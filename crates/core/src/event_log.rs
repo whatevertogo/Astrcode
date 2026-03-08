@@ -18,7 +18,8 @@ pub struct EventLog {
 /// Example: `2026-03-08T12-30-01-a3f2b1c0`
 pub fn generate_session_id() -> String {
     let dt = Utc::now().format("%Y-%m-%dT%H-%M-%S");
-    let short = &Uuid::new_v4().to_string()[..8];
+    let uuid = Uuid::new_v4().simple().to_string();
+    let short = &uuid[..8];
     format!("{dt}-{short}")
 }
 
@@ -83,6 +84,7 @@ impl EventLog {
             ));
         }
         let file = OpenOptions::new()
+            .write(true)
             .append(true)
             .open(&path)
             .with_context(|| format!("failed to open session file: {}", path.display()))?;
@@ -103,8 +105,8 @@ impl EventLog {
 
     /// Append a single event as one JSONL line + flush.
     pub fn append(&mut self, event: &StorageEvent) -> Result<()> {
-        let json = serde_json::to_string(event).context("failed to serialize StorageEvent")?;
-        writeln!(self.writer, "{json}").context("failed to write event to log")?;
+        serde_json::to_writer(&mut self.writer, event).context("failed to serialize StorageEvent")?;
+        writeln!(self.writer).context("failed to write newline")?;
         self.writer.flush().context("failed to flush event log")?;
         Ok(())
     }
