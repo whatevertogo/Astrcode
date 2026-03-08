@@ -1,6 +1,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
@@ -53,6 +53,7 @@ impl EventLog {
     }
 
     /// Create a new session log file. Creates parent directories if needed.
+    /// Returns error if the file already exists.
     pub fn create(session_id: &str) -> Result<Self> {
         let path = session_path(session_id)?;
         if let Some(parent) = path.parent() {
@@ -61,7 +62,7 @@ impl EventLog {
             })?;
         }
         let file = OpenOptions::new()
-            .create(true)
+            .create_new(true)
             .append(true)
             .open(&path)
             .with_context(|| format!("failed to create session file: {}", path.display()))?;
@@ -96,7 +97,7 @@ impl EventLog {
         &self.session_id
     }
 
-    pub fn path(&self) -> &PathBuf {
+    pub fn path(&self) -> &Path {
         &self.path
     }
 
@@ -109,15 +110,15 @@ impl EventLog {
     }
 
     /// Load all events from a session file.
-    /// Skips blank lines and lines that fail to parse (with an eprintln warning).
+    /// Skips blank lines. Returns error on parse failure.
     pub fn load(session_id: &str) -> Result<Vec<StorageEvent>> {
         let path = session_path(session_id)?;
         Self::load_from_path(&path)
     }
 
     /// Load all events from a specific path.
-    /// Skips blank lines and lines that fail to parse (with an eprintln warning).
-    pub fn load_from_path(path: &std::path::Path) -> Result<Vec<StorageEvent>> {
+    /// Skips blank lines. Returns error on parse failure.
+    pub fn load_from_path(path: &Path) -> Result<Vec<StorageEvent>> {
         let file = File::open(&path)
             .with_context(|| format!("failed to open session file: {}", path.display()))?;
         let reader = BufReader::new(file);
@@ -128,16 +129,10 @@ impl EventLog {
             if trimmed.is_empty() {
                 continue;
             }
-            match serde_json::from_str::<StorageEvent>(trimmed) {
-                Ok(event) => events.push(event),
-                Err(e) => {
-                    eprintln!(
-                        "warning: skipping invalid event at {}:{}: {e}",
-                        path.display(),
-                        i + 1
-                    );
-                }
-            }
+            let event = serde_json::from_str::<StorageEvent>(trimmed).with_context(|| {
+                format!("failed to parse event at {}:{}: {}", path.display(), i + 1, trimmed)
+            })?;
+            events.push(event);
         }
         Ok(events)
     }
@@ -145,12 +140,20 @@ impl EventLog {
     /// List all session ids found in the sessions directory, sorted alphabetically.
     pub fn list_sessions() -> Result<Vec<String>> {
         let dir = sessions_dir()?;
+        Self::list_sessions_from_path(&dir)
+    }
+
+    /// List session ids from a specific directory (for testing).
+    fn list_sessions_from_path(dir: &Path) -> Result<Vec<String>> {
         if !dir.exists() {
             return Ok(Vec::new());
         }
         let mut ids = Vec::new();
-        for entry in fs::read_dir(&dir).context("failed to read sessions directory")? {
+        for entry in fs::read_dir(dir).context("failed to read sessions directory")? {
             let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if let Some(id) = name
@@ -186,27 +189,6 @@ mod tests {
         }
     }
 
-    /// Override session_path for tests by writing directly to a temp dir.
-    fn load_from_path(path: &std::path::Path) -> Result<Vec<StorageEvent>> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-        let mut events = Vec::new();
-        for (i, line) in reader.lines().enumerate() {
-            let line = line?;
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            match serde_json::from_str::<StorageEvent>(trimmed) {
-                Ok(event) => events.push(event),
-                Err(e) => {
-                    eprintln!("warning: skipping line {}: {e}", i + 1);
-                }
-            }
-        }
-        Ok(events)
-    }
-
     #[test]
     fn append_and_load_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
@@ -225,25 +207,23 @@ mod tests {
         log.append(&e1).unwrap();
         log.append(&e2).unwrap();
 
-        let loaded = load_from_path(&log.path).unwrap();
+        let loaded = EventLog::load_from_path(log.path()).unwrap();
         assert_eq!(loaded.len(), 2);
         assert!(matches!(&loaded[0], StorageEvent::SessionStart { session_id, .. } if session_id == "test-session-001"));
         assert!(matches!(&loaded[1], StorageEvent::UserMessage { content, .. } if content == "hello"));
     }
 
     #[test]
-    fn load_skips_invalid_lines() {
+    fn load_errors_on_invalid_json() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("session-bad.jsonl");
         {
             let mut f = File::create(&path).unwrap();
             writeln!(f, r#"{{"type":"userMessage","content":"ok","timestamp":"2026-01-01T00:00:00Z"}}"#).unwrap();
             writeln!(f, "THIS IS NOT JSON").unwrap();
-            writeln!(f).unwrap(); // blank line
-            writeln!(f, r#"{{"type":"turnDone","timestamp":"2026-01-01T00:00:00Z"}}"#).unwrap();
         }
-        let events = load_from_path(&path).unwrap();
-        assert_eq!(events.len(), 2);
+        let result = EventLog::load_from_path(&path);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -260,33 +240,26 @@ mod tests {
     #[test]
     fn list_sessions_returns_sorted_ids() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path();
 
         // Create session files with specific IDs
         let ids = ["2026-03-01T10-00-00-aaaaaaaa", "2026-03-02T12-30-00-bbbbbbbb", "2026-03-01T09-00-00-cccccccc"];
         for id in &ids {
-            let path = dir.join(format!("session-{id}.jsonl"));
+            let path = tmp.path().join(format!("session-{id}.jsonl"));
             let mut f = File::create(&path).unwrap();
             writeln!(f, r#"{{"type":"sessionStart","sessionId":"{id}","timestamp":"2026-01-01T00:00:00Z","workingDir":"/tmp"}}"#).unwrap();
         }
 
         // Create a non-session file that should be ignored
-        File::create(dir.join("other-file.txt")).unwrap();
+        File::create(tmp.path().join("other-file.txt")).unwrap();
 
         // Create a file with wrong prefix that should be ignored
-        File::create(dir.join("not-session-123.jsonl")).unwrap();
+        File::create(tmp.path().join("not-session-123.jsonl")).unwrap();
 
-        // Use a helper that reads from the temp dir
-        let mut found: Vec<String> = Vec::new();
-        for entry in fs::read_dir(dir).unwrap() {
-            let entry = entry.unwrap();
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if let Some(id) = name.strip_prefix("session-").and_then(|s| s.strip_suffix(".jsonl")) {
-                found.push(id.to_string());
-            }
-        }
-        found.sort();
+        // Create a directory that should be ignored
+        fs::create_dir(tmp.path().join("session-dir-inside.jsonl")).unwrap();
+
+        // Call the real function
+        let found = EventLog::list_sessions_from_path(tmp.path()).unwrap();
 
         // Should return only the session IDs, sorted alphabetically
         assert_eq!(found.len(), 3);
