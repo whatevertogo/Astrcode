@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "kill-port": "node scripts/kill-port.js",
+    "dev": "node scripts/kill-port.js && vite",
     "build": "vite build"
   },
   "dependencies": {
