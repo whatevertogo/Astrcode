@@ -1,0 +1,58 @@
+.topBar {
+  display: flex;
+  align-items: center;
+  padding: 10px 16px;
+  border-bottom: 1px solid #2d2d2d;
+  background: #1e1e1e;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.breadcrumb {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.projectName {
+  font-size: 13px;
+  color: #858585;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sep {
+  color: #555;
+  font-size: 13px;
+}
+
+.sessionTitle {
+  font-size: 13px;
+  color: #d4d4d4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty {
+  font-size: 13px;
+  color: #555;
+}
+
+.newSessionBtn {
+  padding: 5px 12px;
+  background: #252525;
+  color: #858585;
+  border-radius: 5px;
+  font-size: 12px;
+  flex-shrink: 0;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.newSessionBtn:hover {
+  background: #2a2a2a;
+  color: #d4d4d4;
+}

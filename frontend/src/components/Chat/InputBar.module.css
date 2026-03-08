@@ -1,0 +1,89 @@
+.inputBar {
+  border-top: 1px solid #2d2d2d;
+  background: #1a1a1a;
+  padding: 10px 16px 14px;
+  flex-shrink: 0;
+}
+
+.workingDir {
+  font-size: 11px;
+  color: #555;
+  margin-bottom: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+}
+
+.row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.textarea {
+  flex: 1;
+  min-height: 44px;
+  max-height: 200px;
+  background: #252525;
+  border: 1px solid #3d3d3d;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #d4d4d4;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-y: auto;
+  transition: border-color 150ms ease;
+}
+
+.textarea:focus {
+  border-color: #555;
+  outline: none;
+}
+
+.textarea::placeholder {
+  color: #555;
+}
+
+.textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sendBtn {
+  padding: 8px 18px;
+  background: #1a6ed8;
+  color: #fff;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  flex-shrink: 0;
+  height: 38px;
+  transition: background 150ms ease, opacity 150ms ease;
+}
+
+.sendBtn:hover:not(:disabled) {
+  background: #2179e5;
+}
+
+.sendBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.interruptBtn {
+  padding: 8px 18px;
+  background: #3d1111;
+  color: #f44747;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  flex-shrink: 0;
+  height: 38px;
+  border: 1px solid #f4474740;
+  transition: background 150ms ease;
+}
+
+.interruptBtn:hover {
+  background: #521515;
+}

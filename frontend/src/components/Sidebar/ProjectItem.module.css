@@ -1,0 +1,83 @@
+.wrapper {
+  position: relative;
+}
+
+.projectRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  cursor: pointer;
+  transition: background 150ms ease;
+  user-select: none;
+}
+
+.projectRow:hover {
+  background: #2a2a2a;
+}
+
+.arrow {
+  font-size: 10px;
+  color: #858585;
+  width: 10px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.projectName {
+  font-size: 13px;
+  color: #d4d4d4;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.renameInput {
+  flex: 1;
+  background: #252525;
+  border: 1px solid #555;
+  border-radius: 3px;
+  color: #d4d4d4;
+  font-size: 13px;
+  padding: 1px 4px;
+  outline: none;
+}
+
+.sessions {
+  /* Sessions are indented via SessionItem */
+}
+
+.contextMenu {
+  position: fixed;
+  z-index: 9999;
+  background: #252525;
+  border: 1px solid #3d3d3d;
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 140px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.menuItem {
+  display: block;
+  width: 100%;
+  padding: 7px 14px;
+  text-align: left;
+  color: #d4d4d4;
+  font-size: 13px;
+  transition: background 100ms ease;
+}
+
+.menuItem:hover {
+  background: #2a2a2a;
+}
+
+.menuItemDanger {
+  color: #f44747;
+}

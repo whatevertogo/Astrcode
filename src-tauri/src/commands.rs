@@ -4,18 +4,23 @@ use crate::handle::AgentHandle;
 
 #[tauri::command]
 pub async fn submit_prompt(
-    _text: String,
+    text: String,
     state: State<'_, AgentHandle>,
-    _app: AppHandle,
+    app: AppHandle,
 ) -> Result<(), String> {
-    let _ = &state.runtime;
-    Err("submit_prompt not implemented yet".into())
+    state.submit_prompt(text, app).await
 }
 
 #[tauri::command]
 pub async fn interrupt(state: State<'_, AgentHandle>) -> Result<(), String> {
-    let _ = &state.runtime;
-    Err("interrupt not implemented yet".into())
+    state.interrupt().await
+}
+
+#[tauri::command]
+pub fn get_working_dir() -> Result<String, String> {
+    std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

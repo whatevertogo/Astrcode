@@ -7,8 +7,12 @@ edition = "2021"
 astrcode-core = { path = "../crates/core" }
 ipc = { path = "../crates/ipc" }
 tauri = { version = "2", features = ["devtools"] }
+tauri-plugin-dialog = "2"
 anyhow = "1"
+async-trait.workspace = true
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+uuid.workspace = true
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

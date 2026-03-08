@@ -1,0 +1,74 @@
+.wrapper {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.bubble {
+  background: #2d2d2d;
+  color: #d4d4d4;
+  border-radius: 12px;
+  padding: 10px 14px;
+  max-width: 80%;
+  word-break: break-word;
+  min-width: 60px;
+}
+
+.label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #858585;
+  margin-bottom: 6px;
+}
+
+.content {
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* Markdown overrides inside bubble */
+.content p {
+  margin: 0 0 8px;
+}
+
+.content p:last-child {
+  margin-bottom: 0;
+}
+
+.content ul,
+.content ol {
+  margin: 4px 0 8px;
+  padding-left: 20px;
+}
+
+.content li {
+  margin-bottom: 4px;
+}
+
+.content strong {
+  color: #e0e0e0;
+}
+
+.codeBlock {
+  background: #1a1a1a;
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.inlineCode {
+  background: #1a1a1a;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 13px;
+  color: #9cdcfe;
+}
+
+.cursor {
+  display: inline-block;
+  color: #c586c0;
+  animation: blink 1s step-end infinite;
+  margin-left: 1px;
+}

@@ -126,8 +126,8 @@ fn default_profile_models() -> Vec<String> {
 }
 
 pub fn config_path() -> Result<PathBuf> {
-    let base = dirs::config_dir().ok_or_else(|| anyhow!("unable to resolve config directory"))?;
-    Ok(base.join("astrcode").join("config.json"))
+    let home = dirs::home_dir().ok_or_else(|| anyhow!("unable to resolve home directory"))?;
+    Ok(home.join(".astrcode").join("config.json"))
 }
 
 pub fn load_config() -> Result<Config> {
@@ -188,9 +188,9 @@ mod tests {
         let path = config_path().expect("config_path should resolve");
         let rendered = path.to_string_lossy();
         #[cfg(windows)]
-        assert!(rendered.ends_with("astrcode\\config.json"));
+        assert!(rendered.ends_with(".astrcode\\config.json"));
         #[cfg(not(windows))]
-        assert!(rendered.ends_with("astrcode/config.json"));
+        assert!(rendered.ends_with(".astrcode/config.json"));
     }
 
     #[test]
@@ -199,7 +199,7 @@ mod tests {
         std::env::remove_var("DEEPSEEK_API_KEY");
 
         let temp = tempfile::tempdir().expect("tempdir should be created");
-        let path = temp.path().join("astrcode").join("config.json");
+        let path = temp.path().join(".astrcode").join("config.json");
         assert!(!path.exists());
 
         let loaded = load_config_from_path(&path).expect("first load should succeed");

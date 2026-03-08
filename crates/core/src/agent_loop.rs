@@ -1,18 +1,15 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
-use async_trait::async_trait;
-use ipc::{AgentEvent, AgentEventKind, Phase};
+use chrono::Utc;
 use tokio_util::sync::CancellationToken;
 
 use crate::action::LlmMessage;
+use crate::events::StorageEvent;
 use crate::llm::LlmProvider;
+use crate::projection::AgentState;
 use crate::tools::registry::ToolRegistry;
-
-#[async_trait]
-pub trait EventSink: Send + Sync {
-    async fn emit(&self, event: AgentEvent) -> Result<()>;
-}
 
 pub struct AgentLoop {
     provider: Arc<dyn LlmProvider>,
@@ -29,24 +26,27 @@ impl AgentLoop {
         }
     }
 
+    /// Execute one turn of the agent loop.
+    ///
+    /// `state` provides the conversation history (messages) reconstructed from events.
+    /// Every significant result is emitted as a `StorageEvent` via `on_event`.
+    /// The loop itself performs no IO besides LLM calls and tool execution.
     pub async fn run_turn(
         &self,
-        turn_id: String,
-        user_text: String,
-        sink: Arc<dyn EventSink>,
+        state: &AgentState,
+        on_event: &mut impl FnMut(StorageEvent),
         cancel: CancellationToken,
     ) -> Result<()> {
-        sink.emit(AgentEvent::new(AgentEventKind::PhaseChanged {
-            turn_id: Some(turn_id.clone()),
-            phase: Phase::Thinking,
-        }))
-        .await?;
-
-        let mut messages = vec![LlmMessage::User { content: user_text }];
+        let mut messages = state.messages.clone();
 
         for _ in 0..self.max_steps {
             if cancel.is_cancelled() {
-                self.finish_interrupted(&turn_id, sink.as_ref()).await?;
+                on_event(StorageEvent::Error {
+                    message: "interrupted".to_string(),
+                });
+                on_event(StorageEvent::TurnDone {
+                    timestamp: Utc::now(),
+                });
                 return Ok(());
             }
 
@@ -58,39 +58,33 @@ impl AgentLoop {
                 Ok(response) => response,
                 Err(error) => {
                     if cancel.is_cancelled() {
-                        self.finish_interrupted(&turn_id, sink.as_ref()).await?;
+                        on_event(StorageEvent::Error {
+                            message: "interrupted".to_string(),
+                        });
+                        on_event(StorageEvent::TurnDone {
+                            timestamp: Utc::now(),
+                        });
                         return Ok(());
                     }
 
-                    sink.emit(AgentEvent::new(AgentEventKind::Error {
-                        turn_id: Some(turn_id.clone()),
-                        code: "llm_error".to_string(),
+                    on_event(StorageEvent::Error {
                         message: error.to_string(),
-                    }))
-                    .await?;
-                    self.finish_done(&turn_id, sink.as_ref()).await?;
+                    });
+                    on_event(StorageEvent::TurnDone {
+                        timestamp: Utc::now(),
+                    });
                     return Ok(());
                 }
             };
 
-            if !response.content.is_empty() {
-                sink.emit(AgentEvent::new(AgentEventKind::PhaseChanged {
-                    turn_id: Some(turn_id.clone()),
-                    phase: Phase::Streaming,
-                }))
-                .await?;
+            // TODO: streaming - emit AssistantDelta per token
+            // Currently LlmProvider::complete() returns the full response at once.
+            // When streaming is implemented, emit AssistantDelta { token } for each chunk here.
 
-                for chunk in chunk_text(&response.content, 24) {
-                    if cancel.is_cancelled() {
-                        self.finish_interrupted(&turn_id, sink.as_ref()).await?;
-                        return Ok(());
-                    }
-                    sink.emit(AgentEvent::new(AgentEventKind::ModelDelta {
-                        turn_id: turn_id.clone(),
-                        delta: chunk,
-                    }))
-                    .await?;
-                }
+            if !response.content.is_empty() {
+                on_event(StorageEvent::AssistantFinal {
+                    content: response.content.clone(),
+                });
             }
 
             let tool_calls = response.tool_calls.clone();
@@ -100,39 +94,47 @@ impl AgentLoop {
             });
 
             if tool_calls.is_empty() {
-                self.finish_done(&turn_id, sink.as_ref()).await?;
+                on_event(StorageEvent::TurnDone {
+                    timestamp: Utc::now(),
+                });
                 return Ok(());
             }
 
             for call in tool_calls {
                 if cancel.is_cancelled() {
-                    self.finish_interrupted(&turn_id, sink.as_ref()).await?;
+                    on_event(StorageEvent::Error {
+                        message: "interrupted".to_string(),
+                    });
+                    on_event(StorageEvent::TurnDone {
+                        timestamp: Utc::now(),
+                    });
                     return Ok(());
                 }
 
-                sink.emit(AgentEvent::new(AgentEventKind::PhaseChanged {
-                    turn_id: Some(turn_id.clone()),
-                    phase: Phase::CallingTool,
-                }))
-                .await?;
-                sink.emit(AgentEvent::new(AgentEventKind::ToolCallStart {
-                    turn_id: turn_id.clone(),
+                on_event(StorageEvent::ToolCall {
                     tool_call_id: call.id.clone(),
                     tool_name: call.name.clone(),
                     args: call.args.clone(),
-                }))
-                .await?;
+                });
 
-                let result = self
-                    .tools
-                    .execute(&call, cancel.child_token())
-                    .await;
+                let start = Instant::now();
+                let result = self.tools.execute(&call, cancel.child_token()).await;
+                let duration_ms = start.elapsed().as_millis() as u64;
 
-                sink.emit(AgentEvent::new(AgentEventKind::ToolCallResult {
-                    turn_id: turn_id.clone(),
-                    result: result.clone().into_envelope(),
-                }))
-                .await?;
+                on_event(StorageEvent::ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: if result.ok {
+                        result.output.clone()
+                    } else {
+                        format!(
+                            "tool execution failed: {}\n{}",
+                            result.error.as_deref().unwrap_or("unknown error"),
+                            result.output
+                        )
+                    },
+                    success: result.ok,
+                    duration_ms,
+                });
 
                 messages.push(LlmMessage::Tool {
                     tool_call_id: call.id,
@@ -141,109 +143,48 @@ impl AgentLoop {
             }
         }
 
-        sink.emit(AgentEvent::new(AgentEventKind::Error {
-            turn_id: Some(turn_id.clone()),
-            code: "max_steps_exceeded".to_string(),
+        on_event(StorageEvent::Error {
             message: "turn exceeded max tool iteration steps".to_string(),
-        }))
-        .await?;
-        self.finish_done(&turn_id, sink.as_ref()).await?;
+        });
+        on_event(StorageEvent::TurnDone {
+            timestamp: Utc::now(),
+        });
 
         Ok(())
     }
-
-    async fn finish_done(&self, turn_id: &str, sink: &dyn EventSink) -> Result<()> {
-        sink.emit(AgentEvent::new(AgentEventKind::PhaseChanged {
-            turn_id: Some(turn_id.to_string()),
-            phase: Phase::Done,
-        }))
-        .await?;
-        sink.emit(AgentEvent::new(AgentEventKind::TurnDone {
-            turn_id: turn_id.to_string(),
-        }))
-        .await?;
-        sink.emit(AgentEvent::new(AgentEventKind::PhaseChanged {
-            turn_id: None,
-            phase: Phase::Idle,
-        }))
-        .await?;
-        Ok(())
-    }
-
-    async fn finish_interrupted(&self, turn_id: &str, sink: &dyn EventSink) -> Result<()> {
-        sink.emit(AgentEvent::new(AgentEventKind::PhaseChanged {
-            turn_id: Some(turn_id.to_string()),
-            phase: Phase::Interrupted,
-        }))
-        .await?;
-        sink.emit(AgentEvent::new(AgentEventKind::TurnDone {
-            turn_id: turn_id.to_string(),
-        }))
-        .await?;
-        sink.emit(AgentEvent::new(AgentEventKind::PhaseChanged {
-            turn_id: None,
-            phase: Phase::Idle,
-        }))
-        .await?;
-        Ok(())
-    }
-}
-
-fn chunk_text(input: &str, chunk_size: usize) -> Vec<String> {
-    if input.is_empty() {
-        return Vec::new();
-    }
-
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-    let mut count = 0;
-
-    for ch in input.chars() {
-        current.push(ch);
-        count += 1;
-        if count >= chunk_size {
-            chunks.push(current.clone());
-            current.clear();
-            count = 0;
-        }
-    }
-
-    if !current.is_empty() {
-        chunks.push(current);
-    }
-
-    chunks
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
     use anyhow::{anyhow, Result};
     use async_trait::async_trait;
-    use ipc::AgentEventKind;
+    use ipc::Phase;
     use serde_json::json;
     use tokio::time::{sleep, Duration};
     use tokio_util::sync::CancellationToken;
 
-    use crate::action::{LlmResponse, ToolCallRequest, ToolDefinition, ToolExecutionResult};
+    use crate::action::{LlmMessage, LlmResponse, ToolCallRequest, ToolDefinition, ToolExecutionResult};
+    use crate::events::StorageEvent;
     use crate::llm::LlmProvider;
+    use crate::projection::AgentState;
     use crate::tools::registry::ToolRegistry;
     use crate::tools::Tool;
 
-    use super::{AgentLoop, EventSink};
+    use super::AgentLoop;
 
-    #[derive(Default)]
-    struct MemorySink {
-        events: Mutex<Vec<ipc::AgentEvent>>,
-    }
-
-    #[async_trait]
-    impl EventSink for MemorySink {
-        async fn emit(&self, event: ipc::AgentEvent) -> Result<()> {
-            self.events.lock().expect("lock should work").push(event);
-            Ok(())
+    fn make_state(user_text: &str) -> AgentState {
+        AgentState {
+            session_id: "test".into(),
+            working_dir: PathBuf::from("/tmp"),
+            messages: vec![LlmMessage::User {
+                content: user_text.into(),
+            }],
+            phase: Phase::Thinking,
+            turn_count: 0,
         }
     }
 
@@ -256,7 +197,7 @@ mod tests {
     impl LlmProvider for ScriptedProvider {
         async fn complete(
             &self,
-            _messages: &[crate::action::LlmMessage],
+            _messages: &[LlmMessage],
             _tools: &[ToolDefinition],
             cancel: CancellationToken,
         ) -> Result<LlmResponse> {
@@ -329,38 +270,39 @@ mod tests {
 
         let tools = ToolRegistry::with_v1_defaults();
         let loop_runner = AgentLoop::new(provider, tools);
-        let sink = Arc::new(MemorySink::default());
+        let state = make_state("list files");
+
+        let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let mut on_event = move |e: StorageEvent| {
+            events_clone.lock().expect("lock").push(e);
+        };
 
         loop_runner
-            .run_turn(
-                "turn1".to_string(),
-                "list files".to_string(),
-                sink.clone(),
-                CancellationToken::new(),
-            )
+            .run_turn(&state, &mut on_event, CancellationToken::new())
             .await
             .expect("turn should complete");
 
-        let events = sink.events.lock().expect("lock should work").clone();
+        let events = events.lock().expect("lock").clone();
         let start_idx = events
             .iter()
-            .position(|event| matches!(event.kind, AgentEventKind::ToolCallStart { .. }))
-            .expect("tool start event expected");
+            .position(|e| matches!(e, StorageEvent::ToolCall { .. }))
+            .expect("ToolCall event expected");
         let result_idx = events
             .iter()
-            .position(|event| matches!(event.kind, AgentEventKind::ToolCallResult { .. }))
-            .expect("tool result event expected");
+            .position(|e| matches!(e, StorageEvent::ToolResult { .. }))
+            .expect("ToolResult event expected");
         let done_idx = events
             .iter()
-            .position(|event| matches!(event.kind, AgentEventKind::TurnDone { .. }))
-            .expect("turn done event expected");
+            .position(|e| matches!(e, StorageEvent::TurnDone { .. }))
+            .expect("TurnDone event expected");
 
         assert!(start_idx < result_idx);
         assert!(result_idx < done_idx);
     }
 
     #[tokio::test]
-    async fn interrupt_moves_turn_to_interrupted_without_extra_deltas() {
+    async fn interrupt_emits_error_and_turn_done() {
         let provider = Arc::new(ScriptedProvider {
             responses: Mutex::new(VecDeque::from([LlmResponse {
                 content: "".to_string(),
@@ -377,19 +319,19 @@ mod tests {
         tools.register(Arc::new(SlowTool));
 
         let loop_runner = AgentLoop::new(provider, tools);
-        let sink = Arc::new(MemorySink::default());
+        let state = make_state("run slow");
+
+        let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
-        let sink_for_task = sink.clone();
+        let events_clone = events.clone();
 
         let handle = tokio::spawn(async move {
+            let mut on_event = move |e: StorageEvent| {
+                events_clone.lock().expect("lock").push(e);
+            };
             loop_runner
-                .run_turn(
-                    "turn-interrupt".to_string(),
-                    "run slow".to_string(),
-                    sink_for_task,
-                    cancel,
-                )
+                .run_turn(&state, &mut on_event, cancel)
                 .await
                 .expect("turn should end cleanly")
         });
@@ -398,17 +340,15 @@ mod tests {
         cancel_clone.cancel();
         handle.await.expect("task should join");
 
-        let events = sink.events.lock().expect("lock should work").clone();
-        let interrupted = events.iter().any(|event| {
-            matches!(
-                event.kind,
-                AgentEventKind::PhaseChanged {
-                    phase: ipc::Phase::Interrupted,
-                    ..
-                }
-            )
+        let events = events.lock().expect("lock").clone();
+        let has_error = events.iter().any(|e| {
+            matches!(e, StorageEvent::Error { message } if message == "interrupted")
         });
+        let has_done = events
+            .iter()
+            .any(|e| matches!(e, StorageEvent::TurnDone { .. }));
 
-        assert!(interrupted);
+        assert!(has_error, "should have Error(interrupted)");
+        assert!(has_done, "should have TurnDone");
     }
 }

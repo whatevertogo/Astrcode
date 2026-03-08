@@ -1,0 +1,86 @@
+.wrapper {
+  /* container */
+}
+
+.sessionRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px 4px 28px;
+  cursor: pointer;
+  transition: background 150ms ease;
+  user-select: none;
+  border-left: 3px solid transparent;
+}
+
+.sessionRow:hover {
+  background: #242424;
+}
+
+.sessionRow:focus-visible {
+  outline: 1px solid #1a6ed8;
+  outline-offset: -1px;
+}
+
+.sessionRow.active {
+  background: #2d2d2d;
+  border-left-color: #1a6ed8;
+}
+
+.bullet {
+  font-size: 13px;
+  color: #858585;
+  flex-shrink: 0;
+}
+
+.title {
+  font-size: 12px;
+  color: #c0c0c0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.sessionRow.active .title {
+  color: #d4d4d4;
+}
+
+.renameInput {
+  flex: 1;
+  background: #252525;
+  border: 1px solid #555;
+  border-radius: 3px;
+  color: #d4d4d4;
+  font-size: 12px;
+  padding: 1px 4px;
+  outline: none;
+}
+
+.contextMenu {
+  z-index: 9999;
+  background: #252525;
+  border: 1px solid #3d3d3d;
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 140px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.menuItem {
+  display: block;
+  width: 100%;
+  padding: 7px 14px;
+  text-align: left;
+  color: #d4d4d4;
+  font-size: 13px;
+  transition: background 100ms ease;
+}
+
+.menuItem:hover {
+  background: #2a2a2a;
+}
+
+.menuItemDanger {
+  color: #f44747;
+}

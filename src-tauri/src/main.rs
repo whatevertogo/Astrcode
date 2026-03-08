@@ -13,10 +13,12 @@ fn main() {
     };
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(agent)
         .invoke_handler(tauri::generate_handler![
             commands::submit_prompt,
             commands::interrupt,
+            commands::get_working_dir,
             commands::exit_app,
         ])
         .run(tauri::generate_context!())
