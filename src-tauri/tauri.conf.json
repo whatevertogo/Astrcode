@@ -1,0 +1,26 @@
+{
+  "productName": "AstrCode",
+  "version": "0.1.0",
+  "identifier": "com.astrcode.app",
+  "build": {
+    "frontendDist": "../frontend/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "cd ../frontend && npm install && npm run dev",
+    "beforeBuildCommand": "cd ../frontend && npm install && npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "AstrCode",
+        "width": 900,
+        "height": 700,
+        "minWidth": 600,
+        "minHeight": 400
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  }
+}
