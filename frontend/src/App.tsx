@@ -1,21 +1,98 @@
-import React, { useCallback, useEffect, useReducer, useRef } from 'react';
+import React, { startTransition, useCallback, useEffect, useReducer, useRef } from 'react';
 import type {
   AgentEventPayload,
   Action,
   AppState,
+  SessionMeta,
   Project,
   Session,
+  Message,
 } from './types';
 import { uuid } from './utils/uuid';
 import Sidebar from './components/Sidebar/index';
 import Chat from './components/Chat/index';
-import { useAgent } from './hooks/useAgent';
+import { useAgent, SessionMessage } from './hooks/useAgent';
 import { useProjects } from './hooks/useProjects';
 
 function getDirectoryName(path: string): string {
   const normalized = path.replace(/[\\/]+$/, '');
   const parts = normalized.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] || '默认项目';
+}
+
+function toEpochMs(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function convertSessionMessage(m: SessionMessage): Message {
+  const timestamp = (m.kind === 'user' || m.kind === 'assistant')
+    ? toEpochMs(m.timestamp)
+    : Date.now();
+  const base = { id: uuid(), timestamp };
+  switch (m.kind) {
+    case 'user':
+      return { ...base, kind: 'user' as const, text: m.content };
+    case 'assistant':
+      return { ...base, kind: 'assistant' as const, text: m.content, streaming: false };
+    case 'toolCall':
+      return {
+        ...base,
+        kind: 'toolCall' as const,
+        toolCallId: m.toolCallId,
+        toolName: m.toolName,
+        status: m.success ? 'ok' as const : 'fail' as const,
+        args: m.args,
+        output: m.output,
+        durationMs: m.durationMs,
+      };
+    default:
+      return { ...base, kind: 'assistant' as const, text: '', streaming: false };
+  }
+}
+
+function groupSessionsByProject(sessionMetas: SessionMeta[]): Project[] {
+  const projectMap = new Map<string, { project: Project; maxUpdatedAt: number }>();
+
+  for (const meta of sessionMetas) {
+    const projectId = meta.workingDir || '__default_project__';
+    const projectName = meta.displayName || getDirectoryName(meta.workingDir);
+    const updatedAt = toEpochMs(meta.updatedAt);
+    const createdAt = toEpochMs(meta.createdAt);
+
+    let holder = projectMap.get(projectId);
+    if (!holder) {
+      holder = {
+        project: {
+          id: projectId,
+          name: projectName,
+          workingDir: meta.workingDir,
+          isExpanded: true,
+          sessions: [],
+        },
+        maxUpdatedAt: updatedAt,
+      };
+      projectMap.set(projectId, holder);
+    } else {
+      holder.maxUpdatedAt = Math.max(holder.maxUpdatedAt, updatedAt);
+    }
+
+    holder.project.sessions.push({
+      id: meta.sessionId,
+      projectId,
+      title: meta.title || '新会话',
+      createdAt,
+      updatedAt,
+      messages: [],
+    });
+  }
+
+  const projects = Array.from(projectMap.values());
+  projects.sort((a, b) => b.maxUpdatedAt - a.maxUpdatedAt);
+  return projects.map((item) => {
+    item.project.sessions.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+    return item.project;
+  });
 }
 
 // ────────────────────────────────────────────────────────────
@@ -55,6 +132,9 @@ function mapSession(
 function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case 'SET_PHASE':
+      if (state.phase === action.phase) {
+        return state;
+      }
       return { ...state, phase: action.phase };
 
     case 'ADD_PROJECT': {
@@ -204,6 +284,40 @@ function reducer(state: AppState, action: Action): AppState {
         workingDir: action.workingDir,
       }));
 
+    case 'INITIALIZE': {
+      return {
+        ...state,
+        projects: action.projects,
+        activeProjectId: action.activeProjectId,
+        activeSessionId: action.activeSessionId,
+      };
+    }
+
+    case 'REPLACE_SESSION_MESSAGES':
+      return mapSession(state, action.sessionId, (s) => ({
+        ...s,
+        messages: action.messages,
+      }));
+
+    case 'ADD_SESSION_BACKEND': {
+      // Add a new session from backend (after newSession call)
+      const newSession: Session = {
+        id: action.sessionId,
+        projectId: action.projectId,
+        title: '新会话',
+        createdAt: Date.now(),
+        messages: [],
+      };
+      const nextState = mapProject(state, action.projectId, (p) => ({
+        ...p,
+        sessions: [newSession, ...p.sessions],
+      }));
+      return {
+        ...nextState,
+        activeSessionId: action.sessionId,
+      };
+    }
+
     default:
       return state;
   }
@@ -272,10 +386,12 @@ export default function App() {
         if (!sid) {
           break;
         }
-        dispatch({ type: 'APPEND_DELTA', sessionId: sid, delta: event.data.delta });
+        startTransition(() => {
+          dispatch({ type: 'APPEND_DELTA', sessionId: sid!, delta: event.data.delta });
+        });
         break;
 
-      case 'toolCallStart':
+      case 'assistantMessage':
         if (!sid) {
           break;
         }
@@ -284,29 +400,59 @@ export default function App() {
           sessionId: sid,
           message: {
             id: uuid(),
-            kind: 'toolCall',
-            toolCallId: event.data.toolCallId,
-            toolName: event.data.toolName,
-            status: 'running',
-            args: event.data.args,
+            kind: 'assistant',
+            text: event.data.content,
+            streaming: false,
             timestamp: Date.now(),
           },
         });
+        break;
+
+      case 'toolCallStart':
+        if (!sid) {
+          break;
+        }
+        {
+          const data = event.data as typeof event.data & {
+            tool_call_id?: string;
+            tool_name?: string;
+            turn_id?: string;
+          };
+          dispatch({
+            type: 'ADD_MESSAGE',
+            sessionId: sid,
+            message: {
+              id: uuid(),
+              kind: 'toolCall',
+              toolCallId: data.toolCallId ?? data.tool_call_id ?? 'unknown',
+              toolName: data.toolName ?? data.tool_name ?? '(unknown tool)',
+              status: 'running',
+              args: event.data.args,
+              timestamp: Date.now(),
+            },
+          });
+        }
         break;
 
       case 'toolCallResult':
         if (!sid) {
           break;
         }
-        dispatch({
-          type: 'UPDATE_TOOL_CALL',
-          sessionId: sid,
-          toolCallId: event.data.result.toolCallId,
-          status: event.data.result.ok ? 'ok' : 'fail',
-          output: event.data.result.output,
-          error: event.data.result.error,
-          durationMs: event.data.result.durationMs,
-        });
+        {
+          const result = event.data.result as typeof event.data.result & {
+            tool_call_id?: string;
+            duration_ms?: number;
+          };
+          dispatch({
+            type: 'UPDATE_TOOL_CALL',
+            sessionId: sid,
+            toolCallId: result.toolCallId ?? result.tool_call_id ?? 'unknown',
+            status: event.data.result.ok ? 'ok' : 'fail',
+            output: event.data.result.output,
+            error: event.data.result.error,
+            durationMs: result.durationMs ?? result.duration_ms ?? 0,
+          });
+        }
         break;
 
       case 'turnDone':
@@ -340,71 +486,209 @@ export default function App() {
     }
   }, []);
 
-  const { submitPrompt, interrupt, getWorkingDir } = useAgent(handleAgentEvent);
+  const {
+    submitPrompt,
+    interrupt,
+    getWorkingDir,
+    getSessionId,
+    listSessionsWithMeta,
+    loadSession,
+    switchSession,
+    newSession,
+    deleteSession,
+    deleteProject,
+  } = useAgent(handleAgentEvent);
 
-  useEffect(() => {
-    const defaultProject = state.projects[0];
-    if (!defaultProject || defaultProject.workingDir) {
+  const refreshSessions = useCallback(async () => {
+    const sessionMetas = await listSessionsWithMeta();
+    let metas = sessionMetas;
+
+    if (metas.length === 0) {
+      await newSession();
+      metas = await listSessionsWithMeta();
+    }
+
+    const projectsFromMeta = groupSessionsByProject(metas);
+    const availableSessionIds = new Set(metas.map((meta) => meta.sessionId));
+    const backendCurrentSessionId = await getSessionId();
+    const fallbackSessionId = metas[0]?.sessionId ?? '';
+    const resolvedCurrentSessionId = availableSessionIds.has(backendCurrentSessionId)
+      ? backendCurrentSessionId
+      : fallbackSessionId;
+
+    const messages = resolvedCurrentSessionId
+      ? await loadSession(resolvedCurrentSessionId)
+      : [];
+    const convertedMessages = messages.map(convertSessionMessage);
+
+    const projects = projectsFromMeta.map((project) => ({
+      ...project,
+      sessions: project.sessions.map((session) => (
+        session.id === resolvedCurrentSessionId
+          ? { ...session, messages: convertedMessages }
+          : session
+      )),
+    }));
+
+    let activeProjectId = projects.find((project) =>
+      project.sessions.some((session) => session.id === resolvedCurrentSessionId),
+    )?.id ?? null;
+    let activeSessionId: string | null = resolvedCurrentSessionId || null;
+
+    if (!activeProjectId && projects.length > 0) {
+      activeProjectId = projects[0].id;
+      activeSessionId = projects[0].sessions[0]?.id ?? null;
+    }
+
+    if (projects.length === 0) {
+      const workingDir = await getWorkingDir();
+      const projectId = '__default_project__';
+      const fallbackId = activeSessionId ?? `web-${Date.now()}`;
+      dispatch({
+        type: 'INITIALIZE',
+        projects: [{
+          id: projectId,
+          name: getDirectoryName(workingDir),
+          workingDir,
+          isExpanded: true,
+          sessions: [{
+            id: fallbackId,
+            projectId,
+            title: '新会话',
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            messages: convertedMessages,
+          }],
+        }],
+        activeProjectId: projectId,
+        activeSessionId: fallbackId,
+      });
       return;
     }
 
-    let cancelled = false;
-    void getWorkingDir()
-      .then((workingDir) => {
-        if (cancelled) {
-          return;
-        }
-        dispatch({
-          type: 'SET_WORKING_DIR',
-          projectId: defaultProject.id,
-          workingDir,
-        });
-        dispatch({
-          type: 'RENAME_PROJECT',
-          projectId: defaultProject.id,
-          name: getDirectoryName(workingDir),
-        });
-      })
-      .catch(() => {
-        // Keep the placeholder project if the working directory cannot be resolved.
-      });
+    dispatch({
+      type: 'INITIALIZE',
+      projects,
+      activeProjectId,
+      activeSessionId,
+    });
+  }, [getSessionId, getWorkingDir, listSessionsWithMeta, loadSession, newSession]);
 
+  // Initialize session data from backend on mount
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        await refreshSessions();
+      } catch (err) {
+        if (!cancelled) {
+          console.error('Failed to initialize sessions:', err);
+        }
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [state.projects, getWorkingDir]);
+  }, [refreshSessions]);
 
   const activeProject =
     state.projects.find((p) => p.id === state.activeProjectId) ?? null;
   const activeSession =
     activeProject?.sessions.find((s) => s.id === state.activeSessionId) ?? null;
 
-  const handleNewSession = () => {
-    if (state.activeProjectId) {
-      projects.addSession(state.activeProjectId);
+  const handleNewSession = async () => {
+    try {
+      await newSession();
+      await refreshSessions();
+    } catch (err) {
+      console.error('Failed to create new session:', err);
     }
   };
 
-  const handleSetActive = (projectId: string, sessionId: string) =>
+  const handleSetActive = async (projectId: string, sessionId: string) => {
+    // If switching to a different session, call backend
+    if (sessionId !== state.activeSessionId) {
+      try {
+        await switchSession(sessionId);
+        // Load session messages if not already loaded
+        const targetProject = state.projects.find((p) => p.id === projectId);
+        const targetSession = targetProject?.sessions.find((s) => s.id === sessionId);
+        if (targetSession && targetSession.messages.length === 0) {
+          const messages = await loadSession(sessionId);
+          // Convert SessionMessage to Message
+          const convertedMessages: Message[] = messages.map((m) => {
+            const base = { id: uuid(), timestamp: Date.now() };
+            switch (m.kind) {
+              case 'user':
+                return { ...base, kind: 'user' as const, text: m.content };
+              case 'assistant':
+                return { ...base, kind: 'assistant' as const, text: m.content, streaming: false };
+              case 'toolCall':
+                return {
+                  ...base,
+                  kind: 'toolCall' as const,
+                  toolCallId: m.toolCallId,
+                  toolName: m.toolName,
+                  status: m.success ? 'ok' as const : 'fail' as const,
+                  args: m.args,
+                  output: m.output,
+                  durationMs: m.durationMs,
+                };
+              default:
+                return { ...base, kind: 'assistant' as const, text: '', streaming: false };
+            }
+          });
+          dispatch({
+            type: 'REPLACE_SESSION_MESSAGES',
+            sessionId,
+            messages: convertedMessages,
+          });
+        }
+      } catch (err) {
+        console.error('Failed to switch session:', err);
+        return;
+      }
+    }
     dispatch({ type: 'SET_ACTIVE', projectId, sessionId });
+  };
 
   const handleToggleExpand = (projectId: string) =>
     dispatch({ type: 'TOGGLE_EXPAND', projectId });
 
-  const handleRenameProject = (projectId: string, name: string) =>
-    dispatch({ type: 'RENAME_PROJECT', projectId, name });
+  const handleDeleteProject = async (projectId: string) => {
+    const project = state.projects.find((p) => p.id === projectId);
+    if (!project) {
+      return;
+    }
+    const confirmed = window.confirm(
+      `删除项目“${project.name}”会移除该目录下所有会话，是否继续？`,
+    );
+    if (!confirmed) {
+      return;
+    }
+    try {
+      const result = await deleteProject(project.workingDir);
+      if (result.failedSessionIds.length > 0) {
+        console.error('部分会话删除失败:', result.failedSessionIds);
+      }
+      await refreshSessions();
+    } catch (err) {
+      console.error('Failed to delete project:', err);
+    }
+  };
 
-  const handleDeleteProject = (projectId: string) =>
-    dispatch({ type: 'DELETE_PROJECT', projectId });
-
-  const handleRenameSession = (
-    projectId: string,
-    sessionId: string,
-    title: string,
-  ) => dispatch({ type: 'RENAME_SESSION', projectId, sessionId, title });
-
-  const handleDeleteSession = (projectId: string, sessionId: string) =>
-    dispatch({ type: 'DELETE_SESSION', projectId, sessionId });
+  const handleDeleteSession = async (_projectId: string, sessionId: string) => {
+    const confirmed = window.confirm('确认删除该会话？该操作不可恢复。');
+    if (!confirmed) {
+      return;
+    }
+    try {
+      await deleteSession(sessionId);
+      await refreshSessions();
+    } catch (err) {
+      console.error('Failed to delete session:', err);
+    }
+  };
 
   const handleSubmit = useCallback(
     async (text: string) => {
@@ -430,7 +714,7 @@ export default function App() {
       });
 
       try {
-        await submitPrompt(trimmed);
+        await submitPrompt(trimmed, activeSession?.messages ?? []);
       } catch (err) {
         dispatch({
           type: 'ADD_MESSAGE',
@@ -446,7 +730,7 @@ export default function App() {
         dispatch({ type: 'SET_PHASE', phase: 'idle' });
       }
     },
-    [submitPrompt],
+    [activeSession, submitPrompt],
   );
 
   return (
@@ -465,9 +749,7 @@ export default function App() {
         onSetActive={handleSetActive}
         onToggleExpand={handleToggleExpand}
         onNewProject={projects.addProject}
-        onRenameProject={handleRenameProject}
         onDeleteProject={handleDeleteProject}
-        onRenameSession={handleRenameSession}
         onDeleteSession={handleDeleteSession}
       />
       <Chat

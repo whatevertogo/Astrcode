@@ -42,7 +42,8 @@ pub fn project(events: &[StorageEvent]) -> AgentState {
     let flush = |state: &mut AgentState,
                  pending_content: &mut Option<String>,
                  pending_tool_calls: &mut Vec<ToolCallRequest>| {
-        if let Some(content) = pending_content.take() {
+        if pending_content.is_some() || !pending_tool_calls.is_empty() {
+            let content = pending_content.take().unwrap_or_default();
             state.messages.push(LlmMessage::Assistant {
                 content,
                 tool_calls: std::mem::take(pending_tool_calls),
@@ -294,5 +295,46 @@ mod tests {
         let state = project(&events);
         assert_eq!(state.messages.len(), 2); // User + Assistant only
         assert_eq!(state.turn_count, 1);
+    }
+
+    #[test]
+    fn tool_messages_require_synthetic_assistant_when_content_is_empty() {
+        let events = vec![
+            StorageEvent::SessionStart {
+                session_id: "s1".into(),
+                timestamp: ts(),
+                working_dir: "/tmp".into(),
+            },
+            StorageEvent::UserMessage {
+                content: "run tool".into(),
+                timestamp: ts(),
+            },
+            StorageEvent::ToolCall {
+                tool_call_id: "tc1".into(),
+                tool_name: "listDir".into(),
+                args: json!({"path": "."}),
+            },
+            StorageEvent::ToolResult {
+                tool_call_id: "tc1".into(),
+                output: "[]".into(),
+                success: true,
+                duration_ms: 2,
+            },
+            StorageEvent::TurnDone { timestamp: ts() },
+        ];
+
+        let state = project(&events);
+        assert_eq!(state.messages.len(), 3, "expected user + assistant + tool");
+
+        match &state.messages[1] {
+            LlmMessage::Assistant { content, tool_calls } => {
+                assert_eq!(content, "");
+                assert_eq!(tool_calls.len(), 1);
+                assert_eq!(tool_calls[0].id, "tc1");
+            }
+            other => panic!("expected assistant before tool message, got {:?}", other),
+        }
+
+        assert!(matches!(&state.messages[2], LlmMessage::Tool { tool_call_id, .. } if tool_call_id == "tc1"));
     }
 }

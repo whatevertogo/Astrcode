@@ -1,4 +1,15 @@
 {
+  "scripts": {
+    "dev": "powershell -ExecutionPolicy Bypass -File scripts/dev.ps1",
+    "dev:win": "powershell -ExecutionPolicy Bypass -File scripts/dev.ps1",
+    "dev:unix": "bash scripts/dev.sh",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:tauri": "cargo tauri dev",
+    "build": "cargo tauri build",
+    "check:rust": "cargo check --workspace && cargo test -p ipc",
+    "check:ts": "cd frontend && npm run typecheck",
+    "check": "npm run check:rust && npm run check:ts"
+  },
   "devDependencies": {
     "@types/node": "^25.3.5"
   }

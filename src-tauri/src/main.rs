@@ -20,6 +20,14 @@ fn main() {
             commands::interrupt,
             commands::get_working_dir,
             commands::exit_app,
+            commands::list_sessions,
+            commands::list_sessions_with_meta,
+            commands::load_session,
+            commands::switch_session,
+            commands::new_session,
+            commands::get_session_id,
+            commands::delete_session,
+            commands::delete_project,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

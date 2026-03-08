@@ -4,6 +4,8 @@
   border-radius: 0 6px 6px 0;
   overflow: hidden;
   width: 100%;
+  flex-shrink: 0;
+  min-height: 44px;
   transition: border-left-color 200ms ease;
 }
 
@@ -12,6 +14,7 @@
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
+  min-height: 38px;
   cursor: pointer;
   user-select: none;
   transition: background 150ms ease;
@@ -38,18 +41,25 @@
   font-size: 13px;
   color: #d4d4d4;
   font-weight: 500;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .callId {
   font-size: 11px;
   color: #555;
   font-family: 'Cascadia Code', 'Fira Code', monospace;
+  flex-shrink: 0;
 }
 
 .duration {
   font-size: 11px;
   color: #585858;
-  margin-left: auto;
+  margin-left: 8px;
+  flex-shrink: 0;
 }
 
 .chevron {
@@ -60,6 +70,17 @@
 
 .body {
   border-top: 1px solid #333;
+}
+
+.preview {
+  border-top: 1px solid #333;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #9a9a9a;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .output {

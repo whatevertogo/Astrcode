@@ -20,9 +20,7 @@ interface SidebarProps {
   onSetActive: (projectId: string, sessionId: string) => void;
   onToggleExpand: (projectId: string) => void;
   onNewProject: (name: string, workingDir: string) => void;
-  onRenameProject: (projectId: string, name: string) => void;
   onDeleteProject: (projectId: string) => void;
-  onRenameSession: (projectId: string, sessionId: string, title: string) => void;
   onDeleteSession: (projectId: string, sessionId: string) => void;
 }
 
@@ -33,9 +31,7 @@ export default function Sidebar({
   onSetActive,
   onToggleExpand,
   onNewProject,
-  onRenameProject,
   onDeleteProject,
-  onRenameSession,
   onDeleteSession,
 }: SidebarProps) {
   const [showModal, setShowModal] = useState(false);
@@ -61,9 +57,7 @@ export default function Sidebar({
             activeSessionId={activeSessionId}
             onSetActive={onSetActive}
             onToggleExpand={onToggleExpand}
-            onRename={onRenameProject}
             onDelete={onDeleteProject}
-            onRenameSession={onRenameSession}
             onDeleteSession={onDeleteSession}
           />
         ))}

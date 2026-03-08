@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import type { UserMessage as UserMessageType } from '../../types';
 import styles from './UserMessage.module.css';
 
@@ -6,7 +6,7 @@ interface UserMessageProps {
   message: UserMessageType;
 }
 
-export default function UserMessage({ message }: UserMessageProps) {
+function UserMessage({ message }: UserMessageProps) {
   return (
     <div className={styles.wrapper}>
       <div className={styles.bubble}>
@@ -16,3 +16,5 @@ export default function UserMessage({ message }: UserMessageProps) {
     </div>
   );
 }
+
+export default memo(UserMessage);

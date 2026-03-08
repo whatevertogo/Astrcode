@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { memo, useEffect, useState } from 'react';
 import type { ToolCallMessage, ToolStatus } from '../../types';
 import styles from './ToolCallBlock.module.css';
 
@@ -18,13 +18,22 @@ interface ToolCallBlockProps {
   message: ToolCallMessage;
 }
 
-export default function ToolCallBlock({ message }: ToolCallBlockProps) {
+function ToolCallBlock({ message }: ToolCallBlockProps) {
   const [expanded, setExpanded] = useState(false);
 
   const borderColor = STATUS_COLOR[message.status];
   const icon = STATUS_ICON[message.status];
-  const shortId = message.toolCallId.slice(-6);
+  const toolCallId = message.toolCallId ?? 'unknown';
+  const toolName = message.toolName ?? '(unknown tool)';
+  const shortId = toolCallId.slice(-6);
   const duration = message.durationMs != null ? `${message.durationMs}ms` : '';
+  const preview = message.error ?? message.output ?? (message.status === 'running' ? '执行中...' : '');
+
+  useEffect(() => {
+    if (message.status === 'fail') {
+      setExpanded(true);
+    }
+  }, [message.status]);
 
   return (
     <div
@@ -42,11 +51,15 @@ export default function ToolCallBlock({ message }: ToolCallBlockProps) {
         >
           {icon}
         </span>
-        <span className={styles.toolName}>{message.toolName}</span>
+        <span className={styles.toolName}>{toolName}</span>
         <span className={styles.callId}>#{shortId}</span>
         {duration && <span className={styles.duration}>{duration}</span>}
         <span className={styles.chevron}>{expanded ? '▾' : '▸'}</span>
       </div>
+
+      {!expanded && preview && (
+        <div className={styles.preview}>{preview}</div>
+      )}
 
       {/* Body */}
       {expanded && (
@@ -65,3 +78,5 @@ export default function ToolCallBlock({ message }: ToolCallBlockProps) {
     </div>
   );
 }
+
+export default memo(ToolCallBlock);

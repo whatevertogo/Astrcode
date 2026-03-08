@@ -6,7 +6,9 @@
   "scripts": {
     "kill-port": "node scripts/kill-port.js",
     "dev": "node scripts/kill-port.js && vite",
-    "build": "vite build"
+    "build": "vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check": "npm run typecheck && npm run build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

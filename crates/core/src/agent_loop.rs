@@ -3,18 +3,19 @@ use std::time::Instant;
 
 use anyhow::Result;
 use chrono::Utc;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::action::LlmMessage;
 use crate::events::StorageEvent;
-use crate::llm::LlmProvider;
+use crate::llm::{DeltaCallback, LlmProvider};
 use crate::projection::AgentState;
 use crate::tools::registry::ToolRegistry;
 
 pub struct AgentLoop {
     provider: Arc<dyn LlmProvider>,
     tools: ToolRegistry,
-    max_steps: usize,
+    max_steps: Option<usize>,
 }
 
 impl AgentLoop {
@@ -22,7 +23,15 @@ impl AgentLoop {
         Self {
             provider,
             tools,
-            max_steps: 8,
+            max_steps: None,
+        }
+    }
+
+    pub fn with_max_steps(provider: Arc<dyn LlmProvider>, tools: ToolRegistry, max_steps: usize) -> Self {
+        Self {
+            provider,
+            tools,
+            max_steps: Some(max_steps),
         }
     }
 
@@ -39,7 +48,22 @@ impl AgentLoop {
     ) -> Result<()> {
         let mut messages = state.messages.clone();
 
-        for _ in 0..self.max_steps {
+        let mut step_index = 0usize;
+        loop {
+            if let Some(max_steps) = self.max_steps {
+                if step_index >= max_steps {
+                    eprintln!(
+                        "[agent_loop] reached max tool iteration steps ({}), finishing turn gracefully",
+                        max_steps
+                    );
+                    on_event(StorageEvent::TurnDone {
+                        timestamp: Utc::now(),
+                    });
+                    return Ok(());
+                }
+            }
+            step_index += 1;
+
             if cancel.is_cancelled() {
                 on_event(StorageEvent::Error {
                     message: "interrupted".to_string(),
@@ -50,11 +74,50 @@ impl AgentLoop {
                 return Ok(());
             }
 
-            let response = match self
-                .provider
-                .complete(&messages, &self.tools.definitions(), cancel.child_token())
-                .await
-            {
+            let tool_definitions = self.tools.definitions();
+
+            // Create a channel to receive delta tokens
+            let (delta_tx, mut delta_rx) = mpsc::unbounded_channel::<String>();
+
+            // Create the callback that sends deltas through the channel
+            let on_delta: DeltaCallback = Arc::new(std::sync::Mutex::new(move |delta: String| {
+                let _ = delta_tx.send(delta);
+            }));
+
+            let stream_result = {
+                let stream_future = self
+                    .provider
+                    .stream_complete(
+                        &messages,
+                        &tool_definitions,
+                        cancel.child_token(),
+                        on_delta,
+                    );
+                tokio::pin!(stream_future);
+
+                let stream_result = loop {
+                    tokio::select! {
+                        result = &mut stream_future => break result,
+                        maybe_delta = delta_rx.recv() => {
+                            match maybe_delta {
+                                Some(delta) => {
+                                    eprintln!("[delta] {}", delta);
+                                    on_event(StorageEvent::AssistantDelta { token: delta });
+                                }
+                                None => continue,
+                            }
+                        }
+                    }
+                };
+
+                while let Ok(delta) = delta_rx.try_recv() {
+                    on_event(StorageEvent::AssistantDelta { token: delta });
+                }
+
+                stream_result
+            };
+
+            let response = match stream_result {
                 Ok(response) => response,
                 Err(error) => {
                     if cancel.is_cancelled() {
@@ -77,11 +140,7 @@ impl AgentLoop {
                 }
             };
 
-            // TODO: streaming - emit AssistantDelta per token
-            // Currently LlmProvider::complete() returns the full response at once.
-            // When streaming is implemented, emit AssistantDelta { token } for each chunk here.
-
-            if !response.content.is_empty() {
+            if !response.content.is_empty() || !response.tool_calls.is_empty() {
                 on_event(StorageEvent::AssistantFinal {
                     content: response.content.clone(),
                 });
@@ -142,15 +201,6 @@ impl AgentLoop {
                 });
             }
         }
-
-        on_event(StorageEvent::Error {
-            message: "turn exceeded max tool iteration steps".to_string(),
-        });
-        on_event(StorageEvent::TurnDone {
-            timestamp: Utc::now(),
-        });
-
-        Ok(())
     }
 }
 
@@ -169,7 +219,7 @@ mod tests {
 
     use crate::action::{LlmMessage, LlmResponse, ToolCallRequest, ToolDefinition, ToolExecutionResult};
     use crate::events::StorageEvent;
-    use crate::llm::LlmProvider;
+    use crate::llm::{DeltaCallback, LlmProvider};
     use crate::projection::AgentState;
     use crate::tools::registry::ToolRegistry;
     use crate::tools::Tool;
@@ -213,9 +263,65 @@ mod tests {
                 .pop_front()
                 .ok_or_else(|| anyhow!("no scripted response"))
         }
+
+        async fn stream_complete(
+            &self,
+            messages: &[LlmMessage],
+            tools: &[ToolDefinition],
+            cancel: CancellationToken,
+            on_delta: DeltaCallback,
+        ) -> Result<LlmResponse> {
+            let response = self.complete(messages, tools, cancel).await?;
+            for delta in response.content.chars() {
+                let mut callback = on_delta.lock().expect("delta callback lock");
+                callback(delta.to_string());
+            }
+            Ok(response)
+        }
     }
 
     struct SlowTool;
+
+    struct QuickTool;
+
+    struct StreamingProvider {
+        response: LlmResponse,
+        per_delta_delay: Duration,
+    }
+
+    #[async_trait]
+    impl LlmProvider for StreamingProvider {
+        async fn complete(
+            &self,
+            _messages: &[LlmMessage],
+            _tools: &[ToolDefinition],
+            _cancel: CancellationToken,
+        ) -> Result<LlmResponse> {
+            Ok(self.response.clone())
+        }
+
+        async fn stream_complete(
+            &self,
+            _messages: &[LlmMessage],
+            _tools: &[ToolDefinition],
+            cancel: CancellationToken,
+            on_delta: DeltaCallback,
+        ) -> Result<LlmResponse> {
+            for delta in self.response.content.chars() {
+                {
+                    let mut callback = on_delta.lock().expect("delta callback lock");
+                    callback(delta.to_string());
+                }
+
+                tokio::select! {
+                    _ = cancel.cancelled() => return Err(anyhow!("cancelled")),
+                    _ = sleep(self.per_delta_delay) => {}
+                }
+            }
+
+            Ok(self.response.clone())
+        }
+    }
 
     #[async_trait]
     impl Tool for SlowTool {
@@ -248,6 +354,34 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl Tool for QuickTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "quickTool".to_string(),
+                description: "quick test tool".to_string(),
+                parameters: json!({"type":"object"}),
+            }
+        }
+
+        async fn execute(
+            &self,
+            tool_call_id: String,
+            _args: serde_json::Value,
+            _cancel: CancellationToken,
+        ) -> Result<ToolExecutionResult> {
+            Ok(ToolExecutionResult {
+                tool_call_id,
+                tool_name: "quickTool".to_string(),
+                ok: true,
+                output: "ok".to_string(),
+                error: None,
+                metadata: None,
+                duration_ms: 1,
+            })
+        }
+    }
+
     #[tokio::test]
     async fn tool_events_are_ordered_and_turn_finishes() {
         let provider = Arc::new(ScriptedProvider {
@@ -269,7 +403,7 @@ mod tests {
         });
 
         let tools = ToolRegistry::with_v1_defaults();
-        let loop_runner = AgentLoop::new(provider, tools);
+        let loop_runner = AgentLoop::with_max_steps(provider, tools, 8);
         let state = make_state("list files");
 
         let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -318,7 +452,7 @@ mod tests {
         let mut tools = ToolRegistry::new();
         tools.register(Arc::new(SlowTool));
 
-        let loop_runner = AgentLoop::new(provider, tools);
+        let loop_runner = AgentLoop::with_max_steps(provider, tools, 8);
         let state = make_state("run slow");
 
         let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -326,19 +460,19 @@ mod tests {
         let cancel_clone = cancel.clone();
         let events_clone = events.clone();
 
-        let handle = tokio::spawn(async move {
-            let mut on_event = move |e: StorageEvent| {
-                events_clone.lock().expect("lock").push(e);
-            };
-            loop_runner
-                .run_turn(&state, &mut on_event, cancel)
-                .await
-                .expect("turn should end cleanly")
+        let cancel_task = tokio::spawn(async move {
+            sleep(Duration::from_millis(40)).await;
+            cancel_clone.cancel();
         });
 
-        sleep(Duration::from_millis(40)).await;
-        cancel_clone.cancel();
-        handle.await.expect("task should join");
+        let mut on_event = move |e: StorageEvent| {
+            events_clone.lock().expect("lock").push(e);
+        };
+        loop_runner
+            .run_turn(&state, &mut on_event, cancel)
+            .await
+            .expect("turn should end cleanly");
+        cancel_task.await.expect("cancel task should join");
 
         let events = events.lock().expect("lock").clone();
         let has_error = events.iter().any(|e| {
@@ -350,5 +484,112 @@ mod tests {
 
         assert!(has_error, "should have Error(interrupted)");
         assert!(has_done, "should have TurnDone");
+    }
+
+    #[tokio::test]
+    async fn deltas_emit_before_stream_completion() {
+        let provider = Arc::new(StreamingProvider {
+            response: LlmResponse {
+                content: "streamed".to_string(),
+                tool_calls: vec![],
+            },
+            per_delta_delay: Duration::from_millis(20),
+        });
+        let loop_runner = AgentLoop::new(provider, ToolRegistry::new());
+        let state = make_state("stream please");
+
+        let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_for_task = events.clone();
+
+        let run_task = tokio::spawn(async move {
+            let mut on_event = move |event: StorageEvent| {
+                events_for_task.lock().expect("lock").push(event);
+            };
+
+            loop_runner
+                .run_turn(&state, &mut on_event, CancellationToken::new())
+                .await
+                .expect("turn should complete");
+        });
+
+        tokio::time::timeout(Duration::from_millis(50), async {
+            loop {
+                if events.lock().expect("lock").iter().any(|event| {
+                    matches!(event, StorageEvent::AssistantDelta { .. })
+                }) {
+                    break;
+                }
+                sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("delta should be emitted before streaming completes");
+
+        let snapshot = events.lock().expect("lock").clone();
+        assert!(snapshot
+            .iter()
+            .any(|event| matches!(event, StorageEvent::AssistantDelta { .. })));
+        assert!(
+            !snapshot
+                .iter()
+                .any(|event| matches!(event, StorageEvent::TurnDone { .. })),
+            "turn should still be in progress when first delta arrives"
+        );
+
+        run_task.await.expect("run task should join");
+    }
+
+    #[tokio::test]
+    async fn reaching_max_steps_does_not_emit_error_event() {
+        let scripted = (0..8)
+            .map(|idx| LlmResponse {
+                content: format!("step-{idx}"),
+                tool_calls: vec![ToolCallRequest {
+                    id: format!("call-{idx}"),
+                    name: "quickTool".to_string(),
+                    args: json!({}),
+                }],
+            })
+            .collect::<Vec<_>>();
+
+        let provider = Arc::new(ScriptedProvider {
+            responses: Mutex::new(VecDeque::from(scripted)),
+            delay: Duration::from_millis(0),
+        });
+
+        let mut tools = ToolRegistry::new();
+        tools.register(Arc::new(QuickTool));
+
+        let loop_runner = AgentLoop::new(provider, tools);
+        let state = make_state("loop test");
+
+        let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let mut on_event = move |e: StorageEvent| {
+            events_clone.lock().expect("lock").push(e);
+        };
+
+        loop_runner
+            .run_turn(&state, &mut on_event, CancellationToken::new())
+            .await
+            .expect("turn should complete");
+
+        let events = events.lock().expect("lock").clone();
+        let has_max_error = events.iter().any(|event| {
+            matches!(
+                event,
+                StorageEvent::Error { message }
+                if message.contains("max tool iteration")
+            )
+        });
+        let has_turn_done = events
+            .iter()
+            .any(|event| matches!(event, StorageEvent::TurnDone { .. }));
+
+        assert!(has_turn_done, "should always emit TurnDone at max steps");
+        assert!(
+            !has_max_error,
+            "max step exhaustion should not be surfaced as user-visible error"
+        );
     }
 }

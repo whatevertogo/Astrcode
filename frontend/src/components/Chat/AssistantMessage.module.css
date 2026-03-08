@@ -9,6 +9,7 @@
   border-radius: 12px;
   padding: 10px 14px;
   max-width: 80%;
+  overflow: hidden;
   word-break: break-word;
   min-width: 60px;
 }
@@ -23,6 +24,44 @@
 .content {
   font-size: 14px;
   line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.streamingText {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.fallbackText {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  color: inherit;
+}
+
+.thinkingBlock {
+  margin: 0 0 10px;
+  border: 1px solid #3d3d3d;
+  border-radius: 8px;
+  background: #252526;
+}
+
+.thinkingSummary {
+  cursor: pointer;
+  padding: 8px 10px;
+  color: #dcdcaa;
+  font-size: 12px;
+  user-select: none;
+}
+
+.thinkingContent {
+  margin: 0;
+  padding: 0 10px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  color: #c8c8c8;
 }
 
 /* Markdown overrides inside bubble */

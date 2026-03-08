@@ -20,6 +20,7 @@ export type AgentEventPayload =
   | { event: 'sessionStarted'; data: { sessionId: string } }
   | { event: 'phaseChanged'; data: { phase: Phase; turnId?: string | null } }
   | { event: 'modelDelta'; data: { turnId: string; delta: string } }
+  | { event: 'assistantMessage'; data: { turnId: string; content: string } }
   | {
       event: 'toolCallStart';
       data: {
@@ -80,7 +81,22 @@ export interface Session {
   projectId: string;
   title: string;
   createdAt: number;
+  updatedAt?: number;
   messages: Message[];
+}
+
+export interface SessionMeta {
+  sessionId: string;
+  workingDir: string;
+  displayName: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DeleteProjectResult {
+  successCount: number;
+  failedSessionIds: string[];
 }
 
 export interface Project {
@@ -123,4 +139,12 @@ export type Action =
       error?: string;
       durationMs: number;
     }
-  | { type: 'SET_WORKING_DIR'; projectId: string; workingDir: string };
+  | { type: 'SET_WORKING_DIR'; projectId: string; workingDir: string }
+  | {
+      type: 'INITIALIZE';
+      projects: Project[];
+      activeProjectId: string | null;
+      activeSessionId: string | null;
+    }
+  | { type: 'REPLACE_SESSION_MESSAGES'; sessionId: string; messages: Message[] }
+  | { type: 'ADD_SESSION_BACKEND'; projectId: string; sessionId: string };

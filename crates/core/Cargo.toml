@@ -17,6 +17,7 @@ chrono = { version = "0.4", features = ["serde"] }
 ipc = { path = "../ipc" }
 tokio-util = "0.7"
 dirs = "5"
+futures-util = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent_loop::AgentLoop;
 use crate::config::{load_config, Profile};
-use crate::event_log::{generate_session_id, EventLog};
+use crate::event_log::{generate_session_id, DeleteProjectResult, EventLog, SessionMeta};
 use crate::events::StorageEvent;
 use crate::llm::openai::OpenAiProvider;
 use crate::llm::LlmProvider;
@@ -101,7 +101,9 @@ impl AgentRuntime {
             .run_turn(
                 &state,
                 &mut |event: StorageEvent| {
-                    log.append(&event).ok();
+                    if !matches!(event, StorageEvent::AssistantDelta { .. }) {
+                        log.append(&event).ok();
+                    }
                     emit(&event);
                 },
                 cancel,
@@ -111,6 +113,18 @@ impl AgentRuntime {
 
     pub fn list_sessions() -> Result<Vec<String>> {
         EventLog::list_sessions()
+    }
+
+    pub fn list_sessions_with_meta() -> Result<Vec<SessionMeta>> {
+        EventLog::list_sessions_with_meta()
+    }
+
+    pub fn delete_session(session_id: &str) -> Result<()> {
+        EventLog::delete_session(session_id)
+    }
+
+    pub fn delete_project(working_dir: &str) -> Result<DeleteProjectResult> {
+        EventLog::delete_sessions_by_working_dir(working_dir)
     }
 }
 
@@ -152,7 +166,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use crate::action::{LlmMessage, LlmResponse, ToolDefinition};
-    use crate::llm::LlmProvider;
+    use crate::llm::{DeltaCallback, LlmProvider};
 
     use super::*;
 
@@ -173,6 +187,21 @@ mod tests {
                 .expect("lock")
                 .pop_front()
                 .ok_or_else(|| anyhow!("no responses"))
+        }
+
+        async fn stream_complete(
+            &self,
+            messages: &[LlmMessage],
+            tools: &[ToolDefinition],
+            cancel: CancellationToken,
+            on_delta: DeltaCallback,
+        ) -> anyhow::Result<LlmResponse> {
+            let response = self.complete(messages, tools, cancel).await?;
+            for delta in response.content.chars() {
+                let mut callback = on_delta.lock().expect("delta callback lock");
+                callback(delta.to_string());
+            }
+            Ok(response)
         }
     }
 
@@ -290,6 +319,42 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, StorageEvent::TurnDone { .. })));
+    }
+
+    #[tokio::test]
+    async fn submit_does_not_persist_assistant_deltas() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let responses = vec![LlmResponse {
+            content: "streamed text".into(),
+            tool_calls: vec![],
+        }];
+        let mut runtime = make_test_runtime_with_mock_provider(tmp.path(), responses);
+
+        runtime
+            .log
+            .append(&StorageEvent::SessionStart {
+                session_id: runtime.session_id.clone(),
+                timestamp: Utc::now(),
+                working_dir: "/tmp".into(),
+            })
+            .expect("append session start");
+
+        runtime
+            .submit("hi".into(), CancellationToken::new(), |_event| {})
+            .await
+            .expect("submit");
+
+        let path = tmp
+            .path()
+            .join(format!("session-{}.jsonl", runtime.session_id));
+        let events = load_events_from_path(&path);
+
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, StorageEvent::AssistantDelta { .. })),
+            "delta events are transient and should not be persisted"
+        );
     }
 
     #[test]
