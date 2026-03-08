@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**AstrCode** is a local terminal agent application (AI-powered coding agent) built with:
+**AstrCode** is a local agent application (AI-powered coding agent) built with:
 - **Core Runtime**: Rust (crates/core)
 - **Desktop Framework**: Tauri v2 (src-tauri)
 - **Frontend**: React + TypeScript + Vite (frontend)
