@@ -2,13 +2,11 @@ import React, { useRef, useState } from 'react';
 import type { Phase } from '../../types';
 import styles from './InputBar.module.css';
 
-const BUSY_PHASES: Phase[] = ['thinking', 'callingTool', 'streaming'];
-
 interface InputBarProps {
   workingDir: string;
   phase: Phase;
-  onSubmit: (text: string) => void;
-  onInterrupt: () => void;
+  onSubmit: (text: string) => void | Promise<void>;
+  onInterrupt: () => void | Promise<void>;
 }
 
 export default function InputBar({
@@ -20,7 +18,7 @@ export default function InputBar({
   const [value, setValue] = useState('');
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const isBusy = BUSY_PHASES.includes(phase);
+  const isBusy = phase !== 'idle';
 
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setValue(e.target.value);

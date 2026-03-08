@@ -169,7 +169,11 @@ fn map_and_emit(app: &AppHandle, turn_id: &str, event: &StorageEvent) {
             }
         }
 
-        StorageEvent::SessionStart { .. } => {}
+        StorageEvent::SessionStart { session_id, .. } => {
+            emit_agent_event(app, turn_id, AgentEventKind::SessionStarted {
+                session_id: session_id.clone(),
+            });
+        }
     }
 }
 

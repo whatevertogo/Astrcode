@@ -10,8 +10,8 @@ interface ChatProps {
   session: Session | null;
   phase: Phase;
   onNewSession: () => void;
-  onSubmitPrompt: (text: string) => void;
-  onInterrupt: () => void;
+  onSubmitPrompt: (text: string) => void | Promise<void>;
+  onInterrupt: () => void | Promise<void>;
 }
 
 export default function Chat({

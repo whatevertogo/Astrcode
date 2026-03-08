@@ -6,6 +6,43 @@ export type Phase =
   | 'interrupted'
   | 'done';
 
+export interface ToolCallResultEnvelope {
+  toolCallId: string;
+  toolName: string;
+  ok: boolean;
+  output: string;
+  error?: string;
+  metadata?: unknown;
+  durationMs: number;
+}
+
+export type AgentEventPayload =
+  | { event: 'sessionStarted'; data: { sessionId: string } }
+  | { event: 'phaseChanged'; data: { phase: Phase; turnId?: string | null } }
+  | { event: 'modelDelta'; data: { turnId: string; delta: string } }
+  | {
+      event: 'toolCallStart';
+      data: {
+        turnId: string;
+        toolCallId: string;
+        toolName: string;
+        args: unknown;
+      };
+    }
+  | {
+      event: 'toolCallResult';
+      data: { turnId: string; result: ToolCallResultEnvelope };
+    }
+  | { event: 'turnDone'; data: { turnId: string } }
+  | {
+      event: 'error';
+      data: { turnId?: string | null; code: string; message: string };
+    };
+
+export type AgentEvent = AgentEventPayload & {
+  protocolVersion: number;
+};
+
 export interface UserMessage {
   id: string;
   kind: 'user';

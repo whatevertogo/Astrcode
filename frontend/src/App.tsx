@@ -1,13 +1,10 @@
-import React, { useEffect, useReducer } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import React, { useCallback, useEffect, useReducer, useRef } from 'react';
 import type {
+  AgentEventPayload,
   Action,
   AppState,
-  Message,
-  Phase,
   Project,
   Session,
-  ToolStatus,
 } from './types';
 import { uuid } from './utils/uuid';
 import Sidebar from './components/Sidebar/index';
@@ -248,7 +245,102 @@ function makeInitialState(): AppState {
 export default function App() {
   const [state, dispatch] = useReducer(reducer, undefined, makeInitialState);
   const projects = useProjects(dispatch);
-  const agent = useAgent(state, dispatch);
+  const activeSessionIdRef = useRef<string | null>(state.activeSessionId);
+  const phaseRef = useRef(state.phase);
+
+  useEffect(() => {
+    activeSessionIdRef.current = state.activeSessionId;
+  }, [state.activeSessionId]);
+
+  useEffect(() => {
+    phaseRef.current = state.phase;
+  }, [state.phase]);
+
+  const handleAgentEvent = useCallback((event: AgentEventPayload) => {
+    const sid = activeSessionIdRef.current;
+
+    switch (event.event) {
+      case 'sessionStarted':
+        // Reserved for future session management features.
+        break;
+
+      case 'phaseChanged':
+        dispatch({ type: 'SET_PHASE', phase: event.data.phase });
+        break;
+
+      case 'modelDelta':
+        if (!sid) {
+          break;
+        }
+        dispatch({ type: 'APPEND_DELTA', sessionId: sid, delta: event.data.delta });
+        break;
+
+      case 'toolCallStart':
+        if (!sid) {
+          break;
+        }
+        dispatch({
+          type: 'ADD_MESSAGE',
+          sessionId: sid,
+          message: {
+            id: uuid(),
+            kind: 'toolCall',
+            toolCallId: event.data.toolCallId,
+            toolName: event.data.toolName,
+            status: 'running',
+            args: event.data.args,
+            timestamp: Date.now(),
+          },
+        });
+        break;
+
+      case 'toolCallResult':
+        if (!sid) {
+          break;
+        }
+        dispatch({
+          type: 'UPDATE_TOOL_CALL',
+          sessionId: sid,
+          toolCallId: event.data.result.toolCallId,
+          status: event.data.result.ok ? 'ok' : 'fail',
+          output: event.data.result.output,
+          error: event.data.result.error,
+          durationMs: event.data.result.durationMs,
+        });
+        break;
+
+      case 'turnDone':
+        if (sid) {
+          dispatch({ type: 'END_STREAMING', sessionId: sid });
+        }
+        // Primary source of idle is PhaseChanged(idle). This is fallback only.
+        queueMicrotask(() => {
+          if (phaseRef.current !== 'idle') {
+            dispatch({ type: 'SET_PHASE', phase: 'idle' });
+          }
+        });
+        break;
+
+      case 'error':
+        if (sid && event.data.code !== 'interrupted') {
+          dispatch({
+            type: 'ADD_MESSAGE',
+            sessionId: sid,
+            message: {
+              id: uuid(),
+              kind: 'assistant',
+              text: `错误：${event.data.message}`,
+              streaming: false,
+              timestamp: Date.now(),
+            },
+          });
+        }
+        dispatch({ type: 'SET_PHASE', phase: 'idle' });
+        break;
+    }
+  }, []);
+
+  const { submitPrompt, interrupt, getWorkingDir } = useAgent(handleAgentEvent);
 
   useEffect(() => {
     const defaultProject = state.projects[0];
@@ -257,7 +349,7 @@ export default function App() {
     }
 
     let cancelled = false;
-    void invoke<string>('get_working_dir')
+    void getWorkingDir()
       .then((workingDir) => {
         if (cancelled) {
           return;
@@ -280,7 +372,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [state.projects]);
+  }, [state.projects, getWorkingDir]);
 
   const activeProject =
     state.projects.find((p) => p.id === state.activeProjectId) ?? null;
@@ -314,6 +406,49 @@ export default function App() {
   const handleDeleteSession = (projectId: string, sessionId: string) =>
     dispatch({ type: 'DELETE_SESSION', projectId, sessionId });
 
+  const handleSubmit = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) {
+        return;
+      }
+
+      const sid = activeSessionIdRef.current;
+      if (!sid) {
+        return;
+      }
+
+      dispatch({
+        type: 'ADD_MESSAGE',
+        sessionId: sid,
+        message: {
+          id: uuid(),
+          kind: 'user',
+          text: trimmed,
+          timestamp: Date.now(),
+        },
+      });
+
+      try {
+        await submitPrompt(trimmed);
+      } catch (err) {
+        dispatch({
+          type: 'ADD_MESSAGE',
+          sessionId: sid,
+          message: {
+            id: uuid(),
+            kind: 'assistant',
+            text: `错误：${String(err)}`,
+            streaming: false,
+            timestamp: Date.now(),
+          },
+        });
+        dispatch({ type: 'SET_PHASE', phase: 'idle' });
+      }
+    },
+    [submitPrompt],
+  );
+
   return (
     <div
       style={{
@@ -340,8 +475,8 @@ export default function App() {
         session={activeSession}
         phase={state.phase}
         onNewSession={handleNewSession}
-        onSubmitPrompt={agent.submitPrompt}
-        onInterrupt={agent.interrupt}
+        onSubmitPrompt={handleSubmit}
+        onInterrupt={interrupt}
       />
     </div>
   );
