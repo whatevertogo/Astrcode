@@ -8,6 +8,7 @@ use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 use crate::action::{ToolDefinition, ToolExecutionResult};
+use crate::tools::fs_common::{check_cancel, resolve_path};
 use crate::tools::Tool;
 
 #[derive(Default)]
@@ -45,17 +46,16 @@ impl Tool for ReadFileTool {
         args: serde_json::Value,
         cancel: CancellationToken,
     ) -> Result<ToolExecutionResult> {
-        if cancel.is_cancelled() {
-            anyhow::bail!("readFile interrupted");
-        }
+        check_cancel(&cancel, "readFile")?;
 
         let args: ReadFileArgs = serde_json::from_value(args).context("invalid args for readFile")?;
         let started_at = Instant::now();
         let max_bytes = args.max_bytes.unwrap_or(64 * 1024);
+        let path = resolve_path(&args.path)?;
 
-        let bytes = tokio::fs::read(&args.path)
+        let bytes = tokio::fs::read(&path)
             .await
-            .with_context(|| format!("failed reading file '{}'", args.path.display()))?;
+            .with_context(|| format!("failed reading file '{}'", path.display()))?;
 
         let truncated = bytes.len() > max_bytes;
         let content_bytes = if truncated {
@@ -73,7 +73,7 @@ impl Tool for ReadFileTool {
             output: content,
             error: None,
             metadata: Some(json!({
-                "path": args.path,
+                "path": path,
                 "bytes": bytes.len(),
                 "truncated": truncated,
             })),
@@ -106,5 +106,9 @@ mod tests {
 
         assert!(result.ok);
         assert_eq!(result.output, "hello from read_file");
+        assert_eq!(
+            result.metadata.expect("metadata should exist")["path"],
+            json!(file.to_string_lossy().to_string())
+        );
     }
 }

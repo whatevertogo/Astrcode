@@ -8,6 +8,7 @@ use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 use crate::action::{ToolDefinition, ToolExecutionResult};
+use crate::tools::fs_common::{check_cancel, resolve_path};
 use crate::tools::Tool;
 
 #[derive(Default)]
@@ -45,13 +46,14 @@ impl Tool for ListDirTool {
         args: serde_json::Value,
         cancel: CancellationToken,
     ) -> Result<ToolExecutionResult> {
-        if cancel.is_cancelled() {
-            anyhow::bail!("listDir interrupted");
-        }
+        check_cancel(&cancel, "listDir")?;
 
         let args: ListDirArgs = serde_json::from_value(args).context("invalid args for listDir")?;
         let started_at = Instant::now();
-        let path = args.path.unwrap_or(std::env::current_dir()?);
+        let path = match args.path {
+            Some(path) => resolve_path(&path)?,
+            None => std::env::current_dir().context("failed to resolve current directory")?,
+        };
         let max_entries = args.max_entries.unwrap_or(200);
 
         let mut dir = tokio::fs::read_dir(&path)
@@ -109,5 +111,9 @@ mod tests {
 
         assert!(result.ok);
         assert!(result.output.contains("a.txt"));
+        assert_eq!(
+            result.metadata.expect("metadata should exist")["path"],
+            json!(temp.path().to_string_lossy().to_string())
+        );
     }
 }

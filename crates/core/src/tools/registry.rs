@@ -4,9 +4,13 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::action::{ToolCallRequest, ToolDefinition, ToolExecutionResult};
+use crate::tools::edit_file::EditFileTool;
+use crate::tools::find_files::FindFilesTool;
+use crate::tools::grep::GrepTool;
 use crate::tools::list_dir::ListDirTool;
 use crate::tools::read_file::ReadFileTool;
 use crate::tools::shell::ShellTool;
+use crate::tools::write_file::WriteFileTool;
 use crate::tools::{DynTool, Tool};
 
 #[derive(Clone)]
@@ -26,6 +30,10 @@ impl ToolRegistry {
         registry.register(Arc::new(ShellTool::default()));
         registry.register(Arc::new(ReadFileTool::default()));
         registry.register(Arc::new(ListDirTool::default()));
+        registry.register(Arc::new(WriteFileTool::default()));
+        registry.register(Arc::new(EditFileTool::default()));
+        registry.register(Arc::new(GrepTool::default()));
+        registry.register(Arc::new(FindFilesTool::default()));
         registry
     }
 

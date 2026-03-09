@@ -11,6 +11,7 @@ use tokio::select;
 use tokio_util::sync::CancellationToken;
 
 use crate::action::{ToolDefinition, ToolExecutionResult};
+use crate::tools::fs_common::resolve_path;
 use crate::tools::Tool;
 
 #[derive(Default)]
@@ -64,10 +65,14 @@ impl Tool for ShellTool {
 
         let spec = command_spec(args.shell.as_deref(), &args.command);
         let started_at = Instant::now();
+        let cwd = match args.cwd {
+            Some(cwd) => resolve_path(&cwd)?,
+            None => std::env::current_dir().context("failed to resolve current directory")?,
+        };
 
         let mut child = Command::new(&spec.program)
             .args(&spec.args)
-            .current_dir(args.cwd.unwrap_or(std::env::current_dir()?))
+            .current_dir(cwd)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
