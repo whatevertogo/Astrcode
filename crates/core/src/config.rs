@@ -394,6 +394,14 @@ fn resolve_home_dir() -> Result<PathBuf> {
 
     #[cfg(not(test))]
     {
+        const APP_HOME_OVERRIDE_ENV: &str = "ASTRCODE_HOME_DIR";
+
+        if let Some(home) = std::env::var_os(APP_HOME_OVERRIDE_ENV) {
+            if !home.is_empty() {
+                return Ok(PathBuf::from(home));
+            }
+        }
+
         dirs::home_dir().ok_or_else(|| anyhow!("unable to resolve home directory"))
     }
 }
@@ -616,6 +624,27 @@ mod tests {
                 String::new(),
                 path.to_string_lossy().to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn config_path_prefers_isolated_test_home_over_explicit_override() {
+        let guard = TestEnvGuard::new();
+        let override_home = tempfile::tempdir().expect("tempdir should be created");
+        let previous_override = std::env::var_os("ASTRCODE_HOME_DIR");
+
+        std::env::set_var("ASTRCODE_HOME_DIR", override_home.path());
+        let path = config_path().expect("config_path should resolve");
+        let uses_test_home = path.starts_with(guard.home_dir());
+
+        match previous_override {
+            Some(value) => std::env::set_var("ASTRCODE_HOME_DIR", value),
+            None => std::env::remove_var("ASTRCODE_HOME_DIR"),
+        }
+
+        assert!(
+            uses_test_home,
+            "config path should stay under the isolated test home"
         );
     }
 }

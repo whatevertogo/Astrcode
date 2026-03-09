@@ -119,6 +119,14 @@ fn resolve_home_dir() -> Result<PathBuf> {
 
     #[cfg(not(test))]
     {
+        const APP_HOME_OVERRIDE_ENV: &str = "ASTRCODE_HOME_DIR";
+
+        if let Some(home) = std::env::var_os(APP_HOME_OVERRIDE_ENV) {
+            if !home.is_empty() {
+                return Ok(PathBuf::from(home));
+            }
+        }
+
         dirs::home_dir().ok_or_else(|| anyhow!("unable to resolve home directory"))
     }
 }
@@ -757,5 +765,26 @@ mod tests {
             vec!["2026-03-08T13-00-01-bbbbbbbb".to_string()]
         );
         assert!(!path_ok.exists());
+    }
+
+    #[test]
+    fn session_path_prefers_isolated_test_home_over_explicit_override() {
+        let guard = TestEnvGuard::new();
+        let override_home = tempfile::tempdir().unwrap();
+        let previous_override = std::env::var_os("ASTRCODE_HOME_DIR");
+
+        std::env::set_var("ASTRCODE_HOME_DIR", override_home.path());
+        let path = session_path("2026-03-08T10-00-00-aaaaaaaa").unwrap();
+        let uses_test_home = path.starts_with(guard.home_dir());
+
+        match previous_override {
+            Some(value) => std::env::set_var("ASTRCODE_HOME_DIR", value),
+            None => std::env::remove_var("ASTRCODE_HOME_DIR"),
+        }
+
+        assert!(
+            uses_test_home,
+            "session path should stay under the isolated test home"
+        );
     }
 }

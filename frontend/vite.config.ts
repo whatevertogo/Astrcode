@@ -22,6 +22,8 @@ interface WebChatMessage {
   content: string;
 }
 
+const APP_HOME_OVERRIDE_ENV = 'ASTRCODE_HOME_DIR';
+
 function webChatPlugin(): Plugin {
   return {
     name: 'astrcode-web-chat',
@@ -184,7 +186,7 @@ function normalizeMessages(input: unknown): WebChatMessage[] {
 }
 
 async function loadActiveProfile(): Promise<Required<Pick<WebChatConfigProfile, 'baseUrl' | 'apiKey' | 'models'>> & { activeModel: string | null }> {
-  const configPath = path.join(os.homedir(), '.astrcode', 'config.json');
+  const configPath = path.join(resolveAstrcodeHomeDir(), '.astrcode', 'config.json');
   const raw = await fs.readFile(configPath, 'utf8');
   const config = JSON.parse(raw) as WebChatConfig;
   const profiles = Array.isArray(config.profiles) ? config.profiles : [];
@@ -219,6 +221,15 @@ function resolveApiKey(apiKey: string | null): string {
   }
 
   return value;
+}
+
+function resolveAstrcodeHomeDir(): string {
+  const overriddenHome = process.env[APP_HOME_OVERRIDE_ENV]?.trim();
+  if (overriddenHome) {
+    return overriddenHome;
+  }
+
+  return os.homedir();
 }
 
 function resolveModel(requested: unknown, activeModel: string | null, models: string[]): string {
