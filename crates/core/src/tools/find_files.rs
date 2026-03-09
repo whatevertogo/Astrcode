@@ -102,7 +102,7 @@ impl Tool for FindFilesTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::fs_common::env_lock_for_tests;
+    use crate::test_support::TestEnvGuard;
 
     #[tokio::test]
     async fn find_files_matches_direct_glob() {
@@ -244,13 +244,12 @@ mod tests {
 
     #[tokio::test]
     async fn find_files_supports_relative_root_and_reports_absolute_metadata() {
-        let _guard = env_lock_for_tests().lock().expect("env lock should work");
+        let guard = TestEnvGuard::new();
         let temp = tempfile::tempdir().expect("tempdir should be created");
         tokio::fs::write(temp.path().join("a.txt"), "a")
             .await
             .expect("seed write should work");
-        let previous = std::env::current_dir().expect("cwd should resolve");
-        std::env::set_current_dir(temp.path()).expect("set cwd should work");
+        guard.set_current_dir(temp.path());
 
         let tool = FindFilesTool;
         let result = tool
@@ -264,8 +263,6 @@ mod tests {
             )
             .await
             .expect("findFiles should execute");
-
-        std::env::set_current_dir(previous).expect("restore cwd should work");
 
         assert!(result.ok);
         assert_eq!(

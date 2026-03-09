@@ -7,6 +7,8 @@ pub mod llm;
 pub mod projection;
 pub mod provider_factory;
 pub mod runtime;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod tools;
 
 pub use agent_loop::AgentLoop;

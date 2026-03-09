@@ -137,7 +137,7 @@ fn default_profile_models() -> Vec<String> {
 }
 
 pub fn config_path() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow!("unable to resolve home directory"))?;
+    let home = resolve_home_dir()?;
     Ok(home.join(".astrcode").join("config.json"))
 }
 
@@ -320,12 +320,32 @@ fn platform_open_command(os: &str, path: &Path) -> Result<OpenCommand> {
     Ok(command)
 }
 
+fn resolve_home_dir() -> Result<PathBuf> {
+    #[cfg(test)]
+    if let Some(home) = crate::test_support::test_home_dir() {
+        return Ok(home);
+    }
+
+    #[cfg(test)]
+    {
+        bail!(
+            "{} must be set before tests call config_path()",
+            crate::test_support::TEST_HOME_ENV
+        );
+    }
+
+    #[cfg(not(test))]
+    {
+        dirs::home_dir().ok_or_else(|| anyhow!("unable to resolve home directory"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use crate::tools::fs_common::env_lock_for_tests;
+    use crate::test_support::TestEnvGuard;
 
     use super::*;
 
@@ -339,6 +359,7 @@ mod tests {
 
     #[test]
     fn config_path_has_expected_suffix() {
+        let _guard = TestEnvGuard::new();
         let path = config_path().expect("config_path should resolve");
         let rendered = path.to_string_lossy();
         #[cfg(windows)]
@@ -349,9 +370,7 @@ mod tests {
 
     #[test]
     fn first_load_creates_config_file_with_defaults() {
-        let _guard = env_lock_for_tests()
-            .lock()
-            .expect("env lock should be acquired");
+        let _guard = TestEnvGuard::new();
         std::env::remove_var("DEEPSEEK_API_KEY");
 
         let temp = tempfile::tempdir().expect("tempdir should be created");
@@ -394,9 +413,7 @@ mod tests {
 
     #[test]
     fn resolve_api_key_reads_env_when_value_looks_like_env_var() {
-        let _guard = env_lock_for_tests()
-            .lock()
-            .expect("env lock should be acquired");
+        let _guard = TestEnvGuard::new();
         let env_name = unique_env_name();
         std::env::set_var(&env_name, "resolved-from-env");
 
@@ -413,9 +430,7 @@ mod tests {
 
     #[test]
     fn resolve_api_key_returns_error_when_env_var_missing() {
-        let _guard = env_lock_for_tests()
-            .lock()
-            .expect("env lock should be acquired");
+        let _guard = TestEnvGuard::new();
         let env_name = unique_env_name();
         std::env::remove_var(&env_name);
 

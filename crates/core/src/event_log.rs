@@ -43,7 +43,7 @@ pub fn generate_session_id() -> String {
 }
 
 fn sessions_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow!("unable to resolve home directory"))?;
+    let home = resolve_home_dir()?;
     Ok(home.join(".astrcode").join("sessions"))
 }
 
@@ -100,6 +100,26 @@ fn title_from_user_message(content: &str) -> String {
         "新会话".to_string()
     } else {
         title.to_string()
+    }
+}
+
+fn resolve_home_dir() -> Result<PathBuf> {
+    #[cfg(test)]
+    if let Some(home) = crate::test_support::test_home_dir() {
+        return Ok(home);
+    }
+
+    #[cfg(test)]
+    {
+        return Err(anyhow!(
+            "{} must be set before tests call sessions_dir()",
+            crate::test_support::TEST_HOME_ENV
+        ));
+    }
+
+    #[cfg(not(test))]
+    {
+        dirs::home_dir().ok_or_else(|| anyhow!("unable to resolve home directory"))
     }
 }
 
@@ -468,6 +488,8 @@ impl EventLog {
 mod tests {
     use chrono::Utc;
 
+    use crate::test_support::TestEnvGuard;
+
     use super::*;
 
     fn make_test_log(dir: &std::path::Path) -> EventLog {
@@ -578,7 +600,12 @@ mod tests {
 
     #[test]
     fn session_path_normalizes_prefixed_ids() {
+        let guard = TestEnvGuard::new();
         let path = session_path("session-2026-03-08T10-00-00-aaaaaaaa").unwrap();
+        assert!(
+            path.starts_with(guard.home_dir()),
+            "session path should stay under the isolated test home"
+        );
         let file_name = path
             .file_name()
             .and_then(|s| s.to_str())

@@ -139,7 +139,6 @@ mod tests {
     use std::io::{BufRead, BufReader, BufWriter, Write};
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use anyhow::anyhow;
     use async_trait::async_trait;
@@ -153,6 +152,7 @@ mod tests {
     use crate::config::{save_config, Config};
     use crate::llm::{DeltaCallback, LlmProvider};
     use crate::provider_factory::ProviderFactory;
+    use crate::test_support::TestEnvGuard;
 
     use super::*;
 
@@ -220,57 +220,6 @@ mod tests {
             session_id,
             log,
             loop_,
-        }
-    }
-
-    fn unique_test_dir_name() -> String {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time should be valid")
-            .as_nanos();
-        format!("astrcode-runtime-{}-{}", std::process::id(), nanos)
-    }
-
-    fn set_test_home(home: &std::path::Path) {
-        #[cfg(windows)]
-        {
-            std::env::set_var("USERPROFILE", home);
-            std::env::remove_var("HOME");
-        }
-        #[cfg(not(windows))]
-        {
-            std::env::set_var("HOME", home);
-            std::env::remove_var("USERPROFILE");
-        }
-    }
-
-    struct EnvRestoreGuard {
-        previous_dir: std::path::PathBuf,
-        previous_home: Option<std::ffi::OsString>,
-        previous_userprofile: Option<std::ffi::OsString>,
-    }
-
-    impl EnvRestoreGuard {
-        fn capture() -> Self {
-            Self {
-                previous_dir: std::env::current_dir().expect("cwd should resolve"),
-                previous_home: std::env::var_os("HOME"),
-                previous_userprofile: std::env::var_os("USERPROFILE"),
-            }
-        }
-    }
-
-    impl Drop for EnvRestoreGuard {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.previous_dir);
-            match &self.previous_home {
-                Some(value) => std::env::set_var("HOME", value),
-                None => std::env::remove_var("HOME"),
-            }
-            match &self.previous_userprofile {
-                Some(value) => std::env::set_var("USERPROFILE", value),
-                None => std::env::remove_var("USERPROFILE"),
-            }
         }
     }
 
@@ -541,15 +490,9 @@ mod tests {
 
     #[tokio::test]
     async fn submit_uses_updated_model_after_config_changes() {
-        let _guard = crate::tools::fs_common::env_lock_for_tests()
-            .lock()
-            .expect("env lock should be acquired");
-        let _restore = EnvRestoreGuard::capture();
+        let guard = TestEnvGuard::new();
         let temp = tempfile::tempdir().expect("tempdir should be created");
-        let home = temp.path().join(unique_test_dir_name());
-        std::fs::create_dir_all(&home).expect("home should exist");
-        set_test_home(&home);
-        std::env::set_current_dir(temp.path()).expect("cwd should switch");
+        guard.set_current_dir(temp.path());
 
         let recorded_models = Arc::new(Mutex::new(Vec::new()));
         let (base_url, server_handle) = spawn_model_echo_server(recorded_models.clone()).await;

@@ -176,7 +176,7 @@ fn collect_candidate_files(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::fs_common::env_lock_for_tests;
+    use crate::test_support::TestEnvGuard;
 
     #[tokio::test]
     async fn grep_finds_matches_with_line_numbers() {
@@ -363,10 +363,9 @@ mod tests {
 
     #[tokio::test]
     async fn grep_supports_relative_paths_and_reports_skipped_files() {
-        let _guard = env_lock_for_tests().lock().expect("env lock should work");
+        let guard = TestEnvGuard::new();
         let temp = tempfile::tempdir().expect("tempdir should be created");
-        let previous = std::env::current_dir().expect("cwd should resolve");
-        std::env::set_current_dir(temp.path()).expect("set cwd should work");
+        guard.set_current_dir(temp.path());
         tokio::fs::write(temp.path().join("good.rs"), "pub fn a() {}\n")
             .await
             .expect("seed write should work");
@@ -386,8 +385,6 @@ mod tests {
             )
             .await
             .expect("grep should execute");
-
-        std::env::set_current_dir(previous).expect("restore cwd should work");
 
         assert!(result.ok);
         let matches: Vec<GrepMatch> =

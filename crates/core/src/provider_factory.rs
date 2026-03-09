@@ -54,49 +54,9 @@ mod tests {
     use std::sync::Arc;
 
     use crate::config::{save_config, Config};
-    use crate::tools::fs_common::env_lock_for_tests;
+    use crate::test_support::TestEnvGuard;
 
     use super::*;
-
-    struct EnvRestoreGuard {
-        previous_home: Option<std::ffi::OsString>,
-        previous_userprofile: Option<std::ffi::OsString>,
-    }
-
-    impl EnvRestoreGuard {
-        fn capture() -> Self {
-            Self {
-                previous_home: std::env::var_os("HOME"),
-                previous_userprofile: std::env::var_os("USERPROFILE"),
-            }
-        }
-    }
-
-    impl Drop for EnvRestoreGuard {
-        fn drop(&mut self) {
-            match &self.previous_home {
-                Some(value) => std::env::set_var("HOME", value),
-                None => std::env::remove_var("HOME"),
-            }
-            match &self.previous_userprofile {
-                Some(value) => std::env::set_var("USERPROFILE", value),
-                None => std::env::remove_var("USERPROFILE"),
-            }
-        }
-    }
-
-    fn set_test_home(path: &std::path::Path) {
-        #[cfg(windows)]
-        {
-            std::env::set_var("USERPROFILE", path);
-            std::env::remove_var("HOME");
-        }
-        #[cfg(not(windows))]
-        {
-            std::env::set_var("HOME", path);
-            std::env::remove_var("USERPROFILE");
-        }
-    }
 
     #[test]
     fn resolve_model_prefers_active_model_when_present() {
@@ -134,12 +94,7 @@ mod tests {
 
     #[test]
     fn config_file_provider_factory_prefers_active_model_when_present() {
-        let _guard = env_lock_for_tests()
-            .lock()
-            .expect("env lock should be acquired");
-        let _restore = EnvRestoreGuard::capture();
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        set_test_home(temp.path());
+        let _guard = TestEnvGuard::new();
 
         let config = Config {
             active_model: "model-b".to_string(),
@@ -163,12 +118,7 @@ mod tests {
 
     #[test]
     fn config_file_provider_factory_falls_back_to_first_profile_model() {
-        let _guard = env_lock_for_tests()
-            .lock()
-            .expect("env lock should be acquired");
-        let _restore = EnvRestoreGuard::capture();
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        set_test_home(temp.path());
+        let _guard = TestEnvGuard::new();
 
         let config = Config {
             active_model: "missing-model".to_string(),
@@ -192,12 +142,7 @@ mod tests {
 
     #[test]
     fn config_file_provider_factory_build_errors_when_profile_has_no_models() {
-        let _guard = env_lock_for_tests()
-            .lock()
-            .expect("env lock should be acquired");
-        let _restore = EnvRestoreGuard::capture();
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        set_test_home(temp.path());
+        let _guard = TestEnvGuard::new();
 
         let config = Config {
             profiles: vec![Profile {
