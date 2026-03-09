@@ -43,14 +43,12 @@ pub fn generate_session_id() -> String {
 }
 
 fn sessions_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow!("unable to resolve home directory"))?;
+    let home = resolve_home_dir()?;
     Ok(home.join(".astrcode").join("sessions"))
 }
 
 fn canonical_session_id(session_id: &str) -> &str {
-    session_id
-        .strip_prefix("session-")
-        .unwrap_or(session_id)
+    session_id.strip_prefix("session-").unwrap_or(session_id)
 }
 
 fn session_path(session_id: &str) -> Result<PathBuf> {
@@ -105,14 +103,33 @@ fn title_from_user_message(content: &str) -> String {
     }
 }
 
+fn resolve_home_dir() -> Result<PathBuf> {
+    #[cfg(test)]
+    if let Some(home) = crate::test_support::test_home_dir() {
+        return Ok(home);
+    }
+
+    #[cfg(test)]
+    {
+        return Err(anyhow!(
+            "{} must be set before tests call sessions_dir()",
+            crate::test_support::TEST_HOME_ENV
+        ));
+    }
+
+    #[cfg(not(test))]
+    {
+        dirs::home_dir().ok_or_else(|| anyhow!("unable to resolve home directory"))
+    }
+}
+
 impl EventLog {
     /// Create a new session log at an arbitrary path (for testing).
     #[cfg(test)]
     pub fn create_at_path(session_id: &str, path: PathBuf) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create directory: {}", parent.display())
-            })?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create directory: {}", parent.display()))?;
         }
         let file = OpenOptions::new()
             .create(true)
@@ -173,7 +190,8 @@ impl EventLog {
 
     /// Append a single event as one JSONL line + flush.
     pub fn append(&mut self, event: &StorageEvent) -> Result<()> {
-        serde_json::to_writer(&mut self.writer, event).context("failed to serialize StorageEvent")?;
+        serde_json::to_writer(&mut self.writer, event)
+            .context("failed to serialize StorageEvent")?;
         writeln!(self.writer).context("failed to write newline")?;
         self.writer.flush().context("failed to flush event log")?;
         Ok(())
@@ -200,7 +218,12 @@ impl EventLog {
                 continue;
             }
             let event = serde_json::from_str::<StorageEvent>(trimmed).with_context(|| {
-                format!("failed to parse event at {}:{}: {}", path.display(), i + 1, trimmed)
+                format!(
+                    "failed to parse event at {}:{}: {}",
+                    path.display(),
+                    i + 1,
+                    trimmed
+                )
             })?;
             events.push(event);
         }
@@ -381,9 +404,8 @@ impl EventLog {
             }
         }
 
-        let created_at = created_at.ok_or_else(|| {
-            anyhow!("session file missing sessionStart: {}", path.display())
-        })?;
+        let created_at = created_at
+            .ok_or_else(|| anyhow!("session file missing sessionStart: {}", path.display()))?;
         let working_dir = working_dir.unwrap_or_default();
         let title = title.unwrap_or_else(|| "新会话".to_string());
         Ok((created_at, working_dir, title))
@@ -438,7 +460,11 @@ impl EventLog {
                 }
 
                 let event = serde_json::from_str::<StorageEvent>(trimmed).with_context(|| {
-                    format!("failed to parse tail event at {}: {}", path.display(), trimmed)
+                    format!(
+                        "failed to parse tail event at {}: {}",
+                        path.display(),
+                        trimmed
+                    )
                 })?;
                 if let Some(timestamp) = timestamp_of_event(&event) {
                     return Ok(timestamp);
@@ -461,6 +487,8 @@ impl EventLog {
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
+
+    use crate::test_support::TestEnvGuard;
 
     use super::*;
 
@@ -499,8 +527,12 @@ mod tests {
 
         let loaded = EventLog::load_from_path(log.path()).unwrap();
         assert_eq!(loaded.len(), 2);
-        assert!(matches!(&loaded[0], StorageEvent::SessionStart { session_id, .. } if session_id == "test-session-001"));
-        assert!(matches!(&loaded[1], StorageEvent::UserMessage { content, .. } if content == "hello"));
+        assert!(
+            matches!(&loaded[0], StorageEvent::SessionStart { session_id, .. } if session_id == "test-session-001")
+        );
+        assert!(
+            matches!(&loaded[1], StorageEvent::UserMessage { content, .. } if content == "hello")
+        );
     }
 
     #[test]
@@ -509,7 +541,11 @@ mod tests {
         let path = tmp.path().join("session-bad.jsonl");
         {
             let mut f = File::create(&path).unwrap();
-            writeln!(f, r#"{{"type":"userMessage","content":"ok","timestamp":"2026-01-01T00:00:00Z"}}"#).unwrap();
+            writeln!(
+                f,
+                r#"{{"type":"userMessage","content":"ok","timestamp":"2026-01-01T00:00:00Z"}}"#
+            )
+            .unwrap();
             writeln!(f, "THIS IS NOT JSON").unwrap();
         }
         let result = EventLog::load_from_path(&path);
@@ -532,7 +568,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
 
         // Create session files with specific IDs
-        let ids = ["2026-03-01T10-00-00-aaaaaaaa", "2026-03-02T12-30-00-bbbbbbbb", "2026-03-01T09-00-00-cccccccc"];
+        let ids = [
+            "2026-03-01T10-00-00-aaaaaaaa",
+            "2026-03-02T12-30-00-bbbbbbbb",
+            "2026-03-01T09-00-00-cccccccc",
+        ];
         for id in &ids {
             let path = tmp.path().join(format!("session-{id}.jsonl"));
             let mut f = File::create(&path).unwrap();
@@ -560,7 +600,12 @@ mod tests {
 
     #[test]
     fn session_path_normalizes_prefixed_ids() {
+        let guard = TestEnvGuard::new();
         let path = session_path("session-2026-03-08T10-00-00-aaaaaaaa").unwrap();
+        assert!(
+            path.starts_with(guard.home_dir()),
+            "session path should stay under the isolated test home"
+        );
         let file_name = path
             .file_name()
             .and_then(|s| s.to_str())
@@ -704,7 +749,8 @@ mod tests {
             }
         }
 
-        let result = EventLog::delete_sessions_by_working_dir_from_path(tmp.path(), working_dir).unwrap();
+        let result =
+            EventLog::delete_sessions_by_working_dir_from_path(tmp.path(), working_dir).unwrap();
         assert_eq!(result.success_count, 1);
         assert_eq!(
             result.failed_session_ids,

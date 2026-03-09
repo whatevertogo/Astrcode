@@ -99,6 +99,28 @@ export interface DeleteProjectResult {
   failedSessionIds: string[];
 }
 
+export interface ProfileView {
+  name: string;
+  baseUrl: string;
+  apiKeyPreview: string;
+  models: string[];
+}
+
+export interface ConfigView {
+  configPath: string;
+  activeProfile: string;
+  activeModel: string;
+  profiles: ProfileView[];
+  warning?: string;
+}
+
+export interface TestResult {
+  success: boolean;
+  provider: string;
+  model: string;
+  error?: string;
+}
+
 export interface Project {
   id: string;
   name: string;

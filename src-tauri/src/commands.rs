@@ -1,8 +1,8 @@
-use tauri::{AppHandle, State};
 use tauri::ipc::Channel;
+use tauri::{AppHandle, State};
 
-use crate::handle::{AgentHandle, SessionMessage};
-use astrcode_core::{DeleteProjectResult, SessionMeta};
+use crate::handle::{AgentHandle, ConfigView, SessionMessage};
+use astrcode_core::{DeleteProjectResult, SessionMeta, TestResult};
 use ipc::AgentEvent;
 
 #[tauri::command]
@@ -89,4 +89,36 @@ pub async fn delete_project(
     state: State<'_, AgentHandle>,
 ) -> Result<DeleteProjectResult, String> {
     state.delete_project(working_dir).await
+}
+
+#[tauri::command]
+pub async fn get_config() -> Result<ConfigView, String> {
+    AgentHandle::get_config().await
+}
+
+#[tauri::command]
+pub async fn save_active_selection(
+    active_profile: String,
+    active_model: String,
+    state: State<'_, AgentHandle>,
+) -> Result<(), String> {
+    state
+        .save_active_selection(active_profile, active_model)
+        .await
+}
+
+#[tauri::command]
+pub async fn test_connection(
+    profile_name: String,
+    model: String,
+    state: State<'_, AgentHandle>,
+) -> Result<TestResult, String> {
+    state
+        .test_connection_for_selection(profile_name, model)
+        .await
+}
+
+#[tauri::command]
+pub fn open_config_in_editor() -> Result<(), String> {
+    AgentHandle::open_config_in_editor()
 }

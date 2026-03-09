@@ -6,9 +6,12 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -63,6 +66,14 @@ impl Default for Profile {
             models: vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct TestResult {
+    pub success: bool,
+    pub provider: String,
+    pub model: String,
+    pub error: Option<String>,
 }
 
 impl Profile {
@@ -126,7 +137,7 @@ fn default_profile_models() -> Vec<String> {
 }
 
 pub fn config_path() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow!("unable to resolve home directory"))?;
+    let home = resolve_home_dir()?;
     Ok(home.join(".astrcode").join("config.json"))
 }
 
@@ -135,16 +146,18 @@ pub fn load_config() -> Result<Config> {
     load_config_from_path(&path)
 }
 
+pub fn save_config(config: &Config) -> Result<()> {
+    let path = config_path()?;
+    save_config_to_path(&path, config)
+}
+
 fn load_config_from_path(path: &Path) -> Result<Config> {
     if !path.exists() {
         let parent = path
             .parent()
             .ok_or_else(|| anyhow!("config path has no parent: {}", path.display()))?;
         fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "failed to create config directory for {}",
-                parent.display()
-            )
+            format!("failed to create config directory for {}", parent.display())
         })?;
 
         let default_cfg = Config::default();
@@ -157,23 +170,242 @@ fn load_config_from_path(path: &Path) -> Result<Config> {
         return Ok(default_cfg);
     }
 
-    let raw =
-        fs::read_to_string(path).with_context(|| format!("failed to read config at {}", path.display()))?;
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read config at {}", path.display()))?;
     serde_json::from_str::<Config>(&raw)
         .with_context(|| format!("failed to parse config at {}", path.display()))
 }
 
+fn save_config_to_path(path: &Path, config: &Config) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("config path has no parent: {}", path.display()))?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create config directory for {}", parent.display()))?;
+
+    let json = serde_json::to_string_pretty(config).context("failed to serialize config")?;
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, json)
+        .with_context(|| format!("failed to write temp config at {}", tmp_path.display()))?;
+
+    // On most platforms, `rename` will atomically replace the destination.
+    // On Windows, `std::fs::rename` fails with `AlreadyExists` if the
+    // destination exists, so swap via a backup path and try to roll back
+    // if the second rename fails.
+    if let Err(err) = fs::rename(&tmp_path, path) {
+        #[cfg(windows)]
+        {
+            if err.kind() == std::io::ErrorKind::AlreadyExists {
+                let backup_path = path.with_extension("json.bak");
+                let _ = fs::remove_file(&backup_path);
+
+                // Move old config out of the way before placing the new file.
+                if let Err(backup_err) = fs::rename(path, &backup_path) {
+                    let _ = fs::remove_file(&tmp_path);
+                    bail!(
+                        "failed to move existing config {} to backup {} before replace: {}",
+                        path.display(),
+                        backup_path.display(),
+                        backup_err
+                    );
+                }
+
+                if let Err(rename_err) = fs::rename(&tmp_path, path) {
+                    match fs::rename(&backup_path, path) {
+                        Ok(()) => bail!(
+                            "failed to replace config {} with temp file {}: {}; original config restored from backup {} (temp file kept for recovery)",
+                            path.display(),
+                            tmp_path.display(),
+                            rename_err,
+                            backup_path.display()
+                        ),
+                        Err(restore_err) => bail!(
+                            "failed to replace config {} with temp file {}: {}; also failed to restore backup {}: {} (temp file kept for recovery)",
+                            path.display(),
+                            tmp_path.display(),
+                            rename_err,
+                            backup_path.display(),
+                            restore_err
+                        ),
+                    }
+                }
+
+                let _ = fs::remove_file(&backup_path);
+            } else {
+                let _ = fs::remove_file(&tmp_path);
+                bail!(
+                    "failed to replace config {} with temp file {}: {}",
+                    path.display(),
+                    tmp_path.display(),
+                    err
+                );
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = fs::remove_file(&tmp_path);
+            bail!(
+                "failed to replace config {} with temp file {}: {}",
+                path.display(),
+                tmp_path.display(),
+                err
+            );
+        }
+    }
+    Ok(())
+}
+
+pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResult> {
+    let provider = profile.base_url.trim_end_matches('/').to_string();
+    let api_key = match profile.resolve_api_key() {
+        Ok(api_key) => api_key,
+        Err(err) => {
+            return Ok(TestResult {
+                success: false,
+                provider,
+                model: model.to_string(),
+                error: Some(err.to_string()),
+            });
+        }
+    };
+
+    let endpoint = format!("{}/chat/completions", provider);
+    let response = reqwest::Client::new()
+        .post(endpoint)
+        .bearer_auth(api_key)
+        .timeout(Duration::from_secs(10))
+        .json(&json!({
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "hi"
+                }
+            ],
+            "max_tokens": 1,
+            "stream": false
+        }))
+        .send()
+        .await;
+
+    let result = match response {
+        Ok(response) => {
+            let status = response.status();
+            if status.is_success() {
+                TestResult {
+                    success: true,
+                    provider,
+                    model: model.to_string(),
+                    error: None,
+                }
+            } else if status == reqwest::StatusCode::UNAUTHORIZED {
+                TestResult {
+                    success: false,
+                    provider,
+                    model: model.to_string(),
+                    error: Some("API Key 无效或未授权".to_string()),
+                }
+            } else {
+                TestResult {
+                    success: false,
+                    provider,
+                    model: model.to_string(),
+                    error: Some(format!("请求失败: {}", status)),
+                }
+            }
+        }
+        Err(err) if err.is_timeout() => TestResult {
+            success: false,
+            provider,
+            model: model.to_string(),
+            error: Some("连接超时".to_string()),
+        },
+        Err(err) => TestResult {
+            success: false,
+            provider,
+            model: model.to_string(),
+            error: Some(err.to_string()),
+        },
+    };
+
+    Ok(result)
+}
+
+pub fn open_config_in_editor() -> Result<()> {
+    let _ = load_config()?;
+    let path = config_path()?;
+    let open_command = platform_open_command(std::env::consts::OS, &path)?;
+    Command::new(&open_command.program)
+        .args(&open_command.args)
+        .spawn()
+        .with_context(|| format!("failed to open config in editor: {}", path.display()))?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OpenCommand {
+    program: String,
+    args: Vec<String>,
+}
+
+fn platform_open_command(os: &str, path: &Path) -> Result<OpenCommand> {
+    let rendered_path = path
+        .to_str()
+        .ok_or_else(|| anyhow!("config path is not valid utf-8: {}", path.display()))?
+        .to_string();
+
+    let command = match os {
+        "windows" => OpenCommand {
+            program: "cmd".to_string(),
+            args: vec![
+                "/c".to_string(),
+                "start".to_string(),
+                String::new(),
+                rendered_path,
+            ],
+        },
+        "macos" => OpenCommand {
+            program: "open".to_string(),
+            args: vec![rendered_path],
+        },
+        "linux" => OpenCommand {
+            program: "xdg-open".to_string(),
+            args: vec![rendered_path],
+        },
+        other => bail!("unsupported platform: {}", other),
+    };
+
+    Ok(command)
+}
+
+fn resolve_home_dir() -> Result<PathBuf> {
+    #[cfg(test)]
+    if let Some(home) = crate::test_support::test_home_dir() {
+        return Ok(home);
+    }
+
+    #[cfg(test)]
+    {
+        bail!(
+            "{} must be set before tests call config_path()",
+            crate::test_support::TEST_HOME_ENV
+        );
+    }
+
+    #[cfg(not(test))]
+    {
+        dirs::home_dir().ok_or_else(|| anyhow!("unable to resolve home directory"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::{Mutex, OnceLock};
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::*;
+    use crate::test_support::TestEnvGuard;
 
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
+    use super::*;
 
     fn unique_env_name() -> String {
         let nanos = SystemTime::now()
@@ -185,6 +417,7 @@ mod tests {
 
     #[test]
     fn config_path_has_expected_suffix() {
+        let _guard = TestEnvGuard::new();
         let path = config_path().expect("config_path should resolve");
         let rendered = path.to_string_lossy();
         #[cfg(windows)]
@@ -195,7 +428,7 @@ mod tests {
 
     #[test]
     fn first_load_creates_config_file_with_defaults() {
-        let _guard = env_lock().lock().expect("env lock should be acquired");
+        let _guard = TestEnvGuard::new();
         std::env::remove_var("DEEPSEEK_API_KEY");
 
         let temp = tempfile::tempdir().expect("tempdir should be created");
@@ -238,7 +471,7 @@ mod tests {
 
     #[test]
     fn resolve_api_key_reads_env_when_value_looks_like_env_var() {
-        let _guard = env_lock().lock().expect("env lock should be acquired");
+        let _guard = TestEnvGuard::new();
         let env_name = unique_env_name();
         std::env::set_var(&env_name, "resolved-from-env");
 
@@ -255,7 +488,7 @@ mod tests {
 
     #[test]
     fn resolve_api_key_returns_error_when_env_var_missing() {
-        let _guard = env_lock().lock().expect("env lock should be acquired");
+        let _guard = TestEnvGuard::new();
         let env_name = unique_env_name();
         std::env::remove_var(&env_name);
 
@@ -307,5 +540,82 @@ mod tests {
             .resolve_api_key()
             .expect_err("blank api key should fail");
         assert!(err.to_string().contains("custom"));
+    }
+
+    #[test]
+    fn save_config_overwrites_existing_file_with_pretty_json() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let path = temp.path().join(".astrcode").join("config.json");
+        fs::create_dir_all(path.parent().expect("parent")).expect("parent should exist");
+        fs::write(&path, "{\"version\":\"old\"}").expect("seed config should be written");
+
+        let config = Config {
+            version: "2".to_string(),
+            active_profile: "custom".to_string(),
+            active_model: "gpt-4o-mini".to_string(),
+            profiles: vec![Profile {
+                name: "custom".to_string(),
+                provider_kind: "openai-compatible".to_string(),
+                base_url: "https://example.com".to_string(),
+                api_key: Some("MY_TEST_KEY".to_string()),
+                models: vec!["gpt-4o-mini".to_string()],
+            }],
+        };
+
+        save_config_to_path(&path, &config).expect("save should succeed");
+
+        let raw = fs::read_to_string(&path).expect("saved config should be readable");
+        assert!(raw.contains("\n  \"version\": \"2\""));
+        let parsed: Config = serde_json::from_str(&raw).expect("saved json should parse");
+        assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn save_config_replaces_target_from_tmp_file() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let path = temp.path().join(".astrcode").join("config.json");
+        let tmp_path = PathBuf::from(format!("{}.tmp", path.to_string_lossy()));
+        let config = Config::default();
+
+        save_config_to_path(&path, &config).expect("save should succeed");
+
+        assert!(path.exists(), "final config should exist");
+        assert!(!tmp_path.exists(), "tmp file should be renamed away");
+    }
+
+    #[tokio::test]
+    async fn test_connection_returns_failure_result_when_api_key_cannot_be_resolved() {
+        let profile = Profile {
+            name: "custom".to_string(),
+            base_url: "https://example.com".to_string(),
+            api_key: None,
+            ..Profile::default()
+        };
+
+        let result = test_connection(&profile, "gpt-4o-mini")
+            .await
+            .expect("test_connection should not return Err on auth setup failure");
+
+        assert!(!result.success);
+        assert_eq!(result.provider, "https://example.com");
+        assert_eq!(result.model, "gpt-4o-mini");
+        assert!(result.error.is_some());
+    }
+
+    #[test]
+    fn windows_open_command_includes_empty_title_argument() {
+        let path = PathBuf::from(r"C:\Users\Test User\.astrcode\config.json");
+        let command = platform_open_command("windows", &path).expect("command should build");
+
+        assert_eq!(command.program, "cmd");
+        assert_eq!(
+            command.args,
+            vec![
+                "/c".to_string(),
+                "start".to_string(),
+                String::new(),
+                path.to_string_lossy().to_string(),
+            ]
+        );
     }
 }

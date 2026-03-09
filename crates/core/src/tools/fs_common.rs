@@ -1,6 +1,4 @@
 use std::path::{Component, Path, PathBuf};
-#[cfg(test)]
-use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -57,12 +55,6 @@ pub fn json_output<T: Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).context("failed to serialize output")
 }
 
-#[cfg(test)]
-pub(crate) fn env_lock_for_tests() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
-
 fn normalize_lexically(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
 
@@ -86,6 +78,8 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::TestEnvGuard;
+
     use super::*;
 
     #[test]
@@ -99,7 +93,7 @@ mod tests {
 
     #[test]
     fn resolve_path_returns_absolute_normalized_path() {
-        let _guard = env_lock_for_tests().lock().expect("env lock should work");
+        let _guard = TestEnvGuard::new();
         let cwd = std::env::current_dir().expect("cwd should resolve");
         let resolved = resolve_path(Path::new("./src/../Cargo.toml")).expect("path should resolve");
 

@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef } from 'react';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import type {
   AgentEventPayload,
+  ConfigView,
   DeleteProjectResult,
   Message,
   SessionMeta,
+  TestResult,
 } from '../types';
 import {
   isTauriEnvironment,
@@ -145,6 +147,10 @@ async function streamWebChat(
 
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
+}
+
+function unsupportedDesktopFeature(name: string): Error {
+  return new Error(`${name} 仅在桌面端可用`);
 }
 
 export function useAgent(onEvent: (event: AgentEventPayload) => void) {
@@ -421,6 +427,44 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     return invoke<DeleteProjectResult>('delete_project', { workingDir });
   }, []);
 
+  const getConfig = useCallback(async (): Promise<ConfigView> => {
+    if (!isTauriEnvironment()) {
+      throw unsupportedDesktopFeature('配置读取');
+    }
+    await waitForTauriEnvironment();
+    return invoke<ConfigView>('get_config');
+  }, []);
+
+  const saveActiveSelection = useCallback(
+    async (activeProfile: string, activeModel: string): Promise<void> => {
+      if (!isTauriEnvironment()) {
+        throw unsupportedDesktopFeature('配置保存');
+      }
+      await waitForTauriEnvironment();
+      await invoke('save_active_selection', { activeProfile, activeModel });
+    },
+    [],
+  );
+
+  const testConnection = useCallback(
+    async (profileName: string, model: string): Promise<TestResult> => {
+      if (!isTauriEnvironment()) {
+        throw unsupportedDesktopFeature('连接测试');
+      }
+      await waitForTauriEnvironment();
+      return invoke<TestResult>('test_connection', { profileName, model });
+    },
+    [],
+  );
+
+  const openConfigInEditor = useCallback(async (): Promise<void> => {
+    if (!isTauriEnvironment()) {
+      throw unsupportedDesktopFeature('打开配置文件');
+    }
+    await waitForTauriEnvironment();
+    await invoke('open_config_in_editor');
+  }, []);
+
   return {
     submitPrompt,
     interrupt,
@@ -434,5 +478,9 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     getSessionId,
     deleteSession,
     deleteProject,
+    getConfig,
+    saveActiveSelection,
+    testConnection,
+    openConfigInEditor,
   };
 }

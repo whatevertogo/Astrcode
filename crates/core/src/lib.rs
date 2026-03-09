@@ -5,13 +5,17 @@ pub mod event_log;
 pub mod events;
 pub mod llm;
 pub mod projection;
+pub mod provider_factory;
 pub mod runtime;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod tools;
 
 pub use agent_loop::AgentLoop;
-pub use config::load_config;
+pub use config::{load_config, open_config_in_editor, save_config, test_connection, TestResult};
 pub use event_log::{DeleteProjectResult, EventLog, SessionMeta};
 pub use events::StorageEvent;
 pub use projection::{project, AgentState};
+pub use provider_factory::{ConfigFileProviderFactory, DynProviderFactory, ProviderFactory};
 pub use runtime::AgentRuntime;
 pub use tools::registry::ToolRegistry;
