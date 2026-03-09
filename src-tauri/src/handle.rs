@@ -8,13 +8,14 @@ use tauri::ipc::Channel;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use astrcode_core::{AgentRuntime, DeleteProjectResult, EventLog, SessionMeta, StorageEvent};
+use astrcode_core::{
+    load_config, open_config_in_editor as open_config_file_in_editor, save_config, test_connection,
+    AgentRuntime, DeleteProjectResult, EventLog, SessionMeta, StorageEvent, TestResult,
+};
 use ipc::{AgentEvent, AgentEventKind, Phase, ToolCallResultEnvelope};
 
 fn canonical_session_id(session_id: &str) -> &str {
-    session_id
-        .strip_prefix("session-")
-        .unwrap_or(session_id)
+    session_id.strip_prefix("session-").unwrap_or(session_id)
 }
 
 fn normalize_working_dir(working_dir: &str) -> String {
@@ -67,6 +68,25 @@ pub enum SessionMessage {
     },
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileView {
+    pub name: String,
+    pub base_url: String,
+    pub api_key_preview: String,
+    pub models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigView {
+    pub config_path: String,
+    pub active_profile: String,
+    pub active_model: String,
+    pub profiles: Vec<ProfileView>,
+    pub warning: Option<String>,
+}
+
 /// Convert StorageEvent slice to SessionMessage list.
 /// ToolCall + ToolResult are merged by tool_call_id.
 pub fn convert_events_to_messages(events: &[StorageEvent]) -> Vec<SessionMessage> {
@@ -89,10 +109,19 @@ pub fn convert_events_to_messages(events: &[StorageEvent]) -> Vec<SessionMessage
                     });
                 }
             }
-            StorageEvent::ToolCall { tool_call_id, tool_name, args } => {
+            StorageEvent::ToolCall {
+                tool_call_id,
+                tool_name,
+                args,
+            } => {
                 pending_tool_calls.insert(tool_call_id.clone(), (tool_name.clone(), args.clone()));
             }
-            StorageEvent::ToolResult { tool_call_id, output, success, duration_ms } => {
+            StorageEvent::ToolResult {
+                tool_call_id,
+                output,
+                success,
+                duration_ms,
+            } => {
                 if let Some((tool_name, args)) = pending_tool_calls.remove(tool_call_id) {
                     messages.push(SessionMessage::ToolCall {
                         tool_call_id: tool_call_id.clone(),
@@ -238,15 +267,20 @@ impl AgentHandle {
         if targets.contains(&current_id) {
             self.interrupt().await?;
 
-            if let Some(replacement) = metas.iter().find(|meta| !targets.contains(&meta.session_id)) {
-                let runtime = AgentRuntime::resume(&replacement.session_id).map_err(|e| e.to_string())?;
+            if let Some(replacement) = metas
+                .iter()
+                .find(|meta| !targets.contains(&meta.session_id))
+            {
+                let runtime =
+                    AgentRuntime::resume(&replacement.session_id).map_err(|e| e.to_string())?;
                 if let Ok(state) = runtime.state() {
                     let _ = std::env::set_current_dir(&state.working_dir);
                 }
                 *self.runtime.lock().await = runtime;
                 *self.session_id.lock().await = replacement.session_id.clone();
             } else {
-                let home = user_home_dir().ok_or_else(|| "unable to resolve home directory".to_string())?;
+                let home = user_home_dir()
+                    .ok_or_else(|| "unable to resolve home directory".to_string())?;
                 std::env::set_current_dir(&home).map_err(|e| e.to_string())?;
                 let runtime = AgentRuntime::new_session().map_err(|e| e.to_string())?;
                 let session_id = runtime.session_id.clone();
@@ -258,7 +292,97 @@ impl AgentHandle {
         AgentRuntime::delete_project(&working_dir).map_err(|e| e.to_string())
     }
 
-    pub async fn submit_prompt(&self, text: String, channel: Channel<AgentEvent>) -> Result<(), String> {
+    pub async fn get_config() -> Result<ConfigView, String> {
+        let config = load_config().map_err(|e| e.to_string())?;
+        let config_path = astrcode_core::config::config_path()
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .to_string();
+
+        if config.profiles.is_empty() {
+            return Err("no profiles configured".to_string());
+        }
+
+        let profiles = config
+            .profiles
+            .iter()
+            .map(|profile| ProfileView {
+                name: profile.name.clone(),
+                base_url: profile.base_url.clone(),
+                api_key_preview: api_key_preview(profile.api_key.as_deref()),
+                models: profile.models.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        let (active_profile, active_model, warning) = resolve_active_selection(
+            &config.active_profile,
+            &config.active_model,
+            &config.profiles,
+        )?;
+
+        Ok(ConfigView {
+            config_path,
+            active_profile,
+            active_model,
+            profiles,
+            warning,
+        })
+    }
+
+    pub async fn save_active_selection(
+        &self,
+        active_profile: String,
+        active_model: String,
+    ) -> Result<(), String> {
+        let mut config = load_config().map_err(|e| e.to_string())?;
+        let profile = config
+            .profiles
+            .iter()
+            .find(|profile| profile.name == active_profile)
+            .ok_or_else(|| format!("profile '{}' does not exist", active_profile))?;
+
+        if profile.models.is_empty() {
+            return Err(format!("profile '{}' has no models", active_profile));
+        }
+
+        if !profile.models.iter().any(|model| model == &active_model) {
+            return Err(format!(
+                "model '{}' does not exist in profile '{}'",
+                active_model, active_profile
+            ));
+        }
+
+        config.active_profile = active_profile;
+        config.active_model = active_model;
+        save_config(&config).map_err(|e| e.to_string())
+    }
+
+    pub async fn test_connection_for_selection(
+        &self,
+        profile_name: String,
+        model: String,
+    ) -> Result<TestResult, String> {
+        let config = load_config().map_err(|e| e.to_string())?;
+        let profile = config
+            .profiles
+            .iter()
+            .find(|profile| profile.name == profile_name)
+            .ok_or_else(|| format!("profile '{}' does not exist", profile_name))?;
+
+        test_connection(profile, &model)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn open_config_in_editor() -> Result<(), String> {
+        open_config_file_in_editor().map_err(|e| e.to_string())
+    }
+
+    pub async fn submit_prompt(
+        &self,
+        text: String,
+        channel: Channel<AgentEvent>,
+    ) -> Result<(), String> {
         // Cancel any previous in-flight turn.
         {
             let mut guard = self.cancel.lock().await;
@@ -276,10 +400,13 @@ impl AgentHandle {
         }
 
         // Emit PhaseChanged(Thinking) before starting the turn.
-        send_agent_event(&channel, AgentEventKind::PhaseChanged {
-            turn_id: Some(turn_id.clone()),
-            phase: Phase::Thinking,
-        });
+        send_agent_event(
+            &channel,
+            AgentEventKind::PhaseChanged {
+                turn_id: Some(turn_id.clone()),
+                phase: Phase::Thinking,
+            },
+        );
 
         let mut runtime = self.runtime.lock().await;
         let cancel = cancel_token;
@@ -291,10 +418,13 @@ impl AgentHandle {
                 // Emit PhaseChanged(Streaming) exactly once per streaming sequence.
                 if matches!(event, StorageEvent::AssistantDelta { .. }) {
                     if !streaming_phase_emitted.swap(true, Ordering::Relaxed) {
-                        send_agent_event(&channel, AgentEventKind::PhaseChanged {
-                            turn_id: Some(tid.clone()),
-                            phase: Phase::Streaming,
-                        });
+                        send_agent_event(
+                            &channel,
+                            AgentEventKind::PhaseChanged {
+                                turn_id: Some(tid.clone()),
+                                phase: Phase::Streaming,
+                            },
+                        );
                     }
                 } else {
                     streaming_phase_emitted.store(false, Ordering::Relaxed);
@@ -321,6 +451,86 @@ impl AgentHandle {
         }
         Ok(())
     }
+}
+
+fn is_env_var_name(value: &str) -> bool {
+    value
+        .chars()
+        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        && value.contains('_')
+}
+
+fn api_key_preview(api_key: Option<&str>) -> String {
+    match api_key.map(str::trim) {
+        None => "未配置".to_string(),
+        Some("") => "未配置".to_string(),
+        Some(value) if is_env_var_name(value) => format!("环境变量: {}", value),
+        Some(value) if value.chars().count() > 4 => {
+            let suffix = value
+                .chars()
+                .rev()
+                .take(4)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<String>();
+            format!("****{}", suffix)
+        }
+        Some(_) => "****".to_string(),
+    }
+}
+
+fn resolve_active_selection(
+    active_profile: &str,
+    active_model: &str,
+    profiles: &[astrcode_core::config::Profile],
+) -> Result<(String, String, Option<String>), String> {
+    let fallback_profile = profiles
+        .first()
+        .ok_or_else(|| "no profiles configured".to_string())?;
+
+    let selected_profile = profiles
+        .iter()
+        .find(|profile| profile.name == active_profile)
+        .unwrap_or(fallback_profile);
+
+    if selected_profile.models.is_empty() {
+        return Err(format!("profile '{}' has no models", selected_profile.name));
+    }
+
+    if selected_profile.name != active_profile {
+        return Ok((
+            selected_profile.name.clone(),
+            selected_profile.models[0].clone(),
+            Some(format!(
+                "配置中的 Profile 不存在，已自动选择 {}",
+                selected_profile.name
+            )),
+        ));
+    }
+
+    if let Some(model) = selected_profile
+        .models
+        .iter()
+        .find(|model| *model == active_model)
+    {
+        return Ok((selected_profile.name.clone(), model.clone(), None));
+    }
+
+    let fallback_model = selected_profile
+        .models
+        .first()
+        .cloned()
+        .ok_or_else(|| format!("profile '{}' has no models", selected_profile.name))?;
+
+    Ok((
+        selected_profile.name.clone(),
+        fallback_model.clone(),
+        Some(format!(
+            "配置中的 {} 在当前 Profile 下不存在，已自动选择 {}",
+            active_model, fallback_model
+        )),
+    ))
 }
 
 /// Convert a StorageEvent into zero or more AgentEventKinds for IPC dispatch.
@@ -427,6 +637,8 @@ fn send_agent_event(channel: &Channel<AgentEvent>, kind: AgentEventKind) {
 
 #[cfg(test)]
 mod tests {
+    use astrcode_core::config::Profile;
+
     use super::*;
 
     #[test]
@@ -514,7 +726,9 @@ mod tests {
         let messages = convert_events_to_messages(&events);
         assert_eq!(messages.len(), 2);
         assert!(matches!(&messages[0], SessionMessage::User { content, .. } if content == "hello"));
-        assert!(matches!(&messages[1], SessionMessage::Assistant { content, .. } if content == "hi there"));
+        assert!(
+            matches!(&messages[1], SessionMessage::Assistant { content, .. } if content == "hi there")
+        );
     }
 
     #[test]
@@ -538,7 +752,13 @@ mod tests {
         let messages = convert_events_to_messages(&events);
         assert_eq!(messages.len(), 1);
         match &messages[0] {
-            SessionMessage::ToolCall { tool_name, output, success, duration_ms, .. } => {
+            SessionMessage::ToolCall {
+                tool_name,
+                output,
+                success,
+                duration_ms,
+                ..
+            } => {
                 assert_eq!(tool_name, "listDir");
                 assert_eq!(output, &Some("files listed".to_string()));
                 assert_eq!(success, &Some(true));
@@ -568,5 +788,35 @@ mod tests {
 
         let messages = convert_events_to_messages(&events);
         assert!(messages.is_empty(), "transient events should be ignored");
+    }
+
+    #[test]
+    fn api_key_preview_masks_values_and_env_names() {
+        assert_eq!(api_key_preview(None), "未配置");
+        assert_eq!(
+            api_key_preview(Some("DEEPSEEK_API_KEY")),
+            "环境变量: DEEPSEEK_API_KEY"
+        );
+        assert_eq!(api_key_preview(Some("abcd")), "****");
+        assert_eq!(api_key_preview(Some("secret-1234")), "****1234");
+    }
+
+    #[test]
+    fn resolve_active_selection_falls_back_and_returns_warning() {
+        let profiles = vec![Profile {
+            name: "default".to_string(),
+            models: vec!["model-a".to_string(), "model-b".to_string()],
+            ..Profile::default()
+        }];
+
+        let (profile, model, warning) = resolve_active_selection("missing", "model-z", &profiles)
+            .expect("fallback should work");
+
+        assert_eq!(profile, "default");
+        assert_eq!(model, "model-a");
+        assert_eq!(
+            warning.as_deref(),
+            Some("配置中的 Profile 不存在，已自动选择 default")
+        );
     }
 }

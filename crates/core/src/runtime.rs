@@ -1,16 +1,12 @@
-use std::sync::Arc;
-
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use chrono::Utc;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent_loop::AgentLoop;
-use crate::config::{load_config, Profile};
 use crate::event_log::{generate_session_id, DeleteProjectResult, EventLog, SessionMeta};
 use crate::events::StorageEvent;
-use crate::llm::openai::OpenAiProvider;
-use crate::llm::LlmProvider;
 use crate::projection::{project, AgentState};
+use crate::provider_factory::ConfigFileProviderFactory;
 use crate::tools::registry::ToolRegistry;
 
 pub struct AgentRuntime {
@@ -129,29 +125,11 @@ impl AgentRuntime {
 }
 
 fn build_agent_loop() -> Result<AgentLoop> {
-    let config = load_config()?;
-    let profile = select_profile(&config.profiles, &config.active_profile)?;
-    let api_key = profile.resolve_api_key()?;
-    let model = profile
-        .models
-        .first()
-        .cloned()
-        .unwrap_or_else(|| config.active_model.clone());
-    let provider: Arc<dyn LlmProvider> = Arc::new(OpenAiProvider::new(
-        profile.base_url.clone(),
-        api_key,
-        model,
-    ));
     let tools = ToolRegistry::with_v1_defaults();
-    Ok(AgentLoop::new(provider, tools))
-}
-
-fn select_profile<'a>(profiles: &'a [Profile], active_profile: &str) -> Result<&'a Profile> {
-    profiles
-        .iter()
-        .find(|profile| profile.name == active_profile)
-        .or_else(|| profiles.first())
-        .ok_or_else(|| anyhow!("no profiles configured"))
+    Ok(AgentLoop::new(
+        std::sync::Arc::new(ConfigFileProviderFactory),
+        tools,
+    ))
 }
 
 #[cfg(test)]
@@ -159,19 +137,31 @@ mod tests {
     use std::collections::VecDeque;
     use std::fs::File;
     use std::io::{BufRead, BufReader, BufWriter, Write};
+    use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
+    use anyhow::anyhow;
     use async_trait::async_trait;
     use chrono::Utc;
+    use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::task::JoinHandle;
     use tokio_util::sync::CancellationToken;
 
     use crate::action::{LlmMessage, LlmResponse, ToolDefinition};
+    use crate::config::{save_config, Config};
     use crate::llm::{DeltaCallback, LlmProvider};
+    use crate::provider_factory::ProviderFactory;
 
     use super::*;
 
     struct MockProvider {
         responses: Mutex<VecDeque<LlmResponse>>,
+    }
+
+    struct MockProviderFactory {
+        provider: Arc<MockProvider>,
     }
 
     #[async_trait]
@@ -205,6 +195,12 @@ mod tests {
         }
     }
 
+    impl ProviderFactory for MockProviderFactory {
+        fn build(&self) -> anyhow::Result<Arc<dyn LlmProvider>> {
+            Ok(self.provider.clone())
+        }
+    }
+
     fn make_test_runtime_with_mock_provider(
         dir: &std::path::Path,
         responses: Vec<LlmResponse>,
@@ -216,14 +212,162 @@ mod tests {
         let provider = Arc::new(MockProvider {
             responses: Mutex::new(VecDeque::from(responses)),
         });
+        let factory = Arc::new(MockProviderFactory { provider });
         let tools = ToolRegistry::new();
-        let loop_ = AgentLoop::new(provider, tools);
+        let loop_ = AgentLoop::new(factory, tools);
 
         AgentRuntime {
             session_id,
             log,
             loop_,
         }
+    }
+
+    fn unique_test_dir_name() -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be valid")
+            .as_nanos();
+        format!("astrcode-runtime-{}-{}", std::process::id(), nanos)
+    }
+
+    fn set_test_home(home: &std::path::Path) {
+        #[cfg(windows)]
+        {
+            std::env::set_var("USERPROFILE", home);
+            std::env::remove_var("HOME");
+        }
+        #[cfg(not(windows))]
+        {
+            std::env::set_var("HOME", home);
+            std::env::remove_var("USERPROFILE");
+        }
+    }
+
+    struct EnvRestoreGuard {
+        previous_dir: std::path::PathBuf,
+        previous_home: Option<std::ffi::OsString>,
+        previous_userprofile: Option<std::ffi::OsString>,
+    }
+
+    impl EnvRestoreGuard {
+        fn capture() -> Self {
+            Self {
+                previous_dir: std::env::current_dir().expect("cwd should resolve"),
+                previous_home: std::env::var_os("HOME"),
+                previous_userprofile: std::env::var_os("USERPROFILE"),
+            }
+        }
+    }
+
+    impl Drop for EnvRestoreGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.previous_dir);
+            match &self.previous_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match &self.previous_userprofile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+        }
+    }
+
+    async fn spawn_model_echo_server(
+        recorded_models: Arc<Mutex<Vec<String>>>,
+    ) -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        listener
+            .set_nonblocking(true)
+            .expect("listener should support nonblocking");
+        let listener = tokio::net::TcpListener::from_std(listener).expect("tokio listener");
+
+        let handle = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.expect("accept should work");
+                let recorded_models = recorded_models.clone();
+
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut buf = [0u8; 1024];
+                    let mut content_length = None;
+                    let mut header_len = None;
+
+                    loop {
+                        let n = socket.read(&mut buf).await.expect("read should work");
+                        if n == 0 {
+                            break;
+                        }
+                        request.extend_from_slice(&buf[..n]);
+
+                        if header_len.is_none() {
+                            if let Some(idx) =
+                                request.windows(4).position(|window| window == b"\r\n\r\n")
+                            {
+                                let end = idx + 4;
+                                header_len = Some(end);
+                                let headers = String::from_utf8_lossy(&request[..end]);
+                                content_length = headers.lines().find_map(|line| {
+                                    let mut parts = line.splitn(2, ':');
+                                    let name = parts.next()?.trim();
+                                    let value = parts.next()?.trim();
+                                    if name.eq_ignore_ascii_case("content-length") {
+                                        value.parse::<usize>().ok()
+                                    } else {
+                                        None
+                                    }
+                                });
+                            }
+                        }
+
+                        if let (Some(end), Some(length)) = (header_len, content_length) {
+                            if request.len() >= end + length {
+                                break;
+                            }
+                        }
+                    }
+
+                    if let (Some(end), Some(length)) = (header_len, content_length) {
+                        let body = &request[end..end + length];
+                        let payload: serde_json::Value = serde_json::from_slice(body)
+                            .expect("request body should be valid json");
+                        let model = payload
+                            .get("model")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        recorded_models.lock().expect("lock").push(model);
+                    }
+
+                    let response_body = format!(
+                        "data: {}\n\ndata: [DONE]\n\n",
+                        json!({
+                            "choices": [
+                                {
+                                    "delta": {
+                                        "content": "ok"
+                                    },
+                                    "finish_reason": "stop"
+                                }
+                            ]
+                        })
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                        response_body.len(),
+                        response_body
+                    );
+                    socket
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("response should be written");
+                });
+            }
+        });
+
+        (format!("http://{}", addr), handle)
     }
 
     fn load_events_from_path(path: &std::path::Path) -> Vec<StorageEvent> {
@@ -279,13 +423,9 @@ mod tests {
         let collected: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let collected_clone = collected.clone();
         runtime
-            .submit(
-                "hi".into(),
-                CancellationToken::new(),
-                move |e| {
-                    collected_clone.lock().expect("lock").push(e.clone());
-                },
-            )
+            .submit("hi".into(), CancellationToken::new(), move |e| {
+                collected_clone.lock().expect("lock").push(e.clone());
+            })
             .await
             .expect("submit");
 
@@ -395,9 +535,58 @@ mod tests {
         let state = project(&events);
 
         assert_eq!(state.messages.len(), 2); // User + Assistant
-        assert!(
-            matches!(&state.messages[0], LlmMessage::User { content } if content == "hello")
-        );
+        assert!(matches!(&state.messages[0], LlmMessage::User { content } if content == "hello"));
         assert!(matches!(&state.messages[1], LlmMessage::Assistant { .. }));
+    }
+
+    #[tokio::test]
+    async fn submit_uses_updated_model_after_config_changes() {
+        let _guard = crate::tools::fs_common::env_lock_for_tests()
+            .lock()
+            .expect("env lock should be acquired");
+        let _restore = EnvRestoreGuard::capture();
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let home = temp.path().join(unique_test_dir_name());
+        std::fs::create_dir_all(&home).expect("home should exist");
+        set_test_home(&home);
+        std::env::set_current_dir(temp.path()).expect("cwd should switch");
+
+        let recorded_models = Arc::new(Mutex::new(Vec::new()));
+        let (base_url, server_handle) = spawn_model_echo_server(recorded_models.clone()).await;
+
+        let config = Config {
+            active_profile: "default".to_string(),
+            active_model: "model-a".to_string(),
+            profiles: vec![crate::config::Profile {
+                base_url: base_url.clone(),
+                api_key: Some("sk-test".to_string()),
+                models: vec!["model-a".to_string(), "model-b".to_string()],
+                ..crate::config::Profile::default()
+            }],
+            ..Config::default()
+        };
+        save_config(&config).expect("config should save");
+
+        let mut runtime = AgentRuntime::new_session().expect("runtime should build");
+        runtime
+            .submit("first".into(), CancellationToken::new(), |_event| {})
+            .await
+            .expect("first submit should succeed");
+
+        let updated = Config {
+            active_model: "model-b".to_string(),
+            ..config
+        };
+        save_config(&updated).expect("updated config should save");
+
+        runtime
+            .submit("second".into(), CancellationToken::new(), |_event| {})
+            .await
+            .expect("second submit should succeed");
+
+        let models = recorded_models.lock().expect("lock").clone();
+        server_handle.abort();
+
+        assert_eq!(models, vec!["model-a".to_string(), "model-b".to_string()]);
     }
 }

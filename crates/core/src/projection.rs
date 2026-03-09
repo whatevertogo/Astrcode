@@ -204,9 +204,7 @@ mod tests {
                 content: "list files".into(),
                 timestamp: ts(),
             },
-            StorageEvent::AssistantFinal {
-                content: "".into(),
-            },
+            StorageEvent::AssistantFinal { content: "".into() },
             StorageEvent::ToolCall {
                 tool_call_id: "tc1".into(),
                 tool_name: "listDir".into(),
@@ -327,7 +325,10 @@ mod tests {
         assert_eq!(state.messages.len(), 3, "expected user + assistant + tool");
 
         match &state.messages[1] {
-            LlmMessage::Assistant { content, tool_calls } => {
+            LlmMessage::Assistant {
+                content,
+                tool_calls,
+            } => {
                 assert_eq!(content, "");
                 assert_eq!(tool_calls.len(), 1);
                 assert_eq!(tool_calls[0].id, "tc1");
@@ -335,6 +336,8 @@ mod tests {
             other => panic!("expected assistant before tool message, got {:?}", other),
         }
 
-        assert!(matches!(&state.messages[2], LlmMessage::Tool { tool_call_id, .. } if tool_call_id == "tc1"));
+        assert!(
+            matches!(&state.messages[2], LlmMessage::Tool { tool_call_id, .. } if tool_call_id == "tc1")
+        );
     }
 }

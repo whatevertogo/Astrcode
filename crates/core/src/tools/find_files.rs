@@ -29,7 +29,8 @@ impl Tool for FindFilesTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "findFiles".to_string(),
-            description: "Find files matching a glob pattern. Use ** for recursive search.".to_string(),
+            description: "Find files matching a glob pattern. Use ** for recursive search."
+                .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -59,7 +60,10 @@ impl Tool for FindFilesTool {
             None => std::env::current_dir().context("failed to resolve current directory")?,
         };
         let max_results = args.max_results.unwrap_or(200);
-        let full_pattern = root.join(&args.pattern).to_string_lossy().replace('\\', "/");
+        let full_pattern = root
+            .join(&args.pattern)
+            .to_string_lossy()
+            .replace('\\', "/");
         let entries = glob(&full_pattern)
             .with_context(|| format!("failed to parse glob pattern '{}'", full_pattern))?;
 
@@ -124,7 +128,10 @@ mod tests {
         let paths: Vec<String> =
             serde_json::from_str(&result.output).expect("output should be valid json");
         assert_eq!(paths.len(), 1);
-        assert_eq!(paths[0], temp.path().join("a.txt").to_string_lossy().to_string());
+        assert_eq!(
+            paths[0],
+            temp.path().join("a.txt").to_string_lossy().to_string()
+        );
     }
 
     #[tokio::test]

@@ -99,9 +99,7 @@ impl AgentEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "command", content = "data", rename_all = "camelCase")]
 pub enum TuiCommandKind {
-    SubmitPrompt {
-        text: String,
-    },
+    SubmitPrompt { text: String },
     Interrupt,
     Exit,
 }
@@ -143,10 +141,22 @@ mod tests {
             .get("data")
             .expect("toolCallStart should contain data");
 
-        assert_eq!(payload.get("event"), Some(&Value::String("toolCallStart".to_string())));
-        assert_eq!(data.get("turnId"), Some(&Value::String("turn-1".to_string())));
-        assert_eq!(data.get("toolCallId"), Some(&Value::String("call-123".to_string())));
-        assert_eq!(data.get("toolName"), Some(&Value::String("listDir".to_string())));
+        assert_eq!(
+            payload.get("event"),
+            Some(&Value::String("toolCallStart".to_string()))
+        );
+        assert_eq!(
+            data.get("turnId"),
+            Some(&Value::String("turn-1".to_string()))
+        );
+        assert_eq!(
+            data.get("toolCallId"),
+            Some(&Value::String("call-123".to_string()))
+        );
+        assert_eq!(
+            data.get("toolName"),
+            Some(&Value::String("listDir".to_string()))
+        );
         assert!(data.get("turn_id").is_none());
         assert!(data.get("tool_call_id").is_none());
         assert!(data.get("tool_name").is_none());
@@ -168,14 +178,25 @@ mod tests {
         });
 
         let payload = serde_json::to_value(event).expect("event should serialize");
-        let data = payload.get("data").expect("toolCallResult should contain data");
+        let data = payload
+            .get("data")
+            .expect("toolCallResult should contain data");
         let result = data
             .get("result")
             .expect("toolCallResult should contain result");
 
-        assert_eq!(data.get("turnId"), Some(&Value::String("turn-2".to_string())));
-        assert_eq!(result.get("toolCallId"), Some(&Value::String("call-456".to_string())));
-        assert_eq!(result.get("toolName"), Some(&Value::String("readFile".to_string())));
+        assert_eq!(
+            data.get("turnId"),
+            Some(&Value::String("turn-2".to_string()))
+        );
+        assert_eq!(
+            result.get("toolCallId"),
+            Some(&Value::String("call-456".to_string()))
+        );
+        assert_eq!(
+            result.get("toolName"),
+            Some(&Value::String("readFile".to_string()))
+        );
         assert_eq!(result.get("durationMs"), Some(&Value::Number(12u64.into())));
         assert!(result.get("tool_call_id").is_none());
         assert!(result.get("tool_name").is_none());
@@ -195,7 +216,8 @@ mod tests {
             }
         });
 
-        let parsed: AgentEvent = serde_json::from_value(raw).expect("legacy payload should deserialize");
+        let parsed: AgentEvent =
+            serde_json::from_value(raw).expect("legacy payload should deserialize");
         match parsed.kind {
             AgentEventKind::ToolCallStart {
                 turn_id,

@@ -28,6 +28,10 @@ fn main() {
             commands::get_session_id,
             commands::delete_session,
             commands::delete_project,
+            commands::get_config,
+            commands::save_active_selection,
+            commands::test_connection,
+            commands::open_config_in_editor,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

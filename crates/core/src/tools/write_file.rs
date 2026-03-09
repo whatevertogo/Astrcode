@@ -108,7 +108,9 @@ mod tests {
     async fn write_file_overwrites_existing_file() {
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let file = temp.path().join("hello.txt");
-        tokio::fs::write(&file, "old").await.expect("seed write should work");
+        tokio::fs::write(&file, "old")
+            .await
+            .expect("seed write should work");
         let tool = WriteFileTool;
 
         let result = tool

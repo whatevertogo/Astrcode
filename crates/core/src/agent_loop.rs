@@ -8,31 +8,29 @@ use tokio_util::sync::CancellationToken;
 
 use crate::action::LlmMessage;
 use crate::events::StorageEvent;
-use crate::llm::{DeltaCallback, LlmProvider};
+use crate::llm::DeltaCallback;
 use crate::projection::AgentState;
+use crate::provider_factory::DynProviderFactory;
 use crate::tools::registry::ToolRegistry;
 
 pub struct AgentLoop {
-    provider: Arc<dyn LlmProvider>,
+    factory: DynProviderFactory,
     tools: ToolRegistry,
     max_steps: Option<usize>,
 }
 
 impl AgentLoop {
-    pub fn new(provider: Arc<dyn LlmProvider>, tools: ToolRegistry) -> Self {
+    pub fn new(factory: DynProviderFactory, tools: ToolRegistry) -> Self {
         Self {
-            provider,
+            factory,
             tools,
             max_steps: None,
         }
     }
 
-    pub fn with_max_steps(provider: Arc<dyn LlmProvider>, tools: ToolRegistry, max_steps: usize) -> Self {
-        Self {
-            provider,
-            tools,
-            max_steps: Some(max_steps),
-        }
+    pub fn with_max_steps(mut self, max_steps: usize) -> Self {
+        self.max_steps = Some(max_steps);
+        self
     }
 
     /// Execute one turn of the agent loop.
@@ -47,6 +45,7 @@ impl AgentLoop {
         cancel: CancellationToken,
     ) -> Result<()> {
         let mut messages = state.messages.clone();
+        let provider = self.factory.build()?;
 
         let mut step_index = 0usize;
         loop {
@@ -85,14 +84,12 @@ impl AgentLoop {
             }));
 
             let stream_result = {
-                let stream_future = self
-                    .provider
-                    .stream_complete(
-                        &messages,
-                        &tool_definitions,
-                        cancel.child_token(),
-                        on_delta,
-                    );
+                let stream_future = provider.stream_complete(
+                    &messages,
+                    &tool_definitions,
+                    cancel.child_token(),
+                    on_delta,
+                );
                 tokio::pin!(stream_future);
 
                 let stream_result = loop {
@@ -217,10 +214,13 @@ mod tests {
     use tokio::time::{sleep, Duration};
     use tokio_util::sync::CancellationToken;
 
-    use crate::action::{LlmMessage, LlmResponse, ToolCallRequest, ToolDefinition, ToolExecutionResult};
+    use crate::action::{
+        LlmMessage, LlmResponse, ToolCallRequest, ToolDefinition, ToolExecutionResult,
+    };
     use crate::events::StorageEvent;
     use crate::llm::{DeltaCallback, LlmProvider};
     use crate::projection::AgentState;
+    use crate::provider_factory::ProviderFactory;
     use crate::tools::registry::ToolRegistry;
     use crate::tools::Tool;
 
@@ -287,6 +287,16 @@ mod tests {
     struct StreamingProvider {
         response: LlmResponse,
         per_delta_delay: Duration,
+    }
+
+    struct StaticProviderFactory {
+        provider: Arc<dyn LlmProvider>,
+    }
+
+    impl ProviderFactory for StaticProviderFactory {
+        fn build(&self) -> Result<Arc<dyn LlmProvider>> {
+            Ok(self.provider.clone())
+        }
     }
 
     #[async_trait]
@@ -403,7 +413,8 @@ mod tests {
         });
 
         let tools = ToolRegistry::with_v1_defaults();
-        let loop_runner = AgentLoop::with_max_steps(provider, tools, 8);
+        let factory = Arc::new(StaticProviderFactory { provider });
+        let loop_runner = AgentLoop::new(factory, tools).with_max_steps(8);
         let state = make_state("list files");
 
         let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -452,7 +463,8 @@ mod tests {
         let mut tools = ToolRegistry::new();
         tools.register(Arc::new(SlowTool));
 
-        let loop_runner = AgentLoop::with_max_steps(provider, tools, 8);
+        let factory = Arc::new(StaticProviderFactory { provider });
+        let loop_runner = AgentLoop::new(factory, tools).with_max_steps(8);
         let state = make_state("run slow");
 
         let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -475,9 +487,9 @@ mod tests {
         cancel_task.await.expect("cancel task should join");
 
         let events = events.lock().expect("lock").clone();
-        let has_error = events.iter().any(|e| {
-            matches!(e, StorageEvent::Error { message } if message == "interrupted")
-        });
+        let has_error = events
+            .iter()
+            .any(|e| matches!(e, StorageEvent::Error { message } if message == "interrupted"));
         let has_done = events
             .iter()
             .any(|e| matches!(e, StorageEvent::TurnDone { .. }));
@@ -495,7 +507,8 @@ mod tests {
             },
             per_delta_delay: Duration::from_millis(20),
         });
-        let loop_runner = AgentLoop::new(provider, ToolRegistry::new());
+        let factory = Arc::new(StaticProviderFactory { provider });
+        let loop_runner = AgentLoop::new(factory, ToolRegistry::new());
         let state = make_state("stream please");
 
         let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -514,9 +527,12 @@ mod tests {
 
         tokio::time::timeout(Duration::from_millis(50), async {
             loop {
-                if events.lock().expect("lock").iter().any(|event| {
-                    matches!(event, StorageEvent::AssistantDelta { .. })
-                }) {
+                if events
+                    .lock()
+                    .expect("lock")
+                    .iter()
+                    .any(|event| matches!(event, StorageEvent::AssistantDelta { .. }))
+                {
                     break;
                 }
                 sleep(Duration::from_millis(5)).await;
@@ -560,7 +576,8 @@ mod tests {
         let mut tools = ToolRegistry::new();
         tools.register(Arc::new(QuickTool));
 
-        let loop_runner = AgentLoop::new(provider, tools);
+        let factory = Arc::new(StaticProviderFactory { provider });
+        let loop_runner = AgentLoop::new(factory, tools);
         let state = make_state("loop test");
 
         let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));

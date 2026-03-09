@@ -1,4 +1,4 @@
-import React, { startTransition, useCallback, useEffect, useReducer, useRef } from 'react';
+import React, { startTransition, useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import type {
   AgentEventPayload,
   Action,
@@ -11,6 +11,7 @@ import type {
 import { uuid } from './utils/uuid';
 import Sidebar from './components/Sidebar/index';
 import Chat from './components/Chat/index';
+import SettingsModal from './components/Settings/SettingsModal';
 import { useAgent, SessionMessage } from './hooks/useAgent';
 import { useProjects } from './hooks/useProjects';
 
@@ -358,6 +359,7 @@ function makeInitialState(): AppState {
 // ────────────────────────────────────────────────────────────
 export default function App() {
   const [state, dispatch] = useReducer(reducer, undefined, makeInitialState);
+  const [showSettings, setShowSettings] = useState(false);
   const projects = useProjects(dispatch);
   const activeSessionIdRef = useRef<string | null>(state.activeSessionId);
   const phaseRef = useRef(state.phase);
@@ -497,6 +499,10 @@ export default function App() {
     newSession,
     deleteSession,
     deleteProject,
+    getConfig,
+    saveActiveSelection,
+    testConnection,
+    openConfigInEditor,
   } = useAgent(handleAgentEvent);
 
   const refreshSessions = useCallback(async () => {
@@ -751,6 +757,7 @@ export default function App() {
         onNewProject={projects.addProject}
         onDeleteProject={handleDeleteProject}
         onDeleteSession={handleDeleteSession}
+        onOpenSettings={() => setShowSettings(true)}
       />
       <Chat
         project={activeProject}
@@ -760,6 +767,15 @@ export default function App() {
         onSubmitPrompt={handleSubmit}
         onInterrupt={interrupt}
       />
+      {showSettings && (
+        <SettingsModal
+          onClose={() => setShowSettings(false)}
+          getConfig={getConfig}
+          saveActiveSelection={saveActiveSelection}
+          testConnection={testConnection}
+          openConfigInEditor={openConfigInEditor}
+        />
+      )}
     </div>
   );
 }

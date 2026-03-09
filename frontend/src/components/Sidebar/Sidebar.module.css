@@ -46,8 +46,14 @@
   flex-shrink: 0;
 }
 
+.footerActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .newProjectBtn {
-  width: 100%;
+  flex: 1;
   padding: 7px 12px;
   background: #252525;
   color: #858585;
@@ -60,4 +66,26 @@
 .newProjectBtn:hover {
   background: #2a2a2a;
   color: #d4d4d4;
+}
+
+.settingsBtn {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #252525;
+  color: #8f8f8f;
+  border-radius: 6px;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.settingsBtn:hover {
+  background: #2a2a2a;
+  color: #d4d4d4;
+}
+
+.settingsIcon {
+  width: 16px;
+  height: 16px;
 }

@@ -54,7 +54,9 @@ impl ToolExecutionResult {
 
 #[derive(Clone, Debug)]
 pub enum LlmMessage {
-    User { content: String },
+    User {
+        content: String,
+    },
     Assistant {
         content: String,
         tool_calls: Vec<ToolCallRequest>,

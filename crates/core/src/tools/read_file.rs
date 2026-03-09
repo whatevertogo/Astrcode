@@ -48,7 +48,8 @@ impl Tool for ReadFileTool {
     ) -> Result<ToolExecutionResult> {
         check_cancel(&cancel, "readFile")?;
 
-        let args: ReadFileArgs = serde_json::from_value(args).context("invalid args for readFile")?;
+        let args: ReadFileArgs =
+            serde_json::from_value(args).context("invalid args for readFile")?;
         let started_at = Instant::now();
         let max_bytes = args.max_bytes.unwrap_or(64 * 1024);
         let path = resolve_path(&args.path)?;

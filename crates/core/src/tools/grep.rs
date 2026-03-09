@@ -138,7 +138,10 @@ fn collect_candidate_files(
     }
 
     if !path.is_dir() {
-        return Err(anyhow!("path is neither a file nor directory: {}", path.display()));
+        return Err(anyhow!(
+            "path is neither a file nor directory: {}",
+            path.display()
+        ));
     }
 
     if recursive {
@@ -158,7 +161,8 @@ fn collect_candidate_files(
         .with_context(|| format!("failed reading directory '{}'", path.display()))?
     {
         check_cancel(cancel, "grep")?;
-        let entry = entry.with_context(|| format!("failed reading directory '{}'", path.display()))?;
+        let entry =
+            entry.with_context(|| format!("failed reading directory '{}'", path.display()))?;
         let file_type = entry
             .file_type()
             .with_context(|| format!("failed reading file type '{}'", entry.path().display()))?;

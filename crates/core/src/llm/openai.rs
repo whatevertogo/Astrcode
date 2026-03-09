@@ -68,7 +68,11 @@ impl LlmProvider for OpenAiProvider {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("openai-compatible request failed with {}: {}", status, body));
+            return Err(anyhow!(
+                "openai-compatible request failed with {}: {}",
+                status,
+                body
+            ));
         }
 
         let parsed: OpenAiChatResponse = response
@@ -95,7 +99,10 @@ impl LlmProvider for OpenAiProvider {
             })
             .collect();
 
-        Ok(LlmResponse { content, tool_calls })
+        Ok(LlmResponse {
+            content,
+            tool_calls,
+        })
     }
 
     async fn stream_complete(
@@ -135,7 +142,11 @@ impl LlmProvider for OpenAiProvider {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("openai-compatible request failed with {}: {}", status, body));
+            return Err(anyhow!(
+                "openai-compatible request failed with {}: {}",
+                status,
+                body
+            ));
         }
 
         let mut body_stream = response.bytes_stream();
@@ -218,8 +229,8 @@ fn parse_sse_line(line: &str) -> Result<ParsedSseLine> {
         return Ok(ParsedSseLine::Done);
     }
 
-    let chunk =
-        serde_json::from_str::<OpenAiStreamChunk>(data).context("failed to parse streaming chunk")?;
+    let chunk = serde_json::from_str::<OpenAiStreamChunk>(data)
+        .context("failed to parse streaming chunk")?;
     Ok(ParsedSseLine::Chunk(chunk))
 }
 
@@ -351,7 +362,10 @@ fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
             tool_call_id: None,
             tool_calls: None,
         },
-        LlmMessage::Assistant { content, tool_calls } => OpenAiRequestMessage {
+        LlmMessage::Assistant {
+            content,
+            tool_calls,
+        } => OpenAiRequestMessage {
             role: "assistant".to_string(),
             content: if content.is_empty() {
                 None
@@ -507,8 +521,10 @@ mod tests {
 
     #[test]
     fn parse_sse_line_parses_data_json() {
-        let parsed = parse_sse_line(r#"data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}"#)
-            .expect("line should parse");
+        let parsed = parse_sse_line(
+            r#"data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}"#,
+        )
+        .expect("line should parse");
 
         match parsed {
             ParsedSseLine::Chunk(chunk) => {
@@ -574,7 +590,10 @@ mod tests {
             &on_delta,
         );
 
-        assert_eq!(deltas.lock().unwrap().as_slice(), &["Hel".to_string(), "lo".to_string()]);
+        assert_eq!(
+            deltas.lock().unwrap().as_slice(),
+            &["Hel".to_string(), "lo".to_string()]
+        );
         assert_eq!(full_content, "Hello");
     }
 

@@ -37,8 +37,9 @@ impl Tool for ShellTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "shell".to_string(),
-            description: "Execute a non-interactive shell command once and return stdout/stderr/exitCode."
-                .to_string(),
+            description:
+                "Execute a non-interactive shell command once and return stdout/stderr/exitCode."
+                    .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -58,7 +59,8 @@ impl Tool for ShellTool {
         args: serde_json::Value,
         cancel: CancellationToken,
     ) -> Result<ToolExecutionResult> {
-        let args: ShellArgs = serde_json::from_value(args).context("invalid args for shell tool")?;
+        let args: ShellArgs =
+            serde_json::from_value(args).context("invalid args for shell tool")?;
         if args.command.trim().is_empty() {
             return Err(anyhow!("shell command cannot be empty"));
         }
@@ -148,7 +150,11 @@ fn command_spec(shell: Option<&str>, command: &str) -> CommandSpec {
         };
         return CommandSpec {
             program,
-            args: vec!["-NoProfile".to_string(), "-Command".to_string(), command.to_string()],
+            args: vec![
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                command.to_string(),
+            ],
         };
     }
 
