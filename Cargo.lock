@@ -55,6 +55,7 @@ dependencies = [
  "astrcode-core",
  "async-trait",
  "chrono",
+ "dirs 5.0.1",
  "ipc",
  "serde",
  "serde_json",

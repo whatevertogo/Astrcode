@@ -187,13 +187,71 @@ fn save_config_to_path(path: &Path, config: &Config) -> Result<()> {
     let tmp_path = path.with_extension("json.tmp");
     fs::write(&tmp_path, json)
         .with_context(|| format!("failed to write temp config at {}", tmp_path.display()))?;
-    fs::rename(&tmp_path, path).with_context(|| {
-        format!(
-            "failed to replace config {} with temp file {}",
-            path.display(),
-            tmp_path.display()
-        )
-    })?;
+
+    // On most platforms, `rename` will atomically replace the destination.
+    // On Windows, `std::fs::rename` fails with `AlreadyExists` if the
+    // destination exists, so swap via a backup path and try to roll back
+    // if the second rename fails.
+    if let Err(err) = fs::rename(&tmp_path, path) {
+        #[cfg(windows)]
+        {
+            if err.kind() == std::io::ErrorKind::AlreadyExists {
+                let backup_path = path.with_extension("json.bak");
+                let _ = fs::remove_file(&backup_path);
+
+                // Move old config out of the way before placing the new file.
+                if let Err(backup_err) = fs::rename(path, &backup_path) {
+                    let _ = fs::remove_file(&tmp_path);
+                    bail!(
+                        "failed to move existing config {} to backup {} before replace: {}",
+                        path.display(),
+                        backup_path.display(),
+                        backup_err
+                    );
+                }
+
+                if let Err(rename_err) = fs::rename(&tmp_path, path) {
+                    match fs::rename(&backup_path, path) {
+                        Ok(()) => bail!(
+                            "failed to replace config {} with temp file {}: {}; original config restored from backup {} (temp file kept for recovery)",
+                            path.display(),
+                            tmp_path.display(),
+                            rename_err,
+                            backup_path.display()
+                        ),
+                        Err(restore_err) => bail!(
+                            "failed to replace config {} with temp file {}: {}; also failed to restore backup {}: {} (temp file kept for recovery)",
+                            path.display(),
+                            tmp_path.display(),
+                            rename_err,
+                            backup_path.display(),
+                            restore_err
+                        ),
+                    }
+                }
+
+                let _ = fs::remove_file(&backup_path);
+            } else {
+                let _ = fs::remove_file(&tmp_path);
+                bail!(
+                    "failed to replace config {} with temp file {}: {}",
+                    path.display(),
+                    tmp_path.display(),
+                    err
+                );
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = fs::remove_file(&tmp_path);
+            bail!(
+                "failed to replace config {} with temp file {}: {}",
+                path.display(),
+                tmp_path.display(),
+                err
+            );
+        }
+    }
     Ok(())
 }
 
@@ -211,7 +269,7 @@ pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResul
         }
     };
 
-    let endpoint = format!("{}/v1/chat/completions", provider);
+    let endpoint = format!("{}/chat/completions", provider);
     let response = reqwest::Client::new()
         .post(endpoint)
         .bearer_auth(api_key)

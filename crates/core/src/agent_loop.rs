@@ -45,7 +45,10 @@ impl AgentLoop {
         cancel: CancellationToken,
     ) -> Result<()> {
         let mut messages = state.messages.clone();
-        let provider = self.factory.build()?;
+        // Use spawn_blocking to avoid blocking the Tokio executor with sync IO
+        // (config file reading, env lookups, etc.)
+        let factory = self.factory.clone();
+        let provider = tokio::task::spawn_blocking(move || factory.build()).await??;
 
         let mut step_index = 0usize;
         loop {
