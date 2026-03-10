@@ -50,7 +50,9 @@
   background: #1f1f1f;
   color: #bdbdbd;
   font-size: 18px;
-  transition: background 150ms ease, color 150ms ease;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
 }
 
 .closeButton:hover {
@@ -144,7 +146,10 @@
   padding: 8px 14px;
   border-radius: 8px;
   font-size: 13px;
-  transition: background 150ms ease, color 150ms ease, opacity 150ms ease;
+  transition:
+    background 150ms ease,
+    color 150ms ease,
+    opacity 150ms ease;
 }
 
 .secondaryButton {

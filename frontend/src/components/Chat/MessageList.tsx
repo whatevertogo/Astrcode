@@ -51,7 +51,7 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
                   error: message.error,
                 },
                 null,
-                2,
+                2
               )}
             </pre>
           ) : (
@@ -74,9 +74,7 @@ export default function MessageList({ messages }: MessageListProps) {
 
   return (
     <div className={styles.list}>
-      {messages.length === 0 && (
-        <div className={styles.empty}>向 AstrCode 提问，开始对话...</div>
-      )}
+      {messages.length === 0 && <div className={styles.empty}>向 AstrCode 提问，开始对话...</div>}
       {messages.map((msg) => {
         if (msg.kind === 'user') {
           return (

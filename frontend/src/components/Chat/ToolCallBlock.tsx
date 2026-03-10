@@ -4,14 +4,14 @@ import styles from './ToolCallBlock.module.css';
 
 const STATUS_ICON: Record<ToolStatus, string> = {
   running: '⟳',
-  ok:      '✓',
-  fail:    '✗',
+  ok: '✓',
+  fail: '✗',
 };
 
 const STATUS_COLOR: Record<ToolStatus, string> = {
   running: '#9cdcfe',
-  ok:      '#4ec9b0',
-  fail:    '#f44747',
+  ok: '#4ec9b0',
+  fail: '#f44747',
 };
 
 interface ToolCallBlockProps {
@@ -27,7 +27,8 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
   const toolName = message.toolName ?? '(unknown tool)';
   const shortId = toolCallId.slice(-6);
   const duration = message.durationMs != null ? `${message.durationMs}ms` : '';
-  const preview = message.error ?? message.output ?? (message.status === 'running' ? '执行中...' : '');
+  const preview =
+    message.error ?? message.output ?? (message.status === 'running' ? '执行中...' : '');
 
   useEffect(() => {
     if (message.status === 'fail') {
@@ -36,15 +37,9 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
   }, [message.status]);
 
   return (
-    <div
-      className={styles.block}
-      style={{ borderLeftColor: borderColor }}
-    >
+    <div className={styles.block} style={{ borderLeftColor: borderColor }}>
       {/* Header — click to toggle */}
-      <div
-        className={styles.header}
-        onClick={() => setExpanded((v) => !v)}
-      >
+      <div className={styles.header} onClick={() => setExpanded((v) => !v)}>
         <span
           className={`${styles.icon} ${message.status === 'running' ? styles.spinning : ''}`}
           style={{ color: borderColor }}
@@ -57,19 +52,13 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
         <span className={styles.chevron}>{expanded ? '▾' : '▸'}</span>
       </div>
 
-      {!expanded && preview && (
-        <div className={styles.preview}>{preview}</div>
-      )}
+      {!expanded && preview && <div className={styles.preview}>{preview}</div>}
 
       {/* Body */}
       {expanded && (
         <div className={styles.body}>
-          {message.output && (
-            <pre className={styles.output}>{message.output}</pre>
-          )}
-          {message.error && (
-            <div className={styles.error}>{message.error}</div>
-          )}
+          {message.output && <pre className={styles.output}>{message.output}</pre>}
+          {message.error && <div className={styles.error}>{message.error}</div>}
           {!message.output && !message.error && message.status === 'running' && (
             <div className={styles.running}>执行中...</div>
           )}

@@ -50,7 +50,9 @@
   border-radius: 5px;
   font-size: 12px;
   flex-shrink: 0;
-  transition: background 150ms ease, color 150ms ease;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
 }
 
 .newSessionBtn:hover {

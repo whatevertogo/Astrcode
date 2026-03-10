@@ -59,7 +59,9 @@
   font-weight: 500;
   flex-shrink: 0;
   height: 38px;
-  transition: background 150ms ease, opacity 150ms ease;
+  transition:
+    background 150ms ease,
+    opacity 150ms ease;
 }
 
 .sendBtn:hover:not(:disabled) {

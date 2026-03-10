@@ -14,12 +14,7 @@ interface ContextMenuState {
   y: number;
 }
 
-export default function SessionItem({
-  session,
-  isActive,
-  onSelect,
-  onDelete,
-}: SessionItemProps) {
+export default function SessionItem({ session, isActive, onSelect, onDelete }: SessionItemProps) {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);

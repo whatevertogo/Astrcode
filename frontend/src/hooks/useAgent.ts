@@ -10,10 +10,7 @@ import type {
   SessionMeta,
   TestResult,
 } from '../types';
-import {
-  isTauriEnvironment,
-  waitForTauriEnvironment,
-} from '../lib/tauri';
+import { isTauriEnvironment, waitForTauriEnvironment } from '../lib/tauri';
 import { normalizeAgentEvent } from '../lib/agentEvent';
 
 // ────────────────────────────────────────────────────────────
@@ -42,10 +39,7 @@ export interface SessionToolCallMessage {
   durationMs?: number;
 }
 
-export type SessionMessage =
-  | SessionUserMessage
-  | SessionAssistantMessage
-  | SessionToolCallMessage;
+export type SessionMessage = SessionUserMessage | SessionAssistantMessage | SessionToolCallMessage;
 
 interface WebChatInputMessage {
   role: 'user' | 'assistant';
@@ -57,9 +51,7 @@ function normalizeSessionId(sessionId: string): string {
   if (!trimmed) {
     return '';
   }
-  return trimmed.startsWith('session-')
-    ? trimmed.slice('session-'.length)
-    : trimmed;
+  return trimmed.startsWith('session-') ? trimmed.slice('session-'.length) : trimmed;
 }
 
 function toWebChatMessages(messages: Message[], latestUserText: string): WebChatInputMessage[] {
@@ -100,7 +92,7 @@ async function streamWebChat(
   text: string,
   messages: Message[],
   onEvent: (rawEvent: unknown) => void,
-  controller: AbortController,
+  controller: AbortController
 ): Promise<void> {
   const turnId = `web-${Date.now()}`;
   const response = await fetch('/api/web-chat', {
@@ -223,51 +215,54 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     onEventRef.current(normalizeAgentEvent(rawEvent));
   }, []);
 
-  const submitPrompt = useCallback(async (text: string, messages: Message[] = []): Promise<void> => {
-    if (!isTauriEnvironment()) {
-      webAbortControllerRef.current?.abort();
-      const controller = new AbortController();
-      webAbortControllerRef.current = controller;
-      try {
-        await streamWebChat(text, messages, dispatchIncomingEvent, controller);
-      } catch (error) {
-        if (!isAbortError(error)) {
-          throw error;
+  const submitPrompt = useCallback(
+    async (text: string, messages: Message[] = []): Promise<void> => {
+      if (!isTauriEnvironment()) {
+        webAbortControllerRef.current?.abort();
+        const controller = new AbortController();
+        webAbortControllerRef.current = controller;
+        try {
+          await streamWebChat(text, messages, dispatchIncomingEvent, controller);
+        } catch (error) {
+          if (!isAbortError(error)) {
+            throw error;
+          }
+        } finally {
+          if (webAbortControllerRef.current === controller) {
+            webAbortControllerRef.current = null;
+          }
         }
-      } finally {
-        if (webAbortControllerRef.current === controller) {
-          webAbortControllerRef.current = null;
-        }
-      }
-      return;
-    }
-
-    await waitForTauriEnvironment();
-    flushDesktopDelta();
-
-    const channel = new Channel<unknown>();
-
-    channel.onmessage = (rawPayload) => {
-      const payload = normalizeAgentEvent(rawPayload);
-
-      if (payload.event === 'modelDelta') {
-        const pending = desktopDeltaRef.current;
-        if (pending.turnId && pending.turnId !== payload.data.turnId) {
-          flushDesktopDelta();
-        }
-        pending.turnId = payload.data.turnId;
-        pending.text += payload.data.delta;
-        scheduleDesktopDeltaFlush();
         return;
       }
 
+      await waitForTauriEnvironment();
       flushDesktopDelta();
-      onEventRef.current(payload);
-    };
 
-    await invoke('submit_prompt', { text, channel });
-    flushDesktopDelta();
-  }, [dispatchIncomingEvent, flushDesktopDelta, scheduleDesktopDeltaFlush]);
+      const channel = new Channel<unknown>();
+
+      channel.onmessage = (rawPayload) => {
+        const payload = normalizeAgentEvent(rawPayload);
+
+        if (payload.event === 'modelDelta') {
+          const pending = desktopDeltaRef.current;
+          if (pending.turnId && pending.turnId !== payload.data.turnId) {
+            flushDesktopDelta();
+          }
+          pending.turnId = payload.data.turnId;
+          pending.text += payload.data.delta;
+          scheduleDesktopDeltaFlush();
+          return;
+        }
+
+        flushDesktopDelta();
+        onEventRef.current(payload);
+      };
+
+      await invoke('submit_prompt', { text, channel });
+      flushDesktopDelta();
+    },
+    [dispatchIncomingEvent, flushDesktopDelta, scheduleDesktopDeltaFlush]
+  );
 
   const interrupt = useCallback(async (): Promise<void> => {
     if (!isTauriEnvironment()) {
@@ -315,9 +310,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     try {
       await waitForTauriEnvironment();
       const result = await invoke<string[]>('list_sessions');
-      const normalized = Array.from(
-        new Set(result.map(normalizeSessionId).filter(Boolean)),
-      );
+      const normalized = Array.from(new Set(result.map(normalizeSessionId).filter(Boolean)));
       console.log('[listSessions] Result:', normalized);
       return normalized;
     } catch (err) {
@@ -353,7 +346,9 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
       }
       console.log('[loadSession] Loading session:', normalizedSessionId);
       await waitForTauriEnvironment();
-      const result = await invoke<SessionMessage[]>('load_session', { sessionId: normalizedSessionId });
+      const result = await invoke<SessionMessage[]>('load_session', {
+        sessionId: normalizedSessionId,
+      });
       console.log('[loadSession] Result count:', result.length, result);
       return result;
     } catch (err) {
@@ -372,7 +367,9 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
         return '';
       }
       await waitForTauriEnvironment();
-      const nextSessionId = await invoke<string>('switch_session', { sessionId: normalizedSessionId });
+      const nextSessionId = await invoke<string>('switch_session', {
+        sessionId: normalizedSessionId,
+      });
       return normalizeSessionId(nextSessionId);
     } catch {
       return '';
@@ -445,7 +442,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
       await waitForTauriEnvironment();
       await invoke('save_active_selection', { activeProfile, activeModel });
     },
-    [],
+    []
   );
 
   const testConnection = useCallback(
@@ -456,7 +453,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
       await waitForTauriEnvironment();
       return invoke<TestResult>('test_connection', { profileName, model });
     },
-    [],
+    []
   );
 
   const openConfigInEditor = useCallback(async (): Promise<void> => {
@@ -467,16 +464,13 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     await invoke('open_config_in_editor');
   }, []);
 
-  const setModel = useCallback(
-    async (profileName: string, model: string): Promise<void> => {
-      if (!isTauriEnvironment()) {
-        throw unsupportedDesktopFeature('模型切换');
-      }
-      await waitForTauriEnvironment();
-      await invoke('set_model', { profileName, model });
-    },
-    [],
-  );
+  const setModel = useCallback(async (profileName: string, model: string): Promise<void> => {
+    if (!isTauriEnvironment()) {
+      throw unsupportedDesktopFeature('模型切换');
+    }
+    await waitForTauriEnvironment();
+    await invoke('set_model', { profileName, model });
+  }, []);
 
   const getCurrentModel = useCallback(async (): Promise<CurrentModelInfo> => {
     if (!isTauriEnvironment()) {

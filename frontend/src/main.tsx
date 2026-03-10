@@ -8,10 +8,7 @@ interface RootErrorBoundaryState {
   message: string;
 }
 
-class RootErrorBoundary extends Component<
-  { children: React.ReactNode },
-  RootErrorBoundaryState
-> {
+class RootErrorBoundary extends Component<{ children: React.ReactNode }, RootErrorBoundaryState> {
   state: RootErrorBoundaryState = {
     hasError: false,
     message: '',
@@ -41,7 +38,9 @@ class RootErrorBoundary extends Component<
           }}
         >
           <h1 style={{ marginTop: 0, fontSize: '18px' }}>AstrCode 前端渲染崩溃</h1>
-          <p style={{ color: '#d7a6a6' }}>渲染错误已被拦截，窗口没有退出。请查看 DevTools Console。</p>
+          <p style={{ color: '#d7a6a6' }}>
+            渲染错误已被拦截，窗口没有退出。请查看 DevTools Console。
+          </p>
           <pre
             style={{
               margin: 0,
@@ -68,6 +67,5 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <RootErrorBoundary>
       <App />
     </RootErrorBoundary>
-  </React.StrictMode>,
+  </React.StrictMode>
 );
-

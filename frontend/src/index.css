@@ -14,7 +14,10 @@ body,
   overflow: hidden;
   background-color: #1a1a1a;
   color: #d4d4d4;
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family:
+    system-ui,
+    -apple-system,
+    sans-serif;
   font-size: 14px;
 }
 
@@ -39,14 +42,23 @@ body,
 
 /* Blink cursor animation for streaming assistant messages */
 @keyframes blink {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
 }
 
 /* Spin animation for running tool calls */
 @keyframes spin {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* Reset button styles */

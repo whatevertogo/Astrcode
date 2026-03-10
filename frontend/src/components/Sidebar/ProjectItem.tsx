@@ -53,9 +53,7 @@ export default function ProjectItem({
         onContextMenu={handleContextMenu}
         onClick={() => onToggleExpand(project.id)}
       >
-        <span className={styles.arrow}>
-          {project.isExpanded ? '▾' : '▸'}
-        </span>
+        <span className={styles.arrow}>{project.isExpanded ? '▾' : '▸'}</span>
         <span className={styles.icon}>📁</span>
         <span className={styles.projectName}>{project.name}</span>
       </div>

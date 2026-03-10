@@ -68,7 +68,9 @@
   padding: 8px 10px;
   color: #d4d4d4;
   font-size: 13px;
-  transition: border-color 150ms ease, background 150ms ease;
+  transition:
+    border-color 150ms ease,
+    background 150ms ease;
 }
 
 .pathPicker:hover {
@@ -108,7 +110,9 @@
   color: #858585;
   border-radius: 6px;
   font-size: 13px;
-  transition: background 150ms ease, color 150ms ease;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
 }
 
 .cancelBtn:hover {
@@ -123,7 +127,9 @@
   border-radius: 6px;
   font-size: 13px;
   font-weight: 500;
-  transition: background 150ms ease, opacity 150ms ease;
+  transition:
+    background 150ms ease,
+    opacity 150ms ease;
 }
 
 .confirmBtn:hover:not(:disabled) {

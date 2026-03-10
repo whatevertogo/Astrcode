@@ -151,17 +151,12 @@ export default function ModelSelector({
         aria-label="选择模型"
       >
         {currentModel == null && (
-          <option value="">
-            {loading ? '读取模型中...' : '未选择模型'}
-          </option>
+          <option value="">{loading ? '读取模型中...' : '未选择模型'}</option>
         )}
         {groupedOptions.map(([profileName, profileOptions]) => (
           <optgroup key={profileName} label={profileName}>
             {profileOptions.map(({ option, index }) => (
-              <option
-                key={optionKey(index)}
-                value={optionKey(index)}
-              >
+              <option key={optionKey(index)} value={optionKey(index)}>
                 {`${option.model} · ${option.providerKind}`}
               </option>
             ))}

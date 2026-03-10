@@ -44,7 +44,7 @@ export function getTauriUnavailableMessage(): string {
 }
 
 export async function tryWaitForTauriEnvironment(
-  timeoutMs = TAURI_WAIT_TIMEOUT_MS,
+  timeoutMs = TAURI_WAIT_TIMEOUT_MS
 ): Promise<boolean> {
   const startedAt = Date.now();
 
@@ -63,9 +63,7 @@ export async function tryWaitForTauriEnvironment(
   return true;
 }
 
-export async function waitForTauriEnvironment(
-  timeoutMs = TAURI_WAIT_TIMEOUT_MS,
-): Promise<void> {
+export async function waitForTauriEnvironment(timeoutMs = TAURI_WAIT_TIMEOUT_MS): Promise<void> {
   if (!(await tryWaitForTauriEnvironment(timeoutMs))) {
     throw new Error(TAURI_UNAVAILABLE_MESSAGE);
   }

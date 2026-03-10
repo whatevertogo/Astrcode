@@ -1,10 +1,4 @@
-export type Phase =
-  | 'idle'
-  | 'thinking'
-  | 'callingTool'
-  | 'streaming'
-  | 'interrupted'
-  | 'done';
+export type Phase = 'idle' | 'thinking' | 'callingTool' | 'streaming' | 'interrupted' | 'done';
 
 export interface ToolCallResultEnvelope {
   toolCallId: string;

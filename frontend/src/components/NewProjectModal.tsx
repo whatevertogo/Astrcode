@@ -74,7 +74,12 @@ export default function NewProjectModal({ onConfirm, onCancel }: NewProjectModal
   };
 
   return (
-    <div className={styles.overlay} onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
+    <div
+      className={styles.overlay}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+    >
       <div className={styles.modal} onKeyDown={handleKeyDown}>
         <div className={styles.title}>新建项目</div>
         <div className={styles.field}>
@@ -94,9 +99,7 @@ export default function NewProjectModal({ onConfirm, onCancel }: NewProjectModal
             className={styles.pathPicker}
             onClick={() => void handleChooseDirectory()}
           >
-            <span className={styles.pathValue}>
-              {workingDir || '点击选择文件夹'}
-            </span>
+            <span className={styles.pathValue}>{workingDir || '点击选择文件夹'}</span>
             <span className={styles.pathAction}>浏览</span>
           </button>
         </div>

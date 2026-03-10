@@ -85,7 +85,7 @@ export default function SettingsModal({
   const profiles = configView?.profiles ?? [];
   const currentProfile = useMemo(
     () => profiles.find((profile) => profile.name === selectedProfile) ?? profiles[0],
-    [profiles, selectedProfile],
+    [profiles, selectedProfile]
   );
 
   useEffect(() => {
@@ -155,13 +155,23 @@ export default function SettingsModal({
   };
 
   return (
-    <div className={styles.overlay} onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <div
+      className={styles.overlay}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
       <div className={styles.modal}>
         {warning && <div className={styles.warningBanner}>{warning}</div>}
 
         <div className={styles.header}>
           <div className={styles.title}>设置</div>
-          <button type="button" className={styles.closeButton} onClick={onClose} aria-label="关闭设置">
+          <button
+            type="button"
+            className={styles.closeButton}
+            onClick={onClose}
+            aria-label="关闭设置"
+          >
             ×
           </button>
         </div>
@@ -177,7 +187,11 @@ export default function SettingsModal({
               <label className={styles.label}>配置文件</label>
               <div className={styles.pathRow}>
                 <div className={styles.pathValue}>{configView?.configPath ?? ''}</div>
-                <button type="button" className={styles.secondaryButton} onClick={() => void handleOpenConfig()}>
+                <button
+                  type="button"
+                  className={styles.secondaryButton}
+                  onClick={() => void handleOpenConfig()}
+                >
                   在编辑器中打开
                 </button>
               </div>
@@ -221,7 +235,9 @@ export default function SettingsModal({
               </div>
               <div className={styles.infoRow}>
                 <span className={styles.infoLabel}>API Key</span>
-                <span className={styles.infoValue}>{currentProfile?.apiKeyPreview ?? '未配置'}</span>
+                <span className={styles.infoValue}>
+                  {currentProfile?.apiKeyPreview ?? '未配置'}
+                </span>
               </div>
             </div>
 

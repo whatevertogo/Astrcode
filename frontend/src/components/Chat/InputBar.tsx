@@ -9,12 +9,7 @@ interface InputBarProps {
   onInterrupt: () => void | Promise<void>;
 }
 
-export default function InputBar({
-  workingDir,
-  phase,
-  onSubmit,
-  onInterrupt,
-}: InputBarProps) {
+export default function InputBar({ workingDir, phase, onSubmit, onInterrupt }: InputBarProps) {
   const [value, setValue] = useState('');
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -72,11 +67,7 @@ export default function InputBar({
             中断
           </button>
         ) : (
-          <button
-            className={styles.sendBtn}
-            onClick={submit}
-            disabled={!value.trim()}
-          >
+          <button className={styles.sendBtn} onClick={submit} disabled={!value.trim()}>
             发送
           </button>
         )}

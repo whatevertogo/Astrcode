@@ -5,12 +5,12 @@ import NewProjectModal from '../NewProjectModal';
 import styles from './Sidebar.module.css';
 
 const PHASE_COLOR: Record<Phase, string> = {
-  idle:        '#4ec9b0',
-  thinking:    '#dcdcaa',
+  idle: '#4ec9b0',
+  thinking: '#dcdcaa',
   callingTool: '#9cdcfe',
-  streaming:   '#c586c0',
+  streaming: '#c586c0',
   interrupted: '#f44747',
-  done:        '#4ec9b0',
+  done: '#4ec9b0',
 };
 
 interface SidebarProps {
@@ -68,10 +68,7 @@ export default function Sidebar({
       {/* Footer */}
       <div className={styles.footer}>
         <div className={styles.footerActions}>
-          <button
-            className={styles.newProjectBtn}
-            onClick={() => setShowModal(true)}
-          >
+          <button className={styles.newProjectBtn} onClick={() => setShowModal(true)}>
             + 新项目
           </button>
           <button

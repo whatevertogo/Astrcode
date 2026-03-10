@@ -1,4 +1,11 @@
-import React, { startTransition, useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import React, {
+  startTransition,
+  useCallback,
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+} from 'react';
 import type {
   AgentEventPayload,
   Action,
@@ -27,9 +34,8 @@ function toEpochMs(value: string): number {
 }
 
 function convertSessionMessage(m: SessionMessage): Message {
-  const timestamp = (m.kind === 'user' || m.kind === 'assistant')
-    ? toEpochMs(m.timestamp)
-    : Date.now();
+  const timestamp =
+    m.kind === 'user' || m.kind === 'assistant' ? toEpochMs(m.timestamp) : Date.now();
   const base = { id: uuid(), timestamp };
   switch (m.kind) {
     case 'user':
@@ -42,7 +48,7 @@ function convertSessionMessage(m: SessionMessage): Message {
         kind: 'toolCall' as const,
         toolCallId: m.toolCallId,
         toolName: m.toolName,
-        status: m.success ? 'ok' as const : 'fail' as const,
+        status: m.success ? ('ok' as const) : ('fail' as const),
         args: m.args,
         output: m.output,
         durationMs: m.durationMs,
@@ -99,11 +105,7 @@ function groupSessionsByProject(sessionMetas: SessionMeta[]): Project[] {
 // ────────────────────────────────────────────────────────────
 // Helper: map a single project
 // ────────────────────────────────────────────────────────────
-function mapProject(
-  state: AppState,
-  projectId: string,
-  fn: (p: Project) => Project,
-): AppState {
+function mapProject(state: AppState, projectId: string, fn: (p: Project) => Project): AppState {
   return {
     ...state,
     projects: state.projects.map((p) => (p.id === projectId ? fn(p) : p)),
@@ -113,11 +115,7 @@ function mapProject(
 // ────────────────────────────────────────────────────────────
 // Helper: map a single session (across all projects)
 // ────────────────────────────────────────────────────────────
-function mapSession(
-  state: AppState,
-  sessionId: string,
-  fn: (s: Session) => Session,
-): AppState {
+function mapSession(state: AppState, sessionId: string, fn: (s: Session) => Session): AppState {
   return {
     ...state,
     projects: state.projects.map((p) => ({
@@ -194,7 +192,7 @@ function reducer(state: AppState, action: Action): AppState {
       return mapProject(state, action.projectId, (p) => ({
         ...p,
         sessions: p.sessions.map((s) =>
-          s.id === action.sessionId ? { ...s, title: action.title } : s,
+          s.id === action.sessionId ? { ...s, title: action.title } : s
         ),
       }));
 
@@ -232,10 +230,7 @@ function reducer(state: AppState, action: Action): AppState {
         if (last && last.kind === 'assistant' && last.streaming) {
           return {
             ...s,
-            messages: [
-              ...msgs.slice(0, -1),
-              { ...last, text: last.text + action.delta },
-            ],
+            messages: [...msgs.slice(0, -1), { ...last, text: last.text + action.delta }],
           };
         }
         // Create a new streaming assistant message
@@ -390,7 +385,7 @@ export default function App() {
           break;
         }
         startTransition(() => {
-          dispatch({ type: 'APPEND_DELTA', sessionId: sid!, delta: event.data.delta });
+          dispatch({ type: 'APPEND_DELTA', sessionId: sid, delta: event.data.delta });
         });
         break;
 
@@ -526,23 +521,22 @@ export default function App() {
       ? backendCurrentSessionId
       : fallbackSessionId;
 
-    const messages = resolvedCurrentSessionId
-      ? await loadSession(resolvedCurrentSessionId)
-      : [];
+    const messages = resolvedCurrentSessionId ? await loadSession(resolvedCurrentSessionId) : [];
     const convertedMessages = messages.map(convertSessionMessage);
 
     const projects = projectsFromMeta.map((project) => ({
       ...project,
-      sessions: project.sessions.map((session) => (
+      sessions: project.sessions.map((session) =>
         session.id === resolvedCurrentSessionId
           ? { ...session, messages: convertedMessages }
           : session
-      )),
+      ),
     }));
 
-    let activeProjectId = projects.find((project) =>
-      project.sessions.some((session) => session.id === resolvedCurrentSessionId),
-    )?.id ?? null;
+    let activeProjectId =
+      projects.find((project) =>
+        project.sessions.some((session) => session.id === resolvedCurrentSessionId)
+      )?.id ?? null;
     let activeSessionId: string | null = resolvedCurrentSessionId || null;
 
     if (!activeProjectId && projects.length > 0) {
@@ -556,20 +550,24 @@ export default function App() {
       const fallbackId = activeSessionId ?? `web-${Date.now()}`;
       dispatch({
         type: 'INITIALIZE',
-        projects: [{
-          id: projectId,
-          name: getDirectoryName(workingDir),
-          workingDir,
-          isExpanded: true,
-          sessions: [{
-            id: fallbackId,
-            projectId,
-            title: '新会话',
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-            messages: convertedMessages,
-          }],
-        }],
+        projects: [
+          {
+            id: projectId,
+            name: getDirectoryName(workingDir),
+            workingDir,
+            isExpanded: true,
+            sessions: [
+              {
+                id: fallbackId,
+                projectId,
+                title: '新会话',
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                messages: convertedMessages,
+              },
+            ],
+          },
+        ],
         activeProjectId: projectId,
         activeSessionId: fallbackId,
       });
@@ -601,10 +599,8 @@ export default function App() {
     };
   }, [refreshSessions]);
 
-  const activeProject =
-    state.projects.find((p) => p.id === state.activeProjectId) ?? null;
-  const activeSession =
-    activeProject?.sessions.find((s) => s.id === state.activeSessionId) ?? null;
+  const activeProject = state.projects.find((p) => p.id === state.activeProjectId) ?? null;
+  const activeSession = activeProject?.sessions.find((s) => s.id === state.activeSessionId) ?? null;
 
   const handleNewSession = async () => {
     try {
@@ -640,7 +636,7 @@ export default function App() {
                   kind: 'toolCall' as const,
                   toolCallId: m.toolCallId,
                   toolName: m.toolName,
-                  status: m.success ? 'ok' as const : 'fail' as const,
+                  status: m.success ? ('ok' as const) : ('fail' as const),
                   args: m.args,
                   output: m.output,
                   durationMs: m.durationMs,
@@ -663,17 +659,14 @@ export default function App() {
     dispatch({ type: 'SET_ACTIVE', projectId, sessionId });
   };
 
-  const handleToggleExpand = (projectId: string) =>
-    dispatch({ type: 'TOGGLE_EXPAND', projectId });
+  const handleToggleExpand = (projectId: string) => dispatch({ type: 'TOGGLE_EXPAND', projectId });
 
   const handleDeleteProject = async (projectId: string) => {
     const project = state.projects.find((p) => p.id === projectId);
     if (!project) {
       return;
     }
-    const confirmed = window.confirm(
-      `删除项目“${project.name}”会移除该目录下所有会话，是否继续？`,
-    );
+    const confirmed = window.confirm(`删除项目“${project.name}”会移除该目录下所有会话，是否继续？`);
     if (!confirmed) {
       return;
     }
@@ -741,7 +734,7 @@ export default function App() {
         dispatch({ type: 'SET_PHASE', phase: 'idle' });
       }
     },
-    [activeSession, submitPrompt],
+    [activeSession, submitPrompt]
   );
 
   return (

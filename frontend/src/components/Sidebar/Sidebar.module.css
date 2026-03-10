@@ -59,7 +59,9 @@
   color: #858585;
   border-radius: 6px;
   font-size: 12px;
-  transition: background 150ms ease, color 150ms ease;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
   text-align: left;
 }
 
@@ -77,7 +79,9 @@
   background: #252525;
   color: #8f8f8f;
   border-radius: 6px;
-  transition: background 150ms ease, color 150ms ease;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
 }
 
 .settingsBtn:hover {
