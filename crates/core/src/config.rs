@@ -13,6 +13,11 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+pub const PROVIDER_KIND_OPENAI: &str = "openai-compatible";
+pub const PROVIDER_KIND_ANTHROPIC: &str = "anthropic";
+pub const ANTHROPIC_MESSAGES_API_URL: &str = "https://api.anthropic.com/v1/messages";
+pub const ANTHROPIC_VERSION: &str = "2023-06-01";
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
@@ -62,7 +67,7 @@ impl Default for Profile {
     fn default() -> Self {
         Self {
             name: "deepseek".to_string(),
-            provider_kind: "openai-compatible".to_string(),
+            provider_kind: PROVIDER_KIND_OPENAI.to_string(),
             base_url: "https://api.deepseek.com".to_string(),
             api_key: Some("DEEPSEEK_API_KEY".to_string()),
             models: vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
@@ -123,7 +128,7 @@ fn default_profiles() -> Vec<Profile> {
     vec![
         Profile {
             name: "deepseek".to_string(),
-            provider_kind: "openai-compatible".to_string(),
+            provider_kind: PROVIDER_KIND_OPENAI.to_string(),
             base_url: "https://api.deepseek.com".to_string(),
             api_key: Some("DEEPSEEK_API_KEY".to_string()),
             models: vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
@@ -131,7 +136,7 @@ fn default_profiles() -> Vec<Profile> {
         },
         Profile {
             name: "anthropic".to_string(),
-            provider_kind: "anthropic".to_string(),
+            provider_kind: PROVIDER_KIND_ANTHROPIC.to_string(),
             base_url: String::new(),
             api_key: Some("ANTHROPIC_API_KEY".to_string()),
             models: vec![
@@ -288,7 +293,7 @@ fn save_config_to_path(path: &Path, config: &Config) -> Result<()> {
 
 pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResult> {
     let provider = match profile.provider_kind.as_str() {
-        "anthropic" => "https://api.anthropic.com/v1/messages".to_string(),
+        PROVIDER_KIND_ANTHROPIC => ANTHROPIC_MESSAGES_API_URL.to_string(),
         _ => profile.base_url.trim_end_matches('/').to_string(),
     };
     let api_key = match profile.resolve_api_key() {
@@ -304,7 +309,7 @@ pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResul
     };
 
     match profile.provider_kind.as_str() {
-        "openai-compatible" => {
+        PROVIDER_KIND_OPENAI => {
             let endpoint = format!("{}/chat/completions", provider);
             let response = reqwest::Client::new()
                 .post(endpoint)
@@ -326,11 +331,11 @@ pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResul
 
             Ok(connection_result_from_response(response, provider, model))
         }
-        "anthropic" => {
+        PROVIDER_KIND_ANTHROPIC => {
             let response = reqwest::Client::new()
                 .post(&provider)
                 .header("x-api-key", api_key)
-                .header("anthropic-version", "2023-06-01")
+                .header("anthropic-version", ANTHROPIC_VERSION)
                 .timeout(Duration::from_secs(10))
                 .json(&json!({
                     "model": model,
@@ -629,7 +634,7 @@ mod tests {
             active_model: "gpt-4o-mini".to_string(),
             profiles: vec![Profile {
                 name: "custom".to_string(),
-                provider_kind: "openai-compatible".to_string(),
+                provider_kind: PROVIDER_KIND_OPENAI.to_string(),
                 base_url: "https://example.com".to_string(),
                 api_key: Some("MY_TEST_KEY".to_string()),
                 models: vec!["gpt-4o-mini".to_string()],

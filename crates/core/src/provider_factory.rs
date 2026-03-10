@@ -2,13 +2,12 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 
-use crate::config::{load_config, Profile};
+use crate::config::{
+    load_config, Profile, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI,
+};
 use crate::llm::anthropic::AnthropicProvider;
 use crate::llm::openai::OpenAiProvider;
 use crate::llm::LlmProvider;
-
-const KIND_OPENAI: &str = "openai-compatible";
-const KIND_ANTHROPIC: &str = "anthropic";
 
 pub trait ProviderFactory: Send + Sync {
     fn build(&self) -> Result<Arc<dyn LlmProvider>>;
@@ -47,7 +46,7 @@ fn build_provider(profile: &Profile, model: String) -> Result<BuiltProvider> {
     let api_key = profile.resolve_api_key()?;
 
     match profile.provider_kind.as_str() {
-        KIND_OPENAI => {
+        PROVIDER_KIND_OPENAI => {
             if profile.base_url.trim().is_empty() {
                 return Err(anyhow!(
                     "openai-compatible profile '{}' 缺少 baseUrl",
@@ -61,7 +60,7 @@ fn build_provider(profile: &Profile, model: String) -> Result<BuiltProvider> {
                 model,
             )))
         }
-        KIND_ANTHROPIC => Ok(BuiltProvider::Anthropic(AnthropicProvider::with_max_tokens(
+        PROVIDER_KIND_ANTHROPIC => Ok(BuiltProvider::Anthropic(AnthropicProvider::with_max_tokens(
             api_key,
             model,
             profile.max_tokens,
@@ -135,7 +134,7 @@ mod tests {
     fn build_provider_uses_openai_branch() {
         let profile = Profile {
             name: "deepseek".to_string(),
-            provider_kind: KIND_OPENAI.to_string(),
+            provider_kind: PROVIDER_KIND_OPENAI.to_string(),
             base_url: "https://example.com".to_string(),
             api_key: Some("sk-test".to_string()),
             models: vec!["model-a".to_string()],
@@ -150,7 +149,7 @@ mod tests {
     fn build_provider_errors_when_openai_base_url_is_missing() {
         let profile = Profile {
             name: "deepseek".to_string(),
-            provider_kind: KIND_OPENAI.to_string(),
+            provider_kind: PROVIDER_KIND_OPENAI.to_string(),
             base_url: "   ".to_string(),
             api_key: Some("sk-test".to_string()),
             models: vec!["model-a".to_string()],
@@ -166,7 +165,7 @@ mod tests {
     fn build_provider_uses_anthropic_branch() {
         let profile = Profile {
             name: "anthropic".to_string(),
-            provider_kind: KIND_ANTHROPIC.to_string(),
+            provider_kind: PROVIDER_KIND_ANTHROPIC.to_string(),
             base_url: String::new(),
             api_key: Some("sk-ant".to_string()),
             models: vec!["claude".to_string()],

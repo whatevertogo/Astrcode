@@ -213,7 +213,12 @@ fn response_to_output(response: AnthropicResponse) -> LlmOutput {
                 let args = block.get("input").cloned().unwrap_or(Value::Null);
                 output.tool_calls.push(ToolCallRequest { id, name, args });
             }
-            _ => {}
+            Some(other) => {
+                warn!("anthropic: unknown content block type: {}", other);
+            }
+            None => {
+                warn!("anthropic: content block missing type");
+            }
         }
     }
 
