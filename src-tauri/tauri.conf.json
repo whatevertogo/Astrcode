@@ -8,6 +8,11 @@
     "beforeDevCommand": "",
     "beforeBuildCommand": "cd ../frontend && npm run build"
   },
+  "bundle": {
+    "active": true,
+    "icon": ["icons/icon.ico"],
+    "targets": "all"
+  },
   "app": {
     "windows": [
       {
