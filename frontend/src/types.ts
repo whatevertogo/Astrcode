@@ -121,6 +121,18 @@ export interface TestResult {
   error?: string;
 }
 
+export interface CurrentModelInfo {
+  profileName: string;
+  model: string;
+  providerKind: string;
+}
+
+export interface ModelOption {
+  profileName: string;
+  model: string;
+  providerKind: string;
+}
+
 export interface Project {
   id: string;
   name: string;

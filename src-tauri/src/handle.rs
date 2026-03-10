@@ -88,6 +88,22 @@ pub struct ConfigView {
     pub warning: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentModelInfo {
+    pub profile_name: String,
+    pub model: String,
+    pub provider_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelOption {
+    pub profile_name: String,
+    pub model: String,
+    pub provider_kind: String,
+}
+
 /// Convert StorageEvent slice to SessionMessage list.
 /// ToolCall + ToolResult are merged by tool_call_id.
 pub fn convert_events_to_messages(events: &[StorageEvent]) -> Vec<SessionMessage> {
@@ -341,27 +357,72 @@ impl AgentHandle {
         active_profile: String,
         active_model: String,
     ) -> Result<(), String> {
+        self.set_model(active_profile, active_model).await
+    }
+
+    pub async fn set_model(&self, profile_name: String, model: String) -> Result<(), String> {
         let mut config = load_config().map_err(|e| e.to_string())?;
         let profile = config
             .profiles
             .iter()
-            .find(|profile| profile.name == active_profile)
-            .ok_or_else(|| format!("profile '{}' does not exist", active_profile))?;
+            .find(|profile| profile.name == profile_name)
+            .ok_or_else(|| format!("profile '{}' does not exist", profile_name))?;
 
         if profile.models.is_empty() {
-            return Err(format!("profile '{}' has no models", active_profile));
+            return Err(format!("profile '{}' has no models", profile_name));
         }
 
-        if !profile.models.iter().any(|model| model == &active_model) {
+        if !profile.models.iter().any(|profile_model| profile_model == &model) {
             return Err(format!(
                 "model '{}' does not exist in profile '{}'",
-                active_model, active_profile
+                model, profile_name
             ));
         }
 
-        config.active_profile = active_profile;
-        config.active_model = active_model;
+        config.active_profile = profile_name;
+        config.active_model = model;
         save_config(&config).map_err(|e| e.to_string())
+    }
+
+    pub async fn get_current_model(&self) -> Result<CurrentModelInfo, String> {
+        let config = load_config().map_err(|e| e.to_string())?;
+        let profile = config
+            .profiles
+            .iter()
+            .find(|profile| profile.name == config.active_profile)
+            .or_else(|| config.profiles.first())
+            .ok_or_else(|| "no profiles configured".to_string())?;
+
+        let model = if profile.models.iter().any(|item| item == &config.active_model) {
+            config.active_model
+        } else {
+            profile
+                .models
+                .first()
+                .cloned()
+                .ok_or_else(|| format!("profile '{}' has no models", profile.name))?
+        };
+
+        Ok(CurrentModelInfo {
+            profile_name: profile.name.clone(),
+            model,
+            provider_kind: profile.provider_kind.clone(),
+        })
+    }
+
+    pub async fn list_available_models(&self) -> Result<Vec<ModelOption>, String> {
+        let config = load_config().map_err(|e| e.to_string())?;
+        Ok(config
+            .profiles
+            .iter()
+            .flat_map(|profile| {
+                profile.models.iter().map(|model| ModelOption {
+                    profile_name: profile.name.clone(),
+                    model: model.clone(),
+                    provider_kind: profile.provider_kind.clone(),
+                })
+            })
+            .collect())
     }
 
     pub async fn test_connection_for_selection(
@@ -644,9 +705,53 @@ fn send_agent_event(channel: &Channel<AgentEvent>, kind: AgentEventKind) {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::{Mutex as StdMutex, MutexGuard, OnceLock};
+
+    use astrcode_core::config::Config;
     use astrcode_core::config::Profile;
+    use uuid::Uuid;
 
     use super::*;
+
+    fn config_env_lock() -> &'static StdMutex<()> {
+        static LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| StdMutex::new(()))
+    }
+
+    struct AppHomeGuard {
+        _lock: MutexGuard<'static, ()>,
+        previous: Option<OsString>,
+        home: PathBuf,
+    }
+
+    impl AppHomeGuard {
+        fn new() -> Self {
+            let lock = config_env_lock().lock().expect("lock should work");
+            let previous = std::env::var_os("ASTRCODE_HOME_DIR");
+            let home = std::env::temp_dir().join(format!("astrcode-handle-{}", Uuid::new_v4()));
+            fs::create_dir_all(&home).expect("temp home should exist");
+            std::env::set_var("ASTRCODE_HOME_DIR", &home);
+
+            Self {
+                _lock: lock,
+                previous,
+                home,
+            }
+        }
+    }
+
+    impl Drop for AppHomeGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var("ASTRCODE_HOME_DIR", value),
+                None => std::env::remove_var("ASTRCODE_HOME_DIR"),
+            }
+            let _ = fs::remove_dir_all(&self.home);
+        }
+    }
 
     #[test]
     fn canonical_session_id_strips_prefix_once() {
@@ -825,5 +930,78 @@ mod tests {
             warning.as_deref(),
             Some("配置中的 Profile 不存在，已自动选择 default")
         );
+    }
+
+    #[tokio::test]
+    async fn set_model_writes_config_json() {
+        let _guard = AppHomeGuard::new();
+        save_config(&Config {
+            active_profile: "deepseek".to_string(),
+            active_model: "model-a".to_string(),
+            profiles: vec![Profile {
+                name: "deepseek".to_string(),
+                models: vec!["model-a".to_string(), "model-b".to_string()],
+                api_key: Some("sk-test".to_string()),
+                ..Profile::default()
+            }],
+            ..Config::default()
+        })
+        .expect("config should save");
+
+        let handle = AgentHandle::new().expect("handle should build");
+        handle
+            .set_model("deepseek".to_string(), "model-b".to_string())
+            .await
+            .expect("set_model should succeed");
+
+        let updated = load_config().expect("config should load");
+        assert_eq!(updated.active_profile, "deepseek");
+        assert_eq!(updated.active_model, "model-b");
+    }
+
+    #[tokio::test]
+    async fn set_model_errors_for_missing_profile() {
+        let _guard = AppHomeGuard::new();
+        save_config(&Config {
+            profiles: vec![Profile {
+                name: "deepseek".to_string(),
+                models: vec!["model-a".to_string()],
+                api_key: Some("sk-test".to_string()),
+                ..Profile::default()
+            }],
+            ..Config::default()
+        })
+        .expect("config should save");
+
+        let handle = AgentHandle::new().expect("handle should build");
+        let err = handle
+            .set_model("missing".to_string(), "model-a".to_string())
+            .await
+            .expect_err("missing profile should fail");
+
+        assert!(err.contains("profile 'missing' does not exist"));
+    }
+
+    #[tokio::test]
+    async fn set_model_errors_for_missing_model() {
+        let _guard = AppHomeGuard::new();
+        save_config(&Config {
+            profiles: vec![Profile {
+                name: "deepseek".to_string(),
+                models: vec!["model-a".to_string()],
+                api_key: Some("sk-test".to_string()),
+                ..Profile::default()
+            }],
+            ..Config::default()
+        })
+        .expect("config should save");
+
+        let handle = AgentHandle::new().expect("handle should build");
+        let err = handle
+            .set_model("deepseek".to_string(), "model-b".to_string())
+            .await
+            .expect_err("missing model should fail");
+
+        assert!(err.contains("model 'model-b' does not exist in profile 'deepseek'"));
     }
 }

@@ -360,6 +360,7 @@ function makeInitialState(): AppState {
 export default function App() {
   const [state, dispatch] = useReducer(reducer, undefined, makeInitialState);
   const [showSettings, setShowSettings] = useState(false);
+  const [modelRefreshKey, setModelRefreshKey] = useState(0);
   const projects = useProjects(dispatch);
   const activeSessionIdRef = useRef<string | null>(state.activeSessionId);
   const phaseRef = useRef(state.phase);
@@ -501,6 +502,9 @@ export default function App() {
     deleteProject,
     getConfig,
     saveActiveSelection,
+    setModel,
+    getCurrentModel,
+    listAvailableModels,
     testConnection,
     openConfigInEditor,
   } = useAgent(handleAgentEvent);
@@ -616,6 +620,7 @@ export default function App() {
     if (sessionId !== state.activeSessionId) {
       try {
         await switchSession(sessionId);
+        setModelRefreshKey((value) => value + 1);
         // Load session messages if not already loaded
         const targetProject = state.projects.find((p) => p.id === projectId);
         const targetSession = targetProject?.sessions.find((s) => s.id === sessionId);
@@ -766,6 +771,10 @@ export default function App() {
         onNewSession={handleNewSession}
         onSubmitPrompt={handleSubmit}
         onInterrupt={interrupt}
+        modelRefreshKey={modelRefreshKey}
+        getCurrentModel={getCurrentModel}
+        listAvailableModels={listAvailableModels}
+        setModel={setModel}
       />
       {showSettings && (
         <SettingsModal

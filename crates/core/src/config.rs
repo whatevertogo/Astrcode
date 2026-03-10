@@ -32,9 +32,9 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             version: "1".to_string(),
-            active_profile: "default".to_string(),
+            active_profile: "deepseek".to_string(),
             active_model: "deepseek-chat".to_string(),
-            profiles: vec![Profile::default()],
+            profiles: default_profiles(),
         }
     }
 }
@@ -59,7 +59,7 @@ pub struct Profile {
 impl Default for Profile {
     fn default() -> Self {
         Self {
-            name: "default".to_string(),
+            name: "deepseek".to_string(),
             provider_kind: "openai-compatible".to_string(),
             base_url: "https://api.deepseek.com".to_string(),
             api_key: Some("DEEPSEEK_API_KEY".to_string()),
@@ -114,6 +114,28 @@ fn default_config_active_model() -> String {
 
 fn default_config_profiles() -> Vec<Profile> {
     Config::default().profiles
+}
+
+fn default_profiles() -> Vec<Profile> {
+    vec![
+        Profile {
+            name: "deepseek".to_string(),
+            provider_kind: "openai-compatible".to_string(),
+            base_url: "https://api.deepseek.com".to_string(),
+            api_key: Some("DEEPSEEK_API_KEY".to_string()),
+            models: vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
+        },
+        Profile {
+            name: "anthropic".to_string(),
+            provider_kind: "anthropic".to_string(),
+            base_url: String::new(),
+            api_key: Some("ANTHROPIC_API_KEY".to_string()),
+            models: vec![
+                "claude-sonnet-4-5-20251001".to_string(),
+                "claude-opus-4-5".to_string(),
+            ],
+        },
+    ]
 }
 
 fn default_profile_name() -> String {
@@ -256,7 +278,10 @@ fn save_config_to_path(path: &Path, config: &Config) -> Result<()> {
 }
 
 pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResult> {
-    let provider = profile.base_url.trim_end_matches('/').to_string();
+    let provider = match profile.provider_kind.as_str() {
+        "anthropic" => "https://api.anthropic.com/v1/messages".to_string(),
+        _ => profile.base_url.trim_end_matches('/').to_string(),
+    };
     let api_key = match profile.resolve_api_key() {
         Ok(api_key) => api_key,
         Err(err) => {
@@ -269,26 +294,62 @@ pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResul
         }
     };
 
-    let endpoint = format!("{}/chat/completions", provider);
-    let response = reqwest::Client::new()
-        .post(endpoint)
-        .bearer_auth(api_key)
-        .timeout(Duration::from_secs(10))
-        .json(&json!({
-            "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": "hi"
-                }
-            ],
-            "max_tokens": 1,
-            "stream": false
-        }))
-        .send()
-        .await;
+    match profile.provider_kind.as_str() {
+        "openai-compatible" => {
+            let provider = profile.base_url.trim_end_matches('/').to_string();
+            let endpoint = format!("{}/chat/completions", provider);
+            let response = reqwest::Client::new()
+                .post(endpoint)
+                .bearer_auth(api_key)
+                .timeout(Duration::from_secs(10))
+                .json(&json!({
+                    "model": model,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "hi"
+                        }
+                    ],
+                    "max_tokens": 1,
+                    "stream": false
+                }))
+                .send()
+                .await;
 
-    let result = match response {
+            Ok(connection_result_from_response(response, provider, model))
+        }
+        "anthropic" => {
+            let provider = "https://api.anthropic.com/v1/messages".to_string();
+            let response = reqwest::Client::new()
+                .post(&provider)
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                .timeout(Duration::from_secs(10))
+                .json(&json!({
+                    "model": model,
+                    "max_tokens": 1,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "hi"
+                        }
+                    ]
+                }))
+                .send()
+                .await;
+
+            Ok(connection_result_from_response(response, provider, model))
+        }
+        other => Err(anyhow!("unsupported provider_kind: {}", other)),
+    }
+}
+
+fn connection_result_from_response(
+    response: std::result::Result<reqwest::Response, reqwest::Error>,
+    provider: String,
+    model: &str,
+) -> TestResult {
+    match response {
         Ok(response) => {
             let status = response.status();
             if status.is_success() {
@@ -326,9 +387,7 @@ pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResul
             model: model.to_string(),
             error: Some(err.to_string()),
         },
-    };
-
-    Ok(result)
+    }
 }
 
 pub fn open_config_in_editor() -> Result<()> {

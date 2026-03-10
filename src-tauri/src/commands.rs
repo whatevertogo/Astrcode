@@ -1,7 +1,9 @@
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
 
-use crate::handle::{AgentHandle, ConfigView, SessionMessage};
+use crate::handle::{
+    AgentHandle, ConfigView, CurrentModelInfo, ModelOption, SessionMessage,
+};
 use astrcode_core::{DeleteProjectResult, SessionMeta, TestResult};
 use ipc::AgentEvent;
 
@@ -105,6 +107,29 @@ pub async fn save_active_selection(
     state
         .save_active_selection(active_profile, active_model)
         .await
+}
+
+#[tauri::command]
+pub async fn set_model(
+    profile_name: String,
+    model: String,
+    state: State<'_, AgentHandle>,
+) -> Result<(), String> {
+    state.set_model(profile_name, model).await
+}
+
+#[tauri::command]
+pub async fn get_current_model(
+    state: State<'_, AgentHandle>,
+) -> Result<CurrentModelInfo, String> {
+    state.get_current_model().await
+}
+
+#[tauri::command]
+pub async fn list_available_models(
+    state: State<'_, AgentHandle>,
+) -> Result<Vec<ModelOption>, String> {
+    state.list_available_models().await
 }
 
 #[tauri::command]
