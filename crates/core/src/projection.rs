@@ -93,20 +93,14 @@ pub fn project(events: &[StorageEvent]) -> AgentState {
             StorageEvent::ToolResult {
                 tool_call_id,
                 output,
-                success,
                 ..
             } => {
                 // Flush the assistant message that triggered these tool calls.
                 flush(&mut state, &mut pending_content, &mut pending_tool_calls);
 
-                let content = if *success {
-                    output.clone()
-                } else {
-                    format!("tool execution failed:\n{output}")
-                };
                 state.messages.push(LlmMessage::Tool {
                     tool_call_id: tool_call_id.clone(),
-                    content,
+                    content: output.clone(),
                 });
             }
 

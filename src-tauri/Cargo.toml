@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 astrcode-core = { path = "../crates/core" }
 ipc = { path = "../crates/ipc" }
-tauri = { version = "2", features = ["devtools"] }
+tauri = { version = "2" }
 tauri-plugin-dialog = "2"
 anyhow = "1"
 async-trait.workspace = true

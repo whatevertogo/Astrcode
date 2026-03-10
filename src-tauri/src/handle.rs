@@ -108,7 +108,7 @@ pub struct ModelOption {
 /// ToolCall + ToolResult are merged by tool_call_id.
 pub fn convert_events_to_messages(events: &[StorageEvent]) -> Vec<SessionMessage> {
     let mut messages = Vec::new();
-    let mut pending_tool_calls: HashMap<String, (String, Value)> = HashMap::new();
+    let mut pending_tool_calls: Vec<(String, String, Value)> = Vec::new();
 
     for event in events {
         match event {
@@ -131,7 +131,7 @@ pub fn convert_events_to_messages(events: &[StorageEvent]) -> Vec<SessionMessage
                 tool_name,
                 args,
             } => {
-                pending_tool_calls.insert(tool_call_id.clone(), (tool_name.clone(), args.clone()));
+                pending_tool_calls.push((tool_call_id.clone(), tool_name.clone(), args.clone()));
             }
             StorageEvent::ToolResult {
                 tool_call_id,
@@ -139,7 +139,11 @@ pub fn convert_events_to_messages(events: &[StorageEvent]) -> Vec<SessionMessage
                 success,
                 duration_ms,
             } => {
-                if let Some((tool_name, args)) = pending_tool_calls.remove(tool_call_id) {
+                if let Some(index) = pending_tool_calls
+                    .iter()
+                    .position(|(pending_id, _, _)| pending_id == tool_call_id)
+                {
+                    let (_, tool_name, args) = pending_tool_calls.remove(index);
                     messages.push(SessionMessage::ToolCall {
                         tool_call_id: tool_call_id.clone(),
                         tool_name,
@@ -152,6 +156,17 @@ pub fn convert_events_to_messages(events: &[StorageEvent]) -> Vec<SessionMessage
             }
             _ => {}
         }
+    }
+
+    for (tool_call_id, tool_name, args) in pending_tool_calls {
+        messages.push(SessionMessage::ToolCall {
+            tool_call_id,
+            tool_name,
+            args,
+            output: None,
+            success: None,
+            duration_ms: None,
+        });
     }
 
     messages
@@ -492,6 +507,7 @@ impl AgentHandle {
         let cancel = cancel_token;
         let tid = turn_id.clone();
         let streaming_phase_emitted = AtomicBool::new(false);
+        let mut pending_tool_names: HashMap<String, String> = HashMap::new();
 
         let result = runtime
             .submit(text, cancel, |event| {
@@ -510,7 +526,7 @@ impl AgentHandle {
                     streaming_phase_emitted.store(false, Ordering::Relaxed);
                 }
 
-                for kind in collect_event_kinds(&tid, event) {
+                for kind in collect_event_kinds(&tid, event, &mut pending_tool_names) {
                     send_agent_event(&channel, kind);
                 }
             })
@@ -614,7 +630,11 @@ fn resolve_active_selection(
 }
 
 /// Convert a StorageEvent into zero or more AgentEventKinds for IPC dispatch.
-fn collect_event_kinds(turn_id: &str, event: &StorageEvent) -> Vec<AgentEventKind> {
+fn collect_event_kinds(
+    turn_id: &str,
+    event: &StorageEvent,
+    pending_tool_names: &mut HashMap<String, String>,
+) -> Vec<AgentEventKind> {
     match event {
         StorageEvent::UserMessage { .. } => {
             // No direct AgentEvent for the user message itself.
@@ -635,6 +655,7 @@ fn collect_event_kinds(turn_id: &str, event: &StorageEvent) -> Vec<AgentEventKin
             tool_name,
             args,
         } => {
+            pending_tool_names.insert(tool_call_id.clone(), tool_name.clone());
             vec![
                 AgentEventKind::PhaseChanged {
                     turn_id: Some(turn_id.to_string()),
@@ -655,11 +676,14 @@ fn collect_event_kinds(turn_id: &str, event: &StorageEvent) -> Vec<AgentEventKin
             success,
             duration_ms,
         } => {
+            let tool_name = pending_tool_names
+                .remove(tool_call_id)
+                .unwrap_or_else(|| "(unknown tool)".to_string());
             vec![AgentEventKind::ToolCallResult {
                 turn_id: turn_id.to_string(),
                 result: ToolCallResultEnvelope {
                     tool_call_id: tool_call_id.clone(),
-                    tool_name: String::new(),
+                    tool_name,
                     ok: *success,
                     output: output.clone(),
                     error: if *success { None } else { Some(output.clone()) },
@@ -779,11 +803,13 @@ mod tests {
 
     #[test]
     fn assistant_final_produces_no_events() {
+        let mut pending = HashMap::new();
         let events = collect_event_kinds(
             "turn-1",
             &StorageEvent::AssistantFinal {
                 content: "hello world".to_string(),
             },
+            &mut pending,
         );
 
         assert!(
@@ -794,11 +820,13 @@ mod tests {
 
     #[test]
     fn assistant_delta_produces_only_model_delta() {
+        let mut pending = HashMap::new();
         let events = collect_event_kinds(
             "turn-2",
             &StorageEvent::AssistantDelta {
                 token: "hello".to_string(),
             },
+            &mut pending,
         );
 
         assert_eq!(events.len(), 1);
@@ -811,6 +839,16 @@ mod tests {
 
     #[test]
     fn tool_result_preserves_output_and_failure_state() {
+        let mut pending = HashMap::new();
+        let _ = collect_event_kinds(
+            "turn-3",
+            &StorageEvent::ToolCall {
+                tool_call_id: "tool-1".to_string(),
+                tool_name: "shell".to_string(),
+                args: serde_json::json!({ "command": "echo ok" }),
+            },
+            &mut pending,
+        );
         let events = collect_event_kinds(
             "turn-3",
             &StorageEvent::ToolResult {
@@ -819,6 +857,7 @@ mod tests {
                 success: false,
                 duration_ms: 42,
             },
+            &mut pending,
         );
 
         assert_eq!(events.len(), 1);
@@ -826,6 +865,7 @@ mod tests {
             &events[0],
             AgentEventKind::ToolCallResult { result, .. }
             if result.tool_call_id == "tool-1"
+                && result.tool_name == "shell"
                 && result.output == "boom"
                 && result.error.as_deref() == Some("boom")
                 && !result.ok
@@ -889,6 +929,37 @@ mod tests {
                 assert_eq!(duration_ms, &Some(100));
             }
             _ => panic!("expected ToolCall"),
+        }
+    }
+
+    #[test]
+    fn convert_events_preserves_pending_tool_call_without_result() {
+        use serde_json::json;
+
+        let events = vec![StorageEvent::ToolCall {
+            tool_call_id: "tc-pending".to_string(),
+            tool_name: "readFile".to_string(),
+            args: json!({ "path": "README.md" }),
+        }];
+
+        let messages = convert_events_to_messages(&events);
+        assert_eq!(messages.len(), 1);
+        match &messages[0] {
+            SessionMessage::ToolCall {
+                tool_call_id,
+                tool_name,
+                output,
+                success,
+                duration_ms,
+                ..
+            } => {
+                assert_eq!(tool_call_id, "tc-pending");
+                assert_eq!(tool_name, "readFile");
+                assert_eq!(output, &None);
+                assert_eq!(success, &None);
+                assert_eq!(duration_ms, &None);
+            }
+            _ => panic!("expected pending ToolCall"),
         }
     }
 

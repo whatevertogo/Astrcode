@@ -115,10 +115,12 @@ async function streamWebChat(
   const decoder = new TextDecoder();
   let buffer = '';
 
-  while (true) {
+  let doneReading = false;
+  while (!doneReading) {
     const { value, done } = await reader.read();
     if (done) {
-      break;
+      doneReading = true;
+      continue;
     }
 
     buffer += decoder.decode(value, { stream: true });
@@ -359,20 +361,24 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
 
   const switchSession = useCallback(async (sessionId: string): Promise<string> => {
     if (!isTauriEnvironment()) {
-      return '';
+      return normalizeSessionId(sessionId) || sessionId;
     }
+    const normalizedSessionId = normalizeSessionId(sessionId);
+    if (!normalizedSessionId) {
+      throw new Error('invalid session id');
+    }
+    await waitForTauriEnvironment();
     try {
-      const normalizedSessionId = normalizeSessionId(sessionId);
-      if (!normalizedSessionId) {
-        return '';
-      }
-      await waitForTauriEnvironment();
       const nextSessionId = await invoke<string>('switch_session', {
         sessionId: normalizedSessionId,
       });
-      return normalizeSessionId(nextSessionId);
-    } catch {
-      return '';
+      const normalizedNext = normalizeSessionId(nextSessionId);
+      if (!normalizedNext) {
+        throw new Error('backend returned empty session id');
+      }
+      return normalizedNext;
+    } catch (error) {
+      throw new Error(`switch session failed: ${String(error)}`);
     }
   }, []);
 

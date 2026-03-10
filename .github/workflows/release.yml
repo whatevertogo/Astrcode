@@ -61,6 +61,13 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      - name: Run Rust tests
+        run: cargo test --workspace
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm run test
+
       # Linux 特定依赖
       - name: Install Linux dependencies
         if: matrix.platform.os-name == 'Linux'

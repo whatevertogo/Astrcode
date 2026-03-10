@@ -1,5 +1,7 @@
 import type { AgentEventPayload, Phase } from '../types';
 
+const SUPPORTED_PROTOCOL_VERSION = 1;
+
 type UnknownRecord = Record<string, unknown>;
 
 const VALID_PHASES: Phase[] = [
@@ -90,6 +92,17 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
   const payload = asRecord(raw);
   if (!payload) {
     return invalidEvent('event payload is not an object', raw);
+  }
+
+  const protocolVersion = pickNumber(payload, 'protocolVersion', 'protocol_version');
+  if (protocolVersion == null) {
+    return invalidEvent('protocolVersion field is missing', raw);
+  }
+  if (protocolVersion !== SUPPORTED_PROTOCOL_VERSION) {
+    return invalidEvent(
+      `unsupported protocolVersion ${protocolVersion} (expected ${SUPPORTED_PROTOCOL_VERSION})`,
+      raw
+    );
   }
 
   const event = pickString(payload, 'event');

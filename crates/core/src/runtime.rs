@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::Utc;
 use tokio_util::sync::CancellationToken;
 
@@ -12,6 +12,7 @@ use crate::tools::registry::ToolRegistry;
 pub struct AgentRuntime {
     pub session_id: String,
     log: EventLog,
+    events_cache: Vec<StorageEvent>,
     loop_: AgentLoop,
 }
 
@@ -25,17 +26,19 @@ impl AgentRuntime {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        log.append(&StorageEvent::SessionStart {
+        let session_start = StorageEvent::SessionStart {
             session_id: session_id.clone(),
             timestamp: Utc::now(),
             working_dir,
-        })?;
+        };
+        log.append(&session_start)?;
 
         let loop_ = build_agent_loop()?;
 
         Ok(Self {
             session_id,
             log,
+            events_cache: vec![session_start],
             loop_,
         })
     }
@@ -43,10 +46,12 @@ impl AgentRuntime {
     /// Resume an existing session.
     pub fn resume(session_id: &str) -> Result<Self> {
         let log = EventLog::open(session_id)?;
+        let events_cache = EventLog::load_from_path(log.path())?;
         let loop_ = build_agent_loop()?;
         Ok(Self {
             session_id: session_id.to_string(),
             log,
+            events_cache,
             loop_,
         })
     }
@@ -62,8 +67,11 @@ impl AgentRuntime {
 
     /// Get the current AgentState by replaying all events.
     pub fn state(&self) -> Result<AgentState> {
-        let events = EventLog::load_from_path(self.log.path())?;
-        Ok(project(&events))
+        if self.events_cache.is_empty() {
+            let events = EventLog::load_from_path(self.log.path())?;
+            return Ok(project(&events));
+        }
+        Ok(project(&self.events_cache))
     }
 
     /// Submit a user message: append it, rebuild state, run a turn, and emit+log
@@ -75,36 +83,61 @@ impl AgentRuntime {
         &mut self,
         text: String,
         cancel: CancellationToken,
-        emit: impl Fn(&StorageEvent),
+        mut emit: impl FnMut(&StorageEvent),
     ) -> Result<()> {
+        if self.events_cache.is_empty() {
+            self.events_cache = EventLog::load_from_path(self.log.path())?;
+        }
+
         // 1. Write & emit UserMessage
         let user_event = StorageEvent::UserMessage {
             content: text,
             timestamp: Utc::now(),
         };
         self.log.append(&user_event)?;
+        self.events_cache.push(user_event.clone());
         emit(&user_event);
 
-        // 2. Rebuild state from full log
-        let events = EventLog::load_from_path(self.log.path())?;
-        let state = project(&events);
+        // 2. Rebuild state from cache
+        let state = project(&self.events_cache);
 
         // 3. Run the agent loop; each event is logged + emitted
         let log = &mut self.log;
+        let events_cache = &mut self.events_cache;
         let loop_ = &self.loop_;
+        let cancel_on_persist_failure = cancel.clone();
+        let mut append_error: Option<anyhow::Error> = None;
 
         loop_
             .run_turn(
                 &state,
                 &mut |event: StorageEvent| {
+                    if append_error.is_some() {
+                        return;
+                    }
+
                     if !matches!(event, StorageEvent::AssistantDelta { .. }) {
-                        log.append(&event).ok();
+                        if let Err(err) = log.append(&event) {
+                            append_error = Some(anyhow!("failed to append runtime event: {err}"));
+                            cancel_on_persist_failure.cancel();
+                            emit(&StorageEvent::Error {
+                                message: format!("persistence error: {err}"),
+                            });
+                            return;
+                        }
+                        events_cache.push(event.clone());
                     }
                     emit(&event);
                 },
                 cancel,
             )
-            .await
+            .await?;
+
+        if let Some(err) = append_error {
+            return Err(err);
+        }
+
+        Ok(())
     }
 
     pub fn list_sessions() -> Result<Vec<String>> {
@@ -216,6 +249,7 @@ mod tests {
         AgentRuntime {
             session_id,
             log,
+            events_cache: Vec::new(),
             loop_,
         }
     }

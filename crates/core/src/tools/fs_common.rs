@@ -26,7 +26,50 @@ pub fn resolve_path(path: &Path) -> Result<PathBuf> {
             .join(path)
     };
 
-    Ok(normalize_lexically(&base))
+    let resolved = normalize_lexically(&base);
+    enforce_workspace_sandbox(&resolved)?;
+    Ok(resolved)
+}
+
+fn enforce_workspace_sandbox(path: &Path) -> Result<()> {
+    if !should_enforce_sandbox() {
+        return Ok(());
+    }
+
+    let root = normalize_lexically(
+        &std::env::current_dir().context("failed to resolve current directory")?,
+    );
+
+    if path.starts_with(&root) {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "path escapes workspace sandbox: '{}' is outside '{}'",
+        path.display(),
+        root.display()
+    );
+}
+
+fn should_enforce_sandbox() -> bool {
+    if std::env::var("ASTRCODE_DISABLE_TOOL_SANDBOX")
+        .map(|value| value == "1")
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    #[cfg(test)]
+    {
+        std::env::var("ASTRCODE_ENFORCE_TOOL_SANDBOX")
+            .map(|value| value == "1")
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(test))]
+    {
+        true
+    }
 }
 
 pub async fn read_utf8_file(path: &Path) -> Result<String> {
@@ -99,6 +142,36 @@ mod tests {
 
         assert!(resolved.is_absolute());
         assert_eq!(resolved, cwd.join("Cargo.toml"));
+    }
+
+    #[test]
+    fn resolve_path_rejects_escape_when_enforced() {
+        let test_guard = TestEnvGuard::new();
+        test_guard.set_current_dir(test_guard.home_dir());
+        std::env::set_var("ASTRCODE_ENFORCE_TOOL_SANDBOX", "1");
+
+        let outside = test_guard
+            .home_dir()
+            .parent()
+            .expect("parent should exist")
+            .join("outside.txt");
+        let err = resolve_path(&outside).expect_err("outside path should be rejected");
+
+        std::env::remove_var("ASTRCODE_ENFORCE_TOOL_SANDBOX");
+        assert!(err.to_string().contains("escapes workspace sandbox"));
+    }
+
+    #[test]
+    fn resolve_path_allows_inside_workspace_when_enforced() {
+        let test_guard = TestEnvGuard::new();
+        test_guard.set_current_dir(test_guard.home_dir());
+        std::env::set_var("ASTRCODE_ENFORCE_TOOL_SANDBOX", "1");
+
+        let inside = test_guard.home_dir().join("nested").join("file.txt");
+        let resolved = resolve_path(&inside).expect("inside path should resolve");
+
+        std::env::remove_var("ASTRCODE_ENFORCE_TOOL_SANDBOX");
+        assert!(resolved.starts_with(test_guard.home_dir()));
     }
 
     #[tokio::test]

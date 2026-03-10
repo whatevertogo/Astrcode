@@ -37,7 +37,6 @@ jobs:
 
       - name: Run clippy
         run: cargo clippy --all-targets --all-features
-        continue-on-error: true
 
       - name: Run tests
         run: cargo test --workspace
@@ -65,15 +64,17 @@ jobs:
         working-directory: frontend
         run: npm run typecheck
 
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm run test
+
       - name: Run ESLint
         working-directory: frontend
         run: npm run lint
-        continue-on-error: true
 
       - name: Check formatting
         working-directory: frontend
         run: npm run format:check
-        continue-on-error: true
 
   # 构建检查
   build-check:

@@ -51,8 +51,23 @@ fn canonical_session_id(session_id: &str) -> &str {
     session_id.strip_prefix("session-").unwrap_or(session_id)
 }
 
+fn is_valid_session_id(session_id: &str) -> bool {
+    !session_id.is_empty()
+        && session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == 'T')
+}
+
+fn validated_session_id(session_id: &str) -> Result<String> {
+    let canonical = canonical_session_id(session_id);
+    if !is_valid_session_id(canonical) {
+        return Err(anyhow!("invalid session id: '{session_id}'"));
+    }
+    Ok(canonical.to_string())
+}
+
 fn session_path(session_id: &str) -> Result<PathBuf> {
-    let session_id = canonical_session_id(session_id);
+    let session_id = validated_session_id(session_id)?;
     Ok(sessions_dir()?.join(format!("session-{session_id}.jsonl")))
 }
 
@@ -61,6 +76,7 @@ fn legacy_prefixed_path(session_id: &str) -> Result<PathBuf> {
 }
 
 fn resolve_existing_session_path(session_id: &str) -> Result<PathBuf> {
+    let _ = validated_session_id(session_id)?;
     let canonical = session_path(session_id)?;
     if canonical.exists() {
         return Ok(canonical);
@@ -154,6 +170,7 @@ impl EventLog {
     /// Create a new session log file. Creates parent directories if needed.
     /// Returns error if the file already exists.
     pub fn create(session_id: &str) -> Result<Self> {
+        let canonical_id = validated_session_id(session_id)?;
         let path = session_path(session_id)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| {
@@ -166,7 +183,7 @@ impl EventLog {
             .open(&path)
             .with_context(|| format!("failed to create session file: {}", path.display()))?;
         Ok(Self {
-            session_id: session_id.to_string(),
+            session_id: canonical_id,
             path,
             writer: BufWriter::new(file),
         })
@@ -276,7 +293,9 @@ impl EventLog {
                 .strip_prefix("session-")
                 .and_then(|s| s.strip_suffix(".jsonl"))
             {
-                ids.push(id.to_string());
+                if is_valid_session_id(id) {
+                    ids.push(id.to_string());
+                }
             }
         }
         ids.sort();
@@ -303,6 +322,10 @@ impl EventLog {
                 continue;
             };
 
+            if !is_valid_session_id(id) {
+                continue;
+            }
+
             let canonical_id = canonical_session_id(id).to_string();
             let path = entry.path();
             let (created_at, working_dir, title) = Self::read_session_head_meta(&path)?;
@@ -328,7 +351,7 @@ impl EventLog {
     }
 
     fn delete_session_from_path(dir: &Path, session_id: &str) -> Result<()> {
-        let canonical_id = canonical_session_id(session_id);
+        let canonical_id = validated_session_id(session_id)?;
         let canonical = dir.join(format!("session-{canonical_id}.jsonl"));
         let legacy = dir.join(format!("session-{session_id}.jsonl"));
         let target = if canonical.exists() {
@@ -786,5 +809,25 @@ mod tests {
             uses_test_home,
             "session path should stay under the isolated test home"
         );
+    }
+
+    #[test]
+    fn session_path_rejects_invalid_session_id() {
+        let _guard = TestEnvGuard::new();
+        let err = session_path("../../etc/passwd").expect_err("invalid id should fail");
+        assert!(err.to_string().contains("invalid session id"));
+    }
+
+    #[test]
+    fn list_sessions_ignores_invalid_session_filenames() {
+        let tmp = tempfile::tempdir().unwrap();
+        let valid = tmp.path().join("session-2026-03-10T10-00-00-aaaaaaaa.jsonl");
+        let invalid = tmp.path().join("session-evil..id.jsonl");
+
+        File::create(valid).unwrap();
+        File::create(invalid).unwrap();
+
+        let found = EventLog::list_sessions_from_path(tmp.path()).unwrap();
+        assert_eq!(found, vec!["2026-03-10T10-00-00-aaaaaaaa"]);
     }
 }

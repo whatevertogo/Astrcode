@@ -21,6 +21,7 @@ import Chat from './components/Chat/index';
 import SettingsModal from './components/Settings/SettingsModal';
 import { useAgent, SessionMessage } from './hooks/useAgent';
 import { useProjects } from './hooks/useProjects';
+import { releaseTurnMapping, resolveSessionForTurn } from './lib/turnRouting.ts';
 
 function getDirectoryName(path: string): string {
   const normalized = path.replace(/[\\/]+$/, '');
@@ -359,6 +360,8 @@ export default function App() {
   const projects = useProjects(dispatch);
   const activeSessionIdRef = useRef<string | null>(state.activeSessionId);
   const phaseRef = useRef(state.phase);
+  const turnSessionMapRef = useRef<Record<string, string>>({});
+  const pendingSubmitSessionRef = useRef<string[]>([]);
 
   useEffect(() => {
     activeSessionIdRef.current = state.activeSessionId;
@@ -369,18 +372,30 @@ export default function App() {
   }, [state.phase]);
 
   const handleAgentEvent = useCallback((event: AgentEventPayload) => {
-    const sid = activeSessionIdRef.current;
+    const resolveSessionId = (turnId?: string | null): string | null => {
+      return resolveSessionForTurn(
+        turnSessionMapRef.current,
+        pendingSubmitSessionRef.current,
+        turnId,
+        activeSessionIdRef.current
+      );
+    };
 
     switch (event.event) {
       case 'sessionStarted':
         // Reserved for future session management features.
         break;
 
-      case 'phaseChanged':
+      case 'phaseChanged': {
+        if (event.data.turnId) {
+          resolveSessionId(event.data.turnId);
+        }
         dispatch({ type: 'SET_PHASE', phase: event.data.phase });
         break;
+      }
 
-      case 'modelDelta':
+      case 'modelDelta': {
+        const sid = resolveSessionId(event.data.turnId);
         if (!sid) {
           break;
         }
@@ -388,8 +403,10 @@ export default function App() {
           dispatch({ type: 'APPEND_DELTA', sessionId: sid, delta: event.data.delta });
         });
         break;
+      }
 
-      case 'assistantMessage':
+      case 'assistantMessage': {
+        const sid = resolveSessionId(event.data.turnId);
         if (!sid) {
           break;
         }
@@ -405,8 +422,10 @@ export default function App() {
           },
         });
         break;
+      }
 
-      case 'toolCallStart':
+      case 'toolCallStart': {
+        const sid = resolveSessionId(event.data.turnId);
         if (!sid) {
           break;
         }
@@ -431,8 +450,10 @@ export default function App() {
           });
         }
         break;
+      }
 
-      case 'toolCallResult':
+      case 'toolCallResult': {
+        const sid = resolveSessionId(event.data.turnId);
         if (!sid) {
           break;
         }
@@ -452,11 +473,14 @@ export default function App() {
           });
         }
         break;
+      }
 
-      case 'turnDone':
+      case 'turnDone': {
+        const sid = resolveSessionId(event.data.turnId);
         if (sid) {
           dispatch({ type: 'END_STREAMING', sessionId: sid });
         }
+        releaseTurnMapping(turnSessionMapRef.current, event.data.turnId);
         // Primary source of idle is PhaseChanged(idle). This is fallback only.
         queueMicrotask(() => {
           if (phaseRef.current !== 'idle') {
@@ -464,8 +488,10 @@ export default function App() {
           }
         });
         break;
+      }
 
-      case 'error':
+      case 'error': {
+        const sid = resolveSessionId(event.data.turnId ?? null);
         if (sid && event.data.code !== 'interrupted') {
           dispatch({
             type: 'ADD_MESSAGE',
@@ -479,8 +505,12 @@ export default function App() {
             },
           });
         }
+        if (event.data.turnId) {
+          releaseTurnMapping(turnSessionMapRef.current, event.data.turnId);
+        }
         dispatch({ type: 'SET_PHASE', phase: 'idle' });
         break;
+      }
     }
   }, []);
 
@@ -613,15 +643,16 @@ export default function App() {
 
   const handleSetActive = async (projectId: string, sessionId: string) => {
     // If switching to a different session, call backend
+    let targetSessionId = sessionId;
     if (sessionId !== state.activeSessionId) {
       try {
-        await switchSession(sessionId);
+        targetSessionId = await switchSession(sessionId);
         setModelRefreshKey((value) => value + 1);
         // Load session messages if not already loaded
         const targetProject = state.projects.find((p) => p.id === projectId);
-        const targetSession = targetProject?.sessions.find((s) => s.id === sessionId);
+        const targetSession = targetProject?.sessions.find((s) => s.id === targetSessionId);
         if (targetSession && targetSession.messages.length === 0) {
-          const messages = await loadSession(sessionId);
+          const messages = await loadSession(targetSessionId);
           // Convert SessionMessage to Message
           const convertedMessages: Message[] = messages.map((m) => {
             const base = { id: uuid(), timestamp: Date.now() };
@@ -647,7 +678,7 @@ export default function App() {
           });
           dispatch({
             type: 'REPLACE_SESSION_MESSAGES',
-            sessionId,
+            sessionId: targetSessionId,
             messages: convertedMessages,
           });
         }
@@ -656,7 +687,7 @@ export default function App() {
         return;
       }
     }
-    dispatch({ type: 'SET_ACTIVE', projectId, sessionId });
+    dispatch({ type: 'SET_ACTIVE', projectId, sessionId: targetSessionId });
   };
 
   const handleToggleExpand = (projectId: string) => dispatch({ type: 'TOGGLE_EXPAND', projectId });
@@ -718,8 +749,14 @@ export default function App() {
       });
 
       try {
+        pendingSubmitSessionRef.current.push(sid);
         await submitPrompt(trimmed, activeSession?.messages ?? []);
       } catch (err) {
+        const queue = pendingSubmitSessionRef.current;
+        const index = queue.indexOf(sid);
+        if (index >= 0) {
+          queue.splice(index, 1);
+        }
         dispatch({
           type: 'ADD_MESSAGE',
           sessionId: sid,

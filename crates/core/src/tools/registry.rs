@@ -51,6 +51,20 @@ impl ToolRegistry {
         call: &ToolCallRequest,
         cancel: CancellationToken,
     ) -> ToolExecutionResult {
+        if call.name == "shell" {
+            if let Err(reason) = validate_shell_command_policy(&call.args) {
+                return ToolExecutionResult {
+                    tool_call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    ok: false,
+                    output: String::new(),
+                    error: Some(reason.to_string()),
+                    metadata: None,
+                    duration_ms: 0,
+                };
+            }
+        }
+
         let Some(tool) = self.tools.get(&call.name) else {
             return ToolExecutionResult {
                 tool_call_id: call.id.clone(),
@@ -81,8 +95,135 @@ impl ToolRegistry {
     }
 }
 
+fn validate_shell_command_policy(args: &serde_json::Value) -> anyhow::Result<()> {
+    if std::env::var("ASTRCODE_ALLOW_DANGEROUS_SHELL")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    let command = args
+        .get("command")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    if command.trim().is_empty() {
+        anyhow::bail!("shell command is required");
+    }
+
+    const DENY_PATTERNS: [&str; 14] = [
+        "rm -rf",
+        "rd /s /q",
+        "del /f",
+        "format ",
+        "shutdown",
+        "reboot",
+        "mkfs",
+        "diskpart",
+        "reg delete",
+        "remove-item -recurse -force",
+        "invoke-expression",
+        "iex ",
+        "curl | sh",
+        "wget | sh",
+    ];
+
+    if DENY_PATTERNS.iter().any(|pattern| command.contains(pattern)) {
+        anyhow::bail!("shell command blocked by policy");
+    }
+
+    Ok(())
+}
+
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::with_v1_defaults()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use serde_json::json;
+    use tokio_util::sync::CancellationToken;
+
+    use crate::action::{ToolCallRequest, ToolDefinition, ToolExecutionResult};
+    use crate::tools::Tool;
+
+    use super::ToolRegistry;
+
+    struct FakeShellTool;
+
+    #[async_trait]
+    impl Tool for FakeShellTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "shell".to_string(),
+                description: "fake shell for testing".to_string(),
+                parameters: json!({"type": "object"}),
+            }
+        }
+
+        async fn execute(
+            &self,
+            tool_call_id: String,
+            _args: serde_json::Value,
+            _cancel: CancellationToken,
+        ) -> Result<ToolExecutionResult> {
+            Ok(ToolExecutionResult {
+                tool_call_id,
+                tool_name: "shell".to_string(),
+                ok: true,
+                output: "ok".to_string(),
+                error: None,
+                metadata: None,
+                duration_ms: 0,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_blocks_dangerous_shell_command() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(FakeShellTool));
+
+        let result = registry
+            .execute(
+                &ToolCallRequest {
+                    id: "tc-danger".to_string(),
+                    name: "shell".to_string(),
+                    args: json!({ "command": "rm -rf /tmp/foo" }),
+                },
+                CancellationToken::new(),
+            )
+            .await;
+
+        assert!(!result.ok);
+        assert_eq!(result.error.as_deref(), Some("shell command blocked by policy"));
+    }
+
+    #[tokio::test]
+    async fn execute_allows_safe_shell_command() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(FakeShellTool));
+
+        let result = registry
+            .execute(
+                &ToolCallRequest {
+                    id: "tc-safe".to_string(),
+                    name: "shell".to_string(),
+                    args: json!({ "command": "echo ok" }),
+                },
+                CancellationToken::new(),
+            )
+            .await;
+
+        assert!(result.ok);
+        assert_eq!(result.output, "ok");
     }
 }

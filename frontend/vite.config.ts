@@ -1,7 +1,9 @@
 import fs from 'node:fs/promises';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { defineConfig, type Plugin } from 'vite';
+import type { Plugin, ViteDevServer } from 'vite';
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
 interface WebChatConfigProfile {
@@ -27,8 +29,8 @@ const APP_HOME_OVERRIDE_ENV = 'ASTRCODE_HOME_DIR';
 function webChatPlugin(): Plugin {
   return {
     name: 'astrcode-web-chat',
-    configureServer(server) {
-      server.middlewares.use('/api/web-chat', async (req, res) => {
+    configureServer(server: ViteDevServer) {
+      server.middlewares.use('/api/web-chat', async (req: IncomingMessage, res: ServerResponse) => {
         if (req.method !== 'POST') {
           res.statusCode = 405;
           res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -266,6 +268,18 @@ function parseSseDataLine(line: string): '[DONE]' | { choices?: Array<{ delta?: 
 }
 
 function writeNdjson(res: { write: (chunk: string) => void }, payload: unknown): void {
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    !Array.isArray(payload) &&
+    'event' in payload &&
+    'data' in payload &&
+    !('protocolVersion' in payload)
+  ) {
+    res.write(`${JSON.stringify({ protocolVersion: 1, ...(payload as Record<string, unknown>) })}\n`);
+    return;
+  }
+
   res.write(`${JSON.stringify(payload)}\n`);
 }
 
@@ -275,5 +289,10 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 5173,
     strictPort: true,
+  },
+  test: {
+    environment: 'node',
+    include: ['src/**/*.test.ts'],
+    clearMocks: true,
   },
 });
