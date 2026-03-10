@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -8,8 +6,8 @@ use serde_json::Value;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
 
-use crate::action::{LlmMessage, LlmResponse, ToolCallRequest, ToolDefinition};
-use crate::llm::{DeltaCallback, LlmProvider};
+use crate::action::{LlmMessage, ToolCallRequest, ToolDefinition};
+use crate::llm::{EventSink, LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
 
 #[derive(Clone, Debug)]
 pub struct OpenAiProvider {
@@ -28,185 +26,132 @@ impl OpenAiProvider {
             model,
         }
     }
+
+    fn build_request<'a>(
+        &'a self,
+        messages: &'a [LlmMessage],
+        tools: &'a [ToolDefinition],
+        stream: bool,
+    ) -> OpenAiChatRequest<'a> {
+        OpenAiChatRequest {
+            model: &self.model,
+            messages: messages.iter().map(to_openai_message).collect(),
+            tools: if tools.is_empty() {
+                None
+            } else {
+                Some(tools.iter().map(to_openai_tool).collect())
+            },
+            tool_choice: if tools.is_empty() { None } else { Some("auto") },
+            stream,
+        }
+    }
+
+    async fn send_request(
+        &self,
+        req: &OpenAiChatRequest<'_>,
+        cancel: CancellationToken,
+    ) -> Result<reqwest::Response> {
+        let endpoint = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let send_future = self
+            .client
+            .post(endpoint)
+            .bearer_auth(&self.api_key)
+            .json(req)
+            .send();
+
+        let response = select! {
+            _ = cancel.cancelled() => {
+                return Err(anyhow!("llm request interrupted"));
+            }
+            result = send_future => result.context("failed to call openai-compatible endpoint")?
+        };
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "openai-compatible request failed with {}: {}",
+                status,
+                body
+            ));
+        }
+
+        Ok(response)
+    }
 }
 
 #[async_trait]
 impl LlmProvider for OpenAiProvider {
-    async fn complete(
-        &self,
-        messages: &[LlmMessage],
-        tools: &[ToolDefinition],
-        cancel: CancellationToken,
-    ) -> Result<LlmResponse> {
-        let request = OpenAiChatRequest {
-            model: &self.model,
-            messages: messages.iter().map(to_openai_message).collect(),
-            tools: if tools.is_empty() {
-                None
-            } else {
-                Some(tools.iter().map(to_openai_tool).collect())
-            },
-            tool_choice: if tools.is_empty() { None } else { Some("auto") },
-            stream: false,
-        };
+    async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
+        let cancel = request.cancel;
+        let req = self.build_request(&request.messages, &request.tools, sink.is_some());
+        let response = self.send_request(&req, cancel.child_token()).await?;
 
-        let endpoint = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let send_future = self
-            .client
-            .post(endpoint)
-            .bearer_auth(&self.api_key)
-            .json(&request)
-            .send();
-
-        let response = select! {
-            _ = cancel.cancelled() => {
-                return Err(anyhow!("llm request interrupted"));
+        match sink {
+            None => {
+                let parsed: OpenAiChatResponse = response
+                    .json()
+                    .await
+                    .context("failed to parse openai-compatible response")?;
+                let first_choice = parsed
+                    .choices
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| anyhow!("openai-compatible response did not include choices"))?;
+                Ok(message_to_output(first_choice.message))
             }
-            result = send_future => result.context("failed to call openai-compatible endpoint")?
-        };
+            Some(sink) => {
+                let mut body_stream = response.bytes_stream();
+                let mut sse_buffer = String::new();
+                let mut accumulator = LlmAccumulator::default();
 
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "openai-compatible request failed with {}: {}",
-                status,
-                body
-            ));
-        }
+                loop {
+                    let next_item = select! {
+                        _ = cancel.cancelled() => {
+                            return Err(anyhow!("llm request interrupted"));
+                        }
+                        item = body_stream.next() => item,
+                    };
 
-        let parsed: OpenAiChatResponse = response
-            .json()
-            .await
-            .context("failed to parse openai-compatible response")?;
-        let first_choice = parsed
-            .choices
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("openai-compatible response did not include choices"))?;
+                    let Some(item) = next_item else {
+                        break;
+                    };
 
-        let message = first_choice.message;
-        let content = message.content.unwrap_or_default();
-        let tool_calls = message
-            .tool_calls
-            .unwrap_or_default()
-            .into_iter()
-            .map(|call| ToolCallRequest {
-                id: call.id,
-                name: call.function.name,
-                args: serde_json::from_str::<Value>(&call.function.arguments)
-                    .unwrap_or_else(|_| Value::String(call.function.arguments)),
-            })
-            .collect();
+                    let bytes = item.context("failed to read openai-compatible response stream")?;
+                    let chunk_text = std::str::from_utf8(&bytes)
+                        .context("openai-compatible response stream was not valid utf-8")?;
 
-        Ok(LlmResponse {
-            content,
-            tool_calls,
-        })
-    }
-
-    async fn stream_complete(
-        &self,
-        messages: &[LlmMessage],
-        tools: &[ToolDefinition],
-        cancel: CancellationToken,
-        on_delta: DeltaCallback,
-    ) -> Result<LlmResponse> {
-        let request = OpenAiChatRequest {
-            model: &self.model,
-            messages: messages.iter().map(to_openai_message).collect(),
-            tools: if tools.is_empty() {
-                None
-            } else {
-                Some(tools.iter().map(to_openai_tool).collect())
-            },
-            tool_choice: if tools.is_empty() { None } else { Some("auto") },
-            stream: true,
-        };
-
-        let endpoint = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let send_future = self
-            .client
-            .post(endpoint)
-            .bearer_auth(&self.api_key)
-            .json(&request)
-            .send();
-
-        let response = select! {
-            _ = cancel.cancelled() => {
-                return Err(anyhow!("llm request interrupted"));
-            }
-            result = send_future => result.context("failed to call openai-compatible endpoint")?
-        };
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "openai-compatible request failed with {}: {}",
-                status,
-                body
-            ));
-        }
-
-        let mut body_stream = response.bytes_stream();
-        let mut sse_buffer = String::new();
-        let mut full_content = String::new();
-        let mut tool_calls_acc: HashMap<usize, AccToolCall> = HashMap::new();
-
-        loop {
-            if cancel.is_cancelled() {
-                return Err(anyhow!("llm request interrupted"));
-            }
-
-            let next_item = select! {
-                _ = cancel.cancelled() => {
-                    return Err(anyhow!("llm request interrupted"));
+                    if consume_sse_text_chunk(chunk_text, &mut sse_buffer, &mut accumulator, &sink)?
+                    {
+                        return Ok(accumulator.finish());
+                    }
                 }
-                item = body_stream.next() => item,
-            };
 
-            let Some(item) = next_item else {
-                break;
-            };
-
-            let bytes = item.context("failed to read openai-compatible response stream")?;
-            let chunk_text = std::str::from_utf8(&bytes)
-                .context("openai-compatible response stream was not valid utf-8")?;
-
-            if consume_sse_text_chunk(
-                chunk_text,
-                &mut sse_buffer,
-                &mut full_content,
-                &mut tool_calls_acc,
-                &on_delta,
-            )? {
-                return Ok(LlmResponse {
-                    content: full_content,
-                    tool_calls: to_tool_call_requests(tool_calls_acc),
-                });
+                flush_sse_buffer(&mut sse_buffer, &mut accumulator, &sink)?;
+                Ok(accumulator.finish())
             }
         }
-
-        flush_sse_buffer(
-            &mut sse_buffer,
-            &mut full_content,
-            &mut tool_calls_acc,
-            &on_delta,
-        )?;
-
-        Ok(LlmResponse {
-            content: full_content,
-            tool_calls: to_tool_call_requests(tool_calls_acc),
-        })
     }
 }
 
-#[derive(Debug, Default)]
-struct AccToolCall {
-    id: String,
-    name: String,
-    arguments: String,
+fn message_to_output(message: OpenAiResponseMessage) -> LlmOutput {
+    let content = message.content.unwrap_or_default();
+    let tool_calls = message
+        .tool_calls
+        .unwrap_or_default()
+        .into_iter()
+        .map(|call| ToolCallRequest {
+            id: call.id,
+            name: call.function.name,
+            args: serde_json::from_str::<Value>(&call.function.arguments)
+                .unwrap_or_else(|_| Value::String(call.function.arguments)),
+        })
+        .collect();
+
+    LlmOutput {
+        content,
+        tool_calls,
+    }
 }
 
 enum ParsedSseLine {
@@ -234,56 +179,55 @@ fn parse_sse_line(line: &str) -> Result<ParsedSseLine> {
     Ok(ParsedSseLine::Chunk(chunk))
 }
 
-fn apply_stream_chunk(
-    chunk: OpenAiStreamChunk,
-    full_content: &mut String,
-    tool_calls_acc: &mut HashMap<usize, AccToolCall>,
-    on_delta: &DeltaCallback,
-) {
+fn apply_stream_chunk(chunk: OpenAiStreamChunk) -> Vec<LlmEvent> {
+    let mut events = Vec::new();
+
     for choice in chunk.choices {
         let _ = choice.finish_reason;
 
         if let Some(content) = choice.delta.content {
             if !content.is_empty() {
-                if let Ok(mut cb) = on_delta.lock() {
-                    cb(content.clone());
-                }
-                full_content.push_str(&content);
+                events.push(LlmEvent::TextDelta(content));
             }
         }
 
         if let Some(tool_calls) = choice.delta.tool_calls {
             for tool_call in tool_calls {
-                let entry = tool_calls_acc.entry(tool_call.index).or_default();
+                let (name, arguments_delta) = match tool_call.function {
+                    Some(function) => (function.name, function.arguments.unwrap_or_default()),
+                    None => (None, String::new()),
+                };
 
-                if let Some(id) = tool_call.id {
-                    entry.id = id;
-                }
-
-                if let Some(function) = tool_call.function {
-                    if let Some(name) = function.name {
-                        entry.name = name;
-                    }
-                    if let Some(arguments) = function.arguments {
-                        entry.arguments.push_str(&arguments);
-                    }
-                }
+                events.push(LlmEvent::ToolCallDelta {
+                    index: tool_call.index,
+                    id: tool_call.id,
+                    name,
+                    arguments_delta,
+                });
             }
         }
     }
+
+    events
+}
+
+fn emit_event(event: LlmEvent, accumulator: &mut LlmAccumulator, sink: &EventSink) {
+    sink(event.clone());
+    accumulator.apply(&event);
 }
 
 fn process_sse_line(
     line: &str,
-    full_content: &mut String,
-    tool_calls_acc: &mut HashMap<usize, AccToolCall>,
-    on_delta: &DeltaCallback,
+    accumulator: &mut LlmAccumulator,
+    sink: &EventSink,
 ) -> Result<bool> {
     match parse_sse_line(line)? {
         ParsedSseLine::Ignore => Ok(false),
         ParsedSseLine::Done => Ok(true),
         ParsedSseLine::Chunk(chunk) => {
-            apply_stream_chunk(chunk, full_content, tool_calls_acc, on_delta);
+            for event in apply_stream_chunk(chunk) {
+                emit_event(event, accumulator, sink);
+            }
             Ok(false)
         }
     }
@@ -292,9 +236,8 @@ fn process_sse_line(
 fn consume_sse_text_chunk(
     chunk_text: &str,
     sse_buffer: &mut String,
-    full_content: &mut String,
-    tool_calls_acc: &mut HashMap<usize, AccToolCall>,
-    on_delta: &DeltaCallback,
+    accumulator: &mut LlmAccumulator,
+    sink: &EventSink,
 ) -> Result<bool> {
     sse_buffer.push_str(chunk_text);
 
@@ -304,7 +247,7 @@ fn consume_sse_text_chunk(
             .trim_end_matches('\n')
             .trim_end_matches('\r');
 
-        if process_sse_line(line, full_content, tool_calls_acc, on_delta)? {
+        if process_sse_line(line, accumulator, sink)? {
             return Ok(true);
         }
     }
@@ -314,33 +257,17 @@ fn consume_sse_text_chunk(
 
 fn flush_sse_buffer(
     sse_buffer: &mut String,
-    full_content: &mut String,
-    tool_calls_acc: &mut HashMap<usize, AccToolCall>,
-    on_delta: &DeltaCallback,
+    accumulator: &mut LlmAccumulator,
+    sink: &EventSink,
 ) -> Result<bool> {
     if sse_buffer.is_empty() {
         return Ok(false);
     }
 
     let line = sse_buffer.trim_end_matches('\r');
-    let done = process_sse_line(line, full_content, tool_calls_acc, on_delta)?;
+    let done = process_sse_line(line, accumulator, sink)?;
     sse_buffer.clear();
     Ok(done)
-}
-
-fn to_tool_call_requests(tool_calls_acc: HashMap<usize, AccToolCall>) -> Vec<ToolCallRequest> {
-    let mut entries: Vec<(usize, AccToolCall)> = tool_calls_acc.into_iter().collect();
-    entries.sort_by_key(|(index, _)| *index);
-
-    entries
-        .into_iter()
-        .map(|(_, call)| ToolCallRequest {
-            id: call.id,
-            name: call.name,
-            args: serde_json::from_str::<Value>(&call.arguments)
-                .unwrap_or_else(|_| Value::String(call.arguments)),
-        })
-        .collect()
 }
 
 fn to_openai_tool(def: &ToolDefinition) -> OpenAiTool {
@@ -513,11 +440,43 @@ struct OpenAiStreamToolCallFunction {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
 
     use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::task::JoinHandle;
+    use tokio_util::sync::CancellationToken;
 
     use super::*;
+
+    fn sink_collector(events: Arc<Mutex<Vec<LlmEvent>>>) -> EventSink {
+        Arc::new(move |event| {
+            events.lock().expect("lock").push(event);
+        })
+    }
+
+    fn spawn_server(response: String) -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        listener
+            .set_nonblocking(true)
+            .expect("listener should be nonblocking");
+        let listener = tokio::net::TcpListener::from_std(listener).expect("tokio listener");
+
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept should work");
+            let mut buf = [0_u8; 4096];
+            let _ = socket.read(&mut buf).await;
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("response should be written");
+            let _ = socket.shutdown().await;
+        });
+
+        (format!("http://{}", addr), handle)
+    }
 
     #[test]
     fn parse_sse_line_parses_data_json() {
@@ -528,8 +487,11 @@ mod tests {
 
         match parsed {
             ParsedSseLine::Chunk(chunk) => {
-                assert_eq!(chunk.choices.len(), 1);
-                assert_eq!(chunk.choices[0].delta.content.as_deref(), Some("Hello"));
+                let events = apply_stream_chunk(chunk);
+                assert!(matches!(
+                    events.as_slice(),
+                    [LlmEvent::TextDelta(text)] if text == "Hello"
+                ));
             }
             _ => panic!("expected chunk"),
         }
@@ -548,133 +510,47 @@ mod tests {
     }
 
     #[test]
-    fn content_delta_accumulates_and_emits_multiple_deltas() {
-        use std::sync::{Arc, Mutex};
-        let mut full_content = String::new();
-        let mut tool_calls_acc = HashMap::new();
-        let deltas: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let on_delta: super::DeltaCallback = {
-            let deltas = deltas.clone();
-            Arc::new(Mutex::new(move |delta: String| {
-                deltas.lock().unwrap().push(delta);
-            }))
-        };
+    fn tool_call_delta_maps_empty_arguments_when_missing() {
+        let events = apply_stream_chunk(OpenAiStreamChunk {
+            choices: vec![OpenAiStreamChoice {
+                delta: OpenAiStreamDelta {
+                    content: None,
+                    tool_calls: Some(vec![OpenAiStreamToolCall {
+                        index: 0,
+                        id: Some("call_1".to_string()),
+                        function: Some(OpenAiStreamToolCallFunction {
+                            name: Some("search".to_string()),
+                            arguments: None,
+                        }),
+                    }]),
+                },
+                finish_reason: None,
+            }],
+        });
 
-        apply_stream_chunk(
-            OpenAiStreamChunk {
-                choices: vec![OpenAiStreamChoice {
-                    delta: OpenAiStreamDelta {
-                        content: Some("Hel".to_string()),
-                        tool_calls: None,
-                    },
-                    finish_reason: None,
-                }],
-            },
-            &mut full_content,
-            &mut tool_calls_acc,
-            &on_delta,
-        );
-
-        apply_stream_chunk(
-            OpenAiStreamChunk {
-                choices: vec![OpenAiStreamChoice {
-                    delta: OpenAiStreamDelta {
-                        content: Some("lo".to_string()),
-                        tool_calls: None,
-                    },
-                    finish_reason: None,
-                }],
-            },
-            &mut full_content,
-            &mut tool_calls_acc,
-            &on_delta,
-        );
-
-        assert_eq!(
-            deltas.lock().unwrap().as_slice(),
-            &["Hel".to_string(), "lo".to_string()]
-        );
-        assert_eq!(full_content, "Hello");
-    }
-
-    #[test]
-    fn tool_call_arguments_are_concatenated_incrementally() {
-        use std::sync::{Arc, Mutex};
-        let mut full_content = String::new();
-        let mut tool_calls_acc = HashMap::new();
-        let on_delta: super::DeltaCallback = Arc::new(Mutex::new(|_delta: String| {}));
-
-        apply_stream_chunk(
-            OpenAiStreamChunk {
-                choices: vec![OpenAiStreamChoice {
-                    delta: OpenAiStreamDelta {
-                        content: None,
-                        tool_calls: Some(vec![OpenAiStreamToolCall {
-                            index: 0,
-                            id: Some("call_1".to_string()),
-                            function: Some(OpenAiStreamToolCallFunction {
-                                name: Some("search".to_string()),
-                                arguments: Some("{\"q\":\"hel".to_string()),
-                            }),
-                        }]),
-                    },
-                    finish_reason: None,
-                }],
-            },
-            &mut full_content,
-            &mut tool_calls_acc,
-            &on_delta,
-        );
-
-        apply_stream_chunk(
-            OpenAiStreamChunk {
-                choices: vec![OpenAiStreamChoice {
-                    delta: OpenAiStreamDelta {
-                        content: None,
-                        tool_calls: Some(vec![OpenAiStreamToolCall {
-                            index: 0,
-                            id: None,
-                            function: Some(OpenAiStreamToolCallFunction {
-                                name: None,
-                                arguments: Some("lo\"}".to_string()),
-                            }),
-                        }]),
-                    },
-                    finish_reason: None,
-                }],
-            },
-            &mut full_content,
-            &mut tool_calls_acc,
-            &on_delta,
-        );
-
-        let calls = to_tool_call_requests(tool_calls_acc);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].id, "call_1");
-        assert_eq!(calls[0].name, "search");
-        assert_eq!(calls[0].args, json!({ "q": "hello" }));
+        assert!(matches!(
+            events.as_slice(),
+            [LlmEvent::ToolCallDelta {
+                index: 0,
+                id: Some(id),
+                name: Some(name),
+                arguments_delta,
+            }] if id == "call_1" && name == "search" && arguments_delta.is_empty()
+        ));
     }
 
     #[test]
     fn partial_sse_line_buffer_is_preserved_across_chunks() {
-        use std::sync::{Arc, Mutex};
         let mut sse_buffer = String::new();
-        let mut full_content = String::new();
-        let mut tool_calls_acc = HashMap::new();
-        let deltas: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let on_delta: super::DeltaCallback = {
-            let deltas = deltas.clone();
-            Arc::new(Mutex::new(move |delta: String| {
-                deltas.lock().unwrap().push(delta);
-            }))
-        };
+        let mut accumulator = LlmAccumulator::default();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = sink_collector(events.clone());
 
         let done = consume_sse_text_chunk(
             "data: {\"choices\":[{\"delta\":{\"content\":\"He",
             &mut sse_buffer,
-            &mut full_content,
-            &mut tool_calls_acc,
-            &on_delta,
+            &mut accumulator,
+            &sink,
         )
         .expect("first chunk should parse");
         assert!(!done);
@@ -683,14 +559,183 @@ mod tests {
         let done = consume_sse_text_chunk(
             "llo\"},\"finish_reason\":null}]}\n\n",
             &mut sse_buffer,
-            &mut full_content,
-            &mut tool_calls_acc,
-            &on_delta,
+            &mut accumulator,
+            &sink,
         )
         .expect("second chunk should parse");
         assert!(!done);
         assert!(sse_buffer.is_empty());
-        assert_eq!(full_content, "Hello");
-        assert_eq!(deltas.lock().unwrap().as_slice(), &["Hello".to_string()]);
+        assert_eq!(accumulator.content, "Hello");
+        assert!(matches!(
+            events.lock().expect("lock").as_slice(),
+            [LlmEvent::TextDelta(text)] if text == "Hello"
+        ));
+    }
+
+    #[test]
+    fn tool_call_arguments_are_concatenated_incrementally() {
+        let mut accumulator = LlmAccumulator::default();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = sink_collector(events);
+
+        for event in apply_stream_chunk(OpenAiStreamChunk {
+            choices: vec![OpenAiStreamChoice {
+                delta: OpenAiStreamDelta {
+                    content: None,
+                    tool_calls: Some(vec![OpenAiStreamToolCall {
+                        index: 0,
+                        id: Some("call_1".to_string()),
+                        function: Some(OpenAiStreamToolCallFunction {
+                            name: Some("search".to_string()),
+                            arguments: Some("{\"q\":\"hel".to_string()),
+                        }),
+                    }]),
+                },
+                finish_reason: None,
+            }],
+        }) {
+            emit_event(event, &mut accumulator, &sink);
+        }
+
+        for event in apply_stream_chunk(OpenAiStreamChunk {
+            choices: vec![OpenAiStreamChoice {
+                delta: OpenAiStreamDelta {
+                    content: None,
+                    tool_calls: Some(vec![OpenAiStreamToolCall {
+                        index: 0,
+                        id: None,
+                        function: Some(OpenAiStreamToolCallFunction {
+                            name: None,
+                            arguments: Some("lo\"}".to_string()),
+                        }),
+                    }]),
+                },
+                finish_reason: None,
+            }],
+        }) {
+            emit_event(event, &mut accumulator, &sink);
+        }
+
+        let output = accumulator.finish();
+        assert_eq!(output.tool_calls.len(), 1);
+        assert_eq!(output.tool_calls[0].id, "call_1");
+        assert_eq!(output.tool_calls[0].name, "search");
+        assert_eq!(output.tool_calls[0].args, json!({ "q": "hello" }));
+    }
+
+    #[tokio::test]
+    async fn generate_without_sink_uses_non_streaming_path() {
+        let body = json!({
+            "choices": [{
+                "message": {
+                    "content": "hello",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "function": {
+                            "name": "search",
+                            "arguments": "{\"q\":\"hello\"}"
+                        }
+                    }]
+                }
+            }]
+        })
+        .to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (base_url, handle) = spawn_server(response);
+        let provider = OpenAiProvider::new(base_url, "sk-test".to_string(), "model-a".to_string());
+
+        let output = provider
+            .generate(
+                LlmRequest::new(
+                    vec![LlmMessage::User {
+                        content: "hi".to_string(),
+                    }],
+                    vec![],
+                    CancellationToken::new(),
+                ),
+                None,
+            )
+            .await
+            .expect("generate should succeed");
+
+        handle.await.expect("server should join");
+        assert_eq!(output.content, "hello");
+        assert_eq!(output.tool_calls.len(), 1);
+        assert_eq!(output.tool_calls[0].name, "search");
+    }
+
+    #[tokio::test]
+    async fn generate_with_sink_emits_events_and_returns_output() {
+        let body = format!(
+            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            json!({
+                "choices": [{
+                    "delta": { "content": "hel" },
+                    "finish_reason": null
+                }]
+            }),
+            json!({
+                "choices": [{
+                    "delta": {
+                        "content": "lo",
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_1",
+                            "function": {
+                                "name": "search",
+                                "arguments": "{\"q\":\"hello\"}"
+                            }
+                        }]
+                    },
+                    "finish_reason": "stop"
+                }]
+            })
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (base_url, handle) = spawn_server(response);
+        let provider = OpenAiProvider::new(base_url, "sk-test".to_string(), "model-a".to_string());
+        let events = Arc::new(Mutex::new(Vec::new()));
+
+        let output = provider
+            .generate(
+                LlmRequest::new(
+                    vec![LlmMessage::User {
+                        content: "hi".to_string(),
+                    }],
+                    vec![],
+                    CancellationToken::new(),
+                ),
+                Some(sink_collector(events.clone())),
+            )
+            .await
+            .expect("generate should succeed");
+
+        handle.await.expect("server should join");
+        let events = events.lock().expect("lock").clone();
+
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "hel")));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                LlmEvent::ToolCallDelta { index, id, name, arguments_delta }
+                if *index == 0
+                    && id.as_deref() == Some("call_1")
+                    && name.as_deref() == Some("search")
+                    && arguments_delta == "{\"q\":\"hello\"}"
+            )
+        }));
+        assert_eq!(output.content, "hello");
+        assert_eq!(output.tool_calls.len(), 1);
+        assert_eq!(output.tool_calls[0].args, json!({ "q": "hello" }));
     }
 }

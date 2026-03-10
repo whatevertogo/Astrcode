@@ -3,8 +3,10 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import type {
   AgentEventPayload,
   ConfigView,
+  CurrentModelInfo,
   DeleteProjectResult,
   Message,
+  ModelOption,
   SessionMeta,
   TestResult,
 } from '../types';
@@ -465,6 +467,33 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     await invoke('open_config_in_editor');
   }, []);
 
+  const setModel = useCallback(
+    async (profileName: string, model: string): Promise<void> => {
+      if (!isTauriEnvironment()) {
+        throw unsupportedDesktopFeature('模型切换');
+      }
+      await waitForTauriEnvironment();
+      await invoke('set_model', { profileName, model });
+    },
+    [],
+  );
+
+  const getCurrentModel = useCallback(async (): Promise<CurrentModelInfo> => {
+    if (!isTauriEnvironment()) {
+      throw unsupportedDesktopFeature('当前模型读取');
+    }
+    await waitForTauriEnvironment();
+    return invoke<CurrentModelInfo>('get_current_model');
+  }, []);
+
+  const listAvailableModels = useCallback(async (): Promise<ModelOption[]> => {
+    if (!isTauriEnvironment()) {
+      throw unsupportedDesktopFeature('模型列表读取');
+    }
+    await waitForTauriEnvironment();
+    return invoke<ModelOption[]>('list_available_models');
+  }, []);
+
   return {
     submitPrompt,
     interrupt,
@@ -480,6 +509,9 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     deleteProject,
     getConfig,
     saveActiveSelection,
+    setModel,
+    getCurrentModel,
+    listAvailableModels,
     testConnection,
     openConfigInEditor,
   };

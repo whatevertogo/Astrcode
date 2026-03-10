@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 
-use crate::config::{load_config, Profile};
+use crate::config::{
+    load_config, Profile, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI,
+};
+use crate::llm::anthropic::AnthropicProvider;
 use crate::llm::openai::OpenAiProvider;
 use crate::llm::LlmProvider;
 
@@ -14,18 +17,55 @@ pub type DynProviderFactory = Arc<dyn ProviderFactory>;
 
 pub struct ConfigFileProviderFactory;
 
+#[derive(Debug)]
+enum BuiltProvider {
+    OpenAi(OpenAiProvider),
+    Anthropic(AnthropicProvider),
+}
+
+impl BuiltProvider {
+    fn into_dyn(self) -> Arc<dyn LlmProvider> {
+        match self {
+            BuiltProvider::OpenAi(provider) => Arc::new(provider),
+            BuiltProvider::Anthropic(provider) => Arc::new(provider),
+        }
+    }
+}
+
 impl ProviderFactory for ConfigFileProviderFactory {
     fn build(&self) -> Result<Arc<dyn LlmProvider>> {
         let config = load_config()?;
         let profile = select_profile(&config.profiles, &config.active_profile)?;
-        let api_key = profile.resolve_api_key()?;
         let model = resolve_model(profile, &config.active_model)?;
+        let provider = build_provider(profile, model)?;
+        Ok(provider.into_dyn())
+    }
+}
 
-        Ok(Arc::new(OpenAiProvider::new(
-            profile.base_url.clone(),
+fn build_provider(profile: &Profile, model: String) -> Result<BuiltProvider> {
+    let api_key = profile.resolve_api_key()?;
+
+    match profile.provider_kind.as_str() {
+        PROVIDER_KIND_OPENAI => {
+            if profile.base_url.trim().is_empty() {
+                return Err(anyhow!(
+                    "openai-compatible profile '{}' 缺少 baseUrl",
+                    profile.name
+                ));
+            }
+
+            Ok(BuiltProvider::OpenAi(OpenAiProvider::new(
+                profile.base_url.clone(),
+                api_key,
+                model,
+            )))
+        }
+        PROVIDER_KIND_ANTHROPIC => Ok(BuiltProvider::Anthropic(AnthropicProvider::with_max_tokens(
             api_key,
             model,
-        )))
+            profile.max_tokens,
+        ))),
+        other => Err(anyhow!("unsupported provider_kind: {}", other)),
     }
 }
 
@@ -51,8 +91,6 @@ fn resolve_model(profile: &Profile, active_model: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use crate::config::{save_config, Config};
     use crate::test_support::TestEnvGuard;
 
@@ -93,6 +131,68 @@ mod tests {
     }
 
     #[test]
+    fn build_provider_uses_openai_branch() {
+        let profile = Profile {
+            name: "deepseek".to_string(),
+            provider_kind: PROVIDER_KIND_OPENAI.to_string(),
+            base_url: "https://example.com".to_string(),
+            api_key: Some("sk-test".to_string()),
+            models: vec!["model-a".to_string()],
+            max_tokens: 8096,
+        };
+
+        let provider = build_provider(&profile, "model-a".to_string()).expect("build should work");
+        assert!(matches!(provider, BuiltProvider::OpenAi(_)));
+    }
+
+    #[test]
+    fn build_provider_errors_when_openai_base_url_is_missing() {
+        let profile = Profile {
+            name: "deepseek".to_string(),
+            provider_kind: PROVIDER_KIND_OPENAI.to_string(),
+            base_url: "   ".to_string(),
+            api_key: Some("sk-test".to_string()),
+            models: vec!["model-a".to_string()],
+            max_tokens: Profile::default().max_tokens,
+        };
+
+        let err = build_provider(&profile, "model-a".to_string())
+            .expect_err("missing base url should fail");
+        assert!(err.to_string().contains("缺少 baseUrl"));
+    }
+
+    #[test]
+    fn build_provider_uses_anthropic_branch() {
+        let profile = Profile {
+            name: "anthropic".to_string(),
+            provider_kind: PROVIDER_KIND_ANTHROPIC.to_string(),
+            base_url: String::new(),
+            api_key: Some("sk-ant".to_string()),
+            models: vec!["claude".to_string()],
+            max_tokens: Profile::default().max_tokens,
+        };
+
+        let provider = build_provider(&profile, "claude".to_string()).expect("build should work");
+        assert!(matches!(provider, BuiltProvider::Anthropic(_)));
+    }
+
+    #[test]
+    fn build_provider_errors_when_kind_is_unknown() {
+        let profile = Profile {
+            name: "custom".to_string(),
+            provider_kind: "unknown".to_string(),
+            base_url: "https://example.com".to_string(),
+            api_key: Some("sk-test".to_string()),
+            models: vec!["model-a".to_string()],
+            max_tokens: Profile::default().max_tokens,
+        };
+
+        let err =
+            build_provider(&profile, "model-a".to_string()).expect_err("unknown kind should fail");
+        assert!(err.to_string().contains("unsupported provider_kind"));
+    }
+
+    #[test]
     fn config_file_provider_factory_prefers_active_model_when_present() {
         let _guard = TestEnvGuard::new();
 
@@ -107,7 +207,7 @@ mod tests {
         };
         save_config(&config).expect("config should save");
 
-        let factory = Arc::new(ConfigFileProviderFactory);
+        let factory = ConfigFileProviderFactory;
         let provider = factory.build();
 
         assert!(
@@ -131,7 +231,7 @@ mod tests {
         };
         save_config(&config).expect("config should save");
 
-        let factory = Arc::new(ConfigFileProviderFactory);
+        let factory = ConfigFileProviderFactory;
         let provider = factory.build();
 
         assert!(
@@ -154,7 +254,7 @@ mod tests {
         };
         save_config(&config).expect("config should save");
 
-        let factory = Arc::new(ConfigFileProviderFactory);
+        let factory = ConfigFileProviderFactory;
         let err = match factory.build() {
             Ok(_) => panic!("empty model list should fail"),
             Err(err) => err,

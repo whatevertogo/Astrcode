@@ -13,6 +13,11 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+pub const PROVIDER_KIND_OPENAI: &str = "openai-compatible";
+pub const PROVIDER_KIND_ANTHROPIC: &str = "anthropic";
+pub const ANTHROPIC_MESSAGES_API_URL: &str = "https://api.anthropic.com/v1/messages";
+pub const ANTHROPIC_VERSION: &str = "2023-06-01";
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
@@ -32,9 +37,9 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             version: "1".to_string(),
-            active_profile: "default".to_string(),
+            active_profile: "deepseek".to_string(),
             active_model: "deepseek-chat".to_string(),
-            profiles: vec![Profile::default()],
+            profiles: default_profiles(),
         }
     }
 }
@@ -54,16 +59,19 @@ pub struct Profile {
     pub api_key: Option<String>,
     #[serde(default = "default_profile_models")]
     pub models: Vec<String>,
+    #[serde(default = "default_profile_max_tokens")]
+    pub max_tokens: u32,
 }
 
 impl Default for Profile {
     fn default() -> Self {
         Self {
-            name: "default".to_string(),
-            provider_kind: "openai-compatible".to_string(),
+            name: "deepseek".to_string(),
+            provider_kind: PROVIDER_KIND_OPENAI.to_string(),
             base_url: "https://api.deepseek.com".to_string(),
             api_key: Some("DEEPSEEK_API_KEY".to_string()),
             models: vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
+            max_tokens: 8096,
         }
     }
 }
@@ -116,6 +124,30 @@ fn default_config_profiles() -> Vec<Profile> {
     Config::default().profiles
 }
 
+fn default_profiles() -> Vec<Profile> {
+    vec![
+        Profile {
+            name: "deepseek".to_string(),
+            provider_kind: PROVIDER_KIND_OPENAI.to_string(),
+            base_url: "https://api.deepseek.com".to_string(),
+            api_key: Some("DEEPSEEK_API_KEY".to_string()),
+            models: vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
+            max_tokens: 8096,
+        },
+        Profile {
+            name: "anthropic".to_string(),
+            provider_kind: PROVIDER_KIND_ANTHROPIC.to_string(),
+            base_url: String::new(),
+            api_key: Some("ANTHROPIC_API_KEY".to_string()),
+            models: vec![
+                "claude-sonnet-4-5-20251001".to_string(),
+                "claude-opus-4-5".to_string(),
+            ],
+            max_tokens: 8096,
+        },
+    ]
+}
+
 fn default_profile_name() -> String {
     Profile::default().name
 }
@@ -134,6 +166,10 @@ fn default_profile_api_key() -> Option<String> {
 
 fn default_profile_models() -> Vec<String> {
     Profile::default().models
+}
+
+fn default_profile_max_tokens() -> u32 {
+    Profile::default().max_tokens
 }
 
 pub fn config_path() -> Result<PathBuf> {
@@ -256,7 +292,10 @@ fn save_config_to_path(path: &Path, config: &Config) -> Result<()> {
 }
 
 pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResult> {
-    let provider = profile.base_url.trim_end_matches('/').to_string();
+    let provider = match profile.provider_kind.as_str() {
+        PROVIDER_KIND_ANTHROPIC => ANTHROPIC_MESSAGES_API_URL.to_string(),
+        _ => profile.base_url.trim_end_matches('/').to_string(),
+    };
     let api_key = match profile.resolve_api_key() {
         Ok(api_key) => api_key,
         Err(err) => {
@@ -269,26 +308,60 @@ pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResul
         }
     };
 
-    let endpoint = format!("{}/chat/completions", provider);
-    let response = reqwest::Client::new()
-        .post(endpoint)
-        .bearer_auth(api_key)
-        .timeout(Duration::from_secs(10))
-        .json(&json!({
-            "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": "hi"
-                }
-            ],
-            "max_tokens": 1,
-            "stream": false
-        }))
-        .send()
-        .await;
+    match profile.provider_kind.as_str() {
+        PROVIDER_KIND_OPENAI => {
+            let endpoint = format!("{}/chat/completions", provider);
+            let response = reqwest::Client::new()
+                .post(endpoint)
+                .bearer_auth(api_key)
+                .timeout(Duration::from_secs(10))
+                .json(&json!({
+                    "model": model,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "hi"
+                        }
+                    ],
+                    "max_tokens": 1,
+                    "stream": false
+                }))
+                .send()
+                .await;
 
-    let result = match response {
+            Ok(connection_result_from_response(response, provider, model))
+        }
+        PROVIDER_KIND_ANTHROPIC => {
+            let response = reqwest::Client::new()
+                .post(&provider)
+                .header("x-api-key", api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .timeout(Duration::from_secs(10))
+                .json(&json!({
+                    "model": model,
+                    "max_tokens": 1,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "hi"
+                        }
+                    ]
+                }))
+                .send()
+                .await;
+
+            Ok(connection_result_from_response(response, provider, model))
+        }
+        other => Err(anyhow!("unsupported provider_kind: {}", other)),
+    }
+}
+
+fn connection_result_from_response(
+    response: std::result::Result<reqwest::Response, reqwest::Error>,
+    provider: String,
+    model: &str,
+) -> TestResult {
+    match response {
         Ok(response) => {
             let status = response.status();
             if status.is_success() {
@@ -326,9 +399,7 @@ pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResul
             model: model.to_string(),
             error: Some(err.to_string()),
         },
-    };
-
-    Ok(result)
+    }
 }
 
 pub fn open_config_in_editor() -> Result<()> {
@@ -563,10 +634,11 @@ mod tests {
             active_model: "gpt-4o-mini".to_string(),
             profiles: vec![Profile {
                 name: "custom".to_string(),
-                provider_kind: "openai-compatible".to_string(),
+                provider_kind: PROVIDER_KIND_OPENAI.to_string(),
                 base_url: "https://example.com".to_string(),
                 api_key: Some("MY_TEST_KEY".to_string()),
                 models: vec!["gpt-4o-mini".to_string()],
+                max_tokens: 8096,
             }],
         };
 

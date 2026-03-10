@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -8,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::action::LlmMessage;
 use crate::events::StorageEvent;
-use crate::llm::DeltaCallback;
+use crate::llm::{EventSink, LlmEvent, LlmRequest};
 use crate::projection::AgentState;
 use crate::provider_factory::DynProviderFactory;
 use crate::tools::registry::ToolRegistry;
@@ -77,47 +76,48 @@ impl AgentLoop {
             }
 
             let tool_definitions = self.tools.definitions();
+            let (event_tx, mut event_rx) = mpsc::unbounded_channel::<LlmEvent>();
+            let sink: EventSink = std::sync::Arc::new(move |event| {
+                let _ = event_tx.send(event);
+            });
+            let request = LlmRequest::new(messages.clone(), tool_definitions, cancel.child_token());
 
-            // Create a channel to receive delta tokens
-            let (delta_tx, mut delta_rx) = mpsc::unbounded_channel::<String>();
+            let output = {
+                let generate_future = provider.generate(request, Some(sink));
+                tokio::pin!(generate_future);
 
-            // Create the callback that sends deltas through the channel
-            let on_delta: DeltaCallback = Arc::new(std::sync::Mutex::new(move |delta: String| {
-                let _ = delta_tx.send(delta);
-            }));
+                // Track if channel is still open to avoid spinning when sender is dropped
+                let mut event_rx_open = true;
 
-            let stream_result = {
-                let stream_future = provider.stream_complete(
-                    &messages,
-                    &tool_definitions,
-                    cancel.child_token(),
-                    on_delta,
-                );
-                tokio::pin!(stream_future);
-
-                let stream_result = loop {
+                let output = loop {
                     tokio::select! {
-                        result = &mut stream_future => break result,
-                        maybe_delta = delta_rx.recv() => {
-                            match maybe_delta {
-                                Some(delta) => {
-                                    eprintln!("[delta] {}", delta);
-                                    on_event(StorageEvent::AssistantDelta { token: delta });
+                        result = &mut generate_future => break result,
+                        maybe_event = event_rx.recv(), if event_rx_open => {
+                            match maybe_event {
+                                Some(LlmEvent::TextDelta(text)) => {
+                                    eprintln!("[delta] {}", text);
+                                    on_event(StorageEvent::AssistantDelta { token: text });
                                 }
-                                None => continue,
+                                Some(LlmEvent::ToolCallDelta { .. }) => {}
+                                None => {
+                                    // Sender dropped, disable this branch to avoid spinning
+                                    event_rx_open = false;
+                                }
                             }
                         }
                     }
                 };
 
-                while let Ok(delta) = delta_rx.try_recv() {
-                    on_event(StorageEvent::AssistantDelta { token: delta });
+                while let Ok(event) = event_rx.try_recv() {
+                    if let LlmEvent::TextDelta(text) = event {
+                        on_event(StorageEvent::AssistantDelta { token: text });
+                    }
                 }
 
-                stream_result
+                output
             };
 
-            let response = match stream_result {
+            let output = match output {
                 Ok(response) => response,
                 Err(error) => {
                     if cancel.is_cancelled() {
@@ -140,16 +140,16 @@ impl AgentLoop {
                 }
             };
 
-            if !response.content.is_empty() || !response.tool_calls.is_empty() {
+            if !output.content.is_empty() || !output.tool_calls.is_empty() {
                 on_event(StorageEvent::AssistantFinal {
-                    content: response.content.clone(),
+                    content: output.content.clone(),
                 });
             }
 
-            let tool_calls = response.tool_calls.clone();
+            let tool_calls = output.tool_calls.clone();
             messages.push(LlmMessage::Assistant {
-                content: response.content,
-                tool_calls: response.tool_calls,
+                content: output.content,
+                tool_calls: output.tool_calls,
             });
 
             if tool_calls.is_empty() {
@@ -217,11 +217,9 @@ mod tests {
     use tokio::time::{sleep, Duration};
     use tokio_util::sync::CancellationToken;
 
-    use crate::action::{
-        LlmMessage, LlmResponse, ToolCallRequest, ToolDefinition, ToolExecutionResult,
-    };
+    use crate::action::{LlmMessage, ToolCallRequest, ToolDefinition, ToolExecutionResult};
     use crate::events::StorageEvent;
-    use crate::llm::{DeltaCallback, LlmProvider};
+    use crate::llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
     use crate::projection::AgentState;
     use crate::provider_factory::ProviderFactory;
     use crate::tools::registry::ToolRegistry;
@@ -242,43 +240,31 @@ mod tests {
     }
 
     struct ScriptedProvider {
-        responses: Mutex<VecDeque<LlmResponse>>,
+        responses: Mutex<VecDeque<LlmOutput>>,
         delay: Duration,
     }
 
     #[async_trait]
     impl LlmProvider for ScriptedProvider {
-        async fn complete(
-            &self,
-            _messages: &[LlmMessage],
-            _tools: &[ToolDefinition],
-            cancel: CancellationToken,
-        ) -> Result<LlmResponse> {
+        async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
             if self.delay > Duration::from_millis(0) {
                 tokio::select! {
-                    _ = cancel.cancelled() => return Err(anyhow!("cancelled")),
+                    _ = request.cancel.cancelled() => return Err(anyhow!("cancelled")),
                     _ = sleep(self.delay) => {}
                 }
             }
-            self.responses
+            let response = self.responses
                 .lock()
                 .expect("lock should work")
                 .pop_front()
-                .ok_or_else(|| anyhow!("no scripted response"))
-        }
+                .ok_or_else(|| anyhow!("no scripted response"))?;
 
-        async fn stream_complete(
-            &self,
-            messages: &[LlmMessage],
-            tools: &[ToolDefinition],
-            cancel: CancellationToken,
-            on_delta: DeltaCallback,
-        ) -> Result<LlmResponse> {
-            let response = self.complete(messages, tools, cancel).await?;
-            for delta in response.content.chars() {
-                let mut callback = on_delta.lock().expect("delta callback lock");
-                callback(delta.to_string());
+            if let Some(sink) = sink {
+                for delta in response.content.chars() {
+                    sink(LlmEvent::TextDelta(delta.to_string()));
+                }
             }
+
             Ok(response)
         }
     }
@@ -288,7 +274,7 @@ mod tests {
     struct QuickTool;
 
     struct StreamingProvider {
-        response: LlmResponse,
+        response: LlmOutput,
         per_delta_delay: Duration,
     }
 
@@ -304,30 +290,16 @@ mod tests {
 
     #[async_trait]
     impl LlmProvider for StreamingProvider {
-        async fn complete(
-            &self,
-            _messages: &[LlmMessage],
-            _tools: &[ToolDefinition],
-            _cancel: CancellationToken,
-        ) -> Result<LlmResponse> {
-            Ok(self.response.clone())
-        }
+        async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
+            let Some(sink) = sink else {
+                return Ok(self.response.clone());
+            };
 
-        async fn stream_complete(
-            &self,
-            _messages: &[LlmMessage],
-            _tools: &[ToolDefinition],
-            cancel: CancellationToken,
-            on_delta: DeltaCallback,
-        ) -> Result<LlmResponse> {
             for delta in self.response.content.chars() {
-                {
-                    let mut callback = on_delta.lock().expect("delta callback lock");
-                    callback(delta.to_string());
-                }
+                sink(LlmEvent::TextDelta(delta.to_string()));
 
                 tokio::select! {
-                    _ = cancel.cancelled() => return Err(anyhow!("cancelled")),
+                    _ = request.cancel.cancelled() => return Err(anyhow!("cancelled")),
                     _ = sleep(self.per_delta_delay) => {}
                 }
             }
@@ -399,7 +371,7 @@ mod tests {
     async fn tool_events_are_ordered_and_turn_finishes() {
         let provider = Arc::new(ScriptedProvider {
             responses: Mutex::new(VecDeque::from([
-                LlmResponse {
+                LlmOutput {
                     content: "".to_string(),
                     tool_calls: vec![ToolCallRequest {
                         id: "call1".to_string(),
@@ -407,7 +379,7 @@ mod tests {
                         args: json!({}),
                     }],
                 },
-                LlmResponse {
+                LlmOutput {
                     content: "done".to_string(),
                     tool_calls: vec![],
                 },
@@ -452,7 +424,7 @@ mod tests {
     #[tokio::test]
     async fn interrupt_emits_error_and_turn_done() {
         let provider = Arc::new(ScriptedProvider {
-            responses: Mutex::new(VecDeque::from([LlmResponse {
+            responses: Mutex::new(VecDeque::from([LlmOutput {
                 content: "".to_string(),
                 tool_calls: vec![ToolCallRequest {
                     id: "call-slow".to_string(),
@@ -504,7 +476,7 @@ mod tests {
     #[tokio::test]
     async fn deltas_emit_before_stream_completion() {
         let provider = Arc::new(StreamingProvider {
-            response: LlmResponse {
+            response: LlmOutput {
                 content: "streamed".to_string(),
                 tool_calls: vec![],
             },
@@ -561,7 +533,7 @@ mod tests {
     #[tokio::test]
     async fn reaching_max_steps_does_not_emit_error_event() {
         let scripted = (0..8)
-            .map(|idx| LlmResponse {
+            .map(|idx| LlmOutput {
                 content: format!("step-{idx}"),
                 tool_calls: vec![ToolCallRequest {
                     id: format!("call-{idx}"),

@@ -30,6 +30,9 @@ fn main() {
             commands::delete_project,
             commands::get_config,
             commands::save_active_selection,
+            commands::set_model,
+            commands::get_current_model,
+            commands::list_available_models,
             commands::test_connection,
             commands::open_config_in_editor,
         ])

@@ -148,16 +148,16 @@ mod tests {
     use tokio::task::JoinHandle;
     use tokio_util::sync::CancellationToken;
 
-    use crate::action::{LlmMessage, LlmResponse, ToolDefinition};
+    use crate::action::LlmMessage;
     use crate::config::{save_config, Config};
-    use crate::llm::{DeltaCallback, LlmProvider};
+    use crate::llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
     use crate::provider_factory::ProviderFactory;
     use crate::test_support::TestEnvGuard;
 
     use super::*;
 
     struct MockProvider {
-        responses: Mutex<VecDeque<LlmResponse>>,
+        responses: Mutex<VecDeque<LlmOutput>>,
     }
 
     struct MockProviderFactory {
@@ -166,31 +166,23 @@ mod tests {
 
     #[async_trait]
     impl LlmProvider for MockProvider {
-        async fn complete(
-            &self,
-            _messages: &[LlmMessage],
-            _tools: &[ToolDefinition],
-            _cancel: CancellationToken,
-        ) -> anyhow::Result<LlmResponse> {
-            self.responses
+        async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> anyhow::Result<LlmOutput> {
+            let response = self.responses
                 .lock()
                 .expect("lock")
                 .pop_front()
-                .ok_or_else(|| anyhow!("no responses"))
-        }
+                .ok_or_else(|| anyhow!("no responses"))?;
 
-        async fn stream_complete(
-            &self,
-            messages: &[LlmMessage],
-            tools: &[ToolDefinition],
-            cancel: CancellationToken,
-            on_delta: DeltaCallback,
-        ) -> anyhow::Result<LlmResponse> {
-            let response = self.complete(messages, tools, cancel).await?;
-            for delta in response.content.chars() {
-                let mut callback = on_delta.lock().expect("delta callback lock");
-                callback(delta.to_string());
+            if request.cancel.is_cancelled() {
+                return Err(anyhow!("cancelled"));
             }
+
+            if let Some(sink) = sink {
+                for delta in response.content.chars() {
+                    sink(LlmEvent::TextDelta(delta.to_string()));
+                }
+            }
+
             Ok(response)
         }
     }
@@ -203,7 +195,7 @@ mod tests {
 
     fn make_test_runtime_with_mock_provider(
         dir: &std::path::Path,
-        responses: Vec<LlmResponse>,
+        responses: Vec<LlmOutput>,
     ) -> AgentRuntime {
         let session_id = generate_session_id();
         let path = dir.join(format!("session-{session_id}.jsonl"));
@@ -353,7 +345,7 @@ mod tests {
     #[tokio::test]
     async fn submit_appends_events_and_load_can_read_them() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let responses = vec![LlmResponse {
+        let responses = vec![LlmOutput {
             content: "Hello!".into(),
             tool_calls: vec![],
         }];
@@ -413,7 +405,7 @@ mod tests {
     #[tokio::test]
     async fn submit_does_not_persist_assistant_deltas() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let responses = vec![LlmResponse {
+        let responses = vec![LlmOutput {
             content: "streamed text".into(),
             tool_calls: vec![],
         }];
