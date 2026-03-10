@@ -54,6 +54,8 @@ pub struct Profile {
     pub api_key: Option<String>,
     #[serde(default = "default_profile_models")]
     pub models: Vec<String>,
+    #[serde(default = "default_profile_max_tokens")]
+    pub max_tokens: u32,
 }
 
 impl Default for Profile {
@@ -64,6 +66,7 @@ impl Default for Profile {
             base_url: "https://api.deepseek.com".to_string(),
             api_key: Some("DEEPSEEK_API_KEY".to_string()),
             models: vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
+            max_tokens: 8096,
         }
     }
 }
@@ -124,6 +127,7 @@ fn default_profiles() -> Vec<Profile> {
             base_url: "https://api.deepseek.com".to_string(),
             api_key: Some("DEEPSEEK_API_KEY".to_string()),
             models: vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
+            max_tokens: 8096,
         },
         Profile {
             name: "anthropic".to_string(),
@@ -134,6 +138,7 @@ fn default_profiles() -> Vec<Profile> {
                 "claude-sonnet-4-5-20251001".to_string(),
                 "claude-opus-4-5".to_string(),
             ],
+            max_tokens: 8096,
         },
     ]
 }
@@ -156,6 +161,10 @@ fn default_profile_api_key() -> Option<String> {
 
 fn default_profile_models() -> Vec<String> {
     Profile::default().models
+}
+
+fn default_profile_max_tokens() -> u32 {
+    Profile::default().max_tokens
 }
 
 pub fn config_path() -> Result<PathBuf> {
@@ -296,7 +305,6 @@ pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResul
 
     match profile.provider_kind.as_str() {
         "openai-compatible" => {
-            let provider = profile.base_url.trim_end_matches('/').to_string();
             let endpoint = format!("{}/chat/completions", provider);
             let response = reqwest::Client::new()
                 .post(endpoint)
@@ -319,7 +327,6 @@ pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResul
             Ok(connection_result_from_response(response, provider, model))
         }
         "anthropic" => {
-            let provider = "https://api.anthropic.com/v1/messages".to_string();
             let response = reqwest::Client::new()
                 .post(&provider)
                 .header("x-api-key", api_key)
@@ -626,6 +633,7 @@ mod tests {
                 base_url: "https://example.com".to_string(),
                 api_key: Some("MY_TEST_KEY".to_string()),
                 models: vec!["gpt-4o-mini".to_string()],
+                max_tokens: 8096,
             }],
         };
 

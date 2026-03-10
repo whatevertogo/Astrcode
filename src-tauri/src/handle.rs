@@ -372,7 +372,11 @@ impl AgentHandle {
             return Err(format!("profile '{}' has no models", profile_name));
         }
 
-        if !profile.models.iter().any(|profile_model| profile_model == &model) {
+        if !profile
+            .models
+            .iter()
+            .any(|profile_model| profile_model == &model)
+        {
             return Err(format!(
                 "model '{}' does not exist in profile '{}'",
                 model, profile_name
@@ -386,6 +390,7 @@ impl AgentHandle {
 
     pub async fn get_current_model(&self) -> Result<CurrentModelInfo, String> {
         let config = load_config().map_err(|e| e.to_string())?;
+
         let profile = config
             .profiles
             .iter()
@@ -393,8 +398,15 @@ impl AgentHandle {
             .or_else(|| config.profiles.first())
             .ok_or_else(|| "no profiles configured".to_string())?;
 
-        let model = if profile.models.iter().any(|item| item == &config.active_model) {
-            config.active_model
+        let profile_name = profile.name.clone();
+        let provider_kind = profile.provider_kind.clone();
+
+        let model = if profile
+            .models
+            .iter()
+            .any(|item| item == &config.active_model)
+        {
+            config.active_model.clone()
         } else {
             profile
                 .models
@@ -404,9 +416,9 @@ impl AgentHandle {
         };
 
         Ok(CurrentModelInfo {
-            profile_name: profile.name.clone(),
+            profile_name,
             model,
-            provider_kind: profile.provider_kind.clone(),
+            provider_kind,
         })
     }
 
@@ -1003,5 +1015,37 @@ mod tests {
             .expect_err("missing model should fail");
 
         assert!(err.contains("model 'model-b' does not exist in profile 'deepseek'"));
+    }
+
+    #[tokio::test]
+    async fn get_current_model_falls_back_without_writing_config() {
+        let _guard = AppHomeGuard::new();
+        let config = Config {
+            active_profile: "missing".to_string(),
+            active_model: "missing-model".to_string(),
+            profiles: vec![Profile {
+                name: "deepseek".to_string(),
+                provider_kind: "openai-compatible".to_string(),
+                models: vec!["model-a".to_string(), "model-b".to_string()],
+                api_key: Some("sk-test".to_string()),
+                ..Profile::default()
+            }],
+            ..Config::default()
+        };
+        save_config(&config).expect("config should save");
+
+        let handle = AgentHandle::new().expect("handle should build");
+        let current = handle
+            .get_current_model()
+            .await
+            .expect("get_current_model should succeed");
+
+        assert_eq!(current.profile_name, "deepseek");
+        assert_eq!(current.model, "model-a");
+        assert_eq!(current.provider_kind, "openai-compatible");
+
+        let persisted = load_config().expect("config should still load");
+        assert_eq!(persisted.active_profile, "missing");
+        assert_eq!(persisted.active_model, "missing-model");
     }
 }

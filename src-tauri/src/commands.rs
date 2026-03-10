@@ -1,9 +1,7 @@
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
 
-use crate::handle::{
-    AgentHandle, ConfigView, CurrentModelInfo, ModelOption, SessionMessage,
-};
+use crate::handle::{AgentHandle, ConfigView, CurrentModelInfo, ModelOption, SessionMessage};
 use astrcode_core::{DeleteProjectResult, SessionMeta, TestResult};
 use ipc::AgentEvent;
 
@@ -119,9 +117,7 @@ pub async fn set_model(
 }
 
 #[tauri::command]
-pub async fn get_current_model(
-    state: State<'_, AgentHandle>,
-) -> Result<CurrentModelInfo, String> {
+pub async fn get_current_model(state: State<'_, AgentHandle>) -> Result<CurrentModelInfo, String> {
     state.get_current_model().await
 }
 

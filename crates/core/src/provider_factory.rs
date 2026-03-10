@@ -61,7 +61,11 @@ fn build_provider(profile: &Profile, model: String) -> Result<BuiltProvider> {
                 model,
             )))
         }
-        KIND_ANTHROPIC => Ok(BuiltProvider::Anthropic(AnthropicProvider::new(api_key, model))),
+        KIND_ANTHROPIC => Ok(BuiltProvider::Anthropic(AnthropicProvider::with_max_tokens(
+            api_key,
+            model,
+            profile.max_tokens,
+        ))),
         other => Err(anyhow!("unsupported provider_kind: {}", other)),
     }
 }
@@ -135,6 +139,7 @@ mod tests {
             base_url: "https://example.com".to_string(),
             api_key: Some("sk-test".to_string()),
             models: vec!["model-a".to_string()],
+            max_tokens: 8096,
         };
 
         let provider = build_provider(&profile, "model-a".to_string()).expect("build should work");
@@ -149,6 +154,7 @@ mod tests {
             base_url: "   ".to_string(),
             api_key: Some("sk-test".to_string()),
             models: vec!["model-a".to_string()],
+            max_tokens: Profile::default().max_tokens,
         };
 
         let err = build_provider(&profile, "model-a".to_string())
@@ -164,6 +170,7 @@ mod tests {
             base_url: String::new(),
             api_key: Some("sk-ant".to_string()),
             models: vec!["claude".to_string()],
+            max_tokens: Profile::default().max_tokens,
         };
 
         let provider = build_provider(&profile, "claude".to_string()).expect("build should work");
@@ -178,6 +185,7 @@ mod tests {
             base_url: "https://example.com".to_string(),
             api_key: Some("sk-test".to_string()),
             models: vec!["model-a".to_string()],
+            max_tokens: Profile::default().max_tokens,
         };
 
         let err =

@@ -12,28 +12,34 @@ use crate::llm::{EventSink, LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, Ll
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
-const MAX_TOKENS: u32 = 8096;
+const DEFAULT_MAX_TOKENS: u32 = 8096;
 
 #[derive(Clone, Debug)]
 pub struct AnthropicProvider {
     client: reqwest::Client,
     api_key: String,
     model: String,
+    max_tokens: u32,
 }
 
 impl AnthropicProvider {
     pub fn new(api_key: String, model: String) -> Self {
+        Self::with_max_tokens(api_key, model, DEFAULT_MAX_TOKENS)
+    }
+
+    pub fn with_max_tokens(api_key: String, model: String, max_tokens: u32) -> Self {
         Self {
             client: reqwest::Client::new(),
             api_key,
             model,
+            max_tokens,
         }
     }
 
     fn build_request(&self, messages: &[LlmMessage], tools: &[ToolDefinition], stream: bool) -> AnthropicRequest {
         AnthropicRequest {
             model: self.model.clone(),
-            max_tokens: MAX_TOKENS,
+            max_tokens: self.max_tokens,
             messages: to_anthropic_messages(messages),
             tools: if tools.is_empty() {
                 None

@@ -9,8 +9,12 @@ interface ModelSelectorProps {
   setModel: (profileName: string, model: string) => Promise<void>;
 }
 
-function optionValue(profileName: string, model: string): string {
-  return `${profileName}::${model}`;
+/**
+ * Creates a stable key for an option using its index in the flattened options array.
+ * This avoids issues with special characters in profile/model names.
+ */
+function optionKey(index: number): string {
+  return String(index);
 }
 
 export default function ModelSelector({
@@ -79,29 +83,54 @@ export default function ModelSelector({
     };
   }, [getCurrentModel, listAvailableModels, refreshKey]);
 
-  const groupedOptions = useMemo(() => {
-    const groups = new Map<string, ModelOption[]>();
+  // Flatten grouped options with indices for stable key lookup
+  const flattenedOptions = useMemo(() => {
+    const result: Array<{ option: ModelOption; index: number; profileName: string }> = [];
     for (const option of options) {
-      const group = groups.get(option.profileName) ?? [];
-      group.push(option);
-      groups.set(option.profileName, group);
+      result.push({
+        option,
+        index: result.length,
+        profileName: option.profileName,
+      });
     }
-    return Array.from(groups.entries());
+    return result;
   }, [options]);
 
-  const selectedValue = currentModel
-    ? optionValue(currentModel.profileName, currentModel.model)
-    : '';
+  const groupedOptions = useMemo(() => {
+    const groups = new Map<string, Array<{ option: ModelOption; index: number }>>();
+    for (const { option, index, profileName } of flattenedOptions) {
+      const group = groups.get(profileName) ?? [];
+      group.push({ option, index });
+      groups.set(profileName, group);
+    }
+    return Array.from(groups.entries());
+  }, [flattenedOptions]);
+
+  // Find the index of the currently selected model
+  const selectedIndex = useMemo(() => {
+    if (currentModel == null) {
+      return -1;
+    }
+    return flattenedOptions.findIndex(
+      (item) =>
+        item.option.profileName === currentModel.profileName &&
+        item.option.model === currentModel.model
+    );
+  }, [currentModel, flattenedOptions]);
+
+  const selectedValue = selectedIndex >= 0 ? optionKey(selectedIndex) : '';
 
   const handleChange = async (event: React.ChangeEvent<HTMLSelectElement>) => {
-    const [profileName, model] = event.target.value.split('::');
-    if (!profileName || !model) {
+    const index = parseInt(event.target.value, 10);
+    if (isNaN(index) || index < 0 || index >= flattenedOptions.length) {
       return;
     }
 
+    const { option } = flattenedOptions[index];
+
     setSaving(true);
     try {
-      await setModel(profileName, model);
+      await setModel(option.profileName, option.model);
       const refreshed = await getCurrentModel();
       setCurrentModel(refreshed);
       setError(null);
@@ -128,10 +157,10 @@ export default function ModelSelector({
         )}
         {groupedOptions.map(([profileName, profileOptions]) => (
           <optgroup key={profileName} label={profileName}>
-            {profileOptions.map((option) => (
+            {profileOptions.map(({ option, index }) => (
               <option
-                key={optionValue(option.profileName, option.model)}
-                value={optionValue(option.profileName, option.model)}
+                key={optionKey(index)}
+                value={optionKey(index)}
               >
                 {`${option.model} · ${option.providerKind}`}
               </option>
