@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 
-use crate::config::{
-    load_config, Profile, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI,
-};
+use crate::config::{load_config, Profile, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI};
 use crate::llm::anthropic::AnthropicProvider;
 use crate::llm::openai::OpenAiProvider;
 use crate::llm::LlmProvider;
@@ -60,11 +58,9 @@ fn build_provider(profile: &Profile, model: String) -> Result<BuiltProvider> {
                 model,
             )))
         }
-        PROVIDER_KIND_ANTHROPIC => Ok(BuiltProvider::Anthropic(AnthropicProvider::with_max_tokens(
-            api_key,
-            model,
-            profile.max_tokens,
-        ))),
+        PROVIDER_KIND_ANTHROPIC => Ok(BuiltProvider::Anthropic(
+            AnthropicProvider::with_max_tokens(api_key, model, profile.max_tokens),
+        )),
         other => Err(anyhow!("unsupported provider_kind: {}", other)),
     }
 }

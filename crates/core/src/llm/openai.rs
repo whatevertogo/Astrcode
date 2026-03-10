@@ -93,11 +93,10 @@ impl LlmProvider for OpenAiProvider {
                     .json()
                     .await
                     .context("failed to parse openai-compatible response")?;
-                let first_choice = parsed
-                    .choices
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| anyhow!("openai-compatible response did not include choices"))?;
+                let first_choice =
+                    parsed.choices.into_iter().next().ok_or_else(|| {
+                        anyhow!("openai-compatible response did not include choices")
+                    })?;
                 Ok(message_to_output(first_choice.message))
             }
             Some(sink) => {

@@ -166,8 +166,13 @@ mod tests {
 
     #[async_trait]
     impl LlmProvider for MockProvider {
-        async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> anyhow::Result<LlmOutput> {
-            let response = self.responses
+        async fn generate(
+            &self,
+            request: LlmRequest,
+            sink: Option<EventSink>,
+        ) -> anyhow::Result<LlmOutput> {
+            let response = self
+                .responses
                 .lock()
                 .expect("lock")
                 .pop_front()

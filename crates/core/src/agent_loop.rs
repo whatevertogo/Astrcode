@@ -246,14 +246,19 @@ mod tests {
 
     #[async_trait]
     impl LlmProvider for ScriptedProvider {
-        async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
+        async fn generate(
+            &self,
+            request: LlmRequest,
+            sink: Option<EventSink>,
+        ) -> Result<LlmOutput> {
             if self.delay > Duration::from_millis(0) {
                 tokio::select! {
                     _ = request.cancel.cancelled() => return Err(anyhow!("cancelled")),
                     _ = sleep(self.delay) => {}
                 }
             }
-            let response = self.responses
+            let response = self
+                .responses
                 .lock()
                 .expect("lock should work")
                 .pop_front()
@@ -290,7 +295,11 @@ mod tests {
 
     #[async_trait]
     impl LlmProvider for StreamingProvider {
-        async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
+        async fn generate(
+            &self,
+            request: LlmRequest,
+            sink: Option<EventSink>,
+        ) -> Result<LlmOutput> {
             let Some(sink) = sink else {
                 return Ok(self.response.clone());
             };

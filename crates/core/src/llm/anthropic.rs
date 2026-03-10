@@ -36,7 +36,12 @@ impl AnthropicProvider {
         }
     }
 
-    fn build_request(&self, messages: &[LlmMessage], tools: &[ToolDefinition], stream: bool) -> AnthropicRequest {
+    fn build_request(
+        &self,
+        messages: &[LlmMessage],
+        tools: &[ToolDefinition],
+        stream: bool,
+    ) -> AnthropicRequest {
         AnthropicRequest {
             model: self.model.clone(),
             max_tokens: self.max_tokens,
@@ -120,7 +125,8 @@ impl LlmProvider for AnthropicProvider {
                     let chunk_text = std::str::from_utf8(&bytes)
                         .context("anthropic response stream was not valid utf-8")?;
 
-                    if consume_sse_text_chunk(chunk_text, &mut sse_buffer, &mut accumulator, &sink)? {
+                    if consume_sse_text_chunk(chunk_text, &mut sse_buffer, &mut accumulator, &sink)?
+                    {
                         return Ok(accumulator.finish());
                     }
                 }
@@ -152,11 +158,15 @@ fn to_anthropic_messages(messages: &[LlmMessage]) -> Vec<AnthropicMessage> {
                         text: content.clone(),
                     });
                 }
-                blocks.extend(tool_calls.iter().map(|call| AnthropicContentBlock::ToolUse {
-                    id: call.id.clone(),
-                    name: call.name.clone(),
-                    input: call.args.clone(),
-                }));
+                blocks.extend(
+                    tool_calls
+                        .iter()
+                        .map(|call| AnthropicContentBlock::ToolUse {
+                            id: call.id.clone(),
+                            name: call.name.clone(),
+                            input: call.args.clone(),
+                        }),
+                );
 
                 AnthropicMessage {
                     role: "assistant".to_string(),
@@ -260,9 +270,15 @@ fn parse_sse_block(block: &str) -> Result<Option<(String, Value)>> {
     }
 
     let data = data_lines.join("\n");
-    let payload = serde_json::from_str::<Value>(&data).context("failed to parse anthropic sse payload")?;
+    let payload =
+        serde_json::from_str::<Value>(&data).context("failed to parse anthropic sse payload")?;
     let event_type = event_type
-        .or_else(|| payload.get("type").and_then(Value::as_str).map(str::to_string))
+        .or_else(|| {
+            payload
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .unwrap_or_default();
 
     Ok(Some((event_type, payload)))
@@ -298,7 +314,10 @@ fn process_sse_block(
                     LlmEvent::ToolCallDelta {
                         index,
                         id: block.get("id").and_then(Value::as_str).map(str::to_string),
-                        name: block.get("name").and_then(Value::as_str).map(str::to_string),
+                        name: block
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
                         arguments_delta: String::new(),
                     },
                     accumulator,
@@ -414,9 +433,18 @@ struct AnthropicMessage {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AnthropicContentBlock {
-    Text { text: String },
-    ToolUse { id: String, name: String, input: Value },
-    ToolResult { tool_use_id: String, content: String },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -484,10 +512,8 @@ mod tests {
         }]);
 
         match &messages[0].content[..] {
-            [
-                AnthropicContentBlock::Text { text },
-                AnthropicContentBlock::ToolUse { id, name, input },
-            ] => {
+            [AnthropicContentBlock::Text { text }, AnthropicContentBlock::ToolUse { id, name, input }] =>
+            {
                 assert_eq!(text, "thinking");
                 assert_eq!(id, "call_1");
                 assert_eq!(name, "search");
