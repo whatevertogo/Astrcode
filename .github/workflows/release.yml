@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  # 创建 GitHub Release
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create-release.outputs.id }}
+      release_upload_url: ${{ steps.create-release.outputs.upload_url }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        id: create-release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: AstrCode ${{ steps.get_version.outputs.VERSION }}
+          body: |
+            ## Changes
+            See [commit history](https://github.com/${{ github.repository }}/commits/${{ steps.get_version.outputs.VERSION }}) for details.
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+
+  # 构建 Tauri 应用
+  build-tauri:
+    name: Build ${{ matrix.platform.os-name }}
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - os-name: Linux
+            runs-on: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            arch: x64
+          - os-name: macOS-Intel
+            runs-on: macos-13
+            target: x86_64-apple-darwin
+            arch: x64
+          - os-name: macOS-Apple-Silicon
+            runs-on: macos-14
+            target: aarch64-apple-darwin
+            arch: arm64
+          - os-name: Windows
+            runs-on: windows-latest
+            target: x86_64-pc-windows-msvc
+            arch: x64
+
+    runs-on: ${{ matrix.platform.runs-on }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.target }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.platform.target }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+          architecture: ${{ matrix.platform.arch }}
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # Linux 特定依赖
+      - name: Install Linux dependencies
+        if: matrix.platform.os-name == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: AstrCode ${{ github.ref_name }}
+          releaseBody: 'See [CHANGELOG](https://github.com/${{ github.repository }}/releases) for details.'
+          releaseDraft: false
+          prerelease: false
+          args: --target ${{ matrix.platform.target }}
+
+  # 完成 Release
+  finalize-release:
+    name: Finalize Release
+    needs: build-tauri
+    runs-on: ubuntu-latest
+    steps:
+      - name: Release Published
+        run: |
+          echo "Release published successfully!"
+          echo "Download: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
