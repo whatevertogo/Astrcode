@@ -200,16 +200,20 @@ fn response_to_output(response: AnthropicResponse) -> LlmOutput {
                 }
             }
             Some("tool_use") => {
-                let id = block
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                let name = block
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
+                let id = match block.get("id").and_then(Value::as_str) {
+                    Some(id) if !id.is_empty() => id.to_string(),
+                    _ => {
+                        warn!("anthropic: tool_use block missing non-empty id, skipping");
+                        continue;
+                    }
+                };
+                let name = match block.get("name").and_then(Value::as_str) {
+                    Some(name) if !name.is_empty() => name.to_string(),
+                    _ => {
+                        warn!("anthropic: tool_use block missing non-empty name, skipping");
+                        continue;
+                    }
+                };
                 let args = block.get("input").cloned().unwrap_or(Value::Null);
                 output.tool_calls.push(ToolCallRequest { id, name, args });
             }

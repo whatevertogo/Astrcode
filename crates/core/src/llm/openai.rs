@@ -444,6 +444,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::task::JoinHandle;
     use tokio_util::sync::CancellationToken;
 
@@ -464,13 +465,14 @@ mod tests {
         let listener = tokio::net::TcpListener::from_std(listener).expect("tokio listener");
 
         let handle = tokio::spawn(async move {
-            let (socket, _) = listener.accept().await.expect("accept should work");
+            let (mut socket, _) = listener.accept().await.expect("accept should work");
             let mut buf = [0_u8; 4096];
-            let _ = socket.readable().await;
-            let _ = socket.try_read(&mut buf);
+            let _ = socket.read(&mut buf).await;
             socket
-                .try_write(response.as_bytes())
+                .write_all(response.as_bytes())
+                .await
                 .expect("response should be written");
+            let _ = socket.shutdown().await;
         });
 
         (format!("http://{}", addr), handle)

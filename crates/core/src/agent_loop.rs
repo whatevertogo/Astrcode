@@ -86,17 +86,23 @@ impl AgentLoop {
                 let generate_future = provider.generate(request, Some(sink));
                 tokio::pin!(generate_future);
 
+                // Track if channel is still open to avoid spinning when sender is dropped
+                let mut event_rx_open = true;
+
                 let output = loop {
                     tokio::select! {
                         result = &mut generate_future => break result,
-                        maybe_event = event_rx.recv() => {
+                        maybe_event = event_rx.recv(), if event_rx_open => {
                             match maybe_event {
                                 Some(LlmEvent::TextDelta(text)) => {
                                     eprintln!("[delta] {}", text);
                                     on_event(StorageEvent::AssistantDelta { token: text });
                                 }
                                 Some(LlmEvent::ToolCallDelta { .. }) => {}
-                                None => continue,
+                                None => {
+                                    // Sender dropped, disable this branch to avoid spinning
+                                    event_rx_open = false;
+                                }
                             }
                         }
                     }
