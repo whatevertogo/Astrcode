@@ -22,12 +22,6 @@ jobs:
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-            src-tauri
-            crates/core
-            crates/ipc
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -72,7 +66,7 @@ jobs:
         run: npm run format:check
         continue-on-error: true
 
-  # 构建检查（仅检查能否成功构建，不生成发布产物）
+  # 构建检查
   build-check:
     name: Build Check
     needs: [rust-check, ts-check]
