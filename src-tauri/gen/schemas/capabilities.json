@@ -1,1 +1,16 @@
-{"default":{"identifier":"default","description":"Default capability for AstrCode","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-close","core:app:allow-app-hide","dialog:allow-open"]}}
+{
+    "default": {
+        "identifier": "default",
+        "description": "Default capability for AstrCode",
+        "local": true,
+        "windows": [
+            "main"
+        ],
+        "permissions": [
+            "core:default",
+            "core:window:allow-close",
+            "core:app:allow-app-hide",
+            "dialog:allow-open"
+        ]
+    }
+}
