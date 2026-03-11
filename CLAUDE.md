@@ -52,6 +52,12 @@ cd frontend && npm run dev
 cd frontend && npm run typecheck
 ```
 
+## Workflow Checklist
+
+- 前端代码改动后，交付前至少运行：`cd frontend && npm run typecheck && npm run lint && npm run format:check`
+- Rust 依赖、`Cargo.lock`、`deny.toml` 或 workspace 依赖边界改动后，补跑：`cargo deny check bans`
+- 若同时改了前端与 Rust，以上检查都要过，不能只过其中一部分
+
 ## Coding Style & Naming Conventions
 
 ### Rust
@@ -63,7 +69,7 @@ cd frontend && npm run typecheck
 - Components: `PascalCase.tsx` (e.g., `MessageList.tsx`)
 - Hooks: `use*.ts` (e.g., `useAgent.ts`)
 - Utilities: `camelCase.ts`
-- Run `npm run typecheck` and `npm run lint` before committing
+- Run `npm run typecheck`, `npm run lint`, and `npm run format:check` before committing
 
 ## Testing Guidelines
 

@@ -84,7 +84,11 @@ export default function NewProjectModal({
           <button className={styles.cancelBtn} onClick={onCancel}>
             取消
           </button>
-          <button className={styles.confirmBtn} onClick={handleConfirm} disabled={!workingDir.trim()}>
+          <button
+            className={styles.confirmBtn}
+            onClick={handleConfirm}
+            disabled={!workingDir.trim()}
+          >
             确认
           </button>
         </div>

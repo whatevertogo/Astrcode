@@ -10,11 +10,7 @@ import type {
 } from '../types';
 import { normalizeAgentEvent } from '../lib/agentEvent';
 import { getHostBridge } from '../lib/hostBridge';
-import {
-  ensureServerSession,
-  getServerAuthToken,
-  getServerOrigin,
-} from '../lib/serverAuth';
+import { ensureServerSession, getServerAuthToken, getServerOrigin } from '../lib/serverAuth';
 
 export interface SessionUserMessage {
   kind: 'user';
@@ -38,10 +34,7 @@ export interface SessionToolCallMessage {
   durationMs?: number;
 }
 
-export type SessionMessage =
-  | SessionUserMessage
-  | SessionAssistantMessage
-  | SessionToolCallMessage;
+export type SessionMessage = SessionUserMessage | SessionAssistantMessage | SessionToolCallMessage;
 
 export interface SessionSnapshot {
   messages: SessionMessage[];
@@ -98,7 +91,7 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
 function dispatchStreamError(
   onEvent: (event: AgentEventPayload) => void,
   message: string,
-  turnId: string | null = null,
+  turnId: string | null = null
 ): void {
   onEvent({
     event: 'error',
@@ -113,7 +106,7 @@ function dispatchStreamError(
 async function consumeSseStream(
   response: Response,
   onMessage: (payload: string) => void,
-  signal: AbortSignal,
+  signal: AbortSignal
 ): Promise<void> {
   if (!response.body) {
     throw new Error('event stream response has no body');
@@ -210,7 +203,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
                 'Cache-Control': 'no-cache',
               },
               signal: controller.signal,
-            },
+            }
           );
           await consumeSseStream(
             response,
@@ -229,19 +222,16 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
                 });
               }
             },
-            controller.signal,
+            controller.signal
           );
           if (!controller.signal.aborted && streamAbortRef.current === controller) {
-            dispatchStreamError(
-              onEventRef.current,
-              '事件流连接已关闭，请重新打开当前会话。',
-            );
+            dispatchStreamError(onEventRef.current, '事件流连接已关闭，请重新打开当前会话。');
           }
         } catch (error) {
           if (!controller.signal.aborted) {
             dispatchStreamError(
               onEventRef.current,
-              error instanceof Error ? error.message : String(error),
+              error instanceof Error ? error.message : String(error)
             );
           }
         } finally {
@@ -251,7 +241,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
         }
       })();
     },
-    [dispatchIncomingEvent],
+    [dispatchIncomingEvent]
   );
 
   const disconnectSession = useCallback(() => {
@@ -286,7 +276,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
-      },
+      }
     );
     return response.turnId;
   }, []);
@@ -308,7 +298,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
       `/api/projects?workingDir=${encodeURIComponent(workingDir)}`,
       {
         method: 'DELETE',
-      },
+      }
     );
   }, []);
 
@@ -324,12 +314,15 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
         body: JSON.stringify({ activeProfile, activeModel }),
       });
     },
-    [],
+    []
   );
 
-  const setModel = useCallback(async (profileName: string, model: string): Promise<void> => {
-    await saveActiveSelection(profileName, model);
-  }, [saveActiveSelection]);
+  const setModel = useCallback(
+    async (profileName: string, model: string): Promise<void> => {
+      await saveActiveSelection(profileName, model);
+    },
+    [saveActiveSelection]
+  );
 
   const getCurrentModel = useCallback(async (): Promise<CurrentModelInfo> => {
     return requestJson<CurrentModelInfo>('/api/models/current');
@@ -347,7 +340,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
         body: JSON.stringify({ profileName, model }),
       });
     },
-    [],
+    []
   );
 
   const openConfigInEditor = useCallback(async (path?: string): Promise<void> => {

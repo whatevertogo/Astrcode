@@ -101,19 +101,29 @@ function groupSessionsByProject(sessionMetas: SessionMeta[]): Project[] {
   });
 }
 
-function mapProject(state: AppState, projectId: string, fn: (project: Project) => Project): AppState {
+function mapProject(
+  state: AppState,
+  projectId: string,
+  fn: (project: Project) => Project
+): AppState {
   return {
     ...state,
     projects: state.projects.map((project) => (project.id === projectId ? fn(project) : project)),
   };
 }
 
-function mapSession(state: AppState, sessionId: string, fn: (session: Session) => Session): AppState {
+function mapSession(
+  state: AppState,
+  sessionId: string,
+  fn: (session: Session) => Session
+): AppState {
   return {
     ...state,
     projects: state.projects.map((project) => ({
       ...project,
-      sessions: project.sessions.map((session) => (session.id === sessionId ? fn(session) : session)),
+      sessions: project.sessions.map((session) =>
+        session.id === sessionId ? fn(session) : session
+      ),
     })),
   };
 }
@@ -465,7 +475,7 @@ export default function App() {
       await connectSession(sessionId, snapshot.cursor);
       setModelRefreshKey((value) => value + 1);
     },
-    [connectSession, disconnectSession, loadSession],
+    [connectSession, disconnectSession, loadSession]
   );
 
   const refreshSessions = useCallback(
@@ -478,7 +488,7 @@ export default function App() {
           ? preferredSessionId
           : state.activeSessionId && availableSessionIds.has(state.activeSessionId)
             ? state.activeSessionId
-            : projects[0]?.sessions[0]?.id ?? null;
+            : (projects[0]?.sessions[0]?.id ?? null);
       const nextProjectId =
         projects.find((project) => project.sessions.some((session) => session.id === nextSessionId))
           ?.id ?? null;
@@ -496,7 +506,7 @@ export default function App() {
         disconnectSession();
       }
     },
-    [disconnectSession, listSessionsWithMeta, loadAndActivateSession, state.activeSessionId],
+    [disconnectSession, listSessionsWithMeta, loadAndActivateSession, state.activeSessionId]
   );
 
   useEffect(() => {
@@ -517,8 +527,10 @@ export default function App() {
     };
   }, [disconnectSession, refreshSessions]);
 
-  const activeProject = state.projects.find((project) => project.id === state.activeProjectId) ?? null;
-  const activeSession = activeProject?.sessions.find((session) => session.id === state.activeSessionId) ?? null;
+  const activeProject =
+    state.projects.find((project) => project.id === state.activeProjectId) ?? null;
+  const activeSession =
+    activeProject?.sessions.find((session) => session.id === state.activeSessionId) ?? null;
 
   const handleNewProject = async (workingDir: string) => {
     try {
@@ -630,7 +642,7 @@ export default function App() {
         dispatch({ type: 'SET_PHASE', phase: 'idle' });
       }
     },
-    [submitPrompt],
+    [submitPrompt]
   );
 
   const handleInterrupt = useCallback(async () => {
