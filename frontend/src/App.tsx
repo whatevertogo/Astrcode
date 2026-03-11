@@ -20,6 +20,7 @@ import Sidebar from './components/Sidebar/index';
 import Chat from './components/Chat/index';
 import SettingsModal from './components/Settings/SettingsModal';
 import { useAgent, SessionMessage } from './hooks/useAgent';
+import { splitAssistantContent } from './lib/assistantContent';
 import { useProjects } from './hooks/useProjects';
 import { releaseTurnMapping, resolveSessionForTurn } from './lib/turnRouting.ts';
 
@@ -41,8 +42,17 @@ function convertSessionMessage(m: SessionMessage): Message {
   switch (m.kind) {
     case 'user':
       return { ...base, kind: 'user' as const, text: m.content };
-    case 'assistant':
-      return { ...base, kind: 'assistant' as const, text: m.content, streaming: false };
+    case 'assistant': {
+      const parts = splitAssistantContent(m.content, m.reasoningContent);
+      return {
+        ...base,
+        kind: 'assistant' as const,
+        text: parts.text,
+        reasoningText: parts.reasoningText,
+        streaming: false,
+        reasoningStreaming: false,
+      };
+    }
     case 'toolCall':
       return {
         ...base,
@@ -55,7 +65,13 @@ function convertSessionMessage(m: SessionMessage): Message {
         durationMs: m.durationMs,
       };
     default:
-      return { ...base, kind: 'assistant' as const, text: '', streaming: false };
+      return {
+        ...base,
+        kind: 'assistant' as const,
+        text: '',
+        streaming: false,
+        reasoningStreaming: false,
+      };
   }
 }
 
@@ -228,10 +244,13 @@ function reducer(state: AppState, action: Action): AppState {
       return mapSession(state, action.sessionId, (s) => {
         const msgs = s.messages;
         const last = msgs[msgs.length - 1];
-        if (last && last.kind === 'assistant' && last.streaming) {
+        if (last && last.kind === 'assistant' && (last.streaming || last.reasoningStreaming)) {
           return {
             ...s,
-            messages: [...msgs.slice(0, -1), { ...last, text: last.text + action.delta }],
+            messages: [
+              ...msgs.slice(0, -1),
+              { ...last, text: last.text + action.delta, streaming: true },
+            ],
           };
         }
         // Create a new streaming assistant message
@@ -240,19 +259,93 @@ function reducer(state: AppState, action: Action): AppState {
           kind: 'assistant' as const,
           text: action.delta,
           streaming: true,
+          reasoningStreaming: false,
           timestamp: Date.now(),
         };
         return { ...s, messages: [...msgs, newMsg] };
+      });
+
+    case 'APPEND_REASONING_DELTA':
+      return mapSession(state, action.sessionId, (s) => {
+        const msgs = s.messages;
+        const last = msgs[msgs.length - 1];
+        if (last && last.kind === 'assistant' && (last.streaming || last.reasoningStreaming)) {
+          return {
+            ...s,
+            messages: [
+              ...msgs.slice(0, -1),
+              {
+                ...last,
+                reasoningText: (last.reasoningText ?? '') + action.delta,
+                reasoningStreaming: true,
+              },
+            ],
+          };
+        }
+
+        return {
+          ...s,
+          messages: [
+            ...msgs,
+            {
+              id: uuid(),
+              kind: 'assistant' as const,
+              text: '',
+              reasoningText: action.delta,
+              streaming: false,
+              reasoningStreaming: true,
+              timestamp: Date.now(),
+            },
+          ],
+        };
+      });
+
+    case 'FINALIZE_ASSISTANT_MESSAGE':
+      return mapSession(state, action.sessionId, (s) => {
+        const msgs = s.messages;
+        const last = msgs[msgs.length - 1];
+        if (last && last.kind === 'assistant' && (last.streaming || last.reasoningStreaming)) {
+          return {
+            ...s,
+            messages: [
+              ...msgs.slice(0, -1),
+              {
+                ...last,
+                text: action.content,
+                streaming: false,
+                reasoningStreaming: false,
+              },
+            ],
+          };
+        }
+
+        return {
+          ...s,
+          messages: [
+            ...msgs,
+            {
+              id: uuid(),
+              kind: 'assistant' as const,
+              text: action.content,
+              streaming: false,
+              reasoningStreaming: false,
+              timestamp: Date.now(),
+            },
+          ],
+        };
       });
 
     case 'END_STREAMING':
       return mapSession(state, action.sessionId, (s) => {
         const msgs = s.messages;
         const last = msgs[msgs.length - 1];
-        if (last && last.kind === 'assistant' && last.streaming) {
+        if (last && last.kind === 'assistant' && (last.streaming || last.reasoningStreaming)) {
           return {
             ...s,
-            messages: [...msgs.slice(0, -1), { ...last, streaming: false }],
+            messages: [
+              ...msgs.slice(0, -1),
+              { ...last, streaming: false, reasoningStreaming: false },
+            ],
           };
         }
         return s;
@@ -265,6 +358,7 @@ function reducer(state: AppState, action: Action): AppState {
           if (m.kind === 'toolCall' && m.toolCallId === action.toolCallId) {
             return {
               ...m,
+              toolName: action.toolName || m.toolName,
               status: action.status,
               output: action.output,
               error: action.error,
@@ -405,21 +499,28 @@ export default function App() {
         break;
       }
 
+      case 'thinkingDelta': {
+        const sid = resolveSessionId(event.data.turnId);
+        if (!sid) {
+          break;
+        }
+        dispatch({
+          type: 'APPEND_REASONING_DELTA',
+          sessionId: sid,
+          delta: event.data.delta,
+        });
+        break;
+      }
+
       case 'assistantMessage': {
         const sid = resolveSessionId(event.data.turnId);
         if (!sid) {
           break;
         }
         dispatch({
-          type: 'ADD_MESSAGE',
+          type: 'FINALIZE_ASSISTANT_MESSAGE',
           sessionId: sid,
-          message: {
-            id: uuid(),
-            kind: 'assistant',
-            text: event.data.content,
-            streaming: false,
-            timestamp: Date.now(),
-          },
+          content: event.data.content,
         });
         break;
       }
@@ -466,6 +567,7 @@ export default function App() {
             type: 'UPDATE_TOOL_CALL',
             sessionId: sid,
             toolCallId: result.toolCallId ?? result.tool_call_id ?? 'unknown',
+            toolName: event.data.result.toolName || undefined,
             status: event.data.result.ok ? 'ok' : 'fail',
             output: event.data.result.output,
             error: event.data.result.error,
@@ -501,6 +603,7 @@ export default function App() {
               kind: 'assistant',
               text: `错误：${event.data.message}`,
               streaming: false,
+              reasoningStreaming: false,
               timestamp: Date.now(),
             },
           });
@@ -653,29 +756,7 @@ export default function App() {
         const targetSession = targetProject?.sessions.find((s) => s.id === targetSessionId);
         if (targetSession && targetSession.messages.length === 0) {
           const messages = await loadSession(targetSessionId);
-          // Convert SessionMessage to Message
-          const convertedMessages: Message[] = messages.map((m) => {
-            const base = { id: uuid(), timestamp: Date.now() };
-            switch (m.kind) {
-              case 'user':
-                return { ...base, kind: 'user' as const, text: m.content };
-              case 'assistant':
-                return { ...base, kind: 'assistant' as const, text: m.content, streaming: false };
-              case 'toolCall':
-                return {
-                  ...base,
-                  kind: 'toolCall' as const,
-                  toolCallId: m.toolCallId,
-                  toolName: m.toolName,
-                  status: m.success ? ('ok' as const) : ('fail' as const),
-                  args: m.args,
-                  output: m.output,
-                  durationMs: m.durationMs,
-                };
-              default:
-                return { ...base, kind: 'assistant' as const, text: '', streaming: false };
-            }
-          });
+          const convertedMessages: Message[] = messages.map(convertSessionMessage);
           dispatch({
             type: 'REPLACE_SESSION_MESSAGES',
             sessionId: targetSessionId,
@@ -765,6 +846,7 @@ export default function App() {
             kind: 'assistant',
             text: `错误：${String(err)}`,
             streaming: false,
+            reasoningStreaming: false,
             timestamp: Date.now(),
           },
         });

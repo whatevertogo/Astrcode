@@ -1,7 +1,9 @@
 use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 
-use crate::action::LlmMessage;
+use crate::action::{
+    build_history, rebuild_reasoning_cache_from_history, HistoryEntry, LlmMessage, MessageMetadata,
+};
 use crate::events::StorageEvent;
 use crate::projection::AgentState;
 use crate::prompt::{append_unique_tools, PromptComposer, PromptContext};
@@ -16,6 +18,8 @@ pub(crate) async fn run_turn(
 ) -> Result<()> {
     let provider = llm_cycle::build_provider(agent_loop.factory.clone()).await?;
     let mut messages = state.messages.clone();
+    let mut local_reasoning_cache = agent_loop.reasoning_cache_snapshot();
+    let mut history = build_history(&messages, &local_reasoning_cache);
     let mut step_index = 0usize;
 
     loop {
@@ -37,9 +41,13 @@ pub(crate) async fn run_turn(
         };
         let plan = PromptComposer::with_defaults().build(&ctx);
         let system_prompt = plan.render_system();
-        let mut request_messages = plan.prepend_messages;
-        request_messages.extend(messages.iter().cloned());
-        request_messages.extend(plan.append_messages);
+        let mut request_messages: Vec<HistoryEntry> = plan
+            .prepend_messages
+            .into_iter()
+            .map(HistoryEntry::plain)
+            .collect();
+        request_messages.extend(history.iter().cloned());
+        request_messages.extend(plan.append_messages.into_iter().map(HistoryEntry::plain));
         let mut tool_definitions = agent_loop.tools.definitions();
         append_unique_tools(&mut tool_definitions, plan.extra_tools);
 
@@ -50,6 +58,7 @@ pub(crate) async fn run_turn(
             system_prompt,
             cancel.child_token(),
             on_event,
+            agent_loop.transient_llm_sink(),
         )
         .await
         {
@@ -64,17 +73,30 @@ pub(crate) async fn run_turn(
             }
         };
 
-        if !output.content.is_empty() || !output.tool_calls.is_empty() {
+        if !output.content.is_empty()
+            || !output.tool_calls.is_empty()
+            || output.reasoning_content.is_some()
+        {
             on_event(StorageEvent::AssistantFinal {
                 content: output.content.clone(),
+                reasoning_content: output.reasoning_content.clone(),
             });
         }
 
         let tool_calls = output.tool_calls.clone();
-        messages.push(LlmMessage::Assistant {
+        let assistant_message = LlmMessage::Assistant {
             content: output.content,
             tool_calls: output.tool_calls,
+        };
+        messages.push(assistant_message.clone());
+        history.push(HistoryEntry {
+            message: assistant_message,
+            metadata: MessageMetadata {
+                reasoning_content: output.reasoning_content,
+            },
         });
+        local_reasoning_cache = rebuild_reasoning_cache_from_history(&history);
+        agent_loop.replace_reasoning_cache(local_reasoning_cache.clone());
 
         if tool_calls.is_empty() {
             finish_turn(on_event);
@@ -86,6 +108,7 @@ pub(crate) async fn run_turn(
                 &agent_loop.tools,
                 tool_calls,
                 &mut messages,
+                &mut history,
                 on_event,
                 &cancel,
             )

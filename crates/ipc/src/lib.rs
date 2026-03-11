@@ -48,6 +48,11 @@ pub enum AgentEventKind {
         turn_id: String,
         delta: String,
     },
+    ThinkingDelta {
+        #[serde(rename = "turnId", alias = "turn_id")]
+        turn_id: String,
+        delta: String,
+    },
     AssistantMessage {
         #[serde(rename = "turnId", alias = "turn_id")]
         turn_id: String,
@@ -231,5 +236,32 @@ mod tests {
             }
             other => panic!("expected ToolCallStart, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn thinking_delta_serializes_camel_case_fields() {
+        let event = AgentEvent::new(AgentEventKind::ThinkingDelta {
+            turn_id: "turn-1".to_string(),
+            delta: "pondering".to_string(),
+        });
+
+        let payload = serde_json::to_value(event).expect("event should serialize");
+        let data = payload
+            .get("data")
+            .expect("thinkingDelta should contain data");
+
+        assert_eq!(
+            payload.get("event"),
+            Some(&Value::String("thinkingDelta".to_string()))
+        );
+        assert_eq!(
+            data.get("turnId"),
+            Some(&Value::String("turn-1".to_string()))
+        );
+        assert_eq!(
+            data.get("delta"),
+            Some(&Value::String("pondering".to_string()))
+        );
+        assert!(data.get("turn_id").is_none());
     }
 }

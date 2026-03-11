@@ -40,6 +40,10 @@ impl ProviderFactory for ConfigFileProviderFactory {
     }
 }
 
+pub fn supports_reasoning_content(provider_kind: &str, model: &str) -> bool {
+    provider_kind == PROVIDER_KIND_OPENAI && model.to_ascii_lowercase().contains("deepseek")
+}
+
 fn build_provider(profile: &Profile, model: String) -> Result<BuiltProvider> {
     let api_key = profile.resolve_api_key()?;
 
@@ -52,10 +56,11 @@ fn build_provider(profile: &Profile, model: String) -> Result<BuiltProvider> {
                 ));
             }
 
-            Ok(BuiltProvider::OpenAi(OpenAiProvider::new(
+            Ok(BuiltProvider::OpenAi(OpenAiProvider::with_capabilities(
                 profile.base_url.clone(),
                 api_key,
-                model,
+                model.clone(),
+                supports_reasoning_content(&profile.provider_kind, &model),
             )))
         }
         PROVIDER_KIND_ANTHROPIC => Ok(BuiltProvider::Anthropic(
@@ -139,6 +144,16 @@ mod tests {
 
         let provider = build_provider(&profile, "model-a".to_string()).expect("build should work");
         assert!(matches!(provider, BuiltProvider::OpenAi(_)));
+    }
+
+    #[test]
+    fn supports_reasoning_content_only_for_deepseek_openai_profiles() {
+        assert!(supports_reasoning_content(
+            "openai-compatible",
+            "DeepSeek-R1"
+        ));
+        assert!(!supports_reasoning_content("openai-compatible", "gpt-4o"));
+        assert!(!supports_reasoning_content("anthropic", "deepseek-r1"));
     }
 
     #[test]

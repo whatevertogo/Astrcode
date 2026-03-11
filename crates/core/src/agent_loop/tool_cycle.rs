@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::action::{LlmMessage, ToolCallRequest};
+use crate::action::{HistoryEntry, LlmMessage, ToolCallRequest};
 use crate::events::StorageEvent;
 use crate::tools::registry::ToolRegistry;
 
@@ -15,6 +15,7 @@ pub(crate) async fn execute_tool_calls(
     tools: &ToolRegistry,
     tool_calls: Vec<ToolCallRequest>,
     messages: &mut Vec<LlmMessage>,
+    history: &mut Vec<HistoryEntry>,
     on_event: &mut impl FnMut(StorageEvent),
     cancel: &CancellationToken,
 ) -> ToolCycleOutcome {
@@ -35,15 +36,18 @@ pub(crate) async fn execute_tool_calls(
 
         on_event(StorageEvent::ToolResult {
             tool_call_id: call.id.clone(),
+            tool_name: call.name.clone(),
             output: tool_result_output(&result),
             success: result.ok,
             duration_ms,
         });
 
-        messages.push(LlmMessage::Tool {
+        let tool_message = LlmMessage::Tool {
             tool_call_id: call.id,
             content: result.model_content(),
-        });
+        };
+        messages.push(tool_message.clone());
+        history.push(HistoryEntry::plain(tool_message));
     }
 
     ToolCycleOutcome::Completed

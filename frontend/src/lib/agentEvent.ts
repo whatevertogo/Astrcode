@@ -143,6 +143,15 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
     return { event: 'modelDelta', data: { turnId, delta } };
   }
 
+  if (event === 'thinkingDelta') {
+    const turnId = pickString(data, 'turnId', 'turn_id');
+    const delta = pickString(data, 'delta');
+    if (!turnId || delta == null) {
+      return invalidEvent('thinkingDelta requires turnId and delta', raw);
+    }
+    return { event: 'thinkingDelta', data: { turnId, delta } };
+  }
+
   if (event === 'assistantMessage') {
     const turnId = pickString(data, 'turnId', 'turn_id');
     const content = pickString(data, 'content');

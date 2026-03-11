@@ -2,6 +2,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+fn default_unknown_tool_name() -> String {
+    "(unknown tool)".to_string()
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum StorageEvent {
@@ -19,6 +23,8 @@ pub enum StorageEvent {
     },
     AssistantFinal {
         content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_content: Option<String>,
     },
     ToolCall {
         tool_call_id: String,
@@ -27,6 +33,8 @@ pub enum StorageEvent {
     },
     ToolResult {
         tool_call_id: String,
+        #[serde(default = "default_unknown_tool_name")]
+        tool_name: String,
         output: String,
         success: bool,
         duration_ms: u64,

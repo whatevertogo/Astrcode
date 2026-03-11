@@ -6,14 +6,14 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::action::{LlmMessage, ToolCallRequest, ToolDefinition};
+use crate::action::{HistoryEntry, ToolCallRequest, ToolDefinition};
 
 pub mod anthropic;
 pub mod openai;
 
 #[derive(Clone, Debug)]
 pub struct LlmRequest {
-    pub messages: Vec<LlmMessage>,
+    pub messages: Vec<HistoryEntry>,
     pub tools: Vec<ToolDefinition>,
     pub cancel: CancellationToken,
     pub system_prompt: Option<String>,
@@ -21,7 +21,7 @@ pub struct LlmRequest {
 
 impl LlmRequest {
     pub fn new(
-        messages: Vec<LlmMessage>,
+        messages: Vec<HistoryEntry>,
         tools: Vec<ToolDefinition>,
         cancel: CancellationToken,
     ) -> Self {
@@ -42,6 +42,7 @@ impl LlmRequest {
 #[derive(Clone, Debug)]
 pub enum LlmEvent {
     TextDelta(String),
+    ThinkingDelta(String),
     ToolCallDelta {
         index: usize,
         id: Option<String>,
@@ -54,6 +55,7 @@ pub enum LlmEvent {
 pub struct LlmOutput {
     pub content: String,
     pub tool_calls: Vec<ToolCallRequest>,
+    pub reasoning_content: Option<String>,
 }
 
 pub type EventSink = Arc<dyn Fn(LlmEvent) + Send + Sync>;
@@ -66,6 +68,7 @@ pub trait LlmProvider: Send + Sync {
 #[derive(Default)]
 pub struct LlmAccumulator {
     pub content: String,
+    thinking: String,
     tool_calls: HashMap<usize, AccToolCall>,
 }
 
@@ -81,6 +84,9 @@ impl LlmAccumulator {
         match event {
             LlmEvent::TextDelta(text) => {
                 self.content.push_str(text);
+            }
+            LlmEvent::ThinkingDelta(text) => {
+                self.thinking.push_str(text);
             }
             LlmEvent::ToolCallDelta {
                 index,
@@ -117,6 +123,11 @@ impl LlmAccumulator {
         LlmOutput {
             content: self.content,
             tool_calls,
+            reasoning_content: if self.thinking.is_empty() {
+                None
+            } else {
+                Some(self.thinking)
+            },
         }
     }
 }
@@ -135,6 +146,17 @@ mod tests {
         acc.apply(&LlmEvent::TextDelta("lo".to_string()));
 
         assert_eq!(acc.content, "Hello");
+    }
+
+    #[test]
+    fn thinking_delta_accumulates_reasoning_content() {
+        let mut acc = LlmAccumulator::default();
+
+        acc.apply(&LlmEvent::ThinkingDelta("Hel".to_string()));
+        acc.apply(&LlmEvent::ThinkingDelta("lo".to_string()));
+
+        let output = acc.finish();
+        assert_eq!(output.reasoning_content.as_deref(), Some("Hello"));
     }
 
     #[test]
@@ -200,5 +222,14 @@ mod tests {
         assert_eq!(output.tool_calls[0].args, json!({ "a": 1 }));
         assert_eq!(output.tool_calls[1].id, "call_2");
         assert_eq!(output.tool_calls[1].args, json!({ "b": 2 }));
+    }
+
+    #[test]
+    fn finish_returns_none_when_reasoning_is_empty() {
+        let mut acc = LlmAccumulator::default();
+        acc.apply(&LlmEvent::TextDelta("hello".to_string()));
+
+        let output = acc.finish();
+        assert_eq!(output.reasoning_content, None);
     }
 }

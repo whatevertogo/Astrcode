@@ -68,6 +68,42 @@ fn load_errors_on_invalid_json() {
 }
 
 #[test]
+fn load_accepts_legacy_tool_result_without_tool_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("session-legacy-tool-result.jsonl");
+    {
+        let mut file = File::create(&path).unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"sessionStart","session_id":"legacy","timestamp":"2026-01-01T00:00:00Z","working_dir":"/tmp"}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"toolResult","tool_call_id":"call-1","output":"ok","success":true,"duration_ms":10}}"#
+        )
+        .unwrap();
+    }
+
+    let loaded = EventLog::load_from_path(&path).unwrap();
+    assert_eq!(loaded.len(), 2);
+    assert!(matches!(
+        &loaded[1],
+        StorageEvent::ToolResult {
+            tool_call_id,
+            tool_name,
+            output,
+            success,
+            duration_ms,
+        } if tool_call_id == "call-1"
+            && tool_name == "(unknown tool)"
+            && output == "ok"
+            && *success
+            && *duration_ms == 10
+    ));
+}
+
+#[test]
 fn generate_session_id_format() {
     let id = generate_session_id();
     assert!(id.len() > 20);
@@ -209,6 +245,38 @@ fn list_sessions_with_meta_extracts_fields_and_sorts_by_updated_at() {
     assert_eq!(metas[1].session_id, id_a);
     assert_eq!(metas[0].title, "session-b-title");
     assert_eq!(metas[0].display_name, "b");
+}
+
+#[test]
+fn list_sessions_with_meta_accepts_legacy_tool_result_without_tool_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let id = "2026-03-08T12-00-00-legacyyyy";
+    let path = tmp.path().join(format!("session-{id}.jsonl"));
+
+    {
+        let mut file = File::create(&path).unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"sessionStart","session_id":"{id}","timestamp":"2026-03-08T12:00:00Z","working_dir":"D:/repo/legacy"}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"userMessage","content":"legacy title","timestamp":"2026-03-08T12:01:00Z"}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"toolResult","tool_call_id":"call-legacy","output":"ok","success":true,"duration_ms":10}}"#
+        )
+        .unwrap();
+    }
+
+    let metas = EventLog::list_sessions_with_meta_from_path(tmp.path()).unwrap();
+    assert_eq!(metas.len(), 1);
+    assert_eq!(metas[0].session_id, id);
+    assert_eq!(metas[0].title, "legacy title");
+    assert_eq!(metas[0].display_name, "legacy");
 }
 
 #[test]

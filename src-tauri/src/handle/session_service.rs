@@ -32,9 +32,14 @@ impl AgentHandle {
 
         let runtime = AgentRuntime::new_session().map_err(|e| e.to_string())?;
         let session_id = runtime.session_id.clone();
+        let session_cache = runtime.reasoning_cache_snapshot();
 
         *self.runtime.lock().await = runtime;
         *self.session_id.lock().await = session_id.clone();
+        self.reasoning_cache
+            .lock()
+            .await
+            .insert(session_id.clone(), session_cache);
 
         Ok(session_id)
     }
@@ -46,9 +51,14 @@ impl AgentHandle {
 
         let runtime = AgentRuntime::resume(session_id).map_err(|e| e.to_string())?;
         sync_runtime_working_dir(&runtime);
+        let session_cache = runtime.reasoning_cache_snapshot();
 
         *self.runtime.lock().await = runtime;
         *self.session_id.lock().await = session_id.to_string();
+        self.reasoning_cache
+            .lock()
+            .await
+            .insert(session_id.to_string(), session_cache);
 
         Ok(())
     }
@@ -61,14 +71,23 @@ impl AgentHandle {
             self.interrupt().await?;
             let runtime = AgentRuntime::new_session().map_err(|e| e.to_string())?;
             let next_session_id = runtime.session_id.clone();
+            let session_cache = runtime.reasoning_cache_snapshot();
 
             sync_runtime_working_dir(&runtime);
 
             *self.runtime.lock().await = runtime;
-            *self.session_id.lock().await = next_session_id;
+            *self.session_id.lock().await = next_session_id.clone();
+            self.reasoning_cache
+                .lock()
+                .await
+                .insert(next_session_id, session_cache);
         }
 
-        AgentRuntime::delete_session(&target_id).map_err(|e| e.to_string())
+        let result = AgentRuntime::delete_session(&target_id).map_err(|e| e.to_string());
+        if result.is_ok() {
+            self.reasoning_cache.lock().await.remove(&target_id);
+        }
+        result
     }
 
     pub async fn delete_project(&self, working_dir: String) -> Result<DeleteProjectResult, String> {
@@ -97,20 +116,38 @@ impl AgentHandle {
                 let runtime =
                     AgentRuntime::resume(&replacement.session_id).map_err(|e| e.to_string())?;
                 sync_runtime_working_dir(&runtime);
+                let session_cache = runtime.reasoning_cache_snapshot();
                 *self.runtime.lock().await = runtime;
                 *self.session_id.lock().await = replacement.session_id.clone();
+                self.reasoning_cache
+                    .lock()
+                    .await
+                    .insert(replacement.session_id.clone(), session_cache);
             } else {
                 let home = user_home_dir()
                     .ok_or_else(|| "unable to resolve home directory".to_string())?;
                 std::env::set_current_dir(&home).map_err(|e| e.to_string())?;
                 let runtime = AgentRuntime::new_session().map_err(|e| e.to_string())?;
                 let session_id = runtime.session_id.clone();
+                let session_cache = runtime.reasoning_cache_snapshot();
                 *self.runtime.lock().await = runtime;
-                *self.session_id.lock().await = session_id;
+                *self.session_id.lock().await = session_id.clone();
+                self.reasoning_cache
+                    .lock()
+                    .await
+                    .insert(session_id, session_cache);
             }
         }
 
-        AgentRuntime::delete_project(&working_dir).map_err(|e| e.to_string())
+        let result = AgentRuntime::delete_project(&working_dir).map_err(|e| e.to_string())?;
+
+        // Only remove cache entries for sessions that were successfully deleted
+        let failed_ids: HashSet<_> = result.failed_session_ids.iter().cloned().collect();
+        self.reasoning_cache.lock().await.retain(|session_id, _| {
+            !targets.contains(session_id) || failed_ids.contains(session_id)
+        });
+
+        Ok(result)
     }
 
     pub async fn interrupt(&self) -> Result<(), String> {

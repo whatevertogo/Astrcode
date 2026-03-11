@@ -26,6 +26,7 @@ export interface SessionUserMessage {
 export interface SessionAssistantMessage {
   kind: 'assistant';
   content: string;
+  reasoningContent?: string;
   timestamp: string;
 }
 
@@ -253,6 +254,12 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
           pending.turnId = payload.data.turnId;
           pending.text += payload.data.delta;
           scheduleDesktopDeltaFlush();
+          return;
+        }
+
+        if (payload.event === 'thinkingDelta') {
+          flushDesktopDelta();
+          onEventRef.current(payload);
           return;
         }
 

@@ -6,7 +6,7 @@ use serde_json::Value;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
 
-use crate::action::{LlmMessage, ToolCallRequest, ToolDefinition};
+use crate::action::{HistoryEntry, LlmMessage, ToolCallRequest, ToolDefinition};
 use crate::llm::{EventSink, LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
 
 #[derive(Clone, Debug)]
@@ -15,21 +15,32 @@ pub struct OpenAiProvider {
     base_url: String,
     api_key: String,
     model: String,
+    supports_reasoning_content: bool,
 }
 
 impl OpenAiProvider {
     pub fn new(base_url: String, api_key: String, model: String) -> Self {
+        Self::with_capabilities(base_url, api_key, model, false)
+    }
+
+    pub fn with_capabilities(
+        base_url: String,
+        api_key: String,
+        model: String,
+        supports_reasoning_content: bool,
+    ) -> Self {
         Self {
             client: reqwest::Client::new(),
             base_url,
             api_key,
             model,
+            supports_reasoning_content,
         }
     }
 
     fn build_request<'a>(
         &'a self,
-        messages: &'a [LlmMessage],
+        messages: &'a [HistoryEntry],
         tools: &'a [ToolDefinition],
         system_prompt: Option<&'a str>,
         stream: bool,
@@ -40,11 +51,16 @@ impl OpenAiProvider {
             request_messages.push(OpenAiRequestMessage {
                 role: "system".to_string(),
                 content: Some(text.to_string()),
+                reasoning_content: None,
                 tool_call_id: None,
                 tool_calls: None,
             });
         }
-        request_messages.extend(messages.iter().map(to_openai_message));
+        request_messages.extend(
+            messages
+                .iter()
+                .map(|entry| to_openai_message(entry, self.supports_reasoning_content)),
+        );
 
         OpenAiChatRequest {
             model: &self.model,
@@ -168,6 +184,7 @@ fn message_to_output(message: OpenAiResponseMessage) -> LlmOutput {
     LlmOutput {
         content,
         tool_calls,
+        reasoning_content: message.reasoning_content.filter(|value| !value.is_empty()),
     }
 }
 
@@ -205,6 +222,12 @@ fn apply_stream_chunk(chunk: OpenAiStreamChunk) -> Vec<LlmEvent> {
         if let Some(content) = choice.delta.content {
             if !content.is_empty() {
                 events.push(LlmEvent::TextDelta(content));
+            }
+        }
+
+        if let Some(reasoning_content) = choice.delta.reasoning_content {
+            if !reasoning_content.is_empty() {
+                events.push(LlmEvent::ThinkingDelta(reasoning_content));
             }
         }
 
@@ -298,11 +321,12 @@ fn to_openai_tool(def: &ToolDefinition) -> OpenAiTool {
     }
 }
 
-fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
-    match message {
+fn to_openai_message(entry: &HistoryEntry, supports_reasoning: bool) -> OpenAiRequestMessage {
+    match &entry.message {
         LlmMessage::User { content } => OpenAiRequestMessage {
             role: "user".to_string(),
             content: Some(content.clone()),
+            reasoning_content: None,
             tool_call_id: None,
             tool_calls: None,
         },
@@ -315,6 +339,11 @@ fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
                 None
             } else {
                 Some(content.clone())
+            },
+            reasoning_content: if supports_reasoning {
+                entry.metadata.reasoning_content.clone()
+            } else {
+                None
             },
             tool_call_id: None,
             tool_calls: if tool_calls.is_empty() {
@@ -341,6 +370,7 @@ fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
         } => OpenAiRequestMessage {
             role: "tool".to_string(),
             content: Some(content.clone()),
+            reasoning_content: None,
             tool_call_id: Some(tool_call_id.clone()),
             tool_calls: None,
         },
@@ -363,6 +393,8 @@ struct OpenAiRequestMessage {
     role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -410,6 +442,8 @@ struct OpenAiChoice {
 #[derive(Debug, Deserialize)]
 struct OpenAiResponseMessage {
     content: Option<String>,
+    #[serde(alias = "reasoning")]
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<OpenAiResponseToolCall>>,
 }
 
@@ -439,6 +473,8 @@ struct OpenAiStreamChoice {
 #[derive(Debug, Deserialize)]
 struct OpenAiStreamDelta {
     content: Option<String>,
+    #[serde(alias = "reasoning")]
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<OpenAiStreamToolCall>>,
 }
 
@@ -466,6 +502,10 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
+
+    fn plain_history(messages: Vec<LlmMessage>) -> Vec<HistoryEntry> {
+        messages.into_iter().map(HistoryEntry::plain).collect()
+    }
 
     fn sink_collector(events: Arc<Mutex<Vec<LlmEvent>>>) -> EventSink {
         Arc::new(move |event| {
@@ -540,6 +580,7 @@ mod tests {
             choices: vec![OpenAiStreamChoice {
                 delta: OpenAiStreamDelta {
                     content: None,
+                    reasoning_content: None,
                     tool_calls: Some(vec![OpenAiStreamToolCall {
                         index: 0,
                         id: Some("call_1".to_string()),
@@ -607,6 +648,7 @@ mod tests {
             choices: vec![OpenAiStreamChoice {
                 delta: OpenAiStreamDelta {
                     content: None,
+                    reasoning_content: None,
                     tool_calls: Some(vec![OpenAiStreamToolCall {
                         index: 0,
                         id: Some("call_1".to_string()),
@@ -626,6 +668,7 @@ mod tests {
             choices: vec![OpenAiStreamChoice {
                 delta: OpenAiStreamDelta {
                     content: None,
+                    reasoning_content: None,
                     tool_calls: Some(vec![OpenAiStreamToolCall {
                         index: 0,
                         id: None,
@@ -651,9 +694,9 @@ mod tests {
     #[test]
     fn build_request_prepends_system_message_when_present() {
         let provider = test_provider();
-        let messages = [LlmMessage::User {
+        let messages = plain_history(vec![LlmMessage::User {
             content: "hi".to_string(),
-        }];
+        }]);
         let request = provider.build_request(&messages, &[], Some("Follow the rules"), false);
 
         assert_eq!(request.messages[0].role, "system");
@@ -666,9 +709,9 @@ mod tests {
     #[test]
     fn build_request_does_not_include_system_message_when_absent() {
         let provider = test_provider();
-        let messages = [LlmMessage::User {
+        let messages = plain_history(vec![LlmMessage::User {
             content: "hi".to_string(),
-        }];
+        }]);
         let request = provider.build_request(&messages, &[], None, false);
 
         assert!(request
@@ -705,9 +748,9 @@ mod tests {
         let output = provider
             .generate(
                 LlmRequest::new(
-                    vec![LlmMessage::User {
+                    plain_history(vec![LlmMessage::User {
                         content: "hi".to_string(),
-                    }],
+                    }]),
                     vec![],
                     CancellationToken::new(),
                 ),
@@ -720,6 +763,7 @@ mod tests {
         assert_eq!(output.content, "hello");
         assert_eq!(output.tool_calls.len(), 1);
         assert_eq!(output.tool_calls[0].name, "search");
+        assert_eq!(output.reasoning_content, None);
     }
 
     #[tokio::test]
@@ -761,9 +805,9 @@ mod tests {
         let output = provider
             .generate(
                 LlmRequest::new(
-                    vec![LlmMessage::User {
+                    plain_history(vec![LlmMessage::User {
                         content: "hi".to_string(),
-                    }],
+                    }]),
                     vec![],
                     CancellationToken::new(),
                 ),
@@ -791,5 +835,58 @@ mod tests {
         assert_eq!(output.content, "hello");
         assert_eq!(output.tool_calls.len(), 1);
         assert_eq!(output.tool_calls[0].args, json!({ "q": "hello" }));
+        assert_eq!(output.reasoning_content, None);
+    }
+
+    #[test]
+    fn to_openai_message_includes_reasoning_only_when_supported() {
+        let entry = HistoryEntry {
+            message: LlmMessage::Assistant {
+                content: "done".to_string(),
+                tool_calls: vec![],
+            },
+            metadata: crate::action::MessageMetadata {
+                reasoning_content: Some("chain-of-thought".to_string()),
+            },
+        };
+
+        let with_reasoning = to_openai_message(&entry, true);
+        let without_reasoning = to_openai_message(&entry, false);
+
+        assert_eq!(
+            with_reasoning.reasoning_content.as_deref(),
+            Some("chain-of-thought")
+        );
+        assert_eq!(without_reasoning.reasoning_content, None);
+    }
+
+    #[test]
+    fn stream_reasoning_delta_emits_thinking_event() {
+        let events = apply_stream_chunk(OpenAiStreamChunk {
+            choices: vec![OpenAiStreamChoice {
+                delta: OpenAiStreamDelta {
+                    content: None,
+                    reasoning_content: Some("pondering".to_string()),
+                    tool_calls: None,
+                },
+                finish_reason: None,
+            }],
+        });
+
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, LlmEvent::ThinkingDelta(text) if text == "pondering")));
+    }
+
+    #[test]
+    fn message_to_output_maps_non_streaming_reasoning_content() {
+        let output = message_to_output(OpenAiResponseMessage {
+            content: Some("done".to_string()),
+            reasoning_content: Some("thoughts".to_string()),
+            tool_calls: None,
+        });
+
+        assert_eq!(output.content, "done");
+        assert_eq!(output.reasoning_content.as_deref(), Some("thoughts"));
     }
 }

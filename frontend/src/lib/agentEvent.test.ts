@@ -41,4 +41,17 @@ describe('normalizeAgentEvent protocol gate', () => {
       data: { turnId: 'turn-1', delta: 'hello' },
     });
   });
+
+  it('normalizes thinkingDelta payloads', () => {
+    const normalized = normalizeAgentEvent({
+      protocolVersion: 1,
+      event: 'thinkingDelta',
+      data: { turnId: 'turn-2', delta: 'pondering' },
+    });
+
+    expect(normalized).toEqual({
+      event: 'thinkingDelta',
+      data: { turnId: 'turn-2', delta: 'pondering' },
+    });
+  });
 });

@@ -1,13 +1,17 @@
 mod assembly;
 mod event_sink;
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use chrono::Utc;
 use tokio_util::sync::CancellationToken;
 
+use crate::action::rebuild_reasoning_cache_from_events;
 use crate::agent_loop::AgentLoop;
 use crate::event_log::{generate_session_id, DeleteProjectResult, EventLog, SessionMeta};
 use crate::events::StorageEvent;
+use crate::llm::EventSink;
 use crate::projection::{project, AgentState};
 
 use self::assembly::build_agent_loop;
@@ -52,6 +56,7 @@ impl AgentRuntime {
         let log = EventLog::open(session_id)?;
         let events_cache = EventLog::load_from_path(log.path())?;
         let loop_ = build_agent_loop()?;
+        loop_.replace_reasoning_cache(rebuild_reasoning_cache_from_events(&events_cache));
         Ok(Self {
             session_id: session_id.to_string(),
             log,
@@ -91,6 +96,8 @@ impl AgentRuntime {
     ) -> Result<()> {
         if self.events_cache.is_empty() {
             self.events_cache = EventLog::load_from_path(self.log.path())?;
+            self.loop_
+                .replace_reasoning_cache(rebuild_reasoning_cache_from_events(&self.events_cache));
         }
 
         let user_event = StorageEvent::UserMessage {
@@ -117,6 +124,18 @@ impl AgentRuntime {
             .await?;
 
         sink.finish()
+    }
+
+    pub fn replace_reasoning_cache(&self, cache: HashMap<usize, String>) {
+        self.loop_.replace_reasoning_cache(cache);
+    }
+
+    pub fn reasoning_cache_snapshot(&self) -> HashMap<usize, String> {
+        self.loop_.reasoning_cache_snapshot()
+    }
+
+    pub fn set_transient_llm_sink(&self, sink: Option<EventSink>) {
+        self.loop_.set_transient_llm_sink(sink);
     }
 
     pub fn list_sessions() -> Result<Vec<String>> {

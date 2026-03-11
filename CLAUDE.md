@@ -53,6 +53,7 @@ cd frontend && npm run typecheck
 - Components: `PascalCase.tsx` (e.g., `MessageList.tsx`)
 - Hooks: `use*.ts` (e.g., `useAgent.ts`)
 - Utilities: `camelCase.ts`
+- Run `npm run format` before committing
 - Run `npm run typecheck` before committing
 
 ## Testing Guidelines
@@ -93,3 +94,4 @@ Trait-based design in `crates/core/src/tools/`:
 - **Home 目录测试陷阱**: 在 Windows 测试环境里，`dirs::home_dir()` 不一定受临时 `HOME/USERPROFILE` 影响；需要可控 home 路径的测试或模块，优先复用 `crate::test_support::test_home_dir()` / `TestEnvGuard`
 - **ASTRCODE_HOME_DIR 语义**: 该环境变量表示用户 home 根目录，不是应用数据目录；用户级文件路径都应继续拼接到 `.astrcode/...` 下，例如 `.astrcode/AGENTS.md`
 - **Tauri 前端命令路径**: 当前环境里 `tauri.conf.json` 的 `beforeDevCommand` / `beforeBuildCommand` 按仓库根目录解析；在 Windows 上不要依赖 `npm.ps1`，优先通过 `node` 脚本或 `cmd.exe -> npm.cmd` 间接启动前端命令
+- **Thinking 链路约束**: `thinkingDelta` 只能追加到当前正在流式中的 assistant 消息，不能直接覆盖最后一条 assistant；Anthropic thinking 请求体使用 `thinking.type = "enabled"`；如果要支持会话恢复，reasoning 必须持久化到 `AssistantFinal.reasoning_content`
