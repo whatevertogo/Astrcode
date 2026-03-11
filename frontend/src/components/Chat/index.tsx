@@ -1,4 +1,3 @@
-import React from 'react';
 import type { CurrentModelInfo, ModelOption, Phase, Project, Session } from '../../types';
 import TopBar from './TopBar';
 import MessageList from './MessageList';

@@ -82,7 +82,7 @@ export default function SettingsModal({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
-  const profiles = configView?.profiles ?? [];
+  const profiles = useMemo(() => configView?.profiles ?? [], [configView]);
   const currentProfile = useMemo(
     () => profiles.find((profile) => profile.name === selectedProfile) ?? profiles[0],
     [profiles, selectedProfile]

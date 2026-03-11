@@ -2,6 +2,8 @@
 exclude-dev = true
 
 [bans]
+multiple-versions = "allow"
+
 deny = [
   { crate = "tokio", wrappers = [
       "astrcode-agent",
@@ -12,6 +14,7 @@ deny = [
       "hyper-util",
       "reqwest",
       "tauri",
+      "tauri-plugin-shell",
       "tokio-rustls",
       "tokio-util",
       "tower",

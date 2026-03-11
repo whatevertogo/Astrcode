@@ -53,7 +53,6 @@ export async function tryWaitForTauriEnvironment(
 
   while (!checkTauri()) {
     if (Date.now() - startedAt >= timeoutMs) {
-      console.log('[tryWaitForTauriEnvironment] Timeout after', timeoutMs, 'ms');
       return false;
     }
 

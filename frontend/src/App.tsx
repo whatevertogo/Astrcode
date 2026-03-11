@@ -1,11 +1,4 @@
-import React, {
-  startTransition,
-  useCallback,
-  useEffect,
-  useReducer,
-  useRef,
-  useState,
-} from 'react';
+import { startTransition, useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import type {
   AgentEventPayload,
   Action,
@@ -663,18 +656,28 @@ export default function App() {
         canSelectDirectory={hostBridge.canSelectDirectory}
         defaultWorkingDir={activeProject?.workingDir}
         onSelectDirectory={selectDirectory}
-        onSetActive={handleSetActive}
+        onSetActive={(projectId, sessionId) => {
+          void handleSetActive(projectId, sessionId);
+        }}
         onToggleExpand={handleToggleExpand}
-        onNewProject={handleNewProject}
-        onDeleteProject={handleDeleteProject}
-        onDeleteSession={handleDeleteSession}
+        onNewProject={(workingDir) => {
+          void handleNewProject(workingDir);
+        }}
+        onDeleteProject={(projectId) => {
+          void handleDeleteProject(projectId);
+        }}
+        onDeleteSession={(projectId, sessionId) => {
+          void handleDeleteSession(projectId, sessionId);
+        }}
         onOpenSettings={() => setShowSettings(true)}
       />
       <Chat
         project={activeProject}
         session={activeSession}
         phase={state.phase}
-        onNewSession={handleNewSession}
+        onNewSession={() => {
+          void handleNewSession();
+        }}
         onSubmitPrompt={handleSubmit}
         onInterrupt={handleInterrupt}
         modelRefreshKey={modelRefreshKey}

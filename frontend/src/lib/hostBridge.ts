@@ -24,8 +24,8 @@ function browserBridge(): HostBridge {
     isDesktopHost: false,
     canSelectDirectory: false,
     canOpenEditor: false,
-    async selectDirectory() {
-      return null;
+    selectDirectory() {
+      return Promise.resolve(null);
     },
     async openConfigInEditor(path?: string) {
       if (!path) {

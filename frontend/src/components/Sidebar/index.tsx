@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import type { Phase, Project } from '../../types';
 import ProjectItem from './ProjectItem';
 import NewProjectModal from '../NewProjectModal';

@@ -63,7 +63,7 @@ cd frontend && npm run typecheck
 - Components: `PascalCase.tsx` (e.g., `MessageList.tsx`)
 - Hooks: `use*.ts` (e.g., `useAgent.ts`)
 - Utilities: `camelCase.ts`
-- Run `npm run typecheck` before committing
+- Run `npm run typecheck` and `npm run lint` before committing
 
 ## Testing Guidelines
 

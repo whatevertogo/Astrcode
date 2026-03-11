@@ -47,6 +47,7 @@ function clearTokenFromUrl(): void {
   window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
 }
 
-export async function ensureServerSession(): Promise<void> {
+export function ensureServerSession(): Promise<void> {
   getServerAuthToken();
+  return Promise.resolve();
 }

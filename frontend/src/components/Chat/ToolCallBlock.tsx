@@ -1,4 +1,4 @@
-import React, { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import type { ToolCallMessage, ToolStatus } from '../../types';
 import styles from './ToolCallBlock.module.css';
 
@@ -26,7 +26,7 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
   const toolCallId = message.toolCallId ?? 'unknown';
   const toolName = message.toolName ?? '(unknown tool)';
   const shortId = toolCallId.slice(-6);
-  const duration = message.durationMs != null ? `${message.durationMs}ms` : '';
+  const duration = typeof message.durationMs === 'number' ? `${message.durationMs}ms` : '';
   const preview =
     message.error ?? message.output ?? (message.status === 'running' ? '执行中...' : '');
 

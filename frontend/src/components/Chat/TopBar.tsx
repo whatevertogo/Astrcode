@@ -1,4 +1,3 @@
-import React from 'react';
 import type { CurrentModelInfo, ModelOption } from '../../types';
 import ModelSelector from './ModelSelector';
 import styles from './TopBar.module.css';
