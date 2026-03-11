@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BlockKind {
     Identity = 0,
     Environment = 1,

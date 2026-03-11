@@ -474,12 +474,14 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
             .expect("system prompt should be present for every step");
         assert!(prompt.contains("[Identity]"));
         assert!(prompt.contains("[Environment]"));
-        assert!(
-            prompt.contains("User-wide instructions from ~/.astrcode/AGENTS.md:\nFollow user rule")
-        );
-        assert!(
-            prompt.contains("Project-specific instructions from ./AGENTS.md:\nFollow project rule")
-        );
+        assert!(prompt.contains(&format!(
+            "User-wide instructions from {}:\nFollow user rule",
+            user_agents_path.display()
+        )));
+        assert!(prompt.contains(&format!(
+            "Project-specific instructions from {}:\nFollow project rule",
+            project.path().join("AGENTS.md").display()
+        )));
         assert!(prompt.contains(&format!(
             "Working directory: {}",
             project.path().to_string_lossy()

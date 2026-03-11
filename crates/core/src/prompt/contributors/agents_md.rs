@@ -10,7 +10,7 @@ pub struct AgentsMdContributor;
 pub fn user_agents_md_path() -> Option<PathBuf> {
     if let Some(home) = std::env::var_os("ASTRCODE_HOME_DIR") {
         if !home.is_empty() {
-            return Some(PathBuf::from(home).join("AGENTS.md"));
+            return Some(PathBuf::from(home).join(".astrcode").join("AGENTS.md"));
         }
     }
 
@@ -50,19 +50,25 @@ impl PromptContributor for AgentsMdContributor {
     fn contribute(&self, ctx: &PromptContext) -> PromptContribution {
         let mut system_blocks = Vec::new();
 
-        if let Some(content) = user_agents_md_path().and_then(|path| load_agents_md(&path)) {
-            system_blocks.push(PromptBlock {
-                kind: BlockKind::UserRules,
-                title: "User Rules",
-                content: format!("User-wide instructions from ~/.astrcode/AGENTS.md:\n{content}"),
-            });
+        if let Some(path) = user_agents_md_path() {
+            if let Some(content) = load_agents_md(&path) {
+                system_blocks.push(PromptBlock {
+                    kind: BlockKind::UserRules,
+                    title: "User Rules",
+                    content: format!("User-wide instructions from {}:\n{content}", path.display()),
+                });
+            }
         }
 
-        if let Some(content) = load_agents_md(&project_agents_md_path(&ctx.working_dir)) {
+        let project_path = project_agents_md_path(&ctx.working_dir);
+        if let Some(content) = load_agents_md(&project_path) {
             system_blocks.push(PromptBlock {
                 kind: BlockKind::ProjectRules,
                 title: "Project Rules",
-                content: format!("Project-specific instructions from ./AGENTS.md:\n{content}"),
+                content: format!(
+                    "Project-specific instructions from {}:\n{content}",
+                    project_path.display()
+                ),
             });
         }
 
@@ -117,9 +123,10 @@ mod tests {
 
         assert_eq!(contribution.system_blocks.len(), 1);
         assert_eq!(contribution.system_blocks[0].kind, BlockKind::UserRules);
-        assert!(contribution.system_blocks[0]
-            .content
-            .contains("User-wide instructions from ~/.astrcode/AGENTS.md:\nFollow user rule"));
+        assert!(contribution.system_blocks[0].content.contains(&format!(
+            "User-wide instructions from {}:\nFollow user rule",
+            user_agents_path.display()
+        )));
     }
 
     #[test]
@@ -135,9 +142,10 @@ mod tests {
 
         assert_eq!(contribution.system_blocks.len(), 1);
         assert_eq!(contribution.system_blocks[0].kind, BlockKind::ProjectRules);
-        assert!(contribution.system_blocks[0]
-            .content
-            .contains("Project-specific instructions from ./AGENTS.md:\nFollow project rule"));
+        assert!(contribution.system_blocks[0].content.contains(&format!(
+            "Project-specific instructions from {}:\nFollow project rule",
+            project.path().join("AGENTS.md").display()
+        )));
     }
 
     #[test]
@@ -181,6 +189,9 @@ mod tests {
             None => std::env::remove_var("ASTRCODE_HOME_DIR"),
         }
 
-        assert_eq!(path, override_home.path().join("AGENTS.md"));
+        assert_eq!(
+            path,
+            override_home.path().join(".astrcode").join("AGENTS.md")
+        );
     }
 }

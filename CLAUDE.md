@@ -91,3 +91,5 @@ Trait-based design in `crates/core/src/tools/`:
 - **配置文件**: 首次运行生成 `~/.astrcode/config.json`，含 API 密钥和 Profile 配置
 - **IPC 协议**: 后端→前端事件通过 NDJSON 流传输，见 `AgentEventKind` 枚举
 - **Home 目录测试陷阱**: 在 Windows 测试环境里，`dirs::home_dir()` 不一定受临时 `HOME/USERPROFILE` 影响；需要可控 home 路径的测试或模块，优先复用 `crate::test_support::test_home_dir()` / `TestEnvGuard`
+- **ASTRCODE_HOME_DIR 语义**: 该环境变量表示用户 home 根目录，不是应用数据目录；用户级文件路径都应继续拼接到 `.astrcode/...` 下，例如 `.astrcode/AGENTS.md`
+- **Tauri 前端命令路径**: 当前环境里 `tauri.conf.json` 的 `beforeDevCommand` / `beforeBuildCommand` 按仓库根目录解析；在 Windows 上不要依赖 `npm.ps1`，优先通过 `node` 脚本或 `cmd.exe -> npm.cmd` 间接启动前端命令

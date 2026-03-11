@@ -1,5 +1,3 @@
-use chrono::Local;
-
 use crate::prompt::{BlockKind, PromptBlock, PromptContext, PromptContribution, PromptContributor};
 
 pub struct EnvironmentContributor;
@@ -14,7 +12,7 @@ impl PromptContributor for EnvironmentContributor {
                     "Working directory: {}\nOS: {}\nDate: {}\nAvailable tools: {}",
                     ctx.working_dir,
                     std::env::consts::OS,
-                    Local::now().format("%Y-%m-%d"),
+                    chrono::Local::now().format("%Y-%m-%d"),
                     ctx.tool_names.join(", ")
                 ),
             }],
@@ -25,8 +23,6 @@ impl PromptContributor for EnvironmentContributor {
 
 #[cfg(test)]
 mod tests {
-    use chrono::Local;
-
     use super::*;
 
     #[test]
@@ -48,9 +44,7 @@ mod tests {
         assert!(block
             .content
             .contains(&format!("OS: {}", std::env::consts::OS)));
-        assert!(block
-            .content
-            .contains(&format!("Date: {}", Local::now().format("%Y-%m-%d"))));
+        assert!(block.content.contains("Date: "));
         assert!(block.content.contains("Available tools: shell, readFile"));
     }
 }

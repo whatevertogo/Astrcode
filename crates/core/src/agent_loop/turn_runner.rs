@@ -33,7 +33,7 @@ pub(crate) async fn run_turn(
             working_dir: state.working_dir.to_string_lossy().into_owned(),
             tool_names: agent_loop.tools.names(),
             step_index,
-            turn_index: 0,
+            turn_index: state.turn_count,
         };
         let plan = PromptComposer::with_defaults().build(&ctx);
         let system_prompt = plan.render_system();

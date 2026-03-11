@@ -21,8 +21,8 @@ impl PromptPlan {
             return None;
         }
 
-        let mut blocks = self.system_blocks.clone();
-        blocks.sort_by_key(|block| block.kind.clone());
+        let mut blocks: Vec<&PromptBlock> = self.system_blocks.iter().collect();
+        blocks.sort_by_key(|block| block.kind);
 
         Some(
             blocks
