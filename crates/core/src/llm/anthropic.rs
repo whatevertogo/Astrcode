@@ -105,7 +105,7 @@ impl LlmProvider for AnthropicProvider {
             &request.tools,
             request.system_prompt.as_deref(),
             sink.is_some(),
-            sink.is_some(),
+            self.model.contains("thinking"),
         );
         let response = self.send_request(&body, cancel.child_token()).await?;
 

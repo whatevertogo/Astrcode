@@ -315,6 +315,52 @@ mod tests {
         assert!(cache.get(&1).is_none());
     }
 
+
+    #[test]
+    fn split_assistant_content_collapses_extra_blank_lines() {
+        // Blank line collapsing only happens when think tags are removed
+        let parts = split_assistant_content(
+            "before\n<think>step</think>\n\n\n\nafter",
+            None,
+        );
+        assert_eq!(parts.visible_content, "before\n\nafter");
+    }
+
+    #[test]
+    fn split_assistant_content_returns_original_text_when_no_think_tags() {
+        let parts = split_assistant_content("plain text", None);
+        assert_eq!(parts.visible_content, "plain text");
+        assert_eq!(parts.reasoning_content, None);
+    }
+
+    #[test]
+    fn split_assistant_content_handles_case_insensitive_tags() {
+        let parts = split_assistant_content("<THINK>thinking</THINK>", None);
+        assert_eq!(parts.visible_content, "");
+        assert_eq!(parts.reasoning_content.as_deref(), Some("thinking"));
+    }
+
+    #[test]
+    fn split_assistant_content_deduplicates_identical_reasoning() {
+        let parts = split_assistant_content("<think>thinking</think>", Some("thinking"));
+        assert_eq!(parts.reasoning_content.as_deref(), Some("thinking"));
+    }
+
+    #[test]
+    fn split_assistant_content_handles_empty_think_blocks() {
+        // Empty/whitespace-only think blocks do NOT trigger tag removal
+        let parts = split_assistant_content("<think>   </think>\n\nvisible", None);
+        assert_eq!(parts.visible_content, "<think>   </think>\n\nvisible");
+        assert_eq!(parts.reasoning_content, None);
+    }
+
+    #[test]
+    fn split_assistant_content_handles_empty_string() {
+        let parts = split_assistant_content("", None);
+        assert_eq!(parts.visible_content, "");
+        assert_eq!(parts.reasoning_content, None);
+    }
+
     #[test]
     fn split_assistant_content_extracts_inline_thinking_blocks() {
         let parts = split_assistant_content(

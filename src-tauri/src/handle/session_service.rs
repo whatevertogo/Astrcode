@@ -83,8 +83,11 @@ impl AgentHandle {
                 .insert(next_session_id, session_cache);
         }
 
-        self.reasoning_cache.lock().await.remove(&target_id);
-        AgentRuntime::delete_session(&target_id).map_err(|e| e.to_string())
+        let result = AgentRuntime::delete_session(&target_id).map_err(|e| e.to_string());
+        if result.is_ok() {
+            self.reasoning_cache.lock().await.remove(&target_id);
+        }
+        result
     }
 
     pub async fn delete_project(&self, working_dir: String) -> Result<DeleteProjectResult, String> {
@@ -136,11 +139,15 @@ impl AgentHandle {
             }
         }
 
-        self.reasoning_cache
-            .lock()
-            .await
-            .retain(|session_id, _| !targets.contains(session_id));
-        AgentRuntime::delete_project(&working_dir).map_err(|e| e.to_string())
+        let result = AgentRuntime::delete_project(&working_dir).map_err(|e| e.to_string())?;
+
+        // Only remove cache entries for sessions that were successfully deleted
+        let failed_ids: HashSet<_> = result.failed_session_ids.iter().cloned().collect();
+        self.reasoning_cache.lock().await.retain(|session_id, _| {
+            !targets.contains(session_id) || failed_ids.contains(session_id)
+        });
+
+        Ok(result)
     }
 
     pub async fn interrupt(&self) -> Result<(), String> {
