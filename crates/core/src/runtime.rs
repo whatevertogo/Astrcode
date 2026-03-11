@@ -7,6 +7,7 @@ use anyhow::Result;
 use chrono::Utc;
 use tokio_util::sync::CancellationToken;
 
+use crate::action::rebuild_reasoning_cache_from_events;
 use crate::agent_loop::AgentLoop;
 use crate::event_log::{generate_session_id, DeleteProjectResult, EventLog, SessionMeta};
 use crate::events::StorageEvent;
@@ -55,6 +56,7 @@ impl AgentRuntime {
         let log = EventLog::open(session_id)?;
         let events_cache = EventLog::load_from_path(log.path())?;
         let loop_ = build_agent_loop()?;
+        loop_.replace_reasoning_cache(rebuild_reasoning_cache_from_events(&events_cache));
         Ok(Self {
             session_id: session_id.to_string(),
             log,
@@ -94,6 +96,8 @@ impl AgentRuntime {
     ) -> Result<()> {
         if self.events_cache.is_empty() {
             self.events_cache = EventLog::load_from_path(self.log.path())?;
+            self.loop_
+                .replace_reasoning_cache(rebuild_reasoning_cache_from_events(&self.events_cache));
         }
 
         let user_event = StorageEvent::UserMessage {

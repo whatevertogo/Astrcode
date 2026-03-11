@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use ipc::Phase;
 
-use crate::action::{LlmMessage, ToolCallRequest};
+use crate::action::{split_assistant_content, LlmMessage, ToolCallRequest};
 use crate::events::StorageEvent;
 
 #[derive(Debug, Clone)]
@@ -70,11 +70,16 @@ pub fn project(events: &[StorageEvent]) -> AgentState {
                 state.phase = Phase::Thinking;
             }
 
-            StorageEvent::AssistantFinal { content } => {
+            StorageEvent::AssistantFinal {
+                content,
+                reasoning_content,
+            } => {
                 // If there's already a pending assistant (from a previous step
                 // in the same turn that wasn't flushed), flush it first.
                 flush(&mut state, &mut pending_content, &mut pending_tool_calls);
-                pending_content = Some(content.clone());
+                pending_content = Some(
+                    split_assistant_content(content, reasoning_content.as_deref()).visible_content,
+                );
             }
 
             StorageEvent::ToolCall {
@@ -178,6 +183,7 @@ mod tests {
             },
             StorageEvent::AssistantFinal {
                 content: "hello!".into(),
+                reasoning_content: None,
             },
             StorageEvent::TurnDone { timestamp: ts() },
         ];
@@ -200,7 +206,10 @@ mod tests {
                 content: "list files".into(),
                 timestamp: ts(),
             },
-            StorageEvent::AssistantFinal { content: "".into() },
+            StorageEvent::AssistantFinal {
+                content: "".into(),
+                reasoning_content: None,
+            },
             StorageEvent::ToolCall {
                 tool_call_id: "tc1".into(),
                 tool_name: "listDir".into(),
@@ -215,6 +224,7 @@ mod tests {
             },
             StorageEvent::AssistantFinal {
                 content: "Here are the files".into(),
+                reasoning_content: None,
             },
             StorageEvent::TurnDone { timestamp: ts() },
             // Turn 2: simple user → assistant
@@ -224,6 +234,7 @@ mod tests {
             },
             StorageEvent::AssistantFinal {
                 content: "You're welcome!".into(),
+                reasoning_content: None,
             },
             StorageEvent::TurnDone { timestamp: ts() },
         ];
@@ -281,6 +292,7 @@ mod tests {
             StorageEvent::AssistantDelta { token: "lo".into() },
             StorageEvent::AssistantFinal {
                 content: "hello".into(),
+                reasoning_content: None,
             },
             StorageEvent::Error {
                 message: "some error".into(),
@@ -337,5 +349,31 @@ mod tests {
         assert!(
             matches!(&state.messages[2], LlmMessage::Tool { tool_call_id, .. } if tool_call_id == "tc1")
         );
+    }
+
+    #[test]
+    fn assistant_final_strips_legacy_thinking_tags_during_projection() {
+        let events = vec![
+            StorageEvent::SessionStart {
+                session_id: "s1".into(),
+                timestamp: ts(),
+                working_dir: "/tmp".into(),
+            },
+            StorageEvent::UserMessage {
+                content: "hi".into(),
+                timestamp: ts(),
+            },
+            StorageEvent::AssistantFinal {
+                content: "<think>private</think>\nvisible".into(),
+                reasoning_content: None,
+            },
+            StorageEvent::TurnDone { timestamp: ts() },
+        ];
+
+        let state = project(&events);
+        assert!(matches!(
+            &state.messages[1],
+            LlmMessage::Assistant { content, .. } if content == "visible"
+        ));
     }
 }

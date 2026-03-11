@@ -56,7 +56,7 @@ impl AnthropicProvider {
             },
             stream: stream.then_some(true),
             thinking: enable_thinking.then_some(AnthropicThinking {
-                kind: "enabled".to_string(),
+                type_: "enabled".to_string(),
                 budget_tokens: self.max_tokens,
             }),
         }
@@ -105,7 +105,7 @@ impl LlmProvider for AnthropicProvider {
             &request.tools,
             request.system_prompt.as_deref(),
             sink.is_some(),
-            false,
+            sink.is_some(),
         );
         let response = self.send_request(&body, cancel.child_token()).await?;
 
@@ -459,7 +459,8 @@ struct AnthropicRequest {
 
 #[derive(Debug, Serialize)]
 struct AnthropicThinking {
-    kind: String,
+    #[serde(rename = "type")]
+    type_: String,
     budget_tokens: u32,
 }
 
@@ -713,6 +714,33 @@ mod tests {
 
         assert!(body.get("system").is_none());
         assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn build_request_serializes_thinking_with_type_when_enabled() {
+        let provider = test_provider();
+        let request = provider.build_request(
+            &plain_history(vec![LlmMessage::User {
+                content: "hi".to_string(),
+            }]),
+            &[],
+            None,
+            true,
+            true,
+        );
+        let body = serde_json::to_value(&request).expect("request should serialize");
+        let thinking = body
+            .get("thinking")
+            .expect("thinking config should be present");
+
+        assert_eq!(
+            thinking.get("type").and_then(Value::as_str),
+            Some("enabled")
+        );
+        assert_eq!(
+            thinking.get("budget_tokens").and_then(Value::as_u64),
+            Some(DEFAULT_MAX_TOKENS as u64)
+        );
     }
 
     #[test]

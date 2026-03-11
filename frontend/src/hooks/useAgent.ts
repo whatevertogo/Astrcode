@@ -26,6 +26,7 @@ export interface SessionUserMessage {
 export interface SessionAssistantMessage {
   kind: 'assistant';
   content: string;
+  reasoningContent?: string;
   timestamp: string;
 }
 

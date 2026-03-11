@@ -2,8 +2,7 @@ use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 
 use crate::action::{
-    build_history, rebuild_reasoning_cache_from_history, HistoryEntry, LlmMessage,
-    MessageMetadata,
+    build_history, rebuild_reasoning_cache_from_history, HistoryEntry, LlmMessage, MessageMetadata,
 };
 use crate::events::StorageEvent;
 use crate::projection::AgentState;
@@ -74,9 +73,13 @@ pub(crate) async fn run_turn(
             }
         };
 
-        if !output.content.is_empty() || !output.tool_calls.is_empty() {
+        if !output.content.is_empty()
+            || !output.tool_calls.is_empty()
+            || output.reasoning_content.is_some()
+        {
             on_event(StorageEvent::AssistantFinal {
                 content: output.content.clone(),
+                reasoning_content: output.reasoning_content.clone(),
             });
         }
 

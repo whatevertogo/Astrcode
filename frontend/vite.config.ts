@@ -105,8 +105,19 @@ function webChatPlugin(): Plugin {
                 return;
               }
 
-              const delta = parsed.choices?.[0]?.delta?.content;
-              if (!delta) {
+              const reasoningDelta =
+                parsed.choices?.[0]?.delta?.reasoning_content ??
+                parsed.choices?.[0]?.delta?.reasoning;
+              const textDelta = parsed.choices?.[0]?.delta?.content;
+
+              if (reasoningDelta) {
+                writeNdjson(res, {
+                  event: 'thinkingDelta',
+                  data: { turnId, delta: reasoningDelta },
+                });
+              }
+
+              if (!textDelta) {
                 continue;
               }
 
@@ -120,7 +131,7 @@ function webChatPlugin(): Plugin {
 
               writeNdjson(res, {
                 event: 'modelDelta',
-                data: { turnId, delta },
+                data: { turnId, delta: textDelta },
               });
             }
           }

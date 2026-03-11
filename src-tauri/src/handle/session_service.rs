@@ -32,14 +32,14 @@ impl AgentHandle {
 
         let runtime = AgentRuntime::new_session().map_err(|e| e.to_string())?;
         let session_id = runtime.session_id.clone();
+        let session_cache = runtime.reasoning_cache_snapshot();
 
         *self.runtime.lock().await = runtime;
         *self.session_id.lock().await = session_id.clone();
         self.reasoning_cache
             .lock()
             .await
-            .entry(session_id.clone())
-            .or_insert_with(std::collections::HashMap::new);
+            .insert(session_id.clone(), session_cache);
 
         Ok(session_id)
     }
@@ -51,14 +51,14 @@ impl AgentHandle {
 
         let runtime = AgentRuntime::resume(session_id).map_err(|e| e.to_string())?;
         sync_runtime_working_dir(&runtime);
+        let session_cache = runtime.reasoning_cache_snapshot();
 
         *self.runtime.lock().await = runtime;
         *self.session_id.lock().await = session_id.to_string();
         self.reasoning_cache
             .lock()
             .await
-            .entry(session_id.to_string())
-            .or_insert_with(std::collections::HashMap::new);
+            .insert(session_id.to_string(), session_cache);
 
         Ok(())
     }
@@ -71,6 +71,7 @@ impl AgentHandle {
             self.interrupt().await?;
             let runtime = AgentRuntime::new_session().map_err(|e| e.to_string())?;
             let next_session_id = runtime.session_id.clone();
+            let session_cache = runtime.reasoning_cache_snapshot();
 
             sync_runtime_working_dir(&runtime);
 
@@ -79,8 +80,7 @@ impl AgentHandle {
             self.reasoning_cache
                 .lock()
                 .await
-                .entry(next_session_id)
-                .or_insert_with(std::collections::HashMap::new);
+                .insert(next_session_id, session_cache);
         }
 
         self.reasoning_cache.lock().await.remove(&target_id);
@@ -113,26 +113,26 @@ impl AgentHandle {
                 let runtime =
                     AgentRuntime::resume(&replacement.session_id).map_err(|e| e.to_string())?;
                 sync_runtime_working_dir(&runtime);
+                let session_cache = runtime.reasoning_cache_snapshot();
                 *self.runtime.lock().await = runtime;
                 *self.session_id.lock().await = replacement.session_id.clone();
                 self.reasoning_cache
                     .lock()
                     .await
-                    .entry(replacement.session_id.clone())
-                    .or_insert_with(std::collections::HashMap::new);
+                    .insert(replacement.session_id.clone(), session_cache);
             } else {
                 let home = user_home_dir()
                     .ok_or_else(|| "unable to resolve home directory".to_string())?;
                 std::env::set_current_dir(&home).map_err(|e| e.to_string())?;
                 let runtime = AgentRuntime::new_session().map_err(|e| e.to_string())?;
                 let session_id = runtime.session_id.clone();
+                let session_cache = runtime.reasoning_cache_snapshot();
                 *self.runtime.lock().await = runtime;
                 *self.session_id.lock().await = session_id.clone();
                 self.reasoning_cache
                     .lock()
                     .await
-                    .entry(session_id)
-                    .or_insert_with(std::collections::HashMap::new);
+                    .insert(session_id, session_cache);
             }
         }
 

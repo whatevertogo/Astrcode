@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use astrcode_core::StorageEvent;
+use astrcode_core::{action::split_assistant_content, StorageEvent};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -12,14 +12,19 @@ pub enum SessionMessage {
     },
     Assistant {
         content: String,
+        #[serde(rename = "reasoningContent")]
+        reasoning_content: Option<String>,
         timestamp: String,
     },
     ToolCall {
+        #[serde(rename = "toolCallId")]
         tool_call_id: String,
+        #[serde(rename = "toolName")]
         tool_name: String,
         args: Value,
         output: Option<String>,
         success: Option<bool>,
+        #[serde(rename = "durationMs")]
         duration_ms: Option<u64>,
     },
 }
@@ -36,10 +41,15 @@ pub fn convert_events_to_messages(events: &[StorageEvent]) -> Vec<SessionMessage
                     timestamp: timestamp.to_rfc3339(),
                 });
             }
-            StorageEvent::AssistantFinal { content } => {
-                if !content.is_empty() {
+            StorageEvent::AssistantFinal {
+                content,
+                reasoning_content,
+            } => {
+                let parts = split_assistant_content(content, reasoning_content.as_deref());
+                if !parts.visible_content.is_empty() || parts.reasoning_content.is_some() {
                     messages.push(SessionMessage::Assistant {
-                        content: content.clone(),
+                        content: parts.visible_content,
+                        reasoning_content: parts.reasoning_content,
                         timestamp: chrono::Utc::now().to_rfc3339(),
                     });
                 }
@@ -111,15 +121,21 @@ mod tests {
             },
             StorageEvent::AssistantFinal {
                 content: "hi there".to_string(),
+                reasoning_content: None,
             },
         ];
 
         let messages = convert_events_to_messages(&events);
         assert_eq!(messages.len(), 2);
         assert!(matches!(&messages[0], SessionMessage::User { content, .. } if content == "hello"));
-        assert!(
-            matches!(&messages[1], SessionMessage::Assistant { content, .. } if content == "hi there")
-        );
+        assert!(matches!(
+            &messages[1],
+            SessionMessage::Assistant {
+                content,
+                reasoning_content,
+                ..
+            } if content == "hi there" && reasoning_content.is_none()
+        ));
     }
 
     #[test]
@@ -205,5 +221,71 @@ mod tests {
 
         let messages = convert_events_to_messages(&events);
         assert!(messages.is_empty(), "transient events should be ignored");
+    }
+
+    #[test]
+    fn convert_events_preserves_reasoning_only_assistant_messages() {
+        let events = vec![StorageEvent::AssistantFinal {
+            content: "<think>private steps</think>".to_string(),
+            reasoning_content: None,
+        }];
+
+        let messages = convert_events_to_messages(&events);
+        assert!(matches!(
+            &messages[0],
+            SessionMessage::Assistant {
+                content,
+                reasoning_content,
+                ..
+            } if content.is_empty() && reasoning_content.as_deref() == Some("private steps")
+        ));
+    }
+
+    #[test]
+    fn assistant_session_message_serializes_reasoning_content_as_camel_case() {
+        let payload = serde_json::to_value(SessionMessage::Assistant {
+            content: "visible".to_string(),
+            reasoning_content: Some("private steps".to_string()),
+            timestamp: "2026-03-11T00:00:00Z".to_string(),
+        })
+        .expect("session message should serialize");
+
+        assert_eq!(payload.get("kind").and_then(serde_json::Value::as_str), Some("assistant"));
+        assert_eq!(
+            payload
+                .get("reasoningContent")
+                .and_then(serde_json::Value::as_str),
+            Some("private steps")
+        );
+        assert!(payload.get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn tool_call_session_message_serializes_tool_fields_as_camel_case() {
+        let payload = serde_json::to_value(SessionMessage::ToolCall {
+            tool_call_id: "call-1".to_string(),
+            tool_name: "shell".to_string(),
+            args: json!({ "command": "echo ok" }),
+            output: Some("ok".to_string()),
+            success: Some(true),
+            duration_ms: Some(12),
+        })
+        .expect("tool call message should serialize");
+
+        assert_eq!(
+            payload.get("toolCallId").and_then(serde_json::Value::as_str),
+            Some("call-1")
+        );
+        assert_eq!(
+            payload.get("toolName").and_then(serde_json::Value::as_str),
+            Some("shell")
+        );
+        assert_eq!(
+            payload.get("durationMs").and_then(serde_json::Value::as_u64),
+            Some(12)
+        );
+        assert!(payload.get("tool_call_id").is_none());
+        assert!(payload.get("tool_name").is_none());
+        assert!(payload.get("duration_ms").is_none());
     }
 }

@@ -23,6 +23,8 @@ pub enum StorageEvent {
     },
     AssistantFinal {
         content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_content: Option<String>,
     },
     ToolCall {
         tool_call_id: String,

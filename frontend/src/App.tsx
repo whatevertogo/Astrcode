@@ -20,6 +20,7 @@ import Sidebar from './components/Sidebar/index';
 import Chat from './components/Chat/index';
 import SettingsModal from './components/Settings/SettingsModal';
 import { useAgent, SessionMessage } from './hooks/useAgent';
+import { splitAssistantContent } from './lib/assistantContent';
 import { useProjects } from './hooks/useProjects';
 import { releaseTurnMapping, resolveSessionForTurn } from './lib/turnRouting.ts';
 
@@ -41,14 +42,17 @@ function convertSessionMessage(m: SessionMessage): Message {
   switch (m.kind) {
     case 'user':
       return { ...base, kind: 'user' as const, text: m.content };
-    case 'assistant':
+    case 'assistant': {
+      const parts = splitAssistantContent(m.content, m.reasoningContent);
       return {
         ...base,
         kind: 'assistant' as const,
-        text: m.content,
+        text: parts.text,
+        reasoningText: parts.reasoningText,
         streaming: false,
         reasoningStreaming: false,
       };
+    }
     case 'toolCall':
       return {
         ...base,
@@ -269,7 +273,11 @@ function reducer(state: AppState, action: Action): AppState {
       return mapSession(state, action.sessionId, (s) => {
         const msgs = s.messages;
         const last = msgs[msgs.length - 1];
-        if (last && last.kind === 'assistant') {
+        if (
+          last &&
+          last.kind === 'assistant' &&
+          (last.streaming || last.reasoningStreaming)
+        ) {
           return {
             ...s,
             messages: [
@@ -304,7 +312,11 @@ function reducer(state: AppState, action: Action): AppState {
       return mapSession(state, action.sessionId, (s) => {
         const msgs = s.messages;
         const last = msgs[msgs.length - 1];
-        if (last && last.kind === 'assistant') {
+        if (
+          last &&
+          last.kind === 'assistant' &&
+          (last.streaming || last.reasoningStreaming)
+        ) {
           return {
             ...s,
             messages: [
@@ -760,41 +772,7 @@ export default function App() {
         const targetSession = targetProject?.sessions.find((s) => s.id === targetSessionId);
         if (targetSession && targetSession.messages.length === 0) {
           const messages = await loadSession(targetSessionId);
-          // Convert SessionMessage to Message
-          const convertedMessages: Message[] = messages.map((m) => {
-            const base = { id: uuid(), timestamp: Date.now() };
-            switch (m.kind) {
-              case 'user':
-                return { ...base, kind: 'user' as const, text: m.content };
-              case 'assistant':
-                return {
-                  ...base,
-                  kind: 'assistant' as const,
-                  text: m.content,
-                  streaming: false,
-                  reasoningStreaming: false,
-                };
-              case 'toolCall':
-                return {
-                  ...base,
-                  kind: 'toolCall' as const,
-                  toolCallId: m.toolCallId,
-                  toolName: m.toolName,
-                  status: m.success ? ('ok' as const) : ('fail' as const),
-                  args: m.args,
-                  output: m.output,
-                  durationMs: m.durationMs,
-                };
-              default:
-                return {
-                  ...base,
-                  kind: 'assistant' as const,
-                  text: '',
-                  streaming: false,
-                  reasoningStreaming: false,
-                };
-            }
-          });
+          const convertedMessages: Message[] = messages.map(convertSessionMessage);
           dispatch({
             type: 'REPLACE_SESSION_MESSAGES',
             sessionId: targetSessionId,

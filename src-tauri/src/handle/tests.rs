@@ -1,13 +1,13 @@
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
-use std::collections::HashMap;
 use std::sync::{Mutex as StdMutex, MutexGuard, OnceLock};
 
 use uuid::Uuid;
 
 use astrcode_core::config::{Config, Profile};
-use astrcode_core::{load_config, save_config};
+use astrcode_core::{load_config, save_config, EventLog, StorageEvent};
 
 use super::*;
 
@@ -159,11 +159,10 @@ async fn new_session_creates_fresh_reasoning_cache_entry() {
     let handle = AgentHandle::new().expect("handle should build");
     let first_session_id = handle.get_session_id().await;
 
-    handle
-        .reasoning_cache
-        .lock()
-        .await
-        .insert(first_session_id.clone(), HashMap::from([(0usize, "r1".to_string())]));
+    handle.reasoning_cache.lock().await.insert(
+        first_session_id.clone(),
+        HashMap::from([(0usize, "r1".to_string())]),
+    );
 
     let second_session_id = handle
         .new_session()
@@ -172,7 +171,8 @@ async fn new_session_creates_fresh_reasoning_cache_entry() {
 
     let cache = handle.reasoning_cache.lock().await;
     assert_eq!(
-        cache.get(&first_session_id)
+        cache
+            .get(&first_session_id)
             .and_then(|session_cache| session_cache.get(&0))
             .map(String::as_str),
         Some("r1")
@@ -190,11 +190,10 @@ async fn delete_session_clears_reasoning_cache_for_target_session() {
     let handle = AgentHandle::new().expect("handle should build");
     let first_session_id = handle.get_session_id().await;
 
-    handle
-        .reasoning_cache
-        .lock()
-        .await
-        .insert(first_session_id.clone(), HashMap::from([(0usize, "r1".to_string())]));
+    handle.reasoning_cache.lock().await.insert(
+        first_session_id.clone(),
+        HashMap::from([(0usize, "r1".to_string())]),
+    );
 
     let current_session_id = handle
         .new_session()
@@ -215,5 +214,47 @@ async fn delete_session_clears_reasoning_cache_for_target_session() {
     assert!(
         cache.contains_key(&current_session_id),
         "current session cache should stay intact"
+    );
+}
+
+#[tokio::test]
+async fn switch_session_restores_reasoning_cache_from_persisted_history() {
+    let _guard = AppHomeGuard::new();
+    let session_id = "restored-reasoning";
+    let mut log = EventLog::create(session_id).expect("event log should be created");
+    log.append(&StorageEvent::SessionStart {
+        session_id: session_id.to_string(),
+        timestamp: chrono::Utc::now(),
+        working_dir: "D:/repo".to_string(),
+    })
+    .expect("session start should append");
+    log.append(&StorageEvent::UserMessage {
+        content: "hello".to_string(),
+        timestamp: chrono::Utc::now(),
+    })
+    .expect("user message should append");
+    log.append(&StorageEvent::AssistantFinal {
+        content: "visible".to_string(),
+        reasoning_content: Some("persisted reasoning".to_string()),
+    })
+    .expect("assistant final should append");
+    log.append(&StorageEvent::TurnDone {
+        timestamp: chrono::Utc::now(),
+    })
+    .expect("turn done should append");
+
+    let handle = AgentHandle::new().expect("handle should build");
+    handle
+        .switch_session(session_id)
+        .await
+        .expect("switch_session should succeed");
+
+    let cache = handle.reasoning_cache.lock().await;
+    assert_eq!(
+        cache
+            .get(session_id)
+            .and_then(|session_cache| session_cache.get(&0))
+            .map(String::as_str),
+        Some("persisted reasoning")
     );
 }

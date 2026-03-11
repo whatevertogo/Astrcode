@@ -306,6 +306,46 @@ async fn submit_does_not_persist_assistant_deltas() {
     );
 }
 
+#[tokio::test]
+async fn submit_persists_reasoning_content_in_assistant_final() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let responses = vec![LlmOutput {
+        content: "answer".into(),
+        tool_calls: vec![],
+        reasoning_content: Some("private reasoning".into()),
+    }];
+    let mut runtime = make_test_runtime_with_mock_provider(tmp.path(), responses);
+
+    runtime
+        .log
+        .append(&StorageEvent::SessionStart {
+            session_id: runtime.session_id.clone(),
+            timestamp: Utc::now(),
+            working_dir: "/tmp".into(),
+        })
+        .expect("append session start");
+
+    runtime
+        .submit("hi".into(), CancellationToken::new(), |_event| {})
+        .await
+        .expect("submit");
+
+    let path = tmp
+        .path()
+        .join(format!("session-{}.jsonl", runtime.session_id));
+    let events = load_events_from_path(&path);
+
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StorageEvent::AssistantFinal {
+                content,
+                reasoning_content,
+            } if content == "answer" && reasoning_content.as_deref() == Some("private reasoning")
+        )
+    }));
+}
+
 #[test]
 fn resume_rebuilds_historical_messages() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -344,6 +384,43 @@ fn resume_rebuilds_historical_messages() {
     assert_eq!(state.messages.len(), 2);
     assert!(matches!(&state.messages[0], LlmMessage::User { content } if content == "hello"));
     assert!(matches!(&state.messages[1], LlmMessage::Assistant { .. }));
+}
+
+#[test]
+fn resume_rebuilds_reasoning_cache_from_persisted_history() {
+    let guard = TestEnvGuard::new();
+    let session_id = "resume-reasoning";
+    let mut log = EventLog::create(session_id).expect("create log");
+    log.append(&StorageEvent::SessionStart {
+        session_id: session_id.to_string(),
+        timestamp: Utc::now(),
+        working_dir: guard.home_dir().to_string_lossy().to_string(),
+    })
+    .expect("append session start");
+    log.append(&StorageEvent::UserMessage {
+        content: "hello".into(),
+        timestamp: Utc::now(),
+    })
+    .expect("append user message");
+    log.append(&StorageEvent::AssistantFinal {
+        content: "visible".into(),
+        reasoning_content: Some("persisted reasoning".into()),
+    })
+    .expect("append assistant final");
+    log.append(&StorageEvent::TurnDone {
+        timestamp: Utc::now(),
+    })
+    .expect("append turn done");
+
+    let runtime = AgentRuntime::resume(session_id).expect("resume should succeed");
+
+    assert_eq!(
+        runtime
+            .reasoning_cache_snapshot()
+            .get(&0)
+            .map(String::as_str),
+        Some("persisted reasoning")
+    );
 }
 
 #[tokio::test]

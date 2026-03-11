@@ -178,6 +178,7 @@ mod tests {
             "turn-1",
             &StorageEvent::AssistantFinal {
                 content: "hello world".to_string(),
+                reasoning_content: None,
             },
             &mut pending,
         );

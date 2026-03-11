@@ -35,7 +35,7 @@ impl AgentHandle {
 
         let session_id = runtime.session_id.clone();
         let mut reasoning_cache = HashMap::new();
-        reasoning_cache.insert(session_id.clone(), HashMap::new());
+        reasoning_cache.insert(session_id.clone(), runtime.reasoning_cache_snapshot());
         Ok(Self {
             runtime: Mutex::new(runtime),
             cancel: Mutex::new(None),
