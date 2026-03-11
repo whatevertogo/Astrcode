@@ -315,14 +315,10 @@ mod tests {
         assert!(cache.get(&1).is_none());
     }
 
-
     #[test]
     fn split_assistant_content_collapses_extra_blank_lines() {
         // Blank line collapsing only happens when think tags are removed
-        let parts = split_assistant_content(
-            "before\n<think>step</think>\n\n\n\nafter",
-            None,
-        );
+        let parts = split_assistant_content("before\n<think>step</think>\n\n\n\nafter", None);
         assert_eq!(parts.visible_content, "before\n\nafter");
     }
 
