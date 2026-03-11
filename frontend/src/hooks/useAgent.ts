@@ -256,6 +256,12 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
           return;
         }
 
+        if (payload.event === 'thinkingDelta') {
+          flushDesktopDelta();
+          onEventRef.current(payload);
+          return;
+        }
+
         flushDesktopDelta();
         onEventRef.current(payload);
       };

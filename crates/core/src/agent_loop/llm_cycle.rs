@@ -4,7 +4,7 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::action::{LlmMessage, ToolDefinition};
+use crate::action::{HistoryEntry, ToolDefinition};
 use crate::events::StorageEvent;
 use crate::llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
 use crate::provider_factory::DynProviderFactory;
@@ -15,11 +15,12 @@ pub(crate) async fn build_provider(factory: DynProviderFactory) -> Result<Arc<dy
 
 pub(crate) async fn generate_response(
     provider: &Arc<dyn LlmProvider>,
-    messages: &[LlmMessage],
+    messages: &[HistoryEntry],
     tool_definitions: Vec<ToolDefinition>,
     system_prompt: Option<String>,
     cancel: CancellationToken,
     on_event: &mut impl FnMut(StorageEvent),
+    transient_sink: Option<EventSink>,
 ) -> Result<LlmOutput> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<LlmEvent>();
     let sink: EventSink = Arc::new(move |event| {
@@ -44,6 +45,11 @@ pub(crate) async fn generate_response(
                         eprintln!("[delta] {}", text);
                         on_event(StorageEvent::AssistantDelta { token: text });
                     }
+                    Some(LlmEvent::ThinkingDelta(text)) => {
+                        if let Some(sink) = &transient_sink {
+                            sink(LlmEvent::ThinkingDelta(text));
+                        }
+                    }
                     Some(LlmEvent::ToolCallDelta { .. }) => {}
                     None => event_rx_open = false,
                 }
@@ -52,8 +58,16 @@ pub(crate) async fn generate_response(
     };
 
     while let Ok(event) = event_rx.try_recv() {
-        if let LlmEvent::TextDelta(text) = event {
-            on_event(StorageEvent::AssistantDelta { token: text });
+        match event {
+            LlmEvent::TextDelta(text) => {
+                on_event(StorageEvent::AssistantDelta { token: text });
+            }
+            LlmEvent::ThinkingDelta(text) => {
+                if let Some(sink) = &transient_sink {
+                    sink(LlmEvent::ThinkingDelta(text));
+                }
+            }
+            LlmEvent::ToolCallDelta { .. } => {}
         }
     }
 

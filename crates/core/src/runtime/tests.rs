@@ -217,6 +217,7 @@ async fn submit_appends_events_and_load_can_read_them() {
     let responses = vec![LlmOutput {
         content: "Hello!".into(),
         tool_calls: vec![],
+        reasoning_content: None,
     }];
     let mut runtime = make_test_runtime_with_mock_provider(tmp.path(), responses);
 
@@ -274,6 +275,7 @@ async fn submit_does_not_persist_assistant_deltas() {
     let responses = vec![LlmOutput {
         content: "streamed text".into(),
         tool_calls: vec![],
+        reasoning_content: None,
     }];
     let mut runtime = make_test_runtime_with_mock_provider(tmp.path(), responses);
 

@@ -2,11 +2,15 @@ mod llm_cycle;
 mod tool_cycle;
 mod turn_runner;
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use anyhow::Result;
 use chrono::Utc;
 use tokio_util::sync::CancellationToken;
 
 use crate::events::StorageEvent;
+use crate::llm::EventSink;
 use crate::projection::AgentState;
 use crate::provider_factory::DynProviderFactory;
 use crate::tools::registry::ToolRegistry;
@@ -15,6 +19,8 @@ pub struct AgentLoop {
     factory: DynProviderFactory,
     tools: ToolRegistry,
     max_steps: Option<usize>,
+    reasoning_cache: Mutex<HashMap<usize, String>>,
+    transient_llm_sink: Mutex<Option<EventSink>>,
 }
 
 impl AgentLoop {
@@ -23,6 +29,8 @@ impl AgentLoop {
             factory,
             tools,
             max_steps: None,
+            reasoning_cache: Mutex::new(HashMap::new()),
+            transient_llm_sink: Mutex::new(None),
         }
     }
 
@@ -43,6 +51,31 @@ impl AgentLoop {
         cancel: CancellationToken,
     ) -> Result<()> {
         turn_runner::run_turn(self, state, on_event, cancel).await
+    }
+
+    pub(crate) fn replace_reasoning_cache(&self, cache: HashMap<usize, String>) {
+        *self.reasoning_cache.lock().expect("reasoning cache lock") = cache;
+    }
+
+    pub(crate) fn reasoning_cache_snapshot(&self) -> HashMap<usize, String> {
+        self.reasoning_cache
+            .lock()
+            .expect("reasoning cache lock")
+            .clone()
+    }
+
+    pub(crate) fn set_transient_llm_sink(&self, sink: Option<EventSink>) {
+        *self
+            .transient_llm_sink
+            .lock()
+            .expect("transient llm sink lock") = sink;
+    }
+
+    pub(crate) fn transient_llm_sink(&self) -> Option<EventSink> {
+        self.transient_llm_sink
+            .lock()
+            .expect("transient llm sink lock")
+            .clone()
     }
 }
 

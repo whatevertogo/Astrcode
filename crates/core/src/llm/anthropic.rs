@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
 
-use crate::action::{LlmMessage, ToolCallRequest, ToolDefinition};
+use crate::action::{HistoryEntry, LlmMessage, ToolCallRequest, ToolDefinition};
 use crate::llm::{EventSink, LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -38,10 +38,11 @@ impl AnthropicProvider {
 
     fn build_request(
         &self,
-        messages: &[LlmMessage],
+        messages: &[HistoryEntry],
         tools: &[ToolDefinition],
         system_prompt: Option<&str>,
         stream: bool,
+        enable_thinking: bool,
     ) -> AnthropicRequest {
         AnthropicRequest {
             model: self.model.clone(),
@@ -54,6 +55,10 @@ impl AnthropicProvider {
                 Some(to_anthropic_tools(tools))
             },
             stream: stream.then_some(true),
+            thinking: enable_thinking.then_some(AnthropicThinking {
+                kind: "enabled".to_string(),
+                budget_tokens: self.max_tokens,
+            }),
         }
     }
 
@@ -100,6 +105,7 @@ impl LlmProvider for AnthropicProvider {
             &request.tools,
             request.system_prompt.as_deref(),
             sink.is_some(),
+            false,
         );
         let response = self.send_request(&body, cancel.child_token()).await?;
 
@@ -145,10 +151,10 @@ impl LlmProvider for AnthropicProvider {
     }
 }
 
-fn to_anthropic_messages(messages: &[LlmMessage]) -> Vec<AnthropicMessage> {
+fn to_anthropic_messages(messages: &[HistoryEntry]) -> Vec<AnthropicMessage> {
     messages
         .iter()
-        .map(|message| match message {
+        .map(|entry| match &entry.message {
             LlmMessage::User { content } => AnthropicMessage {
                 role: "user".to_string(),
                 content: vec![AnthropicContentBlock::Text {
@@ -233,6 +239,13 @@ fn response_to_output(response: AnthropicResponse) -> LlmOutput {
                 };
                 let args = block.get("input").cloned().unwrap_or(Value::Null);
                 output.tool_calls.push(ToolCallRequest { id, name, args });
+            }
+            Some("thinking") => {
+                output.reasoning_content = block
+                    .get("thinking")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
             }
             Some(other) => {
                 warn!("anthropic: unknown content block type: {}", other);
@@ -346,6 +359,15 @@ fn process_sse_block(
                         emit_event(LlmEvent::TextDelta(text.to_string()), accumulator, sink);
                     }
                 }
+                Some("thinking_delta") => {
+                    if let Some(thinking) = delta.get("thinking").and_then(Value::as_str) {
+                        emit_event(
+                            LlmEvent::ThinkingDelta(thinking.to_string()),
+                            accumulator,
+                            sink,
+                        );
+                    }
+                }
                 Some("input_json_delta") => {
                     emit_event(
                         LlmEvent::ToolCallDelta {
@@ -431,6 +453,14 @@ struct AnthropicRequest {
     tools: Option<Vec<AnthropicTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<AnthropicThinking>,
+}
+
+#[derive(Debug, Serialize)]
+struct AnthropicThinking {
+    kind: String,
+    budget_tokens: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -441,9 +471,15 @@ struct AnthropicMessage {
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(dead_code)]
 enum AnthropicContentBlock {
     Text {
         text: String,
+    },
+    Thinking {
+        thinking: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
     ToolUse {
         id: String,
@@ -477,6 +513,10 @@ mod tests {
 
     use super::*;
 
+    fn plain_history(messages: Vec<LlmMessage>) -> Vec<HistoryEntry> {
+        messages.into_iter().map(HistoryEntry::plain).collect()
+    }
+
     fn sink_collector(events: Arc<Mutex<Vec<LlmEvent>>>) -> EventSink {
         Arc::new(move |event| {
             events.lock().expect("lock").push(event);
@@ -489,7 +529,7 @@ mod tests {
 
     #[test]
     fn to_anthropic_messages_converts_user_assistant_and_tool() {
-        let messages = to_anthropic_messages(&[
+        let messages = to_anthropic_messages(&plain_history(vec![
             LlmMessage::User {
                 content: "hello".to_string(),
             },
@@ -505,7 +545,7 @@ mod tests {
                 tool_call_id: "call_1".to_string(),
                 content: "tool output".to_string(),
             },
-        ]);
+        ]));
 
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[0].role, "user");
@@ -515,14 +555,14 @@ mod tests {
 
     #[test]
     fn assistant_blocks_keep_text_before_tool_use() {
-        let messages = to_anthropic_messages(&[LlmMessage::Assistant {
+        let messages = to_anthropic_messages(&plain_history(vec![LlmMessage::Assistant {
             content: "thinking".to_string(),
             tool_calls: vec![ToolCallRequest {
                 id: "call_1".to_string(),
                 name: "search".to_string(),
                 args: json!({ "q": "rust" }),
             }],
-        }]);
+        }]));
 
         match &messages[0].content[..] {
             [AnthropicContentBlock::Text { text }, AnthropicContentBlock::ToolUse { id, name, input }] =>
@@ -556,6 +596,20 @@ mod tests {
         assert_eq!(output.tool_calls.len(), 1);
         assert_eq!(output.tool_calls[0].id, "call_1");
         assert_eq!(output.tool_calls[0].args, json!({ "q": "rust" }));
+    }
+
+    #[test]
+    fn non_streaming_response_maps_thinking_block() {
+        let output = response_to_output(AnthropicResponse {
+            content: vec![
+                json!({ "type": "thinking", "thinking": "pondering" }),
+                json!({ "type": "text", "text": "done" }),
+            ],
+            stop_reason: Some("end_turn".to_string()),
+        });
+
+        assert_eq!(output.content, "done");
+        assert_eq!(output.reasoning_content.as_deref(), Some("pondering"));
     }
 
     #[test]
@@ -604,14 +658,35 @@ mod tests {
     }
 
     #[test]
+    fn streaming_thinking_delta_emits_reasoning_event() {
+        let mut accumulator = LlmAccumulator::default();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = sink_collector(events.clone());
+
+        let done = process_sse_block(
+            "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"pondering\"}}",
+            &mut accumulator,
+            &sink,
+        )
+        .expect("thinking delta should parse");
+
+        assert!(!done);
+        let events = events.lock().expect("lock").clone();
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, LlmEvent::ThinkingDelta(text) if text == "pondering")));
+    }
+
+    #[test]
     fn build_request_serializes_system_when_present() {
         let provider = test_provider();
         let request = provider.build_request(
-            &[LlmMessage::User {
+            &plain_history(vec![LlmMessage::User {
                 content: "hi".to_string(),
-            }],
+            }]),
             &[],
             Some("Follow the rules"),
+            false,
             false,
         );
         let body = serde_json::to_value(&request).expect("request should serialize");
@@ -626,15 +701,35 @@ mod tests {
     fn build_request_omits_system_when_absent() {
         let provider = test_provider();
         let request = provider.build_request(
-            &[LlmMessage::User {
+            &plain_history(vec![LlmMessage::User {
                 content: "hi".to_string(),
-            }],
+            }]),
             &[],
             None,
+            false,
             false,
         );
         let body = serde_json::to_value(&request).expect("request should serialize");
 
         assert!(body.get("system").is_none());
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn to_anthropic_messages_does_not_insert_thinking_blocks_from_metadata() {
+        let messages = to_anthropic_messages(&vec![HistoryEntry {
+            message: LlmMessage::Assistant {
+                content: "answer".to_string(),
+                tool_calls: vec![],
+            },
+            metadata: crate::action::MessageMetadata {
+                reasoning_content: Some("hidden".to_string()),
+            },
+        }]);
+
+        assert!(matches!(
+            messages[0].content.as_slice(),
+            [AnthropicContentBlock::Text { text }] if text == "answer"
+        ));
     }
 }

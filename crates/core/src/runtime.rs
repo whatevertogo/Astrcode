@@ -1,6 +1,8 @@
 mod assembly;
 mod event_sink;
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use chrono::Utc;
 use tokio_util::sync::CancellationToken;
@@ -8,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent_loop::AgentLoop;
 use crate::event_log::{generate_session_id, DeleteProjectResult, EventLog, SessionMeta};
 use crate::events::StorageEvent;
+use crate::llm::EventSink;
 use crate::projection::{project, AgentState};
 
 use self::assembly::build_agent_loop;
@@ -117,6 +120,18 @@ impl AgentRuntime {
             .await?;
 
         sink.finish()
+    }
+
+    pub fn replace_reasoning_cache(&self, cache: HashMap<usize, String>) {
+        self.loop_.replace_reasoning_cache(cache);
+    }
+
+    pub fn reasoning_cache_snapshot(&self) -> HashMap<usize, String> {
+        self.loop_.reasoning_cache_snapshot()
+    }
+
+    pub fn set_transient_llm_sink(&self, sink: Option<EventSink>) {
+        self.loop_.set_transient_llm_sink(sink);
     }
 
     pub fn list_sessions() -> Result<Vec<String>> {

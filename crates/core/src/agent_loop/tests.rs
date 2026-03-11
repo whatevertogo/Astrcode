@@ -207,10 +207,12 @@ async fn tool_events_are_ordered_and_turn_finishes() {
                     name: "listDir".to_string(),
                     args: json!({}),
                 }],
+                reasoning_content: None,
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
+                reasoning_content: None,
             },
         ])),
         delay: Duration::from_millis(0),
@@ -260,6 +262,7 @@ async fn interrupt_emits_error_and_turn_done() {
                 name: "slowTool".to_string(),
                 args: json!({}),
             }],
+            reasoning_content: None,
         }])),
         delay: Duration::from_millis(0),
     });
@@ -308,6 +311,7 @@ async fn deltas_emit_before_stream_completion() {
         response: LlmOutput {
             content: "streamed".to_string(),
             tool_calls: vec![],
+            reasoning_content: None,
         },
         per_delta_delay: Duration::from_millis(20),
     });
@@ -369,6 +373,7 @@ async fn reaching_max_steps_does_not_emit_error_event() {
                 name: "quickTool".to_string(),
                 args: json!({}),
             }],
+            reasoning_content: None,
         })
         .collect::<Vec<_>>();
 
@@ -435,10 +440,12 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
                     name: "quickTool".to_string(),
                     args: json!({}),
                 }],
+                reasoning_content: None,
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
+                reasoning_content: None,
             },
         ])),
         requests: requests.clone(),
@@ -492,15 +499,72 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
     assert_eq!(requests[0].messages.len(), 1);
     assert_eq!(requests[1].messages.len(), 3);
     assert!(matches!(
-        &requests[0].messages[0],
+        &requests[0].messages[0].message,
         LlmMessage::User { content } if content == "run quick tool"
     ));
     assert!(matches!(
-        &requests[1].messages[1],
+        &requests[1].messages[1].message,
         LlmMessage::Assistant { tool_calls, .. } if tool_calls.len() == 1 && tool_calls[0].name == "quickTool"
     ));
     assert!(matches!(
-        &requests[1].messages[2],
+        &requests[1].messages[2].message,
         LlmMessage::Tool { tool_call_id, content } if tool_call_id == "call-1" && content == "ok"
     ));
+}
+
+#[tokio::test]
+async fn second_llm_step_reuses_reasoning_from_first_assistant_within_same_turn() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(RecordingProvider {
+        responses: Mutex::new(VecDeque::from([
+            LlmOutput {
+                content: String::new(),
+                tool_calls: vec![ToolCallRequest {
+                    id: "call-1".to_string(),
+                    name: "quickTool".to_string(),
+                    args: json!({}),
+                }],
+                reasoning_content: Some("first-thinking".to_string()),
+            },
+            LlmOutput {
+                content: "done".to_string(),
+                tool_calls: vec![],
+                reasoning_content: Some("second-thinking".to_string()),
+            },
+        ])),
+        requests: requests.clone(),
+    });
+
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(QuickTool));
+
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::new(factory, tools).with_max_steps(8);
+    let state = make_state("reuse reasoning");
+
+    loop_runner
+        .run_turn(&state, &mut |_event| {}, CancellationToken::new())
+        .await
+        .expect("turn should complete");
+
+    let requests = requests.lock().expect("lock should work").clone();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1].messages[1].metadata.reasoning_content.as_deref(),
+        Some("first-thinking")
+    );
+    assert_eq!(
+        loop_runner
+            .reasoning_cache_snapshot()
+            .get(&0)
+            .map(String::as_str),
+        Some("first-thinking")
+    );
+    assert_eq!(
+        loop_runner
+            .reasoning_cache_snapshot()
+            .get(&1)
+            .map(String::as_str),
+        Some("second-thinking")
+    );
 }

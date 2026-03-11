@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
+use std::collections::HashMap;
 use std::sync::{Mutex as StdMutex, MutexGuard, OnceLock};
 
 use uuid::Uuid;
@@ -150,4 +151,69 @@ async fn get_current_model_falls_back_without_writing_config() {
     let persisted = load_config().expect("config should still load");
     assert_eq!(persisted.active_profile, "missing");
     assert_eq!(persisted.active_model, "missing-model");
+}
+
+#[tokio::test]
+async fn new_session_creates_fresh_reasoning_cache_entry() {
+    let _guard = AppHomeGuard::new();
+    let handle = AgentHandle::new().expect("handle should build");
+    let first_session_id = handle.get_session_id().await;
+
+    handle
+        .reasoning_cache
+        .lock()
+        .await
+        .insert(first_session_id.clone(), HashMap::from([(0usize, "r1".to_string())]));
+
+    let second_session_id = handle
+        .new_session()
+        .await
+        .expect("new_session should succeed");
+
+    let cache = handle.reasoning_cache.lock().await;
+    assert_eq!(
+        cache.get(&first_session_id)
+            .and_then(|session_cache| session_cache.get(&0))
+            .map(String::as_str),
+        Some("r1")
+    );
+    assert_eq!(
+        cache.get(&second_session_id),
+        Some(&HashMap::new()),
+        "new session should start with an empty reasoning cache"
+    );
+}
+
+#[tokio::test]
+async fn delete_session_clears_reasoning_cache_for_target_session() {
+    let _guard = AppHomeGuard::new();
+    let handle = AgentHandle::new().expect("handle should build");
+    let first_session_id = handle.get_session_id().await;
+
+    handle
+        .reasoning_cache
+        .lock()
+        .await
+        .insert(first_session_id.clone(), HashMap::from([(0usize, "r1".to_string())]));
+
+    let current_session_id = handle
+        .new_session()
+        .await
+        .expect("new_session should succeed");
+    assert_ne!(current_session_id, first_session_id);
+
+    handle
+        .delete_session(first_session_id.clone())
+        .await
+        .expect("delete_session should succeed");
+
+    let cache = handle.reasoning_cache.lock().await;
+    assert!(
+        !cache.contains_key(&first_session_id),
+        "deleted session cache should be removed"
+    );
+    assert!(
+        cache.contains_key(&current_session_id),
+        "current session cache should stay intact"
+    );
 }

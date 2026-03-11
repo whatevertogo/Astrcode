@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::ipc::Channel;
 
-use astrcode_core::StorageEvent;
+use astrcode_core::{llm::LlmEvent, StorageEvent};
 use ipc::{AgentEvent, AgentEventKind, Phase, ToolCallResultEnvelope};
 
 pub(crate) struct TurnEventBridge {
@@ -52,6 +52,18 @@ impl TurnEventBridge {
 
         for kind in collect_event_kinds(&self.turn_id, event, &mut self.pending_tool_names) {
             send_agent_event(channel, kind);
+        }
+    }
+
+    pub(crate) fn forward_llm_event(&mut self, channel: &Channel<AgentEvent>, event: &LlmEvent) {
+        if let LlmEvent::ThinkingDelta(delta) = event {
+            send_agent_event(
+                channel,
+                AgentEventKind::ThinkingDelta {
+                    turn_id: self.turn_id.clone(),
+                    delta: delta.clone(),
+                },
+            );
         }
     }
 }

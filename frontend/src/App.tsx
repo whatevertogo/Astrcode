@@ -42,7 +42,13 @@ function convertSessionMessage(m: SessionMessage): Message {
     case 'user':
       return { ...base, kind: 'user' as const, text: m.content };
     case 'assistant':
-      return { ...base, kind: 'assistant' as const, text: m.content, streaming: false };
+      return {
+        ...base,
+        kind: 'assistant' as const,
+        text: m.content,
+        streaming: false,
+        reasoningStreaming: false,
+      };
     case 'toolCall':
       return {
         ...base,
@@ -55,7 +61,13 @@ function convertSessionMessage(m: SessionMessage): Message {
         durationMs: m.durationMs,
       };
     default:
-      return { ...base, kind: 'assistant' as const, text: '', streaming: false };
+      return {
+        ...base,
+        kind: 'assistant' as const,
+        text: '',
+        streaming: false,
+        reasoningStreaming: false,
+      };
   }
 }
 
@@ -228,10 +240,17 @@ function reducer(state: AppState, action: Action): AppState {
       return mapSession(state, action.sessionId, (s) => {
         const msgs = s.messages;
         const last = msgs[msgs.length - 1];
-        if (last && last.kind === 'assistant' && last.streaming) {
+        if (
+          last &&
+          last.kind === 'assistant' &&
+          (last.streaming || last.reasoningStreaming)
+        ) {
           return {
             ...s,
-            messages: [...msgs.slice(0, -1), { ...last, text: last.text + action.delta }],
+            messages: [
+              ...msgs.slice(0, -1),
+              { ...last, text: last.text + action.delta, streaming: true },
+            ],
           };
         }
         // Create a new streaming assistant message
@@ -240,19 +259,97 @@ function reducer(state: AppState, action: Action): AppState {
           kind: 'assistant' as const,
           text: action.delta,
           streaming: true,
+          reasoningStreaming: false,
           timestamp: Date.now(),
         };
         return { ...s, messages: [...msgs, newMsg] };
+      });
+
+    case 'APPEND_REASONING_DELTA':
+      return mapSession(state, action.sessionId, (s) => {
+        const msgs = s.messages;
+        const last = msgs[msgs.length - 1];
+        if (last && last.kind === 'assistant') {
+          return {
+            ...s,
+            messages: [
+              ...msgs.slice(0, -1),
+              {
+                ...last,
+                reasoningText: (last.reasoningText ?? '') + action.delta,
+                reasoningStreaming: true,
+              },
+            ],
+          };
+        }
+
+        return {
+          ...s,
+          messages: [
+            ...msgs,
+            {
+              id: uuid(),
+              kind: 'assistant' as const,
+              text: '',
+              reasoningText: action.delta,
+              streaming: false,
+              reasoningStreaming: true,
+              timestamp: Date.now(),
+            },
+          ],
+        };
+      });
+
+    case 'FINALIZE_ASSISTANT_MESSAGE':
+      return mapSession(state, action.sessionId, (s) => {
+        const msgs = s.messages;
+        const last = msgs[msgs.length - 1];
+        if (last && last.kind === 'assistant') {
+          return {
+            ...s,
+            messages: [
+              ...msgs.slice(0, -1),
+              {
+                ...last,
+                text: action.content,
+                streaming: false,
+                reasoningStreaming: false,
+              },
+            ],
+          };
+        }
+
+        return {
+          ...s,
+          messages: [
+            ...msgs,
+            {
+              id: uuid(),
+              kind: 'assistant' as const,
+              text: action.content,
+              streaming: false,
+              reasoningStreaming: false,
+              timestamp: Date.now(),
+            },
+          ],
+        };
       });
 
     case 'END_STREAMING':
       return mapSession(state, action.sessionId, (s) => {
         const msgs = s.messages;
         const last = msgs[msgs.length - 1];
-        if (last && last.kind === 'assistant' && last.streaming) {
+        if (
+          last &&
+          last.kind === 'assistant' &&
+          (last.streaming || last.reasoningStreaming)
+        ) {
           return {
             ...s,
-            messages: [...msgs.slice(0, -1), { ...last, streaming: false }],
+            messages: [
+              ...msgs.slice(0, -1),
+              { ...last, streaming: false, reasoningStreaming: false },
+            ],
           };
         }
         return s;
@@ -265,6 +362,7 @@ function reducer(state: AppState, action: Action): AppState {
           if (m.kind === 'toolCall' && m.toolCallId === action.toolCallId) {
             return {
               ...m,
+              toolName: action.toolName || m.toolName,
               status: action.status,
               output: action.output,
               error: action.error,
@@ -405,21 +503,28 @@ export default function App() {
         break;
       }
 
+      case 'thinkingDelta': {
+        const sid = resolveSessionId(event.data.turnId);
+        if (!sid) {
+          break;
+        }
+        dispatch({
+          type: 'APPEND_REASONING_DELTA',
+          sessionId: sid,
+          delta: event.data.delta,
+        });
+        break;
+      }
+
       case 'assistantMessage': {
         const sid = resolveSessionId(event.data.turnId);
         if (!sid) {
           break;
         }
         dispatch({
-          type: 'ADD_MESSAGE',
+          type: 'FINALIZE_ASSISTANT_MESSAGE',
           sessionId: sid,
-          message: {
-            id: uuid(),
-            kind: 'assistant',
-            text: event.data.content,
-            streaming: false,
-            timestamp: Date.now(),
-          },
+          content: event.data.content,
         });
         break;
       }
@@ -466,6 +571,7 @@ export default function App() {
             type: 'UPDATE_TOOL_CALL',
             sessionId: sid,
             toolCallId: result.toolCallId ?? result.tool_call_id ?? 'unknown',
+            toolName: event.data.result.toolName || undefined,
             status: event.data.result.ok ? 'ok' : 'fail',
             output: event.data.result.output,
             error: event.data.result.error,
@@ -501,6 +607,7 @@ export default function App() {
               kind: 'assistant',
               text: `错误：${event.data.message}`,
               streaming: false,
+              reasoningStreaming: false,
               timestamp: Date.now(),
             },
           });
@@ -660,7 +767,13 @@ export default function App() {
               case 'user':
                 return { ...base, kind: 'user' as const, text: m.content };
               case 'assistant':
-                return { ...base, kind: 'assistant' as const, text: m.content, streaming: false };
+                return {
+                  ...base,
+                  kind: 'assistant' as const,
+                  text: m.content,
+                  streaming: false,
+                  reasoningStreaming: false,
+                };
               case 'toolCall':
                 return {
                   ...base,
@@ -673,7 +786,13 @@ export default function App() {
                   durationMs: m.durationMs,
                 };
               default:
-                return { ...base, kind: 'assistant' as const, text: '', streaming: false };
+                return {
+                  ...base,
+                  kind: 'assistant' as const,
+                  text: '',
+                  streaming: false,
+                  reasoningStreaming: false,
+                };
             }
           });
           dispatch({
@@ -765,6 +884,7 @@ export default function App() {
             kind: 'assistant',
             text: `错误：${String(err)}`,
             streaming: false,
+            reasoningStreaming: false,
             timestamp: Date.now(),
           },
         });

@@ -2,6 +2,7 @@ import React, { Component, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { AssistantMessage as AssistantMessageType } from '../../types';
+import ThinkingBlock from './ThinkingBlock';
 import styles from './AssistantMessage.module.css';
 
 interface AssistantMessageProps {
@@ -33,44 +34,24 @@ class MarkdownGuard extends Component<MarkdownGuardProps, MarkdownGuardState> {
   }
 }
 
-function extractThinkingBlocks(text: string): {
-  visibleText: string;
-  thinkingBlocks: string[];
-} {
-  const thinkingBlocks: string[] = [];
-  const visibleText = text
-    .replace(/<think>([\s\S]*?)<\/think>/gi, (_match, content: string) => {
-      const normalized = content.trim();
-      if (normalized) {
-        thinkingBlocks.push(normalized);
-      }
-      return '';
-    })
-    .trim();
-
-  return { visibleText, thinkingBlocks };
-}
-
 function AssistantMessage({ message }: AssistantMessageProps) {
-  const { visibleText, thinkingBlocks } = extractThinkingBlocks(message.text);
-
   return (
     <div className={styles.wrapper}>
       <div className={styles.bubble}>
         <div className={styles.label}>Assistant</div>
         <div className={styles.content}>
+          {message.reasoningText ? (
+            <ThinkingBlock
+              reasoningText={message.reasoningText}
+              streaming={Boolean(message.reasoningStreaming)}
+            />
+          ) : null}
           {message.streaming ? (
             <div className={styles.streamingText}>{message.text}</div>
           ) : (
             <>
-              {thinkingBlocks.map((block, index) => (
-                <details key={`${message.id}-thinking-${index}`} className={styles.thinkingBlock}>
-                  <summary className={styles.thinkingSummary}>Thinking</summary>
-                  <pre className={styles.thinkingContent}>{block}</pre>
-                </details>
-              ))}
-              {visibleText ? (
-                <MarkdownGuard fallback={visibleText}>
+              {message.text ? (
+                <MarkdownGuard fallback={message.text}>
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
                     components={{
@@ -93,7 +74,7 @@ function AssistantMessage({ message }: AssistantMessageProps) {
                       },
                     }}
                   >
-                    {visibleText}
+                    {message.text}
                   </ReactMarkdown>
                 </MarkdownGuard>
               ) : null}

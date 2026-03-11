@@ -35,6 +35,11 @@ impl AgentHandle {
 
         *self.runtime.lock().await = runtime;
         *self.session_id.lock().await = session_id.clone();
+        self.reasoning_cache
+            .lock()
+            .await
+            .entry(session_id.clone())
+            .or_insert_with(std::collections::HashMap::new);
 
         Ok(session_id)
     }
@@ -49,6 +54,11 @@ impl AgentHandle {
 
         *self.runtime.lock().await = runtime;
         *self.session_id.lock().await = session_id.to_string();
+        self.reasoning_cache
+            .lock()
+            .await
+            .entry(session_id.to_string())
+            .or_insert_with(std::collections::HashMap::new);
 
         Ok(())
     }
@@ -65,9 +75,15 @@ impl AgentHandle {
             sync_runtime_working_dir(&runtime);
 
             *self.runtime.lock().await = runtime;
-            *self.session_id.lock().await = next_session_id;
+            *self.session_id.lock().await = next_session_id.clone();
+            self.reasoning_cache
+                .lock()
+                .await
+                .entry(next_session_id)
+                .or_insert_with(std::collections::HashMap::new);
         }
 
+        self.reasoning_cache.lock().await.remove(&target_id);
         AgentRuntime::delete_session(&target_id).map_err(|e| e.to_string())
     }
 
@@ -99,6 +115,11 @@ impl AgentHandle {
                 sync_runtime_working_dir(&runtime);
                 *self.runtime.lock().await = runtime;
                 *self.session_id.lock().await = replacement.session_id.clone();
+                self.reasoning_cache
+                    .lock()
+                    .await
+                    .entry(replacement.session_id.clone())
+                    .or_insert_with(std::collections::HashMap::new);
             } else {
                 let home = user_home_dir()
                     .ok_or_else(|| "unable to resolve home directory".to_string())?;
@@ -106,10 +127,19 @@ impl AgentHandle {
                 let runtime = AgentRuntime::new_session().map_err(|e| e.to_string())?;
                 let session_id = runtime.session_id.clone();
                 *self.runtime.lock().await = runtime;
-                *self.session_id.lock().await = session_id;
+                *self.session_id.lock().await = session_id.clone();
+                self.reasoning_cache
+                    .lock()
+                    .await
+                    .entry(session_id)
+                    .or_insert_with(std::collections::HashMap::new);
             }
         }
 
+        self.reasoning_cache
+            .lock()
+            .await
+            .retain(|session_id, _| !targets.contains(session_id));
         AgentRuntime::delete_project(&working_dir).map_err(|e| e.to_string())
     }
 
