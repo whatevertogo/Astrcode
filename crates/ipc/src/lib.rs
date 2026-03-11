@@ -246,7 +246,9 @@ mod tests {
         });
 
         let payload = serde_json::to_value(event).expect("event should serialize");
-        let data = payload.get("data").expect("thinkingDelta should contain data");
+        let data = payload
+            .get("data")
+            .expect("thinkingDelta should contain data");
 
         assert_eq!(
             payload.get("event"),

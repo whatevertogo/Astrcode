@@ -250,7 +250,10 @@ mod tests {
         })
         .expect("session message should serialize");
 
-        assert_eq!(payload.get("kind").and_then(serde_json::Value::as_str), Some("assistant"));
+        assert_eq!(
+            payload.get("kind").and_then(serde_json::Value::as_str),
+            Some("assistant")
+        );
         assert_eq!(
             payload
                 .get("reasoningContent")
@@ -273,7 +276,9 @@ mod tests {
         .expect("tool call message should serialize");
 
         assert_eq!(
-            payload.get("toolCallId").and_then(serde_json::Value::as_str),
+            payload
+                .get("toolCallId")
+                .and_then(serde_json::Value::as_str),
             Some("call-1")
         );
         assert_eq!(
@@ -281,7 +286,9 @@ mod tests {
             Some("shell")
         );
         assert_eq!(
-            payload.get("durationMs").and_then(serde_json::Value::as_u64),
+            payload
+                .get("durationMs")
+                .and_then(serde_json::Value::as_u64),
             Some(12)
         );
         assert!(payload.get("tool_call_id").is_none());

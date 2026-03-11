@@ -21,7 +21,7 @@ export function splitAssistantContent(
   const reasoningText =
     explicitReasoning && inlineReasoning && explicitReasoning !== inlineReasoning
       ? `${explicitReasoning}\n\n${inlineReasoning}`
-      : explicitReasoning ?? inlineReasoning;
+      : (explicitReasoning ?? inlineReasoning);
 
   return {
     text: inlineBlocks.length > 0 ? strippedText.trim().replace(/\n{3,}/g, '\n\n') : text,

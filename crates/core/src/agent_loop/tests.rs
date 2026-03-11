@@ -550,7 +550,10 @@ async fn second_llm_step_reuses_reasoning_from_first_assistant_within_same_turn(
     let requests = requests.lock().expect("lock should work").clone();
     assert_eq!(requests.len(), 2);
     assert_eq!(
-        requests[1].messages[1].metadata.reasoning_content.as_deref(),
+        requests[1].messages[1]
+            .metadata
+            .reasoning_content
+            .as_deref(),
         Some("first-thinking")
     );
     assert_eq!(

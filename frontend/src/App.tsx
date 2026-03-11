@@ -244,11 +244,7 @@ function reducer(state: AppState, action: Action): AppState {
       return mapSession(state, action.sessionId, (s) => {
         const msgs = s.messages;
         const last = msgs[msgs.length - 1];
-        if (
-          last &&
-          last.kind === 'assistant' &&
-          (last.streaming || last.reasoningStreaming)
-        ) {
+        if (last && last.kind === 'assistant' && (last.streaming || last.reasoningStreaming)) {
           return {
             ...s,
             messages: [
@@ -273,11 +269,7 @@ function reducer(state: AppState, action: Action): AppState {
       return mapSession(state, action.sessionId, (s) => {
         const msgs = s.messages;
         const last = msgs[msgs.length - 1];
-        if (
-          last &&
-          last.kind === 'assistant' &&
-          (last.streaming || last.reasoningStreaming)
-        ) {
+        if (last && last.kind === 'assistant' && (last.streaming || last.reasoningStreaming)) {
           return {
             ...s,
             messages: [
@@ -312,11 +304,7 @@ function reducer(state: AppState, action: Action): AppState {
       return mapSession(state, action.sessionId, (s) => {
         const msgs = s.messages;
         const last = msgs[msgs.length - 1];
-        if (
-          last &&
-          last.kind === 'assistant' &&
-          (last.streaming || last.reasoningStreaming)
-        ) {
+        if (last && last.kind === 'assistant' && (last.streaming || last.reasoningStreaming)) {
           return {
             ...s,
             messages: [
@@ -351,11 +339,7 @@ function reducer(state: AppState, action: Action): AppState {
       return mapSession(state, action.sessionId, (s) => {
         const msgs = s.messages;
         const last = msgs[msgs.length - 1];
-        if (
-          last &&
-          last.kind === 'assistant' &&
-          (last.streaming || last.reasoningStreaming)
-        ) {
+        if (last && last.kind === 'assistant' && (last.streaming || last.reasoningStreaming)) {
           return {
             ...s,
             messages: [

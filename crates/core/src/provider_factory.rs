@@ -148,7 +148,10 @@ mod tests {
 
     #[test]
     fn supports_reasoning_content_only_for_deepseek_openai_profiles() {
-        assert!(supports_reasoning_content("openai-compatible", "DeepSeek-R1"));
+        assert!(supports_reasoning_content(
+            "openai-compatible",
+            "DeepSeek-R1"
+        ));
         assert!(!supports_reasoning_content("openai-compatible", "gpt-4o"));
         assert!(!supports_reasoning_content("anthropic", "deepseek-r1"));
     }

@@ -4,8 +4,8 @@ use tauri::ipc::Channel;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use astrcode_core::llm::{EventSink, LlmEvent};
 use ::ipc::AgentEvent;
+use astrcode_core::llm::{EventSink, LlmEvent};
 
 use super::ipc::TurnEventBridge;
 use super::AgentHandle;
@@ -56,9 +56,7 @@ impl AgentHandle {
         let transient_sink: EventSink = Arc::new(move |event| {
             if matches!(event, LlmEvent::ThinkingDelta(_)) {
                 let mut bridge = transient_bridge.lock().expect("turn bridge lock");
-                let channel = transient_channel
-                    .lock()
-                    .expect("agent event channel lock");
+                let channel = transient_channel.lock().expect("agent event channel lock");
                 bridge.forward_llm_event(&channel, &event);
             }
         });
