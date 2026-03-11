@@ -4,6 +4,7 @@ use tokio_util::sync::CancellationToken;
 use crate::action::LlmMessage;
 use crate::events::StorageEvent;
 use crate::projection::AgentState;
+use crate::prompt::{append_unique_tools, PromptComposer, PromptContext};
 
 use super::{finish_interrupted, finish_turn, finish_with_error, llm_cycle, tool_cycle, AgentLoop};
 
@@ -22,17 +23,31 @@ pub(crate) async fn run_turn(
             finish_turn(on_event);
             return Ok(());
         }
-        step_index += 1;
 
         if cancel.is_cancelled() {
             finish_interrupted(on_event);
             return Ok(());
         }
 
+        let ctx = PromptContext {
+            working_dir: state.working_dir.to_string_lossy().into_owned(),
+            tool_names: agent_loop.tools.names(),
+            step_index,
+            turn_index: 0,
+        };
+        let plan = PromptComposer::with_defaults().build(&ctx);
+        let system_prompt = plan.render_system();
+        let mut request_messages = plan.prepend_messages;
+        request_messages.extend(messages.iter().cloned());
+        request_messages.extend(plan.append_messages);
+        let mut tool_definitions = agent_loop.tools.definitions();
+        append_unique_tools(&mut tool_definitions, plan.extra_tools);
+
         let output = match llm_cycle::generate_response(
             &provider,
-            &messages,
-            agent_loop.tools.definitions(),
+            &request_messages,
+            tool_definitions,
+            system_prompt,
             cancel.child_token(),
             on_event,
         )
@@ -80,6 +95,8 @@ pub(crate) async fn run_turn(
             finish_interrupted(on_event);
             return Ok(());
         }
+
+        step_index += 1;
     }
 }
 

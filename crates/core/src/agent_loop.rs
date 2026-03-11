@@ -52,7 +52,10 @@ pub(crate) fn finish_turn(on_event: &mut impl FnMut(StorageEvent)) {
     });
 }
 
-pub(crate) fn finish_with_error(message: impl Into<String>, on_event: &mut impl FnMut(StorageEvent)) {
+pub(crate) fn finish_with_error(
+    message: impl Into<String>,
+    on_event: &mut impl FnMut(StorageEvent),
+) {
     on_event(StorageEvent::Error {
         message: message.into(),
     });

@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -14,6 +15,7 @@ use crate::events::StorageEvent;
 use crate::llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
 use crate::projection::AgentState;
 use crate::provider_factory::ProviderFactory;
+use crate::test_support::TestEnvGuard;
 use crate::tools::registry::ToolRegistry;
 use crate::tools::Tool;
 
@@ -38,11 +40,7 @@ struct ScriptedProvider {
 
 #[async_trait]
 impl LlmProvider for ScriptedProvider {
-    async fn generate(
-        &self,
-        request: LlmRequest,
-        sink: Option<EventSink>,
-    ) -> Result<LlmOutput> {
+    async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         if self.delay > Duration::from_millis(0) {
             tokio::select! {
                 _ = request.cancel.cancelled() => return Err(anyhow!("cancelled")),
@@ -75,6 +73,11 @@ struct StreamingProvider {
     per_delta_delay: Duration,
 }
 
+struct RecordingProvider {
+    responses: Mutex<VecDeque<LlmOutput>>,
+    requests: Arc<Mutex<Vec<LlmRequest>>>,
+}
+
 struct StaticProviderFactory {
     provider: Arc<dyn LlmProvider>,
 }
@@ -87,11 +90,7 @@ impl ProviderFactory for StaticProviderFactory {
 
 #[async_trait]
 impl LlmProvider for StreamingProvider {
-    async fn generate(
-        &self,
-        request: LlmRequest,
-        sink: Option<EventSink>,
-    ) -> Result<LlmOutput> {
+    async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         let Some(sink) = sink else {
             return Ok(self.response.clone());
         };
@@ -106,6 +105,35 @@ impl LlmProvider for StreamingProvider {
         }
 
         Ok(self.response.clone())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for RecordingProvider {
+    async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
+        self.requests
+            .lock()
+            .expect("lock should work")
+            .push(request.clone());
+
+        let response = self
+            .responses
+            .lock()
+            .expect("lock should work")
+            .pop_front()
+            .ok_or_else(|| anyhow!("no scripted response"))?;
+
+        if request.cancel.is_cancelled() {
+            return Err(anyhow!("cancelled"));
+        }
+
+        if let Some(sink) = sink {
+            for delta in response.content.chars() {
+                sink(LlmEvent::TextDelta(delta.to_string()));
+            }
+        }
+
+        Ok(response)
     }
 }
 
@@ -384,4 +412,93 @@ async fn reaching_max_steps_does_not_emit_error_event() {
         !has_max_error,
         "max step exhaustion should not be surfaced as user-visible error"
     );
+}
+
+#[tokio::test]
+async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
+    let guard = TestEnvGuard::new();
+    let project = tempfile::tempdir().expect("tempdir should be created");
+    let user_agents_path = guard.home_dir().join(".astrcode").join("AGENTS.md");
+    fs::create_dir_all(user_agents_path.parent().expect("parent should exist"))
+        .expect("user agents dir should be created");
+    fs::write(&user_agents_path, "Follow user rule").expect("user agents file should be written");
+    fs::write(project.path().join("AGENTS.md"), "Follow project rule")
+        .expect("project agents file should be written");
+
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(RecordingProvider {
+        responses: Mutex::new(VecDeque::from([
+            LlmOutput {
+                content: String::new(),
+                tool_calls: vec![ToolCallRequest {
+                    id: "call-1".to_string(),
+                    name: "quickTool".to_string(),
+                    args: json!({}),
+                }],
+            },
+            LlmOutput {
+                content: "done".to_string(),
+                tool_calls: vec![],
+            },
+        ])),
+        requests: requests.clone(),
+    });
+
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(QuickTool));
+
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::new(factory, tools).with_max_steps(8);
+    let state = AgentState {
+        session_id: "test".into(),
+        working_dir: project.path().to_path_buf(),
+        messages: vec![LlmMessage::User {
+            content: "run quick tool".into(),
+        }],
+        phase: Phase::Thinking,
+        turn_count: 0,
+    };
+
+    loop_runner
+        .run_turn(&state, &mut |_event| {}, CancellationToken::new())
+        .await
+        .expect("turn should complete");
+
+    let requests = requests.lock().expect("lock should work").clone();
+    assert_eq!(requests.len(), 2, "expected one request per llm step");
+
+    for request in &requests {
+        let prompt = request
+            .system_prompt
+            .as_deref()
+            .expect("system prompt should be present for every step");
+        assert!(prompt.contains("[Identity]"));
+        assert!(prompt.contains("[Environment]"));
+        assert!(
+            prompt.contains("User-wide instructions from ~/.astrcode/AGENTS.md:\nFollow user rule")
+        );
+        assert!(
+            prompt.contains("Project-specific instructions from ./AGENTS.md:\nFollow project rule")
+        );
+        assert!(prompt.contains(&format!(
+            "Working directory: {}",
+            project.path().to_string_lossy()
+        )));
+        assert!(request.tools.iter().any(|tool| tool.name == "quickTool"));
+    }
+
+    assert_eq!(requests[0].messages.len(), 1);
+    assert_eq!(requests[1].messages.len(), 3);
+    assert!(matches!(
+        &requests[0].messages[0],
+        LlmMessage::User { content } if content == "run quick tool"
+    ));
+    assert!(matches!(
+        &requests[1].messages[1],
+        LlmMessage::Assistant { tool_calls, .. } if tool_calls.len() == 1 && tool_calls[0].name == "quickTool"
+    ));
+    assert!(matches!(
+        &requests[1].messages[2],
+        LlmMessage::Tool { tool_call_id, content } if tool_call_id == "call-1" && content == "ok"
+    ));
 }

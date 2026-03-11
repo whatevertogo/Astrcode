@@ -31,11 +31,24 @@ impl OpenAiProvider {
         &'a self,
         messages: &'a [LlmMessage],
         tools: &'a [ToolDefinition],
+        system_prompt: Option<&'a str>,
         stream: bool,
     ) -> OpenAiChatRequest<'a> {
+        let mut request_messages =
+            Vec::with_capacity(messages.len() + if system_prompt.is_some() { 1 } else { 0 });
+        if let Some(text) = system_prompt {
+            request_messages.push(OpenAiRequestMessage {
+                role: "system".to_string(),
+                content: Some(text.to_string()),
+                tool_call_id: None,
+                tool_calls: None,
+            });
+        }
+        request_messages.extend(messages.iter().map(to_openai_message));
+
         OpenAiChatRequest {
             model: &self.model,
-            messages: messages.iter().map(to_openai_message).collect(),
+            messages: request_messages,
             tools: if tools.is_empty() {
                 None
             } else {
@@ -84,7 +97,12 @@ impl OpenAiProvider {
 impl LlmProvider for OpenAiProvider {
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         let cancel = request.cancel;
-        let req = self.build_request(&request.messages, &request.tools, sink.is_some());
+        let req = self.build_request(
+            &request.messages,
+            &request.tools,
+            request.system_prompt.as_deref(),
+            sink.is_some(),
+        );
         let response = self.send_request(&req, cancel.child_token()).await?;
 
         match sink {
@@ -455,6 +473,14 @@ mod tests {
         })
     }
 
+    fn test_provider() -> OpenAiProvider {
+        OpenAiProvider::new(
+            "http://127.0.0.1:12345".to_string(),
+            "sk-test".to_string(),
+            "model-a".to_string(),
+        )
+    }
+
     fn spawn_server(response: String) -> (String, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
@@ -620,6 +646,35 @@ mod tests {
         assert_eq!(output.tool_calls[0].id, "call_1");
         assert_eq!(output.tool_calls[0].name, "search");
         assert_eq!(output.tool_calls[0].args, json!({ "q": "hello" }));
+    }
+
+    #[test]
+    fn build_request_prepends_system_message_when_present() {
+        let provider = test_provider();
+        let messages = [LlmMessage::User {
+            content: "hi".to_string(),
+        }];
+        let request = provider.build_request(&messages, &[], Some("Follow the rules"), false);
+
+        assert_eq!(request.messages[0].role, "system");
+        assert_eq!(
+            request.messages[0].content.as_deref(),
+            Some("Follow the rules")
+        );
+    }
+
+    #[test]
+    fn build_request_does_not_include_system_message_when_absent() {
+        let provider = test_provider();
+        let messages = [LlmMessage::User {
+            content: "hi".to_string(),
+        }];
+        let request = provider.build_request(&messages, &[], None, false);
+
+        assert!(request
+            .messages
+            .iter()
+            .all(|message| message.role != "system"));
     }
 
     #[tokio::test]

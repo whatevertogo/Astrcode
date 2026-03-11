@@ -90,3 +90,4 @@ Trait-based design in `crates/core/src/tools/`:
 - **async_trait**: 默认 `#[async_trait]` 要求 `Send`；若需非 `Send` 回调，用 `#[async_trait(?Send)]`
 - **配置文件**: 首次运行生成 `~/.astrcode/config.json`，含 API 密钥和 Profile 配置
 - **IPC 协议**: 后端→前端事件通过 NDJSON 流传输，见 `AgentEventKind` 枚举
+- **Home 目录测试陷阱**: 在 Windows 测试环境里，`dirs::home_dir()` 不一定受临时 `HOME/USERPROFILE` 影响；需要可控 home 路径的测试或模块，优先复用 `crate::test_support::test_home_dir()` / `TestEnvGuard`

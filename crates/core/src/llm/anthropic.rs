@@ -40,12 +40,14 @@ impl AnthropicProvider {
         &self,
         messages: &[LlmMessage],
         tools: &[ToolDefinition],
+        system_prompt: Option<&str>,
         stream: bool,
     ) -> AnthropicRequest {
         AnthropicRequest {
             model: self.model.clone(),
             max_tokens: self.max_tokens,
             messages: to_anthropic_messages(messages),
+            system: system_prompt.map(str::to_string),
             tools: if tools.is_empty() {
                 None
             } else {
@@ -93,7 +95,12 @@ impl AnthropicProvider {
 impl LlmProvider for AnthropicProvider {
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         let cancel = request.cancel;
-        let body = self.build_request(&request.messages, &request.tools, sink.is_some());
+        let body = self.build_request(
+            &request.messages,
+            &request.tools,
+            request.system_prompt.as_deref(),
+            sink.is_some(),
+        );
         let response = self.send_request(&body, cancel.child_token()).await?;
 
         match sink {
@@ -419,6 +426,8 @@ struct AnthropicRequest {
     max_tokens: u32,
     messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<AnthropicTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
@@ -472,6 +481,10 @@ mod tests {
         Arc::new(move |event| {
             events.lock().expect("lock").push(event);
         })
+    }
+
+    fn test_provider() -> AnthropicProvider {
+        AnthropicProvider::new("sk-ant-test".to_string(), "claude-test".to_string())
     }
 
     #[test]
@@ -588,5 +601,40 @@ mod tests {
         assert_eq!(output.content, "hello");
         assert_eq!(output.tool_calls.len(), 1);
         assert_eq!(output.tool_calls[0].args, json!({ "q": "rust" }));
+    }
+
+    #[test]
+    fn build_request_serializes_system_when_present() {
+        let provider = test_provider();
+        let request = provider.build_request(
+            &[LlmMessage::User {
+                content: "hi".to_string(),
+            }],
+            &[],
+            Some("Follow the rules"),
+            false,
+        );
+        let body = serde_json::to_value(&request).expect("request should serialize");
+
+        assert_eq!(
+            body.get("system").and_then(Value::as_str),
+            Some("Follow the rules")
+        );
+    }
+
+    #[test]
+    fn build_request_omits_system_when_absent() {
+        let provider = test_provider();
+        let request = provider.build_request(
+            &[LlmMessage::User {
+                content: "hi".to_string(),
+            }],
+            &[],
+            None,
+            false,
+        );
+        let body = serde_json::to_value(&request).expect("request should serialize");
+
+        assert!(body.get("system").is_none());
     }
 }
