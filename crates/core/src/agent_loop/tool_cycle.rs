@@ -35,6 +35,7 @@ pub(crate) async fn execute_tool_calls(
 
         on_event(StorageEvent::ToolResult {
             tool_call_id: call.id.clone(),
+            tool_name: call.name.clone(),
             output: tool_result_output(&result),
             success: result.ok,
             duration_ms,

@@ -93,7 +93,9 @@ pub fn project(events: &[StorageEvent]) -> AgentState {
             StorageEvent::ToolResult {
                 tool_call_id,
                 output,
-                ..
+                success: _,
+                duration_ms: _,
+                tool_name: _,
             } => {
                 // Flush the assistant message that triggered these tool calls.
                 flush(&mut state, &mut pending_content, &mut pending_tool_calls);
@@ -206,6 +208,7 @@ mod tests {
             },
             StorageEvent::ToolResult {
                 tool_call_id: "tc1".into(),
+                tool_name: "listDir".into(),
                 output: "file1.txt\nfile2.txt".into(),
                 success: true,
                 duration_ms: 10,
@@ -308,6 +311,7 @@ mod tests {
             },
             StorageEvent::ToolResult {
                 tool_call_id: "tc1".into(),
+                tool_name: "listDir".into(),
                 output: "[]".into(),
                 success: true,
                 duration_ms: 2,

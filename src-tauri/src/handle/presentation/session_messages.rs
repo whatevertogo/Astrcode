@@ -53,24 +53,29 @@ pub fn convert_events_to_messages(events: &[StorageEvent]) -> Vec<SessionMessage
             }
             StorageEvent::ToolResult {
                 tool_call_id,
+                tool_name,
                 output,
                 success,
                 duration_ms,
             } => {
-                if let Some(index) = pending_tool_calls
+                // Remove from pending if present (to get args)
+                let args = pending_tool_calls
                     .iter()
-                    .position(|(pending_id, _, _)| pending_id == tool_call_id)
-                {
-                    let (_, tool_name, args) = pending_tool_calls.remove(index);
-                    messages.push(SessionMessage::ToolCall {
-                        tool_call_id: tool_call_id.clone(),
-                        tool_name,
-                        args,
-                        output: Some(output.clone()),
-                        success: Some(*success),
-                        duration_ms: Some(*duration_ms),
-                    });
-                }
+                    .find(|(pending_id, _, _)| pending_id == tool_call_id)
+                    .map(|(_, _, args)| args.clone())
+                    .unwrap_or(serde_json::Value::Null);
+
+                // Remove the pending tool call
+                pending_tool_calls.retain(|(pending_id, _, _)| pending_id != tool_call_id);
+
+                messages.push(SessionMessage::ToolCall {
+                    tool_call_id: tool_call_id.clone(),
+                    tool_name: tool_name.clone(),
+                    args,
+                    output: Some(output.clone()),
+                    success: Some(*success),
+                    duration_ms: Some(*duration_ms),
+                });
             }
             _ => {}
         }
@@ -127,6 +132,7 @@ mod tests {
             },
             StorageEvent::ToolResult {
                 tool_call_id: "tc-1".to_string(),
+                tool_name: "listDir".to_string(),
                 output: "files listed".to_string(),
                 success: true,
                 duration_ms: 100,

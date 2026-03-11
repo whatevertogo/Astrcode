@@ -91,18 +91,18 @@ fn collect_event_kinds(
         }
         StorageEvent::ToolResult {
             tool_call_id,
+            tool_name,
             output,
             success,
             duration_ms,
         } => {
-            let tool_name = pending_tool_names
-                .remove(tool_call_id)
-                .unwrap_or_else(|| "(unknown tool)".to_string());
+            // Clean up pending_tool_names (may not exist if already cleaned)
+            let _ = pending_tool_names.remove(tool_call_id);
             vec![AgentEventKind::ToolCallResult {
                 turn_id: turn_id.to_string(),
                 result: ToolCallResultEnvelope {
                     tool_call_id: tool_call_id.clone(),
-                    tool_name,
+                    tool_name: tool_name.clone(),
                     ok: *success,
                     output: output.clone(),
                     error: if *success { None } else { Some(output.clone()) },
@@ -211,6 +211,7 @@ mod tests {
             "turn-3",
             &StorageEvent::ToolResult {
                 tool_call_id: "tool-1".to_string(),
+                tool_name: "shell".to_string(),
                 output: "boom".to_string(),
                 success: false,
                 duration_ms: 42,
