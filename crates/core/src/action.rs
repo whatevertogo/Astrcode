@@ -1,4 +1,3 @@
-use ipc::ToolCallResultEnvelope;
 use serde_json::Value;
 
 #[derive(Clone, Debug)]
@@ -27,18 +26,6 @@ pub struct ToolExecutionResult {
 }
 
 impl ToolExecutionResult {
-    pub fn into_envelope(self) -> ToolCallResultEnvelope {
-        ToolCallResultEnvelope {
-            tool_call_id: self.tool_call_id,
-            tool_name: self.tool_name,
-            ok: self.ok,
-            output: self.output,
-            error: self.error,
-            metadata: self.metadata,
-            duration_ms: self.duration_ms,
-        }
-    }
-
     pub fn model_content(&self) -> String {
         if self.ok {
             self.output.clone()

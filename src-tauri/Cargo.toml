@@ -4,19 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-astrcode-core = { path = "../crates/core" }
-ipc = { path = "../crates/ipc" }
 tauri = { version = "2", features = [] }
-tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
 anyhow = "1"
-async-trait.workspace = true
-tokio = { version = "1", features = ["full"] }
-tokio-util = "0.7"
-uuid.workspace = true
+dirs.workspace = true
+open = "5"
+rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-chrono = "0.4"
-dirs = "5"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

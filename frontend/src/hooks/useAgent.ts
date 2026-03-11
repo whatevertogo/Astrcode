@@ -1,21 +1,20 @@
 import { useCallback, useEffect, useRef } from 'react';
-import { Channel, invoke } from '@tauri-apps/api/core';
 import type {
   AgentEventPayload,
   ConfigView,
   CurrentModelInfo,
   DeleteProjectResult,
-  Message,
   ModelOption,
   SessionMeta,
   TestResult,
 } from '../types';
-import { isTauriEnvironment, waitForTauriEnvironment } from '../lib/tauri';
 import { normalizeAgentEvent } from '../lib/agentEvent';
-
-// ────────────────────────────────────────────────────────────
-// Session message types (mirror Rust SessionMessage)
-// ────────────────────────────────────────────────────────────
+import { getHostBridge } from '../lib/hostBridge';
+import {
+  ensureServerSession,
+  getServerAuthToken,
+  getServerOrigin,
+} from '../lib/serverAuth';
 
 export interface SessionUserMessage {
   kind: 'user';
@@ -39,35 +38,23 @@ export interface SessionToolCallMessage {
   durationMs?: number;
 }
 
-export type SessionMessage = SessionUserMessage | SessionAssistantMessage | SessionToolCallMessage;
+export type SessionMessage =
+  | SessionUserMessage
+  | SessionAssistantMessage
+  | SessionToolCallMessage;
 
-interface WebChatInputMessage {
-  role: 'user' | 'assistant';
-  content: string;
+export interface SessionSnapshot {
+  messages: SessionMessage[];
+  cursor: string | null;
 }
 
-function normalizeSessionId(sessionId: string): string {
-  const trimmed = sessionId.trim();
-  if (!trimmed) {
-    return '';
+function buildAuthHeaders(headers?: HeadersInit): Headers {
+  const merged = new Headers(headers);
+  const token = getServerAuthToken();
+  if (token) {
+    merged.set('x-astrcode-token', token);
   }
-  return trimmed.startsWith('session-') ? trimmed.slice('session-'.length) : trimmed;
-}
-
-function toWebChatMessages(messages: Message[], latestUserText: string): WebChatInputMessage[] {
-  const history = messages.reduce<WebChatInputMessage[]>((acc, message) => {
-    if (message.kind === 'user') {
-      acc.push({ role: 'user', content: message.text });
-      return acc;
-    }
-    if (message.kind === 'assistant' && message.text.trim()) {
-      acc.push({ role: 'assistant', content: message.text });
-    }
-    return acc;
-  }, []);
-
-  history.push({ role: 'user', content: latestUserText });
-  return history;
+  return merged;
 }
 
 async function ensureOk(response: Response): Promise<void> {
@@ -82,45 +69,74 @@ async function ensureOk(response: Response): Promise<void> {
       message = payload.error;
     }
   } catch {
-    // ignore json parse failure and fall back to status text
+    // ignore
   }
 
   throw new Error(message);
 }
 
-async function streamWebChat(
-  text: string,
-  messages: Message[],
-  onEvent: (rawEvent: unknown) => void,
-  controller: AbortController
-): Promise<void> {
-  const turnId = `web-${Date.now()}`;
-  const response = await fetch('/api/web-chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      turnId,
-      messages: toWebChatMessages(messages, text),
-    }),
-    signal: controller.signal,
+async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  await ensureServerSession();
+  const response = await fetch(`${getServerOrigin()}${path}`, {
+    ...init,
+    headers: buildAuthHeaders(init?.headers),
   });
-
   await ensureOk(response);
+  return (await response.json()) as T;
+}
 
+async function request(path: string, init?: RequestInit): Promise<Response> {
+  await ensureServerSession();
+  const response = await fetch(`${getServerOrigin()}${path}`, {
+    ...init,
+    headers: buildAuthHeaders(init?.headers),
+  });
+  await ensureOk(response);
+  return response;
+}
+
+function dispatchStreamError(
+  onEvent: (event: AgentEventPayload) => void,
+  message: string,
+  turnId: string | null = null,
+): void {
+  onEvent({
+    event: 'error',
+    data: {
+      code: 'event_stream_error',
+      message,
+      turnId,
+    },
+  });
+}
+
+async function consumeSseStream(
+  response: Response,
+  onMessage: (payload: string) => void,
+  signal: AbortSignal,
+): Promise<void> {
   if (!response.body) {
-    throw new Error('Web 调试接口未返回可读取的数据流');
+    throw new Error('event stream response has no body');
   }
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let dataLines: string[] = [];
 
-  let doneReading = false;
-  while (!doneReading) {
+  const flushEvent = () => {
+    if (dataLines.length === 0) {
+      return;
+    }
+    const payload = dataLines.join('\n');
+    dataLines = [];
+    onMessage(payload);
+  };
+
+  while (!signal.aborted) {
     const { value, done } = await reader.read();
     if (done) {
-      doneReading = true;
-      continue;
+      break;
     }
 
     buffer += decoder.decode(value, { stream: true });
@@ -128,39 +144,36 @@ async function streamWebChat(
     buffer = lines.pop() ?? '';
 
     for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) {
+      if (line === '') {
+        flushEvent();
         continue;
       }
-      onEvent(JSON.parse(trimmed));
+      if (line.startsWith(':')) {
+        continue;
+      }
+      if (line.startsWith('data:')) {
+        dataLines.push(line.slice(5).trimStart());
+      }
     }
   }
 
-  if (buffer.trim()) {
-    onEvent(JSON.parse(buffer.trim()));
+  buffer += decoder.decode();
+  if (buffer) {
+    const lines = buffer.split(/\r?\n/);
+    for (const line of lines) {
+      if (line.startsWith('data:')) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
   }
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === 'AbortError';
-}
-
-function unsupportedDesktopFeature(name: string): Error {
-  return new Error(`${name} 仅在桌面端可用`);
+  flushEvent();
 }
 
 export function useAgent(onEvent: (event: AgentEventPayload) => void) {
   const onEventRef = useRef(onEvent);
-  const webAbortControllerRef = useRef<AbortController | null>(null);
-  const desktopDeltaRef = useRef<{
-    turnId: string | null;
-    text: string;
-    frameId: number | null;
-  }>({
-    turnId: null,
-    text: '',
-    frameId: null,
-  });
+  const streamAbortRef = useRef<AbortController | null>(null);
+  const connectedSessionIdRef = useRef<string | null>(null);
+  const hostBridgeRef = useRef(getHostBridge());
 
   useEffect(() => {
     onEventRef.current = onEvent;
@@ -168,343 +181,191 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
 
   useEffect(() => {
     return () => {
-      const pending = desktopDeltaRef.current;
-      if (pending.frameId != null) {
-        window.cancelAnimationFrame(pending.frameId);
-        pending.frameId = null;
-      }
+      streamAbortRef.current?.abort();
+      streamAbortRef.current = null;
     };
   }, []);
-
-  const flushDesktopDelta = useCallback(() => {
-    const pending = desktopDeltaRef.current;
-    if (pending.frameId != null) {
-      window.cancelAnimationFrame(pending.frameId);
-      pending.frameId = null;
-    }
-
-    if (!pending.turnId || !pending.text) {
-      pending.turnId = null;
-      pending.text = '';
-      return;
-    }
-
-    onEventRef.current({
-      event: 'modelDelta',
-      data: {
-        turnId: pending.turnId,
-        delta: pending.text,
-      },
-    });
-
-    pending.turnId = null;
-    pending.text = '';
-  }, []);
-
-  const scheduleDesktopDeltaFlush = useCallback(() => {
-    const pending = desktopDeltaRef.current;
-    if (pending.frameId != null) {
-      return;
-    }
-
-    pending.frameId = window.requestAnimationFrame(() => {
-      pending.frameId = null;
-      flushDesktopDelta();
-    });
-  }, [flushDesktopDelta]);
 
   const dispatchIncomingEvent = useCallback((rawEvent: unknown) => {
     onEventRef.current(normalizeAgentEvent(rawEvent));
   }, []);
 
-  const submitPrompt = useCallback(
-    async (text: string, messages: Message[] = []): Promise<void> => {
-      if (!isTauriEnvironment()) {
-        webAbortControllerRef.current?.abort();
-        const controller = new AbortController();
-        webAbortControllerRef.current = controller;
+  const connectSession = useCallback(
+    async (sessionId: string, afterEventId?: string | null): Promise<void> => {
+      await ensureServerSession();
+      streamAbortRef.current?.abort();
+      const controller = new AbortController();
+      streamAbortRef.current = controller;
+      connectedSessionIdRef.current = sessionId;
+
+      void (async () => {
         try {
-          await streamWebChat(text, messages, dispatchIncomingEvent, controller);
+          const response = await request(
+            `/api/sessions/${encodeURIComponent(sessionId)}/events${
+              afterEventId ? `?afterEventId=${encodeURIComponent(afterEventId)}` : ''
+            }`,
+            {
+              headers: {
+                Accept: 'text/event-stream',
+                'Cache-Control': 'no-cache',
+              },
+              signal: controller.signal,
+            },
+          );
+          await consumeSseStream(
+            response,
+            (payload) => {
+              try {
+                dispatchIncomingEvent(JSON.parse(payload));
+              } catch (error) {
+                dispatchIncomingEvent({
+                  protocolVersion: 1,
+                  event: 'error',
+                  data: {
+                    turnId: null,
+                    code: 'invalid_agent_event',
+                    message: String(error),
+                  },
+                });
+              }
+            },
+            controller.signal,
+          );
+          if (!controller.signal.aborted && streamAbortRef.current === controller) {
+            dispatchStreamError(
+              onEventRef.current,
+              '事件流连接已关闭，请重新打开当前会话。',
+            );
+          }
         } catch (error) {
-          if (!isAbortError(error)) {
-            throw error;
+          if (!controller.signal.aborted) {
+            dispatchStreamError(
+              onEventRef.current,
+              error instanceof Error ? error.message : String(error),
+            );
           }
         } finally {
-          if (webAbortControllerRef.current === controller) {
-            webAbortControllerRef.current = null;
+          if (streamAbortRef.current === controller) {
+            streamAbortRef.current = null;
           }
         }
-        return;
-      }
-
-      await waitForTauriEnvironment();
-      flushDesktopDelta();
-
-      const channel = new Channel<unknown>();
-
-      channel.onmessage = (rawPayload) => {
-        const payload = normalizeAgentEvent(rawPayload);
-
-        if (payload.event === 'modelDelta') {
-          const pending = desktopDeltaRef.current;
-          if (pending.turnId && pending.turnId !== payload.data.turnId) {
-            flushDesktopDelta();
-          }
-          pending.turnId = payload.data.turnId;
-          pending.text += payload.data.delta;
-          scheduleDesktopDeltaFlush();
-          return;
-        }
-
-        flushDesktopDelta();
-        onEventRef.current(payload);
-      };
-
-      await invoke('submit_prompt', { text, channel });
-      flushDesktopDelta();
+      })();
     },
-    [dispatchIncomingEvent, flushDesktopDelta, scheduleDesktopDeltaFlush]
+    [dispatchIncomingEvent],
   );
 
-  const interrupt = useCallback(async (): Promise<void> => {
-    if (!isTauriEnvironment()) {
-      webAbortControllerRef.current?.abort();
-      webAbortControllerRef.current = null;
-      onEventRef.current({
-        event: 'phaseChanged',
-        data: { phase: 'idle', turnId: null },
-      });
-      return;
-    }
-
-    await waitForTauriEnvironment();
-    await invoke('interrupt');
+  const disconnectSession = useCallback(() => {
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+    connectedSessionIdRef.current = null;
   }, []);
 
-  const getWorkingDir = useCallback(async (): Promise<string> => {
-    if (!isTauriEnvironment()) {
-      return 'Web Debug Mode';
-    }
-    try {
-      await waitForTauriEnvironment();
-      return invoke<string>('get_working_dir');
-    } catch {
-      return 'Web Debug Mode';
-    }
-  }, []);
-
-  const exitApp = useCallback((): void => {
-    if (!isTauriEnvironment()) {
-      return;
-    }
-
-    void waitForTauriEnvironment().then(() => invoke('exit_app'));
-  }, []);
-
-  // ────────────────────────────────────────────────────────────
-  // Session management
-  // ────────────────────────────────────────────────────────────
-
-  const listSessions = useCallback(async (): Promise<string[]> => {
-    if (!isTauriEnvironment()) {
-      return [];
-    }
-    try {
-      await waitForTauriEnvironment();
-      const result = await invoke<string[]>('list_sessions');
-      const normalized = Array.from(new Set(result.map(normalizeSessionId).filter(Boolean)));
-      console.log('[listSessions] Result:', normalized);
-      return normalized;
-    } catch (err) {
-      console.log('[listSessions] Error:', err);
-      return [];
-    }
+  const createSession = useCallback(async (workingDir: string): Promise<SessionMeta> => {
+    return requestJson<SessionMeta>('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workingDir }),
+    });
   }, []);
 
   const listSessionsWithMeta = useCallback(async (): Promise<SessionMeta[]> => {
-    if (!isTauriEnvironment()) {
-      return [];
-    }
-
-    try {
-      await waitForTauriEnvironment();
-      const result = await invoke<SessionMeta[]>('list_sessions_with_meta');
-      console.log('[listSessionsWithMeta] Result:', result);
-      return result;
-    } catch (err) {
-      console.error('[listSessionsWithMeta] Error:', err);
-      return [];
-    }
+    return requestJson<SessionMeta[]>('/api/sessions');
   }, []);
 
-  const loadSession = useCallback(async (sessionId: string): Promise<SessionMessage[]> => {
-    if (!isTauriEnvironment()) {
-      return [];
-    }
-    try {
-      const normalizedSessionId = normalizeSessionId(sessionId);
-      if (!normalizedSessionId) {
-        return [];
-      }
-      console.log('[loadSession] Loading session:', normalizedSessionId);
-      await waitForTauriEnvironment();
-      const result = await invoke<SessionMessage[]>('load_session', {
-        sessionId: normalizedSessionId,
-      });
-      console.log('[loadSession] Result count:', result.length, result);
-      return result;
-    } catch (err) {
-      console.log('[loadSession] Error:', err);
-      return [];
-    }
+  const loadSession = useCallback(async (sessionId: string): Promise<SessionSnapshot> => {
+    const response = await request(`/api/sessions/${encodeURIComponent(sessionId)}/messages`);
+    const messages = (await response.json()) as SessionMessage[];
+    const cursor = response.headers.get('x-session-cursor');
+    return { messages, cursor };
   }, []);
 
-  const switchSession = useCallback(async (sessionId: string): Promise<string> => {
-    if (!isTauriEnvironment()) {
-      return normalizeSessionId(sessionId) || sessionId;
-    }
-    const normalizedSessionId = normalizeSessionId(sessionId);
-    if (!normalizedSessionId) {
-      throw new Error('invalid session id');
-    }
-    await waitForTauriEnvironment();
-    try {
-      const nextSessionId = await invoke<string>('switch_session', {
-        sessionId: normalizedSessionId,
-      });
-      const normalizedNext = normalizeSessionId(nextSessionId);
-      if (!normalizedNext) {
-        throw new Error('backend returned empty session id');
-      }
-      return normalizedNext;
-    } catch (error) {
-      throw new Error(`switch session failed: ${String(error)}`);
-    }
+  const submitPrompt = useCallback(async (sessionId: string, text: string): Promise<string> => {
+    const response = await requestJson<{ turnId: string }>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/prompts`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      },
+    );
+    return response.turnId;
   }, []);
 
-  const newSession = useCallback(async (): Promise<string> => {
-    if (!isTauriEnvironment()) {
-      return `web-${Date.now()}`;
-    }
-    try {
-      await waitForTauriEnvironment();
-      const nextSessionId = await invoke<string>('new_session');
-      return normalizeSessionId(nextSessionId);
-    } catch {
-      return `web-${Date.now()}`;
-    }
-  }, []);
-
-  const getSessionId = useCallback(async (): Promise<string> => {
-    if (!isTauriEnvironment()) {
-      return '';
-    }
-    try {
-      await waitForTauriEnvironment();
-      const result = await invoke<string>('get_session_id');
-      const normalized = normalizeSessionId(result);
-      console.log('[getSessionId] Result:', normalized);
-      return normalized;
-    } catch (err) {
-      console.error('[getSessionId] Error:', err);
-      return '';
-    }
+  const interrupt = useCallback(async (sessionId: string): Promise<void> => {
+    await request(`/api/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
+      method: 'POST',
+    });
   }, []);
 
   const deleteSession = useCallback(async (sessionId: string): Promise<void> => {
-    if (!isTauriEnvironment()) {
-      return;
-    }
-    const normalizedSessionId = normalizeSessionId(sessionId);
-    if (!normalizedSessionId) {
-      return;
-    }
-    await waitForTauriEnvironment();
-    await invoke('delete_session', { sessionId: normalizedSessionId });
+    await request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+    });
   }, []);
 
   const deleteProject = useCallback(async (workingDir: string): Promise<DeleteProjectResult> => {
-    if (!isTauriEnvironment()) {
-      return { successCount: 0, failedSessionIds: [] };
-    }
-
-    await waitForTauriEnvironment();
-    return invoke<DeleteProjectResult>('delete_project', { workingDir });
+    return requestJson<DeleteProjectResult>(
+      `/api/projects?workingDir=${encodeURIComponent(workingDir)}`,
+      {
+        method: 'DELETE',
+      },
+    );
   }, []);
 
   const getConfig = useCallback(async (): Promise<ConfigView> => {
-    if (!isTauriEnvironment()) {
-      throw unsupportedDesktopFeature('配置读取');
-    }
-    await waitForTauriEnvironment();
-    return invoke<ConfigView>('get_config');
+    return requestJson<ConfigView>('/api/config');
   }, []);
 
   const saveActiveSelection = useCallback(
     async (activeProfile: string, activeModel: string): Promise<void> => {
-      if (!isTauriEnvironment()) {
-        throw unsupportedDesktopFeature('配置保存');
-      }
-      await waitForTauriEnvironment();
-      await invoke('save_active_selection', { activeProfile, activeModel });
+      await request('/api/config/active-selection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activeProfile, activeModel }),
+      });
     },
-    []
+    [],
   );
-
-  const testConnection = useCallback(
-    async (profileName: string, model: string): Promise<TestResult> => {
-      if (!isTauriEnvironment()) {
-        throw unsupportedDesktopFeature('连接测试');
-      }
-      await waitForTauriEnvironment();
-      return invoke<TestResult>('test_connection', { profileName, model });
-    },
-    []
-  );
-
-  const openConfigInEditor = useCallback(async (): Promise<void> => {
-    if (!isTauriEnvironment()) {
-      throw unsupportedDesktopFeature('打开配置文件');
-    }
-    await waitForTauriEnvironment();
-    await invoke('open_config_in_editor');
-  }, []);
 
   const setModel = useCallback(async (profileName: string, model: string): Promise<void> => {
-    if (!isTauriEnvironment()) {
-      throw unsupportedDesktopFeature('模型切换');
-    }
-    await waitForTauriEnvironment();
-    await invoke('set_model', { profileName, model });
-  }, []);
+    await saveActiveSelection(profileName, model);
+  }, [saveActiveSelection]);
 
   const getCurrentModel = useCallback(async (): Promise<CurrentModelInfo> => {
-    if (!isTauriEnvironment()) {
-      throw unsupportedDesktopFeature('当前模型读取');
-    }
-    await waitForTauriEnvironment();
-    return invoke<CurrentModelInfo>('get_current_model');
+    return requestJson<CurrentModelInfo>('/api/models/current');
   }, []);
 
   const listAvailableModels = useCallback(async (): Promise<ModelOption[]> => {
-    if (!isTauriEnvironment()) {
-      throw unsupportedDesktopFeature('模型列表读取');
-    }
-    await waitForTauriEnvironment();
-    return invoke<ModelOption[]>('list_available_models');
+    return requestJson<ModelOption[]>('/api/models');
+  }, []);
+
+  const testConnection = useCallback(
+    async (profileName: string, model: string): Promise<TestResult> => {
+      return requestJson<TestResult>('/api/models/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profileName, model }),
+      });
+    },
+    [],
+  );
+
+  const openConfigInEditor = useCallback(async (path?: string): Promise<void> => {
+    await hostBridgeRef.current.openConfigInEditor(path);
+  }, []);
+
+  const selectDirectory = useCallback(async (): Promise<string | null> => {
+    return hostBridgeRef.current.selectDirectory();
   }, []);
 
   return {
-    submitPrompt,
-    interrupt,
-    getWorkingDir,
-    exitApp,
-    listSessions,
+    createSession,
     listSessionsWithMeta,
     loadSession,
-    switchSession,
-    newSession,
-    getSessionId,
+    connectSession,
+    disconnectSession,
+    submitPrompt,
+    interrupt,
     deleteSession,
     deleteProject,
     getConfig,
@@ -514,5 +375,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     listAvailableModels,
     testConnection,
     openConfigInEditor,
+    selectDirectory,
+    hostBridge: hostBridgeRef.current,
   };
 }
