@@ -37,7 +37,10 @@ pub struct ModelOption {
     pub provider_kind: String,
 }
 
-pub(crate) fn build_config_view(config: &Config, config_path: String) -> Result<ConfigView, String> {
+pub(crate) fn build_config_view(
+    config: &Config,
+    config_path: String,
+) -> Result<ConfigView, String> {
     if config.profiles.is_empty() {
         return Ok(ConfigView {
             config_path,
@@ -59,8 +62,11 @@ pub(crate) fn build_config_view(config: &Config, config_path: String) -> Result<
         })
         .collect::<Vec<_>>();
 
-    let (active_profile, active_model, warning) =
-        resolve_active_selection(&config.active_profile, &config.active_model, &config.profiles)?;
+    let (active_profile, active_model, warning) = resolve_active_selection(
+        &config.active_profile,
+        &config.active_model,
+        &config.profiles,
+    )?;
 
     Ok(ConfigView {
         config_path,
@@ -79,7 +85,11 @@ pub(crate) fn resolve_current_model(config: &Config) -> Result<CurrentModelInfo,
         .or_else(|| config.profiles.first())
         .ok_or_else(|| "no profiles configured".to_string())?;
 
-    let model = if profile.models.iter().any(|item| item == &config.active_model) {
+    let model = if profile
+        .models
+        .iter()
+        .any(|item| item == &config.active_model)
+    {
         config.active_model.clone()
     } else {
         profile
@@ -213,8 +223,8 @@ mod tests {
             ..Profile::default()
         }];
 
-        let (profile, model, warning) =
-            resolve_active_selection("missing", "model-z", &profiles).expect("fallback should work");
+        let (profile, model, warning) = resolve_active_selection("missing", "model-z", &profiles)
+            .expect("fallback should work");
 
         assert_eq!(profile, "default");
         assert_eq!(model, "model-a");

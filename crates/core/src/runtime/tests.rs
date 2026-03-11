@@ -143,8 +143,8 @@ async fn spawn_model_echo_server(
 
                 if let (Some(end), Some(length)) = (header_len, content_length) {
                     let body = &request[end..end + length];
-                    let payload: serde_json::Value = serde_json::from_slice(body)
-                        .expect("request body should be valid json");
+                    let payload: serde_json::Value =
+                        serde_json::from_slice(body).expect("request body should be valid json");
                     let model = payload
                         .get("model")
                         .and_then(|value| value.as_str())
