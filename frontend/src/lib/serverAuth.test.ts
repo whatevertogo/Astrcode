@@ -19,7 +19,7 @@ function setWindowLocation(url: string): void {
 describe('serverAuth', () => {
   afterEach(() => {
     vi.resetModules();
-    delete (globalThis as typeof globalThis & { window?: unknown }).window;
+    Reflect.deleteProperty(globalThis, 'window');
   });
 
   it('prefers bootstrap token', async () => {
