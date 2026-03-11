@@ -103,7 +103,8 @@ mod tests {
     fn runtime_event_sink_persists_non_delta_events_before_finish() {
         let tmp = tempdir().expect("tempdir should work");
         let path = tmp.path().join("session-test.jsonl");
-        let mut log = EventLog::create_at_path("session-test", path.clone()).expect("log should build");
+        let mut log =
+            EventLog::create_at_path("session-test", path.clone()).expect("log should build");
         let mut cache = Vec::new();
         let mut emitted = Vec::new();
         let cancel = CancellationToken::new();

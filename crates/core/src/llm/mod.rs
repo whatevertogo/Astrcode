@@ -16,6 +16,7 @@ pub struct LlmRequest {
     pub messages: Vec<LlmMessage>,
     pub tools: Vec<ToolDefinition>,
     pub cancel: CancellationToken,
+    pub system_prompt: Option<String>,
 }
 
 impl LlmRequest {
@@ -28,7 +29,13 @@ impl LlmRequest {
             messages,
             tools,
             cancel,
+            system_prompt: None,
         }
+    }
+
+    pub fn with_system(mut self, prompt: impl Into<String>) -> Self {
+        self.system_prompt = Some(prompt.into());
+        self
     }
 }
 

@@ -17,6 +17,7 @@ pub(crate) async fn generate_response(
     provider: &Arc<dyn LlmProvider>,
     messages: &[LlmMessage],
     tool_definitions: Vec<ToolDefinition>,
+    system_prompt: Option<String>,
     cancel: CancellationToken,
     on_event: &mut impl FnMut(StorageEvent),
 ) -> Result<LlmOutput> {
@@ -25,6 +26,10 @@ pub(crate) async fn generate_response(
         let _ = event_tx.send(event);
     });
     let request = LlmRequest::new(messages.to_vec(), tool_definitions, cancel);
+    let request = match system_prompt {
+        Some(prompt) => request.with_system(prompt),
+        None => request,
+    };
 
     let generate_future = provider.generate(request, Some(sink));
     tokio::pin!(generate_future);
