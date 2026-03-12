@@ -41,7 +41,7 @@ pub enum SessionMessage {
         tool_name: String,
         args: serde_json::Value,
         output: Option<String>,
-        success: Option<bool>,
+        ok: Option<bool>,
         duration_ms: Option<u64>,
     },
 }
@@ -546,7 +546,7 @@ fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionMessage> {
                         tool_name,
                         args,
                         output: Some(output.clone()),
-                        success: Some(*success),
+                        ok: Some(*success),
                         duration_ms: Some(*duration_ms),
                     });
                 }
@@ -561,7 +561,7 @@ fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionMessage> {
             tool_name,
             args,
             output: None,
-            success: None,
+            ok: None,
             duration_ms: None,
         });
     }
@@ -704,14 +704,16 @@ impl EventTranslator {
                         &mut records,
                     );
                 }
-                if let Some(turn_id) = turn_id.clone() {
-                    push(
-                        AgentEvent::AssistantMessage {
-                            turn_id,
-                            content: content.clone(),
-                        },
-                        &mut records,
-                    );
+                if !content.is_empty() {
+                    if let Some(turn_id) = turn_id.clone() {
+                        push(
+                            AgentEvent::AssistantMessage {
+                                turn_id,
+                                content: content.clone(),
+                            },
+                            &mut records,
+                        );
+                    }
                 }
                 self.phase = Phase::Streaming;
             }
@@ -829,5 +831,92 @@ impl EventTranslator {
             StorageEvent::SessionStart { .. } => None,
             _ => self.current_turn_id.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    #[test]
+    fn empty_assistant_final_only_updates_phase() {
+        let mut translator = EventTranslator::new(Phase::Thinking);
+        let stored = StoredEvent {
+            storage_seq: 7,
+            event: StorageEvent::AssistantFinal {
+                turn_id: Some("turn-1".to_string()),
+                content: String::new(),
+            },
+        };
+
+        let records = translator.translate(&stored);
+
+        assert_eq!(records.len(), 1);
+        assert!(matches!(
+            records[0].event,
+            AgentEvent::PhaseChanged {
+                turn_id: Some(ref turn_id),
+                phase: Phase::Streaming,
+            } if turn_id == "turn-1"
+        ));
+    }
+
+    #[test]
+    fn non_empty_assistant_final_emits_message() {
+        let mut translator = EventTranslator::new(Phase::Thinking);
+        let stored = StoredEvent {
+            storage_seq: 8,
+            event: StorageEvent::AssistantFinal {
+                turn_id: Some("turn-2".to_string()),
+                content: "hello".to_string(),
+            },
+        };
+
+        let records = translator.translate(&stored);
+
+        assert_eq!(records.len(), 2);
+        assert!(matches!(
+            records[1].event,
+            AgentEvent::AssistantMessage {
+                ref turn_id,
+                ref content,
+            } if turn_id == "turn-2" && content == "hello"
+        ));
+    }
+
+    #[test]
+    fn replay_skips_empty_assistant_messages() {
+        let events = vec![
+            StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent::SessionStart {
+                    session_id: "session-1".to_string(),
+                    timestamp: Utc::now(),
+                    working_dir: "/tmp".to_string(),
+                },
+            },
+            StoredEvent {
+                storage_seq: 2,
+                event: StorageEvent::UserMessage {
+                    turn_id: Some("turn-3".to_string()),
+                    content: "run tool".to_string(),
+                    timestamp: Utc::now(),
+                },
+            },
+            StoredEvent {
+                storage_seq: 3,
+                event: StorageEvent::AssistantFinal {
+                    turn_id: Some("turn-3".to_string()),
+                    content: String::new(),
+                },
+            },
+        ];
+
+        let records = replay_records(&events, None);
+
+        assert!(!records
+            .iter()
+            .any(|record| { matches!(record.event, AgentEvent::AssistantMessage { .. }) }));
     }
 }

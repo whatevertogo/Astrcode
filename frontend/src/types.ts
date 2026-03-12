@@ -86,6 +86,7 @@ export interface SessionMeta {
   title: string;
   createdAt: string;
   updatedAt: string;
+  phase: Phase;
 }
 
 export interface DeleteProjectResult {

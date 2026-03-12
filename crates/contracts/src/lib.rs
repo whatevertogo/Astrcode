@@ -81,7 +81,7 @@ pub enum SessionMessageDto {
         tool_name: String,
         args: serde_json::Value,
         output: Option<String>,
-        success: Option<bool>,
+        ok: Option<bool>,
         duration_ms: Option<u64>,
     },
 }

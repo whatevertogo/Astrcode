@@ -628,14 +628,14 @@ fn to_session_message_dto(message: SessionMessage) -> SessionMessageDto {
             tool_name,
             args,
             output,
-            success,
+            ok,
             duration_ms,
         } => SessionMessageDto::ToolCall {
             tool_call_id,
             tool_name,
             args,
             output,
-            success,
+            ok,
             duration_ms,
         },
     }

@@ -49,7 +49,7 @@ function convertSessionMessage(message: SessionMessage): Message {
         kind: 'toolCall' as const,
         toolCallId: message.toolCallId,
         toolName: message.toolName,
-        status: message.success ? ('ok' as const) : ('fail' as const),
+        status: message.ok ? ('ok' as const) : ('fail' as const),
         args: message.args,
         output: message.output,
         durationMs: message.durationMs,

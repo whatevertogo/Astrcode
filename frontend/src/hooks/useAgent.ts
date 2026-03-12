@@ -30,7 +30,7 @@ export interface SessionToolCallMessage {
   toolName: string;
   args: unknown;
   output?: string;
-  success?: boolean;
+  ok?: boolean;
   durationMs?: number;
 }
 

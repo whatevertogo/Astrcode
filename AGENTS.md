@@ -54,9 +54,10 @@ cd frontend && npm run typecheck
 
 ## Workflow Checklist
 
-- 前端代码改动后，交付前至少运行：`cd frontend && npm run typecheck && npm run lint && npm run format:check`
-- Rust 依赖、`Cargo.lock`、`deny.toml` 或 workspace 依赖边界改动后，补跑：`cargo deny check bans`
-- 若同时改了前端与 Rust，以上检查都要过，不能只过其中一部分
+- Rust 代码改动：`cargo fmt --all -- --check && cargo test --workspace`
+- 前端代码改动：`cd frontend && npm run typecheck && npm run lint && npm run format:check`
+- 依赖边界改动（`Cargo.lock`/`deny.toml`）：补跑 `cargo deny check bans`
+- 同时改 Rust 与前端：以上检查都要过
 
 ## Coding Style & Naming Conventions
 
@@ -105,14 +106,23 @@ cd frontend && npm run typecheck
 
 ## Development Tips
 
-- **async_trait**: 默认 `#[async_trait]` 要求 `Send`；若需非 `Send` 回调，用 `#[async_trait(?Send)]`
-- **配置文件**: 首次运行生成 `~/.astrcode/config.json`，含 API 密钥和 Profile 配置
-- **run.json**: 本地 server 启动后写 `~/.astrcode/run.json`，包含 `port`、`token`、`pid`
-- **前端首屏加载**: 先调 `GET /api/sessions/:id/messages`，再用响应头 `x-session-cursor` 连接 SSE，避免首连重复回放
-- **会话列表排序**: `GET /api/sessions` 已按 `updated_at` 倒序返回，前端不得二次排序
-- **Home 目录测试陷阱**: 在 Windows 测试环境里，`dirs::home_dir()` 不一定受临时 `HOME/USERPROFILE` 影响；需要可控 home 路径的测试或模块，优先复用 `crate::test_support::test_home_dir()` / `TestEnvGuard`
-- **ASTRCODE_HOME_DIR 语义**: 该环境变量表示用户 home 根目录，不是应用数据目录；用户级文件路径都应继续拼接到 `.astrcode/...` 下，例如 `.astrcode/AGENTS.md`
-- **Tauri 前端命令路径**: 当前环境里 `tauri.conf.json` 的 `beforeDevCommand` / `beforeBuildCommand` 按仓库根目录解析；在 Windows 上不要依赖 `npm.ps1`，优先通过 `node` 脚本或 `cmd.exe -> npm.cmd` 间接启动前端命令
-- **Tauri sidecar 约束**: `bundle.externalBin` 的源文件名必须带 `-${TAURI_ENV_TARGET_TRIPLE}` 后缀；仓库里统一通过 `scripts/tauri-frontend.js` 先构建/复制 `astrcode-server` sidecar，再启动前端或打包
-- **桌面端 HTTP 桥接**: 前端对本地 server 的鉴权依赖 bootstrap token 头/查询参数，而不是跨站 cookie；若调整 UI origin、serverOrigin 或 CSP，必须同步更新 `crates/server/src/main.rs` 的 CORS 白名单和 `src-tauri/tauri.conf.json` 的 `connect-src`
-- **桌面端 bootstrap 时序**: `cargo tauri dev` 下 Vite dev server 会先启动，sidecar server 之后才启动；桌面端首个 API 请求必须等 `window.__ASTRCODE_BOOTSTRAP__` 注入完成，不能把 Vite 代理当成桌面端的稳定兜底
+### 环境与配置
+- **配置文件**: `~/.astrcode/config.json`（API 密钥、Profile），`run.json`（port/token/pid）
+- **ASTRCODE_HOME_DIR**: 用户 home 根目录，应用数据仍在 `.astrcode/...` 下
+- **async_trait**: 默认要求 `Send`；非 `Send` 回调用 `#[async_trait(?Send)]`
+
+### 前端/浏览器
+- **首屏加载**: 先调 `/api/sessions/:id/messages`，再用 `x-session-cursor` 头连 SSE
+- **会话列表**: `/api/sessions` 已按 `updated_at` 倒序，前端不二次排序
+- **开发态 API**: 保持同源 `/api` 交给 Vite 代理，`/__astrcode__/run-info` 仅用于读取 token
+
+### Tauri/桌面端
+- **Sidecar**: 文件名需带 `-${TAURI_ENV_TARGET_TRIPLE}` 后缀，通过 `scripts/tauri-frontend.js` 构建
+- **Bootstrap 时序**: Vite 先启动，sidecar 后启动；首个 API 请求须等 `window.__ASTRCODE_BOOTSTRAP__` 注入
+- **HTTP 桥接**: 鉴权用 bootstrap token，调 origin/CSP 时同步更新 CORS 白名单
+- **Windows 命令**: 不用 `npm.ps1`，用 `node` 脚本或 `npm.cmd` 启动前端
+
+### 调试陷阱
+- **Windows Home 目录测试**: `dirs::home_dir()` 不受临时环境变量影响；用 `test_support::test_home_dir()` / `TestEnvGuard`
+- **PR 评论修复前**: 先查 `git status --short` 和 `git diff`，避免覆盖未提交改动
+- **排查问题前**: 检查关键文件（`main.rs`、`Cargo.toml`）是否被误删，排除”运行旧版本”误判
