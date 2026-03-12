@@ -113,10 +113,11 @@ describe('serverAuth', () => {
     setWindowLocation('http://127.0.0.1:5173/');
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({
-        token: 'dev-token',
-        serverOrigin: 'http://127.0.0.1:64000/',
-      }),
+      json: () =>
+        Promise.resolve({
+          token: 'dev-token',
+          serverOrigin: 'http://127.0.0.1:64000/',
+        }),
     });
     vi.stubGlobal('fetch', fetchMock);
 
@@ -129,6 +130,6 @@ describe('serverAuth', () => {
       cache: 'no-store',
     });
     expect(getServerAuthToken()).toBe('dev-token');
-    expect(getServerOrigin()).toBe('http://127.0.0.1:64000');
+    expect(getServerOrigin()).toBe('http://127.0.0.1:5173');
   });
 });

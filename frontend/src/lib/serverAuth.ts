@@ -11,7 +11,6 @@ declare global {
 }
 
 let bootstrapToken: string | null | undefined;
-let runtimeServerOrigin: string | null | undefined;
 let bootstrapSessionReady: Promise<void> | null = null;
 const BOOTSTRAP_WAIT_TIMEOUT_MS = 8000;
 const BOOTSTRAP_WAIT_INTERVAL_MS = 50;
@@ -20,7 +19,6 @@ const LOCAL_DEV_PORT = '5173';
 
 interface BrowserBootstrapPayload {
   token?: string;
-  serverOrigin?: string;
 }
 
 export function getServerOrigin(): string {
@@ -28,10 +26,7 @@ export function getServerOrigin(): string {
   if (injected) {
     return injected.replace(/\/+$/, '');
   }
-  if (runtimeServerOrigin) {
-    return runtimeServerOrigin;
-  }
-  return window.location.origin;
+  return window.location.origin.replace(/\/+$/, '');
 }
 
 export function getServerAuthToken(): string | null {
@@ -54,9 +49,8 @@ function getBootstrapToken(): string | null {
   return null;
 }
 
-function cacheServerSession(token: string, serverOrigin: string): void {
+function cacheServerSession(token: string): void {
   bootstrapToken = token;
-  runtimeServerOrigin = serverOrigin.replace(/\/+$/, '');
 }
 
 function hasDesktopBootstrap(): boolean {
@@ -68,9 +62,7 @@ function hasDesktopBootstrap(): boolean {
 function isTauriWindowOrigin(): boolean {
   const { protocol, hostname } = window.location;
   return (
-    protocol === 'tauri:' ||
-    hostname === 'tauri.localhost' ||
-    hostname.endsWith('.tauri.localhost')
+    protocol === 'tauri:' || hostname === 'tauri.localhost' || hostname.endsWith('.tauri.localhost')
   );
 }
 
@@ -88,11 +80,7 @@ function shouldUseBrowserBootstrapBridge(): boolean {
 }
 
 async function waitForDesktopBootstrap(): Promise<void> {
-  if (
-    typeof window === 'undefined' ||
-    !shouldWaitForDesktopBootstrap() ||
-    hasDesktopBootstrap()
-  ) {
+  if (typeof window === 'undefined' || !shouldWaitForDesktopBootstrap() || hasDesktopBootstrap()) {
     return;
   }
 
@@ -114,17 +102,16 @@ async function hydrateBrowserBootstrap(): Promise<void> {
     cache: 'no-store',
   });
   if (!response.ok) {
-    throw new Error('浏览器前端尚未获取到本地服务地址，请确认 astrcode-server 已启动。');
+    throw new Error('浏览器前端尚未获取到本地服务 bootstrap 信息，请确认 astrcode-server 已启动。');
   }
 
   const payload = (await response.json()) as BrowserBootstrapPayload;
   const token = payload.token?.trim();
-  const serverOrigin = payload.serverOrigin?.trim();
-  if (!token || !serverOrigin) {
-    throw new Error('浏览器 bootstrap 返回的数据不完整。');
+  if (!token) {
+    throw new Error('浏览器 bootstrap 返回的数据不完整（缺少 token）。');
   }
 
-  cacheServerSession(token, serverOrigin);
+  cacheServerSession(token);
 }
 
 function clearTokenFromUrl(): void {

@@ -12,7 +12,6 @@ interface RunInfo {
 }
 
 interface BrowserBootstrapPayload {
-  serverOrigin: string;
   token: string;
 }
 
@@ -86,7 +85,6 @@ function resolveBrowserBootstrapPayload(): BrowserBootstrapPayload | null {
   }
 
   return {
-    serverOrigin: `http://127.0.0.1:${runInfo.port}`,
     token,
   };
 }

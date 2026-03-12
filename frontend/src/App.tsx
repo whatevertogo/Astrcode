@@ -13,7 +13,7 @@ import Sidebar from './components/Sidebar/index';
 import Chat from './components/Chat/index';
 import SettingsModal from './components/Settings/SettingsModal';
 import { useAgent, SessionMessage } from './hooks/useAgent';
-import { releaseTurnMapping } from './lib/turnRouting';
+import { releaseTurnMapping, resolveSessionForTurn } from './lib/turnRouting';
 
 function getDirectoryName(path: string): string {
   const normalized = path.replace(/[\\/]+$/, '');
@@ -312,6 +312,15 @@ export default function App() {
   const activeSessionIdRef = useRef<string | null>(state.activeSessionId);
   const phaseRef = useRef(state.phase);
   const turnSessionMapRef = useRef<Record<string, string>>({});
+  const pendingSubmitSessionRef = useRef<string[]>([]);
+
+  const releasePendingSubmitSession = useCallback((sessionId: string) => {
+    const queue = pendingSubmitSessionRef.current;
+    const index = queue.indexOf(sessionId);
+    if (index >= 0) {
+      queue.splice(index, 1);
+    }
+  }, []);
 
   useEffect(() => {
     activeSessionIdRef.current = state.activeSessionId;
@@ -323,10 +332,12 @@ export default function App() {
 
   const handleAgentEvent = useCallback((event: AgentEventPayload) => {
     const resolveSessionId = (turnId?: string | null): string | null => {
-      if (turnId && turnSessionMapRef.current[turnId]) {
-        return turnSessionMapRef.current[turnId];
-      }
-      return activeSessionIdRef.current;
+      return resolveSessionForTurn(
+        turnSessionMapRef.current,
+        pendingSubmitSessionRef.current,
+        turnId,
+        activeSessionIdRef.current
+      );
     };
 
     switch (event.event) {
@@ -624,10 +635,14 @@ export default function App() {
         },
       });
 
+      pendingSubmitSessionRef.current.push(sessionId);
+
       try {
         const turnId = await submitPrompt(sessionId, trimmed);
-        turnSessionMapRef.current[turnId] = sessionId;
+        turnSessionMapRef.current[turnId] = turnSessionMapRef.current[turnId] ?? sessionId;
+        releasePendingSubmitSession(sessionId);
       } catch (error) {
+        releasePendingSubmitSession(sessionId);
         dispatch({
           type: 'ADD_MESSAGE',
           sessionId,
@@ -642,7 +657,7 @@ export default function App() {
         dispatch({ type: 'SET_PHASE', phase: 'idle' });
       }
     },
-    [submitPrompt]
+    [releasePendingSubmitSession, submitPrompt]
   );
 
   const handleInterrupt = useCallback(async () => {

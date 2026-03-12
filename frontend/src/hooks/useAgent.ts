@@ -68,26 +68,46 @@ async function ensureOk(response: Response): Promise<void> {
   throw new Error(message);
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+function normalizeFetchError(error: unknown): Error {
+  if (error instanceof Error && error.name === 'AbortError') {
+    return error;
+  }
+
+  if (error instanceof TypeError) {
+    if (window.__ASTRCODE_BOOTSTRAP__?.isDesktopHost) {
+      return new Error(
+        '无法连接本地服务，请确认 AstrCode 桌面端仍在运行；如果刚关闭了启动它的终端，请重新执行 `cargo tauri dev`。'
+      );
+    }
+    return new Error('无法连接后端服务，请确认本地 server 或网络连接正常。');
+  }
+
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+async function requestResponse(path: string, init?: RequestInit): Promise<Response> {
   await ensureServerSession();
-  const response = await fetch(`${getServerOrigin()}${path}`, {
-    ...init,
-    headers: buildAuthHeaders(init?.headers),
-  });
+  try {
+    return await fetch(`${getServerOrigin()}${path}`, {
+      ...init,
+      headers: buildAuthHeaders(init?.headers),
+    });
+  } catch (error) {
+    throw normalizeFetchError(error);
+  }
+}
+
+async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await requestResponse(path, init);
   await ensureOk(response);
   return (await response.json()) as T;
 }
 
 async function request(path: string, init?: RequestInit): Promise<Response> {
-  await ensureServerSession();
-  const response = await fetch(`${getServerOrigin()}${path}`, {
-    ...init,
-    headers: buildAuthHeaders(init?.headers),
-  });
+  const response = await requestResponse(path, init);
   await ensureOk(response);
   return response;
 }
-
 function dispatchStreamError(
   onEvent: (event: AgentEventPayload) => void,
   message: string,

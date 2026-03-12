@@ -113,8 +113,10 @@ cd frontend && npm run typecheck
 - **Home 目录测试陷阱**: 在 Windows 测试环境里，`dirs::home_dir()` 不一定受临时 `HOME/USERPROFILE` 影响；需要可控 home 路径的测试或模块，优先复用 `crate::test_support::test_home_dir()` / `TestEnvGuard`
 - **ASTRCODE_HOME_DIR 语义**: 该环境变量表示用户 home 根目录，不是应用数据目录；用户级文件路径都应继续拼接到 `.astrcode/...` 下，例如 `.astrcode/AGENTS.md`
 - **处理 PR 评论前先检查工作树**: 当前仓库可能已经存在与评论修复直接重叠的未提交改动；动手前先看 `git status --short` 和相关 `git diff`，避免覆盖他人未提交修复
+- **排查会话/前端问题前先看关键入口是否缺失**: 如果 `git status --short` 里出现 `crates/server/src/main.rs`、`crates/server/Cargo.toml`、前端鉴权测试等关键文件被删除，先确认是不是误删或中断操作留下的现场，否则很容易把“运行的是旧 sidecar / 旧前端”误判成业务 Bug
 - **Tauri 前端命令路径**: 当前环境里 `tauri.conf.json` 的 `beforeDevCommand` / `beforeBuildCommand` 按仓库根目录解析；在 Windows 上不要依赖 `npm.ps1`，优先通过 `node` 脚本或 `cmd.exe -> npm.cmd` 间接启动前端命令
 - **Tauri sidecar 约束**: `bundle.externalBin` 的源文件名必须带 `-${TAURI_ENV_TARGET_TRIPLE}` 后缀；仓库里统一通过 `scripts/tauri-frontend.js` 先构建/复制 `astrcode-server` sidecar，再启动前端或打包
 - **桌面端 HTTP 桥接**: 前端对本地 server 的鉴权依赖 bootstrap token 头/查询参数，而不是跨站 cookie；若调整 UI origin、serverOrigin 或 CSP，必须同步更新 `crates/server/src/main.rs` 的 CORS 白名单和 `src-tauri/tauri.conf.json` 的 `connect-src`
 - **桌面端 bootstrap 时序**: `cargo tauri dev` 下 Vite dev server 会先启动，sidecar server 之后才启动；桌面端首个 API 请求必须等 `window.__ASTRCODE_BOOTSTRAP__` 注入完成，不能把 Vite 代理当成桌面端的稳定兜底
 - **浏览器端 bootstrap 来源**: 浏览器模式不再依赖 `?token=` URL 参数；开发模式通过 Vite 的 `/__astrcode__/run-info` 同源桥接读取 `run.json`，构建后的浏览器页面则由 `astrcode-server` 托管 `frontend/dist` 并向 `index.html` 注入 `window.__ASTRCODE_BOOTSTRAP__`
+- **浏览器开发态 API 路由**: `http://127.0.0.1:5173` 下前端请求必须保持同源 `/api` 并交给 Vite 代理；`/__astrcode__/run-info` 只用于读取 token/确认 server 就绪，不能再把 API origin 改写成 sidecar 的随机端口，否则会重新引入可避免的跨域/CORS 问题

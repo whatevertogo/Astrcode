@@ -40,6 +40,7 @@ use tower_http::services::ServeDir;
 
 const APP_HOME_OVERRIDE_ENV: &str = "ASTRCODE_HOME_DIR";
 const AUTH_HEADER_NAME: &str = "x-astrcode-token";
+const SESSION_CURSOR_HEADER_NAME: &str = "x-session-cursor";
 
 #[derive(Clone)]
 struct AppState {
@@ -164,20 +165,6 @@ async fn main() -> Result<()> {
         bootstrap_token: token.clone(),
         frontend_build: frontend_build.clone(),
     };
-    let cors = CorsLayer::new()
-        .allow_origin([
-            HeaderValue::from_static("http://127.0.0.1:5173"),
-            HeaderValue::from_static("http://localhost:5173"),
-            HeaderValue::from_static("tauri://localhost"),
-            HeaderValue::from_static("http://tauri.localhost"),
-            HeaderValue::from_static("https://tauri.localhost"),
-        ])
-        .allow_methods([Method::GET, Method::POST, Method::DELETE])
-        .allow_headers([
-            CONTENT_TYPE,
-            HeaderName::from_static(AUTH_HEADER_NAME),
-            HeaderName::from_static("last-event-id"),
-        ]);
 
     let app = Router::<AppState>::new()
         .route("/api/auth/exchange", post(exchange_auth))
@@ -194,7 +181,7 @@ async fn main() -> Result<()> {
         .route("/api/models", get(list_models))
         .route("/api/models/test", post(test_model_connection));
     let app = attach_frontend_build(app, frontend_build);
-    let app = app.with_state(state).layer(cors);
+    let app = app.with_state(state).layer(build_cors_layer());
 
     axum::serve(listener, app)
         .await
@@ -322,6 +309,25 @@ fn browser_index_response(index_html: &str) -> Response {
         .expect("browser index response should be valid")
 }
 
+fn build_cors_layer() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin([
+            HeaderValue::from_static("http://127.0.0.1:5173"),
+            HeaderValue::from_static("http://localhost:5173"),
+            HeaderValue::from_static("tauri://localhost"),
+            HeaderValue::from_static("http://tauri.localhost"),
+            HeaderValue::from_static("https://tauri.localhost"),
+        ])
+        .allow_methods([Method::GET, Method::POST, Method::DELETE])
+        .allow_headers([
+            CONTENT_TYPE,
+            HeaderName::from_static(AUTH_HEADER_NAME),
+            HeaderName::from_static("last-event-id"),
+            HeaderName::from_static("cache-control"),
+        ])
+        .expose_headers([HeaderName::from_static(SESSION_CURSOR_HEADER_NAME)])
+}
+
 async fn exchange_auth(
     State(state): State<AppState>,
     Json(request): Json<AuthExchangeRequest>,
@@ -381,7 +387,7 @@ async fn session_messages(
     let mut response = Json(payload).into_response();
     if let Some(cursor) = cursor {
         response.headers_mut().insert(
-            "x-session-cursor",
+            SESSION_CURSOR_HEADER_NAME,
             cursor
                 .parse::<axum::http::HeaderValue>()
                 .map_err(|error| ApiError {
@@ -862,14 +868,20 @@ fn resolve_home_dir() -> Result<PathBuf> {
 
 #[cfg(test)]
 mod browser_bootstrap_tests {
-    use super::{inject_browser_bootstrap_html, serve_frontend_build, AppState, FrontendBuild};
+    use super::{
+        build_cors_layer, inject_browser_bootstrap_html, serve_frontend_build, session_messages,
+        AppState, FrontendBuild, AUTH_HEADER_NAME, SESSION_CURSOR_HEADER_NAME,
+    };
     use std::sync::Arc;
 
     use astrcode_agent::{AgentService, ToolRegistry};
     use axum::body::{to_bytes, Body};
     use axum::extract::State;
-    use axum::http::{Request, StatusCode};
+    use axum::http::{Method, Request, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
     use tempfile::TempDir;
+    use tower::ServiceExt;
 
     #[test]
     fn injects_browser_bootstrap_into_head() {
@@ -973,6 +985,83 @@ mod browser_bootstrap_tests {
         )
         .await;
         assert_eq!(missing_asset.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_allows_cache_control_for_sse_requests() {
+        let app = Router::new()
+            .route("/api/sessions/demo/events", get(|| async { StatusCode::OK }))
+            .layer(build_cors_layer());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/api/sessions/demo/events")
+                    .header("origin", "http://127.0.0.1:5173")
+                    .header("access-control-request-method", "GET")
+                    .header(
+                        "access-control-request-headers",
+                        "x-astrcode-token,cache-control",
+                    )
+                    .body(Body::empty())
+                    .expect("preflight request should be valid"),
+            )
+            .await
+            .expect("preflight response should be returned");
+
+        assert!(response.status().is_success());
+        let allowed_headers = response
+            .headers()
+            .get("access-control-allow-headers")
+            .and_then(|value| value.to_str().ok())
+            .expect("cors preflight should expose allowed headers")
+            .to_ascii_lowercase();
+        assert!(allowed_headers.contains(AUTH_HEADER_NAME));
+        assert!(allowed_headers.contains("cache-control"));
+    }
+
+    #[tokio::test]
+    async fn session_messages_exposes_cursor_header_to_cross_origin_clients() {
+        let temp_dir = TempDir::new().expect("temp dir should be creatable");
+        let state = test_state(None);
+        let meta = state
+            .service
+            .create_session(temp_dir.path())
+            .await
+            .expect("session should be created");
+        let app = Router::new()
+            .route("/api/sessions/:id/messages", get(session_messages))
+            .with_state(state)
+            .layer(build_cors_layer());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("/api/sessions/{}/messages", meta.session_id))
+                    .header("origin", "http://127.0.0.1:5173")
+                    .header(AUTH_HEADER_NAME, "browser-token")
+                    .body(Body::empty())
+                    .expect("messages request should be valid"),
+            )
+            .await
+            .expect("messages response should be returned");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let cursor = response
+            .headers()
+            .get(SESSION_CURSOR_HEADER_NAME)
+            .and_then(|value| value.to_str().ok())
+            .expect("messages response should include cursor header");
+        assert!(!cursor.is_empty());
+        let exposed_headers = response
+            .headers()
+            .get("access-control-expose-headers")
+            .and_then(|value| value.to_str().ok())
+            .expect("cross-origin response should expose cursor header")
+            .to_ascii_lowercase();
+        assert!(exposed_headers.contains(SESSION_CURSOR_HEADER_NAME));
     }
 
     fn test_state(frontend_build: Option<FrontendBuild>) -> AppState {

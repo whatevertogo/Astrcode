@@ -8,7 +8,8 @@ mod paths;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::paths::resolve_home_dir;
@@ -23,6 +24,7 @@ use tauri_plugin_shell::{
 
 struct ServerState {
     child: Mutex<Option<CommandChild>>,
+    shutting_down: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -67,6 +69,7 @@ fn main() {
         .run(|app_handle, event| {
             if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
                 if let Some(state) = app_handle.try_state::<ServerState>() {
+                    state.shutting_down.store(true, Ordering::SeqCst);
                     if let Ok(mut child) = state.child.lock() {
                         if let Some(child) = child.take() {
                             let _ = child.kill();
@@ -78,7 +81,8 @@ fn main() {
 }
 
 fn initialize_server(app_handle: &tauri::AppHandle) -> Result<(ServerState, BootstrapScript)> {
-    let (pid, child) = spawn_server_process(app_handle)?;
+    let shutting_down = Arc::new(AtomicBool::new(false));
+    let (pid, child) = spawn_server_process(app_handle, shutting_down.clone())?;
     let run_info = wait_for_run_info(pid)?;
     wait_for_server_http_ready(run_info.port)?;
     let bootstrap = serde_json::json!({
@@ -90,6 +94,7 @@ fn initialize_server(app_handle: &tauri::AppHandle) -> Result<(ServerState, Boot
     Ok((
         ServerState {
             child: Mutex::new(Some(child)),
+            shutting_down,
         },
         BootstrapScript(format!(
             "window.__ASTRCODE_BOOTSTRAP__ = {};",
@@ -98,7 +103,10 @@ fn initialize_server(app_handle: &tauri::AppHandle) -> Result<(ServerState, Boot
     ))
 }
 
-fn spawn_server_process(app_handle: &tauri::AppHandle) -> Result<(u32, CommandChild)> {
+fn spawn_server_process(
+    app_handle: &tauri::AppHandle,
+    shutting_down: Arc<AtomicBool>,
+) -> Result<(u32, CommandChild)> {
     let sidecar = app_handle
         .shell()
         .sidecar("astrcode-server")
@@ -106,6 +114,7 @@ fn spawn_server_process(app_handle: &tauri::AppHandle) -> Result<(u32, CommandCh
     let (mut events, child) = sidecar
         .spawn()
         .context("failed to spawn astrcode-server sidecar")?;
+    let app_handle = app_handle.clone();
     async_runtime::spawn(async move {
         while let Some(event) = events.recv().await {
             match event {
@@ -124,14 +133,30 @@ fn spawn_server_process(app_handle: &tauri::AppHandle) -> Result<(u32, CommandCh
                 }
                 CommandEvent::Error(error) => {
                     eprintln!("[astrcode-server error] {error}");
+                    if !shutting_down.load(Ordering::SeqCst) {
+                        eprintln!(
+                            "[astrcode-server] sidecar reported an error, closing desktop host"
+                        );
+                        app_handle.exit(1);
+                    }
                 }
                 CommandEvent::Terminated(payload) => {
-                    if payload.code.unwrap_or_default() != 0 {
-                        eprintln!(
-                            "[astrcode-server exited] code={:?} signal={:?}",
-                            payload.code, payload.signal
-                        );
+                    if shutting_down.load(Ordering::SeqCst) {
+                        if payload.code.unwrap_or_default() != 0 {
+                            eprintln!(
+                                "[astrcode-server exited] code={:?} signal={:?}",
+                                payload.code, payload.signal
+                            );
+                        }
+                        continue;
                     }
+
+                    eprintln!(
+                        "[astrcode-server exited] code={:?} signal={:?}; closing desktop host",
+                        payload.code, payload.signal
+                    );
+                    let exit_code = payload.code.filter(|code| *code != 0).unwrap_or(1);
+                    app_handle.exit(exit_code);
                 }
                 _ => {}
             }
