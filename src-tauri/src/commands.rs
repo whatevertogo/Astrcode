@@ -32,6 +32,9 @@ pub fn select_directory() -> Option<String> {
 
 #[tauri::command]
 pub fn open_config_in_editor(path: Option<String>) -> Result<(), String> {
-    let path = path.map(PathBuf::from).unwrap_or_else(default_config_path);
+    let path = match path {
+        Some(p) => PathBuf::from(p),
+        None => default_config_path().map_err(|e| e.to_string())?,
+    };
     open::that(path).map_err(|error| error.to_string())
 }

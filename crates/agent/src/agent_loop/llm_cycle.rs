@@ -42,6 +42,7 @@ pub(crate) async fn generate_response(
             maybe_event = event_rx.recv(), if event_rx_open => {
                 match maybe_event {
                     Some(LlmEvent::TextDelta(text)) => {
+                        #[cfg(debug_assertions)]
                         eprintln!("[delta] {}", text);
                         on_event(StorageEvent::AssistantDelta {
                             turn_id: Some(turn_id.to_string()),

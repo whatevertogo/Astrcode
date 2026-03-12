@@ -167,7 +167,7 @@ fn spawn_server_process(
 }
 
 fn wait_for_run_info(pid: u32) -> Result<RunInfo> {
-    let path = run_info_path();
+    let path = run_info_path()?;
     for _ in 0..100 {
         if path.exists() {
             let raw = std::fs::read_to_string(&path)
@@ -254,6 +254,6 @@ fn probe_server_http_ready(port: u16) -> Result<bool> {
     }
 }
 
-fn run_info_path() -> PathBuf {
-    resolve_home_dir().join(".astrcode").join("run.json")
+fn run_info_path() -> Result<PathBuf> {
+    Ok(resolve_home_dir()?.join(".astrcode").join("run.json"))
 }

@@ -94,6 +94,11 @@ function prepareSidecar(currentMode) {
   fs.mkdirSync(sidecarDir, { recursive: true });
   try {
     fs.copyFileSync(sourceBinary, targetBinary);
+    // Preserve executable permissions on Unix-like systems
+    if (process.platform !== "win32") {
+      const { mode } = fs.statSync(sourceBinary);
+      fs.chmodSync(targetBinary, mode);
+    }
     console.log(`[tauri-frontend] Copied sidecar: ${targetBinary}`);
   } catch (error) {
     console.error(`[tauri-frontend] Failed to copy sidecar: ${error.message}`);
