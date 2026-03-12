@@ -1,4 +1,5 @@
-use astrcode_core as core;
+// 原 crates/contracts，HTTP/SSE DTO 定义
+
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -8,11 +9,11 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub struct AgentEventEnvelope {
     pub protocol_version: u32,
     #[serde(flatten)]
-    pub event: core::AgentEvent,
+    pub event: astrcode_core::AgentEvent,
 }
 
-impl From<core::AgentEvent> for AgentEventEnvelope {
-    fn from(event: core::AgentEvent) -> Self {
+impl From<astrcode_core::AgentEvent> for AgentEventEnvelope {
+    fn from(event: astrcode_core::AgentEvent) -> Self {
         Self {
             protocol_version: PROTOCOL_VERSION,
             event,
@@ -49,7 +50,7 @@ pub struct SessionListItem {
     pub title: String,
     pub created_at: String,
     pub updated_at: String,
-    pub phase: core::Phase,
+    pub phase: astrcode_core::Phase,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

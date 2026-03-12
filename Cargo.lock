@@ -106,15 +106,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "astrcode-contracts"
-version = "0.1.0"
-dependencies = [
- "astrcode-core",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "astrcode-core"
 version = "0.1.0"
 dependencies = [
@@ -130,7 +121,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "astrcode-agent",
- "astrcode-contracts",
  "astrcode-core",
  "astrcode-tools",
  "async-stream",

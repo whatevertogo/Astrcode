@@ -3,6 +3,8 @@
     windows_subsystem = "windows"
 )]
 
+mod dto;
+
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::{Path as FsPath, PathBuf};
@@ -13,7 +15,7 @@ use anyhow::{anyhow, Context, Result};
 use astrcode_agent::{
     AgentService, PromptAccepted, ServiceError, SessionMessage, SessionReplaySource,
 };
-use astrcode_contracts::{
+use crate::dto::{
     AgentEventEnvelope, AuthExchangeRequest, AuthExchangeResponse, ConfigView,
     CreateSessionRequest, CurrentModelInfoDto, DeleteProjectResultDto, ModelOptionDto, ProfileView,
     PromptAcceptedResponse, PromptRequest, SaveActiveSelectionRequest, SessionListItem,
@@ -645,7 +647,7 @@ fn to_sse_event(record: astrcode_agent::SessionEventRecord) -> Event {
     let payload =
         serde_json::to_string(&AgentEventEnvelope::from(record.event)).unwrap_or_else(|error| {
             serde_json::json!({
-                "protocolVersion": astrcode_contracts::PROTOCOL_VERSION,
+                "protocolVersion": crate::dto::PROTOCOL_VERSION,
                 "event": "error",
                 "data": {
                     "turnId": null,
