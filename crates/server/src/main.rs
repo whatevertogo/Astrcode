@@ -990,7 +990,10 @@ mod browser_bootstrap_tests {
     #[tokio::test]
     async fn cors_preflight_allows_cache_control_for_sse_requests() {
         let app = Router::new()
-            .route("/api/sessions/demo/events", get(|| async { StatusCode::OK }))
+            .route(
+                "/api/sessions/demo/events",
+                get(|| async { StatusCode::OK }),
+            )
             .layer(build_cors_layer());
 
         let response = app
