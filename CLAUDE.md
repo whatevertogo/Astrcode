@@ -16,13 +16,13 @@ AstrCode/
 
 ## Key Files Quick Reference
 
-| 文件 | 用途 |
-|------|------|
-| `crates/server/src/main.rs` | 本地 HTTP/SSE server、认证、路由与启动 token |
-| `crates/agent/src/service.rs` | `AgentService`、会话状态、广播与回放 |
-| `crates/agent/src/tool_registry.rs` | 冻结后的只读 `ToolRegistry` |
-| `frontend/src/hooks/useAgent.ts` | 统一的 fetch + EventSource 客户端 |
-| `src-tauri/src/main.rs` | sidecar 启动、bootstrap 注入、退出清理 |
+| 文件                                | 用途                                         |
+| ----------------------------------- | -------------------------------------------- |
+| `crates/server/src/main.rs`         | 本地 HTTP/SSE server、认证、路由与启动 token |
+| `crates/agent/src/service.rs`       | `AgentService`、会话状态、广播与回放         |
+| `crates/agent/src/tool_registry.rs` | 冻结后的只读 `ToolRegistry`                  |
+| `frontend/src/hooks/useAgent.ts`    | 统一的 fetch + EventSource 客户端            |
+| `src-tauri/src/main.rs`             | sidecar 启动、bootstrap 注入、退出清理       |
 
 ## Build, Test, and Development Commands
 
@@ -61,11 +61,13 @@ cd frontend && npm run typecheck
 ## Coding Style & Naming Conventions
 
 ### Rust
+
 - Use `cargo fmt --all` before committing
 - Follow standard Rust naming: `snake_case` for functions/variables, `PascalCase` for types
 - Async functions should return `anyhow::Result<T>`
 
 ### TypeScript/React
+
 - Components: `PascalCase.tsx` (e.g., `MessageList.tsx`)
 - Hooks: `use*.ts` (e.g., `useAgent.ts`)
 - Utilities: `camelCase.ts`
@@ -80,20 +82,24 @@ cd frontend && npm run typecheck
 ## Architecture Notes
 
 ### Server Is The Truth
+
 - 所有会话、配置、模型、事件流业务入口只通过 `crates/server` 暴露的 HTTP / SSE API。
 - 前端和 Tauri 都不得直接调用 `agent`；Tauri 只保留窗口控制与宿主 GUI 能力。
 
 ### Session / Event Model
+
 - 会话持久化在 `~/.astrcode/sessions/session-*.jsonl`。
 - JSONL 采用 append-only `StoredEvent { storage_seq, event }`；`storage_seq` 由会话 writer 独占分配。
 - `GET /api/sessions/:id/events` 先通过 `SessionReplaySource` 回放历史，再实时订阅广播；SSE 事件 id 形如 `{storage_seq}.{subindex}`。
 
 ### Tool System
+
 - `Tool` trait 和 `ToolContext` 定义在 `crates/core`。
 - `ToolRegistryBuilder` 在 server 启动时组装工具，`build()` 后冻结为只读 `ToolRegistry` 并转移给 `AgentService`。
 - 所有工具必须基于 `ToolContext.working_dir` / `sandbox_root` 工作；禁止读取或修改进程级 cwd。
 
 **Tool Error Semantics:**
+
 - `Err(anyhow::Error)` → 系统级失败（IO 错误、参数解析失败、取消）
 - `ToolExecutionResult { ok: false }` → 工具级拒绝（安全策略、需用户确认）
 
@@ -106,6 +112,9 @@ cd frontend && npm run typecheck
 - **会话列表排序**: `GET /api/sessions` 已按 `updated_at` 倒序返回，前端不得二次排序
 - **Home 目录测试陷阱**: 在 Windows 测试环境里，`dirs::home_dir()` 不一定受临时 `HOME/USERPROFILE` 影响；需要可控 home 路径的测试或模块，优先复用 `crate::test_support::test_home_dir()` / `TestEnvGuard`
 - **ASTRCODE_HOME_DIR 语义**: 该环境变量表示用户 home 根目录，不是应用数据目录；用户级文件路径都应继续拼接到 `.astrcode/...` 下，例如 `.astrcode/AGENTS.md`
+- **处理 PR 评论前先检查工作树**: 当前仓库可能已经存在与评论修复直接重叠的未提交改动；动手前先看 `git status --short` 和相关 `git diff`，避免覆盖他人未提交修复
 - **Tauri 前端命令路径**: 当前环境里 `tauri.conf.json` 的 `beforeDevCommand` / `beforeBuildCommand` 按仓库根目录解析；在 Windows 上不要依赖 `npm.ps1`，优先通过 `node` 脚本或 `cmd.exe -> npm.cmd` 间接启动前端命令
 - **Tauri sidecar 约束**: `bundle.externalBin` 的源文件名必须带 `-${TAURI_ENV_TARGET_TRIPLE}` 后缀；仓库里统一通过 `scripts/tauri-frontend.js` 先构建/复制 `astrcode-server` sidecar，再启动前端或打包
 - **桌面端 HTTP 桥接**: 前端对本地 server 的鉴权依赖 bootstrap token 头/查询参数，而不是跨站 cookie；若调整 UI origin、serverOrigin 或 CSP，必须同步更新 `crates/server/src/main.rs` 的 CORS 白名单和 `src-tauri/tauri.conf.json` 的 `connect-src`
+- **桌面端 bootstrap 时序**: `cargo tauri dev` 下 Vite dev server 会先启动，sidecar server 之后才启动；桌面端首个 API 请求必须等 `window.__ASTRCODE_BOOTSTRAP__` 注入完成，不能把 Vite 代理当成桌面端的稳定兜底
+- **浏览器端 bootstrap 来源**: 浏览器模式不再依赖 `?token=` URL 参数；开发模式通过 Vite 的 `/__astrcode__/run-info` 同源桥接读取 `run.json`，构建后的浏览器页面则由 `astrcode-server` 托管 `frontend/dist` 并向 `index.html` 注入 `window.__ASTRCODE_BOOTSTRAP__`

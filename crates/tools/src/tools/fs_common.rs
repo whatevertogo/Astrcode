@@ -36,16 +36,43 @@ fn enforce_workspace_sandbox(root: &Path, path: &Path) -> Result<()> {
     }
 
     let root = normalize_lexically(root);
+    let normalized_path = normalize_lexically(path);
 
-    if path.starts_with(&root) {
-        return Ok(());
+    if !normalized_path.starts_with(&root) {
+        anyhow::bail!(
+            "path escapes workspace sandbox: '{}' is outside '{}'",
+            normalized_path.display(),
+            root.display()
+        );
     }
 
-    anyhow::bail!(
-        "path escapes workspace sandbox: '{}' is outside '{}'",
-        path.display(),
-        root.display()
-    );
+    // Resolve the nearest existing ancestor so creating a new file beneath a symlinked
+    // directory still gets checked against the real filesystem location.
+    let existing_ancestor = nearest_existing_ancestor(&normalized_path).ok_or_else(|| {
+        anyhow::anyhow!(
+            "path '{}' has no existing ancestor to validate against sandbox '{}'",
+            normalized_path.display(),
+            root.display()
+        )
+    })?;
+    let canonical_root = fs::canonicalize(&root)
+        .with_context(|| format!("failed to canonicalize sandbox root '{}'", root.display()))?;
+    let canonical_ancestor = fs::canonicalize(existing_ancestor).with_context(|| {
+        format!(
+            "failed to canonicalize path '{}' while enforcing sandbox",
+            existing_ancestor.display()
+        )
+    })?;
+
+    if !canonical_ancestor.starts_with(&canonical_root) {
+        anyhow::bail!(
+            "path '{}' resolves outside sandbox via symlink ancestor '{}'",
+            normalized_path.display(),
+            existing_ancestor.display()
+        );
+    }
+
+    Ok(())
 }
 
 fn should_enforce_sandbox() -> bool {
@@ -113,6 +140,15 @@ fn normalize_lexically(path: &Path) -> PathBuf {
     normalized
 }
 
+fn nearest_existing_ancestor(mut path: &Path) -> Option<&Path> {
+    loop {
+        if path.exists() {
+            return Some(path);
+        }
+        path = path.parent()?;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Mutex, OnceLock};
@@ -176,6 +212,44 @@ mod tests {
 
         std::env::remove_var("ASTRCODE_ENFORCE_TOOL_SANDBOX");
         assert!(resolved.starts_with(temp.path()));
+    }
+
+    #[cfg(unix)]
+    fn create_directory_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn create_directory_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(target, link)
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn resolve_path_rejects_new_file_under_symlinked_directory_when_enforced() {
+        let _guard = sandbox_env_lock().lock().expect("lock should work");
+        std::env::set_var("ASTRCODE_ENFORCE_TOOL_SANDBOX", "1");
+
+        let workspace = tempfile::tempdir().expect("workspace tempdir should be created");
+        let outside = tempfile::tempdir().expect("outside tempdir should be created");
+        let link = workspace.path().join("linked-outside");
+
+        if let Err(error) = create_directory_symlink(outside.path(), &link) {
+            std::env::remove_var("ASTRCODE_ENFORCE_TOOL_SANDBOX");
+            if cfg!(windows) {
+                return;
+            }
+            panic!("failed to create directory symlink: {error}");
+        }
+
+        let ctx = test_tool_context_for(workspace.path());
+        let err = resolve_path(&ctx, &link.join("new.txt"))
+            .expect_err("symlinked parent should be rejected");
+
+        std::env::remove_var("ASTRCODE_ENFORCE_TOOL_SANDBOX");
+        assert!(err
+            .to_string()
+            .contains("resolves outside sandbox via symlink"));
     }
 
     #[tokio::test]

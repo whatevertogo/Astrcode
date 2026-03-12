@@ -1,6 +1,11 @@
+#![cfg_attr(
+    all(not(debug_assertions), target_os = "windows"),
+    windows_subsystem = "windows"
+)]
+
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,7 +24,8 @@ use astrcode_tools::tools::{
     read_file::ReadFileTool, shell::ShellTool, write_file::WriteFileTool,
 };
 use async_stream::stream;
-use axum::extract::{Path, Query, State};
+use axum::body::Body;
+use axum::extract::{Path, Query, Request, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -28,7 +34,9 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use tower::ServiceExt;
 use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
 
 const APP_HOME_OVERRIDE_ENV: &str = "ASTRCODE_HOME_DIR";
 const AUTH_HEADER_NAME: &str = "x-astrcode-token";
@@ -37,6 +45,13 @@ const AUTH_HEADER_NAME: &str = "x-astrcode-token";
 struct AppState {
     service: Arc<AgentService>,
     bootstrap_token: String,
+    frontend_build: Option<FrontendBuild>,
+}
+
+#[derive(Clone)]
+struct FrontendBuild {
+    dist_dir: PathBuf,
+    index_html: Arc<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -136,16 +151,18 @@ async fn main() -> Result<()> {
         .local_addr()
         .context("failed to resolve server listener address")?;
     let token = random_hex_token();
+    let server_origin = format!("http://127.0.0.1:{}", address.port());
+    let frontend_build = load_frontend_build(&server_origin, &token)?;
     write_run_info(address.port(), &token)?;
     println!(
-        "Ready: http://localhost:{}/?token={}",
-        address.port(),
-        token
+        "Ready: http://localhost:{}/ (API routes live under /api)",
+        address.port()
     );
 
     let state = AppState {
         service,
-        bootstrap_token: token,
+        bootstrap_token: token.clone(),
+        frontend_build: frontend_build.clone(),
     };
     let cors = CorsLayer::new()
         .allow_origin([
@@ -162,7 +179,7 @@ async fn main() -> Result<()> {
             HeaderName::from_static("last-event-id"),
         ]);
 
-    let app = Router::new()
+    let app = Router::<AppState>::new()
         .route("/api/auth/exchange", post(exchange_auth))
         .route("/api/sessions", post(create_session).get(list_sessions))
         .route("/api/sessions/:id/messages", get(session_messages))
@@ -175,13 +192,134 @@ async fn main() -> Result<()> {
         .route("/api/config/active-selection", post(save_active_selection))
         .route("/api/models/current", get(get_current_model))
         .route("/api/models", get(list_models))
-        .route("/api/models/test", post(test_model_connection))
-        .with_state(state)
-        .layer(cors);
+        .route("/api/models/test", post(test_model_connection));
+    let app = attach_frontend_build(app, frontend_build);
+    let app = app.with_state(state).layer(cors);
 
     axum::serve(listener, app)
         .await
         .context("server terminated unexpectedly")
+}
+
+async fn server_root() -> &'static str {
+    "AstrCode server is running. API endpoints are available under /api. Build the frontend with `cd frontend && npm run build` or use the Vite dev server on http://127.0.0.1:5173/."
+}
+
+fn attach_frontend_build(
+    app: Router<AppState>,
+    frontend_build: Option<FrontendBuild>,
+) -> Router<AppState> {
+    if frontend_build.is_some() {
+        return app.fallback(serve_frontend_build);
+    }
+
+    app.route("/", get(server_root))
+}
+
+fn load_frontend_build(server_origin: &str, token: &str) -> Result<Option<FrontendBuild>> {
+    let dist_dir = frontend_dist_dir();
+    let index_path = dist_dir.join("index.html");
+    if !index_path.is_file() {
+        return Ok(None);
+    }
+
+    let raw_index = std::fs::read_to_string(&index_path)
+        .with_context(|| format!("failed to read frontend entry '{}'", index_path.display()))?;
+    let injected_index = Arc::new(inject_browser_bootstrap_html(
+        &raw_index,
+        server_origin,
+        token,
+    )?);
+    Ok(Some(FrontendBuild {
+        dist_dir,
+        index_html: injected_index,
+    }))
+}
+
+async fn serve_frontend_build(State(state): State<AppState>, request: Request<Body>) -> Response {
+    let Some(frontend_build) = state.frontend_build else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if request.method() != Method::GET && request.method() != Method::HEAD {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    let request_path = request.uri().path().trim_start_matches('/').to_string();
+    let looks_like_asset = request_path
+        .rsplit('/')
+        .next()
+        .map(|segment| segment.contains('.'))
+        .unwrap_or(false);
+
+    match ServeDir::new(&frontend_build.dist_dir)
+        .append_index_html_on_directories(false)
+        .oneshot(request)
+        .await
+    {
+        Ok(response) if response.status() != StatusCode::NOT_FOUND => response.into_response(),
+        Ok(_) if looks_like_asset => StatusCode::NOT_FOUND.into_response(),
+        Ok(_) => browser_index_response(&frontend_build.index_html),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to serve frontend build: {error}"),
+        )
+            .into_response(),
+    }
+}
+
+fn frontend_dist_dir() -> PathBuf {
+    workspace_root().join("frontend").join("dist")
+}
+
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(FsPath::parent)
+        .expect("workspace root should exist")
+        .to_path_buf()
+}
+
+fn inject_browser_bootstrap_html(
+    index_html: &str,
+    server_origin: &str,
+    token: &str,
+) -> Result<String> {
+    let bootstrap = serde_json::json!({
+        "token": token,
+        "isDesktopHost": false,
+        "serverOrigin": server_origin,
+    });
+    let script = format!(
+        "<script>window.__ASTRCODE_BOOTSTRAP__ = {};</script>",
+        serde_json::to_string(&bootstrap)?
+    );
+
+    if let Some(head_index) = index_html.find("<head>") {
+        let insert_at = head_index + "<head>".len();
+        let mut html = String::with_capacity(index_html.len() + script.len());
+        html.push_str(&index_html[..insert_at]);
+        html.push_str(&script);
+        html.push_str(&index_html[insert_at..]);
+        return Ok(html);
+    }
+
+    if let Some(head_index) = index_html.find("</head>") {
+        let mut html = String::with_capacity(index_html.len() + script.len());
+        html.push_str(&index_html[..head_index]);
+        html.push_str(&script);
+        html.push_str(&index_html[head_index..]);
+        return Ok(html);
+    }
+
+    Ok(format!("{script}{index_html}"))
+}
+
+fn browser_index_response(index_html: &str) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "text/html; charset=utf-8")
+        .body(Body::from(index_html.to_owned()))
+        .expect("browser index response should be valid")
 }
 
 async fn exchange_auth(
@@ -720,4 +858,218 @@ fn resolve_home_dir() -> Result<PathBuf> {
     }
 
     dirs::home_dir().ok_or_else(|| anyhow!("unable to resolve home directory"))
+}
+
+#[cfg(test)]
+mod browser_bootstrap_tests {
+    use super::{inject_browser_bootstrap_html, serve_frontend_build, AppState, FrontendBuild};
+    use std::sync::Arc;
+
+    use astrcode_agent::{AgentService, ToolRegistry};
+    use axum::body::{to_bytes, Body};
+    use axum::extract::State;
+    use axum::http::{Request, StatusCode};
+    use tempfile::TempDir;
+
+    #[test]
+    fn injects_browser_bootstrap_into_head() {
+        let html = inject_browser_bootstrap_html(
+            "<!doctype html><html><head><title>AstrCode</title></head><body><div id=\"root\"></div></body></html>",
+            "http://127.0.0.1:62000",
+            "browser-token",
+        )
+        .expect("bootstrap injection should succeed");
+
+        assert!(html.contains("window.__ASTRCODE_BOOTSTRAP__"));
+        assert!(html.contains("\"token\":\"browser-token\""));
+        assert!(html.contains("\"serverOrigin\":\"http://127.0.0.1:62000\""));
+        assert!(
+            html.find("window.__ASTRCODE_BOOTSTRAP__")
+                .expect("html should contain bootstrap script")
+                < html.find("</head>").expect("html should contain head")
+        );
+    }
+
+    #[tokio::test]
+    async fn serves_bootstrapped_index_for_spa_routes() {
+        let temp_dir = TempDir::new().expect("temp dir should be creatable");
+        std::fs::write(
+            temp_dir.path().join("index.html"),
+            "<!doctype html><html><head><title>AstrCode</title></head><body><div id=\"root\"></div></body></html>",
+        )
+        .expect("index.html should be writable");
+        std::fs::create_dir_all(temp_dir.path().join("assets"))
+            .expect("assets dir should be creatable");
+        std::fs::write(
+            temp_dir.path().join("assets").join("app.js"),
+            "console.log('ok');",
+        )
+        .expect("asset file should be writable");
+
+        let frontend_build = FrontendBuild {
+            dist_dir: temp_dir.path().to_path_buf(),
+            index_html: Arc::new(
+                inject_browser_bootstrap_html(
+                    "<!doctype html><html><head><title>AstrCode</title></head><body><div id=\"root\"></div></body></html>",
+                    "http://127.0.0.1:65000",
+                    "browser-token",
+                )
+                .expect("bootstrap injection should succeed"),
+            ),
+        };
+        let state = test_state(Some(frontend_build));
+
+        let root = serve_frontend_build(
+            State(state.clone()),
+            Request::builder()
+                .uri("/")
+                .body(Body::empty())
+                .expect("root request should be valid"),
+        )
+        .await;
+        assert_eq!(root.status(), StatusCode::OK);
+        let root_body = to_bytes(root.into_body(), usize::MAX)
+            .await
+            .expect("root response body should be readable");
+        let root_body = String::from_utf8(root_body.to_vec()).expect("root body should be utf8");
+        assert!(root_body.contains("window.__ASTRCODE_BOOTSTRAP__"));
+        assert!(root_body.contains("<div id=\"root\"></div>"));
+
+        let spa = serve_frontend_build(
+            State(state.clone()),
+            Request::builder()
+                .uri("/projects/demo")
+                .body(Body::empty())
+                .expect("spa request should be valid"),
+        )
+        .await;
+        assert_eq!(spa.status(), StatusCode::OK);
+        let spa_body = to_bytes(spa.into_body(), usize::MAX)
+            .await
+            .expect("spa response body should be readable");
+        let spa_body = String::from_utf8(spa_body.to_vec()).expect("spa body should be utf8");
+        assert!(spa_body.contains("window.__ASTRCODE_BOOTSTRAP__"));
+
+        let asset = serve_frontend_build(
+            State(state.clone()),
+            Request::builder()
+                .uri("/assets/app.js")
+                .body(Body::empty())
+                .expect("asset request should be valid"),
+        )
+        .await;
+        assert_eq!(asset.status(), StatusCode::OK);
+        let asset_body = to_bytes(asset.into_body(), usize::MAX)
+            .await
+            .expect("asset response body should be readable");
+        assert_eq!(asset_body.as_ref(), b"console.log('ok');");
+
+        let missing_asset = serve_frontend_build(
+            State(state),
+            Request::builder()
+                .uri("/assets/missing.js")
+                .body(Body::empty())
+                .expect("missing asset request should be valid"),
+        )
+        .await;
+        assert_eq!(missing_asset.status(), StatusCode::NOT_FOUND);
+    }
+
+    fn test_state(frontend_build: Option<FrontendBuild>) -> AppState {
+        let registry = ToolRegistry::builder().build();
+        let service = AgentService::new(registry).expect("agent service should initialize");
+        AppState {
+            service: Arc::new(service),
+            bootstrap_token: "browser-token".to_string(),
+            frontend_build,
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    const IMAGE_SUBSYSTEM_WINDOWS_GUI: u16 = 2;
+
+    #[test]
+    fn release_binary_uses_windows_gui_subsystem() {
+        let status = Command::new(cargo_command())
+            .args(["build", "-p", "astrcode-server", "--release"])
+            .current_dir(workspace_root())
+            .status()
+            .expect("failed to build astrcode-server release binary");
+        assert!(
+            status.success(),
+            "cargo build -p astrcode-server --release failed with status {status}"
+        );
+
+        let binary = workspace_root()
+            .join("target")
+            .join("release")
+            .join("astrcode-server.exe");
+        let subsystem = read_pe_subsystem(&binary);
+        assert_eq!(
+            subsystem,
+            IMAGE_SUBSYSTEM_WINDOWS_GUI,
+            "expected '{}' to use the Windows GUI subsystem so the Tauri sidecar does not spawn a terminal window",
+            binary.display()
+        );
+    }
+
+    fn cargo_command() -> OsString {
+        std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
+    }
+
+    fn workspace_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("workspace root should exist")
+            .to_path_buf()
+    }
+
+    fn read_pe_subsystem(path: &Path) -> u16 {
+        let binary = fs::read(path)
+            .unwrap_or_else(|error| panic!("failed to read '{}': {error}", path.display()));
+
+        assert!(
+            binary.len() >= 0x40,
+            "binary '{}' is too small to contain a PE header",
+            path.display()
+        );
+        assert_eq!(
+            &binary[..2],
+            b"MZ",
+            "binary '{}' is missing the DOS header signature",
+            path.display()
+        );
+
+        let pe_offset = u32::from_le_bytes(
+            binary[0x3c..0x40]
+                .try_into()
+                .expect("DOS header should expose PE offset"),
+        ) as usize;
+        assert!(
+            binary.len() >= pe_offset + 24 + 70,
+            "binary '{}' is too small to contain the PE optional header",
+            path.display()
+        );
+        assert_eq!(
+            &binary[pe_offset..pe_offset + 4],
+            b"PE\0\0",
+            "binary '{}' is missing the PE signature",
+            path.display()
+        );
+
+        let subsystem_offset = pe_offset + 24 + 68;
+        u16::from_le_bytes(
+            binary[subsystem_offset..subsystem_offset + 2]
+                .try_into()
+                .expect("PE optional header should expose subsystem field"),
+        )
+    }
 }

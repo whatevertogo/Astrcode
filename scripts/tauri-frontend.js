@@ -48,7 +48,9 @@ function resolveTargetTriple() {
 }
 
 function serverBinaryName() {
-  return process.platform === "win32" ? "astrcode-server.exe" : "astrcode-server";
+  return process.platform === "win32"
+    ? "astrcode-server.exe"
+    : "astrcode-server";
 }
 
 function bundledSidecarName(targetTriple) {
@@ -60,7 +62,13 @@ function bundledSidecarName(targetTriple) {
 function prepareSidecar(currentMode) {
   const targetTriple = resolveTargetTriple();
   const release = currentMode === "build";
-  const cargoArgs = ["build", "-p", "astrcode-server", "--target", targetTriple];
+  const cargoArgs = [
+    "build",
+    "-p",
+    "astrcode-server",
+    "--target",
+    targetTriple,
+  ];
   if (release) {
     cargoArgs.push("--release");
   }
@@ -84,7 +92,13 @@ function prepareSidecar(currentMode) {
   const targetBinary = path.join(sidecarDir, bundledSidecarName(targetTriple));
 
   fs.mkdirSync(sidecarDir, { recursive: true });
-  fs.copyFileSync(sourceBinary, targetBinary);
+  try {
+    fs.copyFileSync(sourceBinary, targetBinary);
+    console.log(`[tauri-frontend] Copied sidecar: ${targetBinary}`);
+  } catch (error) {
+    console.error(`[tauri-frontend] Failed to copy sidecar: ${error.message}`);
+    throw error;
+  }
 }
 
 prepareSidecar(mode);

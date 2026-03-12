@@ -54,13 +54,19 @@ cargo run -p astrcode-server
 
 # 终端 2：启动前端
 cd frontend && npm run dev
-# 然后打开 http://127.0.0.1:5173/?token=<启动时输出的token>
+# 然后打开 http://127.0.0.1:5173/
+# 前端会自动通过 Vite 的本地桥接读取 run.json，不再需要手工拼 ?token=
 ```
 
 ### 构建
 
 ```bash
 cargo tauri build
+
+# 浏览器端构建
+cd frontend && npm run build
+# 然后启动 cargo run -p astrcode-server，并打开它输出的 http://localhost:<port>/
+# server 会直接托管 frontend/dist，并自动注入浏览器端 bootstrap
 ```
 
 ## 配置

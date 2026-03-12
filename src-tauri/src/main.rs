@@ -5,6 +5,8 @@
 
 mod commands;
 mod paths;
+use std::io::{ErrorKind, Read, Write};
+use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -78,6 +80,7 @@ fn main() {
 fn initialize_server(app_handle: &tauri::AppHandle) -> Result<(ServerState, BootstrapScript)> {
     let (pid, child) = spawn_server_process(app_handle)?;
     let run_info = wait_for_run_info(pid)?;
+    wait_for_server_http_ready(run_info.port)?;
     let bootstrap = serde_json::json!({
         "token": run_info.token,
         "isDesktopHost": true,
@@ -157,6 +160,73 @@ fn wait_for_run_info(pid: u32) -> Result<RunInfo> {
         "timed out waiting for run info matching server pid {}",
         pid
     ))
+}
+
+fn wait_for_server_http_ready(port: u16) -> Result<()> {
+    for _ in 0..100 {
+        match probe_server_http_ready(port) {
+            Ok(true) => return Ok(()),
+            Ok(false) => std::thread::sleep(Duration::from_millis(100)),
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(anyhow!(
+        "timed out waiting for server HTTP readiness on port {}",
+        port
+    ))
+}
+
+fn probe_server_http_ready(port: u16) -> Result<bool> {
+    let mut stream = match TcpStream::connect(("127.0.0.1", port)) {
+        Ok(stream) => stream,
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::ConnectionAborted
+                    | ErrorKind::ConnectionRefused
+                    | ErrorKind::ConnectionReset
+                    | ErrorKind::NotConnected
+                    | ErrorKind::TimedOut
+                    | ErrorKind::WouldBlock
+            ) =>
+        {
+            return Ok(false);
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to connect to astrcode-server on port {}", port));
+        }
+    };
+
+    stream
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .context("failed to configure server readiness read timeout")?;
+    stream
+        .set_write_timeout(Some(Duration::from_millis(100)))
+        .context("failed to configure server readiness write timeout")?;
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .context("failed to write server readiness probe")?;
+
+    let mut buffer = [0_u8; 64];
+    match stream.read(&mut buffer) {
+        Ok(0) => Ok(false),
+        Ok(read) => {
+            let response_head = String::from_utf8_lossy(&buffer[..read]);
+            Ok(response_head.starts_with("HTTP/1.1 200")
+                || response_head.starts_with("HTTP/1.0 200"))
+        }
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::ConnectionReset | ErrorKind::TimedOut | ErrorKind::WouldBlock
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error).context("failed to read server readiness probe"),
+    }
 }
 
 fn run_info_path() -> PathBuf {
