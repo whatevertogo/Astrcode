@@ -872,7 +872,9 @@ mod browser_bootstrap_tests {
         build_cors_layer, inject_browser_bootstrap_html, serve_frontend_build, session_messages,
         AppState, FrontendBuild, AUTH_HEADER_NAME, SESSION_CURSOR_HEADER_NAME,
     };
+    use std::ffi::OsString;
     use std::sync::Arc;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     use astrcode_agent::{AgentService, ToolRegistry};
     use axum::body::{to_bytes, Body};
@@ -882,6 +884,8 @@ mod browser_bootstrap_tests {
     use axum::Router;
     use tempfile::TempDir;
     use tower::ServiceExt;
+
+    const APP_HOME_OVERRIDE_ENV: &str = "ASTRCODE_HOME_DIR";
 
     #[test]
     fn injects_browser_bootstrap_into_head() {
@@ -929,7 +933,7 @@ mod browser_bootstrap_tests {
                 .expect("bootstrap injection should succeed"),
             ),
         };
-        let state = test_state(Some(frontend_build));
+        let (state, _guard) = test_state(Some(frontend_build));
 
         let root = serve_frontend_build(
             State(state.clone()),
@@ -1027,7 +1031,7 @@ mod browser_bootstrap_tests {
     #[tokio::test]
     async fn session_messages_exposes_cursor_header_to_cross_origin_clients() {
         let temp_dir = TempDir::new().expect("temp dir should be creatable");
-        let state = test_state(None);
+        let (state, _guard) = test_state(None);
         let meta = state
             .service
             .create_session(temp_dir.path())
@@ -1067,13 +1071,52 @@ mod browser_bootstrap_tests {
         assert!(exposed_headers.contains(SESSION_CURSOR_HEADER_NAME));
     }
 
-    fn test_state(frontend_build: Option<FrontendBuild>) -> AppState {
+    fn test_state(frontend_build: Option<FrontendBuild>) -> (AppState, ServerTestEnvGuard) {
+        let guard = ServerTestEnvGuard::new();
         let registry = ToolRegistry::builder().build();
         let service = AgentService::new(registry).expect("agent service should initialize");
-        AppState {
-            service: Arc::new(service),
-            bootstrap_token: "browser-token".to_string(),
-            frontend_build,
+        (
+            AppState {
+                service: Arc::new(service),
+                bootstrap_token: "browser-token".to_string(),
+                frontend_build,
+            },
+            guard,
+        )
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct ServerTestEnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        _temp_home: TempDir,
+        previous_home_override: Option<OsString>,
+    }
+
+    impl ServerTestEnvGuard {
+        fn new() -> Self {
+            let lock = env_lock().lock().expect("env lock should be acquired");
+            let temp_home = tempfile::tempdir().expect("tempdir should be created");
+            let previous_home_override = std::env::var_os(APP_HOME_OVERRIDE_ENV);
+            std::env::set_var(APP_HOME_OVERRIDE_ENV, temp_home.path());
+
+            Self {
+                _lock: lock,
+                _temp_home: temp_home,
+                previous_home_override,
+            }
+        }
+    }
+
+    impl Drop for ServerTestEnvGuard {
+        fn drop(&mut self) {
+            match &self.previous_home_override {
+                Some(value) => std::env::set_var(APP_HOME_OVERRIDE_ENV, value),
+                None => std::env::remove_var(APP_HOME_OVERRIDE_ENV),
+            }
         }
     }
 }
