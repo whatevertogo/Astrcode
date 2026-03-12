@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import type { Phase, Project } from '../../types';
 import ProjectItem from './ProjectItem';
 import NewProjectModal from '../NewProjectModal';
@@ -19,7 +19,10 @@ interface SidebarProps {
   phase: Phase;
   onSetActive: (projectId: string, sessionId: string) => void;
   onToggleExpand: (projectId: string) => void;
-  onNewProject: (name: string, workingDir: string) => void;
+  canSelectDirectory: boolean;
+  defaultWorkingDir?: string;
+  onSelectDirectory: () => Promise<string | null>;
+  onNewProject: (workingDir: string) => void;
   onDeleteProject: (projectId: string) => void;
   onDeleteSession: (projectId: string, sessionId: string) => void;
   onOpenSettings: () => void;
@@ -31,6 +34,9 @@ export default function Sidebar({
   phase,
   onSetActive,
   onToggleExpand,
+  canSelectDirectory,
+  defaultWorkingDir,
+  onSelectDirectory,
   onNewProject,
   onDeleteProject,
   onDeleteSession,
@@ -90,8 +96,11 @@ export default function Sidebar({
 
       {showModal && (
         <NewProjectModal
-          onConfirm={(name, workingDir) => {
-            onNewProject(name, workingDir);
+          canSelectDirectory={canSelectDirectory}
+          defaultWorkingDir={defaultWorkingDir}
+          onSelectDirectory={onSelectDirectory}
+          onConfirm={(workingDir) => {
+            onNewProject(workingDir);
             setShowModal(false);
           }}
           onCancel={() => setShowModal(false)}

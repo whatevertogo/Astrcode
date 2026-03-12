@@ -28,7 +28,7 @@ export default function InputBar({ workingDir, phase, onSubmit, onInterrupt }: I
   const submit = () => {
     const trimmed = value.trim();
     if (!trimmed || isBusy) return;
-    onSubmit(trimmed);
+    void onSubmit(trimmed);
     setValue('');
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
@@ -63,7 +63,7 @@ export default function InputBar({ workingDir, phase, onSubmit, onInterrupt }: I
           onCompositionEnd={() => setIsComposing(false)}
         />
         {isBusy ? (
-          <button className={styles.interruptBtn} onClick={onInterrupt}>
+          <button className={styles.interruptBtn} onClick={() => void onInterrupt()}>
             中断
           </button>
         ) : (

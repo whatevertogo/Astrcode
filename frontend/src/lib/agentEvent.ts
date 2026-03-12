@@ -36,7 +36,7 @@ function pickOptionalString(record: UnknownRecord, ...keys: string[]): string | 
       continue;
     }
     const value = record[key];
-    if (value == null) {
+    if (value === null || value === undefined) {
       return null;
     }
     if (typeof value === 'string') {
@@ -95,7 +95,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
   }
 
   const protocolVersion = pickNumber(payload, 'protocolVersion', 'protocol_version');
-  if (protocolVersion == null) {
+  if (protocolVersion === null) {
     return invalidEvent('protocolVersion field is missing', raw);
   }
   if (protocolVersion !== SUPPORTED_PROTOCOL_VERSION) {
@@ -137,7 +137,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
   if (event === 'modelDelta') {
     const turnId = pickString(data, 'turnId', 'turn_id');
     const delta = pickString(data, 'delta');
-    if (!turnId || delta == null) {
+    if (!turnId || delta === null) {
       return invalidEvent('modelDelta requires turnId and delta', raw);
     }
     return { event: 'modelDelta', data: { turnId, delta } };
@@ -146,7 +146,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
   if (event === 'assistantMessage') {
     const turnId = pickString(data, 'turnId', 'turn_id');
     const content = pickString(data, 'content');
-    if (!turnId || content == null) {
+    if (!turnId || content === null) {
       return invalidEvent('assistantMessage requires turnId and content', raw);
     }
     return { event: 'assistantMessage', data: { turnId, content } };

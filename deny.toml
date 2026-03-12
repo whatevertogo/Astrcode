@@ -1,0 +1,24 @@
+[graph]
+exclude-dev = true
+
+[bans]
+multiple-versions = "allow"
+
+deny = [
+  { crate = "tokio", wrappers = [
+      "astrcode-agent",
+      "astrcode-server",
+      "axum",
+      "hyper",
+      "hyper-rustls",
+      "hyper-util",
+      "reqwest",
+      "tauri",
+      "tauri-plugin-shell",
+      "tokio-rustls",
+      "tokio-util",
+      "tower",
+      "tower-http",
+    ], reason = "tokio should stay out of core/contracts/tools production code" },
+  { crate = "axum", wrappers = ["astrcode-server", "axum-extra"], reason = "axum belongs only in the server crate" },
+]

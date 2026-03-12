@@ -1,4 +1,4 @@
-import React, { memo } from 'react';
+import { memo } from 'react';
 import type { UserMessage as UserMessageType } from '../../types';
 import styles from './UserMessage.module.css';
 

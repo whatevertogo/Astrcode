@@ -32,7 +32,7 @@ export default function ModelSelector({
 
   useEffect(() => {
     return () => {
-      if (errorTimerRef.current != null) {
+      if (errorTimerRef.current !== null) {
         window.clearTimeout(errorTimerRef.current);
       }
     };
@@ -40,7 +40,7 @@ export default function ModelSelector({
 
   const showError = (message: string) => {
     setError(message);
-    if (errorTimerRef.current != null) {
+    if (errorTimerRef.current !== null) {
       window.clearTimeout(errorTimerRef.current);
     }
     errorTimerRef.current = window.setTimeout(() => {
@@ -108,7 +108,7 @@ export default function ModelSelector({
 
   // Find the index of the currently selected model
   const selectedIndex = useMemo(() => {
-    if (currentModel == null) {
+    if (currentModel === null) {
       return -1;
     }
     return flattenedOptions.findIndex(
@@ -150,7 +150,7 @@ export default function ModelSelector({
         disabled={loading || saving || options.length <= 1}
         aria-label="选择模型"
       >
-        {currentModel == null && (
+        {currentModel === null && (
           <option value="">{loading ? '读取模型中...' : '未选择模型'}</option>
         )}
         {groupedOptions.map(([profileName, profileOptions]) => (
