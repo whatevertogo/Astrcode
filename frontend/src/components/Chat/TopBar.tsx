@@ -1,6 +1,4 @@
-import React from 'react';
 import type { CurrentModelInfo, ModelOption } from '../../types';
-import { isTauriEnvironment } from '../../lib/tauri';
 import ModelSelector from './ModelSelector';
 import styles from './TopBar.module.css';
 
@@ -23,8 +21,6 @@ export default function TopBar({
   listAvailableModels,
   setModel,
 }: TopBarProps) {
-  const isTauri = isTauriEnvironment();
-
   return (
     <div className={styles.topBar}>
       <div className={styles.breadcrumb}>
@@ -42,17 +38,18 @@ export default function TopBar({
           <span className={styles.empty}>未选择会话</span>
         )}
       </div>
-      {isTauri && (
+      <div className={styles.actions}>
         <ModelSelector
           refreshKey={modelRefreshKey}
           getCurrentModel={getCurrentModel}
           listAvailableModels={listAvailableModels}
           setModel={setModel}
         />
-      )}
-      <button className={styles.newSessionBtn} onClick={onNewSession}>
-        + 新会话
-      </button>
+        <button className={styles.newSessionBtn} onClick={onNewSession} disabled={!projectName}>
+          <span className={styles.newSessionPlus}>+</span>
+          <span>新会话</span>
+        </button>
+      </div>
     </div>
   );
 }

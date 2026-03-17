@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/core", "crates/ipc", "src-tauri"]
+members = [
+    "crates/core",
+    "crates/agent",
+    "crates/tools",
+    "crates/server",
+    "src-tauri",
+]
 resolver = "2"
 
 [workspace.package]
@@ -15,3 +21,17 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "fs", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+axum = { version = "0.7", features = ["macros"] }
+axum-extra = { version = "0.9", features = ["cookie"] }
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6"
+dirs = "5"
+futures-util = "0.3"
+glob = "0.3"
+log = "0.4"
+rand = "0.8"
+regex = "1"
+tempfile = "3"
+thiserror = "1"
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+walkdir = "2"

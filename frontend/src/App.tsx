@@ -1,18 +1,20 @@
-import React, {
+import {
   startTransition,
   useCallback,
   useEffect,
   useReducer,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
 } from 'react';
 import type {
   AgentEventPayload,
   Action,
   AppState,
-  SessionMeta,
   Project,
   Session,
+  SessionMeta,
   Message,
 } from './types';
 import { uuid } from './utils/uuid';
@@ -20,8 +22,24 @@ import Sidebar from './components/Sidebar/index';
 import Chat from './components/Chat/index';
 import SettingsModal from './components/Settings/SettingsModal';
 import { useAgent, SessionMessage } from './hooks/useAgent';
-import { useProjects } from './hooks/useProjects';
-import { releaseTurnMapping, resolveSessionForTurn } from './lib/turnRouting.ts';
+import { snapshotToolStatus } from './lib/sessionMessages';
+import { releaseTurnMapping, resolveSessionForTurn } from './lib/turnRouting';
+import styles from './App.module.css';
+
+const DEFAULT_SIDEBAR_WIDTH = 260;
+const MIN_SIDEBAR_WIDTH = 220;
+const MAX_SIDEBAR_WIDTH = 420;
+
+function getMaxSidebarWidth(): number {
+  if (typeof window === 'undefined') {
+    return MAX_SIDEBAR_WIDTH;
+  }
+  return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, window.innerWidth - 360));
+}
+
+function clampSidebarWidth(width: number): number {
+  return Math.min(getMaxSidebarWidth(), Math.max(MIN_SIDEBAR_WIDTH, width));
+}
 
 function getDirectoryName(path: string): string {
   const normalized = path.replace(/[\\/]+$/, '');
@@ -34,28 +52,34 @@ function toEpochMs(value: string): number {
   return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
-function convertSessionMessage(m: SessionMessage): Message {
+function convertSessionMessage(message: SessionMessage): Message {
   const timestamp =
-    m.kind === 'user' || m.kind === 'assistant' ? toEpochMs(m.timestamp) : Date.now();
+    message.kind === 'user' || message.kind === 'assistant'
+      ? toEpochMs(message.timestamp)
+      : Date.now();
   const base = { id: uuid(), timestamp };
-  switch (m.kind) {
+
+  switch (message.kind) {
     case 'user':
-      return { ...base, kind: 'user' as const, text: m.content };
+      return { ...base, kind: 'user' as const, text: message.content };
     case 'assistant':
-      return { ...base, kind: 'assistant' as const, text: m.content, streaming: false };
+      return {
+        ...base,
+        kind: 'assistant' as const,
+        text: message.content,
+        streaming: false,
+      };
     case 'toolCall':
       return {
         ...base,
         kind: 'toolCall' as const,
-        toolCallId: m.toolCallId,
-        toolName: m.toolName,
-        status: m.success ? ('ok' as const) : ('fail' as const),
-        args: m.args,
-        output: m.output,
-        durationMs: m.durationMs,
+        toolCallId: message.toolCallId,
+        toolName: message.toolName,
+        status: snapshotToolStatus(message.ok),
+        args: message.args,
+        output: message.output,
+        durationMs: message.durationMs,
       };
-    default:
-      return { ...base, kind: 'assistant' as const, text: '', streaming: false };
   }
 }
 
@@ -103,32 +127,33 @@ function groupSessionsByProject(sessionMetas: SessionMeta[]): Project[] {
   });
 }
 
-// ────────────────────────────────────────────────────────────
-// Helper: map a single project
-// ────────────────────────────────────────────────────────────
-function mapProject(state: AppState, projectId: string, fn: (p: Project) => Project): AppState {
+function mapProject(
+  state: AppState,
+  projectId: string,
+  fn: (project: Project) => Project
+): AppState {
   return {
     ...state,
-    projects: state.projects.map((p) => (p.id === projectId ? fn(p) : p)),
+    projects: state.projects.map((project) => (project.id === projectId ? fn(project) : project)),
   };
 }
 
-// ────────────────────────────────────────────────────────────
-// Helper: map a single session (across all projects)
-// ────────────────────────────────────────────────────────────
-function mapSession(state: AppState, sessionId: string, fn: (s: Session) => Session): AppState {
+function mapSession(
+  state: AppState,
+  sessionId: string,
+  fn: (session: Session) => Session
+): AppState {
   return {
     ...state,
-    projects: state.projects.map((p) => ({
-      ...p,
-      sessions: p.sessions.map((s) => (s.id === sessionId ? fn(s) : s)),
+    projects: state.projects.map((project) => ({
+      ...project,
+      sessions: project.sessions.map((session) =>
+        session.id === sessionId ? fn(session) : session
+      ),
     })),
   };
 }
 
-// ────────────────────────────────────────────────────────────
-// Reducer
-// ────────────────────────────────────────────────────────────
 function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case 'SET_PHASE':
@@ -137,29 +162,6 @@ function reducer(state: AppState, action: Action): AppState {
       }
       return { ...state, phase: action.phase };
 
-    case 'ADD_PROJECT': {
-      const project = action.project;
-      const firstSession = project.sessions[0];
-      return {
-        ...state,
-        projects: [...state.projects, project],
-        activeProjectId: project.id,
-        activeSessionId: firstSession?.id ?? null,
-      };
-    }
-
-    case 'ADD_SESSION': {
-      const nextState = mapProject(state, action.projectId, (p) => ({
-        ...p,
-        sessions: [...p.sessions, action.session],
-      }));
-      return {
-        ...nextState,
-        activeProjectId: action.projectId,
-        activeSessionId: action.session.id,
-      };
-    }
-
     case 'SET_ACTIVE':
       return {
         ...state,
@@ -167,21 +169,34 @@ function reducer(state: AppState, action: Action): AppState {
         activeSessionId: action.sessionId,
       };
 
-    case 'TOGGLE_EXPAND':
-      return mapProject(state, action.projectId, (p) => ({
-        ...p,
-        isExpanded: !p.isExpanded,
-      }));
+    case 'ADD_PROJECT':
+      return {
+        ...state,
+        projects: [action.project, ...state.projects],
+        activeProjectId: action.project.id,
+        activeSessionId: action.project.sessions[0]?.id ?? null,
+      };
 
-    case 'RENAME_PROJECT':
-      return mapProject(state, action.projectId, (p) => ({
-        ...p,
-        name: action.name,
+    case 'ADD_SESSION':
+      return {
+        ...mapProject(state, action.projectId, (project) => ({
+          ...project,
+          sessions: [action.session, ...project.sessions],
+        })),
+        activeProjectId: action.projectId,
+        activeSessionId: action.session.id,
+      };
+
+    case 'TOGGLE_EXPAND':
+      return mapProject(state, action.projectId, (project) => ({
+        ...project,
+        isExpanded: !project.isExpanded,
       }));
 
     case 'DELETE_PROJECT': {
-      const projects = state.projects.filter((p) => p.id !== action.projectId);
-      let { activeProjectId, activeSessionId } = state;
+      const projects = state.projects.filter((project) => project.id !== action.projectId);
+      let activeProjectId = state.activeProjectId;
+      let activeSessionId = state.activeSessionId;
       if (activeProjectId === action.projectId) {
         activeProjectId = projects[0]?.id ?? null;
         activeSessionId = projects[0]?.sessions[0]?.id ?? null;
@@ -189,179 +204,176 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, projects, activeProjectId, activeSessionId };
     }
 
-    case 'RENAME_SESSION':
-      return mapProject(state, action.projectId, (p) => ({
-        ...p,
-        sessions: p.sessions.map((s) =>
-          s.id === action.sessionId ? { ...s, title: action.title } : s
-        ),
-      }));
-
     case 'DELETE_SESSION': {
-      const nextState = mapProject(state, action.projectId, (p) => ({
-        ...p,
-        sessions: p.sessions.filter((s) => s.id !== action.sessionId),
+      const nextState = mapProject(state, action.projectId, (project) => ({
+        ...project,
+        sessions: project.sessions.filter((session) => session.id !== action.sessionId),
       }));
-      let { activeSessionId, activeProjectId } = nextState;
+      let activeSessionId = nextState.activeSessionId;
+      let activeProjectId = nextState.activeProjectId;
       if (state.activeSessionId === action.sessionId) {
-        const proj = nextState.projects.find((p) => p.id === action.projectId);
-        activeSessionId = proj?.sessions[0]?.id ?? null;
-        activeProjectId = activeSessionId ? action.projectId : activeProjectId;
+        const project = nextState.projects.find((item) => item.id === action.projectId);
+        activeSessionId = project?.sessions[0]?.id ?? null;
+        activeProjectId = project?.id ?? nextState.projects[0]?.id ?? null;
       }
-      return { ...nextState, activeSessionId, activeProjectId };
+      return { ...nextState, activeProjectId, activeSessionId };
     }
 
     case 'ADD_MESSAGE':
-      return mapSession(state, action.sessionId, (s) => {
-        // Auto-title from first user message
-        let title = s.title;
+      return mapSession(state, action.sessionId, (session) => {
+        let title = session.title;
         if (
           action.message.kind === 'user' &&
-          s.messages.filter((m) => m.kind === 'user').length === 0
+          session.messages.filter((message) => message.kind === 'user').length === 0
         ) {
-          title = (action.message as { text: string }).text.slice(0, 20) || '新会话';
+          title = action.message.text.slice(0, 20) || '新会话';
         }
-        return { ...s, title, messages: [...s.messages, action.message] };
+        return { ...session, title, messages: [...session.messages, action.message] };
       });
 
     case 'APPEND_DELTA':
-      return mapSession(state, action.sessionId, (s) => {
-        const msgs = s.messages;
-        const last = msgs[msgs.length - 1];
-        if (last && last.kind === 'assistant' && last.streaming) {
+      return mapSession(state, action.sessionId, (session) => {
+        const messages = session.messages;
+        const lastMessage = messages[messages.length - 1];
+        if (lastMessage && lastMessage.kind === 'assistant' && lastMessage.streaming) {
           return {
-            ...s,
-            messages: [...msgs.slice(0, -1), { ...last, text: last.text + action.delta }],
+            ...session,
+            messages: [
+              ...messages.slice(0, -1),
+              { ...lastMessage, text: lastMessage.text + action.delta },
+            ],
           };
         }
-        // Create a new streaming assistant message
-        const newMsg = {
-          id: uuid(),
-          kind: 'assistant' as const,
-          text: action.delta,
-          streaming: true,
-          timestamp: Date.now(),
+        return {
+          ...session,
+          messages: [
+            ...messages,
+            {
+              id: uuid(),
+              kind: 'assistant' as const,
+              text: action.delta,
+              streaming: true,
+              timestamp: Date.now(),
+            },
+          ],
         };
-        return { ...s, messages: [...msgs, newMsg] };
+      });
+
+    case 'FINALIZE_ASSISTANT':
+      return mapSession(state, action.sessionId, (session) => {
+        const messages = session.messages;
+        const lastMessage = messages[messages.length - 1];
+        if (lastMessage && lastMessage.kind === 'assistant' && lastMessage.streaming) {
+          return {
+            ...session,
+            messages: [
+              ...messages.slice(0, -1),
+              {
+                ...lastMessage,
+                text: action.content,
+                streaming: false,
+              },
+            ],
+          };
+        }
+        return {
+          ...session,
+          messages: [
+            ...messages,
+            {
+              id: uuid(),
+              kind: 'assistant',
+              text: action.content,
+              streaming: false,
+              timestamp: Date.now(),
+            },
+          ],
+        };
       });
 
     case 'END_STREAMING':
-      return mapSession(state, action.sessionId, (s) => {
-        const msgs = s.messages;
-        const last = msgs[msgs.length - 1];
-        if (last && last.kind === 'assistant' && last.streaming) {
+      return mapSession(state, action.sessionId, (session) => {
+        const messages = session.messages;
+        const lastMessage = messages[messages.length - 1];
+        if (lastMessage && lastMessage.kind === 'assistant' && lastMessage.streaming) {
           return {
-            ...s,
-            messages: [...msgs.slice(0, -1), { ...last, streaming: false }],
+            ...session,
+            messages: [...messages.slice(0, -1), { ...lastMessage, streaming: false }],
           };
         }
-        return s;
+        return session;
       });
 
     case 'UPDATE_TOOL_CALL':
-      return mapSession(state, action.sessionId, (s) => ({
-        ...s,
-        messages: s.messages.map((m) => {
-          if (m.kind === 'toolCall' && m.toolCallId === action.toolCallId) {
+      return mapSession(state, action.sessionId, (session) => ({
+        ...session,
+        messages: session.messages.map((message) => {
+          if (message.kind === 'toolCall' && message.toolCallId === action.toolCallId) {
             return {
-              ...m,
+              ...message,
               status: action.status,
               output: action.output,
               error: action.error,
               durationMs: action.durationMs,
             };
           }
-          return m;
+          return message;
         }),
       }));
 
-    case 'SET_WORKING_DIR':
-      return mapProject(state, action.projectId, (p) => ({
-        ...p,
-        workingDir: action.workingDir,
-      }));
-
-    case 'INITIALIZE': {
+    case 'INITIALIZE':
       return {
         ...state,
         projects: action.projects,
         activeProjectId: action.activeProjectId,
         activeSessionId: action.activeSessionId,
       };
-    }
 
     case 'REPLACE_SESSION_MESSAGES':
-      return mapSession(state, action.sessionId, (s) => ({
-        ...s,
+      return mapSession(state, action.sessionId, (session) => ({
+        ...session,
         messages: action.messages,
       }));
-
-    case 'ADD_SESSION_BACKEND': {
-      // Add a new session from backend (after newSession call)
-      const newSession: Session = {
-        id: action.sessionId,
-        projectId: action.projectId,
-        title: '新会话',
-        createdAt: Date.now(),
-        messages: [],
-      };
-      const nextState = mapProject(state, action.projectId, (p) => ({
-        ...p,
-        sessions: [newSession, ...p.sessions],
-      }));
-      return {
-        ...nextState,
-        activeSessionId: action.sessionId,
-      };
-    }
 
     default:
       return state;
   }
 }
 
-// ────────────────────────────────────────────────────────────
-// Initial state
-// ────────────────────────────────────────────────────────────
 function makeInitialState(): AppState {
-  const projectId = uuid();
-  const sessionId = uuid();
   return {
-    projects: [
-      {
-        id: projectId,
-        name: '默认项目',
-        workingDir: '',
-        isExpanded: true,
-        sessions: [
-          {
-            id: sessionId,
-            projectId,
-            title: '新会话',
-            createdAt: Date.now(),
-            messages: [],
-          },
-        ],
-      },
-    ],
-    activeProjectId: projectId,
-    activeSessionId: sessionId,
+    projects: [],
+    activeProjectId: null,
+    activeSessionId: null,
     phase: 'idle',
   };
 }
 
-// ────────────────────────────────────────────────────────────
-// App
-// ────────────────────────────────────────────────────────────
 export default function App() {
   const [state, dispatch] = useReducer(reducer, undefined, makeInitialState);
   const [showSettings, setShowSettings] = useState(false);
   const [modelRefreshKey, setModelRefreshKey] = useState(0);
-  const projects = useProjects(dispatch);
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    if (typeof window === 'undefined') {
+      return DEFAULT_SIDEBAR_WIDTH;
+    }
+    const savedWidth = Number(window.localStorage.getItem('astrcode.sidebarWidth'));
+    return Number.isFinite(savedWidth) ? clampSidebarWidth(savedWidth) : DEFAULT_SIDEBAR_WIDTH;
+  });
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const activeSessionIdRef = useRef<string | null>(state.activeSessionId);
   const phaseRef = useRef(state.phase);
   const turnSessionMapRef = useRef<Record<string, string>>({});
   const pendingSubmitSessionRef = useRef<string[]>([]);
+  const sidebarDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const releasePendingSubmitSession = useCallback((sessionId: string) => {
+    const queue = pendingSubmitSessionRef.current;
+    const index = queue.indexOf(sessionId);
+    if (index >= 0) {
+      queue.splice(index, 1);
+    }
+  }, []);
 
   useEffect(() => {
     activeSessionIdRef.current = state.activeSessionId;
@@ -370,6 +382,65 @@ export default function App() {
   useEffect(() => {
     phaseRef.current = state.phase;
   }, [state.phase]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    window.localStorage.setItem('astrcode.sidebarWidth', String(sidebarWidth));
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setSidebarWidth((width) => clampSidebarWidth(width));
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      document.body.style.removeProperty('cursor');
+      document.body.style.removeProperty('user-select');
+    };
+  }, []);
+
+  const finishSidebarResize = useCallback(() => {
+    sidebarDragRef.current = null;
+    setIsResizingSidebar(false);
+    document.body.style.removeProperty('cursor');
+    document.body.style.removeProperty('user-select');
+  }, []);
+
+  useEffect(() => {
+    if (!isResizingSidebar) {
+      return;
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const dragState = sidebarDragRef.current;
+      if (!dragState) {
+        return;
+      }
+
+      setSidebarWidth(clampSidebarWidth(dragState.startWidth + event.clientX - dragState.startX));
+    };
+
+    const handlePointerUp = () => {
+      finishSidebarResize();
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+  }, [finishSidebarResize, isResizingSidebar]);
 
   const handleAgentEvent = useCallback((event: AgentEventPayload) => {
     const resolveSessionId = (turnId?: string | null): string | null => {
@@ -383,7 +454,6 @@ export default function App() {
 
     switch (event.event) {
       case 'sessionStarted':
-        // Reserved for future session management features.
         break;
 
       case 'phaseChanged': {
@@ -395,93 +465,73 @@ export default function App() {
       }
 
       case 'modelDelta': {
-        const sid = resolveSessionId(event.data.turnId);
-        if (!sid) {
+        const sessionId = resolveSessionId(event.data.turnId);
+        if (!sessionId) {
           break;
         }
         startTransition(() => {
-          dispatch({ type: 'APPEND_DELTA', sessionId: sid, delta: event.data.delta });
+          dispatch({ type: 'APPEND_DELTA', sessionId, delta: event.data.delta });
         });
         break;
       }
 
       case 'assistantMessage': {
-        const sid = resolveSessionId(event.data.turnId);
-        if (!sid) {
+        const sessionId = resolveSessionId(event.data.turnId);
+        if (!sessionId) {
+          break;
+        }
+        dispatch({
+          type: 'FINALIZE_ASSISTANT',
+          sessionId,
+          content: event.data.content,
+        });
+        break;
+      }
+
+      case 'toolCallStart': {
+        const sessionId = resolveSessionId(event.data.turnId);
+        if (!sessionId) {
           break;
         }
         dispatch({
           type: 'ADD_MESSAGE',
-          sessionId: sid,
+          sessionId,
           message: {
             id: uuid(),
-            kind: 'assistant',
-            text: event.data.content,
-            streaming: false,
+            kind: 'toolCall',
+            toolCallId: event.data.toolCallId,
+            toolName: event.data.toolName,
+            status: 'running',
+            args: event.data.args,
             timestamp: Date.now(),
           },
         });
         break;
       }
 
-      case 'toolCallStart': {
-        const sid = resolveSessionId(event.data.turnId);
-        if (!sid) {
-          break;
-        }
-        {
-          const data = event.data as typeof event.data & {
-            tool_call_id?: string;
-            tool_name?: string;
-            turn_id?: string;
-          };
-          dispatch({
-            type: 'ADD_MESSAGE',
-            sessionId: sid,
-            message: {
-              id: uuid(),
-              kind: 'toolCall',
-              toolCallId: data.toolCallId ?? data.tool_call_id ?? 'unknown',
-              toolName: data.toolName ?? data.tool_name ?? '(unknown tool)',
-              status: 'running',
-              args: event.data.args,
-              timestamp: Date.now(),
-            },
-          });
-        }
-        break;
-      }
-
       case 'toolCallResult': {
-        const sid = resolveSessionId(event.data.turnId);
-        if (!sid) {
+        const sessionId = resolveSessionId(event.data.turnId);
+        if (!sessionId) {
           break;
         }
-        {
-          const result = event.data.result as typeof event.data.result & {
-            tool_call_id?: string;
-            duration_ms?: number;
-          };
-          dispatch({
-            type: 'UPDATE_TOOL_CALL',
-            sessionId: sid,
-            toolCallId: result.toolCallId ?? result.tool_call_id ?? 'unknown',
-            status: event.data.result.ok ? 'ok' : 'fail',
-            output: event.data.result.output,
-            error: event.data.result.error,
-            durationMs: result.durationMs ?? result.duration_ms ?? 0,
-          });
-        }
+        dispatch({
+          type: 'UPDATE_TOOL_CALL',
+          sessionId,
+          toolCallId: event.data.result.toolCallId,
+          status: event.data.result.ok ? 'ok' : 'fail',
+          output: event.data.result.output,
+          error: event.data.result.error,
+          durationMs: event.data.result.durationMs,
+        });
         break;
       }
 
       case 'turnDone': {
-        const sid = resolveSessionId(event.data.turnId);
-        if (sid) {
-          dispatch({ type: 'END_STREAMING', sessionId: sid });
+        const sessionId = resolveSessionId(event.data.turnId);
+        if (sessionId) {
+          dispatch({ type: 'END_STREAMING', sessionId });
         }
         releaseTurnMapping(turnSessionMapRef.current, event.data.turnId);
-        // Primary source of idle is PhaseChanged(idle). This is fallback only.
         queueMicrotask(() => {
           if (phaseRef.current !== 'idle') {
             dispatch({ type: 'SET_PHASE', phase: 'idle' });
@@ -491,11 +541,11 @@ export default function App() {
       }
 
       case 'error': {
-        const sid = resolveSessionId(event.data.turnId ?? null);
-        if (sid && event.data.code !== 'interrupted') {
+        const sessionId = resolveSessionId(event.data.turnId ?? null);
+        if (sessionId && event.data.code !== 'interrupted') {
           dispatch({
             type: 'ADD_MESSAGE',
-            sessionId: sid,
+            sessionId,
             message: {
               id: uuid(),
               kind: 'assistant',
@@ -515,14 +565,13 @@ export default function App() {
   }, []);
 
   const {
-    submitPrompt,
-    interrupt,
-    getWorkingDir,
-    getSessionId,
+    createSession,
     listSessionsWithMeta,
     loadSession,
-    switchSession,
-    newSession,
+    connectSession,
+    disconnectSession,
+    submitPrompt,
+    interrupt,
     deleteSession,
     deleteProject,
     getConfig,
@@ -532,183 +581,132 @@ export default function App() {
     listAvailableModels,
     testConnection,
     openConfigInEditor,
+    selectDirectory,
+    hostBridge,
   } = useAgent(handleAgentEvent);
 
-  const refreshSessions = useCallback(async () => {
-    const sessionMetas = await listSessionsWithMeta();
-    let metas = sessionMetas;
+  const loadAndActivateSession = useCallback(
+    async (projectId: string, sessionId: string) => {
+      disconnectSession();
+      dispatch({ type: 'SET_ACTIVE', projectId, sessionId });
+      const snapshot = await loadSession(sessionId);
+      dispatch({
+        type: 'REPLACE_SESSION_MESSAGES',
+        sessionId,
+        messages: snapshot.messages.map(convertSessionMessage),
+      });
+      await connectSession(sessionId, snapshot.cursor);
+      setModelRefreshKey((value) => value + 1);
+    },
+    [connectSession, disconnectSession, loadSession]
+  );
 
-    if (metas.length === 0) {
-      await newSession();
-      metas = await listSessionsWithMeta();
-    }
+  const refreshSessions = useCallback(
+    async (preferredSessionId?: string | null) => {
+      const sessionMetas = await listSessionsWithMeta();
+      const projects = groupSessionsByProject(sessionMetas);
+      const availableSessionIds = new Set(sessionMetas.map((meta) => meta.sessionId));
+      const nextSessionId =
+        preferredSessionId && availableSessionIds.has(preferredSessionId)
+          ? preferredSessionId
+          : state.activeSessionId && availableSessionIds.has(state.activeSessionId)
+            ? state.activeSessionId
+            : (projects[0]?.sessions[0]?.id ?? null);
+      const nextProjectId =
+        projects.find((project) => project.sessions.some((session) => session.id === nextSessionId))
+          ?.id ?? null;
 
-    const projectsFromMeta = groupSessionsByProject(metas);
-    const availableSessionIds = new Set(metas.map((meta) => meta.sessionId));
-    const backendCurrentSessionId = await getSessionId();
-    const fallbackSessionId = metas[0]?.sessionId ?? '';
-    const resolvedCurrentSessionId = availableSessionIds.has(backendCurrentSessionId)
-      ? backendCurrentSessionId
-      : fallbackSessionId;
-
-    const messages = resolvedCurrentSessionId ? await loadSession(resolvedCurrentSessionId) : [];
-    const convertedMessages = messages.map(convertSessionMessage);
-
-    const projects = projectsFromMeta.map((project) => ({
-      ...project,
-      sessions: project.sessions.map((session) =>
-        session.id === resolvedCurrentSessionId
-          ? { ...session, messages: convertedMessages }
-          : session
-      ),
-    }));
-
-    let activeProjectId =
-      projects.find((project) =>
-        project.sessions.some((session) => session.id === resolvedCurrentSessionId)
-      )?.id ?? null;
-    let activeSessionId: string | null = resolvedCurrentSessionId || null;
-
-    if (!activeProjectId && projects.length > 0) {
-      activeProjectId = projects[0].id;
-      activeSessionId = projects[0].sessions[0]?.id ?? null;
-    }
-
-    if (projects.length === 0) {
-      const workingDir = await getWorkingDir();
-      const projectId = '__default_project__';
-      const fallbackId = activeSessionId ?? `web-${Date.now()}`;
       dispatch({
         type: 'INITIALIZE',
-        projects: [
-          {
-            id: projectId,
-            name: getDirectoryName(workingDir),
-            workingDir,
-            isExpanded: true,
-            sessions: [
-              {
-                id: fallbackId,
-                projectId,
-                title: '新会话',
-                createdAt: Date.now(),
-                updatedAt: Date.now(),
-                messages: convertedMessages,
-              },
-            ],
-          },
-        ],
-        activeProjectId: projectId,
-        activeSessionId: fallbackId,
+        projects,
+        activeProjectId: nextProjectId,
+        activeSessionId: nextSessionId,
       });
-      return;
-    }
 
-    dispatch({
-      type: 'INITIALIZE',
-      projects,
-      activeProjectId,
-      activeSessionId,
-    });
-  }, [getSessionId, getWorkingDir, listSessionsWithMeta, loadSession, newSession]);
+      if (nextProjectId && nextSessionId) {
+        await loadAndActivateSession(nextProjectId, nextSessionId);
+      } else {
+        disconnectSession();
+      }
+    },
+    [disconnectSession, listSessionsWithMeta, loadAndActivateSession, state.activeSessionId]
+  );
 
-  // Initialize session data from backend on mount
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
         await refreshSessions();
-      } catch (err) {
+      } catch (error) {
         if (!cancelled) {
-          console.error('Failed to initialize sessions:', err);
+          console.error('Failed to initialize sessions:', error);
         }
       }
     })();
+
     return () => {
       cancelled = true;
+      disconnectSession();
     };
-  }, [refreshSessions]);
+  }, [disconnectSession, refreshSessions]);
 
-  const activeProject = state.projects.find((p) => p.id === state.activeProjectId) ?? null;
-  const activeSession = activeProject?.sessions.find((s) => s.id === state.activeSessionId) ?? null;
+  const activeProject =
+    state.projects.find((project) => project.id === state.activeProjectId) ?? null;
+  const activeSession =
+    activeProject?.sessions.find((session) => session.id === state.activeSessionId) ?? null;
+
+  const handleNewProject = async (workingDir: string) => {
+    try {
+      const created = await createSession(workingDir);
+      await refreshSessions(created.sessionId);
+    } catch (error) {
+      console.error('Failed to create project session:', error);
+    }
+  };
 
   const handleNewSession = async () => {
+    if (!activeProject?.workingDir) {
+      return;
+    }
     try {
-      await newSession();
-      await refreshSessions();
-    } catch (err) {
-      console.error('Failed to create new session:', err);
+      const created = await createSession(activeProject.workingDir);
+      await refreshSessions(created.sessionId);
+    } catch (error) {
+      console.error('Failed to create session:', error);
     }
   };
 
   const handleSetActive = async (projectId: string, sessionId: string) => {
-    // If switching to a different session, call backend
-    let targetSessionId = sessionId;
-    if (sessionId !== state.activeSessionId) {
-      try {
-        targetSessionId = await switchSession(sessionId);
-        setModelRefreshKey((value) => value + 1);
-        // Load session messages if not already loaded
-        const targetProject = state.projects.find((p) => p.id === projectId);
-        const targetSession = targetProject?.sessions.find((s) => s.id === targetSessionId);
-        if (targetSession && targetSession.messages.length === 0) {
-          const messages = await loadSession(targetSessionId);
-          // Convert SessionMessage to Message
-          const convertedMessages: Message[] = messages.map((m) => {
-            const base = { id: uuid(), timestamp: Date.now() };
-            switch (m.kind) {
-              case 'user':
-                return { ...base, kind: 'user' as const, text: m.content };
-              case 'assistant':
-                return { ...base, kind: 'assistant' as const, text: m.content, streaming: false };
-              case 'toolCall':
-                return {
-                  ...base,
-                  kind: 'toolCall' as const,
-                  toolCallId: m.toolCallId,
-                  toolName: m.toolName,
-                  status: m.success ? ('ok' as const) : ('fail' as const),
-                  args: m.args,
-                  output: m.output,
-                  durationMs: m.durationMs,
-                };
-              default:
-                return { ...base, kind: 'assistant' as const, text: '', streaming: false };
-            }
-          });
-          dispatch({
-            type: 'REPLACE_SESSION_MESSAGES',
-            sessionId: targetSessionId,
-            messages: convertedMessages,
-          });
-        }
-      } catch (err) {
-        console.error('Failed to switch session:', err);
-        return;
-      }
+    try {
+      await loadAndActivateSession(projectId, sessionId);
+    } catch (error) {
+      console.error('Failed to activate session:', error);
     }
-    dispatch({ type: 'SET_ACTIVE', projectId, sessionId: targetSessionId });
   };
 
-  const handleToggleExpand = (projectId: string) => dispatch({ type: 'TOGGLE_EXPAND', projectId });
+  const handleToggleExpand = (projectId: string) => {
+    dispatch({ type: 'TOGGLE_EXPAND', projectId });
+  };
 
   const handleDeleteProject = async (projectId: string) => {
-    const project = state.projects.find((p) => p.id === projectId);
+    const project = state.projects.find((item) => item.id === projectId);
     if (!project) {
       return;
     }
+
     const confirmed = window.confirm(`删除项目“${project.name}”会移除该目录下所有会话，是否继续？`);
     if (!confirmed) {
       return;
     }
+
     try {
       const result = await deleteProject(project.workingDir);
       if (result.failedSessionIds.length > 0) {
         console.error('部分会话删除失败:', result.failedSessionIds);
       }
       await refreshSessions();
-    } catch (err) {
-      console.error('Failed to delete project:', err);
+    } catch (error) {
+      console.error('Failed to delete project:', error);
     }
   };
 
@@ -717,11 +715,12 @@ export default function App() {
     if (!confirmed) {
       return;
     }
+
     try {
       await deleteSession(sessionId);
       await refreshSessions();
-    } catch (err) {
-      console.error('Failed to delete session:', err);
+    } catch (error) {
+      console.error('Failed to delete session:', error);
     }
   };
 
@@ -732,14 +731,14 @@ export default function App() {
         return;
       }
 
-      const sid = activeSessionIdRef.current;
-      if (!sid) {
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId) {
         return;
       }
 
       dispatch({
         type: 'ADD_MESSAGE',
-        sessionId: sid,
+        sessionId,
         message: {
           id: uuid(),
           kind: 'user',
@@ -748,22 +747,21 @@ export default function App() {
         },
       });
 
+      pendingSubmitSessionRef.current.push(sessionId);
+
       try {
-        pendingSubmitSessionRef.current.push(sid);
-        await submitPrompt(trimmed, activeSession?.messages ?? []);
-      } catch (err) {
-        const queue = pendingSubmitSessionRef.current;
-        const index = queue.indexOf(sid);
-        if (index >= 0) {
-          queue.splice(index, 1);
-        }
+        const turnId = await submitPrompt(sessionId, trimmed);
+        turnSessionMapRef.current[turnId] = turnSessionMapRef.current[turnId] ?? sessionId;
+        releasePendingSubmitSession(sessionId);
+      } catch (error) {
+        releasePendingSubmitSession(sessionId);
         dispatch({
           type: 'ADD_MESSAGE',
-          sessionId: sid,
+          sessionId,
           message: {
             id: uuid(),
             kind: 'assistant',
-            text: `错误：${String(err)}`,
+            text: `错误：${String(error)}`,
             streaming: false,
             timestamp: Date.now(),
           },
@@ -771,36 +769,87 @@ export default function App() {
         dispatch({ type: 'SET_PHASE', phase: 'idle' });
       }
     },
-    [activeSession, submitPrompt]
+    [releasePendingSubmitSession, submitPrompt]
   );
 
+  const handleInterrupt = useCallback(async () => {
+    if (!activeSessionIdRef.current) {
+      return;
+    }
+    await interrupt(activeSessionIdRef.current);
+  }, [interrupt]);
+
+  const handleSidebarResizeStart = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      sidebarDragRef.current = {
+        startX: event.clientX,
+        startWidth: sidebarWidth,
+      };
+      setIsResizingSidebar(true);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    },
+    [sidebarWidth]
+  );
+
+  const handleSidebarResizeKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      setSidebarWidth((width) => clampSidebarWidth(width - 16));
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      setSidebarWidth((width) => clampSidebarWidth(width + 16));
+    }
+  }, []);
+
   return (
-    <div
-      style={{
-        display: 'flex',
-        height: '100vh',
-        overflow: 'hidden',
-        background: '#1a1a1a',
-      }}
-    >
-      <Sidebar
-        projects={state.projects}
-        activeSessionId={state.activeSessionId}
-        phase={state.phase}
-        onSetActive={handleSetActive}
-        onToggleExpand={handleToggleExpand}
-        onNewProject={projects.addProject}
-        onDeleteProject={handleDeleteProject}
-        onDeleteSession={handleDeleteSession}
-        onOpenSettings={() => setShowSettings(true)}
+    <div className={styles.app}>
+      <div className={styles.sidebarPane} style={{ width: `${sidebarWidth}px` }}>
+        <Sidebar
+          projects={state.projects}
+          activeSessionId={state.activeSessionId}
+          phase={state.phase}
+          canSelectDirectory={hostBridge.canSelectDirectory}
+          defaultWorkingDir={activeProject?.workingDir}
+          onSelectDirectory={selectDirectory}
+          onSetActive={(projectId, sessionId) => {
+            void handleSetActive(projectId, sessionId);
+          }}
+          onToggleExpand={handleToggleExpand}
+          onNewProject={(workingDir) => {
+            void handleNewProject(workingDir);
+          }}
+          onDeleteProject={(projectId) => {
+            void handleDeleteProject(projectId);
+          }}
+          onDeleteSession={(projectId, sessionId) => {
+            void handleDeleteSession(projectId, sessionId);
+          }}
+          onOpenSettings={() => setShowSettings(true)}
+        />
+      </div>
+      <div
+        className={`${styles.sidebarResizer} ${isResizingSidebar ? styles.sidebarResizerActive : ''}`}
+        role="separator"
+        aria-label="调整侧边栏宽度"
+        aria-orientation="vertical"
+        aria-valuemin={MIN_SIDEBAR_WIDTH}
+        aria-valuemax={getMaxSidebarWidth()}
+        aria-valuenow={sidebarWidth}
+        tabIndex={0}
+        onPointerDown={handleSidebarResizeStart}
+        onKeyDown={handleSidebarResizeKeyDown}
       />
       <Chat
         project={activeProject}
         session={activeSession}
         phase={state.phase}
-        onNewSession={handleNewSession}
+        onNewSession={() => {
+          void handleNewSession();
+        }}
         onSubmitPrompt={handleSubmit}
-        onInterrupt={interrupt}
+        onInterrupt={handleInterrupt}
         modelRefreshKey={modelRefreshKey}
         getCurrentModel={getCurrentModel}
         listAvailableModels={listAvailableModels}

@@ -32,11 +32,17 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Run clippy
         run: cargo clippy --all-targets --all-features
+
+      - name: Run cargo-deny bans
+        run: cargo deny check bans
 
       - name: Run tests
         run: cargo test --workspace

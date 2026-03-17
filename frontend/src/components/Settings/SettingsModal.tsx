@@ -7,7 +7,7 @@ interface SettingsModalProps {
   getConfig: () => Promise<ConfigView>;
   saveActiveSelection: (activeProfile: string, activeModel: string) => Promise<void>;
   testConnection: (profileName: string, model: string) => Promise<TestResult>;
-  openConfigInEditor: () => Promise<void>;
+  openConfigInEditor: (path?: string) => Promise<void>;
 }
 
 function pickNextModel(profile: ProfileView | undefined, currentModel: string): string {
@@ -82,7 +82,7 @@ export default function SettingsModal({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
-  const profiles = configView?.profiles ?? [];
+  const profiles = useMemo(() => configView?.profiles ?? [], [configView]);
   const currentProfile = useMemo(
     () => profiles.find((profile) => profile.name === selectedProfile) ?? profiles[0],
     [profiles, selectedProfile]
@@ -148,7 +148,7 @@ export default function SettingsModal({
   const handleOpenConfig = async () => {
     setErrorMessage(null);
     try {
-      await openConfigInEditor();
+      await openConfigInEditor(configView?.configPath);
     } catch (error) {
       setErrorMessage(String(error));
     }

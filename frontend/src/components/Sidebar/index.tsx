@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import type { Phase, Project } from '../../types';
 import ProjectItem from './ProjectItem';
 import NewProjectModal from '../NewProjectModal';
@@ -19,7 +19,10 @@ interface SidebarProps {
   phase: Phase;
   onSetActive: (projectId: string, sessionId: string) => void;
   onToggleExpand: (projectId: string) => void;
-  onNewProject: (name: string, workingDir: string) => void;
+  canSelectDirectory: boolean;
+  defaultWorkingDir?: string;
+  onSelectDirectory: () => Promise<string | null>;
+  onNewProject: (workingDir: string) => void;
   onDeleteProject: (projectId: string) => void;
   onDeleteSession: (projectId: string, sessionId: string) => void;
   onOpenSettings: () => void;
@@ -31,6 +34,9 @@ export default function Sidebar({
   phase,
   onSetActive,
   onToggleExpand,
+  canSelectDirectory,
+  defaultWorkingDir,
+  onSelectDirectory,
   onNewProject,
   onDeleteProject,
   onDeleteSession,
@@ -40,17 +46,15 @@ export default function Sidebar({
 
   return (
     <div className={styles.sidebar}>
-      {/* Header */}
       <div className={styles.header}>
-        <span className={styles.title}>AstrCode</span>
         <span
           className={styles.phaseIndicator}
           style={{ backgroundColor: PHASE_COLOR[phase] }}
           title={phase}
         />
+        <span className={styles.title}>AstrCode</span>
       </div>
 
-      {/* Project tree */}
       <div className={styles.projectList}>
         {projects.map((project) => (
           <ProjectItem
@@ -65,7 +69,6 @@ export default function Sidebar({
         ))}
       </div>
 
-      {/* Footer */}
       <div className={styles.footer}>
         <div className={styles.footerActions}>
           <button className={styles.newProjectBtn} onClick={() => setShowModal(true)}>
@@ -90,8 +93,11 @@ export default function Sidebar({
 
       {showModal && (
         <NewProjectModal
-          onConfirm={(name, workingDir) => {
-            onNewProject(name, workingDir);
+          canSelectDirectory={canSelectDirectory}
+          defaultWorkingDir={defaultWorkingDir}
+          onSelectDirectory={onSelectDirectory}
+          onConfirm={(workingDir) => {
+            onNewProject(workingDir);
             setShowModal(false);
           }}
           onCancel={() => setShowModal(false)}

@@ -86,6 +86,7 @@ export interface SessionMeta {
   title: string;
   createdAt: string;
   updatedAt: string;
+  phase: Phase;
 }
 
 export interface DeleteProjectResult {
@@ -157,6 +158,7 @@ export type Action =
   | { type: 'DELETE_SESSION'; projectId: string; sessionId: string }
   | { type: 'ADD_MESSAGE'; sessionId: string; message: Message }
   | { type: 'APPEND_DELTA'; sessionId: string; delta: string }
+  | { type: 'FINALIZE_ASSISTANT'; sessionId: string; content: string }
   | { type: 'END_STREAMING'; sessionId: string }
   | {
       type: 'UPDATE_TOOL_CALL';

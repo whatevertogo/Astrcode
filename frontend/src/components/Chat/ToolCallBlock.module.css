@@ -1,47 +1,87 @@
-.block {
-  background: #252525;
-  border-left: 3px solid #9cdcfe;
-  border-radius: 0 6px 6px 0;
-  overflow: hidden;
-  width: 100%;
+.wrapper {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  animation: blockEnter 320ms cubic-bezier(0.2, 1, 0.32, 1);
+}
+
+.avatar {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #efe6da;
+  color: #8a7458;
+  border-radius: 8px;
   flex-shrink: 0;
-  min-height: 44px;
-  transition: border-left-color 200ms ease;
+}
+
+.avatar svg {
+  width: 16px;
+  height: 16px;
+}
+
+.block {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+  box-shadow:
+    0 18px 34px rgba(117, 90, 52, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.82);
 }
 
 .header {
+  width: 100%;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  min-height: 38px;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 16px;
+  min-height: 54px;
   cursor: pointer;
   user-select: none;
-  transition: background 150ms ease;
+  transition: background-color 150ms ease;
 }
 
 .header:hover {
-  background: #2a2a2a;
+  background: #fdf8f1;
 }
 
-.icon {
-  font-size: 13px;
+.headerMain,
+.headerMeta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.headerMain {
+  flex: 1;
+}
+
+.statusIcon {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
-  width: 16px;
-  text-align: center;
-  display: inline-block;
+  font-size: 13px;
 }
 
 .spinning {
   animation: spin 0.8s linear infinite;
-  display: inline-block;
 }
 
 .toolName {
-  font-size: 13px;
-  color: #d4d4d4;
-  font-weight: 500;
-  flex: 1;
+  font-size: 15px;
+  color: var(--text-primary);
+  font-weight: 700;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -49,35 +89,40 @@
 }
 
 .callId {
-  font-size: 11px;
-  color: #555;
+  font-size: 12px;
+  color: var(--text-faint);
   font-family: 'Cascadia Code', 'Fira Code', monospace;
   flex-shrink: 0;
 }
 
 .duration {
-  font-size: 11px;
-  color: #585858;
-  margin-left: 8px;
-  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.toggleLabel {
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 .chevron {
-  font-size: 10px;
-  color: #555;
+  font-size: 12px;
+  color: var(--text-faint);
   flex-shrink: 0;
 }
 
 .body {
-  border-top: 1px solid #333;
+  border-top: 1px solid var(--border);
+  background: #fffefb;
+  animation: bodyExpand 220ms ease;
 }
 
 .preview {
-  border-top: 1px solid #333;
-  padding: 8px 12px;
-  font-size: 12px;
-  color: #9a9a9a;
-  line-height: 1.5;
+  border-top: 1px solid var(--border);
+  padding: 12px 16px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -85,26 +130,75 @@
 
 .output {
   margin: 0;
-  padding: 10px 12px;
+  padding: 16px 18px 18px;
   font-family: 'Cascadia Code', 'Fira Code', monospace;
-  font-size: 12px;
-  color: #c0c0c0;
-  max-height: 300px;
+  font-size: 13px;
+  color: #6d5a45;
+  max-height: 320px;
   overflow-y: auto;
   white-space: pre-wrap;
-  word-break: break-all;
-  line-height: 1.5;
+  overflow-wrap: anywhere;
+  line-height: 1.65;
+  background: linear-gradient(180deg, #fffdf9 0%, #fffbf4 100%);
 }
 
 .error {
-  padding: 8px 12px;
+  padding: 14px 18px 18px;
   font-size: 13px;
-  color: #f44747;
+  color: var(--danger);
   font-family: 'Cascadia Code', 'Fira Code', monospace;
 }
 
 .running {
-  padding: 8px 12px;
-  font-size: 12px;
-  color: #555;
+  padding: 14px 18px 18px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+@keyframes blockEnter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes bodyExpand {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 640px) {
+  .wrapper {
+    gap: 12px;
+  }
+
+  .header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .headerMeta {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wrapper,
+  .spinning,
+  .body {
+    animation: none;
+  }
 }
