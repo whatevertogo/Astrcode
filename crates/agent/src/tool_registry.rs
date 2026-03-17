@@ -128,7 +128,6 @@ mod tests {
         ToolContext {
             session_id: "session-1".to_string(),
             working_dir: std::env::temp_dir(),
-            sandbox_root: std::env::temp_dir(),
             cancel: CancelToken::new(),
         }
     }

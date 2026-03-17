@@ -49,7 +49,6 @@ impl AgentLoop {
         ToolContext {
             session_id: state.session_id.clone(),
             working_dir: state.working_dir.clone(),
-            sandbox_root: state.working_dir.clone(),
             cancel,
         }
     }

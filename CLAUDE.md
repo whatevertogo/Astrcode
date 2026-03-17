@@ -97,7 +97,7 @@ cd frontend && npm run typecheck
 
 - `Tool` trait 和 `ToolContext` 定义在 `crates/core`。
 - `ToolRegistryBuilder` 在 server 启动时组装工具，`build()` 后冻结为只读 `ToolRegistry` 并转移给 `AgentService`。
-- 所有工具必须基于 `ToolContext.working_dir` / `sandbox_root` 工作；禁止读取或修改进程级 cwd。
+- 所有工具必须基于 `ToolContext.working_dir` 工作；禁止读取或修改进程级 cwd。
 
 **Tool Error Semantics:**
 

@@ -11,7 +11,6 @@ pub type SessionId = String;
 pub struct ToolContext {
     pub session_id: SessionId,
     pub working_dir: PathBuf,
-    pub sandbox_root: PathBuf,
     pub cancel: CancelToken,
 }
 

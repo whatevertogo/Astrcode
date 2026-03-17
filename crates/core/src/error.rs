@@ -1,6 +1,4 @@
 use std::env::VarError;
-use std::io;
-use std::str::Utf8Error;
 
 use thiserror::Error;
 
@@ -42,9 +40,6 @@ pub enum AstrError {
     // ========== 工具相关 ==========
     #[error("tool '{name}' failed: {reason}")]
     ToolError { name: String, reason: String },
-
-    #[error("path escapes sandbox: {path}")]
-    SandboxEscape { path: String },
 
     // ========== LLM 相关 ==========
     #[error("LLM request failed: {status} - {body}")]
