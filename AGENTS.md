@@ -1,19 +1,5 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
-
-```
-AstrCode/
-├── crates/
-│   ├── core/        # 纯领域类型、Tool trait、ToolContext、AgentEvent
-│   ├── contracts/   # HTTP / SSE DTO
-│   ├── agent/       # 会话生命周期、JSONL 日志、配置、事件广播
-│   ├── tools/       # Tool 实现，不依赖 agent
-│   └── server/      # Axum 本地 server，唯一业务入口
-├── src-tauri/       # Tauri 薄壳：sidecar 管理、窗口控制、宿主 GUI 桥接
-└── frontend/        # React + TypeScript + Vite UI，共用桌面端和浏览器端
-```
-
 ## Key Files Quick Reference
 
 | 文件                                | 用途                                         |
