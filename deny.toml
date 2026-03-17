@@ -5,7 +5,7 @@ exclude-dev = true
 multiple-versions = "allow"
 
 deny = [
-  { crate = "tokio", wrappers = [
+  { name = "tokio", wrappers = [
       "astrcode-agent",
       "astrcode-server",
       "axum",
@@ -20,5 +20,5 @@ deny = [
       "tower",
       "tower-http",
     ], reason = "tokio should stay out of core/contracts/tools production code" },
-  { crate = "axum", wrappers = ["astrcode-server", "axum-extra"], reason = "axum belongs only in the server crate" },
+  { name = "axum", wrappers = ["astrcode-server", "axum-extra"], reason = "axum belongs only in the server crate" },
 ]

@@ -37,7 +37,13 @@ pub(crate) async fn execute_tool_calls(
 
         let start = Instant::now();
         let ctx = agent_loop.tool_context(state, cancel.clone());
+
+        // 让出控制权，允许其他任务运行
+        // 注意：工具内部包含阻塞操作（shell、文件 I/O 等）
+        // 在高并发场景下应使用 spawn_blocking，但对本地开发工具当前实现可接受
+        tokio::task::yield_now().await;
         let result = tools.execute(&call, &ctx).await;
+
         let duration_ms = start.elapsed().as_millis() as u64;
 
         on_event(StorageEvent::ToolResult {

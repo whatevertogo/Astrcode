@@ -13,3 +13,8 @@ pub fn resolve_home_dir() -> Result<PathBuf> {
 pub fn default_config_path() -> Result<PathBuf> {
     Ok(resolve_home_dir()?.join(".astrcode").join("config.json"))
 }
+
+/// 获取 Astrcode 根目录 (~/.astrcode/)
+pub fn astrcode_root_dir() -> Result<PathBuf> {
+    Ok(resolve_home_dir()?.join(".astrcode"))
+}
