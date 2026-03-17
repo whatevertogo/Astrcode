@@ -1,8 +1,7 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{Context, Result};
-use astrcode_core::{CancelToken, ToolContext};
+use astrcode_core::{AstrError, CancelToken, Result, ToolContext};
 use serde::Serialize;
 
 // Metadata conventions:
@@ -11,9 +10,9 @@ use serde::Serialize;
 // - metadata is the machine-readable contract; output is display text only.
 // - Structured machine data should not be embedded into output strings.
 
-pub fn check_cancel(cancel: &CancelToken, tool_name: &str) -> Result<()> {
+pub fn check_cancel(cancel: &CancelToken, _tool_name: &str) -> Result<()> {
     if cancel.is_cancelled() {
-        anyhow::bail!("{tool_name} interrupted");
+        return Err(AstrError::Cancelled);
     }
     Ok(())
 }
@@ -39,37 +38,47 @@ fn enforce_workspace_sandbox(root: &Path, path: &Path) -> Result<()> {
     let normalized_path = normalize_lexically(path);
 
     if !normalized_path.starts_with(&root) {
-        anyhow::bail!(
-            "path escapes workspace sandbox: '{}' is outside '{}'",
-            normalized_path.display(),
-            root.display()
-        );
+        return Err(AstrError::SandboxEscape {
+            path: normalized_path.display().to_string(),
+        });
     }
 
     // Resolve the nearest existing ancestor so creating a new file beneath a symlinked
     // directory still gets checked against the real filesystem location.
     let existing_ancestor = nearest_existing_ancestor(&normalized_path).ok_or_else(|| {
-        anyhow::anyhow!(
-            "path '{}' has no existing ancestor to validate against sandbox '{}'",
-            normalized_path.display(),
-            root.display()
+        AstrError::ToolError {
+            name: "sandbox".to_string(),
+            reason: format!(
+                "path '{}' has no existing ancestor to validate against sandbox '{}'",
+                normalized_path.display(),
+                root.display()
+            ),
+        }
+    })?;
+    let canonical_root = fs::canonicalize(&root).map_err(|e| {
+        AstrError::io(
+            format!("failed to canonicalize sandbox root '{}'", root.display()),
+            e,
         )
     })?;
-    let canonical_root = fs::canonicalize(&root)
-        .with_context(|| format!("failed to canonicalize sandbox root '{}'", root.display()))?;
-    let canonical_ancestor = fs::canonicalize(existing_ancestor).with_context(|| {
-        format!(
-            "failed to canonicalize path '{}' while enforcing sandbox",
-            existing_ancestor.display()
+    let canonical_ancestor = fs::canonicalize(existing_ancestor).map_err(|e| {
+        AstrError::io(
+            format!(
+                "failed to canonicalize path '{}' while enforcing sandbox",
+                existing_ancestor.display()
+            ),
+            e,
         )
     })?;
 
     if !canonical_ancestor.starts_with(&canonical_root) {
-        anyhow::bail!(
-            "path '{}' resolves outside sandbox via symlink ancestor '{}'",
-            normalized_path.display(),
-            existing_ancestor.display()
-        );
+        return Err(AstrError::SandboxEscape {
+            path: format!(
+                "{} (via symlink {})",
+                normalized_path.display(),
+                existing_ancestor.display()
+            ),
+        });
     }
 
     Ok(())
@@ -97,26 +106,29 @@ fn should_enforce_sandbox() -> bool {
 }
 
 pub async fn read_utf8_file(path: &Path) -> Result<String> {
-    fs::read_to_string(path).with_context(|| format!("failed reading file '{}'", path.display()))
+    fs::read_to_string(path).map_err(|e| AstrError::io(format!("failed reading file '{}'", path.display()), e))
 }
 
 pub async fn write_text_file(path: &Path, content: &str, create_dirs: bool) -> Result<usize> {
     if create_dirs {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("failed creating parent directory '{}'", parent.display())
+            fs::create_dir_all(parent).map_err(|e| {
+                AstrError::io(
+                    format!("failed creating parent directory '{}'", parent.display()),
+                    e,
+                )
             })?;
         }
     }
 
     fs::write(path, content.as_bytes())
-        .with_context(|| format!("failed writing file '{}'", path.display()))?;
+        .map_err(|e| AstrError::io(format!("failed writing file '{}'", path.display()), e))?;
 
     Ok(content.as_bytes().len())
 }
 
 pub fn json_output<T: Serialize>(value: &T) -> Result<String> {
-    serde_json::to_string(value).context("failed to serialize output")
+    serde_json::to_string(value).map_err(|e| AstrError::parse("failed to serialize output", e))
 }
 
 fn normalize_lexically(path: &Path) -> PathBuf {
@@ -168,7 +180,7 @@ mod tests {
         ctx.cancel.cancel();
 
         let err = check_cancel(&ctx.cancel, "grep").expect_err("cancelled token should fail");
-        assert!(err.to_string().contains("grep interrupted"));
+        assert!(err.to_string().contains("cancelled"));
     }
 
     #[test]
@@ -197,7 +209,7 @@ mod tests {
         let err = resolve_path(&ctx, &outside).expect_err("outside path should be rejected");
 
         std::env::remove_var("ASTRCODE_ENFORCE_TOOL_SANDBOX");
-        assert!(err.to_string().contains("escapes workspace sandbox"));
+        assert!(err.to_string().contains("sandbox"));
     }
 
     #[test]
@@ -247,9 +259,7 @@ mod tests {
             .expect_err("symlinked parent should be rejected");
 
         std::env::remove_var("ASTRCODE_ENFORCE_TOOL_SANDBOX");
-        assert!(err
-            .to_string()
-            .contains("resolves outside sandbox via symlink"));
+        assert!(err.to_string().contains("sandbox"));
     }
 
     #[tokio::test]
@@ -257,7 +267,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let file = temp.path().join("note.txt");
 
-        let written = write_text_file(&file, "hello", false)
+        let written: usize = write_text_file(&file, "hello", false)
             .await
             .expect("write should succeed");
         let content = read_utf8_file(&file).await.expect("read should succeed");

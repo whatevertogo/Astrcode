@@ -1,6 +1,5 @@
 use crate::tools::fs_common::{check_cancel, json_output, resolve_path};
-use anyhow::{Context, Result};
-use astrcode_core::{Tool, ToolContext, ToolDefinition, ToolExecutionResult};
+use astrcode_core::{AstrError, Result, Tool, ToolContext, ToolDefinition, ToolExecutionResult};
 use async_trait::async_trait;
 use glob::glob;
 use serde::Deserialize;
@@ -49,8 +48,8 @@ impl Tool for FindFilesTool {
     ) -> Result<ToolExecutionResult> {
         check_cancel(&ctx.cancel, "findFiles")?;
 
-        let args: FindFilesArgs =
-            serde_json::from_value(args).context("invalid args for findFiles")?;
+        let args: FindFilesArgs = serde_json::from_value(args)
+            .map_err(|e| AstrError::parse("invalid args for findFiles", e))?;
         let started_at = Instant::now();
         let root = match args.root {
             Some(root) => resolve_path(ctx, &root)?,
@@ -62,13 +61,19 @@ impl Tool for FindFilesTool {
             .to_string_lossy()
             .replace('\\', "/");
         let entries = glob(&full_pattern)
-            .with_context(|| format!("failed to parse glob pattern '{}'", full_pattern))?;
+            .map_err(|e| AstrError::ToolError {
+                name: "findFiles".to_string(),
+                reason: format!("failed to parse glob pattern '{}': {}", full_pattern, e),
+            })?;
 
         let mut paths = Vec::new();
         let mut truncated = false;
         for entry in entries {
             check_cancel(&ctx.cancel, "findFiles")?;
-            let path = entry.with_context(|| format!("failed matching '{}'", full_pattern))?;
+            let path = entry.map_err(|e| AstrError::ToolError {
+                name: "findFiles".to_string(),
+                reason: format!("failed matching '{}': {}", full_pattern, e),
+            })?;
             if path.is_file() {
                 let resolved = resolve_path(ctx, &path)?;
                 paths.push(resolved.to_string_lossy().to_string());
@@ -239,7 +244,7 @@ mod tests {
             .await
             .expect_err("findFiles should fail");
 
-        assert!(err.to_string().contains("findFiles interrupted"));
+        assert!(err.to_string().contains("cancelled"));
     }
 
     #[tokio::test]

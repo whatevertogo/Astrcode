@@ -1,6 +1,5 @@
 use crate::tools::fs_common::{check_cancel, read_utf8_file, resolve_path, write_text_file};
-use anyhow::{anyhow, Context, Result};
-use astrcode_core::{Tool, ToolContext, ToolDefinition, ToolExecutionResult};
+use astrcode_core::{AstrError, Result, Tool, ToolContext, ToolDefinition, ToolExecutionResult};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
@@ -59,10 +58,10 @@ impl Tool for EditFileTool {
     ) -> Result<ToolExecutionResult> {
         check_cancel(&ctx.cancel, "editFile")?;
 
-        let args: EditFileArgs =
-            serde_json::from_value(args).context("invalid args for editFile")?;
+        let args: EditFileArgs = serde_json::from_value(args)
+            .map_err(|e| AstrError::parse("invalid args for editFile", e))?;
         if args.old_str.is_empty() {
-            return Err(anyhow!("oldStr cannot be empty"));
+            return Err(AstrError::Validation("oldStr cannot be empty".to_string()));
         }
 
         let started_at = Instant::now();
@@ -260,7 +259,7 @@ mod tests {
             .await
             .expect_err("editFile should fail");
 
-        assert!(err.to_string().contains("editFile interrupted"));
+        assert!(err.to_string().contains("cancelled"));
     }
 
     #[tokio::test]

@@ -1,6 +1,5 @@
 use crate::tools::fs_common::{check_cancel, resolve_path, write_text_file};
-use anyhow::{Context, Result};
-use astrcode_core::{Tool, ToolContext, ToolDefinition, ToolExecutionResult};
+use astrcode_core::{AstrError, Result, Tool, ToolContext, ToolDefinition, ToolExecutionResult};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
@@ -46,8 +45,8 @@ impl Tool for WriteFileTool {
     ) -> Result<ToolExecutionResult> {
         check_cancel(&ctx.cancel, "writeFile")?;
 
-        let args: WriteFileArgs =
-            serde_json::from_value(args).context("invalid args for writeFile")?;
+        let args: WriteFileArgs = serde_json::from_value(args)
+            .map_err(|e| AstrError::parse("invalid args for writeFile", e))?;
         let started_at = Instant::now();
         let path = resolve_path(ctx, &args.path)?;
         let bytes = write_text_file(&path, &args.content, args.create_dirs).await?;
@@ -196,7 +195,7 @@ mod tests {
             .await
             .expect_err("writeFile should fail");
 
-        assert!(err.to_string().contains("writeFile interrupted"));
+        assert!(err.to_string().contains("cancelled"));
     }
 
     #[tokio::test]

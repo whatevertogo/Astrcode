@@ -3,8 +3,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::tools::fs_common::{check_cancel, resolve_path};
-use anyhow::{Context, Result};
-use astrcode_core::{Tool, ToolContext, ToolDefinition, ToolExecutionResult};
+use astrcode_core::{AstrError, Result, Tool, ToolContext, ToolDefinition, ToolExecutionResult};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
@@ -46,7 +45,8 @@ impl Tool for ListDirTool {
     ) -> Result<ToolExecutionResult> {
         check_cancel(&ctx.cancel, "listDir")?;
 
-        let args: ListDirArgs = serde_json::from_value(args).context("invalid args for listDir")?;
+        let args: ListDirArgs = serde_json::from_value(args)
+            .map_err(|e| AstrError::parse("invalid args for listDir", e))?;
         let started_at = Instant::now();
         let path = match args.path {
             Some(path) => resolve_path(ctx, &path)?,
@@ -55,9 +55,9 @@ impl Tool for ListDirTool {
         let max_entries = args.max_entries.unwrap_or(200);
 
         let mut entries = Vec::new();
-        for entry in fs::read_dir(&path)
-            .with_context(|| format!("failed reading directory '{}'", path.display()))?
-        {
+        let read_dir = fs::read_dir(&path)
+            .map_err(|e| AstrError::io(format!("failed reading directory '{}'", path.display()), e))?;
+        for entry in read_dir {
             if entries.len() >= max_entries {
                 break;
             }
@@ -74,7 +74,8 @@ impl Tool for ListDirTool {
             tool_call_id,
             tool_name: "listDir".to_string(),
             ok: true,
-            output: serde_json::to_string(&entries)?,
+            output: serde_json::to_string(&entries)
+                .map_err(|e| AstrError::parse("failed to serialize listDir output", e))?,
             error: None,
             metadata: Some(json!({
                 "path": path,

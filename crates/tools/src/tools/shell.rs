@@ -6,8 +6,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::tools::fs_common::{check_cancel, resolve_path};
-use anyhow::{anyhow, Context, Result};
-use astrcode_core::{Tool, ToolContext, ToolDefinition, ToolExecutionResult};
+use astrcode_core::{AstrError, Result, Tool, ToolContext, ToolDefinition, ToolExecutionResult};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
@@ -58,10 +57,10 @@ impl Tool for ShellTool {
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult> {
         check_cancel(&ctx.cancel, "shell")?;
-        let args: ShellArgs =
-            serde_json::from_value(args).context("invalid args for shell tool")?;
+        let args: ShellArgs = serde_json::from_value(args)
+            .map_err(|e| AstrError::parse("invalid args for shell tool", e))?;
         if args.command.trim().is_empty() {
-            return Err(anyhow!("shell command cannot be empty"));
+            return Err(AstrError::Validation("shell command cannot be empty".to_string()));
         }
 
         let spec = command_spec(args.shell.as_deref(), &args.command);
@@ -73,52 +72,54 @@ impl Tool for ShellTool {
 
         let mut child = Command::new(&spec.program)
             .args(&spec.args)
-            .current_dir(cwd)
+            .current_dir(&cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .context("failed to spawn shell command")?;
+            .map_err(|e| AstrError::io("failed to spawn shell command", e))?;
 
-        let mut stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow!("failed to capture stdout"))?;
-        let mut stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| anyhow!("failed to capture stderr"))?;
+        let mut stdout = child.stdout.take().ok_or_else(|| {
+            AstrError::Internal("failed to capture stdout".to_string())
+        })?;
+        let mut stderr = child.stderr.take().ok_or_else(|| {
+            AstrError::Internal("failed to capture stderr".to_string())
+        })?;
 
         let stdout_task = thread::spawn(move || {
             let mut bytes = Vec::new();
             stdout.read_to_end(&mut bytes)?;
-            Result::<Vec<u8>>::Ok(bytes)
+            std::result::Result::<Vec<u8>, std::io::Error>::Ok(bytes)
         });
         let stderr_task = thread::spawn(move || {
             let mut bytes = Vec::new();
             stderr.read_to_end(&mut bytes)?;
-            Result::<Vec<u8>>::Ok(bytes)
+            std::result::Result::<Vec<u8>, std::io::Error>::Ok(bytes)
         });
         let status = loop {
             if ctx.cancel.is_cancelled() {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(anyhow!("shell command interrupted"));
+                return Err(AstrError::Cancelled);
             }
 
-            if let Some(status) = child.try_wait().context("failed to wait shell command")? {
-                break status;
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {}
+                Err(e) => return Err(AstrError::io("failed to wait shell command", e)),
             }
 
             thread::sleep(Duration::from_millis(25));
         };
 
-        let stdout = stdout_task
+        let stdout: Vec<u8> = stdout_task
             .join()
-            .map_err(|_| anyhow!("stdout reader thread panicked"))??;
-        let stderr = stderr_task
+            .map_err(|_| AstrError::Internal("stdout reader thread panicked".to_string()))?
+            .map_err(|e| AstrError::io("failed to read stdout", e))?;
+        let stderr: Vec<u8> = stderr_task
             .join()
-            .map_err(|_| anyhow!("stderr reader thread panicked"))??;
+            .map_err(|_| AstrError::Internal("stderr reader thread panicked".to_string()))?
+            .map_err(|e| AstrError::io("failed to read stderr", e))?;
 
         let stdout_text = String::from_utf8_lossy(&stdout).to_string();
         let stderr_text = String::from_utf8_lossy(&stderr).to_string();

@@ -85,13 +85,12 @@ impl ToolRegistry {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
     use async_trait::async_trait;
     use serde_json::json;
 
     use super::{ToolRegistry, ToolRegistryBuilder};
     use astrcode_core::{
-        CancelToken, Tool, ToolCallRequest, ToolContext, ToolDefinition, ToolExecutionResult,
+        CancelToken, Result, Tool, ToolCallRequest, ToolContext, ToolDefinition, ToolExecutionResult,
     };
 
     struct FakeTool;

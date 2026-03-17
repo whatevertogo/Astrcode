@@ -9,7 +9,7 @@ use dashmap::DashMap;
 use tokio::sync::{broadcast, Mutex};
 use uuid::Uuid;
 
-use astrcode_core::{AgentEvent, CancelToken, Phase, ToolCallEventResult};
+use astrcode_core::{AgentEvent, AstrError, CancelToken, Phase, ToolCallEventResult};
 
 use crate::agent_loop::AgentLoop;
 use crate::config::{
@@ -67,7 +67,7 @@ pub enum ServiceError {
     NotFound(String),
     Conflict(String),
     InvalidInput(String),
-    Internal(anyhow::Error),
+    Internal(AstrError),
 }
 
 impl Display for ServiceError {
@@ -83,9 +83,24 @@ impl Display for ServiceError {
 
 impl std::error::Error for ServiceError {}
 
+impl From<AstrError> for ServiceError {
+    fn from(value: AstrError) -> Self {
+        match &value {
+            AstrError::SessionNotFound(id) => Self::NotFound(format!("session not found: {}", id)),
+            AstrError::ProjectNotFound(id) => Self::NotFound(format!("project not found: {}", id)),
+            AstrError::TurnInProgress(id) => Self::Conflict(format!("turn already in progress: {}", id)),
+            AstrError::Validation(msg) => Self::InvalidInput(msg.clone()),
+            AstrError::InvalidSessionId(id) => Self::InvalidInput(format!("invalid session id: {}", id)),
+            AstrError::MissingApiKey(profile) => Self::InvalidInput(format!("missing api key for profile: {}", profile)),
+            AstrError::MissingBaseUrl(profile) => Self::InvalidInput(format!("missing base url for profile: {}", profile)),
+            _ => Self::Internal(value),
+        }
+    }
+}
+
 impl From<anyhow::Error> for ServiceError {
     fn from(value: anyhow::Error) -> Self {
-        Self::Internal(value)
+        Self::Internal(AstrError::Internal(value.to_string()))
     }
 }
 
@@ -287,7 +302,7 @@ impl AgentService {
             let mut guard = session
                 .cancel
                 .lock()
-                .map_err(|_| ServiceError::Internal(anyhow!("session cancel lock poisoned")))?;
+                .map_err(|_| ServiceError::Internal(AstrError::Internal("session cancel lock poisoned".to_string())))?;
             *guard = cancel.clone();
         }
 
@@ -423,10 +438,10 @@ impl AgentService {
         let working_dir = match &first.event {
             StorageEvent::SessionStart { working_dir, .. } => PathBuf::from(working_dir),
             _ => {
-                return Err(ServiceError::Internal(anyhow!(
+                return Err(ServiceError::Internal(AstrError::Internal(format!(
                     "session '{}' is missing sessionStart",
                     session_id
-                )))
+                ))))
             }
         };
         let phase = stored
@@ -474,7 +489,7 @@ fn normalize_working_dir(working_dir: PathBuf) -> ServiceResult<PathBuf> {
         working_dir
     } else {
         std::env::current_dir()
-            .map_err(|error| ServiceError::Internal(anyhow!(error)))?
+            .map_err(|error| ServiceError::Internal(AstrError::io("failed to get current directory", error)))?
             .join(working_dir)
     };
 

@@ -3,8 +3,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::tools::fs_common::{check_cancel, resolve_path};
-use anyhow::{Context, Result};
-use astrcode_core::{Tool, ToolContext, ToolDefinition, ToolExecutionResult};
+use astrcode_core::{AstrError, Result, Tool, ToolContext, ToolDefinition, ToolExecutionResult};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
@@ -46,14 +45,14 @@ impl Tool for ReadFileTool {
     ) -> Result<ToolExecutionResult> {
         check_cancel(&ctx.cancel, "readFile")?;
 
-        let args: ReadFileArgs =
-            serde_json::from_value(args).context("invalid args for readFile")?;
+        let args: ReadFileArgs = serde_json::from_value(args)
+            .map_err(|e| AstrError::parse("invalid args for readFile", e))?;
         let started_at = Instant::now();
         let max_bytes = args.max_bytes.unwrap_or(64 * 1024);
         let path = resolve_path(ctx, &args.path)?;
 
-        let bytes =
-            fs::read(&path).with_context(|| format!("failed reading file '{}'", path.display()))?;
+        let bytes = fs::read(&path)
+            .map_err(|e| AstrError::io(format!("failed reading file '{}'", path.display()), e))?;
 
         let truncated = bytes.len() > max_bytes;
         let content_bytes = if truncated {

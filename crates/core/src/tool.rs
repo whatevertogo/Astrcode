@@ -1,10 +1,9 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::{CancelToken, ToolDefinition, ToolExecutionResult};
+use crate::{CancelToken, Result, ToolDefinition, ToolExecutionResult};
 
 pub type SessionId = String;
 

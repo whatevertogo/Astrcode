@@ -101,6 +101,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 1.0.69",
  "tokio",
  "uuid",
 ]
@@ -109,10 +110,10 @@ dependencies = [
 name = "astrcode-core"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "serde",
  "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -133,6 +134,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 1.0.69",
  "tokio",
  "tower",
  "tower-http",
@@ -142,7 +144,6 @@ dependencies = [
 name = "astrcode-tools"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "astrcode-core",
  "async-trait",
  "glob",
@@ -151,6 +152,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 1.0.69",
  "tokio",
  "walkdir",
 ]

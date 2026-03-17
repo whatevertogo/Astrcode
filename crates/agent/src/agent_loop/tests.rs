@@ -2,8 +2,8 @@ use std::collections::VecDeque;
 use std::fs;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{anyhow, Result};
-use astrcode_core::{CancelToken, Phase, Tool, ToolContext};
+use anyhow::{anyhow, Result as AnyhowResult};
+use astrcode_core::{AstrError, CancelToken, Phase, Result, Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::json;
 use tokio::time::{sleep, Duration};
@@ -37,7 +37,7 @@ struct ScriptedProvider {
 
 #[async_trait]
 impl LlmProvider for ScriptedProvider {
-    async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
+    async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> AnyhowResult<LlmOutput> {
         if self.delay > Duration::from_millis(0) {
             tokio::select! {
                 _ = crate::cancel::cancelled(request.cancel.clone()) => return Err(anyhow!("cancelled")),
@@ -80,14 +80,14 @@ struct StaticProviderFactory {
 }
 
 impl ProviderFactory for StaticProviderFactory {
-    fn build(&self) -> Result<Arc<dyn LlmProvider>> {
+    fn build(&self) -> AnyhowResult<Arc<dyn LlmProvider>> {
         Ok(self.provider.clone())
     }
 }
 
 #[async_trait]
 impl LlmProvider for StreamingProvider {
-    async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
+    async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> AnyhowResult<LlmOutput> {
         let Some(sink) = sink else {
             return Ok(self.response.clone());
         };
@@ -107,7 +107,7 @@ impl LlmProvider for StreamingProvider {
 
 #[async_trait]
 impl LlmProvider for RecordingProvider {
-    async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
+    async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> AnyhowResult<LlmOutput> {
         self.requests
             .lock()
             .expect("lock should work")
@@ -151,7 +151,7 @@ impl Tool for SlowTool {
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult> {
         tokio::select! {
-            _ = crate::cancel::cancelled(ctx.cancel.clone()) => Err(anyhow!("tool cancelled")),
+            _ = crate::cancel::cancelled(ctx.cancel.clone()) => Err(AstrError::Cancelled),
             _ = sleep(Duration::from_millis(250)) => Ok(ToolExecutionResult {
                 tool_call_id,
                 tool_name: "slowTool".to_string(),

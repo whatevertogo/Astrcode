@@ -1,5 +1,4 @@
-use anyhow::{anyhow, Context, Result};
-use astrcode_core::{CancelToken, Tool, ToolContext, ToolDefinition, ToolExecutionResult};
+use astrcode_core::{AstrError, CancelToken, Result, Tool, ToolContext, ToolDefinition, ToolExecutionResult};
 use async_trait::async_trait;
 use log::warn;
 use regex::RegexBuilder;
@@ -64,13 +63,17 @@ impl Tool for GrepTool {
     ) -> Result<ToolExecutionResult> {
         check_cancel(&ctx.cancel, "grep")?;
 
-        let args: GrepArgs = serde_json::from_value(args).context("invalid args for grep")?;
+        let args: GrepArgs = serde_json::from_value(args)
+            .map_err(|e| AstrError::parse("invalid args for grep", e))?;
         let path = resolve_path(ctx, &args.path)?;
         let started_at = Instant::now();
         let regex = RegexBuilder::new(&args.pattern)
             .case_insensitive(args.case_insensitive)
             .build()
-            .map_err(|error| anyhow!("invalid regex: {error}"))?;
+            .map_err(|error| AstrError::ToolError {
+                name: "grep".to_string(),
+                reason: format!("invalid regex: {}", error),
+            })?;
         let max_matches = args.max_matches.unwrap_or(100);
         let mut matches = Vec::new();
         let mut truncated = false;
@@ -136,17 +139,20 @@ fn collect_candidate_files(
     }
 
     if !path.is_dir() {
-        return Err(anyhow!(
+        return Err(AstrError::Validation(format!(
             "path is neither a file nor directory: {}",
             path.display()
-        ));
+        )));
     }
 
     if recursive {
         let mut files = Vec::new();
         for entry in WalkDir::new(path) {
             check_cancel(cancel, "grep")?;
-            let entry = entry.with_context(|| format!("failed walking '{}'", path.display()))?;
+            let entry = entry.map_err(|e| AstrError::io(
+                format!("failed walking '{}'", path.display()),
+                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+            ))?;
             if entry.file_type().is_file() {
                 files.push(entry.path().to_path_buf());
             }
@@ -155,15 +161,12 @@ fn collect_candidate_files(
     }
 
     let mut files = Vec::new();
-    for entry in std::fs::read_dir(path)
-        .with_context(|| format!("failed reading directory '{}'", path.display()))?
-    {
+    let read_dir = std::fs::read_dir(path)
+        .map_err(|e| AstrError::io(format!("failed reading directory '{}'", path.display()), e))?;
+    for entry in read_dir {
         check_cancel(cancel, "grep")?;
-        let entry =
-            entry.with_context(|| format!("failed reading directory '{}'", path.display()))?;
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("failed reading file type '{}'", entry.path().display()))?;
+        let entry = entry?;
+        let file_type = entry.file_type()?;
         if file_type.is_file() {
             files.push(entry.path());
         }
@@ -343,7 +346,7 @@ mod tests {
             .await
             .expect_err("grep should fail");
 
-        assert!(err.to_string().contains("grep interrupted"));
+        assert!(err.to_string().contains("cancelled"));
     }
 
     #[test]
@@ -362,7 +365,7 @@ mod tests {
         let err = collect_candidate_files(temp.path(), true, &cancel.cancel)
             .expect_err("recursive walk should fail when cancelled");
 
-        assert!(err.to_string().contains("grep interrupted"));
+        assert!(err.to_string().contains("cancelled"));
     }
 
     #[tokio::test]
