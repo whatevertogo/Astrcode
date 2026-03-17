@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
 
 use anyhow::{anyhow, Context, Result};
+use async_trait::async_trait;
 use chrono::Utc;
 use dashmap::DashMap;
 use tokio::sync::{broadcast, Mutex};
@@ -57,9 +59,13 @@ pub struct SessionReplay {
     pub receiver: broadcast::Receiver<SessionEventRecord>,
 }
 
+#[async_trait]
 pub trait SessionReplaySource {
-    fn replay(&self, session_id: &str, last_event_id: Option<&str>)
-        -> ServiceResult<SessionReplay>;
+    async fn replay(
+        &self,
+        session_id: &str,
+        last_event_id: Option<&str>,
+    ) -> ServiceResult<SessionReplay>;
 }
 
 #[derive(Debug)]
@@ -88,11 +94,19 @@ impl From<AstrError> for ServiceError {
         match &value {
             AstrError::SessionNotFound(id) => Self::NotFound(format!("session not found: {}", id)),
             AstrError::ProjectNotFound(id) => Self::NotFound(format!("project not found: {}", id)),
-            AstrError::TurnInProgress(id) => Self::Conflict(format!("turn already in progress: {}", id)),
+            AstrError::TurnInProgress(id) => {
+                Self::Conflict(format!("turn already in progress: {}", id))
+            }
             AstrError::Validation(msg) => Self::InvalidInput(msg.clone()),
-            AstrError::InvalidSessionId(id) => Self::InvalidInput(format!("invalid session id: {}", id)),
-            AstrError::MissingApiKey(profile) => Self::InvalidInput(format!("missing api key for profile: {}", profile)),
-            AstrError::MissingBaseUrl(profile) => Self::InvalidInput(format!("missing base url for profile: {}", profile)),
+            AstrError::InvalidSessionId(id) => {
+                Self::InvalidInput(format!("invalid session id: {}", id))
+            }
+            AstrError::MissingApiKey(profile) => {
+                Self::InvalidInput(format!("missing api key for profile: {}", profile))
+            }
+            AstrError::MissingBaseUrl(profile) => {
+                Self::InvalidInput(format!("missing base url for profile: {}", profile))
+            }
             _ => Self::Internal(value),
         }
     }
@@ -117,12 +131,13 @@ impl SessionWriter {
         }
     }
 
-    fn append(&self, event: &StorageEvent) -> Result<StoredEvent> {
-        let mut guard = self
-            .inner
-            .lock()
-            .map_err(|_| anyhow!("session writer lock poisoned"))?;
+    fn append_blocking(&self, event: &StorageEvent) -> Result<StoredEvent> {
+        let mut guard = lock_anyhow(&self.inner, "session writer")?;
         guard.append(event)
+    }
+
+    async fn append(self: Arc<Self>, event: StorageEvent) -> Result<StoredEvent> {
+        spawn_blocking_anyhow("append session event", move || self.append_blocking(&event)).await
     }
 }
 
@@ -153,6 +168,7 @@ pub struct AgentService {
     sessions: DashMap<String, Arc<SessionState>>,
     loop_: Arc<AgentLoop>,
     config: Mutex<crate::config::Config>,
+    session_load_lock: Mutex<()>,
 }
 
 impl AgentService {
@@ -163,6 +179,7 @@ impl AgentService {
             sessions: DashMap::new(),
             loop_: Arc::new(loop_),
             config: Mutex::new(config),
+            session_load_lock: Mutex::new(()),
         })
     }
 
@@ -197,31 +214,46 @@ impl AgentService {
     }
 
     pub async fn current_config_path(&self) -> ServiceResult<PathBuf> {
-        config_path().map_err(ServiceError::from)
+        spawn_blocking_service("resolve config path", || {
+            config_path().map_err(ServiceError::from)
+        })
+        .await
     }
 
     pub async fn list_sessions_with_meta(&self) -> ServiceResult<Vec<SessionMeta>> {
-        EventLog::list_sessions_with_meta().map_err(ServiceError::from)
+        spawn_blocking_service("list sessions with metadata", || {
+            EventLog::list_sessions_with_meta().map_err(ServiceError::from)
+        })
+        .await
     }
 
     pub async fn list_sessions(&self) -> ServiceResult<Vec<String>> {
-        EventLog::list_sessions().map_err(ServiceError::from)
+        spawn_blocking_service("list sessions", || {
+            EventLog::list_sessions().map_err(ServiceError::from)
+        })
+        .await
     }
 
     pub async fn create_session(
         &self,
         working_dir: impl Into<PathBuf>,
     ) -> ServiceResult<SessionMeta> {
-        let working_dir = normalize_working_dir(working_dir.into())?;
-        let session_id = generate_session_id();
-        let mut log = EventLog::create(&session_id).map_err(ServiceError::from)?;
-        let created_at = Utc::now();
-        let session_start = StorageEvent::SessionStart {
-            session_id: session_id.clone(),
-            timestamp: created_at,
-            working_dir: working_dir.to_string_lossy().to_string(),
-        };
-        let _ = log.append(&session_start).map_err(ServiceError::from)?;
+        let working_dir = working_dir.into();
+        let (session_id, working_dir, created_at, log) =
+            spawn_blocking_service("create session", move || {
+                let working_dir = normalize_working_dir(working_dir)?;
+                let session_id = generate_session_id();
+                let mut log = EventLog::create(&session_id).map_err(ServiceError::from)?;
+                let created_at = Utc::now();
+                let session_start = StorageEvent::SessionStart {
+                    session_id: session_id.clone(),
+                    timestamp: created_at,
+                    working_dir: working_dir.to_string_lossy().to_string(),
+                };
+                let _ = log.append(&session_start).map_err(ServiceError::from)?;
+                Ok((session_id, working_dir, created_at, log))
+            })
+            .await?;
 
         let state = Arc::new(SessionState::new(
             working_dir.clone(),
@@ -245,14 +277,15 @@ impl AgentService {
         &self,
         session_id: &str,
     ) -> ServiceResult<Vec<SessionMessage>> {
-        Ok(self.load_session_snapshot(session_id)?.0)
+        Ok(self.load_session_snapshot(session_id).await?.0)
     }
 
-    pub fn load_session_snapshot(
+    pub async fn load_session_snapshot(
         &self,
         session_id: &str,
     ) -> ServiceResult<(Vec<SessionMessage>, Option<String>)> {
-        let events = EventLog::load(session_id).map_err(ServiceError::from)?;
+        let session_id = normalize_session_id(session_id);
+        let events = load_events(&session_id).await?;
         let cursor = replay_records(&events, None)
             .last()
             .map(|record| record.event_id.clone());
@@ -263,11 +296,18 @@ impl AgentService {
         let normalized = normalize_session_id(session_id);
         self.interrupt(&normalized).await?;
         self.sessions.remove(&normalized);
-        EventLog::delete_session(&normalized).map_err(ServiceError::from)
+        spawn_blocking_service("delete session", move || {
+            EventLog::delete_session(&normalized).map_err(ServiceError::from)
+        })
+        .await
     }
 
     pub async fn delete_project(&self, working_dir: &str) -> ServiceResult<DeleteProjectResult> {
-        let metas = EventLog::list_sessions_with_meta().map_err(ServiceError::from)?;
+        let working_dir = working_dir.to_string();
+        let metas = spawn_blocking_service("list project sessions", || {
+            EventLog::list_sessions_with_meta().map_err(ServiceError::from)
+        })
+        .await?;
         let targets = metas
             .into_iter()
             .filter(|meta| meta.working_dir == working_dir)
@@ -279,7 +319,12 @@ impl AgentService {
             self.sessions.remove(session_id);
         }
 
-        EventLog::delete_sessions_by_working_dir(working_dir).map_err(ServiceError::from)
+        let delete_working_dir = working_dir.clone();
+        spawn_blocking_service("delete project sessions", move || {
+            EventLog::delete_sessions_by_working_dir(&delete_working_dir)
+                .map_err(ServiceError::from)
+        })
+        .await
     }
 
     pub async fn submit_prompt(
@@ -299,10 +344,7 @@ impl AgentService {
         let turn_id = Uuid::new_v4().to_string();
         let cancel = CancelToken::new();
         {
-            let mut guard = session
-                .cancel
-                .lock()
-                .map_err(|_| ServiceError::Internal(AstrError::Internal("session cancel lock poisoned".to_string())))?;
+            let mut guard = lock_service(&session.cancel, "session cancel")?;
             *guard = cancel.clone();
         }
 
@@ -313,9 +355,7 @@ impl AgentService {
 
         let accepted_turn_id = turn_id.clone();
         tokio::spawn(async move {
-            let initial_phase = state
-                .phase
-                .lock()
+            let initial_phase = lock_anyhow(&state.phase, "session phase")
                 .map(|guard| guard.clone())
                 .unwrap_or(Phase::Idle);
             let mut translator = EventTranslator::new(initial_phase);
@@ -326,18 +366,20 @@ impl AgentService {
                 timestamp: Utc::now(),
             };
 
-            let task_result = append_and_broadcast(&state, &user_event, &mut translator)
-                .and_then(|_| EventLog::load(&session_id_for_task))
-                .map(|events| {
-                    events
-                        .into_iter()
-                        .map(|stored| stored.event)
-                        .collect::<Vec<_>>()
-                })
-                .and_then(|events| {
-                    let projected = project(&events);
-                    Ok(projected)
-                });
+            let task_result = match append_and_broadcast(&state, &user_event, &mut translator).await
+            {
+                Ok(()) => load_events(&session_id_for_task)
+                    .await
+                    .map(|events| {
+                        events
+                            .into_iter()
+                            .map(|stored| stored.event)
+                            .collect::<Vec<_>>()
+                    })
+                    .map(|events| project(&events))
+                    .map_err(|error| anyhow!(error)),
+                Err(error) => Err(error),
+            };
 
             let result = match task_result {
                 Ok(projected) => loop_
@@ -345,7 +387,8 @@ impl AgentService {
                         &projected,
                         &turn_id,
                         &mut |event| {
-                            let _ = append_and_broadcast(&state, &event, &mut translator);
+                            append_and_broadcast_blocking(&state, &event, &mut translator)
+                                .map_err(|error| AstrError::Internal(error.to_string()))
                         },
                         cancel.clone(),
                     )
@@ -359,18 +402,18 @@ impl AgentService {
                     turn_id: Some(turn_id.clone()),
                     message: error.to_string(),
                 };
-                let _ = append_and_broadcast(&state, &error_event, &mut translator);
+                let _ = append_and_broadcast(&state, &error_event, &mut translator).await;
                 let turn_done = StorageEvent::TurnDone {
                     turn_id: Some(turn_id.clone()),
                     timestamp: Utc::now(),
                 };
-                let _ = append_and_broadcast(&state, &turn_done, &mut translator);
+                let _ = append_and_broadcast(&state, &turn_done, &mut translator).await;
             }
 
-            if let Ok(mut phase) = state.phase.lock() {
+            if let Ok(mut phase) = lock_anyhow(&state.phase, "session phase") {
                 *phase = translator.phase;
             }
-            if let Ok(mut guard) = state.cancel.lock() {
+            if let Ok(mut guard) = lock_anyhow(&state.cancel, "session cancel") {
                 *guard = CancelToken::new();
             }
             state.running.store(false, Ordering::SeqCst);
@@ -384,7 +427,7 @@ impl AgentService {
     pub async fn interrupt(&self, session_id: &str) -> ServiceResult<()> {
         let session_id = normalize_session_id(session_id);
         if let Some(session) = self.sessions.get(&session_id) {
-            if let Ok(cancel) = session.cancel.lock() {
+            if let Ok(cancel) = lock_anyhow(&session.cancel, "session cancel") {
                 cancel.cancel();
             }
         }
@@ -392,7 +435,10 @@ impl AgentService {
     }
 
     pub async fn open_config_in_editor(&self) -> ServiceResult<()> {
-        open_config_in_editor().map_err(ServiceError::from)
+        spawn_blocking_service("open config in editor", || {
+            open_config_in_editor().map_err(ServiceError::from)
+        })
+        .await
     }
 
     pub async fn test_connection(
@@ -414,41 +460,49 @@ impl AgentService {
     }
 
     async fn ensure_session_loaded(&self, session_id: &str) -> ServiceResult<Arc<SessionState>> {
-        self.load_or_get_session_state(session_id)
-    }
-
-    fn load_or_get_session_state(&self, session_id: &str) -> ServiceResult<Arc<SessionState>> {
         if let Some(existing) = self.sessions.get(session_id) {
             return Ok(existing.clone());
         }
 
-        let stored = EventLog::load(session_id).map_err(|error| match error.to_string() {
-            message if message.contains("session file not found") => {
-                ServiceError::NotFound(message)
-            }
-            _ => ServiceError::from(error),
-        })?;
-        let Some(first) = stored.first() else {
-            return Err(ServiceError::NotFound(format!(
-                "session '{}' is empty",
-                session_id
-            )));
-        };
+        let _guard = self.session_load_lock.lock().await;
+        if let Some(existing) = self.sessions.get(session_id) {
+            return Ok(existing.clone());
+        }
 
-        let working_dir = match &first.event {
-            StorageEvent::SessionStart { working_dir, .. } => PathBuf::from(working_dir),
-            _ => {
-                return Err(ServiceError::Internal(AstrError::Internal(format!(
-                    "session '{}' is missing sessionStart",
-                    session_id
-                ))))
-            }
-        };
-        let phase = stored
-            .last()
-            .map(|event| phase_of_storage_event(&event.event))
-            .unwrap_or(Phase::Idle);
-        let log = EventLog::open(session_id).map_err(ServiceError::from)?;
+        let session_id_owned = session_id.to_string();
+        let (working_dir, phase, log) = spawn_blocking_service("load session state", move || {
+            let stored =
+                EventLog::load(&session_id_owned).map_err(|error| match error.to_string() {
+                    message if message.contains("session file not found") => {
+                        ServiceError::NotFound(message)
+                    }
+                    _ => ServiceError::from(error),
+                })?;
+            let Some(first) = stored.first() else {
+                return Err(ServiceError::NotFound(format!(
+                    "session '{}' is empty",
+                    session_id_owned
+                )));
+            };
+
+            let working_dir = match &first.event {
+                StorageEvent::SessionStart { working_dir, .. } => PathBuf::from(working_dir),
+                _ => {
+                    return Err(ServiceError::Internal(AstrError::Internal(format!(
+                        "session '{}' is missing sessionStart",
+                        session_id_owned
+                    ))))
+                }
+            };
+            let phase = stored
+                .last()
+                .map(|event| phase_of_storage_event(&event.event))
+                .unwrap_or(Phase::Idle);
+            let log = EventLog::open(&session_id_owned).map_err(ServiceError::from)?;
+            Ok((working_dir, phase, log))
+        })
+        .await?;
+
         let state = Arc::new(SessionState::new(
             working_dir,
             phase,
@@ -459,18 +513,19 @@ impl AgentService {
     }
 }
 
+#[async_trait]
 impl SessionReplaySource for AgentService {
-    fn replay(
+    async fn replay(
         &self,
         session_id: &str,
         last_event_id: Option<&str>,
     ) -> ServiceResult<SessionReplay> {
         let session_id = normalize_session_id(session_id);
-        let state = self.load_or_get_session_state(&session_id)?;
+        let state = self.ensure_session_loaded(&session_id).await?;
 
         let receiver = state.broadcaster.subscribe();
-        let history = EventLog::load(&session_id)
-            .map_err(ServiceError::from)
+        let history = load_events(&session_id)
+            .await
             .map(|events| replay_records(&events, last_event_id))?;
         Ok(SessionReplay { history, receiver })
     }
@@ -489,7 +544,9 @@ fn normalize_working_dir(working_dir: PathBuf) -> ServiceResult<PathBuf> {
         working_dir
     } else {
         std::env::current_dir()
-            .map_err(|error| ServiceError::Internal(AstrError::io("failed to get current directory", error)))?
+            .map_err(|error| {
+                ServiceError::Internal(AstrError::io("failed to get current directory", error))
+            })?
             .join(working_dir)
     };
 
@@ -532,10 +589,15 @@ fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionMessage> {
                 content: content.clone(),
                 timestamp: timestamp.to_rfc3339(),
             }),
-            StorageEvent::AssistantFinal { content, .. } if !content.is_empty() => {
+            StorageEvent::AssistantFinal {
+                content, timestamp, ..
+            } if !content.is_empty() => {
                 messages.push(SessionMessage::Assistant {
                     content: content.clone(),
-                    timestamp: Utc::now().to_rfc3339(),
+                    timestamp: timestamp
+                        .as_ref()
+                        .map(|value| value.to_rfc3339())
+                        .unwrap_or_else(|| Utc::now().to_rfc3339()),
                 });
             }
             StorageEvent::ToolCall {
@@ -584,17 +646,27 @@ fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionMessage> {
     messages
 }
 
-fn append_and_broadcast(
+async fn append_and_broadcast(
     session: &SessionState,
     event: &StorageEvent,
     translator: &mut EventTranslator,
 ) -> Result<()> {
-    let stored = session.writer.append(event)?;
+    let stored = session.writer.clone().append(event.clone()).await?;
     let records = translator.translate(&stored);
     for record in records {
         let _ = session.broadcaster.send(record);
     }
     Ok(())
+}
+
+fn append_and_broadcast_blocking(
+    session: &SessionState,
+    event: &StorageEvent,
+    translator: &mut EventTranslator,
+) -> Result<()> {
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(append_and_broadcast(session, event, translator))
+    })
 }
 
 fn replay_records(events: &[StoredEvent], last_event_id: Option<&str>) -> Vec<SessionEventRecord> {
@@ -638,10 +710,56 @@ fn phase_of_storage_event(event: &StorageEvent) -> Phase {
     }
 }
 
+fn lock_service<'a, T>(
+    mutex: &'a StdMutex<T>,
+    name: &'static str,
+) -> ServiceResult<StdMutexGuard<'a, T>> {
+    mutex
+        .lock()
+        .map_err(|_| ServiceError::Internal(AstrError::LockPoisoned(name.to_string())))
+}
+
+fn lock_anyhow<'a, T>(mutex: &'a StdMutex<T>, name: &'static str) -> Result<StdMutexGuard<'a, T>> {
+    mutex
+        .lock()
+        .map_err(|_| anyhow!(AstrError::LockPoisoned(name.to_string())))
+}
+
+async fn spawn_blocking_service<T, F>(label: &'static str, work: F) -> ServiceResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> ServiceResult<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(work).await.map_err(|error| {
+        ServiceError::Internal(AstrError::Internal(format!(
+            "blocking task '{label}' failed: {error}"
+        )))
+    })?
+}
+
+async fn spawn_blocking_anyhow<T, F>(label: &'static str, work: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| anyhow!("blocking task '{label}' failed: {error}"))?
+}
+
+async fn load_events(session_id: &str) -> ServiceResult<Vec<StoredEvent>> {
+    let session_id = session_id.to_string();
+    spawn_blocking_service("load session events", move || {
+        EventLog::load(&session_id).map_err(ServiceError::from)
+    })
+    .await
+}
+
 struct EventTranslator {
     phase: Phase,
     current_turn_id: Option<String>,
     legacy_turn_index: u64,
+    tool_call_names: HashMap<String, String>,
 }
 
 impl EventTranslator {
@@ -650,6 +768,7 @@ impl EventTranslator {
             phase,
             current_turn_id: None,
             legacy_turn_index: 0,
+            tool_call_names: HashMap::new(),
         }
     }
 
@@ -748,6 +867,8 @@ impl EventTranslator {
                     );
                 }
                 if let Some(turn_id) = turn_id.clone() {
+                    self.tool_call_names
+                        .insert(tool_call_id.clone(), tool_name.clone());
                     push(
                         AgentEvent::ToolCallStart {
                             turn_id,
@@ -768,12 +889,16 @@ impl EventTranslator {
                 ..
             } => {
                 if let Some(turn_id) = turn_id.clone() {
+                    let tool_name = self
+                        .tool_call_names
+                        .remove(tool_call_id)
+                        .unwrap_or_default();
                     push(
                         AgentEvent::ToolCallResult {
                             turn_id,
                             result: ToolCallEventResult {
                                 tool_call_id: tool_call_id.clone(),
-                                tool_name: String::new(),
+                                tool_name,
                                 ok: *success,
                                 output: output.clone(),
                                 error: None,
@@ -852,7 +977,8 @@ impl EventTranslator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
+    use crate::test_support::TestEnvGuard;
+    use chrono::{DateTime, Utc};
 
     #[test]
     fn empty_assistant_final_only_updates_phase() {
@@ -862,6 +988,7 @@ mod tests {
             event: StorageEvent::AssistantFinal {
                 turn_id: Some("turn-1".to_string()),
                 content: String::new(),
+                timestamp: None,
             },
         };
 
@@ -885,6 +1012,7 @@ mod tests {
             event: StorageEvent::AssistantFinal {
                 turn_id: Some("turn-2".to_string()),
                 content: "hello".to_string(),
+                timestamp: None,
             },
         };
 
@@ -924,6 +1052,7 @@ mod tests {
                 event: StorageEvent::AssistantFinal {
                     turn_id: Some("turn-3".to_string()),
                     content: String::new(),
+                    timestamp: None,
                 },
             },
         ];
@@ -933,5 +1062,95 @@ mod tests {
         assert!(!records
             .iter()
             .any(|record| { matches!(record.event, AgentEvent::AssistantMessage { .. }) }));
+    }
+
+    #[test]
+    fn snapshot_keeps_assistant_timestamp_from_log() {
+        let expected = DateTime::parse_from_rfc3339("2026-03-17T01:02:03Z")
+            .expect("timestamp should parse")
+            .with_timezone(&Utc);
+        let events = vec![StoredEvent {
+            storage_seq: 1,
+            event: StorageEvent::AssistantFinal {
+                turn_id: Some("turn-4".to_string()),
+                content: "persisted".to_string(),
+                timestamp: Some(expected),
+            },
+        }];
+
+        let messages = convert_events_to_messages(&events);
+
+        assert!(matches!(
+            messages.as_slice(),
+            [SessionMessage::Assistant { timestamp, .. }]
+            if timestamp == &expected.to_rfc3339()
+        ));
+    }
+
+    #[test]
+    fn tool_call_result_keeps_tool_name() {
+        let mut translator = EventTranslator::new(Phase::Thinking);
+        let _ = translator.translate(&StoredEvent {
+            storage_seq: 1,
+            event: StorageEvent::ToolCall {
+                turn_id: Some("turn-5".to_string()),
+                tool_call_id: "call-1".to_string(),
+                tool_name: "grep".to_string(),
+                args: serde_json::json!({"pattern":"TODO"}),
+            },
+        });
+
+        let records = translator.translate(&StoredEvent {
+            storage_seq: 2,
+            event: StorageEvent::ToolResult {
+                turn_id: Some("turn-5".to_string()),
+                tool_call_id: "call-1".to_string(),
+                output: "ok".to_string(),
+                success: true,
+                duration_ms: 10,
+            },
+        });
+
+        assert!(matches!(
+            &records[0].event,
+            AgentEvent::ToolCallResult { result, .. }
+            if result.tool_name == "grep"
+        ));
+    }
+
+    #[tokio::test]
+    async fn ensure_session_loaded_reuses_single_state_under_concurrency() {
+        let _guard = TestEnvGuard::new();
+        let service = Arc::new(AgentService::new(ToolRegistry::builder().build()).unwrap());
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let meta = service
+            .create_session(temp_dir.path())
+            .await
+            .expect("session should be created");
+        service.sessions.remove(&meta.session_id);
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let service = service.clone();
+            let session_id = meta.session_id.clone();
+            handles.push(tokio::spawn(async move {
+                service
+                    .ensure_session_loaded(&session_id)
+                    .await
+                    .expect("session should load")
+            }));
+        }
+
+        let states = futures_util::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|result| result.expect("task should join"))
+            .collect::<Vec<_>>();
+
+        let first = Arc::as_ptr(&states[0]);
+        assert!(states
+            .iter()
+            .all(|state| std::ptr::eq(Arc::as_ptr(state), first)));
+        assert_eq!(service.sessions.len(), 1);
     }
 }

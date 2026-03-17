@@ -2,9 +2,7 @@ mod llm_cycle;
 mod tool_cycle;
 mod turn_runner;
 
-use anyhow::Result;
-use astrcode_core::CancelToken;
-use astrcode_core::ToolContext;
+use astrcode_core::{AstrError, CancelToken, Result, ToolContext};
 use chrono::Utc;
 
 use crate::events::StorageEvent;
@@ -41,7 +39,7 @@ impl AgentLoop {
         &self,
         state: &AgentState,
         turn_id: &str,
-        on_event: &mut impl FnMut(StorageEvent),
+        on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
         cancel: CancelToken,
     ) -> Result<()> {
         turn_runner::run_turn(self, state, turn_id, on_event, cancel).await
@@ -57,27 +55,37 @@ impl AgentLoop {
     }
 }
 
-pub(crate) fn finish_turn(turn_id: &str, on_event: &mut impl FnMut(StorageEvent)) {
+pub(crate) fn finish_turn(
+    turn_id: &str,
+    on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
+) -> Result<()> {
     on_event(StorageEvent::TurnDone {
         turn_id: Some(turn_id.to_string()),
         timestamp: Utc::now(),
-    });
+    })
 }
 
 pub(crate) fn finish_with_error(
     turn_id: &str,
     message: impl Into<String>,
-    on_event: &mut impl FnMut(StorageEvent),
-) {
+    on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
+) -> Result<()> {
     on_event(StorageEvent::Error {
         turn_id: Some(turn_id.to_string()),
         message: message.into(),
-    });
-    finish_turn(turn_id, on_event);
+    })?;
+    finish_turn(turn_id, on_event)
 }
 
-pub(crate) fn finish_interrupted(turn_id: &str, on_event: &mut impl FnMut(StorageEvent)) {
-    finish_with_error(turn_id, "interrupted", on_event);
+pub(crate) fn finish_interrupted(
+    turn_id: &str,
+    on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
+) -> Result<()> {
+    finish_with_error(turn_id, "interrupted", on_event)
+}
+
+pub(crate) fn internal_error(error: impl std::fmt::Display) -> AstrError {
+    AstrError::Internal(error.to_string())
 }
 
 #[cfg(test)]

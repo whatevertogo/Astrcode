@@ -11,15 +11,15 @@ use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
-use astrcode_agent::{
-    AgentService, PromptAccepted, ServiceError, SessionMessage, SessionReplaySource,
-};
 use crate::dto::{
     AgentEventEnvelope, AuthExchangeRequest, AuthExchangeResponse, ConfigView,
     CreateSessionRequest, CurrentModelInfoDto, DeleteProjectResultDto, ModelOptionDto, ProfileView,
     PromptAcceptedResponse, PromptRequest, SaveActiveSelectionRequest, SessionListItem,
     SessionMessageDto, TestConnectionRequest, TestResultDto,
+};
+use anyhow::{anyhow, Context, Result};
+use astrcode_agent::{
+    AgentService, PromptAccepted, ServiceError, SessionMessage, SessionReplaySource,
 };
 use astrcode_tools::tools::{
     edit_file::EditFileTool, find_files::FindFilesTool, grep::GrepTool, list_dir::ListDirTool,
@@ -380,6 +380,7 @@ async fn session_messages(
     let (messages, cursor) = state
         .service
         .load_session_snapshot(&session_id)
+        .await
         .map_err(ApiError::from)?;
     let payload = messages
         .into_iter()
@@ -481,8 +482,11 @@ async fn session_events(
     let mut replay = state
         .service
         .replay(&session_id, last_event_id.as_deref())
+        .await
         .map_err(ApiError::from)?;
     let mut last_sent = last_event_id.as_deref().and_then(parse_event_id);
+    let service = state.service.clone();
+    let session_id_for_stream = session_id.clone();
 
     let event_stream = stream! {
         for record in replay.history {
@@ -506,7 +510,24 @@ async fn session_events(
                     last_sent = Some(current_id);
                     yield Ok::<Event, Infallible>(to_sse_event(record));
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    let cursor = last_sent.map(format_event_id);
+                    match service
+                        .replay(&session_id_for_stream, cursor.as_deref())
+                        .await
+                    {
+                        Ok(recovered) => {
+                            for record in &recovered.history {
+                                if let Some(id) = parse_event_id(&record.event_id) {
+                                    last_sent = Some(id);
+                                }
+                                yield Ok::<Event, Infallible>(to_sse_event(record.clone()));
+                            }
+                            replay = recovered;
+                        }
+                        Err(_) => break,
+                    }
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
@@ -663,6 +684,10 @@ fn to_sse_event(record: astrcode_agent::SessionEventRecord) -> Event {
 fn parse_event_id(raw: &str) -> Option<(u64, u32)> {
     let (storage_seq, subindex) = raw.split_once('.')?;
     Some((storage_seq.parse().ok()?, subindex.parse().ok()?))
+}
+
+fn format_event_id((storage_seq, subindex): (u64, u32)) -> String {
+    format!("{storage_seq}.{subindex}")
 }
 
 fn build_config_view(

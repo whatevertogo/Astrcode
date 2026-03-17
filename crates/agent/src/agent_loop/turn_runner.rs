@@ -1,32 +1,36 @@
-use anyhow::Result;
-use astrcode_core::CancelToken;
+use astrcode_core::{CancelToken, Result};
 
 use crate::events::StorageEvent;
 use crate::projection::AgentState;
 use crate::prompt::{append_unique_tools, PromptComposer, PromptContext};
 use astrcode_core::LlmMessage;
 
-use super::{finish_interrupted, finish_turn, finish_with_error, llm_cycle, tool_cycle, AgentLoop};
+use super::{
+    finish_interrupted, finish_turn, finish_with_error, internal_error, llm_cycle, tool_cycle,
+    AgentLoop,
+};
 
 pub(crate) async fn run_turn(
     agent_loop: &AgentLoop,
     state: &AgentState,
     turn_id: &str,
-    on_event: &mut impl FnMut(StorageEvent),
+    on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
     cancel: CancelToken,
 ) -> Result<()> {
-    let provider = llm_cycle::build_provider(agent_loop.factory.clone()).await?;
+    let provider = llm_cycle::build_provider(agent_loop.factory.clone())
+        .await
+        .map_err(internal_error)?;
     let mut messages = state.messages.clone();
     let mut step_index = 0usize;
 
     loop {
         if reached_max_steps(agent_loop.max_steps, step_index) {
-            finish_turn(turn_id, on_event);
+            finish_turn(turn_id, on_event)?;
             return Ok(());
         }
 
         if cancel.is_cancelled() {
-            finish_interrupted(turn_id, on_event);
+            finish_interrupted(turn_id, on_event)?;
             return Ok(());
         }
 
@@ -58,9 +62,9 @@ pub(crate) async fn run_turn(
             Ok(output) => output,
             Err(error) => {
                 if cancel.is_cancelled() {
-                    finish_interrupted(turn_id, on_event);
+                    finish_interrupted(turn_id, on_event)?;
                 } else {
-                    finish_with_error(turn_id, error.to_string(), on_event);
+                    finish_with_error(turn_id, error.to_string(), on_event)?;
                 }
                 return Ok(());
             }
@@ -70,7 +74,8 @@ pub(crate) async fn run_turn(
             on_event(StorageEvent::AssistantFinal {
                 turn_id: Some(turn_id.to_string()),
                 content: output.content.clone(),
-            });
+                timestamp: Some(chrono::Utc::now()),
+            })?;
         }
 
         let tool_calls = output.tool_calls.clone();
@@ -80,7 +85,7 @@ pub(crate) async fn run_turn(
         });
 
         if tool_calls.is_empty() {
-            finish_turn(turn_id, on_event);
+            finish_turn(turn_id, on_event)?;
             return Ok(());
         }
 
@@ -95,10 +100,11 @@ pub(crate) async fn run_turn(
                 on_event,
                 &cancel,
             )
-            .await,
+            .await
+            .map_err(internal_error)?,
             tool_cycle::ToolCycleOutcome::Interrupted
         ) {
-            finish_interrupted(turn_id, on_event);
+            finish_interrupted(turn_id, on_event)?;
             return Ok(());
         }
 

@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use anyhow::{anyhow, Result};
+use std::path::PathBuf;
 
 pub fn resolve_home_dir() -> Result<PathBuf> {
     if let Some(home) = std::env::var_os("ASTRCODE_HOME_DIR") {

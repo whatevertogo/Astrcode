@@ -1,6 +1,7 @@
 use std::time::Instant;
 
-use astrcode_core::CancelToken;
+use anyhow::Result as AnyhowResult;
+use astrcode_core::{CancelToken, Result as CoreResult};
 
 use super::AgentLoop;
 use crate::events::StorageEvent;
@@ -20,12 +21,12 @@ pub(crate) async fn execute_tool_calls(
     turn_id: &str,
     state: &AgentState,
     messages: &mut Vec<LlmMessage>,
-    on_event: &mut impl FnMut(StorageEvent),
+    on_event: &mut impl FnMut(StorageEvent) -> CoreResult<()>,
     cancel: &CancelToken,
-) -> ToolCycleOutcome {
+) -> AnyhowResult<ToolCycleOutcome> {
     for call in tool_calls {
         if cancel.is_cancelled() {
-            return ToolCycleOutcome::Interrupted;
+            return Ok(ToolCycleOutcome::Interrupted);
         }
 
         on_event(StorageEvent::ToolCall {
@@ -33,7 +34,7 @@ pub(crate) async fn execute_tool_calls(
             tool_call_id: call.id.clone(),
             tool_name: call.name.clone(),
             args: call.args.clone(),
-        });
+        })?;
 
         let start = Instant::now();
         let ctx = agent_loop.tool_context(state, cancel.clone());
@@ -46,7 +47,7 @@ pub(crate) async fn execute_tool_calls(
             output: tool_result_output(&result),
             success: result.ok,
             duration_ms,
-        });
+        })?;
 
         messages.push(LlmMessage::Tool {
             tool_call_id: call.id,
@@ -54,7 +55,7 @@ pub(crate) async fn execute_tool_calls(
         });
     }
 
-    ToolCycleOutcome::Completed
+    Ok(ToolCycleOutcome::Completed)
 }
 
 fn tool_result_output(result: &astrcode_core::ToolExecutionResult) -> String {

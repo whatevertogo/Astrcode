@@ -25,6 +25,8 @@ pub enum StorageEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
         content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<DateTime<Utc>>,
     },
     ToolCall {
         #[serde(default, skip_serializing_if = "Option::is_none")]

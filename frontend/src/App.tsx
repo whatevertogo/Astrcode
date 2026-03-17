@@ -13,6 +13,7 @@ import Sidebar from './components/Sidebar/index';
 import Chat from './components/Chat/index';
 import SettingsModal from './components/Settings/SettingsModal';
 import { useAgent, SessionMessage } from './hooks/useAgent';
+import { snapshotToolStatus } from './lib/sessionMessages';
 import { releaseTurnMapping, resolveSessionForTurn } from './lib/turnRouting';
 
 function getDirectoryName(path: string): string {
@@ -49,7 +50,7 @@ function convertSessionMessage(message: SessionMessage): Message {
         kind: 'toolCall' as const,
         toolCallId: message.toolCallId,
         toolName: message.toolName,
-        status: message.ok ? ('ok' as const) : ('fail' as const),
+        status: snapshotToolStatus(message.ok),
         args: message.args,
         output: message.output,
         durationMs: message.durationMs,

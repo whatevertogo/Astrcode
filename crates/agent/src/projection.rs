@@ -179,6 +179,7 @@ mod tests {
             StorageEvent::AssistantFinal {
                 turn_id: None,
                 content: "hello!".into(),
+                timestamp: None,
             },
             StorageEvent::TurnDone {
                 turn_id: None,
@@ -208,6 +209,7 @@ mod tests {
             StorageEvent::AssistantFinal {
                 turn_id: None,
                 content: "".into(),
+                timestamp: None,
             },
             StorageEvent::ToolCall {
                 turn_id: None,
@@ -225,6 +227,7 @@ mod tests {
             StorageEvent::AssistantFinal {
                 turn_id: None,
                 content: "Here are the files".into(),
+                timestamp: None,
             },
             StorageEvent::TurnDone {
                 turn_id: None,
@@ -239,6 +242,7 @@ mod tests {
             StorageEvent::AssistantFinal {
                 turn_id: None,
                 content: "You're welcome!".into(),
+                timestamp: None,
             },
             StorageEvent::TurnDone {
                 turn_id: None,
@@ -305,6 +309,7 @@ mod tests {
             StorageEvent::AssistantFinal {
                 turn_id: None,
                 content: "hello".into(),
+                timestamp: None,
             },
             StorageEvent::Error {
                 turn_id: None,

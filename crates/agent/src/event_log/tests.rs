@@ -209,6 +209,47 @@ fn list_sessions_with_meta_extracts_fields_and_sorts_by_updated_at() {
 }
 
 #[test]
+fn list_sessions_with_meta_skips_corrupt_session_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let valid_id = "2026-03-08T11-00-00-aaaaaaaa";
+    let valid_path = tmp.path().join(format!("session-{valid_id}.jsonl"));
+    let corrupt_path = tmp
+        .path()
+        .join("session-2026-03-08T11-00-01-bbbbbbbb.jsonl");
+
+    {
+        let mut file = File::create(&valid_path).unwrap();
+        let events = [
+            StorageEvent::SessionStart {
+                session_id: valid_id.to_string(),
+                timestamp: chrono::DateTime::parse_from_rfc3339("2026-03-08T11:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                working_dir: r"D:\repo\valid".to_string(),
+            },
+            StorageEvent::TurnDone {
+                turn_id: None,
+                timestamp: chrono::DateTime::parse_from_rfc3339("2026-03-08T11:05:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            },
+        ];
+        for event in events {
+            writeln!(file, "{}", serde_json::to_string(&event).unwrap()).unwrap();
+        }
+    }
+
+    {
+        let mut file = File::create(&corrupt_path).unwrap();
+        writeln!(file, "{{ this is not valid json").unwrap();
+    }
+
+    let metas = EventLog::list_sessions_with_meta_from_path(tmp.path()).unwrap();
+    assert_eq!(metas.len(), 1);
+    assert_eq!(metas[0].session_id, valid_id);
+}
+
+#[test]
 fn delete_session_from_path_succeeds_and_missing_returns_error() {
     let tmp = tempfile::tempdir().unwrap();
     let id = "2026-03-08T12-00-00-aaaaaaaa";

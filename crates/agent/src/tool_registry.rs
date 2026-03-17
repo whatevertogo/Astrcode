@@ -90,7 +90,8 @@ mod tests {
 
     use super::{ToolRegistry, ToolRegistryBuilder};
     use astrcode_core::{
-        CancelToken, Result, Tool, ToolCallRequest, ToolContext, ToolDefinition, ToolExecutionResult,
+        CancelToken, Result, Tool, ToolCallRequest, ToolContext, ToolDefinition,
+        ToolExecutionResult,
     };
 
     struct FakeTool;

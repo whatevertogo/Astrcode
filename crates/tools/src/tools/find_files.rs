@@ -60,11 +60,10 @@ impl Tool for FindFilesTool {
             .join(&args.pattern)
             .to_string_lossy()
             .replace('\\', "/");
-        let entries = glob(&full_pattern)
-            .map_err(|e| AstrError::ToolError {
-                name: "findFiles".to_string(),
-                reason: format!("failed to parse glob pattern '{}': {}", full_pattern, e),
-            })?;
+        let entries = glob(&full_pattern).map_err(|e| AstrError::ToolError {
+            name: "findFiles".to_string(),
+            reason: format!("failed to parse glob pattern '{}': {}", full_pattern, e),
+        })?;
 
         let mut paths = Vec::new();
         let mut truncated = false;

@@ -37,7 +37,11 @@ struct ScriptedProvider {
 
 #[async_trait]
 impl LlmProvider for ScriptedProvider {
-    async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> AnyhowResult<LlmOutput> {
+    async fn generate(
+        &self,
+        request: LlmRequest,
+        sink: Option<EventSink>,
+    ) -> AnyhowResult<LlmOutput> {
         if self.delay > Duration::from_millis(0) {
             tokio::select! {
                 _ = crate::cancel::cancelled(request.cancel.clone()) => return Err(anyhow!("cancelled")),
@@ -87,7 +91,11 @@ impl ProviderFactory for StaticProviderFactory {
 
 #[async_trait]
 impl LlmProvider for StreamingProvider {
-    async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> AnyhowResult<LlmOutput> {
+    async fn generate(
+        &self,
+        request: LlmRequest,
+        sink: Option<EventSink>,
+    ) -> AnyhowResult<LlmOutput> {
         let Some(sink) = sink else {
             return Ok(self.response.clone());
         };
@@ -107,7 +115,11 @@ impl LlmProvider for StreamingProvider {
 
 #[async_trait]
 impl LlmProvider for RecordingProvider {
-    async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> AnyhowResult<LlmOutput> {
+    async fn generate(
+        &self,
+        request: LlmRequest,
+        sink: Option<EventSink>,
+    ) -> AnyhowResult<LlmOutput> {
         self.requests
             .lock()
             .expect("lock should work")
@@ -224,6 +236,7 @@ async fn tool_events_are_ordered_and_turn_finishes() {
     let events_clone = events.clone();
     let mut on_event = move |e: StorageEvent| {
         events_clone.lock().expect("lock").push(e);
+        Ok(())
     };
 
     loop_runner
@@ -281,6 +294,7 @@ async fn interrupt_emits_error_and_turn_done() {
 
     let mut on_event = move |e: StorageEvent| {
         events_clone.lock().expect("lock").push(e);
+        Ok(())
     };
     loop_runner
         .run_turn(&state, "turn-2", &mut on_event, cancel)
@@ -319,6 +333,7 @@ async fn deltas_emit_before_stream_completion() {
     let run_task = tokio::spawn(async move {
         let mut on_event = move |event: StorageEvent| {
             events_for_task.lock().expect("lock").push(event);
+            Ok(())
         };
 
         loop_runner
@@ -387,6 +402,7 @@ async fn reaching_max_steps_does_not_emit_error_event() {
     let events_clone = events.clone();
     let mut on_event = move |e: StorageEvent| {
         events_clone.lock().expect("lock").push(e);
+        Ok(())
     };
 
     loop_runner
@@ -460,7 +476,7 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
     };
 
     loop_runner
-        .run_turn(&state, "turn-5", &mut |_event| {}, CancelToken::new())
+        .run_turn(&state, "turn-5", &mut |_event| Ok(()), CancelToken::new())
         .await
         .expect("turn should complete");
 
@@ -503,4 +519,34 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
         &requests[1].messages[2],
         LlmMessage::Tool { tool_call_id, content } if tool_call_id == "call-1" && content == "ok"
     ));
+}
+
+#[tokio::test]
+async fn event_sink_failures_abort_the_turn() {
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([LlmOutput {
+            content: "done".to_string(),
+            tool_calls: vec![],
+        }])),
+        delay: Duration::from_millis(0),
+    });
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::new(factory, ToolRegistry::builder().build());
+    let state = make_state("fail event sink");
+
+    let result = loop_runner
+        .run_turn(
+            &state,
+            "turn-6",
+            &mut |_event| Err(AstrError::Internal("event sink failed".to_string())),
+            CancelToken::new(),
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert!(result
+        .err()
+        .expect("result should be error")
+        .to_string()
+        .contains("event sink failed"));
 }

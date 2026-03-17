@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use astrcode_core::CancelToken;
+use astrcode_core::{CancelToken, Result as CoreResult};
 use tokio::sync::mpsc;
 
 use crate::events::StorageEvent;
@@ -20,7 +20,7 @@ pub(crate) async fn generate_response(
     turn_id: &str,
     system_prompt: Option<String>,
     cancel: CancelToken,
-    on_event: &mut impl FnMut(StorageEvent),
+    on_event: &mut impl FnMut(StorageEvent) -> CoreResult<()>,
 ) -> Result<LlmOutput> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<LlmEvent>();
     let sink: EventSink = Arc::new(move |event| {
@@ -47,7 +47,7 @@ pub(crate) async fn generate_response(
                         on_event(StorageEvent::AssistantDelta {
                             turn_id: Some(turn_id.to_string()),
                             token: text,
-                        });
+                        })?;
                     }
                     Some(LlmEvent::ToolCallDelta { .. }) => {}
                     None => event_rx_open = false,
@@ -61,7 +61,7 @@ pub(crate) async fn generate_response(
             on_event(StorageEvent::AssistantDelta {
                 turn_id: Some(turn_id.to_string()),
                 token: text,
-            });
+            })?;
         }
     }
 

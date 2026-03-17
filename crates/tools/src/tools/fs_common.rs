@@ -45,16 +45,15 @@ fn enforce_workspace_sandbox(root: &Path, path: &Path) -> Result<()> {
 
     // Resolve the nearest existing ancestor so creating a new file beneath a symlinked
     // directory still gets checked against the real filesystem location.
-    let existing_ancestor = nearest_existing_ancestor(&normalized_path).ok_or_else(|| {
-        AstrError::ToolError {
+    let existing_ancestor =
+        nearest_existing_ancestor(&normalized_path).ok_or_else(|| AstrError::ToolError {
             name: "sandbox".to_string(),
             reason: format!(
                 "path '{}' has no existing ancestor to validate against sandbox '{}'",
                 normalized_path.display(),
                 root.display()
             ),
-        }
-    })?;
+        })?;
     let canonical_root = fs::canonicalize(&root).map_err(|e| {
         AstrError::io(
             format!("failed to canonicalize sandbox root '{}'", root.display()),
@@ -106,7 +105,8 @@ fn should_enforce_sandbox() -> bool {
 }
 
 pub async fn read_utf8_file(path: &Path) -> Result<String> {
-    fs::read_to_string(path).map_err(|e| AstrError::io(format!("failed reading file '{}'", path.display()), e))
+    fs::read_to_string(path)
+        .map_err(|e| AstrError::io(format!("failed reading file '{}'", path.display()), e))
 }
 
 pub async fn write_text_file(path: &Path, content: &str, create_dirs: bool) -> Result<usize> {

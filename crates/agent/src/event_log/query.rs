@@ -86,7 +86,17 @@ impl EventLog {
 
             let canonical_id = canonical_session_id(id).to_string();
             let path = entry.path();
-            let (created_at, working_dir, title) = Self::read_session_head_meta(&path)?;
+            let (created_at, working_dir, title) = match Self::read_session_head_meta(&path) {
+                Ok(meta) => meta,
+                Err(error) => {
+                    log::warn!(
+                        "skipping unreadable session file '{}': {}",
+                        path.display(),
+                        error
+                    );
+                    continue;
+                }
+            };
             let updated_at = Self::read_last_timestamp(&path).unwrap_or(created_at);
             let phase = Self::read_last_phase(&path).unwrap_or(Phase::Idle);
             metas.push(SessionMeta {
@@ -288,6 +298,7 @@ fn timestamp_of_event(event: &StorageEvent) -> Option<DateTime<Utc>> {
     match event {
         StorageEvent::SessionStart { timestamp, .. } => Some(*timestamp),
         StorageEvent::UserMessage { timestamp, .. } => Some(*timestamp),
+        StorageEvent::AssistantFinal { timestamp, .. } => timestamp.as_ref().cloned(),
         StorageEvent::TurnDone { timestamp, .. } => Some(*timestamp),
         _ => None,
     }

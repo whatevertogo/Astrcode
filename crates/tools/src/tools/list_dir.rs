@@ -55,8 +55,9 @@ impl Tool for ListDirTool {
         let max_entries = args.max_entries.unwrap_or(200);
 
         let mut entries = Vec::new();
-        let read_dir = fs::read_dir(&path)
-            .map_err(|e| AstrError::io(format!("failed reading directory '{}'", path.display()), e))?;
+        let read_dir = fs::read_dir(&path).map_err(|e| {
+            AstrError::io(format!("failed reading directory '{}'", path.display()), e)
+        })?;
         for entry in read_dir {
             if entries.len() >= max_entries {
                 break;

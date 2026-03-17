@@ -60,7 +60,9 @@ impl Tool for ShellTool {
         let args: ShellArgs = serde_json::from_value(args)
             .map_err(|e| AstrError::parse("invalid args for shell tool", e))?;
         if args.command.trim().is_empty() {
-            return Err(AstrError::Validation("shell command cannot be empty".to_string()));
+            return Err(AstrError::Validation(
+                "shell command cannot be empty".to_string(),
+            ));
         }
 
         let spec = command_spec(args.shell.as_deref(), &args.command);
@@ -79,12 +81,14 @@ impl Tool for ShellTool {
             .spawn()
             .map_err(|e| AstrError::io("failed to spawn shell command", e))?;
 
-        let mut stdout = child.stdout.take().ok_or_else(|| {
-            AstrError::Internal("failed to capture stdout".to_string())
-        })?;
-        let mut stderr = child.stderr.take().ok_or_else(|| {
-            AstrError::Internal("failed to capture stderr".to_string())
-        })?;
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| AstrError::Internal("failed to capture stdout".to_string()))?;
+        let mut stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| AstrError::Internal("failed to capture stderr".to_string()))?;
 
         let stdout_task = thread::spawn(move || {
             let mut bytes = Vec::new();

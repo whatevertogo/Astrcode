@@ -1,4 +1,6 @@
-use astrcode_core::{AstrError, CancelToken, Result, Tool, ToolContext, ToolDefinition, ToolExecutionResult};
+use astrcode_core::{
+    AstrError, CancelToken, Result, Tool, ToolContext, ToolDefinition, ToolExecutionResult,
+};
 use async_trait::async_trait;
 use log::warn;
 use regex::RegexBuilder;
@@ -149,10 +151,12 @@ fn collect_candidate_files(
         let mut files = Vec::new();
         for entry in WalkDir::new(path) {
             check_cancel(cancel, "grep")?;
-            let entry = entry.map_err(|e| AstrError::io(
-                format!("failed walking '{}'", path.display()),
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-            ))?;
+            let entry = entry.map_err(|e| {
+                AstrError::io(
+                    format!("failed walking '{}'", path.display()),
+                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                )
+            })?;
             if entry.file_type().is_file() {
                 files.push(entry.path().to_path_buf());
             }
