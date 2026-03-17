@@ -203,10 +203,12 @@ async fn tool_events_are_ordered_and_turn_finishes() {
                     name: "quickTool".to_string(),
                     args: json!({}),
                 }],
+                reasoning: None,
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
+                reasoning: None,
             },
         ])),
         delay: Duration::from_millis(0),
@@ -259,6 +261,7 @@ async fn interrupt_emits_error_and_turn_done() {
                 name: "slowTool".to_string(),
                 args: json!({}),
             }],
+            reasoning: None,
         }])),
         delay: Duration::from_millis(0),
     });
@@ -307,6 +310,7 @@ async fn deltas_emit_before_stream_completion() {
         response: LlmOutput {
             content: "streamed".to_string(),
             tool_calls: vec![],
+            reasoning: None,
         },
         per_delta_delay: Duration::from_millis(20),
     });
@@ -369,6 +373,7 @@ async fn reaching_max_steps_does_not_emit_error_event() {
                 name: "quickTool".to_string(),
                 args: json!({}),
             }],
+            reasoning: None,
         })
         .collect::<Vec<_>>();
 
@@ -437,10 +442,12 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
                     name: "quickTool".to_string(),
                     args: json!({}),
                 }],
+                reasoning: None,
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
+                reasoning: None,
             },
         ])),
         requests: requests.clone(),
@@ -492,10 +499,18 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
         assert!(request.tools.iter().any(|tool| tool.name == "quickTool"));
     }
 
-    assert_eq!(requests[0].messages.len(), 1);
+    assert_eq!(requests[0].messages.len(), 3);
     assert_eq!(requests[1].messages.len(), 3);
     assert!(matches!(
         &requests[0].messages[0],
+        LlmMessage::User { content } if content == "Before changing code, inspect the relevant files and gather context first."
+    ));
+    assert!(matches!(
+        &requests[0].messages[1],
+        LlmMessage::Assistant { content, tool_calls, .. } if content == "I will inspect the relevant files and gather context before making changes." && tool_calls.is_empty()
+    ));
+    assert!(matches!(
+        &requests[0].messages[2],
         LlmMessage::User { content } if content == "run quick tool"
     ));
     assert!(matches!(
@@ -514,6 +529,7 @@ async fn event_sink_failures_abort_the_turn() {
         responses: Mutex::new(VecDeque::from([LlmOutput {
             content: "done".to_string(),
             tool_calls: vec![],
+            reasoning: None,
         }])),
         delay: Duration::from_millis(0),
     });

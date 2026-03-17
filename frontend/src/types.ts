@@ -14,7 +14,11 @@ export type AgentEventPayload =
   | { event: 'sessionStarted'; data: { sessionId: string } }
   | { event: 'phaseChanged'; data: { phase: Phase; turnId?: string | null } }
   | { event: 'modelDelta'; data: { turnId: string; delta: string } }
-  | { event: 'assistantMessage'; data: { turnId: string; content: string } }
+  | { event: 'thinkingDelta'; data: { turnId: string; delta: string } }
+  | {
+      event: 'assistantMessage';
+      data: { turnId: string; content: string; reasoningContent?: string };
+    }
   | {
       event: 'toolCallStart';
       data: {
@@ -49,6 +53,7 @@ export interface AssistantMessage {
   id: string;
   kind: 'assistant';
   text: string;
+  reasoningText?: string;
   streaming: boolean;
   timestamp: number;
 }
@@ -158,7 +163,13 @@ export type Action =
   | { type: 'DELETE_SESSION'; projectId: string; sessionId: string }
   | { type: 'ADD_MESSAGE'; sessionId: string; message: Message }
   | { type: 'APPEND_DELTA'; sessionId: string; delta: string }
-  | { type: 'FINALIZE_ASSISTANT'; sessionId: string; content: string }
+  | { type: 'APPEND_REASONING_DELTA'; sessionId: string; delta: string }
+  | {
+      type: 'FINALIZE_ASSISTANT';
+      sessionId: string;
+      content: string;
+      reasoningText?: string;
+    }
   | { type: 'END_STREAMING'; sessionId: string }
   | {
       type: 'UPDATE_TOOL_CALL';

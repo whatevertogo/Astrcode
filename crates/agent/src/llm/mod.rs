@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use astrcode_core::{CancelToken, Result};
+use astrcode_core::{CancelToken, ReasoningContent, Result};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -37,6 +37,8 @@ impl LlmRequest {
 #[derive(Clone, Debug)]
 pub enum LlmEvent {
     TextDelta(String),
+    ThinkingDelta(String),
+    ThinkingSignature(String),
     ToolCallDelta {
         index: usize,
         id: Option<String>,
@@ -49,6 +51,7 @@ pub enum LlmEvent {
 pub struct LlmOutput {
     pub content: String,
     pub tool_calls: Vec<ToolCallRequest>,
+    pub reasoning: Option<ReasoningContent>,
 }
 
 pub type EventSink = Arc<dyn Fn(LlmEvent) + Send + Sync>;
@@ -61,6 +64,8 @@ pub trait LlmProvider: Send + Sync {
 #[derive(Default)]
 pub struct LlmAccumulator {
     pub content: String,
+    thinking: String,
+    thinking_signature: Option<String>,
     tool_calls: HashMap<usize, AccToolCall>,
 }
 
@@ -76,6 +81,12 @@ impl LlmAccumulator {
         match event {
             LlmEvent::TextDelta(text) => {
                 self.content.push_str(text);
+            }
+            LlmEvent::ThinkingDelta(text) => {
+                self.thinking.push_str(text);
+            }
+            LlmEvent::ThinkingSignature(signature) => {
+                self.thinking_signature = Some(signature.clone());
             }
             LlmEvent::ToolCallDelta {
                 index,
@@ -112,6 +123,14 @@ impl LlmAccumulator {
         LlmOutput {
             content: self.content,
             tool_calls,
+            reasoning: if self.thinking.is_empty() {
+                None
+            } else {
+                Some(ReasoningContent {
+                    content: self.thinking,
+                    signature: self.thinking_signature,
+                })
+            },
         }
     }
 }
@@ -130,6 +149,31 @@ mod tests {
         acc.apply(&LlmEvent::TextDelta("lo".to_string()));
 
         assert_eq!(acc.content, "Hello");
+    }
+
+    #[test]
+    fn thinking_delta_accumulates_reasoning_content() {
+        let mut acc = LlmAccumulator::default();
+
+        acc.apply(&LlmEvent::ThinkingDelta("Hel".to_string()));
+        acc.apply(&LlmEvent::ThinkingDelta("lo".to_string()));
+        acc.apply(&LlmEvent::ThinkingSignature("sig".to_string()));
+
+        let output = acc.finish();
+        assert_eq!(
+            output
+                .reasoning
+                .as_ref()
+                .map(|value| value.content.as_str()),
+            Some("Hello")
+        );
+        assert_eq!(
+            output
+                .reasoning
+                .as_ref()
+                .and_then(|value| value.signature.as_deref()),
+            Some("sig")
+        );
     }
 
     #[test]
@@ -170,6 +214,7 @@ mod tests {
         let output = acc.finish();
         assert_eq!(output.tool_calls.len(), 1);
         assert_eq!(output.tool_calls[0].args, Value::String(String::new()));
+        assert_eq!(output.reasoning, None);
     }
 
     #[test]

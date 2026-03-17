@@ -1,18 +1,17 @@
+use astrcode_core::{LlmMessage, ToolDefinition};
+
 use super::{append_unique_tools, PromptBlock, PromptContribution};
 
 #[derive(Default, Clone, Debug)]
 pub struct PromptPlan {
     pub system_blocks: Vec<PromptBlock>,
-    pub prepend_messages: Vec<astrcode_core::LlmMessage>,
-    pub append_messages: Vec<astrcode_core::LlmMessage>,
-    pub extra_tools: Vec<astrcode_core::ToolDefinition>,
+    pub prepend_messages: Vec<LlmMessage>,
+    pub append_messages: Vec<LlmMessage>,
+    pub extra_tools: Vec<ToolDefinition>,
 }
 
 impl PromptPlan {
     pub fn merge(&mut self, contribution: PromptContribution) {
-        self.system_blocks.extend(contribution.system_blocks);
-        self.prepend_messages.extend(contribution.prepend_messages);
-        self.append_messages.extend(contribution.append_messages);
         append_unique_tools(&mut self.extra_tools, contribution.extra_tools);
     }
 
@@ -22,7 +21,7 @@ impl PromptPlan {
         }
 
         let mut blocks: Vec<&PromptBlock> = self.system_blocks.iter().collect();
-        blocks.sort_by_key(|block| block.kind);
+        blocks.sort_by_key(|block| (block.priority, block.insertion_order));
 
         Some(
             blocks
@@ -37,7 +36,7 @@ impl PromptPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prompt::{BlockKind, PromptBlock};
+    use crate::prompt::{BlockKind, BlockMetadata, PromptBlock};
 
     #[test]
     fn render_system_returns_none_when_empty() {
@@ -47,11 +46,15 @@ mod tests {
     #[test]
     fn render_system_formats_single_block() {
         let plan = PromptPlan {
-            system_blocks: vec![PromptBlock {
-                kind: BlockKind::Identity,
-                title: "Identity",
-                content: "hello".to_string(),
-            }],
+            system_blocks: vec![PromptBlock::new(
+                "identity",
+                BlockKind::Identity,
+                "Identity",
+                "hello",
+                100,
+                BlockMetadata::default(),
+                0,
+            )],
             ..PromptPlan::default()
         };
 
@@ -59,24 +62,36 @@ mod tests {
     }
 
     #[test]
-    fn render_system_sorts_blocks_and_uses_double_newlines_without_extra_whitespace() {
+    fn render_system_sorts_blocks_by_priority_and_insertion_order() {
         let plan = PromptPlan {
             system_blocks: vec![
-                PromptBlock {
-                    kind: BlockKind::ProjectRules,
-                    title: "Project Rules",
-                    content: "project".to_string(),
-                },
-                PromptBlock {
-                    kind: BlockKind::Identity,
-                    title: "Identity",
-                    content: "identity".to_string(),
-                },
-                PromptBlock {
-                    kind: BlockKind::Environment,
-                    title: "Environment",
-                    content: "environment".to_string(),
-                },
+                PromptBlock::new(
+                    "project",
+                    BlockKind::ProjectRules,
+                    "Project Rules",
+                    "project",
+                    500,
+                    BlockMetadata::default(),
+                    2,
+                ),
+                PromptBlock::new(
+                    "identity",
+                    BlockKind::Identity,
+                    "Identity",
+                    "identity",
+                    100,
+                    BlockMetadata::default(),
+                    1,
+                ),
+                PromptBlock::new(
+                    "environment",
+                    BlockKind::Environment,
+                    "Environment",
+                    "environment",
+                    100,
+                    BlockMetadata::default(),
+                    0,
+                ),
             ],
             ..PromptPlan::default()
         };
@@ -85,10 +100,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "[Identity]\nidentity\n\n[Environment]\nenvironment\n\n[Project Rules]\nproject"
+            "[Environment]\nenvironment\n\n[Identity]\nidentity\n\n[Project Rules]\nproject"
         );
-        assert_eq!(rendered.trim(), rendered);
-        assert!(!rendered.starts_with('\n'));
-        assert!(!rendered.ends_with('\n'));
     }
 }

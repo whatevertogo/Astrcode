@@ -67,6 +67,7 @@ function convertSessionMessage(message: SessionMessage): Message {
         ...base,
         kind: 'assistant' as const,
         text: message.content,
+        reasoningText: message.reasoningContent,
         streaming: false,
       };
     case 'toolCall':
@@ -252,6 +253,39 @@ function reducer(state: AppState, action: Action): AppState {
               id: uuid(),
               kind: 'assistant' as const,
               text: action.delta,
+              reasoningText: '',
+              streaming: true,
+              timestamp: Date.now(),
+            },
+          ],
+        };
+      });
+
+    case 'APPEND_REASONING_DELTA':
+      return mapSession(state, action.sessionId, (session) => {
+        const messages = session.messages;
+        const lastMessage = messages[messages.length - 1];
+        if (lastMessage && lastMessage.kind === 'assistant' && lastMessage.streaming) {
+          return {
+            ...session,
+            messages: [
+              ...messages.slice(0, -1),
+              {
+                ...lastMessage,
+                reasoningText: `${lastMessage.reasoningText ?? ''}${action.delta}`,
+              },
+            ],
+          };
+        }
+        return {
+          ...session,
+          messages: [
+            ...messages,
+            {
+              id: uuid(),
+              kind: 'assistant' as const,
+              text: '',
+              reasoningText: action.delta,
               streaming: true,
               timestamp: Date.now(),
             },
@@ -271,6 +305,7 @@ function reducer(state: AppState, action: Action): AppState {
               {
                 ...lastMessage,
                 text: action.content,
+                reasoningText: action.reasoningText ?? lastMessage.reasoningText,
                 streaming: false,
               },
             ],
@@ -284,6 +319,7 @@ function reducer(state: AppState, action: Action): AppState {
               id: uuid(),
               kind: 'assistant',
               text: action.content,
+              reasoningText: action.reasoningText,
               streaming: false,
               timestamp: Date.now(),
             },
@@ -475,6 +511,17 @@ export default function App() {
         break;
       }
 
+      case 'thinkingDelta': {
+        const sessionId = resolveSessionId(event.data.turnId);
+        if (!sessionId) {
+          break;
+        }
+        startTransition(() => {
+          dispatch({ type: 'APPEND_REASONING_DELTA', sessionId, delta: event.data.delta });
+        });
+        break;
+      }
+
       case 'assistantMessage': {
         const sessionId = resolveSessionId(event.data.turnId);
         if (!sessionId) {
@@ -484,6 +531,7 @@ export default function App() {
           type: 'FINALIZE_ASSISTANT',
           sessionId,
           content: event.data.content,
+          reasoningText: event.data.reasoningContent,
         });
         break;
       }
@@ -550,6 +598,7 @@ export default function App() {
               id: uuid(),
               kind: 'assistant',
               text: `错误：${event.data.message}`,
+              reasoningText: '',
               streaming: false,
               timestamp: Date.now(),
             },
@@ -762,6 +811,7 @@ export default function App() {
             id: uuid(),
             kind: 'assistant',
             text: `错误：${String(error)}`,
+            reasoningText: '',
             streaming: false,
             timestamp: Date.now(),
           },

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use astrcode_core::{AgentEvent, Phase, ToolExecutionResult};
+use astrcode_core::{split_assistant_content, AgentEvent, Phase, ToolExecutionResult};
 use async_trait::async_trait;
 use chrono::Utc;
 
@@ -43,14 +43,22 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
                 timestamp: timestamp.to_rfc3339(),
             }),
             StorageEvent::AssistantFinal {
-                content, timestamp, ..
-            } if !content.is_empty() => {
+                content,
+                reasoning_content,
+                timestamp,
+                ..
+            } => {
+                let parts = split_assistant_content(content, reasoning_content.as_deref());
+                if parts.visible_content.is_empty() && parts.reasoning_content.is_none() {
+                    continue;
+                }
                 messages.push(SessionMessage::Assistant {
-                    content: content.clone(),
+                    content: parts.visible_content,
                     timestamp: timestamp
                         .as_ref()
                         .map(|value| value.to_rfc3339())
                         .unwrap_or_else(|| Utc::now().to_rfc3339()),
+                    reasoning_content: parts.reasoning_content,
                 });
             }
             StorageEvent::ToolCall {
@@ -135,9 +143,9 @@ pub(super) fn phase_of_storage_event(event: &StorageEvent) -> Phase {
     match event {
         StorageEvent::SessionStart { .. } => Phase::Idle,
         StorageEvent::UserMessage { .. } => Phase::Thinking,
-        StorageEvent::AssistantDelta { .. } | StorageEvent::AssistantFinal { .. } => {
-            Phase::Streaming
-        }
+        StorageEvent::AssistantDelta { .. }
+        | StorageEvent::ThinkingDelta { .. }
+        | StorageEvent::AssistantFinal { .. } => Phase::Streaming,
         StorageEvent::ToolCall { .. } | StorageEvent::ToolResult { .. } => Phase::CallingTool,
         StorageEvent::TurnDone { .. } | StorageEvent::Error { .. } => Phase::Idle,
     }
@@ -216,7 +224,7 @@ impl EventTranslator {
                 }
                 self.phase = Phase::Streaming;
             }
-            StorageEvent::AssistantFinal { content, .. } => {
+            StorageEvent::ThinkingDelta { token, .. } => {
                 if self.phase != Phase::Streaming {
                     push(
                         AgentEvent::PhaseChanged {
@@ -226,12 +234,39 @@ impl EventTranslator {
                         &mut records,
                     );
                 }
-                if !content.is_empty() {
+                if let Some(turn_id) = turn_id.clone() {
+                    push(
+                        AgentEvent::ThinkingDelta {
+                            turn_id,
+                            delta: token.clone(),
+                        },
+                        &mut records,
+                    );
+                }
+                self.phase = Phase::Streaming;
+            }
+            StorageEvent::AssistantFinal {
+                content,
+                reasoning_content,
+                ..
+            } => {
+                if self.phase != Phase::Streaming {
+                    push(
+                        AgentEvent::PhaseChanged {
+                            turn_id: turn_id.clone(),
+                            phase: Phase::Streaming,
+                        },
+                        &mut records,
+                    );
+                }
+                let parts = split_assistant_content(content, reasoning_content.as_deref());
+                if !parts.visible_content.is_empty() || parts.reasoning_content.is_some() {
                     if let Some(turn_id) = turn_id.clone() {
                         push(
                             AgentEvent::AssistantMessage {
                                 turn_id,
-                                content: content.clone(),
+                                content: parts.visible_content,
+                                reasoning_content: parts.reasoning_content,
                             },
                             &mut records,
                         );
@@ -380,6 +415,8 @@ mod tests {
             event: StorageEvent::AssistantFinal {
                 turn_id: Some("turn-1".to_string()),
                 content: String::new(),
+                reasoning_content: None,
+                reasoning_signature: None,
                 timestamp: None,
             },
         };
@@ -404,6 +441,8 @@ mod tests {
             event: StorageEvent::AssistantFinal {
                 turn_id: Some("turn-2".to_string()),
                 content: "hello".to_string(),
+                reasoning_content: None,
+                reasoning_signature: None,
                 timestamp: None,
             },
         };
@@ -416,6 +455,7 @@ mod tests {
             AgentEvent::AssistantMessage {
                 ref turn_id,
                 ref content,
+                ..
             } if turn_id == "turn-2" && content == "hello"
         ));
     }
@@ -444,6 +484,8 @@ mod tests {
                 event: StorageEvent::AssistantFinal {
                     turn_id: Some("turn-3".to_string()),
                     content: String::new(),
+                    reasoning_content: None,
+                    reasoning_signature: None,
                     timestamp: None,
                 },
             },
@@ -466,6 +508,8 @@ mod tests {
             event: StorageEvent::AssistantFinal {
                 turn_id: Some("turn-4".to_string()),
                 content: "persisted".to_string(),
+                reasoning_content: None,
+                reasoning_signature: None,
                 timestamp: Some(expected),
             },
         }];

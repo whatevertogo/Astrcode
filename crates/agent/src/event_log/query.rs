@@ -342,9 +342,9 @@ fn phase_of_event(event: &StorageEvent) -> Phase {
     match event {
         StorageEvent::SessionStart { .. } => Phase::Idle,
         StorageEvent::UserMessage { .. } => Phase::Thinking,
-        StorageEvent::AssistantDelta { .. } | StorageEvent::AssistantFinal { .. } => {
-            Phase::Streaming
-        }
+        StorageEvent::AssistantDelta { .. }
+        | StorageEvent::ThinkingDelta { .. }
+        | StorageEvent::AssistantFinal { .. } => Phase::Streaming,
         StorageEvent::ToolCall { .. } | StorageEvent::ToolResult { .. } => Phase::CallingTool,
         StorageEvent::TurnDone { .. } | StorageEvent::Error { .. } => Phase::Idle,
     }

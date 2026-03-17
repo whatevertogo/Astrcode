@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use astrcode_core::Phase;
 
 use crate::events::StorageEvent;
-use astrcode_core::{LlmMessage, ToolCallRequest};
+use astrcode_core::{split_assistant_content, LlmMessage, ReasoningContent, ToolCallRequest};
 
 #[derive(Debug, Clone)]
 pub struct AgentState {
@@ -37,16 +37,19 @@ pub fn project(events: &[StorageEvent]) -> AgentState {
     // a ToolResult (after all calls in a step), TurnDone, or the next
     // UserMessage — whichever comes first.
     let mut pending_content: Option<String> = None;
+    let mut pending_reasoning: Option<ReasoningContent> = None;
     let mut pending_tool_calls: Vec<ToolCallRequest> = Vec::new();
 
     let flush = |state: &mut AgentState,
                  pending_content: &mut Option<String>,
+                 pending_reasoning: &mut Option<ReasoningContent>,
                  pending_tool_calls: &mut Vec<ToolCallRequest>| {
         if pending_content.is_some() || !pending_tool_calls.is_empty() {
             let content = pending_content.take().unwrap_or_default();
             state.messages.push(LlmMessage::Assistant {
                 content,
                 tool_calls: std::mem::take(pending_tool_calls),
+                reasoning: pending_reasoning.take(),
             });
         }
     };
@@ -63,18 +66,38 @@ pub fn project(events: &[StorageEvent]) -> AgentState {
             }
 
             StorageEvent::UserMessage { content, .. } => {
-                flush(&mut state, &mut pending_content, &mut pending_tool_calls);
+                flush(
+                    &mut state,
+                    &mut pending_content,
+                    &mut pending_reasoning,
+                    &mut pending_tool_calls,
+                );
                 state.messages.push(LlmMessage::User {
                     content: content.clone(),
                 });
                 state.phase = Phase::Thinking;
             }
 
-            StorageEvent::AssistantFinal { content, .. } => {
+            StorageEvent::AssistantFinal {
+                content,
+                reasoning_content,
+                reasoning_signature,
+                ..
+            } => {
                 // If there's already a pending assistant (from a previous step
                 // in the same turn that wasn't flushed), flush it first.
-                flush(&mut state, &mut pending_content, &mut pending_tool_calls);
-                pending_content = Some(content.clone());
+                flush(
+                    &mut state,
+                    &mut pending_content,
+                    &mut pending_reasoning,
+                    &mut pending_tool_calls,
+                );
+                let parts = split_assistant_content(content, reasoning_content.as_deref());
+                pending_content = Some(parts.visible_content);
+                pending_reasoning = parts.reasoning_content.map(|content| ReasoningContent {
+                    content,
+                    signature: reasoning_signature.clone(),
+                });
             }
 
             StorageEvent::ToolCall {
@@ -96,7 +119,12 @@ pub fn project(events: &[StorageEvent]) -> AgentState {
                 ..
             } => {
                 // Flush the assistant message that triggered these tool calls.
-                flush(&mut state, &mut pending_content, &mut pending_tool_calls);
+                flush(
+                    &mut state,
+                    &mut pending_content,
+                    &mut pending_reasoning,
+                    &mut pending_tool_calls,
+                );
 
                 state.messages.push(LlmMessage::Tool {
                     tool_call_id: tool_call_id.clone(),
@@ -105,18 +133,30 @@ pub fn project(events: &[StorageEvent]) -> AgentState {
             }
 
             StorageEvent::TurnDone { .. } => {
-                flush(&mut state, &mut pending_content, &mut pending_tool_calls);
+                flush(
+                    &mut state,
+                    &mut pending_content,
+                    &mut pending_reasoning,
+                    &mut pending_tool_calls,
+                );
                 state.phase = Phase::Idle;
                 state.turn_count += 1;
             }
 
             // AssistantDelta and Error don't participate in state rebuilding.
-            StorageEvent::AssistantDelta { .. } | StorageEvent::Error { .. } => {}
+            StorageEvent::AssistantDelta { .. }
+            | StorageEvent::ThinkingDelta { .. }
+            | StorageEvent::Error { .. } => {}
         }
     }
 
     // Flush any trailing pending content (e.g. replay stops mid-turn).
-    flush(&mut state, &mut pending_content, &mut pending_tool_calls);
+    flush(
+        &mut state,
+        &mut pending_content,
+        &mut pending_reasoning,
+        &mut pending_tool_calls,
+    );
 
     state
 }
@@ -179,6 +219,8 @@ mod tests {
             StorageEvent::AssistantFinal {
                 turn_id: None,
                 content: "hello!".into(),
+                reasoning_content: None,
+                reasoning_signature: None,
                 timestamp: None,
             },
             StorageEvent::TurnDone {
@@ -209,6 +251,8 @@ mod tests {
             StorageEvent::AssistantFinal {
                 turn_id: None,
                 content: "".into(),
+                reasoning_content: None,
+                reasoning_signature: None,
                 timestamp: None,
             },
             StorageEvent::ToolCall {
@@ -228,6 +272,8 @@ mod tests {
             StorageEvent::AssistantFinal {
                 turn_id: None,
                 content: "Here are the files".into(),
+                reasoning_content: None,
+                reasoning_signature: None,
                 timestamp: None,
             },
             StorageEvent::TurnDone {
@@ -243,6 +289,8 @@ mod tests {
             StorageEvent::AssistantFinal {
                 turn_id: None,
                 content: "You're welcome!".into(),
+                reasoning_content: None,
+                reasoning_signature: None,
                 timestamp: None,
             },
             StorageEvent::TurnDone {
@@ -265,6 +313,7 @@ mod tests {
             LlmMessage::Assistant {
                 content,
                 tool_calls,
+                ..
             } => {
                 assert_eq!(content, "");
                 assert_eq!(tool_calls.len(), 1);
@@ -310,6 +359,8 @@ mod tests {
             StorageEvent::AssistantFinal {
                 turn_id: None,
                 content: "hello".into(),
+                reasoning_content: None,
+                reasoning_signature: None,
                 timestamp: None,
             },
             StorageEvent::Error {
@@ -366,6 +417,7 @@ mod tests {
             LlmMessage::Assistant {
                 content,
                 tool_calls,
+                ..
             } => {
                 assert_eq!(content, "");
                 assert_eq!(tool_calls.len(), 1);

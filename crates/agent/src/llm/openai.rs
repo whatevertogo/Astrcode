@@ -1,6 +1,8 @@
 use std::fmt;
 
-use astrcode_core::{AstrError, CancelToken, LlmMessage, Result, ToolCallRequest, ToolDefinition};
+use astrcode_core::{
+    AstrError, CancelToken, LlmMessage, ReasoningContent, Result, ToolCallRequest, ToolDefinition,
+};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -249,6 +251,13 @@ fn message_to_output(message: OpenAiResponseMessage) -> LlmOutput {
     LlmOutput {
         content,
         tool_calls,
+        reasoning: message
+            .reasoning_content
+            .filter(|value| !value.is_empty())
+            .map(|content| ReasoningContent {
+                content,
+                signature: None,
+            }),
     }
 }
 
@@ -286,6 +295,12 @@ fn apply_stream_chunk(chunk: OpenAiStreamChunk) -> Vec<LlmEvent> {
         if let Some(content) = choice.delta.content {
             if !content.is_empty() {
                 events.push(LlmEvent::TextDelta(content));
+            }
+        }
+
+        if let Some(reasoning_content) = choice.delta.reasoning_content {
+            if !reasoning_content.is_empty() {
+                events.push(LlmEvent::ThinkingDelta(reasoning_content));
             }
         }
 
@@ -390,6 +405,7 @@ fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
         LlmMessage::Assistant {
             content,
             tool_calls,
+            reasoning: _,
         } => OpenAiRequestMessage {
             role: "assistant".to_string(),
             content: if content.is_empty() {
@@ -492,6 +508,8 @@ struct OpenAiChoice {
 #[derive(Debug, Deserialize)]
 struct OpenAiResponseMessage {
     content: Option<String>,
+    #[serde(alias = "reasoning")]
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<OpenAiResponseToolCall>>,
 }
 
@@ -521,6 +539,8 @@ struct OpenAiStreamChoice {
 #[derive(Debug, Deserialize)]
 struct OpenAiStreamDelta {
     content: Option<String>,
+    #[serde(alias = "reasoning")]
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<OpenAiStreamToolCall>>,
 }
 
@@ -623,6 +643,7 @@ mod tests {
             choices: vec![OpenAiStreamChoice {
                 delta: OpenAiStreamDelta {
                     content: None,
+                    reasoning_content: None,
                     tool_calls: Some(vec![OpenAiStreamToolCall {
                         index: 0,
                         id: Some("call_1".to_string()),
@@ -690,6 +711,7 @@ mod tests {
             choices: vec![OpenAiStreamChoice {
                 delta: OpenAiStreamDelta {
                     content: None,
+                    reasoning_content: None,
                     tool_calls: Some(vec![OpenAiStreamToolCall {
                         index: 0,
                         id: Some("call_1".to_string()),
@@ -709,6 +731,7 @@ mod tests {
             choices: vec![OpenAiStreamChoice {
                 delta: OpenAiStreamDelta {
                     content: None,
+                    reasoning_content: None,
                     tool_calls: Some(vec![OpenAiStreamToolCall {
                         index: 0,
                         id: None,

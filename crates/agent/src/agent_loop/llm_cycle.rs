@@ -50,6 +50,13 @@ pub(crate) async fn generate_response(
                             token: text,
                         })?;
                     }
+                    Some(LlmEvent::ThinkingDelta(text)) => {
+                        on_event(StorageEvent::ThinkingDelta {
+                            turn_id: Some(turn_id.to_string()),
+                            token: text,
+                        })?;
+                    }
+                    Some(LlmEvent::ThinkingSignature(_)) => {}
                     Some(LlmEvent::ToolCallDelta { .. }) => {}
                     None => event_rx_open = false,
                 }
@@ -58,11 +65,20 @@ pub(crate) async fn generate_response(
     };
 
     while let Ok(event) = event_rx.try_recv() {
-        if let LlmEvent::TextDelta(text) = event {
-            on_event(StorageEvent::AssistantDelta {
-                turn_id: Some(turn_id.to_string()),
-                token: text,
-            })?;
+        match event {
+            LlmEvent::TextDelta(text) => {
+                on_event(StorageEvent::AssistantDelta {
+                    turn_id: Some(turn_id.to_string()),
+                    token: text,
+                })?;
+            }
+            LlmEvent::ThinkingDelta(text) => {
+                on_event(StorageEvent::ThinkingDelta {
+                    turn_id: Some(turn_id.to_string()),
+                    token: text,
+                })?;
+            }
+            LlmEvent::ThinkingSignature(_) | LlmEvent::ToolCallDelta { .. } => {}
         }
     }
 

@@ -4,7 +4,10 @@ mod error;
 mod event;
 mod tool;
 
-pub use action::{LlmMessage, LlmResponse, ToolCallRequest, ToolDefinition, ToolExecutionResult};
+pub use action::{
+    split_assistant_content, AssistantContentParts, LlmMessage, LlmResponse, ReasoningContent,
+    ToolCallRequest, ToolDefinition, ToolExecutionResult,
+};
 pub use cancel::CancelToken;
 pub use error::{AstrError, Result, ResultExt};
 pub use event::{AgentEvent, Phase};

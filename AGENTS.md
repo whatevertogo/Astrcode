@@ -112,5 +112,6 @@ cd frontend && npm run typecheck
 - **Windows Home 目录测试**: `dirs::home_dir()` 不受临时环境变量影响；用 `test_support::test_home_dir()` / `TestEnvGuard`
 - **PR 评论修复前**: 先查 `git status --short` 和 `git diff`，避免覆盖未提交改动
 - **排查问题前**: 检查关键文件（`main.rs`、`Cargo.toml`）是否被误删，排除”运行旧版本”误判
+- **旧 PR 路径已再次过时**: 当前 prompt 编排入口在 `crates/agent/src/prompt/`，会话快照/SSE 对接集中在 `crates/agent/src/service/replay.rs` 与 `crates/server/src/main.rs`；如果 PR 描述、IDE 标签或历史文档还指向 `crates/core/src/prompt/*`、`crates/core/src/runtime/*` 或 `src-tauri/src/handle/presentation/*`，先以仓库实际路径为准，不要按旧目录硬套冲突修复
 - **AgentService 拆分后**: `crates/agent/src/service/` 已按 `types` / `config_ops` / `session_ops` / `turn_ops` / `replay` / `session_state` 拆分；新增逻辑先确认职责落点，避免把配置 façade、session runtime、事件翻译重新塞回 `mod.rs`
 - **善意提醒已落实**: 这里曾出现过 `AgentService` 在单文件里同时承载配置 façade、会话运行态、事件翻译和测试的职责混杂；后续看到单文件再次快速膨胀时，要立刻提醒协作开发者先做边界整理，再继续堆逻辑

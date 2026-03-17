@@ -28,9 +28,15 @@ pub enum AgentEvent {
         turn_id: String,
         delta: String,
     },
+    ThinkingDelta {
+        turn_id: String,
+        delta: String,
+    },
     AssistantMessage {
         turn_id: String,
         content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_content: Option<String>,
     },
     ToolCallStart {
         turn_id: String,

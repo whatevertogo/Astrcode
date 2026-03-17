@@ -645,9 +645,15 @@ fn to_session_message_dto(message: SessionMessage) -> SessionMessageDto {
         SessionMessage::User { content, timestamp } => {
             SessionMessageDto::User { content, timestamp }
         }
-        SessionMessage::Assistant { content, timestamp } => {
-            SessionMessageDto::Assistant { content, timestamp }
-        }
+        SessionMessage::Assistant {
+            content,
+            timestamp,
+            reasoning_content,
+        } => SessionMessageDto::Assistant {
+            content,
+            timestamp,
+            reasoning_content,
+        },
         SessionMessage::ToolCall {
             tool_call_id,
             tool_name,

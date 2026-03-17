@@ -41,10 +41,9 @@ pub fn open_config_in_editor(path: Option<String>) -> Result<(), String> {
     let allowed_root = crate::paths::astrcode_root_dir().map_err(|e| e.to_string())?;
 
     // 规范化路径并验证是否在允许的根目录下
-    let canonical_path = std::fs::canonicalize(&path)
-        .map_err(|e| format!("无法访问路径: {}", e))?;
-    let canonical_root = std::fs::canonicalize(&allowed_root)
-        .unwrap_or(allowed_root);
+    let canonical_path =
+        std::fs::canonicalize(&path).map_err(|e| format!("无法访问路径: {}", e))?;
+    let canonical_root = std::fs::canonicalize(&allowed_root).unwrap_or(allowed_root);
 
     if !canonical_path.starts_with(&canonical_root) {
         return Err(format!(

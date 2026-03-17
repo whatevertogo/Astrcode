@@ -21,10 +21,19 @@ pub enum StorageEvent {
         turn_id: Option<String>,
         token: String,
     },
+    ThinkingDelta {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        token: String,
+    },
     AssistantFinal {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
         content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_content: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_signature: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timestamp: Option<DateTime<Utc>>,
     },
@@ -62,6 +71,7 @@ impl StorageEvent {
         match self {
             Self::UserMessage { turn_id, .. }
             | Self::AssistantDelta { turn_id, .. }
+            | Self::ThinkingDelta { turn_id, .. }
             | Self::AssistantFinal { turn_id, .. }
             | Self::ToolCall { turn_id, .. }
             | Self::ToolResult { turn_id, .. }

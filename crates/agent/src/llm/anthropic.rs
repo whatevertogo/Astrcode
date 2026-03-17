@@ -1,6 +1,6 @@
 use std::fmt;
 
-use astrcode_core::{AstrError, CancelToken, Result};
+use astrcode_core::{AstrError, CancelToken, ReasoningContent, Result};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use log::warn;
@@ -69,6 +69,7 @@ impl AnthropicProvider {
                 Some(to_anthropic_tools(tools))
             },
             stream: stream.then_some(true),
+            thinking: thinking_config_for_model(&self.model, self.max_tokens),
         }
     }
 
@@ -239,8 +240,15 @@ fn to_anthropic_messages(messages: &[LlmMessage]) -> Vec<AnthropicMessage> {
             LlmMessage::Assistant {
                 content,
                 tool_calls,
+                reasoning,
             } => {
                 let mut blocks = Vec::new();
+                if let Some(reasoning) = reasoning {
+                    blocks.push(AnthropicContentBlock::Thinking {
+                        thinking: reasoning.content.clone(),
+                        signature: reasoning.signature.clone(),
+                    });
+                }
                 if !content.is_empty() {
                     blocks.push(AnthropicContentBlock::Text {
                         text: content.clone(),
@@ -314,6 +322,17 @@ fn response_to_output(response: AnthropicResponse) -> LlmOutput {
                 };
                 let args = block.get("input").cloned().unwrap_or(Value::Null);
                 output.tool_calls.push(ToolCallRequest { id, name, args });
+            }
+            Some("thinking") => {
+                if let Some(thinking) = block.get("thinking").and_then(Value::as_str) {
+                    output.reasoning = Some(ReasoningContent {
+                        content: thinking.to_string(),
+                        signature: block
+                            .get("signature")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    });
+                }
             }
             Some(other) => {
                 warn!("anthropic: unknown content block type: {}", other);
@@ -427,6 +446,20 @@ fn process_sse_block(
                         emit_event(LlmEvent::TextDelta(text.to_string()), accumulator, sink);
                     }
                 }
+                Some("thinking_delta") => {
+                    if let Some(text) = delta.get("thinking").and_then(Value::as_str) {
+                        emit_event(LlmEvent::ThinkingDelta(text.to_string()), accumulator, sink);
+                    }
+                }
+                Some("signature_delta") => {
+                    if let Some(signature) = delta.get("signature").and_then(Value::as_str) {
+                        emit_event(
+                            LlmEvent::ThinkingSignature(signature.to_string()),
+                            accumulator,
+                            sink,
+                        );
+                    }
+                }
                 Some("input_json_delta") => {
                     emit_event(
                         LlmEvent::ToolCallDelta {
@@ -454,6 +487,22 @@ fn process_sse_block(
             Ok(false)
         }
     }
+}
+
+fn thinking_config_for_model(model: &str, max_tokens: u32) -> Option<AnthropicThinking> {
+    if !model.starts_with("claude-") || max_tokens < 2 {
+        return None;
+    }
+
+    let budget_tokens = max_tokens.saturating_mul(3) / 4;
+    if budget_tokens == 0 || budget_tokens >= max_tokens {
+        return None;
+    }
+
+    Some(AnthropicThinking {
+        type_: "enabled".to_string(),
+        budget_tokens,
+    })
 }
 
 fn next_sse_block(buffer: &str) -> Option<(usize, usize)> {
@@ -512,6 +561,15 @@ struct AnthropicRequest {
     tools: Option<Vec<AnthropicTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<AnthropicThinking>,
+}
+
+#[derive(Debug, Serialize)]
+struct AnthropicThinking {
+    #[serde(rename = "type")]
+    type_: String,
+    budget_tokens: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -525,6 +583,11 @@ struct AnthropicMessage {
 enum AnthropicContentBlock {
     Text {
         text: String,
+    },
+    Thinking {
+        thinking: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
     ToolUse {
         id: String,
@@ -581,6 +644,7 @@ mod tests {
                     name: "search".to_string(),
                     args: json!({ "q": "rust" }),
                 }],
+                reasoning: None,
             },
             LlmMessage::Tool {
                 tool_call_id: "call_1".to_string(),
@@ -603,6 +667,7 @@ mod tests {
                 name: "search".to_string(),
                 args: json!({ "q": "rust" }),
             }],
+            reasoning: None,
         }]);
 
         match &messages[0].content[..] {
@@ -637,6 +702,27 @@ mod tests {
         assert_eq!(output.tool_calls.len(), 1);
         assert_eq!(output.tool_calls[0].id, "call_1");
         assert_eq!(output.tool_calls[0].args, json!({ "q": "rust" }));
+        assert_eq!(output.reasoning, None);
+    }
+
+    #[test]
+    fn non_streaming_response_maps_thinking_block() {
+        let output = response_to_output(AnthropicResponse {
+            content: vec![
+                json!({ "type": "thinking", "thinking": "pondering", "signature": "sig-1" }),
+                json!({ "type": "text", "text": "done" }),
+            ],
+            stop_reason: Some("end_turn".to_string()),
+        });
+
+        assert_eq!(output.content, "done");
+        assert_eq!(
+            output.reasoning,
+            Some(ReasoningContent {
+                content: "pondering".to_string(),
+                signature: Some("sig-1".to_string()),
+            })
+        );
     }
 
     #[test]
@@ -717,6 +803,33 @@ mod tests {
         let body = serde_json::to_value(&request).expect("request should serialize");
 
         assert!(body.get("system").is_none());
+    }
+
+    #[test]
+    fn build_request_serializes_thinking_when_model_supports_it() {
+        let provider =
+            AnthropicProvider::new("sk-ant-test".to_string(), "claude-sonnet-4-5".to_string());
+        let request = provider.build_request(
+            &[LlmMessage::User {
+                content: "hi".to_string(),
+            }],
+            &[],
+            None,
+            true,
+        );
+        let body = serde_json::to_value(&request).expect("request should serialize");
+
+        assert_eq!(
+            body.get("thinking")
+                .and_then(|value| value.get("type"))
+                .and_then(Value::as_str),
+            Some("enabled")
+        );
+        assert!(body
+            .get("thinking")
+            .and_then(|value| value.get("budget_tokens"))
+            .and_then(Value::as_u64)
+            .is_some());
     }
 
     #[test]

@@ -39,8 +39,16 @@ pub(crate) async fn run_turn(
             tool_names: agent_loop.tools.names(),
             step_index,
             turn_index: state.turn_count,
+            vars: Default::default(),
         };
-        let plan = PromptComposer::with_defaults().build(&ctx);
+        let build_output = match PromptComposer::with_defaults().build(&ctx).await {
+            Ok(output) => output,
+            Err(error) => {
+                finish_with_error(turn_id, error.to_string(), on_event)?;
+                return Ok(());
+            }
+        };
+        let plan = build_output.plan;
         let system_prompt = plan.render_system();
         let mut request_messages = plan.prepend_messages;
         request_messages.extend(messages.iter().cloned());
@@ -70,10 +78,16 @@ pub(crate) async fn run_turn(
             }
         };
 
-        if !output.content.is_empty() || !output.tool_calls.is_empty() {
+        if !output.content.is_empty() || !output.tool_calls.is_empty() || output.reasoning.is_some()
+        {
             on_event(StorageEvent::AssistantFinal {
                 turn_id: Some(turn_id.to_string()),
                 content: output.content.clone(),
+                reasoning_content: output.reasoning.as_ref().map(|value| value.content.clone()),
+                reasoning_signature: output
+                    .reasoning
+                    .as_ref()
+                    .and_then(|value| value.signature.clone()),
                 timestamp: Some(chrono::Utc::now()),
             })?;
         }
@@ -82,6 +96,7 @@ pub(crate) async fn run_turn(
         messages.push(LlmMessage::Assistant {
             content: output.content,
             tool_calls: output.tool_calls,
+            reasoning: output.reasoning,
         });
 
         if tool_calls.is_empty() {

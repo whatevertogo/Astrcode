@@ -22,6 +22,7 @@ export interface SessionAssistantMessage {
   kind: 'assistant';
   content: string;
   timestamp: string;
+  reasoningContent?: string;
 }
 
 export interface SessionToolCallMessage {
@@ -100,6 +101,7 @@ function normalizeSessionMessage(raw: unknown): SessionMessage {
       kind: 'assistant',
       content: pickString(message, 'content') ?? '',
       timestamp: pickString(message, 'timestamp') ?? new Date().toISOString(),
+      reasoningContent: pickString(message, 'reasoningContent', 'reasoning_content') ?? undefined,
     };
   }
 

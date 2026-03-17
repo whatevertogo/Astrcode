@@ -33,16 +33,21 @@ class MarkdownGuard extends Component<MarkdownGuardProps, MarkdownGuardState> {
   }
 }
 
-function extractThinkingBlocks(text: string): {
+function extractThinkingBlocks(text: string, explicitReasoning?: string): {
   visibleText: string;
   thinkingBlocks: string[];
 } {
   const thinkingBlocks: string[] = [];
+  if (explicitReasoning?.trim()) {
+    thinkingBlocks.push(explicitReasoning.trim());
+  }
   const visibleText = text
     .replace(/<think>([\s\S]*?)<\/think>/gi, (_match, content: string) => {
       const normalized = content.trim();
       if (normalized) {
-        thinkingBlocks.push(normalized);
+        if (!thinkingBlocks.includes(normalized)) {
+          thinkingBlocks.push(normalized);
+        }
       }
       return '';
     })
@@ -52,7 +57,7 @@ function extractThinkingBlocks(text: string): {
 }
 
 function AssistantMessage({ message }: AssistantMessageProps) {
-  const { visibleText, thinkingBlocks } = extractThinkingBlocks(message.text);
+  const { visibleText, thinkingBlocks } = extractThinkingBlocks(message.text, message.reasoningText);
 
   return (
     <div className={styles.wrapper}>
@@ -83,7 +88,19 @@ function AssistantMessage({ message }: AssistantMessageProps) {
           data-streaming={message.streaming ? 'true' : 'false'}
         >
           {message.streaming ? (
-            <div className={styles.streamingText}>{message.text}</div>
+            <>
+              {thinkingBlocks.map((block, index) => (
+                <details
+                  key={`${message.id}-thinking-${index}`}
+                  className={styles.thinkingBlock}
+                  open
+                >
+                  <summary className={styles.thinkingSummary}>Thinking</summary>
+                  <pre className={styles.thinkingContent}>{block}</pre>
+                </details>
+              ))}
+              <div className={styles.streamingText}>{message.text}</div>
+            </>
           ) : (
             <>
               {thinkingBlocks.map((block, index) => (

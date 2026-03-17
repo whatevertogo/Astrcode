@@ -18,6 +18,7 @@ pub enum SessionMessage {
     Assistant {
         content: String,
         timestamp: String,
+        reasoning_content: Option<String>,
     },
     ToolCall {
         tool_call_id: String,
