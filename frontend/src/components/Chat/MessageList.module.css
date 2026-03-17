@@ -15,6 +15,11 @@
   margin-top: 40px;
 }
 
+.messageRow {
+  content-visibility: auto;
+  contain-intrinsic-size: 96px;
+}
+
 .renderError {
   align-self: stretch;
   border: 1px solid #7f3b3b;

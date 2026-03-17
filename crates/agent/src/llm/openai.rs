@@ -1,29 +1,43 @@
-use anyhow::{anyhow, Context, Result};
-use astrcode_core::CancelToken;
+use std::fmt;
+
+use astrcode_core::{AstrError, CancelToken, LlmMessage, Result, ToolCallRequest, ToolDefinition};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::select;
+use tokio::{select, time::{sleep, Duration}};
 
 use crate::llm::{EventSink, LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
-use astrcode_core::{LlmMessage, ToolCallRequest, ToolDefinition};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct OpenAiProvider {
     client: reqwest::Client,
     base_url: String,
     api_key: String,
     model: String,
+    max_tokens: u32,
+}
+
+impl fmt::Debug for OpenAiProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpenAiProvider")
+            .field("client", &self.client)
+            .field("base_url", &self.base_url)
+            .field("api_key", &"<redacted>")
+            .field("model", &self.model)
+            .field("max_tokens", &self.max_tokens)
+            .finish()
+    }
 }
 
 impl OpenAiProvider {
-    pub fn new(base_url: String, api_key: String, model: String) -> Self {
+    pub fn new(base_url: String, api_key: String, model: String, max_tokens: u32) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: build_http_client(),
             base_url,
             api_key,
             model,
+            max_tokens,
         }
     }
 
@@ -48,6 +62,7 @@ impl OpenAiProvider {
 
         OpenAiChatRequest {
             model: &self.model,
+            max_tokens: self.max_tokens,
             messages: request_messages,
             tools: if tools.is_empty() {
                 None
@@ -65,31 +80,90 @@ impl OpenAiProvider {
         cancel: CancelToken,
     ) -> Result<reqwest::Response> {
         let endpoint = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let send_future = self
-            .client
-            .post(endpoint)
-            .bearer_auth(&self.api_key)
-            .json(req)
-            .send();
 
-        let response = select! {
-            _ = crate::cancel::cancelled(cancel.clone()) => {
-                return Err(anyhow!("llm request interrupted"));
+        for attempt in 0..=MAX_RETRIES {
+            let send_future = self
+                .client
+                .post(&endpoint)
+                .bearer_auth(&self.api_key)
+                .json(req)
+                .send();
+
+            let response = select! {
+                _ = crate::cancel::cancelled(cancel.clone()) => {
+                    return Err(AstrError::LlmInterrupted);
+                }
+                result = send_future => result
+                    .map_err(|error| AstrError::http("failed to call openai-compatible endpoint", error))
+            };
+
+            match response {
+                Ok(response) => {
+                    let status = response.status();
+                    if status.is_success() {
+                        return Ok(response);
+                    }
+
+                    let body = response.text().await.unwrap_or_default();
+                    if is_retryable_status(status) && attempt < MAX_RETRIES {
+                        wait_retry_delay(attempt, cancel.clone()).await?;
+                        continue;
+                    }
+
+                    return Err(AstrError::LlmRequestFailed {
+                        status: status.as_u16(),
+                        body,
+                    });
+                }
+                Err(error) => {
+                    if is_retryable_transport_error(&error) && attempt < MAX_RETRIES {
+                        wait_retry_delay(attempt, cancel.clone()).await?;
+                        continue;
+                    }
+                    return Err(error);
+                }
             }
-            result = send_future => result.context("failed to call openai-compatible endpoint")?
-        };
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "openai-compatible request failed with {}: {}",
-                status,
-                body
-            ));
         }
 
-        Ok(response)
+        Err(AstrError::Network(
+            "openai-compatible request failed after retries".to_string(),
+        ))
+    }
+}
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const READ_TIMEOUT: Duration = Duration::from_secs(90);
+const MAX_RETRIES: u32 = 2;
+const RETRY_BASE_DELAY_MS: u64 = 250;
+
+fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .build()
+        .expect("openai http client should build")
+}
+
+fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::REQUEST_TIMEOUT
+            | reqwest::StatusCode::TOO_MANY_REQUESTS
+            | reqwest::StatusCode::BAD_GATEWAY
+            | reqwest::StatusCode::SERVICE_UNAVAILABLE
+            | reqwest::StatusCode::GATEWAY_TIMEOUT
+    ) || status.is_server_error()
+}
+
+fn is_retryable_transport_error(error: &AstrError) -> bool {
+    error.is_retryable()
+}
+
+async fn wait_retry_delay(attempt: u32, cancel: CancelToken) -> Result<()> {
+    let delay_ms = RETRY_BASE_DELAY_MS.saturating_mul(1_u64 << attempt);
+    select! {
+        _ = crate::cancel::cancelled(cancel) => Err(AstrError::LlmInterrupted),
+        _ = sleep(Duration::from_millis(delay_ms)) => Ok(()),
     }
 }
 
@@ -110,10 +184,14 @@ impl LlmProvider for OpenAiProvider {
                 let parsed: OpenAiChatResponse = response
                     .json()
                     .await
-                    .context("failed to parse openai-compatible response")?;
+                    .map_err(|error| {
+                        AstrError::http("failed to parse openai-compatible response", error)
+                    })?;
                 let first_choice =
                     parsed.choices.into_iter().next().ok_or_else(|| {
-                        anyhow!("openai-compatible response did not include choices")
+                        AstrError::LlmStreamError(
+                            "openai-compatible response did not include choices".to_string(),
+                        )
                     })?;
                 Ok(message_to_output(first_choice.message))
             }
@@ -125,7 +203,7 @@ impl LlmProvider for OpenAiProvider {
                 loop {
                     let next_item = select! {
                         _ = crate::cancel::cancelled(cancel.clone()) => {
-                            return Err(anyhow!("llm request interrupted"));
+                            return Err(AstrError::LlmInterrupted);
                         }
                         item = body_stream.next() => item,
                     };
@@ -134,9 +212,14 @@ impl LlmProvider for OpenAiProvider {
                         break;
                     };
 
-                    let bytes = item.context("failed to read openai-compatible response stream")?;
+                    let bytes = item.map_err(|error| {
+                        AstrError::http("failed to read openai-compatible response stream", error)
+                    })?;
                     let chunk_text = std::str::from_utf8(&bytes)
-                        .context("openai-compatible response stream was not valid utf-8")?;
+                        .map_err(|error| {
+                            AstrError::from(error)
+                                .context("openai-compatible response stream was not valid utf-8")
+                        })?;
 
                     if consume_sse_text_chunk(chunk_text, &mut sse_buffer, &mut accumulator, &sink)?
                     {
@@ -192,7 +275,7 @@ fn parse_sse_line(line: &str) -> Result<ParsedSseLine> {
     }
 
     let chunk = serde_json::from_str::<OpenAiStreamChunk>(data)
-        .context("failed to parse streaming chunk")?;
+        .map_err(|error| AstrError::parse("failed to parse streaming chunk", error))?;
     Ok(ParsedSseLine::Chunk(chunk))
 }
 
@@ -350,6 +433,7 @@ fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
 #[derive(Debug, Serialize)]
 struct OpenAiChatRequest<'a> {
     model: &'a str,
+    max_tokens: u32,
     messages: Vec<OpenAiRequestMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OpenAiTool>>,
@@ -478,6 +562,7 @@ mod tests {
             "http://127.0.0.1:12345".to_string(),
             "sk-test".to_string(),
             "model-a".to_string(),
+            2048,
         )
     }
 
@@ -661,6 +746,7 @@ mod tests {
             request.messages[0].content.as_deref(),
             Some("Follow the rules")
         );
+        assert_eq!(request.max_tokens, 2048);
     }
 
     #[test]
@@ -700,7 +786,8 @@ mod tests {
             body
         );
         let (base_url, handle) = spawn_server(response);
-        let provider = OpenAiProvider::new(base_url, "sk-test".to_string(), "model-a".to_string());
+        let provider =
+            OpenAiProvider::new(base_url, "sk-test".to_string(), "model-a".to_string(), 2048);
 
         let output = provider
             .generate(
@@ -755,7 +842,8 @@ mod tests {
             body
         );
         let (base_url, handle) = spawn_server(response);
-        let provider = OpenAiProvider::new(base_url, "sk-test".to_string(), "model-a".to_string());
+        let provider =
+            OpenAiProvider::new(base_url, "sk-test".to_string(), "model-a".to_string(), 2048);
         let events = Arc::new(Mutex::new(Vec::new()));
 
         let output = provider
@@ -791,5 +879,12 @@ mod tests {
         assert_eq!(output.content, "hello");
         assert_eq!(output.tool_calls.len(), 1);
         assert_eq!(output.tool_calls[0].args, json!({ "q": "hello" }));
+    }
+
+    #[test]
+    fn retryable_statuses_are_classified() {
+        assert!(is_retryable_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(is_retryable_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(!is_retryable_status(reqwest::StatusCode::BAD_REQUEST));
     }
 }

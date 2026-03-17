@@ -221,4 +221,19 @@ mod tests {
         assert!(result.ok);
         assert!(result.output.contains("ok"));
     }
+
+    #[tokio::test]
+    async fn shell_tool_rejects_blank_command() {
+        let tool = ShellTool;
+        let err = tool
+            .execute(
+                "tc2".to_string(),
+                json!({"command": "   "}),
+                &test_tool_context_for(std::env::temp_dir()),
+            )
+            .await
+            .expect_err("blank command should fail");
+
+        assert!(matches!(err, AstrError::Validation(_)));
+    }
 }

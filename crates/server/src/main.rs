@@ -17,10 +17,11 @@ use crate::dto::{
     PromptAcceptedResponse, PromptRequest, SaveActiveSelectionRequest, SessionListItem,
     SessionMessageDto, TestConnectionRequest, TestResultDto,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Context, Result as AnyhowResult};
 use astrcode_agent::{
     AgentService, PromptAccepted, ServiceError, SessionMessage, SessionReplaySource,
 };
+use astrcode_core::AstrError;
 use astrcode_tools::tools::{
     edit_file::EditFileTool, find_files::FindFilesTool, grep::GrepTool, list_dir::ListDirTool,
     read_file::ReadFileTool, shell::ShellTool, write_file::WriteFileTool,
@@ -135,7 +136,7 @@ struct RunInfo {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> AnyhowResult<()> {
     let registry = astrcode_agent::ToolRegistry::builder()
         .register(Box::new(ShellTool::default()))
         .register(Box::new(ListDirTool::default()))
@@ -145,14 +146,14 @@ async fn main() -> Result<()> {
         .register(Box::new(FindFilesTool::default()))
         .register(Box::new(GrepTool::default()))
         .build();
-    let service = Arc::new(AgentService::new(registry)?);
+    let service = Arc::new(AgentService::new(registry).map_err(|error| anyhow!(error.to_string()))?);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
-        .context("failed to bind server listener")?;
+        .map_err(|e| AstrError::io("failed to bind server listener", e))?;
     let address: SocketAddr = listener
         .local_addr()
-        .context("failed to resolve server listener address")?;
+        .map_err(|e| AstrError::io("failed to resolve server listener address", e))?;
     let token = random_hex_token();
     let server_origin = format!("http://127.0.0.1:{}", address.port());
     let frontend_build = load_frontend_build(&server_origin, &token)?;
@@ -185,9 +186,9 @@ async fn main() -> Result<()> {
     let app = attach_frontend_build(app, frontend_build);
     let app = app.with_state(state).layer(build_cors_layer());
 
-    axum::serve(listener, app)
+    Ok(axum::serve(listener, app)
         .await
-        .context("server terminated unexpectedly")
+        .map_err(|e| AstrError::io("server terminated unexpectedly", e))?)
 }
 
 async fn server_root() -> &'static str {
@@ -205,7 +206,7 @@ fn attach_frontend_build(
     app.route("/", get(server_root))
 }
 
-fn load_frontend_build(server_origin: &str, token: &str) -> Result<Option<FrontendBuild>> {
+fn load_frontend_build(server_origin: &str, token: &str) -> AnyhowResult<Option<FrontendBuild>> {
     let dist_dir = frontend_dist_dir();
     let index_path = dist_dir.join("index.html");
     if !index_path.is_file() {
@@ -272,7 +273,7 @@ fn inject_browser_bootstrap_html(
     index_html: &str,
     server_origin: &str,
     token: &str,
-) -> Result<String> {
+) -> AnyhowResult<String> {
     let bootstrap = serde_json::json!({
         "token": token,
         "isDesktopHost": false,
@@ -859,7 +860,7 @@ fn random_hex_token() -> String {
     bytes.iter().map(|byte| format!("{:02x}", byte)).collect()
 }
 
-fn write_run_info(port: u16, token: &str) -> Result<()> {
+fn write_run_info(port: u16, token: &str) -> AnyhowResult<()> {
     let path = run_info_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
@@ -879,11 +880,11 @@ fn write_run_info(port: u16, token: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_info_path() -> Result<PathBuf> {
+fn run_info_path() -> AnyhowResult<PathBuf> {
     Ok(resolve_home_dir()?.join(".astrcode").join("run.json"))
 }
 
-fn resolve_home_dir() -> Result<PathBuf> {
+fn resolve_home_dir() -> AnyhowResult<PathBuf> {
     if let Some(home) = std::env::var_os(APP_HOME_OVERRIDE_ENV) {
         if !home.is_empty() {
             return Ok(PathBuf::from(home));
@@ -1096,6 +1097,55 @@ mod browser_bootstrap_tests {
             .expect("cross-origin response should expose cursor header")
             .to_ascii_lowercase();
         assert!(exposed_headers.contains(SESSION_CURSOR_HEADER_NAME));
+    }
+
+    #[tokio::test]
+    async fn session_messages_requires_authentication() {
+        let temp_dir = TempDir::new().expect("temp dir should be creatable");
+        let (state, _guard) = test_state(None);
+        let meta = state
+            .service
+            .create_session(temp_dir.path())
+            .await
+            .expect("session should be created");
+        let app = Router::new()
+            .route("/api/sessions/:id/messages", get(session_messages))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("/api/sessions/{}/messages", meta.session_id))
+                    .body(Body::empty())
+                    .expect("messages request should be valid"),
+            )
+            .await
+            .expect("messages response should be returned");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn session_messages_returns_not_found_for_unknown_session() {
+        let (state, _guard) = test_state(None);
+        let app = Router::new()
+            .route("/api/sessions/:id/messages", get(session_messages))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/sessions/missing-session/messages")
+                    .header(AUTH_HEADER_NAME, "browser-token")
+                    .body(Body::empty())
+                    .expect("messages request should be valid"),
+            )
+            .await
+            .expect("messages response should be returned");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     fn test_state(frontend_build: Option<FrontendBuild>) -> (AppState, ServerTestEnvGuard) {

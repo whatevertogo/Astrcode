@@ -144,6 +144,24 @@ function reducer(state: AppState, action: Action): AppState {
         activeSessionId: action.sessionId,
       };
 
+    case 'ADD_PROJECT':
+      return {
+        ...state,
+        projects: [action.project, ...state.projects],
+        activeProjectId: action.project.id,
+        activeSessionId: action.project.sessions[0]?.id ?? null,
+      };
+
+    case 'ADD_SESSION':
+      return {
+        ...mapProject(state, action.projectId, (project) => ({
+          ...project,
+          sessions: [action.session, ...project.sessions],
+        })),
+        activeProjectId: action.projectId,
+        activeSessionId: action.session.id,
+      };
+
     case 'TOGGLE_EXPAND':
       return mapProject(state, action.projectId, (project) => ({
         ...project,

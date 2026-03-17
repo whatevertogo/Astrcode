@@ -1,16 +1,18 @@
 //! v1 assumptions:
 //! - Missing fields are filled from `Default` without warnings.
-//! - `active_profile` / `active_model` are not cross-validated against `profiles`.
-//! - `provider_kind` is kept as free-form string; v1 does not enforce enum constraints.
+//! - Empty `version` / `active_profile` / `active_model` values are normalized during load.
+//! - `active_profile` / `active_model` are cross-validated against `profiles`.
+//! - `provider_kind` is validated against the supported providers.
 //! - `load_config()` is allowed to print once to stdout during first-time initialization.
 
 use std::fs;
+use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use astrcode_core::{AstrError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -18,8 +20,9 @@ pub const PROVIDER_KIND_OPENAI: &str = "openai-compatible";
 pub const PROVIDER_KIND_ANTHROPIC: &str = "anthropic";
 pub const ANTHROPIC_MESSAGES_API_URL: &str = "https://api.anthropic.com/v1/messages";
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
+pub const CURRENT_CONFIG_VERSION: &str = "1";
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 #[serde(default)]
@@ -37,7 +40,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            version: "1".to_string(),
+            version: CURRENT_CONFIG_VERSION.to_string(),
             active_profile: "deepseek".to_string(),
             active_model: "deepseek-chat".to_string(),
             profiles: default_profiles(),
@@ -45,7 +48,7 @@ impl Default for Config {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 #[serde(default)]
@@ -77,6 +80,30 @@ impl Default for Profile {
     }
 }
 
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("version", &self.version)
+            .field("active_profile", &self.active_profile)
+            .field("active_model", &self.active_model)
+            .field("profiles", &self.profiles)
+            .finish()
+    }
+}
+
+impl fmt::Debug for Profile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Profile")
+            .field("name", &self.name)
+            .field("provider_kind", &self.provider_kind)
+            .field("base_url", &self.base_url)
+            .field("api_key", &redacted_api_key(self.api_key.as_deref()))
+            .field("models", &self.models)
+            .field("max_tokens", &self.max_tokens)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct TestResult {
     pub success: bool,
@@ -88,12 +115,12 @@ pub struct TestResult {
 impl Profile {
     pub fn resolve_api_key(&self) -> Result<String> {
         let val = match &self.api_key {
-            None => bail!("profile '{}' 未配置 apiKey", self.name),
+            None => return Err(AstrError::MissingApiKey(format!("profile '{}' 未配置 apiKey", self.name))),
             Some(s) => s.trim().to_string(),
         };
 
         if val.is_empty() {
-            bail!("profile '{}' 的 apiKey 不能为空", self.name);
+            return Err(AstrError::MissingApiKey(format!("profile '{}' 的 apiKey 不能为空", self.name)));
         }
 
         let is_env_var_name = val
@@ -102,10 +129,18 @@ impl Profile {
             && val.contains('_');
 
         if is_env_var_name {
-            return std::env::var(&val).with_context(|| format!("环境变量 {} 未设置", val));
+            return std::env::var(&val).map_err(|_| AstrError::EnvVarNotFound(format!("环境变量 {} 未设置", val)));
         }
 
         Ok(val)
+    }
+}
+
+fn redacted_api_key(value: Option<&str>) -> &'static str {
+    if value.is_some() {
+        "<redacted>"
+    } else {
+        "<unset>"
     }
 }
 
@@ -192,49 +227,125 @@ fn load_config_from_path(path: &Path) -> Result<Config> {
     if !path.exists() {
         let parent = path
             .parent()
-            .ok_or_else(|| anyhow!("config path has no parent: {}", path.display()))?;
-        fs::create_dir_all(parent).with_context(|| {
-            format!("failed to create config directory for {}", parent.display())
-        })?;
+            .ok_or_else(|| AstrError::Internal(format!("config path has no parent: {}", path.display())))?;
+        fs::create_dir_all(parent).map_err(|e| AstrError::io(
+            format!("failed to create config directory for {}", parent.display()),
+            e,
+        ))?;
 
         let default_cfg = Config::default();
-        write_json_atomic(path, &default_cfg)
-            .with_context(|| format!("failed to initialize config file at {}", path.display()))?;
+        write_json_atomic(path, &default_cfg).map_err(|e| e.context(format!("failed to initialize config file at {}", path.display())))?;
 
         println!("Config created at {}，请填写 apiKey", path.display());
-        return Ok(default_cfg);
+        return Ok(normalize_config(default_cfg)?);
     }
 
     let raw = fs::read_to_string(path)
-        .with_context(|| format!("failed to read config at {}", path.display()))?;
-    serde_json::from_str::<Config>(&raw)
-        .with_context(|| format!("failed to parse config at {}", path.display()))
+        .map_err(|e| AstrError::io(format!("failed to read config at {}", path.display()), e))?;
+    let config = serde_json::from_str::<Config>(&raw)
+        .map_err(|e| AstrError::parse(format!("failed to parse config at {}", path.display()), e))?;
+    normalize_config(config)
+        .map_err(|e| e.context(format!("failed to validate config at {}", path.display())))
 }
 
 fn save_config_to_path(path: &Path, config: &Config) -> Result<()> {
     let parent = path
         .parent()
-        .ok_or_else(|| anyhow!("config path has no parent: {}", path.display()))?;
+        .ok_or_else(|| AstrError::Internal(format!("config path has no parent: {}", path.display())))?;
     fs::create_dir_all(parent)
-        .with_context(|| format!("failed to create config directory for {}", parent.display()))?;
+        .map_err(|e| AstrError::io(format!("failed to create config directory for {}", parent.display()), e))?;
 
-    write_json_atomic(path, config)
+    let normalized = normalize_config(config.clone())?;
+    write_json_atomic(path, &normalized)
+}
+
+fn normalize_config(mut config: Config) -> Result<Config> {
+    migrate_config(&mut config)?;
+    validate_config(&config)?;
+    Ok(config)
+}
+
+fn migrate_config(config: &mut Config) -> Result<()> {
+    if config.version.trim().is_empty() {
+        config.version = CURRENT_CONFIG_VERSION.to_string();
+    }
+
+    match config.version.as_str() {
+        CURRENT_CONFIG_VERSION => {}
+        other => return Err(AstrError::Validation(format!("unsupported config version: {}", other))),
+    }
+
+    if config.active_profile.trim().is_empty() {
+        config.active_profile = Config::default().active_profile;
+    }
+
+    if config.active_model.trim().is_empty() {
+        config.active_model = Config::default().active_model;
+    }
+
+    Ok(())
+}
+
+fn validate_config(config: &Config) -> Result<()> {
+    if config.profiles.is_empty() {
+        return Err(AstrError::Validation("config must contain at least one profile".to_string()));
+    }
+
+    let mut seen_names = std::collections::HashSet::new();
+    for profile in &config.profiles {
+        if profile.name.trim().is_empty() {
+            return Err(AstrError::Validation("profile name cannot be empty".to_string()));
+        }
+        if !seen_names.insert(profile.name.as_str()) {
+            return Err(AstrError::Validation(format!("duplicate profile name: {}", profile.name)));
+        }
+        if profile.models.is_empty() {
+            return Err(AstrError::Validation(format!("profile '{}' must contain at least one model", profile.name)));
+        }
+        if profile.max_tokens == 0 {
+            return Err(AstrError::Validation(format!("profile '{}' max_tokens must be greater than 0", profile.name)));
+        }
+        match profile.provider_kind.as_str() {
+            PROVIDER_KIND_OPENAI => {
+                if profile.base_url.trim().is_empty() {
+                    return Err(AstrError::Validation(format!("profile '{}' base_url cannot be empty", profile.name)));
+                }
+            }
+            PROVIDER_KIND_ANTHROPIC => {}
+            other => return Err(AstrError::Validation(format!("profile '{}' has unsupported provider_kind '{}'", profile.name, other))),
+        }
+    }
+
+    let active_profile = config
+        .profiles
+        .iter()
+        .find(|profile| profile.name == config.active_profile)
+        .ok_or_else(|| AstrError::Validation(format!("active_profile '{}' not found", config.active_profile)))?;
+    if !active_profile.models.iter().any(|model| model == &config.active_model) {
+        return Err(AstrError::Validation(format!(
+            "active_model '{}' is not configured under profile '{}'",
+            config.active_model,
+            config.active_profile
+        )));
+    }
+
+    Ok(())
 }
 
 fn write_json_atomic(path: &Path, config: &Config) -> Result<()> {
-    let json = serde_json::to_vec_pretty(config).context("failed to serialize config")?;
+    let json = serde_json::to_vec_pretty(config).map_err(|e| AstrError::parse("failed to serialize config", e))?;
     let tmp_path = path.with_extension("json.tmp");
     let mut tmp_file = fs::File::create(&tmp_path)
-        .with_context(|| format!("failed to create temp config at {}", tmp_path.display()))?;
+        .map_err(|e| AstrError::io(format!("failed to create temp config at {}", tmp_path.display()), e))?;
     tmp_file
         .write_all(&json)
-        .with_context(|| format!("failed to write temp config at {}", tmp_path.display()))?;
+        .map_err(|e| AstrError::io(format!("failed to write temp config at {}", tmp_path.display()), e))?;
     tmp_file
         .flush()
-        .with_context(|| format!("failed to flush temp config at {}", tmp_path.display()))?;
+        .map_err(|e| AstrError::io(format!("failed to flush temp config at {}", tmp_path.display()), e))?;
     tmp_file
         .sync_all()
-        .with_context(|| format!("failed to fsync temp config at {}", tmp_path.display()))?;
+        .map_err(|e| AstrError::io(format!("failed to fsync temp config at {}", tmp_path.display()), e))?;
     drop(tmp_file);
 
     // On most platforms, `rename` will atomically replace the destination.
@@ -251,54 +362,54 @@ fn write_json_atomic(path: &Path, config: &Config) -> Result<()> {
                 // Move old config out of the way before placing the new file.
                 if let Err(backup_err) = fs::rename(path, &backup_path) {
                     let _ = fs::remove_file(&tmp_path);
-                    bail!(
+                    return Err(AstrError::Internal(format!(
                         "failed to move existing config {} to backup {} before replace: {}",
                         path.display(),
                         backup_path.display(),
                         backup_err
-                    );
+                    )));
                 }
 
                 if let Err(rename_err) = fs::rename(&tmp_path, path) {
                     match fs::rename(&backup_path, path) {
-                        Ok(()) => bail!(
+                        Ok(()) => return Err(AstrError::Internal(format!(
                             "failed to replace config {} with temp file {}: {}; original config restored from backup {} (temp file kept for recovery)",
                             path.display(),
                             tmp_path.display(),
                             rename_err,
                             backup_path.display()
-                        ),
-                        Err(restore_err) => bail!(
+                        ))),
+                        Err(restore_err) => return Err(AstrError::Internal(format!(
                             "failed to replace config {} with temp file {}: {}; also failed to restore backup {}: {} (temp file kept for recovery)",
                             path.display(),
                             tmp_path.display(),
                             rename_err,
                             backup_path.display(),
                             restore_err
-                        ),
+                        ))),
                     }
                 }
 
                 let _ = fs::remove_file(&backup_path);
             } else {
                 let _ = fs::remove_file(&tmp_path);
-                bail!(
+                return Err(AstrError::Internal(format!(
                     "failed to replace config {} with temp file {}: {}",
                     path.display(),
                     tmp_path.display(),
                     err
-                );
+                )));
             }
         }
         #[cfg(not(windows))]
         {
             let _ = fs::remove_file(&tmp_path);
-            bail!(
+            return Err(AstrError::Internal(format!(
                 "failed to replace config {} with temp file {}: {}",
                 path.display(),
                 tmp_path.display(),
                 err
-            );
+            )));
         }
     }
     Ok(())
@@ -365,7 +476,7 @@ pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResul
 
             Ok(connection_result_from_response(response, provider, model))
         }
-        other => Err(anyhow!("unsupported provider_kind: {}", other)),
+        other => Err(AstrError::UnsupportedProvider(other.to_string())),
     }
 }
 
@@ -422,7 +533,7 @@ pub fn open_config_in_editor() -> Result<()> {
     Command::new(&open_command.program)
         .args(&open_command.args)
         .spawn()
-        .with_context(|| format!("failed to open config in editor: {}", path.display()))?;
+        .map_err(|e| AstrError::io(format!("failed to open config in editor: {}", path.display()), e))?;
     Ok(())
 }
 
@@ -435,7 +546,7 @@ struct OpenCommand {
 fn platform_open_command(os: &str, path: &Path) -> Result<OpenCommand> {
     let rendered_path = path
         .to_str()
-        .ok_or_else(|| anyhow!("config path is not valid utf-8: {}", path.display()))?
+        .ok_or_else(|| AstrError::Internal(format!("config path is not valid utf-8: {}", path.display())))?
         .to_string();
 
     let command = match os {
@@ -456,7 +567,7 @@ fn platform_open_command(os: &str, path: &Path) -> Result<OpenCommand> {
             program: "xdg-open".to_string(),
             args: vec![rendered_path],
         },
-        other => bail!("unsupported platform: {}", other),
+        other => return Err(AstrError::UnsupportedPlatform(other.to_string())),
     };
 
     Ok(command)
@@ -470,10 +581,10 @@ fn resolve_home_dir() -> Result<PathBuf> {
 
     #[cfg(test)]
     {
-        bail!(
+        return Err(AstrError::Internal(format!(
             "{} must be set before tests call config_path()",
             crate::test_support::TEST_HOME_ENV
-        );
+        )));
     }
 
     #[cfg(not(test))]
@@ -486,7 +597,7 @@ fn resolve_home_dir() -> Result<PathBuf> {
             }
         }
 
-        dirs::home_dir().ok_or_else(|| anyhow!("unable to resolve home directory"))
+        dirs::home_dir().ok_or(AstrError::HomeDirectoryNotFound)
     }
 }
 
@@ -559,6 +670,31 @@ mod tests {
         let err = load_config_from_path(&path).expect_err("invalid json should fail");
         let err_text = err.to_string();
         assert!(err_text.contains(path.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn load_config_migrates_blank_version_to_current_version() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let path = temp.path().join("config.json");
+        fs::write(&path, r#"{"version":"","activeProfile":"deepseek","activeModel":"deepseek-chat"}"#)
+            .expect("test config should be written");
+
+        let loaded = load_config_from_path(&path).expect("load should succeed");
+        assert_eq!(loaded.version, CURRENT_CONFIG_VERSION);
+    }
+
+    #[test]
+    fn load_config_rejects_active_model_outside_active_profile() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let path = temp.path().join("config.json");
+        fs::write(
+            &path,
+            r#"{"version":"1","activeProfile":"deepseek","activeModel":"claude-opus-4-5"}"#,
+        )
+        .expect("test config should be written");
+
+        let err = load_config_from_path(&path).expect_err("invalid active model should fail");
+        assert!(err.to_string().contains("active_model"));
     }
 
     #[test]
@@ -635,6 +771,17 @@ mod tests {
     }
 
     #[test]
+    fn debug_output_redacts_api_keys() {
+        let config = Config::default();
+
+        let rendered = format!("{:?}", config);
+
+        assert!(!rendered.contains("DEEPSEEK_API_KEY"));
+        assert!(!rendered.contains("ANTHROPIC_API_KEY"));
+        assert!(rendered.contains("<redacted>"));
+    }
+
+    #[test]
     fn save_config_overwrites_existing_file_with_pretty_json() {
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let path = temp.path().join(".astrcode").join("config.json");
@@ -642,7 +789,7 @@ mod tests {
         fs::write(&path, "{\"version\":\"old\"}").expect("seed config should be written");
 
         let config = Config {
-            version: "2".to_string(),
+            version: CURRENT_CONFIG_VERSION.to_string(),
             active_profile: "custom".to_string(),
             active_model: "gpt-4o-mini".to_string(),
             profiles: vec![Profile {
@@ -658,7 +805,7 @@ mod tests {
         save_config_to_path(&path, &config).expect("save should succeed");
 
         let raw = fs::read_to_string(&path).expect("saved config should be readable");
-        assert!(raw.contains("\n  \"version\": \"2\""));
+        assert!(raw.contains(&format!("\n  \"version\": \"{}\"", CURRENT_CONFIG_VERSION)));
         let parsed: Config = serde_json::from_str(&raw).expect("saved json should parse");
         assert_eq!(parsed, config);
     }

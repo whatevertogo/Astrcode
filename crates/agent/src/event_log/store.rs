@@ -4,7 +4,7 @@ use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use astrcode_core::Result;
 
 use crate::events::{StorageEvent, StoredEvent, StoredEventLine};
 
@@ -18,13 +18,13 @@ impl EventLog {
     pub fn create_at_path(session_id: &str, path: PathBuf) -> Result<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create directory: {}", parent.display()))?;
+                .map_err(|e| astrcode_core::AstrError::io(format!("failed to create directory: {}", parent.display()), e))?;
         }
         let file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)
-            .with_context(|| format!("failed to create session file: {}", path.display()))?;
+            .map_err(|e| astrcode_core::AstrError::io(format!("failed to create session file: {}", path.display()), e))?;
         Ok(Self {
             session_id: session_id.to_string(),
             path,
@@ -37,15 +37,18 @@ impl EventLog {
         let canonical_id = validated_session_id(session_id)?;
         let path = session_path(session_id)?;
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create sessions directory: {}", parent.display())
+            fs::create_dir_all(parent).map_err(|e| {
+                astrcode_core::AstrError::io(
+                    format!("failed to create sessions directory: {}", parent.display()),
+                    e,
+                )
             })?;
         }
         let file = OpenOptions::new()
             .create_new(true)
             .append(true)
             .open(&path)
-            .with_context(|| format!("failed to create session file: {}", path.display()))?;
+            .map_err(|e| astrcode_core::AstrError::io(format!("failed to create session file: {}", path.display()), e))?;
         Ok(Self {
             session_id: canonical_id,
             path,
@@ -62,7 +65,7 @@ impl EventLog {
             .write(true)
             .append(true)
             .open(&path)
-            .with_context(|| format!("failed to open session file: {}", path.display()))?;
+            .map_err(|e| astrcode_core::AstrError::io(format!("failed to open session file: {}", path.display()), e))?;
         Ok(Self {
             session_id: canonical_id,
             path,
@@ -86,13 +89,13 @@ impl EventLog {
         };
 
         serde_json::to_writer(&mut self.writer, &stored)
-            .context("failed to serialize StoredEvent")?;
-        writeln!(self.writer).context("failed to write newline")?;
-        self.writer.flush().context("failed to flush event log")?;
+            .map_err(|e| astrcode_core::AstrError::parse("failed to serialize StoredEvent", e))?;
+        writeln!(self.writer).map_err(|e| astrcode_core::AstrError::io("failed to write newline", e))?;
+        self.writer.flush().map_err(|e| astrcode_core::AstrError::io("failed to flush event log", e))?;
         self.writer
             .get_ref()
             .sync_all()
-            .context("failed to sync event log")?;
+            .map_err(|e| astrcode_core::AstrError::io("failed to sync event log", e))?;
         self.next_storage_seq = self.next_storage_seq.saturating_add(1);
         Ok(stored)
     }
@@ -104,21 +107,24 @@ impl EventLog {
 
     pub fn load_from_path(path: &Path) -> Result<Vec<StoredEvent>> {
         let file = File::open(path)
-            .with_context(|| format!("failed to open session file: {}", path.display()))?;
+            .map_err(|e| astrcode_core::AstrError::io(format!("failed to open session file: {}", path.display()), e))?;
         let reader = BufReader::new(file);
         let mut events = Vec::new();
         for (i, line) in reader.lines().enumerate() {
-            let line = line.context("failed to read line from session file")?;
+            let line = line.map_err(|e| astrcode_core::AstrError::io("failed to read line from session file", e))?;
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
             }
-            let event = serde_json::from_str::<StoredEventLine>(trimmed).with_context(|| {
-                format!(
-                    "failed to parse event at {}:{}: {}",
-                    path.display(),
-                    i + 1,
-                    trimmed
+            let event = serde_json::from_str::<StoredEventLine>(trimmed).map_err(|e| {
+                astrcode_core::AstrError::parse(
+                    format!(
+                        "failed to parse event at {}:{}: {}",
+                        path.display(),
+                        i + 1,
+                        trimmed
+                    ),
+                    e,
                 )
             })?;
             events.push(event.into_stored((i + 1) as u64));

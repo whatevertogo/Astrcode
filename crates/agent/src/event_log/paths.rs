@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Result};
+use astrcode_core::{AstrError, Result};
 use uuid::Uuid;
 
 pub fn generate_session_id() -> String {
@@ -29,7 +29,7 @@ pub(crate) fn is_valid_session_id(session_id: &str) -> bool {
 pub(crate) fn validated_session_id(session_id: &str) -> Result<String> {
     let canonical = canonical_session_id(session_id);
     if !is_valid_session_id(canonical) {
-        return Err(anyhow!("invalid session id: '{session_id}'"));
+        return Err(AstrError::InvalidSessionId(session_id.to_string()));
     }
     Ok(canonical.to_string())
 }
@@ -55,7 +55,7 @@ pub(crate) fn resolve_existing_session_path(session_id: &str) -> Result<PathBuf>
         return Ok(legacy);
     }
 
-    Err(anyhow!("session file not found: {}", canonical.display()))
+    Err(AstrError::SessionNotFound(canonical.display().to_string()))
 }
 
 pub(crate) fn resolve_home_dir() -> Result<PathBuf> {
@@ -66,10 +66,10 @@ pub(crate) fn resolve_home_dir() -> Result<PathBuf> {
 
     #[cfg(test)]
     {
-        return Err(anyhow!(
+        return Err(AstrError::Internal(format!(
             "{} must be set before tests call sessions_dir()",
             crate::test_support::TEST_HOME_ENV
-        ));
+        )));
     }
 
     #[cfg(not(test))]
@@ -82,6 +82,6 @@ pub(crate) fn resolve_home_dir() -> Result<PathBuf> {
             }
         }
 
-        dirs::home_dir().ok_or_else(|| anyhow!("unable to resolve home directory"))
+        dirs::home_dir().ok_or(AstrError::HomeDirectoryNotFound)
     }
 }

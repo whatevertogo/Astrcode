@@ -109,4 +109,28 @@ mod tests {
             json!(file.to_string_lossy().to_string())
         );
     }
+
+    #[tokio::test]
+    async fn read_file_tool_marks_truncated_output() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file = temp.path().join("sample.txt");
+        tokio::fs::write(&file, "abcdef")
+            .await
+            .expect("write should work");
+
+        let tool = ReadFileTool;
+        let result = tool
+            .execute(
+                "tc3".to_string(),
+                json!({ "path": file.to_string_lossy(), "maxBytes": 3 }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("readFile should succeed");
+
+        assert_eq!(result.output, "abc");
+        let metadata = result.metadata.expect("metadata should exist");
+        assert_eq!(metadata["bytes"], json!(6));
+        assert_eq!(metadata["truncated"], json!(true));
+    }
 }

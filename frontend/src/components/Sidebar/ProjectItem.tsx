@@ -40,6 +40,21 @@ export default function ProjectItem({
     return () => window.removeEventListener('mousedown', handler);
   }, [contextMenu]);
 
+  useEffect(() => {
+    if (!contextMenu || !menuRef.current) {
+      return;
+    }
+
+    const margin = 8;
+    const maxX = Math.max(margin, window.innerWidth - menuRef.current.offsetWidth - margin);
+    const maxY = Math.max(margin, window.innerHeight - menuRef.current.offsetHeight - margin);
+    const nextX = Math.min(contextMenu.x, maxX);
+    const nextY = Math.min(contextMenu.y, maxY);
+    if (nextX !== contextMenu.x || nextY !== contextMenu.y) {
+      setContextMenu({ x: nextX, y: nextY });
+    }
+  }, [contextMenu]);
+
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     setContextMenu({ x: e.clientX, y: e.clientY });

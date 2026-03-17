@@ -108,6 +108,10 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
   await ensureOk(response);
   return response;
 }
+
+const SSE_RECONNECT_BASE_DELAY_MS = 500;
+const SSE_RECONNECT_MAX_DELAY_MS = 5_000;
+
 function dispatchStreamError(
   onEvent: (event: AgentEventPayload) => void,
   message: string,
@@ -123,9 +127,15 @@ function dispatchStreamError(
   });
 }
 
+function shouldRetryEventStream(error: unknown): boolean {
+  const message =
+    error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return !message.includes('unauthorized') && !message.includes('403');
+}
+
 async function consumeSseStream(
   response: Response,
-  onMessage: (payload: string) => void,
+  onMessage: (payload: string, eventId: string | null) => void,
   signal: AbortSignal
 ): Promise<void> {
   if (!response.body) {
@@ -136,6 +146,7 @@ async function consumeSseStream(
   const decoder = new TextDecoder();
   let buffer = '';
   let dataLines: string[] = [];
+  let eventId: string | null = null;
 
   const flushEvent = () => {
     if (dataLines.length === 0) {
@@ -143,7 +154,8 @@ async function consumeSseStream(
     }
     const payload = dataLines.join('\n');
     dataLines = [];
-    onMessage(payload);
+    onMessage(payload, eventId);
+    eventId = null;
   };
 
   while (!signal.aborted) {
@@ -164,6 +176,10 @@ async function consumeSseStream(
       if (line.startsWith(':')) {
         continue;
       }
+      if (line.startsWith('id:')) {
+        eventId = line.slice(3).trimStart();
+        continue;
+      }
       if (line.startsWith('data:')) {
         dataLines.push(line.slice(5).trimStart());
       }
@@ -174,6 +190,10 @@ async function consumeSseStream(
   if (buffer) {
     const lines = buffer.split(/\r?\n/);
     for (const line of lines) {
+      if (line.startsWith('id:')) {
+        eventId = line.slice(3).trimStart();
+        continue;
+      }
       if (line.startsWith('data:')) {
         dataLines.push(line.slice(5).trimStart());
       }
@@ -185,19 +205,30 @@ async function consumeSseStream(
 export function useAgent(onEvent: (event: AgentEventPayload) => void) {
   const onEventRef = useRef(onEvent);
   const streamAbortRef = useRef<AbortController | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const reconnectAttemptRef = useRef(0);
   const connectedSessionIdRef = useRef<string | null>(null);
+  const lastEventIdRef = useRef<string | null>(null);
   const hostBridgeRef = useRef(getHostBridge());
 
   useEffect(() => {
     onEventRef.current = onEvent;
   }, [onEvent]);
 
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     return () => {
       streamAbortRef.current?.abort();
       streamAbortRef.current = null;
+      clearReconnectTimer();
     };
-  }, []);
+  }, [clearReconnectTimer]);
 
   const dispatchIncomingEvent = useCallback((rawEvent: unknown) => {
     onEventRef.current(normalizeAgentEvent(rawEvent));
@@ -206,16 +237,36 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
   const connectSession = useCallback(
     async (sessionId: string, afterEventId?: string | null): Promise<void> => {
       await ensureServerSession();
+      clearReconnectTimer();
       streamAbortRef.current?.abort();
-      const controller = new AbortController();
-      streamAbortRef.current = controller;
       connectedSessionIdRef.current = sessionId;
+      lastEventIdRef.current = afterEventId ?? null;
+      reconnectAttemptRef.current = 0;
 
-      void (async () => {
+      const scheduleReconnect = () => {
+        if (connectedSessionIdRef.current !== sessionId) {
+          return;
+        }
+        clearReconnectTimer();
+        const attempt = reconnectAttemptRef.current + 1;
+        reconnectAttemptRef.current = attempt;
+        const delayMs = Math.min(
+          SSE_RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1),
+          SSE_RECONNECT_MAX_DELAY_MS
+        );
+        reconnectTimerRef.current = window.setTimeout(() => {
+          reconnectTimerRef.current = null;
+          void startStream(lastEventIdRef.current);
+        }, delayMs);
+      };
+
+      const startStream = async (cursor: string | null): Promise<void> => {
+        const controller = new AbortController();
+        streamAbortRef.current = controller;
         try {
           const response = await request(
             `/api/sessions/${encodeURIComponent(sessionId)}/events${
-              afterEventId ? `?afterEventId=${encodeURIComponent(afterEventId)}` : ''
+              cursor ? `?afterEventId=${encodeURIComponent(cursor)}` : ''
             }`,
             {
               headers: {
@@ -225,9 +276,13 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
               signal: controller.signal,
             }
           );
+          reconnectAttemptRef.current = 0;
           await consumeSseStream(
             response,
-            (payload) => {
+            (payload, eventId) => {
+              if (eventId) {
+                lastEventIdRef.current = eventId;
+              }
               try {
                 dispatchIncomingEvent(JSON.parse(payload));
               } catch (error) {
@@ -244,31 +299,44 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
             },
             controller.signal
           );
-          if (!controller.signal.aborted && streamAbortRef.current === controller) {
-            dispatchStreamError(onEventRef.current, '事件流连接已关闭，请重新打开当前会话。');
+          if (
+            !controller.signal.aborted &&
+            streamAbortRef.current === controller &&
+            connectedSessionIdRef.current === sessionId
+          ) {
+            scheduleReconnect();
           }
         } catch (error) {
-          if (!controller.signal.aborted) {
-            dispatchStreamError(
-              onEventRef.current,
-              error instanceof Error ? error.message : String(error)
-            );
+          if (!controller.signal.aborted && connectedSessionIdRef.current === sessionId) {
+            if (shouldRetryEventStream(error)) {
+              scheduleReconnect();
+            } else {
+              dispatchStreamError(
+                onEventRef.current,
+                error instanceof Error ? error.message : String(error)
+              );
+            }
           }
         } finally {
           if (streamAbortRef.current === controller) {
             streamAbortRef.current = null;
           }
         }
-      })();
+      };
+
+      void startStream(lastEventIdRef.current);
     },
-    [dispatchIncomingEvent]
+    [clearReconnectTimer, dispatchIncomingEvent]
   );
 
   const disconnectSession = useCallback(() => {
+    clearReconnectTimer();
     streamAbortRef.current?.abort();
     streamAbortRef.current = null;
     connectedSessionIdRef.current = null;
-  }, []);
+    lastEventIdRef.current = null;
+    reconnectAttemptRef.current = 0;
+  }, [clearReconnectTimer]);
 
   const createSession = useCallback(async (workingDir: string): Promise<SessionMeta> => {
     return requestJson<SessionMeta>('/api/sessions', {

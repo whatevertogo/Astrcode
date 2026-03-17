@@ -2,7 +2,6 @@ use std::collections::VecDeque;
 use std::fs;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{anyhow, Result as AnyhowResult};
 use astrcode_core::{AstrError, CancelToken, Phase, Result, Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::json;
@@ -41,10 +40,10 @@ impl LlmProvider for ScriptedProvider {
         &self,
         request: LlmRequest,
         sink: Option<EventSink>,
-    ) -> AnyhowResult<LlmOutput> {
+    ) -> Result<LlmOutput> {
         if self.delay > Duration::from_millis(0) {
             tokio::select! {
-                _ = crate::cancel::cancelled(request.cancel.clone()) => return Err(anyhow!("cancelled")),
+                _ = crate::cancel::cancelled(request.cancel.clone()) => return Err(AstrError::LlmInterrupted),
                 _ = sleep(self.delay) => {}
             }
         }
@@ -53,7 +52,7 @@ impl LlmProvider for ScriptedProvider {
             .lock()
             .expect("lock should work")
             .pop_front()
-            .ok_or_else(|| anyhow!("no scripted response"))?;
+            .ok_or_else(|| AstrError::Internal("no scripted response".to_string()))?;
 
         if let Some(sink) = sink {
             for delta in response.content.chars() {
@@ -84,7 +83,7 @@ struct StaticProviderFactory {
 }
 
 impl ProviderFactory for StaticProviderFactory {
-    fn build(&self) -> AnyhowResult<Arc<dyn LlmProvider>> {
+    fn build(&self) -> Result<Arc<dyn LlmProvider>> {
         Ok(self.provider.clone())
     }
 }
@@ -95,7 +94,7 @@ impl LlmProvider for StreamingProvider {
         &self,
         request: LlmRequest,
         sink: Option<EventSink>,
-    ) -> AnyhowResult<LlmOutput> {
+    ) -> Result<LlmOutput> {
         let Some(sink) = sink else {
             return Ok(self.response.clone());
         };
@@ -104,7 +103,7 @@ impl LlmProvider for StreamingProvider {
             sink(LlmEvent::TextDelta(delta.to_string()));
 
             tokio::select! {
-                _ = crate::cancel::cancelled(request.cancel.clone()) => return Err(anyhow!("cancelled")),
+                _ = crate::cancel::cancelled(request.cancel.clone()) => return Err(AstrError::LlmInterrupted),
                 _ = sleep(self.per_delta_delay) => {}
             }
         }
@@ -119,7 +118,7 @@ impl LlmProvider for RecordingProvider {
         &self,
         request: LlmRequest,
         sink: Option<EventSink>,
-    ) -> AnyhowResult<LlmOutput> {
+    ) -> Result<LlmOutput> {
         self.requests
             .lock()
             .expect("lock should work")
@@ -130,10 +129,10 @@ impl LlmProvider for RecordingProvider {
             .lock()
             .expect("lock should work")
             .pop_front()
-            .ok_or_else(|| anyhow!("no scripted response"))?;
+            .ok_or_else(|| AstrError::Internal("no scripted response".to_string()))?;
 
         if request.cancel.is_cancelled() {
-            return Err(anyhow!("cancelled"));
+            return Err(AstrError::LlmInterrupted);
         }
 
         if let Some(sink) = sink {

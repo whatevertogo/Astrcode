@@ -2,8 +2,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
-use anyhow::{anyhow, Context, Result};
-use astrcode_core::Phase;
+use astrcode_core::{AstrError, Phase, Result};
 use chrono::{DateTime, Utc};
 
 use crate::events::{StorageEvent, StoredEventLine};
@@ -40,7 +39,7 @@ impl EventLog {
         }
 
         let mut ids = Vec::new();
-        for entry in fs::read_dir(dir).context("failed to read sessions directory")? {
+        for entry in fs::read_dir(dir).map_err(|e| AstrError::io("failed to read sessions directory", e))? {
             let entry = entry?;
             if !entry.file_type()?.is_file() {
                 continue;
@@ -66,7 +65,7 @@ impl EventLog {
         }
 
         let mut metas = Vec::new();
-        for entry in fs::read_dir(dir).context("failed to read sessions directory")? {
+        for entry in fs::read_dir(dir).map_err(|e| AstrError::io("failed to read sessions directory", e))? {
             let entry = entry?;
             if !entry.file_type()?.is_file() {
                 continue;
@@ -129,11 +128,11 @@ impl EventLog {
         } else if legacy != canonical && legacy.exists() {
             legacy
         } else {
-            return Err(anyhow!("session file not found: {}", canonical.display()));
+            return Err(AstrError::SessionNotFound(canonical.display().to_string()));
         };
 
         fs::remove_file(&target)
-            .with_context(|| format!("failed to delete session file: {}", target.display()))?;
+            .map_err(|e| AstrError::io(format!("failed to delete session file: {}", target.display()), e))?;
         Ok(())
     }
 
@@ -160,7 +159,7 @@ impl EventLog {
 
     fn read_session_head_meta(path: &Path) -> Result<(DateTime<Utc>, String, String)> {
         let file = File::open(path)
-            .with_context(|| format!("failed to open session file: {}", path.display()))?;
+            .map_err(|e| AstrError::io(format!("failed to open session file: {}", path.display()), e))?;
         let reader = BufReader::new(file);
 
         let mut created_at = None;
@@ -168,19 +167,22 @@ impl EventLog {
         let mut title = None;
 
         for (i, line) in reader.lines().enumerate() {
-            let line = line.context("failed to read line from session file")?;
+            let line = line.map_err(|e| AstrError::io("failed to read line from session file", e))?;
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
             }
 
             let event = serde_json::from_str::<StoredEventLine>(trimmed)
-                .with_context(|| {
-                    format!(
-                        "failed to parse head event at {}:{}: {}",
-                        path.display(),
-                        i + 1,
-                        trimmed
+                .map_err(|e| {
+                    AstrError::parse(
+                        format!(
+                            "failed to parse head event at {}:{}: {}",
+                            path.display(),
+                            i + 1,
+                            trimmed
+                        ),
+                        e,
                     )
                 })?
                 .into_stored((i + 1) as u64)
@@ -209,7 +211,7 @@ impl EventLog {
         }
 
         let created_at = created_at
-            .ok_or_else(|| anyhow!("session file missing sessionStart: {}", path.display()))?;
+            .ok_or_else(|| AstrError::Internal(format!("session file missing sessionStart: {}", path.display())))?;
         let working_dir = working_dir.unwrap_or_default();
         let title = title.unwrap_or_else(|| "新会话".to_string());
         Ok((created_at, working_dir, title))
@@ -217,16 +219,16 @@ impl EventLog {
 
     fn read_last_timestamp(path: &Path) -> Result<DateTime<Utc>> {
         let file = File::open(path)
-            .with_context(|| format!("failed to open session file: {}", path.display()))?;
+            .map_err(|e| AstrError::io(format!("failed to open session file: {}", path.display()), e))?;
         let mut reader = BufReader::new(file);
         let len = reader
             .get_ref()
             .metadata()
-            .with_context(|| format!("failed to stat session file: {}", path.display()))?
+            .map_err(|e| AstrError::io(format!("failed to stat session file: {}", path.display()), e))?
             .len();
 
         if len == 0 {
-            return Err(anyhow!("empty session file: {}", path.display()));
+            return Err(AstrError::Internal(format!("empty session file: {}", path.display())));
         }
 
         let mut window: u64 = 4096;
@@ -258,11 +260,14 @@ impl EventLog {
                 }
 
                 let event = serde_json::from_str::<StoredEventLine>(trimmed)
-                    .with_context(|| {
-                        format!(
-                            "failed to parse tail event at {}: {}",
-                            path.display(),
-                            trimmed
+                    .map_err(|e| {
+                        AstrError::parse(
+                            format!(
+                                "failed to parse tail event at {}: {}",
+                                path.display(),
+                                trimmed
+                            ),
+                            e,
                         )
                     })?
                     .into_stored(0)
@@ -278,10 +283,10 @@ impl EventLog {
             window = (window * 2).min(len);
         }
 
-        Err(anyhow!(
+        Err(AstrError::Internal(format!(
             "unable to resolve tail timestamp from session file: {}",
             path.display()
-        ))
+        )))
     }
 
     fn read_last_phase(path: &Path) -> Result<Phase> {

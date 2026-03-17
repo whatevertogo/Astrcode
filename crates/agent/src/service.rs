@@ -4,14 +4,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::Result;
+use astrcode_core::{AgentEvent, AstrError, CancelToken, Phase, ToolExecutionResult};
 use async_trait::async_trait;
 use chrono::Utc;
 use dashmap::DashMap;
 use tokio::sync::{broadcast, Mutex};
 use uuid::Uuid;
-
-use astrcode_core::{AgentEvent, AstrError, CancelToken, Phase, ToolCallEventResult};
 
 use crate::agent_loop::AgentLoop;
 use crate::config::{
@@ -112,12 +111,6 @@ impl From<AstrError> for ServiceError {
     }
 }
 
-impl From<anyhow::Error> for ServiceError {
-    fn from(value: anyhow::Error) -> Self {
-        Self::Internal(AstrError::Internal(value.to_string()))
-    }
-}
-
 pub type ServiceResult<T> = std::result::Result<T, ServiceError>;
 
 struct SessionWriter {
@@ -133,7 +126,7 @@ impl SessionWriter {
 
     fn append_blocking(&self, event: &StorageEvent) -> Result<StoredEvent> {
         let mut guard = lock_anyhow(&self.inner, "session writer")?;
-        guard.append(event)
+        Ok(guard.append(event)?)
     }
 
     async fn append(self: Arc<Self>, event: StorageEvent) -> Result<StoredEvent> {
@@ -377,8 +370,8 @@ impl AgentService {
                             .collect::<Vec<_>>()
                     })
                     .map(|events| project(&events))
-                    .map_err(|error| anyhow!(error)),
-                Err(error) => Err(error),
+                    .map_err(|error| AstrError::Internal(error.to_string())),
+                Err(error) => Err(AstrError::Internal(error.to_string())),
             };
 
             let result = match task_result {
@@ -393,7 +386,7 @@ impl AgentService {
                         cancel.clone(),
                     )
                     .await
-                    .map_err(|error| anyhow!(error)),
+                    .map_err(|error| error),
                 Err(error) => Err(error),
             };
 
@@ -565,7 +558,10 @@ fn normalize_working_dir(working_dir: PathBuf) -> ServiceResult<PathBuf> {
     }
 
     std::fs::canonicalize(&path)
-        .with_context(|| format!("failed to canonicalize workingDir '{}'", path.display()))
+        .map_err(|e| AstrError::io(
+            format!("failed to canonicalize workingDir '{}'", path.display()),
+            e
+        ))
         .map_err(ServiceError::from)
 }
 
@@ -720,9 +716,9 @@ fn lock_service<'a, T>(
 }
 
 fn lock_anyhow<'a, T>(mutex: &'a StdMutex<T>, name: &'static str) -> Result<StdMutexGuard<'a, T>> {
-    mutex
+    Ok(mutex
         .lock()
-        .map_err(|_| anyhow!(AstrError::LockPoisoned(name.to_string())))
+        .map_err(|_| AstrError::LockPoisoned(name.to_string()))?)
 }
 
 async fn spawn_blocking_service<T, F>(label: &'static str, work: F) -> ServiceResult<T>
@@ -744,7 +740,7 @@ where
 {
     tokio::task::spawn_blocking(work)
         .await
-        .map_err(|error| anyhow!("blocking task '{label}' failed: {error}"))?
+        .map_err(|error| AstrError::Internal(format!("blocking task '{label}' failed: {error}")))?
 }
 
 async fn load_events(session_id: &str) -> ServiceResult<Vec<StoredEvent>> {
@@ -896,7 +892,7 @@ impl EventTranslator {
                     push(
                         AgentEvent::ToolCallResult {
                             turn_id,
-                            result: ToolCallEventResult {
+                            result: ToolExecutionResult {
                                 tool_call_id: tool_call_id.clone(),
                                 tool_name,
                                 ok: *success,

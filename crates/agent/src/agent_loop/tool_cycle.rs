@@ -1,7 +1,6 @@
 use std::time::Instant;
 
-use anyhow::Result as AnyhowResult;
-use astrcode_core::{CancelToken, Result as CoreResult};
+use astrcode_core::{CancelToken, Result};
 
 use super::AgentLoop;
 use crate::events::StorageEvent;
@@ -21,9 +20,9 @@ pub(crate) async fn execute_tool_calls(
     turn_id: &str,
     state: &AgentState,
     messages: &mut Vec<LlmMessage>,
-    on_event: &mut impl FnMut(StorageEvent) -> CoreResult<()>,
+    on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
     cancel: &CancelToken,
-) -> AnyhowResult<ToolCycleOutcome> {
+) -> Result<ToolCycleOutcome> {
     for call in tool_calls {
         if cancel.is_cancelled() {
             return Ok(ToolCycleOutcome::Interrupted);
@@ -44,7 +43,7 @@ pub(crate) async fn execute_tool_calls(
         on_event(StorageEvent::ToolResult {
             turn_id: Some(turn_id.to_string()),
             tool_call_id: call.id.clone(),
-            output: tool_result_output(&result),
+            output: result.model_content(),
             success: result.ok,
             duration_ms,
         })?;
@@ -56,16 +55,4 @@ pub(crate) async fn execute_tool_calls(
     }
 
     Ok(ToolCycleOutcome::Completed)
-}
-
-fn tool_result_output(result: &astrcode_core::ToolExecutionResult) -> String {
-    if result.ok {
-        result.output.clone()
-    } else {
-        format!(
-            "tool execution failed: {}\n{}",
-            result.error.as_deref().unwrap_or("unknown error"),
-            result.output
-        )
-    }
 }

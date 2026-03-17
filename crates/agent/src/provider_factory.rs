@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use astrcode_core::{AstrError, Result};
 
 use crate::config::{load_config, Profile, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI};
 use crate::llm::anthropic::AnthropicProvider;
@@ -46,22 +46,23 @@ fn build_provider(profile: &Profile, model: String) -> Result<BuiltProvider> {
     match profile.provider_kind.as_str() {
         PROVIDER_KIND_OPENAI => {
             if profile.base_url.trim().is_empty() {
-                return Err(anyhow!(
+                return Err(AstrError::MissingBaseUrl(format!(
                     "openai-compatible profile '{}' 缺少 baseUrl",
                     profile.name
-                ));
+                )));
             }
 
             Ok(BuiltProvider::OpenAi(OpenAiProvider::new(
                 profile.base_url.clone(),
                 api_key,
                 model,
+                profile.max_tokens,
             )))
         }
         PROVIDER_KIND_ANTHROPIC => Ok(BuiltProvider::Anthropic(
             AnthropicProvider::with_max_tokens(api_key, model, profile.max_tokens),
         )),
-        other => Err(anyhow!("unsupported provider_kind: {}", other)),
+        other => Err(AstrError::UnsupportedProvider(other.to_string())),
     }
 }
 
@@ -70,7 +71,7 @@ fn select_profile<'a>(profiles: &'a [Profile], active: &str) -> Result<&'a Profi
         .iter()
         .find(|profile| profile.name == active)
         .or_else(|| profiles.first())
-        .ok_or_else(|| anyhow!("no profiles configured"))
+        .ok_or(AstrError::NoProfilesConfigured)
 }
 
 fn resolve_model(profile: &Profile, active_model: &str) -> Result<String> {
@@ -82,7 +83,10 @@ fn resolve_model(profile: &Profile, active_model: &str) -> Result<String> {
         .models
         .first()
         .cloned()
-        .ok_or_else(|| anyhow!("profile '{}' has no models", profile.name))
+        .ok_or_else(|| AstrError::ModelNotFound {
+            profile: profile.name.clone(),
+            model: String::new(),
+        })
 }
 
 #[cfg(test)]
@@ -185,7 +189,7 @@ mod tests {
 
         let err =
             build_provider(&profile, "model-a".to_string()).expect_err("unknown kind should fail");
-        assert!(err.to_string().contains("unsupported provider_kind"));
+        assert!(err.to_string().contains("unsupported provider"));
     }
 
     #[test]
@@ -193,6 +197,7 @@ mod tests {
         let _guard = TestEnvGuard::new();
 
         let config = Config {
+            active_profile: "deepseek".to_string(),
             active_model: "model-b".to_string(),
             profiles: vec![Profile {
                 api_key: Some("sk-test".to_string()),
@@ -213,10 +218,11 @@ mod tests {
     }
 
     #[test]
-    fn config_file_provider_factory_falls_back_to_first_profile_model() {
+    fn save_config_rejects_active_model_missing_from_active_profile() {
         let _guard = TestEnvGuard::new();
 
         let config = Config {
+            active_profile: "deepseek".to_string(),
             active_model: "missing-model".to_string(),
             profiles: vec![Profile {
                 api_key: Some("sk-test".to_string()),
@@ -225,19 +231,12 @@ mod tests {
             }],
             ..Config::default()
         };
-        save_config(&config).expect("config should save");
-
-        let factory = ConfigFileProviderFactory;
-        let provider = factory.build();
-
-        assert!(
-            provider.is_ok(),
-            "factory should fall back to the first model"
-        );
+        let err = save_config(&config).expect_err("invalid active model should be rejected");
+        assert!(err.to_string().contains("active_model"));
     }
 
     #[test]
-    fn config_file_provider_factory_build_errors_when_profile_has_no_models() {
+    fn save_config_rejects_profile_without_models() {
         let _guard = TestEnvGuard::new();
 
         let config = Config {
@@ -248,14 +247,7 @@ mod tests {
             }],
             ..Config::default()
         };
-        save_config(&config).expect("config should save");
-
-        let factory = ConfigFileProviderFactory;
-        let err = match factory.build() {
-            Ok(_) => panic!("empty model list should fail"),
-            Err(err) => err,
-        };
-
-        assert!(err.to_string().contains("has no models"));
+        let err = save_config(&config).expect_err("empty model list should fail");
+        assert!(err.to_string().contains("at least one model"));
     }
 }

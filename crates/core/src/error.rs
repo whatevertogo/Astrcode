@@ -1,3 +1,7 @@
+use std::env::VarError;
+use std::io;
+use std::str::Utf8Error;
+
 use thiserror::Error;
 
 /// 项目级统一错误类型
@@ -32,6 +36,9 @@ pub enum AstrError {
     #[error("model '{model}' not found in profile '{profile}'")]
     ModelNotFound { profile: String, model: String },
 
+    #[error("environment variable not found: {0}")]
+    EnvVarNotFound(String),
+
     // ========== 工具相关 ==========
     #[error("tool '{name}' failed: {reason}")]
     ToolError { name: String, reason: String },
@@ -45,6 +52,9 @@ pub enum AstrError {
 
     #[error("LLM stream error: {0}")]
     LlmStreamError(String),
+
+    #[error("LLM request interrupted")]
+    LlmInterrupted,
 
     #[error("invalid api key for provider: {0}")]
     InvalidApiKey(String),
@@ -84,6 +94,13 @@ pub enum AstrError {
     // ========== 网络错误 ==========
     #[error("network error: {0}")]
     Network(String),
+
+    #[error("HTTP request error: {context}")]
+    HttpRequest {
+        context: String,
+        #[source]
+        source: reqwest::Error,
+    },
 
     // ========== 验证错误 ==========
     #[error("validation error: {0}")]
@@ -129,25 +146,45 @@ impl From<std::str::Utf8Error> for AstrError {
     }
 }
 
+impl From<VarError> for AstrError {
+    fn from(e: VarError) -> Self {
+        match e {
+            VarError::NotPresent => AstrError::EnvVarNotFound(String::new()),
+            VarError::NotUnicode(s) => AstrError::Internal(format!(
+                "environment variable contains non-unicode data: {:?}",
+                s
+            )),
+        }
+    }
+}
+
+impl From<reqwest::Error> for AstrError {
+    fn from(e: reqwest::Error) -> Self {
+        AstrError::HttpRequest {
+            context: String::new(),
+            source: e,
+        }
+    }
+}
+
 // ========== 辅助方法 ==========
 
 impl AstrError {
-    pub fn with_context(self, context: impl Into<String>) -> Self {
+    /// 为 IO/Parse/Utf8/HttpRequest 错误添加上下文信息
+    pub fn context(self, context: impl Into<String>) -> Self {
+        let context = context.into();
         match self {
-            AstrError::Io { source, .. } => AstrError::Io {
-                context: context.into(),
-                source,
-            },
-            AstrError::Parse { source, .. } => AstrError::Parse {
-                context: context.into(),
-                source,
-            },
-            AstrError::Utf8 { source, .. } => AstrError::Utf8 {
-                context: context.into(),
-                source,
-            },
+            AstrError::Io { source, .. } => AstrError::Io { context, source },
+            AstrError::Parse { source, .. } => AstrError::Parse { context, source },
+            AstrError::Utf8 { source, .. } => AstrError::Utf8 { context, source },
+            AstrError::HttpRequest { source, .. } => AstrError::HttpRequest { context, source },
             other => other,
         }
+    }
+
+    /// 旧版兼容方法，与 context 行为一致
+    pub fn with_context(self, context: impl Into<String>) -> Self {
+        self.context(context)
     }
 
     pub fn io(context: impl Into<String>, source: std::io::Error) -> Self {
@@ -162,6 +199,44 @@ impl AstrError {
             context: context.into(),
             source,
         }
+    }
+
+    pub fn http(context: impl Into<String>, source: reqwest::Error) -> Self {
+        AstrError::HttpRequest {
+            context: context.into(),
+            source,
+        }
+    }
+
+    /// 检查是否为可重试的网络错误
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            AstrError::HttpRequest { source, .. } => {
+                source.is_timeout() || source.is_connect() || source.is_body()
+            }
+            _ => false,
+        }
+    }
+
+    /// 检查是否为取消错误
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, AstrError::Cancelled | AstrError::LlmInterrupted)
+    }
+}
+
+/// 用于链式添加错误上下文的 trait
+pub trait ResultExt<T> {
+    fn context(self, context: impl Into<String>) -> Result<T>;
+    fn with_context<F: FnOnce() -> String>(self, f: F) -> Result<T>;
+}
+
+impl<T> ResultExt<T> for Result<T> {
+    fn context(self, context: impl Into<String>) -> Result<T> {
+        self.map_err(|e| e.context(context))
+    }
+
+    fn with_context<F: FnOnce() -> String>(self, f: F) -> Result<T> {
+        self.map_err(|e| e.context(f()))
     }
 }
 

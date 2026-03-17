@@ -78,23 +78,29 @@ export default function MessageList({ messages }: MessageListProps) {
       {messages.map((msg) => {
         if (msg.kind === 'user') {
           return (
-            <MessageBoundary key={msg.id} message={msg}>
-              <UserMessage message={msg} />
-            </MessageBoundary>
+            <div key={msg.id} className={styles.messageRow}>
+              <MessageBoundary message={msg}>
+                <UserMessage message={msg} />
+              </MessageBoundary>
+            </div>
           );
         }
         if (msg.kind === 'assistant') {
           return (
-            <MessageBoundary key={msg.id} message={msg}>
-              <AssistantMessage message={msg} />
-            </MessageBoundary>
+            <div key={msg.id} className={styles.messageRow}>
+              <MessageBoundary message={msg}>
+                <AssistantMessage message={msg} />
+              </MessageBoundary>
+            </div>
           );
         }
         if (msg.kind === 'toolCall') {
           return (
-            <MessageBoundary key={msg.id} message={msg}>
-              <ToolCallBlock message={msg} />
-            </MessageBoundary>
+            <div key={msg.id} className={styles.messageRow}>
+              <MessageBoundary message={msg}>
+                <ToolCallBlock message={msg} />
+              </MessageBoundary>
+            </div>
           );
         }
         return null;

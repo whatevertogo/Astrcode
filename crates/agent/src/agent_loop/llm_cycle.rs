@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::Result;
-use astrcode_core::{CancelToken, Result as CoreResult};
+use astrcode_core::{CancelToken, Result};
 use tokio::sync::mpsc;
 
 use crate::events::StorageEvent;
@@ -10,7 +9,9 @@ use crate::provider_factory::DynProviderFactory;
 use astrcode_core::{LlmMessage, ToolDefinition};
 
 pub(crate) async fn build_provider(factory: DynProviderFactory) -> Result<Arc<dyn LlmProvider>> {
-    tokio::task::spawn_blocking(move || factory.build()).await?
+    Ok(tokio::task::spawn_blocking(move || factory.build())
+        .await
+        .map_err(|e| astrcode_core::AstrError::Internal(format!("blocking task failed: {e}")))??)
 }
 
 pub(crate) async fn generate_response(
@@ -20,7 +21,7 @@ pub(crate) async fn generate_response(
     turn_id: &str,
     system_prompt: Option<String>,
     cancel: CancelToken,
-    on_event: &mut impl FnMut(StorageEvent) -> CoreResult<()>,
+    on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
 ) -> Result<LlmOutput> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<LlmEvent>();
     let sink: EventSink = Arc::new(move |event| {

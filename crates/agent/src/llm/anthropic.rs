@@ -1,11 +1,12 @@
-use anyhow::{anyhow, Context, Result};
-use astrcode_core::CancelToken;
+use std::fmt;
+
+use astrcode_core::{AstrError, CancelToken, Result};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use log::warn;
 use serde::Serialize;
 use serde_json::Value;
-use tokio::select;
+use tokio::{select, time::{sleep, Duration}};
 
 use crate::llm::{EventSink, LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
 use astrcode_core::{LlmMessage, ToolCallRequest, ToolDefinition};
@@ -14,12 +15,23 @@ const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 8096;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AnthropicProvider {
     client: reqwest::Client,
     api_key: String,
     model: String,
     max_tokens: u32,
+}
+
+impl fmt::Debug for AnthropicProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AnthropicProvider")
+            .field("client", &self.client)
+            .field("api_key", &"<redacted>")
+            .field("model", &self.model)
+            .field("max_tokens", &self.max_tokens)
+            .finish()
+    }
 }
 
 impl AnthropicProvider {
@@ -29,7 +41,7 @@ impl AnthropicProvider {
 
     pub fn with_max_tokens(api_key: String, model: String, max_tokens: u32) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: build_http_client(),
             api_key,
             model,
             max_tokens,
@@ -62,32 +74,92 @@ impl AnthropicProvider {
         request: &AnthropicRequest,
         cancel: CancelToken,
     ) -> Result<reqwest::Response> {
-        let send_future = self
-            .client
-            .post(ANTHROPIC_API_URL)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .json(request)
-            .send();
+        for attempt in 0..=MAX_RETRIES {
+            let send_future = self
+                .client
+                .post(ANTHROPIC_API_URL)
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .json(request)
+                .send();
 
-        let response = select! {
-            _ = crate::cancel::cancelled(cancel.clone()) => {
-                return Err(anyhow!("llm request interrupted"));
+            let response = select! {
+                _ = crate::cancel::cancelled(cancel.clone()) => {
+                    return Err(AstrError::LlmInterrupted);
+                }
+                result = send_future => result.map_err(|e| AstrError::http("failed to call anthropic endpoint", e))
+            };
+
+            match response {
+                Ok(response) => {
+                    let status = response.status();
+                    if status == reqwest::StatusCode::UNAUTHORIZED {
+                        return Err(AstrError::InvalidApiKey("Anthropic".to_string()));
+                    }
+                    if status.is_success() {
+                        return Ok(response);
+                    }
+
+                    let body = response.text().await.unwrap_or_default();
+                    if is_retryable_status(status) && attempt < MAX_RETRIES {
+                        wait_retry_delay(attempt, cancel.clone()).await?;
+                        continue;
+                    }
+
+                    let error_kind = if is_retryable_status(status) {
+                        "retryable"
+                    } else {
+                        "non-retryable"
+                    };
+                    return Err(AstrError::LlmRequestFailed {
+                        status: status.as_u16(),
+                        body: format!("Anthropic 请求失败 ({}): {}", error_kind, body),
+                    });
+                }
+                Err(error) => {
+                    if error.is_retryable() && attempt < MAX_RETRIES {
+                        wait_retry_delay(attempt, cancel.clone()).await?;
+                        continue;
+                    }
+                    return Err(error);
+                }
             }
-            result = send_future => result.context("failed to call anthropic endpoint")?
-        };
-
-        let status = response.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(anyhow!("Anthropic API Key 无效"));
-        }
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("请求失败: {}: {}", status, body));
         }
 
-        Ok(response)
+        Err(AstrError::LlmStreamError("Anthropic 请求在重试后仍然失败".to_string()))
+    }
+}
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const READ_TIMEOUT: Duration = Duration::from_secs(90);
+const MAX_RETRIES: u32 = 2;
+const RETRY_BASE_DELAY_MS: u64 = 250;
+
+fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .build()
+        .expect("anthropic http client should build")
+}
+
+fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::REQUEST_TIMEOUT
+            | reqwest::StatusCode::TOO_MANY_REQUESTS
+            | reqwest::StatusCode::BAD_GATEWAY
+            | reqwest::StatusCode::SERVICE_UNAVAILABLE
+            | reqwest::StatusCode::GATEWAY_TIMEOUT
+    ) || status.is_server_error()
+}
+
+async fn wait_retry_delay(attempt: u32, cancel: CancelToken) -> Result<()> {
+    let delay_ms = RETRY_BASE_DELAY_MS.saturating_mul(1_u64 << attempt);
+    select! {
+        _ = crate::cancel::cancelled(cancel) => Err(AstrError::LlmInterrupted),
+        _ = sleep(Duration::from_millis(delay_ms)) => Ok(()),
     }
 }
 
@@ -108,7 +180,7 @@ impl LlmProvider for AnthropicProvider {
                 let payload: AnthropicResponse = response
                     .json()
                     .await
-                    .context("failed to parse anthropic response")?;
+                    .map_err(|e| AstrError::http("failed to parse anthropic response", e))?;
                 Ok(response_to_output(payload))
             }
             Some(sink) => {
@@ -119,7 +191,7 @@ impl LlmProvider for AnthropicProvider {
                 loop {
                     let next_item = select! {
                         _ = crate::cancel::cancelled(cancel.clone()) => {
-                            return Err(anyhow!("llm request interrupted"));
+                            return Err(AstrError::LlmInterrupted);
                         }
                         item = stream.next() => item,
                     };
@@ -128,9 +200,12 @@ impl LlmProvider for AnthropicProvider {
                         break;
                     };
 
-                    let bytes = item.context("failed to read anthropic response stream")?;
+                    let bytes = item.map_err(|e| AstrError::http("failed to read anthropic response stream", e))?;
                     let chunk_text = std::str::from_utf8(&bytes)
-                        .context("anthropic response stream was not valid utf-8")?;
+                        .map_err(|e| AstrError::Utf8 {
+                            context: "anthropic response stream was not valid utf-8".to_string(),
+                            source: e,
+                        })?;
 
                     if consume_sse_text_chunk(chunk_text, &mut sse_buffer, &mut accumulator, &sink)?
                     {
@@ -277,8 +352,8 @@ fn parse_sse_block(block: &str) -> Result<Option<(String, Value)>> {
     }
 
     let data = data_lines.join("\n");
-    let payload =
-        serde_json::from_str::<Value>(&data).context("failed to parse anthropic sse payload")?;
+    let payload = serde_json::from_str::<Value>(&data)
+        .map_err(|error| AstrError::parse("failed to parse anthropic sse payload", error))?;
     let event_type = event_type
         .or_else(|| {
             payload
@@ -636,5 +711,12 @@ mod tests {
         let body = serde_json::to_value(&request).expect("request should serialize");
 
         assert!(body.get("system").is_none());
+    }
+
+    #[test]
+    fn retryable_statuses_are_classified() {
+        assert!(is_retryable_status(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+        assert!(is_retryable_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(!is_retryable_status(reqwest::StatusCode::BAD_REQUEST));
     }
 }

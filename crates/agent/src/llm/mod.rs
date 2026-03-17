@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::Result;
-use astrcode_core::CancelToken;
+use astrcode_core::{CancelToken, Result};
 use async_trait::async_trait;
 use serde_json::Value;
 
