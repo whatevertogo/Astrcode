@@ -147,7 +147,7 @@ impl PromptComposer {
             "{}:{}:{}",
             contributor.contributor_id(),
             contributor.cache_version(),
-            ctx.fingerprint()
+            contributor.cache_fingerprint(ctx)
         );
 
         if let Some(hit) = self.lookup_cache(contributor.contributor_id(), &fingerprint) {
@@ -610,6 +610,7 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
+    use tokio::time::sleep;
 
     use super::*;
     use crate::prompt::{BlockCondition, BlockKind, BlockSpec, PromptContribution, RenderTarget};
@@ -714,6 +715,32 @@ mod tests {
             .expect("second build should succeed");
 
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn build_expires_contributor_cache_after_ttl() {
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let composer = PromptComposer::with_options(PromptComposerOptions {
+            cache_ttl: Duration::from_millis(20),
+            ..PromptComposerOptions::default()
+        })
+        .add(Arc::new(CountingContributor {
+            calls: calls.clone(),
+        }));
+        let ctx = test_context(project.path().to_string_lossy().into_owned());
+
+        composer
+            .build(&ctx)
+            .await
+            .expect("first build should succeed");
+        sleep(Duration::from_millis(30)).await;
+        composer
+            .build(&ctx)
+            .await
+            .expect("second build should succeed");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

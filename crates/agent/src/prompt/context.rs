@@ -30,12 +30,10 @@ impl PromptContext {
         }
     }
 
-    pub fn fingerprint(&self) -> String {
+    pub fn contributor_cache_fingerprint(&self) -> String {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.working_dir.hash(&mut hasher);
         self.tool_names.hash(&mut hasher);
-        self.step_index.hash(&mut hasher);
-        self.turn_index.hash(&mut hasher);
 
         let mut vars = self.vars.iter().collect::<Vec<_>>();
         vars.sort_by(|left, right| left.0.cmp(right.0));

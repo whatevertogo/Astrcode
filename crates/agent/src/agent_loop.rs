@@ -7,6 +7,7 @@ use chrono::Utc;
 
 use crate::events::StorageEvent;
 use crate::projection::AgentState;
+use crate::prompt::PromptComposer;
 use crate::provider_factory::DynProviderFactory;
 use crate::tool_registry::ToolRegistry;
 
@@ -14,6 +15,7 @@ pub struct AgentLoop {
     factory: DynProviderFactory,
     tools: ToolRegistry,
     max_steps: Option<usize>,
+    prompt_composer: PromptComposer,
 }
 
 impl AgentLoop {
@@ -22,11 +24,18 @@ impl AgentLoop {
             factory,
             tools,
             max_steps: None,
+            prompt_composer: PromptComposer::with_defaults(),
         }
     }
 
     pub fn with_max_steps(mut self, max_steps: usize) -> Self {
         self.max_steps = Some(max_steps);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_prompt_composer(mut self, prompt_composer: PromptComposer) -> Self {
+        self.prompt_composer = prompt_composer;
         self
     }
 

@@ -10,5 +10,9 @@ pub trait PromptContributor: Send + Sync {
         1
     }
 
+    fn cache_fingerprint(&self, ctx: &PromptContext) -> String {
+        ctx.contributor_cache_fingerprint()
+    }
+
     async fn contribute(&self, ctx: &PromptContext) -> PromptContribution;
 }

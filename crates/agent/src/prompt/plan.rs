@@ -1,6 +1,6 @@
 use astrcode_core::{LlmMessage, ToolDefinition};
 
-use super::{append_unique_tools, PromptBlock, PromptContribution};
+use super::PromptBlock;
 
 #[derive(Default, Clone, Debug)]
 pub struct PromptPlan {
@@ -11,10 +11,6 @@ pub struct PromptPlan {
 }
 
 impl PromptPlan {
-    pub fn merge(&mut self, contribution: PromptContribution) {
-        append_unique_tools(&mut self.extra_tools, contribution.extra_tools);
-    }
-
     pub fn render_system(&self) -> Option<String> {
         if self.system_blocks.is_empty() {
             return None;

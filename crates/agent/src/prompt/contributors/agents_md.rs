@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use log::warn;
@@ -47,6 +48,22 @@ pub fn load_agents_md(path: &Path) -> Option<String> {
     }
 }
 
+fn cache_marker_for_path(path: &Path) -> String {
+    match fs::metadata(path) {
+        Ok(metadata) => {
+            let modified = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default();
+
+            format!("present:{}:{modified}", metadata.len())
+        }
+        Err(_) => "missing".to_string(),
+    }
+}
+
 #[async_trait]
 impl PromptContributor for AgentsMdContributor {
     fn contributor_id(&self) -> &'static str {
@@ -55,6 +72,20 @@ impl PromptContributor for AgentsMdContributor {
 
     fn cache_version(&self) -> u64 {
         2
+    }
+
+    fn cache_fingerprint(&self, ctx: &PromptContext) -> String {
+        let user_marker = user_agents_md_path()
+            .map(|path| format!("{}={}", path.display(), cache_marker_for_path(&path)))
+            .unwrap_or_else(|| "user=<unresolved>".to_string());
+        let project_path = project_agents_md_path(&ctx.working_dir);
+        let project_marker = format!(
+            "{}={}",
+            project_path.display(),
+            cache_marker_for_path(&project_path)
+        );
+
+        format!("{user_marker}|{project_marker}")
     }
 
     async fn contribute(&self, ctx: &PromptContext) -> PromptContribution {

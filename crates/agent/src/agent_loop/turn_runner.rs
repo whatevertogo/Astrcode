@@ -2,7 +2,7 @@ use astrcode_core::{CancelToken, Result};
 
 use crate::events::StorageEvent;
 use crate::projection::AgentState;
-use crate::prompt::{append_unique_tools, PromptComposer, PromptContext};
+use crate::prompt::{append_unique_tools, DiagnosticLevel, PromptContext, PromptDiagnostics};
 use astrcode_core::LlmMessage;
 
 use super::{
@@ -41,13 +41,14 @@ pub(crate) async fn run_turn(
             turn_index: state.turn_count,
             vars: Default::default(),
         };
-        let build_output = match PromptComposer::with_defaults().build(&ctx).await {
+        let build_output = match agent_loop.prompt_composer.build(&ctx).await {
             Ok(output) => output,
             Err(error) => {
                 finish_with_error(turn_id, error.to_string(), on_event)?;
                 return Ok(());
             }
         };
+        log_prompt_diagnostics(&build_output.diagnostics);
         let plan = build_output.plan;
         let system_prompt = plan.render_system();
         let mut request_messages = plan.prepend_messages;
@@ -140,5 +141,23 @@ fn reached_max_steps(max_steps: Option<usize>, step_index: usize) -> bool {
         true
     } else {
         false
+    }
+}
+
+fn log_prompt_diagnostics(diagnostics: &PromptDiagnostics) {
+    for diagnostic in &diagnostics.items {
+        let block_id = diagnostic.block_id.as_deref().unwrap_or("-");
+        let contributor_id = diagnostic.contributor_id.as_deref().unwrap_or("-");
+        let message = format!(
+            "prompt diagnostic contributor={contributor_id} block={block_id} reason={:?} suggestion={}",
+            diagnostic.reason,
+            diagnostic.suggestion.as_deref().unwrap_or("-")
+        );
+
+        match diagnostic.level {
+            DiagnosticLevel::Info => log::debug!("{message}"),
+            DiagnosticLevel::Warning => log::warn!("{message}"),
+            DiagnosticLevel::Error => log::error!("{message}"),
+        }
     }
 }

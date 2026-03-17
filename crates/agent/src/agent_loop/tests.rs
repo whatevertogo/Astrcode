@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::fs;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use astrcode_core::{AstrError, CancelToken, Phase, Result, Tool, ToolContext};
@@ -10,6 +11,10 @@ use tokio::time::{sleep, Duration};
 use crate::events::StorageEvent;
 use crate::llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
 use crate::projection::AgentState;
+use crate::prompt::{
+    BlockKind, BlockSpec, PromptComposer, PromptComposerOptions, PromptContext, PromptContribution,
+    PromptContributor,
+};
 use crate::provider_factory::ProviderFactory;
 use crate::test_support::TestEnvGuard;
 use crate::tool_registry::ToolRegistry;
@@ -78,9 +83,33 @@ struct StaticProviderFactory {
     provider: Arc<dyn LlmProvider>,
 }
 
+struct CountingPromptContributor {
+    calls: Arc<AtomicUsize>,
+}
+
 impl ProviderFactory for StaticProviderFactory {
     fn build(&self) -> Result<Arc<dyn LlmProvider>> {
         Ok(self.provider.clone())
+    }
+}
+
+#[async_trait]
+impl PromptContributor for CountingPromptContributor {
+    fn contributor_id(&self) -> &'static str {
+        "counting-prompt"
+    }
+
+    async fn contribute(&self, _ctx: &PromptContext) -> PromptContribution {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        PromptContribution {
+            blocks: vec![BlockSpec::system_text(
+                "cached-block",
+                BlockKind::Identity,
+                "Cached",
+                "cached",
+            )],
+            ..PromptContribution::default()
+        }
     }
 }
 
@@ -521,6 +550,57 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
         &requests[1].messages[2],
         LlmMessage::Tool { tool_call_id, content } if tool_call_id == "call-1" && content == "ok"
     ));
+}
+
+#[tokio::test]
+async fn reuses_prompt_contributor_cache_across_llm_steps() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let composer = PromptComposer::with_options(PromptComposerOptions {
+        cache_ttl: Duration::from_secs(60),
+        ..PromptComposerOptions::default()
+    })
+    .add(Arc::new(CountingPromptContributor {
+        calls: calls.clone(),
+    }));
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([
+            LlmOutput {
+                content: String::new(),
+                tool_calls: vec![ToolCallRequest {
+                    id: "call-cache".to_string(),
+                    name: "quickTool".to_string(),
+                    args: json!({}),
+                }],
+                reasoning: None,
+            },
+            LlmOutput {
+                content: "done".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+        ])),
+        delay: Duration::from_millis(0),
+    });
+    let tools = ToolRegistry::builder()
+        .register(Box::new(QuickTool))
+        .build();
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::new(factory, tools)
+        .with_prompt_composer(composer)
+        .with_max_steps(8);
+    let state = make_state("cache prompt");
+
+    loop_runner
+        .run_turn(
+            &state,
+            "turn-cache",
+            &mut |_event| Ok(()),
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
