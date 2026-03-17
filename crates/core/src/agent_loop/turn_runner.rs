@@ -2,6 +2,7 @@ use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 
 use crate::action::LlmMessage;
+use crate::config::{load_config, OrchestrationConfig};
 use crate::events::StorageEvent;
 use crate::projection::AgentState;
 use crate::prompt::{append_unique_tools, PromptComposer, PromptContext};
@@ -15,6 +16,16 @@ pub(crate) async fn run_turn(
     cancel: CancellationToken,
 ) -> Result<()> {
     let provider = llm_cycle::build_provider(agent_loop.factory.clone()).await?;
+    let orchestration_config = load_config()
+        .map(|config| config.prompt.orchestration)
+        .unwrap_or_else(|error| {
+            log::warn!(
+                "failed to load prompt orchestration config, falling back to defaults: {}",
+                error
+            );
+            OrchestrationConfig::default()
+        });
+    let composer = PromptComposer::with_orchestration_config(orchestration_config);
     let mut messages = state.messages.clone();
     let mut step_index = 0usize;
 
@@ -34,14 +45,21 @@ pub(crate) async fn run_turn(
             tool_names: agent_loop.tools.names(),
             step_index,
             turn_index: state.turn_count,
+            vars: Default::default(),
         };
-        let plan = PromptComposer::with_defaults().build(&ctx);
-        let system_prompt = plan.render_system();
-        let mut request_messages = plan.prepend_messages;
+        let output = match composer.build(&ctx).await {
+            Ok(output) => output,
+            Err(error) => {
+                finish_with_error(error.to_string(), on_event);
+                return Ok(());
+            }
+        };
+        let system_prompt = output.plan.render_system();
+        let mut request_messages = output.plan.prepend_messages;
         request_messages.extend(messages.iter().cloned());
-        request_messages.extend(plan.append_messages);
+        request_messages.extend(output.plan.append_messages);
         let mut tool_definitions = agent_loop.tools.definitions();
-        append_unique_tools(&mut tool_definitions, plan.extra_tools);
+        append_unique_tools(&mut tool_definitions, output.plan.extra_tools);
 
         let output = match llm_cycle::generate_response(
             &provider,

@@ -93,3 +93,5 @@ Trait-based design in `crates/core/src/tools/`:
 - **Home 目录测试陷阱**: 在 Windows 测试环境里，`dirs::home_dir()` 不一定受临时 `HOME/USERPROFILE` 影响；需要可控 home 路径的测试或模块，优先复用 `crate::test_support::test_home_dir()` / `TestEnvGuard`
 - **ASTRCODE_HOME_DIR 语义**: 该环境变量表示用户 home 根目录，不是应用数据目录；用户级文件路径都应继续拼接到 `.astrcode/...` 下，例如 `.astrcode/AGENTS.md`
 - **Tauri 前端命令路径**: 当前环境里 `tauri.conf.json` 的 `beforeDevCommand` / `beforeBuildCommand` 按仓库根目录解析；在 Windows 上不要依赖 `npm.ps1`，优先通过 `node` 脚本或 `cmd.exe -> npm.cmd` 间接启动前端命令
+- **Prompt 模块路径陷阱**: Prompt orchestration 代码已经迁到 `crates/core/src/prompt/`；如果上下文、旧文档或 IDE 标签还指向 `crates/agent/src/prompt/`，先校验真实文件位置，再继续设计或改动
+- **命名法风格** 注意前后端接收参数命名法一致

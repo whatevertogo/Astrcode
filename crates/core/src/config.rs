@@ -31,6 +31,8 @@ pub struct Config {
     pub active_model: String,
     #[serde(default = "default_config_profiles")]
     pub profiles: Vec<Profile>,
+    #[serde(default = "default_config_prompt")]
+    pub prompt: PromptConfig,
 }
 
 impl Default for Config {
@@ -40,6 +42,62 @@ impl Default for Config {
             active_profile: "deepseek".to_string(),
             active_model: "deepseek-chat".to_string(),
             profiles: default_profiles(),
+            prompt: PromptConfig::default(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+#[serde(default)]
+pub struct PromptConfig {
+    #[serde(default)]
+    pub orchestration: OrchestrationConfig,
+}
+
+impl Default for PromptConfig {
+    fn default() -> Self {
+        Self {
+            orchestration: OrchestrationConfig::default(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ValidationLevel {
+    Off,
+    Warn,
+    Strict,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+#[serde(default)]
+pub struct OrchestrationConfig {
+    #[serde(default = "default_orchestration_enable_concurrent")]
+    pub enable_concurrent: bool,
+    #[serde(default = "default_orchestration_max_concurrent_blocks")]
+    pub max_concurrent_blocks: usize,
+    #[serde(default = "default_orchestration_cache_ttl")]
+    #[serde(with = "duration_millis")]
+    pub cache_ttl: Duration,
+    #[serde(default = "default_orchestration_validation_strictness")]
+    pub validation_strictness: ValidationLevel,
+    #[serde(default = "default_orchestration_enable_diagnostics")]
+    pub enable_diagnostics: bool,
+}
+
+impl Default for OrchestrationConfig {
+    fn default() -> Self {
+        Self {
+            enable_concurrent: false,
+            max_concurrent_blocks: 1,
+            cache_ttl: Duration::from_millis(0),
+            validation_strictness: ValidationLevel::Warn,
+            enable_diagnostics: true,
         }
     }
 }
@@ -124,6 +182,10 @@ fn default_config_profiles() -> Vec<Profile> {
     Config::default().profiles
 }
 
+fn default_config_prompt() -> PromptConfig {
+    Config::default().prompt
+}
+
 fn default_profiles() -> Vec<Profile> {
     vec![
         Profile {
@@ -170,6 +232,47 @@ fn default_profile_models() -> Vec<String> {
 
 fn default_profile_max_tokens() -> u32 {
     Profile::default().max_tokens
+}
+
+fn default_orchestration_enable_concurrent() -> bool {
+    OrchestrationConfig::default().enable_concurrent
+}
+
+fn default_orchestration_max_concurrent_blocks() -> usize {
+    OrchestrationConfig::default().max_concurrent_blocks
+}
+
+fn default_orchestration_cache_ttl() -> Duration {
+    OrchestrationConfig::default().cache_ttl
+}
+
+fn default_orchestration_validation_strictness() -> ValidationLevel {
+    OrchestrationConfig::default().validation_strictness
+}
+
+fn default_orchestration_enable_diagnostics() -> bool {
+    OrchestrationConfig::default().enable_diagnostics
+}
+
+mod duration_millis {
+    use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u64(duration.as_millis() as u64)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let millis = u64::deserialize(deserializer)?;
+        Ok(Duration::from_millis(millis))
+    }
 }
 
 pub fn config_path() -> Result<PathBuf> {
@@ -640,6 +743,7 @@ mod tests {
                 models: vec!["gpt-4o-mini".to_string()],
                 max_tokens: 8096,
             }],
+            prompt: PromptConfig::default(),
         };
 
         save_config_to_path(&path, &config).expect("save should succeed");

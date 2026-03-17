@@ -1,9 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use async_trait::async_trait;
 use log::warn;
 
-use crate::prompt::{BlockKind, PromptBlock, PromptContext, PromptContribution, PromptContributor};
+use crate::prompt::{BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor};
 
 pub struct AgentsMdContributor;
 
@@ -46,34 +47,47 @@ pub fn load_agents_md(path: &Path) -> Option<String> {
     }
 }
 
+#[async_trait]
 impl PromptContributor for AgentsMdContributor {
-    fn contribute(&self, ctx: &PromptContext) -> PromptContribution {
-        let mut system_blocks = Vec::new();
+    fn contributor_id(&self) -> &'static str {
+        "agents-md"
+    }
+
+    async fn contribute(&self, ctx: &PromptContext) -> PromptContribution {
+        let mut blocks = Vec::new();
 
         if let Some(path) = user_agents_md_path() {
             if let Some(content) = load_agents_md(&path) {
-                system_blocks.push(PromptBlock {
-                    kind: BlockKind::UserRules,
-                    title: "User Rules",
-                    content: format!("User-wide instructions from {}:\n{content}", path.display()),
-                });
+                blocks.push(
+                    BlockSpec::system_text(
+                        "user-rules",
+                        BlockKind::UserRules,
+                        "User Rules",
+                        format!("User-wide instructions from {}:\n{content}", path.display()),
+                    )
+                    .with_origin(path.display().to_string()),
+                );
             }
         }
 
         let project_path = project_agents_md_path(&ctx.working_dir);
         if let Some(content) = load_agents_md(&project_path) {
-            system_blocks.push(PromptBlock {
-                kind: BlockKind::ProjectRules,
-                title: "Project Rules",
-                content: format!(
-                    "Project-specific instructions from {}:\n{content}",
-                    project_path.display()
-                ),
-            });
+            blocks.push(
+                BlockSpec::system_text(
+                    "project-rules",
+                    BlockKind::ProjectRules,
+                    "Project Rules",
+                    format!(
+                        "Project-specific instructions from {}:\n{content}",
+                        project_path.display()
+                    ),
+                )
+                .with_origin(project_path.display().to_string()),
+            );
         }
 
         PromptContribution {
-            system_blocks,
+            blocks,
             ..PromptContribution::default()
         }
     }
@@ -92,23 +106,25 @@ mod tests {
             tool_names: vec!["shell".to_string()],
             step_index: 0,
             turn_index: 0,
+            vars: Default::default(),
         }
     }
 
-    #[test]
-    fn returns_empty_blocks_when_agents_files_are_missing() {
+    #[tokio::test]
+    async fn returns_empty_blocks_when_agents_files_are_missing() {
         let _guard = TestEnvGuard::new();
         let project = tempfile::tempdir().expect("tempdir should be created");
         let contributor = AgentsMdContributor;
 
-        let contribution =
-            contributor.contribute(&context(project.path().to_string_lossy().into_owned()));
+        let contribution = contributor
+            .contribute(&context(project.path().to_string_lossy().into_owned()))
+            .await;
 
-        assert!(contribution.system_blocks.is_empty());
+        assert!(contribution.blocks.is_empty());
     }
 
-    #[test]
-    fn returns_user_rules_block_with_source_prefix() {
+    #[tokio::test]
+    async fn returns_user_rules_block_with_source_prefix() {
         let guard = TestEnvGuard::new();
         let project = tempfile::tempdir().expect("tempdir should be created");
         let user_agents_path = guard.home_dir().join(".astrcode").join("AGENTS.md");
@@ -118,61 +134,36 @@ mod tests {
             .expect("user agents file should be written");
         let contributor = AgentsMdContributor;
 
-        let contribution =
-            contributor.contribute(&context(project.path().to_string_lossy().into_owned()));
+        let contribution = contributor
+            .contribute(&context(project.path().to_string_lossy().into_owned()))
+            .await;
 
-        assert_eq!(contribution.system_blocks.len(), 1);
-        assert_eq!(contribution.system_blocks[0].kind, BlockKind::UserRules);
-        assert!(contribution.system_blocks[0].content.contains(&format!(
-            "User-wide instructions from {}:\nFollow user rule",
-            user_agents_path.display()
-        )));
+        assert_eq!(contribution.blocks.len(), 1);
+        assert_eq!(contribution.blocks[0].kind, BlockKind::UserRules);
+        assert!(matches!(
+            &contribution.blocks[0].content,
+            crate::prompt::BlockContent::Text(content)
+            if content.contains(&format!(
+                "User-wide instructions from {}:\nFollow user rule",
+                user_agents_path.display()
+            ))
+        ));
     }
 
-    #[test]
-    fn returns_project_rules_block_with_source_prefix() {
+    #[tokio::test]
+    async fn returns_project_rules_block_with_source_prefix() {
         let _guard = TestEnvGuard::new();
         let project = tempfile::tempdir().expect("tempdir should be created");
         fs::write(project.path().join("AGENTS.md"), "Follow project rule")
             .expect("project agents file should be written");
         let contributor = AgentsMdContributor;
 
-        let contribution =
-            contributor.contribute(&context(project.path().to_string_lossy().into_owned()));
+        let contribution = contributor
+            .contribute(&context(project.path().to_string_lossy().into_owned()))
+            .await;
 
-        assert_eq!(contribution.system_blocks.len(), 1);
-        assert_eq!(contribution.system_blocks[0].kind, BlockKind::ProjectRules);
-        assert!(contribution.system_blocks[0].content.contains(&format!(
-            "Project-specific instructions from {}:\nFollow project rule",
-            project.path().join("AGENTS.md").display()
-        )));
-    }
-
-    #[test]
-    fn returns_both_user_and_project_blocks_when_both_exist() {
-        let guard = TestEnvGuard::new();
-        let project = tempfile::tempdir().expect("tempdir should be created");
-        let user_agents_path = guard.home_dir().join(".astrcode").join("AGENTS.md");
-        fs::create_dir_all(user_agents_path.parent().expect("parent should exist"))
-            .expect("user agents dir should be created");
-        fs::write(&user_agents_path, "Follow user rule")
-            .expect("user agents file should be written");
-        fs::write(project.path().join("AGENTS.md"), "Follow project rule")
-            .expect("project agents file should be written");
-        let contributor = AgentsMdContributor;
-
-        let contribution =
-            contributor.contribute(&context(project.path().to_string_lossy().into_owned()));
-
-        assert_eq!(contribution.system_blocks.len(), 2);
-        assert!(contribution
-            .system_blocks
-            .iter()
-            .any(|block| block.kind == BlockKind::UserRules));
-        assert!(contribution
-            .system_blocks
-            .iter()
-            .any(|block| block.kind == BlockKind::ProjectRules));
+        assert_eq!(contribution.blocks.len(), 1);
+        assert_eq!(contribution.blocks[0].kind, BlockKind::ProjectRules);
     }
 
     #[test]

@@ -90,3 +90,5 @@ Trait-based design in `crates/core/src/tools/`:
 - **async_trait**: 默认 `#[async_trait]` 要求 `Send`；若需非 `Send` 回调，用 `#[async_trait(?Send)]`
 - **配置文件**: 首次运行生成 `~/.astrcode/config.json`，含 API 密钥和 Profile 配置
 - **IPC 协议**: 后端→前端事件通过 NDJSON 流传输，见 `AgentEventKind` 枚举
+- **命名法风格** 注意前后端接收参数命名法一致
+- **Prompt 模块路径陷阱**: Prompt orchestration 代码现在位于 `crates/core/src/prompt/`；如果看到旧资料或 IDE 标签仍指向 `crates/agent/src/prompt/`，先以仓库实际路径为准，避免按已迁移目录做规划或改动

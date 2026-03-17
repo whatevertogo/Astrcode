@@ -1,22 +1,20 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use crate::action::{LlmMessage, ToolDefinition};
+use crate::action::ToolDefinition;
 
-use super::PromptBlock;
+use super::BlockSpec;
 
 #[derive(Default, Clone, Debug)]
 pub struct PromptContribution {
-    pub system_blocks: Vec<PromptBlock>,
-    pub prepend_messages: Vec<LlmMessage>,
-    pub append_messages: Vec<LlmMessage>,
+    pub blocks: Vec<BlockSpec>,
+    pub contributor_vars: HashMap<String, String>,
     pub extra_tools: Vec<ToolDefinition>,
 }
 
 impl PromptContribution {
     pub fn merge(&mut self, other: PromptContribution) {
-        self.system_blocks.extend(other.system_blocks);
-        self.prepend_messages.extend(other.prepend_messages);
-        self.append_messages.extend(other.append_messages);
+        self.blocks.extend(other.blocks);
+        self.contributor_vars.extend(other.contributor_vars);
         append_unique_tools(&mut self.extra_tools, other.extra_tools);
     }
 }
@@ -36,8 +34,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::action::LlmMessage;
-    use crate::prompt::{BlockKind, PromptBlock};
+    use crate::prompt::{BlockKind, BlockSpec};
 
     fn tool(name: &str) -> ToolDefinition {
         ToolDefinition {
@@ -81,40 +78,29 @@ mod tests {
     #[test]
     fn merge_combines_all_fields() {
         let mut base = PromptContribution {
-            system_blocks: vec![PromptBlock {
-                kind: BlockKind::Identity,
-                title: "Identity",
-                content: "base".to_string(),
-            }],
-            prepend_messages: vec![LlmMessage::User {
-                content: "before".to_string(),
-            }],
-            append_messages: vec![LlmMessage::Assistant {
-                content: "after".to_string(),
-                tool_calls: vec![],
-            }],
+            blocks: vec![BlockSpec::system_text(
+                "identity",
+                BlockKind::Identity,
+                "Identity",
+                "base",
+            )],
+            contributor_vars: HashMap::from([("project.name".to_string(), "base".to_string())]),
             extra_tools: vec![tool("shell")],
         };
 
         base.merge(PromptContribution {
-            system_blocks: vec![PromptBlock {
-                kind: BlockKind::Environment,
-                title: "Environment",
-                content: "env".to_string(),
-            }],
-            prepend_messages: vec![LlmMessage::User {
-                content: "extra-before".to_string(),
-            }],
-            append_messages: vec![LlmMessage::Tool {
-                tool_call_id: "call-1".to_string(),
-                content: "tool output".to_string(),
-            }],
+            blocks: vec![BlockSpec::system_text(
+                "environment",
+                BlockKind::Environment,
+                "Environment",
+                "env",
+            )],
+            contributor_vars: HashMap::from([("env.os".to_string(), "windows".to_string())]),
             extra_tools: vec![tool("shell"), tool("grep")],
         });
 
-        assert_eq!(base.system_blocks.len(), 2);
-        assert_eq!(base.prepend_messages.len(), 2);
-        assert_eq!(base.append_messages.len(), 2);
+        assert_eq!(base.blocks.len(), 2);
+        assert_eq!(base.contributor_vars.len(), 2);
         assert_eq!(
             base.extra_tools
                 .into_iter()
