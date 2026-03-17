@@ -1,30 +1,32 @@
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.64);
+  background: rgba(55, 42, 26, 0.18);
+  backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 10000;
+  padding: 20px;
 }
 
 .modal {
   width: 520px;
-  max-width: calc(100vw - 32px);
-  background: #252525;
-  border: 1px solid #3d3d3d;
-  border-radius: 12px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
-  padding: 20px;
+  max-width: min(520px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: 0 24px 60px rgba(83, 61, 31, 0.16);
+  padding: 24px;
 }
 
 .warningBanner {
   margin-bottom: 14px;
-  padding: 10px 12px;
-  background: rgba(214, 157, 13, 0.16);
-  border: 1px solid rgba(214, 157, 13, 0.5);
-  border-radius: 8px;
-  color: #f0c674;
+  padding: 12px 14px;
+  background: #fff7e8;
+  border: 1px solid #f1d7a7;
+  border-radius: 14px;
+  color: #8d621f;
   font-size: 12px;
   line-height: 1.5;
 }
@@ -38,26 +40,29 @@
 }
 
 .title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #f3f3f3;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
 }
 
 .closeButton {
   width: 32px;
   height: 32px;
-  border-radius: 8px;
-  background: #1f1f1f;
-  color: #bdbdbd;
+  border-radius: 10px;
+  background: var(--surface-soft);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
   font-size: 18px;
   transition:
-    background 150ms ease,
-    color 150ms ease;
+    background-color 150ms ease,
+    color 150ms ease,
+    border-color 150ms ease;
 }
 
 .closeButton:hover {
-  background: #2b2b2b;
-  color: #fff;
+  background: #fff;
+  color: var(--text-primary);
+  border-color: var(--border-strong);
 }
 
 .section {
@@ -66,9 +71,10 @@
 
 .label {
   display: block;
-  margin-bottom: 6px;
-  color: #8d8d8d;
-  font-size: 12px;
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .pathRow {
@@ -80,11 +86,11 @@
 .pathValue {
   flex: 1;
   min-width: 0;
-  padding: 9px 12px;
-  border-radius: 8px;
-  border: 1px solid #3a3a3a;
-  background: #1c1c1c;
-  color: #d4d4d4;
+  padding: 11px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #fffdfa;
+  color: var(--text-primary);
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -93,17 +99,21 @@
 
 .select {
   width: 100%;
-  padding: 10px 12px;
-  border-radius: 8px;
-  border: 1px solid #3a3a3a;
-  background: #1c1c1c;
-  color: #d4d4d4;
+  padding: 11px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #fffdfa;
+  color: var(--text-primary);
   font-size: 13px;
   outline: none;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
 }
 
 .select:focus {
-  border-color: #5a8dee;
+  border-color: var(--border-strong);
+  box-shadow: 0 0 0 4px rgba(220, 203, 180, 0.35);
 }
 
 .select:disabled {
@@ -114,8 +124,8 @@
   display: flex;
   justify-content: space-between;
   gap: 16px;
-  padding: 8px 0;
-  border-bottom: 1px solid #313131;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
 }
 
 .infoRow:last-child {
@@ -123,12 +133,12 @@
 }
 
 .infoLabel {
-  color: #8d8d8d;
+  color: var(--text-secondary);
   font-size: 12px;
 }
 
 .infoValue {
-  color: #d4d4d4;
+  color: var(--text-primary);
   font-size: 12px;
   text-align: right;
   word-break: break-all;
@@ -143,32 +153,35 @@
 
 .secondaryButton,
 .primaryButton {
-  padding: 8px 14px;
-  border-radius: 8px;
+  padding: 10px 14px;
+  border-radius: 12px;
   font-size: 13px;
+  font-weight: 600;
   transition:
-    background 150ms ease,
+    background-color 150ms ease,
+    border-color 150ms ease,
     color 150ms ease,
     opacity 150ms ease;
 }
 
 .secondaryButton {
-  background: #2f2f2f;
-  color: #d4d4d4;
+  background: var(--surface-soft);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
 }
 
 .secondaryButton:hover:not(:disabled) {
-  background: #383838;
+  background: #fff;
+  border-color: var(--border-strong);
 }
 
 .primaryButton {
-  background: #1a6ed8;
+  background: var(--accent-strong);
   color: #fff;
-  font-weight: 500;
 }
 
 .primaryButton:hover:not(:disabled) {
-  background: #2179e5;
+  background: #1f1b17;
 }
 
 .secondaryButton:disabled,
@@ -193,23 +206,23 @@
 }
 
 .loadingState {
-  color: #c8c8c8;
+  color: var(--text-secondary);
 }
 
 .successMessage {
-  color: #7bd88f;
+  color: var(--success);
 }
 
 .errorMessage {
-  color: #f48771;
+  color: var(--danger);
 }
 
 .spinner {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.18);
-  border-top-color: #9cdcfe;
+  border: 2px solid rgba(139, 94, 49, 0.18);
+  border-top-color: #8b5e31;
   animation: spin 900ms linear infinite;
 }
 

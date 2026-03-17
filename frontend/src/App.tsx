@@ -15,6 +15,7 @@ import SettingsModal from './components/Settings/SettingsModal';
 import { useAgent, SessionMessage } from './hooks/useAgent';
 import { snapshotToolStatus } from './lib/sessionMessages';
 import { releaseTurnMapping, resolveSessionForTurn } from './lib/turnRouting';
+import styles from './App.module.css';
 
 function getDirectoryName(path: string): string {
   const normalized = path.replace(/[\\/]+$/, '');
@@ -687,14 +688,7 @@ export default function App() {
   }, [interrupt]);
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        height: '100vh',
-        overflow: 'hidden',
-        background: '#1a1a1a',
-      }}
-    >
+    <div className={styles.app}>
       <Sidebar
         projects={state.projects}
         activeSessionId={state.activeSessionId}

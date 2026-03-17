@@ -1,29 +1,36 @@
 .wrapper {
   display: flex;
-  justify-content: flex-start;
+  align-items: flex-start;
+  gap: 16px;
 }
 
-.bubble {
-  background: #2d2d2d;
-  color: #d4d4d4;
-  border-radius: 12px;
-  padding: 10px 14px;
-  max-width: 80%;
-  overflow: hidden;
-  word-break: break-word;
-  min-width: 60px;
+.avatar {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #efe6da;
+  color: #8a7458;
+  border-radius: 8px;
+  flex-shrink: 0;
 }
 
-.label {
-  font-size: 11px;
-  font-weight: 600;
-  color: #858585;
-  margin-bottom: 6px;
+.avatar svg {
+  width: 16px;
+  height: 16px;
+}
+
+.body {
+  flex: 1;
+  min-width: 0;
+  padding-top: 2px;
 }
 
 .content {
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: 15px;
+  line-height: 1.8;
+  color: var(--text-primary);
   overflow-wrap: anywhere;
 }
 
@@ -41,30 +48,31 @@
 }
 
 .thinkingBlock {
-  margin: 0 0 10px;
-  border: 1px solid #3d3d3d;
-  border-radius: 8px;
-  background: #252526;
+  margin: 0 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.7);
+  overflow: hidden;
 }
 
 .thinkingSummary {
   cursor: pointer;
-  padding: 8px 10px;
-  color: #dcdcaa;
+  padding: 10px 14px;
+  color: var(--text-secondary);
   font-size: 12px;
+  font-weight: 600;
   user-select: none;
 }
 
 .thinkingContent {
   margin: 0;
-  padding: 0 10px 10px;
+  padding: 0 14px 14px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-size: 13px;
-  color: #c8c8c8;
+  color: #695f53;
 }
 
-/* Markdown overrides inside bubble */
 .content p {
   margin: 0 0 8px;
 }
@@ -84,30 +92,38 @@
 }
 
 .content strong {
-  color: #e0e0e0;
+  color: #201b16;
 }
 
 .codeBlock {
-  background: #1a1a1a;
-  border-radius: 6px;
-  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px 16px;
   overflow-x: auto;
-  margin: 8px 0;
+  margin: 10px 0;
   font-size: 13px;
   line-height: 1.5;
+  box-shadow: 0 6px 18px rgba(112, 86, 50, 0.04);
 }
 
 .inlineCode {
-  background: #1a1a1a;
-  border-radius: 3px;
-  padding: 1px 5px;
+  background: #f3ebe0;
+  border-radius: 6px;
+  padding: 2px 6px;
   font-size: 13px;
-  color: #9cdcfe;
+  color: #8b5e31;
 }
 
 .cursor {
   display: inline-block;
-  color: #c586c0;
+  color: #6b6258;
   animation: blink 1s step-end infinite;
   margin-left: 1px;
+}
+
+@media (max-width: 640px) {
+  .wrapper {
+    gap: 12px;
+  }
 }

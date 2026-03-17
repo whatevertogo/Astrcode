@@ -143,6 +143,14 @@ export default function ModelSelector({
 
   return (
     <div className={styles.wrapper}>
+      <span className={styles.leadingIcon} aria-hidden="true">
+        <svg viewBox="0 0 20 20">
+          <path
+            d="M8.75 2.5h2.5l.39 1.94c.38.11.74.26 1.08.45l1.84-.73 1.26 2.18-1.45 1.24c.03.19.05.37.05.56 0 .19-.02.37-.05.56l1.45 1.24-1.26 2.18-1.84-.73c-.34.19-.7.34-1.08.45l-.39 1.94h-2.5l-.39-1.94a4.96 4.96 0 0 1-1.08-.45l-1.84.73-1.26-2.18 1.45-1.24a3.7 3.7 0 0 1-.05-.56c0-.19.02-.37.05-.56L3.31 6.34l1.26-2.18 1.84.73c.34-.19.7-.34 1.08-.45l.39-1.94ZM10 7.3A2.7 2.7 0 1 0 10 12.7 2.7 2.7 0 0 0 10 7.3Z"
+            fill="currentColor"
+          />
+        </svg>
+      </span>
       <select
         className={styles.select}
         value={selectedValue}
@@ -163,6 +171,18 @@ export default function ModelSelector({
           </optgroup>
         ))}
       </select>
+      <span className={styles.chevron} aria-hidden="true">
+        <svg viewBox="0 0 12 12">
+          <path
+            d="M2.5 4.5 6 8l3.5-3.5"
+            fill="none"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.4"
+          />
+        </svg>
+      </span>
       {error && <span className={styles.error}>{error}</span>}
     </div>
   );

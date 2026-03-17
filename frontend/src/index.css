@@ -4,6 +4,28 @@
   box-sizing: border-box;
 }
 
+:root {
+  --app-bg: #f7f1ea;
+  --panel-bg: #fcfaf7;
+  --sidebar-bg: #f5efe6;
+  --surface: #fffdfa;
+  --surface-muted: #f3ece3;
+  --surface-soft: #faf5ee;
+  --border: #e6dccd;
+  --border-strong: #d9cab6;
+  --text-primary: #2f2923;
+  --text-secondary: #7f7468;
+  --text-muted: #aea293;
+  --text-faint: #c4baae;
+  --accent-strong: #2f2b27;
+  --accent-soft: #39c98f;
+  --success-soft: #e7f7ee;
+  --success: #3ebc7f;
+  --danger-soft: #fff0ed;
+  --danger: #cc5b5b;
+  --shadow-soft: 0 10px 30px rgba(117, 90, 52, 0.08);
+}
+
 html,
 body,
 #root {
@@ -12,19 +34,20 @@ body,
   height: 100%;
   width: 100%;
   overflow: hidden;
-  background-color: #1a1a1a;
-  color: #d4d4d4;
-  font-family:
-    system-ui,
-    -apple-system,
-    sans-serif;
+  background:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.7), transparent 28%),
+    linear-gradient(180deg, #faf6f0 0%, var(--app-bg) 100%);
+  color: var(--text-primary);
+  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   font-size: 14px;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -32,12 +55,15 @@ body,
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #444;
-  border-radius: 2px;
+  background: #d5cabd;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #555;
+  background: #c8bbab;
+  background-clip: padding-box;
 }
 
 /* Blink cursor animation for streaming assistant messages */
@@ -69,6 +95,7 @@ button {
   color: inherit;
   font-family: inherit;
   font-size: inherit;
+  padding: 0;
 }
 
 /* Reset textarea styles */
@@ -80,6 +107,11 @@ textarea {
   border: none;
   outline: none;
   resize: none;
+}
+
+select,
+input {
+  font: inherit;
 }
 
 /* Code / monospace */

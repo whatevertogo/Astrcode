@@ -1,19 +1,50 @@
 .wrapper {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
   min-width: 0;
 }
 
+.leadingIcon,
+.chevron {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+
+.leadingIcon {
+  left: 12px;
+}
+
+.leadingIcon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.chevron {
+  right: 12px;
+}
+
+.chevron svg {
+  width: 12px;
+  height: 12px;
+}
+
 .select {
-  min-width: 240px;
-  max-width: 320px;
-  padding: 6px 10px;
-  border: 1px solid #333;
-  border-radius: 6px;
-  background: #252525;
-  color: #d4d4d4;
-  font-size: 12px;
+  min-width: 280px;
+  max-width: 360px;
+  height: 38px;
+  padding: 0 34px 0 36px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text-primary);
+  font-size: 13px;
+  box-shadow: 0 2px 10px rgba(112, 86, 50, 0.04);
+  appearance: none;
 }
 
 .select:disabled {
@@ -22,10 +53,25 @@
 }
 
 .error {
-  max-width: 220px;
-  color: #e57373;
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  max-width: 260px;
+  color: #b34e4e;
+  background: #fff8f7;
+  border: 1px solid #f0d5d2;
+  border-radius: 10px;
+  padding: 8px 10px;
+  box-shadow: 0 8px 18px rgba(134, 75, 75, 0.1);
   font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1.4;
+}
+
+@media (max-width: 640px) {
+  .wrapper,
+  .select {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+  }
 }

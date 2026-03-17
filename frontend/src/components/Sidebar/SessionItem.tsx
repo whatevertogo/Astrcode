@@ -54,8 +54,9 @@ export default function SessionItem({ session, isActive, onSelect, onDelete }: S
         onContextMenu={handleContextMenu}
         tabIndex={0}
       >
-        <span className={styles.bullet}>›</span>
-        <span className={styles.title}>{session.title}</span>
+        <span className={styles.title} title={session.title}>
+          {session.title}
+        </span>
       </div>
 
       {contextMenu && (
@@ -66,6 +67,7 @@ export default function SessionItem({ session, isActive, onSelect, onDelete }: S
         >
           <button
             className={`${styles.menuItem} ${styles.menuItemDanger}`}
+            type="button"
             onClick={() => {
               onDelete();
               setContextMenu(null);

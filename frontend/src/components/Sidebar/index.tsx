@@ -46,17 +46,15 @@ export default function Sidebar({
 
   return (
     <div className={styles.sidebar}>
-      {/* Header */}
       <div className={styles.header}>
-        <span className={styles.title}>AstrCode</span>
         <span
           className={styles.phaseIndicator}
           style={{ backgroundColor: PHASE_COLOR[phase] }}
           title={phase}
         />
+        <span className={styles.title}>AstrCode</span>
       </div>
 
-      {/* Project tree */}
       <div className={styles.projectList}>
         {projects.map((project) => (
           <ProjectItem
@@ -71,7 +69,6 @@ export default function Sidebar({
         ))}
       </div>
 
-      {/* Footer */}
       <div className={styles.footer}>
         <div className={styles.footerActions}>
           <button className={styles.newProjectBtn} onClick={() => setShowModal(true)}>

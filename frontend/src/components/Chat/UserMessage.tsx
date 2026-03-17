@@ -9,8 +9,10 @@ interface UserMessageProps {
 function UserMessage({ message }: UserMessageProps) {
   return (
     <div className={styles.wrapper}>
-      <div className={styles.bubble}>
-        <div className={styles.label}>你</div>
+      <div className={styles.avatar} aria-hidden="true">
+        U
+      </div>
+      <div className={styles.body}>
         <div className={styles.text}>{message.text}</div>
       </div>
     </div>

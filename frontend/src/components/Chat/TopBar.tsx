@@ -38,15 +38,18 @@ export default function TopBar({
           <span className={styles.empty}>未选择会话</span>
         )}
       </div>
-      <ModelSelector
-        refreshKey={modelRefreshKey}
-        getCurrentModel={getCurrentModel}
-        listAvailableModels={listAvailableModels}
-        setModel={setModel}
-      />
-      <button className={styles.newSessionBtn} onClick={onNewSession} disabled={!projectName}>
-        + 新会话
-      </button>
+      <div className={styles.actions}>
+        <ModelSelector
+          refreshKey={modelRefreshKey}
+          getCurrentModel={getCurrentModel}
+          listAvailableModels={listAvailableModels}
+          setModel={setModel}
+        />
+        <button className={styles.newSessionBtn} onClick={onNewSession} disabled={!projectName}>
+          <span className={styles.newSessionPlus}>+</span>
+          <span>新会话</span>
+        </button>
+      </div>
     </div>
   );
 }
