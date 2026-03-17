@@ -17,14 +17,23 @@ impl EventLog {
     #[cfg(test)]
     pub fn create_at_path(session_id: &str, path: PathBuf) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| astrcode_core::AstrError::io(format!("failed to create directory: {}", parent.display()), e))?;
+            fs::create_dir_all(parent).map_err(|e| {
+                astrcode_core::AstrError::io(
+                    format!("failed to create directory: {}", parent.display()),
+                    e,
+                )
+            })?;
         }
         let file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)
-            .map_err(|e| astrcode_core::AstrError::io(format!("failed to create session file: {}", path.display()), e))?;
+            .map_err(|e| {
+                astrcode_core::AstrError::io(
+                    format!("failed to create session file: {}", path.display()),
+                    e,
+                )
+            })?;
         Ok(Self {
             session_id: session_id.to_string(),
             path,
@@ -48,7 +57,12 @@ impl EventLog {
             .create_new(true)
             .append(true)
             .open(&path)
-            .map_err(|e| astrcode_core::AstrError::io(format!("failed to create session file: {}", path.display()), e))?;
+            .map_err(|e| {
+                astrcode_core::AstrError::io(
+                    format!("failed to create session file: {}", path.display()),
+                    e,
+                )
+            })?;
         Ok(Self {
             session_id: canonical_id,
             path,
@@ -65,7 +79,12 @@ impl EventLog {
             .write(true)
             .append(true)
             .open(&path)
-            .map_err(|e| astrcode_core::AstrError::io(format!("failed to open session file: {}", path.display()), e))?;
+            .map_err(|e| {
+                astrcode_core::AstrError::io(
+                    format!("failed to open session file: {}", path.display()),
+                    e,
+                )
+            })?;
         Ok(Self {
             session_id: canonical_id,
             path,
@@ -90,8 +109,11 @@ impl EventLog {
 
         serde_json::to_writer(&mut self.writer, &stored)
             .map_err(|e| astrcode_core::AstrError::parse("failed to serialize StoredEvent", e))?;
-        writeln!(self.writer).map_err(|e| astrcode_core::AstrError::io("failed to write newline", e))?;
-        self.writer.flush().map_err(|e| astrcode_core::AstrError::io("failed to flush event log", e))?;
+        writeln!(self.writer)
+            .map_err(|e| astrcode_core::AstrError::io("failed to write newline", e))?;
+        self.writer
+            .flush()
+            .map_err(|e| astrcode_core::AstrError::io("failed to flush event log", e))?;
         self.writer
             .get_ref()
             .sync_all()
@@ -106,12 +128,18 @@ impl EventLog {
     }
 
     pub fn load_from_path(path: &Path) -> Result<Vec<StoredEvent>> {
-        let file = File::open(path)
-            .map_err(|e| astrcode_core::AstrError::io(format!("failed to open session file: {}", path.display()), e))?;
+        let file = File::open(path).map_err(|e| {
+            astrcode_core::AstrError::io(
+                format!("failed to open session file: {}", path.display()),
+                e,
+            )
+        })?;
         let reader = BufReader::new(file);
         let mut events = Vec::new();
         for (i, line) in reader.lines().enumerate() {
-            let line = line.map_err(|e| astrcode_core::AstrError::io("failed to read line from session file", e))?;
+            let line = line.map_err(|e| {
+                astrcode_core::AstrError::io("failed to read line from session file", e)
+            })?;
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;

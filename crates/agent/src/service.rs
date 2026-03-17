@@ -558,10 +558,12 @@ fn normalize_working_dir(working_dir: PathBuf) -> ServiceResult<PathBuf> {
     }
 
     std::fs::canonicalize(&path)
-        .map_err(|e| AstrError::io(
-            format!("failed to canonicalize workingDir '{}'", path.display()),
-            e
-        ))
+        .map_err(|e| {
+            AstrError::io(
+                format!("failed to canonicalize workingDir '{}'", path.display()),
+                e,
+            )
+        })
         .map_err(ServiceError::from)
 }
 

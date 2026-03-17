@@ -146,7 +146,8 @@ async fn main() -> AnyhowResult<()> {
         .register(Box::new(FindFilesTool::default()))
         .register(Box::new(GrepTool::default()))
         .build();
-    let service = Arc::new(AgentService::new(registry).map_err(|error| anyhow!(error.to_string()))?);
+    let service =
+        Arc::new(AgentService::new(registry).map_err(|error| anyhow!(error.to_string()))?);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

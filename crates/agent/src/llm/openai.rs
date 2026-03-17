@@ -5,7 +5,10 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::{select, time::{sleep, Duration}};
+use tokio::{
+    select,
+    time::{sleep, Duration},
+};
 
 use crate::llm::{EventSink, LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
 
@@ -181,18 +184,14 @@ impl LlmProvider for OpenAiProvider {
 
         match sink {
             None => {
-                let parsed: OpenAiChatResponse = response
-                    .json()
-                    .await
-                    .map_err(|error| {
-                        AstrError::http("failed to parse openai-compatible response", error)
-                    })?;
-                let first_choice =
-                    parsed.choices.into_iter().next().ok_or_else(|| {
-                        AstrError::LlmStreamError(
-                            "openai-compatible response did not include choices".to_string(),
-                        )
-                    })?;
+                let parsed: OpenAiChatResponse = response.json().await.map_err(|error| {
+                    AstrError::http("failed to parse openai-compatible response", error)
+                })?;
+                let first_choice = parsed.choices.into_iter().next().ok_or_else(|| {
+                    AstrError::LlmStreamError(
+                        "openai-compatible response did not include choices".to_string(),
+                    )
+                })?;
                 Ok(message_to_output(first_choice.message))
             }
             Some(sink) => {
@@ -215,11 +214,10 @@ impl LlmProvider for OpenAiProvider {
                     let bytes = item.map_err(|error| {
                         AstrError::http("failed to read openai-compatible response stream", error)
                     })?;
-                    let chunk_text = std::str::from_utf8(&bytes)
-                        .map_err(|error| {
-                            AstrError::from(error)
-                                .context("openai-compatible response stream was not valid utf-8")
-                        })?;
+                    let chunk_text = std::str::from_utf8(&bytes).map_err(|error| {
+                        AstrError::from(error)
+                            .context("openai-compatible response stream was not valid utf-8")
+                    })?;
 
                     if consume_sse_text_chunk(chunk_text, &mut sse_buffer, &mut accumulator, &sink)?
                     {
@@ -884,7 +882,9 @@ mod tests {
     #[test]
     fn retryable_statuses_are_classified() {
         assert!(is_retryable_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
-        assert!(is_retryable_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(is_retryable_status(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        ));
         assert!(!is_retryable_status(reqwest::StatusCode::BAD_REQUEST));
     }
 }

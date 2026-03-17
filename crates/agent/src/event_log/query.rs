@@ -39,7 +39,9 @@ impl EventLog {
         }
 
         let mut ids = Vec::new();
-        for entry in fs::read_dir(dir).map_err(|e| AstrError::io("failed to read sessions directory", e))? {
+        for entry in
+            fs::read_dir(dir).map_err(|e| AstrError::io("failed to read sessions directory", e))?
+        {
             let entry = entry?;
             if !entry.file_type()?.is_file() {
                 continue;
@@ -65,7 +67,9 @@ impl EventLog {
         }
 
         let mut metas = Vec::new();
-        for entry in fs::read_dir(dir).map_err(|e| AstrError::io("failed to read sessions directory", e))? {
+        for entry in
+            fs::read_dir(dir).map_err(|e| AstrError::io("failed to read sessions directory", e))?
+        {
             let entry = entry?;
             if !entry.file_type()?.is_file() {
                 continue;
@@ -131,8 +135,12 @@ impl EventLog {
             return Err(AstrError::SessionNotFound(canonical.display().to_string()));
         };
 
-        fs::remove_file(&target)
-            .map_err(|e| AstrError::io(format!("failed to delete session file: {}", target.display()), e))?;
+        fs::remove_file(&target).map_err(|e| {
+            AstrError::io(
+                format!("failed to delete session file: {}", target.display()),
+                e,
+            )
+        })?;
         Ok(())
     }
 
@@ -158,8 +166,12 @@ impl EventLog {
     }
 
     fn read_session_head_meta(path: &Path) -> Result<(DateTime<Utc>, String, String)> {
-        let file = File::open(path)
-            .map_err(|e| AstrError::io(format!("failed to open session file: {}", path.display()), e))?;
+        let file = File::open(path).map_err(|e| {
+            AstrError::io(
+                format!("failed to open session file: {}", path.display()),
+                e,
+            )
+        })?;
         let reader = BufReader::new(file);
 
         let mut created_at = None;
@@ -167,7 +179,8 @@ impl EventLog {
         let mut title = None;
 
         for (i, line) in reader.lines().enumerate() {
-            let line = line.map_err(|e| AstrError::io("failed to read line from session file", e))?;
+            let line =
+                line.map_err(|e| AstrError::io("failed to read line from session file", e))?;
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
@@ -210,25 +223,41 @@ impl EventLog {
             }
         }
 
-        let created_at = created_at
-            .ok_or_else(|| AstrError::Internal(format!("session file missing sessionStart: {}", path.display())))?;
+        let created_at = created_at.ok_or_else(|| {
+            AstrError::Internal(format!(
+                "session file missing sessionStart: {}",
+                path.display()
+            ))
+        })?;
         let working_dir = working_dir.unwrap_or_default();
         let title = title.unwrap_or_else(|| "新会话".to_string());
         Ok((created_at, working_dir, title))
     }
 
     fn read_last_timestamp(path: &Path) -> Result<DateTime<Utc>> {
-        let file = File::open(path)
-            .map_err(|e| AstrError::io(format!("failed to open session file: {}", path.display()), e))?;
+        let file = File::open(path).map_err(|e| {
+            AstrError::io(
+                format!("failed to open session file: {}", path.display()),
+                e,
+            )
+        })?;
         let mut reader = BufReader::new(file);
         let len = reader
             .get_ref()
             .metadata()
-            .map_err(|e| AstrError::io(format!("failed to stat session file: {}", path.display()), e))?
+            .map_err(|e| {
+                AstrError::io(
+                    format!("failed to stat session file: {}", path.display()),
+                    e,
+                )
+            })?
             .len();
 
         if len == 0 {
-            return Err(AstrError::Internal(format!("empty session file: {}", path.display())));
+            return Err(AstrError::Internal(format!(
+                "empty session file: {}",
+                path.display()
+            )));
         }
 
         let mut window: u64 = 4096;

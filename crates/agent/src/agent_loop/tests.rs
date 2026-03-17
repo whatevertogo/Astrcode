@@ -36,11 +36,7 @@ struct ScriptedProvider {
 
 #[async_trait]
 impl LlmProvider for ScriptedProvider {
-    async fn generate(
-        &self,
-        request: LlmRequest,
-        sink: Option<EventSink>,
-    ) -> Result<LlmOutput> {
+    async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         if self.delay > Duration::from_millis(0) {
             tokio::select! {
                 _ = crate::cancel::cancelled(request.cancel.clone()) => return Err(AstrError::LlmInterrupted),
@@ -90,11 +86,7 @@ impl ProviderFactory for StaticProviderFactory {
 
 #[async_trait]
 impl LlmProvider for StreamingProvider {
-    async fn generate(
-        &self,
-        request: LlmRequest,
-        sink: Option<EventSink>,
-    ) -> Result<LlmOutput> {
+    async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         let Some(sink) = sink else {
             return Ok(self.response.clone());
         };
@@ -114,11 +106,7 @@ impl LlmProvider for StreamingProvider {
 
 #[async_trait]
 impl LlmProvider for RecordingProvider {
-    async fn generate(
-        &self,
-        request: LlmRequest,
-        sink: Option<EventSink>,
-    ) -> Result<LlmOutput> {
+    async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         self.requests
             .lock()
             .expect("lock should work")
