@@ -2,16 +2,31 @@
   padding: 16px 32px 18px;
   background: var(--panel-bg);
   flex-shrink: 0;
+  animation: composerEnter 320ms ease;
 }
 
 .inputBar {
   width: min(100%, 860px);
   margin: 0 auto;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  box-shadow: var(--shadow-soft);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(253, 248, 241, 0.98) 100%);
+  border: 1px solid rgba(230, 220, 205, 0.95);
+  border-radius: 24px;
+  box-shadow:
+    0 24px 42px rgba(117, 90, 52, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.82);
   overflow: hidden;
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
+}
+
+.inputBar:focus-within {
+  border-color: rgba(122, 185, 153, 0.56);
+  box-shadow:
+    0 0 0 4px rgba(57, 201, 143, 0.12),
+    0 28px 48px rgba(117, 90, 52, 0.13);
+  transform: translateY(-1px);
 }
 
 .workingDirRow {
@@ -21,6 +36,7 @@
   padding: 10px 16px;
   border-bottom: 1px solid var(--border);
   color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.44);
 }
 
 .workingDirIcon {
@@ -72,20 +88,21 @@
 }
 
 .sendBtn {
-  width: 38px;
-  height: 38px;
+  width: 42px;
+  height: 42px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: var(--accent-strong);
+  background: linear-gradient(180deg, #35302b 0%, #26211d 100%);
   color: #fff;
-  border-radius: 12px;
+  border-radius: 14px;
   flex-shrink: 0;
   transition:
     transform 150ms ease,
     background-color 150ms ease,
-    opacity 150ms ease;
-  box-shadow: 0 10px 20px rgba(47, 43, 39, 0.14);
+    opacity 150ms ease,
+    box-shadow 150ms ease;
+  box-shadow: 0 14px 26px rgba(47, 43, 39, 0.16);
 }
 
 .sendBtn svg {
@@ -94,8 +111,16 @@
 }
 
 .sendBtn:hover:not(:disabled) {
-  background: #1f1b17;
-  transform: translateY(-1px);
+  background: linear-gradient(180deg, #2f2b27 0%, #1f1b17 100%);
+  transform: translateY(-1px) scale(1.03);
+  box-shadow: 0 18px 32px rgba(47, 43, 39, 0.2);
+}
+
+.sendBtn:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 4px rgba(57, 201, 143, 0.16),
+    0 18px 32px rgba(47, 43, 39, 0.2);
 }
 
 .sendBtn:disabled {
@@ -128,6 +153,18 @@
   color: var(--text-muted);
 }
 
+@keyframes composerEnter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @media (max-width: 640px) {
   .composerWrap {
     padding: 14px 16px 16px;
@@ -135,5 +172,15 @@
 
   .row {
     padding: 12px 14px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composerWrap,
+  .inputBar,
+  .sendBtn,
+  .interruptBtn {
+    animation: none;
+    transition: none;
   }
 }

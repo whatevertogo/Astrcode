@@ -19,7 +19,7 @@ AstrCode/
 | 文件                                | 用途                                         |
 | ----------------------------------- | -------------------------------------------- |
 | `crates/server/src/main.rs`         | 本地 HTTP/SSE server、认证、路由与启动 token |
-| `crates/agent/src/service.rs`       | `AgentService`、会话状态、广播与回放         |
+| `crates/agent/src/service/mod.rs`   | `AgentService` 门面与 service 子模块入口     |
 | `crates/agent/src/tool_registry.rs` | 冻结后的只读 `ToolRegistry`                  |
 | `frontend/src/hooks/useAgent.ts`    | 统一的 fetch + EventSource 客户端            |
 | `src-tauri/src/main.rs`             | sidecar 启动、bootstrap 注入、退出清理       |
@@ -126,3 +126,5 @@ cd frontend && npm run typecheck
 - **Windows Home 目录测试**: `dirs::home_dir()` 不受临时环境变量影响；用 `test_support::test_home_dir()` / `TestEnvGuard`
 - **PR 评论修复前**: 先查 `git status --short` 和 `git diff`，避免覆盖未提交改动
 - **排查问题前**: 检查关键文件（`main.rs`、`Cargo.toml`）是否被误删，排除”运行旧版本”误判
+- **AgentService 拆分后**: `crates/agent/src/service/` 已按 `types` / `config_ops` / `session_ops` / `turn_ops` / `replay` / `session_state` 拆分；新增逻辑先确认职责落点，避免把配置 façade、session runtime、事件翻译重新塞回 `mod.rs`
+- **善意提醒已落实**: 这里曾出现过 `AgentService` 在单文件里同时承载配置 façade、会话运行态、事件翻译和测试的职责混杂；后续看到单文件再次快速膨胀时，要立刻提醒协作开发者先做边界整理，再继续堆逻辑

@@ -220,6 +220,7 @@ mod tests {
             StorageEvent::ToolResult {
                 turn_id: None,
                 tool_call_id: "tc1".into(),
+                tool_name: "listDir".into(),
                 output: "file1.txt\nfile2.txt".into(),
                 success: true,
                 duration_ms: 10,
@@ -347,6 +348,7 @@ mod tests {
             StorageEvent::ToolResult {
                 turn_id: None,
                 tool_call_id: "tc1".into(),
+                tool_name: "listDir".into(),
                 output: "[]".into(),
                 success: true,
                 duration_ms: 2,

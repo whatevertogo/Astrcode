@@ -101,7 +101,7 @@ export default function InputBar({ workingDir, phase, onSubmit, onInterrupt }: I
           )}
         </div>
       </div>
-      <div className={styles.disclaimer}>AI 可能会产生误导性信息，请核实重要内容。</div>
+      <div className={styles.disclaimer}>AI 可能会产生误导性信息，请核实重要内容</div>
     </div>
   );
 }

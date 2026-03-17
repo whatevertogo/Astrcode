@@ -39,6 +39,8 @@ pub enum StorageEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
         tool_call_id: String,
+        #[serde(default)]
+        tool_name: String,
         output: String,
         success: bool,
         duration_ms: u64,

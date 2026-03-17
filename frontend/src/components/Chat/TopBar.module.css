@@ -5,7 +5,8 @@
   gap: 16px;
   padding: 14px 22px;
   border-bottom: 1px solid var(--border);
-  background: var(--panel-bg);
+  background: linear-gradient(180deg, rgba(255, 252, 247, 0.96) 0%, rgba(252, 250, 247, 0.9) 100%);
+  backdrop-filter: blur(12px);
   flex-shrink: 0;
 }
 
@@ -49,6 +50,7 @@
   align-items: center;
   gap: 12px;
   flex-shrink: 0;
+  animation: topBarEnter 280ms ease;
 }
 
 .newSessionBtn {
@@ -57,21 +59,31 @@
   gap: 8px;
   height: 38px;
   padding: 0 16px;
-  background: var(--accent-strong);
+  background: linear-gradient(180deg, #342f2a 0%, #24201c 100%);
   color: #fff;
-  border-radius: 12px;
+  border-radius: 14px;
   font-size: 14px;
   font-weight: 600;
   flex-shrink: 0;
+  box-shadow: 0 14px 28px rgba(47, 43, 39, 0.16);
   transition:
     background-color 150ms ease,
     opacity 150ms ease,
-    transform 150ms ease;
+    transform 150ms ease,
+    box-shadow 150ms ease;
 }
 
 .newSessionBtn:hover:not(:disabled) {
-  background: #1f1b17;
-  transform: translateY(-1px);
+  background: linear-gradient(180deg, #2f2b27 0%, #1f1b17 100%);
+  transform: translateY(-1px) scale(1.01);
+  box-shadow: 0 18px 34px rgba(47, 43, 39, 0.2);
+}
+
+.newSessionBtn:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 4px rgba(57, 201, 143, 0.16),
+    0 18px 34px rgba(47, 43, 39, 0.2);
 }
 
 .newSessionBtn:disabled {
@@ -82,6 +94,18 @@
 .newSessionPlus {
   font-size: 18px;
   line-height: 1;
+}
+
+@keyframes topBarEnter {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @media (max-width: 900px) {
@@ -99,5 +123,13 @@
 @media (max-width: 640px) {
   .actions {
     flex-wrap: wrap;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .actions,
+  .newSessionBtn {
+    animation: none;
+    transition: none;
   }
 }

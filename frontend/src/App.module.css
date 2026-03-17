@@ -5,3 +5,38 @@
   background: var(--app-bg);
   color: var(--text-primary);
 }
+
+.sidebarPane {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.sidebarResizer {
+  position: relative;
+  width: 10px;
+  flex: 0 0 10px;
+  cursor: col-resize;
+  background: transparent;
+  outline: none;
+}
+
+.sidebarResizer::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: var(--border);
+  transition:
+    background-color 150ms ease,
+    width 150ms ease;
+}
+
+.sidebarResizer:hover::before,
+.sidebarResizerActive::before,
+.sidebarResizer:focus-visible::before {
+  width: 2px;
+  background: var(--border-strong);
+}

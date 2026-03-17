@@ -41,6 +41,83 @@ export interface SessionSnapshot {
   cursor: string | null;
 }
 
+type UnknownRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): UnknownRecord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as UnknownRecord;
+}
+
+function pickString(record: UnknownRecord, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string') {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function pickBoolean(record: UnknownRecord, ...keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'boolean') {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function pickNumber(record: UnknownRecord, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function normalizeSessionMessage(raw: unknown): SessionMessage {
+  const message = asRecord(raw);
+  if (!message) {
+    throw new Error(`invalid session message: ${String(raw)}`);
+  }
+
+  const kind = pickString(message, 'kind');
+  if (kind === 'user') {
+    return {
+      kind: 'user',
+      content: pickString(message, 'content') ?? '',
+      timestamp: pickString(message, 'timestamp') ?? new Date().toISOString(),
+    };
+  }
+
+  if (kind === 'assistant') {
+    return {
+      kind: 'assistant',
+      content: pickString(message, 'content') ?? '',
+      timestamp: pickString(message, 'timestamp') ?? new Date().toISOString(),
+    };
+  }
+
+  if (kind === 'toolCall') {
+    return {
+      kind: 'toolCall',
+      toolCallId: pickString(message, 'toolCallId', 'tool_call_id') ?? 'unknown',
+      toolName: pickString(message, 'toolName', 'tool_name') ?? '(unknown tool)',
+      args: message.args ?? null,
+      output: pickString(message, 'output'),
+      ok: pickBoolean(message, 'ok'),
+      durationMs: pickNumber(message, 'durationMs', 'duration_ms'),
+    };
+  }
+
+  throw new Error(`unsupported session message kind: ${String(kind)}`);
+}
+
 function buildAuthHeaders(headers?: HeadersInit): Headers {
   const merged = new Headers(headers);
   const token = getServerAuthToken();
@@ -352,7 +429,8 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
 
   const loadSession = useCallback(async (sessionId: string): Promise<SessionSnapshot> => {
     const response = await request(`/api/sessions/${encodeURIComponent(sessionId)}/messages`);
-    const messages = (await response.json()) as SessionMessage[];
+    const payload = (await response.json()) as unknown[];
+    const messages = payload.map(normalizeSessionMessage);
     const cursor = response.headers.get('x-session-cursor');
     return { messages, cursor };
   }, []);

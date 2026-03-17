@@ -78,7 +78,10 @@ function AssistantMessage({ message }: AssistantMessageProps) {
         </svg>
       </div>
       <div className={styles.body}>
-        <div className={styles.content}>
+        <div
+          className={`${styles.content} ${message.streaming ? styles.contentStreaming : ''}`}
+          data-streaming={message.streaming ? 'true' : 'false'}
+        >
           {message.streaming ? (
             <div className={styles.streamingText}>{message.text}</div>
           ) : (

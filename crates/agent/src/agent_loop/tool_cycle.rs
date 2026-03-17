@@ -43,6 +43,7 @@ pub(crate) async fn execute_tool_calls(
         on_event(StorageEvent::ToolResult {
             turn_id: Some(turn_id.to_string()),
             tool_call_id: call.id.clone(),
+            tool_name: call.name.clone(),
             output: result.model_content(),
             success: result.ok,
             duration_ms,

@@ -54,7 +54,7 @@ AstrCode/
 | 文件 | 功能 |
 |------|------|
 | `lib.rs` | 模块导出入口 |
-| `service.rs` | `AgentService` - 核心服务，管理会话状态、广播、回放 |
+| `service/mod.rs` | `AgentService` 门面与 service 子模块入口 |
 | `agent_loop.rs` | Agent 循环封装，协调 LLM 调用和工具执行 |
 | `agent_loop/llm_cycle.rs` | LLM 调用循环逻辑 |
 | `agent_loop/tool_cycle.rs` | 工具执行循环逻辑 |

@@ -1,4 +1,13 @@
-import { startTransition, useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import type {
   AgentEventPayload,
   Action,
@@ -16,6 +25,21 @@ import { useAgent, SessionMessage } from './hooks/useAgent';
 import { snapshotToolStatus } from './lib/sessionMessages';
 import { releaseTurnMapping, resolveSessionForTurn } from './lib/turnRouting';
 import styles from './App.module.css';
+
+const DEFAULT_SIDEBAR_WIDTH = 260;
+const MIN_SIDEBAR_WIDTH = 220;
+const MAX_SIDEBAR_WIDTH = 420;
+
+function getMaxSidebarWidth(): number {
+  if (typeof window === 'undefined') {
+    return MAX_SIDEBAR_WIDTH;
+  }
+  return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, window.innerWidth - 360));
+}
+
+function clampSidebarWidth(width: number): number {
+  return Math.min(getMaxSidebarWidth(), Math.max(MIN_SIDEBAR_WIDTH, width));
+}
 
 function getDirectoryName(path: string): string {
   const normalized = path.replace(/[\\/]+$/, '');
@@ -329,10 +353,19 @@ export default function App() {
   const [state, dispatch] = useReducer(reducer, undefined, makeInitialState);
   const [showSettings, setShowSettings] = useState(false);
   const [modelRefreshKey, setModelRefreshKey] = useState(0);
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    if (typeof window === 'undefined') {
+      return DEFAULT_SIDEBAR_WIDTH;
+    }
+    const savedWidth = Number(window.localStorage.getItem('astrcode.sidebarWidth'));
+    return Number.isFinite(savedWidth) ? clampSidebarWidth(savedWidth) : DEFAULT_SIDEBAR_WIDTH;
+  });
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const activeSessionIdRef = useRef<string | null>(state.activeSessionId);
   const phaseRef = useRef(state.phase);
   const turnSessionMapRef = useRef<Record<string, string>>({});
   const pendingSubmitSessionRef = useRef<string[]>([]);
+  const sidebarDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
   const releasePendingSubmitSession = useCallback((sessionId: string) => {
     const queue = pendingSubmitSessionRef.current;
@@ -349,6 +382,65 @@ export default function App() {
   useEffect(() => {
     phaseRef.current = state.phase;
   }, [state.phase]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    window.localStorage.setItem('astrcode.sidebarWidth', String(sidebarWidth));
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setSidebarWidth((width) => clampSidebarWidth(width));
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      document.body.style.removeProperty('cursor');
+      document.body.style.removeProperty('user-select');
+    };
+  }, []);
+
+  const finishSidebarResize = useCallback(() => {
+    sidebarDragRef.current = null;
+    setIsResizingSidebar(false);
+    document.body.style.removeProperty('cursor');
+    document.body.style.removeProperty('user-select');
+  }, []);
+
+  useEffect(() => {
+    if (!isResizingSidebar) {
+      return;
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const dragState = sidebarDragRef.current;
+      if (!dragState) {
+        return;
+      }
+
+      setSidebarWidth(clampSidebarWidth(dragState.startWidth + event.clientX - dragState.startX));
+    };
+
+    const handlePointerUp = () => {
+      finishSidebarResize();
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+  }, [finishSidebarResize, isResizingSidebar]);
 
   const handleAgentEvent = useCallback((event: AgentEventPayload) => {
     const resolveSessionId = (turnId?: string | null): string | null => {
@@ -687,29 +779,70 @@ export default function App() {
     await interrupt(activeSessionIdRef.current);
   }, [interrupt]);
 
+  const handleSidebarResizeStart = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      sidebarDragRef.current = {
+        startX: event.clientX,
+        startWidth: sidebarWidth,
+      };
+      setIsResizingSidebar(true);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    },
+    [sidebarWidth]
+  );
+
+  const handleSidebarResizeKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        setSidebarWidth((width) => clampSidebarWidth(width - 16));
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        setSidebarWidth((width) => clampSidebarWidth(width + 16));
+      }
+    },
+    []
+  );
+
   return (
     <div className={styles.app}>
-      <Sidebar
-        projects={state.projects}
-        activeSessionId={state.activeSessionId}
-        phase={state.phase}
-        canSelectDirectory={hostBridge.canSelectDirectory}
-        defaultWorkingDir={activeProject?.workingDir}
-        onSelectDirectory={selectDirectory}
-        onSetActive={(projectId, sessionId) => {
-          void handleSetActive(projectId, sessionId);
-        }}
-        onToggleExpand={handleToggleExpand}
-        onNewProject={(workingDir) => {
-          void handleNewProject(workingDir);
-        }}
-        onDeleteProject={(projectId) => {
-          void handleDeleteProject(projectId);
-        }}
-        onDeleteSession={(projectId, sessionId) => {
-          void handleDeleteSession(projectId, sessionId);
-        }}
-        onOpenSettings={() => setShowSettings(true)}
+      <div className={styles.sidebarPane} style={{ width: `${sidebarWidth}px` }}>
+        <Sidebar
+          projects={state.projects}
+          activeSessionId={state.activeSessionId}
+          phase={state.phase}
+          canSelectDirectory={hostBridge.canSelectDirectory}
+          defaultWorkingDir={activeProject?.workingDir}
+          onSelectDirectory={selectDirectory}
+          onSetActive={(projectId, sessionId) => {
+            void handleSetActive(projectId, sessionId);
+          }}
+          onToggleExpand={handleToggleExpand}
+          onNewProject={(workingDir) => {
+            void handleNewProject(workingDir);
+          }}
+          onDeleteProject={(projectId) => {
+            void handleDeleteProject(projectId);
+          }}
+          onDeleteSession={(projectId, sessionId) => {
+            void handleDeleteSession(projectId, sessionId);
+          }}
+          onOpenSettings={() => setShowSettings(true)}
+        />
+      </div>
+      <div
+        className={`${styles.sidebarResizer} ${isResizingSidebar ? styles.sidebarResizerActive : ''}`}
+        role="separator"
+        aria-label="调整侧边栏宽度"
+        aria-orientation="vertical"
+        aria-valuemin={MIN_SIDEBAR_WIDTH}
+        aria-valuemax={getMaxSidebarWidth()}
+        aria-valuenow={sidebarWidth}
+        tabIndex={0}
+        onPointerDown={handleSidebarResizeStart}
+        onKeyDown={handleSidebarResizeKeyDown}
       />
       <Chat
         project={activeProject}
