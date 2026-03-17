@@ -793,18 +793,15 @@ export default function App() {
     [sidebarWidth]
   );
 
-  const handleSidebarResizeKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLDivElement>) => {
-      if (event.key === 'ArrowLeft') {
-        event.preventDefault();
-        setSidebarWidth((width) => clampSidebarWidth(width - 16));
-      } else if (event.key === 'ArrowRight') {
-        event.preventDefault();
-        setSidebarWidth((width) => clampSidebarWidth(width + 16));
-      }
-    },
-    []
-  );
+  const handleSidebarResizeKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      setSidebarWidth((width) => clampSidebarWidth(width - 16));
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      setSidebarWidth((width) => clampSidebarWidth(width + 16));
+    }
+  }, []);
 
   return (
     <div className={styles.app}>
