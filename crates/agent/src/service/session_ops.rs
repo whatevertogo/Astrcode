@@ -238,6 +238,7 @@ pub(super) async fn load_events(session_id: &str) -> ServiceResult<Vec<StoredEve
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::sync::Arc;
 
     use crate::test_support::TestEnvGuard;
@@ -279,5 +280,62 @@ mod tests {
             .iter()
             .all(|state| std::ptr::eq(Arc::as_ptr(state), first)));
         assert_eq!(service.sessions.len(), 1);
+    }
+
+    #[test]
+    fn normalize_session_id_keeps_legacy_inner_prefix() {
+        assert_eq!(
+            normalize_session_id("session-session-2026-03-08T10-00-00-aaaaaaaa"),
+            "session-2026-03-08T10-00-00-aaaaaaaa"
+        );
+    }
+
+    #[test]
+    fn normalize_working_dir_rejects_file_paths() {
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let file = temp_dir.path().join("file.txt");
+        std::fs::write(&file, "demo").expect("file should be created");
+
+        let err =
+            normalize_working_dir(file).expect_err("file paths should not be accepted as workdir");
+
+        assert!(matches!(err, ServiceError::InvalidInput(_)));
+        assert!(err.to_string().contains("is not a directory"));
+    }
+
+    #[test]
+    fn normalize_working_dir_rejects_missing_paths() {
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let missing = temp_dir.path().join("missing");
+
+        let err = normalize_working_dir(missing).expect_err("missing workdir should fail");
+
+        assert!(matches!(err, ServiceError::InvalidInput(_)));
+        assert!(err.to_string().contains("is invalid"));
+    }
+
+    #[test]
+    fn display_name_from_working_dir_uses_default_for_root() {
+        #[cfg(windows)]
+        let root = Path::new(r"C:\");
+        #[cfg(not(windows))]
+        let root = Path::new("/");
+
+        assert_eq!(display_name_from_working_dir(root), "默认项目");
+    }
+
+    #[test]
+    fn display_name_from_working_dir_ignores_trailing_separator() {
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let rendered = format!("{}{}", temp_dir.path().display(), std::path::MAIN_SEPARATOR);
+
+        assert_eq!(
+            display_name_from_working_dir(Path::new(&rendered)),
+            temp_dir
+                .path()
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("tempdir name should be utf-8")
+        );
     }
 }

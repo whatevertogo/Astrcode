@@ -23,7 +23,7 @@ impl SessionWriter {
         }
     }
 
-    fn append_blocking(&self, event: &StorageEvent) -> Result<StoredEvent> {
+    pub(super) fn append_blocking(&self, event: &StorageEvent) -> Result<StoredEvent> {
         let mut guard = lock_anyhow(&self.inner, "session writer")?;
         Ok(guard.append(event)?)
     }

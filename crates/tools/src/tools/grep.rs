@@ -404,4 +404,26 @@ mod tests {
             json!(1)
         );
     }
+
+    #[tokio::test]
+    async fn grep_errors_for_missing_paths() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let tool = GrepTool;
+
+        let err = tool
+            .execute(
+                "tc-grep-missing".to_string(),
+                json!({
+                    "pattern": "pub fn",
+                    "path": "missing"
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect_err("missing paths should fail");
+
+        assert!(err
+            .to_string()
+            .contains("path is neither a file nor directory"));
+    }
 }

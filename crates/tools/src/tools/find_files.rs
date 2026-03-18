@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use glob::glob;
 use serde::Deserialize;
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
 #[derive(Default)]
@@ -51,9 +51,10 @@ impl Tool for FindFilesTool {
         let args: FindFilesArgs = serde_json::from_value(args)
             .map_err(|e| AstrError::parse("invalid args for findFiles", e))?;
         let started_at = Instant::now();
+        validate_glob_pattern(&args.pattern)?;
         let root = match args.root {
             Some(root) => resolve_path(ctx, &root)?,
-            None => ctx.working_dir.clone(),
+            None => resolve_path(ctx, Path::new("."))?,
         };
         let max_results = args.max_results.unwrap_or(200);
         let full_pattern = root
@@ -98,6 +99,42 @@ impl Tool for FindFilesTool {
             duration_ms: started_at.elapsed().as_millis(),
         })
     }
+}
+
+fn validate_glob_pattern(pattern: &str) -> Result<()> {
+    if looks_like_windows_drive_relative_path(pattern) {
+        return Err(AstrError::Validation(format!(
+            "glob pattern '{}' must stay within the working directory",
+            pattern
+        )));
+    }
+
+    let path = Path::new(pattern);
+    if path.is_absolute() {
+        return Err(AstrError::Validation(format!(
+            "glob pattern '{}' must stay within the working directory",
+            pattern
+        )));
+    }
+
+    for component in path.components() {
+        match component {
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir => {
+                return Err(AstrError::Validation(format!(
+                    "glob pattern '{}' must stay within the working directory",
+                    pattern
+                )));
+            }
+            Component::CurDir | Component::Normal(_) => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn looks_like_windows_drive_relative_path(pattern: &str) -> bool {
+    let bytes = pattern.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 #[cfg(test)]
@@ -270,5 +307,62 @@ mod tests {
             result.metadata.expect("metadata should exist")["root"],
             json!(temp.path().to_string_lossy().to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn find_files_rejects_absolute_patterns() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let tool = FindFilesTool;
+
+        let err = tool
+            .execute(
+                "tc-find-absolute-pattern".to_string(),
+                json!({
+                    "pattern": temp.path().join("*.txt").to_string_lossy().to_string(),
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect_err("absolute patterns should be rejected");
+
+        assert!(matches!(err, AstrError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn find_files_rejects_parent_directory_patterns() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let tool = FindFilesTool;
+
+        let err = tool
+            .execute(
+                "tc-find-parent-pattern".to_string(),
+                json!({
+                    "pattern": "../*.txt",
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect_err("parent directory patterns should be rejected");
+
+        assert!(matches!(err, AstrError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn find_files_rejects_windows_drive_relative_patterns() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let tool = FindFilesTool;
+
+        let err = tool
+            .execute(
+                "tc-find-drive-relative-pattern".to_string(),
+                json!({
+                    "pattern": "C:foo.txt",
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect_err("drive-relative patterns should be rejected");
+
+        assert!(matches!(err, AstrError::Validation(_)));
     }
 }

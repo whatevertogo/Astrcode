@@ -250,6 +250,37 @@ fn list_sessions_with_meta_skips_corrupt_session_files() {
 }
 
 #[test]
+fn list_sessions_with_meta_reads_last_phase_from_tail() {
+    let tmp = tempfile::tempdir().unwrap();
+    let session_id = "2026-03-08T14-00-00-aaaaaaaa";
+    let path = tmp.path().join(format!("session-{session_id}.jsonl"));
+    let mut file = File::create(&path).unwrap();
+    let events = [
+        StorageEvent::SessionStart {
+            session_id: session_id.to_string(),
+            timestamp: chrono::DateTime::parse_from_rfc3339("2026-03-08T14:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            working_dir: r"D:\repo\phase".to_string(),
+        },
+        StorageEvent::ToolCall {
+            turn_id: Some("turn-1".to_string()),
+            tool_call_id: "call-1".to_string(),
+            tool_name: "grep".to_string(),
+            args: serde_json::json!({"pattern":"TODO"}),
+        },
+    ];
+    for event in events {
+        writeln!(file, "{}", serde_json::to_string(&event).unwrap()).unwrap();
+    }
+
+    let metas = EventLog::list_sessions_with_meta_from_path(tmp.path()).unwrap();
+
+    assert_eq!(metas.len(), 1);
+    assert_eq!(metas[0].phase, astrcode_core::Phase::CallingTool);
+}
+
+#[test]
 fn delete_session_from_path_succeeds_and_missing_returns_error() {
     let tmp = tempfile::tempdir().unwrap();
     let id = "2026-03-08T12-00-00-aaaaaaaa";

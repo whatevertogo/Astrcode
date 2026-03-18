@@ -18,13 +18,29 @@ pub fn check_cancel(cancel: &CancelToken, _tool_name: &str) -> Result<()> {
 }
 
 pub fn resolve_path(ctx: &ToolContext, path: &Path) -> Result<PathBuf> {
+    let working_dir = canonicalize_path(
+        &ctx.working_dir,
+        &format!(
+            "failed to canonicalize working directory '{}'",
+            ctx.working_dir.display()
+        ),
+    )?;
     let base = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        ctx.working_dir.join(path)
+        working_dir.join(path)
     };
 
-    Ok(normalize_lexically(&base))
+    let resolved = resolve_for_boundary_check(&normalize_lexically(&base))?;
+    if is_path_within_root(&resolved, &working_dir) {
+        return Ok(resolved);
+    }
+
+    Err(AstrError::Validation(format!(
+        "path '{}' escapes working directory '{}'",
+        path.display(),
+        working_dir.display()
+    )))
 }
 
 pub async fn read_utf8_file(path: &Path) -> Result<String> {
@@ -75,6 +91,72 @@ fn normalize_lexically(path: &Path) -> PathBuf {
     normalized
 }
 
+fn resolve_for_boundary_check(path: &Path) -> Result<PathBuf> {
+    if path.exists() {
+        return canonicalize_path(
+            path,
+            &format!("failed to canonicalize path '{}'", path.display()),
+        );
+    }
+
+    let mut missing_components = Vec::new();
+    let mut current = path;
+    while !current.exists() {
+        let Some(name) = current.file_name() else {
+            return Err(AstrError::Validation(format!(
+                "path '{}' cannot be resolved under the working directory",
+                path.display()
+            )));
+        };
+        let Some(parent) = current.parent() else {
+            return Err(AstrError::Validation(format!(
+                "path '{}' cannot be resolved under the working directory",
+                path.display()
+            )));
+        };
+        missing_components.push(name.to_os_string());
+        current = parent;
+    }
+
+    let mut resolved_parent = canonicalize_path(
+        current,
+        &format!("failed to canonicalize path '{}'", current.display()),
+    )?;
+    for component in missing_components.iter().rev() {
+        resolved_parent.push(component);
+    }
+
+    Ok(normalize_lexically(&resolved_parent))
+}
+
+fn canonicalize_path(path: &Path, context: &str) -> Result<PathBuf> {
+    fs::canonicalize(path)
+        .map(normalize_absolute_path)
+        .map_err(|e| AstrError::io(context.to_string(), e))
+}
+
+fn is_path_within_root(path: &Path, root: &Path) -> bool {
+    let normalized_path = normalize_lexically(path);
+    let normalized_root = normalize_lexically(root);
+    normalized_path == normalized_root || normalized_path.starts_with(&normalized_root)
+}
+
+fn normalize_absolute_path(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(rendered) = path.to_str() {
+            if let Some(stripped) = rendered.strip_prefix(r"\\?\UNC\") {
+                return PathBuf::from(format!(r"\\{}", stripped));
+            }
+            if let Some(stripped) = rendered.strip_prefix(r"\\?\") {
+                return PathBuf::from(stripped);
+            }
+        }
+    }
+
+    path
+}
+
 #[cfg(test)]
 mod tests {
     use crate::test_support::test_tool_context_for;
@@ -99,6 +181,61 @@ mod tests {
 
         assert!(resolved.is_absolute());
         assert_eq!(resolved, cwd.join("Cargo.toml"));
+    }
+
+    #[test]
+    fn resolve_path_rejects_relative_escape_from_working_dir() {
+        let parent = tempfile::tempdir().expect("tempdir should be created");
+        let working_dir = parent.path().join("workspace");
+        fs::create_dir_all(&working_dir).expect("workspace should be created");
+        let ctx = test_tool_context_for(&working_dir);
+
+        let err = resolve_path(&ctx, Path::new("../outside.txt"))
+            .expect_err("escaping path should be rejected");
+
+        assert!(matches!(err, AstrError::Validation(_)));
+        assert!(err.to_string().contains("escapes working directory"));
+    }
+
+    #[test]
+    fn resolve_path_rejects_absolute_path_outside_working_dir() {
+        let working_dir = tempfile::tempdir().expect("tempdir should be created");
+        let outside_dir = tempfile::tempdir().expect("tempdir should be created");
+        let outside = outside_dir.path().join("outside.txt");
+        fs::write(&outside, "outside").expect("outside file should be created");
+        let ctx = test_tool_context_for(working_dir.path());
+
+        let err =
+            resolve_path(&ctx, &outside).expect_err("absolute path outside working dir fails");
+
+        assert!(matches!(err, AstrError::Validation(_)));
+        assert!(err.to_string().contains("escapes working directory"));
+    }
+
+    #[test]
+    fn resolve_path_allows_absolute_path_inside_working_dir() {
+        let working_dir = tempfile::tempdir().expect("tempdir should be created");
+        let file = working_dir.path().join("notes.txt");
+        fs::write(&file, "hello").expect("file should be created");
+        let ctx = test_tool_context_for(working_dir.path());
+
+        let resolved = resolve_path(&ctx, &file).expect("path should resolve");
+
+        assert_eq!(resolved, file);
+    }
+
+    #[test]
+    fn is_path_within_root_ignores_trailing_separators() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let root = temp.path().join("workspace");
+        fs::create_dir_all(root.join("nested")).expect("workspace should be created");
+        let root_with_separator =
+            PathBuf::from(format!("{}{}", root.display(), std::path::MAIN_SEPARATOR));
+
+        assert!(is_path_within_root(
+            &root.join("nested"),
+            &root_with_separator
+        ));
     }
 
     #[tokio::test]

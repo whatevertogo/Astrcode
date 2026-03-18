@@ -94,4 +94,26 @@ mod tests {
             TemplateRenderError::MissingVariable("name".to_string())
         );
     }
+
+    #[test]
+    fn errors_when_placeholder_is_unclosed() {
+        let template = PromptTemplate::new("hello {{ name");
+
+        let err = template
+            .render(|_| Some("world".to_string()))
+            .expect_err("unclosed placeholder should fail");
+
+        assert_eq!(err, TemplateRenderError::UnclosedPlaceholder);
+    }
+
+    #[test]
+    fn errors_when_placeholder_is_empty() {
+        let template = PromptTemplate::new("hello {{   }}");
+
+        let err = template
+            .render(|_| Some("world".to_string()))
+            .expect_err("empty placeholder should fail");
+
+        assert_eq!(err, TemplateRenderError::EmptyPlaceholder);
+    }
 }

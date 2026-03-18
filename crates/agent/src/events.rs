@@ -63,6 +63,8 @@ pub enum StorageEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<DateTime<Utc>>,
     },
 }
 

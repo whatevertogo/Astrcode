@@ -235,6 +235,25 @@ impl EventLog {
     }
 
     fn read_last_timestamp(path: &Path) -> Result<DateTime<Utc>> {
+        Self::read_tail_value(path, timestamp_of_event)?.ok_or_else(|| {
+            AstrError::Internal(format!(
+                "unable to resolve tail timestamp from session file: {}",
+                path.display()
+            ))
+        })
+    }
+
+    fn read_last_phase(path: &Path) -> Result<Phase> {
+        Ok(
+            Self::read_tail_value(path, |event| Some(phase_of_event(event)))?
+                .unwrap_or(Phase::Idle),
+        )
+    }
+
+    fn read_tail_value<T, F>(path: &Path, mut mapper: F) -> Result<Option<T>>
+    where
+        F: FnMut(&StorageEvent) -> Option<T>,
+    {
         let file = File::open(path).map_err(|e| {
             AstrError::io(
                 format!("failed to open session file: {}", path.display()),
@@ -301,8 +320,8 @@ impl EventLog {
                     })?
                     .into_stored(0)
                     .event;
-                if let Some(timestamp) = timestamp_of_event(&event) {
-                    return Ok(timestamp);
+                if let Some(value) = mapper(&event) {
+                    return Ok(Some(value));
                 }
             }
 
@@ -312,19 +331,7 @@ impl EventLog {
             window = (window * 2).min(len);
         }
 
-        Err(AstrError::Internal(format!(
-            "unable to resolve tail timestamp from session file: {}",
-            path.display()
-        )))
-    }
-
-    fn read_last_phase(path: &Path) -> Result<Phase> {
-        let events = Self::load_from_path(path)?;
-        let phase = events
-            .last()
-            .map(|stored| phase_of_event(&stored.event))
-            .unwrap_or(Phase::Idle);
-        Ok(phase)
+        Ok(None)
     }
 }
 
@@ -334,6 +341,7 @@ fn timestamp_of_event(event: &StorageEvent) -> Option<DateTime<Utc>> {
         StorageEvent::UserMessage { timestamp, .. } => Some(*timestamp),
         StorageEvent::AssistantFinal { timestamp, .. } => timestamp.as_ref().cloned(),
         StorageEvent::TurnDone { timestamp, .. } => Some(*timestamp),
+        StorageEvent::Error { timestamp, .. } => timestamp.as_ref().cloned(),
         _ => None,
     }
 }
@@ -366,5 +374,90 @@ fn title_from_user_message(content: &str) -> String {
         "新会话".to_string()
     } else {
         title.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use chrono::TimeZone;
+
+    use super::*;
+    use crate::events::StoredEvent;
+
+    #[test]
+    fn read_last_timestamp_uses_error_event_timestamp() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let path = temp.path().join("session-test.jsonl");
+        let created_at = Utc
+            .with_ymd_and_hms(2026, 3, 18, 8, 0, 0)
+            .single()
+            .expect("timestamp should be valid");
+        let failed_at = Utc
+            .with_ymd_and_hms(2026, 3, 18, 8, 5, 0)
+            .single()
+            .expect("timestamp should be valid");
+        let lines = [
+            serde_json::to_string(&StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent::SessionStart {
+                    session_id: "session-1".to_string(),
+                    timestamp: created_at,
+                    working_dir: "/tmp/project".to_string(),
+                },
+            })
+            .expect("session start should serialize"),
+            serde_json::to_string(&StoredEvent {
+                storage_seq: 2,
+                event: StorageEvent::Error {
+                    turn_id: Some("turn-1".to_string()),
+                    message: "boom".to_string(),
+                    timestamp: Some(failed_at),
+                },
+            })
+            .expect("error event should serialize"),
+        ];
+        fs::write(&path, format!("{}\n{}\n", lines[0], lines[1])).expect("log should be written");
+
+        let updated_at = EventLog::read_last_timestamp(&path).expect("timestamp should resolve");
+
+        assert_eq!(updated_at, failed_at);
+    }
+
+    #[test]
+    fn read_last_phase_reads_tail_event_without_loading_full_log() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let path = temp.path().join("session-tail.jsonl");
+        let created_at = Utc
+            .with_ymd_and_hms(2026, 3, 18, 9, 0, 0)
+            .single()
+            .expect("timestamp should be valid");
+        let lines = [
+            serde_json::to_string(&StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent::SessionStart {
+                    session_id: "session-2".to_string(),
+                    timestamp: created_at,
+                    working_dir: "/tmp/project".to_string(),
+                },
+            })
+            .expect("session start should serialize"),
+            serde_json::to_string(&StoredEvent {
+                storage_seq: 2,
+                event: StorageEvent::ToolCall {
+                    turn_id: Some("turn-2".to_string()),
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: "grep".to_string(),
+                    args: serde_json::json!({"pattern":"TODO"}),
+                },
+            })
+            .expect("tool call should serialize"),
+        ];
+        fs::write(&path, format!("{}\n{}\n", lines[0], lines[1])).expect("log should be written");
+
+        let phase = EventLog::read_last_phase(&path).expect("phase should resolve");
+
+        assert_eq!(phase, Phase::CallingTool);
     }
 }

@@ -73,7 +73,7 @@ impl Default for Profile {
             name: "deepseek".to_string(),
             provider_kind: PROVIDER_KIND_OPENAI.to_string(),
             base_url: "https://api.deepseek.com".to_string(),
-            api_key: Some("DEEPSEEK_API_KEY".to_string()),
+            api_key: Some("env:DEEPSEEK_API_KEY".to_string()),
             models: vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
             max_tokens: 8096,
         }
@@ -131,18 +131,44 @@ impl Profile {
             )));
         }
 
-        let is_env_var_name = val
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-            && val.contains('_');
+        if let Some(raw) = val.strip_prefix("literal:") {
+            let literal = raw.trim().to_string();
+            if literal.is_empty() {
+                return Err(AstrError::MissingApiKey(format!(
+                    "profile '{}' 的 apiKey 不能为空",
+                    self.name
+                )));
+            }
+            return Ok(literal);
+        }
 
-        if is_env_var_name {
-            return std::env::var(&val)
-                .map_err(|_| AstrError::EnvVarNotFound(format!("环境变量 {} 未设置", val)));
+        if let Some(raw) = val.strip_prefix("env:") {
+            let env_name = raw.trim();
+            if !is_env_var_name(env_name) {
+                return Err(AstrError::Validation(format!(
+                    "profile '{}' 的 apiKey env 引用 '{}' 非法",
+                    self.name, env_name
+                )));
+            }
+            return std::env::var(env_name)
+                .map_err(|_| AstrError::EnvVarNotFound(format!("环境变量 {} 未设置", env_name)));
+        }
+
+        if is_env_var_name(&val) {
+            if let Ok(resolved) = std::env::var(&val) {
+                return Ok(resolved);
+            }
         }
 
         Ok(val)
     }
+}
+
+fn is_env_var_name(value: &str) -> bool {
+    value
+        .chars()
+        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        && value.contains('_')
 }
 
 fn redacted_api_key(value: Option<&str>) -> &'static str {
@@ -175,7 +201,7 @@ fn default_profiles() -> Vec<Profile> {
             name: "deepseek".to_string(),
             provider_kind: PROVIDER_KIND_OPENAI.to_string(),
             base_url: "https://api.deepseek.com".to_string(),
-            api_key: Some("DEEPSEEK_API_KEY".to_string()),
+            api_key: Some("env:DEEPSEEK_API_KEY".to_string()),
             models: vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
             max_tokens: 8096,
         },
@@ -183,7 +209,7 @@ fn default_profiles() -> Vec<Profile> {
             name: "anthropic".to_string(),
             provider_kind: PROVIDER_KIND_ANTHROPIC.to_string(),
             base_url: String::new(),
-            api_key: Some("ANTHROPIC_API_KEY".to_string()),
+            api_key: Some("env:ANTHROPIC_API_KEY".to_string()),
             models: vec![
                 "claude-sonnet-4-5-20251001".to_string(),
                 "claude-opus-4-5".to_string(),
@@ -797,20 +823,38 @@ mod tests {
     }
 
     #[test]
-    fn resolve_api_key_returns_error_when_env_var_missing() {
+    fn resolve_api_key_errors_when_explicit_env_var_missing() {
         let _guard = TestEnvGuard::new();
         let env_name = unique_env_name();
         std::env::remove_var(&env_name);
 
         let profile = Profile {
             name: "default".to_string(),
-            api_key: Some(env_name.clone()),
+            api_key: Some(format!("env:{env_name}")),
             ..Profile::default()
         };
         let err = profile
             .resolve_api_key()
             .expect_err("missing env var should fail");
         assert!(err.to_string().contains(&env_name));
+    }
+
+    #[test]
+    fn resolve_api_key_treats_missing_legacy_env_like_value_as_literal() {
+        let _guard = TestEnvGuard::new();
+        let env_like_value = unique_env_name();
+        std::env::remove_var(&env_like_value);
+
+        let profile = Profile {
+            name: "default".to_string(),
+            api_key: Some(env_like_value.clone()),
+            ..Profile::default()
+        };
+        let resolved = profile
+            .resolve_api_key()
+            .expect("missing legacy env-like value should be treated as literal");
+
+        assert_eq!(resolved, env_like_value);
     }
 
     #[test]
@@ -824,6 +868,20 @@ mod tests {
             .resolve_api_key()
             .expect("plaintext api key should pass");
         assert_eq!(resolved, "sk-plaintext");
+    }
+
+    #[test]
+    fn resolve_api_key_supports_explicit_literal_prefix() {
+        let profile = Profile {
+            name: "default".to_string(),
+            api_key: Some("literal:MY_TEST_KEY".to_string()),
+            ..Profile::default()
+        };
+        let resolved = profile
+            .resolve_api_key()
+            .expect("literal prefix should bypass env resolution");
+
+        assert_eq!(resolved, "MY_TEST_KEY");
     }
 
     #[test]
@@ -960,5 +1018,91 @@ mod tests {
             uses_test_home,
             "config path should stay under the isolated test home"
         );
+    }
+
+    #[test]
+    fn validate_config_rejects_empty_profile_names() {
+        let err = validate_config(&Config {
+            profiles: vec![Profile {
+                name: "   ".to_string(),
+                ..Profile::default()
+            }],
+            ..Config::default()
+        })
+        .expect_err("empty profile names should fail");
+
+        assert!(err.to_string().contains("profile name cannot be empty"));
+    }
+
+    #[test]
+    fn validate_config_rejects_duplicate_profile_names() {
+        let profile = Profile::default();
+        let err = validate_config(&Config {
+            active_profile: profile.name.clone(),
+            active_model: profile.models[0].clone(),
+            profiles: vec![profile.clone(), profile],
+            version: CURRENT_CONFIG_VERSION.to_string(),
+        })
+        .expect_err("duplicate profile names should fail");
+
+        assert!(err.to_string().contains("duplicate profile name"));
+    }
+
+    #[test]
+    fn validate_config_rejects_profiles_without_models() {
+        let err = validate_config(&Config {
+            profiles: vec![Profile {
+                models: Vec::new(),
+                ..Profile::default()
+            }],
+            ..Config::default()
+        })
+        .expect_err("profiles without models should fail");
+
+        assert!(err.to_string().contains("at least one model"));
+    }
+
+    #[test]
+    fn validate_config_rejects_zero_max_tokens() {
+        let err = validate_config(&Config {
+            profiles: vec![Profile {
+                max_tokens: 0,
+                ..Profile::default()
+            }],
+            ..Config::default()
+        })
+        .expect_err("zero max_tokens should fail");
+
+        assert!(err
+            .to_string()
+            .contains("max_tokens must be greater than 0"));
+    }
+
+    #[test]
+    fn validate_config_rejects_blank_openai_base_url() {
+        let err = validate_config(&Config {
+            profiles: vec![Profile {
+                base_url: "   ".to_string(),
+                ..Profile::default()
+            }],
+            ..Config::default()
+        })
+        .expect_err("blank openai base url should fail");
+
+        assert!(err.to_string().contains("base_url cannot be empty"));
+    }
+
+    #[test]
+    fn validate_config_rejects_unsupported_provider_kind() {
+        let err = validate_config(&Config {
+            profiles: vec![Profile {
+                provider_kind: "unknown".to_string(),
+                ..Profile::default()
+            }],
+            ..Config::default()
+        })
+        .expect_err("unsupported provider should fail");
+
+        assert!(err.to_string().contains("unsupported provider_kind"));
     }
 }

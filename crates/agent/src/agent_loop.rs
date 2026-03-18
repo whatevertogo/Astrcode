@@ -81,6 +81,7 @@ pub(crate) fn finish_with_error(
     on_event(StorageEvent::Error {
         turn_id: Some(turn_id.to_string()),
         message: message.into(),
+        timestamp: Some(Utc::now()),
     })?;
     finish_turn(turn_id, on_event)
 }

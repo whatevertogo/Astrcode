@@ -68,3 +68,54 @@ impl AgentService {
             .map_err(ServiceError::from)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::config::{Config, Profile};
+    use crate::test_support::TestEnvGuard;
+    use crate::tool_registry::ToolRegistry;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn save_active_selection_rejects_missing_profile() {
+        let _guard = TestEnvGuard::new();
+        let service = AgentService::new(ToolRegistry::builder().build()).expect("service");
+
+        let err = service
+            .save_active_selection("missing".to_string(), "model-a".to_string())
+            .await
+            .expect_err("missing profile should fail");
+
+        assert!(matches!(err, ServiceError::InvalidInput(_)));
+        assert!(err.to_string().contains("does not exist"));
+    }
+
+    #[tokio::test]
+    async fn save_active_selection_rejects_missing_model() {
+        let _guard = TestEnvGuard::new();
+        let service = AgentService::new(ToolRegistry::builder().build()).expect("service");
+        {
+            let mut config = service.config.lock().await;
+            *config = Config {
+                active_profile: "custom".to_string(),
+                active_model: "model-a".to_string(),
+                profiles: vec![Profile {
+                    name: "custom".to_string(),
+                    models: vec!["model-a".to_string()],
+                    api_key: Some("TEST_API_KEY".to_string()),
+                    ..Profile::default()
+                }],
+                ..Config::default()
+            };
+        }
+
+        let err = service
+            .save_active_selection("custom".to_string(), "missing-model".to_string())
+            .await
+            .expect_err("missing model should fail");
+
+        assert!(matches!(err, ServiceError::InvalidInput(_)));
+        assert!(err.to_string().contains("does not exist in profile"));
+    }
+}

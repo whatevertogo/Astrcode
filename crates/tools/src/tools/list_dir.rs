@@ -59,6 +59,7 @@ impl Tool for ListDirTool {
             AstrError::io(format!("failed reading directory '{}'", path.display()), e)
         })?;
         for entry in read_dir {
+            check_cancel(&ctx.cancel, "listDir")?;
             if entries.len() >= max_entries {
                 break;
             }
@@ -115,5 +116,65 @@ mod tests {
             result.metadata.expect("metadata should exist")["path"],
             json!(temp.path().to_string_lossy().to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn list_dir_tool_honors_max_entries() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        tokio::fs::write(temp.path().join("a.txt"), "x")
+            .await
+            .expect("write should work");
+        tokio::fs::write(temp.path().join("b.txt"), "x")
+            .await
+            .expect("write should work");
+
+        let tool = ListDirTool;
+        let result = tool
+            .execute(
+                "tc-list-max".to_string(),
+                json!({"path": temp.path().to_string_lossy(), "maxEntries": 1}),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("listDir should succeed");
+
+        let entries: Vec<serde_json::Value> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_dir_tool_errors_for_missing_path() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let tool = ListDirTool;
+
+        let err = tool
+            .execute(
+                "tc-list-missing".to_string(),
+                json!({"path": "missing"}),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect_err("missing paths should fail");
+
+        assert!(err.to_string().contains("failed reading directory"));
+    }
+
+    #[tokio::test]
+    async fn list_dir_tool_returns_cancelled_when_context_is_cancelled() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let ctx = {
+            let ctx = test_tool_context_for(temp.path());
+            ctx.cancel.cancel();
+            ctx
+        };
+        let tool = ListDirTool;
+
+        let err = tool
+            .execute("tc-list-cancel".to_string(), json!({}), &ctx)
+            .await
+            .expect_err("cancelled listDir should fail");
+
+        assert!(err.to_string().contains("cancelled"));
     }
 }

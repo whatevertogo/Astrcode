@@ -11,7 +11,7 @@ describe('turnRouting', () => {
 
     expect(sid).toBe('session-a');
     expect(map['turn-1']).toBe('session-a');
-    expect(pending).toEqual([]);
+    expect(pending).toEqual(['session-a']);
   });
 
   it('reuses mapped session for subsequent events', () => {
@@ -31,6 +31,18 @@ describe('turnRouting', () => {
 
     expect(sid).toBe('session-active');
     expect(map['turn-2']).toBe('session-active');
+  });
+
+  it('does not consume queue when resolving the same turn repeatedly', () => {
+    const map: Record<string, string> = {};
+    const pending = ['session-a'];
+
+    const first = resolveSessionForTurn(map, pending, 'turn-3', 'session-z');
+    const second = resolveSessionForTurn(map, pending, 'turn-3', 'session-z');
+
+    expect(first).toBe('session-a');
+    expect(second).toBe('session-a');
+    expect(pending).toEqual(['session-a']);
   });
 
   it('releases turn mapping on completion', () => {

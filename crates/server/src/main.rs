@@ -336,7 +336,7 @@ async fn exchange_auth(
     State(state): State<AppState>,
     Json(request): Json<AuthExchangeRequest>,
 ) -> Result<Json<AuthExchangeResponse>, ApiError> {
-    if request.token != state.bootstrap_token {
+    if !secure_token_eq(&request.token, &state.bootstrap_token) {
         return Err(ApiError::unauthorized());
     }
 
@@ -619,13 +619,27 @@ fn require_auth(
         .and_then(|value| value.to_str().ok());
     let authorized = header_token
         .or(query_token)
-        .map(|token| token == state.bootstrap_token)
+        .map(|token| secure_token_eq(token, &state.bootstrap_token))
         .unwrap_or(false);
     if authorized {
         Ok(())
     } else {
         Err(ApiError::unauthorized())
     }
+}
+
+fn secure_token_eq(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let mut diff = left.len() ^ right.len();
+
+    for i in 0..left.len().max(right.len()) {
+        let left_byte = left.get(i).copied().unwrap_or(0);
+        let right_byte = right.get(i).copied().unwrap_or(0);
+        diff |= usize::from(left_byte ^ right_byte);
+    }
+
+    diff == 0
 }
 
 fn to_session_list_item(meta: astrcode_agent::SessionMeta) -> SessionListItem {
@@ -838,7 +852,20 @@ fn api_key_preview(api_key: Option<&str>) -> String {
     match api_key.map(str::trim) {
         None => "未配置".to_string(),
         Some("") => "未配置".to_string(),
-        Some(value) if is_env_var_name(value) => format!("环境变量: {}", value),
+        Some(value) if value.starts_with("env:") => {
+            let env_name = value.trim_start_matches("env:").trim();
+            if env_name.is_empty() {
+                "未配置".to_string()
+            } else {
+                format!("环境变量: {}", env_name)
+            }
+        }
+        Some(value) if value.starts_with("literal:") => {
+            api_key_preview(Some(value.trim_start_matches("literal:").trim()))
+        }
+        Some(value) if is_env_var_name(value) && std::env::var_os(value).is_some() => {
+            format!("环境变量: {}", value)
+        }
         Some(value) if value.chars().count() > 4 => {
             let suffix = value
                 .chars()
@@ -904,8 +931,9 @@ fn resolve_home_dir() -> AnyhowResult<PathBuf> {
 #[cfg(test)]
 mod browser_bootstrap_tests {
     use super::{
-        build_cors_layer, inject_browser_bootstrap_html, serve_frontend_build, session_messages,
-        AppState, FrontendBuild, AUTH_HEADER_NAME, SESSION_CURSOR_HEADER_NAME,
+        api_key_preview, build_cors_layer, inject_browser_bootstrap_html, secure_token_eq,
+        serve_frontend_build, session_messages, AppState, FrontendBuild, AUTH_HEADER_NAME,
+        SESSION_CURSOR_HEADER_NAME,
     };
     use std::ffi::OsString;
     use std::sync::Arc;
@@ -1153,6 +1181,22 @@ mod browser_bootstrap_tests {
             .expect("messages response should be returned");
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn secure_token_eq_requires_exact_match() {
+        assert!(secure_token_eq("browser-token", "browser-token"));
+        assert!(!secure_token_eq("browser-token", "browser-token-x"));
+        assert!(!secure_token_eq("browser-token", "browser-tokem"));
+    }
+
+    #[test]
+    fn api_key_preview_supports_explicit_env_and_literal_prefixes() {
+        assert_eq!(
+            api_key_preview(Some("env:DEEPSEEK_API_KEY")),
+            "环境变量: DEEPSEEK_API_KEY"
+        );
+        assert_eq!(api_key_preview(Some("literal:ABCD1234")), "****1234");
     }
 
     fn test_state(frontend_build: Option<FrontendBuild>) -> (AppState, ServerTestEnvGuard) {

@@ -13,7 +13,7 @@ export function resolveSessionForTurn(
     return mapped;
   }
 
-  const queued = pendingSubmitSessions.shift() ?? null;
+  const queued = pendingSubmitSessions[0] ?? null;
   const fallback = queued ?? activeSessionId;
   if (fallback) {
     turnSessionMap[turnId] = fallback;

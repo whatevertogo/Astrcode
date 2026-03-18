@@ -36,6 +36,7 @@ struct RunInfo {
     port: u16,
     token: String,
     pid: u32,
+    started_at: Option<String>,
 }
 
 fn main() {
@@ -84,7 +85,16 @@ fn initialize_server(app_handle: &tauri::AppHandle) -> Result<(ServerState, Boot
     let shutting_down = Arc::new(AtomicBool::new(false));
     let (pid, child) = spawn_server_process(app_handle, shutting_down.clone())?;
     let run_info = wait_for_run_info(pid)?;
-    wait_for_server_http_ready(run_info.port)?;
+    let started_at = run_info
+        .started_at
+        .as_deref()
+        .unwrap_or("unknown-start-time");
+    wait_for_server_http_ready(run_info.port).with_context(|| {
+        format!(
+            "server pid {} (startedAt={started_at}) did not become ready on port {}",
+            run_info.pid, run_info.port
+        )
+    })?;
     let bootstrap = serde_json::json!({
         "token": run_info.token,
         "isDesktopHost": true,

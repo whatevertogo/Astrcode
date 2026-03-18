@@ -586,4 +586,64 @@ mod tests {
             if result.tool_name == "read_file"
         ));
     }
+
+    #[test]
+    fn convert_events_to_messages_keeps_unfinished_tool_calls_running() {
+        let messages = convert_events_to_messages(&[StoredEvent {
+            storage_seq: 1,
+            event: StorageEvent::ToolCall {
+                turn_id: Some("turn-6".to_string()),
+                tool_call_id: "call-pending".to_string(),
+                tool_name: "grep".to_string(),
+                args: serde_json::json!({"pattern":"TODO"}),
+            },
+        }]);
+
+        assert!(matches!(
+            messages.as_slice(),
+            [SessionMessage::ToolCall {
+                tool_call_id,
+                tool_name,
+                output: None,
+                ok: None,
+                duration_ms: None,
+                ..
+            }] if tool_call_id == "call-pending" && tool_name == "grep"
+        ));
+    }
+
+    #[test]
+    fn replay_records_skips_items_at_or_before_last_event_id() {
+        let events = vec![
+            StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent::SessionStart {
+                    session_id: "session-1".to_string(),
+                    timestamp: Utc::now(),
+                    working_dir: "/tmp".to_string(),
+                },
+            },
+            StoredEvent {
+                storage_seq: 2,
+                event: StorageEvent::UserMessage {
+                    turn_id: Some("turn-7".to_string()),
+                    content: "hello".to_string(),
+                    timestamp: Utc::now(),
+                },
+            },
+            StoredEvent {
+                storage_seq: 3,
+                event: StorageEvent::TurnDone {
+                    turn_id: Some("turn-7".to_string()),
+                    timestamp: Utc::now(),
+                },
+            },
+        ];
+
+        let records = replay_records(&events, Some("2.0"));
+
+        assert!(records.iter().all(|record| record.event_id != "1.0"));
+        assert!(records.iter().all(|record| record.event_id != "2.0"));
+        assert!(records.iter().any(|record| record.event_id == "3.0"));
+    }
 }

@@ -22,17 +22,16 @@ impl AgentService {
     ) -> ServiceResult<PromptAccepted> {
         let session_id = normalize_session_id(session_id);
         let session = self.ensure_session_loaded(&session_id).await?;
-        if session.running.swap(true, Ordering::SeqCst) {
-            return Err(ServiceError::Conflict(format!(
-                "session '{}' is already running",
-                session_id
-            )));
-        }
-
         let turn_id = Uuid::new_v4().to_string();
         let cancel = CancelToken::new();
         {
             let mut guard = lock_service(&session.cancel, "session cancel")?;
+            if session.running.swap(true, Ordering::SeqCst) {
+                return Err(ServiceError::Conflict(format!(
+                    "session '{}' is already running",
+                    session_id
+                )));
+            }
             *guard = cancel.clone();
         }
 
@@ -89,6 +88,7 @@ impl AgentService {
                 let error_event = StorageEvent::Error {
                     turn_id: Some(turn_id.clone()),
                     message: error.to_string(),
+                    timestamp: Some(Utc::now()),
                 };
                 let _ = append_and_broadcast(&state, &error_event, &mut translator).await;
                 let turn_done = StorageEvent::TurnDone {
@@ -141,7 +141,58 @@ fn append_and_broadcast_blocking(
     event: &StorageEvent,
     translator: &mut EventTranslator,
 ) -> Result<()> {
-    tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(append_and_broadcast(session, event, translator))
-    })
+    let stored = session.writer.append_blocking(event)?;
+    let records = translator.translate(&stored);
+    for record in records {
+        let _ = session.broadcaster.send(record);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use astrcode_core::AgentEvent;
+    use chrono::Utc;
+
+    use crate::event_log::EventLog;
+
+    use super::super::session_state::SessionWriter;
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn append_and_broadcast_blocking_works_on_current_thread_runtime() {
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let log = EventLog::create_at_path(
+            "test-session",
+            temp_dir.path().join("session-test-session.jsonl"),
+        )
+        .expect("event log should be created");
+        let state = SessionState::new(
+            temp_dir.path().to_path_buf(),
+            Phase::Idle,
+            Arc::new(SessionWriter::new(log)),
+        );
+        let mut receiver = state.broadcaster.subscribe();
+        let mut translator = EventTranslator::new(Phase::Idle);
+
+        append_and_broadcast_blocking(
+            &state,
+            &StorageEvent::SessionStart {
+                session_id: "test-session".to_string(),
+                timestamp: Utc::now(),
+                working_dir: temp_dir.path().to_string_lossy().to_string(),
+            },
+            &mut translator,
+        )
+        .expect("append should succeed");
+
+        let record = receiver.recv().await.expect("record should be broadcast");
+        assert_eq!(record.event_id, "1.0");
+        assert!(matches!(
+            record.event,
+            AgentEvent::SessionStarted { ref session_id } if session_id == "test-session"
+        ));
+    }
 }

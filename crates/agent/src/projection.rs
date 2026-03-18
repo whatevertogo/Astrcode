@@ -366,6 +366,7 @@ mod tests {
             StorageEvent::Error {
                 turn_id: None,
                 message: "some error".into(),
+                timestamp: Some(ts()),
             },
             StorageEvent::TurnDone {
                 turn_id: None,
