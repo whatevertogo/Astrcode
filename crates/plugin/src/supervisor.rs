@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use astrcode_core::{PluginManifest, Result};
 use astrcode_protocol::plugin::{
-    CapabilityDescriptor, CapabilityKind, InitializeMessage, InitializeResultData, InvokeMessage,
-    PeerDescriptor, ProfileDescriptor, ResultMessage, SideEffectLevel, StabilityLevel,
-    PROTOCOL_VERSION,
+    CapabilityDescriptor, InitializeMessage, InitializeResultData, InvokeMessage, PeerDescriptor,
+    ProfileDescriptor, ResultMessage, PROTOCOL_VERSION,
 };
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use crate::core_to_protocol_capability;
 use crate::{CapabilityRouter, Peer, PluginProcess, StreamExecution};
 
 pub struct Supervisor {
@@ -43,6 +43,10 @@ impl Supervisor {
 
     pub fn remote_initialize(&self) -> &InitializeResultData {
         &self.remote_initialize
+    }
+
+    pub(crate) fn peer(&self) -> Peer {
+        self.peer.clone()
     }
 
     pub async fn invoke(
@@ -133,42 +137,6 @@ pub fn manifest_capabilities(manifest: &PluginManifest) -> Vec<CapabilityDescrip
     manifest
         .capabilities
         .iter()
-        .map(|capability| CapabilityDescriptor {
-            name: capability.name.clone(),
-            kind: match capability.kind {
-                astrcode_core::CapabilityKind::Tool => CapabilityKind::Tool,
-                astrcode_core::CapabilityKind::Agent => CapabilityKind::Agent,
-                astrcode_core::CapabilityKind::ContextProvider => CapabilityKind::ContextProvider,
-                astrcode_core::CapabilityKind::MemoryProvider => CapabilityKind::MemoryProvider,
-                astrcode_core::CapabilityKind::PolicyHook => CapabilityKind::PolicyHook,
-                astrcode_core::CapabilityKind::Renderer => CapabilityKind::Renderer,
-                astrcode_core::CapabilityKind::Resource => CapabilityKind::Resource,
-            },
-            description: capability.description.clone(),
-            input_schema: capability.input_schema.clone(),
-            output_schema: capability.output_schema.clone(),
-            streaming: capability.streaming,
-            profiles: capability.profiles.clone(),
-            tags: capability.tags.clone(),
-            permissions: capability
-                .permissions
-                .iter()
-                .map(|permission| astrcode_protocol::plugin::PermissionHint {
-                    name: permission.name.clone(),
-                    rationale: permission.rationale.clone(),
-                })
-                .collect(),
-            side_effect: match capability.side_effect {
-                astrcode_core::SideEffectLevel::None => SideEffectLevel::None,
-                astrcode_core::SideEffectLevel::Local => SideEffectLevel::Local,
-                astrcode_core::SideEffectLevel::Workspace => SideEffectLevel::Workspace,
-                astrcode_core::SideEffectLevel::External => SideEffectLevel::External,
-            },
-            stability: match capability.stability {
-                astrcode_core::StabilityLevel::Experimental => StabilityLevel::Experimental,
-                astrcode_core::StabilityLevel::Stable => StabilityLevel::Stable,
-                astrcode_core::StabilityLevel::Deprecated => StabilityLevel::Deprecated,
-            },
-        })
+        .map(core_to_protocol_capability)
         .collect()
 }

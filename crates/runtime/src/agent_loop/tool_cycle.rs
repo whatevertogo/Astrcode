@@ -5,8 +5,7 @@ use astrcode_core::{CancelToken, Result};
 use super::AgentLoop;
 use astrcode_core::AgentState;
 use astrcode_core::StorageEvent;
-use astrcode_core::ToolRegistry;
-use astrcode_core::{LlmMessage, ToolCallRequest};
+use astrcode_core::{CapabilityRouter, LlmMessage, ToolCallRequest};
 
 pub(crate) enum ToolCycleOutcome {
     Completed,
@@ -15,7 +14,7 @@ pub(crate) enum ToolCycleOutcome {
 
 pub(crate) async fn execute_tool_calls(
     agent_loop: &AgentLoop,
-    tools: &ToolRegistry,
+    capabilities: &CapabilityRouter,
     tool_calls: Vec<ToolCallRequest>,
     turn_id: &str,
     state: &AgentState,
@@ -42,7 +41,7 @@ pub(crate) async fn execute_tool_calls(
         // 注意：工具内部包含阻塞操作（shell、文件 I/O 等）
         // 在高并发场景下应使用 spawn_blocking，但对本地开发工具当前实现可接受
         tokio::task::yield_now().await;
-        let result = tools.execute(&call, &ctx).await;
+        let result = capabilities.execute_tool(&call, &ctx).await;
 
         let duration_ms = start.elapsed().as_millis() as u64;
 

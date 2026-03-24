@@ -2,27 +2,33 @@ mod llm_cycle;
 mod tool_cycle;
 mod turn_runner;
 
-use astrcode_core::{AstrError, CancelToken, Result, ToolContext, DEFAULT_MAX_OUTPUT_SIZE};
+use astrcode_core::{
+    AstrError, CancelToken, CapabilityRouter, Result, ToolContext, ToolRegistry,
+    DEFAULT_MAX_OUTPUT_SIZE,
+};
 use chrono::Utc;
 
 use crate::prompt::PromptComposer;
 use crate::provider_factory::DynProviderFactory;
 use astrcode_core::AgentState;
 use astrcode_core::StorageEvent;
-use astrcode_core::ToolRegistry;
 
 pub struct AgentLoop {
     factory: DynProviderFactory,
-    tools: ToolRegistry,
+    capabilities: CapabilityRouter,
     max_steps: Option<usize>,
     prompt_composer: PromptComposer,
 }
 
 impl AgentLoop {
     pub fn new(factory: DynProviderFactory, tools: ToolRegistry) -> Self {
+        Self::from_capabilities(factory, CapabilityRouter::from_tool_registry(tools))
+    }
+
+    pub fn from_capabilities(factory: DynProviderFactory, capabilities: CapabilityRouter) -> Self {
         Self {
             factory,
-            tools,
+            capabilities,
             max_steps: None,
             prompt_composer: PromptComposer::with_defaults(),
         }

@@ -36,7 +36,7 @@ pub(crate) async fn run_turn(
 
         let ctx = PromptContext {
             working_dir: state.working_dir.to_string_lossy().into_owned(),
-            tool_names: agent_loop.tools.names(),
+            tool_names: agent_loop.capabilities.tool_names(),
             step_index,
             turn_index: state.turn_count,
             vars: Default::default(),
@@ -54,7 +54,7 @@ pub(crate) async fn run_turn(
         let mut request_messages = plan.prepend_messages;
         request_messages.extend(messages.iter().cloned());
         request_messages.extend(plan.append_messages);
-        let mut tool_definitions = agent_loop.tools.definitions();
+        let mut tool_definitions = agent_loop.capabilities.tool_definitions();
         append_unique_tools(&mut tool_definitions, plan.extra_tools);
 
         let output = match llm_cycle::generate_response(
@@ -108,7 +108,7 @@ pub(crate) async fn run_turn(
         if matches!(
             tool_cycle::execute_tool_calls(
                 agent_loop,
-                &agent_loop.tools,
+                &agent_loop.capabilities,
                 tool_calls,
                 turn_id,
                 state,

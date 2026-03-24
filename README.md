@@ -135,6 +135,7 @@ AstrCode/
 │   ├── sdk/         # 插件作者 API
 │   ├── tools/       # Tool 实现，不依赖 runtime
 │   └── server/      # Axum 本地 server，唯一业务入口
+├── examples/        # 示例插件与示例 manifest
 ├── src-tauri/       # Tauri 薄壳：sidecar 管理、窗口控制、宿主 GUI 桥接
 └── frontend/        # React + TypeScript + Vite UI，共用桌面端和浏览器端
 ```

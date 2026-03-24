@@ -7,6 +7,7 @@ multiple-versions = "allow"
 deny = [
   { name = "tokio", wrappers = [
       "astrcode-core",
+      "astrcode-example-plugin",
       "astrcode-plugin",
       "astrcode-runtime",
       "astrcode-server",

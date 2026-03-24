@@ -13,7 +13,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result as AnyhowResult};
-use astrcode_core::{AstrError, ToolRegistry};
+use astrcode_core::{AstrError, CapabilityRouter, ToolRegistry};
+use astrcode_plugin::{PluginLoader, Supervisor};
+use astrcode_protocol::plugin::{PeerDescriptor, PeerRole};
 use astrcode_runtime::{RuntimeService, ServiceError};
 use astrcode_tools::tools::{
     edit_file::EditFileTool, find_files::FindFilesTool, grep::GrepTool, list_dir::ListDirTool,
@@ -121,8 +123,13 @@ async fn main() -> AnyhowResult<()> {
         .register(Box::new(FindFilesTool::default()))
         .register(Box::new(GrepTool::default()))
         .build();
-    let service =
-        Arc::new(RuntimeService::new(registry).map_err(|error| anyhow!(error.to_string()))?);
+    let (capabilities, _plugin_supervisors) = load_runtime_capabilities(registry)
+        .await
+        .map_err(|error| anyhow!(error.to_string()))?;
+    let service = Arc::new(
+        RuntimeService::from_capabilities(capabilities)
+            .map_err(|error| anyhow!(error.to_string()))?,
+    );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -152,6 +159,45 @@ async fn main() -> AnyhowResult<()> {
     Ok(axum::serve(listener, app)
         .await
         .map_err(|e| AstrError::io("server terminated unexpectedly", e))?)
+}
+
+async fn load_runtime_capabilities(
+    registry: ToolRegistry,
+) -> std::result::Result<(CapabilityRouter, Vec<Supervisor>), AstrError> {
+    let mut builder = CapabilityRouter::builder().register_tool_registry(registry);
+    let mut supervisors = Vec::new();
+
+    let Some(raw_paths) = std::env::var_os("ASTRCODE_PLUGIN_DIRS") else {
+        return builder.build().map(|router| (router, supervisors));
+    };
+
+    let search_paths = std::env::split_paths(&raw_paths).collect::<Vec<_>>();
+    if search_paths.is_empty() {
+        return builder.build().map(|router| (router, supervisors));
+    }
+
+    let loader = PluginLoader { search_paths };
+    for manifest in loader.discover()? {
+        let supervisor = Supervisor::start(
+            &manifest,
+            PeerDescriptor {
+                id: "astrcode-server".to_string(),
+                name: "astrcode-server".to_string(),
+                role: PeerRole::Supervisor,
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                supported_profiles: vec!["coding".to_string()],
+                metadata: serde_json::Value::Null,
+            },
+        )
+        .await?;
+        for invoker in supervisor.capability_invokers() {
+            builder = builder.register_invoker(invoker);
+        }
+        log::info!("loaded plugin '{}'", manifest.name);
+        supervisors.push(supervisor);
+    }
+
+    builder.build().map(|router| (router, supervisors))
 }
 
 #[cfg(test)]

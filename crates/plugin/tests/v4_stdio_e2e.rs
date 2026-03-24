@@ -19,6 +19,8 @@ fn fixture_manifest() -> PluginManifest {
         plugin_type: vec![PluginType::Tool],
         capabilities: vec![],
         executable: Some(env!("CARGO_BIN_EXE_fixture_worker").to_string()),
+        args: Vec::new(),
+        working_dir: None,
         repository: None,
     }
 }

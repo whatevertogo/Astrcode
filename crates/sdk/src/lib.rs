@@ -11,4 +11,4 @@ pub use context::PluginContext;
 pub use hook::{PolicyDecision, PolicyHook};
 pub use memory::MemoryProvider;
 pub use stream::{StreamChunk, StreamWriter};
-pub use tool::{ToolHandler, ToolRegistration};
+pub use tool::{ToolHandler, ToolRegistration, ToolResult};

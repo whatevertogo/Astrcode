@@ -17,13 +17,17 @@ impl PluginProcess {
         let executable = manifest.executable.as_ref().ok_or_else(|| {
             AstrError::Validation(format!("plugin '{}' has no executable", manifest.name))
         })?;
-        let mut child = Command::new(executable)
+        let mut command = Command::new(executable);
+        command
+            .args(&manifest.args)
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .map_err(|error| {
-                AstrError::io(format!("failed to spawn plugin '{executable}'"), error)
-            })?;
+            .stdout(Stdio::piped());
+        if let Some(working_dir) = &manifest.working_dir {
+            command.current_dir(working_dir);
+        }
+        let mut child = command.spawn().map_err(|error| {
+            AstrError::io(format!("failed to spawn plugin '{executable}'"), error)
+        })?;
         let stdin = child.stdin.take().ok_or_else(|| {
             AstrError::Internal(format!("plugin '{}' did not expose stdin", manifest.name))
         })?;

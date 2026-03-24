@@ -24,4 +24,6 @@ tokio-util.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+astrcode-plugin = { path = "../plugin" }
+astrcode-protocol = { path = "../protocol" }
 tempfile.workspace = true

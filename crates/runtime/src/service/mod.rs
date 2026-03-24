@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent_loop::AgentLoop;
 use crate::config::load_config;
 use crate::provider_factory::ConfigFileProviderFactory;
-use astrcode_core::ToolRegistry;
+use astrcode_core::{CapabilityRouter, ToolRegistry};
 
 mod config_ops;
 mod replay;
@@ -34,8 +34,12 @@ pub struct RuntimeService {
 
 impl RuntimeService {
     pub fn new(registry: ToolRegistry) -> ServiceResult<Self> {
+        Self::from_capabilities(CapabilityRouter::from_tool_registry(registry))
+    }
+
+    pub fn from_capabilities(capabilities: CapabilityRouter) -> ServiceResult<Self> {
         let config = load_config().map_err(ServiceError::from)?;
-        let loop_ = AgentLoop::new(Arc::new(ConfigFileProviderFactory), registry);
+        let loop_ = AgentLoop::from_capabilities(Arc::new(ConfigFileProviderFactory), capabilities);
         Ok(Self {
             sessions: DashMap::new(),
             loop_: Arc::new(loop_),

@@ -28,6 +28,20 @@ AstrCode 的长期目标是：
 - 会话、事件、工具、状态始终由平台统一管理
 - 既优先服务 coding agent，又保留向更通用 agent 平台扩展的空间
 
+### 1.1 冻结 ADR
+
+以下 ADR 作为当前架构边界的冻结决策：
+
+- [ADR-0001: Freeze AstrCode Protocol V4 Wire Model](docs/adr/0001-astrcode-protocol-v4-wire-model.md)
+- [ADR-0002: Freeze Coding Profile Context Boundary](docs/adr/0002-astrcode-coding-profile-context.md)
+- [ADR-0003: Use Core-Owned Unified Capability Routing](docs/adr/0003-unified-capability-routing.md)
+
+约束：
+
+- `PROJECT_STRUCTURE.md` 负责长期总纲
+- ADR 负责冻结关键协议与边界决策
+- 实现如果偏离 ADR，必须先更新 ADR 再改代码
+
 ---
 
 ## 2. 核心原则

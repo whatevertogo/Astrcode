@@ -30,6 +30,10 @@ pub use event::{
 pub use plugin::{PluginManifest, PluginRegistry, PluginState, PluginType};
 pub use policy::{AllowAllPolicyEngine, PolicyDecision, PolicyEngine};
 pub use projection::{project, AgentState};
+pub use registry::{
+    CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, CapabilityRouter,
+    CapabilityRouterBuilder,
+};
 pub use registry::{ToolRegistry, ToolRegistryBuilder};
 pub use runtime::{KernelApi, Orchestrator, RuntimeCoordinator, TurnContext, TurnOutcome};
 pub use session::{

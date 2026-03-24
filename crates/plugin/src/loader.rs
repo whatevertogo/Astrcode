@@ -51,7 +51,22 @@ impl PluginLoader {
                         error,
                     )
                 })?;
-                manifests.push(PluginManifest::from_toml(&raw)?);
+                let mut manifest = PluginManifest::from_toml(&raw)?;
+                if let Some(working_dir) = manifest.working_dir.clone() {
+                    let working_dir_path = PathBuf::from(&working_dir);
+                    if working_dir_path.is_relative() {
+                        let resolved = path.parent().unwrap_or(search_path).join(working_dir_path);
+                        manifest.working_dir = Some(resolved.to_string_lossy().into_owned());
+                    }
+                }
+                if let Some(executable) = manifest.executable.clone() {
+                    let executable_path = PathBuf::from(&executable);
+                    if executable_path.is_relative() && executable_path.components().count() > 1 {
+                        let resolved = path.parent().unwrap_or(search_path).join(executable_path);
+                        manifest.executable = Some(resolved.to_string_lossy().into_owned());
+                    }
+                }
+                manifests.push(manifest);
             }
         }
         Ok(manifests)

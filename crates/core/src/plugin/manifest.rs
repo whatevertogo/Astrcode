@@ -18,6 +18,10 @@ pub struct PluginManifest {
     pub plugin_type: Vec<PluginType>,
     pub capabilities: Vec<CapabilityDescriptor>,
     pub executable: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
     pub repository: Option<String>,
 }
 
