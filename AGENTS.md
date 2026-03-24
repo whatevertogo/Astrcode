@@ -12,33 +12,6 @@
 | `frontend/src/hooks/useAgent.ts`    | 统一的 fetch + EventSource 客户端            |
 | `src-tauri/src/main.rs`             | sidecar 启动、bootstrap 注入、退出清理       |
 
-## Build, Test, and Development Commands
-
-```bash
-# Development (Tauri 壳 + 前端 dev server，桌面端会自行拉起本地 server)
-cargo tauri dev
-
-# Browser-only local server
-cargo run -p astrcode-server
-
-# Production build
-cargo tauri build
-
-# Run all Rust tests
-cargo test --workspace
-
-# Workspace check
-cargo check --workspace
-
-# Dependency boundary checks
-cargo deny check bans
-
-# Frontend development
-cd frontend && npm run dev
-
-# Frontend type checking
-cd frontend && npm run typecheck
-```
 
 ## Workflow Checklist
 
