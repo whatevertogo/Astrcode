@@ -85,7 +85,49 @@ dependencies = [
 ]
 
 [[package]]
-name = "astrcode-agent"
+name = "astrcode-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "dashmap",
+ "dirs 5.0.1",
+ "log",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "toml 0.8.2",
+ "uuid",
+]
+
+[[package]]
+name = "astrcode-plugin"
+version = "0.1.0"
+dependencies = [
+ "astrcode-core",
+ "astrcode-protocol",
+ "async-trait",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "astrcode-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "astrcode-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -108,16 +150,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "astrcode-core"
+name = "astrcode-sdk"
 version = "0.1.0"
 dependencies = [
- "async-trait",
- "dirs 5.0.1",
- "reqwest 0.12.28",
+ "astrcode-protocol",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
- "toml 0.8.2",
 ]
 
 [[package]]
@@ -125,8 +163,10 @@ name = "astrcode-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "astrcode-agent",
  "astrcode-core",
+ "astrcode-plugin",
+ "astrcode-protocol",
+ "astrcode-runtime",
  "astrcode-tools",
  "async-stream",
  "axum",

@@ -3,57 +3,54 @@
     windows_subsystem = "windows"
 )]
 
-mod dto;
+mod auth;
+mod bootstrap;
+mod mapper;
+mod routes;
 
-use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::path::{Path as FsPath, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
-use crate::dto::{
-    AgentEventEnvelope, AuthExchangeRequest, AuthExchangeResponse, ConfigView,
-    CreateSessionRequest, CurrentModelInfoDto, DeleteProjectResultDto, ModelOptionDto, ProfileView,
-    PromptAcceptedResponse, PromptRequest, SaveActiveSelectionRequest, SessionListItem,
-    SessionMessageDto, TestConnectionRequest, TestResultDto,
-};
-use anyhow::{anyhow, Context, Result as AnyhowResult};
-use astrcode_agent::{
-    AgentService, PromptAccepted, ServiceError, SessionMessage, SessionReplaySource,
-};
-use astrcode_core::AstrError;
+use anyhow::{anyhow, Result as AnyhowResult};
+use astrcode_core::{AstrError, ToolRegistry};
+use astrcode_runtime::{RuntimeService, ServiceError};
 use astrcode_tools::tools::{
     edit_file::EditFileTool, find_files::FindFilesTool, grep::GrepTool, list_dir::ListDirTool,
     read_file::ReadFileTool, shell::ShellTool, write_file::WriteFileTool,
 };
-use async_stream::stream;
-use axum::body::Body;
-use axum::extract::{Path, Query, Request, State};
-use axum::http::header::CONTENT_TYPE;
-use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
-use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use rand::RngCore;
-use serde::{Deserialize, Serialize};
-use tower::ServiceExt;
-use tower_http::cors::CorsLayer;
-use tower_http::services::ServeDir;
+use serde::Serialize;
 
-const APP_HOME_OVERRIDE_ENV: &str = "ASTRCODE_HOME_DIR";
-const AUTH_HEADER_NAME: &str = "x-astrcode-token";
-const SESSION_CURSOR_HEADER_NAME: &str = "x-session-cursor";
+#[cfg(all(test, target_os = "windows"))]
+use crate::bootstrap::workspace_root;
+use crate::bootstrap::{
+    attach_frontend_build, build_cors_layer, load_frontend_build, random_hex_token, write_run_info,
+};
+#[cfg(test)]
+use crate::bootstrap::{inject_browser_bootstrap_html, serve_frontend_build};
+#[cfg(test)]
+use crate::mapper::api_key_preview;
+use crate::routes::build_api_router;
+#[cfg(test)]
+use crate::routes::sessions::session_messages;
+#[cfg(test)]
+use auth::secure_token_eq;
+
+pub(crate) const AUTH_HEADER_NAME: &str = "x-astrcode-token";
+pub(crate) const SESSION_CURSOR_HEADER_NAME: &str = "x-session-cursor";
 
 #[derive(Clone)]
-struct AppState {
-    service: Arc<AgentService>,
+pub(crate) struct AppState {
+    service: Arc<RuntimeService>,
     bootstrap_token: String,
     frontend_build: Option<FrontendBuild>,
 }
 
 #[derive(Clone)]
-struct FrontendBuild {
+pub(crate) struct FrontendBuild {
     dist_dir: PathBuf,
     index_html: Arc<String>,
 }
@@ -64,7 +61,7 @@ struct ErrorPayload {
 }
 
 #[derive(Debug)]
-struct ApiError {
+pub(crate) struct ApiError {
     status: StatusCode,
     message: String,
 }
@@ -113,31 +110,9 @@ impl From<ServiceError> for ApiError {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DeleteProjectQuery {
-    working_dir: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SessionEventsQuery {
-    after_event_id: Option<String>,
-    token: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RunInfo {
-    port: u16,
-    token: String,
-    pid: u32,
-    started_at: String,
-}
-
 #[tokio::main]
 async fn main() -> AnyhowResult<()> {
-    let registry = astrcode_agent::ToolRegistry::builder()
+    let registry = ToolRegistry::builder()
         .register(Box::new(ShellTool::default()))
         .register(Box::new(ListDirTool::default()))
         .register(Box::new(ReadFileTool::default()))
@@ -147,7 +122,7 @@ async fn main() -> AnyhowResult<()> {
         .register(Box::new(GrepTool::default()))
         .build();
     let service =
-        Arc::new(AgentService::new(registry).map_err(|error| anyhow!(error.to_string()))?);
+        Arc::new(RuntimeService::new(registry).map_err(|error| anyhow!(error.to_string()))?);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -170,762 +145,13 @@ async fn main() -> AnyhowResult<()> {
         frontend_build: frontend_build.clone(),
     };
 
-    let app = Router::<AppState>::new()
-        .route("/api/auth/exchange", post(exchange_auth))
-        .route("/api/sessions", post(create_session).get(list_sessions))
-        .route("/api/sessions/:id/messages", get(session_messages))
-        .route("/api/sessions/:id/prompts", post(submit_prompt))
-        .route("/api/sessions/:id/interrupt", post(interrupt_session))
-        .route("/api/sessions/:id/events", get(session_events))
-        .route("/api/sessions/:id", delete(delete_session))
-        .route("/api/projects", delete(delete_project))
-        .route("/api/config", get(get_config))
-        .route("/api/config/active-selection", post(save_active_selection))
-        .route("/api/models/current", get(get_current_model))
-        .route("/api/models", get(list_models))
-        .route("/api/models/test", post(test_model_connection));
+    let app: Router<AppState> = build_api_router();
     let app = attach_frontend_build(app, frontend_build);
     let app = app.with_state(state).layer(build_cors_layer());
 
     Ok(axum::serve(listener, app)
         .await
         .map_err(|e| AstrError::io("server terminated unexpectedly", e))?)
-}
-
-async fn server_root() -> &'static str {
-    "AstrCode server is running. API endpoints are available under /api. Build the frontend with `cd frontend && npm run build` or use the Vite dev server on http://127.0.0.1:5173/."
-}
-
-fn attach_frontend_build(
-    app: Router<AppState>,
-    frontend_build: Option<FrontendBuild>,
-) -> Router<AppState> {
-    if frontend_build.is_some() {
-        return app.fallback(serve_frontend_build);
-    }
-
-    app.route("/", get(server_root))
-}
-
-fn load_frontend_build(server_origin: &str, token: &str) -> AnyhowResult<Option<FrontendBuild>> {
-    let dist_dir = frontend_dist_dir();
-    let index_path = dist_dir.join("index.html");
-    if !index_path.is_file() {
-        return Ok(None);
-    }
-
-    let raw_index = std::fs::read_to_string(&index_path)
-        .with_context(|| format!("failed to read frontend entry '{}'", index_path.display()))?;
-    let injected_index = Arc::new(inject_browser_bootstrap_html(
-        &raw_index,
-        server_origin,
-        token,
-    )?);
-    Ok(Some(FrontendBuild {
-        dist_dir,
-        index_html: injected_index,
-    }))
-}
-
-async fn serve_frontend_build(State(state): State<AppState>, request: Request<Body>) -> Response {
-    let Some(frontend_build) = state.frontend_build else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    if request.method() != Method::GET && request.method() != Method::HEAD {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-
-    let request_path = request.uri().path().trim_start_matches('/').to_string();
-    let looks_like_asset = request_path
-        .rsplit('/')
-        .next()
-        .map(|segment| segment.contains('.'))
-        .unwrap_or(false);
-
-    match ServeDir::new(&frontend_build.dist_dir)
-        .append_index_html_on_directories(false)
-        .oneshot(request)
-        .await
-    {
-        Ok(response) if response.status() != StatusCode::NOT_FOUND => response.into_response(),
-        Ok(_) if looks_like_asset => StatusCode::NOT_FOUND.into_response(),
-        Ok(_) => browser_index_response(&frontend_build.index_html),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to serve frontend build: {error}"),
-        )
-            .into_response(),
-    }
-}
-
-fn frontend_dist_dir() -> PathBuf {
-    workspace_root().join("frontend").join("dist")
-}
-
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(FsPath::parent)
-        .expect("workspace root should exist")
-        .to_path_buf()
-}
-
-fn inject_browser_bootstrap_html(
-    index_html: &str,
-    server_origin: &str,
-    token: &str,
-) -> AnyhowResult<String> {
-    let bootstrap = serde_json::json!({
-        "token": token,
-        "isDesktopHost": false,
-        "serverOrigin": server_origin,
-    });
-    let script = format!(
-        "<script>window.__ASTRCODE_BOOTSTRAP__ = {};</script>",
-        serde_json::to_string(&bootstrap)?
-    );
-
-    if let Some(head_index) = index_html.find("<head>") {
-        let insert_at = head_index + "<head>".len();
-        let mut html = String::with_capacity(index_html.len() + script.len());
-        html.push_str(&index_html[..insert_at]);
-        html.push_str(&script);
-        html.push_str(&index_html[insert_at..]);
-        return Ok(html);
-    }
-
-    if let Some(head_index) = index_html.find("</head>") {
-        let mut html = String::with_capacity(index_html.len() + script.len());
-        html.push_str(&index_html[..head_index]);
-        html.push_str(&script);
-        html.push_str(&index_html[head_index..]);
-        return Ok(html);
-    }
-
-    Ok(format!("{script}{index_html}"))
-}
-
-fn browser_index_response(index_html: &str) -> Response {
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(CONTENT_TYPE, "text/html; charset=utf-8")
-        .body(Body::from(index_html.to_owned()))
-        .expect("browser index response should be valid")
-}
-
-fn build_cors_layer() -> CorsLayer {
-    CorsLayer::new()
-        .allow_origin([
-            HeaderValue::from_static("http://127.0.0.1:5173"),
-            HeaderValue::from_static("http://localhost:5173"),
-            HeaderValue::from_static("tauri://localhost"),
-            HeaderValue::from_static("http://tauri.localhost"),
-            HeaderValue::from_static("https://tauri.localhost"),
-        ])
-        .allow_methods([Method::GET, Method::POST, Method::DELETE])
-        .allow_headers([
-            CONTENT_TYPE,
-            HeaderName::from_static(AUTH_HEADER_NAME),
-            HeaderName::from_static("last-event-id"),
-            HeaderName::from_static("cache-control"),
-        ])
-        .expose_headers([HeaderName::from_static(SESSION_CURSOR_HEADER_NAME)])
-}
-
-async fn exchange_auth(
-    State(state): State<AppState>,
-    Json(request): Json<AuthExchangeRequest>,
-) -> Result<Json<AuthExchangeResponse>, ApiError> {
-    if !secure_token_eq(&request.token, &state.bootstrap_token) {
-        return Err(ApiError::unauthorized());
-    }
-
-    Ok(Json(AuthExchangeResponse { ok: true }))
-}
-
-async fn create_session(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(request): Json<CreateSessionRequest>,
-) -> Result<Json<SessionListItem>, ApiError> {
-    require_auth(&state, &headers, None)?;
-    let meta = state
-        .service
-        .create_session(request.working_dir)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(to_session_list_item(meta)))
-}
-
-async fn list_sessions(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Json<Vec<SessionListItem>>, ApiError> {
-    require_auth(&state, &headers, None)?;
-    let sessions = state
-        .service
-        .list_sessions_with_meta()
-        .await
-        .map_err(ApiError::from)?
-        .into_iter()
-        .map(to_session_list_item)
-        .collect();
-    Ok(Json(sessions))
-}
-
-async fn session_messages(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(session_id): Path<String>,
-) -> Result<Response, ApiError> {
-    require_auth(&state, &headers, None)?;
-    let (messages, cursor) = state
-        .service
-        .load_session_snapshot(&session_id)
-        .await
-        .map_err(ApiError::from)?;
-    let payload = messages
-        .into_iter()
-        .map(to_session_message_dto)
-        .collect::<Vec<_>>();
-
-    let mut response = Json(payload).into_response();
-    if let Some(cursor) = cursor {
-        response.headers_mut().insert(
-            SESSION_CURSOR_HEADER_NAME,
-            cursor
-                .parse::<axum::http::HeaderValue>()
-                .map_err(|error| ApiError {
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: error.to_string(),
-                })?,
-        );
-    }
-    Ok(response)
-}
-
-async fn submit_prompt(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(session_id): Path<String>,
-    Json(request): Json<PromptRequest>,
-) -> Result<(StatusCode, Json<PromptAcceptedResponse>), ApiError> {
-    require_auth(&state, &headers, None)?;
-    let accepted: PromptAccepted = state
-        .service
-        .submit_prompt(&session_id, request.text)
-        .await
-        .map_err(ApiError::from)?;
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(PromptAcceptedResponse {
-            turn_id: accepted.turn_id,
-        }),
-    ))
-}
-
-async fn interrupt_session(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(session_id): Path<String>,
-) -> Result<StatusCode, ApiError> {
-    require_auth(&state, &headers, None)?;
-    state
-        .service
-        .interrupt(&session_id)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn delete_session(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(session_id): Path<String>,
-) -> Result<StatusCode, ApiError> {
-    require_auth(&state, &headers, None)?;
-    state
-        .service
-        .delete_session(&session_id)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn delete_project(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<DeleteProjectQuery>,
-) -> Result<Json<DeleteProjectResultDto>, ApiError> {
-    require_auth(&state, &headers, None)?;
-    let result = state
-        .service
-        .delete_project(&query.working_dir)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(DeleteProjectResultDto {
-        success_count: result.success_count,
-        failed_session_ids: result.failed_session_ids,
-    }))
-}
-
-async fn session_events(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(session_id): Path<String>,
-    Query(query): Query<SessionEventsQuery>,
-) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    require_auth(&state, &headers, query.token.as_deref())?;
-    let last_event_id = headers
-        .get("last-event-id")
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_string())
-        .or(query.after_event_id);
-    let mut replay = state
-        .service
-        .replay(&session_id, last_event_id.as_deref())
-        .await
-        .map_err(ApiError::from)?;
-    let mut last_sent = last_event_id.as_deref().and_then(parse_event_id);
-    let service = state.service.clone();
-    let session_id_for_stream = session_id.clone();
-
-    let event_stream = stream! {
-        for record in replay.history {
-            if let Some(id) = parse_event_id(&record.event_id) {
-                last_sent = Some(id);
-            }
-            yield Ok::<Event, Infallible>(to_sse_event(record));
-        }
-
-        loop {
-            match replay.receiver.recv().await {
-                Ok(record) => {
-                    let Some(current_id) = parse_event_id(&record.event_id) else {
-                        continue;
-                    };
-                    if let Some(last_id) = last_sent {
-                        if current_id <= last_id {
-                            continue;
-                        }
-                    }
-                    last_sent = Some(current_id);
-                    yield Ok::<Event, Infallible>(to_sse_event(record));
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    let cursor = last_sent.map(format_event_id);
-                    match service
-                        .replay(&session_id_for_stream, cursor.as_deref())
-                        .await
-                    {
-                        Ok(recovered) => {
-                            for record in &recovered.history {
-                                if let Some(id) = parse_event_id(&record.event_id) {
-                                    last_sent = Some(id);
-                                }
-                                yield Ok::<Event, Infallible>(to_sse_event(record.clone()));
-                            }
-                            replay = recovered;
-                        }
-                        Err(_) => break,
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    };
-
-    Ok(Sse::new(event_stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text("keepalive"),
-    ))
-}
-
-async fn get_config(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Json<ConfigView>, ApiError> {
-    require_auth(&state, &headers, None)?;
-    let config = state.service.get_config().await;
-    let config_path = state
-        .service
-        .current_config_path()
-        .await
-        .map_err(ApiError::from)?
-        .to_string_lossy()
-        .to_string();
-    Ok(Json(build_config_view(&config, config_path)?))
-}
-
-async fn save_active_selection(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(request): Json<SaveActiveSelectionRequest>,
-) -> Result<StatusCode, ApiError> {
-    require_auth(&state, &headers, None)?;
-    state
-        .service
-        .save_active_selection(request.active_profile, request.active_model)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn get_current_model(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Json<CurrentModelInfoDto>, ApiError> {
-    require_auth(&state, &headers, None)?;
-    let config = state.service.get_config().await;
-    Ok(Json(resolve_current_model(&config)?))
-}
-
-async fn list_models(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Json<Vec<ModelOptionDto>>, ApiError> {
-    require_auth(&state, &headers, None)?;
-    let config = state.service.get_config().await;
-    Ok(Json(list_model_options(&config)))
-}
-
-async fn test_model_connection(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(request): Json<TestConnectionRequest>,
-) -> Result<Json<TestResultDto>, ApiError> {
-    require_auth(&state, &headers, None)?;
-    let result = state
-        .service
-        .test_connection(&request.profile_name, &request.model)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(TestResultDto {
-        success: result.success,
-        provider: result.provider,
-        model: result.model,
-        error: result.error,
-    }))
-}
-
-fn require_auth(
-    state: &AppState,
-    headers: &HeaderMap,
-    query_token: Option<&str>,
-) -> Result<(), ApiError> {
-    let header_token = headers
-        .get(AUTH_HEADER_NAME)
-        .and_then(|value| value.to_str().ok());
-    let authorized = header_token
-        .or(query_token)
-        .map(|token| secure_token_eq(token, &state.bootstrap_token))
-        .unwrap_or(false);
-    if authorized {
-        Ok(())
-    } else {
-        Err(ApiError::unauthorized())
-    }
-}
-
-fn secure_token_eq(left: &str, right: &str) -> bool {
-    let left = left.as_bytes();
-    let right = right.as_bytes();
-    let mut diff = left.len() ^ right.len();
-
-    for i in 0..left.len().max(right.len()) {
-        let left_byte = left.get(i).copied().unwrap_or(0);
-        let right_byte = right.get(i).copied().unwrap_or(0);
-        diff |= usize::from(left_byte ^ right_byte);
-    }
-
-    diff == 0
-}
-
-fn to_session_list_item(meta: astrcode_agent::SessionMeta) -> SessionListItem {
-    SessionListItem {
-        session_id: meta.session_id,
-        working_dir: meta.working_dir,
-        display_name: meta.display_name,
-        title: meta.title,
-        created_at: meta.created_at.to_rfc3339(),
-        updated_at: meta.updated_at.to_rfc3339(),
-        phase: meta.phase,
-    }
-}
-
-fn to_session_message_dto(message: SessionMessage) -> SessionMessageDto {
-    match message {
-        SessionMessage::User { content, timestamp } => {
-            SessionMessageDto::User { content, timestamp }
-        }
-        SessionMessage::Assistant {
-            content,
-            timestamp,
-            reasoning_content,
-        } => SessionMessageDto::Assistant {
-            content,
-            timestamp,
-            reasoning_content,
-        },
-        SessionMessage::ToolCall {
-            tool_call_id,
-            tool_name,
-            args,
-            output,
-            ok,
-            duration_ms,
-        } => SessionMessageDto::ToolCall {
-            tool_call_id,
-            tool_name,
-            args,
-            output,
-            ok,
-            duration_ms,
-        },
-    }
-}
-
-fn to_sse_event(record: astrcode_agent::SessionEventRecord) -> Event {
-    let payload =
-        serde_json::to_string(&AgentEventEnvelope::from(record.event)).unwrap_or_else(|error| {
-            serde_json::json!({
-                "protocolVersion": crate::dto::PROTOCOL_VERSION,
-                "event": "error",
-                "data": {
-                    "turnId": null,
-                    "code": "serialization_error",
-                    "message": error.to_string()
-                }
-            })
-            .to_string()
-        });
-    Event::default().id(record.event_id).data(payload)
-}
-
-fn parse_event_id(raw: &str) -> Option<(u64, u32)> {
-    let (storage_seq, subindex) = raw.split_once('.')?;
-    Some((storage_seq.parse().ok()?, subindex.parse().ok()?))
-}
-
-fn format_event_id((storage_seq, subindex): (u64, u32)) -> String {
-    format!("{storage_seq}.{subindex}")
-}
-
-fn build_config_view(
-    config: &astrcode_agent::Config,
-    config_path: String,
-) -> Result<ConfigView, ApiError> {
-    if config.profiles.is_empty() {
-        return Ok(ConfigView {
-            config_path,
-            active_profile: String::new(),
-            active_model: String::new(),
-            profiles: Vec::new(),
-            warning: Some("no profiles configured".to_string()),
-        });
-    }
-
-    let profiles = config
-        .profiles
-        .iter()
-        .map(|profile| ProfileView {
-            name: profile.name.clone(),
-            base_url: profile.base_url.clone(),
-            api_key_preview: api_key_preview(profile.api_key.as_deref()),
-            models: profile.models.clone(),
-        })
-        .collect::<Vec<_>>();
-
-    let (active_profile, active_model, warning) = resolve_active_selection(
-        &config.active_profile,
-        &config.active_model,
-        &config.profiles,
-    )?;
-
-    Ok(ConfigView {
-        config_path,
-        active_profile,
-        active_model,
-        profiles,
-        warning,
-    })
-}
-
-fn resolve_current_model(config: &astrcode_agent::Config) -> Result<CurrentModelInfoDto, ApiError> {
-    let profile = config
-        .profiles
-        .iter()
-        .find(|profile| profile.name == config.active_profile)
-        .or_else(|| config.profiles.first())
-        .ok_or_else(|| ApiError {
-            status: StatusCode::BAD_REQUEST,
-            message: "no profiles configured".to_string(),
-        })?;
-
-    let model = if profile
-        .models
-        .iter()
-        .any(|item| item == &config.active_model)
-    {
-        config.active_model.clone()
-    } else {
-        profile.models.first().cloned().ok_or_else(|| ApiError {
-            status: StatusCode::BAD_REQUEST,
-            message: format!("profile '{}' has no models", profile.name),
-        })?
-    };
-
-    Ok(CurrentModelInfoDto {
-        profile_name: profile.name.clone(),
-        model,
-        provider_kind: profile.provider_kind.clone(),
-    })
-}
-
-fn list_model_options(config: &astrcode_agent::Config) -> Vec<ModelOptionDto> {
-    config
-        .profiles
-        .iter()
-        .flat_map(|profile| {
-            profile.models.iter().map(|model| ModelOptionDto {
-                profile_name: profile.name.clone(),
-                model: model.clone(),
-                provider_kind: profile.provider_kind.clone(),
-            })
-        })
-        .collect()
-}
-
-fn resolve_active_selection(
-    active_profile: &str,
-    active_model: &str,
-    profiles: &[astrcode_agent::Profile],
-) -> Result<(String, String, Option<String>), ApiError> {
-    let fallback_profile = profiles.first().ok_or_else(|| ApiError {
-        status: StatusCode::BAD_REQUEST,
-        message: "no profiles configured".to_string(),
-    })?;
-
-    let selected_profile = profiles
-        .iter()
-        .find(|profile| profile.name == active_profile)
-        .unwrap_or(fallback_profile);
-
-    if selected_profile.models.is_empty() {
-        return Err(ApiError {
-            status: StatusCode::BAD_REQUEST,
-            message: format!("profile '{}' has no models", selected_profile.name),
-        });
-    }
-
-    if selected_profile.name != active_profile {
-        return Ok((
-            selected_profile.name.clone(),
-            selected_profile.models[0].clone(),
-            Some(format!(
-                "配置中的 Profile 不存在，已自动选择 {}",
-                selected_profile.name
-            )),
-        ));
-    }
-
-    if let Some(model) = selected_profile
-        .models
-        .iter()
-        .find(|model| *model == active_model)
-    {
-        return Ok((selected_profile.name.clone(), model.clone(), None));
-    }
-
-    Ok((
-        selected_profile.name.clone(),
-        selected_profile.models[0].clone(),
-        Some(format!(
-            "配置中的 {} 在当前 Profile 下不存在，已自动选择 {}",
-            active_model, selected_profile.models[0]
-        )),
-    ))
-}
-
-fn api_key_preview(api_key: Option<&str>) -> String {
-    match api_key.map(str::trim) {
-        None => "未配置".to_string(),
-        Some("") => "未配置".to_string(),
-        Some(value) if value.starts_with("env:") => {
-            let env_name = value.trim_start_matches("env:").trim();
-            if env_name.is_empty() {
-                "未配置".to_string()
-            } else {
-                format!("环境变量: {}", env_name)
-            }
-        }
-        Some(value) if value.starts_with("literal:") => {
-            api_key_preview(Some(value.trim_start_matches("literal:").trim()))
-        }
-        Some(value) if is_env_var_name(value) && std::env::var_os(value).is_some() => {
-            format!("环境变量: {}", value)
-        }
-        Some(value) if value.chars().count() > 4 => {
-            let suffix = value
-                .chars()
-                .rev()
-                .take(4)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<String>();
-            format!("****{}", suffix)
-        }
-        Some(_) => "****".to_string(),
-    }
-}
-
-fn is_env_var_name(value: &str) -> bool {
-    value
-        .chars()
-        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-        && value.contains('_')
-}
-
-fn random_hex_token() -> String {
-    let mut bytes = [0_u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    bytes.iter().map(|byte| format!("{:02x}", byte)).collect()
-}
-
-fn write_run_info(port: u16, token: &str) -> AnyhowResult<()> {
-    let path = run_info_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!("failed to create run info directory '{}'", parent.display())
-        })?;
-    }
-
-    let payload = RunInfo {
-        port,
-        token: token.to_string(),
-        pid: std::process::id(),
-        started_at: chrono::Utc::now().to_rfc3339(),
-    };
-    let json = serde_json::to_string_pretty(&payload).context("failed to serialize run info")?;
-    std::fs::write(&path, json)
-        .with_context(|| format!("failed to write run info '{}'", path.display()))?;
-    Ok(())
-}
-
-fn run_info_path() -> AnyhowResult<PathBuf> {
-    Ok(resolve_home_dir()?.join(".astrcode").join("run.json"))
-}
-
-fn resolve_home_dir() -> AnyhowResult<PathBuf> {
-    if let Some(home) = std::env::var_os(APP_HOME_OVERRIDE_ENV) {
-        if !home.is_empty() {
-            return Ok(PathBuf::from(home));
-        }
-    }
-
-    dirs::home_dir().ok_or_else(|| anyhow!("unable to resolve home directory"))
 }
 
 #[cfg(test)]
@@ -939,7 +165,8 @@ mod browser_bootstrap_tests {
     use std::sync::Arc;
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
-    use astrcode_agent::{AgentService, ToolRegistry};
+    use astrcode_core::ToolRegistry;
+    use astrcode_runtime::RuntimeService;
     use axum::body::{to_bytes, Body};
     use axum::extract::State;
     use axum::http::{Method, Request, StatusCode};
@@ -1202,7 +429,7 @@ mod browser_bootstrap_tests {
     fn test_state(frontend_build: Option<FrontendBuild>) -> (AppState, ServerTestEnvGuard) {
         let guard = ServerTestEnvGuard::new();
         let registry = ToolRegistry::builder().build();
-        let service = AgentService::new(registry).expect("agent service should initialize");
+        let service = RuntimeService::new(registry).expect("runtime service should initialize");
         (
             AppState {
                 service: Arc::new(service),
@@ -1253,8 +480,10 @@ mod browser_bootstrap_tests {
 mod tests {
     use std::ffi::OsString;
     use std::fs;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::process::Command;
+
+    use super::workspace_root;
 
     const IMAGE_SUBSYSTEM_WINDOWS_GUI: u16 = 2;
 
@@ -1287,52 +516,29 @@ mod tests {
         std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
     }
 
-    fn workspace_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(Path::parent)
-            .expect("workspace root should exist")
-            .to_path_buf()
-    }
-
     fn read_pe_subsystem(path: &Path) -> u16 {
-        let binary = fs::read(path)
-            .unwrap_or_else(|error| panic!("failed to read '{}': {error}", path.display()));
-
+        let bytes = fs::read(path).unwrap_or_else(|error| {
+            panic!("failed to read PE binary '{}': {error}", path.display())
+        });
         assert!(
-            binary.len() >= 0x40,
-            "binary '{}' is too small to contain a PE header",
-            path.display()
-        );
-        assert_eq!(
-            &binary[..2],
-            b"MZ",
-            "binary '{}' is missing the DOS header signature",
+            bytes.len() >= 0x40,
+            "PE binary '{}' is too small",
             path.display()
         );
 
-        let pe_offset = u32::from_le_bytes(
-            binary[0x3c..0x40]
-                .try_into()
-                .expect("DOS header should expose PE offset"),
-        ) as usize;
+        let pe_offset = u32::from_le_bytes(bytes[0x3C..0x40].try_into().unwrap()) as usize;
+        let optional_header_offset = pe_offset + 4 + 20;
+        let subsystem_offset = optional_header_offset + 68;
         assert!(
-            binary.len() >= pe_offset + 24 + 70,
-            "binary '{}' is too small to contain the PE optional header",
-            path.display()
-        );
-        assert_eq!(
-            &binary[pe_offset..pe_offset + 4],
-            b"PE\0\0",
-            "binary '{}' is missing the PE signature",
+            subsystem_offset + 2 <= bytes.len(),
+            "PE binary '{}' is truncated before subsystem field",
             path.display()
         );
 
-        let subsystem_offset = pe_offset + 24 + 68;
         u16::from_le_bytes(
-            binary[subsystem_offset..subsystem_offset + 2]
+            bytes[subsystem_offset..subsystem_offset + 2]
                 .try_into()
-                .expect("PE optional header should expose subsystem field"),
+                .unwrap(),
         )
     }
 }

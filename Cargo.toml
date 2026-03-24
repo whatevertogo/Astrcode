@@ -1,7 +1,10 @@
 [workspace]
 members = [
     "crates/core",
-    "crates/agent",
+    "crates/runtime",
+    "crates/protocol",
+    "crates/plugin",
+    "crates/sdk",
     "crates/tools",
     "crates/server",
     "src-tauri",

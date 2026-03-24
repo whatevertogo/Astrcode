@@ -128,10 +128,12 @@ cd frontend && npm run build
 ```
 AstrCode/
 ├── crates/
-│   ├── core/        # 纯领域类型、Tool trait、ToolContext、AgentEvent
-│   ├── contracts/   # HTTP / SSE DTO
-│   ├── agent/       # 会话生命周期、JSONL 日志、配置、事件广播
-│   ├── tools/       # Tool 实现，不依赖 agent
+│   ├── core/        # 纯领域类型、事件存储、投影、注册表
+│   ├── runtime/     # AgentLoop、配置与运行态 façade
+│   ├── protocol/    # HTTP / SSE / Plugin DTO
+│   ├── plugin/      # stdio 插件运行时
+│   ├── sdk/         # 插件作者 API
+│   ├── tools/       # Tool 实现，不依赖 runtime
 │   └── server/      # Axum 本地 server，唯一业务入口
 ├── src-tauri/       # Tauri 薄壳：sidecar 管理、窗口控制、宿主 GUI 桥接
 └── frontend/        # React + TypeScript + Vite UI，共用桌面端和浏览器端
@@ -155,13 +157,13 @@ AstrCode/
                              ▼
 ┌────────────────────────────────────────────────────────┐
 │                   astrcode-server                       │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐│
-│  │  Axum Router│───▶│AgentService │───▶│ ToolRegistry││
-│  └─────────────┘    └──────┬──────┘    └─────────────┘│
-│                            │                           │
-│  ┌─────────────┐    ┌──────▼──────┐                    │
-│  │  Auth/Token │    │ SessionStore│                    │
-│  └─────────────┘    └─────────────┘                    │
+│  ┌─────────────┐    ┌──────────────┐   ┌─────────────┐ │
+│  │  Axum Router│───▶│RuntimeService│──▶│ ToolRegistry│ │
+│  └─────────────┘    └──────┬───────┘   └─────────────┘ │
+│                            │                            │
+│  ┌─────────────┐    ┌──────▼──────┐   ┌─────────────┐ │
+│  │  Auth/Token │    │ EventStore  │   │ Protocol DTO│ │
+│  └─────────────┘    └─────────────┘   └─────────────┘ │
 └────────────────────────────────────────────────────────┘
 ```
 

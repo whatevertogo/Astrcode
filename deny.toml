@@ -6,7 +6,9 @@ multiple-versions = "allow"
 
 deny = [
   { name = "tokio", wrappers = [
-      "astrcode-agent",
+      "astrcode-core",
+      "astrcode-plugin",
+      "astrcode-runtime",
       "astrcode-server",
       "axum",
       "hyper",
@@ -19,6 +21,6 @@ deny = [
       "tokio-util",
       "tower",
       "tower-http",
-    ], reason = "tokio should stay out of core/contracts/tools production code" },
+    ], reason = "tokio is allowed only in crates that own runtime, IO, or persisted session infrastructure; keep it out of protocol and sdk" },
   { name = "axum", wrappers = ["astrcode-server", "axum-extra"], reason = "axum belongs only in the server crate" },
 ]

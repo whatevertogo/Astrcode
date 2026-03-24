@@ -6,8 +6,10 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-astrcode-agent = { path = "../agent" }
 astrcode-core = { path = "../core" }
+astrcode-plugin = { path = "../plugin" }
+astrcode-protocol = { path = "../protocol" }
+astrcode-runtime = { path = "../runtime" }
 astrcode-tools = { path = "../tools" }
 async-stream = "0.3"
 anyhow.workspace = true

@@ -1,6 +1,6 @@
 use std::env;
 
-use astrcode_core::{CancelToken, DEFAULT_MAX_OUTPUT_SIZE, ToolContext};
+use astrcode_core::{CancelToken, ToolContext, DEFAULT_MAX_OUTPUT_SIZE};
 
 #[test]
 fn cancel_token_clone_observes_shared_cancellation() {
