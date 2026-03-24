@@ -707,7 +707,8 @@ CapabilityDescriptor 应显式声明权限与副作用。
 - Policy Hook
 - Renderer
 - Trigger Handler
-- Skill Adapter
+- 动态注册Skill
+- 动态注册mcp
 
 ### 9.2 插件角色
 
