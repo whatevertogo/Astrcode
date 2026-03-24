@@ -1,11 +1,17 @@
-mod capability;
+mod descriptors;
 mod error;
 mod handshake;
 mod messages;
+#[cfg(test)]
+mod tests;
 
-pub use capability::CapabilityDto;
-pub use error::ProtocolError;
-pub use handshake::{ClientInfo, InitializeRequest, InitializeResult, ServerInfo};
+pub use descriptors::{
+    BudgetHint, CallerRef, CapabilityDescriptor, CapabilityKind, FilterDescriptor,
+    HandlerDescriptor, InvocationContext, PeerDescriptor, PeerRole, PermissionHint,
+    ProfileDescriptor, SideEffectLevel, StabilityLevel, TriggerDescriptor, WorkspaceRef,
+};
+pub use error::{ErrorPayload, ProtocolError};
+pub use handshake::{InitializeMessage, InitializeResultData, PROTOCOL_VERSION};
 pub use messages::{
-    CancelRequest, InvokeOutcome, InvokeRequest, InvokeResult, PluginMessage, StreamEvent,
+    CancelMessage, EventMessage, EventPhase, InvokeMessage, PluginMessage, ResultMessage,
 };

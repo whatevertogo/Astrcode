@@ -1,12 +1,24 @@
-mod executor;
-mod handshake;
+mod capability_router;
+mod handler_dispatcher;
 mod lifecycle;
 mod loader;
+mod peer;
 mod process;
+mod streaming;
+mod supervisor;
 pub mod transport;
+mod worker;
 
-pub use executor::PluginExecutor;
-pub use handshake::perform_handshake;
+pub use capability_router::{
+    AllowAllPermissionChecker, CapabilityHandler, CapabilityRouter, PermissionChecker,
+};
+pub use handler_dispatcher::HandlerDispatcher;
 pub use lifecycle::LifecycleManager;
 pub use loader::{PluginInstance, PluginLoader};
+pub use peer::Peer;
 pub use process::PluginProcess;
+pub use streaming::{EventEmitter, StreamExecution};
+pub use supervisor::{
+    default_initialize_message, default_profiles, manifest_capabilities, Supervisor,
+};
+pub use worker::Worker;

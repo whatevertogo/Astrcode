@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use astrcode_core::{PluginManifest, Result};
+use astrcode_protocol::plugin::{InitializeMessage, PeerDescriptor};
 
-use crate::PluginProcess;
+use crate::{PluginProcess, Supervisor};
 
 #[derive(Debug, Clone)]
 pub struct PluginInstance {
@@ -62,7 +63,17 @@ impl PluginLoader {
         })
     }
 
-    pub async fn start(&self, manifest: &PluginManifest) -> Result<PluginProcess> {
+    pub async fn start_process(&self, manifest: &PluginManifest) -> Result<PluginProcess> {
         PluginProcess::start(manifest).await
+    }
+
+    pub async fn start(
+        &self,
+        manifest: &PluginManifest,
+        local_peer: PeerDescriptor,
+        local_initialize: Option<InitializeMessage>,
+    ) -> Result<Supervisor> {
+        let process = self.start_process(manifest).await?;
+        Supervisor::from_process(process, local_peer, local_initialize).await
     }
 }

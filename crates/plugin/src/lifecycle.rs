@@ -1,20 +1,20 @@
 use astrcode_core::Result;
 
-use crate::PluginProcess;
+use crate::Supervisor;
 
 #[derive(Default)]
 pub struct LifecycleManager {
-    processes: Vec<PluginProcess>,
+    supervisors: Vec<Supervisor>,
 }
 
 impl LifecycleManager {
-    pub fn register(&mut self, process: PluginProcess) {
-        self.processes.push(process);
+    pub fn register(&mut self, supervisor: Supervisor) {
+        self.supervisors.push(supervisor);
     }
 
     pub async fn shutdown_all(&mut self) -> Result<()> {
-        for process in &mut self.processes {
-            process.shutdown().await?;
+        for supervisor in &mut self.supervisors {
+            supervisor.shutdown().await?;
         }
         Ok(())
     }

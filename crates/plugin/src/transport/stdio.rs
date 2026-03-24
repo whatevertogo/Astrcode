@@ -1,47 +1,61 @@
-use astrcode_core::{AstrError, Result};
-use astrcode_protocol::plugin::PluginMessage;
+use std::pin::Pin;
+
 use async_trait::async_trait;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{self, AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, ChildStdout};
+use tokio::sync::Mutex;
 
 use super::Transport;
 
 pub struct StdioTransport {
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    writer: Mutex<Pin<Box<dyn AsyncWrite + Send>>>,
+    reader: Mutex<Pin<Box<dyn AsyncBufRead + Send>>>,
 }
 
 impl StdioTransport {
-    pub fn new(stdin: ChildStdin, stdout: ChildStdout) -> Self {
+    pub fn from_child(stdin: ChildStdin, stdout: ChildStdout) -> Self {
         Self {
-            stdin,
-            stdout: BufReader::new(stdout),
+            writer: Mutex::new(Box::pin(stdin)),
+            reader: Mutex::new(Box::pin(BufReader::new(stdout))),
+        }
+    }
+
+    pub fn from_process_stdio() -> Self {
+        Self {
+            writer: Mutex::new(Box::pin(io::stdout())),
+            reader: Mutex::new(Box::pin(BufReader::new(io::stdin()))),
         }
     }
 }
 
 #[async_trait]
 impl Transport for StdioTransport {
-    async fn send(&mut self, message: &PluginMessage) -> Result<()> {
-        let json = serde_json::to_string(message)
-            .map_err(|error| AstrError::parse("failed to serialize plugin message", error))?;
-        self.stdin
-            .write_all(json.as_bytes())
+    async fn send(&self, payload: &str) -> Result<(), String> {
+        let mut writer = self.writer.lock().await;
+        writer
+            .write_all(payload.as_bytes())
             .await
-            .map_err(|error| AstrError::io("failed to write plugin request", error))?;
-        self.stdin
+            .map_err(|error| format!("failed to write plugin payload: {error}"))?;
+        writer
             .write_all(b"\n")
             .await
-            .map_err(|error| AstrError::io("failed to terminate plugin request", error))
+            .map_err(|error| format!("failed to terminate plugin payload: {error}"))?;
+        writer
+            .flush()
+            .await
+            .map_err(|error| format!("failed to flush plugin payload: {error}"))
     }
 
-    async fn receive(&mut self) -> Result<PluginMessage> {
+    async fn recv(&self) -> Result<Option<String>, String> {
+        let mut reader = self.reader.lock().await;
         let mut line = String::new();
-        self.stdout
+        let bytes = reader
             .read_line(&mut line)
             .await
-            .map_err(|error| AstrError::io("failed to read plugin response", error))?;
-        serde_json::from_str(line.trim())
-            .map_err(|error| AstrError::parse("failed to deserialize plugin response", error))
+            .map_err(|error| format!("failed to read plugin payload: {error}"))?;
+        if bytes == 0 {
+            return Ok(None);
+        }
+        Ok(Some(line.trim_end_matches(['\r', '\n']).to_string()))
     }
 }

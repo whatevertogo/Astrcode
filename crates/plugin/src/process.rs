@@ -1,7 +1,7 @@
 use std::process::Stdio;
+use std::sync::Arc;
 
 use astrcode_core::{AstrError, PluginManifest, Result};
-use astrcode_protocol::plugin::{InitializeResult, InvokeRequest, InvokeResult};
 use tokio::process::{Child, Command};
 
 use crate::transport::{StdioTransport, Transport};
@@ -9,7 +9,7 @@ use crate::transport::{StdioTransport, Transport};
 pub struct PluginProcess {
     pub manifest: PluginManifest,
     pub child: Child,
-    pub transport: Box<dyn Transport>,
+    transport: Arc<dyn Transport>,
 }
 
 impl PluginProcess {
@@ -30,29 +30,24 @@ impl PluginProcess {
         let stdout = child.stdout.take().ok_or_else(|| {
             AstrError::Internal(format!("plugin '{}' did not expose stdout", manifest.name))
         })?;
-        let transport = StdioTransport::new(stdin, stdout);
+        let transport: Arc<dyn Transport> = Arc::new(StdioTransport::from_child(stdin, stdout));
 
         Ok(Self {
             manifest: manifest.clone(),
             child,
-            transport: Box::new(transport),
+            transport,
         })
     }
 
-    pub async fn initialize(&mut self) -> Result<InitializeResult> {
-        crate::handshake::perform_handshake(self.transport.as_mut()).await
-    }
-
-    pub async fn invoke(&mut self, req: InvokeRequest) -> Result<InvokeResult> {
-        crate::executor::PluginExecutor::new(self.transport.as_mut())
-            .invoke(req)
-            .await
+    pub fn transport(&self) -> Arc<dyn Transport> {
+        Arc::clone(&self.transport)
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {
-        self.child
-            .kill()
-            .await
-            .map_err(|error| AstrError::io("failed to terminate plugin process", error))
+        match self.child.kill().await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => Ok(()),
+            Err(error) => Err(AstrError::io("failed to terminate plugin process", error)),
+        }
     }
 }

@@ -18,7 +18,10 @@ pub use action::{
     ToolCallRequest, ToolDefinition, ToolExecutionResult,
 };
 pub use cancel::CancelToken;
-pub use capability::{CapabilityDescriptor, CapabilityNamespace};
+pub use capability::{
+    CapabilityDescriptor, CapabilityKind, CapabilityNamespace, PermissionHint, SideEffectLevel,
+    StabilityLevel,
+};
 pub use error::{AstrError, Result, ResultExt};
 pub use event::{
     generate_session_id, phase_of_storage_event, replay_records, AgentEvent, EventLog, EventStore,
