@@ -320,10 +320,10 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
       await ensureServerSession();
       clearReconnectTimer();
       streamAbortRef.current?.abort();
-      
+
       // Increment generation to invalidate any pending operations from previous connections
       const generation = ++streamGenerationRef.current;
-      
+
       connectedSessionIdRef.current = sessionId;
       lastEventIdRef.current = afterEventId ?? null;
       reconnectAttemptRef.current = 0;
@@ -357,7 +357,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
         if (streamGenerationRef.current !== generation) {
           return;
         }
-        
+
         const controller = new AbortController();
         streamAbortRef.current = controller;
         try {
@@ -373,13 +373,13 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
               signal: controller.signal,
             }
           );
-          
+
           // Check generation after request
           if (streamGenerationRef.current !== generation) {
             controller.abort();
             return;
           }
-          
+
           reconnectAttemptRef.current = 0;
           await consumeSseStream(
             response,

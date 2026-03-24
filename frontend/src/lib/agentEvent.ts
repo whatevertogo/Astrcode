@@ -163,7 +163,8 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
       data: {
         turnId,
         content,
-        reasoningContent: pickOptionalString(data, 'reasoningContent', 'reasoning_content') ?? undefined,
+        reasoningContent:
+          pickOptionalString(data, 'reasoningContent', 'reasoning_content') ?? undefined,
       },
     };
   }

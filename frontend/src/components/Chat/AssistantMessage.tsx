@@ -33,7 +33,10 @@ class MarkdownGuard extends Component<MarkdownGuardProps, MarkdownGuardState> {
   }
 }
 
-function extractThinkingBlocks(text: string, explicitReasoning?: string): {
+function extractThinkingBlocks(
+  text: string,
+  explicitReasoning?: string
+): {
   visibleText: string;
   thinkingBlocks: string[];
 } {
@@ -57,7 +60,10 @@ function extractThinkingBlocks(text: string, explicitReasoning?: string): {
 }
 
 function AssistantMessage({ message }: AssistantMessageProps) {
-  const { visibleText, thinkingBlocks } = extractThinkingBlocks(message.text, message.reasoningText);
+  const { visibleText, thinkingBlocks } = extractThinkingBlocks(
+    message.text,
+    message.reasoningText
+  );
 
   return (
     <div className={styles.wrapper}>
