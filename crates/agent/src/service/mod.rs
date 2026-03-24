@@ -73,19 +73,29 @@ impl AgentService {
         // Wait for all sessions to become idle
         let start = std::time::Instant::now();
         let timeout = std::time::Duration::from_secs(timeout_secs);
-        
+
         loop {
-            let running_count = self.sessions.iter()
-                .filter(|entry| entry.value().running.load(std::sync::atomic::Ordering::SeqCst))
+            let running_count = self
+                .sessions
+                .iter()
+                .filter(|entry| {
+                    entry
+                        .value()
+                        .running
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                })
                 .count();
-            
+
             if running_count == 0 {
                 log::info!("All sessions are idle, shutdown complete");
                 return;
             }
 
             if start.elapsed() >= timeout {
-                log::warn!("Shutdown timeout elapsed, {} sessions still running", running_count);
+                log::warn!(
+                    "Shutdown timeout elapsed, {} sessions still running",
+                    running_count
+                );
                 return;
             }
 

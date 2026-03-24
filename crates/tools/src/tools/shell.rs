@@ -137,7 +137,7 @@ impl Tool for ShellTool {
             "exitCode": exit_code,
         });
         let output = output_json.to_string();
-        
+
         // Truncate if output exceeds max size
         let (output, truncated) = if output.len() > ctx.max_output_size {
             let truncation_msg = format!(
@@ -145,7 +145,8 @@ impl Tool for ShellTool {
                 output.len(),
                 ctx.max_output_size
             );
-            let mut truncated_output = output[..ctx.max_output_size.saturating_sub(truncation_msg.len())].to_string();
+            let mut truncated_output =
+                output[..ctx.max_output_size.saturating_sub(truncation_msg.len())].to_string();
             truncated_output.push_str(&truncation_msg);
             (truncated_output, true)
         } else {
