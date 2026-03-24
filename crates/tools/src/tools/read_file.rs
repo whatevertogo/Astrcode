@@ -75,6 +75,7 @@ impl Tool for ReadFileTool {
                 "truncated": truncated,
             })),
             duration_ms: started_at.elapsed().as_millis(),
+            truncated,
         })
     }
 }

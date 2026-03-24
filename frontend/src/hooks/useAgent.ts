@@ -289,6 +289,8 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
   const connectedSessionIdRef = useRef<string | null>(null);
   const lastEventIdRef = useRef<string | null>(null);
   const hostBridgeRef = useRef(getHostBridge());
+  // Generation counter to prevent race conditions when switching sessions
+  const streamGenerationRef = useRef(0);
 
   useEffect(() => {
     onEventRef.current = onEvent;
@@ -318,11 +320,19 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
       await ensureServerSession();
       clearReconnectTimer();
       streamAbortRef.current?.abort();
+      
+      // Increment generation to invalidate any pending operations from previous connections
+      const generation = ++streamGenerationRef.current;
+      
       connectedSessionIdRef.current = sessionId;
       lastEventIdRef.current = afterEventId ?? null;
       reconnectAttemptRef.current = 0;
 
       const scheduleReconnect = () => {
+        // Check if this connection is still active
+        if (streamGenerationRef.current !== generation) {
+          return;
+        }
         if (connectedSessionIdRef.current !== sessionId) {
           return;
         }
@@ -335,11 +345,19 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
         );
         reconnectTimerRef.current = window.setTimeout(() => {
           reconnectTimerRef.current = null;
-          void startStream(lastEventIdRef.current);
+          // Check generation again before reconnecting
+          if (streamGenerationRef.current === generation) {
+            void startStream(lastEventIdRef.current);
+          }
         }, delayMs);
       };
 
       const startStream = async (cursor: string | null): Promise<void> => {
+        // Check if this connection is still active
+        if (streamGenerationRef.current !== generation) {
+          return;
+        }
+        
         const controller = new AbortController();
         streamAbortRef.current = controller;
         try {
@@ -355,10 +373,21 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
               signal: controller.signal,
             }
           );
+          
+          // Check generation after request
+          if (streamGenerationRef.current !== generation) {
+            controller.abort();
+            return;
+          }
+          
           reconnectAttemptRef.current = 0;
           await consumeSseStream(
             response,
             (payload, eventId) => {
+              // Check generation before processing each event
+              if (streamGenerationRef.current !== generation) {
+                return;
+              }
               if (eventId) {
                 lastEventIdRef.current = eventId;
               }
@@ -381,11 +410,16 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
           if (
             !controller.signal.aborted &&
             streamAbortRef.current === controller &&
-            connectedSessionIdRef.current === sessionId
+            connectedSessionIdRef.current === sessionId &&
+            streamGenerationRef.current === generation
           ) {
             scheduleReconnect();
           }
         } catch (error) {
+          // Check generation before handling error
+          if (streamGenerationRef.current !== generation) {
+            return;
+          }
           if (!controller.signal.aborted && connectedSessionIdRef.current === sessionId) {
             if (shouldRetryEventStream(error)) {
               scheduleReconnect();
@@ -415,6 +449,8 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     connectedSessionIdRef.current = null;
     lastEventIdRef.current = null;
     reconnectAttemptRef.current = 0;
+    // Increment generation to invalidate any pending operations
+    streamGenerationRef.current++;
   }, [clearReconnectTimer]);
 
   const createSession = useCallback(async (workingDir: string): Promise<SessionMeta> => {

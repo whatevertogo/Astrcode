@@ -1,6 +1,6 @@
 use std::env;
 
-use astrcode_core::{CancelToken, ToolContext};
+use astrcode_core::{CancelToken, DEFAULT_MAX_OUTPUT_SIZE, ToolContext};
 
 #[test]
 fn cancel_token_clone_observes_shared_cancellation() {
@@ -21,6 +21,7 @@ fn tool_context_preserves_explicit_execution_roots() {
         session_id: "session-1".to_string(),
         working_dir: working_dir.clone(),
         cancel: CancelToken::new(),
+        max_output_size: DEFAULT_MAX_OUTPUT_SIZE,
     };
 
     assert_eq!(ctx.session_id, "session-1");

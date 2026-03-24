@@ -2,7 +2,7 @@ mod llm_cycle;
 mod tool_cycle;
 mod turn_runner;
 
-use astrcode_core::{AstrError, CancelToken, Result, ToolContext};
+use astrcode_core::{AstrError, CancelToken, DEFAULT_MAX_OUTPUT_SIZE, Result, ToolContext};
 use chrono::Utc;
 
 use crate::events::StorageEvent;
@@ -59,6 +59,7 @@ impl AgentLoop {
             session_id: state.session_id.clone(),
             working_dir: state.working_dir.clone(),
             cancel,
+            max_output_size: DEFAULT_MAX_OUTPUT_SIZE,
         }
     }
 }

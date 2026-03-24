@@ -130,12 +130,27 @@ impl Tool for ShellTool {
         let exit_code = status.code().unwrap_or(-1);
         let ok = status.success();
 
-        let output = json!({
+        // Build output JSON and check size
+        let output_json = json!({
             "stdout": stdout_text,
             "stderr": stderr_text,
             "exitCode": exit_code,
-        })
-        .to_string();
+        });
+        let output = output_json.to_string();
+        
+        // Truncate if output exceeds max size
+        let (output, truncated) = if output.len() > ctx.max_output_size {
+            let truncation_msg = format!(
+                "\n... [OUTPUT TRUNCATED: {} bytes total, showing first {} bytes]",
+                output.len(),
+                ctx.max_output_size
+            );
+            let mut truncated_output = output[..ctx.max_output_size.saturating_sub(truncation_msg.len())].to_string();
+            truncated_output.push_str(&truncation_msg);
+            (truncated_output, true)
+        } else {
+            (output, false)
+        };
 
         Ok(ToolExecutionResult {
             tool_call_id,
@@ -147,8 +162,9 @@ impl Tool for ShellTool {
             } else {
                 Some(format!("shell command exited with code {}", exit_code))
             },
-            metadata: Some(json!({ "exitCode": exit_code })),
+            metadata: Some(json!({ "exitCode": exit_code, "truncated": truncated })),
             duration_ms: started_at.elapsed().as_millis(),
+            truncated,
         })
     }
 }

@@ -331,6 +331,7 @@ impl EventTranslator {
                                 error: None,
                                 metadata: None,
                                 duration_ms: *duration_ms as u128,
+                                truncated: false,
                             },
                         },
                         &mut records,

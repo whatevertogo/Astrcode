@@ -62,6 +62,7 @@ impl Tool for WriteFileTool {
                 "bytes": bytes,
             })),
             duration_ms: started_at.elapsed().as_millis(),
+            truncated: false,
         })
     }
 }

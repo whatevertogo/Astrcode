@@ -55,12 +55,14 @@ impl Tool for ListDirTool {
         let max_entries = args.max_entries.unwrap_or(200);
 
         let mut entries = Vec::new();
+        let mut truncated = false;
         let read_dir = fs::read_dir(&path).map_err(|e| {
             AstrError::io(format!("failed reading directory '{}'", path.display()), e)
         })?;
         for entry in read_dir {
             check_cancel(&ctx.cancel, "listDir")?;
             if entries.len() >= max_entries {
+                truncated = true;
                 break;
             }
             let entry = entry?;
@@ -81,9 +83,11 @@ impl Tool for ListDirTool {
             error: None,
             metadata: Some(json!({
                 "path": path,
-                "count": entries.len()
+                "count": entries.len(),
+                "truncated": truncated,
             })),
             duration_ms: started_at.elapsed().as_millis(),
+            truncated,
         })
     }
 }

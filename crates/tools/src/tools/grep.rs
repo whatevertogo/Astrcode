@@ -127,6 +127,7 @@ impl Tool for GrepTool {
                 "skipped_files": skipped_files,
             })),
             duration_ms: started_at.elapsed().as_millis(),
+            truncated,
         })
     }
 }

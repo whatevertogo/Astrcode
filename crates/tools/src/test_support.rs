@@ -13,5 +13,6 @@ pub fn test_tool_context_for(path: impl Into<PathBuf>) -> ToolContext {
         session_id: "session-test".to_string(),
         working_dir: cwd,
         cancel: CancelToken::new(),
+        max_output_size: astrcode_core::DEFAULT_MAX_OUTPUT_SIZE,
     }
 }

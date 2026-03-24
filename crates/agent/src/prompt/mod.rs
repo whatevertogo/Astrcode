@@ -12,10 +12,10 @@ pub use block::{
     BlockCondition, BlockContent, BlockKind, BlockMetadata, BlockSpec, PromptBlock, RenderTarget,
     ValidationPolicy,
 };
-pub use composer::{PromptBuildOutput, PromptComposer, PromptComposerOptions, ValidationLevel};
+pub use composer::{PromptComposer, PromptComposerOptions, ValidationLevel};
 pub use context::PromptContext;
 pub use contribution::{append_unique_tools, PromptContribution};
 pub use contributor::PromptContributor;
-pub use diagnostics::{DiagnosticLevel, DiagnosticReason, PromptDiagnostic, PromptDiagnostics};
+pub use diagnostics::{DiagnosticLevel, PromptDiagnostics};
 pub use plan::PromptPlan;
-pub use template::{PromptTemplate, TemplateRenderError};
+pub use template::TemplateRenderError;

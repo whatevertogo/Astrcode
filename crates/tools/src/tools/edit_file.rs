@@ -80,6 +80,7 @@ impl Tool for EditFileTool {
                     "path": path.to_string_lossy(),
                 })),
                 duration_ms: started_at.elapsed().as_millis(),
+                truncated: false,
             });
         }
 
@@ -96,6 +97,7 @@ impl Tool for EditFileTool {
                     "path": path.to_string_lossy(),
                 })),
                 duration_ms: started_at.elapsed().as_millis(),
+                truncated: false,
             });
         }
 
@@ -112,6 +114,7 @@ impl Tool for EditFileTool {
                 "path": path.to_string_lossy(),
             })),
             duration_ms: started_at.elapsed().as_millis(),
+            truncated: false,
         })
     }
 }

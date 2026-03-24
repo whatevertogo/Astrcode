@@ -35,6 +35,9 @@ pub struct ToolExecutionResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
     pub duration_ms: u128,
+    /// Indicates whether the output was truncated due to size limit
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 impl ToolExecutionResult {
@@ -174,6 +177,7 @@ mod tests {
             error: Some("boom".to_string()),
             metadata: None,
             duration_ms: 12,
+            truncated: false,
         };
 
         assert_eq!(

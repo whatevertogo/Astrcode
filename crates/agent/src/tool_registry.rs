@@ -65,6 +65,7 @@ impl ToolRegistry {
                 error: Some(format!("unknown tool '{}'", call.name)),
                 metadata: None,
                 duration_ms: 0,
+                truncated: false,
             };
         };
 
@@ -78,6 +79,7 @@ impl ToolRegistry {
                 error: Some(error.to_string()),
                 metadata: None,
                 duration_ms: 0,
+                truncated: false,
             },
         }
     }
@@ -120,6 +122,7 @@ mod tests {
                 error: None,
                 metadata: None,
                 duration_ms: 0,
+                truncated: false,
             })
         }
     }
@@ -129,6 +132,7 @@ mod tests {
             session_id: "session-1".to_string(),
             working_dir: std::env::temp_dir(),
             cancel: CancelToken::new(),
+            max_output_size: astrcode_core::DEFAULT_MAX_OUTPUT_SIZE,
         }
     }
 

@@ -188,6 +188,7 @@ impl Tool for SlowTool {
                 error: None,
                 metadata: None,
                 duration_ms: 250,
+                truncated: false,
             })
         }
     }
@@ -217,6 +218,7 @@ impl Tool for QuickTool {
             error: None,
             metadata: None,
             duration_ms: 1,
+            truncated: false,
         })
     }
 }
