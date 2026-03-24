@@ -242,15 +242,14 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
 
-    use crate::test_support::TestEnvGuard;
-    use astrcode_core::ToolRegistry;
+    use crate::test_support::{empty_capabilities, TestEnvGuard};
 
     use super::*;
 
     #[tokio::test]
     async fn ensure_session_loaded_reuses_single_state_under_concurrency() {
         let _guard = TestEnvGuard::new();
-        let service = Arc::new(RuntimeService::new(ToolRegistry::builder().build()).unwrap());
+        let service = Arc::new(RuntimeService::from_capabilities(empty_capabilities()).unwrap());
         let temp_dir = tempfile::tempdir().expect("tempdir should be created");
         let meta = service
             .create_session(temp_dir.path())

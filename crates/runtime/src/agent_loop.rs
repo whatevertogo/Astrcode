@@ -3,8 +3,7 @@ mod tool_cycle;
 mod turn_runner;
 
 use astrcode_core::{
-    AstrError, CancelToken, CapabilityRouter, Result, ToolContext, ToolRegistry,
-    DEFAULT_MAX_OUTPUT_SIZE,
+    AstrError, CancelToken, CapabilityRouter, Result, ToolContext, DEFAULT_MAX_OUTPUT_SIZE,
 };
 use chrono::Utc;
 
@@ -21,10 +20,6 @@ pub struct AgentLoop {
 }
 
 impl AgentLoop {
-    pub fn new(factory: DynProviderFactory, tools: ToolRegistry) -> Self {
-        Self::from_capabilities(factory, CapabilityRouter::from_tool_registry(tools))
-    }
-
     pub fn from_capabilities(factory: DynProviderFactory, capabilities: CapabilityRouter) -> Self {
         Self {
             factory,

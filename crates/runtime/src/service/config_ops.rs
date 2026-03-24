@@ -72,15 +72,14 @@ impl RuntimeService {
 #[cfg(test)]
 mod tests {
     use crate::config::{Config, Profile};
-    use crate::test_support::TestEnvGuard;
-    use astrcode_core::ToolRegistry;
+    use crate::test_support::{empty_capabilities, TestEnvGuard};
 
     use super::*;
 
     #[tokio::test]
     async fn save_active_selection_rejects_missing_profile() {
         let _guard = TestEnvGuard::new();
-        let service = RuntimeService::new(ToolRegistry::builder().build()).expect("service");
+        let service = RuntimeService::from_capabilities(empty_capabilities()).expect("service");
 
         let err = service
             .save_active_selection("missing".to_string(), "model-a".to_string())
@@ -94,7 +93,7 @@ mod tests {
     #[tokio::test]
     async fn save_active_selection_rejects_missing_model() {
         let _guard = TestEnvGuard::new();
-        let service = RuntimeService::new(ToolRegistry::builder().build()).expect("service");
+        let service = RuntimeService::from_capabilities(empty_capabilities()).expect("service");
         {
             let mut config = service.config.lock().await;
             *config = Config {

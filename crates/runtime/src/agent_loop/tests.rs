@@ -20,7 +20,7 @@ use crate::prompt::{
     PromptContributor,
 };
 use crate::provider_factory::ProviderFactory;
-use crate::test_support::TestEnvGuard;
+use crate::test_support::{capabilities_from_tools, empty_capabilities, TestEnvGuard};
 use astrcode_core::AgentState;
 use astrcode_core::StorageEvent;
 use astrcode_core::ToolRegistry;
@@ -255,7 +255,8 @@ async fn tool_events_are_ordered_and_turn_finishes() {
         .register(Box::new(QuickTool))
         .build();
     let factory = Arc::new(StaticProviderFactory { provider });
-    let loop_runner = AgentLoop::new(factory, tools).with_max_steps(8);
+    let loop_runner =
+        AgentLoop::from_capabilities(factory, capabilities_from_tools(tools)).with_max_steps(8);
     let state = make_state("list files");
 
     let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -306,7 +307,8 @@ async fn interrupt_emits_error_and_turn_done() {
     let tools = ToolRegistry::builder().register(Box::new(SlowTool)).build();
 
     let factory = Arc::new(StaticProviderFactory { provider });
-    let loop_runner = AgentLoop::new(factory, tools).with_max_steps(8);
+    let loop_runner =
+        AgentLoop::from_capabilities(factory, capabilities_from_tools(tools)).with_max_steps(8);
     let state = make_state("run slow");
 
     let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -352,7 +354,7 @@ async fn deltas_emit_before_stream_completion() {
         per_delta_delay: Duration::from_millis(20),
     });
     let factory = Arc::new(StaticProviderFactory { provider });
-    let loop_runner = AgentLoop::new(factory, ToolRegistry::builder().build());
+    let loop_runner = AgentLoop::from_capabilities(factory, empty_capabilities());
     let state = make_state("stream please");
 
     let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -424,7 +426,7 @@ async fn reaching_max_steps_does_not_emit_error_event() {
         .build();
 
     let factory = Arc::new(StaticProviderFactory { provider });
-    let loop_runner = AgentLoop::new(factory, tools);
+    let loop_runner = AgentLoop::from_capabilities(factory, capabilities_from_tools(tools));
     let state = make_state("loop test");
 
     let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -495,7 +497,8 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
         .build();
 
     let factory = Arc::new(StaticProviderFactory { provider });
-    let loop_runner = AgentLoop::new(factory, tools).with_max_steps(8);
+    let loop_runner =
+        AgentLoop::from_capabilities(factory, capabilities_from_tools(tools)).with_max_steps(8);
     let state = AgentState {
         session_id: "test".into(),
         working_dir: project.path().to_path_buf(),
@@ -593,7 +596,7 @@ async fn reuses_prompt_contributor_cache_across_llm_steps() {
         .register(Box::new(QuickTool))
         .build();
     let factory = Arc::new(StaticProviderFactory { provider });
-    let loop_runner = AgentLoop::new(factory, tools)
+    let loop_runner = AgentLoop::from_capabilities(factory, capabilities_from_tools(tools))
         .with_prompt_composer(composer)
         .with_max_steps(8);
     let state = make_state("cache prompt");
@@ -622,7 +625,7 @@ async fn event_sink_failures_abort_the_turn() {
         delay: Duration::from_millis(0),
     });
     let factory = Arc::new(StaticProviderFactory { provider });
-    let loop_runner = AgentLoop::new(factory, ToolRegistry::builder().build());
+    let loop_runner = AgentLoop::from_capabilities(factory, empty_capabilities());
     let state = make_state("fail event sink");
 
     let result = loop_runner

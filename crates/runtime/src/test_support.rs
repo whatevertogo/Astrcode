@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+use astrcode_core::{CapabilityRouter, ToolRegistry};
 use tempfile::TempDir;
 
 pub(crate) const TEST_HOME_ENV: &str = "ASTRCODE_TEST_HOME";
@@ -12,6 +13,16 @@ pub(crate) fn env_lock() -> &'static Mutex<()> {
 
 pub(crate) fn test_home_dir() -> Option<PathBuf> {
     std::env::var_os(TEST_HOME_ENV).map(PathBuf::from)
+}
+
+pub(crate) fn empty_capabilities() -> CapabilityRouter {
+    CapabilityRouter::builder()
+        .build()
+        .expect("empty capability router should build")
+}
+
+pub(crate) fn capabilities_from_tools(tools: ToolRegistry) -> CapabilityRouter {
+    CapabilityRouter::from_tool_registry(tools)
 }
 
 pub(crate) struct TestEnvGuard {
