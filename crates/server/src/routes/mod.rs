@@ -1,5 +1,6 @@
 pub(crate) mod config;
 pub(crate) mod model;
+pub(crate) mod runtime;
 pub(crate) mod sessions;
 
 use astrcode_protocol::http::{AuthExchangeRequest, AuthExchangeResponse};
@@ -36,6 +37,11 @@ pub(crate) fn build_api_router() -> Router<AppState> {
         .route("/api/models/current", get(model::get_current_model))
         .route("/api/models", get(model::list_models))
         .route("/api/models/test", post(model::test_model_connection))
+        .route("/api/runtime/plugins", get(runtime::get_runtime_status))
+        .route(
+            "/api/runtime/plugins/reload",
+            post(runtime::reload_runtime_plugins),
+        )
 }
 
 async fn exchange_auth(
@@ -46,5 +52,10 @@ async fn exchange_auth(
         return Err(ApiError::unauthorized());
     }
 
-    Ok(Json(AuthExchangeResponse { ok: true }))
+    let issued = state.auth_sessions.issue_token();
+    Ok(Json(AuthExchangeResponse {
+        ok: true,
+        token: issued.token,
+        expires_at_ms: issued.expires_at_ms,
+    }))
 }

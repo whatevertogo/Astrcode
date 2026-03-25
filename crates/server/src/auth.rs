@@ -1,6 +1,56 @@
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+use chrono::{Duration, Utc};
 use axum::http::HeaderMap;
 
+use crate::bootstrap::random_hex_token;
 use crate::{ApiError, AppState, AUTH_HEADER_NAME};
+
+const API_SESSION_TTL_HOURS: i64 = 8;
+
+#[derive(Debug, Clone)]
+pub(crate) struct IssuedAuthToken {
+    pub token: String,
+    pub expires_at_ms: i64,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct AuthSessionManager {
+    tokens: Mutex<HashMap<String, i64>>,
+}
+
+impl AuthSessionManager {
+    pub(crate) fn issue_token(&self) -> IssuedAuthToken {
+        self.issue_named_token(random_hex_token(), API_SESSION_TTL_HOURS)
+    }
+
+    pub(crate) fn validate(&self, token: &str) -> bool {
+        let now = Utc::now().timestamp_millis();
+        let mut tokens = self.tokens.lock().expect("auth token lock poisoned");
+        tokens.retain(|_, expires_at_ms| *expires_at_ms > now);
+        tokens
+            .iter()
+            .any(|(known, expires_at_ms)| *expires_at_ms > now && secure_token_eq(known, token))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn issue_test_token(&self, token: impl Into<String>) -> IssuedAuthToken {
+        self.issue_named_token(token.into(), API_SESSION_TTL_HOURS)
+    }
+
+    fn issue_named_token(&self, token: String, ttl_hours: i64) -> IssuedAuthToken {
+        let expires_at_ms = (Utc::now() + Duration::hours(ttl_hours)).timestamp_millis();
+        self.tokens
+            .lock()
+            .expect("auth token lock poisoned")
+            .insert(token.clone(), expires_at_ms);
+        IssuedAuthToken {
+            token,
+            expires_at_ms,
+        }
+    }
+}
 
 pub(crate) fn require_auth(
     state: &AppState,
@@ -12,7 +62,7 @@ pub(crate) fn require_auth(
         .and_then(|value| value.to_str().ok());
     let authorized = header_token
         .or(query_token)
-        .map(|token| secure_token_eq(token, &state.bootstrap_token))
+        .map(|token| state.auth_sessions.validate(token))
         .unwrap_or(false);
     if authorized {
         Ok(())

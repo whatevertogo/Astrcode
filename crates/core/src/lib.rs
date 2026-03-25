@@ -27,15 +27,18 @@ pub use event::{
     generate_session_id, phase_of_storage_event, replay_records, AgentEvent, EventLog, EventStore,
     EventTranslator, Phase, StorageEvent, StoredEvent,
 };
-pub use plugin::{PluginManifest, PluginRegistry, PluginState, PluginType};
+pub use plugin::{PluginHealth, PluginManifest, PluginRegistry, PluginState, PluginType};
 pub use policy::{AllowAllPolicyEngine, PolicyDecision, PolicyEngine};
-pub use projection::{project, AgentState};
+pub use projection::{project, AgentState, AgentStateProjector};
 pub use registry::{
     CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, CapabilityRouter,
     CapabilityRouterBuilder,
 };
 pub use registry::{ToolRegistry, ToolRegistryBuilder};
-pub use runtime::{KernelApi, Orchestrator, RuntimeCoordinator, TurnContext, TurnOutcome};
+pub use runtime::{
+    KernelApi, ManagedRuntimeComponent, Orchestrator, RuntimeCoordinator, RuntimeHandle,
+    TurnContext, TurnOutcome,
+};
 pub use session::{
     DeleteProjectResult, FileSystemSessionRepository, SessionEventRecord, SessionManager,
     SessionMessage, SessionMeta, SessionWriter,

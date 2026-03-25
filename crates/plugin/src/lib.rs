@@ -20,9 +20,10 @@ pub use invoker::{
 pub use lifecycle::LifecycleManager;
 pub use loader::{PluginInstance, PluginLoader};
 pub use peer::Peer;
-pub use process::PluginProcess;
+pub use process::{PluginProcess, PluginProcessStatus};
 pub use streaming::{EventEmitter, StreamExecution};
 pub use supervisor::{
     default_initialize_message, default_profiles, manifest_capabilities, Supervisor,
+    SupervisorHealth, SupervisorHealthReport,
 };
 pub use worker::Worker;

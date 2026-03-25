@@ -1,11 +1,14 @@
-use astrcode_core::{replay_records, split_assistant_content};
+use astrcode_core::{replay_records, split_assistant_content, AstrError};
 use async_trait::async_trait;
 use chrono::Utc;
+use std::time::Instant;
 
 use astrcode_core::{StorageEvent, StoredEvent};
 
 use super::session_ops::{load_events, normalize_session_id};
-use super::{RuntimeService, ServiceResult, SessionMessage, SessionReplay, SessionReplaySource};
+use super::{
+    ReplayPath, RuntimeService, ServiceResult, SessionMessage, SessionReplay, SessionReplaySource,
+};
 
 #[async_trait]
 impl SessionReplaySource for RuntimeService {
@@ -18,9 +21,42 @@ impl SessionReplaySource for RuntimeService {
         let state = self.ensure_session_loaded(&session_id).await?;
 
         let receiver = state.broadcaster.subscribe();
-        let history = load_events(&session_id)
-            .await
-            .map(|events| replay_records(&events, last_event_id))?;
+        let started_at = Instant::now();
+        let replay_result = match state
+            .recent_records_after(last_event_id)
+            .map_err(|error| AstrError::Internal(error.to_string()))?
+        {
+            Some(history) => Ok((history, ReplayPath::Cache)),
+            None => load_events(&session_id)
+                .await
+                .map(|events| (replay_records(&events, last_event_id), ReplayPath::DiskFallback)),
+        };
+        let elapsed = started_at.elapsed();
+        match &replay_result {
+            Ok((history, path)) => {
+                self.observability
+                    .record_sse_catch_up(elapsed, true, path.clone(), history.len());
+                if matches!(path, ReplayPath::DiskFallback) {
+                    log::warn!(
+                        "session '{}' replay used durable fallback and recovered {} events in {}ms",
+                        session_id,
+                        history.len(),
+                        elapsed.as_millis()
+                    );
+                }
+            }
+            Err(error) => {
+                self.observability
+                    .record_sse_catch_up(elapsed, false, ReplayPath::DiskFallback, 0);
+                log::error!(
+                    "failed to replay session '{}' after {}ms: {}",
+                    session_id,
+                    elapsed.as_millis(),
+                    error
+                );
+            }
+        }
+        let (history, _) = replay_result?;
         Ok(SessionReplay { history, receiver })
     }
 }

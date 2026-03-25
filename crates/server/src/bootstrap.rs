@@ -9,7 +9,7 @@ use axum::response::Response;
 use axum::routing::get;
 use axum::Router;
 use rand::RngCore;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tower::ServiceExt;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
@@ -17,14 +17,16 @@ use tower_http::services::ServeDir;
 use crate::{AppState, FrontendBuild, AUTH_HEADER_NAME, SESSION_CURSOR_HEADER_NAME};
 
 pub(crate) const APP_HOME_OVERRIDE_ENV: &str = "ASTRCODE_HOME_DIR";
+const RUN_INFO_TTL_HOURS: i64 = 24;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RunInfo {
     port: u16,
     token: String,
     pid: u32,
     started_at: String,
+    expires_at_ms: i64,
 }
 
 async fn server_root() -> &'static str {
@@ -177,15 +179,37 @@ pub(crate) fn write_run_info(port: u16, token: &str) -> AnyhowResult<()> {
         })?;
     }
 
+    let started_at = chrono::Utc::now();
     let payload = RunInfo {
         port,
         token: token.to_string(),
         pid: std::process::id(),
-        started_at: chrono::Utc::now().to_rfc3339(),
+        started_at: started_at.to_rfc3339(),
+        expires_at_ms: (started_at + chrono::Duration::hours(RUN_INFO_TTL_HOURS))
+            .timestamp_millis(),
     };
     let json = serde_json::to_string_pretty(&payload).context("failed to serialize run info")?;
     std::fs::write(&path, json)
         .with_context(|| format!("failed to write run info '{}'", path.display()))?;
+    Ok(())
+}
+
+pub(crate) fn clear_run_info(expected_pid: u32) -> AnyhowResult<()> {
+    let path = run_info_path()?;
+    if !path.is_file() {
+        return Ok(());
+    }
+
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read run info '{}'", path.display()))?;
+    let run_info: RunInfo = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse run info '{}'", path.display()))?;
+    if run_info.pid != expected_pid {
+        return Ok(());
+    }
+
+    std::fs::remove_file(&path)
+        .with_context(|| format!("failed to remove run info '{}'", path.display()))?;
     Ok(())
 }
 
@@ -201,4 +225,69 @@ fn resolve_home_dir() -> AnyhowResult<PathBuf> {
     }
 
     dirs::home_dir().ok_or_else(|| anyhow!("unable to resolve home directory"))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_support::ServerTestEnvGuard;
+
+    use super::{clear_run_info, run_info_path, write_run_info};
+
+    #[test]
+    fn write_run_info_persists_expiry_and_clear_run_info_removes_matching_pid() {
+        let _guard = ServerTestEnvGuard::new();
+        write_run_info(62000, "bootstrap-token").expect("run info should be written");
+
+        let path = run_info_path().expect("run info path should resolve");
+        let payload = std::fs::read_to_string(&path).expect("run info should be readable");
+        let json: serde_json::Value =
+            serde_json::from_str(&payload).expect("run info should be valid json");
+        assert_eq!(
+            json.get("port").and_then(|value| value.as_u64()),
+            Some(62000)
+        );
+        assert_eq!(
+            json.get("token").and_then(|value| value.as_str()),
+            Some("bootstrap-token")
+        );
+        assert!(
+            json.get("expiresAtMs")
+                .and_then(|value| value.as_i64())
+                .is_some(),
+            "run info should carry an expiry for the bootstrap token"
+        );
+
+        clear_run_info(std::process::id()).expect("matching pid should clear run info");
+        assert!(
+            !path.exists(),
+            "graceful shutdown should remove the bootstrap token file for the active server pid"
+        );
+    }
+
+    #[test]
+    fn clear_run_info_keeps_files_for_other_server_pids() {
+        let _guard = ServerTestEnvGuard::new();
+        let path = run_info_path().expect("run info path should resolve");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("run info parent should exist");
+        }
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "port": 62000,
+                "token": "bootstrap-token",
+                "pid": std::process::id() + 1,
+                "startedAt": "2026-03-25T00:00:00Z",
+                "expiresAtMs": 9_999_999_999_999_i64
+            })
+            .to_string(),
+        )
+        .expect("run info fixture should be written");
+
+        clear_run_info(std::process::id()).expect("non-matching pid should be ignored");
+        assert!(
+            path.exists(),
+            "cleanup must not delete a newer server's run info"
+        );
+    }
 }

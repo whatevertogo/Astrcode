@@ -9,6 +9,7 @@ interface RunInfo {
   port?: number;
   token?: string;
   pid?: number;
+  expiresAtMs?: number;
 }
 
 interface BrowserBootstrapPayload {
@@ -51,6 +52,9 @@ function readRunInfo(): RunInfo | null {
     if (runInfo.pid !== undefined && !isLivePid(runInfo.pid)) {
       return null;
     }
+    if (typeof runInfo.expiresAtMs === 'number' && Date.now() > runInfo.expiresAtMs) {
+      return null;
+    }
     return runInfo;
   } catch {
     return null;
@@ -63,18 +67,6 @@ function resolveApiProxyTarget(): string | undefined {
     return undefined;
   }
   return `http://127.0.0.1:${runInfo.port}`;
-}
-
-function resolveApiProxyHeaders(): Record<string, string> | undefined {
-  const runInfo = readRunInfo();
-  const token = runInfo?.token?.trim();
-  if (!token) {
-    return undefined;
-  }
-
-  return {
-    'x-astrcode-token': token,
-  };
 }
 
 function resolveBrowserBootstrapPayload(): BrowserBootstrapPayload | null {
@@ -116,8 +108,6 @@ function astrcodeBrowserBootstrapPlugin(): Plugin {
 }
 
 const apiProxyTarget = resolveApiProxyTarget();
-const apiProxyHeaders = resolveApiProxyHeaders();
-
 export default defineConfig({
   plugins: [react(), astrcodeBrowserBootstrapPlugin()],
   server: {
@@ -129,7 +119,6 @@ export default defineConfig({
           '/api': {
             target: apiProxyTarget,
             changeOrigin: false,
-            headers: apiProxyHeaders,
           },
         }
       : undefined,

@@ -108,6 +108,10 @@ impl Peer {
         self.inner.remote_initialize.lock().await.clone()
     }
 
+    pub async fn closed_reason(&self) -> Option<String> {
+        self.inner.closed_reason.lock().await.clone()
+    }
+
     pub async fn wait_closed(&self) {
         loop {
             let notified = self.inner.closed_notify.notified();

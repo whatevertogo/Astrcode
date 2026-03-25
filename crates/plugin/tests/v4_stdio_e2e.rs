@@ -71,7 +71,7 @@ fn coding_context(request_id: &str) -> InvocationContext {
 #[tokio::test]
 async fn stdio_supervisor_initializes_and_invokes_unary_capability() -> Result<()> {
     let manifest = fixture_manifest();
-    let mut supervisor = Supervisor::start(&manifest, local_peer()).await?;
+    let supervisor = Supervisor::start(&manifest, local_peer()).await?;
 
     assert_eq!(supervisor.remote_initialize().peer.role, PeerRole::Worker);
     assert!(supervisor
@@ -96,7 +96,7 @@ async fn stdio_supervisor_initializes_and_invokes_unary_capability() -> Result<(
 #[tokio::test]
 async fn stdio_supervisor_streams_started_delta_completed_lifecycle() -> Result<()> {
     let manifest = fixture_manifest();
-    let mut supervisor = Supervisor::start(&manifest, local_peer()).await?;
+    let supervisor = Supervisor::start(&manifest, local_peer()).await?;
     let mut stream = supervisor
         .invoke_stream(
             "tool.patch_stream",
@@ -128,7 +128,7 @@ async fn stdio_supervisor_streams_started_delta_completed_lifecycle() -> Result<
 #[tokio::test]
 async fn stdio_supervisor_propagates_cancel_to_streaming_worker() -> Result<()> {
     let manifest = fixture_manifest();
-    let mut supervisor = Supervisor::start(&manifest, local_peer()).await?;
+    let supervisor = Supervisor::start(&manifest, local_peer()).await?;
     let mut stream = supervisor
         .invoke_stream(
             "tool.patch_stream",

@@ -1,15 +1,17 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use dashmap::DashMap;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent_loop::AgentLoop;
 use crate::config::load_config;
 use crate::provider_factory::ConfigFileProviderFactory;
-use astrcode_core::CapabilityRouter;
+use astrcode_core::{AstrError, CapabilityRouter, RuntimeHandle};
 
 mod config_ops;
+mod observability;
 mod replay;
 mod session_ops;
 mod session_state;
@@ -22,12 +24,17 @@ pub use self::types::{
     PromptAccepted, ServiceError, ServiceResult, SessionEventRecord, SessionMessage, SessionReplay,
     SessionReplaySource,
 };
+pub use observability::{
+    OperationMetricsSnapshot, ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot,
+};
+use observability::RuntimeObservability;
 
 pub struct RuntimeService {
     sessions: DashMap<String, Arc<SessionState>>,
-    loop_: Arc<AgentLoop>,
+    loop_: RwLock<Arc<AgentLoop>>,
     config: Mutex<crate::config::Config>,
     session_load_lock: Mutex<()>,
+    observability: Arc<RuntimeObservability>,
     /// Token used to signal server shutdown
     shutdown_token: CancellationToken,
 }
@@ -38,11 +45,49 @@ impl RuntimeService {
         let loop_ = AgentLoop::from_capabilities(Arc::new(ConfigFileProviderFactory), capabilities);
         Ok(Self {
             sessions: DashMap::new(),
-            loop_: Arc::new(loop_),
+            loop_: RwLock::new(Arc::new(loop_)),
             config: Mutex::new(config),
             session_load_lock: Mutex::new(()),
+            observability: Arc::new(RuntimeObservability::default()),
             shutdown_token: CancellationToken::new(),
         })
+    }
+
+    pub async fn current_loop(&self) -> Arc<AgentLoop> {
+        self.loop_.read().await.clone()
+    }
+
+    pub async fn replace_capabilities(&self, capabilities: CapabilityRouter) -> ServiceResult<()> {
+        let next_loop = Arc::new(AgentLoop::from_capabilities(
+            Arc::new(ConfigFileProviderFactory),
+            capabilities,
+        ));
+        *self.loop_.write().await = next_loop;
+        Ok(())
+    }
+
+    pub fn loaded_session_count(&self) -> usize {
+        self.sessions.len()
+    }
+
+    pub fn running_session_ids(&self) -> Vec<String> {
+        let mut running_sessions = self
+            .sessions
+            .iter()
+            .filter(|entry| {
+                entry
+                    .value()
+                    .running
+                    .load(std::sync::atomic::Ordering::SeqCst)
+            })
+            .map(|entry| entry.key().clone())
+            .collect::<Vec<_>>();
+        running_sessions.sort();
+        running_sessions
+    }
+
+    pub fn observability_snapshot(&self) -> RuntimeObservabilitySnapshot {
+        self.observability.snapshot()
     }
 
     /// Returns a clone of the shutdown token for use in handlers
@@ -101,5 +146,21 @@ impl RuntimeService {
 
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+    }
+}
+
+#[async_trait]
+impl RuntimeHandle for RuntimeService {
+    fn runtime_name(&self) -> &'static str {
+        "astrcode-runtime"
+    }
+
+    fn runtime_kind(&self) -> &'static str {
+        "native"
+    }
+
+    async fn shutdown(&self, timeout_secs: u64) -> std::result::Result<(), AstrError> {
+        RuntimeService::shutdown(self, timeout_secs).await;
+        Ok(())
     }
 }

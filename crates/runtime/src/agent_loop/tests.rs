@@ -709,7 +709,7 @@ async fn unified_capability_router_executes_builtin_and_plugin_tools() {
         working_dir: Some(repo_root.to_string_lossy().into_owned()),
         repository: None,
     };
-    let mut supervisor = Supervisor::start(
+    let supervisor = Supervisor::start(
         &manifest,
         PeerDescriptor {
             id: "runtime-test-supervisor".to_string(),

@@ -186,6 +186,7 @@ dependencies = [
  "astrcode-runtime",
  "astrcode-tools",
  "async-stream",
+ "async-trait",
  "axum",
  "axum-extra",
  "chrono",

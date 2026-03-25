@@ -1,12 +1,21 @@
-use astrcode_core::{AgentEvent, Phase, SessionEventRecord, SessionMeta};
+use astrcode_core::{
+    plugin::PluginEntry, AgentEvent, CapabilityDescriptor, Phase, PluginHealth, PluginState,
+    SessionEventRecord, SessionMeta,
+};
 use astrcode_protocol::http::{
     AgentEventEnvelope, AgentEventPayload, ConfigView, CurrentModelInfoDto, ModelOptionDto,
-    PhaseDto, ProfileView, SessionListItem, SessionMessageDto, ToolCallResultDto, PROTOCOL_VERSION,
+    OperationMetricsDto, PhaseDto, PluginHealthDto, PluginRuntimeStateDto, ProfileView,
+    ReplayMetricsDto, RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto,
+    SessionListItem, SessionMessageDto, ToolCallResultDto, PROTOCOL_VERSION,
 };
-use astrcode_runtime::{Config, Profile, SessionMessage};
+use astrcode_runtime::{
+    Config, OperationMetricsSnapshot, Profile, ReplayMetricsSnapshot,
+    RuntimeObservabilitySnapshot, SessionMessage,
+};
 use axum::http::StatusCode;
 use axum::response::sse::Event;
 
+use crate::capabilities::RuntimeGovernanceSnapshot;
 use crate::ApiError;
 
 pub(crate) fn to_session_list_item(meta: SessionMeta) -> SessionListItem {
@@ -53,6 +62,31 @@ pub(crate) fn to_session_message_dto(message: SessionMessage) -> SessionMessageD
     }
 }
 
+pub(crate) fn to_runtime_status_dto(snapshot: RuntimeGovernanceSnapshot) -> RuntimeStatusDto {
+    RuntimeStatusDto {
+        runtime_name: snapshot.runtime_name,
+        runtime_kind: snapshot.runtime_kind,
+        loaded_session_count: snapshot.loaded_session_count,
+        running_session_ids: snapshot.running_session_ids,
+        plugin_search_paths: snapshot
+            .plugin_search_paths
+            .into_iter()
+            .map(|path| path.display().to_string())
+            .collect(),
+        metrics: to_runtime_metrics_dto(snapshot.metrics),
+        capabilities: snapshot
+            .capabilities
+            .into_iter()
+            .map(to_runtime_capability_dto)
+            .collect(),
+        plugins: snapshot
+            .plugins
+            .into_iter()
+            .map(to_runtime_plugin_dto)
+            .collect(),
+    }
+}
+
 pub(crate) fn to_sse_event(record: SessionEventRecord) -> Event {
     // Keep protocol mapping centralized so protocol stays independent from core/runtime types.
     let payload = serde_json::to_string(&AgentEventEnvelope {
@@ -91,6 +125,73 @@ pub(crate) fn to_phase_dto(phase: Phase) -> PhaseDto {
         Phase::Streaming => PhaseDto::Streaming,
         Phase::Interrupted => PhaseDto::Interrupted,
         Phase::Done => PhaseDto::Done,
+    }
+}
+
+fn to_runtime_capability_dto(descriptor: CapabilityDescriptor) -> RuntimeCapabilityDto {
+    RuntimeCapabilityDto {
+        name: descriptor.name,
+        kind: serde_json::to_value(&descriptor.kind)
+            .ok()
+            .and_then(|value| value.as_str().map(ToString::to_string))
+            .unwrap_or_else(|| "unknown".to_string()),
+        description: descriptor.description,
+        profiles: descriptor.profiles,
+        streaming: descriptor.streaming,
+    }
+}
+
+fn to_runtime_plugin_dto(entry: PluginEntry) -> RuntimePluginDto {
+    RuntimePluginDto {
+        name: entry.manifest.name,
+        version: entry.manifest.version,
+        description: entry.manifest.description,
+        state: match entry.state {
+            PluginState::Discovered => PluginRuntimeStateDto::Discovered,
+            PluginState::Initialized => PluginRuntimeStateDto::Initialized,
+            PluginState::Failed => PluginRuntimeStateDto::Failed,
+        },
+        health: match entry.health {
+            PluginHealth::Unknown => PluginHealthDto::Unknown,
+            PluginHealth::Healthy => PluginHealthDto::Healthy,
+            PluginHealth::Degraded => PluginHealthDto::Degraded,
+            PluginHealth::Unavailable => PluginHealthDto::Unavailable,
+        },
+        failure_count: entry.failure_count,
+        failure: entry.failure,
+        last_checked_at: entry.last_checked_at,
+        capabilities: entry
+            .capabilities
+            .into_iter()
+            .map(to_runtime_capability_dto)
+            .collect(),
+    }
+}
+
+fn to_runtime_metrics_dto(snapshot: RuntimeObservabilitySnapshot) -> RuntimeMetricsDto {
+    RuntimeMetricsDto {
+        session_rehydrate: to_operation_metrics_dto(snapshot.session_rehydrate),
+        sse_catch_up: to_replay_metrics_dto(snapshot.sse_catch_up),
+        turn_execution: to_operation_metrics_dto(snapshot.turn_execution),
+    }
+}
+
+fn to_operation_metrics_dto(snapshot: OperationMetricsSnapshot) -> OperationMetricsDto {
+    OperationMetricsDto {
+        total: snapshot.total,
+        failures: snapshot.failures,
+        total_duration_ms: snapshot.total_duration_ms,
+        last_duration_ms: snapshot.last_duration_ms,
+        max_duration_ms: snapshot.max_duration_ms,
+    }
+}
+
+fn to_replay_metrics_dto(snapshot: ReplayMetricsSnapshot) -> ReplayMetricsDto {
+    ReplayMetricsDto {
+        totals: to_operation_metrics_dto(snapshot.totals),
+        cache_hits: snapshot.cache_hits,
+        disk_fallbacks: snapshot.disk_fallbacks,
+        recovered_events: snapshot.recovered_events,
     }
 }
 

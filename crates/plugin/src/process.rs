@@ -12,6 +12,12 @@ pub struct PluginProcess {
     transport: Arc<dyn Transport>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginProcessStatus {
+    pub running: bool,
+    pub exit_code: Option<i32>,
+}
+
 impl PluginProcess {
     pub async fn start(manifest: &PluginManifest) -> Result<Self> {
         let executable = manifest.executable.as_ref().ok_or_else(|| {
@@ -45,6 +51,23 @@ impl PluginProcess {
 
     pub fn transport(&self) -> Arc<dyn Transport> {
         Arc::clone(&self.transport)
+    }
+
+    pub fn status(&mut self) -> Result<PluginProcessStatus> {
+        let exit_status = self
+            .child
+            .try_wait()
+            .map_err(|error| AstrError::io("failed to poll plugin process", error))?;
+        Ok(match exit_status {
+            Some(status) => PluginProcessStatus {
+                running: false,
+                exit_code: status.code(),
+            },
+            None => PluginProcessStatus {
+                running: true,
+                exit_code: None,
+            },
+        })
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {

@@ -26,56 +26,40 @@ impl Default for AgentState {
     }
 }
 
-/// Pure function: project an event sequence into an AgentState.
-/// No IO, no side effects.
-pub fn project(events: &[StorageEvent]) -> AgentState {
-    let mut state = AgentState::default();
+#[derive(Debug, Clone, Default)]
+pub struct AgentStateProjector {
+    state: AgentState,
+    pending_content: Option<String>,
+    pending_reasoning: Option<ReasoningContent>,
+    pending_tool_calls: Vec<ToolCallRequest>,
+}
 
-    // Buffer for assembling LlmMessage::Assistant with tool_calls.
-    // When we see AssistantFinal we store the content; subsequent ToolCall
-    // events accumulate tool_calls.  The buffer is flushed when we encounter
-    // a ToolResult (after all calls in a step), TurnDone, or the next
-    // UserMessage — whichever comes first.
-    let mut pending_content: Option<String> = None;
-    let mut pending_reasoning: Option<ReasoningContent> = None;
-    let mut pending_tool_calls: Vec<ToolCallRequest> = Vec::new();
-
-    let flush = |state: &mut AgentState,
-                 pending_content: &mut Option<String>,
-                 pending_reasoning: &mut Option<ReasoningContent>,
-                 pending_tool_calls: &mut Vec<ToolCallRequest>| {
-        if pending_content.is_some() || !pending_tool_calls.is_empty() {
-            let content = pending_content.take().unwrap_or_default();
-            state.messages.push(LlmMessage::Assistant {
-                content,
-                tool_calls: std::mem::take(pending_tool_calls),
-                reasoning: pending_reasoning.take(),
-            });
+impl AgentStateProjector {
+    pub fn from_events(events: &[StorageEvent]) -> Self {
+        let mut projector = Self::default();
+        for event in events {
+            projector.apply(event);
         }
-    };
+        projector
+    }
 
-    for event in events {
+    pub fn apply(&mut self, event: &StorageEvent) {
         match event {
             StorageEvent::SessionStart {
                 session_id,
                 working_dir,
                 ..
             } => {
-                state.session_id = session_id.clone();
-                state.working_dir = PathBuf::from(working_dir);
+                self.state.session_id = session_id.clone();
+                self.state.working_dir = PathBuf::from(working_dir);
             }
 
             StorageEvent::UserMessage { content, .. } => {
-                flush(
-                    &mut state,
-                    &mut pending_content,
-                    &mut pending_reasoning,
-                    &mut pending_tool_calls,
-                );
-                state.messages.push(LlmMessage::User {
+                self.flush_pending_assistant();
+                self.state.messages.push(LlmMessage::User {
                     content: content.clone(),
                 });
-                state.phase = Phase::Thinking;
+                self.state.phase = Phase::Thinking;
             }
 
             StorageEvent::AssistantFinal {
@@ -84,17 +68,10 @@ pub fn project(events: &[StorageEvent]) -> AgentState {
                 reasoning_signature,
                 ..
             } => {
-                // If there's already a pending assistant (from a previous step
-                // in the same turn that wasn't flushed), flush it first.
-                flush(
-                    &mut state,
-                    &mut pending_content,
-                    &mut pending_reasoning,
-                    &mut pending_tool_calls,
-                );
+                self.flush_pending_assistant();
                 let parts = split_assistant_content(content, reasoning_content.as_deref());
-                pending_content = Some(parts.visible_content);
-                pending_reasoning = parts.reasoning_content.map(|content| ReasoningContent {
+                self.pending_content = Some(parts.visible_content);
+                self.pending_reasoning = parts.reasoning_content.map(|content| ReasoningContent {
                     content,
                     signature: reasoning_signature.clone(),
                 });
@@ -106,7 +83,7 @@ pub fn project(events: &[StorageEvent]) -> AgentState {
                 args,
                 ..
             } => {
-                pending_tool_calls.push(ToolCallRequest {
+                self.pending_tool_calls.push(ToolCallRequest {
                     id: tool_call_id.clone(),
                     name: tool_name.clone(),
                     args: args.clone(),
@@ -118,47 +95,47 @@ pub fn project(events: &[StorageEvent]) -> AgentState {
                 output,
                 ..
             } => {
-                // Flush the assistant message that triggered these tool calls.
-                flush(
-                    &mut state,
-                    &mut pending_content,
-                    &mut pending_reasoning,
-                    &mut pending_tool_calls,
-                );
-
-                state.messages.push(LlmMessage::Tool {
+                self.flush_pending_assistant();
+                self.state.messages.push(LlmMessage::Tool {
                     tool_call_id: tool_call_id.clone(),
                     content: output.clone(),
                 });
             }
 
             StorageEvent::TurnDone { .. } => {
-                flush(
-                    &mut state,
-                    &mut pending_content,
-                    &mut pending_reasoning,
-                    &mut pending_tool_calls,
-                );
-                state.phase = Phase::Idle;
-                state.turn_count += 1;
+                self.flush_pending_assistant();
+                self.state.phase = Phase::Idle;
+                self.state.turn_count += 1;
             }
 
-            // AssistantDelta and Error don't participate in state rebuilding.
             StorageEvent::AssistantDelta { .. }
             | StorageEvent::ThinkingDelta { .. }
             | StorageEvent::Error { .. } => {}
         }
     }
 
-    // Flush any trailing pending content (e.g. replay stops mid-turn).
-    flush(
-        &mut state,
-        &mut pending_content,
-        &mut pending_reasoning,
-        &mut pending_tool_calls,
-    );
+    pub fn snapshot(&self) -> AgentState {
+        let mut clone = self.clone();
+        clone.flush_pending_assistant();
+        clone.state
+    }
 
-    state
+    fn flush_pending_assistant(&mut self) {
+        if self.pending_content.is_some() || !self.pending_tool_calls.is_empty() {
+            let content = self.pending_content.take().unwrap_or_default();
+            self.state.messages.push(LlmMessage::Assistant {
+                content,
+                tool_calls: std::mem::take(&mut self.pending_tool_calls),
+                reasoning: self.pending_reasoning.take(),
+            });
+        }
+    }
+}
+
+/// Pure function: project an event sequence into an AgentState.
+/// No IO, no side effects.
+pub fn project(events: &[StorageEvent]) -> AgentState {
+    AgentStateProjector::from_events(events).snapshot()
 }
 
 #[cfg(test)]
@@ -430,5 +407,45 @@ mod tests {
         assert!(
             matches!(&state.messages[2], LlmMessage::Tool { tool_call_id, .. } if tool_call_id == "tc1")
         );
+    }
+
+    #[test]
+    fn incremental_projector_matches_batch_projection() {
+        let events = vec![
+            StorageEvent::SessionStart {
+                session_id: "s1".into(),
+                timestamp: ts(),
+                working_dir: "/tmp".into(),
+            },
+            StorageEvent::UserMessage {
+                turn_id: None,
+                content: "hello".into(),
+                timestamp: ts(),
+            },
+            StorageEvent::AssistantFinal {
+                turn_id: None,
+                content: "hi".into(),
+                reasoning_content: Some("thinking".into()),
+                reasoning_signature: Some("sig".into()),
+                timestamp: None,
+            },
+            StorageEvent::TurnDone {
+                turn_id: None,
+                timestamp: ts(),
+            },
+        ];
+
+        let batch = project(&events);
+        let mut projector = AgentStateProjector::default();
+        for event in &events {
+            projector.apply(event);
+        }
+
+        let incremental = projector.snapshot();
+        assert_eq!(incremental.session_id, batch.session_id);
+        assert_eq!(incremental.working_dir, batch.working_dir);
+        assert_eq!(incremental.phase, batch.phase);
+        assert_eq!(incremental.turn_count, batch.turn_count);
+        assert_eq!(incremental.messages.len(), batch.messages.len());
     }
 }

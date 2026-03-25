@@ -11,6 +11,8 @@ declare global {
 }
 
 let bootstrapToken: string | null | undefined;
+let sessionToken: string | null | undefined;
+let sessionTokenExpiresAtMs = 0;
 let bootstrapSessionReady: Promise<void> | null = null;
 const BOOTSTRAP_WAIT_TIMEOUT_MS = 8000;
 const BOOTSTRAP_WAIT_INTERVAL_MS = 50;
@@ -19,6 +21,12 @@ const LOCAL_DEV_PORT = '5173';
 
 interface BrowserBootstrapPayload {
   token?: string;
+}
+
+interface AuthExchangeResponse {
+  ok?: boolean;
+  token?: string;
+  expiresAtMs?: number;
 }
 
 export function getServerOrigin(): string {
@@ -30,15 +38,10 @@ export function getServerOrigin(): string {
 }
 
 export function getServerAuthToken(): string | null {
-  if (bootstrapToken !== undefined) {
-    return bootstrapToken;
+  if (sessionToken && Date.now() < sessionTokenExpiresAtMs) {
+    return sessionToken;
   }
-
-  bootstrapToken = getBootstrapToken();
-  if (bootstrapToken) {
-    clearTokenFromUrl();
-  }
-  return bootstrapToken;
+  return null;
 }
 
 function getBootstrapToken(): string | null {
@@ -49,8 +52,13 @@ function getBootstrapToken(): string | null {
   return null;
 }
 
-function cacheServerSession(token: string): void {
+function cacheBootstrapToken(token: string): void {
   bootstrapToken = token;
+}
+
+function cacheServerSession(token: string, expiresAtMs: number): void {
+  sessionToken = token;
+  sessionTokenExpiresAtMs = expiresAtMs;
 }
 
 function hasDesktopBootstrap(): boolean {
@@ -111,7 +119,28 @@ async function hydrateBrowserBootstrap(): Promise<void> {
     throw new Error('浏览器 bootstrap 返回的数据不完整（缺少 token）。');
   }
 
-  cacheServerSession(token);
+  cacheBootstrapToken(token);
+}
+
+async function exchangeBootstrapToken(token: string): Promise<void> {
+  const response = await fetch(`${getServerOrigin()}/api/auth/exchange`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ token }),
+  });
+  if (!response.ok) {
+    throw new Error('本地服务拒绝了 bootstrap 凭据，请确认 astrcode-server 仍然是当前会话启动的实例。');
+  }
+
+  const payload = (await response.json()) as AuthExchangeResponse;
+  const sessionTokenValue = payload.token?.trim();
+  if (!payload.ok || !sessionTokenValue || typeof payload.expiresAtMs !== 'number') {
+    throw new Error('本地服务返回的鉴权交换结果不完整。');
+  }
+
+  cacheServerSession(sessionTokenValue, payload.expiresAtMs);
 }
 
 function clearTokenFromUrl(): void {
@@ -127,9 +156,20 @@ export function ensureServerSession(): Promise<void> {
   if (!bootstrapSessionReady) {
     bootstrapSessionReady = (async () => {
       await waitForDesktopBootstrap();
-      getServerAuthToken();
+      if (!bootstrapToken) {
+        bootstrapToken = getBootstrapToken();
+        if (bootstrapToken) {
+          clearTokenFromUrl();
+        }
+      }
       if (!bootstrapToken) {
         await hydrateBrowserBootstrap();
+      }
+      if (!bootstrapToken) {
+        throw new Error('未找到可用于交换的 bootstrap 凭据。');
+      }
+      if (!sessionToken || Date.now() >= sessionTokenExpiresAtMs) {
+        await exchangeBootstrapToken(bootstrapToken);
       }
     })().finally(() => {
       bootstrapSessionReady = null;
@@ -137,6 +177,8 @@ export function ensureServerSession(): Promise<void> {
   }
 
   return bootstrapSessionReady.then(() => {
-    getServerAuthToken();
+    if (!sessionToken) {
+      throw new Error('本地服务鉴权会话尚未建立。');
+    }
   });
 }

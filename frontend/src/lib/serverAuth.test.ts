@@ -36,9 +36,22 @@ describe('serverAuth', () => {
       }
     ).window.__ASTRCODE_BOOTSTRAP__ = { token: 'desktop-token' };
 
-    const { getServerAuthToken } = await import('./serverAuth');
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          ok: true,
+          token: 'session-token',
+          expiresAtMs: Date.now() + 60_000,
+        }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
 
-    expect(getServerAuthToken()).toBe('desktop-token');
+    const { ensureServerSession, getServerAuthToken } = await import('./serverAuth');
+
+    await ensureServerSession();
+
+    expect(getServerAuthToken()).toBe('session-token');
   });
 
   it('ignores token query parameter', async () => {
@@ -70,12 +83,23 @@ describe('serverAuth', () => {
       };
     }, 10);
 
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          ok: true,
+          token: 'desktop-session',
+          expiresAtMs: Date.now() + 60_000,
+        }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
     const { ensureServerSession, getServerAuthToken, getServerOrigin } =
       await import('./serverAuth');
 
     await ensureServerSession();
 
-    expect(getServerAuthToken()).toBe('desktop-token');
+    expect(getServerAuthToken()).toBe('desktop-session');
     expect(getServerOrigin()).toBe('http://127.0.0.1:62000');
   });
 
@@ -97,12 +121,23 @@ describe('serverAuth', () => {
       };
     }, 10);
 
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          ok: true,
+          token: 'packaged-session',
+          expiresAtMs: Date.now() + 60_000,
+        }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
     const { ensureServerSession, getServerAuthToken, getServerOrigin } =
       await import('./serverAuth');
 
     await ensureServerSession();
 
-    expect(getServerAuthToken()).toBe('packaged-token');
+    expect(getServerAuthToken()).toBe('packaged-session');
     expect(getServerOrigin()).toBe('http://127.0.0.1:63000');
   });
 
@@ -111,14 +146,25 @@ describe('serverAuth', () => {
       isTauriEnvironment: () => false,
     }));
     setWindowLocation('http://127.0.0.1:5173/');
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: () =>
-        Promise.resolve({
-          token: 'dev-token',
-          serverOrigin: 'http://127.0.0.1:64000/',
-        }),
-    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            token: 'bootstrap-token',
+            serverOrigin: 'http://127.0.0.1:64000/',
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            ok: true,
+            token: 'dev-session',
+            expiresAtMs: Date.now() + 60_000,
+          }),
+      });
     vi.stubGlobal('fetch', fetchMock);
 
     const { ensureServerSession, getServerAuthToken, getServerOrigin } =
@@ -129,7 +175,14 @@ describe('serverAuth', () => {
     expect(fetchMock).toHaveBeenCalledWith('/__astrcode__/run-info', {
       cache: 'no-store',
     });
-    expect(getServerAuthToken()).toBe('dev-token');
+    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:5173/api/auth/exchange', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ token: 'bootstrap-token' }),
+    });
+    expect(getServerAuthToken()).toBe('dev-session');
     expect(getServerOrigin()).toBe('http://127.0.0.1:5173');
   });
 });

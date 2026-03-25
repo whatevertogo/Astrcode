@@ -12,8 +12,8 @@ impl LifecycleManager {
         self.supervisors.push(supervisor);
     }
 
-    pub async fn shutdown_all(&mut self) -> Result<()> {
-        for supervisor in &mut self.supervisors {
+    pub async fn shutdown_all(&self) -> Result<()> {
+        for supervisor in &self.supervisors {
             supervisor.shutdown().await?;
         }
         Ok(())

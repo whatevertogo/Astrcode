@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
-use astrcode_core::{AstrError, Phase};
+use astrcode_core::{AgentStateProjector, AstrError, Phase};
 use chrono::Utc;
 
 use astrcode_core::{generate_session_id, DeleteProjectResult, EventLog, SessionMeta};
@@ -33,7 +34,7 @@ impl RuntimeService {
         working_dir: impl Into<PathBuf>,
     ) -> ServiceResult<SessionMeta> {
         let working_dir = working_dir.into();
-        let (session_id, working_dir, created_at, log) =
+        let (session_id, working_dir, created_at, log, stored_session_start) =
             spawn_blocking_service("create session", move || {
                 let working_dir = normalize_working_dir(working_dir)?;
                 let session_id = generate_session_id();
@@ -44,15 +45,25 @@ impl RuntimeService {
                     timestamp: created_at,
                     working_dir: working_dir.to_string_lossy().to_string(),
                 };
-                let _ = log.append(&session_start).map_err(ServiceError::from)?;
-                Ok((session_id, working_dir, created_at, log))
+                let stored_session_start =
+                    log.append(&session_start).map_err(ServiceError::from)?;
+                Ok((
+                    session_id,
+                    working_dir,
+                    created_at,
+                    log,
+                    stored_session_start,
+                ))
             })
             .await?;
 
+        let phase = phase_of_storage_event(&stored_session_start.event);
         let state = Arc::new(SessionState::new(
             working_dir.clone(),
-            Phase::Idle,
+            phase,
             Arc::new(SessionWriter::new(log)),
+            AgentStateProjector::from_events(std::slice::from_ref(&stored_session_start.event)),
+            replay_records(std::slice::from_ref(&stored_session_start), None),
         ));
         self.sessions.insert(session_id.clone(), state);
 
@@ -135,43 +146,76 @@ impl RuntimeService {
         }
 
         let session_id_owned = session_id.to_string();
-        let (working_dir, phase, log) = spawn_blocking_service("load session state", move || {
+        let started_at = Instant::now();
+        let load_result =
+            spawn_blocking_service("load session state", move || {
             let stored =
                 EventLog::load(&session_id_owned).map_err(|error| match error.to_string() {
-                    message if message.contains("session file not found") => {
-                        ServiceError::NotFound(message)
-                    }
-                    _ => ServiceError::from(error),
-                })?;
-            let Some(first) = stored.first() else {
-                return Err(ServiceError::NotFound(format!(
-                    "session '{}' is empty",
-                    session_id_owned
-                )));
-            };
-
-            let working_dir = match &first.event {
-                StorageEvent::SessionStart { working_dir, .. } => PathBuf::from(working_dir),
-                _ => {
-                    return Err(ServiceError::Internal(AstrError::Internal(format!(
-                        "session '{}' is missing sessionStart",
+                        message if message.contains("session file not found") => {
+                            ServiceError::NotFound(message)
+                        }
+                        _ => ServiceError::from(error),
+                    })?;
+                let Some(first) = stored.first() else {
+                    return Err(ServiceError::NotFound(format!(
+                        "session '{}' is empty",
                         session_id_owned
-                    ))))
-                }
-            };
-            let phase = stored
-                .last()
-                .map(|event| phase_of_storage_event(&event.event))
-                .unwrap_or(Phase::Idle);
-            let log = EventLog::open(&session_id_owned).map_err(ServiceError::from)?;
-            Ok((working_dir, phase, log))
+                    )));
+                };
+
+                let working_dir = match &first.event {
+                    StorageEvent::SessionStart { working_dir, .. } => PathBuf::from(working_dir),
+                    _ => {
+                        return Err(ServiceError::Internal(AstrError::Internal(format!(
+                            "session '{}' is missing sessionStart",
+                            session_id_owned
+                        ))))
+                    }
+                };
+                let phase = stored
+                    .last()
+                    .map(|event| phase_of_storage_event(&event.event))
+                    .unwrap_or(Phase::Idle);
+                let log = EventLog::open(&session_id_owned).map_err(ServiceError::from)?;
+                let events = stored
+                    .iter()
+                    .map(|record| record.event.clone())
+                    .collect::<Vec<_>>();
+            let projector = AgentStateProjector::from_events(&events);
+            let recent_records = replay_records(&stored, None);
+            Ok((working_dir, phase, log, projector, recent_records))
         })
-        .await?;
+        .await;
+        let elapsed = started_at.elapsed();
+        match &load_result {
+            Ok(_) => {
+                self.observability.record_session_rehydrate(elapsed, true);
+                if elapsed.as_millis() >= 250 {
+                    log::warn!(
+                        "session '{}' rehydrate took {}ms",
+                        session_id,
+                        elapsed.as_millis()
+                    );
+                }
+            }
+            Err(error) => {
+                self.observability.record_session_rehydrate(elapsed, false);
+                log::error!(
+                    "failed to rehydrate session '{}' after {}ms: {}",
+                    session_id,
+                    elapsed.as_millis(),
+                    error
+                );
+            }
+        }
+        let (working_dir, phase, log, projector, recent_records) = load_result?;
 
         let state = Arc::new(SessionState::new(
             working_dir,
             phase,
             Arc::new(SessionWriter::new(log)),
+            projector,
+            recent_records,
         ));
         self.sessions.insert(session_id.to_string(), state.clone());
         Ok(state)

@@ -1,14 +1,14 @@
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use anyhow::Result;
 use astrcode_core::{AstrError, CancelToken, Phase};
 use chrono::Utc;
 use uuid::Uuid;
 
-use astrcode_core::project;
 use astrcode_core::StorageEvent;
 
-use super::session_ops::{load_events, normalize_session_id};
+use super::session_ops::normalize_session_id;
 use super::session_state::SessionState;
 use super::support::{lock_anyhow, lock_service};
 use super::{PromptAccepted, RuntimeService, ServiceError, ServiceResult};
@@ -36,12 +36,13 @@ impl RuntimeService {
         }
 
         let state = session.clone();
-        let session_id_for_task = session_id.clone();
-        let loop_ = self.loop_.clone();
+        let loop_ = self.current_loop().await;
         let text_for_task = text;
 
         let accepted_turn_id = turn_id.clone();
+        let observability = self.observability.clone();
         tokio::spawn(async move {
+            let turn_started_at = Instant::now();
             let initial_phase = lock_anyhow(&state.phase, "session phase")
                 .map(|guard| guard.clone())
                 .unwrap_or(Phase::Idle);
@@ -55,15 +56,8 @@ impl RuntimeService {
 
             let task_result = match append_and_broadcast(&state, &user_event, &mut translator).await
             {
-                Ok(()) => load_events(&session_id_for_task)
-                    .await
-                    .map(|events| {
-                        events
-                            .into_iter()
-                            .map(|stored| stored.event)
-                            .collect::<Vec<_>>()
-                    })
-                    .map(|events| project(&events))
+                Ok(()) => state
+                    .snapshot_projected_state()
                     .map_err(|error| AstrError::Internal(error.to_string())),
                 Err(error) => Err(AstrError::Internal(error.to_string())),
             };
@@ -84,6 +78,7 @@ impl RuntimeService {
                 Err(error) => Err(error),
             };
 
+            let succeeded = result.is_ok();
             if let Err(error) = result {
                 let error_event = StorageEvent::Error {
                     turn_id: Some(turn_id.clone()),
@@ -105,6 +100,22 @@ impl RuntimeService {
                 *guard = CancelToken::new();
             }
             state.running.store(false, Ordering::SeqCst);
+
+            let elapsed = turn_started_at.elapsed();
+            observability.record_turn_execution(elapsed, succeeded);
+            if succeeded {
+                if elapsed.as_millis() >= 5_000 {
+                    log::warn!(
+                        "turn '{}' completed slowly in {}ms",
+                        turn_id,
+                        elapsed.as_millis()
+                    );
+                } else {
+                    log::info!("turn '{}' completed in {}ms", turn_id, elapsed.as_millis());
+                }
+            } else {
+                log::warn!("turn '{}' failed in {}ms", turn_id, elapsed.as_millis());
+            }
         });
 
         Ok(PromptAccepted {
@@ -129,7 +140,7 @@ async fn append_and_broadcast(
     translator: &mut EventTranslator,
 ) -> Result<()> {
     let stored = session.writer.clone().append(event.clone()).await?;
-    let records = translator.translate(&stored);
+    let records = session.translate_store_and_cache(&stored, translator)?;
     for record in records {
         let _ = session.broadcaster.send(record);
     }
@@ -142,7 +153,7 @@ fn append_and_broadcast_blocking(
     translator: &mut EventTranslator,
 ) -> Result<()> {
     let stored = session.writer.append_blocking(event)?;
-    let records = translator.translate(&stored);
+    let records = session.translate_store_and_cache(&stored, translator)?;
     for record in records {
         let _ = session.broadcaster.send(record);
     }
@@ -171,6 +182,8 @@ mod tests {
             temp_dir.path().to_path_buf(),
             Phase::Idle,
             Arc::new(SessionWriter::new(log)),
+            Default::default(),
+            Vec::new(),
         );
         let mut receiver = state.broadcaster.subscribe();
         let mut translator = EventTranslator::new(Phase::Idle);

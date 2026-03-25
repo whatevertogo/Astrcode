@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use astrcode_core::{PluginManifest, Result};
+use async_trait::async_trait;
+use tokio::sync::Mutex;
+
+use astrcode_core::{ManagedRuntimeComponent, PluginManifest, Result};
 use astrcode_protocol::plugin::{
     CapabilityDescriptor, InitializeMessage, InitializeResultData, InvokeMessage, PeerDescriptor,
     ProfileDescriptor, ResultMessage, PROTOCOL_VERSION,
@@ -11,8 +14,21 @@ use uuid::Uuid;
 use crate::core_to_protocol_capability;
 use crate::{CapabilityRouter, Peer, PluginProcess, StreamExecution};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SupervisorHealth {
+    Healthy,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupervisorHealthReport {
+    pub health: SupervisorHealth,
+    pub message: Option<String>,
+}
+
 pub struct Supervisor {
-    process: PluginProcess,
+    manifest_name: String,
+    process: Mutex<PluginProcess>,
     peer: Peer,
     remote_initialize: InitializeResultData,
 }
@@ -28,14 +44,29 @@ impl Supervisor {
         local_peer: PeerDescriptor,
         local_initialize: Option<InitializeMessage>,
     ) -> Result<Self> {
+        let mut process = process;
+        let manifest_name = process.manifest.name.clone();
         let router = Arc::new(CapabilityRouter::default());
         let initialize = local_initialize.unwrap_or_else(|| {
             default_initialize_message(local_peer, Vec::new(), default_profiles())
         });
         let peer = Peer::new(process.transport(), initialize, router);
-        let remote_initialize = peer.initialize().await?;
+        let remote_initialize = match peer.initialize().await {
+            Ok(remote_initialize) => remote_initialize,
+            Err(error) => {
+                if let Err(shutdown_error) = process.shutdown().await {
+                    log::warn!(
+                        "failed to terminate plugin '{}' after initialize error: {}",
+                        manifest_name,
+                        shutdown_error
+                    );
+                }
+                return Err(error);
+            }
+        };
         Ok(Self {
-            process,
+            manifest_name,
+            process: Mutex::new(process),
             peer,
             remote_initialize,
         })
@@ -91,8 +122,44 @@ impl Supervisor {
         self.peer.cancel(request_id, reason).await
     }
 
-    pub async fn shutdown(&mut self) -> Result<()> {
-        self.process.shutdown().await
+    pub async fn shutdown(&self) -> Result<()> {
+        self.process.lock().await.shutdown().await
+    }
+
+    pub async fn health_report(&self) -> Result<SupervisorHealthReport> {
+        if let Some(reason) = self.peer.closed_reason().await {
+            return Ok(SupervisorHealthReport {
+                health: SupervisorHealth::Unavailable,
+                message: Some(format!("protocol peer closed: {reason}")),
+            });
+        }
+
+        let status = self.process.lock().await.status()?;
+        if status.running {
+            Ok(SupervisorHealthReport {
+                health: SupervisorHealth::Healthy,
+                message: None,
+            })
+        } else {
+            Ok(SupervisorHealthReport {
+                health: SupervisorHealth::Unavailable,
+                message: Some(match status.exit_code {
+                    Some(code) => format!("plugin process exited with code {code}"),
+                    None => "plugin process exited".to_string(),
+                }),
+            })
+        }
+    }
+}
+
+#[async_trait]
+impl ManagedRuntimeComponent for Supervisor {
+    fn component_name(&self) -> String {
+        format!("plugin supervisor '{}'", self.manifest_name)
+    }
+
+    async fn shutdown_component(&self) -> Result<()> {
+        self.shutdown().await
     }
 }
 

@@ -37,6 +37,7 @@ struct RunInfo {
     token: String,
     pid: u32,
     started_at: Option<String>,
+    expires_at_ms: Option<i64>,
 }
 
 fn main() {
@@ -184,7 +185,7 @@ fn wait_for_run_info(pid: u32) -> Result<RunInfo> {
                 .with_context(|| format!("failed to read run info '{}'", path.display()))?;
             let run_info: RunInfo = serde_json::from_str(&raw)
                 .with_context(|| format!("failed to parse run info '{}'", path.display()))?;
-            if run_info.pid == pid {
+            if run_info.pid == pid && run_info_is_fresh(&run_info)? {
                 return Ok(run_info);
             }
         }
@@ -262,6 +263,20 @@ fn probe_server_http_ready(port: u16) -> Result<bool> {
         }
         Err(error) => Err(error).context("failed to read server readiness probe"),
     }
+}
+
+fn run_info_is_fresh(run_info: &RunInfo) -> Result<bool> {
+    let Some(expires_at_ms) = run_info.expires_at_ms else {
+        return Ok(true);
+    };
+    Ok(current_time_ms()? <= expires_at_ms)
+}
+
+fn current_time_ms() -> Result<i64> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("system clock is before unix epoch")?;
+    Ok(now.as_millis() as i64)
 }
 
 fn run_info_path() -> Result<PathBuf> {

@@ -23,35 +23,56 @@ impl PluginLoader {
                 continue;
             }
 
-            for entry in std::fs::read_dir(search_path).map_err(|error| {
-                astrcode_core::AstrError::io(
-                    format!(
-                        "failed to read plugin directory '{}'",
-                        search_path.display()
-                    ),
-                    error,
-                )
-            })? {
-                let entry = entry.map_err(|error| {
-                    astrcode_core::AstrError::io(
-                        format!(
-                            "failed to inspect plugin entry in '{}'",
-                            search_path.display()
-                        ),
-                        error,
-                    )
-                })?;
+            let entries = match std::fs::read_dir(search_path) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    log::warn!(
+                        "skipping plugin directory '{}' because it could not be read: {}",
+                        search_path.display(),
+                        error
+                    );
+                    continue;
+                }
+            };
+
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        log::warn!(
+                            "skipping plugin entry in '{}' because it could not be inspected: {}",
+                            search_path.display(),
+                            error
+                        );
+                        continue;
+                    }
+                };
                 let path = entry.path();
                 if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
                     continue;
                 }
-                let raw = std::fs::read_to_string(&path).map_err(|error| {
-                    astrcode_core::AstrError::io(
-                        format!("failed to read plugin manifest '{}'", path.display()),
-                        error,
-                    )
-                })?;
-                let mut manifest = PluginManifest::from_toml(&raw)?;
+                let raw = match std::fs::read_to_string(&path) {
+                    Ok(raw) => raw,
+                    Err(error) => {
+                        log::warn!(
+                            "skipping plugin manifest '{}' because it could not be read: {}",
+                            path.display(),
+                            error
+                        );
+                        continue;
+                    }
+                };
+                let mut manifest = match PluginManifest::from_toml(&raw) {
+                    Ok(manifest) => manifest,
+                    Err(error) => {
+                        log::warn!(
+                            "skipping plugin manifest '{}' because it could not be parsed: {}",
+                            path.display(),
+                            error
+                        );
+                        continue;
+                    }
+                };
                 if let Some(working_dir) = manifest.working_dir.clone() {
                     let working_dir_path = PathBuf::from(&working_dir);
                     if working_dir_path.is_relative() {
@@ -69,6 +90,14 @@ impl PluginLoader {
                 manifests.push(manifest);
             }
         }
+        // Keep discovery deterministic so capability conflicts always resolve against the same
+        // plugin order regardless of filesystem enumeration order.
+        manifests.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.version.cmp(&right.version))
+                .then_with(|| left.executable.cmp(&right.executable))
+        });
         Ok(manifests)
     }
 
