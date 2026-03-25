@@ -17,7 +17,7 @@ use tower_http::services::ServeDir;
 use crate::{AppState, FrontendBuild, AUTH_HEADER_NAME, SESSION_CURSOR_HEADER_NAME};
 
 pub(crate) const APP_HOME_OVERRIDE_ENV: &str = "ASTRCODE_HOME_DIR";
-const RUN_INFO_TTL_HOURS: i64 = 24;
+pub(crate) const BOOTSTRAP_TOKEN_TTL_HOURS: i64 = 24;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -171,7 +171,11 @@ pub(crate) fn random_hex_token() -> String {
     bytes.iter().map(|byte| format!("{:02x}", byte)).collect()
 }
 
-pub(crate) fn write_run_info(port: u16, token: &str) -> AnyhowResult<()> {
+pub(crate) fn bootstrap_token_expires_at_ms(started_at: chrono::DateTime<chrono::Utc>) -> i64 {
+    (started_at + chrono::Duration::hours(BOOTSTRAP_TOKEN_TTL_HOURS)).timestamp_millis()
+}
+
+pub(crate) fn write_run_info(port: u16, token: &str, expires_at_ms: i64) -> AnyhowResult<()> {
     let path = run_info_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
@@ -185,8 +189,7 @@ pub(crate) fn write_run_info(port: u16, token: &str) -> AnyhowResult<()> {
         token: token.to_string(),
         pid: std::process::id(),
         started_at: started_at.to_rfc3339(),
-        expires_at_ms: (started_at + chrono::Duration::hours(RUN_INFO_TTL_HOURS))
-            .timestamp_millis(),
+        expires_at_ms,
     };
     let json = serde_json::to_string_pretty(&payload).context("failed to serialize run info")?;
     std::fs::write(&path, json)
@@ -231,12 +234,14 @@ fn resolve_home_dir() -> AnyhowResult<PathBuf> {
 mod tests {
     use crate::test_support::ServerTestEnvGuard;
 
-    use super::{clear_run_info, run_info_path, write_run_info};
+    use super::{bootstrap_token_expires_at_ms, clear_run_info, run_info_path, write_run_info};
 
     #[test]
     fn write_run_info_persists_expiry_and_clear_run_info_removes_matching_pid() {
         let _guard = ServerTestEnvGuard::new();
-        write_run_info(62000, "bootstrap-token").expect("run info should be written");
+        let expires_at_ms = bootstrap_token_expires_at_ms(chrono::Utc::now());
+        write_run_info(62000, "bootstrap-token", expires_at_ms)
+            .expect("run info should be written");
 
         let path = run_info_path().expect("run info path should resolve");
         let payload = std::fs::read_to_string(&path).expect("run info should be readable");

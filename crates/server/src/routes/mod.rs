@@ -8,7 +8,7 @@ use axum::extract::State;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 
-use crate::{auth::secure_token_eq, ApiError, AppState};
+use crate::{ApiError, AppState};
 
 pub(crate) fn build_api_router() -> Router<AppState> {
     Router::<AppState>::new()
@@ -48,7 +48,7 @@ async fn exchange_auth(
     State(state): State<AppState>,
     Json(request): Json<AuthExchangeRequest>,
 ) -> Result<Json<AuthExchangeResponse>, ApiError> {
-    if !secure_token_eq(&request.token, &state.bootstrap_token) {
+    if !state.bootstrap_auth.validate(&request.token) {
         return Err(ApiError::unauthorized());
     }
 

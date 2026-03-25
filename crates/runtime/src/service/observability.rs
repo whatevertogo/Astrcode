@@ -87,11 +87,11 @@ impl OperationMetrics {
             .fetch_add(elapsed_ms, Ordering::Relaxed);
         self.last_duration_ms.store(elapsed_ms, Ordering::Relaxed);
 
-        let _ = self.max_duration_ms.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |current| (elapsed_ms > current).then_some(elapsed_ms),
-        );
+        let _ =
+            self.max_duration_ms
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    (elapsed_ms > current).then_some(elapsed_ms)
+                });
     }
 
     fn snapshot(&self) -> OperationMetricsSnapshot {
@@ -141,4 +141,3 @@ impl ReplayMetrics {
 fn saturating_duration_ms(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
-

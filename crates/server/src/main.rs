@@ -4,6 +4,8 @@
 )]
 
 mod auth;
+#[cfg(test)]
+mod auth_routes_tests;
 mod bootstrap;
 #[cfg(test)]
 mod browser_bootstrap_tests;
@@ -29,10 +31,10 @@ use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
 use serde::Serialize;
 
-use crate::auth::AuthSessionManager;
+use crate::auth::{AuthSessionManager, BootstrapAuth};
 use crate::bootstrap::{
-    attach_frontend_build, build_cors_layer, clear_run_info, load_frontend_build, random_hex_token,
-    write_run_info,
+    attach_frontend_build, bootstrap_token_expires_at_ms, build_cors_layer, clear_run_info,
+    load_frontend_build, random_hex_token, write_run_info,
 };
 use crate::capabilities::{bootstrap_runtime, RuntimeGovernance};
 use crate::routes::build_api_router;
@@ -46,7 +48,7 @@ pub(crate) struct AppState {
     coordinator: Arc<RuntimeCoordinator>,
     runtime_governance: Arc<RuntimeGovernance>,
     auth_sessions: Arc<AuthSessionManager>,
-    bootstrap_token: String,
+    bootstrap_auth: BootstrapAuth,
     frontend_build: Option<FrontendBuild>,
 }
 
@@ -125,9 +127,15 @@ async fn main() -> AnyhowResult<()> {
         .local_addr()
         .map_err(|e| AstrError::io("failed to resolve server listener address", e))?;
     let token = random_hex_token();
+    let bootstrap_expires_at_ms = bootstrap_token_expires_at_ms(chrono::Utc::now());
+    let bootstrap_auth = BootstrapAuth::new(token.clone(), bootstrap_expires_at_ms);
     let server_origin = format!("http://127.0.0.1:{}", address.port());
-    let frontend_build = load_frontend_build(&server_origin, &token)?;
-    write_run_info(address.port(), &token)?;
+    let frontend_build = load_frontend_build(&server_origin, bootstrap_auth.token())?;
+    write_run_info(
+        address.port(),
+        bootstrap_auth.token(),
+        bootstrap_auth.expires_at_ms(),
+    )?;
     println!(
         "Ready: http://localhost:{}/ (API routes live under /api)",
         address.port()
@@ -138,7 +146,7 @@ async fn main() -> AnyhowResult<()> {
         coordinator: Arc::clone(&runtime.coordinator),
         runtime_governance: Arc::clone(&runtime.governance),
         auth_sessions: Arc::new(AuthSessionManager::default()),
-        bootstrap_token: token.clone(),
+        bootstrap_auth,
         frontend_build: frontend_build.clone(),
     };
     let shutdown_coordinator = Arc::clone(&state.coordinator);

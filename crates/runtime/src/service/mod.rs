@@ -10,6 +10,8 @@ use crate::config::load_config;
 use crate::provider_factory::ConfigFileProviderFactory;
 use astrcode_core::{AstrError, CapabilityRouter, RuntimeHandle};
 
+#[cfg(test)]
+mod baselines;
 mod config_ops;
 mod observability;
 mod replay;
@@ -24,10 +26,10 @@ pub use self::types::{
     PromptAccepted, ServiceError, ServiceResult, SessionEventRecord, SessionMessage, SessionReplay,
     SessionReplaySource,
 };
+use observability::RuntimeObservability;
 pub use observability::{
     OperationMetricsSnapshot, ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot,
 };
-use observability::RuntimeObservability;
 
 pub struct RuntimeService {
     sessions: DashMap<String, Arc<SessionState>>,

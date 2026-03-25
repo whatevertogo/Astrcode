@@ -131,7 +131,9 @@ async function exchangeBootstrapToken(token: string): Promise<void> {
     body: JSON.stringify({ token }),
   });
   if (!response.ok) {
-    throw new Error('本地服务拒绝了 bootstrap 凭据，请确认 astrcode-server 仍然是当前会话启动的实例。');
+    throw new Error(
+      '本地服务拒绝了 bootstrap 凭据，请确认 astrcode-server 仍然是当前会话启动的实例。'
+    );
   }
 
   const payload = (await response.json()) as AuthExchangeResponse;

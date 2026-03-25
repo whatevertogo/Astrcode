@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use astrcode_core::{CapabilityRouter, PluginRegistry, RuntimeCoordinator, RuntimeHandle};
 use astrcode_runtime::RuntimeService;
 
-use crate::auth::AuthSessionManager;
+use crate::auth::{AuthSessionManager, BootstrapAuth};
 use crate::bootstrap::APP_HOME_OVERRIDE_ENV;
 use crate::capabilities::RuntimeGovernance;
 use crate::{AppState, FrontendBuild};
@@ -73,7 +73,10 @@ pub(crate) fn test_state(frontend_build: Option<FrontendBuild>) -> (AppState, Se
             coordinator,
             runtime_governance,
             auth_sessions,
-            bootstrap_token: "browser-token".to_string(),
+            bootstrap_auth: BootstrapAuth::new(
+                "browser-token".to_string(),
+                chrono::Utc::now().timestamp_millis() + 60_000,
+            ),
             frontend_build,
         },
         guard,

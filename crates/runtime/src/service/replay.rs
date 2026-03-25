@@ -27,9 +27,12 @@ impl SessionReplaySource for RuntimeService {
             .map_err(|error| AstrError::Internal(error.to_string()))?
         {
             Some(history) => Ok((history, ReplayPath::Cache)),
-            None => load_events(&session_id)
-                .await
-                .map(|events| (replay_records(&events, last_event_id), ReplayPath::DiskFallback)),
+            None => load_events(&session_id).await.map(|events| {
+                (
+                    replay_records(&events, last_event_id),
+                    ReplayPath::DiskFallback,
+                )
+            }),
         };
         let elapsed = started_at.elapsed();
         match &replay_result {

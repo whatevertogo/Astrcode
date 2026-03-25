@@ -129,9 +129,9 @@ mod tests {
 
     use super::RuntimeCoordinator;
     use crate::{
-        plugin::{PluginEntry, PluginHealth}, AstrError, CapabilityDescriptor, CapabilityKind,
-        ManagedRuntimeComponent, PluginRegistry, Result, RuntimeHandle, SideEffectLevel,
-        StabilityLevel,
+        plugin::{PluginEntry, PluginHealth},
+        AstrError, CapabilityDescriptor, CapabilityKind, ManagedRuntimeComponent, PluginRegistry,
+        Result, RuntimeHandle, SideEffectLevel, StabilityLevel,
     };
 
     struct FakeRuntimeHandle {

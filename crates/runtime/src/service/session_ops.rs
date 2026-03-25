@@ -147,40 +147,39 @@ impl RuntimeService {
 
         let session_id_owned = session_id.to_string();
         let started_at = Instant::now();
-        let load_result =
-            spawn_blocking_service("load session state", move || {
+        let load_result = spawn_blocking_service("load session state", move || {
             let stored =
                 EventLog::load(&session_id_owned).map_err(|error| match error.to_string() {
-                        message if message.contains("session file not found") => {
-                            ServiceError::NotFound(message)
-                        }
-                        _ => ServiceError::from(error),
-                    })?;
-                let Some(first) = stored.first() else {
-                    return Err(ServiceError::NotFound(format!(
-                        "session '{}' is empty",
-                        session_id_owned
-                    )));
-                };
-
-                let working_dir = match &first.event {
-                    StorageEvent::SessionStart { working_dir, .. } => PathBuf::from(working_dir),
-                    _ => {
-                        return Err(ServiceError::Internal(AstrError::Internal(format!(
-                            "session '{}' is missing sessionStart",
-                            session_id_owned
-                        ))))
+                    message if message.contains("session file not found") => {
+                        ServiceError::NotFound(message)
                     }
-                };
-                let phase = stored
-                    .last()
-                    .map(|event| phase_of_storage_event(&event.event))
-                    .unwrap_or(Phase::Idle);
-                let log = EventLog::open(&session_id_owned).map_err(ServiceError::from)?;
-                let events = stored
-                    .iter()
-                    .map(|record| record.event.clone())
-                    .collect::<Vec<_>>();
+                    _ => ServiceError::from(error),
+                })?;
+            let Some(first) = stored.first() else {
+                return Err(ServiceError::NotFound(format!(
+                    "session '{}' is empty",
+                    session_id_owned
+                )));
+            };
+
+            let working_dir = match &first.event {
+                StorageEvent::SessionStart { working_dir, .. } => PathBuf::from(working_dir),
+                _ => {
+                    return Err(ServiceError::Internal(AstrError::Internal(format!(
+                        "session '{}' is missing sessionStart",
+                        session_id_owned
+                    ))))
+                }
+            };
+            let phase = stored
+                .last()
+                .map(|event| phase_of_storage_event(&event.event))
+                .unwrap_or(Phase::Idle);
+            let log = EventLog::open(&session_id_owned).map_err(ServiceError::from)?;
+            let events = stored
+                .iter()
+                .map(|record| record.event.clone())
+                .collect::<Vec<_>>();
             let projector = AgentStateProjector::from_events(&events);
             let recent_records = replay_records(&stored, None);
             Ok((working_dir, phase, log, projector, recent_records))

@@ -1,13 +1,41 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use chrono::{Duration, Utc};
 use axum::http::HeaderMap;
+use chrono::{Duration, Utc};
 
 use crate::bootstrap::random_hex_token;
 use crate::{ApiError, AppState, AUTH_HEADER_NAME};
 
 const API_SESSION_TTL_HOURS: i64 = 8;
+
+#[derive(Debug, Clone)]
+pub(crate) struct BootstrapAuth {
+    token: String,
+    expires_at_ms: i64,
+}
+
+impl BootstrapAuth {
+    pub(crate) fn new(token: String, expires_at_ms: i64) -> Self {
+        Self {
+            token,
+            expires_at_ms,
+        }
+    }
+
+    pub(crate) fn token(&self) -> &str {
+        &self.token
+    }
+
+    pub(crate) fn expires_at_ms(&self) -> i64 {
+        self.expires_at_ms
+    }
+
+    pub(crate) fn validate(&self, candidate: &str) -> bool {
+        Utc::now().timestamp_millis() <= self.expires_at_ms
+            && secure_token_eq(&self.token, candidate)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct IssuedAuthToken {

@@ -97,13 +97,10 @@ impl RuntimeGovernance {
             )));
         }
 
-        let assembled = assemble_runtime_surface(
-            manifests,
-            initializer,
-            self.coordinator.plugin_registry(),
-        )
-            .await
-            .map_err(ServiceError::Internal)?;
+        let assembled =
+            assemble_runtime_surface(manifests, initializer, self.coordinator.plugin_registry())
+                .await
+                .map_err(ServiceError::Internal)?;
         let capability_surface = assembled.router.descriptors();
         self.service.replace_capabilities(assembled.router).await?;
         let previous_active_plugins = {
@@ -125,15 +122,9 @@ impl RuntimeGovernance {
             }
         }
 
-        for active_plugin in previous_active_plugins {
-            if let Err(error) = active_plugin.component.shutdown_component().await {
-                log::warn!(
-                    "failed to shut down retired plugin '{}' after reload: {}",
-                    active_plugin.name,
-                    error
-                );
-            }
-        }
+        // RuntimeCoordinator owns managed-component shutdown so reload cannot race or double-close
+        // the same supervisor through a second governance-side lifecycle path.
+        drop(previous_active_plugins);
 
         Ok(RuntimeReloadResult {
             snapshot: self.snapshot_with_paths(plugin_search_paths).await,
@@ -165,27 +156,23 @@ impl RuntimeGovernance {
             match active_plugin.component.health_report().await {
                 Ok(report) => match report.health {
                     PluginHealth::Healthy => {
-                        self.coordinator
-                            .plugin_registry()
-                            .record_health_probe(
-                                &active_plugin.name,
-                                PluginHealth::Healthy,
-                                None,
-                                checked_at,
-                            );
+                        self.coordinator.plugin_registry().record_health_probe(
+                            &active_plugin.name,
+                            PluginHealth::Healthy,
+                            None,
+                            checked_at,
+                        );
                     }
                     PluginHealth::Unavailable | PluginHealth::Degraded | PluginHealth::Unknown => {
                         let message = report
                             .message
                             .unwrap_or_else(|| "plugin supervisor unavailable".to_string());
-                        self.coordinator
-                            .plugin_registry()
-                            .record_health_probe(
-                                &active_plugin.name,
-                                PluginHealth::Unavailable,
-                                Some(message),
-                                checked_at,
-                            );
+                        self.coordinator.plugin_registry().record_health_probe(
+                            &active_plugin.name,
+                            PluginHealth::Unavailable,
+                            Some(message),
+                            checked_at,
+                        );
                     }
                 },
                 Err(error) => {
@@ -367,7 +354,8 @@ where
     I: PluginInitializer,
 {
     let plugin_registry = Arc::new(PluginRegistry::default());
-    let assembled = assemble_runtime_surface(manifests, initializer, Arc::clone(&plugin_registry)).await?;
+    let assembled =
+        assemble_runtime_surface(manifests, initializer, Arc::clone(&plugin_registry)).await?;
     let capability_surface = assembled.router.descriptors();
     plugin_registry.replace_snapshot(assembled.plugin_entries);
     let service = Arc::new(
@@ -502,7 +490,8 @@ where
             },
         );
         log::info!("loaded plugin '{}'", manifest.name);
-        managed_components.push(loaded_plugin.component.clone() as Arc<dyn ManagedRuntimeComponent>);
+        managed_components
+            .push(loaded_plugin.component.clone() as Arc<dyn ManagedRuntimeComponent>);
         active_plugins.push(ActivePluginRuntime {
             name: manifest.name,
             component: loaded_plugin.component,
@@ -667,7 +656,9 @@ mod tests {
 
     #[async_trait]
     impl ManagedPluginComponent for FakeManagedComponent {
-        async fn health_report(&self) -> std::result::Result<ManagedPluginHealth, astrcode_core::AstrError> {
+        async fn health_report(
+            &self,
+        ) -> std::result::Result<ManagedPluginHealth, astrcode_core::AstrError> {
             Ok(ManagedPluginHealth {
                 health: PluginHealth::Healthy,
                 message: None,

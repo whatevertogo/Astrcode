@@ -13,7 +13,7 @@ pub use config::{
     TestResult,
 };
 pub use service::{
-    OperationMetricsSnapshot, PromptAccepted, ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot,
-    RuntimeService, ServiceError, ServiceResult, SessionEventRecord, SessionMessage, SessionReplay,
-    SessionReplaySource,
+    OperationMetricsSnapshot, PromptAccepted, ReplayMetricsSnapshot, ReplayPath,
+    RuntimeObservabilitySnapshot, RuntimeService, ServiceError, ServiceResult, SessionEventRecord,
+    SessionMessage, SessionReplay, SessionReplaySource,
 };
