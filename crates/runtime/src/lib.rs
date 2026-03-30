@@ -1,3 +1,18 @@
+//! # Astrcode 运行时
+//!
+//! 本库实现了 Astrcode Agent 的运行时系统，负责：
+//!
+//! - **Agent 循环**: 运行 LLM 调用和工具执行的主循环
+//! - **Prompt 组装**: 构建发送给 LLM 的提示词
+//! - **审批服务**: 处理需要用户确认的能力调用
+//! - **运行时服务**: HTTP 服务器的后端，管理会话状态
+//! - **配置管理**: API 密钥、Profile 配置
+//!
+//! ## 架构
+//!
+//! `RuntimeService` 是门面，通过 `AgentLoop` 执行 Turn，
+//! 通过 `ApprovalBroker` 处理审批，通过 `CapabilityRouter` 调用工具。
+
 mod agent_loop;
 mod approval_service;
 mod bootstrap;

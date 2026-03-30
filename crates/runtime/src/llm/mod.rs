@@ -1,3 +1,15 @@
+//! # LLM 提供者
+//!
+//! 本模块定义了 LLM 提供者的抽象接口和共享逻辑。
+//!
+//! ## 架构
+//!
+//! - `LlmProvider`: LLM 提供者 trait（Anthropic、OpenAI 等）
+//! - `LlmRequest`: 模型调用请求
+//! - `LlmOutput`: 模型调用响应
+//! - `LlmEvent`: 流式事件（文本增量、工具调用增量等）
+//! - `LlmAccumulator`: 流式事件累加器
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -18,21 +30,19 @@ pub mod openai;
 // Shared constants & helpers used by all LLM providers
 // ---------------------------------------------------------------------------
 
-/// TCP connect timeout applied to every outbound HTTP request.
+/// TCP 连接超时（10 秒）
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Server-side read timeout – long enough for slow streaming responses but not
-/// infinite so we can detect stalled connections.
+/// 读取超时（90 秒）- 足够慢的流式响应，但能检测卡死的连接
 const READ_TIMEOUT: Duration = Duration::from_secs(90);
 
-/// Maximum number of automatic retries for transient HTTP failures.
+/// 最大自动重试次数（瞬态故障）
 const MAX_RETRIES: u32 = 2;
 
-/// Base delay in milliseconds for the first retry.  Each subsequent retry
-/// doubles the delay (exponential back-off).
+/// 首次重试延迟（毫秒），后续重试指数退避
 const RETRY_BASE_DELAY_MS: u64 = 250;
 
-/// Build a `reqwest::Client` with the shared connect / read timeout policy.
+/// 构建共享超时策略的 HTTP 客户端
 pub(crate) fn build_http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
@@ -41,10 +51,9 @@ pub(crate) fn build_http_client() -> reqwest::Client {
         .expect("http client should build")
 }
 
-/// Classify an HTTP status code as transient / retryable.
+/// 判断 HTTP 状态码是否可重试
 ///
-/// Covers 408 (request timeout), 429 (rate-limit), all 5xx codes, and the
-/// common gateway error codes (502, 503, 504).
+/// 包括 408（超时）、429（限流）、所有 5xx 和网关错误。
 pub(crate) fn is_retryable_status(status: reqwest::StatusCode) -> bool {
     matches!(
         status,
@@ -56,8 +65,7 @@ pub(crate) fn is_retryable_status(status: reqwest::StatusCode) -> bool {
     ) || status.is_server_error()
 }
 
-/// Wait the exponential back-off delay for the given `attempt` index, or abort
-/// early when the cancellation token fires.
+/// 等待指数退避延迟（或被取消）
 pub(crate) async fn wait_retry_delay(attempt: u32, cancel: CancelToken) -> Result<()> {
     let delay_ms = RETRY_BASE_DELAY_MS.saturating_mul(1_u64 << attempt);
     select! {
@@ -66,7 +74,7 @@ pub(crate) async fn wait_retry_delay(attempt: u32, cancel: CancelToken) -> Resul
     }
 }
 
-/// Forward an event to the external sink **and** accumulate it internally.
+/// 转发事件到外部汇并同时累加到内部
 pub(crate) fn emit_event(event: LlmEvent, accumulator: &mut LlmAccumulator, sink: &EventSink) {
     sink(event.clone());
     accumulator.apply(&event);
@@ -76,10 +84,7 @@ pub(crate) fn emit_event(event: LlmEvent, accumulator: &mut LlmAccumulator, sink
 // Test helpers (shared across provider test modules)
 // ---------------------------------------------------------------------------
 
-/// Create an `EventSink` that records every received event into a
-/// `Vec<LlmEvent>` guarded by a `Mutex`.
-///
-/// Used by unit tests in both `anthropic` and `openai` modules.
+/// 创建记录所有事件的 EventSink（用于测试）
 #[cfg(test)]
 pub(crate) fn sink_collector(events: Arc<std::sync::Mutex<Vec<LlmEvent>>>) -> EventSink {
     Arc::new(move |event| {
@@ -87,12 +92,10 @@ pub(crate) fn sink_collector(events: Arc<std::sync::Mutex<Vec<LlmEvent>>>) -> Ev
     })
 }
 
-#[derive(Clone, Debug)]
-/// Runtime-scoped model call request consumed by the agent loop.
+/// 运行时范围的模型调用请求
 ///
-/// This request intentionally stops at "messages in, optional system prompt, tool surface, cancel
-/// token". Provider discovery, credential resolution, model selection, and failover remain runtime
-/// assembly concerns outside of the loop contract.
+/// 限制在"消息、系统提示、工具、取消令牌"，不包含提供者发现和凭据解析。
+#[derive(Clone, Debug)]
 pub struct LlmRequest {
     pub messages: Vec<LlmMessage>,
     pub tools: Vec<ToolDefinition>,

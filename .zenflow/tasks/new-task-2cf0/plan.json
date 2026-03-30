@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "steps": [
+    {
+      "id": "a109fc14-f910-45da-844f-25f0fd80b5a1",
+      "name": "处理 crates/core 模块注释",
+      "description": "为核心模块添加中文注释：事件系统、会话管理、工具注册表、策略引擎、插件注册表等",
+      "status": "Completed",
+      "sort_order": 0,
+      "start_new_chat": false,
+      "stop_after_completion": false,
+      "created_at": "2026-03-30T18:17:44.034935800Z",
+      "updated_at": "2026-03-30T18:20:25.389048300Z"
+    },
+    {
+      "id": "58c857bb-f8d5-4f7d-a64b-d6850bdc1f40",
+      "name": "处理 crates/runtime 模块注释",
+      "description": "为运行时模块添加中文注释：Agent 循环、LLM 调用、Prompt 组装、运行时服务等",
+      "status": "Completed",
+      "sort_order": 1,
+      "start_new_chat": false,
+      "stop_after_completion": false,
+      "created_at": "2026-03-30T18:17:44.034935800Z",
+      "updated_at": "2026-03-30T18:22:13.754848100Z"
+    },
+    {
+      "id": "13a3e40b-3054-47eb-b570-312e2eb05b94",
+      "name": "处理 crates/plugin 模块注释",
+      "description": "为插件系统添加中文注释：进程管理、通信、生命周期、工作池等",
+      "status": "Completed",
+      "sort_order": 2,
+      "start_new_chat": false,
+      "stop_after_completion": false,
+      "created_at": "2026-03-30T18:17:44.034935800Z",
+      "updated_at": "2026-03-30T18:22:13.779362600Z"
+    },
+    {
+      "id": "71162ae1-5c93-43e3-96b6-84360a9ffa19",
+      "name": "处理 crates/server 模块注释",
+      "description": "为 HTTP 服务器添加中文注释：路由、认证、Bootstrap、映射器等",
+      "status": "Completed",
+      "sort_order": 3,
+      "start_new_chat": false,
+      "stop_after_completion": false,
+      "created_at": "2026-03-30T18:17:44.034935800Z",
+      "updated_at": "2026-03-30T18:22:13.813700400Z"
+    },
+    {
+      "id": "5e3fe97d-01a2-45b3-9826-307f1c21cd8a",
+      "name": "处理 crates/protocol 模块注释",
+      "description": "为协议层添加中文注释：HTTP/SSE DTO、插件协议、传输层等",
+      "status": "Completed",
+      "sort_order": 4,
+      "start_new_chat": false,
+      "stop_after_completion": false,
+      "created_at": "2026-03-30T18:17:44.034935800Z",
+      "updated_at": "2026-03-30T18:22:13.831517100Z"
+    },
+    {
+      "id": "487c45af-f7c8-44e3-ae27-caf3d71a9e42",
+      "name": "处理 crates/sdk 和 tools 模块注释",
+      "description": "为 SDK 和内置工具添加中文注释",
+      "status": "Completed",
+      "sort_order": 5,
+      "start_new_chat": false,
+      "stop_after_completion": false,
+      "created_at": "2026-03-30T18:17:44.034935800Z",
+      "updated_at": "2026-03-30T18:22:13.858837800Z"
+    },
+    {
+      "id": "c0dad9ae-dd89-4900-b5cb-cd2784b61060",
+      "name": "处理前端核心文件注释",
+      "description": "为前端核心文件添加中文注释：hooks、组件、类型定义等",
+      "status": "Completed",
+      "sort_order": 6,
+      "start_new_chat": false,
+      "stop_after_completion": false,
+      "created_at": "2026-03-30T18:17:44.034935800Z",
+      "updated_at": "2026-03-30T18:22:40.001064200Z"
+    },
+    {
+      "id": "6674bbfd-8308-4202-96f4-3fe3c709616b",
+      "name": "代码验证与测试",
+      "description": "运行 cargo test、cargo fmt、前端 typecheck 和 lint",
+      "status": "InProgress",
+      "sort_order": 7,
+      "start_new_chat": false,
+      "stop_after_completion": false,
+      "created_at": "2026-03-30T18:17:44.034935800Z",
+      "updated_at": "2026-03-30T18:22:40.024078300Z"
+    }
+  ]
+}

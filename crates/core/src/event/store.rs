@@ -1,3 +1,7 @@
+//! # 事件存储实现
+//!
+//! 实现 `EventLog` 的文件操作：创建、打开、追加、加载。
+
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
@@ -14,6 +18,7 @@ use super::{
 };
 
 impl EventLog {
+    /// 仅用于测试：在指定路径创建事件日志
     #[cfg(test)]
     pub fn create_at_path(session_id: &str, path: PathBuf) -> Result<Self> {
         if let Some(parent) = path.parent() {
@@ -42,6 +47,17 @@ impl EventLog {
         })
     }
 
+    /// 创建新的事件日志
+    ///
+    /// ## 验证
+    ///
+    /// - `session_id` 必须符合格式要求
+    /// - 文件必须不存在（`create_new` 保证）
+    ///
+    /// ## 失败情况
+    ///
+    /// - 会话 ID 格式无效
+    /// - 文件已存在
     pub fn create(session_id: &str) -> Result<Self> {
         let canonical_id = validated_session_id(session_id)?;
         let path = session_path(session_id)?;
@@ -71,6 +87,9 @@ impl EventLog {
         })
     }
 
+    /// 打开现有的事件日志
+    ///
+    /// 自动扫描文件以确定下一个 `storage_seq`。
     pub fn open(session_id: &str) -> Result<Self> {
         let canonical_id = canonical_session_id(session_id).to_string();
         let path = resolve_existing_session_path(session_id)?;
@@ -93,14 +112,26 @@ impl EventLog {
         })
     }
 
+    /// 获取会话 ID
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
 
+    /// 获取日志文件路径
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    /// 追加一个事件到日志
+    ///
+    /// ## 持久化保证
+    ///
+    /// 1. 序列化为 JSON
+    /// 2. 写入换行符
+    /// 3. `flush()` - 确保数据从用户态缓冲区写入内核
+    /// 4. `sync_all()` - 确保数据从内核页缓存写入磁盘
+    ///
+    /// 这个顺序确保即使进程崩溃，已追加的事件也不会丢失。
     pub fn append(&mut self, event: &StorageEvent) -> Result<StoredEvent> {
         let stored = StoredEvent {
             storage_seq: self.next_storage_seq,
@@ -121,11 +152,18 @@ impl EventLog {
         Ok(stored)
     }
 
+    /// 加载会话的所有事件
     pub fn load(session_id: &str) -> Result<Vec<StoredEvent>> {
         let path = resolve_existing_session_path(session_id)?;
         Self::load_from_path(&path)
     }
 
+    /// 从文件路径加载所有事件
+    ///
+    /// ## 容错处理
+    ///
+    /// - 空行被跳过（允许尾随换行）
+    /// - 解析错误会返回包含行号和内容的有用错误信息
     pub fn load_from_path(path: &Path) -> Result<Vec<StoredEvent>> {
         let file = File::open(path).map_err(|e| {
             crate::AstrError::io(
@@ -158,6 +196,9 @@ impl EventLog {
         Ok(events)
     }
 
+    /// 获取文件中最后一个事件的 storage_seq
+    ///
+    /// 用于打开现有日志时确定下一个序号。
     pub fn last_storage_seq_from_path(path: &Path) -> Result<u64> {
         Ok(Self::load_from_path(path)?
             .last()

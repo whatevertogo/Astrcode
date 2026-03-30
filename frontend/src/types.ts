@@ -1,3 +1,7 @@
+//! # 类型定义
+//!
+//! 定义前端使用的所有 TypeScript 类型。
+
 export type Phase = 'idle' | 'thinking' | 'callingTool' | 'streaming' | 'interrupted' | 'done';
 
 export interface ToolCallResultEnvelope {
@@ -149,7 +153,7 @@ export interface AppState {
 }
 
 // ────────────────────────────────────────────────────────────
-// Reducer action union (shared across App + hooks)
+// Reducer action 联合类型（App 和 hooks 之间共享）
 // ────────────────────────────────────────────────────────────
 export type Action =
   | { type: 'SET_PHASE'; phase: Phase }

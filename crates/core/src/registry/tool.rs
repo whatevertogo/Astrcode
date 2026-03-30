@@ -1,3 +1,7 @@
+//! # 工具注册表
+//!
+//! 工具注册表负责管理所有可用的工具，并提供执行接口。
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -9,12 +13,18 @@ use crate::{
     CapabilityInvoker, Result, Tool, ToolCallRequest, ToolContext, ToolExecutionResult,
 };
 
+/// 工具注册表构建器
+///
+/// 使用构建器模式组装工具，`build()` 后冻结为只读注册表。
 pub struct ToolRegistryBuilder {
+    /// 工具名称 -> 工具实例的映射
     tools: HashMap<String, Box<dyn Tool>>,
+    /// 工具注册顺序（用于 UI 展示）
     order: Vec<String>,
 }
 
 impl ToolRegistryBuilder {
+    /// 创建新的构建器
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
@@ -22,8 +32,12 @@ impl ToolRegistryBuilder {
         }
     }
 
+    /// 注册一个工具
+    ///
+    /// 如果同名工具已存在，会将其替换并移动到顺序末尾。
     pub fn register(mut self, tool: Box<dyn Tool>) -> Self {
         let name = tool.definition().name;
+        // 移除旧的同名工具（如果存在）
         if let Some(index) = self.order.iter().position(|existing| existing == &name) {
             self.order.remove(index);
         }
@@ -32,6 +46,7 @@ impl ToolRegistryBuilder {
         self
     }
 
+    /// 构建冻结的只读注册表
     pub fn build(self) -> ToolRegistry {
         ToolRegistry {
             tools: self.tools,
@@ -40,16 +55,21 @@ impl ToolRegistryBuilder {
     }
 }
 
+/// 工具注册表
+///
+/// 冻结后的只读工具注册表，可以安全地在运行时共享。
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
     order: Vec<String>,
 }
 
 impl ToolRegistry {
+    /// 创建新的构建器
     pub fn builder() -> ToolRegistryBuilder {
         ToolRegistryBuilder::new()
     }
 
+    /// 获取所有工具定义
     pub fn definitions(&self) -> Vec<crate::ToolDefinition> {
         self.order
             .iter()
@@ -58,10 +78,14 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// 获取所有工具名称（按注册顺序）
     pub fn names(&self) -> Vec<String> {
         self.order.clone()
     }
 
+    /// 执行工具调用
+    ///
+    /// 如果工具不存在或执行失败，返回错误结果。
     pub async fn execute(&self, call: &ToolCallRequest, ctx: &ToolContext) -> ToolExecutionResult {
         let Some(tool) = self.tools.get(&call.name) else {
             return ToolExecutionResult {
@@ -91,8 +115,9 @@ impl ToolRegistry {
         }
     }
 
-    /// Converts the frozen tool registry into generic capability invokers while preserving
-    /// registration order.
+    /// 将工具注册表转换为通用能力调用器
+    ///
+    /// 保留注册顺序，用于能力路由器。
     pub fn into_capability_invokers(mut self) -> Result<Vec<Arc<dyn CapabilityInvoker>>> {
         self.order
             .into_iter()
@@ -102,12 +127,20 @@ impl ToolRegistry {
     }
 }
 
+/// Tool 到 CapabilityInvoker 的适配器
+///
+/// 将 Tool trait 适配为通用的 CapabilityInvoker 接口。
 pub struct ToolCapabilityInvoker {
+    /// 工具实例
     tool: Arc<dyn Tool>,
+    /// 工具的能力描述符
     descriptor: CapabilityDescriptor,
 }
 
 impl ToolCapabilityInvoker {
+    /// 创建新的适配器
+    ///
+    /// 验证工具描述符的有效性。
     pub fn new(tool: Arc<dyn Tool>) -> Result<Self> {
         let fallback_name = tool.definition().name;
         let descriptor = tool.capability_descriptor().map_err(|error| {
@@ -127,6 +160,7 @@ impl ToolCapabilityInvoker {
         Ok(Self { tool, descriptor })
     }
 
+    /// 从 Box 创建 Arc 包装的适配器
     pub fn boxed(tool: Box<dyn Tool>) -> Result<Arc<dyn CapabilityInvoker>> {
         Ok(Arc::new(Self::new(Arc::from(tool))?))
     }
@@ -178,6 +212,9 @@ impl CapabilityInvoker for ToolCapabilityInvoker {
     }
 }
 
+/// 显示工具标签（用于错误信息）
+///
+/// 空名称显示为 `<unnamed>`。
 fn display_tool_label(name: &str) -> &str {
     let trimmed = name.trim();
     if trimmed.is_empty() {

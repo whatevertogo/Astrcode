@@ -1,3 +1,20 @@
+//! # Agent Hook
+//!
+//! 统一的 API 调用和 SSE 事件流管理。
+//!
+//! ## 核心功能
+//!
+//! - **会话管理**: 创建、加载、删除会话
+//! - **消息发送**: 提交用户 Prompt
+//! - **SSE 连接**: 连接会话事件流，支持断线重连
+//! - **配置管理**: 读取、保存配置
+//!
+//! ## SSE 断线重连
+//!
+//! - 使用指数退避策略（500ms 起始，最大 5s）
+//! - 通过 `lastEventId` 实现断点续传
+//! - 通过 `generation` 计数防止旧连接干扰
+
 import { useCallback, useEffect, useRef } from 'react';
 import type {
   AgentEventPayload,
@@ -44,6 +61,7 @@ export interface SessionSnapshot {
 
 type UnknownRecord = Record<string, unknown>;
 
+/// 安全地将值转换为 Record 类型
 function asRecord(value: unknown): UnknownRecord | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
@@ -188,9 +206,11 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
   return response;
 }
 
+// SSE 重连配置
 const SSE_RECONNECT_BASE_DELAY_MS = 500;
 const SSE_RECONNECT_MAX_DELAY_MS = 5_000;
 
+/// 分发流错误事件
 function dispatchStreamError(
   onEvent: (event: AgentEventPayload) => void,
   message: string,
