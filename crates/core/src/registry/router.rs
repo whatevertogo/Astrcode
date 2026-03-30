@@ -375,7 +375,10 @@ mod tests {
     #[tokio::test]
     async fn invoker_registered_tools_expose_tool_definitions_and_execute() {
         let router = CapabilityRouter::builder()
-            .register_invoker(ToolCapabilityInvoker::boxed(Box::new(FakeTool)))
+            .register_invoker(
+                ToolCapabilityInvoker::boxed(Box::new(FakeTool))
+                    .expect("tool descriptor should build"),
+            )
             .build()
             .expect("router should build");
         assert_eq!(router.tool_names(), vec!["fake".to_string()]);

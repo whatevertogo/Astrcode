@@ -47,4 +47,4 @@ pub use session::{
     DeleteProjectResult, FileSystemSessionRepository, SessionEventRecord, SessionManager,
     SessionMessage, SessionMeta, SessionWriter,
 };
-pub use tool::{SessionId, Tool, ToolContext, DEFAULT_MAX_OUTPUT_SIZE};
+pub use tool::{SessionId, Tool, ToolCapabilityMetadata, ToolContext, DEFAULT_MAX_OUTPUT_SIZE};

@@ -92,13 +92,28 @@ impl AgentStateProjector {
 
             StorageEvent::ToolResult {
                 tool_call_id,
+                tool_name,
                 output,
+                success,
+                error,
+                metadata,
+                duration_ms,
                 ..
             } => {
                 self.flush_pending_assistant();
+                let result = crate::ToolExecutionResult {
+                    tool_call_id: tool_call_id.clone(),
+                    tool_name: tool_name.clone(),
+                    ok: *success,
+                    output: output.clone(),
+                    error: error.clone(),
+                    metadata: metadata.clone(),
+                    duration_ms: *duration_ms,
+                    truncated: false,
+                };
                 self.state.messages.push(LlmMessage::Tool {
                     tool_call_id: tool_call_id.clone(),
-                    content: output.clone(),
+                    content: result.model_content(),
                 });
             }
 
@@ -244,6 +259,8 @@ mod tests {
                 tool_name: "listDir".into(),
                 output: "file1.txt\nfile2.txt".into(),
                 success: true,
+                error: None,
+                metadata: None,
                 duration_ms: 10,
             },
             StorageEvent::AssistantFinal {
@@ -380,6 +397,8 @@ mod tests {
                 tool_name: "listDir".into(),
                 output: "[]".into(),
                 success: true,
+                error: None,
+                metadata: None,
                 duration_ms: 2,
             },
             StorageEvent::TurnDone {

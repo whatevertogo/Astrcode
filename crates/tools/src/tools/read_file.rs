@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::tools::fs_common::{check_cancel, resolve_path};
-use astrcode_core::{AstrError, Result, Tool, ToolContext, ToolDefinition, ToolExecutionResult};
+use astrcode_core::{
+    AstrError, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
+    ToolExecutionResult,
+};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
@@ -35,6 +38,13 @@ impl Tool for ReadFileTool {
                 "additionalProperties": false
             }),
         }
+    }
+
+    fn capability_metadata(&self) -> ToolCapabilityMetadata {
+        ToolCapabilityMetadata::builtin()
+            .tags(["filesystem", "read"])
+            .permission("filesystem.read")
+            .side_effect(SideEffectLevel::None)
     }
 
     async fn execute(

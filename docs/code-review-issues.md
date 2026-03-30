@@ -35,7 +35,7 @@
 `StorageEvent::ToolResult` 没有 `error`/`metadata` 字段，translate 后永远为 `None`。
 工具执行的错误详情在 replay 时无法恢复。
 
-**修复**: 在 `StorageEvent::ToolResult` 中添加 `error: Option<String>` 和 `metadata: Option<Value>` 字段。
+**修复**: 在 `StorageEvent::ToolResult` 中添加 `error: Option<String>` 和 `metadata: Option<Value>` 字段，并保持旧 JSONL 日志的反序列化兼容。
 
 ---
 
@@ -80,7 +80,7 @@
 
 `core/registry/tool.rs:124-137` 将所有 tool 标记为 `builtin`、`Workspace` side-effect、`Stable`。
 
-**修复**: 让 `Tool` trait 提供 descriptor 或 metadata 回调。
+**修复**: 让 `Tool` trait 提供 `capability_metadata()` / `capability_descriptor()` 回调，adapter 只负责注册，不再猜测元数据。
 
 ### M7. `std::sync::Mutex` 用于 async context
 
@@ -144,7 +144,7 @@
 
 `sdk/src/error.rs:201-217`。
 
-**修复**: 添加 `SdkError::Internal` 变体来接收任意错误字符串。
+**修复**: 让任意字符串默认落到 `SdkError::Internal`，避免把未知来源错误伪装成 validation failure。
 
 ### L6. 公共 enum 缺 `#[non_exhaustive]`
 
@@ -185,13 +185,13 @@ runtime 和 server 多处。
 | H1 | ✅ | 抽取 LLM 共享代码到 `llm/mod.rs` |
 | H2 | ⬜ | 统一 core/protocol 类型（架构决策，暂缓） |
 | H3 | ✅ | 修复 phase 映射 Bug + 重复（Interrupted 分支修复 + 函数统一） |
-| H4 | ⬜ | StorageEvent 添加 error/metadata（影响存储格式，暂缓） |
+| H4 | ✅ | StorageEvent::ToolResult 持久化 error/metadata，并兼容旧 JSONL 反序列化 |
 | M1 | ✅ | duration_ms → u64（action.rs + router.rs + translate.rs） |
 | M2 | ✅ | 删除 AgentContext |
 | M3 | ✅ | 删除 MemoryProvider |
 | M4 | ✅ | 删除 WebSocketTransport stub |
 | M5 | ✅ | 删除 HandlerDispatcher |
-| M6 | ⬜ | Tool descriptor 元数据硬编码（需设计 Tool trait 扩展） |
+| M6 | ✅ | Tool trait 新增 capability metadata/descriptor 回调，内置工具元数据下沉到各自实现 |
 | M7 | ⬜ | auth.rs Mutex（需评估改为 tokio::sync::Mutex 的影响） |
 | M8 | ⬜ | peer.rs JoinHandle（需评估生命周期影响） |
 | M9 | ⬜ | service 错误策略统一 |
@@ -201,7 +201,7 @@ runtime 和 server 多处。
 | L2 | ✅ | 移除 dashmap 依赖 |
 | L3 | ✅ | CapabilityKind::custom() 保留并加文档注释 |
 | L4 | ✅ | declare_tool! 标记 #[doc(hidden)] |
-| L5 | ⬜ | From<String> → SdkError 语义 |
+| L5 | ✅ | From<String/&str> 默认映射到 SdkError::Internal |
 | L6 | ⬜ | 公共 enum 加 #[non_exhaustive] |
 | L7 | ✅ | #[allow(unused_imports)] 清理 |
 | L8 | ⬜ | SessionState.working_dir dead code |

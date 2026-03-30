@@ -1,5 +1,8 @@
 use crate::tools::fs_common::{check_cancel, resolve_path, write_text_file};
-use astrcode_core::{AstrError, Result, Tool, ToolContext, ToolDefinition, ToolExecutionResult};
+use astrcode_core::{
+    AstrError, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
+    ToolExecutionResult,
+};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
@@ -35,6 +38,13 @@ impl Tool for WriteFileTool {
                 "additionalProperties": false
             }),
         }
+    }
+
+    fn capability_metadata(&self) -> ToolCapabilityMetadata {
+        ToolCapabilityMetadata::builtin()
+            .tags(["filesystem", "write"])
+            .permission("filesystem.write")
+            .side_effect(SideEffectLevel::Workspace)
     }
 
     async fn execute(

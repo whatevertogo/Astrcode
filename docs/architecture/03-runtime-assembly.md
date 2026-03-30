@@ -135,6 +135,9 @@ Runtime assembly 需要承担以下职责：
 runtime assembly 还承担一项很重要但容易被忽略的职责：  
 在 capability 真正进入统一 router 之前，对插件上报的 descriptor 做宿主侧校验。这样插件作者即便绕过 builder 直接构造 descriptor，错误也会在装配阶段被显式拒收。
 
+对内置工具也一样。  
+`ToolCapabilityInvoker` 不再硬编码统一的 `builtin / Workspace / Stable` 元数据，而是优先读取 `Tool::capability_metadata()` 或 `Tool::capability_descriptor()`。这样权限 hint、side-effect 和稳定性会跟着工具实现本身演进，而不是散落在 adapter 层。
+
 Phase 3 之后，`RuntimeService` 也会显式持有 `PolicyEngine` 与 `ApprovalBroker`，并在 capability surface reload 时保留这两个运行时服务，而不是偷偷回退成默认行为。
 
 ## Capability Router Stays the Center

@@ -43,13 +43,13 @@ pub struct ToolExecutionResult {
 impl ToolExecutionResult {
     pub fn model_content(&self) -> String {
         if self.ok {
-            self.output.clone()
-        } else {
-            format!(
-                "tool execution failed: {}\n{}",
-                self.error.as_deref().unwrap_or("unknown error"),
-                self.output
-            )
+            return self.output.clone();
+        }
+
+        match self.error.as_deref() {
+            Some(error) if self.output.is_empty() => format!("tool execution failed: {error}"),
+            Some(error) => format!("tool execution failed: {error}\n{}", self.output),
+            None => self.output.clone(),
         }
     }
 }
@@ -184,6 +184,38 @@ mod tests {
             result.model_content(),
             "tool execution failed: boom\ntool output"
         );
+    }
+
+    #[test]
+    fn model_content_avoids_trailing_newline_for_failed_tools_without_output() {
+        let result = ToolExecutionResult {
+            tool_call_id: "call-1".to_string(),
+            tool_name: "demo".to_string(),
+            ok: false,
+            output: String::new(),
+            error: Some("blocked".to_string()),
+            metadata: None,
+            duration_ms: 12,
+            truncated: false,
+        };
+
+        assert_eq!(result.model_content(), "tool execution failed: blocked");
+    }
+
+    #[test]
+    fn model_content_preserves_legacy_failed_output_without_error_field() {
+        let result = ToolExecutionResult {
+            tool_call_id: "call-1".to_string(),
+            tool_name: "demo".to_string(),
+            ok: false,
+            output: "tool execution blocked: policy".to_string(),
+            error: None,
+            metadata: None,
+            duration_ms: 12,
+            truncated: false,
+        };
+
+        assert_eq!(result.model_content(), "tool execution blocked: policy");
     }
 
     #[test]

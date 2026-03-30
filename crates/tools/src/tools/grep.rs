@@ -1,5 +1,6 @@
 use astrcode_core::{
-    AstrError, CancelToken, Result, Tool, ToolContext, ToolDefinition, ToolExecutionResult,
+    AstrError, CancelToken, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext,
+    ToolDefinition, ToolExecutionResult,
 };
 use async_trait::async_trait;
 use log::warn;
@@ -55,6 +56,13 @@ impl Tool for GrepTool {
                 "additionalProperties": false
             }),
         }
+    }
+
+    fn capability_metadata(&self) -> ToolCapabilityMetadata {
+        ToolCapabilityMetadata::builtin()
+            .tags(["filesystem", "read", "search"])
+            .permission("filesystem.read")
+            .side_effect(SideEffectLevel::None)
     }
 
     async fn execute(

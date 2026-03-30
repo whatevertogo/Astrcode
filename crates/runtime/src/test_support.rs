@@ -23,7 +23,10 @@ pub(crate) fn empty_capabilities() -> CapabilityRouter {
 
 pub(crate) fn capabilities_from_tools(tools: ToolRegistry) -> CapabilityRouter {
     let mut builder = CapabilityRouter::builder();
-    for invoker in tools.into_capability_invokers() {
+    for invoker in tools
+        .into_capability_invokers()
+        .expect("tool descriptors should build")
+    {
         builder = builder.register_invoker(invoker);
     }
     builder

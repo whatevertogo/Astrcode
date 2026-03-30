@@ -181,7 +181,7 @@ pub(crate) async fn assemble_runtime_surface<I>(
 where
     I: PluginInitializer,
 {
-    let built_in_invokers = built_in_capability_invokers();
+    let built_in_invokers = built_in_capability_invokers()?;
     let mut registered_capability_names: HashSet<String> = built_in_invokers
         .iter()
         .map(|invoker| invoker.descriptor().name)

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use astrcode_core::{CapabilityInvoker, ToolCapabilityInvoker};
+use astrcode_core::{CapabilityInvoker, Result, ToolCapabilityInvoker};
 
-pub(crate) fn built_in_capability_invokers() -> Vec<Arc<dyn CapabilityInvoker>> {
+pub(crate) fn built_in_capability_invokers() -> Result<Vec<Arc<dyn CapabilityInvoker>>> {
     vec![
         ToolCapabilityInvoker::boxed(Box::new(astrcode_tools::tools::shell::ShellTool::default())),
         ToolCapabilityInvoker::boxed(Box::new(
@@ -22,4 +22,6 @@ pub(crate) fn built_in_capability_invokers() -> Vec<Arc<dyn CapabilityInvoker>> 
         )),
         ToolCapabilityInvoker::boxed(Box::new(astrcode_tools::tools::grep::GrepTool::default())),
     ]
+    .into_iter()
+    .collect()
 }

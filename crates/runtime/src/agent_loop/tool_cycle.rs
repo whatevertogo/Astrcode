@@ -121,16 +121,17 @@ async fn execute_raw_tool_call(
 
     // Yield before local IO-heavy tools so other tasks can make progress between tool calls.
     tokio::task::yield_now().await;
-    let result = capabilities.execute_tool(&tool_call, ctx).await;
-
-    let duration_ms = start.elapsed().as_millis() as u64;
+    let mut result = capabilities.execute_tool(&tool_call, ctx).await;
+    result.duration_ms = start.elapsed().as_millis() as u64;
     on_event(StorageEvent::ToolResult {
         turn_id: Some(turn_id.to_string()),
         tool_call_id: tool_call.id.clone(),
         tool_name: tool_call.name.clone(),
-        output: result.model_content(),
+        output: result.output.clone(),
         success: result.ok,
-        duration_ms,
+        error: result.error.clone(),
+        metadata: result.metadata.clone(),
+        duration_ms: result.duration_ms,
     })?;
 
     Ok(result)
@@ -152,8 +153,10 @@ fn denied_tool_result(
         turn_id: Some(turn_id.to_string()),
         tool_call_id: call.id.clone(),
         tool_name: call.name.clone(),
-        output: format!("tool execution blocked: {reason}"),
+        output: String::new(),
         success: false,
+        error: Some(reason.to_string()),
+        metadata: None,
         duration_ms: 0,
     })
 }

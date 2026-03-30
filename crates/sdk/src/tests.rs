@@ -378,6 +378,15 @@ fn sdk_error_maps_to_protocol_payload() {
 }
 
 #[test]
+fn string_conversions_map_to_internal_errors() {
+    let from_string = SdkError::from("boom".to_string());
+    let from_str = SdkError::from("boom");
+
+    assert!(matches!(from_string, SdkError::Internal { .. }));
+    assert!(matches!(from_str, SdkError::Internal { .. }));
+}
+
+#[test]
 fn descriptor_builder_is_reexported_for_plugin_authors() {
     let descriptor = CapabilityDescriptor::builder("tool.builder", CapabilityKind::tool())
         .description("builder test")

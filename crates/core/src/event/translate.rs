@@ -214,6 +214,8 @@ impl EventTranslator {
                 tool_name,
                 output,
                 success,
+                error,
+                metadata,
                 duration_ms,
                 ..
             } => {
@@ -233,8 +235,8 @@ impl EventTranslator {
                                 tool_name: name,
                                 ok: *success,
                                 output: output.clone(),
-                                error: None,
-                                metadata: None,
+                                error: error.clone(),
+                                metadata: metadata.clone(),
                                 duration_ms: *duration_ms,
                                 truncated: false,
                             },

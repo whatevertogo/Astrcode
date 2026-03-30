@@ -200,18 +200,12 @@ impl From<serde_json::Error> for SdkError {
 
 impl From<String> for SdkError {
     fn from(value: String) -> Self {
-        Self::Validation {
-            message: value,
-            details: Value::Null,
-        }
+        Self::internal(value)
     }
 }
 
 impl From<&str> for SdkError {
     fn from(value: &str) -> Self {
-        Self::Validation {
-            message: value.to_string(),
-            details: Value::Null,
-        }
+        Self::internal(value)
     }
 }

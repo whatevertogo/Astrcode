@@ -103,8 +103,11 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
             } => pending_tool_calls.push((tool_call_id.clone(), tool_name.clone(), args.clone())),
             StorageEvent::ToolResult {
                 tool_call_id,
+                tool_name: stored_tool_name,
                 output,
                 success,
+                error,
+                metadata,
                 duration_ms,
                 ..
             } => {
@@ -112,12 +115,26 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
                     .iter()
                     .position(|(pending_id, _, _)| pending_id == tool_call_id)
                 {
-                    let (_, tool_name, args) = pending_tool_calls.remove(index);
+                    let (_, pending_tool_name, args) = pending_tool_calls.remove(index);
+                    let result = astrcode_core::ToolExecutionResult {
+                        tool_call_id: tool_call_id.clone(),
+                        tool_name: if stored_tool_name.is_empty() {
+                            pending_tool_name
+                        } else {
+                            stored_tool_name.clone()
+                        },
+                        ok: *success,
+                        output: output.clone(),
+                        error: error.clone(),
+                        metadata: metadata.clone(),
+                        duration_ms: *duration_ms,
+                        truncated: false,
+                    };
                     messages.push(SessionMessage::ToolCall {
                         tool_call_id: tool_call_id.clone(),
-                        tool_name,
+                        tool_name: result.tool_name.clone(),
                         args,
-                        output: Some(output.clone()),
+                        output: Some(result.model_content()),
                         ok: Some(*success),
                         duration_ms: Some(*duration_ms),
                     });

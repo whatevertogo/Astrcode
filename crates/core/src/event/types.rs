@@ -52,6 +52,10 @@ pub enum StorageEvent {
         tool_name: String,
         output: String,
         success: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<Value>,
         duration_ms: u64,
     },
     TurnDone {
@@ -107,6 +111,29 @@ impl StoredEventLine {
                 storage_seq: fallback_seq,
                 event,
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StorageEvent;
+
+    #[test]
+    fn tool_result_deserializes_legacy_lines_without_error_or_metadata() {
+        let event: StorageEvent = serde_json::from_str(
+            r#"{"type":"toolResult","turn_id":"turn-1","tool_call_id":"call-1","tool_name":"readFile","output":"hello","success":true,"duration_ms":12}"#,
+        )
+        .expect("legacy tool result should deserialize");
+
+        match event {
+            StorageEvent::ToolResult {
+                error, metadata, ..
+            } => {
+                assert_eq!(error, None);
+                assert_eq!(metadata, None);
+            }
+            other => panic!("expected tool result, got {other:?}"),
         }
     }
 }

@@ -2,12 +2,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::{
-    CapabilityContext, CapabilityDescriptor, CapabilityExecutionResult, CapabilityInvoker,
-    CapabilityKind, Result, SideEffectLevel, StabilityLevel, Tool, ToolCallRequest, ToolContext,
-    ToolDefinition, ToolExecutionResult,
+    AstrError, CapabilityContext, CapabilityDescriptor, CapabilityExecutionResult,
+    CapabilityInvoker, Result, Tool, ToolCallRequest, ToolContext, ToolExecutionResult,
 };
 
 pub struct ToolRegistryBuilder {
@@ -94,7 +93,7 @@ impl ToolRegistry {
 
     /// Converts the frozen tool registry into generic capability invokers while preserving
     /// registration order.
-    pub fn into_capability_invokers(mut self) -> Vec<Arc<dyn CapabilityInvoker>> {
+    pub fn into_capability_invokers(mut self) -> Result<Vec<Arc<dyn CapabilityInvoker>>> {
         self.order
             .into_iter()
             .filter_map(|name| self.tools.remove(&name))
@@ -105,36 +104,38 @@ impl ToolRegistry {
 
 pub struct ToolCapabilityInvoker {
     tool: Arc<dyn Tool>,
-    definition: ToolDefinition,
+    descriptor: CapabilityDescriptor,
 }
 
 impl ToolCapabilityInvoker {
-    pub fn new(tool: Arc<dyn Tool>) -> Self {
-        let definition = tool.definition();
-        Self { tool, definition }
+    pub fn new(tool: Arc<dyn Tool>) -> Result<Self> {
+        let fallback_name = tool.definition().name;
+        let descriptor = tool.capability_descriptor().map_err(|error| {
+            AstrError::Validation(format!(
+                "invalid tool descriptor '{}': {}",
+                display_tool_label(&fallback_name),
+                error
+            ))
+        })?;
+        descriptor.validate().map_err(|error| {
+            AstrError::Validation(format!(
+                "invalid tool descriptor '{}': {}",
+                display_tool_label(&descriptor.name),
+                error
+            ))
+        })?;
+        Ok(Self { tool, descriptor })
     }
 
-    pub fn boxed(tool: Box<dyn Tool>) -> Arc<dyn CapabilityInvoker> {
-        Arc::new(Self::new(Arc::from(tool)))
+    pub fn boxed(tool: Box<dyn Tool>) -> Result<Arc<dyn CapabilityInvoker>> {
+        Ok(Arc::new(Self::new(Arc::from(tool))?))
     }
 }
 
 #[async_trait]
 impl CapabilityInvoker for ToolCapabilityInvoker {
     fn descriptor(&self) -> CapabilityDescriptor {
-        CapabilityDescriptor {
-            name: self.definition.name.clone(),
-            kind: CapabilityKind::tool(),
-            description: self.definition.description.clone(),
-            input_schema: self.definition.parameters.clone(),
-            output_schema: json!({ "type": "string" }),
-            streaming: false,
-            profiles: vec!["coding".to_string()],
-            tags: vec!["builtin".to_string()],
-            permissions: Vec::new(),
-            side_effect: SideEffectLevel::Workspace,
-            stability: StabilityLevel::Stable,
-        }
+        self.descriptor.clone()
     }
 
     async fn invoke(
@@ -169,11 +170,20 @@ impl CapabilityInvoker for ToolCapabilityInvoker {
                 truncated: result.truncated,
             }),
             Err(error) => Ok(CapabilityExecutionResult::failure(
-                self.definition.name.clone(),
+                self.descriptor.name.clone(),
                 error.to_string(),
                 Value::Null,
             )),
         }
+    }
+}
+
+fn display_tool_label(name: &str) -> &str {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        "<unnamed>"
+    } else {
+        trimmed
     }
 }
 
@@ -186,11 +196,14 @@ mod tests {
 
     use super::{ToolCapabilityInvoker, ToolRegistry, ToolRegistryBuilder};
     use crate::{
-        CancelToken, CapabilityContext, CapabilityInvoker, Result, Tool, ToolCallRequest,
-        ToolContext, ToolDefinition, ToolExecutionResult,
+        CancelToken, CapabilityContext, CapabilityDescriptor, CapabilityInvoker, CapabilityKind,
+        PermissionHint, Result, SideEffectLevel, StabilityLevel, Tool, ToolCallRequest,
+        ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
     };
 
     struct FakeTool;
+    struct PolicyAwareTool;
+    struct InvalidTool;
 
     #[async_trait]
     impl Tool for FakeTool {
@@ -211,6 +224,90 @@ mod tests {
             Ok(ToolExecutionResult {
                 tool_call_id,
                 tool_name: "fake".to_string(),
+                ok: true,
+                output: "ok".to_string(),
+                error: None,
+                metadata: None,
+                duration_ms: 0,
+                truncated: false,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Tool for PolicyAwareTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "policyAware".to_string(),
+                description: "policy aware".to_string(),
+                parameters: json!({"type": "object"}),
+            }
+        }
+
+        fn capability_metadata(&self) -> ToolCapabilityMetadata {
+            ToolCapabilityMetadata::builtin()
+                .tags(["filesystem", "read"])
+                .permission_with_rationale("filesystem.read", "reads workspace files")
+                .side_effect(SideEffectLevel::None)
+                .stability(StabilityLevel::Experimental)
+        }
+
+        async fn execute(
+            &self,
+            tool_call_id: String,
+            _input: serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolExecutionResult> {
+            Ok(ToolExecutionResult {
+                tool_call_id,
+                tool_name: "policyAware".to_string(),
+                ok: true,
+                output: "ok".to_string(),
+                error: None,
+                metadata: None,
+                duration_ms: 0,
+                truncated: false,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Tool for InvalidTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "invalid".to_string(),
+                description: "invalid".to_string(),
+                parameters: json!({"type": "object"}),
+            }
+        }
+
+        fn capability_descriptor(
+            &self,
+        ) -> std::result::Result<CapabilityDescriptor, crate::DescriptorBuildError> {
+            Ok(CapabilityDescriptor {
+                name: "   ".to_string(),
+                kind: CapabilityKind::tool(),
+                description: "invalid".to_string(),
+                input_schema: json!({"type": "object"}),
+                output_schema: json!({"type": "string"}),
+                streaming: false,
+                profiles: Vec::new(),
+                tags: Vec::new(),
+                permissions: Vec::<PermissionHint>::new(),
+                side_effect: SideEffectLevel::Workspace,
+                stability: StabilityLevel::Stable,
+            })
+        }
+
+        async fn execute(
+            &self,
+            tool_call_id: String,
+            _input: serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolExecutionResult> {
+            Ok(ToolExecutionResult {
+                tool_call_id,
+                tool_name: "invalid".to_string(),
                 ok: true,
                 output: "ok".to_string(),
                 error: None,
@@ -257,7 +354,8 @@ mod tests {
 
     #[tokio::test]
     async fn tool_capability_invoker_wraps_tool_execution() {
-        let invoker = ToolCapabilityInvoker::new(Arc::new(FakeTool));
+        let invoker = ToolCapabilityInvoker::new(Arc::new(FakeTool))
+            .expect("default tool descriptor should build");
         let result = invoker
             .invoke(
                 json!({}),
@@ -285,7 +383,8 @@ mod tests {
         let invokers = ToolRegistry::builder()
             .register(Box::new(FakeTool))
             .build()
-            .into_capability_invokers();
+            .into_capability_invokers()
+            .expect("tool descriptors should build");
 
         assert_eq!(
             invokers
@@ -294,5 +393,41 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["fake".to_string()]
         );
+    }
+
+    #[test]
+    fn tool_capability_invoker_uses_tool_metadata_for_descriptor() {
+        let descriptor = ToolCapabilityInvoker::new(Arc::new(PolicyAwareTool))
+            .expect("custom tool metadata should build")
+            .descriptor();
+
+        assert_eq!(descriptor.name, "policyAware");
+        assert_eq!(descriptor.side_effect, SideEffectLevel::None);
+        assert_eq!(descriptor.stability, StabilityLevel::Experimental);
+        assert_eq!(
+            descriptor.permissions,
+            vec![PermissionHint {
+                name: "filesystem.read".to_string(),
+                rationale: Some("reads workspace files".to_string()),
+            }]
+        );
+        assert_eq!(
+            descriptor.tags,
+            vec![
+                "builtin".to_string(),
+                "filesystem".to_string(),
+                "read".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn tool_capability_invoker_rejects_invalid_tool_descriptors() {
+        let error = match ToolCapabilityInvoker::new(Arc::new(InvalidTool)) {
+            Ok(_) => panic!("invalid descriptor should be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, crate::AstrError::Validation(_)));
     }
 }

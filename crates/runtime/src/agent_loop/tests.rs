@@ -915,9 +915,11 @@ async fn denied_tool_calls_emit_failure_without_executing_tool() {
             StorageEvent::ToolResult {
                 tool_name,
                 success,
-                output,
+                error,
                 ..
-            } if tool_name == "policyTool" && !success && output.contains("policy blocked tool")
+            } if tool_name == "policyTool"
+                && !success
+                && error.as_deref() == Some("policy blocked tool")
         )
     }));
 }
@@ -1055,11 +1057,11 @@ async fn denied_approval_returns_failed_tool_result_without_execution() {
             StorageEvent::ToolResult {
                 tool_name,
                 success,
-                output,
+                error,
                 ..
             } if tool_name == "policyTool"
                 && !success
-                && output.contains("approval rejected in test")
+                && error.as_deref() == Some("approval rejected in test")
         )
     }));
 }
@@ -1147,6 +1149,7 @@ async fn unified_capability_router_executes_builtin_and_plugin_tools() {
         .register(Box::new(QuickTool))
         .build()
         .into_capability_invokers()
+        .expect("tool descriptors should build")
     {
         capability_builder = capability_builder.register_invoker(invoker);
     }
