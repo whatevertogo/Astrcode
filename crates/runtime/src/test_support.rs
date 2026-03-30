@@ -78,6 +78,7 @@ impl TestEnvGuard {
         self._temp_home.path()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn set_current_dir<P: AsRef<Path>>(&self, path: P) {
         std::env::set_current_dir(path).expect("set cwd should work");
     }
