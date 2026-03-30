@@ -6,6 +6,7 @@ use super::template::PromptTemplate;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BlockKind {
     Identity,
+    #[allow(dead_code)]
     SystemPrompt,
     Environment,
     UserRules,
@@ -29,6 +30,7 @@ impl BlockKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum RenderTarget {
     System,
     PrependUser,
@@ -38,6 +40,7 @@ pub enum RenderTarget {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum ValidationPolicy {
     Inherit,
     Skip,
@@ -45,6 +48,7 @@ pub enum ValidationPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum BlockCondition {
     Always,
     StepEquals(usize),
@@ -134,6 +138,7 @@ impl BlockSpec {
         }
     }
 
+    #[allow(dead_code)]
     pub fn message_template(
         id: impl Into<Cow<'static, str>>,
         kind: BlockKind,
@@ -162,6 +167,7 @@ impl BlockSpec {
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_validation_policy(mut self, validation_policy: ValidationPolicy) -> Self {
         self.validation_policy = validation_policy;
         self
@@ -182,6 +188,7 @@ impl BlockSpec {
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_var(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.vars.insert(key.into(), value.into());
         self

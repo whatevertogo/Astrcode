@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum DiagnosticLevel {
     Info,
     Warning,
