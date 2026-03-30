@@ -37,6 +37,9 @@ fn parse_event_id(raw: &str) -> Option<(u64, u32)> {
     Some((storage_seq, subindex))
 }
 
+/// 根据 storage event 推断当前 phase。
+/// 注意：Error 事件在 message == "interrupted" 时应映射为 Phase::Interrupted，
+/// 但该函数仅用于 tail 扫描等轻量级场景，完整的 phase 转换由 EventTranslator 处理。
 pub fn phase_of_storage_event(event: &StorageEvent) -> Phase {
     match event {
         StorageEvent::SessionStart { .. } => Phase::Idle,
@@ -45,7 +48,11 @@ pub fn phase_of_storage_event(event: &StorageEvent) -> Phase {
         | StorageEvent::ThinkingDelta { .. }
         | StorageEvent::AssistantFinal { .. } => Phase::Streaming,
         StorageEvent::ToolCall { .. } | StorageEvent::ToolResult { .. } => Phase::CallingTool,
-        StorageEvent::TurnDone { .. } | StorageEvent::Error { .. } => Phase::Idle,
+        StorageEvent::TurnDone { .. } => Phase::Idle,
+        // "interrupted" 错误应映射为 Interrupted 而非 Idle，
+        // 否则会话列表中中断的会话会错误地显示为 Idle
+        StorageEvent::Error { message, .. } if message == "interrupted" => Phase::Interrupted,
+        StorageEvent::Error { .. } => Phase::Idle,
     }
 }
 
@@ -228,7 +235,7 @@ impl EventTranslator {
                                 output: output.clone(),
                                 error: None,
                                 metadata: None,
-                                duration_ms: *duration_ms as u128,
+                                duration_ms: *duration_ms,
                                 truncated: false,
                             },
                         },

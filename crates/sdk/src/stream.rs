@@ -82,7 +82,10 @@ impl StreamWriter {
         )
     }
 
-    pub fn records(&self) -> Vec<StreamChunk> {
-        self.records.lock().expect("stream records lock").clone()
+    pub fn records(&self) -> StreamResult<Vec<StreamChunk>> {
+        self.records
+            .lock()
+            .map_err(|_| SdkError::internal("stream records lock poisoned"))
+            .map(|guard| guard.clone())
     }
 }

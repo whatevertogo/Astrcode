@@ -28,7 +28,11 @@ pub use event::{
     EventTranslator, Phase, StorageEvent, StoredEvent,
 };
 pub use plugin::{PluginHealth, PluginManifest, PluginRegistry, PluginState, PluginType};
-pub use policy::{AllowAllPolicyEngine, PolicyDecision, PolicyEngine};
+pub use policy::{
+    AllowAllPolicyEngine, ApprovalDefault, ApprovalPending, ApprovalRequest, ApprovalResolution,
+    CapabilityCall, ContextPressureInput, ContextStrategyDecision, ModelRequest, PolicyContext,
+    PolicyEngine, PolicyVerdict,
+};
 pub use projection::{project, AgentState, AgentStateProjector};
 pub use registry::{
     CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, CapabilityRouter,

@@ -6,9 +6,12 @@ use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent_loop::AgentLoop;
+use crate::approval_service::{ApprovalBroker, DefaultApprovalBroker};
 use crate::config::load_config;
 use crate::provider_factory::ConfigFileProviderFactory;
-use astrcode_core::{AstrError, CapabilityRouter, RuntimeHandle};
+use astrcode_core::{
+    AllowAllPolicyEngine, AstrError, CapabilityRouter, PolicyEngine, RuntimeHandle,
+};
 
 #[cfg(test)]
 mod baselines;
@@ -34,6 +37,8 @@ pub use observability::{
 pub struct RuntimeService {
     sessions: DashMap<String, Arc<SessionState>>,
     loop_: RwLock<Arc<AgentLoop>>,
+    policy: Arc<dyn PolicyEngine>,
+    approval: Arc<dyn ApprovalBroker>,
     config: Mutex<crate::config::Config>,
     session_load_lock: Mutex<()>,
     observability: Arc<RuntimeObservability>,
@@ -43,11 +48,27 @@ pub struct RuntimeService {
 
 impl RuntimeService {
     pub fn from_capabilities(capabilities: CapabilityRouter) -> ServiceResult<Self> {
+        Self::from_runtime_services(
+            capabilities,
+            Arc::new(AllowAllPolicyEngine),
+            Arc::new(DefaultApprovalBroker),
+        )
+    }
+
+    pub fn from_runtime_services(
+        capabilities: CapabilityRouter,
+        policy: Arc<dyn PolicyEngine>,
+        approval: Arc<dyn ApprovalBroker>,
+    ) -> ServiceResult<Self> {
         let config = load_config().map_err(ServiceError::from)?;
-        let loop_ = AgentLoop::from_capabilities(Arc::new(ConfigFileProviderFactory), capabilities);
+        let loop_ = AgentLoop::from_capabilities(Arc::new(ConfigFileProviderFactory), capabilities)
+            .with_policy_engine(Arc::clone(&policy))
+            .with_approval_broker(Arc::clone(&approval));
         Ok(Self {
             sessions: DashMap::new(),
             loop_: RwLock::new(Arc::new(loop_)),
+            policy,
+            approval,
             config: Mutex::new(config),
             session_load_lock: Mutex::new(()),
             observability: Arc::new(RuntimeObservability::default()),
@@ -60,10 +81,11 @@ impl RuntimeService {
     }
 
     pub async fn replace_capabilities(&self, capabilities: CapabilityRouter) -> ServiceResult<()> {
-        let next_loop = Arc::new(AgentLoop::from_capabilities(
-            Arc::new(ConfigFileProviderFactory),
-            capabilities,
-        ));
+        let next_loop = Arc::new(
+            AgentLoop::from_capabilities(Arc::new(ConfigFileProviderFactory), capabilities)
+                .with_policy_engine(Arc::clone(&self.policy))
+                .with_approval_broker(Arc::clone(&self.approval)),
+        );
         *self.loop_.write().await = next_loop;
         Ok(())
     }

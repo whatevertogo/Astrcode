@@ -79,7 +79,7 @@ impl Tool for EditFileTool {
                 metadata: Some(json!({
                     "path": path.to_string_lossy(),
                 })),
-                duration_ms: started_at.elapsed().as_millis(),
+                duration_ms: started_at.elapsed().as_millis() as u64,
                 truncated: false,
             });
         }
@@ -96,7 +96,7 @@ impl Tool for EditFileTool {
                 metadata: Some(json!({
                     "path": path.to_string_lossy(),
                 })),
-                duration_ms: started_at.elapsed().as_millis(),
+                duration_ms: started_at.elapsed().as_millis() as u64,
                 truncated: false,
             });
         }
@@ -113,7 +113,7 @@ impl Tool for EditFileTool {
             metadata: Some(json!({
                 "path": path.to_string_lossy(),
             })),
-            duration_ms: started_at.elapsed().as_millis(),
+            duration_ms: started_at.elapsed().as_millis() as u64,
             truncated: false,
         })
     }

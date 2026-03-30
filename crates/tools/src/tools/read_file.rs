@@ -74,7 +74,7 @@ impl Tool for ReadFileTool {
                 "bytes": bytes.len(),
                 "truncated": truncated,
             })),
-            duration_ms: started_at.elapsed().as_millis(),
+            duration_ms: started_at.elapsed().as_millis() as u64,
             truncated,
         })
     }

@@ -1,3 +1,5 @@
+/// Hidden implementation detail — not part of the public SDK surface.
+#[doc(hidden)]
 #[macro_export]
 macro_rules! declare_tool {
     ($handler:ty) => {

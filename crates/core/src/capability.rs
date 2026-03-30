@@ -33,6 +33,8 @@ impl CapabilityKind {
         Self(kind.into().trim().to_string())
     }
 
+    /// Alias for [`Self::new`]; kept for readability at call-sites that construct
+    /// non-standard / user-defined capability kinds.
     pub fn custom(kind: impl Into<String>) -> Self {
         Self::new(kind)
     }

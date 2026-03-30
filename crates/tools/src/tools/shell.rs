@@ -164,7 +164,7 @@ impl Tool for ShellTool {
                 Some(format!("shell command exited with code {}", exit_code))
             },
             metadata: Some(json!({ "exitCode": exit_code, "truncated": truncated })),
-            duration_ms: started_at.elapsed().as_millis(),
+            duration_ms: started_at.elapsed().as_millis() as u64,
             truncated,
         })
     }

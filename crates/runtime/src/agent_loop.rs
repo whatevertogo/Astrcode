@@ -3,10 +3,13 @@ mod tool_cycle;
 mod turn_runner;
 
 use astrcode_core::{
-    AstrError, CancelToken, CapabilityRouter, Result, ToolContext, DEFAULT_MAX_OUTPUT_SIZE,
+    AllowAllPolicyEngine, AstrError, CancelToken, CapabilityRouter, PolicyContext, PolicyEngine,
+    Result, ToolContext, DEFAULT_MAX_OUTPUT_SIZE,
 };
 use chrono::Utc;
+use std::sync::Arc;
 
+use crate::approval_service::{ApprovalBroker, DefaultApprovalBroker};
 use crate::prompt::PromptComposer;
 use crate::provider_factory::DynProviderFactory;
 use astrcode_core::AgentState;
@@ -15,6 +18,8 @@ use astrcode_core::StorageEvent;
 pub struct AgentLoop {
     factory: DynProviderFactory,
     capabilities: CapabilityRouter,
+    policy: Arc<dyn PolicyEngine>,
+    approval: Arc<dyn ApprovalBroker>,
     max_steps: Option<usize>,
     prompt_composer: PromptComposer,
 }
@@ -24,9 +29,21 @@ impl AgentLoop {
         Self {
             factory,
             capabilities,
+            policy: Arc::new(AllowAllPolicyEngine),
+            approval: Arc::new(DefaultApprovalBroker),
             max_steps: None,
             prompt_composer: PromptComposer::with_defaults(),
         }
+    }
+
+    pub fn with_policy_engine(mut self, policy: Arc<dyn PolicyEngine>) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    pub fn with_approval_broker(mut self, approval: Arc<dyn ApprovalBroker>) -> Self {
+        self.approval = approval;
+        self
     }
 
     pub fn with_max_steps(mut self, max_steps: usize) -> Self {
@@ -61,6 +78,22 @@ impl AgentLoop {
             working_dir: state.working_dir.clone(),
             cancel,
             max_output_size: DEFAULT_MAX_OUTPUT_SIZE,
+        }
+    }
+
+    pub(crate) fn policy_context(
+        &self,
+        state: &AgentState,
+        turn_id: &str,
+        step_index: usize,
+    ) -> PolicyContext {
+        PolicyContext {
+            session_id: state.session_id.clone(),
+            turn_id: turn_id.to_string(),
+            step_index,
+            working_dir: state.working_dir.to_string_lossy().into_owned(),
+            profile: "coding".to_string(),
+            metadata: serde_json::Value::Null,
         }
     }
 }

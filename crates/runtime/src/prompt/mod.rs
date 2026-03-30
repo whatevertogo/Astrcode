@@ -8,12 +8,10 @@ pub mod diagnostics;
 pub mod plan;
 pub mod template;
 
-#[allow(unused_imports)]
 pub use block::{
     BlockCondition, BlockContent, BlockKind, BlockMetadata, BlockSpec, PromptBlock, RenderTarget,
     ValidationPolicy,
 };
-#[allow(unused_imports)]
 pub use composer::{PromptComposer, PromptComposerOptions, ValidationLevel};
 pub use context::PromptContext;
 pub use contribution::{append_unique_tools, PromptContribution};

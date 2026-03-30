@@ -239,7 +239,7 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
                 output: result.output,
                 error: result.error,
                 metadata: result.metadata,
-                duration_ms: result.duration_ms,
+                duration_ms: u128::from(result.duration_ms),
                 truncated: result.truncated,
             },
         },

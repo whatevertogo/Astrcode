@@ -99,6 +99,21 @@
 - `Allow / Deny / Ask` 成为正式 runtime contract
 - transport 层只消费审批状态，不决定审批模型
 
+### Status
+
+本阶段已完成：
+
+- `core::policy` 已冻结为 `ModelRequest` / `CapabilityCall` / `PolicyVerdict` 三态契约
+- `runtime::approval_service` 已提供默认 `ApprovalBroker`
+- `AgentLoop` 已接入模型请求改写、tool call allow / deny / ask 与 broker 恢复
+- `RuntimeService` 已在 capability reload 时保留 `PolicyEngine` 与 `ApprovalBroker`
+
+仍待后续阶段完成的部分：
+
+- 把 `ContextStrategyDecision` 接进真正的 token budgeting / compaction 触发路径
+- 把审批状态镜像到专门的 runtime observation bus
+- 为 Web / CLI / ACP 接入真正的人工审批 transport
+
 ## Phase 4: Introduce Runtime Observation Bus
 
 ### Target

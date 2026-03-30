@@ -1,4 +1,5 @@
 mod agent_loop;
+mod approval_service;
 mod bootstrap;
 #[cfg(test)]
 mod bootstrap_tests;
@@ -15,6 +16,7 @@ mod service;
 #[cfg(test)]
 mod test_support;
 
+pub use approval_service::{ApprovalBroker, DefaultApprovalBroker};
 pub use bootstrap::{bootstrap_runtime, RuntimeBootstrap};
 pub use config::{
     config_path, load_config, open_config_in_editor, save_config, test_connection, Config, Profile,

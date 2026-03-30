@@ -58,10 +58,13 @@ impl CapabilityHandler for RegisteredToolAdapter {
             .execute_value(input, plugin_context, stream.clone())
             .await
             .map_err(|error| AstrError::ToolError {
-                name: tool_name,
+                name: tool_name.clone(),
                 reason: error.to_string(),
             })?;
-        for chunk in stream.records() {
+        for chunk in stream.records().map_err(|error| AstrError::ToolError {
+            name: tool_name.clone(),
+            reason: error.to_string(),
+        })? {
             events.delta(chunk.event, chunk.payload).await?;
         }
         if cancel.is_cancelled() {

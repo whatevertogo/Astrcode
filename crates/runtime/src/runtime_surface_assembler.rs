@@ -356,8 +356,8 @@ fn invalid_capability_reason(capabilities: &[CapabilityDescriptor]) -> Option<St
 
 fn host_peer_descriptor() -> PeerDescriptor {
     PeerDescriptor {
-        id: "astrcode-server".to_string(),
-        name: "astrcode-server".to_string(),
+        id: "astrcode-runtime".to_string(),
+        name: "astrcode-runtime".to_string(),
         role: PeerRole::Supervisor,
         version: env!("CARGO_PKG_VERSION").to_string(),
         supported_profiles: vec!["coding".to_string()],

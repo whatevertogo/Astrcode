@@ -126,7 +126,7 @@ impl Tool for GrepTool {
                 "truncated": truncated,
                 "skipped_files": skipped_files,
             })),
-            duration_ms: started_at.elapsed().as_millis(),
+            duration_ms: started_at.elapsed().as_millis() as u64,
             truncated,
         })
     }

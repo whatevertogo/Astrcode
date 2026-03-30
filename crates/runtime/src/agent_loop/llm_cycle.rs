@@ -1,13 +1,11 @@
 use std::sync::Arc;
 
-use astrcode_core::{CancelToken, Result};
+use astrcode_core::{CancelToken, ModelRequest, Result};
 use tokio::sync::mpsc;
 
 use crate::llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
 use crate::provider_factory::DynProviderFactory;
 use astrcode_core::StorageEvent;
-use astrcode_core::{LlmMessage, ToolDefinition};
-
 pub(crate) async fn build_provider(factory: DynProviderFactory) -> Result<Arc<dyn LlmProvider>> {
     Ok(tokio::task::spawn_blocking(move || factory.build())
         .await
@@ -16,10 +14,8 @@ pub(crate) async fn build_provider(factory: DynProviderFactory) -> Result<Arc<dy
 
 pub(crate) async fn generate_response(
     provider: &Arc<dyn LlmProvider>,
-    messages: &[LlmMessage],
-    tool_definitions: Vec<ToolDefinition>,
+    request: ModelRequest,
     turn_id: &str,
-    system_prompt: Option<String>,
     cancel: CancelToken,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
 ) -> Result<LlmOutput> {
@@ -27,11 +23,7 @@ pub(crate) async fn generate_response(
     let sink: EventSink = Arc::new(move |event| {
         let _ = event_tx.send(event);
     });
-    let request = LlmRequest::new(messages.to_vec(), tool_definitions, cancel);
-    let request = match system_prompt {
-        Some(prompt) => request.with_system(prompt),
-        None => request,
-    };
+    let request = LlmRequest::from_model_request(request, cancel);
 
     let generate_future = provider.generate(request, Some(sink));
     tokio::pin!(generate_future);
@@ -43,8 +35,7 @@ pub(crate) async fn generate_response(
             maybe_event = event_rx.recv(), if event_rx_open => {
                 match maybe_event {
                     Some(LlmEvent::TextDelta(text)) => {
-                        #[cfg(debug_assertions)]
-                        eprintln!("[delta] {}", text);
+                        log::debug!("[delta] {}", text);
                         on_event(StorageEvent::AssistantDelta {
                             turn_id: Some(turn_id.to_string()),
                             token: text,

@@ -61,7 +61,7 @@ impl Tool for WriteFileTool {
                 "path": path.to_string_lossy(),
                 "bytes": bytes,
             })),
-            duration_ms: started_at.elapsed().as_millis(),
+            duration_ms: started_at.elapsed().as_millis() as u64,
             truncated: false,
         })
     }

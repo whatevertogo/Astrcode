@@ -6,12 +6,12 @@ use futures_util::StreamExt;
 use log::warn;
 use serde::Serialize;
 use serde_json::Value;
-use tokio::{
-    select,
-    time::{sleep, Duration},
-};
+use tokio::select;
 
-use crate::llm::{EventSink, LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
+use crate::llm::{
+    build_http_client, emit_event, is_retryable_status, wait_retry_delay, EventSink,
+    LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest, MAX_RETRIES,
+};
 use astrcode_core::{LlmMessage, ToolCallRequest, ToolDefinition};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -134,38 +134,6 @@ impl AnthropicProvider {
         Err(AstrError::LlmStreamError(
             "Anthropic 请求在重试后仍然失败".to_string(),
         ))
-    }
-}
-
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const READ_TIMEOUT: Duration = Duration::from_secs(90);
-const MAX_RETRIES: u32 = 2;
-const RETRY_BASE_DELAY_MS: u64 = 250;
-
-fn build_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(READ_TIMEOUT)
-        .build()
-        .expect("anthropic http client should build")
-}
-
-fn is_retryable_status(status: reqwest::StatusCode) -> bool {
-    matches!(
-        status,
-        reqwest::StatusCode::REQUEST_TIMEOUT
-            | reqwest::StatusCode::TOO_MANY_REQUESTS
-            | reqwest::StatusCode::BAD_GATEWAY
-            | reqwest::StatusCode::SERVICE_UNAVAILABLE
-            | reqwest::StatusCode::GATEWAY_TIMEOUT
-    ) || status.is_server_error()
-}
-
-async fn wait_retry_delay(attempt: u32, cancel: CancelToken) -> Result<()> {
-    let delay_ms = RETRY_BASE_DELAY_MS.saturating_mul(1_u64 << attempt);
-    select! {
-        _ = crate::cancel::cancelled(cancel) => Err(AstrError::LlmInterrupted),
-        _ = sleep(Duration::from_millis(delay_ms)) => Ok(()),
     }
 }
 
@@ -348,11 +316,6 @@ fn response_to_output(response: AnthropicResponse) -> LlmOutput {
 
 fn block_type(value: &Value) -> Option<&str> {
     value.get("type").and_then(Value::as_str)
-}
-
-fn emit_event(event: LlmEvent, accumulator: &mut LlmAccumulator, sink: &EventSink) {
-    sink(event.clone());
-    accumulator.apply(&event);
 }
 
 fn parse_sse_block(block: &str) -> Result<Option<(String, Value)>> {
@@ -620,12 +583,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
-    fn sink_collector(events: Arc<Mutex<Vec<LlmEvent>>>) -> EventSink {
-        Arc::new(move |event| {
-            events.lock().expect("lock").push(event);
-        })
-    }
+    use crate::llm::sink_collector;
 
     fn test_provider() -> AnthropicProvider {
         AnthropicProvider::new("sk-ant-test".to_string(), "claude-test".to_string())

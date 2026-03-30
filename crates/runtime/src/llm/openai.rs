@@ -7,12 +7,12 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::{
-    select,
-    time::{sleep, Duration},
-};
+use tokio::select;
 
-use crate::llm::{EventSink, LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
+use crate::llm::{
+    build_http_client, emit_event, is_retryable_status, wait_retry_delay, EventSink,
+    LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest, MAX_RETRIES,
+};
 
 #[derive(Clone)]
 pub struct OpenAiProvider {
@@ -136,40 +136,10 @@ impl OpenAiProvider {
     }
 }
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const READ_TIMEOUT: Duration = Duration::from_secs(90);
-const MAX_RETRIES: u32 = 2;
-const RETRY_BASE_DELAY_MS: u64 = 250;
-
-fn build_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(READ_TIMEOUT)
-        .build()
-        .expect("openai http client should build")
-}
-
-fn is_retryable_status(status: reqwest::StatusCode) -> bool {
-    matches!(
-        status,
-        reqwest::StatusCode::REQUEST_TIMEOUT
-            | reqwest::StatusCode::TOO_MANY_REQUESTS
-            | reqwest::StatusCode::BAD_GATEWAY
-            | reqwest::StatusCode::SERVICE_UNAVAILABLE
-            | reqwest::StatusCode::GATEWAY_TIMEOUT
-    ) || status.is_server_error()
-}
-
+/// Local wrapper so the retry loop can keep the provider-specific name
+/// while delegating to the shared retry classification in `AstrError`.
 fn is_retryable_transport_error(error: &AstrError) -> bool {
     error.is_retryable()
-}
-
-async fn wait_retry_delay(attempt: u32, cancel: CancelToken) -> Result<()> {
-    let delay_ms = RETRY_BASE_DELAY_MS.saturating_mul(1_u64 << attempt);
-    select! {
-        _ = crate::cancel::cancelled(cancel) => Err(AstrError::LlmInterrupted),
-        _ = sleep(Duration::from_millis(delay_ms)) => Ok(()),
-    }
 }
 
 #[async_trait]
@@ -322,11 +292,6 @@ fn apply_stream_chunk(chunk: OpenAiStreamChunk) -> Vec<LlmEvent> {
     }
 
     events
-}
-
-fn emit_event(event: LlmEvent, accumulator: &mut LlmAccumulator, sink: &EventSink) {
-    sink(event.clone());
-    accumulator.apply(&event);
 }
 
 fn process_sse_line(
@@ -568,12 +533,7 @@ mod tests {
     use tokio::task::JoinHandle;
 
     use super::*;
-
-    fn sink_collector(events: Arc<Mutex<Vec<LlmEvent>>>) -> EventSink {
-        Arc::new(move |event| {
-            events.lock().expect("lock").push(event);
-        })
-    }
+    use crate::llm::sink_collector;
 
     fn test_provider() -> OpenAiProvider {
         OpenAiProvider::new(

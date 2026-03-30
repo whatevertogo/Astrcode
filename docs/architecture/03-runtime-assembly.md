@@ -121,6 +121,7 @@ Runtime assembly 需要承担以下职责：
 - `runtime_governance.rs`
 - `builtin_capabilities.rs`
 - `plugin_discovery.rs`
+- `approval_service.rs`
 
 其中：
 
@@ -129,9 +130,12 @@ Runtime assembly 需要承担以下职责：
 - `runtime_governance.rs` 负责 reload / health / snapshot
 - `builtin_capabilities.rs` 负责默认 capability source
 - `plugin_discovery.rs` 负责插件搜索路径与 manifest 发现
+- `approval_service.rs` 负责默认审批 broker 及其生命周期边界
 
 runtime assembly 还承担一项很重要但容易被忽略的职责：  
 在 capability 真正进入统一 router 之前，对插件上报的 descriptor 做宿主侧校验。这样插件作者即便绕过 builder 直接构造 descriptor，错误也会在装配阶段被显式拒收。
+
+Phase 3 之后，`RuntimeService` 也会显式持有 `PolicyEngine` 与 `ApprovalBroker`，并在 capability surface reload 时保留这两个运行时服务，而不是偷偷回退成默认行为。
 
 ## Capability Router Stays the Center
 

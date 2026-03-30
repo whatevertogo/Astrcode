@@ -34,7 +34,7 @@ pub struct ToolExecutionResult {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
-    pub duration_ms: u128,
+    pub duration_ms: u64,
     /// Indicates whether the output was truncated due to size limit
     #[serde(default)]
     pub truncated: bool,

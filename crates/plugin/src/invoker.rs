@@ -78,7 +78,7 @@ impl CapabilityInvoker for PluginCapabilityInvoker {
                     output: result.output,
                     error: None,
                     metadata: Some(result.metadata),
-                    duration_ms: started_at.elapsed().as_millis(),
+                    duration_ms: started_at.elapsed().as_millis() as u64,
                     truncated: false,
                 })
             } else {
@@ -92,7 +92,7 @@ impl CapabilityInvoker for PluginCapabilityInvoker {
                     output: result.output,
                     error: Some(error),
                     metadata: Some(result.metadata),
-                    duration_ms: started_at.elapsed().as_millis(),
+                    duration_ms: started_at.elapsed().as_millis() as u64,
                     truncated: false,
                 })
             }
@@ -148,7 +148,7 @@ async fn finish_stream_invocation(
                     output: event.payload,
                     error: None,
                     metadata: Some(json!({ "streamEvents": deltas })),
-                    duration_ms: started_at.elapsed().as_millis(),
+                    duration_ms: started_at.elapsed().as_millis() as u64,
                     truncated: false,
                 });
             }
@@ -164,7 +164,7 @@ async fn finish_stream_invocation(
                             .unwrap_or_else(|| "stream invocation failed".to_string()),
                     ),
                     metadata: Some(json!({ "streamEvents": deltas })),
-                    duration_ms: started_at.elapsed().as_millis(),
+                    duration_ms: started_at.elapsed().as_millis() as u64,
                     truncated: false,
                 });
             }

@@ -2,7 +2,6 @@ mod context;
 mod error;
 mod hook;
 mod macros;
-mod memory;
 mod stream;
 #[cfg(test)]
 mod tests;
@@ -18,7 +17,6 @@ pub use hook::{
     HookRegistry, HookShortCircuit, PolicyDecision, PolicyHook, PolicyHookChain,
     RegisteredPolicyHook,
 };
-pub use memory::MemoryProvider;
 pub use serde::{de::DeserializeOwned, Serialize};
 pub use stream::{StreamChunk, StreamWriter};
 pub use tool::{DynToolHandler, ToolFuture, ToolHandler, ToolRegistration, ToolResult};

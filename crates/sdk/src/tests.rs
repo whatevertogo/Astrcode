@@ -211,7 +211,7 @@ fn stream_writer_records_standard_event_shapes() {
         .diagnostic("warning", "unused variable")
         .expect("diagnostic");
 
-    let records = stream.records();
+    let records = stream.records().expect("records should not be poisoned");
     assert_eq!(records[0].event, "message.delta");
     assert_eq!(records[1].event, "artifact.patch");
     assert_eq!(records[2].event, "diagnostic");

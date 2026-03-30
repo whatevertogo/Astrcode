@@ -347,15 +347,7 @@ fn timestamp_of_event(event: &StorageEvent) -> Option<DateTime<Utc>> {
 }
 
 fn phase_of_event(event: &StorageEvent) -> Phase {
-    match event {
-        StorageEvent::SessionStart { .. } => Phase::Idle,
-        StorageEvent::UserMessage { .. } => Phase::Thinking,
-        StorageEvent::AssistantDelta { .. }
-        | StorageEvent::ThinkingDelta { .. }
-        | StorageEvent::AssistantFinal { .. } => Phase::Streaming,
-        StorageEvent::ToolCall { .. } | StorageEvent::ToolResult { .. } => Phase::CallingTool,
-        StorageEvent::TurnDone { .. } | StorageEvent::Error { .. } => Phase::Idle,
-    }
+    super::phase_of_storage_event(event)
 }
 
 fn session_display_name(working_dir: &str) -> String {

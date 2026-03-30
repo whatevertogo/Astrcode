@@ -3,6 +3,7 @@ use astrcode_core::{CancelToken, Result};
 use crate::prompt::{append_unique_tools, DiagnosticLevel, PromptContext, PromptDiagnostics};
 use astrcode_core::AgentState;
 use astrcode_core::LlmMessage;
+use astrcode_core::ModelRequest;
 use astrcode_core::StorageEvent;
 
 use super::{
@@ -56,13 +57,28 @@ pub(crate) async fn run_turn(
         request_messages.extend(plan.append_messages);
         let mut tool_definitions = agent_loop.capabilities.tool_definitions();
         append_unique_tools(&mut tool_definitions, plan.extra_tools);
+        let policy_ctx = agent_loop.policy_context(state, turn_id, step_index);
+        let request = ModelRequest {
+            messages: request_messages,
+            tools: tool_definitions,
+            system_prompt,
+        };
+        let request = match agent_loop
+            .policy
+            .check_model_request(request, &policy_ctx)
+            .await
+        {
+            Ok(request) => request,
+            Err(error) => {
+                finish_with_error(turn_id, error.to_string(), on_event)?;
+                return Ok(());
+            }
+        };
 
         let output = match llm_cycle::generate_response(
             &provider,
-            &request_messages,
-            tool_definitions,
+            request,
             turn_id,
-            system_prompt,
             cancel.clone(),
             on_event,
         )
@@ -112,6 +128,7 @@ pub(crate) async fn run_turn(
                 tool_calls,
                 turn_id,
                 state,
+                step_index,
                 &mut messages,
                 on_event,
                 &cancel,
@@ -134,7 +151,7 @@ fn reached_max_steps(max_steps: Option<usize>, step_index: usize) -> bool {
     };
 
     if step_index >= max_steps {
-        eprintln!(
+        log::warn!(
             "[agent_loop] reached max tool iteration steps ({}), finishing turn gracefully",
             max_steps
         );

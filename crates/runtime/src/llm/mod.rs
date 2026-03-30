@@ -1,14 +1,91 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use astrcode_core::{CancelToken, ReasoningContent, Result};
+use astrcode_core::{AstrError, CancelToken, ModelRequest, ReasoningContent, Result};
 use async_trait::async_trait;
 use serde_json::Value;
+use tokio::{
+    select,
+    time::{sleep, Duration},
+};
 
 use astrcode_core::{LlmMessage, ToolCallRequest, ToolDefinition};
 
 pub mod anthropic;
 pub mod openai;
+
+// ---------------------------------------------------------------------------
+// Shared constants & helpers used by all LLM providers
+// ---------------------------------------------------------------------------
+
+/// TCP connect timeout applied to every outbound HTTP request.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Server-side read timeout – long enough for slow streaming responses but not
+/// infinite so we can detect stalled connections.
+const READ_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Maximum number of automatic retries for transient HTTP failures.
+const MAX_RETRIES: u32 = 2;
+
+/// Base delay in milliseconds for the first retry.  Each subsequent retry
+/// doubles the delay (exponential back-off).
+const RETRY_BASE_DELAY_MS: u64 = 250;
+
+/// Build a `reqwest::Client` with the shared connect / read timeout policy.
+pub(crate) fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .build()
+        .expect("http client should build")
+}
+
+/// Classify an HTTP status code as transient / retryable.
+///
+/// Covers 408 (request timeout), 429 (rate-limit), all 5xx codes, and the
+/// common gateway error codes (502, 503, 504).
+pub(crate) fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::REQUEST_TIMEOUT
+            | reqwest::StatusCode::TOO_MANY_REQUESTS
+            | reqwest::StatusCode::BAD_GATEWAY
+            | reqwest::StatusCode::SERVICE_UNAVAILABLE
+            | reqwest::StatusCode::GATEWAY_TIMEOUT
+    ) || status.is_server_error()
+}
+
+/// Wait the exponential back-off delay for the given `attempt` index, or abort
+/// early when the cancellation token fires.
+pub(crate) async fn wait_retry_delay(attempt: u32, cancel: CancelToken) -> Result<()> {
+    let delay_ms = RETRY_BASE_DELAY_MS.saturating_mul(1_u64 << attempt);
+    select! {
+        _ = crate::cancel::cancelled(cancel) => Err(AstrError::LlmInterrupted),
+        _ = sleep(Duration::from_millis(delay_ms)) => Ok(()),
+    }
+}
+
+/// Forward an event to the external sink **and** accumulate it internally.
+pub(crate) fn emit_event(event: LlmEvent, accumulator: &mut LlmAccumulator, sink: &EventSink) {
+    sink(event.clone());
+    accumulator.apply(&event);
+}
+
+// ---------------------------------------------------------------------------
+// Test helpers (shared across provider test modules)
+// ---------------------------------------------------------------------------
+
+/// Create an `EventSink` that records every received event into a
+/// `Vec<LlmEvent>` guarded by a `Mutex`.
+///
+/// Used by unit tests in both `anthropic` and `openai` modules.
+#[cfg(test)]
+pub(crate) fn sink_collector(events: Arc<std::sync::Mutex<Vec<LlmEvent>>>) -> EventSink {
+    Arc::new(move |event| {
+        events.lock().expect("lock").push(event);
+    })
+}
 
 #[derive(Clone, Debug)]
 /// Runtime-scoped model call request consumed by the agent loop.
@@ -36,6 +113,15 @@ impl LlmRequest {
     pub fn with_system(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
         self
+    }
+
+    pub fn from_model_request(request: ModelRequest, cancel: CancelToken) -> Self {
+        Self {
+            messages: request.messages,
+            tools: request.tools,
+            cancel,
+            system_prompt: request.system_prompt,
+        }
     }
 }
 

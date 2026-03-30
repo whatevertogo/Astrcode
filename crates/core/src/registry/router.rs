@@ -53,7 +53,7 @@ pub struct CapabilityExecutionResult {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
-    pub duration_ms: u128,
+    pub duration_ms: u64,
     #[serde(default)]
     pub truncated: bool,
 }
@@ -104,7 +104,7 @@ impl CapabilityExecutionResult {
             output,
             error: self.error,
             metadata: self.metadata,
-            duration_ms: self.duration_ms,
+            duration_ms: self.duration_ms as u64,
             truncated: self.truncated,
         }
     }
@@ -188,6 +188,12 @@ impl CapabilityRouter {
 
     pub fn capability_names(&self) -> Vec<String> {
         self.order.clone()
+    }
+
+    pub fn descriptor(&self, name: &str) -> Option<CapabilityDescriptor> {
+        self.invokers_by_name
+            .get(name)
+            .map(|invoker| invoker.descriptor())
     }
 
     /// Projects tool-callable capabilities into the LLM-facing tool definition surface.

@@ -4,9 +4,12 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::approval_service::ApprovalBroker;
 use astrcode_core::{
-    AstrError, CancelToken, CapabilityRouter as CoreCapabilityRouter, Phase, PluginManifest,
-    PluginType, Result, Tool, ToolContext,
+    ApprovalDefault, ApprovalRequest, ApprovalResolution, AstrError, CancelToken, CapabilityCall,
+    CapabilityRouter as CoreCapabilityRouter, ContextPressureInput, ContextStrategyDecision,
+    ModelRequest, Phase, PluginManifest, PluginType, PolicyContext, PolicyEngine, PolicyVerdict,
+    Result, Tool, ToolContext,
 };
 use astrcode_plugin::Supervisor;
 use astrcode_protocol::plugin::{PeerDescriptor, PeerRole};
@@ -74,6 +77,9 @@ impl LlmProvider for ScriptedProvider {
 struct SlowTool;
 
 struct QuickTool;
+struct CountingTool {
+    executions: Arc<AtomicUsize>,
+}
 
 struct StreamingProvider {
     response: LlmOutput,
@@ -91,6 +97,22 @@ struct StaticProviderFactory {
 
 struct CountingPromptContributor {
     calls: Arc<AtomicUsize>,
+}
+struct RewriteSystemPromptPolicy {
+    suffix: String,
+}
+struct DenyCapabilityPolicy {
+    capability_name: String,
+    reason: String,
+}
+struct AskCapabilityPolicy {
+    capability_name: String,
+    prompt: String,
+    default: ApprovalDefault,
+}
+struct RecordingApprovalBroker {
+    requests: Arc<Mutex<Vec<ApprovalRequest>>>,
+    resolutions: Mutex<VecDeque<ApprovalResolution>>,
 }
 
 impl ProviderFactory for StaticProviderFactory {
@@ -116,6 +138,131 @@ impl PromptContributor for CountingPromptContributor {
             )],
             ..PromptContribution::default()
         }
+    }
+}
+
+#[async_trait]
+impl PolicyEngine for RewriteSystemPromptPolicy {
+    async fn check_model_request(
+        &self,
+        mut request: ModelRequest,
+        _ctx: &PolicyContext,
+    ) -> Result<ModelRequest> {
+        let base = request.system_prompt.take().unwrap_or_default();
+        request.system_prompt = Some(format!("{base}\n{}", self.suffix).trim().to_string());
+        Ok(request)
+    }
+
+    async fn check_capability_call(
+        &self,
+        call: CapabilityCall,
+        _ctx: &PolicyContext,
+    ) -> Result<PolicyVerdict<CapabilityCall>> {
+        Ok(PolicyVerdict::Allow(call))
+    }
+
+    async fn decide_context_strategy(
+        &self,
+        _input: ContextPressureInput,
+        _ctx: &PolicyContext,
+    ) -> Result<ContextStrategyDecision> {
+        Ok(ContextStrategyDecision::Ignore)
+    }
+}
+
+#[async_trait]
+impl PolicyEngine for DenyCapabilityPolicy {
+    async fn check_model_request(
+        &self,
+        request: ModelRequest,
+        _ctx: &PolicyContext,
+    ) -> Result<ModelRequest> {
+        Ok(request)
+    }
+
+    async fn check_capability_call(
+        &self,
+        call: CapabilityCall,
+        _ctx: &PolicyContext,
+    ) -> Result<PolicyVerdict<CapabilityCall>> {
+        if call.name() == self.capability_name {
+            Ok(PolicyVerdict::deny(self.reason.clone()))
+        } else {
+            Ok(PolicyVerdict::Allow(call))
+        }
+    }
+
+    async fn decide_context_strategy(
+        &self,
+        _input: ContextPressureInput,
+        _ctx: &PolicyContext,
+    ) -> Result<ContextStrategyDecision> {
+        Ok(ContextStrategyDecision::Ignore)
+    }
+}
+
+#[async_trait]
+impl PolicyEngine for AskCapabilityPolicy {
+    async fn check_model_request(
+        &self,
+        request: ModelRequest,
+        _ctx: &PolicyContext,
+    ) -> Result<ModelRequest> {
+        Ok(request)
+    }
+
+    async fn check_capability_call(
+        &self,
+        call: CapabilityCall,
+        ctx: &PolicyContext,
+    ) -> Result<PolicyVerdict<CapabilityCall>> {
+        if call.name() == self.capability_name {
+            let prompt = self.prompt.clone();
+            let request = ApprovalRequest {
+                request_id: call.request_id.clone(),
+                session_id: ctx.session_id.clone(),
+                turn_id: ctx.turn_id.clone(),
+                capability: call.descriptor.clone(),
+                payload: call.payload.clone(),
+                prompt,
+                default: self.default.clone(),
+                metadata: serde_json::Value::Null,
+            };
+            Ok(PolicyVerdict::ask(request, call))
+        } else {
+            Ok(PolicyVerdict::Allow(call))
+        }
+    }
+
+    async fn decide_context_strategy(
+        &self,
+        _input: ContextPressureInput,
+        _ctx: &PolicyContext,
+    ) -> Result<ContextStrategyDecision> {
+        Ok(ContextStrategyDecision::Ignore)
+    }
+}
+
+#[async_trait]
+impl ApprovalBroker for RecordingApprovalBroker {
+    async fn request(
+        &self,
+        request: ApprovalRequest,
+        cancel: CancelToken,
+    ) -> Result<ApprovalResolution> {
+        if cancel.is_cancelled() {
+            return Err(AstrError::Cancelled);
+        }
+        self.requests
+            .lock()
+            .expect("approval requests lock")
+            .push(request);
+        Ok(self
+            .resolutions
+            .lock()
+            .expect("approval resolutions lock")
+            .pop_front()
+            .unwrap_or_else(ApprovalResolution::approved))
     }
 }
 
@@ -221,6 +368,36 @@ impl Tool for QuickTool {
             tool_name: "quickTool".to_string(),
             ok: true,
             output: "ok".to_string(),
+            error: None,
+            metadata: None,
+            duration_ms: 1,
+            truncated: false,
+        })
+    }
+}
+
+#[async_trait]
+impl Tool for CountingTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "policyTool".to_string(),
+            description: "policy-aware test tool".to_string(),
+            parameters: json!({"type":"object"}),
+        }
+    }
+
+    async fn execute(
+        &self,
+        tool_call_id: String,
+        _args: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<ToolExecutionResult> {
+        self.executions.fetch_add(1, Ordering::SeqCst);
+        Ok(ToolExecutionResult {
+            tool_call_id,
+            tool_name: "policyTool".to_string(),
+            ok: true,
+            output: "counted".to_string(),
             error: None,
             metadata: None,
             duration_ms: 1,
@@ -643,6 +820,248 @@ async fn event_sink_failures_abort_the_turn() {
         .expect("result should be error")
         .to_string()
         .contains("event sink failed"));
+}
+
+#[tokio::test]
+async fn policy_can_rewrite_model_request_before_provider_execution() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(RecordingProvider {
+        responses: Mutex::new(VecDeque::from([LlmOutput {
+            content: "done".to_string(),
+            tool_calls: vec![],
+            reasoning: None,
+        }])),
+        requests: Arc::clone(&requests),
+    });
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::from_capabilities(factory, empty_capabilities())
+        .with_policy_engine(Arc::new(RewriteSystemPromptPolicy {
+            suffix: "[Policy Guardrail]".to_string(),
+        }));
+
+    loop_runner
+        .run_turn(
+            &make_state("rewrite prompt"),
+            "turn-policy-rewrite",
+            &mut |_event| Ok(()),
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+
+    let requests = requests.lock().expect("recorded requests lock");
+    let prompt = requests[0]
+        .system_prompt
+        .as_deref()
+        .expect("system prompt should exist");
+    assert!(prompt.contains("[Policy Guardrail]"));
+}
+
+#[tokio::test]
+async fn denied_tool_calls_emit_failure_without_executing_tool() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([
+            LlmOutput {
+                content: String::new(),
+                tool_calls: vec![ToolCallRequest {
+                    id: "call-policy-deny".to_string(),
+                    name: "policyTool".to_string(),
+                    args: json!({}),
+                }],
+                reasoning: None,
+            },
+            LlmOutput {
+                content: "done".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+        ])),
+        delay: Duration::from_millis(0),
+    });
+    let tools = ToolRegistry::builder()
+        .register(Box::new(CountingTool {
+            executions: Arc::clone(&executions),
+        }))
+        .build();
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::from_capabilities(factory, capabilities_from_tools(tools))
+        .with_policy_engine(Arc::new(DenyCapabilityPolicy {
+            capability_name: "policyTool".to_string(),
+            reason: "policy blocked tool".to_string(),
+        }))
+        .with_max_steps(8);
+    let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = Arc::clone(&events);
+    let mut on_event = move |event: StorageEvent| {
+        events_clone.lock().expect("events lock").push(event);
+        Ok(())
+    };
+
+    loop_runner
+        .run_turn(
+            &make_state("deny tool"),
+            "turn-policy-deny",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert!(events.lock().expect("events lock").iter().any(|event| {
+        matches!(
+            event,
+            StorageEvent::ToolResult {
+                tool_name,
+                success,
+                output,
+                ..
+            } if tool_name == "policyTool" && !success && output.contains("policy blocked tool")
+        )
+    }));
+}
+
+#[tokio::test]
+async fn ask_policy_uses_approval_broker_before_tool_execution() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let approval_requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([
+            LlmOutput {
+                content: String::new(),
+                tool_calls: vec![ToolCallRequest {
+                    id: "call-policy-ask".to_string(),
+                    name: "policyTool".to_string(),
+                    args: json!({}),
+                }],
+                reasoning: None,
+            },
+            LlmOutput {
+                content: "done".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+        ])),
+        delay: Duration::from_millis(0),
+    });
+    let broker = Arc::new(RecordingApprovalBroker {
+        requests: Arc::clone(&approval_requests),
+        resolutions: Mutex::new(VecDeque::from([ApprovalResolution::approved()])),
+    });
+    let tools = ToolRegistry::builder()
+        .register(Box::new(CountingTool {
+            executions: Arc::clone(&executions),
+        }))
+        .build();
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::from_capabilities(factory, capabilities_from_tools(tools))
+        .with_policy_engine(Arc::new(AskCapabilityPolicy {
+            capability_name: "policyTool".to_string(),
+            prompt: "Allow policyTool?".to_string(),
+            default: ApprovalDefault::Deny,
+        }))
+        .with_approval_broker(broker)
+        .with_max_steps(8);
+
+    loop_runner
+        .run_turn(
+            &make_state("ask tool"),
+            "turn-policy-ask",
+            &mut |_event| Ok(()),
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    let requests = approval_requests.lock().expect("approval requests lock");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].capability_name(), "policyTool");
+    assert_eq!(requests[0].prompt, "Allow policyTool?");
+}
+
+#[tokio::test]
+async fn denied_approval_returns_failed_tool_result_without_execution() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let approval_requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([
+            LlmOutput {
+                content: String::new(),
+                tool_calls: vec![ToolCallRequest {
+                    id: "call-policy-ask-denied".to_string(),
+                    name: "policyTool".to_string(),
+                    args: json!({}),
+                }],
+                reasoning: None,
+            },
+            LlmOutput {
+                content: "done".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+        ])),
+        delay: Duration::from_millis(0),
+    });
+    let broker = Arc::new(RecordingApprovalBroker {
+        requests: Arc::clone(&approval_requests),
+        resolutions: Mutex::new(VecDeque::from([ApprovalResolution::denied(
+            "approval rejected in test",
+        )])),
+    });
+    let tools = ToolRegistry::builder()
+        .register(Box::new(CountingTool {
+            executions: Arc::clone(&executions),
+        }))
+        .build();
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::from_capabilities(factory, capabilities_from_tools(tools))
+        .with_policy_engine(Arc::new(AskCapabilityPolicy {
+            capability_name: "policyTool".to_string(),
+            prompt: "Allow policyTool?".to_string(),
+            default: ApprovalDefault::Allow,
+        }))
+        .with_approval_broker(broker)
+        .with_max_steps(8);
+    let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = Arc::clone(&events);
+    let mut on_event = move |event: StorageEvent| {
+        events_clone.lock().expect("events lock").push(event);
+        Ok(())
+    };
+
+    loop_runner
+        .run_turn(
+            &make_state("deny approval"),
+            "turn-policy-approval-deny",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        approval_requests
+            .lock()
+            .expect("approval requests lock")
+            .len(),
+        1
+    );
+    assert!(events.lock().expect("events lock").iter().any(|event| {
+        matches!(
+            event,
+            StorageEvent::ToolResult {
+                tool_name,
+                success,
+                output,
+                ..
+            } if tool_name == "policyTool"
+                && !success
+                && output.contains("approval rejected in test")
+        )
+    }));
 }
 
 #[tokio::test]

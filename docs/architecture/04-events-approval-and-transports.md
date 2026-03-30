@@ -35,7 +35,11 @@
 
 ```rust
 trait ApprovalBroker: Send + Sync {
-    async fn request(&self, req: ApprovalRequest) -> Result<ApprovalResolution>;
+    async fn request(
+        &self,
+        req: ApprovalRequest,
+        cancel: CancelToken,
+    ) -> Result<ApprovalResolution>;
 }
 ```
 
@@ -52,6 +56,10 @@ trait ApprovalBroker: Send + Sync {
 - 审批不会依赖某个具体 transport
 - CLI、Web、Tauri、ACP 都能走同一审批模型
 - 审批状态不会被混成“只是一个 UI 事件”
+- broker 可以显式感知 turn cancellation，而不是在挂起审批时泄漏僵尸等待
+
+当前实现中，runtime 默认提供一个 `DefaultApprovalBroker`：  
+它会根据 `ApprovalRequest.default` 立即给出 allow / deny 结果。这样在真正的 Web/CLI 审批 transport 到位之前，`Ask` 也不会把 turn 卡死。
 
 ## 3. EventBus vs EventLog
 
@@ -166,3 +174,12 @@ HTTP/SSE / CLI / ACP / Tauri/Web subscribe and render
 - ACP / CLI / SSE 共享 runtime 事件，不共享彼此的 transport shape
 
 这和现有 V4 protocol ADR 方向是一致的：传输层只做 raw message transport，状态机与业务语义不应下沉到 transport。
+
+## Current Status
+
+截至当前实现：
+
+- Phase 3 的 `PolicyEngine` 三态与 `ApprovalBroker` 已落地进 `AgentLoop`
+- `Allow / Deny / Ask` 已经真正影响 tool-call 执行路径
+- runtime 默认 broker 已存在，且支持 cancel-aware request
+- Phase 4 的 runtime observation bus 仍未落地，审批状态目前不会单独作为 durable session event 存储

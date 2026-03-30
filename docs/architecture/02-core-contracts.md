@@ -248,6 +248,16 @@ enum PolicyVerdict<T> {
 }
 ```
 
+当前实现已经落地为：
+
+- `ModelRequest`：用于 policy 检查和改写模型请求
+- `CapabilityCall`：用于 policy 检查 capability 调用，并携带 descriptor 元数据
+- `ApprovalRequest` / `ApprovalResolution`：用于承载 `Ask` 分支的审批载荷
+- `ContextPressureInput` / `ContextStrategyDecision`：用于冻结上下文压力决策点
+
+其中 `AllowAllPolicyEngine` 是 runtime 默认实现，保证没有自定义 policy 时行为与旧实现兼容。
+当前 `ContextPressureInput` 还只停留在 contract 层，真正的 token budget 触发点仍留给后续阶段补齐。
+
 这里刻意没有使用“万能 hook”。
 
 原因：
@@ -268,6 +278,8 @@ enum PolicyVerdict<T> {
 - Policy 负责产出 `Ask`
 - Approval service 负责挂起与恢复
 - Event 只负责镜像 `ApprovalRequested` / `ApprovalResolved`
+
+当前 runtime 已经接入这条链路：tool call 会先经过 `PolicyEngine::check_capability_call()`，`Ask` 分支再通过 broker 解析为 allow / deny，最后才进入真正的 capability 执行。
 
 ## 4. Event Contract
 
