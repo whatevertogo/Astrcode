@@ -1,18 +1,37 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use astrcode_core::{PluginHealth, PluginManifest, RuntimeCoordinator};
-use astrcode_runtime::{RuntimeService, ServiceError};
-use chrono::Utc;
+use astrcode_core::{
+    plugin::PluginEntry, CapabilityDescriptor, PluginHealth, PluginManifest, RuntimeCoordinator,
+};
+use chrono::{DateTime, Utc};
 use tokio::sync::{Mutex, RwLock};
 
-use super::assembly::{
-    assemble_runtime_surface, configured_plugin_paths, discover_plugin_manifests_in,
-    PluginInitializer, SupervisorPluginInitializer,
+use crate::plugin_discovery::{configured_plugin_paths, discover_plugin_manifests_in};
+use crate::runtime_surface_assembler::{
+    assemble_runtime_surface, ActivePluginRuntime, PluginInitializer, SupervisorPluginInitializer,
 };
-use super::{ActivePluginRuntime, RuntimeGovernanceSnapshot, RuntimeReloadResult};
+use crate::{RuntimeObservabilitySnapshot, RuntimeService, ServiceError};
 
-pub(crate) struct RuntimeGovernance {
+#[derive(Debug, Clone)]
+pub struct RuntimeGovernanceSnapshot {
+    pub runtime_name: String,
+    pub runtime_kind: String,
+    pub loaded_session_count: usize,
+    pub running_session_ids: Vec<String>,
+    pub plugin_search_paths: Vec<PathBuf>,
+    pub metrics: RuntimeObservabilitySnapshot,
+    pub capabilities: Vec<CapabilityDescriptor>,
+    pub plugins: Vec<PluginEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeReloadResult {
+    pub snapshot: RuntimeGovernanceSnapshot,
+    pub reloaded_at: DateTime<Utc>,
+}
+
+pub struct RuntimeGovernance {
     service: Arc<RuntimeService>,
     coordinator: Arc<RuntimeCoordinator>,
     active_plugins: RwLock<Vec<ActivePluginRuntime>>,
@@ -20,7 +39,14 @@ pub(crate) struct RuntimeGovernance {
 }
 
 impl RuntimeGovernance {
-    pub(crate) fn new(
+    pub fn from_runtime(
+        service: Arc<RuntimeService>,
+        coordinator: Arc<RuntimeCoordinator>,
+    ) -> Self {
+        Self::with_active_plugins(service, coordinator, Vec::new())
+    }
+
+    pub(crate) fn with_active_plugins(
         service: Arc<RuntimeService>,
         coordinator: Arc<RuntimeCoordinator>,
         active_plugins: Vec<ActivePluginRuntime>,
@@ -33,12 +59,12 @@ impl RuntimeGovernance {
         }
     }
 
-    pub(crate) async fn snapshot(&self) -> RuntimeGovernanceSnapshot {
+    pub async fn snapshot(&self) -> RuntimeGovernanceSnapshot {
         self.refresh_plugin_health().await;
         self.snapshot_with_paths(configured_plugin_paths()).await
     }
 
-    pub(crate) async fn reload(&self) -> Result<RuntimeReloadResult, ServiceError> {
+    pub async fn reload(&self) -> Result<RuntimeReloadResult, ServiceError> {
         let search_paths = configured_plugin_paths();
         let manifests =
             discover_plugin_manifests_in(&search_paths).map_err(ServiceError::Internal)?;
@@ -47,7 +73,7 @@ impl RuntimeGovernance {
             .await
     }
 
-    pub(super) async fn reload_from_manifests<I>(
+    pub(crate) async fn reload_from_manifests<I>(
         &self,
         manifests: Vec<PluginManifest>,
         initializer: &I,
@@ -90,8 +116,6 @@ impl RuntimeGovernance {
             }
         }
 
-        // RuntimeCoordinator owns managed-component shutdown so reload cannot race or double-close
-        // the same supervisor through a second governance-side lifecycle path.
         drop(previous_active_plugins);
 
         Ok(RuntimeReloadResult {

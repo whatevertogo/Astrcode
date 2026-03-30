@@ -6,31 +6,44 @@ use std::time::Instant;
 use astrcode_core::{
     plugin::PluginEntry, AstrError, CapabilityDescriptor, CapabilityExecutionResult,
     CapabilityInvoker, CapabilityRouter, ManagedRuntimeComponent, PluginHealth, PluginManifest,
-    PluginRegistry, RuntimeCoordinator, RuntimeHandle, ToolRegistry,
+    PluginRegistry,
 };
 use astrcode_plugin::{PluginLoader, Supervisor, SupervisorHealth};
 use astrcode_protocol::plugin::{PeerDescriptor, PeerRole};
-use astrcode_runtime::{RuntimeService, ServiceError};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::Value;
 
-use super::{
-    ActivePluginRuntime, ManagedPluginComponent, ManagedPluginHealth, RuntimeBootstrap,
-    RuntimeGovernance,
-};
+use crate::builtin_capabilities::built_in_tool_registry;
 
-pub(super) struct AssembledRuntimeSurface {
-    pub(super) router: CapabilityRouter,
-    pub(super) plugin_entries: Vec<PluginEntry>,
-    pub(super) managed_components: Vec<Arc<dyn ManagedRuntimeComponent>>,
-    pub(super) active_plugins: Vec<ActivePluginRuntime>,
+pub(crate) struct AssembledRuntimeSurface {
+    pub(crate) router: CapabilityRouter,
+    pub(crate) plugin_entries: Vec<PluginEntry>,
+    pub(crate) managed_components: Vec<Arc<dyn ManagedRuntimeComponent>>,
+    pub(crate) active_plugins: Vec<ActivePluginRuntime>,
 }
 
-pub(super) struct LoadedPlugin {
-    pub(super) component: Arc<dyn ManagedPluginComponent>,
-    pub(super) capabilities: Vec<CapabilityDescriptor>,
-    pub(super) invokers: Vec<Arc<dyn CapabilityInvoker>>,
+#[derive(Clone)]
+pub(crate) struct ActivePluginRuntime {
+    pub(crate) name: String,
+    pub(crate) component: Arc<dyn ManagedPluginComponent>,
+}
+
+pub(crate) struct LoadedPlugin {
+    pub(crate) component: Arc<dyn ManagedPluginComponent>,
+    pub(crate) capabilities: Vec<CapabilityDescriptor>,
+    pub(crate) invokers: Vec<Arc<dyn CapabilityInvoker>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManagedPluginHealth {
+    pub(crate) health: PluginHealth,
+    pub(crate) message: Option<String>,
+}
+
+#[async_trait]
+pub(crate) trait ManagedPluginComponent: ManagedRuntimeComponent {
+    async fn health_report(&self) -> std::result::Result<ManagedPluginHealth, AstrError>;
 }
 
 #[async_trait]
@@ -122,19 +135,19 @@ impl CapabilityInvoker for GovernedPluginInvoker {
 }
 
 #[async_trait]
-pub(super) trait PluginInitializer: Send + Sync {
+pub(crate) trait PluginInitializer: Send + Sync {
     async fn initialize(
         &self,
         manifest: &PluginManifest,
     ) -> std::result::Result<LoadedPlugin, AstrError>;
 }
 
-pub(super) struct SupervisorPluginInitializer {
+pub(crate) struct SupervisorPluginInitializer {
     loader: PluginLoader,
 }
 
 impl SupervisorPluginInitializer {
-    pub(super) fn new(search_paths: Vec<PathBuf>) -> Self {
+    pub(crate) fn new(search_paths: Vec<PathBuf>) -> Self {
         Self {
             loader: PluginLoader { search_paths },
         }
@@ -149,7 +162,7 @@ impl PluginInitializer for SupervisorPluginInitializer {
     ) -> std::result::Result<LoadedPlugin, AstrError> {
         let supervisor = Arc::new(
             self.loader
-                .start(manifest, server_peer_descriptor(), None)
+                .start(manifest, host_peer_descriptor(), None)
                 .await?,
         );
         Ok(LoadedPlugin {
@@ -160,47 +173,7 @@ impl PluginInitializer for SupervisorPluginInitializer {
     }
 }
 
-pub(crate) async fn bootstrap_runtime() -> std::result::Result<RuntimeBootstrap, AstrError> {
-    let search_paths = configured_plugin_paths();
-    let manifests = discover_plugin_manifests_in(&search_paths)?;
-    let initializer = SupervisorPluginInitializer::new(search_paths);
-    bootstrap_runtime_from_manifests(manifests, &initializer).await
-}
-
-pub(super) async fn bootstrap_runtime_from_manifests<I>(
-    manifests: Vec<PluginManifest>,
-    initializer: &I,
-) -> std::result::Result<RuntimeBootstrap, AstrError>
-where
-    I: PluginInitializer,
-{
-    let plugin_registry = Arc::new(PluginRegistry::default());
-    let assembled =
-        assemble_runtime_surface(manifests, initializer, Arc::clone(&plugin_registry)).await?;
-    let capability_surface = assembled.router.descriptors();
-    plugin_registry.replace_snapshot(assembled.plugin_entries);
-    let service = Arc::new(
-        RuntimeService::from_capabilities(assembled.router).map_err(service_error_to_astr)?,
-    );
-    let runtime: Arc<dyn RuntimeHandle> = service.clone();
-    let coordinator = Arc::new(
-        RuntimeCoordinator::new(runtime, plugin_registry, capability_surface)
-            .with_managed_components(assembled.managed_components),
-    );
-    let governance = Arc::new(RuntimeGovernance::new(
-        Arc::clone(&service),
-        Arc::clone(&coordinator),
-        assembled.active_plugins,
-    ));
-
-    Ok(RuntimeBootstrap {
-        service,
-        coordinator,
-        governance,
-    })
-}
-
-pub(super) async fn assemble_runtime_surface<I>(
+pub(crate) async fn assemble_runtime_surface<I>(
     manifests: Vec<PluginManifest>,
     initializer: &I,
     plugin_registry: Arc<PluginRegistry>,
@@ -257,6 +230,30 @@ where
                 continue;
             }
         };
+
+        if let Some(failure) = invalid_capability_reason(&loaded_plugin.capabilities) {
+            log::error!("failed to register plugin '{}': {}", manifest.name, failure);
+            plugin_entries.insert(
+                manifest.name.clone(),
+                PluginEntry {
+                    manifest: manifest.clone(),
+                    state: astrcode_core::PluginState::Failed,
+                    health: PluginHealth::Unavailable,
+                    failure_count: 1,
+                    capabilities: loaded_plugin.capabilities.clone(),
+                    failure: Some(failure),
+                    last_checked_at: None,
+                },
+            );
+            if let Err(error) = loaded_plugin.component.shutdown_component().await {
+                log::warn!(
+                    "failed to shut down rejected plugin component '{}': {}",
+                    loaded_plugin.component.component_name(),
+                    error
+                );
+            }
+            continue;
+        }
 
         if let Some(conflict) =
             conflicting_capability_name(&registered_capability_names, &loaded_plugin.capabilities)
@@ -327,26 +324,7 @@ where
     })
 }
 
-pub(super) fn configured_plugin_paths() -> Vec<PathBuf> {
-    match std::env::var_os("ASTRCODE_PLUGIN_DIRS") {
-        Some(raw_paths) => std::env::split_paths(&raw_paths).collect(),
-        None => Vec::new(),
-    }
-}
-
-pub(super) fn discover_plugin_manifests_in(
-    search_paths: &[PathBuf],
-) -> std::result::Result<Vec<PluginManifest>, AstrError> {
-    if search_paths.is_empty() {
-        return Ok(Vec::new());
-    }
-    PluginLoader {
-        search_paths: search_paths.to_vec(),
-    }
-    .discover()
-}
-
-pub(super) fn conflicting_capability_name(
+pub(crate) fn conflicting_capability_name(
     registered_capability_names: &HashSet<String>,
     capabilities: &[CapabilityDescriptor],
 ) -> Option<String> {
@@ -361,38 +339,17 @@ pub(super) fn conflicting_capability_name(
     None
 }
 
-fn service_error_to_astr(error: ServiceError) -> AstrError {
-    match error {
-        ServiceError::NotFound(message)
-        | ServiceError::Conflict(message)
-        | ServiceError::InvalidInput(message) => AstrError::Validation(message),
-        ServiceError::Internal(error) => AstrError::Internal(error.to_string()),
-    }
+fn invalid_capability_reason(capabilities: &[CapabilityDescriptor]) -> Option<String> {
+    capabilities.iter().find_map(|capability| {
+        capability.validate().err().map(|error| {
+            let name = capability.name.trim();
+            let label = if name.is_empty() { "<unnamed>" } else { name };
+            format!("capability '{}' is invalid: {}", label, error)
+        })
+    })
 }
 
-fn built_in_tool_registry() -> ToolRegistry {
-    ToolRegistry::builder()
-        .register(Box::new(astrcode_tools::tools::shell::ShellTool::default()))
-        .register(Box::new(
-            astrcode_tools::tools::list_dir::ListDirTool::default(),
-        ))
-        .register(Box::new(
-            astrcode_tools::tools::read_file::ReadFileTool::default(),
-        ))
-        .register(Box::new(
-            astrcode_tools::tools::write_file::WriteFileTool::default(),
-        ))
-        .register(Box::new(
-            astrcode_tools::tools::edit_file::EditFileTool::default(),
-        ))
-        .register(Box::new(
-            astrcode_tools::tools::find_files::FindFilesTool::default(),
-        ))
-        .register(Box::new(astrcode_tools::tools::grep::GrepTool::default()))
-        .build()
-}
-
-fn server_peer_descriptor() -> PeerDescriptor {
+fn host_peer_descriptor() -> PeerDescriptor {
     PeerDescriptor {
         id: "astrcode-server".to_string(),
         name: "astrcode-server".to_string(),

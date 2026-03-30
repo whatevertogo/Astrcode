@@ -9,7 +9,6 @@ mod auth_routes_tests;
 mod bootstrap;
 #[cfg(test)]
 mod browser_bootstrap_tests;
-mod capabilities;
 mod mapper;
 mod routes;
 #[cfg(test)]
@@ -25,7 +24,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result as AnyhowResult};
 use astrcode_core::{AstrError, RuntimeCoordinator};
-use astrcode_runtime::{RuntimeService, ServiceError};
+use astrcode_runtime::{bootstrap_runtime, RuntimeGovernance, RuntimeService, ServiceError};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
@@ -36,7 +35,6 @@ use crate::bootstrap::{
     attach_frontend_build, bootstrap_token_expires_at_ms, build_cors_layer, clear_run_info,
     load_frontend_build, random_hex_token, write_run_info,
 };
-use crate::capabilities::{bootstrap_runtime, RuntimeGovernance};
 use crate::routes::build_api_router;
 
 pub(crate) const AUTH_HEADER_NAME: &str = "x-astrcode-token";

@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::fmt;
 
@@ -24,17 +24,87 @@ impl CapabilityNamespace {
 ///
 /// The generic capability path remains name + payload + invoke. Adapter-facing surfaces may read
 /// this metadata to decide how a capability should be exposed or filtered.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum CapabilityKind {
-    #[default]
-    Tool,
-    Agent,
-    ContextProvider,
-    MemoryProvider,
-    PolicyHook,
-    Renderer,
-    Resource,
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Hash)]
+#[serde(transparent)]
+pub struct CapabilityKind(String);
+
+impl CapabilityKind {
+    pub fn new(kind: impl Into<String>) -> Self {
+        Self(kind.into().trim().to_string())
+    }
+
+    pub fn custom(kind: impl Into<String>) -> Self {
+        Self::new(kind)
+    }
+
+    pub fn tool() -> Self {
+        Self::new("tool")
+    }
+
+    pub fn agent() -> Self {
+        Self::new("agent")
+    }
+
+    pub fn context_provider() -> Self {
+        Self::new("context_provider")
+    }
+
+    pub fn memory_provider() -> Self {
+        Self::new("memory_provider")
+    }
+
+    pub fn policy_hook() -> Self {
+        Self::new("policy_hook")
+    }
+
+    pub fn renderer() -> Self {
+        Self::new("renderer")
+    }
+
+    pub fn resource() -> Self {
+        Self::new("resource")
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_tool(&self) -> bool {
+        self.as_str() == "tool"
+    }
+}
+
+impl Default for CapabilityKind {
+    fn default() -> Self {
+        Self::tool()
+    }
+}
+
+impl From<&str> for CapabilityKind {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<String> for CapabilityKind {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl<'de> Deserialize<'de> for CapabilityKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Self::new(String::deserialize(deserializer)?))
+    }
+}
+
+impl fmt::Display for CapabilityKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -90,12 +160,29 @@ pub struct CapabilityDescriptor {
 }
 
 impl CapabilityDescriptor {
-    pub fn builder(name: impl Into<String>, kind: CapabilityKind) -> CapabilityDescriptorBuilder {
+    pub fn builder(
+        name: impl Into<String>,
+        kind: impl Into<CapabilityKind>,
+    ) -> CapabilityDescriptorBuilder {
         CapabilityDescriptorBuilder::new(name, kind)
     }
 
     pub fn namespace(&self) -> CapabilityNamespace {
         CapabilityNamespace::from_capability_name(&self.name)
+    }
+
+    /// Validates a descriptor that may have been constructed directly or decoded from protocol
+    /// messages instead of flowing through the builder.
+    pub fn validate(&self) -> Result<(), DescriptorBuildError> {
+        validate_non_empty("name", self.name.clone())?;
+        validate_kind(self.kind.clone())?;
+        validate_non_empty("description", self.description.clone())?;
+        validate_schema("input_schema", self.input_schema.clone())?;
+        validate_schema("output_schema", self.output_schema.clone())?;
+        validate_string_list("profiles", self.profiles.clone())?;
+        validate_string_list("tags", self.tags.clone())?;
+        validate_permissions(self.permissions.clone())?;
+        Ok(())
     }
 }
 
@@ -143,10 +230,10 @@ pub struct CapabilityDescriptorBuilder {
 }
 
 impl CapabilityDescriptorBuilder {
-    pub fn new(name: impl Into<String>, kind: CapabilityKind) -> Self {
+    pub fn new(name: impl Into<String>, kind: impl Into<CapabilityKind>) -> Self {
         Self {
             name: name.into(),
-            kind,
+            kind: kind.into(),
             description: None,
             input_schema: None,
             output_schema: None,
@@ -250,6 +337,7 @@ impl CapabilityDescriptorBuilder {
 
     pub fn build(self) -> Result<CapabilityDescriptor, DescriptorBuildError> {
         let name = validate_non_empty("name", self.name)?;
+        let kind = validate_kind(self.kind)?;
         let description = validate_non_empty(
             "description",
             self.description
@@ -271,7 +359,7 @@ impl CapabilityDescriptorBuilder {
 
         Ok(CapabilityDescriptor {
             name,
-            kind: self.kind,
+            kind,
             description,
             input_schema,
             output_schema,
@@ -283,6 +371,10 @@ impl CapabilityDescriptorBuilder {
             stability: self.stability,
         })
     }
+}
+
+fn validate_kind(value: CapabilityKind) -> Result<CapabilityKind, DescriptorBuildError> {
+    Ok(CapabilityKind(validate_non_empty("kind", value.0)?))
 }
 
 fn validate_non_empty(field: &'static str, value: String) -> Result<String, DescriptorBuildError> {
@@ -351,7 +443,7 @@ mod tests {
 
     #[test]
     fn builder_creates_descriptor_with_validated_fields() {
-        let descriptor = CapabilityDescriptor::builder("tool.sample", CapabilityKind::Tool)
+        let descriptor = CapabilityDescriptor::builder("tool.sample", CapabilityKind::tool())
             .description("  Sample tool  ")
             .schema(json!({ "type": "object" }), json!({ "type": "object" }))
             .permission("filesystem.read")
@@ -372,7 +464,7 @@ mod tests {
 
     #[test]
     fn builder_rejects_missing_required_fields_and_duplicates() {
-        let missing_schema = CapabilityDescriptor::builder("tool.sample", CapabilityKind::Tool)
+        let missing_schema = CapabilityDescriptor::builder("tool.sample", CapabilityKind::tool())
             .description("sample")
             .build()
             .expect_err("schemas are required");
@@ -381,18 +473,73 @@ mod tests {
             DescriptorBuildError::MissingField("input_schema")
         );
 
-        let duplicate_profile = CapabilityDescriptor::builder("tool.sample", CapabilityKind::Tool)
-            .description("sample")
-            .schema(json!({ "type": "object" }), json!({ "type": "object" }))
-            .profiles(["coding", "coding"])
-            .build()
-            .expect_err("duplicate profile should fail");
+        let duplicate_profile =
+            CapabilityDescriptor::builder("tool.sample", CapabilityKind::tool())
+                .description("sample")
+                .schema(json!({ "type": "object" }), json!({ "type": "object" }))
+                .profiles(["coding", "coding"])
+                .build()
+                .expect_err("duplicate profile should fail");
         assert_eq!(
             duplicate_profile,
             DescriptorBuildError::DuplicateValue {
                 field: "profiles",
                 value: "coding".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn builder_accepts_custom_kind_and_preserves_string_value() {
+        let descriptor = CapabilityDescriptor::builder("workspace.index", "lsp.indexer")
+            .description("Indexes workspace symbols")
+            .schema(json!({ "type": "object" }), json!({ "type": "object" }))
+            .build()
+            .expect("custom kind should be valid");
+
+        assert_eq!(descriptor.kind.as_str(), "lsp.indexer");
+        assert!(!descriptor.kind.is_tool());
+    }
+
+    #[test]
+    fn builder_rejects_blank_custom_kind() {
+        let error = CapabilityDescriptor::builder("workspace.index", CapabilityKind::custom("   "))
+            .description("Indexes workspace symbols")
+            .schema(json!({ "type": "object" }), json!({ "type": "object" }))
+            .build()
+            .expect_err("blank custom kind should fail");
+
+        assert_eq!(error, DescriptorBuildError::EmptyField("kind"));
+    }
+
+    #[test]
+    fn capability_kind_new_trims_whitespace() {
+        let kind = CapabilityKind::custom("  lsp.indexer  ");
+
+        assert_eq!(kind.as_str(), "lsp.indexer");
+    }
+
+    #[test]
+    fn validate_rejects_direct_descriptor_with_blank_kind() {
+        let descriptor = CapabilityDescriptor {
+            name: "workspace.index".to_string(),
+            kind: CapabilityKind::custom("   "),
+            description: "Indexes workspace symbols".to_string(),
+            input_schema: json!({ "type": "object" }),
+            output_schema: json!({ "type": "object" }),
+            streaming: false,
+            profiles: Vec::new(),
+            tags: Vec::new(),
+            permissions: Vec::new(),
+            side_effect: SideEffectLevel::None,
+            stability: StabilityLevel::Stable,
+        };
+
+        assert_eq!(
+            descriptor
+                .validate()
+                .expect_err("blank kind should be rejected"),
+            DescriptorBuildError::EmptyField("kind")
         );
     }
 }

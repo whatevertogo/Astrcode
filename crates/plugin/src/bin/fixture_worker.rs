@@ -17,7 +17,7 @@ impl CapabilityHandler for EchoHandler {
     fn descriptor(&self) -> CapabilityDescriptor {
         CapabilityDescriptor {
             name: "tool.echo".to_string(),
-            kind: CapabilityKind::Tool,
+            kind: CapabilityKind::tool(),
             description: "Echo the input".to_string(),
             input_schema: json!({ "type": "object" }),
             output_schema: json!({ "type": "object" }),
@@ -48,7 +48,7 @@ impl CapabilityHandler for PatchStreamHandler {
     fn descriptor(&self) -> CapabilityDescriptor {
         CapabilityDescriptor {
             name: "tool.patch_stream".to_string(),
-            kind: CapabilityKind::Tool,
+            kind: CapabilityKind::tool(),
             description: "Emit patch deltas".to_string(),
             input_schema: json!({ "type": "object" }),
             output_schema: json!({ "type": "object" }),
@@ -108,7 +108,7 @@ impl CapabilityHandler for DelayedEchoHandler {
     fn descriptor(&self) -> CapabilityDescriptor {
         CapabilityDescriptor {
             name: "tool.delayed_echo".to_string(),
-            kind: CapabilityKind::Tool,
+            kind: CapabilityKind::tool(),
             description: "Delay before returning".to_string(),
             input_schema: json!({ "type": "object" }),
             output_schema: json!({ "type": "object" }),

@@ -2,19 +2,20 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use astrcode_core::{
+    CapabilityContext, CapabilityDescriptor, CapabilityExecutionResult, CapabilityInvoker,
+    CapabilityKind, ManagedRuntimeComponent, PluginHealth, PluginState, PluginType, Result,
+    SideEffectLevel, StabilityLevel,
+};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use super::assembly::{
-    bootstrap_runtime_from_manifests, conflicting_capability_name, LoadedPlugin, PluginInitializer,
+use crate::bootstrap::{bootstrap_runtime_from_manifests, RuntimeBootstrap};
+use crate::runtime_surface_assembler::{
+    conflicting_capability_name, LoadedPlugin, ManagedPluginComponent, ManagedPluginHealth,
+    PluginInitializer,
 };
-use super::{ManagedPluginComponent, ManagedPluginHealth, RuntimeBootstrap};
-use crate::test_support::ServerTestEnvGuard;
-use astrcode_core::{
-    CapabilityContext, CapabilityDescriptor, CapabilityExecutionResult, CapabilityInvoker,
-    CapabilityKind, ManagedRuntimeComponent, PluginHealth, PluginManifest, PluginState, PluginType,
-    Result, SideEffectLevel, StabilityLevel,
-};
+use crate::test_support::TestEnvGuard;
 
 struct FakeInitializer {
     responses: HashMap<String, FakePluginResponse>,
@@ -29,7 +30,7 @@ enum FakePluginResponse {
 impl PluginInitializer for FakeInitializer {
     async fn initialize(
         &self,
-        manifest: &PluginManifest,
+        manifest: &astrcode_core::PluginManifest,
     ) -> std::result::Result<LoadedPlugin, astrcode_core::AstrError> {
         match self
             .responses
@@ -102,8 +103,8 @@ impl CapabilityInvoker for FakeCapabilityInvoker {
     }
 }
 
-fn manifest(name: &str) -> PluginManifest {
-    PluginManifest {
+fn manifest(name: &str) -> astrcode_core::PluginManifest {
+    astrcode_core::PluginManifest {
         name: name.to_string(),
         version: "0.1.0".to_string(),
         description: format!("{name} plugin"),
@@ -119,7 +120,7 @@ fn manifest(name: &str) -> PluginManifest {
 fn capability(name: &str) -> CapabilityDescriptor {
     CapabilityDescriptor {
         name: name.to_string(),
-        kind: CapabilityKind::Tool,
+        kind: CapabilityKind::tool(),
         description: format!("{name} capability"),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({ "type": "object" }),
@@ -160,10 +161,10 @@ fn loaded_plugin(
 }
 
 fn bootstrap_from(
-    manifests: Vec<PluginManifest>,
+    manifests: Vec<astrcode_core::PluginManifest>,
     initializer: FakeInitializer,
-) -> (RuntimeBootstrap, ServerTestEnvGuard) {
-    let guard = ServerTestEnvGuard::new();
+) -> (RuntimeBootstrap, TestEnvGuard) {
+    let guard = TestEnvGuard::new();
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime should build");
     let bootstrap = runtime
         .block_on(async { bootstrap_runtime_from_manifests(manifests, &initializer).await })
@@ -274,9 +275,49 @@ fn bootstrap_rejects_duplicate_plugin_capabilities_deterministically() {
     );
 }
 
+#[test]
+fn bootstrap_marks_plugin_failed_when_descriptor_is_invalid() {
+    let shutdowns = Arc::new(Mutex::new(Vec::new()));
+    let mut invalid = capability("tool.invalid");
+    invalid.kind = CapabilityKind::custom("   ");
+    let initializer = FakeInitializer {
+        responses: HashMap::from([(
+            "alpha".to_string(),
+            FakePluginResponse::Loaded(LoadedPlugin {
+                component: Arc::new(FakeManagedComponent {
+                    name: "alpha".to_string(),
+                    shutdowns: Arc::clone(&shutdowns),
+                }),
+                invokers: vec![Arc::new(FakeCapabilityInvoker {
+                    descriptor: invalid.clone(),
+                }) as Arc<dyn CapabilityInvoker>],
+                capabilities: vec![invalid],
+            }),
+        )]),
+    };
+
+    let (bootstrap, _guard) = bootstrap_from(vec![manifest("alpha")], initializer);
+    let alpha = bootstrap
+        .coordinator
+        .plugin_registry()
+        .get("alpha")
+        .expect("alpha entry should exist");
+
+    assert_eq!(alpha.state, PluginState::Failed);
+    assert_eq!(alpha.health, PluginHealth::Unavailable);
+    assert!(alpha
+        .failure
+        .as_deref()
+        .is_some_and(|message| message.contains("invalid")));
+    assert_eq!(
+        shutdowns.lock().expect("shutdown log").clone(),
+        vec!["alpha".to_string()]
+    );
+}
+
 #[tokio::test]
 async fn governance_reload_swaps_runtime_surface_and_shutdowns_retired_plugins() {
-    let _guard = ServerTestEnvGuard::new();
+    let _guard = TestEnvGuard::new();
     let shutdowns = Arc::new(Mutex::new(Vec::new()));
     let initial = FakeInitializer {
         responses: HashMap::from([(

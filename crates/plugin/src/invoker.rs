@@ -203,15 +203,7 @@ fn to_invocation_context(ctx: &CapabilityContext) -> InvocationContext {
 pub fn protocol_to_core_capability(descriptor: &CapabilityDescriptor) -> CoreCapabilityDescriptor {
     CoreCapabilityDescriptor {
         name: descriptor.name.clone(),
-        kind: match descriptor.kind {
-            CapabilityKind::Tool => CoreCapabilityKind::Tool,
-            CapabilityKind::Agent => CoreCapabilityKind::Agent,
-            CapabilityKind::ContextProvider => CoreCapabilityKind::ContextProvider,
-            CapabilityKind::MemoryProvider => CoreCapabilityKind::MemoryProvider,
-            CapabilityKind::PolicyHook => CoreCapabilityKind::PolicyHook,
-            CapabilityKind::Renderer => CoreCapabilityKind::Renderer,
-            CapabilityKind::Resource => CoreCapabilityKind::Resource,
-        },
+        kind: CoreCapabilityKind::from(descriptor.kind.as_str()),
         description: descriptor.description.clone(),
         input_schema: descriptor.input_schema.clone(),
         output_schema: descriptor.output_schema.clone(),
@@ -245,15 +237,7 @@ pub fn core_to_protocol_capability(
 ) -> CapabilityDescriptor {
     CapabilityDescriptor {
         name: capability.name.clone(),
-        kind: match capability.kind {
-            astrcode_core::CapabilityKind::Tool => CapabilityKind::Tool,
-            astrcode_core::CapabilityKind::Agent => CapabilityKind::Agent,
-            astrcode_core::CapabilityKind::ContextProvider => CapabilityKind::ContextProvider,
-            astrcode_core::CapabilityKind::MemoryProvider => CapabilityKind::MemoryProvider,
-            astrcode_core::CapabilityKind::PolicyHook => CapabilityKind::PolicyHook,
-            astrcode_core::CapabilityKind::Renderer => CapabilityKind::Renderer,
-            astrcode_core::CapabilityKind::Resource => CapabilityKind::Resource,
-        },
+        kind: CapabilityKind::from(capability.kind.as_str()),
         description: capability.description.clone(),
         input_schema: capability.input_schema.clone(),
         output_schema: capability.output_schema.clone(),
@@ -279,5 +263,62 @@ pub fn core_to_protocol_capability(
             astrcode_core::StabilityLevel::Stable => StabilityLevel::Stable,
             astrcode_core::StabilityLevel::Deprecated => StabilityLevel::Deprecated,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{core_to_protocol_capability, protocol_to_core_capability};
+    use astrcode_core::{
+        CapabilityDescriptor as CoreCapabilityDescriptor, CapabilityKind as CoreCapabilityKind,
+        SideEffectLevel as CoreSideEffectLevel, StabilityLevel as CoreStabilityLevel,
+    };
+    use astrcode_protocol::plugin::{
+        CapabilityDescriptor, CapabilityKind, SideEffectLevel, StabilityLevel,
+    };
+
+    #[test]
+    fn custom_kind_roundtrips_between_protocol_and_core() {
+        let protocol = CapabilityDescriptor {
+            name: "workspace.index".to_string(),
+            kind: CapabilityKind::custom("lsp.indexer"),
+            description: "Indexes workspace symbols".to_string(),
+            input_schema: json!({ "type": "object" }),
+            output_schema: json!({ "type": "object" }),
+            streaming: false,
+            profiles: vec!["coding".to_string()],
+            tags: vec!["lsp".to_string()],
+            permissions: vec![],
+            side_effect: SideEffectLevel::None,
+            stability: StabilityLevel::Stable,
+        };
+
+        let core = protocol_to_core_capability(&protocol);
+        assert_eq!(core.kind.as_str(), "lsp.indexer");
+
+        let encoded = core_to_protocol_capability(&core);
+        assert_eq!(encoded.kind.as_str(), "lsp.indexer");
+    }
+
+    #[test]
+    fn core_custom_kind_preserves_string_when_encoded_for_protocol() {
+        let core = CoreCapabilityDescriptor {
+            name: "workspace.index".to_string(),
+            kind: CoreCapabilityKind::custom("mcp.resource"),
+            description: "Indexes workspace symbols".to_string(),
+            input_schema: json!({ "type": "object" }),
+            output_schema: json!({ "type": "object" }),
+            streaming: false,
+            profiles: vec!["coding".to_string()],
+            tags: vec![],
+            permissions: vec![],
+            side_effect: CoreSideEffectLevel::None,
+            stability: CoreStabilityLevel::Stable,
+        };
+
+        let protocol = core_to_protocol_capability(&core);
+        assert_eq!(protocol.kind.as_str(), "mcp.resource");
     }
 }

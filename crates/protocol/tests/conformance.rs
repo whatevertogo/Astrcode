@@ -35,7 +35,7 @@ fn sample_peer() -> PeerDescriptor {
 fn sample_capability() -> CapabilityDescriptor {
     CapabilityDescriptor {
         name: "workspace.summary".to_string(),
-        kind: CapabilityKind::Tool,
+        kind: CapabilityKind::tool(),
         description: "Summarize the active coding workspace.".to_string(),
         input_schema: json!({
             "type": "object",

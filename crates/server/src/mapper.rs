@@ -8,6 +8,7 @@ use astrcode_protocol::http::{
     ReplayMetricsDto, RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto,
     SessionListItem, SessionMessageDto, ToolCallResultDto, PROTOCOL_VERSION,
 };
+use astrcode_runtime::RuntimeGovernanceSnapshot;
 use astrcode_runtime::{
     Config, OperationMetricsSnapshot, Profile, ReplayMetricsSnapshot, RuntimeObservabilitySnapshot,
     SessionMessage,
@@ -15,7 +16,6 @@ use astrcode_runtime::{
 use axum::http::StatusCode;
 use axum::response::sse::Event;
 
-use crate::capabilities::RuntimeGovernanceSnapshot;
 use crate::ApiError;
 
 pub(crate) fn to_session_list_item(meta: SessionMeta) -> SessionListItem {

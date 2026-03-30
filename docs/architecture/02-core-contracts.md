@@ -153,13 +153,19 @@ trait Capability: Send + Sync {
 Layer 1 只要求 capability 是一个 `{ descriptor, invoke }` 对。  
 `CapabilityKind` 是路由、策略、展示和适配时使用的元数据，不是第二套调用协议。
 
+当前实现里，`CapabilityKind` 已经是开放字符串类型，而不是闭合 enum。  
+也就是说，插件作者可以声明自定义 kind，而不需要先修改 protocol crate 或 core contract。
+
+同时，descriptor 校验不再只依赖 builder。  
+直接构造的 descriptor 或通过插件协议解码得到的 descriptor，在注册和 runtime assembly 时也会走统一校验，避免把空 kind、空 name 或无效 schema 静默带进系统。
+
 这意味着：
 
 - 新 capability source 不应该因为新增 `kind` 就要求改写 AgentLoop
 - workflow、memory、context、resource 之类能力仍然走同一个 invoke contract
 - `kind` 更适合被 Layer 2 用于策略、投影和 transport 适配
 
-当前代码里，`CapabilityKind::Tool` 仍会被某些 adapter surface 特判，例如：
+当前代码里，`tool` kind 仍会被某些 adapter surface 特判，例如：
 
 - 把 capability 投影成 LLM tool definitions
 - 判断某个 capability 是否允许走 tool-call 执行路径

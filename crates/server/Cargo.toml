@@ -7,12 +7,9 @@ authors.workspace = true
 
 [dependencies]
 astrcode-core = { path = "../core" }
-astrcode-plugin = { path = "../plugin" }
 astrcode-protocol = { path = "../protocol" }
 astrcode-runtime = { path = "../runtime" }
-astrcode-tools = { path = "../tools" }
 async-stream = "0.3"
-async-trait.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 axum-extra.workspace = true

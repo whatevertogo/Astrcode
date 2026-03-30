@@ -155,6 +155,12 @@ impl CapabilityRouterBuilder {
 
         for invoker in self.invokers {
             let descriptor = invoker.descriptor();
+            descriptor.validate().map_err(|error| {
+                AstrError::Validation(format!(
+                    "invalid capability descriptor '{}': {}",
+                    descriptor.name, error
+                ))
+            })?;
             if invokers_by_name
                 .insert(descriptor.name.clone(), Arc::clone(&invoker))
                 .is_some()
@@ -210,7 +216,7 @@ impl CapabilityRouter {
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
         self.descriptors()
             .into_iter()
-            .filter(|descriptor| descriptor.kind == CapabilityKind::Tool)
+            .filter(|descriptor| descriptor.kind.is_tool())
             .map(|descriptor| ToolDefinition {
                 name: descriptor.name,
                 description: descriptor.description,
@@ -261,7 +267,7 @@ impl CapabilityRouter {
         };
 
         let descriptor = invoker.descriptor();
-        if descriptor.kind != CapabilityKind::Tool {
+        if !descriptor.kind.is_tool() {
             return ToolExecutionResult {
                 tool_call_id: call.id.clone(),
                 tool_name: call.name.clone(),
@@ -315,7 +321,7 @@ impl CapabilityInvoker for ToolRegistryCapabilityInvoker {
     fn descriptor(&self) -> CapabilityDescriptor {
         CapabilityDescriptor {
             name: self.definition.name.clone(),
-            kind: CapabilityKind::Tool,
+            kind: CapabilityKind::tool(),
             description: self.definition.description.clone(),
             input_schema: self.definition.parameters.clone(),
             output_schema: json!({ "type": "string" }),
@@ -417,7 +423,7 @@ mod tests {
         fn descriptor(&self) -> CapabilityDescriptor {
             CapabilityDescriptor {
                 name: "plugin.echo".to_string(),
-                kind: CapabilityKind::Tool,
+                kind: CapabilityKind::tool(),
                 description: "echo".to_string(),
                 input_schema: json!({ "type": "object" }),
                 output_schema: json!({ "type": "object" }),

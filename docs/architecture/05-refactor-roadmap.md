@@ -39,23 +39,13 @@
 
 ### Target
 
-先完成整理性拆分：
-
-- `crates/server/src/capabilities.rs` → `crates/server/src/capabilities/*`
-
-第一步已落地为：
-
-- `crates/server/src/capabilities/mod.rs`
-- `crates/server/src/capabilities/assembly.rs`
-- `crates/server/src/capabilities/governance.rs`
-- `crates/server/src/capabilities/tests.rs`
-
-下一步再视情况继续下沉为：
+已完成：
 
 - `crates/runtime/src/bootstrap.rs`
 - `crates/runtime/src/runtime_surface_assembler.rs`
 - `crates/runtime/src/runtime_governance.rs`
 - `crates/runtime/src/builtin_capabilities.rs`
+- `crates/runtime/src/plugin_discovery.rs`
 - `crates/runtime/src/plugin_host.rs`
 
 ### Success Criteria
@@ -63,6 +53,11 @@
 - 行为不变
 - 测试不退化
 - `server` 不再直接承载大部分 runtime 装配细节
+
+### Status
+
+本阶段已完成前四项，且现有 server 入口已经只消费 `astrcode-runtime` 暴露的 bootstrap / governance surface。  
+仍未单独提炼的项是一个更明确的 `plugin_host.rs` 生命周期模块。
 
 ## Phase 2: Make Capability the Only First-Class Action Model
 

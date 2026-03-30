@@ -95,9 +95,12 @@ Runtime assembly 需要承担以下职责：
 
 最典型的例子是：
 
-- `crates/server/src/capabilities/*`
+- `crates/runtime/src/bootstrap.rs`
+- `crates/runtime/src/runtime_surface_assembler.rs`
+- `crates/runtime/src/runtime_governance.rs`
+- `crates/runtime/src/builtin_capabilities.rs`
 
-这组模块当前仍然同时承担了：
+这组模块当前承担了：
 
 - runtime bootstrap
 - plugin manifest discovery
@@ -107,26 +110,28 @@ Runtime assembly 需要承担以下职责：
 - governance snapshot / reload
 - plugin health probing
 
-虽然已经完成了单文件拆分，但职责本身还没有完全迁到独立 runtime assembly 层。
+相比之前，这些职责已经从 `server` 成功下沉到 `runtime` crate。
 
 ## Recommended Split
 
-当前已经在 `crates/server/src/capabilities/` 下完成第一步拆分，后续建议继续向更明确的 runtime assembly 模块收敛：
+当前仓库已经落地为：
 
-- `runtime_bootstrap.rs`
+- `bootstrap.rs`
 - `runtime_surface_assembler.rs`
 - `runtime_governance.rs`
-- `plugin_host.rs`
 - `builtin_capabilities.rs`
 - `plugin_discovery.rs`
 
 其中：
 
-- `runtime_bootstrap.rs` 负责“把一个 runtime 装起来”
+- `bootstrap.rs` 负责“把一个 runtime 装起来”
 - `runtime_surface_assembler.rs` 负责“把 built-in + plugin 组装成统一 capability surface”
 - `runtime_governance.rs` 负责 reload / health / snapshot
-- `plugin_host.rs` 负责插件生命周期
 - `builtin_capabilities.rs` 负责默认 capability source
+- `plugin_discovery.rs` 负责插件搜索路径与 manifest 发现
+
+runtime assembly 还承担一项很重要但容易被忽略的职责：  
+在 capability 真正进入统一 router 之前，对插件上报的 descriptor 做宿主侧校验。这样插件作者即便绕过 builder 直接构造 descriptor，错误也会在装配阶段被显式拒收。
 
 ## Capability Router Stays the Center
 

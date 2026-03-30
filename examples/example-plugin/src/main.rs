@@ -78,7 +78,7 @@ impl ToolHandler for WorkspaceSummaryTool {
     fn descriptor(&self) -> CapabilityDescriptor {
         CapabilityDescriptor {
             name: "workspace.summary".to_string(),
-            kind: CapabilityKind::Tool,
+            kind: CapabilityKind::tool(),
             description: "Summarize the active coding workspace".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -160,7 +160,7 @@ impl ToolHandler for FilePreviewTool {
     fn descriptor(&self) -> CapabilityDescriptor {
         CapabilityDescriptor {
             name: "file.preview".to_string(),
-            kind: CapabilityKind::Tool,
+            kind: CapabilityKind::tool(),
             description: "Read a short preview from a file inside the active workspace".to_string(),
             input_schema: json!({
                 "type": "object",

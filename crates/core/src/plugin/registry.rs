@@ -205,7 +205,7 @@ mod tests {
     fn capability(name: &str) -> CapabilityDescriptor {
         CapabilityDescriptor {
             name: name.to_string(),
-            kind: CapabilityKind::Tool,
+            kind: CapabilityKind::tool(),
             description: format!("{name} capability"),
             input_schema: json!({ "type": "object" }),
             output_schema: json!({ "type": "object" }),

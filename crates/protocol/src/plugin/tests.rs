@@ -20,7 +20,7 @@ fn sample_peer() -> PeerDescriptor {
 }
 
 fn sample_capability() -> CapabilityDescriptor {
-    CapabilityDescriptor::builder("tool.echo", CapabilityKind::Tool)
+    CapabilityDescriptor::builder("tool.echo", CapabilityKind::tool())
         .description("Echo the input")
         .schema(json!({ "type": "object" }), json!({ "type": "object" }))
         .streaming(true)
@@ -228,7 +228,7 @@ fn result_message_preserves_error_payload_details() {
 
 #[test]
 fn capability_builder_rejects_invalid_fields() {
-    let error = CapabilityDescriptor::builder("tool.echo", CapabilityKind::Tool)
+    let error = CapabilityDescriptor::builder("tool.echo", CapabilityKind::tool())
         .description("Echo the input")
         .schema(json!({ "type": "object" }), json!("not-a-schema"))
         .profile("coding")
@@ -236,4 +236,62 @@ fn capability_builder_rejects_invalid_fields() {
         .expect_err("invalid output schema should fail");
 
     assert_eq!(error, DescriptorBuildError::InvalidSchema("output_schema"));
+}
+
+#[test]
+fn capability_builder_accepts_custom_kind_strings() {
+    let descriptor = CapabilityDescriptor::builder("workspace.index", "lsp.indexer")
+        .description("Indexes workspace symbols")
+        .schema(json!({ "type": "object" }), json!({ "type": "object" }))
+        .build()
+        .expect("custom kind should build");
+
+    assert_eq!(descriptor.kind.as_str(), "lsp.indexer");
+    assert_eq!(
+        serde_json::to_value(&descriptor).expect("serialize descriptor")["kind"],
+        "lsp.indexer"
+    );
+}
+
+#[test]
+fn capability_builder_rejects_blank_custom_kind() {
+    let error = CapabilityDescriptor::builder("workspace.index", CapabilityKind::custom("  "))
+        .description("Indexes workspace symbols")
+        .schema(json!({ "type": "object" }), json!({ "type": "object" }))
+        .build()
+        .expect_err("blank kind should fail");
+
+    assert_eq!(error, DescriptorBuildError::EmptyField("kind"));
+}
+
+#[test]
+fn capability_kind_deserialization_trims_whitespace() {
+    let kind: CapabilityKind =
+        serde_json::from_value(json!("  lsp.indexer  ")).expect("kind should deserialize");
+
+    assert_eq!(kind.as_str(), "lsp.indexer");
+}
+
+#[test]
+fn capability_validate_rejects_direct_blank_kind() {
+    let descriptor = CapabilityDescriptor {
+        name: "workspace.index".to_string(),
+        kind: CapabilityKind::custom("  "),
+        description: "Indexes workspace symbols".to_string(),
+        input_schema: json!({ "type": "object" }),
+        output_schema: json!({ "type": "object" }),
+        streaming: false,
+        profiles: vec![],
+        tags: vec![],
+        permissions: vec![],
+        side_effect: SideEffectLevel::None,
+        stability: StabilityLevel::Stable,
+    };
+
+    assert_eq!(
+        descriptor
+            .validate()
+            .expect_err("direct descriptor validation should reject blank kind"),
+        DescriptorBuildError::EmptyField("kind")
+    );
 }

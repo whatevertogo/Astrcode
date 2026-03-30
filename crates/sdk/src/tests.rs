@@ -54,7 +54,7 @@ struct SampleOutput {
 
 impl ToolHandler<SampleInput, SampleOutput> for SampleTool {
     fn descriptor(&self) -> CapabilityDescriptor {
-        CapabilityDescriptor::builder("tool.sample", CapabilityKind::Tool)
+        CapabilityDescriptor::builder("tool.sample", CapabilityKind::tool())
             .description("Sample tool")
             .schema(json!({ "type": "object" }), json!({ "type": "object" }))
             .streaming(true)
@@ -379,7 +379,7 @@ fn sdk_error_maps_to_protocol_payload() {
 
 #[test]
 fn descriptor_builder_is_reexported_for_plugin_authors() {
-    let descriptor = CapabilityDescriptor::builder("tool.builder", CapabilityKind::Tool)
+    let descriptor = CapabilityDescriptor::builder("tool.builder", CapabilityKind::tool())
         .description("builder test")
         .schema(json!({ "type": "object" }), json!({ "type": "object" }))
         .permission("filesystem.read")

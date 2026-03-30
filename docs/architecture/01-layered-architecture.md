@@ -117,7 +117,7 @@ AstrCode 未来要稳定的不是“某个 server 实现”或“某个插件加
 | 目标层 | 当前 crate / 模块 | 说明 |
 | --- | --- | --- |
 | Layer 1 | `crates/runtime/src/agent_loop*`, `crates/core/src/capability.rs`, `crates/core/src/registry/router.rs` | 已经有核心雏形，但命名和边界还需整理 |
-| Layer 2 | `crates/server/src/capabilities/*`, `crates/plugin/src/*`, `crates/runtime/src/service/*`, prompt contributors | 装配逻辑已经从单文件拆成模块，但仍主要位于 `server` 侧，后续还要继续收敛 runtime surface |
+| Layer 2 | `crates/runtime/src/bootstrap.rs`, `crates/runtime/src/runtime_surface_assembler.rs`, `crates/runtime/src/runtime_governance.rs`, `crates/runtime/src/builtin_capabilities.rs`, `crates/runtime/src/service/*`, `crates/plugin/src/*`, prompt contributors | runtime assembly 已经下沉到 `runtime` crate，`server` 只消费 runtime surface |
 | Layer 3 | `crates/server/src/main.rs`, `crates/server/src/routes/*`, `src-tauri/src/main.rs`, `frontend/src/hooks/useAgent.ts` | 已经基本按 transport 层工作 |
 
 ## Design Consequences

@@ -1,11 +1,10 @@
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use astrcode_core::{CapabilityRouter, PluginRegistry, RuntimeCoordinator, RuntimeHandle};
-use astrcode_runtime::RuntimeService;
+use astrcode_runtime::{RuntimeGovernance, RuntimeService};
 
 use crate::auth::{AuthSessionManager, BootstrapAuth};
 use crate::bootstrap::APP_HOME_OVERRIDE_ENV;
-use crate::capabilities::RuntimeGovernance;
 use crate::{AppState, FrontendBuild};
 
 pub(crate) fn server_test_env_lock() -> &'static Mutex<()> {
@@ -60,10 +59,9 @@ pub(crate) fn test_state(frontend_build: Option<FrontendBuild>) -> (AppState, Se
         Arc::new(PluginRegistry::default()),
         Vec::new(),
     ));
-    let runtime_governance = Arc::new(RuntimeGovernance::new(
+    let runtime_governance = Arc::new(RuntimeGovernance::from_runtime(
         Arc::clone(&service),
         Arc::clone(&coordinator),
-        Vec::new(),
     ));
     let auth_sessions = Arc::new(AuthSessionManager::default());
     auth_sessions.issue_test_token("browser-token");

@@ -63,9 +63,11 @@ AstrCode 的目标架构收敛为三层：
 - `crates/runtime/src/agent_loop.rs`
 - `crates/runtime/src/agent_loop/turn_runner.rs`
 - `crates/runtime/src/agent_loop/tool_cycle.rs`
+- `crates/runtime/src/bootstrap.rs`
+- `crates/runtime/src/runtime_surface_assembler.rs`
+- `crates/runtime/src/runtime_governance.rs`
 - `crates/core/src/registry/router.rs`
 - `crates/core/src/capability.rs`
-- `crates/server/src/capabilities/*`
 - `crates/server/src/main.rs`
 - `crates/plugin/src/*`
 

@@ -7,6 +7,9 @@ authors.workspace = true
 
 [dependencies]
 astrcode-core = { path = "../core" }
+astrcode-plugin = { path = "../plugin" }
+astrcode-protocol = { path = "../protocol" }
+astrcode-tools = { path = "../tools" }
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
@@ -24,6 +27,4 @@ tokio-util.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-astrcode-plugin = { path = "../plugin" }
-astrcode-protocol = { path = "../protocol" }
 tempfile.workspace = true

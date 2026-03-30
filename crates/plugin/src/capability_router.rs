@@ -66,6 +66,12 @@ impl CapabilityRouter {
 
     pub fn register_arc(&mut self, handler: Arc<dyn CapabilityHandler>) -> Result<()> {
         let descriptor = handler.descriptor();
+        descriptor.validate().map_err(|error| {
+            AstrError::Validation(format!(
+                "invalid capability descriptor '{}': {}",
+                descriptor.name, error
+            ))
+        })?;
         if self.handlers.contains_key(&descriptor.name) {
             return Err(AstrError::Validation(format!(
                 "duplicate capability registration: {}",
@@ -129,7 +135,7 @@ mod tests {
         fn descriptor(&self) -> CapabilityDescriptor {
             CapabilityDescriptor {
                 name: "tool.sample".to_string(),
-                kind: CapabilityKind::Tool,
+                kind: CapabilityKind::tool(),
                 description: "sample".to_string(),
                 input_schema: json!({ "type": "object" }),
                 output_schema: json!({ "type": "object" }),
