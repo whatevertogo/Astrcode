@@ -153,7 +153,7 @@ export interface AppState {
 }
 
 // ────────────────────────────────────────────────────────────
-// Reducer action union (shared across App + hooks)
+// Reducer action 联合类型（App 和 hooks 之间共享）
 // ────────────────────────────────────────────────────────────
 export type Action =
   | { type: 'SET_PHASE'; phase: Phase }

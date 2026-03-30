@@ -61,7 +61,6 @@ pub struct RuntimeService {
     /// 可观测性（指标收集）
     observability: Arc<RuntimeObservability>,
     /// 关闭令牌（用于通知所有处理器停止）
-    /// Token used to signal server shutdown
     shutdown_token: CancellationToken,
 }
 
