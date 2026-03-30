@@ -6,9 +6,10 @@ mod messages;
 mod tests;
 
 pub use descriptors::{
-    BudgetHint, CallerRef, CapabilityDescriptor, CapabilityKind, FilterDescriptor,
-    HandlerDescriptor, InvocationContext, PeerDescriptor, PeerRole, PermissionHint,
-    ProfileDescriptor, SideEffectLevel, StabilityLevel, TriggerDescriptor, WorkspaceRef,
+    BudgetHint, CallerRef, CapabilityDescriptor, CapabilityDescriptorBuilder, CapabilityKind,
+    DescriptorBuildError, FilterDescriptor, HandlerDescriptor, InvocationContext, PeerDescriptor,
+    PeerRole, PermissionHint, ProfileDescriptor, SideEffectLevel, StabilityLevel,
+    TriggerDescriptor, WorkspaceRef,
 };
 pub use error::{ErrorPayload, ProtocolError};
 pub use handshake::{InitializeMessage, InitializeResultData, PROTOCOL_VERSION};

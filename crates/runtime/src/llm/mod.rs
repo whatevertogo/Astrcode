@@ -11,6 +11,11 @@ pub mod anthropic;
 pub mod openai;
 
 #[derive(Clone, Debug)]
+/// Runtime-scoped model call request consumed by the agent loop.
+///
+/// This request intentionally stops at "messages in, optional system prompt, tool surface, cancel
+/// token". Provider discovery, credential resolution, model selection, and failover remain runtime
+/// assembly concerns outside of the loop contract.
 pub struct LlmRequest {
     pub messages: Vec<LlmMessage>,
     pub tools: Vec<ToolDefinition>,
@@ -58,6 +63,11 @@ pub type EventSink = Arc<dyn Fn(LlmEvent) + Send + Sync>;
 
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
+    /// Executes one model call for the current turn.
+    ///
+    /// This trait is the runtime's concrete model-call port. It does not own provider registry
+    /// concerns such as API-key management or model discovery; those are handled before the loop
+    /// receives an implementation.
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput>;
 }
 

@@ -19,8 +19,8 @@ pub use action::{
 };
 pub use cancel::CancelToken;
 pub use capability::{
-    CapabilityDescriptor, CapabilityKind, CapabilityNamespace, PermissionHint, SideEffectLevel,
-    StabilityLevel,
+    CapabilityDescriptor, CapabilityDescriptorBuilder, CapabilityKind, CapabilityNamespace,
+    DescriptorBuildError, PermissionHint, SideEffectLevel, StabilityLevel,
 };
 pub use error::{AstrError, Result, ResultExt};
 pub use event::{

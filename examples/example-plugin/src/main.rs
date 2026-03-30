@@ -9,7 +9,10 @@ use astrcode_protocol::plugin::{
     CapabilityDescriptor, CapabilityKind, InvocationContext, PeerDescriptor, PeerRole,
     SideEffectLevel, StabilityLevel,
 };
-use astrcode_sdk::{PluginContext, StreamWriter, ToolHandler, ToolRegistration, ToolResult};
+use astrcode_sdk::{
+    DeserializeOwned, PluginContext, Serialize, StreamWriter, ToolHandler, ToolRegistration,
+    ToolResult,
+};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
@@ -18,7 +21,12 @@ struct RegisteredToolAdapter {
 }
 
 impl RegisteredToolAdapter {
-    fn new(handler: Box<dyn ToolHandler>) -> Self {
+    fn new<H, I, O>(handler: H) -> Self
+    where
+        H: ToolHandler<I, O> + 'static,
+        I: DeserializeOwned + Send + 'static,
+        O: Serialize + Send + 'static,
+    {
         Self {
             registration: ToolRegistration::new(handler),
         }
@@ -47,7 +55,7 @@ impl CapabilityHandler for RegisteredToolAdapter {
         let output = self
             .registration
             .handler()
-            .execute(input, plugin_context, stream.clone())
+            .execute_value(input, plugin_context, stream.clone())
             .await
             .map_err(|error| AstrError::ToolError {
                 name: tool_name,
@@ -257,12 +265,8 @@ fn resolve_workspace_path(root: &Path, candidate: &str) -> ToolResult<PathBuf> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut router = CapabilityRouter::default();
-    router.register_arc(Arc::new(RegisteredToolAdapter::new(Box::new(
-        WorkspaceSummaryTool,
-    ))))?;
-    router.register_arc(Arc::new(RegisteredToolAdapter::new(Box::new(
-        FilePreviewTool,
-    ))))?;
+    router.register_arc(Arc::new(RegisteredToolAdapter::new(WorkspaceSummaryTool)))?;
+    router.register_arc(Arc::new(RegisteredToolAdapter::new(FilePreviewTool)))?;
 
     let worker = Worker::from_stdio(
         PeerDescriptor {

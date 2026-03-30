@@ -1,9 +1,10 @@
-use std::error::Error;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 
-type StreamResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
+use crate::SdkError;
+
+type StreamResult<T> = Result<T, SdkError>;
 type StreamCallback = dyn Fn(StreamChunk) -> StreamResult<()> + Send + Sync;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,16 +31,21 @@ impl StreamWriter {
     }
 
     pub fn emit(&self, event: impl Into<String>, payload: Value) -> StreamResult<()> {
+        let event = event.into();
         let chunk = StreamChunk {
-            event: event.into(),
+            event: event.clone(),
             payload,
         };
         self.records
             .lock()
-            .expect("stream records lock")
+            .map_err(|_| SdkError::internal("stream records lock poisoned"))?
             .push(chunk.clone());
         if let Some(callback) = &self.callback {
-            callback(chunk)?;
+            callback(chunk).map_err(|error| SdkError::StreamEmit {
+                event,
+                message: error.to_string(),
+                details: error.details(),
+            })?;
         }
         Ok(())
     }

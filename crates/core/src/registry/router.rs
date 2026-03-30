@@ -203,6 +203,10 @@ impl CapabilityRouter {
         self.order.clone()
     }
 
+    /// Projects tool-callable capabilities into the LLM-facing tool definition surface.
+    ///
+    /// This is an adapter view over the generic capability registry, not the core capability
+    /// contract itself.
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
         self.descriptors()
             .into_iter()
@@ -240,6 +244,9 @@ impl CapabilityRouter {
         call: &ToolCallRequest,
         ctx: &ToolContext,
     ) -> ToolExecutionResult {
+        // Tool execution is a projection of the generic capability surface. Keeping the
+        // kind-check here confines tool-call semantics to the adapter path instead of requiring
+        // the broader capability invoke contract to branch on every kind.
         let Some(invoker) = self.invokers_by_name.get(&call.name) else {
             return ToolExecutionResult {
                 tool_call_id: call.id.clone(),

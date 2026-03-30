@@ -1,11 +1,11 @@
 use serde_json::json;
 
 use super::{
-    CancelMessage, CapabilityDescriptor, CapabilityKind, ErrorPayload, EventMessage, EventPhase,
-    FilterDescriptor, HandlerDescriptor, InitializeMessage, InitializeResultData,
-    InvocationContext, PeerDescriptor, PeerRole, PermissionHint, PluginMessage, ProfileDescriptor,
-    ResultMessage, SideEffectLevel, StabilityLevel, TriggerDescriptor, WorkspaceRef,
-    PROTOCOL_VERSION,
+    CancelMessage, CapabilityDescriptor, CapabilityKind, DescriptorBuildError, ErrorPayload,
+    EventMessage, EventPhase, FilterDescriptor, HandlerDescriptor, InitializeMessage,
+    InitializeResultData, InvocationContext, PeerDescriptor, PeerRole, PermissionHint,
+    PluginMessage, ProfileDescriptor, ResultMessage, SideEffectLevel, StabilityLevel,
+    TriggerDescriptor, WorkspaceRef, PROTOCOL_VERSION,
 };
 
 fn sample_peer() -> PeerDescriptor {
@@ -20,22 +20,20 @@ fn sample_peer() -> PeerDescriptor {
 }
 
 fn sample_capability() -> CapabilityDescriptor {
-    CapabilityDescriptor {
-        name: "tool.echo".to_string(),
-        kind: CapabilityKind::Tool,
-        description: "Echo the input".to_string(),
-        input_schema: json!({ "type": "object" }),
-        output_schema: json!({ "type": "object" }),
-        streaming: true,
-        profiles: vec!["coding".to_string()],
-        tags: vec!["test".to_string()],
-        permissions: vec![PermissionHint {
+    CapabilityDescriptor::builder("tool.echo", CapabilityKind::Tool)
+        .description("Echo the input")
+        .schema(json!({ "type": "object" }), json!({ "type": "object" }))
+        .streaming(true)
+        .profile("coding")
+        .tag("test")
+        .permissions(vec![PermissionHint {
             name: "filesystem.read".to_string(),
             rationale: Some("reads fixtures".to_string()),
-        }],
-        side_effect: SideEffectLevel::Local,
-        stability: StabilityLevel::Stable,
-    }
+        }])
+        .side_effect(SideEffectLevel::Local)
+        .stability(StabilityLevel::Stable)
+        .build()
+        .expect("sample capability should build")
 }
 
 #[test]
@@ -226,4 +224,16 @@ fn result_message_preserves_error_payload_details() {
         "filesystem.write"
     );
     assert_eq!(encoded["metadata"]["source"], "policy");
+}
+
+#[test]
+fn capability_builder_rejects_invalid_fields() {
+    let error = CapabilityDescriptor::builder("tool.echo", CapabilityKind::Tool)
+        .description("Echo the input")
+        .schema(json!({ "type": "object" }), json!("not-a-schema"))
+        .profile("coding")
+        .build()
+        .expect_err("invalid output schema should fail");
+
+    assert_eq!(error, DescriptorBuildError::InvalidSchema("output_schema"));
 }
