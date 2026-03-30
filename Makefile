@@ -15,5 +15,5 @@ tauri:
 
 check:
 	cargo check --workspace
-	cargo test -p ipc
+	cargo test --workspace
 	cd frontend && npm run typecheck
