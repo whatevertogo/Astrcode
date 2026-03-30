@@ -1,3 +1,7 @@
+//! # 类型定义
+//!
+//! 定义前端使用的所有 TypeScript 类型。
+
 export type Phase = 'idle' | 'thinking' | 'callingTool' | 'streaming' | 'interrupted' | 'done';
 
 export interface ToolCallResultEnvelope {

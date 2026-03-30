@@ -1,3 +1,7 @@
+//! # 运行时服务
+//!
+//! RuntimeService 是 Astrcode 的核心服务，负责管理会话和执行 Agent 循环。
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -34,14 +38,29 @@ pub use observability::{
     OperationMetricsSnapshot, ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot,
 };
 
+/// 运行时服务
+///
+/// 负责管理所有会话的状态和执行。主要职责：
+/// - 会话生命周期管理（创建、加载、删除）
+/// - Agent Turn 执行（通过 AgentLoop）
+/// - 事件流广播（SSE）
+/// - 优雅关闭
 pub struct RuntimeService {
+    /// 会话 ID -> 会话状态的映射（使用 DashMap 支持并发访问）
     sessions: DashMap<String, Arc<SessionState>>,
+    /// Agent Loop 实例（可热替换，用于支持运行时重载能力）
     loop_: RwLock<Arc<AgentLoop>>,
+    /// 策略引擎（控制能力调用是否需要审批）
     policy: Arc<dyn PolicyEngine>,
+    /// 审批代理（处理用户确认流程）
     approval: Arc<dyn ApprovalBroker>,
+    /// 配置（API 密钥等）
     config: Mutex<crate::config::Config>,
+    /// 会话加载锁（防止并发加载同一会话）
     session_load_lock: Mutex<()>,
+    /// 可观测性（指标收集）
     observability: Arc<RuntimeObservability>,
+    /// 关闭令牌（用于通知所有处理器停止）
     /// Token used to signal server shutdown
     shutdown_token: CancellationToken,
 }
