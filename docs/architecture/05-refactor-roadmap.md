@@ -70,13 +70,14 @@
 ### Practical Changes
 
 - 在命名和模块边界上强调 `Capability`
-- 把 tool adapter 明确放到 adapter/source 模块
+- 把 tool adapter 明确放到 adapter/source 模块，并通过 `CapabilityInvoker` 注册
 - 避免 runtime 直接依赖“本地 tool 列表”作为主抽象
 
 ### Success Criteria
 
 - 新增动作能力时，默认先问“它是什么 capability”
 - built-in 和 plugin capability 进入同一路由
+- `CapabilityRouter` 不再直接暴露 `ToolRegistry` 装配入口
 
 ## Phase 3: Introduce Formal Policy and Approval Runtime Services
 

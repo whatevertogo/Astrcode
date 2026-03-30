@@ -22,7 +22,13 @@ pub(crate) fn empty_capabilities() -> CapabilityRouter {
 }
 
 pub(crate) fn capabilities_from_tools(tools: ToolRegistry) -> CapabilityRouter {
-    CapabilityRouter::from_tool_registry(tools)
+    let mut builder = CapabilityRouter::builder();
+    for invoker in tools.into_capability_invokers() {
+        builder = builder.register_invoker(invoker);
+    }
+    builder
+        .build()
+        .expect("tool-derived capability router should build")
 }
 
 pub(crate) struct TestEnvGuard {

@@ -7,4 +7,4 @@ pub use router::{
     CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, CapabilityRouter,
     CapabilityRouterBuilder,
 };
-pub use tool::{ToolRegistry, ToolRegistryBuilder};
+pub use tool::{ToolCapabilityInvoker, ToolRegistry, ToolRegistryBuilder};

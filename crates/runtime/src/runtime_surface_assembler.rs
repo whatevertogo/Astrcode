@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::Value;
 
-use crate::builtin_capabilities::built_in_tool_registry;
+use crate::builtin_capabilities::built_in_capability_invokers;
 
 pub(crate) struct AssembledRuntimeSurface {
     pub(crate) router: CapabilityRouter,
@@ -181,10 +181,15 @@ pub(crate) async fn assemble_runtime_surface<I>(
 where
     I: PluginInitializer,
 {
-    let built_in_registry = built_in_tool_registry();
-    let mut registered_capability_names: HashSet<String> =
-        built_in_registry.names().into_iter().collect();
-    let mut builder = CapabilityRouter::builder().register_tool_registry(built_in_registry);
+    let built_in_invokers = built_in_capability_invokers();
+    let mut registered_capability_names: HashSet<String> = built_in_invokers
+        .iter()
+        .map(|invoker| invoker.descriptor().name)
+        .collect();
+    let mut builder = CapabilityRouter::builder();
+    for invoker in built_in_invokers {
+        builder = builder.register_invoker(invoker);
+    }
     let mut plugin_entries = BTreeMap::new();
     let mut managed_components = Vec::new();
     let mut active_plugins = Vec::new();

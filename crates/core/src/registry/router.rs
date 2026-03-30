@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    AstrError, CancelToken, CapabilityDescriptor, CapabilityKind, Result, ToolCallRequest,
-    ToolContext, ToolDefinition, ToolExecutionResult, ToolRegistry,
+    AstrError, CancelToken, CapabilityDescriptor, Result, ToolCallRequest, ToolContext,
+    ToolDefinition, ToolExecutionResult,
 };
 
 #[derive(Clone, Debug)]
@@ -137,18 +137,6 @@ impl CapabilityRouterBuilder {
         self
     }
 
-    pub fn register_tool_registry(mut self, registry: ToolRegistry) -> Self {
-        let registry = Arc::new(registry);
-        for definition in registry.definitions() {
-            self.invokers
-                .push(Arc::new(ToolRegistryCapabilityInvoker::new(
-                    Arc::clone(&registry),
-                    definition,
-                )));
-        }
-        self
-    }
-
     pub fn build(self) -> Result<CapabilityRouter> {
         let mut invokers_by_name = HashMap::new();
         let mut order = Vec::new();
@@ -188,13 +176,6 @@ pub struct CapabilityRouter {
 impl CapabilityRouter {
     pub fn builder() -> CapabilityRouterBuilder {
         CapabilityRouterBuilder::new()
-    }
-
-    pub fn from_tool_registry(registry: ToolRegistry) -> Self {
-        CapabilityRouter::builder()
-            .register_tool_registry(registry)
-            .build()
-            .expect("tool registry cannot produce duplicate capability names")
     }
 
     pub fn descriptors(&self) -> Vec<CapabilityDescriptor> {
@@ -302,75 +283,6 @@ impl CapabilityRouter {
     }
 }
 
-struct ToolRegistryCapabilityInvoker {
-    registry: Arc<ToolRegistry>,
-    definition: ToolDefinition,
-}
-
-impl ToolRegistryCapabilityInvoker {
-    fn new(registry: Arc<ToolRegistry>, definition: ToolDefinition) -> Self {
-        Self {
-            registry,
-            definition,
-        }
-    }
-}
-
-#[async_trait]
-impl CapabilityInvoker for ToolRegistryCapabilityInvoker {
-    fn descriptor(&self) -> CapabilityDescriptor {
-        CapabilityDescriptor {
-            name: self.definition.name.clone(),
-            kind: CapabilityKind::tool(),
-            description: self.definition.description.clone(),
-            input_schema: self.definition.parameters.clone(),
-            output_schema: json!({ "type": "string" }),
-            streaming: false,
-            profiles: vec!["coding".to_string()],
-            tags: vec!["builtin".to_string()],
-            permissions: Vec::new(),
-            side_effect: crate::SideEffectLevel::Workspace,
-            stability: crate::StabilityLevel::Stable,
-        }
-    }
-
-    async fn invoke(
-        &self,
-        payload: Value,
-        ctx: &CapabilityContext,
-    ) -> Result<CapabilityExecutionResult> {
-        let result = self
-            .registry
-            .execute(
-                &ToolCallRequest {
-                    id: ctx
-                        .request_id
-                        .clone()
-                        .unwrap_or_else(|| "capability-call".to_string()),
-                    name: self.definition.name.clone(),
-                    args: payload,
-                },
-                &ToolContext {
-                    session_id: ctx.session_id.clone(),
-                    working_dir: ctx.working_dir.clone(),
-                    cancel: ctx.cancel.clone(),
-                    max_output_size: crate::DEFAULT_MAX_OUTPUT_SIZE,
-                },
-            )
-            .await;
-
-        Ok(CapabilityExecutionResult {
-            capability_name: result.tool_name,
-            success: result.ok,
-            output: Value::String(result.output),
-            error: result.error,
-            metadata: result.metadata,
-            duration_ms: result.duration_ms,
-            truncated: result.truncated,
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -378,11 +290,11 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::{json, Value};
 
-    use super::{CapabilityExecutionResult, CapabilityInvoker, CapabilityRouter, ToolRegistry};
+    use super::{CapabilityExecutionResult, CapabilityInvoker, CapabilityRouter};
     use crate::{
         CancelToken, CapabilityContext, CapabilityDescriptor, CapabilityKind, Result,
-        SideEffectLevel, StabilityLevel, Tool, ToolCallRequest, ToolContext, ToolDefinition,
-        ToolExecutionResult,
+        SideEffectLevel, StabilityLevel, Tool, ToolCallRequest, ToolCapabilityInvoker, ToolContext,
+        ToolDefinition, ToolExecutionResult,
     };
 
     struct FakeTool;
@@ -455,10 +367,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn from_tool_registry_exposes_tool_definitions_and_executes_tools() {
-        let router = CapabilityRouter::from_tool_registry(
-            ToolRegistry::builder().register(Box::new(FakeTool)).build(),
-        );
+    async fn invoker_registered_tools_expose_tool_definitions_and_execute() {
+        let router = CapabilityRouter::builder()
+            .register_invoker(ToolCapabilityInvoker::boxed(Box::new(FakeTool)))
+            .build()
+            .expect("router should build");
         assert_eq!(router.tool_names(), vec!["fake".to_string()]);
 
         let result = router

@@ -723,11 +723,14 @@ async fn unified_capability_router_executes_builtin_and_plugin_tools() {
     .await
     .expect("supervisor should start");
 
-    let mut capability_builder = CoreCapabilityRouter::builder().register_tool_registry(
-        ToolRegistry::builder()
-            .register(Box::new(QuickTool))
-            .build(),
-    );
+    let mut capability_builder = CoreCapabilityRouter::builder();
+    for invoker in ToolRegistry::builder()
+        .register(Box::new(QuickTool))
+        .build()
+        .into_capability_invokers()
+    {
+        capability_builder = capability_builder.register_invoker(invoker);
+    }
     for invoker in supervisor.capability_invokers() {
         capability_builder = capability_builder.register_invoker(invoker);
     }

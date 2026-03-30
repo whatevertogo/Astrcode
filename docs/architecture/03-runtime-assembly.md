@@ -139,7 +139,7 @@ runtime assembly 还承担一项很重要但容易被忽略的职责：
 
 这和已接受的 [ADR-0003](../adr/0003-unified-capability-routing.md) 一致：
 
-- built-in tool 走 adapter 接入 router
+- built-in tool 先适配成 `CapabilityInvoker` 再注册到 router
 - plugin capability 走 invoker 接入 router
 - runtime 只消费 router
 

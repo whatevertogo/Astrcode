@@ -34,7 +34,7 @@ pub use registry::{
     CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, CapabilityRouter,
     CapabilityRouterBuilder,
 };
-pub use registry::{ToolRegistry, ToolRegistryBuilder};
+pub use registry::{ToolCapabilityInvoker, ToolRegistry, ToolRegistryBuilder};
 pub use runtime::{
     KernelApi, ManagedRuntimeComponent, Orchestrator, RuntimeCoordinator, RuntimeHandle,
     TurnContext, TurnOutcome,
