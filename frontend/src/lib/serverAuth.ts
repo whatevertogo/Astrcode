@@ -11,6 +11,7 @@ declare global {
 }
 
 let bootstrapToken: string | null | undefined;
+let browserServerOrigin: string | null = null;
 let sessionToken: string | null | undefined;
 let sessionTokenExpiresAtMs = 0;
 let bootstrapSessionReady: Promise<void> | null = null;
@@ -21,6 +22,7 @@ const LOCAL_DEV_PORT = '5173';
 
 interface BrowserBootstrapPayload {
   token?: string;
+  serverOrigin?: string;
 }
 
 interface AuthExchangeResponse {
@@ -33,6 +35,9 @@ export function getServerOrigin(): string {
   const injected = window.__ASTRCODE_BOOTSTRAP__?.serverOrigin?.trim();
   if (injected) {
     return injected.replace(/\/+$/, '');
+  }
+  if (browserServerOrigin) {
+    return browserServerOrigin;
   }
   return window.location.origin.replace(/\/+$/, '');
 }
@@ -117,6 +122,11 @@ async function hydrateBrowserBootstrap(): Promise<void> {
   const token = payload.token?.trim();
   if (!token) {
     throw new Error('浏览器 bootstrap 返回的数据不完整（缺少 token）。');
+  }
+
+  const origin = payload.serverOrigin?.trim()?.replace(/\/+$/, '');
+  if (origin) {
+    browserServerOrigin = origin;
   }
 
   cacheBootstrapToken(token);
