@@ -31,7 +31,11 @@
 
 - 团队对 core/runtime/transport 三层边界形成共识
 - 明确哪些抽象以后尽量不改
-- 先停掉“继续往大文件里加逻辑”的惯性
+- 先停掉”继续往大文件里加逻辑”的惯性
+
+### Status
+
+本阶段已完成。四份核心文档已冻结，团队对三层边界和四类契约形成共识。
 
 ## Phase 1: Split Heavy Assembly Files Without Behavior Changes
 
@@ -48,6 +52,12 @@
 - `crates/runtime/src/plugin_discovery.rs`
 - `crates/runtime/src/plugin_host.rs`
 
+已完成 crate 拆分（从 `runtime` 提取独立 crate）：
+
+- `crates/runtime-config/` — 配置模型与加载/校验逻辑
+- `crates/runtime-llm/` — LLM 提供者抽象与 OpenAI/Anthropic 适配
+- `crates/runtime-prompt/` — Prompt 组装引擎与 Contributor 模式
+
 ### Success Criteria
 
 - 行为不变
@@ -56,8 +66,7 @@
 
 ### Status
 
-本阶段已完成前四项，且现有 server 入口已经只消费 `astrcode-runtime` 暴露的 bootstrap / governance surface。  
-仍未单独提炼的项是一个更明确的 `plugin_host.rs` 生命周期模块。
+本阶段已全部完成。server 入口只消费 `astrcode-runtime` 暴露的 bootstrap / governance surface；LLM/配置/Prompt 均已拆为独立 crate。
 
 ## Phase 2: Make Capability the Only First-Class Action Model
 
@@ -71,13 +80,20 @@
 
 - 在命名和模块边界上强调 `Capability`
 - 把 tool adapter 明确放到 adapter/source 模块，并通过 `CapabilityInvoker` 注册
-- 避免 runtime 直接依赖“本地 tool 列表”作为主抽象
+- 避免 runtime 直接依赖”本地 tool 列表”作为主抽象
 
 ### Success Criteria
 
-- 新增动作能力时，默认先问“它是什么 capability”
+- 新增动作能力时，默认先问”它是什么 capability”
 - built-in 和 plugin capability 进入同一路由
 - `CapabilityRouter` 不再直接暴露 `ToolRegistry` 装配入口
+
+### Status
+
+本阶段已基本完成：
+- `Tool` trait 已新增 `capability_metadata()` / `capability_descriptor()` 回调，内置工具元数据下沉到各自实现
+- `ToolCapabilityInvoker` 已注册到统一 `CapabilityRouter`
+- `HandlerDispatcher` 等冗余适配层已清理
 
 ## Phase 3: Introduce Formal Policy and Approval Runtime Services
 
@@ -114,6 +130,10 @@
 - 把审批状态镜像到专门的 runtime observation bus
 - 为 Web / CLI / ACP 接入真正的人工审批 transport
 
+### Status (补充)
+
+本阶段已全部完成。LLM provider 已拆分到 `crates/runtime-llm`（OpenAI + Anthropic），消除了此前 `anthropic.rs` / `openai.rs` 的大量重复代码。
+
 ## Phase 4: Introduce Runtime Observation Bus
 
 ### Target
@@ -135,13 +155,22 @@
 
 ### Target
 
-把当前的能力提示从“固定摘要”升级为真正的发现与加载机制。
+把当前的能力提示从”固定摘要”升级为真正的发现与加载机制。
 
 ### Practical Changes
 
 - `AGENTS.md` 支持更清晰的分层作用域
 - `SKILL.md` 支持按需发现与按需加载
 - prompt contributor pipeline 继续保留，但数据来源升级
+- `IdentityContributor` 支持用户自定义 `~/.astrcode/IDENTITY.md` 身份注入
+
+### Status
+
+本阶段部分完成：
+- `runtime-prompt` crate 已独立拆分，采用 Contributor 模式组装系统提示
+- 已有 Contributor：Identity / AgentsMd / Environment / SkillSummary
+- `AGENTS.md` 的分层加载已支持
+- `SKILL.md` 按需发现与加载仍在进行中
 
 ### Success Criteria
 
@@ -169,9 +198,10 @@
 
 每个阶段结束时，至少验证：
 
-- Rust 代码改动：`cargo fmt --all -- --check && cargo test --workspace`
-- 前端代码改动：`cd frontend && npm run typecheck && npm run lint && npm run format:check`
+- Rust 代码改动：`cargo fmt --all -- --check && cargo test --workspace --exclude astrcode`
+- 前端代码改动：`cd frontend && npm run typecheck && npm run format:check`（lint 当前无效，见 CLAUDE.md）
 - 如果改动 `deny.toml` 或 `Cargo.lock`：`cargo deny check bans`
+- CI 工作流已配置自动检查：`rust-check` / `frontend-check` / `tauri-build` / `dependency-audit`
 
 ## Expected End State
 

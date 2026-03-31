@@ -6,12 +6,11 @@
 
 ## 🔴 High — 需要立即修复
 
-### H1. `llm/anthropic.rs` 与 `llm/openai.rs` 大量重复代码
+### H1. ~~`llm/anthropic.rs` 与 `llm/openai.rs` 大量重复代码~~ ✅ 已修复
 
-6 处几乎相同的代码：`is_retryable_status`、`build_http_client`、`wait_retry_delay`、`emit_event`、
-常量 `CONNECT_TIMEOUT/READ_TIMEOUT/MAX_RETRIES/RETRY_BASE_DELAY_MS`、测试 helper `sink_collector`。
+原问题：6 处几乎相同的代码（`is_retryable_status`、`build_http_client`、`wait_retry_delay`、`emit_event`、常量、测试 helper）。
 
-**修复**: 抽取到 `llm/mod.rs` 共享模块。
+**修复**: 已拆分到独立 `crates/runtime-llm/` crate，共享逻辑在 `lib.rs` 中统一，Anthropic/OpenAI 仅保留 provider-specific 适配代码。
 
 ### H2. `CapabilityDescriptor` 等类型在 `core` 和 `protocol` 中重复定义
 
@@ -182,7 +181,7 @@ runtime 和 server 多处。
 
 | # | 状态 | 说明 |
 |---|------|------|
-| H1 | ✅ | 抽取 LLM 共享代码到 `llm/mod.rs` |
+| H1 | ✅ | 拆分到独立 `crates/runtime-llm/` crate，共享逻辑统一到 lib.rs |
 | H2 | ⬜ | 统一 core/protocol 类型（架构决策，暂缓） |
 | H3 | ✅ | 修复 phase 映射 Bug + 重复（Interrupted 分支修复 + 函数统一） |
 | H4 | ✅ | StorageEvent::ToolResult 持久化 error/metadata，并兼容旧 JSONL 反序列化 |

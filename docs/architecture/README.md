@@ -66,6 +66,10 @@ AstrCode 的目标架构收敛为三层：
 - `crates/runtime/src/bootstrap.rs`
 - `crates/runtime/src/runtime_surface_assembler.rs`
 - `crates/runtime/src/runtime_governance.rs`
+- `crates/runtime-config/src/lib.rs` — 配置模型与加载/校验（独立 crate）
+- `crates/runtime-llm/src/lib.rs` — LLM 提供者抽象与共享逻辑（独立 crate）
+- `crates/runtime-prompt/src/composer.rs` — Prompt 组装引擎与 Contributor 调度
+- `crates/runtime-prompt/src/contributors/` — 系统提示各片段贡献者
 - `crates/core/src/registry/router.rs`
 - `crates/core/src/capability.rs`
 - `crates/server/src/main.rs`

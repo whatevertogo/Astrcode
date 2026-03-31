@@ -50,7 +50,7 @@ AgentLoop 通过一个最小的模型调用端口工作，可以把它理解为 
 - provider failover / routing
 
 这些都属于 Layer 2 的 runtime assembly 问题。  
-当前实现里，这个端口的现实落点是 `crates/runtime/src/llm/mod.rs` 中的 `LlmProvider`。
+当前实现里，这个端口的现实落点是 `crates/runtime-llm/src/lib.rs` 中的 `LlmProvider`。
 
 AgentLoop 不应直接承担：
 

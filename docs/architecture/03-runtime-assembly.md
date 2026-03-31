@@ -93,12 +93,15 @@ Runtime assembly 需要承担以下职责：
 
 当前仓库里最需要整理的不是 loop，而是 runtime assembly 的代码位置。
 
-最典型的例子是：
+经过 Phase 1 重构，这组模块已拆分为：
 
 - `crates/runtime/src/bootstrap.rs`
 - `crates/runtime/src/runtime_surface_assembler.rs`
 - `crates/runtime/src/runtime_governance.rs`
 - `crates/runtime/src/builtin_capabilities.rs`
+- `crates/runtime-config/` — 配置模型与加载/校验（独立 crate）
+- `crates/runtime-llm/` — LLM 提供者抽象与适配（独立 crate）
+- `crates/runtime-prompt/` — Prompt 组装引擎与 Contributor 模式（独立 crate）
 
 这组模块当前承担了：
 
@@ -109,8 +112,11 @@ Runtime assembly 需要承担以下职责：
 - capability conflict detection
 - governance snapshot / reload
 - plugin health probing
+- 配置加载与校验（`runtime-config`）
+- LLM 调用与 provider 管理（`runtime-llm`）
+- 系统提示组装与 contributor 调度（`runtime-prompt`）
 
-相比之前，这些职责已经从 `server` 成功下沉到 `runtime` crate。
+这些职责已从 `server` 成功下沉到 `runtime` crate 及其拆分出的子 crate。
 
 ## Recommended Split
 
@@ -156,6 +162,11 @@ Phase 3 之后，`RuntimeService` 也会显式持有 `PolicyEngine` 与 `Approva
 
 `PromptComposer` 和 contributors 是当前代码里值得保留的模式。
 
+`runtime-prompt` crate 已从 `runtime` 中拆分为独立 crate，采用 Contributor 模式组装系统提示：
+
+- `PromptComposer` 按优先级调度各 `PromptContributor`
+- 已有 Contributor：`IdentityContributor`（用户身份）、`AgentsMdContributor`（项目指令）、`EnvironmentContributor`（环境信息）、`SkillSummaryContributor`（技能摘要）
+
 建议继续保留并加强：
 
 - `AGENTS.md` 分层加载
@@ -165,10 +176,12 @@ Phase 3 之后，`RuntimeService` 也会显式持有 `PolicyEngine` 与 `Approva
 
 相关代码：
 
-- `crates/runtime/src/prompt/contributors/agents_md.rs`
-- `crates/runtime/src/prompt/contributors/skill_summary.rs`
+- `crates/runtime-prompt/src/contributors/agents_md.rs`
+- `crates/runtime-prompt/src/contributors/skill_summary.rs`
+- `crates/runtime-prompt/src/contributors/identity.rs`
+- `crates/runtime-prompt/src/contributors/environment.rs`
 
-未来要做的不是推翻这套机制，而是把它从“固定摘要块”升级为“真正的 loader + contributor pipeline”。
+未来要做的不是推翻这套机制，而是把它从”固定摘要块”升级为”真正的 loader + contributor pipeline”。
 
 ## Runtime Bootstrap Contract
 
