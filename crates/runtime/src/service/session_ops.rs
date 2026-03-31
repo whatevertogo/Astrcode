@@ -148,13 +148,21 @@ impl RuntimeService {
         let session_id_owned = session_id.to_string();
         let started_at = Instant::now();
         let load_result = spawn_blocking_service("load session state", move || {
-            let stored =
-                EventLog::load(&session_id_owned).map_err(|error| match error.to_string() {
+            // 先打开会话获取路径，然后用 iter_from_path 流式读取事件
+            let log =
+                EventLog::open(&session_id_owned).map_err(|error| match error.to_string() {
                     message if message.contains("session file not found") => {
                         ServiceError::NotFound(message)
                     }
                     _ => ServiceError::from(error),
                 })?;
+            let path = log.path().to_path_buf();
+            drop(log); // 释放写句柄，以便只读迭代
+
+            let stored: Vec<StoredEvent> = EventLog::iter_from_path(&path)
+                .map_err(ServiceError::from)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(ServiceError::from)?;
             let Some(first) = stored.first() else {
                 return Err(ServiceError::NotFound(format!(
                     "session '{}' is empty",
@@ -275,7 +283,15 @@ pub(super) fn display_name_from_working_dir(path: &Path) -> String {
 pub(super) async fn load_events(session_id: &str) -> ServiceResult<Vec<StoredEvent>> {
     let session_id = session_id.to_string();
     spawn_blocking_service("load session events", move || {
-        EventLog::load(&session_id).map_err(ServiceError::from)
+        // 打开会话获取路径，然后用 iter_from_path 流式读取事件
+        let log = EventLog::open(&session_id).map_err(ServiceError::from)?;
+        let path = log.path().to_path_buf();
+        drop(log); // 释放写句柄，以便只读迭代
+
+        EventLog::iter_from_path(&path)
+            .map_err(ServiceError::from)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ServiceError::from)
     })
     .await
 }

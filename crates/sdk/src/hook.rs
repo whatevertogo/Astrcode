@@ -50,16 +50,13 @@ pub trait PolicyHook: Send + Sync {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum HookShortCircuit {
     Never,
+    #[default]
     OnDeny,
 }
 
-impl Default for HookShortCircuit {
-    fn default() -> Self {
-        Self::OnDeny
-    }
-}
 
 #[derive(Clone)]
 pub struct RegisteredPolicyHook {

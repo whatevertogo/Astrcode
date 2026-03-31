@@ -4,6 +4,7 @@ use std::io::Write;
 use chrono::Utc;
 
 use crate::event::StorageEvent;
+use crate::home::ASTRCODE_HOME_DIR_ENV;
 use crate::test_support::TestEnvGuard;
 
 use super::*;
@@ -14,6 +15,8 @@ fn make_test_log(dir: &std::path::Path) -> EventLog {
     EventLog::create_at_path(session_id, path).unwrap()
 }
 
+// 测试代码需要使用 deprecated API 来验证其行为
+#[allow(deprecated)]
 #[test]
 fn append_and_load_roundtrip() {
     let tmp = tempfile::tempdir().unwrap();
@@ -43,6 +46,8 @@ fn append_and_load_roundtrip() {
     );
 }
 
+// 测试代码需要使用 deprecated API 来验证其行为
+#[allow(deprecated)]
 #[test]
 fn load_errors_on_invalid_json() {
     let tmp = tempfile::tempdir().unwrap();
@@ -338,15 +343,15 @@ fn delete_sessions_by_working_dir_continues_on_partial_failure() {
 fn session_path_prefers_isolated_test_home_over_explicit_override() {
     let guard = TestEnvGuard::new();
     let override_home = tempfile::tempdir().unwrap();
-    let previous_override = std::env::var_os("ASTRCODE_HOME_DIR");
+    let previous_override = std::env::var_os(ASTRCODE_HOME_DIR_ENV);
 
-    std::env::set_var("ASTRCODE_HOME_DIR", override_home.path());
+    std::env::set_var(ASTRCODE_HOME_DIR_ENV, override_home.path());
     let path = session_path("2026-03-08T10-00-00-aaaaaaaa").unwrap();
     let uses_test_home = path.starts_with(guard.home_dir());
 
     match previous_override {
-        Some(value) => std::env::set_var("ASTRCODE_HOME_DIR", value),
-        None => std::env::remove_var("ASTRCODE_HOME_DIR"),
+        Some(value) => std::env::set_var(ASTRCODE_HOME_DIR_ENV, value),
+        None => std::env::remove_var(ASTRCODE_HOME_DIR_ENV),
     }
 
     assert!(

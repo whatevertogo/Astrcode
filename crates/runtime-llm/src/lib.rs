@@ -224,7 +224,7 @@ impl LlmAccumulator {
                 id: call.id,
                 name: call.name,
                 args: serde_json::from_str(&call.arguments)
-                    .unwrap_or_else(|_| Value::String(call.arguments)),
+                    .unwrap_or(Value::String(call.arguments)),
             })
             .collect();
 

@@ -23,6 +23,12 @@ pub struct TestEnvGuard {
     previous_test_home: Option<std::ffi::OsString>,
 }
 
+impl Default for TestEnvGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TestEnvGuard {
     pub fn new() -> Self {
         let lock = env_lock().lock().expect("env lock should be acquired");

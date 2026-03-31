@@ -4,23 +4,23 @@ use astrcode_core::{CapabilityInvoker, Result, ToolCapabilityInvoker};
 
 pub(crate) fn built_in_capability_invokers() -> Result<Vec<Arc<dyn CapabilityInvoker>>> {
     vec![
-        ToolCapabilityInvoker::boxed(Box::new(astrcode_tools::tools::shell::ShellTool::default())),
+        ToolCapabilityInvoker::boxed(Box::new(astrcode_tools::tools::shell::ShellTool)),
         ToolCapabilityInvoker::boxed(Box::new(
-            astrcode_tools::tools::list_dir::ListDirTool::default(),
+            astrcode_tools::tools::list_dir::ListDirTool,
         )),
         ToolCapabilityInvoker::boxed(Box::new(
-            astrcode_tools::tools::read_file::ReadFileTool::default(),
+            astrcode_tools::tools::read_file::ReadFileTool,
         )),
         ToolCapabilityInvoker::boxed(Box::new(
-            astrcode_tools::tools::write_file::WriteFileTool::default(),
+            astrcode_tools::tools::write_file::WriteFileTool,
         )),
         ToolCapabilityInvoker::boxed(Box::new(
-            astrcode_tools::tools::edit_file::EditFileTool::default(),
+            astrcode_tools::tools::edit_file::EditFileTool,
         )),
         ToolCapabilityInvoker::boxed(Box::new(
-            astrcode_tools::tools::find_files::FindFilesTool::default(),
+            astrcode_tools::tools::find_files::FindFilesTool,
         )),
-        ToolCapabilityInvoker::boxed(Box::new(astrcode_tools::tools::grep::GrepTool::default())),
+        ToolCapabilityInvoker::boxed(Box::new(astrcode_tools::tools::grep::GrepTool)),
     ]
     .into_iter()
     .collect()

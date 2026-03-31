@@ -163,7 +163,7 @@ fn collect_candidate_files(
             let entry = entry.map_err(|e| {
                 AstrError::io(
                     format!("failed walking '{}'", path.display()),
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             if entry.file_type().is_file() {

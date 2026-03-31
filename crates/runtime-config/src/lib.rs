@@ -38,9 +38,10 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use astrcode_core::test_support::TestEnvGuard;
     use crate::saver::save_config_to_path;
     use crate::validation::validate_config;
+    use astrcode_core::home::ASTRCODE_HOME_DIR_ENV;
+    use astrcode_core::test_support::TestEnvGuard;
 
     use super::*;
 
@@ -335,15 +336,15 @@ mod tests {
     fn config_path_prefers_isolated_test_home_over_explicit_override() {
         let guard = TestEnvGuard::new();
         let override_home = tempfile::tempdir().expect("tempdir should be created");
-        let previous_override = std::env::var_os("ASTRCODE_HOME_DIR");
+        let previous_override = std::env::var_os(ASTRCODE_HOME_DIR_ENV);
 
-        std::env::set_var("ASTRCODE_HOME_DIR", override_home.path());
+        std::env::set_var(ASTRCODE_HOME_DIR_ENV, override_home.path());
         let path = config_path().expect("config_path should resolve");
         let uses_test_home = path.starts_with(guard.home_dir());
 
         match previous_override {
-            Some(value) => std::env::set_var("ASTRCODE_HOME_DIR", value),
-            None => std::env::remove_var("ASTRCODE_HOME_DIR"),
+            Some(value) => std::env::set_var(ASTRCODE_HOME_DIR_ENV, value),
+            None => std::env::remove_var(ASTRCODE_HOME_DIR_ENV),
         }
 
         assert!(

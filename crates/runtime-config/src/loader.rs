@@ -42,7 +42,7 @@ pub fn load_config_from_path(path: &Path) -> Result<Config> {
         })?;
 
         println!("Config created at {}，请填写 apiKey", path.display());
-        return Ok(normalize_config(default_cfg)?);
+        return normalize_config(default_cfg);
     }
 
     let raw = fs::read_to_string(path)

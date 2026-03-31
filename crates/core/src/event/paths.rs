@@ -44,7 +44,6 @@ fn legacy_prefixed_path(session_id: &str) -> Result<PathBuf> {
 }
 
 pub(crate) fn resolve_existing_session_path(session_id: &str) -> Result<PathBuf> {
-
     let _ = validated_session_id(session_id)?;
     let canonical = session_path(session_id)?;
     if canonical.exists() {

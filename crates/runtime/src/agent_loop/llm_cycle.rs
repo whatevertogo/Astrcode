@@ -7,9 +7,9 @@ use crate::llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
 use crate::provider_factory::DynProviderFactory;
 use astrcode_core::StorageEvent;
 pub(crate) async fn build_provider(factory: DynProviderFactory) -> Result<Arc<dyn LlmProvider>> {
-    Ok(tokio::task::spawn_blocking(move || factory.build())
+    tokio::task::spawn_blocking(move || factory.build())
         .await
-        .map_err(|e| astrcode_core::AstrError::Internal(format!("blocking task failed: {e}")))??)
+        .map_err(|e| astrcode_core::AstrError::Internal(format!("blocking task failed: {e}")))?
 }
 
 pub(crate) async fn generate_response(

@@ -161,7 +161,7 @@ impl EventLog {
         let path = resolve_existing_session_path(session_id)?;
         let next_storage_seq = Self::last_storage_seq_from_path(&path)?.saturating_add(1);
         let file = OpenOptions::new()
-            .write(true)
+            
             .append(true)
             .open(&path)
             .map_err(|e| {
@@ -227,6 +227,7 @@ impl EventLog {
         since = "0.2.0",
         note = "Use iter_from_path or replay_to for streaming"
     )]
+    #[allow(deprecated)]
     pub fn load(session_id: &str) -> Result<Vec<StoredEvent>> {
         let path = resolve_existing_session_path(session_id)?;
         Self::load_from_path(&path)

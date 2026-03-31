@@ -104,7 +104,7 @@ impl CapabilityExecutionResult {
             output,
             error: self.error,
             metadata: self.metadata,
-            duration_ms: self.duration_ms as u64,
+            duration_ms: self.duration_ms,
             truncated: self.truncated,
         }
     }
@@ -123,6 +123,12 @@ pub trait CapabilityInvoker: Send + Sync {
 
 pub struct CapabilityRouterBuilder {
     invokers: Vec<Arc<dyn CapabilityInvoker>>,
+}
+
+impl Default for CapabilityRouterBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CapabilityRouterBuilder {

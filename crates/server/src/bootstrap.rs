@@ -16,7 +16,9 @@ use tower_http::services::ServeDir;
 
 use crate::{ApiError, AppState, FrontendBuild, AUTH_HEADER_NAME, SESSION_CURSOR_HEADER_NAME};
 
-pub(crate) const APP_HOME_OVERRIDE_ENV: &str = "ASTRCODE_HOME_DIR";
+/// 从 core crate 导入，避免重复定义（仅测试使用）
+#[cfg(test)]
+pub(crate) use astrcode_core::home::ASTRCODE_HOME_DIR_ENV as APP_HOME_OVERRIDE_ENV;
 pub(crate) const BOOTSTRAP_TOKEN_TTL_HOURS: i64 = 24;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -43,7 +45,9 @@ async fn server_root() -> &'static str {
 ///
 /// 前端 Vite dev server (port 5173) 通过此端点获取 server 的 bootstrap token，
 /// 然后才能进行鉴权交换。
-pub(crate) async fn serve_run_info(State(_state): State<AppState>) -> Result<Json<BrowserBootstrapResponse>, ApiError> {
+pub(crate) async fn serve_run_info(
+    State(_state): State<AppState>,
+) -> Result<Json<BrowserBootstrapResponse>, ApiError> {
     let run_info_path = run_info_path().map_err(|e| ApiError {
         status: StatusCode::INTERNAL_SERVER_ERROR,
         message: e.to_string(),
@@ -51,7 +55,8 @@ pub(crate) async fn serve_run_info(State(_state): State<AppState>) -> Result<Jso
     if !run_info_path.is_file() {
         return Err(ApiError {
             status: StatusCode::SERVICE_UNAVAILABLE,
-            message: "run info not available; server may be starting up or shutting down".to_string(),
+            message: "run info not available; server may be starting up or shutting down"
+                .to_string(),
         });
     }
 

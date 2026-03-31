@@ -64,7 +64,7 @@ pub async fn write_text_file(path: &Path, content: &str, create_dirs: bool) -> R
     fs::write(path, content.as_bytes())
         .map_err(|e| AstrError::io(format!("failed writing file '{}'", path.display()), e))?;
 
-    Ok(content.as_bytes().len())
+    Ok(content.len())
 }
 
 pub fn json_output<T: Serialize>(value: &T) -> Result<String> {

@@ -44,7 +44,7 @@ impl RuntimeService {
         tokio::spawn(async move {
             let turn_started_at = Instant::now();
             let initial_phase = lock_anyhow(&state.phase, "session phase")
-                .map(|guard| guard.clone())
+                .map(|guard| *guard)
                 .unwrap_or(Phase::Idle);
             let mut translator = EventTranslator::new(initial_phase);
 
@@ -73,8 +73,7 @@ impl RuntimeService {
                         },
                         cancel.clone(),
                     )
-                    .await
-                    .map_err(|error| error),
+                    .await,
                 Err(error) => Err(error),
             };
 

@@ -219,7 +219,7 @@ fn message_to_output(message: OpenAiResponseMessage) -> LlmOutput {
             id: call.id,
             name: call.function.name,
             args: serde_json::from_str::<Value>(&call.function.arguments)
-                .unwrap_or_else(|_| Value::String(call.function.arguments)),
+                .unwrap_or(Value::String(call.function.arguments)),
         })
         .collect();
 

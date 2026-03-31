@@ -32,19 +32,28 @@ pub(crate) fn to_session_list_item(meta: SessionMeta) -> SessionListItem {
 
 pub(crate) fn to_session_message_dto(message: SessionMessage) -> SessionMessageDto {
     match message {
-        SessionMessage::User { content, timestamp } => {
-            SessionMessageDto::User { content, timestamp }
-        }
+        SessionMessage::User {
+            turn_id,
+            content,
+            timestamp,
+        } => SessionMessageDto::User {
+            turn_id,
+            content,
+            timestamp,
+        },
         SessionMessage::Assistant {
+            turn_id,
             content,
             timestamp,
             reasoning_content,
         } => SessionMessageDto::Assistant {
+            turn_id,
             content,
             timestamp,
             reasoning_content,
-        },
+        }
         SessionMessage::ToolCall {
+            turn_id,
             tool_call_id,
             tool_name,
             args,
@@ -54,6 +63,7 @@ pub(crate) fn to_session_message_dto(message: SessionMessage) -> SessionMessageD
             ok,
             duration_ms,
         } => SessionMessageDto::ToolCall {
+            turn_id,
             tool_call_id,
             tool_name,
             args,

@@ -16,17 +16,14 @@ use super::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ValidationLevel {
     Off,
+    #[default]
     Warn,
     Strict,
 }
 
-impl Default for ValidationLevel {
-    fn default() -> Self {
-        Self::Warn
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct PromptComposerOptions {

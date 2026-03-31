@@ -190,14 +190,14 @@ fn command_spec(shell: Option<&str>, command: &str) -> CommandSpec {
             Some(shell) => shell.to_string(),
             None => default_windows_shell().to_string(),
         };
-        return CommandSpec {
+        CommandSpec {
             program,
             args: vec![
                 "-NoProfile".to_string(),
                 "-Command".to_string(),
                 command.to_string(),
             ],
-        };
+        }
     }
 
     #[cfg(not(windows))]

@@ -384,11 +384,11 @@ fn parse_sse_block(block: &str) -> Result<Option<(String, Value)>> {
     Ok(Some((event_type, payload)))
 }
 
-fn extract_start_block<'a>(payload: &'a Value) -> &'a Value {
+fn extract_start_block(payload: &Value) -> &Value {
     payload.get("content_block").unwrap_or(payload)
 }
 
-fn extract_delta_block<'a>(payload: &'a Value) -> &'a Value {
+fn extract_delta_block(payload: &Value) -> &Value {
     payload.get("delta").unwrap_or(payload)
 }
 
@@ -697,10 +697,9 @@ mod tests {
         }]);
 
         match &messages[0].content[..] {
-            [
-                AnthropicContentBlock::Text { text, .. },
-                AnthropicContentBlock::ToolUse { id, name, input, .. },
-            ] => {
+            [AnthropicContentBlock::Text { text, .. }, AnthropicContentBlock::ToolUse {
+                id, name, input, ..
+            }] => {
                 assert_eq!(text, "thinking");
                 assert_eq!(id, "call_1");
                 assert_eq!(name, "search");

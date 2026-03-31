@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use astrcode_core::home::{ASTRCODE_HOME_DIR_ENV, ASTRCODE_TEST_HOME_ENV};
 use log::warn;
 
 /// Resolves a path to a file under `~/.astrcode/` (or the configured home override).
@@ -11,14 +12,14 @@ use log::warn;
 /// Checks `ASTRCODE_HOME_DIR`, then `ASTRCODE_TEST_HOME` (for tests),
 /// then falls back to `dirs::home_dir()`.
 pub fn user_astrcode_file_path(filename: &str) -> Option<PathBuf> {
-    if let Some(home) = std::env::var_os("ASTRCODE_HOME_DIR") {
+    if let Some(home) = std::env::var_os(ASTRCODE_HOME_DIR_ENV) {
         if !home.is_empty() {
             return Some(PathBuf::from(home).join(".astrcode").join(filename));
         }
     }
 
-    if let Some(home) = astrcode_core::test_support::test_home_dir() {
-        return Some(home.join(".astrcode").join(filename));
+    if let Some(home) = std::env::var_os(ASTRCODE_TEST_HOME_ENV) {
+        return Some(PathBuf::from(home).join(".astrcode").join(filename));
     }
 
     match dirs::home_dir() {

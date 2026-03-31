@@ -99,9 +99,11 @@ impl PromptContributor for AgentsMdContributor {
 mod tests {
     use std::fs;
 
+    use astrcode_core::home::ASTRCODE_HOME_DIR_ENV;
+    use astrcode_core::test_support::TestEnvGuard;
+
     use super::*;
     use crate::BlockContent;
-    use astrcode_core::test_support::TestEnvGuard;
 
     fn context(working_dir: String) -> PromptContext {
         PromptContext {
@@ -209,14 +211,14 @@ mod tests {
     fn user_agents_md_path_prefers_app_home_override() {
         let _guard = TestEnvGuard::new();
         let override_home = tempfile::tempdir().expect("tempdir should be created");
-        let previous_override = std::env::var_os("ASTRCODE_HOME_DIR");
+        let previous_override = std::env::var_os(ASTRCODE_HOME_DIR_ENV);
 
-        std::env::set_var("ASTRCODE_HOME_DIR", override_home.path());
+        std::env::set_var(ASTRCODE_HOME_DIR_ENV, override_home.path());
         let path = user_agents_md_path().expect("override path should resolve");
 
         match previous_override {
-            Some(value) => std::env::set_var("ASTRCODE_HOME_DIR", value),
-            None => std::env::remove_var("ASTRCODE_HOME_DIR"),
+            Some(value) => std::env::set_var(ASTRCODE_HOME_DIR_ENV, value),
+            None => std::env::remove_var(ASTRCODE_HOME_DIR_ENV),
         }
 
         assert_eq!(

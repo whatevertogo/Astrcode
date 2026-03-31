@@ -49,7 +49,9 @@ pub enum ValidationPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
+#[derive(Default)]
 pub enum BlockCondition {
+    #[default]
     Always,
     StepEquals(usize),
     FirstStepOnly,
@@ -57,11 +59,6 @@ pub enum BlockCondition {
     VarEquals { key: String, expected: String },
 }
 
-impl Default for BlockCondition {
-    fn default() -> Self {
-        Self::Always
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BlockMetadata {

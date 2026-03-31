@@ -19,6 +19,7 @@ mod bootstrap;
 #[cfg(test)]
 mod bootstrap_tests;
 mod builtin_capabilities;
+#[cfg(test)]
 mod cancel;
 mod plugin_discovery;
 mod provider_factory;
