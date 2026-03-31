@@ -108,6 +108,7 @@ function astrcodeBrowserBootstrapPlugin(): Plugin {
 }
 
 const apiProxyTarget = resolveApiProxyTarget();
+console.log('[astrcode] API proxy target:', apiProxyTarget ?? '(not configured - run.json missing or invalid)');
 export default defineConfig({
   plugins: [react(), astrcodeBrowserBootstrapPlugin()],
   server: {
@@ -118,7 +119,7 @@ export default defineConfig({
       ? {
           '/api': {
             target: apiProxyTarget,
-            changeOrigin: false,
+            changeOrigin: true,
           },
         }
       : undefined,
