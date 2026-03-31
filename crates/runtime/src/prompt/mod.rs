@@ -9,9 +9,9 @@ pub mod plan;
 pub mod template;
 
 pub use block::{
-    BlockCondition, BlockContent, BlockKind, BlockMetadata, BlockSpec, PromptBlock, RenderTarget,
-    ValidationPolicy,
+    BlockCondition, BlockContent, BlockKind, BlockSpec, PromptBlock, RenderTarget, ValidationPolicy,
 };
+#[allow(unused_imports)]
 pub use composer::{PromptComposer, PromptComposerOptions, ValidationLevel};
 pub use context::PromptContext;
 pub use contribution::{append_unique_tools, PromptContribution};

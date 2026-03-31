@@ -1,3 +1,20 @@
+//! # 事件转换器
+//!
+//! 将存储事件（`StorageEvent`）转换为领域事件（`AgentEvent`）。
+//!
+//! ## 核心职责
+//!
+//! 1. **Phase 跟踪**: 维护当前会话阶段，在阶段变化时发出 `PhaseChanged` 事件
+//! 2. **Turn ID 管理**: 为旧事件（没有 turn_id）生成 legacy turn ID
+//! 3. **工具名称缓存**: 存储 `tool_call_id -> tool_name` 映射，用于 ToolResult
+//! 4. **事件 ID 生成**: 为每个领域事件生成 `{storage_seq}.{subindex}` 格式的 ID
+//!
+//! ## 为什么需要这个组件？
+//!
+//! - `StorageEvent` 是持久化格式，面向存储
+//! - `AgentEvent` 是 SSE 推送格式，面向展示
+//! - 一个 `StorageEvent` 可能产生多个 `AgentEvent`（如 PhaseChanged + 实际事件）
+
 use std::collections::HashMap;
 
 use crate::{
@@ -5,6 +22,12 @@ use crate::{
     StoredEvent, ToolExecutionResult,
 };
 
+/// 回放存储事件为会话事件记录
+///
+/// ## 断点续传
+///
+/// `last_event_id` 用于 SSE 断点续传，格式为 `{storage_seq}.{subindex}`。
+/// 只返回 ID 严格大于 `last_event_id` 的事件。
 pub fn replay_records(
     events: &[StoredEvent],
     last_event_id: Option<&str>,
@@ -19,6 +42,7 @@ pub fn replay_records(
                 let Some(current_id) = parse_event_id(&record.event_id) else {
                     continue;
                 };
+                // 只返回 ID 大于断点的事件（>= 的部分已经发送过）
                 if current_id <= after_id {
                     continue;
                 }
@@ -30,6 +54,7 @@ pub fn replay_records(
     history
 }
 
+/// 解析事件 ID 为 (storage_seq, subindex) 元组
 fn parse_event_id(raw: &str) -> Option<(u64, u32)> {
     let (storage_seq, subindex) = raw.split_once('.')?;
     let storage_seq = storage_seq.parse().ok()?;
@@ -38,8 +63,16 @@ fn parse_event_id(raw: &str) -> Option<(u64, u32)> {
 }
 
 /// 根据 storage event 推断当前 phase。
-/// 注意：Error 事件在 message == "interrupted" 时应映射为 Phase::Interrupted，
-/// 但该函数仅用于 tail 扫描等轻量级场景，完整的 phase 转换由 EventTranslator 处理。
+///
+/// ## 用途
+///
+/// 此函数用于 tail 扫描等轻量级场景（如会话列表展示状态），
+/// 不跟踪完整的 phase 转换历史。
+///
+/// ## 注意
+///
+/// - Error 事件在 message == "interrupted" 时应映射为 Phase::Interrupted
+/// - 完整的 phase 转换由 `EventTranslator` 处理
 pub fn phase_of_storage_event(event: &StorageEvent) -> Phase {
     match event {
         StorageEvent::SessionStart { .. } => Phase::Idle,
@@ -56,14 +89,25 @@ pub fn phase_of_storage_event(event: &StorageEvent) -> Phase {
     }
 }
 
+/// 事件转换器
+///
+/// 将存储事件转换为领域事件，同时维护会话状态。
 pub struct EventTranslator {
+    /// 当前会话阶段
     pub phase: Phase,
+    /// 当前 Turn ID
     current_turn_id: Option<String>,
+    /// 旧事件没有 turn_id，需要生成 legacy turn ID
     legacy_turn_index: u64,
+    /// 工具调用 ID -> 工具名称的映射
+    ///
+    /// 为什么需要：ToolResult 事件的 tool_name 字段可能为空，
+    /// 需要从之前的 ToolCall 事件中查找。
     tool_call_names: HashMap<String, String>,
 }
 
 impl EventTranslator {
+    /// 创建新的转换器
     pub fn new(phase: Phase) -> Self {
         Self {
             phase,
@@ -73,11 +117,24 @@ impl EventTranslator {
         }
     }
 
+    /// 转换单个存储事件为多个领域事件
+    ///
+    /// ## 返回多个事件的原因
+    ///
+    /// 一个存储事件可能触发：
+    /// 1. PhaseChanged 事件（如果阶段发生变化）
+    /// 2. 实际的事件内容
+    ///
+    /// ## 子序号
+    ///
+    /// 每个事件携带 `{storage_seq}.{subindex}` 格式的 ID，
+    /// subindex 从 0 开始递增，用于 SSE 断点续传。
     pub fn translate(&mut self, stored: &StoredEvent) -> Vec<SessionEventRecord> {
         let mut subindex = 0u32;
         let mut records = Vec::new();
         let turn_id = self.turn_id_for(&stored.event);
 
+        // 闭包：添加一个事件记录，自动分配子序号
         let mut push = |event: AgentEvent, records: &mut Vec<SessionEventRecord>| {
             records.push(SessionEventRecord {
                 event_id: format!("{}.{}", stored.storage_seq, subindex),
@@ -290,20 +347,25 @@ impl EventTranslator {
     }
 
     fn turn_id_for(&mut self, event: &StorageEvent) -> Option<String> {
+        // 如果事件自带 turn_id，直接使用并更新当前 turn
         if let Some(turn_id) = event.turn_id() {
             let turn_id = turn_id.to_string();
             self.current_turn_id = Some(turn_id.clone());
             return Some(turn_id);
         }
 
+        // 旧事件没有 turn_id，需要生成或复用
         match event {
+            // UserMessage 开始新的 turn，生成新的 legacy turn ID
             StorageEvent::UserMessage { .. } => {
                 self.legacy_turn_index = self.legacy_turn_index.saturating_add(1);
                 let turn_id = format!("legacy-turn-{}", self.legacy_turn_index);
                 self.current_turn_id = Some(turn_id.clone());
                 Some(turn_id)
             }
+            // SessionStart 不属于任何 turn
             StorageEvent::SessionStart { .. } => None,
+            // 其他事件复用当前 turn_id
             _ => self.current_turn_id.clone(),
         }
     }

@@ -1,3 +1,13 @@
+//! # Tool Trait 与执行上下文
+//!
+//! 定义了工具（Tool）系统的核心抽象。Tool 是 LLM Agent 调用外部能力的统一接口。
+//!
+//! ## 核心概念
+//!
+//! - **Tool**: 可被 Agent 调用的能力单元（如文件读写、Shell 执行、代码搜索）
+//! - **ToolContext**: 工具执行时的上下文信息（会话 ID、工作目录、取消令牌）
+//! - **ToolCapabilityMetadata**: 工具的能力元数据（用于策略引擎的权限判断）
+
 use std::path::PathBuf;
 
 use async_trait::async_trait;
@@ -11,7 +21,9 @@ use crate::{
 /// Unique identifier for a session.
 pub type SessionId = String;
 
-/// Default maximum output size for tool execution (1 MB)
+/// 工具执行的默认最大输出大小（1 MB）
+///
+/// 超过此大小的输出会被截断，防止大文件导致内存溢出或网络传输问题。
 pub const DEFAULT_MAX_OUTPUT_SIZE: usize = 1024 * 1024;
 
 /// Execution context provided to tools during invocation.

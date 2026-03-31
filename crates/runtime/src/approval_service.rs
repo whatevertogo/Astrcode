@@ -1,13 +1,19 @@
+//! # 审批代理
+//!
+//! 审批代理负责处理需要用户确认的能力调用。
+
 use async_trait::async_trait;
 
 use astrcode_core::{ApprovalRequest, ApprovalResolution, CancelToken, Result};
 
+/// 审批代理 trait
+///
+/// 故意设计为传输无关，CLI、Web UI 或其他桥接都可以实现此接口。
 #[async_trait]
 pub trait ApprovalBroker: Send + Sync {
-    /// Resolves a policy-generated approval request.
+    /// 解析策略生成的审批请求
     ///
-    /// The broker is deliberately transport-agnostic. A CLI, Web UI, or ACP bridge can sit behind
-    /// this trait later without changing the agent loop contract.
+    /// 返回用户的审批决定（批准/拒绝）。
     async fn request(
         &self,
         request: ApprovalRequest,
@@ -15,6 +21,9 @@ pub trait ApprovalBroker: Send + Sync {
     ) -> Result<ApprovalResolution>;
 }
 
+/// 默认审批代理
+///
+/// 直接使用请求的默认值，无需用户交互。用于测试和不策略的场景。
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DefaultApprovalBroker;
 

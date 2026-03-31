@@ -32,7 +32,8 @@ impl PromptPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prompt::{BlockKind, BlockMetadata, PromptBlock};
+    use crate::prompt::block::BlockMetadata;
+    use crate::prompt::{BlockKind, PromptBlock};
 
     #[test]
     fn render_system_returns_none_when_empty() {

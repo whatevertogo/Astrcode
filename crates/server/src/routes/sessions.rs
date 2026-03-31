@@ -1,3 +1,7 @@
+//! # 会话路由处理器
+//!
+//! 处理会话相关的 HTTP 请求和 SSE 事件流。
+
 use std::convert::Infallible;
 use std::time::Duration;
 
@@ -20,12 +24,14 @@ use crate::mapper::{
 };
 use crate::{ApiError, AppState, SESSION_CURSOR_HEADER_NAME};
 
+/// 删除项目查询参数
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DeleteProjectQuery {
     working_dir: String,
 }
 
+/// 会话事件查询参数
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SessionEventsQuery {

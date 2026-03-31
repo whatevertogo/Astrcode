@@ -816,8 +816,7 @@ async fn event_sink_failures_abort_the_turn() {
 
     assert!(result.is_err());
     assert!(result
-        .err()
-        .expect("result should be error")
+        .expect_err("result should be error")
         .to_string()
         .contains("event sink failed"));
 }

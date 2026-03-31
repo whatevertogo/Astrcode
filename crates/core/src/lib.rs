@@ -1,3 +1,20 @@
+//! # Astrcode 核心库
+//!
+//! 本库定义了 Astrcode 系统的核心领域模型和接口，与具体的运行时实现解耦。
+//!
+//! ## 主要模块
+//!
+//! - [`event`]: 事件存储与回放系统（JSONL append-only 日志）
+//! - [`session`]: 会话管理与持久化
+//! - [`tool`]: Tool trait 定义（插件系统的基础抽象）
+//! - [`capability`]: 能力描述符（用于策略引擎和 UI 展示）
+//! - [`policy`]: 策略引擎 trait（审批、内容审查、上下文压缩决策）
+//! - [`plugin`]: 插件清单与注册表
+//! - [`registry`]: 能力路由器（将能力调用分派到具体的 invoker）
+//! - [`runtime`]: 运行时协调器接口
+//! - [`projection`]: Agent 状态投影（从事件流推导状态）
+//! - [`action`]: LLM 消息与工具调用相关的数据结构
+
 mod action;
 mod cancel;
 pub mod capability;

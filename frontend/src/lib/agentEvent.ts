@@ -1,5 +1,10 @@
+//! # Agent 事件处理
+//!
+//! 将 SSE 接收的原始事件规范化为前端可用的格式。
+
 import type { AgentEventPayload, Phase } from '../types';
 
+/// 支持的协议版本
 const SUPPORTED_PROTOCOL_VERSION = 1;
 
 type UnknownRecord = Record<string, unknown>;

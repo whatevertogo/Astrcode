@@ -686,6 +686,7 @@ fn resolve_home_dir() -> Result<PathBuf> {
 
     #[cfg(test)]
     {
+        #[allow(clippy::needless_return)]
         return Err(AstrError::Internal(format!(
             "{} must be set before tests call config_path()",
             crate::test_support::TEST_HOME_ENV
