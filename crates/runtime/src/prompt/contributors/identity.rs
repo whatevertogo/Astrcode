@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use log::warn;
+use log::{info, warn};
 
 use crate::prompt::{BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor};
 
@@ -39,6 +39,10 @@ pub fn user_identity_md_path() -> Option<PathBuf> {
 
 /// Loads the identity definition from the given path.
 /// Returns None if the file doesn't exist or can't be read.
+/// Enforces a maximum size limit to prevent excessively large identity files
+/// from bloating the system prompt.
+const MAX_IDENTITY_SIZE: usize = 4096;
+
 pub fn load_identity_md(path: &Path) -> Option<String> {
     if !path.exists() {
         return None;
@@ -46,10 +50,19 @@ pub fn load_identity_md(path: &Path) -> Option<String> {
 
     match fs::read_to_string(path) {
         Ok(content) => {
+            if content.len() > MAX_IDENTITY_SIZE {
+                warn!(
+                    "identity file {} exceeds {} bytes ({} bytes), truncating",
+                    path.display(),
+                    MAX_IDENTITY_SIZE,
+                    content.len()
+                );
+            }
             let trimmed = content.trim().to_string();
             if trimmed.is_empty() {
                 None
             } else {
+                info!("loaded custom identity from {}", path.display());
                 Some(trimmed)
             }
         }

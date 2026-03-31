@@ -3,6 +3,7 @@ use std::path::{Component, Path, PathBuf};
 
 use astrcode_core::{AstrError, CancelToken, Result, ToolContext};
 use serde::Serialize;
+use serde_json::{json, Value};
 
 // Metadata conventions:
 // - Path fields are returned as absolute path strings.
@@ -68,6 +69,166 @@ pub async fn write_text_file(path: &Path, content: &str, create_dirs: bool) -> R
 
 pub fn json_output<T: Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).map_err(|e| AstrError::parse("failed to serialize output", e))
+}
+
+pub struct TextChangeReport {
+    pub summary: String,
+    pub metadata: Value,
+}
+
+pub fn build_text_change_report(
+    path: &Path,
+    change_type: &'static str,
+    before: Option<&str>,
+    after: &str,
+) -> TextChangeReport {
+    let diff = build_unified_diff(path, before.unwrap_or(""), after, before.is_none());
+    let summary = if diff.has_changes {
+        format!(
+            "{change_type} {} (+{} -{})",
+            path.display(),
+            diff.added_lines,
+            diff.removed_lines
+        )
+    } else {
+        format!("{change_type} {} (no content changes)", path.display())
+    };
+
+    TextChangeReport {
+        summary,
+        metadata: json!({
+            "path": path.to_string_lossy(),
+            "changeType": change_type,
+            "diff": {
+                "patch": diff.patch,
+                "addedLines": diff.added_lines,
+                "removedLines": diff.removed_lines,
+                "hasChanges": diff.has_changes,
+                "truncated": diff.truncated,
+            }
+        }),
+    }
+}
+
+struct UnifiedDiffReport {
+    patch: String,
+    added_lines: usize,
+    removed_lines: usize,
+    has_changes: bool,
+    truncated: bool,
+}
+
+fn build_unified_diff(path: &Path, before: &str, after: &str, created: bool) -> UnifiedDiffReport {
+    let before_lines = text_lines(before);
+    let after_lines = text_lines(after);
+
+    let mut prefix_len = 0usize;
+    while prefix_len < before_lines.len()
+        && prefix_len < after_lines.len()
+        && before_lines[prefix_len] == after_lines[prefix_len]
+    {
+        prefix_len += 1;
+    }
+
+    let mut suffix_len = 0usize;
+    while suffix_len < before_lines.len().saturating_sub(prefix_len)
+        && suffix_len < after_lines.len().saturating_sub(prefix_len)
+        && before_lines[before_lines.len() - 1 - suffix_len]
+            == after_lines[after_lines.len() - 1 - suffix_len]
+    {
+        suffix_len += 1;
+    }
+
+    let before_change_end = before_lines.len().saturating_sub(suffix_len);
+    let after_change_end = after_lines.len().saturating_sub(suffix_len);
+    let has_changes = prefix_len != before_lines.len() || prefix_len != after_lines.len();
+    let removed_lines = before_change_end.saturating_sub(prefix_len);
+    let added_lines = after_change_end.saturating_sub(prefix_len);
+
+    let display_path = path.display().to_string().replace('\\', "/");
+    let before_label = if created {
+        "/dev/null".to_string()
+    } else {
+        format!("a/{display_path}")
+    };
+    let after_label = format!("b/{display_path}");
+    let mut lines = vec![format!("--- {before_label}"), format!("+++ {after_label}")];
+
+    if !has_changes {
+        lines.push(format!("@@ -1,0 +1,0 @@ {}", "no changes"));
+        return UnifiedDiffReport {
+            patch: lines.join("\n"),
+            added_lines,
+            removed_lines,
+            has_changes,
+            truncated: false,
+        };
+    }
+
+    let context_start = prefix_len.saturating_sub(3);
+    let before_hunk_end = (before_change_end + 3).min(before_lines.len());
+    let after_hunk_end = (after_change_end + 3).min(after_lines.len());
+    let before_hunk_start = if removed_lines == 0 {
+        context_start
+    } else {
+        context_start + 1
+    };
+    let after_hunk_start = if added_lines == 0 {
+        context_start
+    } else {
+        context_start + 1
+    };
+
+    lines.push(format!(
+        "@@ -{},{} +{},{} @@",
+        before_hunk_start,
+        before_hunk_end.saturating_sub(context_start),
+        after_hunk_start,
+        after_hunk_end.saturating_sub(context_start)
+    ));
+
+    for line in &before_lines[context_start..prefix_len] {
+        lines.push(format!(" {}", line));
+    }
+
+    for line in &before_lines[prefix_len..before_change_end] {
+        lines.push(format!("-{}", line));
+    }
+
+    for line in &after_lines[prefix_len..after_change_end] {
+        lines.push(format!("+{}", line));
+    }
+
+    for line in &before_lines[before_change_end..before_hunk_end] {
+        lines.push(format!(" {}", line));
+    }
+
+    const MAX_PATCH_LINES: usize = 240;
+    let truncated = lines.len() > MAX_PATCH_LINES;
+    if truncated {
+        lines.truncate(MAX_PATCH_LINES);
+        lines.push("... diff truncated ...".to_string());
+    }
+
+    UnifiedDiffReport {
+        patch: lines.join("\n"),
+        added_lines,
+        removed_lines,
+        has_changes,
+        truncated,
+    }
+}
+
+fn text_lines(text: &str) -> Vec<&str> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines: Vec<&str> = text.lines().collect();
+    if text.ends_with('\n') {
+        lines.push("");
+    }
+    lines
 }
 
 fn normalize_lexically(path: &Path) -> PathBuf {
@@ -262,5 +423,26 @@ mod tests {
             .expect("write should succeed");
 
         assert!(file.exists());
+    }
+
+    #[test]
+    fn text_change_report_contains_patch_metadata() {
+        let report = build_text_change_report(
+            Path::new("src/demo.rs"),
+            "updated",
+            Some("old line\n"),
+            "new line\n",
+        );
+
+        assert!(report.summary.contains("src/demo.rs"));
+        assert_eq!(report.metadata["changeType"], json!("updated"));
+        assert!(report.metadata["diff"]["patch"]
+            .as_str()
+            .expect("patch should exist")
+            .contains("-old line"));
+        assert!(report.metadata["diff"]["patch"]
+            .as_str()
+            .expect("patch should exist")
+            .contains("+new line"));
     }
 }

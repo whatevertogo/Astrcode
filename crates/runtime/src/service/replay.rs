@@ -134,7 +134,9 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
                         tool_call_id: tool_call_id.clone(),
                         tool_name: result.tool_name.clone(),
                         args,
-                        output: Some(result.model_content()),
+                        output: (!result.output.is_empty()).then_some(result.output.clone()),
+                        error: result.error.clone(),
+                        metadata: result.metadata.clone(),
                         ok: Some(*success),
                         duration_ms: Some(*duration_ms),
                     });
@@ -150,6 +152,8 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
             tool_name,
             args,
             output: None,
+            error: None,
+            metadata: None,
             ok: None,
             duration_ms: None,
         });

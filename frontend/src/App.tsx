@@ -79,6 +79,8 @@ function convertSessionMessage(message: SessionMessage): Message {
         status: snapshotToolStatus(message.ok),
         args: message.args,
         output: message.output,
+        error: message.error,
+        metadata: message.metadata,
         durationMs: message.durationMs,
       };
   }
@@ -341,21 +343,69 @@ function reducer(state: AppState, action: Action): AppState {
       });
 
     case 'UPDATE_TOOL_CALL':
-      return mapSession(state, action.sessionId, (session) => ({
-        ...session,
-        messages: session.messages.map((message) => {
-          if (message.kind === 'toolCall' && message.toolCallId === action.toolCallId) {
+      return mapSession(state, action.sessionId, (session) => {
+        const exactMatchIndex = session.messages.findIndex(
+          (message) => message.kind === 'toolCall' && message.toolCallId === action.toolCallId
+        );
+        const fallbackIndex =
+          exactMatchIndex >= 0
+            ? exactMatchIndex
+            : [...session.messages]
+                .reverse()
+                .findIndex(
+                  (message) =>
+                    message.kind === 'toolCall' &&
+                    message.status === 'running' &&
+                    message.toolName === action.toolName
+                );
+        const targetIndex =
+          exactMatchIndex >= 0
+            ? exactMatchIndex
+            : fallbackIndex >= 0
+              ? session.messages.length - 1 - fallbackIndex
+              : -1;
+
+        if (targetIndex < 0) {
+          return {
+            ...session,
+            messages: [
+              ...session.messages,
+              {
+                id: uuid(),
+                kind: 'toolCall',
+                toolCallId: action.toolCallId,
+                toolName: action.toolName,
+                status: action.status,
+                args: null,
+                output: action.output,
+                error: action.error,
+                metadata: action.metadata,
+                durationMs: action.durationMs,
+                timestamp: Date.now(),
+              },
+            ],
+          };
+        }
+
+        return {
+          ...session,
+          messages: session.messages.map((message, index) => {
+            if (index !== targetIndex || message.kind !== 'toolCall') {
+              return message;
+            }
             return {
               ...message,
+              toolCallId: action.toolCallId,
+              toolName: action.toolName,
               status: action.status,
               output: action.output,
               error: action.error,
+              metadata: action.metadata,
               durationMs: action.durationMs,
             };
-          }
-          return message;
-        }),
-      }));
+          }),
+        };
+      });
 
     case 'INITIALIZE':
       return {
@@ -566,9 +616,11 @@ export default function App() {
           type: 'UPDATE_TOOL_CALL',
           sessionId,
           toolCallId: event.data.result.toolCallId,
+          toolName: event.data.result.toolName,
           status: event.data.result.ok ? 'ok' : 'fail',
           output: event.data.result.output,
           error: event.data.result.error,
+          metadata: event.data.result.metadata,
           durationMs: event.data.result.durationMs,
         });
         break;

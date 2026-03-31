@@ -117,6 +117,13 @@
   animation: bodyExpand 220ms ease;
 }
 
+.summary {
+  padding: 14px 18px 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
 .preview {
   border-top: 1px solid var(--border);
   padding: 12px 16px;
@@ -130,7 +137,7 @@
 
 .output {
   margin: 0;
-  padding: 16px 18px 18px;
+  padding: 14px 18px 18px;
   font-family: 'Cascadia Code', 'Fira Code', monospace;
   font-size: 13px;
   color: #6d5a45;
@@ -142,11 +149,63 @@
   background: linear-gradient(180deg, #fffdf9 0%, #fffbf4 100%);
 }
 
+.patch {
+  margin: 14px 18px 0;
+  border: 1px solid #e5d8c8;
+  border-radius: 14px;
+  overflow: auto;
+  background: #f9f5ee;
+}
+
+.patchLine {
+  padding: 0 14px;
+  min-height: 22px;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 12px;
+  line-height: 22px;
+  white-space: pre;
+}
+
+.patchLineMeta {
+  color: #6d5a45;
+  background: #efe4d5;
+}
+
+.patchLineHeader {
+  color: #6d5a45;
+  background: #f4ebdf;
+}
+
+.patchLineContext {
+  color: #6d5a45;
+}
+
+.patchLineAdd {
+  color: #1f6b45;
+  background: #ebf7ef;
+}
+
+.patchLineRemove {
+  color: #8f4038;
+  background: #fbeceb;
+}
+
+.patchLineNote {
+  color: #8a7458;
+  background: #f8f1e6;
+}
+
 .error {
   padding: 14px 18px 18px;
   font-size: 13px;
   color: var(--danger);
   font-family: 'Cascadia Code', 'Fira Code', monospace;
+}
+
+.note {
+  padding: 12px 18px 18px;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 .running {

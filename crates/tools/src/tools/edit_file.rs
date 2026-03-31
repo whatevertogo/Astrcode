@@ -1,4 +1,6 @@
-use crate::tools::fs_common::{check_cancel, read_utf8_file, resolve_path, write_text_file};
+use crate::tools::fs_common::{
+    build_text_change_report, check_cancel, read_utf8_file, resolve_path, write_text_file,
+};
 use astrcode_core::{
     AstrError, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
     ToolExecutionResult,
@@ -20,18 +22,32 @@ struct EditFileArgs {
     new_str: String,
 }
 
-fn count_occurrences(haystack: &str, needle: &str) -> usize {
+fn find_unique_occurrence(haystack: &str, needle: &str) -> Option<Result<usize>> {
     if needle.is_empty() {
-        return 0;
+        return None;
     }
 
-    let mut count = 0;
-    let mut start = 0;
-    while let Some(pos) = haystack[start..].find(needle) {
-        count += 1;
-        start += pos + 1;
+    let mut first_match = None;
+    let mut offset = 0usize;
+    while let Some(relative_pos) = haystack[offset..].find(needle) {
+        let absolute_pos = offset + relative_pos;
+        if first_match.replace(absolute_pos).is_some() {
+            return Some(Err(AstrError::Validation(
+                "oldStr appears multiple times, must be unique to edit safely".to_string(),
+            )));
+        }
+
+        // Move by one UTF-8 scalar so overlapping matches are still detected without scanning the
+        // whole file after the second hit.
+        let step = haystack[absolute_pos..]
+            .chars()
+            .next()
+            .map(|value| value.len_utf8())
+            .unwrap_or(1);
+        offset = absolute_pos + step;
     }
-    count
+
+    first_match.map(Ok)
 }
 
 #[async_trait]
@@ -77,9 +93,8 @@ impl Tool for EditFileTool {
         let started_at = Instant::now();
         let path = resolve_path(ctx, &args.path)?;
         let content = read_utf8_file(&path).await?;
-        let occurrences = count_occurrences(&content, &args.old_str);
-
-        if occurrences == 0 {
+        check_cancel(ctx.cancel(), "editFile")?;
+        let Some(match_result) = find_unique_occurrence(&content, &args.old_str) else {
             return Ok(ToolExecutionResult {
                 tool_call_id,
                 tool_name: "editFile".to_string(),
@@ -92,37 +107,43 @@ impl Tool for EditFileTool {
                 duration_ms: started_at.elapsed().as_millis() as u64,
                 truncated: false,
             });
-        }
+        };
 
-        if occurrences > 1 {
-            return Ok(ToolExecutionResult {
-                tool_call_id,
-                tool_name: "editFile".to_string(),
-                ok: false,
-                output: String::new(),
-                error: Some(format!(
-                    "oldStr appears {occurrences} times, must be unique to edit safely"
-                )),
-                metadata: Some(json!({
-                    "path": path.to_string_lossy(),
-                })),
-                duration_ms: started_at.elapsed().as_millis() as u64,
-                truncated: false,
-            });
-        }
+        let match_start = match match_result {
+            Ok(match_start) => match_start,
+            Err(error) => {
+                return Ok(ToolExecutionResult {
+                    tool_call_id,
+                    tool_name: "editFile".to_string(),
+                    ok: false,
+                    output: String::new(),
+                    error: Some(error.to_string()),
+                    metadata: Some(json!({
+                        "path": path.to_string_lossy(),
+                    })),
+                    duration_ms: started_at.elapsed().as_millis() as u64,
+                    truncated: false,
+                });
+            }
+        };
 
-        let replaced = content.replacen(&args.old_str, &args.new_str, 1);
+        let match_end = match_start + args.old_str.len();
+        let mut replaced =
+            String::with_capacity(content.len() - args.old_str.len() + args.new_str.len());
+        replaced.push_str(&content[..match_start]);
+        replaced.push_str(&args.new_str);
+        replaced.push_str(&content[match_end..]);
+        let report = build_text_change_report(&path, "updated", Some(&content), &replaced);
+        check_cancel(ctx.cancel(), "editFile")?;
         write_text_file(&path, &replaced, false).await?;
 
         Ok(ToolExecutionResult {
             tool_call_id,
             tool_name: "editFile".to_string(),
             ok: true,
-            output: format!("replaced 1 occurrence in {}", path.to_string_lossy()),
+            output: report.summary,
             error: None,
-            metadata: Some(json!({
-                "path": path.to_string_lossy(),
-            })),
+            metadata: Some(report.metadata),
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated: false,
         })
@@ -165,6 +186,35 @@ mod tests {
             result.metadata.expect("metadata should exist")["path"],
             json!(file.to_string_lossy().to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn edit_file_returns_patch_metadata() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file = temp.path().join("hello.txt");
+        tokio::fs::write(&file, "hello world\n")
+            .await
+            .expect("seed write should work");
+        let tool = EditFileTool;
+
+        let result = tool
+            .execute(
+                "tc-edit-patch".to_string(),
+                json!({
+                    "path": file.to_string_lossy(),
+                    "oldStr": "hello",
+                    "newStr": "world"
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("editFile should execute");
+
+        let metadata = result.metadata.expect("metadata should exist");
+        assert!(metadata["diff"]["patch"]
+            .as_str()
+            .expect("patch should exist")
+            .contains("+world world"));
     }
 
     #[tokio::test]
@@ -216,7 +266,7 @@ mod tests {
             .expect("editFile should execute");
 
         assert!(!result.ok);
-        assert!(result.error.unwrap_or_default().contains("appears 2 times"));
+        assert!(result.error.unwrap_or_default().contains("multiple times"));
     }
 
     #[tokio::test]
@@ -242,7 +292,7 @@ mod tests {
             .expect("editFile should execute");
 
         assert!(!result.ok);
-        assert!(result.error.unwrap_or_default().contains("appears 2 times"));
+        assert!(result.error.unwrap_or_default().contains("multiple times"));
     }
 
     #[tokio::test]

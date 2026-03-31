@@ -1,4 +1,7 @@
-use crate::tools::fs_common::{check_cancel, resolve_path, write_text_file};
+use crate::tools::fs_common::{
+    build_text_change_report, check_cancel, read_utf8_file, resolve_path, write_text_file,
+    TextChangeReport,
+};
 use astrcode_core::{
     AstrError, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
     ToolExecutionResult,
@@ -59,18 +62,52 @@ impl Tool for WriteFileTool {
             .map_err(|e| AstrError::parse("invalid args for writeFile", e))?;
         let started_at = Instant::now();
         let path = resolve_path(ctx, &args.path)?;
+        let file_existed = path.exists();
+        let existing_content = if file_existed {
+            match read_utf8_file(&path).await {
+                Ok(content) => Some(content),
+                Err(error) => {
+                    log::warn!(
+                        "writeFile skipped diff metadata for '{}' because the existing file could not be read as UTF-8: {}",
+                        path.display(),
+                        error
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let change_type = if file_existed { "updated" } else { "created" };
         let bytes = write_text_file(&path, &args.content, args.create_dirs).await?;
+        let report = if file_existed && existing_content.is_none() {
+            TextChangeReport {
+                summary: format!("{change_type} {} (diff unavailable)", path.display()),
+                metadata: json!({
+                    "path": path.to_string_lossy(),
+                    "changeType": change_type,
+                }),
+            }
+        } else {
+            build_text_change_report(
+                &path,
+                change_type,
+                existing_content.as_deref(),
+                &args.content,
+            )
+        };
+        let mut metadata = report.metadata;
+        if let Some(object) = metadata.as_object_mut() {
+            object.insert("bytes".to_string(), json!(bytes));
+        }
 
         Ok(ToolExecutionResult {
             tool_call_id,
             tool_name: "writeFile".to_string(),
             ok: true,
-            output: format!("wrote {bytes} bytes"),
+            output: report.summary,
             error: None,
-            metadata: Some(json!({
-                "path": path.to_string_lossy(),
-                "bytes": bytes,
-            })),
+            metadata: Some(metadata),
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated: false,
         })
@@ -137,6 +174,11 @@ mod tests {
             .await
             .expect("file should be readable");
         assert_eq!(content, "new");
+        let metadata = result.metadata.expect("metadata should exist");
+        assert!(metadata["diff"]["patch"]
+            .as_str()
+            .expect("patch should exist")
+            .contains("+new"));
     }
 
     #[tokio::test]

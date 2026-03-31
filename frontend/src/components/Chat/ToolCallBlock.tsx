@@ -18,22 +18,81 @@ interface ToolCallBlockProps {
   message: ToolCallMessage;
 }
 
+interface ToolDiffMetadata {
+  path?: string;
+  patch: string;
+  addedLines?: number;
+  removedLines?: number;
+  truncated?: boolean;
+  hasChanges?: boolean;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function pickNumber(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function extractDiffMetadata(metadata: unknown): ToolDiffMetadata | null {
+  const container = asRecord(metadata);
+  const diff = asRecord(container?.diff);
+  if (!container || !diff || typeof diff.patch !== 'string' || diff.patch.length === 0) {
+    return null;
+  }
+
+  return {
+    path: typeof container.path === 'string' ? container.path : undefined,
+    patch: diff.patch,
+    addedLines: pickNumber(diff, 'addedLines'),
+    removedLines: pickNumber(diff, 'removedLines'),
+    truncated: diff.truncated === true,
+    hasChanges: diff.hasChanges === true,
+  };
+}
+
+function patchLineClassName(line: string): string {
+  if (line.startsWith('+++') || line.startsWith('---')) {
+    return styles.patchLineMeta;
+  }
+  if (line.startsWith('@@')) {
+    return styles.patchLineHeader;
+  }
+  if (line.startsWith('+')) {
+    return styles.patchLineAdd;
+  }
+  if (line.startsWith('-')) {
+    return styles.patchLineRemove;
+  }
+  if (line.startsWith('...')) {
+    return styles.patchLineNote;
+  }
+  return styles.patchLineContext;
+}
+
 function ToolCallBlock({ message }: ToolCallBlockProps) {
-  const [expanded, setExpanded] = useState(Boolean(message.output || message.error));
+  const diff = extractDiffMetadata(message.metadata);
+  const [expanded, setExpanded] = useState(Boolean(message.output || message.error || diff));
 
   const borderColor = STATUS_COLOR[message.status];
   const toolCallId = message.toolCallId ?? 'unknown';
   const toolName = message.toolName ?? '(unknown tool)';
   const shortId = toolCallId.slice(-6);
   const duration = typeof message.durationMs === 'number' ? `${message.durationMs}ms` : '';
-  const preview =
-    message.error ?? message.output ?? (message.status === 'running' ? '执行中...' : '');
+  const preview = diff
+    ? `${diff.path ?? toolName}  +${diff.addedLines ?? 0} -${diff.removedLines ?? 0}`
+    : (message.error ?? message.output ?? (message.status === 'running' ? '执行中...' : ''));
 
   useEffect(() => {
-    if (message.status === 'fail' || message.output || message.error) {
+    if (message.status === 'fail' || message.output || message.error || diff) {
       setExpanded(true);
     }
-  }, [message.error, message.output, message.status]);
+  }, [diff, message.error, message.output, message.status]);
 
   return (
     <div className={styles.wrapper}>
@@ -89,8 +148,24 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
 
         {expanded && (
           <div className={styles.body}>
-            {message.output && <pre className={styles.output}>{message.output}</pre>}
+            {message.output && <div className={styles.summary}>{message.output}</div>}
+            {diff && (
+              <div className={styles.patch}>
+                {diff.patch.split('\n').map((line, index) => (
+                  <div
+                    key={`${toolCallId}-${index}`}
+                    className={`${styles.patchLine} ${patchLineClassName(line)}`}
+                  >
+                    {line || ' '}
+                  </div>
+                ))}
+              </div>
+            )}
+            {message.output && !diff && <pre className={styles.output}>{message.output}</pre>}
             {message.error && <div className={styles.error}>{message.error}</div>}
+            {diff?.truncated && (
+              <div className={styles.note}>diff 已截断，完整变更请直接查看文件。</div>
+            )}
             {!message.output && !message.error && message.status === 'running' && (
               <div className={styles.running}>执行中...</div>
             )}

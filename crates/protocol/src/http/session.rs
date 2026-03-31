@@ -50,6 +50,10 @@ pub enum SessionMessageDto {
         tool_name: String,
         args: serde_json::Value,
         output: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<serde_json::Value>,
         ok: Option<bool>,
         duration_ms: Option<u64>,
     },

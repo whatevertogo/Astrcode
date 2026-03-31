@@ -48,6 +48,8 @@ export interface SessionToolCallMessage {
   toolName: string;
   args: unknown;
   output?: string;
+  error?: string;
+  metadata?: unknown;
   ok?: boolean;
   durationMs?: number;
 }
@@ -130,6 +132,8 @@ function normalizeSessionMessage(raw: unknown): SessionMessage {
       toolName: pickString(message, 'toolName', 'tool_name') ?? '(unknown tool)',
       args: message.args ?? null,
       output: pickString(message, 'output'),
+      error: pickString(message, 'error'),
+      metadata: message.metadata,
       ok: pickBoolean(message, 'ok'),
       durationMs: pickNumber(message, 'durationMs', 'duration_ms'),
     };

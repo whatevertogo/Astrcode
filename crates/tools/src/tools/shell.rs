@@ -155,8 +155,11 @@ impl Tool for ShellTool {
                 output.len(),
                 ctx.max_output_size()
             );
-            let mut truncated_output =
-                output[..ctx.max_output_size().saturating_sub(truncation_msg.len())].to_string();
+            // 使用 floor_char_boundary 确保截断点在 UTF-8 char boundary 上，
+            // 避免输出含中文/Unicode 且总量接近 max_output_size 时按字节切片 panic
+            let truncate_at = output
+                .floor_char_boundary(ctx.max_output_size().saturating_sub(truncation_msg.len()));
+            let mut truncated_output = output[..truncate_at].to_string();
             truncated_output.push_str(&truncation_msg);
             (truncated_output, true)
         } else {
@@ -209,17 +212,21 @@ fn command_spec(shell: Option<&str>, command: &str) -> CommandSpec {
 
 #[cfg(windows)]
 fn default_windows_shell() -> &'static str {
-    if std::process::Command::new("pwsh")
-        .arg("-NoProfile")
-        .arg("-Command")
-        .arg("$PSVersionTable.PSVersion")
-        .output()
-        .is_ok()
-    {
-        "pwsh"
-    } else {
-        "powershell"
-    }
+    use std::sync::OnceLock;
+    static SHELL: OnceLock<&'static str> = OnceLock::new();
+    SHELL.get_or_init(|| {
+        if std::process::Command::new("pwsh")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg("$PSVersionTable.PSVersion")
+            .output()
+            .is_ok()
+        {
+            "pwsh"
+        } else {
+            "powershell"
+        }
+    })
 }
 
 #[cfg(test)]

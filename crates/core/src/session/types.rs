@@ -26,6 +26,8 @@ pub enum SessionMessage {
         tool_name: String,
         args: serde_json::Value,
         output: Option<String>,
+        error: Option<String>,
+        metadata: Option<serde_json::Value>,
         ok: Option<bool>,
         duration_ms: Option<u64>,
     },

@@ -220,12 +220,14 @@ async fn e2e_session_replay_events() {
     let app = build_api_router().with_state(state);
 
     // Create a session
-    let working_dir = std::env::temp_dir().to_string_lossy().to_string();
+    let working_dir = std::env::temp_dir();
+    let working_dir = working_dir.canonicalize().unwrap_or(working_dir);
+    let working_dir_str = working_dir.to_string_lossy().to_string();
     let create_req = auth_request("POST", "/api/sessions")
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::to_vec(&CreateSessionRequest {
-                working_dir: working_dir.clone(),
+                working_dir: working_dir_str.clone(),
             })
             .expect("request should serialize"),
         ))
@@ -258,8 +260,8 @@ async fn e2e_session_replay_events() {
         .expect("response should return");
     assert_eq!(prompt_resp.status(), StatusCode::ACCEPTED);
 
-    // Wait briefly for events to be recorded
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // 使用轮询等待事件持久化，而非固定 sleep，避免在 CI 慢环境下不稳定
+    wait_for_user_message_count(app.clone(), session_id, 1).await;
 
     // Request session events (SSE stream)
     let events_req = auth_request("GET", &format!("/api/sessions/{}/events", session_id))
@@ -281,6 +283,19 @@ async fn e2e_session_replay_events() {
             .map(|v| v.to_str().unwrap_or("")),
         Some("text/event-stream")
     );
+
+    // 解析 SSE body 确认包含预期事件，而非只检查 content-type
+    let body_bytes = to_bytes(events_resp.into_body(), usize::MAX)
+        .await
+        .expect("SSE body should be readable");
+    let body_str = String::from_utf8_lossy(&body_bytes);
+    // SSE 数据行以 "data:" 开头，至少应包含一条事件
+    let data_line_count = body_str.lines().filter(|l| l.starts_with("data:")).count();
+    assert!(
+        data_line_count > 0,
+        "SSE stream should contain at least one data event, got: {}",
+        body_str
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -293,7 +308,9 @@ async fn e2e_multiple_sessions_isolation() {
     let app = build_api_router().with_state(state.clone());
 
     // Create two sessions
-    let working_dir = std::env::temp_dir().to_string_lossy().to_string();
+    let working_dir = std::env::temp_dir();
+    let working_dir = working_dir.canonicalize().unwrap_or(working_dir);
+    let working_dir = working_dir.to_string_lossy().to_string();
 
     // Create session A
     let create_req_a = auth_request("POST", "/api/sessions")
@@ -557,12 +574,14 @@ async fn e2e_session_interrupt() {
     let app = build_api_router().with_state(state);
 
     // Create a session
-    let working_dir = std::env::temp_dir().to_string_lossy().to_string();
+    let working_dir = std::env::temp_dir();
+    let working_dir = working_dir.canonicalize().unwrap_or(working_dir);
+    let working_dir_str = working_dir.to_string_lossy().to_string();
     let create_req = auth_request("POST", "/api/sessions")
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::to_vec(&CreateSessionRequest {
-                working_dir: working_dir.clone(),
+                working_dir: working_dir_str.clone(),
             })
             .expect("request should serialize"),
         ))

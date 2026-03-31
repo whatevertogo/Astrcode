@@ -73,6 +73,7 @@ export interface ToolCallMessage {
   args: unknown;
   output?: string;
   error?: string;
+  metadata?: unknown;
   durationMs?: number;
   timestamp: number;
 }
@@ -179,9 +180,11 @@ export type Action =
       type: 'UPDATE_TOOL_CALL';
       sessionId: string;
       toolCallId: string;
+      toolName: string;
       status: ToolStatus;
       output: string;
       error?: string;
+      metadata?: unknown;
       durationMs: number;
     }
   | { type: 'SET_WORKING_DIR'; projectId: string; workingDir: string }

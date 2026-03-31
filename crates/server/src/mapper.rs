@@ -49,6 +49,8 @@ pub(crate) fn to_session_message_dto(message: SessionMessage) -> SessionMessageD
             tool_name,
             args,
             output,
+            error,
+            metadata,
             ok,
             duration_ms,
         } => SessionMessageDto::ToolCall {
@@ -56,6 +58,8 @@ pub(crate) fn to_session_message_dto(message: SessionMessage) -> SessionMessageD
             tool_name,
             args,
             output,
+            error,
+            metadata,
             ok,
             duration_ms,
         },

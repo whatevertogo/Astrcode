@@ -13,7 +13,6 @@ use crate::{
     CapabilityInvoker, Result, Tool, ToolCallRequest, ToolContext, ToolExecutionResult,
 };
 
-
 /// 工具注册表构建器
 ///
 /// 使用构建器模式组装工具，`build()` 后冻结为只读注册表。
@@ -47,7 +46,6 @@ impl ToolRegistryBuilder {
         self
     }
 
-
     /// 构建冻结的只读注册表
     pub fn build(self) -> ToolRegistry {
         ToolRegistry {
@@ -56,7 +54,6 @@ impl ToolRegistryBuilder {
         }
     }
 }
-
 
 /// 工具注册表
 ///
@@ -71,7 +68,6 @@ impl ToolRegistry {
     pub fn builder() -> ToolRegistryBuilder {
         ToolRegistryBuilder::new()
     }
-
 
     /// 获取所有工具定义
     pub fn definitions(&self) -> Vec<crate::ToolDefinition> {

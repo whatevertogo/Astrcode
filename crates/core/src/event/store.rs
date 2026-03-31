@@ -3,7 +3,7 @@
 //! 实现 `EventLog` 的文件操作：创建、打开、追加、加载。
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, Write};
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
@@ -324,8 +324,59 @@ impl EventLog {
     /// 获取文件中最后一个事件的 storage_seq
     ///
     /// 用于打开现有日志时确定下一个序号。
+    /// 小文件直接迭代；大文件仅读取尾部避免全量扫描。
     pub fn last_storage_seq_from_path(path: &Path) -> Result<u64> {
-        // 使用迭代器只读取最后一行，避免全量加载
+        let file_size = std::fs::metadata(path)
+            .map_err(|e| crate::AstrError::io("failed to read file metadata", e))?
+            .len();
+
+        if file_size == 0 {
+            return Ok(0);
+        }
+
+        // 小文件（<= 64KB）直接全量迭代，避免 seek 在 Windows 上
+        // 与并发写入句柄的交互问题
+        const TAIL_THRESHOLD: u64 = 64 * 1024;
+        if file_size <= TAIL_THRESHOLD {
+            let mut last_seq: Option<u64> = None;
+            for event_result in EventLogIterator::from_path(path)? {
+                let event = event_result?;
+                last_seq = Some(event.storage_seq);
+            }
+            return Ok(last_seq.unwrap_or(0));
+        }
+
+        // 大文件：仅读取尾部 64KB，避免扫描数百 MB 的会话文件
+        let offset = file_size - TAIL_THRESHOLD;
+
+        let mut file = File::open(path).map_err(|e| {
+            crate::AstrError::io(
+                format!("failed to open session file: {}", path.display()),
+                e,
+            )
+        })?;
+        file.seek(std::io::SeekFrom::Start(offset))
+            .map_err(|e| crate::AstrError::io("failed to seek in session file", e))?;
+
+        let mut content = String::new();
+        file.read_to_string(&mut content)
+            .map_err(|e| crate::AstrError::io("failed to read session file tail", e))?;
+
+        // 从后向前搜索最后一个有效事件行，找到即返回
+        for line in content.lines().rev() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Some(seq) = serde_json::from_str::<serde_json::Value>(trimmed)
+                .ok()
+                .and_then(|v| v.get("storage_seq").and_then(|s| s.as_u64()))
+            {
+                return Ok(seq);
+            }
+        }
+
+        // 尾部未找到有效事件（极端情况：单行超大事件），回退到全量扫描
         let mut last_seq: Option<u64> = None;
         for event_result in EventLogIterator::from_path(path)? {
             let event = event_result?;
