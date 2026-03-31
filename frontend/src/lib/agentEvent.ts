@@ -52,6 +52,20 @@ function pickOptionalString(record: UnknownRecord, ...keys: string[]): string | 
   return undefined;
 }
 
+function pickStringAllowEmpty(record: UnknownRecord, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    if (!(key in record)) {
+      continue;
+    }
+    const value = record[key];
+    if (typeof value === 'string') {
+      return value;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
 function pickNumber(record: UnknownRecord, ...keys: string[]): number | null {
   for (const key of keys) {
     const value = record[key];
@@ -159,8 +173,12 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
 
   if (event === 'assistantMessage') {
     const turnId = pickString(data, 'turnId', 'turn_id');
-    const content = pickString(data, 'content');
-    if (!turnId || content === null) {
+    const content = pickStringAllowEmpty(data, 'content');
+    const reasoningContent =
+      pickOptionalString(data, 'reasoningContent', 'reasoning_content') ?? undefined;
+    // assistantMessage 可能只携带 reasoning；这时 content 允许为空字符串，
+    // 否则前端会把合法的中间态消息误报为协议错误。
+    if (!turnId || content === undefined || (content.length === 0 && !reasoningContent?.length)) {
       return invalidEvent('assistantMessage requires turnId and content', raw);
     }
     return {
@@ -168,8 +186,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
       data: {
         turnId,
         content,
-        reasoningContent:
-          pickOptionalString(data, 'reasoningContent', 'reasoning_content') ?? undefined,
+        reasoningContent,
       },
     };
   }

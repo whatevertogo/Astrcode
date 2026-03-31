@@ -51,7 +51,7 @@ pub(crate) fn to_session_message_dto(message: SessionMessage) -> SessionMessageD
             content,
             timestamp,
             reasoning_content,
-        }
+        },
         SessionMessage::ToolCall {
             turn_id,
             tool_call_id,

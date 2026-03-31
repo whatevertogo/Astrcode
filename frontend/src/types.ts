@@ -49,6 +49,7 @@ export type AgentEvent = AgentEventPayload & {
 export interface UserMessage {
   id: string;
   kind: 'user';
+  turnId?: string | null;
   text: string;
   timestamp: number;
 }
@@ -56,6 +57,7 @@ export interface UserMessage {
 export interface AssistantMessage {
   id: string;
   kind: 'assistant';
+  turnId?: string | null;
   text: string;
   reasoningText?: string;
   streaming: boolean;
@@ -67,6 +69,7 @@ export type ToolStatus = 'running' | 'ok' | 'fail';
 export interface ToolCallMessage {
   id: string;
   kind: 'toolCall';
+  turnId?: string | null;
   toolCallId: string;
   toolName: string;
   status: ToolStatus;
@@ -167,18 +170,20 @@ export type Action =
   | { type: 'RENAME_SESSION'; projectId: string; sessionId: string; title: string }
   | { type: 'DELETE_SESSION'; projectId: string; sessionId: string }
   | { type: 'ADD_MESSAGE'; sessionId: string; message: Message }
-  | { type: 'APPEND_DELTA'; sessionId: string; delta: string }
-  | { type: 'APPEND_REASONING_DELTA'; sessionId: string; delta: string }
+  | { type: 'APPEND_DELTA'; sessionId: string; turnId: string; delta: string }
+  | { type: 'APPEND_REASONING_DELTA'; sessionId: string; turnId: string; delta: string }
   | {
       type: 'FINALIZE_ASSISTANT';
       sessionId: string;
+      turnId: string;
       content: string;
       reasoningText?: string;
     }
-  | { type: 'END_STREAMING'; sessionId: string }
+  | { type: 'END_STREAMING'; sessionId: string; turnId: string }
   | {
       type: 'UPDATE_TOOL_CALL';
       sessionId: string;
+      turnId?: string | null;
       toolCallId: string;
       toolName: string;
       status: ToolStatus;

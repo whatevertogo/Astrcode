@@ -41,4 +41,25 @@ describe('normalizeAgentEvent protocol gate', () => {
       data: { turnId: 'turn-1', delta: 'hello' },
     });
   });
+
+  it('accepts assistantMessage when content is empty but reasoning exists', () => {
+    const normalized = normalizeAgentEvent({
+      protocolVersion: 1,
+      event: 'assistantMessage',
+      data: {
+        turn_id: 'turn-2',
+        content: '',
+        reasoning_content: '先检查相关文件。',
+      },
+    });
+
+    expect(normalized).toEqual({
+      event: 'assistantMessage',
+      data: {
+        turnId: 'turn-2',
+        content: '',
+        reasoningContent: '先检查相关文件。',
+      },
+    });
+  });
 });

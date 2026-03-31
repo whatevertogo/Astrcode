@@ -11,11 +11,12 @@ import {
 import type {
   AgentEventPayload,
   Action,
+  AssistantMessage,
   AppState,
-  Project,
   Session,
-  SessionMeta,
   Message,
+  Project,
+  SessionMeta,
 } from './types';
 import { uuid } from './utils/uuid';
 import Sidebar from './components/Sidebar/index';
@@ -61,11 +62,12 @@ function convertSessionMessage(message: SessionMessage): Message {
 
   switch (message.kind) {
     case 'user':
-      return { ...base, kind: 'user' as const, text: message.content };
+      return { ...base, kind: 'user' as const, turnId: message.turnId, text: message.content };
     case 'assistant':
       return {
         ...base,
         kind: 'assistant' as const,
+        turnId: message.turnId,
         text: message.content,
         reasoningText: message.reasoningContent,
         streaming: false,
@@ -74,6 +76,7 @@ function convertSessionMessage(message: SessionMessage): Message {
       return {
         ...base,
         kind: 'toolCall' as const,
+        turnId: message.turnId,
         toolCallId: message.toolCallId,
         toolName: message.toolName,
         status: snapshotToolStatus(message.ok),
@@ -157,6 +160,53 @@ function mapSession(
   };
 }
 
+function findAssistantMessageIndex(messages: Message[], turnId: string): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.kind === 'assistant' && message.turnId === turnId) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function moveUpdatedMessageToTail(
+  messages: Message[],
+  targetIndex: number,
+  updatedMessage: Message
+): Message[] {
+  if (targetIndex < 0) {
+    return messages;
+  }
+
+  if (targetIndex === messages.length - 1) {
+    return [...messages.slice(0, -1), updatedMessage];
+  }
+
+  return [...messages.slice(0, targetIndex), ...messages.slice(targetIndex + 1), updatedMessage];
+}
+
+function upsertAssistantTurnMessage(
+  messages: Message[],
+  turnId: string,
+  createMessage: () => AssistantMessage,
+  updateMessage: (message: AssistantMessage) => AssistantMessage
+): Message[] {
+  const targetIndex = findAssistantMessageIndex(messages, turnId);
+  if (targetIndex < 0) {
+    return [...messages, createMessage()];
+  }
+
+  const target = messages[targetIndex];
+  if (target.kind !== 'assistant') {
+    return [...messages, createMessage()];
+  }
+
+  // A turn can resume after one or more tool rows; keep the evolving assistant block at the tail
+  // so reasoning/final text stays visually attached to the latest tool activity instead of splitting.
+  return moveUpdatedMessageToTail(messages, targetIndex, updateMessage(target));
+}
+
 function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case 'SET_PHASE':
@@ -236,110 +286,102 @@ function reducer(state: AppState, action: Action): AppState {
 
     case 'APPEND_DELTA':
       return mapSession(state, action.sessionId, (session) => {
-        const messages = session.messages;
-        const lastMessage = messages[messages.length - 1];
-        if (lastMessage && lastMessage.kind === 'assistant' && lastMessage.streaming) {
-          return {
-            ...session,
-            messages: [
-              ...messages.slice(0, -1),
-              { ...lastMessage, text: lastMessage.text + action.delta },
-            ],
-          };
-        }
         return {
           ...session,
-          messages: [
-            ...messages,
-            {
+          messages: upsertAssistantTurnMessage(
+            session.messages,
+            action.turnId,
+            () => ({
               id: uuid(),
-              kind: 'assistant' as const,
+              kind: 'assistant',
+              turnId: action.turnId,
               text: action.delta,
               reasoningText: '',
               streaming: true,
               timestamp: Date.now(),
-            },
-          ],
+            }),
+            (message) => ({
+              ...message,
+              turnId: action.turnId,
+              text: message.text + action.delta,
+              streaming: true,
+            })
+          ),
         };
       });
 
     case 'APPEND_REASONING_DELTA':
       return mapSession(state, action.sessionId, (session) => {
-        const messages = session.messages;
-        const lastMessage = messages[messages.length - 1];
-        if (lastMessage && lastMessage.kind === 'assistant' && lastMessage.streaming) {
-          return {
-            ...session,
-            messages: [
-              ...messages.slice(0, -1),
-              {
-                ...lastMessage,
-                reasoningText: `${lastMessage.reasoningText ?? ''}${action.delta}`,
-              },
-            ],
-          };
-        }
         return {
           ...session,
-          messages: [
-            ...messages,
-            {
+          messages: upsertAssistantTurnMessage(
+            session.messages,
+            action.turnId,
+            () => ({
               id: uuid(),
-              kind: 'assistant' as const,
+              kind: 'assistant',
+              turnId: action.turnId,
               text: '',
               reasoningText: action.delta,
               streaming: true,
               timestamp: Date.now(),
-            },
-          ],
+            }),
+            (message) => ({
+              ...message,
+              turnId: action.turnId,
+              reasoningText: `${message.reasoningText ?? ''}${action.delta}`,
+              streaming: true,
+            })
+          ),
         };
       });
 
     case 'FINALIZE_ASSISTANT':
       return mapSession(state, action.sessionId, (session) => {
-        const messages = session.messages;
-        const lastMessage = messages[messages.length - 1];
-        if (lastMessage && lastMessage.kind === 'assistant' && lastMessage.streaming) {
-          return {
-            ...session,
-            messages: [
-              ...messages.slice(0, -1),
-              {
-                ...lastMessage,
-                text: action.content,
-                reasoningText: action.reasoningText ?? lastMessage.reasoningText,
-                streaming: false,
-              },
-            ],
-          };
-        }
         return {
           ...session,
-          messages: [
-            ...messages,
-            {
+          messages: upsertAssistantTurnMessage(
+            session.messages,
+            action.turnId,
+            () => ({
               id: uuid(),
               kind: 'assistant',
+              turnId: action.turnId,
               text: action.content,
               reasoningText: action.reasoningText,
               streaming: false,
               timestamp: Date.now(),
-            },
-          ],
+            }),
+            (message) => ({
+              ...message,
+              turnId: action.turnId,
+              text: action.content,
+              reasoningText: action.reasoningText ?? message.reasoningText,
+              streaming: false,
+            })
+          ),
         };
       });
 
     case 'END_STREAMING':
       return mapSession(state, action.sessionId, (session) => {
-        const messages = session.messages;
-        const lastMessage = messages[messages.length - 1];
-        if (lastMessage && lastMessage.kind === 'assistant' && lastMessage.streaming) {
-          return {
-            ...session,
-            messages: [...messages.slice(0, -1), { ...lastMessage, streaming: false }],
-          };
+        const targetIndex = findAssistantMessageIndex(session.messages, action.turnId);
+        if (targetIndex < 0) {
+          return session;
         }
-        return session;
+
+        const target = session.messages[targetIndex];
+        if (target.kind !== 'assistant') {
+          return session;
+        }
+
+        return {
+          ...session,
+          messages: moveUpdatedMessageToTail(session.messages, targetIndex, {
+            ...target,
+            streaming: false,
+          }),
+        };
       });
 
     case 'UPDATE_TOOL_CALL':
@@ -353,7 +395,11 @@ function reducer(state: AppState, action: Action): AppState {
         if (targetIndex < 0) {
           for (let i = session.messages.length - 1; i >= 0; i--) {
             const msg = session.messages[i];
-            if (msg.kind === 'toolCall' && msg.status === 'running' && msg.toolName === action.toolName) {
+            if (
+              msg.kind === 'toolCall' &&
+              msg.status === 'running' &&
+              msg.toolName === action.toolName
+            ) {
               targetIndex = i;
               break;
             }
@@ -368,6 +414,7 @@ function reducer(state: AppState, action: Action): AppState {
               {
                 id: uuid(),
                 kind: 'toolCall',
+                turnId: action.turnId,
                 toolCallId: action.toolCallId,
                 toolName: action.toolName,
                 status: action.status,
@@ -390,6 +437,7 @@ function reducer(state: AppState, action: Action): AppState {
             }
             return {
               ...message,
+              turnId: action.turnId ?? message.turnId,
               toolCallId: action.toolCallId,
               toolName: action.toolName,
               status: action.status,
@@ -551,7 +599,12 @@ export default function App() {
           break;
         }
         startTransition(() => {
-          dispatch({ type: 'APPEND_DELTA', sessionId, delta: event.data.delta });
+          dispatch({
+            type: 'APPEND_DELTA',
+            sessionId,
+            turnId: event.data.turnId,
+            delta: event.data.delta,
+          });
         });
         break;
       }
@@ -562,7 +615,12 @@ export default function App() {
           break;
         }
         startTransition(() => {
-          dispatch({ type: 'APPEND_REASONING_DELTA', sessionId, delta: event.data.delta });
+          dispatch({
+            type: 'APPEND_REASONING_DELTA',
+            sessionId,
+            turnId: event.data.turnId,
+            delta: event.data.delta,
+          });
         });
         break;
       }
@@ -575,6 +633,7 @@ export default function App() {
         dispatch({
           type: 'FINALIZE_ASSISTANT',
           sessionId,
+          turnId: event.data.turnId,
           content: event.data.content,
           reasoningText: event.data.reasoningContent,
         });
@@ -592,6 +651,7 @@ export default function App() {
           message: {
             id: uuid(),
             kind: 'toolCall',
+            turnId: event.data.turnId,
             toolCallId: event.data.toolCallId,
             toolName: event.data.toolName,
             status: 'running',
@@ -610,6 +670,7 @@ export default function App() {
         dispatch({
           type: 'UPDATE_TOOL_CALL',
           sessionId,
+          turnId: event.data.turnId,
           toolCallId: event.data.result.toolCallId,
           toolName: event.data.result.toolName,
           status: event.data.result.ok ? 'ok' : 'fail',
@@ -624,7 +685,7 @@ export default function App() {
       case 'turnDone': {
         const sessionId = resolveSessionId(event.data.turnId);
         if (sessionId) {
-          dispatch({ type: 'END_STREAMING', sessionId });
+          dispatch({ type: 'END_STREAMING', sessionId, turnId: event.data.turnId });
         }
         releaseTurnMapping(turnSessionMapRef.current, event.data.turnId);
         queueMicrotask(() => {

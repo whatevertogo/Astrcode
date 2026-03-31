@@ -36,16 +36,22 @@ pub struct PromptAcceptedResponse {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SessionMessageDto {
     User {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
         content: String,
         timestamp: String,
     },
     Assistant {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
         content: String,
         timestamp: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning_content: Option<String>,
     },
     ToolCall {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
         tool_call_id: String,
         tool_name: String,
         args: serde_json::Value,

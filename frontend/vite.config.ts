@@ -14,6 +14,7 @@ interface RunInfo {
 
 interface BrowserBootstrapPayload {
   token: string;
+  serverOrigin: string;
 }
 
 const APP_HOME_OVERRIDE_ENV = 'ASTRCODE_HOME_DIR';
@@ -69,15 +70,19 @@ function resolveApiProxyTarget(): string | undefined {
   return `http://127.0.0.1:${runInfo.port}`;
 }
 
-function resolveBrowserBootstrapPayload(): BrowserBootstrapPayload | null {
+export function resolveBrowserBootstrapPayload(): BrowserBootstrapPayload | null {
   const runInfo = readRunInfo();
   const token = runInfo?.token?.trim();
-  if (!runInfo?.port || !token) {
+  const serverOrigin = runInfo?.port ? `http://127.0.0.1:${runInfo.port}` : null;
+  if (!token || !serverOrigin) {
     return null;
   }
 
+  // 浏览器开发态里 server 可能晚于 Vite 启动，因此桥接必须带上真实 server origin，
+  // 这样前端不需要依赖启动瞬间是否已经注册了静态代理。
   return {
     token,
+    serverOrigin,
   };
 }
 
@@ -108,7 +113,11 @@ function astrcodeBrowserBootstrapPlugin(): Plugin {
 }
 
 const apiProxyTarget = resolveApiProxyTarget();
-console.log('[astrcode] API proxy target:', apiProxyTarget ?? '(not configured - run.json missing or invalid)');
+console.log(
+  '[astrcode] API proxy target:',
+  apiProxyTarget ??
+    '(optional at startup - browser bridge will connect directly when run.json is ready)'
+);
 export default defineConfig({
   plugins: [react(), astrcodeBrowserBootstrapPlugin()],
   server: {

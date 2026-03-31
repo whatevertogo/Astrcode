@@ -13,15 +13,21 @@ pub use event::{DeleteProjectResult, SessionMeta};
 #[derive(Clone, Debug)]
 pub enum SessionMessage {
     /// 用户消息
-    User { content: String, timestamp: String },
+    User {
+        turn_id: Option<String>,
+        content: String,
+        timestamp: String,
+    },
     /// 助手消息
     Assistant {
+        turn_id: Option<String>,
         content: String,
         timestamp: String,
         reasoning_content: Option<String>,
     },
     /// 工具调用消息
     ToolCall {
+        turn_id: Option<String>,
         tool_call_id: String,
         tool_name: String,
         args: serde_json::Value,

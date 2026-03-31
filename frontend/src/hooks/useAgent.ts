@@ -31,12 +31,14 @@ import { ensureServerSession, getServerAuthToken, getServerOrigin } from '../lib
 
 export interface SessionUserMessage {
   kind: 'user';
+  turnId?: string | null;
   content: string;
   timestamp: string;
 }
 
 export interface SessionAssistantMessage {
   kind: 'assistant';
+  turnId?: string | null;
   content: string;
   timestamp: string;
   reasoningContent?: string;
@@ -44,6 +46,7 @@ export interface SessionAssistantMessage {
 
 export interface SessionToolCallMessage {
   kind: 'toolCall';
+  turnId?: string | null;
   toolCallId: string;
   toolName: string;
   args: unknown;
@@ -81,6 +84,23 @@ function pickString(record: UnknownRecord, ...keys: string[]): string | undefine
   return undefined;
 }
 
+function pickOptionalString(record: UnknownRecord, ...keys: string[]): string | null | undefined {
+  for (const key of keys) {
+    if (!(key in record)) {
+      continue;
+    }
+    const value = record[key];
+    if (value === null || value === undefined) {
+      return null;
+    }
+    if (typeof value === 'string') {
+      return value;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
 function pickBoolean(record: UnknownRecord, ...keys: string[]): boolean | undefined {
   for (const key of keys) {
     const value = record[key];
@@ -111,6 +131,7 @@ function normalizeSessionMessage(raw: unknown): SessionMessage {
   if (kind === 'user') {
     return {
       kind: 'user',
+      turnId: pickOptionalString(message, 'turnId', 'turn_id') ?? null,
       content: pickString(message, 'content') ?? '',
       timestamp: pickString(message, 'timestamp') ?? new Date().toISOString(),
     };
@@ -119,6 +140,7 @@ function normalizeSessionMessage(raw: unknown): SessionMessage {
   if (kind === 'assistant') {
     return {
       kind: 'assistant',
+      turnId: pickOptionalString(message, 'turnId', 'turn_id') ?? null,
       content: pickString(message, 'content') ?? '',
       timestamp: pickString(message, 'timestamp') ?? new Date().toISOString(),
       reasoningContent: pickString(message, 'reasoningContent', 'reasoning_content') ?? undefined,
@@ -128,6 +150,7 @@ function normalizeSessionMessage(raw: unknown): SessionMessage {
   if (kind === 'toolCall') {
     return {
       kind: 'toolCall',
+      turnId: pickOptionalString(message, 'turnId', 'turn_id') ?? null,
       toolCallId: pickString(message, 'toolCallId', 'tool_call_id') ?? 'unknown',
       toolName: pickString(message, 'toolName', 'tool_name') ?? '(unknown tool)',
       args: message.args ?? null,

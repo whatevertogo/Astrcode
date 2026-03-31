@@ -7,6 +7,7 @@ edition = "2021"
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 anyhow = "1"
+astrcode-core = { path = "../crates/core" }
 dirs.workspace = true
 open = "5"
 rfd = "0.15"

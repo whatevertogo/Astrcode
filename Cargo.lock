@@ -74,6 +74,7 @@ name = "astrcode"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "astrcode-core",
  "dirs 5.0.1",
  "open",
  "rfd",
