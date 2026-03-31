@@ -148,6 +148,9 @@ dependencies = [
  "astrcode-core",
  "astrcode-plugin",
  "astrcode-protocol",
+ "astrcode-runtime-config",
+ "astrcode-runtime-llm",
+ "astrcode-runtime-prompt",
  "astrcode-tools",
  "async-trait",
  "chrono",
@@ -164,6 +167,51 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uuid",
+]
+
+[[package]]
+name = "astrcode-runtime-config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "astrcode-core",
+ "dirs 5.0.1",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "astrcode-runtime-llm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "astrcode-core",
+ "async-trait",
+ "futures-util",
+ "log",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "astrcode-runtime-prompt"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "astrcode-core",
+ "async-trait",
+ "chrono",
+ "dirs 5.0.1",
+ "log",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

@@ -26,8 +26,7 @@ pub mod projection;
 pub mod registry;
 pub mod runtime;
 pub mod session;
-#[cfg(test)]
-mod test_support;
+pub mod test_support;
 mod tool;
 
 pub use action::{

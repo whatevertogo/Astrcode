@@ -10,6 +10,9 @@ astrcode-core = { path = "../core" }
 astrcode-plugin = { path = "../plugin" }
 astrcode-protocol = { path = "../protocol" }
 astrcode-tools = { path = "../tools" }
+astrcode-runtime-config = { path = "../runtime-config" }
+astrcode-runtime-llm = { path = "../runtime-llm" }
+astrcode-runtime-prompt = { path = "../runtime-prompt" }
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true

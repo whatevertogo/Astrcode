@@ -2,6 +2,9 @@
 members = [
     "crates/core",
     "crates/runtime",
+    "crates/runtime-config",
+    "crates/runtime-llm",
+    "crates/runtime-prompt",
     "crates/protocol",
     "crates/plugin",
     "crates/sdk",

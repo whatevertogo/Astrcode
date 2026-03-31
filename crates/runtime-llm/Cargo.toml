@@ -1,20 +1,17 @@
 [package]
-name = "astrcode-core"
+name = "astrcode-runtime-llm"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
 [dependencies]
+astrcode-core = { path = "../core" }
+anyhow.workspace = true
 async-trait.workspace = true
-chrono.workspace = true
-dirs.workspace = true
+futures-util.workspace = true
 log.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tempfile.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
-toml = "0.8"
-uuid.workspace = true

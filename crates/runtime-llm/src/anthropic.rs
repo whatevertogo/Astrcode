@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::select;
 
-use crate::llm::{
+use crate::{
     build_http_client, emit_event, is_retryable_status, wait_retry_delay, EventSink,
     LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest, MAX_RETRIES,
 };
@@ -91,7 +91,7 @@ impl AnthropicProvider {
                 .send();
 
             let response = select! {
-                _ = crate::cancel::cancelled(cancel.clone()) => {
+                _ = crate::cancelled(cancel.clone()) => {
                     return Err(AstrError::LlmInterrupted);
                 }
                 result = send_future => result.map_err(|e| AstrError::http("failed to call anthropic endpoint", e))
@@ -166,7 +166,7 @@ impl LlmProvider for AnthropicProvider {
 
                 loop {
                     let next_item = select! {
-                        _ = crate::cancel::cancelled(cancel.clone()) => {
+                        _ = crate::cancelled(cancel.clone()) => {
                             return Err(AstrError::LlmInterrupted);
                         }
                         item = stream.next() => item,
@@ -585,7 +585,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::llm::sink_collector;
+    use crate::sink_collector;
 
     fn test_provider() -> AnthropicProvider {
         AnthropicProvider::new("sk-ant-test".to_string(), "claude-test".to_string())
@@ -686,7 +686,7 @@ mod tests {
     }
 
     #[test]
-    fn streaming_content_block_delta_emits_and_accumulates_events() {
+    fn streaming_content_block_delta_emits_and_accumates_events() {
         let mut accumulator = LlmAccumulator::default();
         let events = Arc::new(Mutex::new(Vec::new()));
         let sink = sink_collector(events.clone());

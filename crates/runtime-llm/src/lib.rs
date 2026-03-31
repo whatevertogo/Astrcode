@@ -12,19 +12,31 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use astrcode_core::{AstrError, CancelToken, ModelRequest, ReasoningContent, Result};
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::{
     select,
-    time::{sleep, Duration},
+    time::{sleep, Duration as TokioDuration},
 };
 
 use astrcode_core::{LlmMessage, ToolCallRequest, ToolDefinition};
 
 pub mod anthropic;
 pub mod openai;
+
+// ---------------------------------------------------------------------------
+// Cancel helper (moved from runtime::cancel)
+// ---------------------------------------------------------------------------
+
+/// Polls the cancel token until it is signalled.
+pub async fn cancelled(cancel: CancelToken) {
+    while !cancel.is_cancelled() {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Shared constants & helpers used by all LLM providers
@@ -43,7 +55,7 @@ const MAX_RETRIES: u32 = 2;
 const RETRY_BASE_DELAY_MS: u64 = 250;
 
 /// 构建共享超时策略的 HTTP 客户端
-pub(crate) fn build_http_client() -> reqwest::Client {
+pub fn build_http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)
@@ -54,7 +66,7 @@ pub(crate) fn build_http_client() -> reqwest::Client {
 /// 判断 HTTP 状态码是否可重试
 ///
 /// 包括 408（超时）、429（限流）、所有 5xx 和网关错误。
-pub(crate) fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+pub fn is_retryable_status(status: reqwest::StatusCode) -> bool {
     matches!(
         status,
         reqwest::StatusCode::REQUEST_TIMEOUT
@@ -66,16 +78,16 @@ pub(crate) fn is_retryable_status(status: reqwest::StatusCode) -> bool {
 }
 
 /// 等待指数退避延迟（或被取消）
-pub(crate) async fn wait_retry_delay(attempt: u32, cancel: CancelToken) -> Result<()> {
+pub async fn wait_retry_delay(attempt: u32, cancel: CancelToken) -> Result<()> {
     let delay_ms = RETRY_BASE_DELAY_MS.saturating_mul(1_u64 << attempt);
     select! {
-        _ = crate::cancel::cancelled(cancel) => Err(AstrError::LlmInterrupted),
-        _ = sleep(Duration::from_millis(delay_ms)) => Ok(()),
+        _ = cancelled(cancel) => Err(AstrError::LlmInterrupted),
+        _ = sleep(TokioDuration::from_millis(delay_ms)) => Ok(()),
     }
 }
 
 /// 转发事件到外部汇并同时累加到内部
-pub(crate) fn emit_event(event: LlmEvent, accumulator: &mut LlmAccumulator, sink: &EventSink) {
+pub fn emit_event(event: LlmEvent, accumulator: &mut LlmAccumulator, sink: &EventSink) {
     sink(event.clone());
     accumulator.apply(&event);
 }
@@ -86,7 +98,7 @@ pub(crate) fn emit_event(event: LlmEvent, accumulator: &mut LlmAccumulator, sink
 
 /// 创建记录所有事件的 EventSink（用于测试）
 #[cfg(test)]
-pub(crate) fn sink_collector(events: Arc<std::sync::Mutex<Vec<LlmEvent>>>) -> EventSink {
+pub fn sink_collector(events: Arc<std::sync::Mutex<Vec<LlmEvent>>>) -> EventSink {
     Arc::new(move |event| {
         events.lock().expect("lock").push(event);
     })

@@ -3,18 +3,18 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use tempfile::TempDir;
 
-pub(crate) const TEST_HOME_ENV: &str = "ASTRCODE_TEST_HOME";
+pub const TEST_HOME_ENV: &str = "ASTRCODE_TEST_HOME";
 
-pub(crate) fn env_lock() -> &'static Mutex<()> {
+pub fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-pub(crate) fn test_home_dir() -> Option<PathBuf> {
+pub fn test_home_dir() -> Option<PathBuf> {
     std::env::var_os(TEST_HOME_ENV).map(PathBuf::from)
 }
 
-pub(crate) struct TestEnvGuard {
+pub struct TestEnvGuard {
     _lock: MutexGuard<'static, ()>,
     _temp_home: TempDir,
     previous_dir: PathBuf,
@@ -24,7 +24,7 @@ pub(crate) struct TestEnvGuard {
 }
 
 impl TestEnvGuard {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         let lock = env_lock().lock().expect("env lock should be acquired");
         let temp_home = tempfile::tempdir().expect("tempdir should be created");
         let previous_dir = std::env::current_dir().expect("cwd should resolve");
@@ -54,11 +54,11 @@ impl TestEnvGuard {
         }
     }
 
-    pub(crate) fn home_dir(&self) -> &Path {
+    pub fn home_dir(&self) -> &Path {
         self._temp_home.path()
     }
 
-    pub(crate) fn set_current_dir<P: AsRef<Path>>(&self, path: P) {
+    pub fn set_current_dir<P: AsRef<Path>>(&self, path: P) {
         std::env::set_current_dir(path).expect("set cwd should work");
     }
 }

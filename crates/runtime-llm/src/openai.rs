@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::select;
 
-use crate::llm::{
+use crate::{
     build_http_client, emit_event, is_retryable_status, wait_retry_delay, EventSink,
     LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest, MAX_RETRIES,
 };
@@ -95,7 +95,7 @@ impl OpenAiProvider {
                 .send();
 
             let response = select! {
-                _ = crate::cancel::cancelled(cancel.clone()) => {
+                _ = crate::cancelled(cancel.clone()) => {
                     return Err(AstrError::LlmInterrupted);
                 }
                 result = send_future => result
@@ -173,7 +173,7 @@ impl LlmProvider for OpenAiProvider {
 
                 loop {
                     let next_item = select! {
-                        _ = crate::cancel::cancelled(cancel.clone()) => {
+                        _ = crate::cancelled(cancel.clone()) => {
                             return Err(AstrError::LlmInterrupted);
                         }
                         item = body_stream.next() => item,
@@ -533,7 +533,7 @@ mod tests {
     use tokio::task::JoinHandle;
 
     use super::*;
-    use crate::llm::sink_collector;
+    use crate::sink_collector;
 
     fn test_provider() -> OpenAiProvider {
         OpenAiProvider::new(
