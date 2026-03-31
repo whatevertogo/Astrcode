@@ -7,14 +7,14 @@ use axum::http::{HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::routing::get;
-use axum::Router;
+use axum::{Json, Router};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tower::ServiceExt;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
-use crate::{AppState, FrontendBuild, AUTH_HEADER_NAME, SESSION_CURSOR_HEADER_NAME};
+use crate::{ApiError, AppState, FrontendBuild, AUTH_HEADER_NAME, SESSION_CURSOR_HEADER_NAME};
 
 pub(crate) const APP_HOME_OVERRIDE_ENV: &str = "ASTRCODE_HOME_DIR";
 pub(crate) const BOOTSTRAP_TOKEN_TTL_HOURS: i64 = 24;
@@ -29,8 +29,57 @@ struct RunInfo {
     expires_at_ms: i64,
 }
 
+/// 浏览器 bootstrap 桥接端点返回的载荷（仅包含 token）
+#[derive(Debug, Serialize)]
+pub(crate) struct BrowserBootstrapResponse {
+    token: String,
+}
+
 async fn server_root() -> &'static str {
     "AstrCode server is running. API endpoints are available under /api. Build the frontend with `cd frontend && npm run build` or use the Vite dev server on http://127.0.0.1:5173/."
+}
+
+/// 为浏览器开发服务器提供 bootstrap token
+///
+/// 前端 Vite dev server (port 5173) 通过此端点获取 server 的 bootstrap token，
+/// 然后才能进行鉴权交换。
+pub(crate) async fn serve_run_info(State(_state): State<AppState>) -> Result<Json<BrowserBootstrapResponse>, ApiError> {
+    let run_info_path = run_info_path().map_err(|e| ApiError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: e.to_string(),
+    })?;
+    if !run_info_path.is_file() {
+        return Err(ApiError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "run info not available; server may be starting up or shutting down".to_string(),
+        });
+    }
+
+    let raw = std::fs::read_to_string(&run_info_path)
+        .with_context(|| format!("failed to read run info '{}'", run_info_path.display()))
+        .map_err(|e| ApiError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: e.to_string(),
+        })?;
+
+    let run_info: RunInfo = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse run info '{}'", run_info_path.display()))
+        .map_err(|e| ApiError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: e.to_string(),
+        })?;
+
+    // 检查 token 是否过期
+    if chrono::Utc::now().timestamp_millis() > run_info.expires_at_ms {
+        return Err(ApiError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "bootstrap token has expired; server may need restart".to_string(),
+        });
+    }
+
+    Ok(Json(BrowserBootstrapResponse {
+        token: run_info.token,
+    }))
 }
 
 pub(crate) fn attach_frontend_build(

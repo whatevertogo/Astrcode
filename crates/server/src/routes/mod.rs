@@ -8,10 +8,12 @@ use axum::extract::State;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 
+use crate::bootstrap::serve_run_info;
 use crate::{ApiError, AppState};
 
 pub(crate) fn build_api_router() -> Router<AppState> {
     Router::<AppState>::new()
+        .route("/__astrcode__/run-info", get(serve_run_info))
         .route("/api/auth/exchange", post(exchange_auth))
         .route(
             "/api/sessions",
