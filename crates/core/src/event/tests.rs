@@ -376,3 +376,249 @@ fn list_sessions_ignores_invalid_session_filenames() {
     let found = EventLog::list_sessions_from_path(tmp.path()).unwrap();
     assert_eq!(found, vec!["2026-03-10T10-00-00-aaaaaaaa"]);
 }
+
+#[test]
+fn iter_events_roundtrip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut log = make_test_log(tmp.path());
+
+    let e1 = StorageEvent::SessionStart {
+        session_id: "test-session-001".into(),
+        timestamp: Utc::now(),
+        working_dir: "/tmp".into(),
+    };
+    let e2 = StorageEvent::UserMessage {
+        turn_id: None,
+        content: "hello".into(),
+        timestamp: Utc::now(),
+    };
+    let e3 = StorageEvent::AssistantDelta {
+        turn_id: Some("turn-1".into()),
+        token: "world".into(),
+    };
+
+    log.append(&e1).unwrap();
+    log.append(&e2).unwrap();
+    log.append(&e3).unwrap();
+
+    let events: Vec<_> = EventLog::iter_from_path(log.path())
+        .unwrap()
+        .collect::<crate::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0].storage_seq, 1);
+    assert_eq!(events[1].storage_seq, 2);
+    assert_eq!(events[2].storage_seq, 3);
+    assert!(
+        matches!(&events[0].event, StorageEvent::SessionStart { session_id, .. } if session_id == "test-session-001")
+    );
+    assert!(
+        matches!(&events[1].event, StorageEvent::UserMessage { content, .. } if content == "hello")
+    );
+    assert!(
+        matches!(&events[2].event, StorageEvent::AssistantDelta { token, .. } if token == "world")
+    );
+}
+
+#[test]
+fn iter_events_skips_empty_lines() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("session-test.jsonl");
+    {
+        let mut f = File::create(&path).unwrap();
+        // 使用 serde_json 序列化确保格式正确
+        let e1 = StorageEvent::SessionStart {
+            session_id: "test".into(),
+            timestamp: chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            working_dir: "/tmp".into(),
+        };
+        let e2 = StorageEvent::UserMessage {
+            turn_id: None,
+            content: "hello".into(),
+            timestamp: chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:01Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+        writeln!(f, "{}", serde_json::to_string(&e1).unwrap()).unwrap();
+        writeln!(f).unwrap(); // empty line
+        writeln!(f).unwrap(); // another empty line
+        writeln!(f, "{}", serde_json::to_string(&e2).unwrap()).unwrap();
+    }
+
+    let events: Vec<_> = EventLog::iter_from_path(&path)
+        .unwrap()
+        .collect::<crate::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(events.len(), 2);
+}
+
+#[test]
+fn iter_errors_on_invalid_json() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("session-bad.jsonl");
+    {
+        let mut f = File::create(&path).unwrap();
+        let event = StorageEvent::UserMessage {
+            turn_id: None,
+            content: "ok".into(),
+            timestamp: chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+        writeln!(f, "{}", serde_json::to_string(&event).unwrap()).unwrap();
+        writeln!(f, "THIS IS NOT JSON").unwrap();
+    }
+
+    let mut iter = EventLog::iter_from_path(&path).unwrap();
+    // First event should succeed
+    assert!(iter.next().unwrap().is_ok());
+    // Second event should fail
+    let second = iter.next().unwrap();
+    assert!(second.is_err());
+}
+
+#[test]
+fn replay_to_processes_all_events() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut log = make_test_log(tmp.path());
+
+    let e1 = StorageEvent::SessionStart {
+        session_id: "test-session-001".into(),
+        timestamp: Utc::now(),
+        working_dir: "/tmp".into(),
+    };
+    let e2 = StorageEvent::UserMessage {
+        turn_id: None,
+        content: "hello".into(),
+        timestamp: Utc::now(),
+    };
+
+    log.append(&e1).unwrap();
+    log.append(&e2).unwrap();
+
+    let mut count = 0;
+    let mut session_ids: Vec<String> = Vec::new();
+    EventLog::replay_to(log.path(), |event| {
+        count += 1;
+        if let StorageEvent::SessionStart { session_id, .. } = &event.event {
+            session_ids.push(session_id.clone());
+        }
+        Ok(())
+    })
+    .unwrap();
+
+    assert_eq!(count, 2);
+    assert_eq!(session_ids, vec!["test-session-001"]);
+}
+
+#[test]
+fn replay_to_stops_on_callback_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut log = make_test_log(tmp.path());
+
+    for i in 0..5 {
+        let e = StorageEvent::UserMessage {
+            turn_id: None,
+            content: format!("message-{}", i),
+            timestamp: Utc::now(),
+        };
+        log.append(&e).unwrap();
+    }
+
+    let mut processed = 0;
+    let result = EventLog::replay_to(log.path(), |_event| {
+        processed += 1;
+        if processed >= 3 {
+            return Err(crate::AstrError::Internal("stop processing".to_string()));
+        }
+        Ok(())
+    });
+
+    assert!(result.is_err());
+    assert_eq!(processed, 3);
+}
+
+#[test]
+fn last_storage_seq_uses_iterator() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut log = make_test_log(tmp.path());
+
+    for i in 0..10 {
+        let e = StorageEvent::UserMessage {
+            turn_id: None,
+            content: format!("message-{}", i),
+            timestamp: Utc::now(),
+        };
+        log.append(&e).unwrap();
+    }
+
+    let last_seq = EventLog::last_storage_seq_from_path(log.path()).unwrap();
+    assert_eq!(last_seq, 10);
+}
+
+#[test]
+fn iter_and_load_produce_same_results() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut log = make_test_log(tmp.path());
+
+    let events_to_write = [
+        StorageEvent::SessionStart {
+            session_id: "test-session-001".into(),
+            timestamp: Utc::now(),
+            working_dir: "/tmp".into(),
+        },
+        StorageEvent::UserMessage {
+            turn_id: None,
+            content: "hello".into(),
+            timestamp: Utc::now(),
+        },
+        StorageEvent::AssistantFinal {
+            turn_id: Some("turn-1".into()),
+            content: "world".into(),
+            reasoning_content: None,
+            reasoning_signature: None,
+            timestamp: Some(Utc::now()),
+        },
+    ];
+
+    for e in &events_to_write {
+        log.append(e).unwrap();
+    }
+
+    // Use deprecated load_from_path for comparison
+    #[allow(deprecated)]
+    let loaded = EventLog::load_from_path(log.path()).unwrap();
+    let iterated: Vec<_> = EventLog::iter_from_path(log.path())
+        .unwrap()
+        .collect::<crate::Result<Vec<_>>>()
+        .unwrap();
+
+    assert_eq!(loaded.len(), iterated.len());
+    for (l, i) in loaded.iter().zip(iterated.iter()) {
+        assert_eq!(l.storage_seq, i.storage_seq);
+        // StorageEvent 未实现 PartialEq，所以比较 storage_seq 就足够了
+    }
+}
+
+#[test]
+fn iter_from_empty_file_yields_no_events() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("session-empty.jsonl");
+    // 创建一个 0 字节文件
+    File::create(&path).unwrap();
+
+    let events: Vec<_> = EventLog::iter_from_path(&path)
+        .unwrap()
+        .collect::<crate::Result<Vec<_>>>()
+        .unwrap();
+    assert!(events.is_empty(), "空文件不应产生任何事件");
+}
+
+#[test]
+fn iter_from_nonexistent_path_returns_error() {
+    let path = std::path::PathBuf::from("/tmp/astrcode-nonexistent-session-xyz.jsonl");
+    let result = EventLog::iter_from_path(&path);
+    assert!(result.is_err(), "不存在的文件路径应返回错误");
+}

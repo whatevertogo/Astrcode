@@ -56,7 +56,7 @@ impl Tool for FindFilesTool {
         args: serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult> {
-        check_cancel(&ctx.cancel, "findFiles")?;
+        check_cancel(ctx.cancel(), "findFiles")?;
 
         let args: FindFilesArgs = serde_json::from_value(args)
             .map_err(|e| AstrError::parse("invalid args for findFiles", e))?;
@@ -79,7 +79,7 @@ impl Tool for FindFilesTool {
         let mut paths = Vec::new();
         let mut truncated = false;
         for entry in entries {
-            check_cancel(&ctx.cancel, "findFiles")?;
+            check_cancel(ctx.cancel(), "findFiles")?;
             let path = entry.map_err(|e| AstrError::ToolError {
                 name: "findFiles".to_string(),
                 reason: format!("failed matching '{}': {}", full_pattern, e),
@@ -275,7 +275,7 @@ mod tests {
         let tool = FindFilesTool;
         let cancel = {
             let ctx = test_tool_context_for(temp.path());
-            ctx.cancel.cancel();
+            ctx.cancel().cancel();
             ctx
         };
 

@@ -1,6 +1,6 @@
 use std::env;
 
-use astrcode_core::{CancelToken, ToolContext, DEFAULT_MAX_OUTPUT_SIZE};
+use astrcode_core::{CancelToken, ToolContext};
 
 #[test]
 fn cancel_token_clone_observes_shared_cancellation() {
@@ -17,14 +17,13 @@ fn cancel_token_clone_observes_shared_cancellation() {
 #[test]
 fn tool_context_preserves_explicit_execution_roots() {
     let working_dir = env::temp_dir().join("astrcode-working-dir");
-    let ctx = ToolContext {
-        session_id: "session-1".to_string(),
-        working_dir: working_dir.clone(),
-        cancel: CancelToken::new(),
-        max_output_size: DEFAULT_MAX_OUTPUT_SIZE,
-    };
+    let ctx = ToolContext::new(
+        "session-1".to_string(),
+        working_dir.clone(),
+        CancelToken::new(),
+    );
 
-    assert_eq!(ctx.session_id, "session-1");
-    assert_eq!(ctx.working_dir, working_dir);
-    assert!(!ctx.cancel.is_cancelled());
+    assert_eq!(ctx.session_id(), "session-1");
+    assert_eq!(ctx.working_dir(), &working_dir);
+    assert!(!ctx.cancel().is_cancelled());
 }

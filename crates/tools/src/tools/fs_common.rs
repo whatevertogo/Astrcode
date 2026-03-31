@@ -19,10 +19,10 @@ pub fn check_cancel(cancel: &CancelToken, _tool_name: &str) -> Result<()> {
 
 pub fn resolve_path(ctx: &ToolContext, path: &Path) -> Result<PathBuf> {
     let working_dir = canonicalize_path(
-        &ctx.working_dir,
+        ctx.working_dir(),
         &format!(
             "failed to canonicalize working directory '{}'",
-            ctx.working_dir.display()
+            ctx.working_dir().display()
         ),
     )?;
     let base = if path.is_absolute() {
@@ -166,9 +166,9 @@ mod tests {
     #[test]
     fn check_cancel_returns_error_for_cancelled_token() {
         let ctx = test_tool_context_for(std::env::temp_dir());
-        ctx.cancel.cancel();
+        ctx.cancel().cancel();
 
-        let err = check_cancel(&ctx.cancel, "grep").expect_err("cancelled token should fail");
+        let err = check_cancel(ctx.cancel(), "grep").expect_err("cancelled token should fail");
         assert!(err.to_string().contains("cancelled"));
     }
 

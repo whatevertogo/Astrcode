@@ -53,7 +53,7 @@ impl Tool for ReadFileTool {
         args: serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult> {
-        check_cancel(&ctx.cancel, "readFile")?;
+        check_cancel(ctx.cancel(), "readFile")?;
 
         let args: ReadFileArgs = serde_json::from_value(args)
             .map_err(|e| AstrError::parse("invalid args for readFile", e))?;

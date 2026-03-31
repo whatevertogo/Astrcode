@@ -9,6 +9,8 @@ mod auth_routes_tests;
 mod bootstrap;
 #[cfg(test)]
 mod browser_bootstrap_tests;
+#[cfg(test)]
+mod e2e_tests;
 mod mapper;
 mod routes;
 #[cfg(test)]

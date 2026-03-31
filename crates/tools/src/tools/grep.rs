@@ -71,7 +71,7 @@ impl Tool for GrepTool {
         args: serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult> {
-        check_cancel(&ctx.cancel, "grep")?;
+        check_cancel(ctx.cancel(), "grep")?;
 
         let args: GrepArgs = serde_json::from_value(args)
             .map_err(|e| AstrError::parse("invalid args for grep", e))?;
@@ -89,9 +89,9 @@ impl Tool for GrepTool {
         let mut truncated = false;
         let mut skipped_files = 0usize;
 
-        let files = collect_candidate_files(&path, args.recursive, &ctx.cancel)?;
+        let files = collect_candidate_files(&path, args.recursive, ctx.cancel())?;
         for file in files {
-            check_cancel(&ctx.cancel, "grep")?;
+            check_cancel(ctx.cancel(), "grep")?;
 
             let content = match read_utf8_file(&file).await {
                 Ok(content) => content,
@@ -103,7 +103,7 @@ impl Tool for GrepTool {
             };
 
             for (index, line) in content.lines().enumerate() {
-                check_cancel(&ctx.cancel, "grep")?;
+                check_cancel(ctx.cancel(), "grep")?;
                 if regex.is_match(line) {
                     matches.push(GrepMatch {
                         file: file.to_string_lossy().to_string(),
@@ -343,7 +343,7 @@ mod tests {
         let tool = GrepTool;
         let cancel = {
             let ctx = test_tool_context_for(temp.path());
-            ctx.cancel.cancel();
+            ctx.cancel().cancel();
             ctx
         };
 
@@ -371,11 +371,11 @@ mod tests {
 
         let cancel = {
             let ctx = test_tool_context_for(temp.path());
-            ctx.cancel.cancel();
+            ctx.cancel().cancel();
             ctx
         };
 
-        let err = collect_candidate_files(temp.path(), true, &cancel.cancel)
+        let err = collect_candidate_files(temp.path(), true, cancel.cancel())
             .expect_err("recursive walk should fail when cancelled");
 
         assert!(err.to_string().contains("cancelled"));

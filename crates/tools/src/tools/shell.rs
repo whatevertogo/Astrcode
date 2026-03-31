@@ -66,7 +66,7 @@ impl Tool for ShellTool {
         args: serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult> {
-        check_cancel(&ctx.cancel, "shell")?;
+        check_cancel(ctx.cancel(), "shell")?;
         let args: ShellArgs = serde_json::from_value(args)
             .map_err(|e| AstrError::parse("invalid args for shell tool", e))?;
         if args.command.trim().is_empty() {
@@ -79,7 +79,7 @@ impl Tool for ShellTool {
         let started_at = Instant::now();
         let cwd = match args.cwd {
             Some(cwd) => resolve_path(ctx, &cwd)?,
-            None => ctx.working_dir.clone(),
+            None => ctx.working_dir().clone(),
         };
 
         let mut child = Command::new(&spec.program)
@@ -111,7 +111,7 @@ impl Tool for ShellTool {
             std::result::Result::<Vec<u8>, std::io::Error>::Ok(bytes)
         });
         let status = loop {
-            if ctx.cancel.is_cancelled() {
+            if ctx.cancel().is_cancelled() {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(AstrError::Cancelled);
@@ -149,14 +149,14 @@ impl Tool for ShellTool {
         let output = output_json.to_string();
 
         // Truncate if output exceeds max size
-        let (output, truncated) = if output.len() > ctx.max_output_size {
+        let (output, truncated) = if output.len() > ctx.max_output_size() {
             let truncation_msg = format!(
                 "\n... [OUTPUT TRUNCATED: {} bytes total, showing first {} bytes]",
                 output.len(),
-                ctx.max_output_size
+                ctx.max_output_size()
             );
             let mut truncated_output =
-                output[..ctx.max_output_size.saturating_sub(truncation_msg.len())].to_string();
+                output[..ctx.max_output_size().saturating_sub(truncation_msg.len())].to_string();
             truncated_output.push_str(&truncation_msg);
             (truncated_output, true)
         } else {

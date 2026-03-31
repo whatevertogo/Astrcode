@@ -53,14 +53,14 @@ impl Tool for ListDirTool {
         args: serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult> {
-        check_cancel(&ctx.cancel, "listDir")?;
+        check_cancel(ctx.cancel(), "listDir")?;
 
         let args: ListDirArgs = serde_json::from_value(args)
             .map_err(|e| AstrError::parse("invalid args for listDir", e))?;
         let started_at = Instant::now();
         let path = match args.path {
             Some(path) => resolve_path(ctx, &path)?,
-            None => ctx.working_dir.clone(),
+            None => ctx.working_dir().clone(),
         };
         let max_entries = args.max_entries.unwrap_or(200);
 
@@ -70,7 +70,7 @@ impl Tool for ListDirTool {
             AstrError::io(format!("failed reading directory '{}'", path.display()), e)
         })?;
         for entry in read_dir {
-            check_cancel(&ctx.cancel, "listDir")?;
+            check_cancel(ctx.cancel(), "listDir")?;
             if entries.len() >= max_entries {
                 truncated = true;
                 break;
@@ -179,7 +179,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let ctx = {
             let ctx = test_tool_context_for(temp.path());
-            ctx.cancel.cancel();
+            ctx.cancel().cancel();
             ctx
         };
         let tool = ListDirTool;

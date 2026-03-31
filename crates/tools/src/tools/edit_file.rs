@@ -66,7 +66,7 @@ impl Tool for EditFileTool {
         args: serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult> {
-        check_cancel(&ctx.cancel, "editFile")?;
+        check_cancel(ctx.cancel(), "editFile")?;
 
         let args: EditFileArgs = serde_json::from_value(args)
             .map_err(|e| AstrError::parse("invalid args for editFile", e))?;
@@ -255,7 +255,7 @@ mod tests {
         let tool = EditFileTool;
         let cancel = {
             let ctx = test_tool_context_for(temp.path());
-            ctx.cancel.cancel();
+            ctx.cancel().cancel();
             ctx
         };
 

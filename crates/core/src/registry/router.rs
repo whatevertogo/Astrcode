@@ -25,13 +25,13 @@ pub struct CapabilityContext {
 
 impl CapabilityContext {
     pub fn from_tool_context(ctx: &ToolContext, request_id: impl Into<Option<String>>) -> Self {
-        let working_dir = ctx.working_dir.to_string_lossy().into_owned();
+        let working_dir = ctx.working_dir().to_string_lossy().into_owned();
         Self {
             request_id: request_id.into(),
             trace_id: None,
-            session_id: ctx.session_id.clone(),
-            working_dir: ctx.working_dir.clone(),
-            cancel: ctx.cancel.clone(),
+            session_id: ctx.session_id().to_string(),
+            working_dir: ctx.working_dir().clone(),
+            cancel: ctx.cancel().clone(),
             profile: "coding".to_string(),
             profile_context: json!({
                 "workingDir": working_dir,
@@ -140,6 +140,7 @@ impl CapabilityRouterBuilder {
     pub fn build(self) -> Result<CapabilityRouter> {
         let mut invokers_by_name = HashMap::new();
         let mut order = Vec::new();
+        let mut tool_order = Vec::new();
 
         for invoker in self.invokers {
             let descriptor = invoker.descriptor();
@@ -158,12 +159,16 @@ impl CapabilityRouterBuilder {
                     descriptor.name
                 )));
             }
+            if descriptor.kind.is_tool() {
+                tool_order.push(descriptor.name.clone());
+            }
             order.push(descriptor.name);
         }
 
         Ok(CapabilityRouter {
             invokers_by_name,
             order,
+            tool_order,
         })
     }
 }
@@ -171,6 +176,7 @@ impl CapabilityRouterBuilder {
 pub struct CapabilityRouter {
     invokers_by_name: HashMap<String, Arc<dyn CapabilityInvoker>>,
     order: Vec<String>,
+    tool_order: Vec<String>,
 }
 
 impl CapabilityRouter {
@@ -212,11 +218,8 @@ impl CapabilityRouter {
             .collect()
     }
 
-    pub fn tool_names(&self) -> Vec<String> {
-        self.tool_definitions()
-            .into_iter()
-            .map(|definition| definition.name)
-            .collect()
+    pub fn tool_names(&self) -> &[String] {
+        &self.tool_order
     }
 
     pub async fn invoke(
@@ -364,12 +367,11 @@ mod tests {
     }
 
     fn tool_context() -> ToolContext {
-        ToolContext {
-            session_id: "session-1".to_string(),
-            working_dir: std::env::temp_dir(),
-            cancel: CancelToken::new(),
-            max_output_size: crate::DEFAULT_MAX_OUTPUT_SIZE,
-        }
+        ToolContext::new(
+            "session-1".to_string(),
+            std::env::temp_dir(),
+            CancelToken::new(),
+        )
     }
 
     #[tokio::test]

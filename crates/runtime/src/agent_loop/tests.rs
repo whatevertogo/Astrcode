@@ -332,7 +332,7 @@ impl Tool for SlowTool {
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult> {
         tokio::select! {
-            _ = crate::cancel::cancelled(ctx.cancel.clone()) => Err(AstrError::Cancelled),
+            _ = crate::cancel::cancelled(ctx.cancel().clone()) => Err(AstrError::Cancelled),
             _ = sleep(Duration::from_millis(250)) => Ok(ToolExecutionResult {
                 tool_call_id,
                 tool_name: "slowTool".to_string(),

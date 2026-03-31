@@ -4,7 +4,7 @@ mod turn_runner;
 
 use astrcode_core::{
     AllowAllPolicyEngine, AstrError, CancelToken, CapabilityRouter, PolicyContext, PolicyEngine,
-    Result, ToolContext, DEFAULT_MAX_OUTPUT_SIZE,
+    Result, ToolContext,
 };
 use chrono::Utc;
 use std::sync::Arc;
@@ -73,12 +73,7 @@ impl AgentLoop {
     }
 
     pub(crate) fn tool_context(&self, state: &AgentState, cancel: CancelToken) -> ToolContext {
-        ToolContext {
-            session_id: state.session_id.clone(),
-            working_dir: state.working_dir.clone(),
-            cancel,
-            max_output_size: DEFAULT_MAX_OUTPUT_SIZE,
-        }
+        ToolContext::new(state.session_id.clone(), state.working_dir.clone(), cancel)
     }
 
     pub(crate) fn policy_context(

@@ -24,8 +24,8 @@ pub use capability::{
 };
 pub use error::{AstrError, Result, ResultExt};
 pub use event::{
-    generate_session_id, phase_of_storage_event, replay_records, AgentEvent, EventLog, EventStore,
-    EventTranslator, Phase, StorageEvent, StoredEvent,
+    generate_session_id, phase_of_storage_event, replay_records, AgentEvent, EventLog,
+    EventLogIterator, EventStore, EventTranslator, Phase, StorageEvent, StoredEvent,
 };
 pub use plugin::{PluginHealth, PluginManifest, PluginRegistry, PluginState, PluginType};
 pub use policy::{

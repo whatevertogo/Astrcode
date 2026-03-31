@@ -53,7 +53,7 @@ impl Tool for WriteFileTool {
         args: serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult> {
-        check_cancel(&ctx.cancel, "writeFile")?;
+        check_cancel(ctx.cancel(), "writeFile")?;
 
         let args: WriteFileArgs = serde_json::from_value(args)
             .map_err(|e| AstrError::parse("invalid args for writeFile", e))?;
@@ -190,7 +190,7 @@ mod tests {
         let tool = WriteFileTool;
         let cancel = {
             let ctx = test_tool_context_for(temp.path());
-            ctx.cancel.cancel();
+            ctx.cancel().cancel();
             ctx
         };
 

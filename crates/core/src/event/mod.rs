@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 pub use self::domain::{AgentEvent, Phase};
 pub use self::paths::generate_session_id;
 use self::paths::{session_path, validated_session_id};
+pub use self::store::EventLogIterator;
 pub use self::translate::{phase_of_storage_event, replay_records, EventTranslator};
 pub use self::types::{StorageEvent, StoredEvent, StoredEventLine};
 

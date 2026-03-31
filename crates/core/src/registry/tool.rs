@@ -9,12 +9,17 @@ use crate::{
     CapabilityInvoker, Result, Tool, ToolCallRequest, ToolContext, ToolExecutionResult,
 };
 
+/// Builder for constructing a frozen [`ToolRegistry`].
+///
+/// Tools are registered in order; re-registering a tool with the same name
+/// updates its position in the registry.
 pub struct ToolRegistryBuilder {
     tools: HashMap<String, Box<dyn Tool>>,
     order: Vec<String>,
 }
 
 impl ToolRegistryBuilder {
+    /// Creates a new empty builder.
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
@@ -22,6 +27,10 @@ impl ToolRegistryBuilder {
         }
     }
 
+    /// Registers a tool with this builder.
+    ///
+    /// If a tool with the same name already exists, it is replaced and its
+    /// registration order is updated.
     pub fn register(mut self, tool: Box<dyn Tool>) -> Self {
         let name = tool.definition().name;
         if let Some(index) = self.order.iter().position(|existing| existing == &name) {
@@ -32,6 +41,7 @@ impl ToolRegistryBuilder {
         self
     }
 
+    /// Builds a frozen, read-only [`ToolRegistry`].
     pub fn build(self) -> ToolRegistry {
         ToolRegistry {
             tools: self.tools,
@@ -40,16 +50,22 @@ impl ToolRegistryBuilder {
     }
 }
 
+/// A frozen, read-only registry of available tools.
+///
+/// Once built, the registry cannot be modified. Use [`ToolRegistryBuilder`]
+/// to construct and populate tools before freezing.
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
     order: Vec<String>,
 }
 
 impl ToolRegistry {
+    /// Creates a new builder for constructing a tool registry.
     pub fn builder() -> ToolRegistryBuilder {
         ToolRegistryBuilder::new()
     }
 
+    /// Returns the definitions of all registered tools in registration order.
     pub fn definitions(&self) -> Vec<crate::ToolDefinition> {
         self.order
             .iter()
@@ -58,10 +74,15 @@ impl ToolRegistry {
             .collect()
     }
 
-    pub fn names(&self) -> Vec<String> {
-        self.order.clone()
+    /// Returns the names of all registered tools in registration order.
+    pub fn names(&self) -> &[String] {
+        &self.order
     }
 
+    /// Executes a tool call with the given context.
+    ///
+    /// Returns a `ToolExecutionResult` indicating success or failure.
+    /// If the tool is not found, returns a failure result with an error message.
     pub async fn execute(&self, call: &ToolCallRequest, ctx: &ToolContext) -> ToolExecutionResult {
         let Some(tool) = self.tools.get(&call.name) else {
             return ToolExecutionResult {
@@ -150,12 +171,11 @@ impl CapabilityInvoker for ToolCapabilityInvoker {
                     .clone()
                     .unwrap_or_else(|| "capability-call".to_string()),
                 payload,
-                &ToolContext {
-                    session_id: ctx.session_id.clone(),
-                    working_dir: ctx.working_dir.clone(),
-                    cancel: ctx.cancel.clone(),
-                    max_output_size: crate::DEFAULT_MAX_OUTPUT_SIZE,
-                },
+                &ToolContext::new(
+                    ctx.session_id.clone(),
+                    ctx.working_dir.clone(),
+                    ctx.cancel.clone(),
+                ),
             )
             .await;
 
@@ -319,12 +339,11 @@ mod tests {
     }
 
     fn test_context() -> ToolContext {
-        ToolContext {
-            session_id: "session-1".to_string(),
-            working_dir: std::env::temp_dir(),
-            cancel: CancelToken::new(),
-            max_output_size: crate::DEFAULT_MAX_OUTPUT_SIZE,
-        }
+        ToolContext::new(
+            "session-1".to_string(),
+            std::env::temp_dir(),
+            CancelToken::new(),
+        )
     }
 
     #[tokio::test]
@@ -349,7 +368,7 @@ mod tests {
     #[test]
     fn builder_preserves_registration_order() {
         let registry = ToolRegistry::builder().register(Box::new(FakeTool)).build();
-        assert_eq!(registry.names(), vec!["fake".to_string()]);
+        assert_eq!(registry.names(), &["fake".to_string()]);
     }
 
     #[tokio::test]

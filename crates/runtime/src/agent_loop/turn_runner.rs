@@ -37,7 +37,7 @@ pub(crate) async fn run_turn(
 
         let ctx = PromptContext {
             working_dir: state.working_dir.to_string_lossy().into_owned(),
-            tool_names: agent_loop.capabilities.tool_names(),
+            tool_names: agent_loop.capabilities.tool_names().to_vec(),
             step_index,
             turn_index: state.turn_count,
             vars: Default::default(),

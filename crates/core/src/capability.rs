@@ -135,8 +135,13 @@ pub enum StabilityLevel {
     Deprecated,
 }
 
+/// A descriptor that describes a capability's metadata, schema, and policy hints.
+///
+/// `CapabilityDescriptor` is used by the runtime to route, filter, and expose
+/// capabilities across different transport layers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CapabilityDescriptor {
+    /// Unique name of the capability.
     pub name: String,
     /// Routing and policy metadata for this capability.
     ///
@@ -144,24 +149,34 @@ pub struct CapabilityDescriptor {
     /// descriptor so runtime assembly, policy, and transport layers can make projection choices.
     #[serde(default)]
     pub kind: CapabilityKind,
+    /// Human-readable description of what this capability does.
     pub description: String,
+    /// JSON Schema describing the expected input payload.
     pub input_schema: Value,
+    /// JSON Schema describing the output payload.
     pub output_schema: Value,
+    /// Whether this capability supports streaming output.
     #[serde(default)]
     pub streaming: bool,
+    /// Capability profiles that this capability belongs to.
     #[serde(default)]
     pub profiles: Vec<String>,
+    /// Descriptive tags for categorization and discovery.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Permission hints indicating what resources or actions this capability may access.
     #[serde(default)]
     pub permissions: Vec<PermissionHint>,
+    /// The level of side effects this capability may produce.
     #[serde(default)]
     pub side_effect: SideEffectLevel,
+    /// Stability level indicating API maturity.
     #[serde(default)]
     pub stability: StabilityLevel,
 }
 
 impl CapabilityDescriptor {
+    /// Creates a new builder for constructing a `CapabilityDescriptor`.
     pub fn builder(
         name: impl Into<String>,
         kind: impl Into<CapabilityKind>,
@@ -169,6 +184,7 @@ impl CapabilityDescriptor {
         CapabilityDescriptorBuilder::new(name, kind)
     }
 
+    /// Returns the namespace derived from the capability name.
     pub fn namespace(&self) -> CapabilityNamespace {
         CapabilityNamespace::from_capability_name(&self.name)
     }
@@ -188,11 +204,16 @@ impl CapabilityDescriptor {
     }
 }
 
+/// Error type for capability descriptor validation failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DescriptorBuildError {
+    /// A required field was empty or whitespace-only.
     EmptyField(&'static str),
+    /// A required field was missing.
     MissingField(&'static str),
+    /// A schema field was not a valid JSON object.
     InvalidSchema(&'static str),
+    /// A list field contained duplicate values.
     DuplicateValue { field: &'static str, value: String },
 }
 
@@ -216,6 +237,10 @@ impl fmt::Display for DescriptorBuildError {
 
 impl std::error::Error for DescriptorBuildError {}
 
+/// Builder for constructing a validated [`CapabilityDescriptor`].
+///
+/// Use [`CapabilityDescriptor::builder`] or this struct directly to
+/// assemble capability metadata with validation before building.
 #[derive(Debug, Clone)]
 pub struct CapabilityDescriptorBuilder {
     name: String,
@@ -232,6 +257,7 @@ pub struct CapabilityDescriptorBuilder {
 }
 
 impl CapabilityDescriptorBuilder {
+    /// Creates a new builder with the given name and kind.
     pub fn new(name: impl Into<String>, kind: impl Into<CapabilityKind>) -> Self {
         Self {
             name: name.into(),
