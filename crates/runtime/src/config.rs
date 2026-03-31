@@ -244,7 +244,7 @@ fn default_profile_max_tokens() -> u32 {
 }
 
 pub fn config_path() -> Result<PathBuf> {
-    let home = resolve_home_dir()?;
+    let home = astrcode_core::home::resolve_home_dir()?;
     Ok(home.join(".astrcode").join("config.json"))
 }
 
@@ -676,44 +676,6 @@ fn platform_open_command(os: &str, path: &Path) -> Result<OpenCommand> {
     };
 
     Ok(command)
-}
-
-fn resolve_home_dir() -> Result<PathBuf> {
-    #[cfg(test)]
-    if let Some(home) = crate::test_support::test_home_dir() {
-        return Ok(home);
-    }
-
-    #[cfg(test)]
-    {
-        #[allow(clippy::needless_return)]
-        return Err(AstrError::Internal(format!(
-            "{} must be set before tests call config_path()",
-            crate::test_support::TEST_HOME_ENV
-        )));
-    }
-
-    #[cfg(not(test))]
-    {
-        const APP_HOME_OVERRIDE_ENV: &str = "ASTRCODE_HOME_DIR";
-        const TEST_HOME_OVERRIDE_ENV: &str = "ASTRCODE_TEST_HOME";
-
-        if let Some(home) = std::env::var_os(APP_HOME_OVERRIDE_ENV) {
-            if !home.is_empty() {
-                return Ok(PathBuf::from(home));
-            }
-        }
-
-        // Also check test home override in non-test builds, since dependent
-        // crates may be exercised by integration tests that set this variable.
-        if let Some(home) = std::env::var_os(TEST_HOME_OVERRIDE_ENV) {
-            if !home.is_empty() {
-                return Ok(PathBuf::from(home));
-            }
-        }
-
-        dirs::home_dir().ok_or(AstrError::HomeDirectoryNotFound)
-    }
 }
 
 #[cfg(test)]

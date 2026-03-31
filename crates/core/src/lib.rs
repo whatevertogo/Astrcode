@@ -20,6 +20,7 @@ mod cancel;
 pub mod capability;
 mod error;
 pub mod event;
+pub mod home;
 pub mod plugin;
 pub mod policy;
 pub mod projection;

@@ -10,7 +10,7 @@ use crate::validation::normalize_config;
 
 /// Returns the path to the config file.
 pub fn config_path() -> Result<PathBuf> {
-    let home = resolve_home_dir()?;
+    let home = astrcode_core::home::resolve_home_dir()?;
     Ok(home.join(".astrcode").join("config.json"))
 }
 
@@ -52,47 +52,6 @@ pub fn load_config_from_path(path: &Path) -> Result<Config> {
     })?;
     normalize_config(config)
         .map_err(|e| e.context(format!("failed to validate config at {}", path.display())))
-}
-
-/// Resolves the home directory for config storage.
-///
-/// In test mode, uses `ASTRCODE_TEST_HOME` if set.
-/// In production, checks `ASTRCODE_HOME_DIR` env override, then falls back to `dirs::home_dir()`.
-fn resolve_home_dir() -> Result<PathBuf> {
-    #[cfg(test)]
-    if let Some(home) = astrcode_core::test_support::test_home_dir() {
-        return Ok(home);
-    }
-
-    #[cfg(test)]
-    {
-        #[allow(clippy::needless_return)]
-        return Err(AstrError::Internal(format!(
-            "{} must be set before tests call config_path()",
-            astrcode_core::test_support::TEST_HOME_ENV
-        )));
-    }
-
-    #[cfg(not(test))]
-    {
-        const APP_HOME_OVERRIDE_ENV: &str = "ASTRCODE_HOME_DIR";
-        const TEST_HOME_OVERRIDE_ENV: &str = "ASTRCODE_TEST_HOME";
-
-        if let Some(home) = std::env::var_os(APP_HOME_OVERRIDE_ENV) {
-            if !home.is_empty() {
-                return Ok(PathBuf::from(home));
-            }
-        }
-
-        // 非测试构建也检查 ASTRCODE_TEST_HOME，因为上层 crate 可能在集成测试中设置此变量
-        if let Some(home) = std::env::var_os(TEST_HOME_OVERRIDE_ENV) {
-            if !home.is_empty() {
-                return Ok(PathBuf::from(home));
-            }
-        }
-
-        dirs::home_dir().ok_or(AstrError::HomeDirectoryNotFound)
-    }
 }
 
 /// Writes JSON atomically via a temp file and rename.

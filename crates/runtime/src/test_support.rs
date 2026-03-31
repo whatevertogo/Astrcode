@@ -1,8 +1,6 @@
 use astrcode_core::{CapabilityRouter, ToolRegistry};
 
-pub(crate) use astrcode_core::test_support::{
-    env_lock, test_home_dir, TestEnvGuard, TEST_HOME_ENV,
-};
+pub(crate) use astrcode_core::test_support::TestEnvGuard;
 
 pub(crate) fn empty_capabilities() -> CapabilityRouter {
     CapabilityRouter::builder()

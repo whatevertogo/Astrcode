@@ -266,17 +266,10 @@ pub(crate) fn clear_run_info(expected_pid: u32) -> AnyhowResult<()> {
 }
 
 fn run_info_path() -> AnyhowResult<PathBuf> {
-    Ok(resolve_home_dir()?.join(".astrcode").join("run.json"))
-}
-
-fn resolve_home_dir() -> AnyhowResult<PathBuf> {
-    if let Some(home) = std::env::var_os(APP_HOME_OVERRIDE_ENV) {
-        if !home.is_empty() {
-            return Ok(PathBuf::from(home));
-        }
-    }
-
-    dirs::home_dir().ok_or_else(|| anyhow!("unable to resolve home directory"))
+    Ok(astrcode_core::home::resolve_home_dir()
+        .map_err(|e| anyhow!("{e}"))?
+        .join(".astrcode")
+        .join("run.json"))
 }
 
 #[cfg(test)]
