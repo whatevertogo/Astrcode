@@ -9,7 +9,7 @@ use astrcode_protocol::plugin::{
     EventPhase, InvocationContext, PeerDescriptor, PeerRole, WorkspaceRef,
 };
 use serde_json::{json, Value};
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 
 fn fixture_manifest() -> PluginManifest {
     PluginManifest {
@@ -222,4 +222,73 @@ async fn stdio_peer_closes_pending_request_and_stream_when_process_dies() -> Res
     );
 
     Ok(())
+}
+
+#[tokio::test]
+async fn stdio_peer_abort_closes_pending_request_and_stream() -> Result<()> {
+    let manifest = fixture_manifest();
+    let mut process = PluginProcess::start(&manifest).await?;
+    let peer = Peer::new(
+        process.transport(),
+        default_initialize_message(local_peer(), Vec::new(), default_profiles()),
+        Arc::new(CapabilityRouter::default()),
+    );
+    let remote = peer.initialize().await?;
+    assert_eq!(remote.peer.role, PeerRole::Worker);
+
+    let unary_peer = peer.clone();
+    let unary_task = tokio::spawn(async move {
+        unary_peer
+            .invoke(astrcode_protocol::plugin::InvokeMessage {
+                id: "req-abort-unary".to_string(),
+                capability: "tool.delayed_echo".to_string(),
+                input: json!({ "message": "wait" }),
+                context: coding_context("req-abort-unary"),
+                stream: false,
+            })
+            .await
+    });
+
+    let mut stream = peer
+        .invoke_stream(astrcode_protocol::plugin::InvokeMessage {
+            id: "req-abort-stream".to_string(),
+            capability: "tool.patch_stream".to_string(),
+            input: json!({ "path": "src/main.rs" }),
+            context: coding_context("req-abort-stream"),
+            stream: true,
+        })
+        .await?;
+
+    sleep(Duration::from_millis(80)).await;
+    peer.abort().await;
+
+    let unary = timeout(Duration::from_secs(2), unary_task)
+        .await
+        .expect("unary invoke should resolve after peer abort")
+        .expect("join unary")
+        .expect("invoke result");
+    assert!(!unary.success);
+    assert_eq!(
+        unary.error.as_ref().expect("transport close error").code,
+        "transport_closed"
+    );
+
+    let terminal = timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(event) = stream.recv().await {
+                if matches!(event.phase, EventPhase::Completed | EventPhase::Failed) {
+                    return event;
+                }
+            }
+        }
+    })
+    .await
+    .expect("stream should terminate after peer abort");
+    assert_eq!(terminal.phase, EventPhase::Failed);
+    assert_eq!(
+        terminal.error.as_ref().expect("stream close error").code,
+        "transport_closed"
+    );
+
+    process.shutdown().await
 }

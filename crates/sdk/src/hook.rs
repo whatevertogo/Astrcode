@@ -49,14 +49,12 @@ pub trait PolicyHook: Send + Sync {
     ) -> PolicyDecision;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HookShortCircuit {
     Never,
     #[default]
     OnDeny,
 }
-
 
 #[derive(Clone)]
 pub struct RegisteredPolicyHook {

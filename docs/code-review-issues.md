@@ -81,23 +81,23 @@
 
 **修复**: 让 `Tool` trait 提供 `capability_metadata()` / `capability_descriptor()` 回调，adapter 只负责注册，不再猜测元数据。
 
-### M7. `std::sync::Mutex` 用于 async context
+### M7. ~~`std::sync::Mutex` 用于 async context~~ ✅ 评估后确认正确
 
-`server/src/auth.rs:48` 使用 `std::sync::Mutex<HashMap>`。
+`server/src/auth.rs:48` 使用 `std::sync::Mutex<HashMap<String, i64>>`。
 
-**修复**: 替换为 `tokio::sync::Mutex` 或 `DashMap`。
+**评估结论**: 临界区仅包含 HashMap get/insert/retain 操作，无 `.await` 点。tokio 官方文档推荐在无 `.await` 的短临界区使用 `std::sync::Mutex`（避免 tokio::sync::Mutex 的额外开销）。当前用法正确，无需修改。
 
-### M8. `peer.rs` spawn_read_loop 丢弃 JoinHandle
+### M8. ~~`peer.rs` spawn_read_loop 丢弃 JoinHandle~~ ✅ 已修复
 
-`plugin/src/peer.rs:125-130` spawn 后丢弃 handle，无法强制关闭。
+`plugin/src/peer.rs` spawn 后丢弃 handle，无法强制关闭。
 
-**修复**: 存储 `JoinHandle`，shutdown 时 abort。
+**修复**: `PeerInner` 新增 `read_loop_handle: std::sync::Mutex<Option<JoinHandle<()>>>` 和 `invoke_handles: tokio::sync::Mutex<Vec<JoinHandle<()>>>`。新增 `Peer::abort()` 方法。`Supervisor::shutdown()` 先调用 `peer.abort()` 再 shutdown process。
 
-### M9. service 层双错误策略
+### M9. ~~service 层双错误策略~~ ✅ 已修复
 
 `runtime/service/support.rs` 同时提供 `ServiceResult` 和 `anyhow::Result` 的工具函数。
 
-**修复**: 统一到 `ServiceError`。
+**修复**: 删除重复的 `lock_service`/`spawn_blocking_service` helper，统一内部用 `lock_anyhow`/`spawn_blocking_anyhow`。新增 `From<anyhow::Error> for ServiceError` 实现边界转换。`spawn_blocking_service` 保留为桥接函数内部调用 `spawn_blocking_anyhow`。
 
 ### M10. `StreamWriter::records()` 用 `.expect()` 可能 panic
 
@@ -182,7 +182,7 @@ runtime 和 server 多处。
 | # | 状态 | 说明 |
 |---|------|------|
 | H1 | ✅ | 拆分到独立 `crates/runtime-llm/` crate，共享逻辑统一到 lib.rs |
-| H2 | ⬜ | 统一 core/protocol 类型（架构决策，暂缓） |
+| H2 | ✅ | 统一到 protocol 权威定义，core re-export protocol 类型，删除重复定义和 invoker 转换函数 |
 | H3 | ✅ | 修复 phase 映射 Bug + 重复（Interrupted 分支修复 + 函数统一） |
 | H4 | ✅ | StorageEvent::ToolResult 持久化 error/metadata，并兼容旧 JSONL 反序列化 |
 | M1 | ✅ | duration_ms → u64（action.rs + router.rs + translate.rs） |
@@ -191,9 +191,9 @@ runtime 和 server 多处。
 | M4 | ✅ | 删除 WebSocketTransport stub |
 | M5 | ✅ | 删除 HandlerDispatcher |
 | M6 | ✅ | Tool trait 新增 capability metadata/descriptor 回调，内置工具元数据下沉到各自实现 |
-| M7 | ⬜ | auth.rs Mutex（需评估改为 tokio::sync::Mutex 的影响） |
-| M8 | ⬜ | peer.rs JoinHandle（需评估生命周期影响） |
-| M9 | ⬜ | service 错误策略统一 |
+| M7 | ✅ | 评估后确认 std::sync::Mutex 用法正确（临界区无 await，符合 tokio 官方推荐） |
+| M8 | ✅ | PeerInner 存储 read_loop JoinHandle + invoke handles，abort() 在 shutdown 时清理 |
+| M9 | ✅ | 删除 lock_service/spawn_blocking_service 重复 helper，统一内部用 anyhow，边界通过 From<anyhow::Error> 转换 |
 | M10 | ✅ | StreamWriter records() 返回 Result |
 | M11 | ✅ | eprintln → log::warn/log::debug |
 | L1 | ✅ | 删除 registry/capability.rs 转发文件 |

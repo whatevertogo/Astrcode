@@ -2,15 +2,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use astrcode_core::{
-    AstrError, CapabilityContext, CapabilityDescriptor as CoreCapabilityDescriptor,
-    CapabilityExecutionResult, CapabilityInvoker, CapabilityKind as CoreCapabilityKind,
-    PermissionHint as CorePermissionHint, Result, SideEffectLevel as CoreSideEffectLevel,
-    StabilityLevel as CoreStabilityLevel,
+    AstrError, CapabilityContext, CapabilityDescriptor, CapabilityExecutionResult,
+    CapabilityInvoker, Result,
 };
-use astrcode_protocol::plugin::{
-    CapabilityDescriptor, CapabilityKind, EventPhase, InvocationContext, PermissionHint,
-    SideEffectLevel, StabilityLevel, WorkspaceRef,
-};
+use astrcode_protocol::plugin::{EventPhase, InvocationContext, WorkspaceRef};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -20,7 +15,7 @@ use crate::{Peer, StreamExecution, Supervisor};
 #[derive(Clone)]
 pub struct PluginCapabilityInvoker {
     peer: Peer,
-    descriptor: CoreCapabilityDescriptor,
+    descriptor: CapabilityDescriptor,
     remote_name: String,
 }
 
@@ -28,7 +23,7 @@ impl PluginCapabilityInvoker {
     pub fn from_protocol_descriptor(peer: Peer, descriptor: CapabilityDescriptor) -> Self {
         Self {
             remote_name: descriptor.name.clone(),
-            descriptor: protocol_to_core_capability(&descriptor),
+            descriptor,
             peer,
         }
     }
@@ -36,7 +31,7 @@ impl PluginCapabilityInvoker {
 
 #[async_trait]
 impl CapabilityInvoker for PluginCapabilityInvoker {
-    fn descriptor(&self) -> CoreCapabilityDescriptor {
+    fn descriptor(&self) -> CapabilityDescriptor {
         self.descriptor.clone()
     }
 
@@ -115,12 +110,8 @@ impl Supervisor {
             .collect()
     }
 
-    pub fn core_capabilities(&self) -> Vec<CoreCapabilityDescriptor> {
-        self.remote_initialize()
-            .capabilities
-            .iter()
-            .map(protocol_to_core_capability)
-            .collect()
+    pub fn core_capabilities(&self) -> Vec<CapabilityDescriptor> {
+        self.remote_initialize().capabilities.clone()
     }
 }
 
@@ -197,128 +188,5 @@ fn to_invocation_context(ctx: &CapabilityContext) -> InvocationContext {
         profile: ctx.profile.clone(),
         profile_context: ctx.profile_context.clone(),
         metadata: ctx.metadata.clone(),
-    }
-}
-
-pub fn protocol_to_core_capability(descriptor: &CapabilityDescriptor) -> CoreCapabilityDescriptor {
-    CoreCapabilityDescriptor {
-        name: descriptor.name.clone(),
-        kind: CoreCapabilityKind::from(descriptor.kind.as_str()),
-        description: descriptor.description.clone(),
-        input_schema: descriptor.input_schema.clone(),
-        output_schema: descriptor.output_schema.clone(),
-        streaming: descriptor.streaming,
-        profiles: descriptor.profiles.clone(),
-        tags: descriptor.tags.clone(),
-        permissions: descriptor
-            .permissions
-            .iter()
-            .map(|permission| CorePermissionHint {
-                name: permission.name.clone(),
-                rationale: permission.rationale.clone(),
-            })
-            .collect(),
-        side_effect: match descriptor.side_effect {
-            SideEffectLevel::None => CoreSideEffectLevel::None,
-            SideEffectLevel::Local => CoreSideEffectLevel::Local,
-            SideEffectLevel::Workspace => CoreSideEffectLevel::Workspace,
-            SideEffectLevel::External => CoreSideEffectLevel::External,
-        },
-        stability: match descriptor.stability {
-            StabilityLevel::Experimental => CoreStabilityLevel::Experimental,
-            StabilityLevel::Stable => CoreStabilityLevel::Stable,
-            StabilityLevel::Deprecated => CoreStabilityLevel::Deprecated,
-        },
-    }
-}
-
-pub fn core_to_protocol_capability(
-    capability: &astrcode_core::CapabilityDescriptor,
-) -> CapabilityDescriptor {
-    CapabilityDescriptor {
-        name: capability.name.clone(),
-        kind: CapabilityKind::from(capability.kind.as_str()),
-        description: capability.description.clone(),
-        input_schema: capability.input_schema.clone(),
-        output_schema: capability.output_schema.clone(),
-        streaming: capability.streaming,
-        profiles: capability.profiles.clone(),
-        tags: capability.tags.clone(),
-        permissions: capability
-            .permissions
-            .iter()
-            .map(|permission| PermissionHint {
-                name: permission.name.clone(),
-                rationale: permission.rationale.clone(),
-            })
-            .collect(),
-        side_effect: match capability.side_effect {
-            astrcode_core::SideEffectLevel::None => SideEffectLevel::None,
-            astrcode_core::SideEffectLevel::Local => SideEffectLevel::Local,
-            astrcode_core::SideEffectLevel::Workspace => SideEffectLevel::Workspace,
-            astrcode_core::SideEffectLevel::External => SideEffectLevel::External,
-        },
-        stability: match capability.stability {
-            astrcode_core::StabilityLevel::Experimental => StabilityLevel::Experimental,
-            astrcode_core::StabilityLevel::Stable => StabilityLevel::Stable,
-            astrcode_core::StabilityLevel::Deprecated => StabilityLevel::Deprecated,
-        },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::{core_to_protocol_capability, protocol_to_core_capability};
-    use astrcode_core::{
-        CapabilityDescriptor as CoreCapabilityDescriptor, CapabilityKind as CoreCapabilityKind,
-        SideEffectLevel as CoreSideEffectLevel, StabilityLevel as CoreStabilityLevel,
-    };
-    use astrcode_protocol::plugin::{
-        CapabilityDescriptor, CapabilityKind, SideEffectLevel, StabilityLevel,
-    };
-
-    #[test]
-    fn custom_kind_roundtrips_between_protocol_and_core() {
-        let protocol = CapabilityDescriptor {
-            name: "workspace.index".to_string(),
-            kind: CapabilityKind::custom("lsp.indexer"),
-            description: "Indexes workspace symbols".to_string(),
-            input_schema: json!({ "type": "object" }),
-            output_schema: json!({ "type": "object" }),
-            streaming: false,
-            profiles: vec!["coding".to_string()],
-            tags: vec!["lsp".to_string()],
-            permissions: vec![],
-            side_effect: SideEffectLevel::None,
-            stability: StabilityLevel::Stable,
-        };
-
-        let core = protocol_to_core_capability(&protocol);
-        assert_eq!(core.kind.as_str(), "lsp.indexer");
-
-        let encoded = core_to_protocol_capability(&core);
-        assert_eq!(encoded.kind.as_str(), "lsp.indexer");
-    }
-
-    #[test]
-    fn core_custom_kind_preserves_string_when_encoded_for_protocol() {
-        let core = CoreCapabilityDescriptor {
-            name: "workspace.index".to_string(),
-            kind: CoreCapabilityKind::custom("mcp.resource"),
-            description: "Indexes workspace symbols".to_string(),
-            input_schema: json!({ "type": "object" }),
-            output_schema: json!({ "type": "object" }),
-            streaming: false,
-            profiles: vec!["coding".to_string()],
-            tags: vec![],
-            permissions: vec![],
-            side_effect: CoreSideEffectLevel::None,
-            stability: CoreStabilityLevel::Stable,
-        };
-
-        let protocol = core_to_protocol_capability(&core);
-        assert_eq!(protocol.kind.as_str(), "mcp.resource");
     }
 }

@@ -211,7 +211,7 @@
 每个阶段结束时，至少验证：
 
 - Rust 代码改动：`cargo fmt --all -- --check && cargo test --workspace --exclude astrcode`
-- 前端代码改动：`cd frontend && npm run typecheck && npm run format:check`（lint 当前无效，见 CLAUDE.md）
+- 前端代码改动：`cd frontend && npm run typecheck && npm run lint && npm run format:check`
 - 如果改动 `deny.toml` 或 `Cargo.lock`：`cargo deny check bans`
 - CI 工作流已配置自动检查：`rust-check` / `frontend-check` / `tauri-build` / `dependency-audit`
 

@@ -4,7 +4,7 @@
 ## Workflow Checklist
 
 - Rust 代码改动：`cargo fmt --all -- --check && cargo test --workspace --exclude astrcode`
-- 前端代码改动：`cd frontend && npm run typecheck && npm run format:check`（lint 当前无效，见调试陷阱）
+- 前端代码改动：`cd frontend && npm run typecheck && npm run lint && npm run format:check`
 - 依赖边界改动（`Cargo.lock`/`deny.toml`）：补跑 `cargo deny check bans`
 - 同时改 Rust 与前端：以上检查都要过
 - CI 已配置 4 个工作流（`rust-check` / `frontend-check` / `tauri-build` / `dependency-audit`），推送到 `master` 或开 PR 自动触发
@@ -100,4 +100,3 @@ protocol (纯 DTO，无业务依赖)
 - **Protocol 独立**: `crates/protocol` 不得依赖 `core/runtime`；所有跨边界数据都通过显式 DTO 和 mapper 转换，避免重新出现“共享内部类型就是协议”的耦合
 - **Server 入口瘦身后**: `crates/server/src/main.rs` 只保留启动与装配；新增逻辑优先落到 `routes/`、`mapper.rs`、`bootstrap.rs`，避免重新把 HTTP 路由、DTO 转换、静态资源托管全部堆回入口
 - **当前 `cargo test --workspace` 在本机可能被 Tauri sidecar 权限拦截**: `src-tauri` 的 build script 访问 `binaries/astrcode-server-<triple>.exe` 时可能报 `Os { code: 5, kind: PermissionDenied }`。改 Rust 代码时先用 `cargo test --workspace --exclude astrcode` 验证业务 crate，再单独排查桌面端打包权限。
-- **当前 `frontend` 的 `npm run lint` 脚本不会真正 lint `src/`**: 现有 ESLint 配置会把传入的 `src` 整体视为 ignored，命令只返回 ignored warning。前端改动至少补跑 `npm run typecheck` 和 `npm run format:check`，并在修复 ESLint 配置前不要把 `npm run lint` 的成功与否当成有效校验。

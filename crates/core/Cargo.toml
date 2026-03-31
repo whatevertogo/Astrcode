@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+astrcode-protocol = { path = "../protocol" }
 async-trait.workspace = true
 chrono.workspace = true
 dirs.workspace = true

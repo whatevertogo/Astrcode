@@ -28,6 +28,8 @@ struct PeerInner {
     remote_initialize: Mutex<Option<InitializeResultData>>,
     closed_reason: Mutex<Option<String>>,
     closed_notify: Notify,
+    read_loop_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    invoke_handles: std::sync::Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
 }
 
 impl Peer {
@@ -46,6 +48,8 @@ impl Peer {
             remote_initialize: Mutex::new(None),
             closed_reason: Mutex::new(None),
             closed_notify: Notify::new(),
+            read_loop_handle: std::sync::Mutex::new(None),
+            invoke_handles: std::sync::Mutex::new(HashMap::new()),
         });
 
         let peer = Self { inner };
@@ -124,9 +128,35 @@ impl Peer {
 
     fn spawn_read_loop(&self) {
         let inner = Arc::clone(&self.inner);
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             inner.read_loop().await;
         });
+        // Store the handle so we can abort the read loop during shutdown.
+        // Using std::sync::Mutex is safe here: the write happens synchronously
+        // during Peer::new, and abort() reads it from an async context with
+        // negligible contention.
+        *self.inner.read_loop_handle.lock().unwrap() = Some(handle);
+    }
+
+    /// Aborts the read loop and all active inbound invoke handlers.
+    ///
+    /// Called by Supervisor during shutdown so the peer's background tasks
+    /// don't linger after the process is terminated.
+    pub async fn abort(&self) {
+        if let Some(handle) = self.inner.read_loop_handle.lock().unwrap().take() {
+            handle.abort();
+        }
+        let handles = std::mem::take(&mut *self.inner.invoke_handles.lock().unwrap());
+        for (_, handle) in handles {
+            handle.abort();
+        }
+        let cancellations = std::mem::take(&mut *self.inner.inbound_cancellations.lock().await);
+        for (_, cancel) in cancellations {
+            cancel.cancel();
+        }
+        self.inner
+            .close("peer aborted during shutdown".to_string())
+            .await;
     }
 
     async fn await_result<T>(&self, request: T) -> Result<ResultMessage>
@@ -226,7 +256,7 @@ impl PeerInner {
         match message {
             PluginMessage::Initialize(message) => self.handle_initialize(message).await,
             PluginMessage::Invoke(message) => {
-                self.handle_invoke(message);
+                self.handle_invoke(message).await;
                 Ok(())
             }
             PluginMessage::Result(message) => self.handle_result(message).await,
@@ -293,27 +323,50 @@ impl PeerInner {
         self.send_message(&PluginMessage::Result(response)).await
     }
 
-    fn handle_invoke(self: Arc<Self>, message: InvokeMessage) {
-        tokio::spawn(async move {
+    async fn handle_invoke(self: Arc<Self>, message: InvokeMessage) {
+        let request_id = message.id.clone();
+        let run_self = Arc::clone(&self);
+        let cleanup_self = Arc::clone(&self);
+        let cleanup_request_id = request_id.clone();
+        let handle = tokio::spawn(async move {
             let request_id = message.id.clone();
             let cancel = CancelToken::new();
-            self.inbound_cancellations
+            run_self
+                .inbound_cancellations
                 .lock()
                 .await
                 .insert(request_id.clone(), cancel.clone());
 
             let result = if message.stream {
-                self.handle_streaming_invoke(message, cancel.clone()).await
+                run_self
+                    .handle_streaming_invoke(message, cancel.clone())
+                    .await
             } else {
-                self.handle_unary_invoke(message, cancel.clone()).await
+                run_self.handle_unary_invoke(message, cancel.clone()).await
             };
 
-            self.inbound_cancellations.lock().await.remove(&request_id);
+            run_self
+                .inbound_cancellations
+                .lock()
+                .await
+                .remove(&request_id);
+            cleanup_self
+                .invoke_handles
+                .lock()
+                .unwrap()
+                .remove(&cleanup_request_id);
             if let Err(error) = result {
-                self.close(format!("failed to process inbound invoke: {error}"))
+                run_self
+                    .close(format!("failed to process inbound invoke: {error}"))
                     .await;
             }
         });
+
+        // Track the handle before returning so shutdown cannot miss an invoke that was just spawned.
+        self.invoke_handles
+            .lock()
+            .unwrap()
+            .insert(request_id, handle);
     }
 
     async fn handle_unary_invoke(&self, message: InvokeMessage, cancel: CancelToken) -> Result<()> {

@@ -160,16 +160,12 @@ impl EventLog {
         let canonical_id = canonical_session_id(session_id).to_string();
         let path = resolve_existing_session_path(session_id)?;
         let next_storage_seq = Self::last_storage_seq_from_path(&path)?.saturating_add(1);
-        let file = OpenOptions::new()
-            
-            .append(true)
-            .open(&path)
-            .map_err(|e| {
-                crate::AstrError::io(
-                    format!("failed to open session file: {}", path.display()),
-                    e,
-                )
-            })?;
+        let file = OpenOptions::new().append(true).open(&path).map_err(|e| {
+            crate::AstrError::io(
+                format!("failed to open session file: {}", path.display()),
+                e,
+            )
+        })?;
         Ok(Self {
             session_id: canonical_id,
             path,

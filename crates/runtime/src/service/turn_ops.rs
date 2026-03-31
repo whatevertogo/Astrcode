@@ -10,7 +10,7 @@ use astrcode_core::StorageEvent;
 
 use super::session_ops::normalize_session_id;
 use super::session_state::SessionState;
-use super::support::{lock_anyhow, lock_service};
+use super::support::lock_anyhow;
 use super::{PromptAccepted, RuntimeService, ServiceError, ServiceResult};
 use astrcode_core::EventTranslator;
 
@@ -25,7 +25,7 @@ impl RuntimeService {
         let turn_id = Uuid::new_v4().to_string();
         let cancel = CancelToken::new();
         {
-            let mut guard = lock_service(&session.cancel, "session cancel")?;
+            let mut guard = lock_anyhow(&session.cancel, "session cancel")?;
             if session.running.swap(true, Ordering::SeqCst) {
                 return Err(ServiceError::Conflict(format!(
                     "session '{}' is already running",
@@ -63,17 +63,19 @@ impl RuntimeService {
             };
 
             let result = match task_result {
-                Ok(projected) => loop_
-                    .run_turn(
-                        &projected,
-                        &turn_id,
-                        &mut |event| {
-                            append_and_broadcast_blocking(&state, &event, &mut translator)
-                                .map_err(|error| AstrError::Internal(error.to_string()))
-                        },
-                        cancel.clone(),
-                    )
-                    .await,
+                Ok(projected) => {
+                    loop_
+                        .run_turn(
+                            &projected,
+                            &turn_id,
+                            &mut |event| {
+                                append_and_broadcast_blocking(&state, &event, &mut translator)
+                                    .map_err(|error| AstrError::Internal(error.to_string()))
+                            },
+                            cancel.clone(),
+                        )
+                        .await
+                }
                 Err(error) => Err(error),
             };
 

@@ -45,6 +45,22 @@ impl Display for ServiceError {
 
 impl std::error::Error for ServiceError {}
 
+impl From<anyhow::Error> for ServiceError {
+    fn from(value: anyhow::Error) -> Self {
+        // Try to downcast to ServiceError first (e.g. from spawn_blocking_service bridge),
+        // then to AstrError for better variant mapping.
+        // `downcast` returns ownership on Err, so we can chain attempts.
+        let value = match value.downcast::<ServiceError>() {
+            Ok(service_error) => return service_error,
+            Err(value) => value,
+        };
+        match value.downcast::<AstrError>() {
+            Ok(astr_error) => Self::from(astr_error),
+            Err(other) => Self::Internal(AstrError::Internal(other.to_string())),
+        }
+    }
+}
+
 impl From<AstrError> for ServiceError {
     fn from(value: AstrError) -> Self {
         match &value {

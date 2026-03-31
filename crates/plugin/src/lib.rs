@@ -21,9 +21,7 @@ mod worker;
 pub use capability_router::{
     AllowAllPermissionChecker, CapabilityHandler, CapabilityRouter, PermissionChecker,
 };
-pub use invoker::{
-    core_to_protocol_capability, protocol_to_core_capability, PluginCapabilityInvoker,
-};
+pub use invoker::PluginCapabilityInvoker;
 pub use lifecycle::LifecycleManager;
 pub use loader::{PluginInstance, PluginLoader};
 pub use peer::Peer;

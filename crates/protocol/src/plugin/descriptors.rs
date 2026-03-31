@@ -180,6 +180,15 @@ impl CapabilityDescriptor {
     ///
     /// Runtime and plugin registration paths call this so plugin authors get the same guarantees
     /// as the builder API even when they do not use the builder helpers.
+    /// Returns the namespace derived from the capability name (prefix before the first dot).
+    ///
+    /// `"tool.read_file"` → `"tool"`, `"shell"` → `"shell"`.
+    pub fn namespace(&self) -> &str {
+        self.name
+            .split_once('.')
+            .map_or(self.name.as_str(), |(ns, _)| ns)
+    }
+
     pub fn validate(&self) -> Result<(), DescriptorBuildError> {
         validate_non_empty("name", self.name.clone())?;
         validate_kind(self.kind.clone())?;

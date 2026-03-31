@@ -15,15 +15,13 @@ use super::{
     TemplateRenderError, ValidationPolicy,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ValidationLevel {
     Off,
     #[default]
     Warn,
     Strict,
 }
-
 
 #[derive(Debug, Clone)]
 pub struct PromptComposerOptions {

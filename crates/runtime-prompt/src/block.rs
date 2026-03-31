@@ -56,9 +56,11 @@ pub enum BlockCondition {
     StepEquals(usize),
     FirstStepOnly,
     HasTool(String),
-    VarEquals { key: String, expected: String },
+    VarEquals {
+        key: String,
+        expected: String,
+    },
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BlockMetadata {

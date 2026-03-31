@@ -89,6 +89,7 @@ dependencies = [
 name = "astrcode-core"
 version = "0.1.0"
 dependencies = [
+ "astrcode-protocol",
  "async-trait",
  "chrono",
  "dirs 5.0.1",

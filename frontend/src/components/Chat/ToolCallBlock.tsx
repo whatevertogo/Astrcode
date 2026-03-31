@@ -91,7 +91,11 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
 
   // 仅在用户未交互且工具状态变为终态时自动展开一次
   useEffect(() => {
-    if (!userInteracted && (message.status === 'fail' || message.status === 'ok') && (message.output || message.error || diff)) {
+    if (
+      !userInteracted &&
+      (message.status === 'fail' || message.status === 'ok') &&
+      (message.output || message.error || diff)
+    ) {
       setExpanded(true);
     }
   }, [diff, message.error, message.output, message.status, userInteracted]);
@@ -120,7 +124,14 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
         </svg>
       </div>
       <div className={styles.block}>
-        <button className={styles.header} type="button" onClick={() => { setUserInteracted(true); setExpanded((v) => !v); }}>
+        <button
+          className={styles.header}
+          type="button"
+          onClick={() => {
+            setUserInteracted(true);
+            setExpanded((v) => !v);
+          }}
+        >
           <span className={styles.headerMain}>
             <span
               className={`${styles.statusIcon} ${message.status === 'running' ? styles.spinning : ''}`}

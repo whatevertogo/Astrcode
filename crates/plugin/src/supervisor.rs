@@ -11,7 +11,6 @@ use astrcode_protocol::plugin::{
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::core_to_protocol_capability;
 use crate::{CapabilityRouter, Peer, PluginProcess, StreamExecution};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,6 +122,11 @@ impl Supervisor {
     }
 
     pub async fn shutdown(&self) -> Result<()> {
+        // Abort the read loop and any in-flight invoke handlers first, then
+        // terminate the child process.  This order ensures the peer's background
+        // tasks don't linger after the process exits (which could cause the
+        // transport to hang if stdin/stdout pipes don't close promptly).
+        self.peer.abort().await;
         self.process.lock().await.shutdown().await
     }
 
@@ -201,9 +205,5 @@ pub fn default_profiles() -> Vec<ProfileDescriptor> {
 }
 
 pub fn manifest_capabilities(manifest: &PluginManifest) -> Vec<CapabilityDescriptor> {
-    manifest
-        .capabilities
-        .iter()
-        .map(core_to_protocol_capability)
-        .collect()
+    manifest.capabilities.clone()
 }
