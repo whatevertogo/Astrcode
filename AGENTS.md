@@ -1,24 +1,5 @@
 # Repository Guidelines
 
-## Key Files Quick Reference
-
-| 文件                                           | 用途                                         |
-| ---------------------------------------------- | -------------------------------------------- |
-| `crates/server/src/main.rs`                    | 本地 HTTP/SSE server 启动入口与状态装配      |
-| `crates/server/src/routes/`                    | HTTP/SSE 路由处理器                          |
-| `crates/runtime/src/service/mod.rs`            | `RuntimeService` 门面与运行态入口            |
-| `crates/core/src/registry/tool.rs`             | 冻结后的只读 `ToolRegistry`                  |
-| `crates/protocol/src/http/`                    | HTTP/SSE DTO 与协议边界                      |
-| `crates/runtime-config/src/lib.rs`             | 配置模型与加载/校验逻辑（独立 crate）        |
-| `crates/runtime-llm/src/`                      | LLM 提供者抽象与 OpenAI/Anthropic 适配       |
-| `crates/runtime-prompt/src/composer.rs`        | Prompt 组装引擎与 Contributor 调度           |
-| `crates/runtime-prompt/src/contributors/`      | 系统提示各片段贡献者（identity/agents_md 等）|
-| `crates/tools/src/tools/fs_common.rs`          | 文件工具共享的 diff 计算与输出格式化         |
-| `frontend/src/hooks/useAgent.ts`               | 统一的 fetch + EventSource 客户端            |
-| `frontend/src/components/Chat/ToolCallBlock.tsx`| 工具调用结果渲染（含 diff 可视化）           |
-| `src-tauri/src/main.rs`                        | sidecar 启动、bootstrap 注入、退出清理       |
-| `.github/workflows/`                           | CI 工作流：rust-check / frontend-check / tauri-build / dependency-audit |
-
 
 ## Workflow Checklist
 
@@ -102,30 +83,8 @@ protocol (纯 DTO，无业务依赖)
 - diff 结果随 `ToolResult` 返回前端，`ToolCallBlock.tsx` 负责渲染（含语法高亮）。
 - 前端通过 `useAgent.ts` 的 `tool_result` 事件接收 diff 内容。
 
-### Prompt System
-
-- `runtime-prompt` crate 负责系统提示组装，采用 Contributor 模式。
-- `PromptComposer` 按优先级调度各 `PromptContributor`，拼装最终系统提示。
-- 已有 Contributor：`IdentityContributor`（用户身份）、`AgentsMdContributor`（项目指令）、`EnvironmentContributor`（环境信息）、`SkillSummaryContributor`（技能摘要）。
-- 每个 Contributor 实现 `PromptContributor` trait，返回 `PromptContribution`（含优先级和内容块）。
-
-### Identity System
-
-- 用户可在 `~/.astrcode/IDENTITY.md` 创建自定义身份文件，定义 Agent 的角色、偏好和约束。
-- `IdentityContributor` 在 Prompt 组装时读取该文件，将内容注入系统提示。
-- 项目级的 `IDENTITY.md` 也可放在 `crates/runtime-prompt/src/contributors/IDENTITY.md` 作为默认模板。
 
 ## Development Tips
-
-### 环境与配置
-- **配置文件**: `~/.astrcode/config.json`（API 密钥、Profile），`run.json`（port/token/pid）
-- **ASTRCODE_HOME_DIR**: 用户 home 根目录，应用数据仍在 `.astrcode/...` 下
-- **async_trait**: 默认要求 `Send`；非 `Send` 回调用 `#[async_trait(?Send)]`
-
-### 前端/浏览器
-- **首屏加载**: 先调 `/api/sessions/:id/messages`，再用 `x-session-cursor` 头连 SSE
-- **会话列表**: `/api/sessions` 已按 `updated_at` 倒序，前端不二次排序
-- **开发态 API**: 保持同源 `/api` 交给 Vite 代理，`/__astrcode__/run-info` 仅用于读取 token
 
 ### Tauri/桌面端
 - **Sidecar**: 文件名需带 `-${TAURI_ENV_TARGET_TRIPLE}` 后缀，通过 `scripts/tauri-frontend.js` 构建
