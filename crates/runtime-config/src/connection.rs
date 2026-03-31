@@ -12,9 +12,11 @@ use crate::types::{Profile, TestResult};
 
 /// Tests the connection to a provider using the given profile and model.
 pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResult> {
-    let provider = match profile.provider_kind.as_str() {
-        ANTHROPIC_MESSAGES_API_URL => ANTHROPIC_MESSAGES_API_URL.to_string(),
-        _ => profile.base_url.trim_end_matches('/').to_string(),
+    // provider_kind 标识提供者类型而非 URL，Anthropic 使用固定 API 端点
+    let provider = if profile.provider_kind == PROVIDER_KIND_ANTHROPIC {
+        ANTHROPIC_MESSAGES_API_URL.to_string()
+    } else {
+        profile.base_url.trim_end_matches('/').to_string()
     };
     let api_key = match profile.resolve_api_key() {
         Ok(api_key) => api_key,

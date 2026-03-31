@@ -1,32 +1,16 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use async_trait::async_trait;
 use log::warn;
 
+use super::shared::{cache_marker_for_path, user_astrcode_file_path};
 use crate::{BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor};
 
 pub struct AgentsMdContributor;
 
 pub fn user_agents_md_path() -> Option<PathBuf> {
-    if let Some(home) = std::env::var_os("ASTRCODE_HOME_DIR") {
-        if !home.is_empty() {
-            return Some(PathBuf::from(home).join(".astrcode").join("AGENTS.md"));
-        }
-    }
-
-    if let Some(home) = astrcode_core::test_support::test_home_dir() {
-        return Some(home.join(".astrcode").join("AGENTS.md"));
-    }
-
-    match dirs::home_dir() {
-        Some(home) => Some(home.join(".astrcode").join("AGENTS.md")),
-        None => {
-            warn!("failed to resolve home dir for AGENTS.md");
-            None
-        }
-    }
+    user_astrcode_file_path("AGENTS.md")
 }
 
 pub fn project_agents_md_path(working_dir: &str) -> PathBuf {
@@ -44,22 +28,6 @@ pub fn load_agents_md(path: &Path) -> Option<String> {
             warn!("failed to read {}: {}", path.display(), error);
             None
         }
-    }
-}
-
-fn cache_marker_for_path(path: &Path) -> String {
-    match fs::metadata(path) {
-        Ok(metadata) => {
-            let modified = metadata
-                .modified()
-                .ok()
-                .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
-                .map(|duration| duration.as_nanos())
-                .unwrap_or_default();
-
-            format!("present:{}:{modified}", metadata.len())
-        }
-        Err(_) => "missing".to_string(),
     }
 }
 

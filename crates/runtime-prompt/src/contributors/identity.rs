@@ -1,10 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use async_trait::async_trait;
 use log::{info, warn};
 
+use super::shared::{cache_marker_for_path, user_astrcode_file_path};
 use crate::{BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor};
 
 pub struct IdentityContributor;
@@ -15,25 +15,8 @@ You help with coding tasks, file editing, and terminal commands. \
 Be concise and accurate. Prefer editing files directly over explaining how to do it.";
 
 /// Returns the path to the user-wide IDENTITY.md file.
-/// Respects ASTRCODE_HOME_DIR if set, otherwise falls back to ~/.astrcode/IDENTITY.md
 pub fn user_identity_md_path() -> Option<PathBuf> {
-    if let Some(home) = std::env::var_os("ASTRCODE_HOME_DIR") {
-        if !home.is_empty() {
-            return Some(PathBuf::from(home).join(".astrcode").join("IDENTITY.md"));
-        }
-    }
-
-    if let Some(home) = astrcode_core::test_support::test_home_dir() {
-        return Some(home.join(".astrcode").join("IDENTITY.md"));
-    }
-
-    match dirs::home_dir() {
-        Some(home) => Some(home.join(".astrcode").join("IDENTITY.md")),
-        None => {
-            warn!("failed to resolve home dir for IDENTITY.md");
-            None
-        }
-    }
+    user_astrcode_file_path("IDENTITY.md")
 }
 
 /// Loads the identity definition from the given path.
@@ -69,23 +52,6 @@ pub fn load_identity_md(path: &Path) -> Option<String> {
             warn!("failed to read {}: {}", path.display(), error);
             None
         }
-    }
-}
-
-/// Returns a cache marker for the given path, used for cache invalidation.
-fn cache_marker_for_path(path: &Path) -> String {
-    match fs::metadata(path) {
-        Ok(metadata) => {
-            let modified = metadata
-                .modified()
-                .ok()
-                .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
-                .map(|duration| duration.as_nanos())
-                .unwrap_or_default();
-
-            format!("present:{}:{modified}", metadata.len())
-        }
-        Err(_) => "missing".to_string(),
     }
 }
 

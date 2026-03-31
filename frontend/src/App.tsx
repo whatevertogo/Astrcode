@@ -344,26 +344,21 @@ function reducer(state: AppState, action: Action): AppState {
 
     case 'UPDATE_TOOL_CALL':
       return mapSession(state, action.sessionId, (session) => {
+        // 先精确匹配 toolCallId
         const exactMatchIndex = session.messages.findIndex(
           (message) => message.kind === 'toolCall' && message.toolCallId === action.toolCallId
         );
-        const fallbackIndex =
-          exactMatchIndex >= 0
-            ? exactMatchIndex
-            : [...session.messages]
-                .reverse()
-                .findIndex(
-                  (message) =>
-                    message.kind === 'toolCall' &&
-                    message.status === 'running' &&
-                    message.toolName === action.toolName
-                );
-        const targetIndex =
-          exactMatchIndex >= 0
-            ? exactMatchIndex
-            : fallbackIndex >= 0
-              ? session.messages.length - 1 - fallbackIndex
-              : -1;
+        // 回退：从尾部向前找同名的 running tool call（不分配临时数组）
+        let targetIndex = exactMatchIndex;
+        if (targetIndex < 0) {
+          for (let i = session.messages.length - 1; i >= 0; i--) {
+            const msg = session.messages[i];
+            if (msg.kind === 'toolCall' && msg.status === 'running' && msg.toolName === action.toolName) {
+              targetIndex = i;
+              break;
+            }
+          }
+        }
 
         if (targetIndex < 0) {
           return {

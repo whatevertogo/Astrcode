@@ -150,7 +150,8 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
 
         {expanded && (
           <div className={styles.body}>
-            {message.output && <div className={styles.summary}>{message.output}</div>}
+            {/* 有 diff 时以摘要样式展示 output，无 diff 时以等宽 pre 展示 */}
+            {message.output && diff && <div className={styles.summary}>{message.output}</div>}
             {diff && (
               <div className={styles.patch}>
                 {diff.patch.split('\n').map((line, index) => (

@@ -17,10 +17,7 @@ use std::time::Duration;
 use astrcode_core::{AstrError, CancelToken, ModelRequest, ReasoningContent, Result};
 use async_trait::async_trait;
 use serde_json::Value;
-use tokio::{
-    select,
-    time::{sleep, Duration as TokioDuration},
-};
+use tokio::{select, time::sleep};
 
 use astrcode_core::{LlmMessage, ToolCallRequest, ToolDefinition};
 
@@ -82,7 +79,7 @@ pub async fn wait_retry_delay(attempt: u32, cancel: CancelToken) -> Result<()> {
     let delay_ms = RETRY_BASE_DELAY_MS.saturating_mul(1_u64 << attempt);
     select! {
         _ = cancelled(cancel) => Err(AstrError::LlmInterrupted),
-        _ = sleep(TokioDuration::from_millis(delay_ms)) => Ok(()),
+        _ = sleep(Duration::from_millis(delay_ms)) => Ok(()),
     }
 }
 

@@ -21,6 +21,7 @@ mod types;
 mod validation;
 
 // Public re-exports
+pub use api_key::is_env_var_name;
 pub use connection::test_connection;
 pub use constants::{
     ANTHROPIC_MESSAGES_API_URL, ANTHROPIC_VERSION, CURRENT_CONFIG_VERSION, PROVIDER_KIND_ANTHROPIC,
@@ -37,7 +38,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use crate::loader::test_support::TestEnvGuard;
+    use astrcode_core::test_support::TestEnvGuard;
     use crate::saver::save_config_to_path;
     use crate::validation::validate_config;
 

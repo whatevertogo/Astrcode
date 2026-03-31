@@ -65,7 +65,7 @@ impl Profile {
 
 /// Checks if a value looks like an environment variable name
 /// (uppercase letters, digits, underscores, and contains at least one underscore).
-fn is_env_var_name(value: &str) -> bool {
+pub fn is_env_var_name(value: &str) -> bool {
     value
         .chars()
         .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
