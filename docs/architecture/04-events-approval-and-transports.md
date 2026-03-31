@@ -181,5 +181,7 @@ HTTP/SSE / CLI / ACP / Tauri/Web subscribe and render
 
 - Phase 3 的 `PolicyEngine` 三态与 `ApprovalBroker` 已落地进 `AgentLoop`
 - `Allow / Deny / Ask` 已经真正影响 tool-call 执行路径
-- runtime 默认 broker 已存在，且支持 cancel-aware request
-- Phase 4 的 runtime observation bus 仍未落地，审批状态目前不会单独作为 durable session event 存储
+- `DefaultApprovalBroker` 已实现，支持 cancel-aware request
+- `AgentEvent` 与 `StorageEvent` 已明确区分，通过 `EventTranslator` 做投影转换
+- `EventLog` 已实现 append-only JSONL 持久化，支持 replay 和 SSE cursor
+- 审批状态目前通过 `ToolCallStart` / `ToolCallResult` 事件间接体现，尚未作为独立的 `ApprovalRequested` / `ApprovalResolved` 事件发射

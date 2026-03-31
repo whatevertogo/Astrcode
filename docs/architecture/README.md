@@ -60,19 +60,28 @@ AstrCode 的目标架构收敛为三层：
 
 当前仓库里与这组文档最相关的代码锚点如下：
 
-- `crates/runtime/src/agent_loop.rs`
-- `crates/runtime/src/agent_loop/turn_runner.rs`
-- `crates/runtime/src/agent_loop/tool_cycle.rs`
-- `crates/runtime/src/bootstrap.rs`
-- `crates/runtime/src/runtime_surface_assembler.rs`
-- `crates/runtime/src/runtime_governance.rs`
+- `crates/runtime/src/agent_loop.rs` — AgentLoop 主循环，持有 policy 和 approval
+- `crates/runtime/src/agent_loop/turn_runner.rs` — turn 执行入口，接入 model request policy
+- `crates/runtime/src/agent_loop/tool_cycle.rs` — tool call 执行路径，接入 capability call policy 三态
+- `crates/runtime/src/bootstrap.rs` — runtime bootstrap 入口，产出 `RuntimeBootstrap`
+- `crates/runtime/src/runtime_surface_assembler.rs` — built-in + plugin 组装为统一 capability surface
+- `crates/runtime/src/runtime_governance.rs` — reload / health / snapshot
+- `crates/runtime/src/approval_service.rs` — `ApprovalBroker` trait 与 `DefaultApprovalBroker`
+- `crates/runtime/src/builtin_capabilities.rs` — 内置工具通过 `ToolCapabilityInvoker` 注册
+- `crates/runtime/src/provider_factory.rs` — LLM provider 工厂（OpenAI / Anthropic）
 - `crates/runtime-config/src/lib.rs` — 配置模型与加载/校验（独立 crate）
 - `crates/runtime-llm/src/lib.rs` — LLM 提供者抽象与共享逻辑（独立 crate）
-- `crates/runtime-prompt/src/composer.rs` — Prompt 组装引擎与 Contributor 调度
+- `crates/runtime-llm/src/openai.rs` / `anthropic.rs` — 具体 provider 实现
+- `crates/runtime-prompt/src/composer.rs` — Prompt 组装引擎与 Contributor 调度（独立 crate）
 - `crates/runtime-prompt/src/contributors/` — 系统提示各片段贡献者
-- `crates/core/src/registry/router.rs`
-- `crates/core/src/capability.rs`
-- `crates/server/src/main.rs`
-- `crates/plugin/src/*`
+- `crates/core/src/registry/router.rs` — `CapabilityRouter` 统一能力路由
+- `crates/core/src/capability.rs` — `CapabilityDescriptor` / `CapabilityKind` 契约
+- `crates/core/src/policy/engine.rs` — `PolicyEngine` trait 与三态决策
+- `crates/core/src/event/domain.rs` — `AgentEvent` 运行时观测事件
+- `crates/core/src/event/types.rs` — `StorageEvent` 持久化领域事件
+- `crates/core/src/tool.rs` — `Tool` trait 与 `capability_descriptor()` 默认实现
+- `crates/server/src/main.rs` — HTTP/SSE server 入口，消费 `RuntimeBootstrap`
+- `crates/plugin/src/` — 插件宿主（supervisor、peer、loader、transport）
+- `crates/protocol/src/plugin/` — V4 插件协议消息类型与握手
 
 后续重构时，优先以这些文件为迁移入口，而不是从 UI 或单个 tool 开始逆向调整。

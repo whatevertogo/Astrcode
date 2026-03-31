@@ -60,10 +60,14 @@ impl AnthropicProvider {
         system_prompt: Option<&str>,
         stream: bool,
     ) -> AnthropicRequest {
+        let mut anthropic_messages = to_anthropic_messages(messages);
+        // Enable prompt caching on the last 2 message blocks for KV cache reuse
+        enable_message_caching(&mut anthropic_messages, 2);
+
         AnthropicRequest {
             model: self.model.clone(),
             max_tokens: self.max_tokens,
-            messages: to_anthropic_messages(messages),
+            messages: anthropic_messages,
             system: system_prompt.map(str::to_string),
             tools: if tools.is_empty() {
                 None
@@ -205,6 +209,7 @@ fn to_anthropic_messages(messages: &[LlmMessage]) -> Vec<AnthropicMessage> {
                 role: "user".to_string(),
                 content: vec![AnthropicContentBlock::Text {
                     text: content.clone(),
+                    cache_control: None,
                 }],
             },
             LlmMessage::Assistant {
@@ -217,11 +222,13 @@ fn to_anthropic_messages(messages: &[LlmMessage]) -> Vec<AnthropicMessage> {
                     blocks.push(AnthropicContentBlock::Thinking {
                         thinking: reasoning.content.clone(),
                         signature: reasoning.signature.clone(),
+                        cache_control: None,
                     });
                 }
                 if !content.is_empty() {
                     blocks.push(AnthropicContentBlock::Text {
                         text: content.clone(),
+                        cache_control: None,
                     });
                 }
                 blocks.extend(
@@ -231,6 +238,7 @@ fn to_anthropic_messages(messages: &[LlmMessage]) -> Vec<AnthropicMessage> {
                             id: call.id.clone(),
                             name: call.name.clone(),
                             input: call.args.clone(),
+                            cache_control: None,
                         }),
                 );
 
@@ -247,10 +255,30 @@ fn to_anthropic_messages(messages: &[LlmMessage]) -> Vec<AnthropicMessage> {
                 content: vec![AnthropicContentBlock::ToolResult {
                     tool_use_id: tool_call_id.clone(),
                     content: content.clone(),
+                    cache_control: None,
                 }],
             },
         })
         .collect()
+}
+
+/// Enable prompt caching on the last `cache_depth` message content blocks.
+/// Anthropic caches the last marked block and all preceding blocks up to
+/// the previous cache marker, so marking the final N blocks effectively
+/// caches the tail of the conversation for KV cache reuse.
+fn enable_message_caching(messages: &mut [AnthropicMessage], cache_depth: usize) {
+    if messages.is_empty() || cache_depth == 0 {
+        return;
+    }
+
+    let cache_count = cache_depth.min(messages.len());
+    let start_idx = messages.len() - cache_count;
+
+    for msg in &mut messages[start_idx..] {
+        if let Some(last_block) = msg.content.last_mut() {
+            last_block.set_cache_control(true);
+        }
+    }
 }
 
 fn to_anthropic_tools(tools: &[ToolDefinition]) -> Vec<AnthropicTool> {
@@ -548,21 +576,59 @@ struct AnthropicMessage {
 enum AnthropicContentBlock {
     Text {
         text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<AnthropicCacheControl>,
     },
     Thinking {
         thinking: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<AnthropicCacheControl>,
     },
     ToolUse {
         id: String,
         name: String,
         input: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<AnthropicCacheControl>,
     },
     ToolResult {
         tool_use_id: String,
         content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<AnthropicCacheControl>,
     },
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AnthropicCacheControl {
+    #[serde(rename = "type")]
+    type_: String,
+}
+
+impl AnthropicCacheControl {
+    fn ephemeral() -> Self {
+        Self {
+            type_: "ephemeral".to_string(),
+        }
+    }
+}
+
+impl AnthropicContentBlock {
+    fn set_cache_control(&mut self, enabled: bool) {
+        let control = if enabled {
+            Some(AnthropicCacheControl::ephemeral())
+        } else {
+            None
+        };
+        match self {
+            AnthropicContentBlock::Text { cache_control, .. } => *cache_control = control,
+            AnthropicContentBlock::Thinking { cache_control, .. } => *cache_control = control,
+            AnthropicContentBlock::ToolUse { cache_control, .. } => *cache_control = control,
+            AnthropicContentBlock::ToolResult { cache_control, .. } => *cache_control = control,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -631,8 +697,10 @@ mod tests {
         }]);
 
         match &messages[0].content[..] {
-            [AnthropicContentBlock::Text { text }, AnthropicContentBlock::ToolUse { id, name, input }] =>
-            {
+            [
+                AnthropicContentBlock::Text { text, .. },
+                AnthropicContentBlock::ToolUse { id, name, input, .. },
+            ] => {
                 assert_eq!(text, "thinking");
                 assert_eq!(id, "call_1");
                 assert_eq!(name, "search");

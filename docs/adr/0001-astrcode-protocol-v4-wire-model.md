@@ -99,3 +99,13 @@ AstrCode Protocol V4 只定义以下五类顶层消息：
 
 - 旧的实验性消息格式不再兼容
 - 未来如果想改变初始化模型或流式生命周期，需要显式升级协议，而不是悄悄修改字段
+
+## Current Implementation Status
+
+截至 2026-03-31，V4 协议已在以下模块落地：
+
+- `crates/protocol/src/plugin/` — 插件协议消息类型、握手、错误模型
+- `crates/protocol/tests/fixtures/v4/` — 五类顶层消息的 JSON fixture 基线
+- `crates/plugin/src/peer.rs` — Peer 层协议状态机与请求响应匹配
+- `crates/plugin/src/transport/stdio.rs` — stdio 传输实现
+- `crates/plugin/tests/v4_stdio_e2e.rs` — V4 stdio 端到端测试

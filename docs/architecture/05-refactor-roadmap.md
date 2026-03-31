@@ -50,7 +50,8 @@
 - `crates/runtime/src/runtime_governance.rs`
 - `crates/runtime/src/builtin_capabilities.rs`
 - `crates/runtime/src/plugin_discovery.rs`
-- `crates/runtime/src/plugin_host.rs`
+- `crates/runtime/src/approval_service.rs`
+- `crates/runtime/src/provider_factory.rs`
 
 已完成 crate 拆分（从 `runtime` 提取独立 crate）：
 
@@ -94,6 +95,7 @@
 - `Tool` trait 已新增 `capability_metadata()` / `capability_descriptor()` 回调，内置工具元数据下沉到各自实现
 - `ToolCapabilityInvoker` 已注册到统一 `CapabilityRouter`
 - `HandlerDispatcher` 等冗余适配层已清理
+- `plugin_host.rs` 已被 `runtime_surface_assembler.rs` 替代，插件装配走统一 surface 路径
 
 ## Phase 3: Introduce Formal Policy and Approval Runtime Services
 
@@ -127,7 +129,7 @@
 仍待后续阶段完成的部分：
 
 - 把 `ContextStrategyDecision` 接进真正的 token budgeting / compaction 触发路径
-- 把审批状态镜像到专门的 runtime observation bus
+- 把审批状态镜像到专门的 runtime observation bus（`ApprovalRequested` / `ApprovalResolved` 事件）
 - 为 Web / CLI / ACP 接入真正的人工审批 transport
 
 ### Status (补充)
@@ -145,6 +147,16 @@
 - `AgentEvent` 面向 UI、CLI、ACP、telemetry
 - `StorageEvent` 面向持久化、replay、cursor
 - 两者可以投影，但不强制相等
+
+### Current Status
+
+本阶段部分完成：
+
+- `AgentEvent` 已在 `crates/core/src/event/domain.rs` 定义，包含 `SessionStarted`、`PhaseChanged`、`ModelDelta`、`ThinkingDelta`、`AssistantMessage`、`ToolCallStart`、`ToolCallResult`、`TurnDone`、`Error`
+- `StorageEvent` 已在 `crates/core/src/event/types.rs` 定义，面向 JSONL 持久化
+- `EventTranslator` 已在 `crates/core/src/event/translate.rs` 实现 StorageEvent → AgentEvent 投影
+- `EventLog` 已实现 append-only JSONL 写入与 replay
+- 审批状态（`ApprovalRequested` / `ApprovalResolved`）尚未作为独立事件发射，目前通过 tool call 事件间接体现
 
 ### Success Criteria
 

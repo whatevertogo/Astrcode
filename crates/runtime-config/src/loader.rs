@@ -76,8 +76,17 @@ fn resolve_home_dir() -> Result<PathBuf> {
     #[cfg(not(test))]
     {
         const APP_HOME_OVERRIDE_ENV: &str = "ASTRCODE_HOME_DIR";
+        const TEST_HOME_OVERRIDE_ENV: &str = "ASTRCODE_TEST_HOME";
 
         if let Some(home) = std::env::var_os(APP_HOME_OVERRIDE_ENV) {
+            if !home.is_empty() {
+                return Ok(PathBuf::from(home));
+            }
+        }
+
+        // Also check test home override in non-test builds, since dependent
+        // crates may be exercised by integration tests that set this variable.
+        if let Some(home) = std::env::var_os(TEST_HOME_OVERRIDE_ENV) {
             if !home.is_empty() {
                 return Ok(PathBuf::from(home));
             }

@@ -86,6 +86,12 @@ Runtime bootstrap 时：
 
 `server` 可以调用 bootstrap 入口，但不再拥有 capability 语义或装配语义本身。
 
+### 6. Descriptor 校验在装配阶段统一执行
+
+无论 descriptor 是通过 builder 构造、直接创建还是从插件协议解码得到，在注册到 `CapabilityRouter` 时都会经过统一校验。这确保空 kind、空 name 或无效 schema 不会静默进入路由层。
+
+当前实现中，`Tool` trait 已提供 `capability_descriptor()` 默认实现，从 `definition()` + `capability_metadata()` 自动构建 descriptor。内置工具可通过覆写这两个方法自定义元数据，而无需在 adapter 层硬编码。
+
 ## Consequences
 
 正面影响：

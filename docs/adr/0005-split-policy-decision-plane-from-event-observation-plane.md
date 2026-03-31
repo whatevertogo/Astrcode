@@ -76,3 +76,36 @@ AstrCode 可以同时保留：
 - runtime 需要新增 approval broker 一类的显式服务
 - 需要定义 policy input / decision 与 event taxonomy
 - 一些现有事件流和持久化事件之间需要重新梳理投影关系
+
+## Current Implementation Status
+
+截至 2026-03-31，本 ADR 描述的控制面/观测面分离已在以下模块落地：
+
+### Policy 控制面
+
+- `crates/core/src/policy/engine.rs` — `PolicyEngine` trait 与 `PolicyVerdict<T>` 三态（Allow/Deny/Ask）
+- `ModelRequest` / `CapabilityCall` / `ContextPressureInput` / `ContextStrategyDecision` 已冻结为正式契约
+- `AllowAllPolicyEngine` 作为默认实现，保证无自定义 policy 时行为兼容
+
+### Approval Broker
+
+- `crates/runtime/src/approval_service.rs` — `ApprovalBroker` trait 与 `DefaultApprovalBroker`
+- `DefaultApprovalBroker` 根据 `ApprovalRequest.default` 立即给出 allow/deny，避免 turn 卡死
+- broker 接口显式接收 `CancelToken`，支持审批挂起与中断语义脱节
+
+### AgentLoop 集成
+
+- `crates/runtime/src/agent_loop.rs` — `AgentLoop` 已持有 `policy: Arc<dyn PolicyEngine>` 和 `approval: Arc<dyn ApprovalBroker>`
+- `crates/runtime/src/agent_loop/tool_cycle.rs` — tool call 执行路径已接入 `check_capability_call()` 三态分支
+- `crates/runtime/src/agent_loop/turn_runner.rs` — turn 开始时已接入 `check_model_request()` 策略检查
+
+### Event 观测面
+
+- `crates/core/src/event/domain.rs` — `AgentEvent` 已定义为面向展示的运行时观测事件
+- `crates/core/src/event/types.rs` — `StorageEvent` 已定义为面向持久化/replay 的领域事件
+- 两者通过 `EventTranslator` 做投影转换，不强制等同
+
+仍待后续阶段完成的部分：
+
+- 把 `ContextStrategyDecision` 接进真正的 token budgeting / compaction 触发路径
+- 为 Web / CLI / ACP 接入真正的人工审批 transport

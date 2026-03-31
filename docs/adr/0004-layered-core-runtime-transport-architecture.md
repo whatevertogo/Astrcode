@@ -52,6 +52,14 @@ Layer 2 负责把 core contract 组装为可运行 runtime，包括：
 - session store
 - skills / agents / layered config loading
 
+当前 Layer 2 已拆分为多个独立 crate，保持编译隔离：
+
+- `crates/runtime/` — 运行时门面（`RuntimeService`、`AgentLoop`、bootstrap、governance）
+- `crates/runtime-config/` — 配置模型与加载/校验
+- `crates/runtime-llm/` — LLM 提供者抽象与 OpenAI/Anthropic 适配
+- `crates/runtime-prompt/` — Prompt 组装引擎与 Contributor 模式
+- `crates/plugin/` — 插件宿主（supervisor、peer、loader、transport）
+
 ### 3. Layer 3: Transports and External Adapters
 
 Layer 3 负责对外暴露 runtime，包括：

@@ -95,13 +95,16 @@ Runtime assembly 需要承担以下职责：
 
 经过 Phase 1 重构，这组模块已拆分为：
 
-- `crates/runtime/src/bootstrap.rs`
-- `crates/runtime/src/runtime_surface_assembler.rs`
-- `crates/runtime/src/runtime_governance.rs`
-- `crates/runtime/src/builtin_capabilities.rs`
+- `crates/runtime/src/bootstrap.rs` — runtime bootstrap 入口
+- `crates/runtime/src/runtime_surface_assembler.rs` — built-in + plugin 组装为统一 capability surface
+- `crates/runtime/src/runtime_governance.rs` — reload / health / snapshot
+- `crates/runtime/src/builtin_capabilities.rs` — 内置工具通过 `ToolCapabilityInvoker` 注册
+- `crates/runtime/src/approval_service.rs` — `ApprovalBroker` trait 与默认实现
+- `crates/runtime/src/provider_factory.rs` — LLM provider 工厂
 - `crates/runtime-config/` — 配置模型与加载/校验（独立 crate）
-- `crates/runtime-llm/` — LLM 提供者抽象与适配（独立 crate）
+- `crates/runtime-llm/` — LLM 提供者抽象与 OpenAI/Anthropic 适配（独立 crate）
 - `crates/runtime-prompt/` — Prompt 组装引擎与 Contributor 模式（独立 crate）
+- `crates/plugin/` — 插件宿主（supervisor、peer、loader、transport）
 
 这组模块当前承担了：
 

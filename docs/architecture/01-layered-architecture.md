@@ -116,8 +116,8 @@ AstrCode 未来要稳定的不是“某个 server 实现”或“某个插件加
 
 | 目标层 | 当前 crate / 模块 | 说明 |
 | --- | --- | --- |
-| Layer 1 | `crates/runtime/src/agent_loop*`, `crates/core/src/capability.rs`, `crates/core/src/registry/router.rs` | 核心契约已基本冻结 |
-| Layer 2 | `crates/runtime/src/bootstrap.rs`, `crates/runtime/src/runtime_surface_assembler.rs`, `crates/runtime/src/runtime_governance.rs`, `crates/runtime/src/builtin_capabilities.rs`, `crates/runtime/src/service/*`, `crates/plugin/src/*`, `crates/runtime-config/`, `crates/runtime-llm/`, `crates/runtime-prompt/` | runtime assembly 已拆分为多个独立 crate；config/llm/prompt 均已编译隔离 |
+| Layer 1 | `crates/core/src/capability.rs`, `crates/core/src/policy/engine.rs`, `crates/core/src/event/domain.rs`, `crates/core/src/event/types.rs`, `crates/core/src/registry/router.rs`, `crates/core/src/tool.rs` | 核心契约已冻结：Capability / Policy / Event / AgentLoop |
+| Layer 2 | `crates/runtime/src/agent_loop*`, `crates/runtime/src/bootstrap.rs`, `crates/runtime/src/runtime_surface_assembler.rs`, `crates/runtime/src/runtime_governance.rs`, `crates/runtime/src/builtin_capabilities.rs`, `crates/runtime/src/approval_service.rs`, `crates/runtime/src/service/*`, `crates/runtime-config/`, `crates/runtime-llm/`, `crates/runtime-prompt/`, `crates/plugin/src/*` | runtime assembly 已拆分为多个独立 crate；config/llm/prompt/plugin 均已编译隔离 |
 | Layer 3 | `crates/server/src/main.rs`, `crates/server/src/routes/*`, `src-tauri/src/main.rs`, `frontend/src/hooks/useAgent.ts`, `frontend/src/components/Chat/ToolCallBlock.tsx` | 已基本按 transport 层工作 |
 
 ## Design Consequences

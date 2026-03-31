@@ -61,9 +61,14 @@ impl OpenAiProvider {
                 content: Some(text.to_string()),
                 tool_call_id: None,
                 tool_calls: None,
+                cache_control: None,
             });
         }
         request_messages.extend(messages.iter().map(to_openai_message));
+
+        // Enable prompt caching on the last 2 messages for KV cache reuse
+        // OpenAI uses prediction type "content" for cached context
+        enable_message_caching(&mut request_messages, 2);
 
         OpenAiChatRequest {
             model: &self.model,
@@ -366,6 +371,7 @@ fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
             content: Some(content.clone()),
             tool_call_id: None,
             tool_calls: None,
+            cache_control: None,
         },
         LlmMessage::Assistant {
             content,
@@ -396,6 +402,7 @@ fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
                         .collect(),
                 )
             },
+            cache_control: None,
         },
         LlmMessage::Tool {
             tool_call_id,
@@ -405,7 +412,26 @@ fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
             content: Some(content.clone()),
             tool_call_id: Some(tool_call_id.clone()),
             tool_calls: None,
+            cache_control: None,
         },
+    }
+}
+
+/// Enable prompt caching on the last `cache_depth` messages.
+/// OpenAI's prompt caching reuses cached context when the prefix matches,
+/// so marking the tail messages allows cache reuse for the conversation history.
+fn enable_message_caching(messages: &mut [OpenAiRequestMessage], cache_depth: usize) {
+    if messages.is_empty() || cache_depth == 0 {
+        return;
+    }
+
+    let cache_count = cache_depth.min(messages.len());
+    let start_idx = messages.len() - cache_count;
+
+    for msg in &mut messages[start_idx..] {
+        msg.cache_control = Some(OpenAiCacheControl {
+            type_: "content".to_string(),
+        });
     }
 }
 
@@ -430,6 +456,14 @@ struct OpenAiRequestMessage {
     tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OpenAiToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<OpenAiCacheControl>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct OpenAiCacheControl {
+    #[serde(rename = "type")]
+    type_: String,
 }
 
 #[derive(Debug, Serialize)]
