@@ -652,7 +652,11 @@ mod tests {
     use crate::sink_collector;
 
     fn test_provider() -> AnthropicProvider {
-        AnthropicProvider::with_max_tokens("sk-ant-test".to_string(), "claude-test".to_string(), 8096)
+        AnthropicProvider::with_max_tokens(
+            "sk-ant-test".to_string(),
+            "claude-test".to_string(),
+            8096,
+        )
     }
 
     #[test]
@@ -832,8 +836,11 @@ mod tests {
 
     #[test]
     fn build_request_serializes_thinking_when_model_supports_it() {
-        let provider =
-            AnthropicProvider::with_max_tokens("sk-ant-test".to_string(), "claude-sonnet-4-5".to_string(), 8096);
+        let provider = AnthropicProvider::with_max_tokens(
+            "sk-ant-test".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            8096,
+        );
         let request = provider.build_request(
             &[LlmMessage::User {
                 content: "hi".to_string(),

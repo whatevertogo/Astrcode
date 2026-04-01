@@ -1,6 +1,32 @@
 [graph]
 exclude-dev = true
 
+[advisories]
+ignore = [
+  # unic-* unmaintained — transitive via tauri → urlpattern, no upgrade available
+  "RUSTSEC-2025-0098",
+  "RUSTSEC-2025-0100",
+  "RUSTSEC-2025-0081",
+  "RUSTSEC-2025-0080",
+  "RUSTSEC-2025-0075",
+  "RUSTSEC-2025-0057",
+  # gtk-rs GTK3 bindings unmaintained — transitive via tauri (Linux), tauri 3 will migrate to GTK4
+  "RUSTSEC-2024-0411",
+  "RUSTSEC-2024-0412",
+  "RUSTSEC-2024-0413",
+  "RUSTSEC-2024-0414",
+  "RUSTSEC-2024-0415",
+  "RUSTSEC-2024-0416",
+  "RUSTSEC-2024-0417",
+  "RUSTSEC-2024-0418",
+  "RUSTSEC-2024-0419",
+  "RUSTSEC-2024-0420",
+  # proc-macro-error unmaintained — transitive via tauri chain
+  "RUSTSEC-2024-0370",
+  # fxhash unmaintained — transitive via tauri chain
+  "RUSTSEC-2026-0049",
+]
+
 [bans]
 multiple-versions = "allow"
 
@@ -10,6 +36,8 @@ deny = [
       "astrcode-example-plugin",
       "astrcode-plugin",
       "astrcode-runtime",
+      "astrcode-runtime-config",
+      "astrcode-runtime-llm",
       "astrcode-server",
       "axum",
       "hyper",
@@ -25,3 +53,25 @@ deny = [
     ], reason = "tokio is allowed only in crates that own runtime, IO, or persisted session infrastructure; keep it out of protocol and sdk" },
   { name = "axum", wrappers = ["astrcode-server", "axum-extra"], reason = "axum belongs only in the server crate" },
 ]
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+]
+private = { ignore = true }
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
