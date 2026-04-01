@@ -65,6 +65,7 @@ mod tests {
                 permissions: vec![],
                 side_effect: SideEffectLevel::Workspace,
                 stability: StabilityLevel::Stable,
+                metadata: serde_json::Value::Null,
             },
             payload: json!({}),
             prompt: "Allow sample?".to_string(),

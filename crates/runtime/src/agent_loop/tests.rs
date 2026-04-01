@@ -747,7 +747,7 @@ async fn reuses_prompt_contributor_cache_across_llm_steps() {
         cache_ttl: Duration::from_secs(60),
         ..PromptComposerOptions::default()
     })
-    .add(Arc::new(CountingPromptContributor {
+    .with_contributor(Arc::new(CountingPromptContributor {
         calls: calls.clone(),
     }));
     let provider = Arc::new(ScriptedProvider {

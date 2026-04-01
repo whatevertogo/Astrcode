@@ -215,6 +215,7 @@ mod tests {
             permissions: Vec::new(),
             side_effect: SideEffectLevel::None,
             stability: StabilityLevel::Stable,
+            metadata: json!(null),
         }
     }
 

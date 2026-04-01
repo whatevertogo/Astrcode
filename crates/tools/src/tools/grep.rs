@@ -1,6 +1,6 @@
 use astrcode_core::{
     AstrError, CancelToken, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext,
-    ToolDefinition, ToolExecutionResult,
+    ToolDefinition, ToolExecutionResult, ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use log::warn;
@@ -63,6 +63,16 @@ impl Tool for GrepTool {
             .tags(["filesystem", "read", "search"])
             .permission("filesystem.read")
             .side_effect(SideEffectLevel::None)
+            .prompt(
+                ToolPromptMetadata::new(
+                    "Search file contents by regex when you need to locate code, config keys, or repeated text patterns.",
+                    "Use `grep` after scoping the search path. It is the fastest way to answer where something is defined or referenced before opening specific files.",
+                )
+                .caveat("Regex patterns can over-match; narrow the path or cap `maxMatches` before drawing conclusions from broad searches.")
+                .example("Find all references to a symbol, config key, or error string inside a module or repository subtree.")
+                .prompt_tag("search")
+                .always_include(true),
+            )
     }
 
     async fn execute(

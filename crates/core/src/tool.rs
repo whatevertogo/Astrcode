@@ -11,6 +11,7 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
@@ -86,6 +87,54 @@ impl ToolContext {
 ///
 /// This struct is used by tools to declare their operational characteristics, which
 /// the policy engine and capability router use to make access control decisions.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolPromptMetadata {
+    pub summary: String,
+    pub guide: String,
+    #[serde(default)]
+    pub caveats: Vec<String>,
+    #[serde(default)]
+    pub examples: Vec<String>,
+    #[serde(default)]
+    pub prompt_tags: Vec<String>,
+    #[serde(default)]
+    pub always_include: bool,
+}
+
+impl ToolPromptMetadata {
+    pub fn new(summary: impl Into<String>, guide: impl Into<String>) -> Self {
+        Self {
+            summary: summary.into(),
+            guide: guide.into(),
+            caveats: Vec::new(),
+            examples: Vec::new(),
+            prompt_tags: Vec::new(),
+            always_include: false,
+        }
+    }
+
+    pub fn caveat(mut self, caveat: impl Into<String>) -> Self {
+        self.caveats.push(caveat.into());
+        self
+    }
+
+    pub fn example(mut self, example: impl Into<String>) -> Self {
+        self.examples.push(example.into());
+        self
+    }
+
+    pub fn prompt_tag(mut self, prompt_tag: impl Into<String>) -> Self {
+        self.prompt_tags.push(prompt_tag.into());
+        self
+    }
+
+    pub fn always_include(mut self, always_include: bool) -> Self {
+        self.always_include = always_include;
+        self
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolCapabilityMetadata {
     /// Capability profiles that this tool belongs to (e.g., "coding", "analysis").
@@ -98,6 +147,8 @@ pub struct ToolCapabilityMetadata {
     pub side_effect: SideEffectLevel,
     /// Stability level indicating API maturity.
     pub stability: StabilityLevel,
+    /// Prompt guidance that should be projected into the layered prompt system.
+    pub prompt: Option<ToolPromptMetadata>,
 }
 
 impl Default for ToolCapabilityMetadata {
@@ -118,6 +169,7 @@ impl ToolCapabilityMetadata {
             permissions: Vec::new(),
             side_effect: SideEffectLevel::Workspace,
             stability: StabilityLevel::Stable,
+            prompt: None,
         }
     }
 
@@ -187,11 +239,26 @@ impl ToolCapabilityMetadata {
         self
     }
 
+    /// Attaches prompt guidance to this tool descriptor.
+    pub fn prompt(mut self, prompt: ToolPromptMetadata) -> Self {
+        self.prompt = Some(prompt);
+        self
+    }
+
     /// Builds a [`CapabilityDescriptor`] from this metadata and the tool definition.
     pub fn build_descriptor(
         self,
         definition: ToolDefinition,
     ) -> std::result::Result<CapabilityDescriptor, DescriptorBuildError> {
+        let mut metadata = serde_json::Map::new();
+        if let Some(prompt) = self.prompt {
+            metadata.insert(
+                "prompt".to_string(),
+                serde_json::to_value(prompt)
+                    .expect("tool prompt metadata should serialize into JSON"),
+            );
+        }
+
         CapabilityDescriptor::builder(definition.name, CapabilityKind::tool())
             .description(definition.description)
             .schema(definition.parameters, json!({ "type": "string" }))
@@ -200,6 +267,7 @@ impl ToolCapabilityMetadata {
             .permissions(self.permissions)
             .side_effect(self.side_effect)
             .stability(self.stability)
+            .metadata(Value::Object(metadata))
             .build()
     }
 }

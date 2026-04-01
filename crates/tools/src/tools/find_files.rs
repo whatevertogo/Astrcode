@@ -1,7 +1,7 @@
 use crate::tools::fs_common::{check_cancel, json_output, resolve_path};
 use astrcode_core::{
     AstrError, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult,
+    ToolExecutionResult, ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use glob::glob;
@@ -48,6 +48,15 @@ impl Tool for FindFilesTool {
             .tags(["filesystem", "read", "search"])
             .permission("filesystem.read")
             .side_effect(SideEffectLevel::None)
+            .prompt(
+                ToolPromptMetadata::new(
+                    "Find candidate files by glob when you know the filename pattern but not the exact path.",
+                    "Use `findFiles` to narrow a workspace to a set of matching paths before calling `readFile` or `editFile`. It is better than shell globbing because it stays within the working directory and returns structured results.",
+                )
+                .caveat("Patterns must stay inside the workspace; use `**` explicitly when you need recursive matching.")
+                .example("Locate all `Cargo.toml`, `package.json`, or `*.tsx` files under the repo.")
+                .prompt_tag("search"),
+            )
     }
 
     async fn execute(

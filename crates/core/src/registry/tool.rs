@@ -339,6 +339,7 @@ mod tests {
                 permissions: Vec::<PermissionHint>::new(),
                 side_effect: SideEffectLevel::Workspace,
                 stability: StabilityLevel::Stable,
+                metadata: serde_json::Value::Null,
             })
         }
 

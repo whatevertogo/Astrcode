@@ -41,6 +41,7 @@ impl PluginInitializer for FakeInitializer {
                 component: loaded.component.clone(),
                 capabilities: loaded.capabilities.clone(),
                 invokers: loaded.invokers.clone(),
+                prompt_declarations: loaded.prompt_declarations.clone(),
             }),
             FakePluginResponse::Failed(message) => {
                 Err(astrcode_core::AstrError::Internal(message.clone()))
@@ -130,6 +131,7 @@ fn capability(name: &str) -> CapabilityDescriptor {
         permissions: Vec::new(),
         side_effect: SideEffectLevel::None,
         stability: StabilityLevel::Stable,
+        metadata: Value::Null,
     }
 }
 
@@ -157,6 +159,7 @@ fn loaded_plugin(
         }),
         capabilities,
         invokers,
+        prompt_declarations: Vec::new(),
     }
 }
 
@@ -292,6 +295,7 @@ fn bootstrap_marks_plugin_failed_when_descriptor_is_invalid() {
                     descriptor: invalid.clone(),
                 }) as Arc<dyn CapabilityInvoker>],
                 capabilities: vec![invalid],
+                prompt_declarations: Vec::new(),
             }),
         )]),
     };

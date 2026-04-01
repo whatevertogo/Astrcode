@@ -286,6 +286,7 @@ fn capability_validate_rejects_direct_blank_kind() {
         permissions: vec![],
         side_effect: SideEffectLevel::None,
         stability: StabilityLevel::Stable,
+        metadata: json!({}),
     };
 
     assert_eq!(

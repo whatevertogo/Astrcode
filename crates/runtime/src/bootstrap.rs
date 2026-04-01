@@ -35,7 +35,12 @@ where
     let capability_surface = assembled.router.descriptors();
     plugin_registry.replace_snapshot(assembled.plugin_entries);
     let service = Arc::new(
-        RuntimeService::from_capabilities(assembled.router).map_err(service_error_to_astr)?,
+        RuntimeService::from_capabilities_with_prompt_inputs(
+            assembled.router,
+            assembled.prompt_declarations,
+            crate::builtin_skills::builtin_skills(),
+        )
+        .map_err(service_error_to_astr)?,
     );
     let runtime: Arc<dyn RuntimeHandle> = service.clone();
     let coordinator = Arc::new(

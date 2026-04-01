@@ -3,7 +3,7 @@ use crate::tools::fs_common::{
 };
 use astrcode_core::{
     AstrError, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult,
+    ToolExecutionResult, ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -80,6 +80,16 @@ impl Tool for EditFileTool {
             .tags(["filesystem", "write", "edit"])
             .permission("filesystem.write")
             .side_effect(SideEffectLevel::Workspace)
+            .prompt(
+                ToolPromptMetadata::new(
+                    "Apply a narrow, safety-checked string replacement inside an existing file.",
+                    "Use `editFile` when you know the exact old text and want a minimal change. It rejects ambiguous replacements, which makes it safer than rewriting a whole file for small edits.",
+                )
+                .caveat("`oldStr` must match exactly once; if the text is missing or duplicated, the edit is rejected.")
+                .example("Rename a flag or replace one function body fragment without regenerating the whole file.")
+                .prompt_tag("filesystem")
+                .always_include(true),
+            )
     }
 
     async fn execute(

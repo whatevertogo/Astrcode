@@ -323,6 +323,7 @@ mod tests {
             permissions: vec![],
             side_effect: SideEffectLevel::Workspace,
             stability: StabilityLevel::Stable,
+            metadata: Value::Null,
         }
     }
 

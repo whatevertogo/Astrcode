@@ -3,17 +3,33 @@ use std::collections::HashMap;
 
 use super::template::PromptTemplate;
 
+/// Semantic classification of a prompt block.
+///
+/// Determines default priority ordering in the assembled system prompt.
+/// Lower priority values appear earlier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BlockKind {
+    /// Agent identity (who the AI is). Priority 100.
     Identity,
     // 预留给未来的系统 prompt 块——当 PromptComposer 需要将多个 identity/rule 片段
     // 合并为一个统一的 system prompt 时，此变体将作为合成结果的 BlockKind。
     #[allow(dead_code)]
     SystemPrompt,
+    /// Working directory, OS, date, tool list. Priority 300.
     Environment,
+    /// User-level rules from ~/.astrcode/AGENTS.md. Priority 400.
     UserRules,
+    /// Project-level rules from ./AGENTS.md. Priority 500.
     ProjectRules,
+    /// Per-tool usage guides (summary + detailed guide). Priority 550.
+    ToolGuide,
+    /// Multi-tool workflow guides (e.g. "read before edit"). Priority 560.
+    SkillGuide,
+    /// Plugin/MCP-injected prompt instructions. Priority 580.
+    ExtensionInstruction,
+    /// Legacy skill summary block (tool name list). Priority 600.
     Skill,
+    /// Few-shot example message pairs. Priority 700.
     FewShotExamples,
 }
 
@@ -25,6 +41,9 @@ impl BlockKind {
             Self::Environment => 300,
             Self::UserRules => 400,
             Self::ProjectRules => 500,
+            Self::ToolGuide => 550,
+            Self::SkillGuide => 560,
+            Self::ExtensionInstruction => 580,
             Self::Skill => 600,
             Self::FewShotExamples => 700,
         }

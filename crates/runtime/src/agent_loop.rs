@@ -19,6 +19,9 @@ use crate::provider_factory::DynProviderFactory;
 use astrcode_core::AgentState;
 use astrcode_core::StorageEvent;
 
+use crate::builtin_skills::builtin_skills;
+use crate::prompt::{PromptDeclaration, SkillSpec};
+
 /// Agent 循环
 ///
 /// 负责执行单个 Agent Turn，包含：
@@ -38,11 +41,32 @@ pub struct AgentLoop {
     max_steps: Option<usize>,
     /// Prompt 组装器
     prompt_composer: PromptComposer,
+    /// Prompt 构建时可见的能力描述符。
+    prompt_capability_descriptors: Vec<astrcode_core::CapabilityDescriptor>,
+    /// 归一化后的扩展 prompt 声明。
+    prompt_declarations: Vec<PromptDeclaration>,
+    /// 当前运行时启用的高层 skill 指南。
+    prompt_skills: Vec<SkillSpec>,
 }
 
 impl AgentLoop {
     /// 从能力路由器创建 AgentLoop
     pub fn from_capabilities(factory: DynProviderFactory, capabilities: CapabilityRouter) -> Self {
+        Self::from_capabilities_with_prompt_inputs(
+            factory,
+            capabilities,
+            Vec::new(),
+            builtin_skills(),
+        )
+    }
+
+    pub fn from_capabilities_with_prompt_inputs(
+        factory: DynProviderFactory,
+        capabilities: CapabilityRouter,
+        prompt_declarations: Vec<PromptDeclaration>,
+        prompt_skills: Vec<SkillSpec>,
+    ) -> Self {
+        let prompt_capability_descriptors = capabilities.descriptors();
         Self {
             factory,
             capabilities,
@@ -50,6 +74,9 @@ impl AgentLoop {
             approval: Arc::new(DefaultApprovalBroker),
             max_steps: None,
             prompt_composer: PromptComposer::with_defaults(),
+            prompt_capability_descriptors,
+            prompt_declarations,
+            prompt_skills,
         }
     }
 

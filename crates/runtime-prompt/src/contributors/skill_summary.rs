@@ -16,14 +16,6 @@ impl PromptContributor for SkillSummaryContributor {
     async fn contribute(&self, _ctx: &PromptContext) -> PromptContribution {
         PromptContribution {
             blocks: vec![
-                BlockSpec::system_template(
-                    "skill-summary",
-                    BlockKind::Skill,
-                    "Skill Summary",
-                    "Available tools: {{tools.names}}",
-                )
-                .with_tag("skills")
-                .with_category("capabilities"),
                 BlockSpec::message_text(
                     "few-shot-user",
                     BlockKind::FewShotExamples,
@@ -64,6 +56,9 @@ mod tests {
         let ctx = PromptContext {
             working_dir: "/workspace/demo".to_string(),
             tool_names: vec!["shell".to_string()],
+            capability_descriptors: Vec::new(),
+            prompt_declarations: Vec::new(),
+            skills: Vec::new(),
             step_index: 0,
             turn_index: 0,
             vars: Default::default(),
@@ -71,11 +66,6 @@ mod tests {
 
         let output = composer.build(&ctx).await.expect("build should succeed");
 
-        assert!(output
-            .plan
-            .system_blocks
-            .iter()
-            .any(|block| block.kind == BlockKind::Skill));
         assert_eq!(output.plan.prepend_messages.len(), 2);
     }
 }

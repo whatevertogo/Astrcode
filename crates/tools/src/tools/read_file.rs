@@ -5,7 +5,7 @@ use std::time::Instant;
 use crate::tools::fs_common::{check_cancel, resolve_path};
 use astrcode_core::{
     AstrError, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult,
+    ToolExecutionResult, ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -45,6 +45,16 @@ impl Tool for ReadFileTool {
             .tags(["filesystem", "read"])
             .permission("filesystem.read")
             .side_effect(SideEffectLevel::None)
+            .prompt(
+                ToolPromptMetadata::new(
+                    "Read the exact contents of a text file when you need authoritative code or config context.",
+                    "Use `readFile` after you have identified the right path with `findFiles` or `grep`. It is the primary source of truth for code analysis, debugging, and planning edits because it returns the file contents directly.",
+                )
+                .caveat("Large files can be truncated by `maxBytes`, so confirm whether truncation happened before making claims about the tail of a file.")
+                .example("Open the implementation of a function or inspect a config file before editing it.")
+                .prompt_tag("filesystem")
+                .always_include(true),
+            )
     }
 
     async fn execute(

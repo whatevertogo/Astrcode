@@ -5,7 +5,7 @@ use std::time::Instant;
 use crate::tools::fs_common::{check_cancel, resolve_path};
 use astrcode_core::{
     AstrError, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult,
+    ToolExecutionResult, ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -45,6 +45,15 @@ impl Tool for ListDirTool {
             .tags(["filesystem", "read"])
             .permission("filesystem.read")
             .side_effect(SideEffectLevel::None)
+            .prompt(
+                ToolPromptMetadata::new(
+                    "List the immediate contents of a directory before drilling into specific files.",
+                    "Use `listDir` to understand repository structure, confirm filenames, and narrow the search space before calling read or edit tools. Prefer it over shell directory listings because it returns structured metadata.",
+                )
+                .caveat("It only returns a shallow directory listing; use `findFiles` for recursive discovery.")
+                .example("Check which packages or source folders exist under the current workspace.")
+                .prompt_tag("filesystem"),
+            )
     }
 
     async fn execute(

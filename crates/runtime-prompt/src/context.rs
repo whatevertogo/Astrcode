@@ -1,10 +1,17 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
+use astrcode_core::CapabilityDescriptor;
+
+use crate::{PromptDeclaration, SkillSpec};
+
 #[derive(Clone, Debug, Default)]
 pub struct PromptContext {
     pub working_dir: String,
     pub tool_names: Vec<String>,
+    pub capability_descriptors: Vec<CapabilityDescriptor>,
+    pub prompt_declarations: Vec<PromptDeclaration>,
+    pub skills: Vec<SkillSpec>,
     pub step_index: usize,
     pub turn_index: usize,
     pub vars: HashMap<String, String>,
@@ -30,10 +37,23 @@ impl PromptContext {
         }
     }
 
+    pub fn latest_user_message(&self) -> Option<&str> {
+        self.vars.get("turn.user_message").map(String::as_str)
+    }
+
     pub fn contributor_cache_fingerprint(&self) -> String {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.working_dir.hash(&mut hasher);
         self.tool_names.hash(&mut hasher);
+        serde_json::to_string(&self.capability_descriptors)
+            .expect("capability descriptors should serialize")
+            .hash(&mut hasher);
+        serde_json::to_string(&self.prompt_declarations)
+            .expect("prompt declarations should serialize")
+            .hash(&mut hasher);
+        serde_json::to_string(&self.skills)
+            .expect("skills should serialize")
+            .hash(&mut hasher);
 
         let mut vars = self.vars.iter().collect::<Vec<_>>();
         vars.sort_by(|left, right| left.0.cmp(right.0));
@@ -55,6 +75,9 @@ mod tests {
         let mut ctx = PromptContext {
             working_dir: "/workspace/demo".to_string(),
             tool_names: vec!["shell".to_string(), "grep".to_string()],
+            capability_descriptors: Vec::new(),
+            prompt_declarations: Vec::new(),
+            skills: Vec::new(),
             step_index: 1,
             turn_index: 2,
             vars: HashMap::new(),

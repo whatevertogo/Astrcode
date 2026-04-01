@@ -6,7 +6,8 @@ use anyhow::{anyhow, Result};
 use astrcode_core::LlmMessage;
 
 use super::contributors::{
-    AgentsMdContributor, EnvironmentContributor, IdentityContributor, SkillSummaryContributor,
+    AgentsMdContributor, CapabilityPromptContributor, EnvironmentContributor, IdentityContributor,
+    SkillGuideContributor, SkillSummaryContributor,
 };
 use super::diagnostics::{DiagnosticLevel, DiagnosticReason, PromptDiagnostic, PromptDiagnostics};
 use super::{
@@ -91,13 +92,18 @@ impl PromptComposer {
 
     pub fn with_options(options: PromptComposerOptions) -> Self {
         Self::new(options)
-            .add(Arc::new(IdentityContributor))
-            .add(Arc::new(EnvironmentContributor))
-            .add(Arc::new(AgentsMdContributor))
-            .add(Arc::new(SkillSummaryContributor))
+            .with_contributor(Arc::new(IdentityContributor))
+            .with_contributor(Arc::new(EnvironmentContributor))
+            .with_contributor(Arc::new(AgentsMdContributor))
+            .with_contributor(Arc::new(CapabilityPromptContributor))
+            .with_contributor(Arc::new(SkillGuideContributor))
+            .with_contributor(Arc::new(SkillSummaryContributor))
     }
 
-    pub fn add(mut self, contributor: Arc<dyn PromptContributor>) -> Self {
+    /// Appends a contributor to the chain.
+    ///
+    /// Not named `add` to avoid confusion with `std::ops::Add`.
+    pub fn with_contributor(mut self, contributor: Arc<dyn PromptContributor>) -> Self {
         self.contributors.push(contributor);
         self
     }
@@ -617,6 +623,9 @@ mod tests {
         PromptContext {
             working_dir,
             tool_names: vec!["shell".to_string()],
+            capability_descriptors: Vec::new(),
+            prompt_declarations: Vec::new(),
+            skills: Vec::new(),
             step_index: 0,
             turn_index: 0,
             vars: HashMap::new(),
@@ -680,7 +689,8 @@ mod tests {
     #[tokio::test]
     async fn add_appends_custom_contributor_output() {
         let project = tempfile::tempdir().expect("tempdir should be created");
-        let composer = PromptComposer::with_defaults().add(Arc::new(StaticContributor));
+        let composer =
+            PromptComposer::with_defaults().with_contributor(Arc::new(StaticContributor));
 
         let output = composer
             .build(&test_context(project.path().to_string_lossy().into_owned()))
@@ -698,9 +708,10 @@ mod tests {
     async fn build_reuses_contributor_cache_for_same_context() {
         let project = tempfile::tempdir().expect("tempdir should be created");
         let calls = Arc::new(AtomicUsize::new(0));
-        let composer = PromptComposer::with_defaults().add(Arc::new(CountingContributor {
-            calls: calls.clone(),
-        }));
+        let composer =
+            PromptComposer::with_defaults().with_contributor(Arc::new(CountingContributor {
+                calls: calls.clone(),
+            }));
         let ctx = test_context(project.path().to_string_lossy().into_owned());
 
         composer
@@ -723,7 +734,7 @@ mod tests {
             cache_ttl: Duration::from_millis(20),
             ..PromptComposerOptions::default()
         })
-        .add(Arc::new(CountingContributor {
+        .with_contributor(Arc::new(CountingContributor {
             calls: calls.clone(),
         }));
         let ctx = test_context(project.path().to_string_lossy().into_owned());
@@ -773,7 +784,7 @@ mod tests {
             validation_level: ValidationLevel::Strict,
             ..PromptComposerOptions::default()
         })
-        .add(Arc::new(TemplateContributor));
+        .with_contributor(Arc::new(TemplateContributor));
         let mut ctx = test_context("/workspace/demo".to_string());
         ctx.vars
             .insert("project.name".to_string(), "context".to_string());
@@ -814,7 +825,8 @@ mod tests {
             }
         }
 
-        let composer = PromptComposer::with_defaults().add(Arc::new(ConditionalContributor));
+        let composer =
+            PromptComposer::with_defaults().with_contributor(Arc::new(ConditionalContributor));
         let output = composer
             .build(&test_context("/workspace/demo".to_string()))
             .await
@@ -860,7 +872,7 @@ mod tests {
             validation_level: ValidationLevel::Strict,
             ..PromptComposerOptions::default()
         })
-        .add(Arc::new(InvalidContributor));
+        .with_contributor(Arc::new(InvalidContributor));
 
         let err = composer
             .build(&test_context("/workspace/demo".to_string()))

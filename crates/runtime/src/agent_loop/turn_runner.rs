@@ -1,4 +1,5 @@
 use astrcode_core::{CancelToken, Result};
+use std::collections::HashMap;
 
 use crate::prompt::{append_unique_tools, DiagnosticLevel, PromptContext, PromptDiagnostics};
 use astrcode_core::AgentState;
@@ -55,12 +56,22 @@ pub(crate) async fn run_turn(
             return Ok(());
         }
 
+        let mut vars = HashMap::new();
+        if let Some(latest_user_message) = latest_user_message(&messages) {
+            vars.insert(
+                "turn.user_message".to_string(),
+                latest_user_message.to_string(),
+            );
+        }
         let ctx = PromptContext {
             working_dir: state.working_dir.to_string_lossy().into_owned(),
             tool_names: agent_loop.capabilities.tool_names().to_vec(),
+            capability_descriptors: agent_loop.prompt_capability_descriptors.clone(),
+            prompt_declarations: agent_loop.prompt_declarations.clone(),
+            skills: agent_loop.prompt_skills.clone(),
             step_index,
             turn_index: state.turn_count,
-            vars: Default::default(),
+            vars,
         };
         let build_output = match agent_loop.prompt_composer.build(&ctx).await {
             Ok(output) => output,
@@ -163,6 +174,13 @@ pub(crate) async fn run_turn(
 
         step_index += 1;
     }
+}
+
+fn latest_user_message(messages: &[LlmMessage]) -> Option<&str> {
+    messages.iter().rev().find_map(|message| match message {
+        LlmMessage::User { content } => Some(content.as_str()),
+        LlmMessage::Assistant { .. } | LlmMessage::Tool { .. } => None,
+    })
 }
 
 fn reached_max_steps(max_steps: Option<usize>, step_index: usize) -> bool {

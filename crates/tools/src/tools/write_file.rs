@@ -4,7 +4,7 @@ use crate::tools::fs_common::{
 };
 use astrcode_core::{
     AstrError, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult,
+    ToolExecutionResult, ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -48,6 +48,15 @@ impl Tool for WriteFileTool {
             .tags(["filesystem", "write"])
             .permission("filesystem.write")
             .side_effect(SideEffectLevel::Workspace)
+            .prompt(
+                ToolPromptMetadata::new(
+                    "Create or fully replace a text file when the whole target content is known.",
+                    "Use `writeFile` for file creation, regeneration, or full rewrites. Prefer `editFile` when you only need to replace a small unique region, because that keeps the change narrower and easier to validate.",
+                )
+                .caveat("It overwrites existing file contents, so only use it when a full replacement is intentional.")
+                .example("Create a new config file or rewrite a small generated artifact with known final content.")
+                .prompt_tag("filesystem"),
+            )
     }
 
     async fn execute(

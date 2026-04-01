@@ -1,0 +1,90 @@
+use crate::prompt::{SkillSource, SkillSpec};
+
+pub(crate) fn builtin_skills() -> Vec<SkillSpec> {
+    vec![
+        SkillSpec {
+            id: "code-modification".to_string(),
+            name: "Code Modification".to_string(),
+            description: "Use a read-before-write workflow when the user asks for code changes."
+                .to_string(),
+            guide: "Inspect the relevant files first, then make the smallest coherent edit, and finish with verification that matches the touched surface area.".to_string(),
+            required_tools: vec![
+                "readFile".to_string(),
+                "editFile".to_string(),
+                "writeFile".to_string(),
+            ],
+            triggers: vec![
+                "fix".to_string(),
+                "implement".to_string(),
+                "refactor".to_string(),
+                "change".to_string(),
+                "update".to_string(),
+                "add".to_string(),
+                "delete".to_string(),
+                "remove".to_string(),
+                "rename".to_string(),
+                "修改".to_string(),
+                "修复".to_string(),
+                "删除".to_string(),
+                "添加".to_string(),
+                "改".to_string(),
+                "实现".to_string(),
+            ],
+            source: SkillSource::Builtin,
+            expand_tool_guides: true,
+        },
+        SkillSpec {
+            id: "codebase-exploration".to_string(),
+            name: "Codebase Exploration".to_string(),
+            description: "Use targeted discovery tools before making architectural claims."
+                .to_string(),
+            guide: "Start with directory and search tools to narrow scope, then read the specific files that explain behavior. Avoid guessing from filenames alone.".to_string(),
+            required_tools: vec![
+                "listDir".to_string(),
+                "findFiles".to_string(),
+                "grep".to_string(),
+                "readFile".to_string(),
+            ],
+            triggers: vec![
+                "where".to_string(),
+                "find".to_string(),
+                "search".to_string(),
+                "locate".to_string(),
+                "explore".to_string(),
+                "understand".to_string(),
+                "看看".to_string(),
+                "分析".to_string(),
+                "搜索".to_string(),
+                "查找".to_string(),
+                "在哪".to_string(),
+                "哪个".to_string(),
+            ],
+            source: SkillSource::Builtin,
+            expand_tool_guides: false,
+        },
+        SkillSpec {
+            id: "shell-safety".to_string(),
+            name: "Shell Safety".to_string(),
+            description: "Treat shell as a high-leverage tool that needs narrow, explainable commands."
+                .to_string(),
+            guide: "Prefer read-only commands first, keep commands scoped to the workspace, and explain why a risky command is necessary before running it. When a built-in file tool can do the job more precisely, prefer that over shell.".to_string(),
+            required_tools: vec!["shell".to_string()],
+            triggers: vec![
+                "shell".to_string(),
+                "command".to_string(),
+                "terminal".to_string(),
+                "powershell".to_string(),
+                "bash".to_string(),
+                "cmd".to_string(),
+                "run".to_string(),
+                "execute".to_string(),
+                "终端".to_string(),
+                "命令行".to_string(),
+                "执行".to_string(),
+                "运行".to_string(),
+            ],
+            source: SkillSource::Builtin,
+            expand_tool_guides: true,
+        },
+    ]
+}

@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent_loop::AgentLoop;
 use crate::approval_service::{ApprovalBroker, DefaultApprovalBroker};
 use crate::config::load_config;
+use crate::prompt::{PromptDeclaration, SkillSpec};
 use crate::provider_factory::ConfigFileProviderFactory;
 use astrcode_core::{
     AllowAllPolicyEngine, AstrError, CapabilityRouter, PolicyEngine, RuntimeHandle,
@@ -66,8 +67,22 @@ pub struct RuntimeService {
 
 impl RuntimeService {
     pub fn from_capabilities(capabilities: CapabilityRouter) -> ServiceResult<Self> {
+        Self::from_capabilities_with_prompt_inputs(
+            capabilities,
+            Vec::new(),
+            crate::builtin_skills::builtin_skills(),
+        )
+    }
+
+    pub fn from_capabilities_with_prompt_inputs(
+        capabilities: CapabilityRouter,
+        prompt_declarations: Vec<PromptDeclaration>,
+        prompt_skills: Vec<SkillSpec>,
+    ) -> ServiceResult<Self> {
         Self::from_runtime_services(
             capabilities,
+            prompt_declarations,
+            prompt_skills,
             Arc::new(AllowAllPolicyEngine),
             Arc::new(DefaultApprovalBroker),
         )
@@ -75,13 +90,20 @@ impl RuntimeService {
 
     pub fn from_runtime_services(
         capabilities: CapabilityRouter,
+        prompt_declarations: Vec<PromptDeclaration>,
+        prompt_skills: Vec<SkillSpec>,
         policy: Arc<dyn PolicyEngine>,
         approval: Arc<dyn ApprovalBroker>,
     ) -> ServiceResult<Self> {
         let config = load_config().map_err(ServiceError::from)?;
-        let loop_ = AgentLoop::from_capabilities(Arc::new(ConfigFileProviderFactory), capabilities)
-            .with_policy_engine(Arc::clone(&policy))
-            .with_approval_broker(Arc::clone(&approval));
+        let loop_ = AgentLoop::from_capabilities_with_prompt_inputs(
+            Arc::new(ConfigFileProviderFactory),
+            capabilities,
+            prompt_declarations,
+            prompt_skills,
+        )
+        .with_policy_engine(Arc::clone(&policy))
+        .with_approval_broker(Arc::clone(&approval));
         Ok(Self {
             sessions: DashMap::new(),
             loop_: RwLock::new(Arc::new(loop_)),
@@ -99,10 +121,29 @@ impl RuntimeService {
     }
 
     pub async fn replace_capabilities(&self, capabilities: CapabilityRouter) -> ServiceResult<()> {
+        self.replace_capabilities_with_prompt_inputs(
+            capabilities,
+            Vec::new(),
+            crate::builtin_skills::builtin_skills(),
+        )
+        .await
+    }
+
+    pub async fn replace_capabilities_with_prompt_inputs(
+        &self,
+        capabilities: CapabilityRouter,
+        prompt_declarations: Vec<PromptDeclaration>,
+        prompt_skills: Vec<SkillSpec>,
+    ) -> ServiceResult<()> {
         let next_loop = Arc::new(
-            AgentLoop::from_capabilities(Arc::new(ConfigFileProviderFactory), capabilities)
-                .with_policy_engine(Arc::clone(&self.policy))
-                .with_approval_broker(Arc::clone(&self.approval)),
+            AgentLoop::from_capabilities_with_prompt_inputs(
+                Arc::new(ConfigFileProviderFactory),
+                capabilities,
+                prompt_declarations,
+                prompt_skills,
+            )
+            .with_policy_engine(Arc::clone(&self.policy))
+            .with_approval_broker(Arc::clone(&self.approval)),
         );
         *self.loop_.write().await = next_loop;
         Ok(())

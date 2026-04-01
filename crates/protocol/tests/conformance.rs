@@ -51,6 +51,7 @@ fn sample_capability() -> CapabilityDescriptor {
         }],
         side_effect: SideEffectLevel::None,
         stability: StabilityLevel::Stable,
+        metadata: Value::Null,
     }
 }
 

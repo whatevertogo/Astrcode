@@ -15,9 +15,11 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::builtin_capabilities::built_in_capability_invokers;
+use crate::prompt::{PromptDeclaration, PromptDeclarationSource};
 
 pub(crate) struct AssembledRuntimeSurface {
     pub(crate) router: CapabilityRouter,
+    pub(crate) prompt_declarations: Vec<PromptDeclaration>,
     pub(crate) plugin_entries: Vec<PluginEntry>,
     pub(crate) managed_components: Vec<Arc<dyn ManagedRuntimeComponent>>,
     pub(crate) active_plugins: Vec<ActivePluginRuntime>,
@@ -33,6 +35,7 @@ pub(crate) struct LoadedPlugin {
     pub(crate) component: Arc<dyn ManagedPluginComponent>,
     pub(crate) capabilities: Vec<CapabilityDescriptor>,
     pub(crate) invokers: Vec<Arc<dyn CapabilityInvoker>>,
+    pub(crate) prompt_declarations: Vec<PromptDeclaration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,6 +172,10 @@ impl PluginInitializer for SupervisorPluginInitializer {
             component: supervisor.clone(),
             capabilities: supervisor.core_capabilities(),
             invokers: supervisor.capability_invokers(),
+            prompt_declarations: normalize_prompt_declarations(
+                &manifest.name,
+                &supervisor.remote_initialize().metadata,
+            ),
         })
     }
 }
@@ -211,6 +218,7 @@ where
         builder = builder.register_invoker(invoker);
     }
     let mut plugin_entries = BTreeMap::new();
+    let mut prompt_declarations = Vec::new();
     let mut managed_components = Vec::new();
     let mut active_plugins = Vec::new();
 
@@ -320,6 +328,7 @@ where
                 plugin_registry: Arc::clone(&plugin_registry),
             }));
         }
+        prompt_declarations.extend(loaded_plugin.prompt_declarations.clone());
         plugin_entries.insert(
             manifest.name.clone(),
             PluginEntry {
@@ -343,6 +352,7 @@ where
 
     Ok(AssembledRuntimeSurface {
         router: builder.build()?,
+        prompt_declarations,
         plugin_entries: plugin_entries.into_values().collect(),
         managed_components,
         active_plugins,
@@ -383,4 +393,70 @@ fn host_peer_descriptor() -> PeerDescriptor {
         supported_profiles: vec!["coding".to_string()],
         metadata: serde_json::Value::Null,
     }
+}
+
+fn normalize_prompt_declarations(plugin_name: &str, metadata: &Value) -> Vec<PromptDeclaration> {
+    let Some(raw_declarations) = metadata.get("promptDeclarations") else {
+        return Vec::new();
+    };
+    let Some(raw_declarations) = raw_declarations.as_array() else {
+        log::warn!(
+            "plugin '{}' metadata.promptDeclarations must be an array, got {}",
+            plugin_name,
+            raw_declarations
+        );
+        return Vec::new();
+    };
+
+    let mut seen_block_ids = HashSet::new();
+    let mut declarations = Vec::new();
+    for (index, raw_declaration) in raw_declarations.iter().enumerate() {
+        match serde_json::from_value::<PromptDeclaration>(raw_declaration.clone()) {
+            Ok(mut declaration) => {
+                if let Some(message) = validate_prompt_declaration(&declaration) {
+                    log::warn!(
+                        "plugin '{}' prompt declaration {} rejected: {}",
+                        plugin_name,
+                        index,
+                        message
+                    );
+                    continue;
+                }
+                if !seen_block_ids.insert(declaration.block_id.clone()) {
+                    log::warn!(
+                        "plugin '{}' prompt declaration '{}' is duplicated; keeping the first declaration only",
+                        plugin_name,
+                        declaration.block_id
+                    );
+                    continue;
+                }
+                declaration.source = PromptDeclarationSource::Plugin;
+                declaration.origin = Some(plugin_name.to_string());
+                declarations.push(declaration);
+            }
+            Err(error) => {
+                log::warn!(
+                    "plugin '{}' prompt declaration {} is invalid JSON schema: {}",
+                    plugin_name,
+                    index,
+                    error
+                );
+            }
+        }
+    }
+
+    declarations
+}
+
+fn validate_prompt_declaration(declaration: &PromptDeclaration) -> Option<&'static str> {
+    if declaration.block_id.trim().is_empty() {
+        return Some("blockId must not be empty");
+    }
+    if declaration.title.trim().is_empty() {
+        return Some("title must not be empty");
+    }
+    if declaration.content.trim().is_empty() {
+        return Some("content must not be empty");
+    }
+    None
 }

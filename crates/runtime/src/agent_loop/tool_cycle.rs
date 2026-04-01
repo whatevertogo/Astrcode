@@ -15,6 +15,7 @@ pub(crate) enum ToolCycleOutcome {
     Interrupted,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_tool_calls(
     agent_loop: &AgentLoop,
     capabilities: &CapabilityRouter,

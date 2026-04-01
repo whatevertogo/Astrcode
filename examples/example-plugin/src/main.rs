@@ -101,6 +101,7 @@ impl ToolHandler for WorkspaceSummaryTool {
             permissions: vec![],
             side_effect: SideEffectLevel::None,
             stability: StabilityLevel::Stable,
+            metadata: Value::Null,
         }
     }
 
@@ -187,6 +188,7 @@ impl ToolHandler for FilePreviewTool {
             permissions: vec![],
             side_effect: SideEffectLevel::None,
             stability: StabilityLevel::Stable,
+            metadata: Value::Null,
         }
     }
 

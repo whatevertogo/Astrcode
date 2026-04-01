@@ -109,6 +109,9 @@ mod tests {
         PromptContext {
             working_dir,
             tool_names: vec!["shell".to_string()],
+            capability_descriptors: Vec::new(),
+            prompt_declarations: Vec::new(),
+            skills: Vec::new(),
             step_index: 0,
             turn_index: 0,
             vars: Default::default(),

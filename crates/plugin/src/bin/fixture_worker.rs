@@ -27,6 +27,7 @@ impl CapabilityHandler for EchoHandler {
             permissions: vec![],
             side_effect: SideEffectLevel::None,
             stability: StabilityLevel::Stable,
+            metadata: Value::Null,
         }
     }
 
@@ -58,6 +59,7 @@ impl CapabilityHandler for PatchStreamHandler {
             permissions: vec![],
             side_effect: SideEffectLevel::Workspace,
             stability: StabilityLevel::Stable,
+            metadata: Value::Null,
         }
     }
 
@@ -118,6 +120,7 @@ impl CapabilityHandler for DelayedEchoHandler {
             permissions: vec![],
             side_effect: SideEffectLevel::None,
             stability: StabilityLevel::Stable,
+            metadata: Value::Null,
         }
     }
 

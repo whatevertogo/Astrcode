@@ -145,6 +145,7 @@ mod tests {
                 permissions: vec![],
                 side_effect: SideEffectLevel::None,
                 stability: StabilityLevel::Stable,
+                metadata: Value::Null,
             }
         }
 

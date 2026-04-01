@@ -96,7 +96,13 @@ impl RuntimeGovernance {
                 .await
                 .map_err(ServiceError::Internal)?;
         let capability_surface = assembled.router.descriptors();
-        self.service.replace_capabilities(assembled.router).await?;
+        self.service
+            .replace_capabilities_with_prompt_inputs(
+                assembled.router,
+                assembled.prompt_declarations,
+                crate::builtin_skills::builtin_skills(),
+            )
+            .await?;
         let previous_active_plugins = {
             let mut guard = self.active_plugins.write().await;
             std::mem::replace(&mut *guard, assembled.active_plugins)

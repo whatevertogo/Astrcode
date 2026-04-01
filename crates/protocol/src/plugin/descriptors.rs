@@ -72,12 +72,20 @@ impl CapabilityKind {
         Self::new("resource")
     }
 
+    pub fn prompt() -> Self {
+        Self::new("prompt")
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
     pub fn is_tool(&self) -> bool {
         self.as_str() == "tool"
+    }
+
+    pub fn is_prompt(&self) -> bool {
+        self.as_str() == "prompt"
     }
 }
 
@@ -166,6 +174,8 @@ pub struct CapabilityDescriptor {
     pub side_effect: SideEffectLevel,
     #[serde(default)]
     pub stability: StabilityLevel,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub metadata: Value,
 }
 
 impl CapabilityDescriptor {
@@ -243,6 +253,7 @@ pub struct CapabilityDescriptorBuilder {
     permissions: Vec<PermissionHint>,
     side_effect: SideEffectLevel,
     stability: StabilityLevel,
+    metadata: Value,
 }
 
 impl CapabilityDescriptorBuilder {
@@ -259,6 +270,7 @@ impl CapabilityDescriptorBuilder {
             permissions: Vec::new(),
             side_effect: SideEffectLevel::default(),
             stability: StabilityLevel::default(),
+            metadata: Value::Null,
         }
     }
 
@@ -351,6 +363,11 @@ impl CapabilityDescriptorBuilder {
         self
     }
 
+    pub fn metadata(mut self, metadata: Value) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
     pub fn build(self) -> Result<CapabilityDescriptor, DescriptorBuildError> {
         let name = validate_non_empty("name", self.name)?;
         let kind = validate_kind(self.kind)?;
@@ -385,6 +402,7 @@ impl CapabilityDescriptorBuilder {
             permissions,
             side_effect: self.side_effect,
             stability: self.stability,
+            metadata: self.metadata,
         })
     }
 }

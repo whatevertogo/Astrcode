@@ -8,7 +8,7 @@ use std::time::Instant;
 use crate::tools::fs_common::{check_cancel, resolve_path};
 use astrcode_core::{
     AstrError, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult,
+    ToolExecutionResult, ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -58,6 +58,15 @@ impl Tool for ShellTool {
             .tags(["process", "shell"])
             .permission("shell.exec")
             .side_effect(SideEffectLevel::External)
+            .prompt(
+                ToolPromptMetadata::new(
+                    "Run a one-shot shell command when file tools or search tools are not precise enough.",
+                    "Use `shell` for non-interactive commands that are easier to express as a single command line than as a dedicated file tool. Keep commands scoped to the workspace, explain risky commands before running them, and prefer read-only inspection before mutation.",
+                )
+                .caveat("Shell commands can mutate the workspace or external system state, so keep them narrowly scoped.")
+                .example("Inspect repository status or run a targeted build/test command.")
+                .prompt_tag("shell"),
+            )
     }
 
     async fn execute(
