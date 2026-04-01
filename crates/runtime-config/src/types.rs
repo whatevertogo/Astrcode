@@ -22,6 +22,20 @@ pub struct Config {
     pub profiles: Vec<Profile>,
 }
 
+/// Per-project private configuration overlay.
+///
+/// This file intentionally uses optional fields so project-specific values can
+/// override only the settings that differ from the user baseline.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+#[serde(default)]
+pub struct ConfigOverlay {
+    pub active_profile: Option<String>,
+    pub active_model: Option<String>,
+    pub profiles: Option<Vec<Profile>>,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {

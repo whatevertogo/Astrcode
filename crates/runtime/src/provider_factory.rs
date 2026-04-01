@@ -1,14 +1,15 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use astrcode_core::{AstrError, Result};
 
-use crate::config::{load_config, Profile, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI};
+use crate::config::{load_resolved_config, Profile, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI};
 use crate::llm::anthropic::AnthropicProvider;
 use crate::llm::openai::OpenAiProvider;
 use crate::llm::LlmProvider;
 
 pub trait ProviderFactory: Send + Sync {
-    fn build(&self) -> Result<Arc<dyn LlmProvider>>;
+    fn build_for_working_dir(&self, working_dir: Option<PathBuf>) -> Result<Arc<dyn LlmProvider>>;
 }
 
 pub type DynProviderFactory = Arc<dyn ProviderFactory>;
@@ -31,8 +32,8 @@ impl BuiltProvider {
 }
 
 impl ProviderFactory for ConfigFileProviderFactory {
-    fn build(&self) -> Result<Arc<dyn LlmProvider>> {
-        let config = load_config()?;
+    fn build_for_working_dir(&self, working_dir: Option<PathBuf>) -> Result<Arc<dyn LlmProvider>> {
+        let config = load_resolved_config(working_dir.as_deref())?;
         let profile = select_profile(&config.profiles, &config.active_profile)?;
         let model = resolve_model(profile, &config.active_model)?;
         let provider = build_provider(profile, model)?;
@@ -209,7 +210,7 @@ mod tests {
         save_config(&config).expect("config should save");
 
         let factory = ConfigFileProviderFactory;
-        let provider = factory.build();
+        let provider = factory.build_for_working_dir(None);
 
         assert!(
             provider.is_ok(),

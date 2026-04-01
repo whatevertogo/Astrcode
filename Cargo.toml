@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/core",
+    "crates/storage",
     "crates/runtime",
     "crates/runtime-config",
     "crates/runtime-llm",
@@ -28,7 +29,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "sync", "fs", "time", "signal"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 axum = { version = "0.7", features = ["macros"] }
 axum-extra = { version = "0.9", features = ["cookie"] }
 chrono = { version = "0.4", features = ["serde"] }

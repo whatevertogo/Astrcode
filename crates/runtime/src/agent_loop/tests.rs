@@ -116,7 +116,7 @@ struct RecordingApprovalBroker {
 }
 
 impl ProviderFactory for StaticProviderFactory {
-    fn build(&self) -> Result<Arc<dyn LlmProvider>> {
+    fn build_for_working_dir(&self, _working_dir: Option<PathBuf>) -> Result<Arc<dyn LlmProvider>> {
         Ok(self.provider.clone())
     }
 }
@@ -1183,29 +1183,35 @@ async fn unified_capability_router_executes_builtin_and_plugin_tools() {
         .await
         .expect("turn should complete");
 
-    let events = events.lock().expect("lock");
-    assert!(events.iter().any(|event| {
-        matches!(
-            event,
-            StorageEvent::ToolResult {
-                tool_name,
-                output,
-                ..
-            } if tool_name == "quickTool" && output == "ok"
-        )
-    }));
-    assert!(events.iter().any(|event| {
-        matches!(
-            event,
-            StorageEvent::ToolResult {
-                tool_name,
-                output,
-                ..
-            } if tool_name == "workspace.summary"
-                && output.contains("Cargo.toml")
-                && output.contains("\"workspaceRoot\"")
-        )
-    }));
+    // 在关闭 supervisor 前先把断言结果提取出来，避免同步锁跨 await 持有。
+    let (saw_quick_tool, saw_workspace_summary) = {
+        let events = events.lock().expect("lock");
+        let saw_quick_tool = events.iter().any(|event| {
+            matches!(
+                event,
+                StorageEvent::ToolResult {
+                    tool_name,
+                    output,
+                    ..
+                } if tool_name == "quickTool" && output == "ok"
+            )
+        });
+        let saw_workspace_summary = events.iter().any(|event| {
+            matches!(
+                event,
+                StorageEvent::ToolResult {
+                    tool_name,
+                    output,
+                    ..
+                } if tool_name == "workspace.summary"
+                    && output.contains("Cargo.toml")
+                    && output.contains("\"workspaceRoot\"")
+            )
+        });
+        (saw_quick_tool, saw_workspace_summary)
+    };
+    assert!(saw_quick_tool);
+    assert!(saw_workspace_summary);
 
     supervisor
         .shutdown()

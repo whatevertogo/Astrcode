@@ -168,7 +168,7 @@ mod tests {
     use astrcode_core::AgentEvent;
     use chrono::Utc;
 
-    use astrcode_core::EventLog;
+    use astrcode_storage::session::EventLog;
 
     use super::super::session_state::SessionWriter;
     use super::*;
@@ -182,7 +182,8 @@ mod tests {
         let state = SessionState::new(
             temp_dir.path().to_path_buf(),
             Phase::Idle,
-            Arc::new(SessionWriter::new(log)),
+            // 测试继续走真实 EventLog，确保 trait object 包装不改变持久化路径。
+            Arc::new(SessionWriter::new(Box::new(log))),
             Default::default(),
             Vec::new(),
         );

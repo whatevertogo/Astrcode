@@ -2,6 +2,7 @@ use astrcode_core::{replay_records, split_assistant_content, AstrError};
 use async_trait::async_trait;
 use chrono::Utc;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use astrcode_core::{StorageEvent, StoredEvent};
@@ -28,12 +29,14 @@ impl SessionReplaySource for RuntimeService {
             .map_err(|error| AstrError::Internal(error.to_string()))?
         {
             Some(history) => Ok((history, ReplayPath::Cache)),
-            None => load_events(&session_id).await.map(|events| {
-                (
-                    replay_records(&events, last_event_id),
-                    ReplayPath::DiskFallback,
-                )
-            }),
+            None => load_events(Arc::clone(&self.session_manager), &session_id)
+                .await
+                .map(|events| {
+                    (
+                        replay_records(&events, last_event_id),
+                        ReplayPath::DiskFallback,
+                    )
+                }),
         };
         let elapsed = started_at.elapsed();
         match &replay_result {

@@ -39,9 +39,10 @@ pub(crate) async fn run_turn(
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
     cancel: CancelToken,
 ) -> Result<()> {
-    let provider = llm_cycle::build_provider(agent_loop.factory.clone())
-        .await
-        .map_err(internal_error)?;
+    let provider =
+        llm_cycle::build_provider(agent_loop.factory.clone(), Some(state.working_dir.clone()))
+            .await
+            .map_err(internal_error)?;
     let mut messages = state.messages.clone();
     let mut step_index = 0usize;
 

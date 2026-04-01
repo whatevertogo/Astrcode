@@ -5,7 +5,7 @@ use std::time::Instant;
 use astrcode_core::{AgentStateProjector, AstrError, Phase};
 use chrono::Utc;
 
-use astrcode_core::{generate_session_id, DeleteProjectResult, EventLog, SessionMeta};
+use astrcode_core::{generate_session_id, DeleteProjectResult, SessionMeta};
 use astrcode_core::{StorageEvent, StoredEvent};
 
 use super::replay::convert_events_to_messages;
@@ -16,15 +16,19 @@ use astrcode_core::{phase_of_storage_event, replay_records};
 
 impl RuntimeService {
     pub async fn list_sessions_with_meta(&self) -> ServiceResult<Vec<SessionMeta>> {
-        spawn_blocking_service("list sessions with metadata", || {
-            EventLog::list_sessions_with_meta().map_err(ServiceError::from)
+        let session_manager = Arc::clone(&self.session_manager);
+        spawn_blocking_service("list sessions with metadata", move || {
+            session_manager
+                .list_sessions_with_meta()
+                .map_err(ServiceError::from)
         })
         .await
     }
 
     pub async fn list_sessions(&self) -> ServiceResult<Vec<String>> {
-        spawn_blocking_service("list sessions", || {
-            EventLog::list_sessions().map_err(ServiceError::from)
+        let session_manager = Arc::clone(&self.session_manager);
+        spawn_blocking_service("list sessions", move || {
+            session_manager.list_sessions().map_err(ServiceError::from)
         })
         .await
     }
@@ -34,11 +38,14 @@ impl RuntimeService {
         working_dir: impl Into<PathBuf>,
     ) -> ServiceResult<SessionMeta> {
         let working_dir = working_dir.into();
+        let session_manager = Arc::clone(&self.session_manager);
         let (session_id, working_dir, created_at, log, stored_session_start) =
             spawn_blocking_service("create session", move || {
                 let working_dir = normalize_working_dir(working_dir)?;
                 let session_id = generate_session_id();
-                let mut log = EventLog::create(&session_id).map_err(ServiceError::from)?;
+                let mut log = session_manager
+                    .create_event_log(&session_id)
+                    .map_err(ServiceError::from)?;
                 let created_at = Utc::now();
                 let session_start = StorageEvent::SessionStart {
                     session_id: session_id.clone(),
@@ -90,7 +97,7 @@ impl RuntimeService {
         session_id: &str,
     ) -> ServiceResult<(Vec<SessionMessage>, Option<String>)> {
         let session_id = normalize_session_id(session_id);
-        let events = load_events(&session_id).await?;
+        let events = load_events(Arc::clone(&self.session_manager), &session_id).await?;
         let cursor = replay_records(&events, None)
             .last()
             .map(|record| record.event_id.clone());
@@ -101,16 +108,22 @@ impl RuntimeService {
         let normalized = normalize_session_id(session_id);
         self.interrupt(&normalized).await?;
         self.sessions.remove(&normalized);
+        let session_manager = Arc::clone(&self.session_manager);
         spawn_blocking_service("delete session", move || {
-            EventLog::delete_session(&normalized).map_err(ServiceError::from)
+            session_manager
+                .delete_session(&normalized)
+                .map_err(ServiceError::from)
         })
         .await
     }
 
     pub async fn delete_project(&self, working_dir: &str) -> ServiceResult<DeleteProjectResult> {
         let working_dir = working_dir.to_string();
-        let metas = spawn_blocking_service("list project sessions", || {
-            EventLog::list_sessions_with_meta().map_err(ServiceError::from)
+        let session_manager = Arc::clone(&self.session_manager);
+        let metas = spawn_blocking_service("list project sessions", move || {
+            session_manager
+                .list_sessions_with_meta()
+                .map_err(ServiceError::from)
         })
         .await?;
         let targets = metas
@@ -125,8 +138,10 @@ impl RuntimeService {
         }
 
         let delete_working_dir = working_dir.clone();
+        let session_manager = Arc::clone(&self.session_manager);
         spawn_blocking_service("delete project sessions", move || {
-            EventLog::delete_sessions_by_working_dir(&delete_working_dir)
+            session_manager
+                .delete_sessions_by_working_dir(&delete_working_dir)
                 .map_err(ServiceError::from)
         })
         .await
@@ -156,20 +171,11 @@ impl RuntimeService {
         }
 
         let session_id_owned = session_id.to_string();
+        let session_manager = Arc::clone(&self.session_manager);
         let started_at = Instant::now();
         let load_result = spawn_blocking_service("load session state", move || {
-            // 先打开会话获取路径，然后用 iter_from_path 流式读取事件
-            let log =
-                EventLog::open(&session_id_owned).map_err(|error| match error.to_string() {
-                    message if message.contains("session file not found") => {
-                        ServiceError::NotFound(message)
-                    }
-                    _ => ServiceError::from(error),
-                })?;
-            let path = log.path().to_path_buf();
-            drop(log); // 释放写句柄，以便只读迭代
-
-            let stored: Vec<StoredEvent> = EventLog::iter_from_path(&path)
+            let stored: Vec<StoredEvent> = session_manager
+                .replay_events(&session_id_owned)
                 .map_err(ServiceError::from)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(ServiceError::from)?;
@@ -193,7 +199,9 @@ impl RuntimeService {
                 .last()
                 .map(|event| phase_of_storage_event(&event.event))
                 .unwrap_or(Phase::Idle);
-            let log = EventLog::open(&session_id_owned).map_err(ServiceError::from)?;
+            let log = session_manager
+                .open_event_log(&session_id_owned)
+                .map_err(ServiceError::from)?;
             let events = stored
                 .iter()
                 .map(|record| record.event.clone())
@@ -290,15 +298,14 @@ pub(super) fn display_name_from_working_dir(path: &Path) -> String {
         .to_string()
 }
 
-pub(super) async fn load_events(session_id: &str) -> ServiceResult<Vec<StoredEvent>> {
+pub(super) async fn load_events(
+    session_manager: Arc<dyn astrcode_core::SessionManager>,
+    session_id: &str,
+) -> ServiceResult<Vec<StoredEvent>> {
     let session_id = session_id.to_string();
     spawn_blocking_service("load session events", move || {
-        // 打开会话获取路径，然后用 iter_from_path 流式读取事件
-        let log = EventLog::open(&session_id).map_err(ServiceError::from)?;
-        let path = log.path().to_path_buf();
-        drop(log); // 释放写句柄，以便只读迭代
-
-        EventLog::iter_from_path(&path)
+        session_manager
+            .replay_events(&session_id)
             .map_err(ServiceError::from)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(ServiceError::from)

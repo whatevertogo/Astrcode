@@ -5,11 +5,11 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use anyhow::Result;
 use astrcode_core::{
-    AgentState, AgentStateProjector, CancelToken, EventTranslator, Phase, SessionEventRecord,
+    AgentState, AgentStateProjector, CancelToken, EventLogWriter, EventTranslator, Phase,
+    SessionEventRecord,
 };
 use tokio::sync::broadcast;
 
-use astrcode_core::EventLog;
 use astrcode_core::{StorageEvent, StoredEvent};
 
 use super::support::{lock_anyhow, spawn_blocking_anyhow};
@@ -76,13 +76,13 @@ impl RecentSessionEvents {
 }
 
 pub(super) struct SessionWriter {
-    inner: StdMutex<EventLog>,
+    inner: StdMutex<Box<dyn EventLogWriter>>,
 }
 
 impl SessionWriter {
-    pub(super) fn new(log: EventLog) -> Self {
+    pub(super) fn new(writer: Box<dyn EventLogWriter>) -> Self {
         Self {
-            inner: StdMutex::new(log),
+            inner: StdMutex::new(writer),
         }
     }
 

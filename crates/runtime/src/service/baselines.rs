@@ -1,13 +1,15 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{Duration as ChronoDuration, Utc};
 
-use astrcode_core::{AstrError, EventLog, Result, StorageEvent, StoredEvent};
+use astrcode_core::{AstrError, Result, StorageEvent, StoredEvent};
+use astrcode_storage::session::EventLog;
 
 use crate::agent_loop::AgentLoop;
 use crate::llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
@@ -46,7 +48,7 @@ struct StaticProviderFactory {
 }
 
 impl ProviderFactory for StaticProviderFactory {
-    fn build(&self) -> Result<Arc<dyn LlmProvider>> {
+    fn build_for_working_dir(&self, _working_dir: Option<PathBuf>) -> Result<Arc<dyn LlmProvider>> {
         Ok(Arc::clone(&self.provider))
     }
 }

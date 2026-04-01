@@ -30,8 +30,8 @@ mod test_support;
 
 pub use astrcode_runtime_config as config;
 pub use astrcode_runtime_config::{
-    config_path, load_config, open_config_in_editor, save_config, test_connection, Config, Profile,
-    TestResult,
+    config_path, load_config, load_resolved_config, open_config_in_editor, save_config,
+    test_connection, Config, ConfigOverlay, Profile, TestResult,
 };
 pub use astrcode_runtime_llm as llm;
 pub use astrcode_runtime_prompt as prompt;

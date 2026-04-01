@@ -28,9 +28,12 @@ pub use constants::{
     PROVIDER_KIND_OPENAI,
 };
 pub use editor::open_config_in_editor;
-pub use loader::{config_path, load_config, load_config_from_path};
+pub use loader::{
+    config_path, load_config, load_config_from_path, load_config_overlay_from_path,
+    load_resolved_config, project_overlay_path,
+};
 pub use saver::{save_config, save_config_to_path};
-pub use types::{Config, Profile, TestResult};
+pub use types::{Config, ConfigOverlay, Profile, TestResult};
 pub use validation::validate_config;
 
 #[cfg(test)]

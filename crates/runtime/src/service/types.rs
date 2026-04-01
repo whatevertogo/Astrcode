@@ -1,6 +1,6 @@
 use std::fmt::{Display, Formatter};
 
-use astrcode_core::AstrError;
+use astrcode_core::{AstrError, StoreError};
 pub use astrcode_core::{SessionEventRecord, SessionMessage};
 use async_trait::async_trait;
 use tokio::sync::broadcast;
@@ -87,6 +87,19 @@ impl From<AstrError> for ServiceError {
                 Self::InvalidInput(format!("missing base url for profile: {}", profile))
             }
             _ => Self::Internal(value),
+        }
+    }
+}
+
+impl From<StoreError> for ServiceError {
+    fn from(value: StoreError) -> Self {
+        match value {
+            StoreError::SessionNotFound(id) => Self::NotFound(format!("session not found: {}", id)),
+            StoreError::InvalidSessionId(id) => {
+                Self::InvalidInput(format!("invalid session id: {}", id))
+            }
+            StoreError::Io { context, .. } => Self::Internal(AstrError::Internal(context)),
+            StoreError::Parse { context, .. } => Self::Internal(AstrError::Internal(context)),
         }
     }
 }

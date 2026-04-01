@@ -12,31 +12,26 @@
 //!
 //! - `domain`: 领域事件类型（`AgentEvent`）和会话阶段（`Phase`）
 //! - `types`: 存储事件类型（`StorageEvent`）和序列化格式
-//! - `store`: `EventLog` 实现（文件的创建、打开、追加、加载）
 //! - `translate`: `EventTranslator` 将存储事件转换为领域事件
-//! - `paths`: 会话文件路径生成和验证
-//! - `query`: 事件查询功能
 
 mod domain;
-mod paths;
-mod query;
-mod store;
 mod translate;
 mod types;
 
-use std::fs::File;
-use std::io::{BufWriter, Write};
-use std::path::PathBuf;
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 pub use self::domain::{AgentEvent, Phase};
-pub use self::paths::generate_session_id;
-use self::paths::{session_path, validated_session_id};
-pub use self::store::EventLogIterator;
 pub use self::translate::{phase_of_storage_event, replay_records, EventTranslator};
 pub use self::types::{StorageEvent, StoredEvent, StoredEventLine};
+
+pub fn generate_session_id() -> String {
+    let dt = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S");
+    let uuid = Uuid::new_v4().simple().to_string();
+    let short = &uuid[..8];
+    format!("{dt}-{short}")
+}
 
 /// 会话元数据
 ///
@@ -71,59 +66,3 @@ pub struct DeleteProjectResult {
     /// 删除失败的会话 ID 列表
     pub failed_session_ids: Vec<String>,
 }
-
-/// 事件日志
-///
-/// 负责将会话事件追加到 JSONL 文件。每个会话对应一个文件：
-/// `~/.astrcode/sessions/session-{id}.jsonl`
-///
-/// ## 存储格式
-///
-/// 每行一个 JSON 对象：
-/// ```json
-/// {"storage_seq": 1, "event": {"SessionStart": {...}}}
-/// {"storage_seq": 2, "event": {"UserMessage": {...}}}
-/// ```
-///
-/// ## 存储 Seq 分配
-///
-/// - `storage_seq` 由 Writer 独占分配，保证单调递增
-/// - SSE 事件 ID 使用 `{storage_seq}.{subindex}` 格式
-/// - 客户端可以用 `Last-Event-ID` 实现断点续传
-pub struct EventLog {
-    /// 会话 ID
-    session_id: String,
-    /// 日志文件路径
-    path: PathBuf,
-    /// 缓冲写入器（提高写入性能）
-    writer: BufWriter<File>,
-    /// 下一个事件的存储序号
-    next_storage_seq: u64,
-}
-
-/// 确保 EventLog 在 Drop 时正确刷新和同步
-///
-/// 这是防止数据丢失的关键：即使 panic 发生，也要尽力刷新缓冲区。
-impl Drop for EventLog {
-    fn drop(&mut self) {
-        if let Err(error) = self.writer.flush() {
-            log::warn!(
-                "failed to flush event log '{}' on drop: {}",
-                self.path.display(),
-                error
-            );
-            return;
-        }
-
-        if let Err(error) = self.writer.get_ref().sync_all() {
-            log::warn!(
-                "failed to sync event log '{}' on drop: {}",
-                self.path.display(),
-                error
-            );
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests;

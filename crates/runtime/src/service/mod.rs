@@ -15,8 +15,9 @@ use crate::config::load_config;
 use crate::prompt::{PromptDeclaration, SkillSpec};
 use crate::provider_factory::ConfigFileProviderFactory;
 use astrcode_core::{
-    AllowAllPolicyEngine, AstrError, CapabilityRouter, PolicyEngine, RuntimeHandle,
+    AllowAllPolicyEngine, AstrError, CapabilityRouter, PolicyEngine, RuntimeHandle, SessionManager,
 };
+use astrcode_storage::session::FileSystemSessionRepository;
 
 #[cfg(test)]
 mod baselines;
@@ -57,6 +58,8 @@ pub struct RuntimeService {
     approval: Arc<dyn ApprovalBroker>,
     /// 配置（API 密钥等）
     config: Mutex<crate::config::Config>,
+    /// 会话存储实现（负责 durable session 文件读写）
+    session_manager: Arc<dyn SessionManager>,
     /// 会话加载锁（防止并发加载同一会话）
     session_load_lock: Mutex<()>,
     /// 可观测性（指标收集）
@@ -85,6 +88,7 @@ impl RuntimeService {
             prompt_skills,
             Arc::new(AllowAllPolicyEngine),
             Arc::new(DefaultApprovalBroker),
+            Arc::new(FileSystemSessionRepository),
         )
     }
 
@@ -94,6 +98,7 @@ impl RuntimeService {
         prompt_skills: Vec<SkillSpec>,
         policy: Arc<dyn PolicyEngine>,
         approval: Arc<dyn ApprovalBroker>,
+        session_manager: Arc<dyn SessionManager>,
     ) -> ServiceResult<Self> {
         let config = load_config().map_err(ServiceError::from)?;
         let loop_ = AgentLoop::from_capabilities_with_prompt_inputs(
@@ -110,6 +115,7 @@ impl RuntimeService {
             policy,
             approval,
             config: Mutex::new(config),
+            session_manager,
             session_load_lock: Mutex::new(()),
             observability: Arc::new(RuntimeObservability::default()),
             shutdown_token: CancellationToken::new(),

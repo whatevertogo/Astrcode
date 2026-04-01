@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use astrcode_core::{CancelToken, ModelRequest, Result};
@@ -6,8 +7,11 @@ use tokio::sync::mpsc;
 use crate::llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
 use crate::provider_factory::DynProviderFactory;
 use astrcode_core::StorageEvent;
-pub(crate) async fn build_provider(factory: DynProviderFactory) -> Result<Arc<dyn LlmProvider>> {
-    tokio::task::spawn_blocking(move || factory.build())
+pub(crate) async fn build_provider(
+    factory: DynProviderFactory,
+    working_dir: Option<PathBuf>,
+) -> Result<Arc<dyn LlmProvider>> {
+    tokio::task::spawn_blocking(move || factory.build_for_working_dir(working_dir))
         .await
         .map_err(|e| astrcode_core::AstrError::Internal(format!("blocking task failed: {e}")))?
 }

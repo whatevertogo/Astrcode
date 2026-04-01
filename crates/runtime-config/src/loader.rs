@@ -1,11 +1,13 @@
 //! Configuration loading utilities.
 
+use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use astrcode_core::{AstrError, Result};
+use uuid::Uuid;
 
-use crate::types::Config;
+use crate::types::{Config, ConfigOverlay};
 use crate::validation::normalize_config;
 
 /// Returns the path to the config file.
@@ -18,6 +20,26 @@ pub fn config_path() -> Result<PathBuf> {
 pub fn load_config() -> Result<Config> {
     let path = config_path()?;
     load_config_from_path(&path)
+}
+
+/// Loads the effective configuration for an optional working directory.
+pub fn load_resolved_config(working_dir: Option<&Path>) -> Result<Config> {
+    let mut config = load_config()?;
+    if let Some(working_dir) = working_dir {
+        let project_path = project_overlay_path(working_dir)?;
+        if let Some(overlay) = load_config_overlay_from_path(&project_path)? {
+            if let Some(active_profile) = overlay.active_profile {
+                config.active_profile = active_profile;
+            }
+            if let Some(active_model) = overlay.active_model {
+                config.active_model = active_model;
+            }
+            if let Some(profiles) = overlay.profiles {
+                config.profiles = profiles;
+            }
+        }
+    }
+    normalize_config(config)
 }
 
 /// Loads the configuration from a specific path.
@@ -45,13 +67,49 @@ pub fn load_config_from_path(path: &Path) -> Result<Config> {
         return normalize_config(default_cfg);
     }
 
-    let raw = fs::read_to_string(path)
-        .map_err(|e| AstrError::io(format!("failed to read config at {}", path.display()), e))?;
-    let config = serde_json::from_str::<Config>(&raw).map_err(|e| {
-        AstrError::parse(format!("failed to parse config at {}", path.display()), e)
-    })?;
+    let config = read_json_from_path::<Config>(path)?;
     normalize_config(config)
         .map_err(|e| e.context(format!("failed to validate config at {}", path.display())))
+}
+
+/// Loads a project overlay if the file exists.
+pub fn load_config_overlay_from_path(path: &Path) -> Result<Option<ConfigOverlay>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    read_json_from_path(path).map(Some)
+}
+
+/// Returns the private project overlay path for a working directory.
+pub fn project_overlay_path(working_dir: &Path) -> Result<PathBuf> {
+    let home = astrcode_core::home::resolve_home_dir()?;
+    Ok(home
+        .join(".astrcode")
+        .join("projects")
+        .join(stable_project_key(working_dir))
+        .join("config.json"))
+}
+
+fn stable_project_key(working_dir: &Path) -> String {
+    let canonical =
+        std::fs::canonicalize(working_dir).unwrap_or_else(|_| working_dir.to_path_buf());
+    let normalized: Cow<'_, str> = canonical.to_string_lossy();
+    let key_source = if cfg!(windows) {
+        normalized.to_ascii_lowercase()
+    } else {
+        normalized.into_owned()
+    };
+    Uuid::new_v5(&Uuid::NAMESPACE_URL, key_source.as_bytes()).to_string()
+}
+
+fn read_json_from_path<T>(path: &Path) -> Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let raw = fs::read_to_string(path)
+        .map_err(|e| AstrError::io(format!("failed to read config at {}", path.display()), e))?;
+    serde_json::from_str::<T>(&raw)
+        .map_err(|e| AstrError::parse(format!("failed to parse config at {}", path.display()), e))
 }
 
 /// Writes JSON atomically via a temp file and rename.
