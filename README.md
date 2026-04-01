@@ -36,9 +36,14 @@
 ### 安装依赖
 
 ```bash
+# 安装仓库级工具（会自动注册 .githooks/pre-commit）
+npm install
+
 # 安装前端依赖
 cd frontend && npm install
 ```
+
+执行根目录或 `frontend` 的 `npm install` 时，会自动把仓库的 `core.hooksPath` 指向 `.githooks/`。之后每次 `git commit` 都会在提交前格式化已暂存的 Rust 文件和 `frontend/src` 下的 `ts` / `tsx` / `css` 文件，并把格式化结果重新加入暂存区。
 
 ### 开发模式
 
@@ -255,7 +260,7 @@ Tauri 仅作为"薄壳"，负责：
 make check
 # 或
 cargo check --workspace
-cargo test --workspace
+cargo test --workspace --exclude astrcode
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features
 
@@ -279,8 +284,8 @@ cd frontend && npm run format
 ### 测试
 
 ```bash
-# 运行所有 Rust 测试
-cargo test --workspace
+# 运行业务 Rust 测试
+cargo test --workspace --exclude astrcode
 
 # 运行前端测试
 cd frontend && npm run test:watch
@@ -294,25 +299,12 @@ cargo deny check bans
 
 ## CI/CD
 
-项目使用 GitHub Actions 进行持续集成：
+项目使用 4 个 GitHub Actions workflow：
 
-```
-┌─────────────────┐    ┌─────────────────┐
-│  rust-check     │    │   ts-check      │
-│  - fmt check    │    │  - typecheck    │
-│  - clippy       │    │  - test:watch   │
-│  - cargo deny   │    │  - lint         │
-│  - cargo test   │    │  - format:check │
-└────────┬────────┘    └────────┬────────┘
-         │                     │
-         └──────────┬──────────┘
-                    │
-            ┌───────▼────────┐
-            │  build-check   │
-            │  - npm build   │
-            │  - cargo check │
-            └────────────────┘
-```
+- `rust-check`：`cargo fmt --all -- --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --workspace --exclude astrcode`
+- `frontend-check`：`cd frontend && npm run typecheck && npm run lint && npm run format:check`
+- `dependency-audit`：当 `Cargo.lock` 或 `deny.toml` 变更时执行 `cargo deny check bans`
+- `tauri-build`：在发布 tag 时构建 Tauri 桌面端
 
 ## 许可证
 

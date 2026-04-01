@@ -1,5 +1,6 @@
 {
   "scripts": {
+    "postinstall": "node scripts/setup-git-hooks.mjs",
     "dev": "powershell -ExecutionPolicy Bypass -File scripts/dev.ps1",
     "dev:win": "powershell -ExecutionPolicy Bypass -File scripts/dev.ps1",
     "dev:unix": "bash scripts/dev.sh",

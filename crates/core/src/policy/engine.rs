@@ -179,7 +179,9 @@ pub enum PolicyVerdict<T> {
     /// 拒绝执行
     Deny { reason: String },
     /// 需要用户审批
-    Ask(ApprovalPending<T>),
+    ///
+    /// Box 住审批载荷，避免 Allow/Deny 也为较大的审批上下文付出同样的栈空间成本。
+    Ask(Box<ApprovalPending<T>>),
 }
 
 impl<T> PolicyVerdict<T> {
@@ -197,7 +199,7 @@ impl<T> PolicyVerdict<T> {
 
     /// 创建需审批裁决
     pub fn ask(request: ApprovalRequest, action: T) -> Self {
-        Self::Ask(ApprovalPending { request, action })
+        Self::Ask(Box::new(ApprovalPending { request, action }))
     }
 }
 

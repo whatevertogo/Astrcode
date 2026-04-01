@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+# Use one Node entrypoint so Git for Windows and Unix shells execute the same formatting flow.
+node scripts/pre-commit-format.mjs

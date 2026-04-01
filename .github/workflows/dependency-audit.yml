@@ -30,7 +30,7 @@ jobs:
           shared-key: "cargo-deny"
 
       - name: Install cargo-deny
-        run: cargo install cargo-deny
+        run: cargo install cargo-deny --locked
 
       - name: Run cargo-deny
-        run: cargo deny check
+        run: cargo deny check bans

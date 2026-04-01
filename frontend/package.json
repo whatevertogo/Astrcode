@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "postinstall": "node ../scripts/setup-git-hooks.mjs",
     "kill-port": "node scripts/kill-port.js",
     "dev": "node scripts/kill-port.js && vite",
     "build": "vite build",

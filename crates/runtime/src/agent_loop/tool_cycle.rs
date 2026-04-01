@@ -1,7 +1,8 @@
 use std::time::Instant;
 
 use astrcode_core::{
-    ApprovalResolution, CancelToken, CapabilityCall, PolicyVerdict, Result, ToolExecutionResult,
+    ApprovalPending, ApprovalResolution, CancelToken, CapabilityCall, PolicyVerdict, Result,
+    ToolExecutionResult,
 };
 
 use super::AgentLoop;
@@ -59,11 +60,9 @@ pub(crate) async fn execute_tool_calls(
                     denial_result(&call, reason)
                 }
                 PolicyVerdict::Ask(pending) => {
-                    let pending_call = normalized_tool_call(&proposed_call, pending.action)?;
-                    let resolution = agent_loop
-                        .approval
-                        .request(pending.request, cancel.clone())
-                        .await?;
+                    let ApprovalPending { request, action } = *pending;
+                    let pending_call = normalized_tool_call(&proposed_call, action)?;
+                    let resolution = agent_loop.approval.request(request, cancel.clone()).await?;
 
                     if resolution.approved {
                         execute_tool_call(capabilities, pending_call, turn_id, &ctx, on_event)

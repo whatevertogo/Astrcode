@@ -23,6 +23,12 @@ pub struct ToolRegistryBuilder {
     order: Vec<String>,
 }
 
+impl Default for ToolRegistryBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolRegistryBuilder {
     /// 创建新的构建器
     pub fn new() -> Self {
