@@ -9,7 +9,6 @@
 
 mod capability_router;
 mod invoker;
-mod lifecycle;
 mod loader;
 mod peer;
 mod process;
@@ -22,13 +21,12 @@ pub use capability_router::{
     AllowAllPermissionChecker, CapabilityHandler, CapabilityRouter, PermissionChecker,
 };
 pub use invoker::PluginCapabilityInvoker;
-pub use lifecycle::LifecycleManager;
-pub use loader::{PluginInstance, PluginLoader};
+pub use loader::PluginLoader;
 pub use peer::Peer;
 pub use process::{PluginProcess, PluginProcessStatus};
 pub use streaming::{EventEmitter, StreamExecution};
 pub use supervisor::{
-    default_initialize_message, default_profiles, manifest_capabilities, Supervisor,
-    SupervisorHealth, SupervisorHealthReport,
+    default_initialize_message, default_profiles, Supervisor, SupervisorHealth,
+    SupervisorHealthReport,
 };
 pub use worker::Worker;

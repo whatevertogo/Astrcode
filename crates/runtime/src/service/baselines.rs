@@ -26,7 +26,7 @@ impl LlmProvider for StaticProvider {
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         if !self.delay.is_zero() {
             tokio::select! {
-                _ = crate::cancel::cancelled(request.cancel.clone()) => return Err(AstrError::LlmInterrupted),
+                _ = crate::llm::cancelled(request.cancel.clone()) => return Err(AstrError::LlmInterrupted),
                 _ = tokio::time::sleep(self.delay) => {}
             }
         }

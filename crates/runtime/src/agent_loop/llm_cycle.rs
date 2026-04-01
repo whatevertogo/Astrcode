@@ -12,6 +12,18 @@ pub(crate) async fn build_provider(factory: DynProviderFactory) -> Result<Arc<dy
         .map_err(|e| astrcode_core::AstrError::Internal(format!("blocking task failed: {e}")))?
 }
 
+/// 调用 LLM 提供者并实时转发流式增量事件。
+///
+/// ## 架构模式：unbounded channel + select + drain
+///
+/// LLM 提供者的 `generate()` 方法接受一个 `EventSink` 回调来推送流式事件。
+/// 但我们需要在接收事件的同时等待 `generate()` 完成并获取最终结果。
+/// 使用 `tokio::select!` 同时等待这两个源：
+/// - `generate_future` 完成 → 返回最终 `LlmOutput`
+/// - `event_rx.recv()` → 实时转发增量 delta 为 `StorageEvent`
+///
+/// `generate()` 可能在返回结果之前推送最后几个事件到 channel，
+/// 所以下方用 `try_recv()` 循环排空 channel 中残余事件。
 pub(crate) async fn generate_response(
     provider: &Arc<dyn LlmProvider>,
     request: ModelRequest,

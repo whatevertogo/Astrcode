@@ -65,6 +65,14 @@ impl SessionReplaySource for RuntimeService {
     }
 }
 
+/// 将存储事件序列转换为面向前端展示的会话消息列表。
+///
+/// ## 关键设计决策
+///
+/// **reasoning-only 消息合并**: 当 `AssistantFinal` 仅包含推理内容（`reasoning_content`）
+/// 而没有可见内容（`content` 为空）时，先缓存到 `pending_reasoning_only_assistants`。
+/// 如果紧接着出现 `ToolCall`，说明推理内容是工具调用的前置思考，应合并到工具调用消息中；
+/// 如果没有工具调用（如 turn 结束），则丢弃这些纯推理消息——前端不需要展示空的推理块。
 pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionMessage> {
     let mut messages = Vec::new();
     let mut pending_tool_calls: Vec<(Option<String>, String, String, serde_json::Value)> =

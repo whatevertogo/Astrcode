@@ -13,6 +13,33 @@ use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 
 use crate::{CapabilityRouter, EventEmitter, StreamExecution};
 
+/// 与插件进程的双向通信端。
+///
+/// ## 架构概览
+///
+/// ```text
+/// Host (本进程)                          Plugin (子进程)
+/// ──────────────                        ──────────────
+/// invoke() ─── InvokeMessage ──────►  处理请求
+///            ◄──── ResultMessage ───────  返回结果
+///            ◄──── EventMessage ────────  流式增量
+///
+/// read_loop ◄──── PluginMessage ───────  所有入站消息
+///            ─── CancelMessage ──────►  取消请求
+/// ```
+///
+/// ## 关键状态
+///
+/// - `pending_results`: 等待结果的一次性 channel，invoke 时插入，收到 ResultMessage 时取出
+/// - `pending_streams`: 流式调用的增量 channel，invoke(stream=true) 时插入
+/// - `inbound_cancellations`: 插件调用 host 能力时的取消令牌，host 可以取消
+/// - `read_loop_handle`: 后台读循环的 JoinHandle，abort() 时用于取消
+/// - `invoke_handles`: 每个入站 invoke 对应的处理任务，abort() 时批量取消
+///
+/// ## 同步原语选择
+///
+/// `read_loop_handle` 和 `invoke_handles` 使用 `std::sync::Mutex`（非 tokio Mutex），
+/// 因为这些字段只在短时间内持有锁（插入/取出 HashMap 条目），不需要跨 await 点。
 #[derive(Clone)]
 pub struct Peer {
     inner: Arc<PeerInner>,

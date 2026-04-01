@@ -209,6 +209,10 @@ pub(crate) async fn session_events(
                     yield Ok::<Event, Infallible>(to_sse_event(record));
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    // SSE lag 恢复：broadcast channel 有界容量（默认 1024），
+                    // 如果客户端消费太慢会被 Channel 丢弃消息。此时需要重新
+                    // 从磁盘回放历史事件，以 last_sent 为游标起点，补齐丢失
+                    // 的事件后继续订阅。如果回放也失败则断开连接。
                     let cursor = last_sent.map(format_event_id);
                     match service
                         .replay(&session_id_for_stream, cursor.as_deref())

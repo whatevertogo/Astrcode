@@ -203,7 +203,3 @@ pub fn default_profiles() -> Vec<ProfileDescriptor> {
         metadata: Value::Null,
     }]
 }
-
-pub fn manifest_capabilities(manifest: &PluginManifest) -> Vec<CapabilityDescriptor> {
-    manifest.capabilities.clone()
-}

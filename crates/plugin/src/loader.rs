@@ -5,11 +5,6 @@ use astrcode_protocol::plugin::{InitializeMessage, PeerDescriptor};
 
 use crate::{PluginProcess, Supervisor};
 
-#[derive(Debug, Clone)]
-pub struct PluginInstance {
-    pub manifest: PluginManifest,
-}
-
 #[derive(Debug, Default, Clone)]
 pub struct PluginLoader {
     pub search_paths: Vec<PathBuf>,
@@ -99,12 +94,6 @@ impl PluginLoader {
                 .then_with(|| left.executable.cmp(&right.executable))
         });
         Ok(manifests)
-    }
-
-    pub fn load(&self, manifest: &PluginManifest) -> Result<PluginInstance> {
-        Ok(PluginInstance {
-            manifest: manifest.clone(),
-        })
     }
 
     pub async fn start_process(&self, manifest: &PluginManifest) -> Result<PluginProcess> {

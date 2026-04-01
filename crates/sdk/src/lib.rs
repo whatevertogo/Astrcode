@@ -12,7 +12,6 @@
 mod context;
 mod error;
 mod hook;
-mod macros;
 mod stream;
 #[cfg(test)]
 mod tests;

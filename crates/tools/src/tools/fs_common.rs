@@ -118,6 +118,24 @@ struct UnifiedDiffReport {
     truncated: bool,
 }
 
+/// 手工实现的 unified diff 生成器。
+///
+/// ## 为什么不用外部 diff 库
+///
+/// 工具系统需要生成 unified diff 格式的输出给前端渲染，但只需要单 hunk（所有变更
+/// 集中在一个区域），不需要标准 diff 的多 hunk 分割。因此使用简化算法：
+///
+/// ## 算法
+///
+/// 1. **前后缀匹配**: 从文件开头和结尾分别找公共行（prefix_len / suffix_len），
+///    中间的就是变更区域。这是最简单的 diff 策略——不处理交叉插入/删除。
+/// 2. **上下文行**: 变更区域前后各取最多 3 行作为上下文（context_start =
+///    prefix_len - 3），保证 diff 可读性。
+/// 3. **Hunk header 计算**: `@@ -{start},{count} +{start},{count} @@`
+///    - start 使用 1-based 行号：如果有删除行则 `context_start + 1`，否则 `context_start`
+///      （纯新增文件时 start 从 0 开始无意义，+1 使其从第 1 行开始）
+///    - count = hunk_end - context_start（包含上下文行和变更行）
+/// 4. **截断**: 超过 240 行的 diff 截断，避免前端渲染性能问题。
 fn build_unified_diff(path: &Path, before: &str, after: &str, created: bool) -> UnifiedDiffReport {
     let before_lines = text_lines(before);
     let after_lines = text_lines(after);
@@ -252,6 +270,13 @@ fn normalize_lexically(path: &Path) -> PathBuf {
     normalized
 }
 
+/// 解析路径到绝对形式，用于沙箱边界检查。
+///
+/// **为什么不能用 `fs::canonicalize` 直接处理**: `canonicalize` 要求路径在磁盘上存在，
+/// 但 `writeFile` 和 `editFile` 经常操作尚不存在的文件/目录。此函数从路径的尾部向上
+/// 找到第一个存在的祖先，对其 `canonicalize` 获取真实绝对路径，再拼回缺失的部分。
+/// 例如 `/home/user/project/new_dir/new_file.txt` 中 `new_dir/` 不存在时，
+/// 先 canonicalize `/home/user/project/`，再追加 `new_dir/new_file.txt`。
 fn resolve_for_boundary_check(path: &Path) -> Result<PathBuf> {
     if path.exists() {
         return canonicalize_path(

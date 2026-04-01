@@ -61,6 +61,13 @@ impl From<anyhow::Error> for ServiceError {
     }
 }
 
+/// 将领域错误映射为 HTTP 语义错误。
+///
+/// 每个 AstrError 变体被归类到对应的 HTTP 状态码类别：
+/// - NotFound (404): SessionNotFound, ProjectNotFound
+/// - Conflict (409): TurnInProgress
+/// - InvalidInput (400): Validation, InvalidSessionId, MissingApiKey, MissingBaseUrl
+/// - Internal (500): 其他所有错误（IO、LLM 失败等）
 impl From<AstrError> for ServiceError {
     fn from(value: AstrError) -> Self {
         match &value {

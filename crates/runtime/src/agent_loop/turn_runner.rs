@@ -11,6 +11,26 @@ use super::{
     AgentLoop,
 };
 
+/// 执行一个完整的 agent turn（从用户提示到最终响应）。
+///
+/// ## Turn 内部的 step 循环
+///
+/// 一个 turn 可能包含多个 step（LLM 调用 → 工具执行 → 再调用 LLM → ...），
+/// 直到 LLM 不再请求工具调用为止。每个 step 的流程：
+///
+/// ```text
+/// 1. compose prompt  →  组装系统提示词 + 历史消息
+/// 2. call LLM        →  发送到 provider，流式接收 delta
+/// 3. process result   →  如果有 tool_calls → 执行工具 → 回到步骤 1
+///                       如果没有 tool_calls → turn 结束
+/// ```
+///
+/// ## 终止条件
+///
+/// - `max_steps` 达到上限（防止无限循环）
+/// - LLM 返回纯文本（无工具调用）
+/// - 取消信号触发
+/// - 任何步骤返回错误
 pub(crate) async fn run_turn(
     agent_loop: &AgentLoop,
     state: &AgentState,

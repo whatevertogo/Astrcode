@@ -154,6 +154,9 @@ impl EventTranslator {
                 self.phase = Phase::Idle;
             }
             StorageEvent::UserMessage { .. } => {
+                // 收到用户消息意味着新 turn 开始，状态切换到 Thinking。
+                // 不检查当前 phase 是否已经是 Thinking，因为
+                // UserMessage 总是新 turn 的起点。
                 if self.phase != Phase::Thinking {
                     push(
                         AgentEvent::PhaseChanged {
@@ -166,6 +169,8 @@ impl EventTranslator {
                 self.phase = Phase::Thinking;
             }
             StorageEvent::AssistantDelta { token, .. } => {
+                // LLM 文本增量输出。首次收到时需从 Thinking 切换到 Streaming，
+                // 后续增量不再触发 PhaseChanged（避免 SSE 抖动）。
                 if self.phase != Phase::Streaming {
                     push(
                         AgentEvent::PhaseChanged {
@@ -266,6 +271,9 @@ impl EventTranslator {
                 }
                 self.phase = Phase::CallingTool;
             }
+            // 工具执行结果。不触发 PhaseChanged —— 在同一个 turn 内，
+            // 可能有多个工具调用和结果交替出现，phase 保持 CallingTool。
+            // 只有 TurnDone 才将 phase 切回 Idle。
             StorageEvent::ToolResult {
                 tool_call_id,
                 tool_name,

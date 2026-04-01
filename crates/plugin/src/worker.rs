@@ -6,6 +6,10 @@ use astrcode_protocol::plugin::{InitializeMessage, PeerDescriptor};
 use crate::transport::StdioTransport;
 use crate::{CapabilityRouter, Peer};
 
+/// 进程内插件 Worker—— 通过 stdio 与宿主进程通信。
+///
+/// 通常用于子进程模式下，插件二进制通过 `Worker::from_stdio()` 创建连接，
+/// 然后进入 `run()` 循环直到连接关闭。
 pub struct Worker {
     peer: Peer,
 }

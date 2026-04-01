@@ -177,11 +177,6 @@ impl AstrError {
         }
     }
 
-    /// 旧版兼容方法，与 context 行为一致
-    pub fn with_context(self, context: impl Into<String>) -> Self {
-        self.context(context)
-    }
-
     pub fn io(context: impl Into<String>, source: std::io::Error) -> Self {
         AstrError::Io {
             context: context.into(),

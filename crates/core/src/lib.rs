@@ -27,6 +27,10 @@ pub mod projection;
 pub mod registry;
 pub mod runtime;
 pub mod session;
+// test_support 是 pub mod（而非 #[cfg(test)]），因为其他 crate（runtime, runtime-config,
+// runtime-prompt）的测试代码通过 `astrcode_core::test_support::TestEnvGuard` 导入它。
+// Rust 不支持跨 crate 的 #[cfg(test)] 导出，所以只能保持 pub。tempfile 依赖也因此
+// 无法移到 [dev-dependencies]，但该模块除测试外不会在生产代码路径中被调用。
 pub mod test_support;
 mod tool;
 
@@ -42,7 +46,7 @@ pub use capability::{
 pub use error::{AstrError, Result, ResultExt};
 pub use event::{
     generate_session_id, phase_of_storage_event, replay_records, AgentEvent, EventLog,
-    EventLogIterator, EventStore, EventTranslator, Phase, StorageEvent, StoredEvent,
+    EventLogIterator, EventTranslator, Phase, StorageEvent, StoredEvent,
 };
 pub use plugin::{PluginHealth, PluginManifest, PluginRegistry, PluginState, PluginType};
 pub use policy::{

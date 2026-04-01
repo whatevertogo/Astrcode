@@ -1,3 +1,15 @@
+// 本文件包含 Tauri 桌面端引导所需的全部基础设施：
+// - 前端静态文件服务（serve_frontend_build / attach_frontend_build / load_frontend_build）
+// - 运行信息文件管理（write_run_info / clear_run_info）—— Tauri 通过读取此文件发现 server 端口
+// - 浏览器引导 token 注入（inject_browser_bootstrap_html）—— 将认证 token 嵌入 HTML
+// - CORS 配置（build_cors_layer）—— 开发模式需要 localhost 双端口互通
+// - Token 生成（random_hex_token / bootstrap_token_expires_at_ms）
+// - 工作区根目录解析（workspace_root）
+//
+// 这些功能都与「server 如何被外部发现和认证」相关，放在一起是因为它们在启动流程中
+// 按顺序调用：生成 token → 写 run_info → 配 CORS → 挂载前端 → 注入 token 到 HTML。
+// 如果未来增加更多引导逻辑，可以考虑拆分为 bootstrap/ 子模块。
+
 use std::path::{Path as FsPath, PathBuf};
 
 use anyhow::{anyhow, Context, Result as AnyhowResult};

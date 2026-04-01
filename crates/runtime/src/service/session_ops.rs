@@ -132,6 +132,16 @@ impl RuntimeService {
         .await
     }
 
+    /// 确保会话已加载到内存中，使用双重检查锁定避免重复加载。
+    ///
+    /// ## 为什么需要锁
+    ///
+    /// 多个并发请求可能同时请求同一个 session_id（如多个 SSE 客户端连接）。
+    /// 如果不加锁，会导致同一个会话被从磁盘加载两次，创建两个不同的
+    /// `SessionState` 和 broadcast channel，后续事件会分散到不同 channel。
+    ///
+    /// 使用 `session_load_lock` 保证只有一个请求执行实际的磁盘加载，
+    /// 其他请求等待锁释放后直接从 `sessions` map 中获取已加载的状态。
     pub(super) async fn ensure_session_loaded(
         &self,
         session_id: &str,

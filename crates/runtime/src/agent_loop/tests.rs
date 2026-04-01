@@ -53,7 +53,7 @@ impl LlmProvider for ScriptedProvider {
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         if self.delay > Duration::from_millis(0) {
             tokio::select! {
-                _ = crate::cancel::cancelled(request.cancel.clone()) => return Err(AstrError::LlmInterrupted),
+                _ = crate::llm::cancelled(request.cancel.clone()) => return Err(AstrError::LlmInterrupted),
                 _ = sleep(self.delay) => {}
             }
         }
@@ -277,7 +277,7 @@ impl LlmProvider for StreamingProvider {
             sink(LlmEvent::TextDelta(delta.to_string()));
 
             tokio::select! {
-                _ = crate::cancel::cancelled(request.cancel.clone()) => return Err(AstrError::LlmInterrupted),
+                _ = crate::llm::cancelled(request.cancel.clone()) => return Err(AstrError::LlmInterrupted),
                 _ = sleep(self.per_delta_delay) => {}
             }
         }
@@ -332,7 +332,7 @@ impl Tool for SlowTool {
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult> {
         tokio::select! {
-            _ = crate::cancel::cancelled(ctx.cancel().clone()) => Err(AstrError::Cancelled),
+            _ = crate::llm::cancelled(ctx.cancel().clone()) => Err(AstrError::Cancelled),
             _ = sleep(Duration::from_millis(250)) => Ok(ToolExecutionResult {
                 tool_call_id,
                 tool_name: "slowTool".to_string(),

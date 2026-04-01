@@ -250,6 +250,19 @@ impl EventLog {
         )
     }
 
+    /// 从会话文件尾部扫描，查找满足 mapper 条件的最后一个值。
+    ///
+    /// ## 算法（指数窗口扫描）
+    ///
+    /// 从文件末尾向前搜索，使用指数增长的读取窗口：
+    /// 1. 初始窗口 = 4KB，从 `len - window` 位置开始读取
+    /// 2. 如果读取位置不在文件开头，跳过第一行（可能是不完整的行）
+    /// 3. 如果跳过第一行后没有任何内容，窗口翻倍重试
+    /// 4. 对窗口内的行**从后向前**遍历，找到第一个匹配的值立即返回
+    /// 5. 如果窗口内没找到匹配值，翻倍窗口继续扫描更早的内容
+    ///
+    /// 这个策略避免了对大文件的全量扫描——对于只需要最后一个时间戳或阶段
+    /// 的场景，通常在第一次 4KB 读取中就能命中。
     fn read_tail_value<T, F>(path: &Path, mut mapper: F) -> Result<Option<T>>
     where
         F: FnMut(&StorageEvent) -> Option<T>,
@@ -346,6 +359,8 @@ fn timestamp_of_event(event: &StorageEvent) -> Option<DateTime<Utc>> {
     }
 }
 
+/// 适配器：将 `phase_of_storage_event()`（返回 `Phase`）包装为 `Option<Phase>`，
+/// 以便作为 `read_tail_value()` 的 mapper 闭包使用。
 fn phase_of_event(event: &StorageEvent) -> Phase {
     super::phase_of_storage_event(event)
 }

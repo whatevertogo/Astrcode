@@ -248,6 +248,10 @@ impl PromptComposer {
         plan: &mut PromptPlan,
         diagnostics: &mut PromptDiagnostics,
     ) -> Result<()> {
+        // 波前式拓扑排序（wave-based topological sort）：
+        // 每轮迭代处理所有依赖已就绪的候选块，未就绪的推迟到下一轮。
+        // 如果一轮迭代中没有任何进展（progressed == false），说明存在循环依赖。
+        // 这种方式比标准 Kahn 算法更简单，且能自然地产生诊断信息。
         let known_ids = candidates
             .iter()
             .map(|candidate| candidate.spec.id.to_string())

@@ -173,6 +173,26 @@ impl PluginInitializer for SupervisorPluginInitializer {
     }
 }
 
+/// 组装完整的运行时能力面（capability surface）。
+///
+/// 将内置工具和外部插件的能力统一注册到 `CapabilityRouter` 中。
+///
+/// ## 流程
+///
+/// 1. 收集内置工具（shell, readFile, writeFile 等）的 invoker
+/// 2. 对插件清单按名称/版本排序（保证确定性冲突解决）
+/// 3. 逐个初始化插件：通过 `PluginInitializer` 启动进程并握手
+/// 4. 对每个插件分三种结果：
+///    - **成功**: 注册其能力到 router，记录为活跃插件
+///    - **能力冲突**: 如果能力名已被注册，跳过该插件，记录为健康冲突
+///    - **初始化失败**: 跳过该插件，记录为不健康
+/// 5. 返回组装结果：router + 所有插件条目（含活跃/跳过/失败的） + 需要管理的组件
+///
+/// ## 关键约束
+///
+/// - 能力名必须全局唯一：先到先得，排序保证确定性
+/// - 插件初始化失败不阻塞其他插件
+/// - 返回的 `managed_components` 需要在 shutdown 时有序关闭
 pub(crate) async fn assemble_runtime_surface<I>(
     manifests: Vec<PluginManifest>,
     initializer: &I,

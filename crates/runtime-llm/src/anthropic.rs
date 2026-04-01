@@ -16,8 +16,6 @@ use astrcode_core::{LlmMessage, ToolCallRequest, ToolDefinition};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
-#[allow(dead_code)]
-const DEFAULT_MAX_TOKENS: u32 = 8096;
 
 #[derive(Clone)]
 pub struct AnthropicProvider {
@@ -39,11 +37,6 @@ impl fmt::Debug for AnthropicProvider {
 }
 
 impl AnthropicProvider {
-    #[allow(dead_code)]
-    pub fn new(api_key: String, model: String) -> Self {
-        Self::with_max_tokens(api_key, model, DEFAULT_MAX_TOKENS)
-    }
-
     pub fn with_max_tokens(api_key: String, model: String, max_tokens: u32) -> Self {
         Self {
             client: build_http_client(),
@@ -401,6 +394,11 @@ fn process_sse_block(
         return Ok(false);
     };
 
+    // Anthropic SSE 事件类型分派：
+    // - content_block_start: 新内容块开始（可能是文本或工具调用）
+    // - content_block_delta: 增量内容（文本/思考/签名/工具参数）
+    // - message_stop: 流结束信号，返回 true 通知上层停止读取
+    // - message_start/delta/content_block_stop/ping: 元数据事件，静默忽略
     match event_type.as_str() {
         "content_block_start" => {
             let index = payload
@@ -654,7 +652,7 @@ mod tests {
     use crate::sink_collector;
 
     fn test_provider() -> AnthropicProvider {
-        AnthropicProvider::new("sk-ant-test".to_string(), "claude-test".to_string())
+        AnthropicProvider::with_max_tokens("sk-ant-test".to_string(), "claude-test".to_string(), 8096)
     }
 
     #[test]
@@ -835,7 +833,7 @@ mod tests {
     #[test]
     fn build_request_serializes_thinking_when_model_supports_it() {
         let provider =
-            AnthropicProvider::new("sk-ant-test".to_string(), "claude-sonnet-4-5".to_string());
+            AnthropicProvider::with_max_tokens("sk-ant-test".to_string(), "claude-sonnet-4-5".to_string(), 8096);
         let request = provider.build_request(
             &[LlmMessage::User {
                 content: "hi".to_string(),

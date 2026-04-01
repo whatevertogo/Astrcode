@@ -22,6 +22,12 @@ struct EditFileArgs {
     new_str: String,
 }
 
+/// 在 haystack 中查找 needle 的唯一出现位置。
+///
+/// **为什么需要重叠检测**: 如果只按 `needle.len()` 步进，对于 `"ababa"` 中搜索 `"aba"`
+/// 会漏掉位置 2 的重叠匹配。edit_file 要求 oldStr 在文件中必须唯一，
+/// 因此需要逐 UTF-8 标量步进来捕获所有可能的匹配位置。
+/// 找到多个匹配时返回错误，拒绝编辑以防止意外修改错误的位置。
 fn find_unique_occurrence(haystack: &str, needle: &str) -> Option<Result<usize>> {
     if needle.is_empty() {
         return None;

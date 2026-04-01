@@ -76,6 +76,26 @@ pub struct AssistantContentParts {
     pub reasoning_content: Option<String>,
 }
 
+/// 将 LLM 原始输出文本拆分为「可见内容」和「推理内容」两部分。
+///
+/// ## 为什么需要这个函数
+///
+/// 某些 LLM（如 Anthropic Claude）使用 `<think＞...＜/think＞` 标签包裹推理过程。
+/// 但 LLM 可能在不同位置以不同方式输出这些标签：
+/// - 作为独立的 reasoning_content 字段（由 LLM API 返回）
+/// - 内联在文本内容中（某些模型/提供商的输出风格）
+///
+/// 此函数统一处理这两种情况，提取出推理内容并清理可见文本。
+///
+/// ## 算法要点
+///
+/// 1. 用游标扫描全文，查找大小写不敏感的 `<think＞...＜/think＞` 标签对
+/// 2. 空的 think 块（`<think＞＜/think＞`）保留原样不动——避免破坏无推理内容时的输出
+/// 3. 非空 think 块的内容被提取到 `inline_blocks`，标签从可见文本中移除
+/// 4. 移除标签后，连续超过两个空行的位置会被折叠为两个空行（`collapse_extra_blank_lines`），
+///    因为标签移除可能留下大片空白
+/// 5. 如果同时存在显式 reasoning（API 返回的）和内联 reasoning（从标签提取的），
+///    合并两者；内容相同时去重
 pub fn split_assistant_content(
     content: &str,
     explicit_reasoning: Option<&str>,

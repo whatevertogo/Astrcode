@@ -321,7 +321,15 @@ impl EventLog {
     /// 获取文件中最后一个事件的 storage_seq
     ///
     /// 用于打开现有日志时确定下一个序号。
-    /// 小文件直接迭代；大文件仅读取尾部避免全量扫描。
+    ///
+    /// ## 两阶段策略
+    ///
+    /// 1. **小文件**（<= 64KB）：直接全量迭代，简单可靠。
+    ///    避免在 Windows 上 seek 与并发写入句柄的交互问题。
+    /// 2. **大文件**：仅读取文件尾部 64KB，从后向前搜索最后一个有效事件行。
+    ///    这是性能关键路径——会话文件可能达到数百 MB，全量扫描不可接受。
+    /// 3. **极端回退**：如果尾部 64KB 中没有完整事件行（例如单行超大 JSON），
+    ///    回退到全量扫描。这种情况极为罕见。
     pub fn last_storage_seq_from_path(path: &Path) -> Result<u64> {
         let file_size = std::fs::metadata(path)
             .map_err(|e| crate::AstrError::io("failed to read file metadata", e))?

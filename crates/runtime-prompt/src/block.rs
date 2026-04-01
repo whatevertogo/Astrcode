@@ -6,6 +6,8 @@ use super::template::PromptTemplate;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BlockKind {
     Identity,
+    // 预留给未来的系统 prompt 块——当 PromptComposer 需要将多个 identity/rule 片段
+    // 合并为一个统一的 system prompt 时，此变体将作为合成结果的 BlockKind。
     #[allow(dead_code)]
     SystemPrompt,
     Environment,
@@ -30,7 +32,6 @@ impl BlockKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum RenderTarget {
     System,
     PrependUser,
@@ -40,16 +41,13 @@ pub enum RenderTarget {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum ValidationPolicy {
     Inherit,
     Skip,
     Strict,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum BlockCondition {
     #[default]
     Always,
@@ -137,20 +135,6 @@ impl BlockSpec {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn message_template(
-        id: impl Into<Cow<'static, str>>,
-        kind: BlockKind,
-        title: impl Into<Cow<'static, str>>,
-        template: impl Into<Cow<'static, str>>,
-        render_target: RenderTarget,
-    ) -> Self {
-        Self {
-            render_target,
-            ..Self::system_template(id, kind, title, template)
-        }
-    }
-
     pub fn with_priority(mut self, priority: i32) -> Self {
         self.priority = Some(priority);
         self
@@ -163,12 +147,6 @@ impl BlockSpec {
 
     pub fn depends_on(mut self, dependency: impl Into<Cow<'static, str>>) -> Self {
         self.dependencies.push(dependency.into());
-        self
-    }
-
-    #[allow(dead_code)]
-    pub fn with_validation_policy(mut self, validation_policy: ValidationPolicy) -> Self {
-        self.validation_policy = validation_policy;
         self
     }
 
@@ -187,6 +165,7 @@ impl BlockSpec {
         self
     }
 
+    // 仅在测试中使用；生产代码通过 contributor 设置 vars
     #[allow(dead_code)]
     pub fn with_var(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.vars.insert(key.into(), value.into());

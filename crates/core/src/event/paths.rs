@@ -39,21 +39,12 @@ pub(crate) fn session_path(session_id: &str) -> Result<PathBuf> {
     Ok(sessions_dir()?.join(format!("session-{session_id}.jsonl")))
 }
 
-fn legacy_prefixed_path(session_id: &str) -> Result<PathBuf> {
-    Ok(sessions_dir()?.join(format!("session-{session_id}.jsonl")))
-}
-
 pub(crate) fn resolve_existing_session_path(session_id: &str) -> Result<PathBuf> {
     let _ = validated_session_id(session_id)?;
-    let canonical = session_path(session_id)?;
-    if canonical.exists() {
-        return Ok(canonical);
+    let path = session_path(session_id)?;
+    if path.exists() {
+        return Ok(path);
     }
 
-    let legacy = legacy_prefixed_path(session_id)?;
-    if legacy != canonical && legacy.exists() {
-        return Ok(legacy);
-    }
-
-    Err(AstrError::SessionNotFound(canonical.display().to_string()))
+    Err(AstrError::SessionNotFound(path.display().to_string()))
 }

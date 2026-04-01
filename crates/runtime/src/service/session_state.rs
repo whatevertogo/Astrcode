@@ -42,6 +42,12 @@ impl RecentSessionEvents {
         }
     }
 
+    /// 从内存缓存中返回 `last_event_id` 之后的事件。
+    ///
+    /// 返回 `None` 表示缓存不足以满足请求，调用方应回退到磁盘回放。
+    /// 具体来说：
+    /// - `last_event_id == None` 且缓存曾被截断 → 完整历史不在缓存中，必须走磁盘
+    /// - `last_event_id` 对应的事件早于缓存中最老的事件 → 被截断的部分无法提供
     fn records_after(&self, last_event_id: Option<&str>) -> Option<Vec<SessionEventRecord>> {
         let snapshot = self.records.iter().cloned().collect::<Vec<_>>();
         let Some(last_event_id) = last_event_id else {
@@ -91,6 +97,7 @@ impl SessionWriter {
 }
 
 pub(super) struct SessionState {
+    // 保留以备将来 session 级工作目录切换时使用；当前所有工具通过 ToolContext.working_dir 获取路径
     #[allow(dead_code)]
     pub(super) working_dir: PathBuf,
     pub(super) phase: StdMutex<Phase>,

@@ -101,9 +101,6 @@ pub struct EventLog {
     next_storage_seq: u64,
 }
 
-/// 事件存储别名（与 EventLog 相同）
-pub type EventStore = EventLog;
-
 /// 确保 EventLog 在 Drop 时正确刷新和同步
 ///
 /// 这是防止数据丢失的关键：即使 panic 发生，也要尽力刷新缓冲区。

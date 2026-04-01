@@ -1,3 +1,11 @@
+// 本文件承担两个职责：
+// 1. 将内部领域类型转换为 HTTP DTO（纯粹的映射函数）
+// 2. 配置解析逻辑（resolve_active_selection、resolve_current_model、list_model_options）
+//
+// 第二部分严格来说不属于 mapper——它包含活跃配置选择、模型枚举、API key 格式化等业务逻辑。
+// 当前放在这里是因为这些逻辑仅被 HTTP route 调用，且与 DTO 构造紧密耦合。
+// 如果未来配置解析变复杂，应考虑将 resolve_* 函数移到 runtime-config crate。
+
 use astrcode_core::{
     plugin::PluginEntry, AgentEvent, CapabilityDescriptor, Phase, PluginHealth, PluginState,
     SessionEventRecord, SessionMeta,
