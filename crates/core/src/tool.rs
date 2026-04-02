@@ -234,6 +234,8 @@ pub struct ToolCapabilityMetadata {
     pub permissions: Vec<PermissionHint>,
     /// The level of side effects this tool may produce.
     pub side_effect: SideEffectLevel,
+    /// Whether the runtime may execute multiple calls to this capability in parallel.
+    pub concurrency_safe: bool,
     /// Stability level indicating API maturity.
     pub stability: StabilityLevel,
     /// Prompt guidance that should be projected into the layered prompt system.
@@ -257,6 +259,7 @@ impl ToolCapabilityMetadata {
             tags: vec!["builtin".to_string()],
             permissions: Vec::new(),
             side_effect: SideEffectLevel::Workspace,
+            concurrency_safe: false,
             stability: StabilityLevel::Stable,
             prompt: None,
         }
@@ -322,6 +325,12 @@ impl ToolCapabilityMetadata {
         self
     }
 
+    /// Marks whether the tool is safe to run concurrently with other safe tools.
+    pub fn concurrency_safe(mut self, concurrency_safe: bool) -> Self {
+        self.concurrency_safe = concurrency_safe;
+        self
+    }
+
     /// Sets the stability level for this tool.
     pub fn stability(mut self, stability: StabilityLevel) -> Self {
         self.stability = stability;
@@ -355,6 +364,7 @@ impl ToolCapabilityMetadata {
             .tags(self.tags)
             .permissions(self.permissions)
             .side_effect(self.side_effect)
+            .concurrency_safe(self.concurrency_safe)
             .stability(self.stability)
             .metadata(Value::Object(metadata))
             .build()

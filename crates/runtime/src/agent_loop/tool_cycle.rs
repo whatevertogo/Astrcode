@@ -4,6 +4,7 @@ use astrcode_core::{
     ApprovalPending, ApprovalResolution, CancelToken, CapabilityCall, PolicyVerdict, Result,
     ToolExecutionResult,
 };
+use futures_util::stream::{self, StreamExt};
 use tokio::sync::mpsc;
 
 use super::AgentLoop;
@@ -14,6 +15,16 @@ use astrcode_core::{CapabilityRouter, LlmMessage, ToolCallRequest};
 pub(crate) enum ToolCycleOutcome {
     Completed,
     Interrupted,
+}
+
+struct PendingToolCall {
+    index: usize,
+    tool_call: ToolCallRequest,
+}
+
+struct CallOutcome {
+    result: ToolExecutionResult,
+    buffered_events: Option<Vec<StorageEvent>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -28,17 +39,21 @@ pub(crate) async fn execute_tool_calls(
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
     cancel: &CancelToken,
 ) -> Result<ToolCycleOutcome> {
-    for call in tool_calls {
+    let mut safe_calls = Vec::new();
+    let mut unsafe_calls = Vec::new();
+    let mut outcomes = (0..tool_calls.len()).map(|_| None).collect::<Vec<_>>();
+
+    for (index, call) in tool_calls.into_iter().enumerate() {
         if cancel.is_cancelled() {
+            push_tool_messages(messages, outcomes);
             return Ok(ToolCycleOutcome::Interrupted);
         }
 
-        let ctx = agent_loop.tool_context(state, cancel.clone());
         let policy_ctx = agent_loop.policy_context(state, turn_id, step_index);
-        let result = if let Some(descriptor) = capabilities.descriptor(&call.name) {
+        if let Some(descriptor) = capabilities.descriptor(&call.name) {
             let proposed_call = CapabilityCall {
                 request_id: call.id.clone(),
-                descriptor,
+                descriptor: descriptor.clone(),
                 payload: call.args.clone(),
                 metadata: serde_json::Value::Null,
             };
@@ -48,18 +63,23 @@ pub(crate) async fn execute_tool_calls(
                 .await?
             {
                 PolicyVerdict::Allow(allowed_call) => {
-                    execute_tool_call(
-                        capabilities,
-                        normalized_tool_call(&proposed_call, allowed_call)?,
-                        turn_id,
-                        &ctx,
-                        on_event,
-                    )
-                    .await?
+                    let tool_call = tool_call_from_capability_call(normalized_tool_call(
+                        &proposed_call,
+                        allowed_call,
+                    )?);
+                    push_prepared_call(
+                        &descriptor,
+                        PendingToolCall { index, tool_call },
+                        &mut safe_calls,
+                        &mut unsafe_calls,
+                    );
                 }
                 PolicyVerdict::Deny { reason } => {
                     denied_tool_result(&call, turn_id, &reason, on_event)?;
-                    denial_result(&call, reason)
+                    outcomes[index] = Some(CallOutcome {
+                        result: denial_result(&call, reason),
+                        buffered_events: None,
+                    });
                 }
                 PolicyVerdict::Ask(pending) => {
                     let ApprovalPending { request, action } = *pending;
@@ -67,41 +87,171 @@ pub(crate) async fn execute_tool_calls(
                     let resolution = agent_loop.approval.request(request, cancel.clone()).await?;
 
                     if resolution.approved {
-                        execute_tool_call(capabilities, pending_call, turn_id, &ctx, on_event)
-                            .await?
+                        let tool_call = tool_call_from_capability_call(pending_call);
+                        push_prepared_call(
+                            &descriptor,
+                            PendingToolCall { index, tool_call },
+                            &mut safe_calls,
+                            &mut unsafe_calls,
+                        );
                     } else {
                         let reason = approval_denial_reason(&resolution);
                         denied_tool_result(&call, turn_id, &reason, on_event)?;
-                        denial_result(&call, reason)
+                        outcomes[index] = Some(CallOutcome {
+                            result: denial_result(&call, reason),
+                            buffered_events: None,
+                        });
                     }
                 }
             }
         } else {
-            execute_raw_tool_call(capabilities, call.clone(), turn_id, &ctx, on_event).await?
-        };
+            unsafe_calls.push(PendingToolCall {
+                index,
+                tool_call: call,
+            });
+        }
+    }
 
-        messages.push(LlmMessage::Tool {
-            tool_call_id: call.id,
-            content: result.model_content(),
+    if !safe_calls.is_empty() {
+        if cancel.is_cancelled() {
+            push_tool_messages(messages, outcomes);
+            return Ok(ToolCycleOutcome::Interrupted);
+        }
+
+        for (index, recorded) in
+            execute_safe_tool_calls(agent_loop, capabilities, safe_calls, turn_id, state, cancel)
+                .await?
+        {
+            outcomes[index] = Some(CallOutcome {
+                result: recorded.result,
+                buffered_events: Some(recorded.events),
+            });
+        }
+
+        flush_buffered_events(&mut outcomes, on_event, cancel)?;
+    }
+
+    if !unsafe_calls.is_empty() && cancel.is_cancelled() {
+        push_tool_messages(messages, outcomes);
+        return Ok(ToolCycleOutcome::Interrupted);
+    }
+
+    for pending in unsafe_calls {
+        if cancel.is_cancelled() {
+            push_tool_messages(messages, outcomes);
+            return Ok(ToolCycleOutcome::Interrupted);
+        }
+
+        let ctx = agent_loop.tool_context(state, cancel.clone());
+        let result =
+            execute_raw_tool_call(capabilities, pending.tool_call, turn_id, &ctx, on_event).await?;
+        outcomes[pending.index] = Some(CallOutcome {
+            result,
+            buffered_events: None,
         });
     }
 
+    push_tool_messages(messages, outcomes);
     Ok(ToolCycleOutcome::Completed)
 }
 
-async fn execute_tool_call(
-    capabilities: &CapabilityRouter,
-    call: CapabilityCall,
-    turn_id: &str,
-    ctx: &astrcode_core::ToolContext,
-    on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
-) -> Result<ToolExecutionResult> {
-    let tool_call = ToolCallRequest {
+fn push_prepared_call(
+    descriptor: &astrcode_core::CapabilityDescriptor,
+    pending: PendingToolCall,
+    safe_calls: &mut Vec<PendingToolCall>,
+    unsafe_calls: &mut Vec<PendingToolCall>,
+) {
+    if descriptor.concurrency_safe {
+        safe_calls.push(pending);
+    } else {
+        unsafe_calls.push(pending);
+    }
+}
+
+fn tool_call_from_capability_call(call: CapabilityCall) -> ToolCallRequest {
+    ToolCallRequest {
         id: call.request_id,
         name: call.descriptor.name,
         args: call.payload,
-    };
-    execute_raw_tool_call(capabilities, tool_call, turn_id, ctx, on_event).await
+    }
+}
+
+struct RecordedExecution {
+    result: ToolExecutionResult,
+    events: Vec<StorageEvent>,
+}
+
+async fn execute_safe_tool_calls(
+    agent_loop: &AgentLoop,
+    capabilities: &CapabilityRouter,
+    safe_calls: Vec<PendingToolCall>,
+    turn_id: &str,
+    state: &AgentState,
+    cancel: &CancelToken,
+) -> Result<Vec<(usize, RecordedExecution)>> {
+    let concurrency_limit = agent_loop
+        .max_tool_concurrency()
+        .min(safe_calls.len().max(1));
+    let results = stream::iter(safe_calls)
+        .map(|pending| async move {
+            let ctx = agent_loop.tool_context(state, cancel.clone());
+            let recorded =
+                execute_raw_tool_call_recorded(capabilities, pending.tool_call, turn_id, &ctx)
+                    .await?;
+            Ok((pending.index, recorded))
+        })
+        .buffer_unordered(concurrency_limit)
+        .collect::<Vec<Result<(usize, RecordedExecution)>>>()
+        .await;
+
+    results.into_iter().collect()
+}
+
+async fn execute_raw_tool_call_recorded(
+    capabilities: &CapabilityRouter,
+    tool_call: ToolCallRequest,
+    turn_id: &str,
+    ctx: &astrcode_core::ToolContext,
+) -> Result<RecordedExecution> {
+    let mut events = Vec::new();
+    let result = execute_raw_tool_call(capabilities, tool_call, turn_id, ctx, &mut |event| {
+        events.push(event);
+        Ok(())
+    })
+    .await?;
+
+    Ok(RecordedExecution { result, events })
+}
+
+fn flush_buffered_events(
+    outcomes: &mut [Option<CallOutcome>],
+    on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
+    cancel: &CancelToken,
+) -> Result<()> {
+    for outcome in outcomes.iter_mut().flatten() {
+        let Some(events) = outcome.buffered_events.take() else {
+            continue;
+        };
+
+        for event in events {
+            if let Err(error) = on_event(event) {
+                cancel.cancel();
+                return Err(error);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn push_tool_messages(messages: &mut Vec<LlmMessage>, outcomes: Vec<Option<CallOutcome>>) {
+    for outcome in outcomes.into_iter().flatten() {
+        let tool_call_id = outcome.result.tool_call_id.clone();
+        messages.push(LlmMessage::Tool {
+            tool_call_id,
+            content: outcome.result.model_content(),
+        });
+    }
 }
 
 async fn execute_raw_tool_call(

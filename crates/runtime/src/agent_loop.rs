@@ -22,6 +22,8 @@ use astrcode_core::StorageEvent;
 use crate::builtin_skills::builtin_skills;
 use crate::prompt::{PromptDeclaration, SkillSpec};
 
+use astrcode_runtime_config::max_tool_concurrency;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnOutcome {
     /// LLM 返回纯文本（无 tool_calls），自然结束。
@@ -65,6 +67,8 @@ pub struct AgentLoop {
     prompt_declarations: Vec<PromptDeclaration>,
     /// 当前运行时启用的高层 skill 指南。
     prompt_skills: Vec<SkillSpec>,
+    /// 单个 step 内允许并发执行的只读工具上限。
+    max_tool_concurrency: usize,
 }
 
 impl AgentLoop {
@@ -94,6 +98,9 @@ impl AgentLoop {
             prompt_capability_descriptors,
             prompt_declarations,
             prompt_skills,
+            // 默认并行度统一从 runtime-config 读取，这样环境变量覆盖和
+            // 直接构造 AgentLoop 的默认行为保持同一套来源。
+            max_tool_concurrency: max_tool_concurrency(),
         }
     }
 
@@ -106,6 +113,14 @@ impl AgentLoop {
     /// 设置审批代理
     pub fn with_approval_broker(mut self, approval: Arc<dyn ApprovalBroker>) -> Self {
         self.approval = approval;
+        self
+    }
+
+    /// 设置并发安全工具的最大并行度。
+    ///
+    /// 最小值会被钳制到 1，避免配置错误把安全组完全禁用成不可执行状态。
+    pub fn with_max_tool_concurrency(mut self, max_tool_concurrency: usize) -> Self {
+        self.max_tool_concurrency = max_tool_concurrency.max(1);
         self
     }
 
@@ -162,6 +177,10 @@ impl AgentLoop {
             profile: "coding".to_string(),
             metadata: serde_json::Value::Null,
         }
+    }
+
+    pub(crate) fn max_tool_concurrency(&self) -> usize {
+        self.max_tool_concurrency
     }
 }
 

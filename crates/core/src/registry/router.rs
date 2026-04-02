@@ -341,6 +341,7 @@ mod tests {
                 input_schema: json!({ "type": "object" }),
                 output_schema: json!({ "type": "object" }),
                 streaming: false,
+                concurrency_safe: false,
                 profiles: vec!["coding".to_string()],
                 tags: vec![],
                 permissions: vec![],

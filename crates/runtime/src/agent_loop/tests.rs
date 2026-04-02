@@ -9,7 +9,7 @@ use astrcode_core::{
     ApprovalDefault, ApprovalRequest, ApprovalResolution, AstrError, CancelToken, CapabilityCall,
     CapabilityRouter as CoreCapabilityRouter, ContextPressureInput, ContextStrategyDecision,
     ModelRequest, Phase, PluginManifest, PluginType, PolicyContext, PolicyEngine, PolicyVerdict,
-    Result, Tool, ToolContext,
+    Result, Tool, ToolCapabilityMetadata, ToolContext,
 };
 use astrcode_plugin::Supervisor;
 use astrcode_protocol::plugin::{PeerDescriptor, PeerRole};
@@ -80,6 +80,20 @@ struct QuickTool;
 struct StreamingTool;
 struct CountingTool {
     executions: Arc<AtomicUsize>,
+}
+
+#[derive(Default)]
+struct ConcurrencyTracker {
+    active: AtomicUsize,
+    max_active: AtomicUsize,
+    started: AtomicUsize,
+    cancelled: AtomicUsize,
+}
+
+struct ConcurrencyTrackingTool {
+    name: &'static str,
+    concurrency_safe: bool,
+    tracker: Arc<ConcurrencyTracker>,
 }
 
 struct StreamingProvider {
@@ -447,6 +461,81 @@ impl Tool for CountingTool {
     }
 }
 
+#[async_trait]
+impl Tool for ConcurrencyTrackingTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name.to_string(),
+            description: "tracks concurrent executions".to_string(),
+            parameters: json!({
+                "type":"object",
+                "properties": {
+                    "delayMs": { "type": "integer", "minimum": 0 }
+                },
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn capability_metadata(&self) -> ToolCapabilityMetadata {
+        ToolCapabilityMetadata::builtin()
+            .side_effect(if self.concurrency_safe {
+                astrcode_core::SideEffectLevel::None
+            } else {
+                astrcode_core::SideEffectLevel::Workspace
+            })
+            .concurrency_safe(self.concurrency_safe)
+    }
+
+    async fn execute(
+        &self,
+        tool_call_id: String,
+        args: serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolExecutionResult> {
+        let delay_ms = args
+            .get("delayMs")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(100);
+
+        self.tracker.started.fetch_add(1, Ordering::SeqCst);
+        let active_now = self.tracker.active.fetch_add(1, Ordering::SeqCst) + 1;
+        update_max_active(&self.tracker.max_active, active_now);
+
+        let run_result = tokio::select! {
+            _ = crate::llm::cancelled(ctx.cancel().clone()) => {
+                self.tracker.cancelled.fetch_add(1, Ordering::SeqCst);
+                Err(AstrError::Cancelled)
+            }
+            _ = sleep(Duration::from_millis(delay_ms)) => {
+                Ok(ToolExecutionResult {
+                    tool_call_id: tool_call_id.clone(),
+                    tool_name: self.name.to_string(),
+                    ok: true,
+                    output: tool_call_id,
+                    error: None,
+                    metadata: None,
+                    duration_ms: delay_ms,
+                    truncated: false,
+                })
+            }
+        };
+
+        self.tracker.active.fetch_sub(1, Ordering::SeqCst);
+        run_result
+    }
+}
+
+fn update_max_active(max_active: &AtomicUsize, candidate: usize) {
+    let mut observed = max_active.load(Ordering::SeqCst);
+    while candidate > observed {
+        match max_active.compare_exchange(observed, candidate, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => break,
+            Err(actual) => observed = actual,
+        }
+    }
+}
+
 #[tokio::test]
 async fn tool_events_are_ordered_and_turn_finishes() {
     let provider = Arc::new(ScriptedProvider {
@@ -642,6 +731,314 @@ async fn interrupt_emits_error_and_turn_done() {
 
     assert!(has_error, "should have Error(interrupted)");
     assert!(has_done, "should have TurnDone");
+}
+
+#[tokio::test]
+async fn concurrency_safe_tools_run_in_parallel() {
+    let tracker = Arc::new(ConcurrencyTracker::default());
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([
+            LlmOutput {
+                content: String::new(),
+                tool_calls: vec![
+                    ToolCallRequest {
+                        id: "call-safe-1".to_string(),
+                        name: "parallelSafeTool".to_string(),
+                        args: json!({ "delayMs": 120 }),
+                    },
+                    ToolCallRequest {
+                        id: "call-safe-2".to_string(),
+                        name: "parallelSafeTool".to_string(),
+                        args: json!({ "delayMs": 120 }),
+                    },
+                ],
+                reasoning: None,
+            },
+            LlmOutput {
+                content: "done".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+        ])),
+        delay: Duration::from_millis(0),
+    });
+    let tools = ToolRegistry::builder()
+        .register(Box::new(ConcurrencyTrackingTool {
+            name: "parallelSafeTool",
+            concurrency_safe: true,
+            tracker: Arc::clone(&tracker),
+        }))
+        .build();
+    let loop_runner = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory { provider }),
+        capabilities_from_tools(tools),
+    );
+
+    loop_runner
+        .run_turn(
+            &make_state("run parallel safe tools"),
+            "turn-parallel-safe",
+            &mut |_event| Ok(()),
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+
+    assert_eq!(tracker.started.load(Ordering::SeqCst), 2);
+    assert!(
+        tracker.max_active.load(Ordering::SeqCst) >= 2,
+        "safe tools should overlap in execution"
+    );
+}
+
+#[tokio::test]
+async fn unsafe_tools_remain_sequential() {
+    let tracker = Arc::new(ConcurrencyTracker::default());
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([
+            LlmOutput {
+                content: String::new(),
+                tool_calls: vec![
+                    ToolCallRequest {
+                        id: "call-unsafe-1".to_string(),
+                        name: "sequentialUnsafeTool".to_string(),
+                        args: json!({ "delayMs": 80 }),
+                    },
+                    ToolCallRequest {
+                        id: "call-unsafe-2".to_string(),
+                        name: "sequentialUnsafeTool".to_string(),
+                        args: json!({ "delayMs": 80 }),
+                    },
+                ],
+                reasoning: None,
+            },
+            LlmOutput {
+                content: "done".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+        ])),
+        delay: Duration::from_millis(0),
+    });
+    let tools = ToolRegistry::builder()
+        .register(Box::new(ConcurrencyTrackingTool {
+            name: "sequentialUnsafeTool",
+            concurrency_safe: false,
+            tracker: Arc::clone(&tracker),
+        }))
+        .build();
+    let loop_runner = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory { provider }),
+        capabilities_from_tools(tools),
+    );
+
+    loop_runner
+        .run_turn(
+            &make_state("run unsafe tools"),
+            "turn-sequential-unsafe",
+            &mut |_event| Ok(()),
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+
+    assert_eq!(tracker.started.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        tracker.max_active.load(Ordering::SeqCst),
+        1,
+        "unsafe tools must never overlap"
+    );
+}
+
+#[tokio::test]
+async fn max_tool_concurrency_limits_safe_parallelism() {
+    let tracker = Arc::new(ConcurrencyTracker::default());
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([
+            LlmOutput {
+                content: String::new(),
+                tool_calls: vec![
+                    ToolCallRequest {
+                        id: "call-limit-1".to_string(),
+                        name: "limitedSafeTool".to_string(),
+                        args: json!({ "delayMs": 80 }),
+                    },
+                    ToolCallRequest {
+                        id: "call-limit-2".to_string(),
+                        name: "limitedSafeTool".to_string(),
+                        args: json!({ "delayMs": 80 }),
+                    },
+                ],
+                reasoning: None,
+            },
+            LlmOutput {
+                content: "done".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+        ])),
+        delay: Duration::from_millis(0),
+    });
+    let tools = ToolRegistry::builder()
+        .register(Box::new(ConcurrencyTrackingTool {
+            name: "limitedSafeTool",
+            concurrency_safe: true,
+            tracker: Arc::clone(&tracker),
+        }))
+        .build();
+    let loop_runner = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory { provider }),
+        capabilities_from_tools(tools),
+    )
+    .with_max_tool_concurrency(1);
+
+    loop_runner
+        .run_turn(
+            &make_state("limit safe concurrency"),
+            "turn-limit-safe",
+            &mut |_event| Ok(()),
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+
+    assert_eq!(
+        tracker.max_active.load(Ordering::SeqCst),
+        1,
+        "configured concurrency limit should cap safe tool overlap"
+    );
+}
+
+#[tokio::test]
+async fn parallel_safe_tool_results_preserve_original_request_order() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let tracker = Arc::new(ConcurrencyTracker::default());
+    let provider = Arc::new(RecordingProvider {
+        responses: Mutex::new(VecDeque::from([
+            LlmOutput {
+                content: String::new(),
+                tool_calls: vec![
+                    ToolCallRequest {
+                        id: "call-ordered-slow".to_string(),
+                        name: "orderedSafeTool".to_string(),
+                        args: json!({ "delayMs": 120 }),
+                    },
+                    ToolCallRequest {
+                        id: "call-ordered-fast".to_string(),
+                        name: "orderedSafeTool".to_string(),
+                        args: json!({ "delayMs": 20 }),
+                    },
+                ],
+                reasoning: None,
+            },
+            LlmOutput {
+                content: "done".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+        ])),
+        requests: Arc::clone(&requests),
+    });
+    let tools = ToolRegistry::builder()
+        .register(Box::new(ConcurrencyTrackingTool {
+            name: "orderedSafeTool",
+            concurrency_safe: true,
+            tracker,
+        }))
+        .build();
+    let loop_runner = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory { provider }),
+        capabilities_from_tools(tools),
+    );
+
+    loop_runner
+        .run_turn(
+            &make_state("preserve tool order"),
+            "turn-ordered-safe",
+            &mut |_event| Ok(()),
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+
+    let requests = requests.lock().expect("recorded requests lock");
+    let tool_messages = requests[1]
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            LlmMessage::Tool { tool_call_id, .. } => Some(tool_call_id.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        tool_messages,
+        vec![
+            "call-ordered-slow".to_string(),
+            "call-ordered-fast".to_string()
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cancellation_propagates_to_parallel_safe_tools() {
+    let tracker = Arc::new(ConcurrencyTracker::default());
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([LlmOutput {
+            content: String::new(),
+            tool_calls: vec![
+                ToolCallRequest {
+                    id: "call-cancel-1".to_string(),
+                    name: "cancelSafeTool".to_string(),
+                    args: json!({ "delayMs": 250 }),
+                },
+                ToolCallRequest {
+                    id: "call-cancel-2".to_string(),
+                    name: "cancelSafeTool".to_string(),
+                    args: json!({ "delayMs": 250 }),
+                },
+            ],
+            reasoning: None,
+        }])),
+        delay: Duration::from_millis(0),
+    });
+    let tools = ToolRegistry::builder()
+        .register(Box::new(ConcurrencyTrackingTool {
+            name: "cancelSafeTool",
+            concurrency_safe: true,
+            tracker: Arc::clone(&tracker),
+        }))
+        .build();
+    let loop_runner = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory { provider }),
+        capabilities_from_tools(tools),
+    );
+    let cancel = CancelToken::new();
+    let cancel_clone = cancel.clone();
+
+    let cancel_task = tokio::spawn(async move {
+        sleep(Duration::from_millis(40)).await;
+        cancel_clone.cancel();
+    });
+
+    let outcome = loop_runner
+        .run_turn(
+            &make_state("cancel safe tools"),
+            "turn-cancel-safe",
+            &mut |_event| Ok(()),
+            cancel,
+        )
+        .await
+        .expect("turn should end cleanly");
+    cancel_task.await.expect("cancel task should join");
+
+    assert_eq!(outcome, TurnOutcome::Cancelled);
+    assert_eq!(tracker.started.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        tracker.cancelled.load(Ordering::SeqCst),
+        2,
+        "all running safe tools should observe cancellation"
+    );
 }
 
 #[tokio::test]

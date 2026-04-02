@@ -164,6 +164,8 @@ pub struct CapabilityDescriptor {
     pub output_schema: Value,
     #[serde(default)]
     pub streaming: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub concurrency_safe: bool,
     #[serde(default)]
     pub profiles: Vec<String>,
     #[serde(default)]
@@ -248,6 +250,7 @@ pub struct CapabilityDescriptorBuilder {
     input_schema: Option<Value>,
     output_schema: Option<Value>,
     streaming: bool,
+    concurrency_safe: bool,
     profiles: Vec<String>,
     tags: Vec<String>,
     permissions: Vec<PermissionHint>,
@@ -265,6 +268,7 @@ impl CapabilityDescriptorBuilder {
             input_schema: None,
             output_schema: None,
             streaming: false,
+            concurrency_safe: false,
             profiles: Vec::new(),
             tags: Vec::new(),
             permissions: Vec::new(),
@@ -297,6 +301,11 @@ impl CapabilityDescriptorBuilder {
 
     pub fn streaming(mut self, streaming: bool) -> Self {
         self.streaming = streaming;
+        self
+    }
+
+    pub fn concurrency_safe(mut self, concurrency_safe: bool) -> Self {
+        self.concurrency_safe = concurrency_safe;
         self
     }
 
@@ -397,6 +406,7 @@ impl CapabilityDescriptorBuilder {
             input_schema,
             output_schema,
             streaming: self.streaming,
+            concurrency_safe: self.concurrency_safe,
             profiles,
             tags,
             permissions,
@@ -405,6 +415,10 @@ impl CapabilityDescriptorBuilder {
             metadata: self.metadata,
         })
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn validate_kind(value: CapabilityKind) -> Result<CapabilityKind, DescriptorBuildError> {

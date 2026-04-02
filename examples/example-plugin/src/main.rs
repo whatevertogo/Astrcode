@@ -96,6 +96,7 @@ impl ToolHandler for WorkspaceSummaryTool {
                 }
             }),
             streaming: false,
+            concurrency_safe: true,
             profiles: vec!["coding".to_string()],
             tags: vec!["example".to_string(), "workspace".to_string()],
             permissions: vec![],
@@ -183,6 +184,7 @@ impl ToolHandler for FilePreviewTool {
                 }
             }),
             streaming: false,
+            concurrency_safe: true,
             profiles: vec!["coding".to_string()],
             tags: vec!["example".to_string(), "file".to_string()],
             permissions: vec![],

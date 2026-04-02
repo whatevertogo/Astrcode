@@ -45,6 +45,7 @@ impl Tool for ReadFileTool {
             .tags(["filesystem", "read"])
             .permission("filesystem.read")
             .side_effect(SideEffectLevel::None)
+            .concurrency_safe(true)
             .prompt(
                 ToolPromptMetadata::new(
                     "Read the exact contents of a text file when you need authoritative code or config context.",

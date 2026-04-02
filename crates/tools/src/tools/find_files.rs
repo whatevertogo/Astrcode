@@ -48,6 +48,7 @@ impl Tool for FindFilesTool {
             .tags(["filesystem", "read", "search"])
             .permission("filesystem.read")
             .side_effect(SideEffectLevel::None)
+            .concurrency_safe(true)
             .prompt(
                 ToolPromptMetadata::new(
                     "Find candidate files by glob when you know the filename pattern but not the exact path.",
