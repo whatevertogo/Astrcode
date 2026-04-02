@@ -34,63 +34,7 @@ loop {
 
 ### 目标
 
-将隐式终止改为显式 `TurnOutcome`，移除 `max_steps`，以用户中断和上下文压缩作为真正的安全网。
-
-### 需求
-
-#### P1.1 引入 `TurnOutcome` 枚举
-
-当前 `run_turn()` 返回 `Result<()>`，终止原因隐含在 `StorageEvent` 流中。
-改为返回 `Result<TurnOutcome>`：
-
-```rust
-pub enum TurnOutcome {
-    /// LLM 返回纯文本（无 tool_calls），自然结束
-    Completed,
-    /// 用户取消或 CancelToken 触发
-    Cancelled,
-    /// 不可恢复错误
-    Error { message: String },
-}
-```
-
-- 调用方（`RuntimeService`）根据 `TurnOutcome` 决定后续行为
-- 所有路径仍然通过 `on_event` 发出 `TurnDone`
-
-#### P1.2 移除 `max_steps`
-
-- 删除 `AgentLoop.max_steps` 字段和 `with_max_steps()` 方法
-- 删除 `turn_runner::reached_max_steps()` 函数
-- LLM 的终止完全依赖自然完成（无 tool_calls）或用户中断
-- **安全网**由 P3 的上下文压缩提供：消息不会无限增长，超出阈值时自动压缩
-
-#### P1.3 `TurnDone` 携带终止原因
-
-扩展 `StorageEvent::TurnDone`：
-
-```rust
-TurnDone {
-    turn_id: Option<String>,
-    timestamp: DateTime<Utc>,
-    reason: Option<String>,  // 新增: "completed" | "cancelled" | "error"
-}
-```
-
-### 验收标准
-
-- [ ] `run_turn()` 返回 `Result<TurnOutcome>`
-- [ ] `max_steps` 字段及相关代码已删除
-- [ ] `TurnDone` 事件包含非空 `reason`
-- [ ] 所有现有测试适配新返回类型
-
-### 影响范围
-
-- `crates/runtime/src/agent_loop.rs`（删除 `max_steps`，返回 `TurnOutcome`）
-- `crates/runtime/src/agent_loop/turn_runner.rs`（删除 `reached_max_steps`）
-- `crates/runtime/src/service/mod.rs`（调用方适配）
-- `crates/core/src/event/types.rs`（`TurnDone` 扩展）
-
----
+将隐式终止改为显式 `TurnOutcome`，移除 `max_steps`，以用户中断和上下文压缩作为真正的安全网。(已经完成)
 
 ## P2：并行工具执行
 
@@ -552,7 +496,7 @@ impl Tool for AgentTool {
 | 模式 | 实现 | 说明 |
 |------|------|------|
 | **委派** | AgentTool（单次调用） | 父 agent 等子 agent 完成，结果作为 ToolResult 返回 |
-| **并行团队** | 多个 AgentTool 并发调用 | P2 的 `concurrency_safe` 让多个 AgentTool 并行执行，各自独立上下文，结果汇总给父 agent |
+| **并行团队** | 多个 AgentTool 并发调用 | P2 的 `concurrency_safe` 让多个 AgentTool 并行执行，各自独立上下文，结果汇总给父 agent(leader) |
 | **接替** | 跨 turn 上下文传递 | 父 turn 结束，子 turn 继续（通过 session event 流衔接） |
 
 ### 关键设计决策
