@@ -15,6 +15,7 @@
 //! - `translate`: `EventTranslator` 将存储事件转换为领域事件
 
 mod domain;
+mod phase;
 mod translate;
 mod types;
 
@@ -23,7 +24,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub use self::domain::{AgentEvent, Phase};
-pub use self::translate::{phase_of_storage_event, replay_records, EventTranslator};
+pub use self::phase::{target_phase as phase_of_storage_event, PhaseTracker};
+pub use self::translate::{replay_records, EventTranslator};
 pub use self::types::{StorageEvent, StoredEvent, StoredEventLine};
 
 /// 生成全局唯一的会话 ID，格式为 `YYYY-MM-DDTHH-MM-SS-xxxxxxxx`。
