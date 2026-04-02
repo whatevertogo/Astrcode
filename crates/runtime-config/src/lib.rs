@@ -15,7 +15,7 @@ mod api_key;
 mod connection;
 mod constants;
 mod editor;
-mod env;
+mod env_resolver;
 mod loader;
 mod saver;
 mod types;
@@ -31,7 +31,9 @@ pub use constants::{
     TAURI_ENV_TARGET_TRIPLE_ENV,
 };
 pub use editor::open_config_in_editor;
-pub use env::{env_reference, is_env_var_name, parse_env_value, resolve_env_value, ParsedEnvValue};
+pub use env_resolver::{
+    env_reference, is_env_var_name, parse_env_value, resolve_env_value, ParsedEnvValue,
+};
 pub use loader::{
     config_path, load_config, load_config_from_path, load_config_overlay_from_path,
     load_resolved_config, project_overlay_path,

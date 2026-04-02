@@ -2,7 +2,7 @@
 
 use astrcode_core::{AstrError, Result};
 
-use crate::env::resolve_env_value;
+use crate::env_resolver::resolve_env_value;
 use crate::types::Profile;
 
 impl Profile {

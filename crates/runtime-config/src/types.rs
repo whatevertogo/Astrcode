@@ -8,7 +8,7 @@ use crate::constants::{
     ANTHROPIC_API_KEY_ENV, CURRENT_CONFIG_VERSION, DEEPSEEK_API_KEY_ENV, PROVIDER_KIND_ANTHROPIC,
     PROVIDER_KIND_OPENAI,
 };
-use crate::env::env_reference;
+use crate::env_resolver::env_reference;
 
 /// Top-level application configuration.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]

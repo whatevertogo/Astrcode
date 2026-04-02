@@ -463,7 +463,7 @@ impl PeerInner {
             .await;
 
         let terminal = match result {
-            Ok(output) if cancel.is_cancelled() => EventMessage {
+            Ok(_output) if cancel.is_cancelled() => EventMessage {
                 id: request_id,
                 phase: EventPhase::Failed,
                 event: "invoke.cancelled".to_string(),
