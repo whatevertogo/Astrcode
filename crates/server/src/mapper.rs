@@ -1,10 +1,7 @@
-// 本文件承担两个职责：
-// 1. 将内部领域类型转换为 HTTP DTO（纯粹的映射函数）
-// 2. 配置解析逻辑（resolve_active_selection、resolve_current_model、list_model_options）
+// 本文件只负责把内部类型投影成 HTTP DTO。
 //
-// 第二部分严格来说不属于 mapper——它包含活跃配置选择、模型枚举、API key 格式化等业务逻辑。
-// 当前放在这里是因为这些逻辑仅被 HTTP route 调用，且与 DTO 构造紧密耦合。
-// TODO:如果未来配置解析变复杂，应考虑将 resolve_* 函数移到 runtime-config crate。
+// 配置选择和 fallback 规则已经下沉到 runtime-config，这里只做协议层映射，
+// 这样服务端入口不会悄悄长出另一套配置业务逻辑。
 
 use astrcode_core::{
     plugin::PluginEntry, AgentEvent, CapabilityDescriptor, Phase, PluginHealth, PluginState,
@@ -18,8 +15,9 @@ use astrcode_protocol::http::{
 };
 use astrcode_runtime::RuntimeGovernanceSnapshot;
 use astrcode_runtime::{
-    is_env_var_name, Config, OperationMetricsSnapshot, Profile, ReplayMetricsSnapshot,
-    RuntimeObservabilitySnapshot, SessionMessage,
+    is_env_var_name, list_model_options as resolve_model_options, resolve_active_selection,
+    resolve_current_model as resolve_runtime_current_model, Config, OperationMetricsSnapshot,
+    ReplayMetricsSnapshot, RuntimeObservabilitySnapshot, SessionMessage,
 };
 use axum::http::StatusCode;
 use axum::response::sse::Event;
@@ -325,115 +323,48 @@ pub(crate) fn build_config_view(
         })
         .collect::<Vec<_>>();
 
-    let (active_profile, active_model, warning) = resolve_active_selection(
+    let selection = resolve_active_selection(
         &config.active_profile,
         &config.active_model,
         &config.profiles,
-    )?;
+    )
+    .map_err(config_selection_error)?;
 
     Ok(ConfigView {
         config_path,
-        active_profile,
-        active_model,
+        active_profile: selection.active_profile,
+        active_model: selection.active_model,
         profiles,
-        warning,
+        warning: selection.warning,
     })
 }
 
 pub(crate) fn resolve_current_model(config: &Config) -> Result<CurrentModelInfoDto, ApiError> {
-    let profile = config
-        .profiles
-        .iter()
-        .find(|profile| profile.name == config.active_profile)
-        .or_else(|| config.profiles.first())
-        .ok_or_else(|| ApiError {
-            status: StatusCode::BAD_REQUEST,
-            message: "no profiles configured".to_string(),
-        })?;
-
-    let model = if profile
-        .models
-        .iter()
-        .any(|item| item == &config.active_model)
-    {
-        config.active_model.clone()
-    } else {
-        profile.models.first().cloned().ok_or_else(|| ApiError {
-            status: StatusCode::BAD_REQUEST,
-            message: format!("profile '{}' has no models", profile.name),
-        })?
-    };
+    let selection = resolve_runtime_current_model(config).map_err(config_selection_error)?;
 
     Ok(CurrentModelInfoDto {
-        profile_name: profile.name.clone(),
-        model,
-        provider_kind: profile.provider_kind.clone(),
+        profile_name: selection.profile_name,
+        model: selection.model,
+        provider_kind: selection.provider_kind,
     })
 }
 
 pub(crate) fn list_model_options(config: &Config) -> Vec<ModelOptionDto> {
-    config
-        .profiles
-        .iter()
-        .flat_map(|profile| {
-            profile.models.iter().map(|model| ModelOptionDto {
-                profile_name: profile.name.clone(),
-                model: model.clone(),
-                provider_kind: profile.provider_kind.clone(),
-            })
+    resolve_model_options(config)
+        .into_iter()
+        .map(|option| ModelOptionDto {
+            profile_name: option.profile_name,
+            model: option.model,
+            provider_kind: option.provider_kind,
         })
         .collect()
 }
 
-fn resolve_active_selection(
-    active_profile: &str,
-    active_model: &str,
-    profiles: &[Profile],
-) -> Result<(String, String, Option<String>), ApiError> {
-    let fallback_profile = profiles.first().ok_or_else(|| ApiError {
+fn config_selection_error(error: anyhow::Error) -> ApiError {
+    ApiError {
         status: StatusCode::BAD_REQUEST,
-        message: "no profiles configured".to_string(),
-    })?;
-
-    let selected_profile = profiles
-        .iter()
-        .find(|profile| profile.name == active_profile)
-        .unwrap_or(fallback_profile);
-
-    if selected_profile.models.is_empty() {
-        return Err(ApiError {
-            status: StatusCode::BAD_REQUEST,
-            message: format!("profile '{}' has no models", selected_profile.name),
-        });
+        message: error.to_string(),
     }
-
-    if selected_profile.name != active_profile {
-        return Ok((
-            selected_profile.name.clone(),
-            selected_profile.models[0].clone(),
-            Some(format!(
-                "配置中的 Profile 不存在，已自动选择 {}",
-                selected_profile.name
-            )),
-        ));
-    }
-
-    if let Some(model) = selected_profile
-        .models
-        .iter()
-        .find(|model| *model == active_model)
-    {
-        return Ok((selected_profile.name.clone(), model.clone(), None));
-    }
-
-    Ok((
-        selected_profile.name.clone(),
-        selected_profile.models[0].clone(),
-        Some(format!(
-            "配置中的 {} 在当前 Profile 下不存在，已自动选择 {}",
-            active_model, selected_profile.models[0]
-        )),
-    ))
 }
 
 pub(crate) fn api_key_preview(api_key: Option<&str>) -> String {

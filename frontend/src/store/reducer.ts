@@ -125,7 +125,12 @@ function findToolCallMessageIndex(
 
 // ─── Re-exports used by App.tsx ───────────────────────────────────────────────
 
-export { findAssistantMessageIndex, moveUpdatedMessageToTail, upsertAssistantTurnMessage, findToolCallMessageIndex };
+export {
+  findAssistantMessageIndex,
+  moveUpdatedMessageToTail,
+  upsertAssistantTurnMessage,
+  findToolCallMessageIndex,
+};
 
 // ─── Reducer ──────────────────────────────────────────────────────────────────
 

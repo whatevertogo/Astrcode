@@ -3,7 +3,7 @@
 //! Session message conversion, project grouping, and session message replacement helpers.
 //! These were previously at the top of App.tsx and made the file harder to navigate.
 
-import type { AssistantMessage, Message, Project, SessionMeta } from '../types';
+import type { Message, Project, SessionMeta } from '../types';
 import { uuid } from '../utils/uuid';
 import { snapshotToolStatus } from '../lib/sessionMessages';
 import type { SessionMessage as HookSessionMessage } from '../hooks/useAgent';

@@ -18,6 +18,7 @@ mod editor;
 mod env_resolver;
 mod loader;
 mod saver;
+mod selection;
 mod types;
 mod validation;
 
@@ -39,6 +40,10 @@ pub use loader::{
     load_resolved_config, project_overlay_path,
 };
 pub use saver::{save_config, save_config_to_path};
+pub use selection::{
+    list_model_options, resolve_active_selection, resolve_current_model, ActiveSelection,
+    CurrentModelSelection, ModelOption,
+};
 pub use types::{Config, ConfigOverlay, Profile, TestResult};
 pub use validation::validate_config;
 
