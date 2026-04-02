@@ -127,7 +127,7 @@ impl RuntimeService {
             }
 
             if let Ok(mut phase) = lock_anyhow(&state.phase, "session phase") {
-                *phase = translator.phase;
+                *phase = translator.phase();
             }
             // 重置 CancelToken：前一个 token 已被消费（正常完成或被取消），
             // 必须替换为新的空 token 以"重新武装"会话，否则下一次 interrupt()
