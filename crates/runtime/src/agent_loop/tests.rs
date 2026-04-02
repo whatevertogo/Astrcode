@@ -871,6 +871,7 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
 
 #[tokio::test]
 async fn reuses_prompt_contributor_cache_across_llm_steps() {
+    let _guard = TestEnvGuard::new();
     let calls = Arc::new(AtomicUsize::new(0));
     let composer = PromptComposer::with_options(PromptComposerOptions {
         cache_ttl: Duration::from_secs(60),
