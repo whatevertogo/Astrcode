@@ -124,6 +124,7 @@ mod tests {
         save_config(&Config {
             runtime: RuntimeConfig {
                 max_tool_concurrency: Some(6),
+                ..RuntimeConfig::default()
             },
             ..Config::default()
         })

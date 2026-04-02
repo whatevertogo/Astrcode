@@ -1,5 +1,6 @@
 use astrcode_core::{
     replay_records, split_assistant_content, AstrError, ToolOutputDelta, ToolOutputStream,
+    UserMessageOrigin,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -90,11 +91,17 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
                 turn_id,
                 content,
                 timestamp,
-            } => messages.push(SessionMessage::User {
-                turn_id: turn_id.clone(),
-                content: content.clone(),
-                timestamp: timestamp.to_rfc3339(),
-            }),
+                origin,
+            } => {
+                if !matches!(origin, UserMessageOrigin::User) {
+                    continue;
+                }
+                messages.push(SessionMessage::User {
+                    turn_id: turn_id.clone(),
+                    content: content.clone(),
+                    timestamp: timestamp.to_rfc3339(),
+                });
+            }
             StorageEvent::AssistantFinal {
                 turn_id,
                 content,
@@ -225,6 +232,7 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
                     });
                 }
             }
+            StorageEvent::PromptMetrics { .. } | StorageEvent::CompactApplied { .. } => {}
             StorageEvent::TurnDone { turn_id, .. } | StorageEvent::Error { turn_id, .. } => {
                 if let Some(turn_id) = turn_id {
                     pending_reasoning_only_assistants.remove(turn_id);
@@ -376,6 +384,7 @@ fn build_shell_display_metadata(
 
 #[cfg(test)]
 mod tests {
+    use astrcode_core::UserMessageOrigin;
     use chrono::TimeZone;
     use serde_json::json;
 
@@ -393,6 +402,7 @@ mod tests {
                 StorageEvent::UserMessage {
                     turn_id: Some("turn-1".to_string()),
                     content: "调用一下工具给我看看".to_string(),
+                    origin: UserMessageOrigin::User,
                     timestamp: Utc.with_ymd_and_hms(2026, 3, 31, 15, 0, 0).unwrap(),
                 },
             ),

@@ -60,6 +60,20 @@ pub const CURRENT_CONFIG_VERSION: &str = "1";
 
 /// Default maximum number of concurrency-safe tools that may execute in parallel.
 pub const DEFAULT_MAX_TOOL_CONCURRENCY: usize = 10;
+/// Default auto-compact toggle.
+pub const DEFAULT_AUTO_COMPACT_ENABLED: bool = true;
+/// Default percentage of effective context window used before compaction starts.
+pub const DEFAULT_COMPACT_THRESHOLD_PERCENT: u8 = 90;
+/// Default per-tool-result request budget in bytes.
+pub const DEFAULT_TOOL_RESULT_MAX_BYTES: usize = 100_000;
+/// Default number of recent user turns kept verbatim during compaction.
+pub const DEFAULT_COMPACT_KEEP_RECENT_TURNS: u8 = 4;
+/// Default token budget. Zero disables auto-continue.
+pub const DEFAULT_TOKEN_BUDGET: u64 = 0;
+/// Default diminishing-returns threshold for auto-continue.
+pub const DEFAULT_CONTINUATION_MIN_DELTA_TOKENS: usize = 500;
+/// Default maximum number of continuation turns.
+pub const DEFAULT_MAX_CONTINUATIONS: u8 = 3;
 
 /// Returns the maximum number of concurrency-safe tools from process env/defaults.
 ///
@@ -88,5 +102,50 @@ pub fn resolve_max_tool_concurrency(runtime: &RuntimeConfig) -> usize {
     runtime
         .max_tool_concurrency
         .unwrap_or_else(max_tool_concurrency)
+        .max(1)
+}
+
+pub fn resolve_auto_compact_enabled(runtime: &RuntimeConfig) -> bool {
+    runtime
+        .auto_compact_enabled
+        .unwrap_or(DEFAULT_AUTO_COMPACT_ENABLED)
+}
+
+pub fn resolve_compact_threshold_percent(runtime: &RuntimeConfig) -> u8 {
+    runtime
+        .compact_threshold_percent
+        .unwrap_or(DEFAULT_COMPACT_THRESHOLD_PERCENT)
+        .clamp(1, 100)
+}
+
+pub fn resolve_tool_result_max_bytes(runtime: &RuntimeConfig) -> usize {
+    runtime
+        .tool_result_max_bytes
+        .unwrap_or(DEFAULT_TOOL_RESULT_MAX_BYTES)
+        .max(1)
+}
+
+pub fn resolve_compact_keep_recent_turns(runtime: &RuntimeConfig) -> u8 {
+    runtime
+        .compact_keep_recent_turns
+        .unwrap_or(DEFAULT_COMPACT_KEEP_RECENT_TURNS)
+        .max(1)
+}
+
+pub fn resolve_default_token_budget(runtime: &RuntimeConfig) -> u64 {
+    runtime.default_token_budget.unwrap_or(DEFAULT_TOKEN_BUDGET)
+}
+
+pub fn resolve_continuation_min_delta_tokens(runtime: &RuntimeConfig) -> usize {
+    runtime
+        .continuation_min_delta_tokens
+        .unwrap_or(DEFAULT_CONTINUATION_MIN_DELTA_TOKENS)
+        .max(1)
+}
+
+pub fn resolve_max_continuations(runtime: &RuntimeConfig) -> u8 {
+    runtime
+        .max_continuations
+        .unwrap_or(DEFAULT_MAX_CONTINUATIONS)
         .max(1)
 }

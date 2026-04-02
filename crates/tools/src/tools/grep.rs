@@ -64,6 +64,7 @@ impl Tool for GrepTool {
             .permission("filesystem.read")
             .side_effect(SideEffectLevel::None)
             .concurrency_safe(true)
+            .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
                     "Search file contents by regex when you need to locate code, config keys, or repeated text patterns.",

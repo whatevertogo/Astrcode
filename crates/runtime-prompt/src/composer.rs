@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
-use astrcode_core::LlmMessage;
+use astrcode_core::{LlmMessage, UserMessageOrigin};
 
 use super::contributors::{
     AgentsMdContributor, CapabilityPromptContributor, EnvironmentContributor, IdentityContributor,
@@ -525,17 +525,19 @@ impl PromptComposer {
                 candidate.spec.metadata.clone(),
                 candidate.insertion_order,
             )),
-            RenderTarget::PrependUser => plan
-                .prepend_messages
-                .push(LlmMessage::User { content: rendered }),
+            RenderTarget::PrependUser => plan.prepend_messages.push(LlmMessage::User {
+                content: rendered,
+                origin: UserMessageOrigin::User,
+            }),
             RenderTarget::PrependAssistant => plan.prepend_messages.push(LlmMessage::Assistant {
                 content: rendered,
                 tool_calls: vec![],
                 reasoning: None,
             }),
-            RenderTarget::AppendUser => plan
-                .append_messages
-                .push(LlmMessage::User { content: rendered }),
+            RenderTarget::AppendUser => plan.append_messages.push(LlmMessage::User {
+                content: rendered,
+                origin: UserMessageOrigin::User,
+            }),
             RenderTarget::AppendAssistant => plan.append_messages.push(LlmMessage::Assistant {
                 content: rendered,
                 tool_calls: vec![],

@@ -24,6 +24,24 @@ use astrcode_core::{LlmMessage, ToolCallRequest, ToolDefinition};
 pub mod anthropic;
 pub mod openai;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModelLimits {
+    pub context_window: usize,
+    pub max_output_tokens: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LlmUsage {
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+}
+
+impl LlmUsage {
+    pub fn total_tokens(self) -> usize {
+        self.input_tokens.saturating_add(self.output_tokens)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Cancel helper (moved from runtime::cancel)
 // ---------------------------------------------------------------------------
@@ -155,6 +173,7 @@ pub struct LlmOutput {
     pub content: String,
     pub tool_calls: Vec<ToolCallRequest>,
     pub reasoning: Option<ReasoningContent>,
+    pub usage: Option<LlmUsage>,
 }
 
 pub type EventSink = Arc<dyn Fn(LlmEvent) + Send + Sync>;
@@ -167,6 +186,12 @@ pub trait LlmProvider: Send + Sync {
     /// concerns such as API-key management or model discovery; those are handled before the loop
     /// receives an implementation.
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput>;
+
+    /// Returns local context-window heuristics for request-budget decisions.
+    ///
+    /// TODO(claude-auto-compact): switch to provider-reported limits when the upstream APIs expose
+    /// exact tokenizer/context-window metadata instead of relying on model-name heuristics.
+    fn model_limits(&self) -> ModelLimits;
 }
 
 #[derive(Default)]
@@ -239,6 +264,7 @@ impl LlmAccumulator {
                     signature: self.thinking_signature,
                 })
             },
+            usage: None,
         }
     }
 }

@@ -2,7 +2,11 @@
 //!
 //! 实现单个 Agent Turn 的执行逻辑。
 
+pub(crate) mod compaction;
 mod llm_cycle;
+pub(crate) mod microcompact;
+pub(crate) mod token_budget;
+pub(crate) mod token_usage;
 mod tool_cycle;
 mod turn_runner;
 
@@ -11,9 +15,11 @@ use astrcode_core::{
     Result, ToolContext,
 };
 use chrono::Utc;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::approval_service::{ApprovalBroker, DefaultApprovalBroker};
+use crate::llm::LlmProvider;
 use crate::prompt::PromptComposer;
 use crate::provider_factory::DynProviderFactory;
 use astrcode_core::AgentState;
@@ -22,7 +28,10 @@ use astrcode_core::StorageEvent;
 use crate::builtin_skills::builtin_skills;
 use crate::prompt::{PromptDeclaration, SkillSpec};
 
-use astrcode_runtime_config::max_tool_concurrency;
+use astrcode_runtime_config::{
+    max_tool_concurrency, DEFAULT_AUTO_COMPACT_ENABLED, DEFAULT_COMPACT_KEEP_RECENT_TURNS,
+    DEFAULT_COMPACT_THRESHOLD_PERCENT, DEFAULT_TOOL_RESULT_MAX_BYTES,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnOutcome {
@@ -69,6 +78,14 @@ pub struct AgentLoop {
     prompt_skills: Vec<SkillSpec>,
     /// 单个 step 内允许并发执行的只读工具上限。
     max_tool_concurrency: usize,
+    /// Whether request-level automatic compaction may run before a model step.
+    auto_compact_enabled: bool,
+    /// Percentage of the effective context window at which compaction starts.
+    compact_threshold_percent: u8,
+    /// Maximum bytes from a single tool result that may be shown to the model.
+    tool_result_max_bytes: usize,
+    /// Number of recent user turns that stay verbatim during compaction.
+    compact_keep_recent_turns: usize,
 }
 
 impl AgentLoop {
@@ -101,6 +118,10 @@ impl AgentLoop {
             // 默认并行度统一从 runtime-config 读取，这样环境变量覆盖和
             // 直接构造 AgentLoop 的默认行为保持同一套来源。
             max_tool_concurrency: max_tool_concurrency(),
+            auto_compact_enabled: DEFAULT_AUTO_COMPACT_ENABLED,
+            compact_threshold_percent: DEFAULT_COMPACT_THRESHOLD_PERCENT,
+            tool_result_max_bytes: DEFAULT_TOOL_RESULT_MAX_BYTES,
+            compact_keep_recent_turns: DEFAULT_COMPACT_KEEP_RECENT_TURNS as usize,
         }
     }
 
@@ -121,6 +142,26 @@ impl AgentLoop {
     /// 最小值会被钳制到 1，避免配置错误把安全组完全禁用成不可执行状态。
     pub fn with_max_tool_concurrency(mut self, max_tool_concurrency: usize) -> Self {
         self.max_tool_concurrency = max_tool_concurrency.max(1);
+        self
+    }
+
+    pub fn with_auto_compact_enabled(mut self, auto_compact_enabled: bool) -> Self {
+        self.auto_compact_enabled = auto_compact_enabled;
+        self
+    }
+
+    pub fn with_compact_threshold_percent(mut self, compact_threshold_percent: u8) -> Self {
+        self.compact_threshold_percent = compact_threshold_percent.clamp(1, 100);
+        self
+    }
+
+    pub fn with_tool_result_max_bytes(mut self, tool_result_max_bytes: usize) -> Self {
+        self.tool_result_max_bytes = tool_result_max_bytes.max(1);
+        self
+    }
+
+    pub fn with_compact_keep_recent_turns(mut self, compact_keep_recent_turns: usize) -> Self {
+        self.compact_keep_recent_turns = compact_keep_recent_turns.max(1);
         self
     }
 
@@ -154,7 +195,17 @@ impl AgentLoop {
         on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
         cancel: CancelToken,
     ) -> Result<TurnOutcome> {
-        turn_runner::run_turn(self, state, turn_id, on_event, cancel).await
+        turn_runner::run_turn(self, state, turn_id, on_event, cancel, true).await
+    }
+
+    pub(crate) async fn run_turn_without_finish(
+        &self,
+        state: &AgentState,
+        turn_id: &str,
+        on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
+        cancel: CancelToken,
+    ) -> Result<TurnOutcome> {
+        turn_runner::run_turn(self, state, turn_id, on_event, cancel, false).await
     }
 
     /// 创建工具执行上下文
@@ -181,6 +232,29 @@ impl AgentLoop {
 
     pub(crate) fn max_tool_concurrency(&self) -> usize {
         self.max_tool_concurrency
+    }
+
+    pub(crate) async fn build_provider(
+        &self,
+        working_dir: Option<PathBuf>,
+    ) -> Result<Arc<dyn LlmProvider>> {
+        llm_cycle::build_provider(self.factory.clone(), working_dir).await
+    }
+
+    pub(crate) fn auto_compact_enabled(&self) -> bool {
+        self.auto_compact_enabled
+    }
+
+    pub(crate) fn compact_threshold_percent(&self) -> u8 {
+        self.compact_threshold_percent
+    }
+
+    pub(crate) fn tool_result_max_bytes(&self) -> usize {
+        self.tool_result_max_bytes
+    }
+
+    pub(crate) fn compact_keep_recent_turns(&self) -> usize {
+        self.compact_keep_recent_turns
     }
 }
 

@@ -11,6 +11,7 @@ pub fn target_phase(event: &StorageEvent) -> Phase {
     match event {
         StorageEvent::SessionStart { .. } => Phase::Idle,
         StorageEvent::UserMessage { .. } => Phase::Thinking,
+        StorageEvent::PromptMetrics { .. } | StorageEvent::CompactApplied { .. } => Phase::Idle,
         StorageEvent::AssistantDelta { .. }
         | StorageEvent::ThinkingDelta { .. }
         | StorageEvent::AssistantFinal { .. } => Phase::Streaming,
@@ -44,6 +45,12 @@ impl PhaseTracker {
         event: &StorageEvent,
         turn_id: Option<String>,
     ) -> Option<AgentEvent> {
+        if matches!(
+            event,
+            StorageEvent::PromptMetrics { .. } | StorageEvent::CompactApplied { .. }
+        ) {
+            return None;
+        }
         let new_phase = target_phase(event);
         if self.current != new_phase {
             self.current = new_phase;

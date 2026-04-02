@@ -4,7 +4,10 @@ use std::path::{Component, Path, PathBuf};
 use astrcode_core::home::resolve_home_dir;
 use log::warn;
 
-use crate::prompt::{is_valid_skill_name, parse_skill_md, SkillSource, SkillSpec};
+use crate::prompt::{
+    collect_asset_files, is_valid_skill_name, parse_skill_md, SkillSource, SkillSpec,
+    SKILL_FILE_NAME,
+};
 
 struct BundledSkillDefinition {
     id: &'static str,
@@ -27,7 +30,7 @@ pub(crate) fn builtin_skills() -> Vec<SkillSpec> {
             let skill_markdown = definition
                 .assets
                 .iter()
-                .find(|asset| asset.relative_path == "SKILL.md")
+                .find(|asset| asset.relative_path == SKILL_FILE_NAME)
                 .unwrap_or_else(|| panic!("bundled skill '{}' is missing SKILL.md", definition.id))
                 .content;
             let mut skill = parse_skill_md(skill_markdown, definition.id, SkillSource::Builtin)
@@ -139,38 +142,6 @@ fn write_asset_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
     }
 
     fs::write(path, content)
-}
-
-fn collect_asset_files(skill_root: &Path) -> Vec<String> {
-    let mut files = Vec::new();
-    collect_files_recursive(skill_root, skill_root, &mut files);
-    files.retain(|path| path != "SKILL.md");
-    files.sort();
-    files
-}
-
-fn collect_files_recursive(root: &Path, base_dir: &Path, files: &mut Vec<String>) {
-    let entries = match fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(_) => return,
-    };
-
-    for entry in entries.filter_map(Result::ok) {
-        let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if file_type.is_dir() {
-            collect_files_recursive(&path, base_dir, files);
-            continue;
-        }
-        if !file_type.is_file() {
-            continue;
-        }
-        if let Ok(relative) = path.strip_prefix(base_dir) {
-            files.push(relative.to_string_lossy().replace('\\', "/"));
-        }
-    }
 }
 
 #[cfg(test)]

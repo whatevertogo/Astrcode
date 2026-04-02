@@ -11,7 +11,8 @@ use tokio::select;
 
 use crate::{
     build_http_client, emit_event, is_retryable_status, wait_retry_delay, EventSink,
-    LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest, MAX_RETRIES,
+    LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest, LlmUsage, ModelLimits,
+    MAX_RETRIES,
 };
 
 #[derive(Clone)]
@@ -164,12 +165,16 @@ impl LlmProvider for OpenAiProvider {
                 let parsed: OpenAiChatResponse = response.json().await.map_err(|error| {
                     AstrError::http("failed to parse openai-compatible response", error)
                 })?;
+                let usage = parsed.usage.as_ref().map(|usage| LlmUsage {
+                    input_tokens: usage.prompt_tokens.unwrap_or_default() as usize,
+                    output_tokens: usage.completion_tokens.unwrap_or_default() as usize,
+                });
                 let first_choice = parsed.choices.into_iter().next().ok_or_else(|| {
                     AstrError::LlmStreamError(
                         "openai-compatible response did not include choices".to_string(),
                     )
                 })?;
-                Ok(message_to_output(first_choice.message))
+                Ok(message_to_output(first_choice.message, usage))
             }
             Some(sink) => {
                 let mut body_stream = response.bytes_stream();
@@ -207,9 +212,18 @@ impl LlmProvider for OpenAiProvider {
             }
         }
     }
+
+    fn model_limits(&self) -> ModelLimits {
+        ModelLimits {
+            // TODO(claude-auto-compact): replace these model-name heuristics with provider/model
+            // metadata once OpenAI-compatible backends expose authoritative context-window info.
+            context_window: estimate_openai_context_window(&self.model),
+            max_output_tokens: self.max_tokens as usize,
+        }
+    }
 }
 
-fn message_to_output(message: OpenAiResponseMessage) -> LlmOutput {
+fn message_to_output(message: OpenAiResponseMessage, usage: Option<LlmUsage>) -> LlmOutput {
     let content = message.content.unwrap_or_default();
     let tool_calls = message
         .tool_calls
@@ -233,6 +247,7 @@ fn message_to_output(message: OpenAiResponseMessage) -> LlmOutput {
                 content,
                 signature: None,
             }),
+        usage,
     }
 }
 
@@ -366,7 +381,7 @@ fn to_openai_tool(def: &ToolDefinition) -> OpenAiTool {
 
 fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
     match message {
-        LlmMessage::User { content } => OpenAiRequestMessage {
+        LlmMessage::User { content, .. } => OpenAiRequestMessage {
             role: "user".to_string(),
             content: Some(content.clone()),
             tool_call_id: None,
@@ -415,6 +430,23 @@ fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
             cache_control: None,
         },
     }
+}
+
+fn estimate_openai_context_window(model: &str) -> usize {
+    let model = model.to_ascii_lowercase();
+    if model.contains("deepseek") {
+        return 128_000;
+    }
+    if model.contains("gpt-4o-mini") {
+        return 128_000;
+    }
+    if model.contains("gpt-4o") || model.contains("gpt-4.1") || model.starts_with("gpt-5") {
+        return 128_000;
+    }
+    if model.starts_with('o') {
+        return 128_000;
+    }
+    128_000
 }
 
 /// Enable prompt caching on the last `cache_depth` messages.
@@ -497,6 +529,8 @@ struct OpenAiToolCallFunction {
 #[derive(Debug, Deserialize)]
 struct OpenAiChatResponse {
     choices: Vec<OpenAiChoice>,
+    #[serde(default)]
+    usage: Option<OpenAiUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -510,6 +544,14 @@ struct OpenAiResponseMessage {
     #[serde(alias = "reasoning")]
     reasoning_content: Option<String>,
     tool_calls: Option<Vec<OpenAiResponseToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiUsage {
+    #[serde(default)]
+    prompt_tokens: Option<u64>,
+    #[serde(default)]
+    completion_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -561,7 +603,7 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
 
-    use astrcode_core::CancelToken;
+    use astrcode_core::{CancelToken, UserMessageOrigin};
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::task::JoinHandle;
@@ -753,6 +795,7 @@ mod tests {
         let provider = test_provider();
         let messages = [LlmMessage::User {
             content: "hi".to_string(),
+            origin: UserMessageOrigin::User,
         }];
         let request = provider.build_request(&messages, &[], Some("Follow the rules"), false);
 
@@ -769,6 +812,7 @@ mod tests {
         let provider = test_provider();
         let messages = [LlmMessage::User {
             content: "hi".to_string(),
+            origin: UserMessageOrigin::User,
         }];
         let request = provider.build_request(&messages, &[], None, false);
 
@@ -809,6 +853,7 @@ mod tests {
                 LlmRequest::new(
                     vec![LlmMessage::User {
                         content: "hi".to_string(),
+                        origin: UserMessageOrigin::User,
                     }],
                     vec![],
                     CancelToken::new(),
@@ -866,6 +911,7 @@ mod tests {
                 LlmRequest::new(
                     vec![LlmMessage::User {
                         content: "hi".to_string(),
+                        origin: UserMessageOrigin::User,
                     }],
                     vec![],
                     CancelToken::new(),

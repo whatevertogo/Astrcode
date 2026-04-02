@@ -340,7 +340,6 @@ pub(crate) fn conflicting_capability_name(
     None
 }
 
-/// 创建初始发现状态的插件条目
 fn make_discovered_entry(manifest: &PluginManifest) -> PluginEntry {
     PluginEntry {
         manifest: manifest.clone(),
@@ -353,7 +352,6 @@ fn make_discovered_entry(manifest: &PluginManifest) -> PluginEntry {
     }
 }
 
-/// 创建失败状态的插件条目
 fn make_failed_entry(
     manifest: PluginManifest,
     capabilities: Vec<CapabilityDescriptor>,
@@ -370,7 +368,6 @@ fn make_failed_entry(
     }
 }
 
-/// 初始化成功状态的插件条目
 fn make_initialized_entry(
     manifest: &PluginManifest,
     capabilities: Vec<CapabilityDescriptor>,

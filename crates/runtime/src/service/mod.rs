@@ -11,7 +11,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent_loop::AgentLoop;
 use crate::approval_service::{ApprovalBroker, DefaultApprovalBroker};
-use crate::config::{load_config, resolve_max_tool_concurrency};
+use crate::config::{
+    load_config, resolve_auto_compact_enabled, resolve_compact_keep_recent_turns,
+    resolve_compact_threshold_percent, resolve_max_tool_concurrency, resolve_tool_result_max_bytes,
+};
 use crate::prompt::{PromptDeclaration, SkillSpec};
 use crate::provider_factory::ConfigFileProviderFactory;
 use astrcode_core::{
@@ -117,6 +120,10 @@ impl RuntimeService {
             prompt_skills,
         )
         .with_max_tool_concurrency(max_tool_concurrency)
+        .with_auto_compact_enabled(resolve_auto_compact_enabled(&config.runtime))
+        .with_compact_threshold_percent(resolve_compact_threshold_percent(&config.runtime))
+        .with_tool_result_max_bytes(resolve_tool_result_max_bytes(&config.runtime))
+        .with_compact_keep_recent_turns(resolve_compact_keep_recent_turns(&config.runtime) as usize)
         .with_policy_engine(Arc::clone(&policy))
         .with_approval_broker(Arc::clone(&approval));
         let (session_catalog_events, _) = broadcast::channel(SESSION_CATALOG_BROADCAST_CAPACITY);
@@ -144,10 +151,11 @@ impl RuntimeService {
         prompt_declarations: Vec<PromptDeclaration>,
         prompt_skills: Vec<SkillSpec>,
     ) -> ServiceResult<()> {
-        let max_tool_concurrency = {
+        let runtime_config = {
             let config = self.config.lock().await;
-            resolve_max_tool_concurrency(&config.runtime)
+            config.runtime.clone()
         };
+        let max_tool_concurrency = resolve_max_tool_concurrency(&runtime_config);
         let next_loop = Arc::new(
             AgentLoop::from_capabilities_with_prompt_inputs(
                 Arc::new(ConfigFileProviderFactory),
@@ -156,6 +164,12 @@ impl RuntimeService {
                 prompt_skills,
             )
             .with_max_tool_concurrency(max_tool_concurrency)
+            .with_auto_compact_enabled(resolve_auto_compact_enabled(&runtime_config))
+            .with_compact_threshold_percent(resolve_compact_threshold_percent(&runtime_config))
+            .with_tool_result_max_bytes(resolve_tool_result_max_bytes(&runtime_config))
+            .with_compact_keep_recent_turns(
+                resolve_compact_keep_recent_turns(&runtime_config) as usize
+            )
             .with_policy_engine(Arc::clone(&self.policy))
             .with_approval_broker(Arc::clone(&self.approval)),
         );

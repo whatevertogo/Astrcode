@@ -111,6 +111,13 @@ impl SessionWriter {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct SessionTokenBudgetState {
+    pub total_budget: u64,
+    pub used_tokens: u64,
+    pub continuation_count: u8,
+}
+
 pub(super) struct SessionState {
     // 保留以备将来 session 级工作目录切换时使用；当前所有工具通过 ToolContext.working_dir 获取路径
     #[allow(dead_code)]
@@ -119,6 +126,11 @@ pub(super) struct SessionState {
     pub(super) running: AtomicBool,
     pub(super) cancel: StdMutex<CancelToken>,
     pub(super) turn_lease: StdMutex<Option<Box<dyn SessionTurnLease>>>,
+    /// Session-scoped token budget bookkeeping for auto-continue.
+    pub(super) token_budget: StdMutex<Option<SessionTokenBudgetState>>,
+    /// Per-session compact circuit breaker. We keep it in memory because the failure mode is
+    /// runtime-local: once the process restarts, a fresh provider/config combination may recover.
+    pub(super) compact_failure_count: StdMutex<u32>,
     pub(super) broadcaster: broadcast::Sender<SessionEventRecord>,
     pub(super) writer: Arc<SessionWriter>,
     projector: StdMutex<AgentStateProjector>,
@@ -142,6 +154,8 @@ impl SessionState {
             running: AtomicBool::new(false),
             cancel: StdMutex::new(CancelToken::new()),
             turn_lease: StdMutex::new(None),
+            token_budget: StdMutex::new(None),
+            compact_failure_count: StdMutex::new(0),
             broadcaster,
             writer,
             projector: StdMutex::new(projector),

@@ -165,6 +165,20 @@ pub(crate) async fn interrupt_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub(crate) async fn compact_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    require_auth(&state, &headers, None)?;
+    state
+        .service
+        .compact_session(&session_id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub(crate) async fn delete_session(
     State(state): State<AppState>,
     headers: HeaderMap,

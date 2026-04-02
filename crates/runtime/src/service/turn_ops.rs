@@ -5,16 +5,27 @@ use std::time::Instant;
 use anyhow::Result;
 use astrcode_core::{
     generate_session_id, AstrError, CancelToken, Phase, SessionTurnAcquireResult, SessionTurnLease,
-    StorageEvent, StoredEvent,
+    StorageEvent, StoredEvent, UserMessageOrigin,
 };
 use chrono::Utc;
 use uuid::Uuid;
 
 use super::session_ops::normalize_session_id;
-use super::session_state::SessionState;
+use super::session_state::{SessionState, SessionTokenBudgetState};
 use super::support::{lock_anyhow, spawn_blocking_service};
 use super::{PromptAccepted, RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent};
-use crate::agent_loop::TurnOutcome;
+use crate::agent_loop::{
+    compaction::{self, CompactConfig},
+    token_budget::{
+        build_auto_continue_nudge, check_token_budget, strip_token_budget_marker,
+        TokenBudgetDecision,
+    },
+    token_usage::estimate_text_tokens,
+    TurnOutcome,
+};
+use crate::config::{
+    resolve_continuation_min_delta_tokens, resolve_default_token_budget, resolve_max_continuations,
+};
 use astrcode_core::EventTranslator;
 
 struct SubmitTarget {
@@ -26,12 +37,66 @@ struct SubmitTarget {
 
 const MAX_CONCURRENT_BRANCH_DEPTH: usize = 3;
 
+#[derive(Debug, Clone, Copy)]
+struct BudgetSettings {
+    continuation_min_delta_tokens: usize,
+    max_continuations: u8,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct TurnExecutionStats {
+    estimated_tokens_used: u64,
+    last_assistant_output_tokens: usize,
+    pending_prompt_tokens: Option<u64>,
+}
+
+impl TurnExecutionStats {
+    fn record_prompt_metrics(&mut self, estimated_tokens: u32) {
+        self.pending_prompt_tokens = Some(estimated_tokens as u64);
+    }
+
+    fn record_assistant_output(&mut self, content: &str, reasoning_content: Option<&str>) {
+        // Only charge the prompt snapshot once the model actually produced a response, so
+        // compaction-only snapshots do not consume the session's continuation budget.
+        self.flush_pending_prompt_tokens();
+        let output_tokens = estimate_text_tokens(content)
+            + reasoning_content
+                .map(estimate_text_tokens)
+                .unwrap_or_default();
+        self.estimated_tokens_used = self
+            .estimated_tokens_used
+            .saturating_add(output_tokens as u64);
+        self.last_assistant_output_tokens = output_tokens;
+    }
+
+    fn flush_pending_prompt_tokens(&mut self) {
+        if let Some(prompt_tokens) = self.pending_prompt_tokens.take() {
+            self.estimated_tokens_used = self.estimated_tokens_used.saturating_add(prompt_tokens);
+        }
+    }
+}
+
 impl RuntimeService {
     pub async fn submit_prompt(
         &self,
         session_id: &str,
         text: String,
     ) -> ServiceResult<PromptAccepted> {
+        let runtime_config = { self.config.lock().await.runtime.clone() };
+        let parsed_budget = strip_token_budget_marker(&text);
+        let default_token_budget = resolve_default_token_budget(&runtime_config);
+        let token_budget = parsed_budget
+            .budget
+            .or((default_token_budget > 0).then_some(default_token_budget));
+        let text = if parsed_budget.cleaned_text.is_empty() {
+            text
+        } else {
+            parsed_budget.cleaned_text
+        };
+        let budget_settings = BudgetSettings {
+            continuation_min_delta_tokens: resolve_continuation_min_delta_tokens(&runtime_config),
+            max_continuations: resolve_max_continuations(&runtime_config),
+        };
         let turn_id = Uuid::new_v4().to_string();
         let session_id = normalize_session_id(session_id);
         let SubmitTarget {
@@ -53,6 +118,13 @@ impl RuntimeService {
             *cancel_guard = cancel.clone();
             *lease_guard = Some(turn_lease);
         }
+        if let Ok(mut budget_guard) = lock_anyhow(&session.token_budget, "session token budget") {
+            *budget_guard = token_budget.map(|total_budget| SessionTokenBudgetState {
+                total_budget,
+                used_tokens: 0,
+                continuation_count: 0,
+            });
+        }
 
         let state = session.clone();
         let loop_ = self.current_loop().await;
@@ -72,36 +144,25 @@ impl RuntimeService {
                 turn_id: Some(turn_id.clone()),
                 content: text_for_task,
                 timestamp: Utc::now(),
+                origin: UserMessageOrigin::User,
             };
 
             let task_result = match append_and_broadcast(&state, &user_event, &mut translator).await
             {
-                Ok(()) => state
-                    .snapshot_projected_state()
-                    .map_err(|error| AstrError::Internal(error.to_string())),
+                Ok(()) => {
+                    execute_turn_chain(
+                        &state,
+                        &loop_,
+                        &turn_id,
+                        cancel.clone(),
+                        &mut translator,
+                        budget_settings,
+                    )
+                    .await
+                }
                 Err(error) => Err(AstrError::Internal(error.to_string())),
             };
-
-            let result = match task_result {
-                Ok(projected) => {
-                    loop_
-                        .run_turn(
-                            &projected,
-                            &turn_id,
-                            &mut |event| {
-                                append_and_broadcast_from_turn_callback(
-                                    &state,
-                                    &event,
-                                    &mut translator,
-                                )
-                                .map_err(|error| AstrError::Internal(error.to_string()))
-                            },
-                            cancel.clone(),
-                        )
-                        .await
-                }
-                Err(error) => Err(error),
-            };
+            let result = task_result;
 
             let succeeded = matches!(
                 result.as_ref(),
@@ -137,6 +198,9 @@ impl RuntimeService {
             }
             if let Ok(mut lease) = lock_anyhow(&state.turn_lease, "session turn lease") {
                 *lease = None;
+            }
+            if let Ok(mut budget_guard) = lock_anyhow(&state.token_budget, "session token budget") {
+                *budget_guard = None;
             }
             state.running.store(false, Ordering::SeqCst);
 
@@ -186,6 +250,207 @@ impl RuntimeService {
             }
         }
         Ok(())
+    }
+
+    pub async fn compact_session(&self, session_id: &str) -> ServiceResult<()> {
+        let session_id = normalize_session_id(session_id);
+        let session = self.ensure_session_loaded(&session_id).await?;
+        if session.running.load(Ordering::SeqCst) {
+            return Err(ServiceError::Conflict(format!(
+                "session '{}' is busy; manual compact is only allowed while idle",
+                session_id
+            )));
+        }
+
+        let loop_ = self.current_loop().await;
+        let projected = session
+            .snapshot_projected_state()
+            .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
+        let provider = loop_
+            .build_provider(Some(projected.working_dir.clone()))
+            .await
+            .map_err(ServiceError::from)?;
+        let compact_result = compaction::auto_compact(
+            provider.as_ref(),
+            &projected.messages,
+            None,
+            CompactConfig {
+                keep_recent_turns: loop_.compact_keep_recent_turns(),
+                trigger: astrcode_core::CompactTrigger::Manual,
+            },
+            CancelToken::new(),
+        )
+        .await
+        .map_err(ServiceError::from)?;
+
+        let Some(compact_result) = compact_result else {
+            if let Ok(mut failures) =
+                lock_anyhow(&session.compact_failure_count, "compact failures")
+            {
+                *failures = 0;
+            }
+            return Ok(());
+        };
+
+        let initial_phase = lock_anyhow(&session.phase, "session phase")
+            .map(|guard| *guard)
+            .unwrap_or(Phase::Idle);
+        let mut translator = EventTranslator::new(initial_phase);
+        append_and_broadcast(
+            &session,
+            &StorageEvent::CompactApplied {
+                turn_id: None,
+                trigger: astrcode_core::CompactTrigger::Manual,
+                summary: compact_result.summary,
+                preserved_recent_turns: compact_result.preserved_recent_turns.min(u32::MAX as usize)
+                    as u32,
+                pre_tokens: compact_result.pre_tokens.min(u32::MAX as usize) as u32,
+                post_tokens_estimate: compact_result.post_tokens_estimate.min(u32::MAX as usize)
+                    as u32,
+                messages_removed: compact_result.messages_removed.min(u32::MAX as usize) as u32,
+                tokens_freed: compact_result.tokens_freed.min(u32::MAX as usize) as u32,
+                timestamp: compact_result.timestamp,
+            },
+            &mut translator,
+        )
+        .await
+        .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
+        if let Ok(mut phase) = lock_anyhow(&session.phase, "session phase") {
+            *phase = translator.phase();
+        }
+        if let Ok(mut failures) = lock_anyhow(&session.compact_failure_count, "compact failures") {
+            *failures = 0;
+        }
+        Ok(())
+    }
+}
+
+async fn execute_turn_chain(
+    state: &SessionState,
+    loop_: &crate::agent_loop::AgentLoop,
+    turn_id: &str,
+    cancel: CancelToken,
+    translator: &mut EventTranslator,
+    budget_settings: BudgetSettings,
+) -> std::result::Result<TurnOutcome, AstrError> {
+    loop {
+        let projected = state
+            .snapshot_projected_state()
+            .map_err(|error| AstrError::Internal(error.to_string()))?;
+        let mut stats = TurnExecutionStats::default();
+        let outcome = loop_
+            .run_turn_without_finish(
+                &projected,
+                turn_id,
+                &mut |event| {
+                    observe_turn_event(&mut stats, &event);
+                    append_and_broadcast_from_turn_callback(state, &event, translator)
+                        .map_err(|error| AstrError::Internal(error.to_string()))
+                },
+                cancel.clone(),
+            )
+            .await?;
+
+        if matches!(outcome, TurnOutcome::Completed)
+            && maybe_continue_after_turn(state, turn_id, translator, stats, budget_settings)
+                .await
+                .map_err(|error| AstrError::Internal(error.to_string()))?
+        {
+            continue;
+        }
+
+        append_and_broadcast(
+            state,
+            &StorageEvent::TurnDone {
+                turn_id: Some(turn_id.to_string()),
+                timestamp: Utc::now(),
+                reason: Some(turn_done_reason(&outcome).to_string()),
+            },
+            translator,
+        )
+        .await
+        .map_err(|error| AstrError::Internal(error.to_string()))?;
+        return Ok(outcome);
+    }
+}
+
+async fn maybe_continue_after_turn(
+    state: &SessionState,
+    turn_id: &str,
+    translator: &mut EventTranslator,
+    stats: TurnExecutionStats,
+    budget_settings: BudgetSettings,
+) -> ServiceResult<bool> {
+    let (decision, total_budget, used_tokens) = {
+        let mut budget_guard = lock_anyhow(&state.token_budget, "session token budget")?;
+        let Some(budget_state) = budget_guard.as_mut() else {
+            return Ok(false);
+        };
+
+        budget_state.used_tokens = budget_state
+            .used_tokens
+            .saturating_add(stats.estimated_tokens_used);
+        let decision = check_token_budget(
+            budget_state.used_tokens,
+            budget_state.total_budget,
+            budget_state.continuation_count,
+            stats.last_assistant_output_tokens,
+            budget_settings.continuation_min_delta_tokens,
+            budget_settings.max_continuations,
+        );
+        let total_budget = budget_state.total_budget;
+        let used_tokens = budget_state.used_tokens;
+        if matches!(decision, TokenBudgetDecision::Continue) {
+            budget_state.continuation_count = budget_state.continuation_count.saturating_add(1);
+        } else {
+            *budget_guard = None;
+        }
+        (decision, total_budget, used_tokens)
+    };
+
+    if !matches!(decision, TokenBudgetDecision::Continue) {
+        return Ok(false);
+    }
+
+    // TODO(claude-auto-compact): if Astrcode grows a queue-based turn scheduler, move auto-
+    // continue dispatch there instead of appending the synthetic nudge directly from this task.
+    append_and_broadcast(
+        state,
+        &StorageEvent::UserMessage {
+            turn_id: Some(turn_id.to_string()),
+            content: build_auto_continue_nudge(used_tokens, total_budget),
+            timestamp: Utc::now(),
+            origin: UserMessageOrigin::AutoContinueNudge,
+        },
+        translator,
+    )
+    .await?;
+    Ok(true)
+}
+
+fn observe_turn_event(stats: &mut TurnExecutionStats, event: &StorageEvent) {
+    match event {
+        StorageEvent::PromptMetrics {
+            estimated_tokens, ..
+        } => {
+            stats.record_prompt_metrics(*estimated_tokens);
+        }
+        StorageEvent::AssistantFinal {
+            content,
+            reasoning_content,
+            ..
+        } => {
+            stats.record_assistant_output(content, reasoning_content.as_deref());
+        }
+        _ => {}
+    }
+}
+
+fn turn_done_reason(outcome: &TurnOutcome) -> &'static str {
+    match outcome {
+        TurnOutcome::Completed => "completed",
+        TurnOutcome::Cancelled => "cancelled",
+        TurnOutcome::Error { .. } => "error",
     }
 }
 
@@ -468,6 +733,7 @@ mod tests {
                 event: StorageEvent::UserMessage {
                     turn_id: Some("turn-1".to_string()),
                     content: "first".to_string(),
+                    origin: UserMessageOrigin::User,
                     timestamp,
                 },
             },
@@ -484,6 +750,7 @@ mod tests {
                 event: StorageEvent::UserMessage {
                     turn_id: Some("turn-2".to_string()),
                     content: "second".to_string(),
+                    origin: UserMessageOrigin::User,
                     timestamp,
                 },
             },
@@ -518,6 +785,44 @@ mod tests {
                 .to_string()
                 .contains("too many concurrent branch attempts"),
             "conflict reason should explain why submit was rejected"
+        );
+    }
+
+    #[test]
+    fn prompt_metrics_only_charge_budget_after_a_real_model_response() {
+        let mut stats = TurnExecutionStats::default();
+
+        observe_turn_event(
+            &mut stats,
+            &StorageEvent::PromptMetrics {
+                turn_id: Some("turn-1".to_string()),
+                step_index: 0,
+                estimated_tokens: 800,
+                context_window: 100_000,
+                effective_window: 80_000,
+                threshold_tokens: 72_000,
+                truncated_tool_results: 0,
+            },
+        );
+        assert_eq!(
+            stats.estimated_tokens_used, 0,
+            "compaction-only snapshots should not be billed yet"
+        );
+
+        observe_turn_event(
+            &mut stats,
+            &StorageEvent::AssistantFinal {
+                turn_id: Some("turn-1".to_string()),
+                content: "done".to_string(),
+                reasoning_content: None,
+                reasoning_signature: None,
+                timestamp: None,
+            },
+        );
+
+        assert!(
+            stats.estimated_tokens_used >= 800,
+            "the prompt charge should be applied once the model actually responded"
         );
     }
 }

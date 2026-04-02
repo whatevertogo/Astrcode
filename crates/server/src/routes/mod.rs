@@ -25,6 +25,7 @@ pub(crate) fn build_api_router() -> Router<AppState> {
             get(sessions::session_messages),
         )
         .route("/api/sessions/:id/prompts", post(sessions::submit_prompt))
+        .route("/api/sessions/:id/compact", post(sessions::compact_session))
         .route(
             "/api/sessions/:id/interrupt",
             post(sessions::interrupt_session),

@@ -46,6 +46,7 @@ impl Tool for ListDirTool {
             .permission("filesystem.read")
             .side_effect(SideEffectLevel::None)
             .concurrency_safe(true)
+            .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
                     "List the immediate contents of a directory before drilling into specific files.",

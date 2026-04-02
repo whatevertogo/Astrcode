@@ -166,6 +166,8 @@ pub struct CapabilityDescriptor {
     pub streaming: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub concurrency_safe: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub compact_clearable: bool,
     #[serde(default)]
     pub profiles: Vec<String>,
     #[serde(default)]
@@ -251,6 +253,7 @@ pub struct CapabilityDescriptorBuilder {
     output_schema: Option<Value>,
     streaming: bool,
     concurrency_safe: bool,
+    compact_clearable: bool,
     profiles: Vec<String>,
     tags: Vec<String>,
     permissions: Vec<PermissionHint>,
@@ -269,6 +272,7 @@ impl CapabilityDescriptorBuilder {
             output_schema: None,
             streaming: false,
             concurrency_safe: false,
+            compact_clearable: false,
             profiles: Vec::new(),
             tags: Vec::new(),
             permissions: Vec::new(),
@@ -306,6 +310,11 @@ impl CapabilityDescriptorBuilder {
 
     pub fn concurrency_safe(mut self, concurrency_safe: bool) -> Self {
         self.concurrency_safe = concurrency_safe;
+        self
+    }
+
+    pub fn compact_clearable(mut self, compact_clearable: bool) -> Self {
+        self.compact_clearable = compact_clearable;
         self
     }
 
@@ -407,6 +416,7 @@ impl CapabilityDescriptorBuilder {
             output_schema,
             streaming: self.streaming,
             concurrency_safe: self.concurrency_safe,
+            compact_clearable: self.compact_clearable,
             profiles,
             tags,
             permissions,

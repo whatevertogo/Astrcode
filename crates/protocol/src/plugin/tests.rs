@@ -282,6 +282,7 @@ fn capability_validate_rejects_direct_blank_kind() {
         output_schema: json!({ "type": "object" }),
         streaming: false,
         concurrency_safe: false,
+        compact_clearable: false,
         profiles: vec![],
         tags: vec![],
         permissions: vec![],

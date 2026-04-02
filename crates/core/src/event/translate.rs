@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use crate::{
     session::SessionEventRecord, split_assistant_content, AgentEvent, Phase, StorageEvent,
-    StoredEvent, ToolExecutionResult,
+    StoredEvent, ToolExecutionResult, UserMessageOrigin,
 };
 
 use super::phase::PhaseTracker;
@@ -132,14 +132,18 @@ impl EventTranslator {
                 });
                 self.phase_tracker.force_to(Phase::Idle, None);
             }
-            StorageEvent::UserMessage { content, .. } => {
-                if let Some(turn_id) = turn_id_ref {
-                    push(AgentEvent::UserMessage {
-                        turn_id: turn_id.clone(),
-                        content: content.clone(),
-                    });
-                } else if !content.is_empty() {
-                    warn_missing_turn_id(stored.storage_seq, "userMessage");
+            StorageEvent::UserMessage {
+                content, origin, ..
+            } => {
+                if matches!(origin, UserMessageOrigin::User) {
+                    if let Some(turn_id) = turn_id_ref {
+                        push(AgentEvent::UserMessage {
+                            turn_id: turn_id.clone(),
+                            content: content.clone(),
+                        });
+                    } else if !content.is_empty() {
+                        warn_missing_turn_id(stored.storage_seq, "userMessage");
+                    }
                 }
                 if self.phase_tracker.current() != Phase::Thinking {
                     push(AgentEvent::PhaseChanged {
@@ -150,6 +154,7 @@ impl EventTranslator {
                 self.phase_tracker
                     .force_to(Phase::Thinking, turn_id.clone());
             }
+            StorageEvent::PromptMetrics { .. } | StorageEvent::CompactApplied { .. } => {}
             StorageEvent::AssistantDelta { token, .. } => {
                 if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::ModelDelta {
@@ -323,6 +328,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::UserMessageOrigin;
     use crate::{phase_of_storage_event, AgentEvent, StoredEvent, ToolOutputStream};
 
     #[test]
@@ -333,6 +339,7 @@ mod tests {
                 event: StorageEvent::UserMessage {
                     turn_id: Some("turn-1".to_string()),
                     content: "hello".to_string(),
+                    origin: UserMessageOrigin::User,
                     timestamp: chrono::Utc::now(),
                 },
             }],

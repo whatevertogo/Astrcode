@@ -127,6 +127,7 @@ fn capability(name: &str) -> CapabilityDescriptor {
         output_schema: json!({ "type": "object" }),
         streaming: false,
         concurrency_safe: false,
+        compact_clearable: false,
         profiles: vec!["coding".to_string()],
         tags: Vec::new(),
         permissions: Vec::new(),

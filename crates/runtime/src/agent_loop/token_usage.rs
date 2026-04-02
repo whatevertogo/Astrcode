@@ -1,0 +1,179 @@
+use astrcode_core::{LlmMessage, UserMessageOrigin};
+
+use crate::llm::{LlmUsage, ModelLimits};
+
+pub(crate) const SUMMARY_RESERVE_TOKENS: usize = 20_000;
+const MESSAGE_BASE_TOKENS: usize = 6;
+const TOOL_CALL_BASE_TOKENS: usize = 12;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PromptTokenSnapshot {
+    pub context_tokens: usize,
+    pub budget_tokens: usize,
+    pub context_window: usize,
+    pub effective_window: usize,
+    pub threshold_tokens: usize,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct TokenUsageTracker {
+    anchored_budget_tokens: usize,
+}
+
+impl TokenUsageTracker {
+    pub(crate) fn record_usage(&mut self, usage: Option<LlmUsage>) {
+        let Some(usage) = usage else {
+            return;
+        };
+        // Provider-reported usage is the closest thing we have to billed tokens, so budget
+        // accounting prefers it over prompt-size heuristics whenever the backend exposes it.
+        self.anchored_budget_tokens = self
+            .anchored_budget_tokens
+            .saturating_add(usage.total_tokens());
+    }
+
+    pub(crate) fn budget_tokens(&self, estimated_context_tokens: usize) -> usize {
+        if self.anchored_budget_tokens > 0 {
+            self.anchored_budget_tokens
+        } else {
+            estimated_context_tokens
+        }
+    }
+}
+
+pub(crate) fn build_prompt_snapshot(
+    tracker: &TokenUsageTracker,
+    messages: &[LlmMessage],
+    system_prompt: Option<&str>,
+    limits: ModelLimits,
+    threshold_percent: u8,
+) -> PromptTokenSnapshot {
+    let context_tokens = estimate_request_tokens(messages, system_prompt);
+    PromptTokenSnapshot {
+        context_tokens,
+        budget_tokens: tracker.budget_tokens(context_tokens),
+        context_window: limits.context_window,
+        effective_window: effective_context_window(limits),
+        threshold_tokens: compact_threshold_tokens(limits, threshold_percent),
+    }
+}
+
+pub(crate) fn effective_context_window(limits: ModelLimits) -> usize {
+    limits
+        .context_window
+        .saturating_sub(SUMMARY_RESERVE_TOKENS.min(limits.context_window))
+}
+
+pub(crate) fn compact_threshold_tokens(limits: ModelLimits, threshold_percent: u8) -> usize {
+    effective_context_window(limits)
+        .saturating_mul(threshold_percent as usize)
+        .saturating_div(100)
+}
+
+pub(crate) fn should_compact(snapshot: PromptTokenSnapshot) -> bool {
+    snapshot.context_tokens >= snapshot.threshold_tokens
+}
+
+pub(crate) fn estimate_request_tokens(
+    messages: &[LlmMessage],
+    system_prompt: Option<&str>,
+) -> usize {
+    // TODO(claude-auto-compact): replace this full-scan heuristic with a provider-native tokenizer
+    // once the backends expose exact token accounting and context-window metadata.
+    let system_tokens = system_prompt.map_or(0, estimate_text_tokens);
+    system_tokens + messages.iter().map(estimate_message_tokens).sum::<usize>()
+}
+
+pub(crate) fn estimate_message_tokens(message: &LlmMessage) -> usize {
+    match message {
+        LlmMessage::User { content, origin } => {
+            MESSAGE_BASE_TOKENS
+                + estimate_text_tokens(content)
+                + match origin {
+                    UserMessageOrigin::User => 0,
+                    UserMessageOrigin::AutoContinueNudge => 8,
+                    UserMessageOrigin::CompactSummary => 16,
+                }
+        }
+        LlmMessage::Assistant {
+            content,
+            tool_calls,
+            reasoning,
+        } => {
+            MESSAGE_BASE_TOKENS
+                + estimate_text_tokens(content)
+                + reasoning
+                    .as_ref()
+                    .map_or(0, |value| estimate_text_tokens(&value.content))
+                + tool_calls
+                    .iter()
+                    .map(|call| {
+                        TOOL_CALL_BASE_TOKENS
+                            + estimate_text_tokens(&call.id)
+                            + estimate_text_tokens(&call.name)
+                            + estimate_json_tokens(&call.args.to_string())
+                    })
+                    .sum::<usize>()
+        }
+        LlmMessage::Tool {
+            tool_call_id,
+            content,
+        } => {
+            MESSAGE_BASE_TOKENS + estimate_text_tokens(tool_call_id) + estimate_text_tokens(content)
+        }
+    }
+}
+
+pub(crate) fn estimate_text_tokens(text: &str) -> usize {
+    let chars = text.chars().count();
+    // 4 chars/token is a conservative cross-provider heuristic for ASCII-heavy code/chat text.
+    chars.div_ceil(4).max(1)
+}
+
+fn estimate_json_tokens(json: &str) -> usize {
+    estimate_text_tokens(json) + 4
+}
+
+#[cfg(test)]
+mod tests {
+    use astrcode_core::{ReasoningContent, ToolCallRequest};
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn request_estimate_includes_system_and_message_content() {
+        let messages = vec![
+            LlmMessage::User {
+                content: "inspect src/main.rs".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "I will inspect it.".to_string(),
+                tool_calls: vec![ToolCallRequest {
+                    id: "call-1".to_string(),
+                    name: "readFile".to_string(),
+                    args: json!({"path": "src/main.rs"}),
+                }],
+                reasoning: Some(ReasoningContent {
+                    content: "Need file contents first.".to_string(),
+                    signature: None,
+                }),
+            },
+        ];
+
+        let estimate = estimate_request_tokens(&messages, Some("system"));
+        assert!(estimate > 0);
+    }
+
+    #[test]
+    fn compact_threshold_uses_effective_window() {
+        let limits = ModelLimits {
+            context_window: 100_000,
+            max_output_tokens: 8_000,
+        };
+
+        assert_eq!(effective_context_window(limits), 80_000);
+        assert_eq!(compact_threshold_tokens(limits, 90), 72_000);
+    }
+}

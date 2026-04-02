@@ -9,7 +9,7 @@ use astrcode_core::{
     ApprovalDefault, ApprovalRequest, ApprovalResolution, AstrError, CancelToken, CapabilityCall,
     CapabilityRouter as CoreCapabilityRouter, ContextPressureInput, ContextStrategyDecision,
     ModelRequest, Phase, PluginManifest, PluginType, PolicyContext, PolicyEngine, PolicyVerdict,
-    Result, Tool, ToolCapabilityMetadata, ToolContext,
+    Result, Tool, ToolCapabilityMetadata, ToolContext, UserMessageOrigin,
 };
 use astrcode_plugin::Supervisor;
 use astrcode_protocol::plugin::{PeerDescriptor, PeerRole};
@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use tokio::time::{sleep, Duration};
 
-use crate::llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
+use crate::llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
 use crate::prompt::{
     BlockKind, BlockSpec, PromptComposer, PromptComposerOptions, PromptContext, PromptContribution,
     PromptContributor,
@@ -37,6 +37,7 @@ fn make_state(user_text: &str) -> AgentState {
         working_dir: std::env::temp_dir(),
         messages: vec![LlmMessage::User {
             content: user_text.into(),
+            origin: UserMessageOrigin::User,
         }],
         phase: Phase::Thinking,
         turn_count: 0,
@@ -50,6 +51,13 @@ struct ScriptedProvider {
 
 #[async_trait]
 impl LlmProvider for ScriptedProvider {
+    fn model_limits(&self) -> ModelLimits {
+        ModelLimits {
+            context_window: 200_000,
+            max_output_tokens: 4_096,
+        }
+    }
+
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         if self.delay > Duration::from_millis(0) {
             tokio::select! {
@@ -283,6 +291,13 @@ impl ApprovalBroker for RecordingApprovalBroker {
 
 #[async_trait]
 impl LlmProvider for StreamingProvider {
+    fn model_limits(&self) -> ModelLimits {
+        ModelLimits {
+            context_window: 200_000,
+            max_output_tokens: 4_096,
+        }
+    }
+
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         let Some(sink) = sink else {
             return Ok(self.response.clone());
@@ -303,6 +318,13 @@ impl LlmProvider for StreamingProvider {
 
 #[async_trait]
 impl LlmProvider for RecordingProvider {
+    fn model_limits(&self) -> ModelLimits {
+        ModelLimits {
+            context_window: 200_000,
+            max_output_tokens: 4_096,
+        }
+    }
+
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         self.requests
             .lock()
@@ -548,11 +570,13 @@ async fn tool_events_are_ordered_and_turn_finishes() {
                     args: json!({}),
                 }],
                 reasoning: None,
+                usage: None,
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
+                usage: None,
             },
         ])),
         delay: Duration::from_millis(0),
@@ -612,11 +636,13 @@ async fn streaming_tool_emits_deltas_before_tool_result() {
                     args: json!({}),
                 }],
                 reasoning: None,
+                usage: None,
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
+                usage: None,
             },
         ])),
         delay: Duration::from_millis(0),
@@ -687,6 +713,7 @@ async fn interrupt_emits_error_and_turn_done() {
                 args: json!({}),
             }],
             reasoning: None,
+            usage: None,
         }])),
         delay: Duration::from_millis(0),
     });
@@ -753,11 +780,13 @@ async fn concurrency_safe_tools_run_in_parallel() {
                     },
                 ],
                 reasoning: None,
+                usage: None,
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
+                usage: None,
             },
         ])),
         delay: Duration::from_millis(0),
@@ -811,11 +840,13 @@ async fn unsafe_tools_remain_sequential() {
                     },
                 ],
                 reasoning: None,
+                usage: None,
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
+                usage: None,
             },
         ])),
         delay: Duration::from_millis(0),
@@ -870,11 +901,13 @@ async fn max_tool_concurrency_limits_safe_parallelism() {
                     },
                 ],
                 reasoning: None,
+                usage: None,
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
+                usage: None,
             },
         ])),
         delay: Duration::from_millis(0),
@@ -930,11 +963,13 @@ async fn parallel_safe_tool_results_preserve_original_request_order() {
                     },
                 ],
                 reasoning: None,
+                usage: None,
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
+                usage: None,
             },
         ])),
         requests: Arc::clone(&requests),
@@ -999,6 +1034,7 @@ async fn cancellation_propagates_to_parallel_safe_tools() {
                 },
             ],
             reasoning: None,
+            usage: None,
         }])),
         delay: Duration::from_millis(0),
     });
@@ -1048,6 +1084,7 @@ async fn deltas_emit_before_stream_completion() {
             content: "streamed".to_string(),
             tool_calls: vec![],
             reasoning: None,
+            usage: None,
         },
         per_delta_delay: Duration::from_millis(20),
     });
@@ -1111,12 +1148,14 @@ async fn long_tool_chains_complete_without_a_step_cap() {
                 args: json!({}),
             }],
             reasoning: None,
+            usage: None,
         })
         .collect::<Vec<_>>();
     scripted.push(LlmOutput {
         content: "done".to_string(),
         tool_calls: vec![],
         reasoning: None,
+        usage: None,
     });
 
     let provider = Arc::new(ScriptedProvider {
@@ -1186,11 +1225,13 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
                     args: json!({}),
                 }],
                 reasoning: None,
+                usage: None,
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
+                usage: None,
             },
         ])),
         requests: requests.clone(),
@@ -1207,6 +1248,7 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
         working_dir: project.path().to_path_buf(),
         messages: vec![LlmMessage::User {
             content: "run quick tool".into(),
+            origin: UserMessageOrigin::User,
         }],
         phase: Phase::Thinking,
         turn_count: 0,
@@ -1246,7 +1288,7 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
     assert_eq!(requests[1].messages.len(), 3);
     assert!(matches!(
         &requests[0].messages[0],
-        LlmMessage::User { content } if content == "Before changing code, inspect the relevant files and gather context first."
+        LlmMessage::User { content, .. } if content == "Before changing code, inspect the relevant files and gather context first."
     ));
     assert!(matches!(
         &requests[0].messages[1],
@@ -1254,7 +1296,7 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
     ));
     assert!(matches!(
         &requests[0].messages[2],
-        LlmMessage::User { content } if content == "run quick tool"
+        LlmMessage::User { content, .. } if content == "run quick tool"
     ));
     assert!(matches!(
         &requests[1].messages[1],
@@ -1287,11 +1329,13 @@ async fn reuses_prompt_contributor_cache_across_llm_steps() {
                     args: json!({}),
                 }],
                 reasoning: None,
+                usage: None,
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
+                usage: None,
             },
         ])),
         delay: Duration::from_millis(0),
@@ -1324,6 +1368,7 @@ async fn event_sink_failures_abort_the_turn() {
             content: "done".to_string(),
             tool_calls: vec![],
             reasoning: None,
+            usage: None,
         }])),
         delay: Duration::from_millis(0),
     });
@@ -1355,6 +1400,7 @@ async fn policy_can_rewrite_model_request_before_provider_execution() {
             content: "done".to_string(),
             tool_calls: vec![],
             reasoning: None,
+            usage: None,
         }])),
         requests: Arc::clone(&requests),
     });
@@ -1395,11 +1441,13 @@ async fn denied_tool_calls_emit_failure_without_executing_tool() {
                     args: json!({}),
                 }],
                 reasoning: None,
+                usage: None,
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
+                usage: None,
             },
         ])),
         delay: Duration::from_millis(0),
@@ -1462,11 +1510,13 @@ async fn ask_policy_uses_approval_broker_before_tool_execution() {
                     args: json!({}),
                 }],
                 reasoning: None,
+                usage: None,
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
+                usage: None,
             },
         ])),
         delay: Duration::from_millis(0),
@@ -1520,11 +1570,13 @@ async fn denied_approval_returns_failed_tool_result_without_execution() {
                     args: json!({}),
                 }],
                 reasoning: None,
+                usage: None,
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
+                usage: None,
             },
         ])),
         delay: Duration::from_millis(0),
@@ -1620,11 +1672,13 @@ async fn unified_capability_router_executes_builtin_and_plugin_tools() {
                     },
                 ],
                 reasoning: None,
+                usage: None,
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
+                usage: None,
             },
         ])),
         delay: Duration::from_millis(0),
@@ -1689,6 +1743,7 @@ async fn unified_capability_router_executes_builtin_and_plugin_tools() {
         working_dir: workspace.path().to_path_buf(),
         messages: vec![LlmMessage::User {
             content: "summarize workspace".into(),
+            origin: UserMessageOrigin::User,
         }],
         phase: Phase::Thinking,
         turn_count: 0,

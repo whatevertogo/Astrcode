@@ -345,6 +345,7 @@ mod tests {
                 output_schema: json!({"type": "string"}),
                 streaming: false,
                 concurrency_safe: false,
+                compact_clearable: false,
                 profiles: Vec::new(),
                 tags: Vec::new(),
                 permissions: Vec::<PermissionHint>::new(),

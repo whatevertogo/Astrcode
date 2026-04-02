@@ -10,7 +10,8 @@ use tokio::select;
 
 use crate::{
     build_http_client, emit_event, is_retryable_status, wait_retry_delay, EventSink,
-    LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest, MAX_RETRIES,
+    LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest, LlmUsage, ModelLimits,
+    MAX_RETRIES,
 };
 use astrcode_core::{LlmMessage, ToolCallRequest, ToolDefinition};
 
@@ -192,13 +193,22 @@ impl LlmProvider for AnthropicProvider {
             }
         }
     }
+
+    fn model_limits(&self) -> ModelLimits {
+        ModelLimits {
+            // Claude model families currently expose 200k-class context windows. We keep the
+            // heuristic conservative and local until provider APIs return explicit limits.
+            context_window: 200_000,
+            max_output_tokens: self.max_tokens as usize,
+        }
+    }
 }
 
 fn to_anthropic_messages(messages: &[LlmMessage]) -> Vec<AnthropicMessage> {
     messages
         .iter()
         .map(|message| match message {
-            LlmMessage::User { content } => AnthropicMessage {
+            LlmMessage::User { content, .. } => AnthropicMessage {
                 role: "user".to_string(),
                 content: vec![AnthropicContentBlock::Text {
                     text: content.clone(),
@@ -288,6 +298,10 @@ fn to_anthropic_tools(tools: &[ToolDefinition]) -> Vec<AnthropicTool> {
 fn response_to_output(response: AnthropicResponse) -> LlmOutput {
     let mut output = LlmOutput::default();
     let _ = response.stop_reason;
+    output.usage = response.usage.map(|usage| LlmUsage {
+        input_tokens: usage.input_tokens.unwrap_or_default() as usize,
+        output_tokens: usage.output_tokens.unwrap_or_default() as usize,
+    });
 
     for block in response.content {
         match block_type(&block) {
@@ -640,12 +654,23 @@ struct AnthropicTool {
 struct AnthropicResponse {
     content: Vec<Value>,
     stop_reason: Option<String>,
+    #[serde(default)]
+    usage: Option<AnthropicUsage>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AnthropicUsage {
+    #[serde(default)]
+    input_tokens: Option<u64>,
+    #[serde(default)]
+    output_tokens: Option<u64>,
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use astrcode_core::UserMessageOrigin;
     use serde_json::json;
 
     use super::*;
@@ -664,6 +689,7 @@ mod tests {
         let messages = to_anthropic_messages(&[
             LlmMessage::User {
                 content: "hello".to_string(),
+                origin: UserMessageOrigin::User,
             },
             LlmMessage::Assistant {
                 content: "done".to_string(),
@@ -725,6 +751,7 @@ mod tests {
                 json!({ "type": "text", "text": "world" }),
             ],
             stop_reason: Some("tool_use".to_string()),
+            usage: None,
         });
 
         assert_eq!(output.content, "hello world");
@@ -742,6 +769,7 @@ mod tests {
                 json!({ "type": "text", "text": "done" }),
             ],
             stop_reason: Some("end_turn".to_string()),
+            usage: None,
         });
 
         assert_eq!(output.content, "done");
@@ -805,6 +833,7 @@ mod tests {
         let request = provider.build_request(
             &[LlmMessage::User {
                 content: "hi".to_string(),
+                origin: UserMessageOrigin::User,
             }],
             &[],
             Some("Follow the rules"),
@@ -824,6 +853,7 @@ mod tests {
         let request = provider.build_request(
             &[LlmMessage::User {
                 content: "hi".to_string(),
+                origin: UserMessageOrigin::User,
             }],
             &[],
             None,
@@ -844,6 +874,7 @@ mod tests {
         let request = provider.build_request(
             &[LlmMessage::User {
                 content: "hi".to_string(),
+                origin: UserMessageOrigin::User,
             }],
             &[],
             None,

@@ -65,6 +65,27 @@ pub struct RuntimeConfig {
     /// semantically "set" the moment we write the default config file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tool_concurrency: Option<usize>,
+    /// Whether automatic context compaction may run before a model step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_compact_enabled: Option<bool>,
+    /// Percentage of the effective context window at which compaction triggers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compact_threshold_percent: Option<u8>,
+    /// Maximum bytes from a single tool result that may be sent to the model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_result_max_bytes: Option<usize>,
+    /// Number of recent user turns to keep verbatim during compaction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compact_keep_recent_turns: Option<u8>,
+    /// Optional default token budget for autonomous continuation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_token_budget: Option<u64>,
+    /// Minimum assistant delta before another continuation is considered worthwhile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation_min_delta_tokens: Option<usize>,
+    /// Maximum number of auto-continue follow-up turns after the initial turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_continuations: Option<u8>,
 }
 
 impl Default for Config {
@@ -128,6 +149,16 @@ impl fmt::Debug for RuntimeConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RuntimeConfig")
             .field("max_tool_concurrency", &self.max_tool_concurrency)
+            .field("auto_compact_enabled", &self.auto_compact_enabled)
+            .field("compact_threshold_percent", &self.compact_threshold_percent)
+            .field("tool_result_max_bytes", &self.tool_result_max_bytes)
+            .field("compact_keep_recent_turns", &self.compact_keep_recent_turns)
+            .field("default_token_budget", &self.default_token_budget)
+            .field(
+                "continuation_min_delta_tokens",
+                &self.continuation_min_delta_tokens,
+            )
+            .field("max_continuations", &self.max_continuations)
             .finish()
     }
 }

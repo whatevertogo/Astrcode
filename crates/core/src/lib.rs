@@ -39,7 +39,7 @@ mod tool;
 
 pub use action::{
     split_assistant_content, AssistantContentParts, LlmMessage, ReasoningContent, ToolCallRequest,
-    ToolDefinition, ToolExecutionResult, ToolOutputDelta, ToolOutputStream,
+    ToolDefinition, ToolExecutionResult, ToolOutputDelta, ToolOutputStream, UserMessageOrigin,
 };
 pub use cancel::CancelToken;
 pub use capability::{
@@ -48,8 +48,8 @@ pub use capability::{
 };
 pub use error::{AstrError, Result, ResultExt};
 pub use event::{
-    generate_session_id, phase_of_storage_event, replay_records, AgentEvent, EventTranslator,
-    Phase, StorageEvent, StoredEvent, StoredEventLine,
+    generate_session_id, phase_of_storage_event, replay_records, AgentEvent, CompactTrigger,
+    EventTranslator, Phase, StorageEvent, StoredEvent, StoredEventLine,
 };
 pub use plugin::{PluginHealth, PluginManifest, PluginRegistry, PluginState, PluginType};
 pub use policy::{

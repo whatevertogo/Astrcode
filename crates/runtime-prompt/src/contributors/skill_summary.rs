@@ -2,7 +2,7 @@ use async_trait::async_trait;
 
 use crate::{
     resolve_prompt_skills, skill_roots_cache_marker, BlockKind, BlockSpec, PromptContext,
-    PromptContribution, PromptContributor,
+    PromptContribution, PromptContributor, SKILL_TOOL_NAME,
 };
 
 pub struct SkillSummaryContributor;
@@ -26,7 +26,11 @@ impl PromptContributor for SkillSummaryContributor {
     }
 
     async fn contribute(&self, ctx: &PromptContext) -> PromptContribution {
-        if !ctx.tool_names.iter().any(|tool_name| tool_name == "Skill") {
+        if !ctx
+            .tool_names
+            .iter()
+            .any(|tool_name| tool_name == SKILL_TOOL_NAME)
+        {
             return PromptContribution::default();
         }
 

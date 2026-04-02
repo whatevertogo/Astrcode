@@ -70,10 +70,20 @@ impl ToolExecutionResult {
     }
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UserMessageOrigin {
+    #[default]
+    User,
+    AutoContinueNudge,
+    CompactSummary,
+}
+
 #[derive(Clone, Debug)]
 pub enum LlmMessage {
     User {
         content: String,
+        origin: UserMessageOrigin,
     },
     Assistant {
         content: String,

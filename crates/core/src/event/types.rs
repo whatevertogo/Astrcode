@@ -2,7 +2,14 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ToolOutputStream;
+use crate::{ToolOutputStream, UserMessageOrigin};
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactTrigger {
+    Auto,
+    Manual,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -21,6 +28,8 @@ pub enum StorageEvent {
         turn_id: Option<String>,
         content: String,
         timestamp: DateTime<Utc>,
+        #[serde(default, skip_serializing_if = "is_default_user_message_origin")]
+        origin: UserMessageOrigin,
     },
     AssistantDelta {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -73,6 +82,28 @@ pub enum StorageEvent {
         metadata: Option<Value>,
         duration_ms: u64,
     },
+    PromptMetrics {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        step_index: u32,
+        estimated_tokens: u32,
+        context_window: u32,
+        effective_window: u32,
+        threshold_tokens: u32,
+        truncated_tool_results: u32,
+    },
+    CompactApplied {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        trigger: CompactTrigger,
+        summary: String,
+        preserved_recent_turns: u32,
+        pre_tokens: u32,
+        post_tokens_estimate: u32,
+        messages_removed: u32,
+        tokens_freed: u32,
+        timestamp: DateTime<Utc>,
+    },
     TurnDone {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
@@ -99,11 +130,17 @@ impl StorageEvent {
             | Self::ToolCall { turn_id, .. }
             | Self::ToolCallDelta { turn_id, .. }
             | Self::ToolResult { turn_id, .. }
+            | Self::PromptMetrics { turn_id, .. }
+            | Self::CompactApplied { turn_id, .. }
             | Self::TurnDone { turn_id, .. }
             | Self::Error { turn_id, .. } => turn_id.as_deref(),
             Self::SessionStart { .. } => None,
         }
     }
+}
+
+fn is_default_user_message_origin(origin: &UserMessageOrigin) -> bool {
+    matches!(origin, UserMessageOrigin::User)
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

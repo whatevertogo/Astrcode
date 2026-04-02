@@ -25,12 +25,18 @@ mod validation;
 // Public re-exports
 pub use connection::test_connection;
 pub use constants::{
-    max_tool_concurrency, resolve_max_tool_concurrency, ALL_ASTRCODE_ENV_VARS,
-    ANTHROPIC_API_KEY_ENV, ASTRCODE_HOME_DIR_ENV, ASTRCODE_MAX_TOOL_CONCURRENCY_ENV,
-    ASTRCODE_PLUGIN_DIRS_ENV, ASTRCODE_TEST_HOME_ENV, BUILD_ENV_VARS, CURRENT_CONFIG_VERSION,
-    DEEPSEEK_API_KEY_ENV, DEFAULT_MAX_TOOL_CONCURRENCY, ENV_REFERENCE_PREFIX, HOME_ENV_VARS,
-    LITERAL_VALUE_PREFIX, PLUGIN_ENV_VARS, PROVIDER_API_KEY_ENV_VARS, PROVIDER_KIND_ANTHROPIC,
-    PROVIDER_KIND_OPENAI, RUNTIME_ENV_VARS, TAURI_ENV_TARGET_TRIPLE_ENV,
+    max_tool_concurrency, resolve_auto_compact_enabled, resolve_compact_keep_recent_turns,
+    resolve_compact_threshold_percent, resolve_continuation_min_delta_tokens,
+    resolve_default_token_budget, resolve_max_continuations, resolve_max_tool_concurrency,
+    resolve_tool_result_max_bytes, ALL_ASTRCODE_ENV_VARS, ANTHROPIC_API_KEY_ENV,
+    ASTRCODE_HOME_DIR_ENV, ASTRCODE_MAX_TOOL_CONCURRENCY_ENV, ASTRCODE_PLUGIN_DIRS_ENV,
+    ASTRCODE_TEST_HOME_ENV, BUILD_ENV_VARS, CURRENT_CONFIG_VERSION, DEEPSEEK_API_KEY_ENV,
+    DEFAULT_AUTO_COMPACT_ENABLED, DEFAULT_COMPACT_KEEP_RECENT_TURNS,
+    DEFAULT_COMPACT_THRESHOLD_PERCENT, DEFAULT_CONTINUATION_MIN_DELTA_TOKENS,
+    DEFAULT_MAX_CONTINUATIONS, DEFAULT_MAX_TOOL_CONCURRENCY, DEFAULT_TOKEN_BUDGET,
+    DEFAULT_TOOL_RESULT_MAX_BYTES, ENV_REFERENCE_PREFIX, HOME_ENV_VARS, LITERAL_VALUE_PREFIX,
+    PLUGIN_ENV_VARS, PROVIDER_API_KEY_ENV_VARS, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI,
+    RUNTIME_ENV_VARS, TAURI_ENV_TARGET_TRIPLE_ENV,
 };
 pub use editor::open_config_in_editor;
 pub use env_resolver::{
@@ -155,6 +161,7 @@ mod tests {
 
         let resolved = resolve_max_tool_concurrency(&RuntimeConfig {
             max_tool_concurrency: Some(7),
+            ..RuntimeConfig::default()
         });
 
         std::env::remove_var(ASTRCODE_MAX_TOOL_CONCURRENCY_ENV);
@@ -503,6 +510,7 @@ mod tests {
         let err = validate_config(&Config {
             runtime: RuntimeConfig {
                 max_tool_concurrency: Some(0),
+                ..RuntimeConfig::default()
             },
             ..Config::default()
         })

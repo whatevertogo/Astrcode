@@ -8,7 +8,11 @@ use serde::Deserialize;
 use crate::contributors::cache_marker_for_path;
 use crate::{is_valid_skill_name, SkillSource, SkillSpec};
 
-const SKILL_FILE_NAME: &str = "SKILL.md";
+pub const SKILL_FILE_NAME: &str = "SKILL.md";
+
+/// Tool name for the built-in Skill capability — shared between prompt
+/// contributors (gate on `"Skill"` in tool list) and the runtime tool impl.
+pub const SKILL_TOOL_NAME: &str = "Skill";
 
 /// Claude-style skills intentionally keep frontmatter minimal: discovery only
 /// needs a stable name plus an aggressive description that tells the model when
@@ -81,16 +85,9 @@ pub fn parse_skill_md(content: &str, fallback_id: &str, source: SkillSource) -> 
 }
 
 pub fn load_skills_from_dir(dir: &Path, source: SkillSource) -> Vec<SkillSpec> {
-    if !dir.exists() {
-        return Vec::new();
-    }
-
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
-        Err(error) => {
-            warn!("failed to read skill directory {}: {error}", dir.display());
-            return Vec::new();
-        }
+        Err(_) => return Vec::new(),
     };
 
     let mut children = entries.filter_map(Result::ok).collect::<Vec<_>>();
@@ -262,7 +259,7 @@ fn cache_marker_for_skill_root(root: &Path) -> String {
     format!("{}:[{}]", root.display(), markers.join(","))
 }
 
-fn collect_asset_files(skill_dir: &Path) -> Vec<String> {
+pub fn collect_asset_files(skill_dir: &Path) -> Vec<String> {
     let mut files = Vec::new();
     collect_files_recursive(skill_dir, skill_dir, &mut files);
     files.retain(|path| path != SKILL_FILE_NAME);

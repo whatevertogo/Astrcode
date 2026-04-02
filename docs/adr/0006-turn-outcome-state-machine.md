@@ -82,3 +82,15 @@ AgentLoop（单次 turn 执行器）
 ```
 
 `AgentLoop` 的边界保持为单次 turn 执行器，不感知编排逻辑。`TurnOutcome` 未来可按需扩展（如 `Completed { final_message }` 携带输出），但当前保持最小化以避免过早设计。
+
+
+## Current Implementation Status
+
+截至 2026-04-03，已全部落地：
+
+- `TurnOutcome` 枚举: `crates/runtime/src/agent_loop.rs` (line 36-44)
+- `run_turn()` 返回 `Result<TurnOutcome>`: `crates/runtime/src/agent_loop.rs` (line 191-199)
+- `max_steps` 已完全移除: 无 `max_steps` 字段、无 `with_max_steps()` 方法、无 `reached_max_steps()` 函数
+- `TurnDone.reason` 字段: `crates/core/src/event/types.rs` — `reason: Option<String>` 带 `#[serde(default)]` 向后兼容
+- `finish_turn` / `finish_with_error` / `finish_interrupted`: `crates/runtime/src/agent_loop.rs` (line 262-301)
+- ADR-0006 实施提交: d690778

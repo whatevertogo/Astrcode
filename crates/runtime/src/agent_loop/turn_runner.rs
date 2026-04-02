@@ -8,8 +8,10 @@ use astrcode_core::ModelRequest;
 use astrcode_core::StorageEvent;
 
 use super::{
-    finish_interrupted, finish_turn, finish_with_error, internal_error, llm_cycle, tool_cycle,
-    AgentLoop, TurnOutcome,
+    compaction::{self, CompactConfig},
+    finish_interrupted, finish_turn, finish_with_error, internal_error, llm_cycle, microcompact,
+    token_usage::{self, TokenUsageTracker},
+    tool_cycle, AgentLoop, TurnOutcome,
 };
 
 /// 执行一个完整的 agent turn（从用户提示到最终响应）。
@@ -37,6 +39,7 @@ pub(crate) async fn run_turn(
     turn_id: &str,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
     cancel: CancelToken,
+    emit_turn_done: bool,
 ) -> Result<TurnOutcome> {
     let provider =
         llm_cycle::build_provider(agent_loop.factory.clone(), Some(state.working_dir.clone()))
@@ -44,18 +47,25 @@ pub(crate) async fn run_turn(
     let provider = match provider {
         Ok(provider) => provider,
         Err(error) => {
-            return finish_with_error(turn_id, internal_error(error).to_string(), on_event)
+            return report_error(
+                turn_id,
+                internal_error(error).to_string(),
+                on_event,
+                emit_turn_done,
+            )
         }
     };
     let mut messages = state.messages.clone();
     let mut step_index = 0usize;
+    let model_limits = provider.model_limits();
+    let mut token_tracker = TokenUsageTracker::default();
 
     loop {
         // 取消是协作式的，在 step 边界检查。若 LLM 正在执行慢速推理，
         // 此处不会立即响应取消——实际的中断由 generate_response 内部的
         // CancelToken 机制处理（取消时 provider 的 HTTP 连接会被 abort）。
         if cancel.is_cancelled() {
-            return finish_interrupted(turn_id, on_event);
+            return report_interrupted(turn_id, on_event, emit_turn_done);
         }
 
         let mut vars = HashMap::new();
@@ -78,7 +88,7 @@ pub(crate) async fn run_turn(
         let build_output = match agent_loop.prompt_composer.build(&ctx).await {
             Ok(output) => output,
             Err(error) => {
-                return finish_with_error(turn_id, error.to_string(), on_event);
+                return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
             }
         };
         log_prompt_diagnostics(&build_output.diagnostics);
@@ -90,6 +100,74 @@ pub(crate) async fn run_turn(
         let mut request_messages = plan.prepend_messages;
         request_messages.extend(messages.iter().cloned());
         request_messages.extend(plan.append_messages);
+        let microcompact_result = microcompact::apply_microcompact(
+            &request_messages,
+            &agent_loop.prompt_capability_descriptors,
+            agent_loop.tool_result_max_bytes(),
+            agent_loop.compact_keep_recent_turns(),
+            token_usage::effective_context_window(model_limits),
+        );
+        request_messages = microcompact_result.messages;
+        let prompt_snapshot = token_usage::build_prompt_snapshot(
+            &token_tracker,
+            &request_messages,
+            system_prompt.as_deref(),
+            model_limits,
+            agent_loop.compact_threshold_percent(),
+        );
+        on_event(StorageEvent::PromptMetrics {
+            turn_id: Some(turn_id.to_string()),
+            step_index: step_index as u32,
+            estimated_tokens: prompt_snapshot.context_tokens.min(u32::MAX as usize) as u32,
+            context_window: prompt_snapshot.context_window.min(u32::MAX as usize) as u32,
+            effective_window: prompt_snapshot.effective_window.min(u32::MAX as usize) as u32,
+            threshold_tokens: prompt_snapshot.threshold_tokens.min(u32::MAX as usize) as u32,
+            truncated_tool_results: microcompact_result
+                .truncated_tool_results
+                .min(u32::MAX as usize) as u32,
+        })?;
+        if agent_loop.auto_compact_enabled() && token_usage::should_compact(prompt_snapshot) {
+            let compact_result = match compaction::auto_compact(
+                provider.as_ref(),
+                &messages,
+                system_prompt.as_deref(),
+                CompactConfig {
+                    keep_recent_turns: agent_loop.compact_keep_recent_turns(),
+                    trigger: astrcode_core::CompactTrigger::Auto,
+                },
+                cancel.clone(),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    return if cancel.is_cancelled() {
+                        report_interrupted(turn_id, on_event, emit_turn_done)
+                    } else {
+                        report_error(turn_id, error.to_string(), on_event, emit_turn_done)
+                    };
+                }
+            };
+
+            if let Some(compact_result) = compact_result {
+                on_event(StorageEvent::CompactApplied {
+                    turn_id: Some(turn_id.to_string()),
+                    trigger: astrcode_core::CompactTrigger::Auto,
+                    summary: compact_result.summary,
+                    preserved_recent_turns: compact_result
+                        .preserved_recent_turns
+                        .min(u32::MAX as usize) as u32,
+                    pre_tokens: compact_result.pre_tokens.min(u32::MAX as usize) as u32,
+                    post_tokens_estimate: compact_result.post_tokens_estimate.min(u32::MAX as usize)
+                        as u32,
+                    messages_removed: compact_result.messages_removed.min(u32::MAX as usize) as u32,
+                    tokens_freed: compact_result.tokens_freed.min(u32::MAX as usize) as u32,
+                    timestamp: compact_result.timestamp,
+                })?;
+                messages = compact_result.messages;
+                continue;
+            }
+        }
         let mut tool_definitions = agent_loop.capabilities.tool_definitions();
         append_unique_tools(&mut tool_definitions, plan.extra_tools);
         let policy_ctx = agent_loop.policy_context(state, turn_id, step_index);
@@ -105,7 +183,7 @@ pub(crate) async fn run_turn(
         {
             Ok(request) => request,
             Err(error) => {
-                return finish_with_error(turn_id, error.to_string(), on_event);
+                return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
             }
         };
 
@@ -121,12 +199,13 @@ pub(crate) async fn run_turn(
             Ok(output) => output,
             Err(error) => {
                 return if cancel.is_cancelled() {
-                    finish_interrupted(turn_id, on_event)
+                    report_interrupted(turn_id, on_event, emit_turn_done)
                 } else {
-                    finish_with_error(turn_id, error.to_string(), on_event)
+                    report_error(turn_id, error.to_string(), on_event, emit_turn_done)
                 };
             }
         };
+        token_tracker.record_usage(output.usage);
 
         if !output.content.is_empty() || !output.tool_calls.is_empty() || output.reasoning.is_some()
         {
@@ -150,7 +229,7 @@ pub(crate) async fn run_turn(
         });
 
         if tool_calls.is_empty() {
-            return finish_turn(turn_id, TurnOutcome::Completed, on_event);
+            return complete_turn(turn_id, TurnOutcome::Completed, on_event, emit_turn_done);
         }
 
         let tool_cycle_outcome = match tool_cycle::execute_tool_calls(
@@ -168,7 +247,12 @@ pub(crate) async fn run_turn(
         {
             Ok(outcome) => outcome,
             Err(error) => {
-                return finish_with_error(turn_id, internal_error(error).to_string(), on_event)
+                return report_error(
+                    turn_id,
+                    internal_error(error).to_string(),
+                    on_event,
+                    emit_turn_done,
+                )
             }
         };
 
@@ -176,16 +260,65 @@ pub(crate) async fn run_turn(
             tool_cycle_outcome,
             tool_cycle::ToolCycleOutcome::Interrupted
         ) {
-            return finish_interrupted(turn_id, on_event);
+            return report_interrupted(turn_id, on_event, emit_turn_done);
         }
 
         step_index += 1;
     }
 }
 
+fn complete_turn(
+    turn_id: &str,
+    outcome: TurnOutcome,
+    on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
+    emit_turn_done: bool,
+) -> Result<TurnOutcome> {
+    if emit_turn_done {
+        finish_turn(turn_id, outcome, on_event)
+    } else {
+        Ok(outcome)
+    }
+}
+
+fn report_error(
+    turn_id: &str,
+    message: impl Into<String>,
+    on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
+    emit_turn_done: bool,
+) -> Result<TurnOutcome> {
+    let message = message.into();
+    if emit_turn_done {
+        finish_with_error(turn_id, message, on_event)
+    } else {
+        on_event(StorageEvent::Error {
+            turn_id: Some(turn_id.to_string()),
+            message: message.clone(),
+            timestamp: Some(chrono::Utc::now()),
+        })?;
+        Ok(TurnOutcome::Error { message })
+    }
+}
+
+fn report_interrupted(
+    turn_id: &str,
+    on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
+    emit_turn_done: bool,
+) -> Result<TurnOutcome> {
+    if emit_turn_done {
+        finish_interrupted(turn_id, on_event)
+    } else {
+        on_event(StorageEvent::Error {
+            turn_id: Some(turn_id.to_string()),
+            message: "interrupted".to_string(),
+            timestamp: Some(chrono::Utc::now()),
+        })?;
+        Ok(TurnOutcome::Cancelled)
+    }
+}
+
 fn latest_user_message(messages: &[LlmMessage]) -> Option<&str> {
     messages.iter().rev().find_map(|message| match message {
-        LlmMessage::User { content } => Some(content.as_str()),
+        LlmMessage::User { content, .. } => Some(content.as_str()),
         LlmMessage::Assistant { .. } | LlmMessage::Tool { .. } => None,
     })
 }

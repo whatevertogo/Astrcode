@@ -48,6 +48,33 @@ pub fn validate_config(config: &Config) -> Result<()> {
             "runtime.maxToolConcurrency must be greater than 0".to_string(),
         ));
     }
+    if matches!(config.runtime.tool_result_max_bytes, Some(0)) {
+        return Err(AstrError::Validation(
+            "runtime.toolResultMaxBytes must be greater than 0".to_string(),
+        ));
+    }
+    if matches!(config.runtime.compact_keep_recent_turns, Some(0)) {
+        return Err(AstrError::Validation(
+            "runtime.compactKeepRecentTurns must be greater than 0".to_string(),
+        ));
+    }
+    if matches!(config.runtime.continuation_min_delta_tokens, Some(0)) {
+        return Err(AstrError::Validation(
+            "runtime.continuationMinDeltaTokens must be greater than 0".to_string(),
+        ));
+    }
+    if matches!(config.runtime.max_continuations, Some(0)) {
+        return Err(AstrError::Validation(
+            "runtime.maxContinuations must be greater than 0".to_string(),
+        ));
+    }
+    if let Some(percent) = config.runtime.compact_threshold_percent {
+        if !(1..=100).contains(&percent) {
+            return Err(AstrError::Validation(
+                "runtime.compactThresholdPercent must be between 1 and 100".to_string(),
+            ));
+        }
+    }
 
     if config.profiles.is_empty() {
         return Err(AstrError::Validation(

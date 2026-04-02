@@ -236,6 +236,8 @@ pub struct ToolCapabilityMetadata {
     pub side_effect: SideEffectLevel,
     /// Whether the runtime may execute multiple calls to this capability in parallel.
     pub concurrency_safe: bool,
+    /// Whether old tool results may be compacted out of request context to save tokens.
+    pub compact_clearable: bool,
     /// Stability level indicating API maturity.
     pub stability: StabilityLevel,
     /// Prompt guidance that should be projected into the layered prompt system.
@@ -260,6 +262,7 @@ impl ToolCapabilityMetadata {
             permissions: Vec::new(),
             side_effect: SideEffectLevel::Workspace,
             concurrency_safe: false,
+            compact_clearable: false,
             stability: StabilityLevel::Stable,
             prompt: None,
         }
@@ -331,6 +334,12 @@ impl ToolCapabilityMetadata {
         self
     }
 
+    /// Marks whether historical results from this tool may be cleared from model context.
+    pub fn compact_clearable(mut self, compact_clearable: bool) -> Self {
+        self.compact_clearable = compact_clearable;
+        self
+    }
+
     /// Sets the stability level for this tool.
     pub fn stability(mut self, stability: StabilityLevel) -> Self {
         self.stability = stability;
@@ -365,6 +374,7 @@ impl ToolCapabilityMetadata {
             .permissions(self.permissions)
             .side_effect(self.side_effect)
             .concurrency_safe(self.concurrency_safe)
+            .compact_clearable(self.compact_clearable)
             .stability(self.stability)
             .metadata(Value::Object(metadata))
             .build()

@@ -26,7 +26,7 @@ use uuid::Uuid;
 pub use self::domain::{AgentEvent, Phase};
 pub use self::phase::{target_phase as phase_of_storage_event, PhaseTracker};
 pub use self::translate::{replay_records, EventTranslator};
-pub use self::types::{StorageEvent, StoredEvent, StoredEventLine};
+pub use self::types::{CompactTrigger, StorageEvent, StoredEvent, StoredEventLine};
 
 /// 生成全局唯一的会话 ID，格式为 `YYYY-MM-DDTHH-MM-SS-xxxxxxxx`。
 ///

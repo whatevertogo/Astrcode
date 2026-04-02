@@ -43,8 +43,10 @@ pub struct SkillSpec {
 impl SkillSpec {
     pub fn matches_requested_name(&self, requested_name: &str) -> bool {
         let requested_name = normalize_skill_name(requested_name);
+        // `id` is already validated as kebab-case at parse time, so normalize
+        // is strictly for the caller-provided side — both sides land in the
+        // same canonical form for comparison.
         requested_name == normalize_skill_name(&self.id)
-            || requested_name == normalize_skill_name(&self.name)
     }
 }
 

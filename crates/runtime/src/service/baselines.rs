@@ -8,11 +8,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{Duration as ChronoDuration, Utc};
 
-use astrcode_core::{AstrError, Result, StorageEvent, StoredEvent};
+use astrcode_core::{AstrError, Result, StorageEvent, StoredEvent, UserMessageOrigin};
 use astrcode_storage::session::EventLog;
 
 use crate::agent_loop::AgentLoop;
-use crate::llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
+use crate::llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
 use crate::provider_factory::ProviderFactory;
 use crate::test_support::{empty_capabilities, TestEnvGuard};
 
@@ -25,6 +25,13 @@ struct StaticProvider {
 
 #[async_trait]
 impl LlmProvider for StaticProvider {
+    fn model_limits(&self) -> ModelLimits {
+        ModelLimits {
+            context_window: 200_000,
+            max_output_tokens: 4_096,
+        }
+    }
+
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         if !self.delay.is_zero() {
             tokio::select! {
@@ -99,6 +106,7 @@ fn seed_session_log(session_id: &str, working_dir: &Path, turns: usize) {
             StorageEvent::UserMessage {
                 turn_id: Some(turn_id.clone()),
                 content: format!("prompt {turn_index}"),
+                origin: UserMessageOrigin::User,
                 timestamp,
             },
         );

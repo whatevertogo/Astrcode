@@ -7,7 +7,7 @@ use astrcode_core::{
     ToolExecutionResult, ToolPromptMetadata,
 };
 
-use crate::prompt::{normalize_skill_name, resolve_prompt_skills, SkillSpec};
+use crate::prompt::{normalize_skill_name, resolve_prompt_skills, SkillSpec, SKILL_TOOL_NAME};
 
 #[derive(Debug, Deserialize)]
 struct SkillToolInput {
@@ -30,7 +30,7 @@ impl SkillTool {
 impl Tool for SkillTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "Skill".to_string(),
+            name: SKILL_TOOL_NAME.to_string(),
             description: "Execute a skill within the main conversation.".to_string(),
             parameters: json!({
                 "type": "object",
@@ -68,16 +68,10 @@ impl Tool for SkillTool {
         let parsed_input = match serde_json::from_value::<SkillToolInput>(input) {
             Ok(parsed_input) => parsed_input,
             Err(error) => {
-                return Ok(ToolExecutionResult {
+                return Ok(skill_error(
                     tool_call_id,
-                    tool_name: "Skill".to_string(),
-                    ok: false,
-                    output: String::new(),
-                    error: Some(format!("invalid Skill input: {error}")),
-                    metadata: None,
-                    duration_ms: 0,
-                    truncated: false,
-                });
+                    format!("invalid Skill input: {error}"),
+                ));
             }
         };
 
@@ -92,25 +86,19 @@ impl Tool for SkillTool {
                 .map(|skill| skill.id.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            return Ok(ToolExecutionResult {
+            return Ok(skill_error(
                 tool_call_id,
-                tool_name: "Skill".to_string(),
-                ok: false,
-                output: String::new(),
-                error: Some(format!(
+                format!(
                     "unknown skill '{}'. Available skills: {}",
                     normalize_skill_name(&parsed_input.skill),
                     available
-                )),
-                metadata: None,
-                duration_ms: 0,
-                truncated: false,
-            });
+                ),
+            ));
         };
 
         Ok(ToolExecutionResult {
             tool_call_id,
-            tool_name: "Skill".to_string(),
+            tool_name: SKILL_TOOL_NAME.to_string(),
             ok: true,
             output: render_skill_content(skill, parsed_input.args.as_deref(), ctx.session_id()),
             error: None,
@@ -118,6 +106,19 @@ impl Tool for SkillTool {
             duration_ms: 0,
             truncated: false,
         })
+    }
+}
+
+fn skill_error(tool_call_id: String, error: String) -> ToolExecutionResult {
+    ToolExecutionResult {
+        tool_call_id,
+        tool_name: SKILL_TOOL_NAME.to_string(),
+        ok: false,
+        output: String::new(),
+        error: Some(error),
+        metadata: None,
+        duration_ms: 0,
+        truncated: false,
     }
 }
 

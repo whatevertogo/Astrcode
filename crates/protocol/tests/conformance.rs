@@ -44,6 +44,7 @@ fn sample_capability() -> CapabilityDescriptor {
         output_schema: json!({ "type": "object" }),
         streaming: false,
         concurrency_safe: false,
+        compact_clearable: false,
         profiles: vec!["coding".to_string()],
         tags: vec!["workspace".to_string(), "summary".to_string()],
         permissions: vec![PermissionHint {

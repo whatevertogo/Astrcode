@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use crate::Phase;
 
 use crate::event::StorageEvent;
-use crate::{split_assistant_content, LlmMessage, ReasoningContent, ToolCallRequest};
+use crate::{
+    split_assistant_content, LlmMessage, ReasoningContent, ToolCallRequest, UserMessageOrigin,
+};
 
 #[derive(Debug, Clone)]
 pub struct AgentState {
@@ -54,10 +56,13 @@ impl AgentStateProjector {
                 self.state.working_dir = PathBuf::from(working_dir);
             }
 
-            StorageEvent::UserMessage { content, .. } => {
+            StorageEvent::UserMessage {
+                content, origin, ..
+            } => {
                 self.flush_pending_assistant();
                 self.state.messages.push(LlmMessage::User {
                     content: content.clone(),
+                    origin: *origin,
                 });
                 self.state.phase = Phase::Thinking;
             }
@@ -117,6 +122,15 @@ impl AgentStateProjector {
                 });
             }
 
+            StorageEvent::CompactApplied {
+                summary,
+                preserved_recent_turns,
+                ..
+            } => {
+                self.flush_pending_assistant();
+                self.apply_compaction(summary, *preserved_recent_turns as usize);
+            }
+
             StorageEvent::TurnDone { .. } => {
                 self.flush_pending_assistant();
                 self.state.phase = Phase::Idle;
@@ -125,6 +139,7 @@ impl AgentStateProjector {
 
             StorageEvent::AssistantDelta { .. }
             | StorageEvent::ToolCallDelta { .. }
+            | StorageEvent::PromptMetrics { .. }
             | StorageEvent::ThinkingDelta { .. }
             | StorageEvent::Error { .. } => {}
         }
@@ -146,6 +161,55 @@ impl AgentStateProjector {
             });
         }
     }
+
+    fn apply_compaction(&mut self, summary: &str, preserved_recent_turns: usize) {
+        let keep_start = recent_turn_start_index(&self.state.messages, preserved_recent_turns);
+        let keep_start = keep_start.unwrap_or(self.state.messages.len());
+        let removed = self.state.messages[..keep_start].len();
+        if removed == 0 {
+            return;
+        }
+
+        let preserved = self.state.messages.split_off(keep_start);
+        self.state.messages = vec![LlmMessage::User {
+            content: format_compact_summary(summary),
+            origin: UserMessageOrigin::CompactSummary,
+        }];
+        self.state.messages.extend(preserved);
+    }
+}
+
+fn format_compact_summary(summary: &str) -> String {
+    format!(
+        "[Auto-compact summary]\n{}\n\nContinue from this summary without repeating it to the user.",
+        summary.trim()
+    )
+}
+
+fn recent_turn_start_index(
+    messages: &[LlmMessage],
+    preserved_recent_turns: usize,
+) -> Option<usize> {
+    let mut seen_turns = 0usize;
+    let mut last_index = None;
+
+    for (index, message) in messages.iter().enumerate().rev() {
+        if matches!(
+            message,
+            LlmMessage::User {
+                origin: UserMessageOrigin::User,
+                ..
+            }
+        ) {
+            seen_turns += 1;
+            last_index = Some(index);
+            if seen_turns >= preserved_recent_turns {
+                break;
+            }
+        }
+    }
+
+    last_index
 }
 
 /// Pure function: project an event sequence into an AgentState.
@@ -187,6 +251,7 @@ mod tests {
             StorageEvent::UserMessage {
                 turn_id: None,
                 content: "hello".into(),
+                origin: UserMessageOrigin::User,
                 timestamp: ts(),
             },
         ];
@@ -194,7 +259,9 @@ mod tests {
         assert_eq!(state.session_id, "s1");
         assert_eq!(state.working_dir, PathBuf::from("/tmp"));
         assert_eq!(state.messages.len(), 1);
-        assert!(matches!(&state.messages[0], LlmMessage::User { content } if content == "hello"));
+        assert!(
+            matches!(&state.messages[0], LlmMessage::User { content, .. } if content == "hello")
+        );
         assert_eq!(state.phase, Phase::Thinking);
     }
 
@@ -211,6 +278,7 @@ mod tests {
             StorageEvent::UserMessage {
                 turn_id: None,
                 content: "hi".into(),
+                origin: UserMessageOrigin::User,
                 timestamp: ts(),
             },
             StorageEvent::AssistantFinal {
@@ -246,6 +314,7 @@ mod tests {
             StorageEvent::UserMessage {
                 turn_id: None,
                 content: "list files".into(),
+                origin: UserMessageOrigin::User,
                 timestamp: ts(),
             },
             StorageEvent::AssistantFinal {
@@ -287,6 +356,7 @@ mod tests {
             StorageEvent::UserMessage {
                 turn_id: None,
                 content: "thanks".into(),
+                origin: UserMessageOrigin::User,
                 timestamp: ts(),
             },
             StorageEvent::AssistantFinal {
@@ -352,6 +422,7 @@ mod tests {
             StorageEvent::UserMessage {
                 turn_id: None,
                 content: "hi".into(),
+                origin: UserMessageOrigin::User,
                 timestamp: ts(),
             },
             StorageEvent::AssistantDelta {
@@ -398,6 +469,7 @@ mod tests {
             StorageEvent::UserMessage {
                 turn_id: None,
                 content: "run tool".into(),
+                origin: UserMessageOrigin::User,
                 timestamp: ts(),
             },
             StorageEvent::ToolCall {
@@ -457,6 +529,7 @@ mod tests {
             StorageEvent::UserMessage {
                 turn_id: None,
                 content: "hello".into(),
+                origin: UserMessageOrigin::User,
                 timestamp: ts(),
             },
             StorageEvent::AssistantFinal {
