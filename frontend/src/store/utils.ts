@@ -5,8 +5,8 @@
 
 import type { AssistantMessage, Message, Project, SessionMeta } from '../types';
 import { uuid } from '../utils/uuid';
-import { snapshotToolStatus } from '../sessionMessages';
-import type { SessionMessage as HookSessionMessage } from '../../hooks/useAgent';
+import { snapshotToolStatus } from '../lib/sessionMessages';
+import type { SessionMessage as HookSessionMessage } from '../hooks/useAgent';
 
 function toEpochMs(value: string): number {
   const parsed = Date.parse(value);

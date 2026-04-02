@@ -13,22 +13,9 @@
 
 ### Rust
 
-- Use `cargo fmt --all` before committing
+- Use `cargo fmt --all`,`cargo clippy --all-targets --all-features -- -D warnings` before committing
 - Follow standard Rust naming: `snake_case` for functions/variables, `PascalCase` for types
 - Async functions should return `anyhow::Result<T>`
-
-### TypeScript/React
-
-- Components: `PascalCase.tsx` (e.g., `MessageList.tsx`)
-- Hooks: `use*.ts` (e.g., `useAgent.ts`)
-- Utilities: `camelCase.ts`
-- Run `npm run typecheck`, `npm run lint`, and `npm run format:check` before committing
-
-## Testing Guidelines
-
-- Rust tests use built-in `#[test]` and `#[tokio::test]` attributes
-- Test files are colocated with source files in `#[cfg(test)]` modules
-- Run full suite: `cargo test --workspace`
 
 ## Architecture Notes
 
@@ -68,9 +55,9 @@ protocol (纯 DTO，无业务依赖)
 
 ### Tool Event / UX
 
-- 工具事件除了 `ToolCall` / `ToolResult`，现在还有 `ToolCallDelta`；长耗时工具的增量输出必须先落 `StorageEvent`，再通过 SSE 推给前端，不能只做前端内存态。
-- `shell` 工具按 stdout / stderr 增量流式输出；前端工具卡片会基于 `metadata.display.kind = terminal` 渲染终端视图，刷新后也要能从 replay 还原。
-- `writeFile` / `editFile` 的 diff 仍以 metadata 为准；`ToolCallBlock` 只负责展示，diff/shell metadata 解析逻辑优先收口到 `frontend/src/lib/`，避免组件里堆协议判断。
+- 工具事件除了 `ToolCall` / `ToolResult`，现在还有 `ToolCallDelta`；长耗时工具的增量输出必须先持久化再广播，不能只留在前端本地状态。
+- `shell` 工具按 stdout / stderr 增量流式输出；前端工具卡片会基于 `metadata.display.kind = terminal` 渲染终端视图，断线重连后通过 replay 恢复。
+- `writeFile` / `editFile` 的 diff 仍通过 metadata 驱动展示；diff/shell metadata 的解析逻辑优先收口到 `frontend/src/lib/`，避免在 `ToolCallBlock` 里散落协议细节。
 
 ## Development Tips
 
@@ -90,3 +77,4 @@ protocol (纯 DTO，无业务依赖)
 # 注意
 
 - 项目自定义环境变量常量的底层源头放 `crates/core/src/env.rs`；`crates/runtime-config/src/constants.rs` 负责按 home / plugin / provider / build 分类聚合与对外导出，新增环境变量时不要散落硬编码
+- 不需要向后兼容，尽量以最良好的架构和代码风格书写代码，尽量0技术债

@@ -112,7 +112,7 @@ impl EventTranslator {
             push(phase_event);
         }
 
-        self.convert_event(stored, &turn_id, &mut push);
+        self.convert_event(stored, turn_id, &mut push);
 
         records
     }
@@ -120,15 +120,17 @@ impl EventTranslator {
     fn convert_event(
         &mut self,
         stored: &StoredEvent,
-        turn_id: &Option<String>,
+        turn_id: Option<String>,
         push: &mut impl FnMut(AgentEvent),
     ) {
+        let turn_id_ref = turn_id.as_ref();
+
         match &stored.event {
             StorageEvent::SessionStart { session_id, .. } => {
                 push(AgentEvent::SessionStarted {
                     session_id: session_id.clone(),
                 });
-                self.phase_tracker.force_to(Phase::Idle, turn_id.clone());
+                self.phase_tracker.force_to(Phase::Idle, None);
             }
             StorageEvent::UserMessage { .. } => {
                 if self.phase_tracker.current() != Phase::Thinking {
@@ -141,9 +143,9 @@ impl EventTranslator {
                     .force_to(Phase::Thinking, turn_id.clone());
             }
             StorageEvent::AssistantDelta { token, .. } => {
-                if let Some(turn_id) = turn_id.clone() {
+                if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::ModelDelta {
-                        turn_id,
+                        turn_id: turn_id.clone(),
                         delta: token.clone(),
                     });
                 } else if !token.is_empty() {
@@ -151,9 +153,9 @@ impl EventTranslator {
                 }
             }
             StorageEvent::ThinkingDelta { token, .. } => {
-                if let Some(turn_id) = turn_id.clone() {
+                if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::ThinkingDelta {
-                        turn_id,
+                        turn_id: turn_id.clone(),
                         delta: token.clone(),
                     });
                 } else if !token.is_empty() {
@@ -166,15 +168,17 @@ impl EventTranslator {
                 ..
             } => {
                 let parts = split_assistant_content(content, reasoning_content.as_deref());
-                if let Some(turn_id) = turn_id.clone() {
-                    if !parts.visible_content.is_empty() || parts.reasoning_content.is_some() {
+                let has_content =
+                    !parts.visible_content.is_empty() || parts.reasoning_content.is_some();
+                if let Some(turn_id) = turn_id_ref {
+                    if has_content {
                         push(AgentEvent::AssistantMessage {
-                            turn_id,
+                            turn_id: turn_id.clone(),
                             content: parts.visible_content,
                             reasoning_content: parts.reasoning_content,
                         });
                     }
-                } else if !parts.visible_content.is_empty() || parts.reasoning_content.is_some() {
+                } else if has_content {
                     warn_missing_turn_id(stored.storage_seq, "assistantMessage");
                 }
             }
@@ -184,11 +188,11 @@ impl EventTranslator {
                 args,
                 ..
             } => {
-                if let Some(turn_id) = turn_id.clone() {
+                if let Some(turn_id) = turn_id_ref {
                     self.tool_call_names
                         .insert(tool_call_id.clone(), tool_name.clone());
                     push(AgentEvent::ToolCallStart {
-                        turn_id,
+                        turn_id: turn_id.clone(),
                         tool_call_id: tool_call_id.clone(),
                         tool_name: tool_name.clone(),
                         input: args.clone(),
@@ -204,7 +208,7 @@ impl EventTranslator {
                 delta,
                 ..
             } => {
-                if let Some(turn_id) = turn_id.clone() {
+                if let Some(turn_id) = turn_id_ref {
                     let name = if !tool_name.is_empty() {
                         tool_name.clone()
                     } else {
@@ -214,7 +218,7 @@ impl EventTranslator {
                             .unwrap_or_default()
                     };
                     push(AgentEvent::ToolCallDelta {
-                        turn_id,
+                        turn_id: turn_id.clone(),
                         tool_call_id: tool_call_id.clone(),
                         tool_name: name,
                         stream: *stream,
@@ -234,7 +238,7 @@ impl EventTranslator {
                 duration_ms,
                 ..
             } => {
-                if let Some(turn_id) = turn_id.clone() {
+                if let Some(turn_id) = turn_id_ref {
                     let cached_name = self.tool_call_names.remove(tool_call_id);
                     let name = if !tool_name.is_empty() {
                         tool_name.clone()
@@ -242,7 +246,7 @@ impl EventTranslator {
                         cached_name.unwrap_or_default()
                     };
                     push(AgentEvent::ToolCallResult {
-                        turn_id,
+                        turn_id: turn_id.clone(),
                         result: ToolExecutionResult {
                             tool_call_id: tool_call_id.clone(),
                             tool_name: name,
@@ -259,8 +263,10 @@ impl EventTranslator {
                 }
             }
             StorageEvent::TurnDone { .. } => {
-                if let Some(turn_id) = turn_id.clone() {
-                    push(AgentEvent::TurnDone { turn_id });
+                if let Some(turn_id) = turn_id_ref {
+                    push(AgentEvent::TurnDone {
+                        turn_id: turn_id.clone(),
+                    });
                 } else {
                     warn_missing_turn_id(stored.storage_seq, "turnDone");
                 }
@@ -278,8 +284,7 @@ impl EventTranslator {
                     message: message.clone(),
                 });
                 if message == "interrupted" {
-                    self.phase_tracker
-                        .force_to(Phase::Interrupted, turn_id.clone());
+                    self.phase_tracker.force_to(Phase::Interrupted, turn_id);
                 }
             }
         }
@@ -310,7 +315,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{AgentEvent, StoredEvent, ToolOutputStream};
+    use crate::{phase_of_storage_event, AgentEvent, StoredEvent, ToolOutputStream};
 
     #[test]
     fn tool_call_delta_replays_with_cached_tool_name() {

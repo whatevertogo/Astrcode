@@ -77,3 +77,4 @@ protocol (纯 DTO，无业务依赖)
 # 注意
 
 - 项目自定义环境变量常量的底层源头放 `crates/core/src/env.rs`；`crates/runtime-config/src/constants.rs` 负责按 home / plugin / provider / build 分类聚合与对外导出，新增环境变量时不要散落硬编码
+- 不需要向后兼容，尽量以最良好的架构和代码风格书写代码，尽量0技术债
