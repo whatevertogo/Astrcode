@@ -81,4 +81,29 @@ describe('normalizeAgentEvent protocol gate', () => {
       },
     });
   });
+
+  it('accepts toolCallDelta payloads and normalizes stream names', () => {
+    const normalized = normalizeAgentEvent({
+      protocolVersion: 1,
+      event: 'toolCallDelta',
+      data: {
+        turn_id: 'turn-shell',
+        tool_call_id: 'call-1',
+        tool_name: 'shell',
+        stream: 'stderr',
+        delta: 'boom\\n',
+      },
+    });
+
+    expect(normalized).toEqual({
+      event: 'toolCallDelta',
+      data: {
+        turnId: 'turn-shell',
+        toolCallId: 'call-1',
+        toolName: 'shell',
+        stream: 'stderr',
+        delta: 'boom\\n',
+      },
+    });
+  });
 });

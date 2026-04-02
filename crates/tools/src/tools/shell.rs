@@ -8,7 +8,7 @@ use std::time::Instant;
 use crate::tools::fs_common::{check_cancel, resolve_path};
 use astrcode_core::{
     AstrError, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult, ToolPromptMetadata,
+    ToolExecutionResult, ToolOutputStream, ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -30,6 +30,201 @@ struct ShellArgs {
 struct CommandSpec {
     program: String,
     args: Vec<String>,
+}
+
+struct StreamCapture {
+    text: String,
+    bytes_read: usize,
+    truncated: bool,
+    limit: usize,
+    stream: ToolOutputStream,
+}
+
+impl StreamCapture {
+    fn new(stream: ToolOutputStream, limit: usize) -> Self {
+        Self {
+            text: String::new(),
+            bytes_read: 0,
+            truncated: false,
+            limit,
+            stream,
+        }
+    }
+
+    fn push_chunk(&mut self, chunk: &str) -> String {
+        self.bytes_read = self.bytes_read.saturating_add(chunk.len());
+        if self.truncated || chunk.is_empty() {
+            return String::new();
+        }
+
+        let remaining = self.limit.saturating_sub(self.text.len());
+        if remaining == 0 {
+            self.truncated = true;
+            return self.append_truncation_notice();
+        }
+
+        let take_len = chunk.floor_char_boundary(remaining.min(chunk.len()));
+        let visible = &chunk[..take_len];
+        self.text.push_str(visible);
+
+        let mut emitted = visible.to_string();
+        if take_len < chunk.len() {
+            self.truncated = true;
+            let notice = self.append_truncation_notice();
+            emitted.push_str(&notice);
+        }
+
+        emitted
+    }
+
+    fn append_truncation_notice(&mut self) -> String {
+        let label = match self.stream {
+            ToolOutputStream::Stdout => "stdout",
+            ToolOutputStream::Stderr => "stderr",
+        };
+        let notice = format!(
+            "\n... [{label} truncated after {} bytes; later output omitted]\n",
+            self.limit
+        );
+        self.text.push_str(&notice);
+        notice
+    }
+}
+
+fn spawn_stream_reader<R: Read + Send + 'static>(
+    reader: R,
+    stream: ToolOutputStream,
+    ctx: ToolContext,
+    tool_call_id: String,
+    tool_name: String,
+    limit: usize,
+) -> thread::JoinHandle<std::result::Result<StreamCapture, std::io::Error>> {
+    thread::spawn(move || {
+        let mut capture = StreamCapture::new(stream, limit);
+        let mut reader = reader;
+        let mut chunk = [0u8; 4096];
+        let mut pending_bytes = Vec::new();
+        let mut pending = String::new();
+
+        loop {
+            let read = reader.read(&mut chunk)?;
+            if read == 0 {
+                if !pending_bytes.is_empty() {
+                    // A final lossy flush at EOF preserves any incomplete trailing UTF-8 bytes
+                    // instead of silently dropping them from the terminal transcript.
+                    pending.push_str(&String::from_utf8_lossy(&pending_bytes));
+                    pending_bytes.clear();
+                }
+                if !pending.is_empty() {
+                    let visible = capture.push_chunk(&pending);
+                    if !visible.is_empty() {
+                        match stream {
+                            ToolOutputStream::Stdout => {
+                                let _ = ctx.emit_stdout(
+                                    tool_call_id.clone(),
+                                    tool_name.clone(),
+                                    visible,
+                                );
+                            }
+                            ToolOutputStream::Stderr => {
+                                let _ = ctx.emit_stderr(
+                                    tool_call_id.clone(),
+                                    tool_name.clone(),
+                                    visible,
+                                );
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+
+            pending_bytes.extend_from_slice(&chunk[..read]);
+            pending.push_str(&drain_decoded_utf8(&mut pending_bytes));
+            while let Some(newline_index) = pending.find('\n') {
+                let next_chunk = pending[..=newline_index].to_string();
+                pending.replace_range(..=newline_index, "");
+                let visible = capture.push_chunk(&next_chunk);
+                if visible.is_empty() {
+                    continue;
+                }
+
+                match stream {
+                    ToolOutputStream::Stdout => {
+                        let _ = ctx.emit_stdout(tool_call_id.clone(), tool_name.clone(), visible);
+                    }
+                    ToolOutputStream::Stderr => {
+                        let _ = ctx.emit_stderr(tool_call_id.clone(), tool_name.clone(), visible);
+                    }
+                }
+            }
+
+            if pending.len() >= 4096 {
+                // Extremely long lines should still stream progressively; otherwise a single
+                // no-newline command can hold the entire transcript until process exit.
+                let visible = capture.push_chunk(&pending);
+                pending.clear();
+                if visible.is_empty() {
+                    continue;
+                }
+
+                match stream {
+                    ToolOutputStream::Stdout => {
+                        let _ = ctx.emit_stdout(tool_call_id.clone(), tool_name.clone(), visible);
+                    }
+                    ToolOutputStream::Stderr => {
+                        let _ = ctx.emit_stderr(tool_call_id.clone(), tool_name.clone(), visible);
+                    }
+                }
+            }
+        }
+
+        Ok(capture)
+    })
+}
+
+fn drain_decoded_utf8(pending_bytes: &mut Vec<u8>) -> String {
+    let mut decoded = String::new();
+
+    loop {
+        match std::str::from_utf8(pending_bytes) {
+            Ok(valid) => {
+                decoded.push_str(valid);
+                pending_bytes.clear();
+                break;
+            }
+            Err(error) => {
+                let valid_up_to = error.valid_up_to();
+                if valid_up_to > 0 {
+                    let valid = std::str::from_utf8(&pending_bytes[..valid_up_to])
+                        .expect("valid UTF-8 prefix should decode");
+                    decoded.push_str(valid);
+                    pending_bytes.drain(..valid_up_to);
+                    continue;
+                }
+
+                let Some(invalid_len) = error.error_len() else {
+                    // `error_len == None` means the remaining bytes form an incomplete UTF-8
+                    // sequence that may become valid once the next read arrives, so keep them.
+                    break;
+                };
+
+                decoded.push_str(&String::from_utf8_lossy(&pending_bytes[..invalid_len]));
+                pending_bytes.drain(..invalid_len);
+            }
+        }
+    }
+
+    decoded
+}
+
+fn render_shell_output(stdout: &str, stderr: &str) -> String {
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => stdout.to_string(),
+        (true, false) => stderr.to_string(),
+        (false, false) => format!("[stdout]\n{stdout}\n\n[stderr]\n{stderr}"),
+    }
 }
 
 #[async_trait]
@@ -86,10 +281,13 @@ impl Tool for ShellTool {
 
         let spec = command_spec(args.shell.as_deref(), &args.command);
         let started_at = Instant::now();
+        let command_text = args.command.clone();
+        let shell_program = spec.program.clone();
         let cwd = match args.cwd {
             Some(cwd) => resolve_path(ctx, &cwd)?,
             None => ctx.working_dir().clone(),
         };
+        let cwd_text = cwd.to_string_lossy().to_string();
 
         let mut child = Command::new(&spec.program)
             .args(&spec.args)
@@ -100,25 +298,31 @@ impl Tool for ShellTool {
             .spawn()
             .map_err(|e| AstrError::io("failed to spawn shell command", e))?;
 
-        let mut stdout = child
+        let stdout = child
             .stdout
             .take()
             .ok_or_else(|| AstrError::Internal("failed to capture stdout".to_string()))?;
-        let mut stderr = child
+        let stderr = child
             .stderr
             .take()
             .ok_or_else(|| AstrError::Internal("failed to capture stderr".to_string()))?;
-
-        let stdout_task = thread::spawn(move || {
-            let mut bytes = Vec::new();
-            stdout.read_to_end(&mut bytes)?;
-            std::result::Result::<Vec<u8>, std::io::Error>::Ok(bytes)
-        });
-        let stderr_task = thread::spawn(move || {
-            let mut bytes = Vec::new();
-            stderr.read_to_end(&mut bytes)?;
-            std::result::Result::<Vec<u8>, std::io::Error>::Ok(bytes)
-        });
+        let stream_limit = ctx.max_output_size();
+        let stdout_task = spawn_stream_reader(
+            stdout,
+            ToolOutputStream::Stdout,
+            ctx.clone(),
+            tool_call_id.clone(),
+            "shell".to_string(),
+            stream_limit,
+        );
+        let stderr_task = spawn_stream_reader(
+            stderr,
+            ToolOutputStream::Stderr,
+            ctx.clone(),
+            tool_call_id.clone(),
+            "shell".to_string(),
+            stream_limit,
+        );
         let status = loop {
             if ctx.cancel().is_cancelled() {
                 let _ = child.kill();
@@ -135,27 +339,18 @@ impl Tool for ShellTool {
             thread::sleep(Duration::from_millis(25));
         };
 
-        let stdout: Vec<u8> = stdout_task
+        let stdout_capture = stdout_task
             .join()
             .map_err(|_| AstrError::Internal("stdout reader thread panicked".to_string()))?
             .map_err(|e| AstrError::io("failed to read stdout", e))?;
-        let stderr: Vec<u8> = stderr_task
+        let stderr_capture = stderr_task
             .join()
             .map_err(|_| AstrError::Internal("stderr reader thread panicked".to_string()))?
             .map_err(|e| AstrError::io("failed to read stderr", e))?;
 
-        let stdout_text = String::from_utf8_lossy(&stdout).to_string();
-        let stderr_text = String::from_utf8_lossy(&stderr).to_string();
         let exit_code = status.code().unwrap_or(-1);
         let ok = status.success();
-
-        // Build output JSON and check size
-        let output_json = json!({
-            "stdout": stdout_text,
-            "stderr": stderr_text,
-            "exitCode": exit_code,
-        });
-        let output = output_json.to_string();
+        let output = render_shell_output(&stdout_capture.text, &stderr_capture.text);
 
         // Truncate if output exceeds max size
         let (output, truncated) = if output.len() > ctx.max_output_size() {
@@ -185,7 +380,25 @@ impl Tool for ShellTool {
             } else {
                 Some(format!("shell command exited with code {}", exit_code))
             },
-            metadata: Some(json!({ "exitCode": exit_code, "truncated": truncated })),
+            metadata: Some(json!({
+                "command": command_text,
+                "cwd": cwd_text.clone(),
+                "shell": shell_program,
+                "exitCode": exit_code,
+                "streamed": true,
+                "stdoutBytes": stdout_capture.bytes_read,
+                "stderrBytes": stderr_capture.bytes_read,
+                "stdoutTruncated": stdout_capture.truncated,
+                "stderrTruncated": stderr_capture.truncated,
+                "display": {
+                    "kind": "terminal",
+                    "command": args.command,
+                    "cwd": cwd_text,
+                    "shell": spec.program,
+                    "exitCode": exit_code,
+                },
+                "truncated": truncated,
+            })),
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated,
         })
@@ -240,8 +453,147 @@ fn default_windows_shell() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+    use std::io;
+
     use super::*;
     use crate::test_support::test_tool_context_for;
+    use astrcode_core::ToolOutputDelta;
+    use tokio::sync::mpsc;
+
+    struct ChunkedReader {
+        chunks: VecDeque<Vec<u8>>,
+    }
+
+    impl ChunkedReader {
+        fn new(chunks: Vec<Vec<u8>>) -> Self {
+            Self {
+                chunks: VecDeque::from(chunks),
+            }
+        }
+    }
+
+    impl Read for ChunkedReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let Some(chunk) = self.chunks.pop_front() else {
+                return Ok(0);
+            };
+            let read_len = chunk.len().min(buf.len());
+            buf[..read_len].copy_from_slice(&chunk[..read_len]);
+            if read_len < chunk.len() {
+                self.chunks.push_front(chunk[read_len..].to_vec());
+            }
+            Ok(read_len)
+        }
+    }
+
+    fn collect_output_deltas(
+        rx: &mut mpsc::UnboundedReceiver<ToolOutputDelta>,
+    ) -> Vec<ToolOutputDelta> {
+        let mut deltas = Vec::new();
+        while let Ok(delta) = rx.try_recv() {
+            deltas.push(delta);
+        }
+        deltas
+    }
+
+    #[test]
+    fn stream_capture_truncates_oversized_chunk_with_notice() {
+        let mut capture = StreamCapture::new(ToolOutputStream::Stdout, 5);
+
+        let emitted = capture.push_chunk("abcdef");
+
+        assert_eq!(
+            emitted,
+            "abcde\n... [stdout truncated after 5 bytes; later output omitted]\n"
+        );
+        assert_eq!(capture.text, emitted);
+        assert_eq!(capture.bytes_read, 6);
+        assert!(capture.truncated);
+    }
+
+    #[test]
+    fn stream_capture_emits_notice_when_next_chunk_crosses_limit_boundary() {
+        let mut capture = StreamCapture::new(ToolOutputStream::Stderr, 5);
+
+        assert_eq!(capture.push_chunk("hello"), "hello");
+        assert!(!capture.truncated);
+        let emitted = capture.push_chunk("!");
+
+        assert_eq!(
+            emitted,
+            "\n... [stderr truncated after 5 bytes; later output omitted]\n"
+        );
+        assert_eq!(
+            capture.text,
+            "hello\n... [stderr truncated after 5 bytes; later output omitted]\n"
+        );
+        assert_eq!(capture.bytes_read, 6);
+        assert!(capture.truncated);
+    }
+
+    #[tokio::test]
+    async fn spawn_stream_reader_streams_long_lines_without_newlines_progressively() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let reader = ChunkedReader::new(vec![vec![b'a'; 5000]]);
+        let ctx = test_tool_context_for(std::env::temp_dir()).with_tool_output_sender(tx);
+
+        let handle = spawn_stream_reader(
+            reader,
+            ToolOutputStream::Stdout,
+            ctx,
+            "call-long".to_string(),
+            "shell".to_string(),
+            6000,
+        );
+        let capture = handle
+            .join()
+            .expect("reader thread should join")
+            .expect("reader should succeed");
+        let deltas = collect_output_deltas(&mut rx);
+
+        assert_eq!(capture.text.len(), 5000);
+        assert_eq!(capture.bytes_read, 5000);
+        assert_eq!(
+            deltas.len(),
+            2,
+            "4096 boundary should force an intermediate flush"
+        );
+        assert_eq!(deltas[0].delta.len(), 4096);
+        assert_eq!(deltas[1].delta.len(), 904);
+        assert!(deltas
+            .iter()
+            .all(|delta| delta.stream == ToolOutputStream::Stdout));
+    }
+
+    #[tokio::test]
+    async fn spawn_stream_reader_preserves_utf8_chars_split_across_reads() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let reader = ChunkedReader::new(vec![
+            vec![0xE4, 0xBD],
+            vec![0xA0, 0xE5, 0xA5],
+            vec![0xBD, b'\n'],
+        ]);
+        let ctx = test_tool_context_for(std::env::temp_dir()).with_tool_output_sender(tx);
+
+        let handle = spawn_stream_reader(
+            reader,
+            ToolOutputStream::Stdout,
+            ctx,
+            "call-utf8".to_string(),
+            "shell".to_string(),
+            100,
+        );
+        let capture = handle
+            .join()
+            .expect("reader thread should join")
+            .expect("reader should succeed");
+        let deltas = collect_output_deltas(&mut rx);
+
+        assert_eq!(capture.text, "你好\n");
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].delta, "你好\n");
+    }
 
     #[tokio::test]
     async fn shell_tool_runs_non_interactive_command() {

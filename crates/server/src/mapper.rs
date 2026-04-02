@@ -14,7 +14,7 @@ use astrcode_protocol::http::{
     AgentEventEnvelope, AgentEventPayload, ConfigView, CurrentModelInfoDto, ModelOptionDto,
     OperationMetricsDto, PhaseDto, PluginHealthDto, PluginRuntimeStateDto, ProfileView,
     ReplayMetricsDto, RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto,
-    SessionListItem, SessionMessageDto, ToolCallResultDto, PROTOCOL_VERSION,
+    SessionListItem, SessionMessageDto, ToolCallResultDto, ToolOutputStreamDto, PROTOCOL_VERSION,
 };
 use astrcode_runtime::RuntimeGovernanceSnapshot;
 use astrcode_runtime::{
@@ -152,6 +152,13 @@ pub(crate) fn to_phase_dto(phase: Phase) -> PhaseDto {
     }
 }
 
+fn to_tool_output_stream_dto(stream: astrcode_core::ToolOutputStream) -> ToolOutputStreamDto {
+    match stream {
+        astrcode_core::ToolOutputStream::Stdout => ToolOutputStreamDto::Stdout,
+        astrcode_core::ToolOutputStream::Stderr => ToolOutputStreamDto::Stderr,
+    }
+}
+
 fn to_runtime_capability_dto(descriptor: CapabilityDescriptor) -> RuntimeCapabilityDto {
     RuntimeCapabilityDto {
         name: descriptor.name,
@@ -253,6 +260,19 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
             tool_call_id,
             tool_name,
             input,
+        },
+        AgentEvent::ToolCallDelta {
+            turn_id,
+            tool_call_id,
+            tool_name,
+            stream,
+            delta,
+        } => AgentEventPayload::ToolCallDelta {
+            turn_id,
+            tool_call_id,
+            tool_name,
+            stream: to_tool_output_stream_dto(stream),
+            delta,
         },
         AgentEvent::ToolCallResult { turn_id, result } => AgentEventPayload::ToolCallResult {
             turn_id,

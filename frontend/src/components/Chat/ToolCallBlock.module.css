@@ -124,6 +124,33 @@
   line-height: 1.6;
 }
 
+.diffMeta {
+  padding: 14px 18px 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.diffPill,
+.shellPill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: #7a654d;
+  background: #f4eadc;
+}
+
+.diffPath {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  overflow-wrap: anywhere;
+}
+
 .preview {
   border-top: 1px solid var(--border);
   padding: 12px 16px;
@@ -147,6 +174,51 @@
   overflow-wrap: anywhere;
   line-height: 1.65;
   background: linear-gradient(180deg, #fffdf9 0%, #fffbf4 100%);
+}
+
+.shellMeta {
+  padding: 14px 18px 0;
+}
+
+.shellCommand {
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 13px;
+  color: #4c3f31;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.shellMetaRow {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.terminal {
+  margin: 14px 18px 0;
+  border: 1px solid #2c3138;
+  border-radius: 16px;
+  overflow: auto;
+  max-height: 360px;
+  background:
+    radial-gradient(circle at top, rgba(109, 142, 167, 0.18), transparent 45%),
+    linear-gradient(180deg, #12161b 0%, #181d23 100%);
+}
+
+.terminalSegment {
+  padding: 0 16px;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #e8edf4;
+}
+
+.terminalSegmentError {
+  color: #ffb8b0;
 }
 
 .patch {

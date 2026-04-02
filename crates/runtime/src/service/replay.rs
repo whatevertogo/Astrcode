@@ -1,4 +1,6 @@
-use astrcode_core::{replay_records, split_assistant_content, AstrError};
+use astrcode_core::{
+    replay_records, split_assistant_content, AstrError, ToolOutputDelta, ToolOutputStream,
+};
 use async_trait::async_trait;
 use chrono::Utc;
 use std::collections::HashMap;
@@ -6,6 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use astrcode_core::{StorageEvent, StoredEvent};
+use serde_json::{json, Map, Value};
 
 use super::session_ops::{load_events, normalize_session_id};
 use super::{
@@ -78,8 +81,7 @@ impl SessionReplaySource for RuntimeService {
 /// 如果没有工具调用（如 turn 结束），则丢弃这些纯推理消息——前端不需要展示空的推理块。
 pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionMessage> {
     let mut messages = Vec::new();
-    let mut pending_tool_calls: Vec<(Option<String>, String, String, serde_json::Value)> =
-        Vec::new();
+    let mut pending_tool_calls: Vec<PendingToolCall> = Vec::new();
     let mut pending_reasoning_only_assistants: HashMap<String, Option<String>> = HashMap::new();
 
     for stored in events {
@@ -133,12 +135,40 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
                 tool_name,
                 args,
                 ..
-            } => pending_tool_calls.push((
-                turn_id.clone(),
-                tool_call_id.clone(),
-                tool_name.clone(),
-                args.clone(),
-            )),
+            } => pending_tool_calls.push(PendingToolCall {
+                turn_id: turn_id.clone(),
+                tool_call_id: tool_call_id.clone(),
+                tool_name: tool_name.clone(),
+                args: args.clone(),
+                output: String::new(),
+                segments: Vec::new(),
+            }),
+            StorageEvent::ToolCallDelta {
+                tool_call_id,
+                tool_name,
+                stream,
+                delta,
+                ..
+            } => {
+                if let Some(pending) = pending_tool_calls
+                    .iter_mut()
+                    .find(|pending| pending.tool_call_id == *tool_call_id)
+                {
+                    if pending.tool_name.is_empty() && !tool_name.is_empty() {
+                        pending.tool_name = tool_name.clone();
+                    }
+                    pending.push_delta(ToolOutputDelta {
+                        tool_call_id: tool_call_id.clone(),
+                        tool_name: if tool_name.is_empty() {
+                            pending.tool_name.clone()
+                        } else {
+                            tool_name.clone()
+                        },
+                        stream: *stream,
+                        delta: delta.clone(),
+                    });
+                }
+            }
             StorageEvent::ToolResult {
                 turn_id,
                 tool_call_id,
@@ -152,32 +182,41 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
             } => {
                 if let Some(index) = pending_tool_calls
                     .iter()
-                    .position(|(_, pending_id, _, _)| pending_id == tool_call_id)
+                    .position(|pending| pending.tool_call_id == *tool_call_id)
                 {
-                    let (pending_turn_id, _, pending_tool_name, args) =
-                        pending_tool_calls.remove(index);
+                    let pending = pending_tool_calls.remove(index);
+                    let tool_name = if stored_tool_name.is_empty() {
+                        pending.tool_name.clone()
+                    } else {
+                        stored_tool_name.clone()
+                    };
                     let result = astrcode_core::ToolExecutionResult {
                         tool_call_id: tool_call_id.clone(),
                         // ToolCall 事件总是包含工具名，但 ToolResult 事件可能为空
                         // （如旧版格式或异常恢复场景）。此时使用匹配的 pending ToolCall
                         // 中的工具名作为回退，确保前端能正确显示工具卡片。
-                        tool_name: if stored_tool_name.is_empty() {
-                            pending_tool_name
-                        } else {
-                            stored_tool_name.clone()
-                        },
+                        tool_name: tool_name.clone(),
                         ok: *success,
-                        output: output.clone(),
+                        output: if pending.output.is_empty() {
+                            output.clone()
+                        } else {
+                            pending.output.clone()
+                        },
                         error: error.clone(),
-                        metadata: metadata.clone(),
+                        metadata: decorate_tool_metadata(
+                            &tool_name,
+                            &pending.args,
+                            metadata.as_ref(),
+                            &pending.segments,
+                        ),
                         duration_ms: *duration_ms,
                         truncated: false,
                     };
                     messages.push(SessionMessage::ToolCall {
-                        turn_id: turn_id.clone().or(pending_turn_id),
+                        turn_id: turn_id.clone().or(pending.turn_id),
                         tool_call_id: tool_call_id.clone(),
                         tool_name: result.tool_name.clone(),
-                        args,
+                        args: pending.args,
                         output: (!result.output.is_empty()).then_some(result.output.clone()),
                         error: result.error.clone(),
                         metadata: result.metadata.clone(),
@@ -199,21 +238,140 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
     // 这代表两种场景：(1) 快照发生在 turn 执行中间（正常状态，前端显示 loading）；
     // (2) 进程在工具执行期间崩溃（异常恢复，前端显示无结果的工具卡片）。
     // 无论哪种情况，前端都需要看到这些 ToolCall 以保持 UI 一致性。
-    for (turn_id, tool_call_id, tool_name, args) in pending_tool_calls {
+    for pending in pending_tool_calls {
         messages.push(SessionMessage::ToolCall {
-            turn_id,
-            tool_call_id,
-            tool_name,
-            args,
-            output: None,
+            turn_id: pending.turn_id,
+            tool_call_id: pending.tool_call_id.clone(),
+            tool_name: pending.tool_name.clone(),
+            args: pending.args.clone(),
+            output: (!pending.output.is_empty()).then_some(pending.output.clone()),
             error: None,
-            metadata: None,
+            metadata: decorate_tool_metadata(
+                &pending.tool_name,
+                &pending.args,
+                None,
+                &pending.segments,
+            ),
             ok: None,
             duration_ms: None,
         });
     }
 
     messages
+}
+
+#[derive(Clone, Debug)]
+struct PendingToolCall {
+    turn_id: Option<String>,
+    tool_call_id: String,
+    tool_name: String,
+    args: Value,
+    output: String,
+    segments: Vec<ToolOutputSegment>,
+}
+
+impl PendingToolCall {
+    fn push_delta(&mut self, delta: ToolOutputDelta) {
+        self.output.push_str(&delta.delta);
+        match self.segments.last_mut() {
+            Some(last) if last.stream == delta.stream => last.text.push_str(&delta.delta),
+            _ => self.segments.push(ToolOutputSegment {
+                stream: delta.stream,
+                text: delta.delta,
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ToolOutputSegment {
+    stream: ToolOutputStream,
+    text: String,
+}
+
+fn decorate_tool_metadata(
+    tool_name: &str,
+    args: &Value,
+    metadata: Option<&Value>,
+    segments: &[ToolOutputSegment],
+) -> Option<Value> {
+    let mut object = metadata
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_else(Map::new);
+
+    if tool_name != "shell" {
+        return if object.is_empty() {
+            None
+        } else {
+            Some(Value::Object(object))
+        };
+    }
+
+    object.insert(
+        "display".to_string(),
+        build_shell_display_metadata(args, metadata, segments),
+    );
+
+    Some(Value::Object(object))
+}
+
+fn build_shell_display_metadata(
+    args: &Value,
+    metadata: Option<&Value>,
+    segments: &[ToolOutputSegment],
+) -> Value {
+    let command = args.get("command").and_then(Value::as_str).or_else(|| {
+        metadata
+            .and_then(|value| value.get("command"))
+            .and_then(Value::as_str)
+    });
+    let cwd = args.get("cwd").and_then(Value::as_str).or_else(|| {
+        metadata
+            .and_then(|value| value.get("cwd"))
+            .and_then(Value::as_str)
+    });
+    let shell = args.get("shell").and_then(Value::as_str).or_else(|| {
+        metadata
+            .and_then(|value| value.get("shell"))
+            .and_then(Value::as_str)
+    });
+    let exit_code = metadata
+        .and_then(|value| value.get("exitCode"))
+        .and_then(Value::as_i64);
+
+    let mut display = Map::new();
+    display.insert("kind".to_string(), json!("terminal"));
+    if let Some(command) = command {
+        display.insert("command".to_string(), json!(command));
+    }
+    if let Some(cwd) = cwd {
+        display.insert("cwd".to_string(), json!(cwd));
+    }
+    if let Some(shell) = shell {
+        display.insert("shell".to_string(), json!(shell));
+    }
+    if let Some(exit_code) = exit_code {
+        display.insert("exitCode".to_string(), json!(exit_code));
+    }
+    if !segments.is_empty() {
+        display.insert(
+            "segments".to_string(),
+            Value::Array(
+                segments
+                    .iter()
+                    .map(|segment| {
+                        json!({
+                            "stream": segment.stream,
+                            "text": segment.text,
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+    }
+
+    Value::Object(display)
 }
 
 #[cfg(test)]
@@ -341,5 +499,79 @@ mod tests {
 
         assert_eq!(messages.len(), 1, "expected only the finished tool row");
         assert!(matches!(messages[0], SessionMessage::ToolCall { .. }));
+    }
+
+    #[test]
+    fn snapshot_rebuilds_shell_terminal_metadata_from_tool_deltas() {
+        let events = vec![
+            stored(
+                1,
+                StorageEvent::ToolCall {
+                    turn_id: Some("turn-shell".to_string()),
+                    tool_call_id: "tc-shell".to_string(),
+                    tool_name: "shell".to_string(),
+                    args: json!({"command": "echo ok", "cwd": "/repo"}),
+                },
+            ),
+            stored(
+                2,
+                StorageEvent::ToolCallDelta {
+                    turn_id: Some("turn-shell".to_string()),
+                    tool_call_id: "tc-shell".to_string(),
+                    tool_name: "shell".to_string(),
+                    stream: ToolOutputStream::Stdout,
+                    delta: "ok\n".to_string(),
+                },
+            ),
+            stored(
+                3,
+                StorageEvent::ToolCallDelta {
+                    turn_id: Some("turn-shell".to_string()),
+                    tool_call_id: "tc-shell".to_string(),
+                    tool_name: "shell".to_string(),
+                    stream: ToolOutputStream::Stderr,
+                    delta: "warn\n".to_string(),
+                },
+            ),
+            stored(
+                4,
+                StorageEvent::ToolResult {
+                    turn_id: Some("turn-shell".to_string()),
+                    tool_call_id: "tc-shell".to_string(),
+                    tool_name: "shell".to_string(),
+                    output: "[stdout]\nok\n\n[stderr]\nwarn\n".to_string(),
+                    success: true,
+                    error: None,
+                    metadata: Some(json!({
+                        "command": "echo ok",
+                        "cwd": "/repo",
+                        "exitCode": 0,
+                    })),
+                    duration_ms: 9,
+                },
+            ),
+        ];
+
+        let messages = convert_events_to_messages(&events);
+        let shell = match &messages[0] {
+            SessionMessage::ToolCall {
+                tool_name,
+                output,
+                metadata,
+                ..
+            } => {
+                assert_eq!(tool_name, "shell");
+                assert_eq!(output.as_deref(), Some("ok\nwarn\n"));
+                metadata.as_ref().expect("shell metadata should exist")
+            }
+            other => panic!("expected tool call message, got {other:?}"),
+        };
+
+        assert_eq!(shell["display"]["kind"], json!("terminal"));
+        assert_eq!(shell["display"]["command"], json!("echo ok"));
+        assert_eq!(shell["display"]["cwd"], json!("/repo"));
+        assert_eq!(shell["display"]["exitCode"], json!(0));
+        assert_eq!(shell["display"]["segments"][0]["stream"], json!("stdout"));
+        assert_eq!(shell["display"]["segments"][1]["stream"], json!("stderr"));
     }
 }

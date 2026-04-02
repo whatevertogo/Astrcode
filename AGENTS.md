@@ -66,6 +66,12 @@ protocol (纯 DTO，无业务依赖)
 - JSONL 采用 append-only `StoredEvent { storage_seq, event }`；`storage_seq` 由会话 writer 独占分配。
 - `GET /api/sessions/:id/events` 先通过 `SessionReplaySource` 回放历史，再实时订阅广播；SSE 事件 id 形如 `{storage_seq}.{subindex}`
 
+### Tool Event / UX
+
+- 工具事件除了 `ToolCall` / `ToolResult`，现在还有 `ToolCallDelta`；长耗时工具的增量输出必须先落 `StorageEvent`，再通过 SSE 推给前端，不能只做前端内存态。
+- `shell` 工具按 stdout / stderr 增量流式输出；前端工具卡片会基于 `metadata.display.kind = terminal` 渲染终端视图，刷新后也要能从 replay 还原。
+- `writeFile` / `editFile` 的 diff 仍以 metadata 为准；`ToolCallBlock` 只负责展示，diff/shell metadata 解析逻辑优先收口到 `frontend/src/lib/`，避免组件里堆协议判断。
+
 ## Development Tips
 
 ### Tauri/桌面端

@@ -184,6 +184,20 @@ impl CapabilityInvoker for ToolCapabilityInvoker {
         payload: Value,
         ctx: &CapabilityContext,
     ) -> Result<CapabilityExecutionResult> {
+        let tool_ctx = if let Some(sender) = ctx.tool_output_sender.clone() {
+            ToolContext::new(
+                ctx.session_id.clone(),
+                ctx.working_dir.clone(),
+                ctx.cancel.clone(),
+            )
+            .with_tool_output_sender(sender)
+        } else {
+            ToolContext::new(
+                ctx.session_id.clone(),
+                ctx.working_dir.clone(),
+                ctx.cancel.clone(),
+            )
+        };
         let result = self
             .tool
             .execute(
@@ -191,11 +205,7 @@ impl CapabilityInvoker for ToolCapabilityInvoker {
                     .clone()
                     .unwrap_or_else(|| "capability-call".to_string()),
                 payload,
-                &ToolContext::new(
-                    ctx.session_id.clone(),
-                    ctx.working_dir.clone(),
-                    ctx.cancel.clone(),
-                ),
+                &tool_ctx,
             )
             .await;
 
@@ -411,6 +421,7 @@ mod tests {
                     profile: "coding".to_string(),
                     profile_context: serde_json::Value::Null,
                     metadata: serde_json::Value::Null,
+                    tool_output_sender: None,
                 },
             )
             .await

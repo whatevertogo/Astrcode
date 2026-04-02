@@ -2,7 +2,7 @@
 //!
 //! 将 SSE 接收的原始事件规范化为前端可用的格式。
 
-import type { AgentEventPayload, Phase } from '../types';
+import type { AgentEventPayload, Phase, ToolOutputStream } from '../types';
 
 /// 支持的协议版本
 const SUPPORTED_PROTOCOL_VERSION = 1;
@@ -17,6 +17,7 @@ const VALID_PHASES: Phase[] = [
   'interrupted',
   'done',
 ];
+const VALID_TOOL_OUTPUT_STREAMS: ToolOutputStream[] = ['stdout', 'stderr'];
 
 function asRecord(value: unknown): UnknownRecord | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -83,6 +84,18 @@ function toPhase(value: unknown): Phase | null {
 
   if ((VALID_PHASES as string[]).includes(value)) {
     return value as Phase;
+  }
+
+  return null;
+}
+
+function toToolOutputStream(value: unknown): ToolOutputStream | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  if ((VALID_TOOL_OUTPUT_STREAMS as string[]).includes(value)) {
+    return value as ToolOutputStream;
   }
 
   return null;
@@ -205,6 +218,27 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
         toolCallId,
         toolName,
         args: data.args ?? null,
+      },
+    };
+  }
+
+  if (event === 'toolCallDelta') {
+    const turnId = pickString(data, 'turnId', 'turn_id');
+    const toolCallId = pickString(data, 'toolCallId', 'tool_call_id') ?? 'unknown';
+    const toolName = pickString(data, 'toolName', 'tool_name') ?? '(unknown tool)';
+    const stream = toToolOutputStream(data.stream);
+    const delta = pickStringAllowEmpty(data, 'delta');
+    if (!turnId || !stream || delta === undefined) {
+      return invalidEvent('toolCallDelta requires turnId, stream and delta', raw);
+    }
+    return {
+      event: 'toolCallDelta',
+      data: {
+        turnId,
+        toolCallId,
+        toolName,
+        stream,
+        delta,
       },
     };
   }

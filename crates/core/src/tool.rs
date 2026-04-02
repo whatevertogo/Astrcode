@@ -8,15 +8,18 @@
 //! - **ToolContext**: 工具执行时的上下文信息（会话 ID、工作目录、取消令牌）
 //! - **ToolCapabilityMetadata**: 工具的能力元数据（用于策略引擎的权限判断）
 
+use std::fmt;
 use std::path::PathBuf;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     CancelToken, CapabilityDescriptor, CapabilityKind, DescriptorBuildError, PermissionHint,
-    Result, SideEffectLevel, StabilityLevel, ToolDefinition, ToolExecutionResult,
+    Result, SideEffectLevel, StabilityLevel, ToolDefinition, ToolExecutionResult, ToolOutputDelta,
+    ToolOutputStream,
 };
 
 /// Unique identifier for a session.
@@ -31,7 +34,6 @@ pub const DEFAULT_MAX_OUTPUT_SIZE: usize = 1024 * 1024;
 ///
 /// `ToolContext` carries session metadata, working directory, cancellation support,
 /// and output size limits that tools should respect when producing results.
-#[derive(Clone, Debug)]
 pub struct ToolContext {
     /// Unique session identifier.
     session_id: SessionId,
@@ -41,6 +43,11 @@ pub struct ToolContext {
     cancel: CancelToken,
     /// Maximum output size in bytes. Defaults to 1MB.
     max_output_size: usize,
+    /// Optional streaming channel for long-running tools.
+    ///
+    /// Tools emit best-effort deltas through this sender so runtime can persist and fan them out
+    /// in-order without coupling individual tools to storage or transport details.
+    tool_output_sender: Option<UnboundedSender<ToolOutputDelta>>,
 }
 
 impl ToolContext {
@@ -53,12 +60,25 @@ impl ToolContext {
             working_dir,
             cancel,
             max_output_size: DEFAULT_MAX_OUTPUT_SIZE,
+            tool_output_sender: None,
         }
     }
 
     /// Sets the maximum output size in bytes.
     pub fn with_max_output_size(mut self, max_output_size: usize) -> Self {
         self.max_output_size = max_output_size;
+        self
+    }
+
+    /// Attaches a sender used for best-effort tool output streaming.
+    ///
+    /// Runtime injects this when it wants a tool to publish incremental stdout/stderr updates
+    /// before the final `ToolExecutionResult` is available.
+    pub fn with_tool_output_sender(
+        mut self,
+        tool_output_sender: UnboundedSender<ToolOutputDelta>,
+    ) -> Self {
+        self.tool_output_sender = Some(tool_output_sender);
         self
     }
 
@@ -80,6 +100,75 @@ impl ToolContext {
     /// Returns the maximum output size in bytes.
     pub fn max_output_size(&self) -> usize {
         self.max_output_size
+    }
+
+    pub fn tool_output_sender(&self) -> Option<UnboundedSender<ToolOutputDelta>> {
+        self.tool_output_sender.clone()
+    }
+
+    /// Emits a tool delta to the runtime if streaming is enabled.
+    ///
+    /// This is intentionally best-effort: losing a live UI update must not fail the tool itself,
+    /// because the final persisted `ToolExecutionResult` is still the source of truth.
+    pub fn emit_tool_delta(&self, delta: ToolOutputDelta) -> bool {
+        self.tool_output_sender
+            .as_ref()
+            .is_some_and(|sender| sender.send(delta).is_ok())
+    }
+
+    pub fn emit_stdout(
+        &self,
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        delta: impl Into<String>,
+    ) -> bool {
+        self.emit_tool_delta(ToolOutputDelta {
+            tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
+            stream: ToolOutputStream::Stdout,
+            delta: delta.into(),
+        })
+    }
+
+    pub fn emit_stderr(
+        &self,
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        delta: impl Into<String>,
+    ) -> bool {
+        self.emit_tool_delta(ToolOutputDelta {
+            tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
+            stream: ToolOutputStream::Stderr,
+            delta: delta.into(),
+        })
+    }
+}
+
+impl Clone for ToolContext {
+    fn clone(&self) -> Self {
+        Self {
+            session_id: self.session_id.clone(),
+            working_dir: self.working_dir.clone(),
+            cancel: self.cancel.clone(),
+            max_output_size: self.max_output_size,
+            tool_output_sender: self.tool_output_sender.clone(),
+        }
+    }
+}
+
+impl fmt::Debug for ToolContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToolContext")
+            .field("session_id", &self.session_id)
+            .field("working_dir", &self.working_dir)
+            .field("cancel", &self.cancel)
+            .field("max_output_size", &self.max_output_size)
+            .field(
+                "tool_output_sender",
+                &self.tool_output_sender.as_ref().map(|_| "<attached>"),
+            )
+            .finish()
     }
 }
 

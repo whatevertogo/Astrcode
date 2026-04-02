@@ -8,8 +8,9 @@ use serde_json::{json, Value};
 
 use crate::{
     AstrError, CancelToken, CapabilityDescriptor, Result, ToolCallRequest, ToolContext,
-    ToolDefinition, ToolExecutionResult,
+    ToolDefinition, ToolExecutionResult, ToolOutputDelta,
 };
+use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Clone, Debug)]
 pub struct CapabilityContext {
@@ -21,6 +22,7 @@ pub struct CapabilityContext {
     pub profile: String,
     pub profile_context: Value,
     pub metadata: Value,
+    pub tool_output_sender: Option<UnboundedSender<ToolOutputDelta>>,
 }
 
 impl CapabilityContext {
@@ -39,6 +41,7 @@ impl CapabilityContext {
                 "approvalMode": "inherit"
             }),
             metadata: Value::Null,
+            tool_output_sender: ctx.tool_output_sender(),
         }
     }
 }

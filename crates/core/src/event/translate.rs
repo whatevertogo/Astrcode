@@ -80,7 +80,9 @@ pub fn phase_of_storage_event(event: &StorageEvent) -> Phase {
         StorageEvent::AssistantDelta { .. }
         | StorageEvent::ThinkingDelta { .. }
         | StorageEvent::AssistantFinal { .. } => Phase::Streaming,
-        StorageEvent::ToolCall { .. } | StorageEvent::ToolResult { .. } => Phase::CallingTool,
+        StorageEvent::ToolCall { .. }
+        | StorageEvent::ToolCallDelta { .. }
+        | StorageEvent::ToolResult { .. } => Phase::CallingTool,
         StorageEvent::TurnDone { .. } => Phase::Idle,
         // "interrupted" 错误应映射为 Interrupted 而非 Idle，
         // 否则会话列表中中断的会话会错误地显示为 Idle
@@ -287,6 +289,46 @@ impl EventTranslator {
                 }
                 self.phase = Phase::CallingTool;
             }
+            StorageEvent::ToolCallDelta {
+                tool_call_id,
+                tool_name,
+                stream,
+                delta,
+                ..
+            } => {
+                if self.phase != Phase::CallingTool {
+                    push(
+                        AgentEvent::PhaseChanged {
+                            turn_id: turn_id.clone(),
+                            phase: Phase::CallingTool,
+                        },
+                        &mut records,
+                    );
+                }
+                if let Some(turn_id) = turn_id.clone() {
+                    let name = if !tool_name.is_empty() {
+                        tool_name.clone()
+                    } else {
+                        self.tool_call_names
+                            .get(tool_call_id)
+                            .cloned()
+                            .unwrap_or_default()
+                    };
+                    push(
+                        AgentEvent::ToolCallDelta {
+                            turn_id,
+                            tool_call_id: tool_call_id.clone(),
+                            tool_name: name,
+                            stream: *stream,
+                            delta: delta.clone(),
+                        },
+                        &mut records,
+                    );
+                } else if !delta.is_empty() {
+                    warn_missing_turn_id(stored.storage_seq, "toolCallDelta");
+                }
+                self.phase = Phase::CallingTool;
+            }
             // 工具执行结果。不触发 PhaseChanged —— 在同一个 turn 内，
             // 可能有多个工具调用和结果交替出现，phase 保持 CallingTool。
             // 只有 TurnDone 才将 phase 切回 Idle。
@@ -301,12 +343,11 @@ impl EventTranslator {
                 ..
             } => {
                 if let Some(turn_id) = turn_id.clone() {
+                    let cached_name = self.tool_call_names.remove(tool_call_id);
                     let name = if !tool_name.is_empty() {
                         tool_name.clone()
                     } else {
-                        self.tool_call_names
-                            .remove(tool_call_id)
-                            .unwrap_or_default()
+                        cached_name.unwrap_or_default()
                     };
                     push(
                         AgentEvent::ToolCallResult {
@@ -396,5 +437,110 @@ impl EventTranslator {
             // 其他事件复用当前 turn_id
             _ => self.current_turn_id.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::{AgentEvent, StoredEvent, ToolOutputStream};
+
+    #[test]
+    fn tool_call_delta_replays_with_cached_tool_name() {
+        let mut translator = EventTranslator::new(Phase::Idle);
+        let tool_call = StoredEvent {
+            storage_seq: 1,
+            event: StorageEvent::ToolCall {
+                turn_id: Some("turn-1".to_string()),
+                tool_call_id: "call-1".to_string(),
+                tool_name: "shell".to_string(),
+                args: json!({"command": "echo ok"}),
+            },
+        };
+        let tool_delta = StoredEvent {
+            storage_seq: 2,
+            event: StorageEvent::ToolCallDelta {
+                turn_id: Some("turn-1".to_string()),
+                tool_call_id: "call-1".to_string(),
+                tool_name: String::new(),
+                stream: ToolOutputStream::Stdout,
+                delta: "ok\n".to_string(),
+            },
+        };
+        let tool_result = StoredEvent {
+            storage_seq: 3,
+            event: StorageEvent::ToolResult {
+                turn_id: Some("turn-1".to_string()),
+                tool_call_id: "call-1".to_string(),
+                tool_name: String::new(),
+                output: "ok\n".to_string(),
+                success: true,
+                error: None,
+                metadata: None,
+                duration_ms: 12,
+            },
+        };
+
+        let _ = translator.translate(&tool_call);
+        let delta_records = translator.translate(&tool_delta);
+        let result_records = translator.translate(&tool_result);
+
+        assert!(matches!(
+            delta_records.last().map(|record| &record.event),
+            Some(AgentEvent::ToolCallDelta {
+                tool_name,
+                stream: ToolOutputStream::Stdout,
+                delta,
+                ..
+            }) if tool_name == "shell" && delta == "ok\n"
+        ));
+        assert!(matches!(
+            result_records.last().map(|record| &record.event),
+            Some(AgentEvent::ToolCallResult { result, .. })
+                if result.tool_name == "shell" && result.output == "ok\n"
+        ));
+    }
+
+    #[test]
+    fn phase_of_tool_call_delta_is_calling_tool() {
+        let phase = phase_of_storage_event(&StorageEvent::ToolCallDelta {
+            turn_id: Some("turn-1".to_string()),
+            tool_call_id: "call-1".to_string(),
+            tool_name: "shell".to_string(),
+            stream: ToolOutputStream::Stdout,
+            delta: "ok\n".to_string(),
+        });
+
+        assert_eq!(phase, Phase::CallingTool);
+    }
+
+    #[test]
+    fn replay_records_keeps_tool_call_delta_ids_monotonic() {
+        let records = replay_records(
+            &[StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent::ToolCallDelta {
+                    turn_id: Some("turn-1".to_string()),
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: "shell".to_string(),
+                    stream: ToolOutputStream::Stderr,
+                    delta: "warn\n".to_string(),
+                },
+            }],
+            None,
+        );
+
+        assert_eq!(records.len(), 2);
+        assert!(matches!(
+            records[0].event,
+            AgentEvent::PhaseChanged {
+                phase: Phase::CallingTool,
+                ..
+            }
+        ));
+        assert_eq!(records[0].event_id, "1.0");
+        assert_eq!(records[1].event_id, "1.1");
     }
 }

@@ -10,7 +10,8 @@ pub use config::{
     ConfigView, ProfileView, SaveActiveSelectionRequest, TestConnectionRequest, TestResultDto,
 };
 pub use event::{
-    AgentEventEnvelope, AgentEventPayload, PhaseDto, ToolCallResultDto, PROTOCOL_VERSION,
+    AgentEventEnvelope, AgentEventPayload, PhaseDto, ToolCallResultDto, ToolOutputStreamDto,
+    PROTOCOL_VERSION,
 };
 pub use model::{CurrentModelInfoDto, ModelOptionDto};
 pub use runtime::{

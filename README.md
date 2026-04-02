@@ -18,12 +18,12 @@
 | 工具 | 描述 |
 |------|------|
 | `read_file` | 读取文件内容 |
-| `write_file` | 写入或创建文件 |
-| `edit_file` | 精确替换文件内容（唯一匹配验证） |
+| `write_file` | 写入或创建文件，并返回结构化 diff metadata |
+| `edit_file` | 精确替换文件内容（唯一匹配验证），并返回结构化 diff metadata |
 | `list_dir` | 列出目录内容 |
 | `find_files` | Glob 模式文件搜索 |
 | `grep` | 正则表达式内容搜索 |
-| `shell` | 执行 Shell 命令 |
+| `shell` | 执行 Shell 命令，stdout/stderr 以流式事件增量展示 |
 
 ## 快速开始
 

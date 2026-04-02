@@ -124,6 +124,7 @@ impl AgentStateProjector {
             }
 
             StorageEvent::AssistantDelta { .. }
+            | StorageEvent::ToolCallDelta { .. }
             | StorageEvent::ThinkingDelta { .. }
             | StorageEvent::Error { .. } => {}
         }

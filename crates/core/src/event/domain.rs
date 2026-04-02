@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ToolExecutionResult;
+use crate::{ToolExecutionResult, ToolOutputStream};
 
 /// 会话阶段
 ///
@@ -63,6 +63,14 @@ pub enum AgentEvent {
         /// 工具参数
         #[serde(rename = "args")]
         input: Value,
+    },
+    /// 工具输出增量
+    ToolCallDelta {
+        turn_id: String,
+        tool_call_id: String,
+        tool_name: String,
+        stream: ToolOutputStream,
+        delta: String,
     },
     /// 工具调用结果
     ToolCallResult {

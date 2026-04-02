@@ -1,5 +1,7 @@
 export interface ToolDiffMetadata {
   path?: string;
+  changeType?: string;
+  bytes?: number;
   patch: string;
   addedLines?: number;
   removedLines?: number;
@@ -32,6 +34,8 @@ export function extractToolDiffMetadata(metadata: unknown): ToolDiffMetadata | n
 
   return {
     path: typeof container.path === 'string' ? container.path : undefined,
+    changeType: typeof container.changeType === 'string' ? container.changeType : undefined,
+    bytes: pickNumber(container, 'bytes'),
     patch: diff.patch,
     addedLines: pickNumber(diff, 'addedLines'),
     removedLines: pickNumber(diff, 'removedLines'),

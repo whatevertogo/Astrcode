@@ -3,6 +3,7 @@
 //! 定义前端使用的所有 TypeScript 类型。
 
 export type Phase = 'idle' | 'thinking' | 'callingTool' | 'streaming' | 'interrupted' | 'done';
+export type ToolOutputStream = 'stdout' | 'stderr';
 
 export interface ToolCallResultEnvelope {
   toolCallId: string;
@@ -30,6 +31,16 @@ export type AgentEventPayload =
         toolCallId: string;
         toolName: string;
         args: unknown;
+      };
+    }
+  | {
+      event: 'toolCallDelta';
+      data: {
+        turnId: string;
+        toolCallId: string;
+        toolName: string;
+        stream: ToolOutputStream;
+        delta: string;
       };
     }
   | {
@@ -182,6 +193,15 @@ export type Action =
       reasoningText?: string;
     }
   | { type: 'END_STREAMING'; sessionId: string; turnId: string }
+  | {
+      type: 'APPEND_TOOL_CALL_DELTA';
+      sessionId: string;
+      turnId?: string | null;
+      toolCallId: string;
+      toolName: string;
+      stream: ToolOutputStream;
+      delta: string;
+    }
   | {
       type: 'UPDATE_TOOL_CALL';
       sessionId: string;

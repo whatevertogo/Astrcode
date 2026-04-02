@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::ToolOutputStream;
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum StorageEvent {
@@ -48,6 +50,15 @@ pub enum StorageEvent {
         tool_name: String,
         args: Value,
     },
+    ToolCallDelta {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        tool_call_id: String,
+        #[serde(default)]
+        tool_name: String,
+        stream: ToolOutputStream,
+        delta: String,
+    },
     ToolResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
@@ -86,6 +97,7 @@ impl StorageEvent {
             | Self::ThinkingDelta { turn_id, .. }
             | Self::AssistantFinal { turn_id, .. }
             | Self::ToolCall { turn_id, .. }
+            | Self::ToolCallDelta { turn_id, .. }
             | Self::ToolResult { turn_id, .. }
             | Self::TurnDone { turn_id, .. }
             | Self::Error { turn_id, .. } => turn_id.as_deref(),

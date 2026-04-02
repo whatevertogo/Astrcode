@@ -13,6 +13,13 @@ pub enum PhaseDto {
     Done,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolOutputStreamDto {
+    Stdout,
+    Stderr,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolCallResultDto {
@@ -56,6 +63,13 @@ pub enum AgentEventPayload {
         tool_name: String,
         #[serde(rename = "args")]
         input: serde_json::Value,
+    },
+    ToolCallDelta {
+        turn_id: String,
+        tool_call_id: String,
+        tool_name: String,
+        stream: ToolOutputStreamDto,
+        delta: String,
     },
     ToolCallResult {
         turn_id: String,

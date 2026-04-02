@@ -77,6 +77,7 @@ impl LlmProvider for ScriptedProvider {
 struct SlowTool;
 
 struct QuickTool;
+struct StreamingTool;
 struct CountingTool {
     executions: Arc<AtomicUsize>,
 }
@@ -377,6 +378,46 @@ impl Tool for QuickTool {
 }
 
 #[async_trait]
+impl Tool for StreamingTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "streamingTool".to_string(),
+            description: "streaming test tool".to_string(),
+            parameters: json!({"type":"object"}),
+        }
+    }
+
+    async fn execute(
+        &self,
+        tool_call_id: String,
+        _args: serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolExecutionResult> {
+        let _ = ctx.emit_stdout(tool_call_id.clone(), "streamingTool", "stdout line\n");
+        sleep(Duration::from_millis(20)).await;
+        let _ = ctx.emit_stderr(tool_call_id.clone(), "streamingTool", "stderr line\n");
+        sleep(Duration::from_millis(20)).await;
+
+        Ok(ToolExecutionResult {
+            tool_call_id,
+            tool_name: "streamingTool".to_string(),
+            ok: true,
+            output: "[stdout]\nstdout line\n\n[stderr]\nstderr line\n".to_string(),
+            error: None,
+            metadata: Some(json!({
+                "display": {
+                    "kind": "terminal",
+                    "command": "streaming-tool",
+                    "exitCode": 0,
+                }
+            })),
+            duration_ms: 1,
+            truncated: false,
+        })
+    }
+}
+
+#[async_trait]
 impl Tool for CountingTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
@@ -467,6 +508,82 @@ async fn tool_events_are_ordered_and_turn_finishes() {
     assert!(matches!(
         &events[done_idx],
         StorageEvent::TurnDone { reason, .. } if reason.as_deref() == Some("completed")
+    ));
+}
+
+#[tokio::test]
+async fn streaming_tool_emits_deltas_before_tool_result() {
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([
+            LlmOutput {
+                content: "".to_string(),
+                tool_calls: vec![ToolCallRequest {
+                    id: "call-stream".to_string(),
+                    name: "streamingTool".to_string(),
+                    args: json!({}),
+                }],
+                reasoning: None,
+            },
+            LlmOutput {
+                content: "done".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+        ])),
+        delay: Duration::from_millis(0),
+    });
+
+    let tools = ToolRegistry::builder()
+        .register(Box::new(StreamingTool))
+        .build();
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::from_capabilities(factory, capabilities_from_tools(tools));
+    let state = make_state("stream tool");
+
+    let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+    let mut on_event = move |event: StorageEvent| {
+        events_clone.lock().expect("lock").push(event);
+        Ok(())
+    };
+
+    let outcome = loop_runner
+        .run_turn(&state, "turn-stream", &mut on_event, CancelToken::new())
+        .await
+        .expect("turn should complete");
+    assert_eq!(outcome, TurnOutcome::Completed);
+
+    let events = events.lock().expect("lock").clone();
+    let call_idx = events
+        .iter()
+        .position(|event| matches!(event, StorageEvent::ToolCall { .. }))
+        .expect("tool call event expected");
+    let first_delta_idx = events
+        .iter()
+        .position(|event| matches!(event, StorageEvent::ToolCallDelta { .. }))
+        .expect("tool call delta event expected");
+    let result_idx = events
+        .iter()
+        .position(|event| matches!(event, StorageEvent::ToolResult { .. }))
+        .expect("tool result event expected");
+
+    assert!(call_idx < first_delta_idx);
+    assert!(first_delta_idx < result_idx);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, StorageEvent::ToolCallDelta { .. }))
+            .count(),
+        2,
+        "streaming tool should emit both stdout and stderr deltas"
+    );
+    assert!(matches!(
+        &events[first_delta_idx],
+        StorageEvent::ToolCallDelta {
+            tool_name,
+            delta,
+            ..
+        } if tool_name == "streamingTool" && delta == "stdout line\n"
     ));
 }
 

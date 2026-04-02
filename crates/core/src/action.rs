@@ -40,6 +40,22 @@ pub struct ToolExecutionResult {
     pub truncated: bool,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolOutputStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolOutputDelta {
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub stream: ToolOutputStream,
+    pub delta: String,
+}
+
 impl ToolExecutionResult {
     pub fn model_content(&self) -> String {
         if self.ok {

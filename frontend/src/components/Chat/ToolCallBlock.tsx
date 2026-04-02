@@ -1,6 +1,7 @@
 import { memo, useEffect, useState } from 'react';
 import type { ToolCallMessage, ToolStatus } from '../../types';
 import { classifyToolDiffLine, extractToolDiffMetadata } from '../../lib/toolDiff';
+import { extractToolShellDisplay } from '../../lib/toolDisplay';
 import styles from './ToolCallBlock.module.css';
 
 const STATUS_ICON: Record<ToolStatus, string> = {
@@ -37,8 +38,39 @@ function patchLineClassName(line: string): string {
   }
 }
 
+function formatDiffPreview(message: ToolCallMessage): string {
+  const diff = extractToolDiffMetadata(message.metadata);
+  if (!diff) {
+    return message.error ?? message.output ?? (message.status === 'running' ? '执行中...' : '');
+  }
+
+  const detailParts = [
+    diff.changeType,
+    typeof diff.bytes === 'number' ? `${diff.bytes} bytes` : '',
+    `+${diff.addedLines ?? 0} -${diff.removedLines ?? 0}`,
+  ].filter(Boolean);
+  return [diff.path ?? message.toolName, detailParts.join(' · ')].filter(Boolean).join('  ');
+}
+
+function shellPreview(message: ToolCallMessage): string {
+  const shell = extractToolShellDisplay(message.metadata);
+  if (!shell) {
+    return message.error ?? message.output ?? (message.status === 'running' ? '执行中...' : '');
+  }
+
+  const latestChunk = shell.segments[shell.segments.length - 1]?.text ?? message.output ?? '';
+  const lines = latestChunk
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const latestLine = lines[lines.length - 1];
+  const header = shell.command ? `$ ${shell.command}` : message.toolName;
+  return latestLine ? `${header}  ${latestLine}` : header;
+}
+
 function ToolCallBlock({ message }: ToolCallBlockProps) {
   const diff = extractToolDiffMetadata(message.metadata);
+  const shell = extractToolShellDisplay(message.metadata);
   const [expanded, setExpanded] = useState(false);
   const [userInteracted, setUserInteracted] = useState(false);
 
@@ -47,9 +79,7 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
   const toolName = message.toolName ?? '(unknown tool)';
   const shortId = toolCallId.slice(-6);
   const duration = typeof message.durationMs === 'number' ? `${message.durationMs}ms` : '';
-  const preview = diff
-    ? `${diff.path ?? toolName}  +${diff.addedLines ?? 0} -${diff.removedLines ?? 0}`
-    : (message.error ?? message.output ?? (message.status === 'running' ? '执行中...' : ''));
+  const preview = diff ? formatDiffPreview(message) : shellPreview(message);
 
   // 仅在用户未交互且工具状态变为终态时自动展开一次
   useEffect(() => {
@@ -123,8 +153,29 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
 
         {expanded && (
           <div className={styles.body}>
+            {shell && (
+              <div className={styles.shellMeta}>
+                {shell.command && <div className={styles.shellCommand}>$ {shell.command}</div>}
+                <div className={styles.shellMetaRow}>
+                  {shell.cwd && <span className={styles.shellPill}>{shell.cwd}</span>}
+                  {shell.shell && <span className={styles.shellPill}>{shell.shell}</span>}
+                  {typeof shell.exitCode === 'number' && (
+                    <span className={styles.shellPill}>exit {shell.exitCode}</span>
+                  )}
+                </div>
+              </div>
+            )}
             {/* 有 diff 时以摘要样式展示 output，无 diff 时以等宽 pre 展示 */}
             {message.output && diff && <div className={styles.summary}>{message.output}</div>}
+            {diff && (
+              <div className={styles.diffMeta}>
+                {diff.changeType && <span className={styles.diffPill}>{diff.changeType}</span>}
+                {diff.path && <span className={styles.diffPath}>{diff.path}</span>}
+                {typeof diff.bytes === 'number' && (
+                  <span className={styles.diffPill}>{diff.bytes} bytes</span>
+                )}
+              </div>
+            )}
             {diff && (
               <div className={styles.patch}>
                 {diff.patch.split('\n').map((line, index) => (
@@ -137,12 +188,36 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
                 ))}
               </div>
             )}
-            {message.output && !diff && <pre className={styles.output}>{message.output}</pre>}
+            {shell && (
+              <div className={styles.terminal}>
+                {shell.segments.length > 0 ? (
+                  shell.segments.map((segment, index) => (
+                    <div
+                      key={`${toolCallId}-segment-${index}`}
+                      className={
+                        segment.stream === 'stderr'
+                          ? `${styles.terminalSegment} ${styles.terminalSegmentError}`
+                          : styles.terminalSegment
+                      }
+                    >
+                      {segment.text}
+                    </div>
+                  ))
+                ) : message.output ? (
+                  <pre className={styles.output}>{message.output}</pre>
+                ) : (
+                  <div className={styles.running}>执行中...</div>
+                )}
+              </div>
+            )}
+            {message.output && !diff && !shell && (
+              <pre className={styles.output}>{message.output}</pre>
+            )}
             {message.error && <div className={styles.error}>{message.error}</div>}
             {diff?.truncated && (
               <div className={styles.note}>diff 已截断，完整变更请直接查看文件。</div>
             )}
-            {!message.output && !message.error && message.status === 'running' && (
+            {!message.output && !message.error && !shell && message.status === 'running' && (
               <div className={styles.running}>执行中...</div>
             )}
           </div>

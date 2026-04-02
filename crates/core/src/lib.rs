@@ -39,7 +39,7 @@ mod tool;
 
 pub use action::{
     split_assistant_content, AssistantContentParts, LlmMessage, ReasoningContent, ToolCallRequest,
-    ToolDefinition, ToolExecutionResult,
+    ToolDefinition, ToolExecutionResult, ToolOutputDelta, ToolOutputStream,
 };
 pub use cancel::CancelToken;
 pub use capability::{

@@ -24,6 +24,7 @@ import Chat from './components/Chat/index';
 import SettingsModal from './components/Settings/SettingsModal';
 import { useAgent, SessionMessage } from './hooks/useAgent';
 import { snapshotToolStatus } from './lib/sessionMessages';
+import { appendToolDeltaMetadata, mergeToolMetadata } from './lib/toolDisplay';
 import { releaseTurnMapping, resolveSessionForTurn } from './lib/turnRouting';
 import styles from './App.module.css';
 
@@ -220,6 +221,40 @@ function upsertAssistantTurnMessage(
   return moveUpdatedMessageToTail(messages, targetIndex, updateMessage(target));
 }
 
+function findToolCallMessageIndex(
+  messages: Message[],
+  toolCallId: string,
+  toolName: string,
+  turnId?: string | null,
+  requireRunning = false
+): number {
+  const exactMatchIndex = messages.findIndex(
+    (message) => message.kind === 'toolCall' && message.toolCallId === toolCallId
+  );
+  if (exactMatchIndex >= 0) {
+    return exactMatchIndex;
+  }
+
+  const fallbackCandidates: number[] = [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    const turnMatches =
+      turnId === null || turnId === undefined
+        ? message.turnId === null || message.turnId === undefined
+        : message.turnId === turnId;
+    if (
+      message.kind === 'toolCall' &&
+      (!requireRunning || message.status === 'running') &&
+      message.toolName === toolName &&
+      turnMatches
+    ) {
+      fallbackCandidates.push(index);
+    }
+  }
+
+  return fallbackCandidates.length === 1 ? fallbackCandidates[0] : -1;
+}
+
 function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case 'SET_PHASE':
@@ -397,34 +432,76 @@ function reducer(state: AppState, action: Action): AppState {
         };
       });
 
+    case 'APPEND_TOOL_CALL_DELTA':
+      return mapSession(state, action.sessionId, (session) => {
+        const targetIndex = findToolCallMessageIndex(
+          session.messages,
+          action.toolCallId,
+          action.toolName,
+          action.turnId,
+          false
+        );
+
+        if (targetIndex < 0) {
+          return {
+            ...session,
+            messages: [
+              ...session.messages,
+              {
+                id: uuid(),
+                kind: 'toolCall',
+                turnId: action.turnId,
+                toolCallId: action.toolCallId,
+                toolName: action.toolName,
+                status: 'running',
+                args: null,
+                output: action.delta,
+                metadata: appendToolDeltaMetadata(
+                  undefined,
+                  action.toolName,
+                  null,
+                  action.stream,
+                  action.delta
+                ),
+                timestamp: Date.now(),
+              },
+            ],
+          };
+        }
+
+        return {
+          ...session,
+          messages: session.messages.map((message, index) => {
+            if (index !== targetIndex || message.kind !== 'toolCall') {
+              return message;
+            }
+            return {
+              ...message,
+              turnId: action.turnId ?? message.turnId,
+              toolCallId: action.toolCallId,
+              toolName: action.toolName,
+              output: `${message.output ?? ''}${action.delta}`,
+              metadata: appendToolDeltaMetadata(
+                message.metadata,
+                action.toolName,
+                message.args,
+                action.stream,
+                action.delta
+              ),
+            };
+          }),
+        };
+      });
+
     case 'UPDATE_TOOL_CALL':
       return mapSession(state, action.sessionId, (session) => {
-        // 先精确匹配 toolCallId
-        const exactMatchIndex = session.messages.findIndex(
-          (message) => message.kind === 'toolCall' && message.toolCallId === action.toolCallId
+        const targetIndex = findToolCallMessageIndex(
+          session.messages,
+          action.toolCallId,
+          action.toolName,
+          action.turnId,
+          true
         );
-        // 回退匹配必须同时限定 turn，且只能在候选唯一时使用，
-        // 否则同名工具并发执行时会把结果写进错误的卡片。
-        let targetIndex = exactMatchIndex;
-        if (targetIndex < 0) {
-          const fallbackCandidates: number[] = [];
-          for (let i = session.messages.length - 1; i >= 0; i--) {
-            const msg = session.messages[i];
-            const turnMatches =
-              action.turnId === null || action.turnId === undefined
-                ? msg.turnId === null || msg.turnId === undefined
-                : msg.turnId === action.turnId;
-            if (
-              msg.kind === 'toolCall' &&
-              msg.status === 'running' &&
-              msg.toolName === action.toolName &&
-              turnMatches
-            ) {
-              fallbackCandidates.push(i);
-            }
-          }
-          targetIndex = fallbackCandidates.length === 1 ? fallbackCandidates[0] : -1;
-        }
 
         if (targetIndex < 0) {
           return {
@@ -455,15 +532,16 @@ function reducer(state: AppState, action: Action): AppState {
             if (index !== targetIndex || message.kind !== 'toolCall') {
               return message;
             }
+            const isShellTool = message.toolName === 'shell' || action.toolName === 'shell';
             return {
               ...message,
               turnId: action.turnId ?? message.turnId,
               toolCallId: action.toolCallId,
               toolName: action.toolName,
               status: action.status,
-              output: action.output,
+              output: isShellTool && message.output ? message.output : action.output,
               error: action.error,
-              metadata: action.metadata,
+              metadata: mergeToolMetadata(message.metadata, action.metadata),
               durationMs: action.durationMs,
             };
           }),
@@ -679,6 +757,25 @@ export default function App() {
             args: event.data.args,
             timestamp: Date.now(),
           },
+        });
+        break;
+      }
+
+      case 'toolCallDelta': {
+        const sessionId = resolveSessionId(event.data.turnId);
+        if (!sessionId) {
+          break;
+        }
+        startTransition(() => {
+          dispatch({
+            type: 'APPEND_TOOL_CALL_DELTA',
+            sessionId,
+            turnId: event.data.turnId,
+            toolCallId: event.data.toolCallId,
+            toolName: event.data.toolName,
+            stream: event.data.stream,
+            delta: event.data.delta,
+          });
         });
         break;
       }

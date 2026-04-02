@@ -13,22 +13,9 @@
 
 ### Rust
 
-- Use `cargo fmt --all` before committing
+- Use `cargo fmt --all`,`cargo clippy --all-targets --all-features -- -D warnings` before committing
 - Follow standard Rust naming: `snake_case` for functions/variables, `PascalCase` for types
 - Async functions should return `anyhow::Result<T>`
-
-### TypeScript/React
-
-- Components: `PascalCase.tsx` (e.g., `MessageList.tsx`)
-- Hooks: `use*.ts` (e.g., `useAgent.ts`)
-- Utilities: `camelCase.ts`
-- Run `npm run typecheck`, `npm run lint`, and `npm run format:check` before committing
-
-## Testing Guidelines
-
-- Rust tests use built-in `#[test]` and `#[tokio::test]` attributes
-- Test files are colocated with source files in `#[cfg(test)]` modules
-- Run full suite: `cargo test --workspace`
 
 ## Architecture Notes
 
@@ -65,6 +52,12 @@ protocol (纯 DTO，无业务依赖)
 - 全局配置保持在 `~/.astrcode/config.json`；会话按项目落在 `~/.astrcode/projects/<project>/sessions/<session-id>/session-*.jsonl`。
 - JSONL 采用 append-only `StoredEvent { storage_seq, event }`；`storage_seq` 由会话 writer 独占分配。
 - `GET /api/sessions/:id/events` 先通过 `SessionReplaySource` 回放历史，再实时订阅广播；SSE 事件 id 形如 `{storage_seq}.{subindex}`
+
+### Tool Event / UX
+
+- 工具事件除了 `ToolCall` / `ToolResult`，现在还有 `ToolCallDelta`；长耗时工具的增量输出必须先持久化再广播，不能只留在前端本地状态。
+- `shell` 工具按 stdout / stderr 增量流式输出；前端工具卡片会基于 `metadata.display.kind = terminal` 渲染终端视图，断线重连后通过 replay 恢复。
+- `writeFile` / `editFile` 的 diff 仍通过 metadata 驱动展示；diff/shell metadata 的解析逻辑优先收口到 `frontend/src/lib/`，避免在 `ToolCallBlock` 里散落协议细节。
 
 ## Development Tips
 

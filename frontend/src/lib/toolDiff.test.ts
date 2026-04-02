@@ -12,6 +12,8 @@ describe('extractToolDiffMetadata', () => {
     expect(
       extractToolDiffMetadata({
         path: '/tmp/demo.ts',
+        changeType: 'updated',
+        bytes: 42,
         diff: {
           patch: '--- a/demo.ts\n+++ b/demo.ts\n@@ -1,1 +1,1 @@\n-old\n+new',
           addedLines: 1,
@@ -22,6 +24,8 @@ describe('extractToolDiffMetadata', () => {
       })
     ).toEqual({
       path: '/tmp/demo.ts',
+      changeType: 'updated',
+      bytes: 42,
       patch: '--- a/demo.ts\n+++ b/demo.ts\n@@ -1,1 +1,1 @@\n-old\n+new',
       addedLines: 1,
       removedLines: 1,
