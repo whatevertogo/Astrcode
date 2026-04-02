@@ -17,6 +17,7 @@ export interface ToolCallResultEnvelope {
 
 export type AgentEventPayload =
   | { event: 'sessionStarted'; data: { sessionId: string } }
+  | { event: 'userMessage'; data: { turnId: string; content: string } }
   | { event: 'phaseChanged'; data: { phase: Phase; turnId?: string | null } }
   | { event: 'modelDelta'; data: { turnId: string; delta: string } }
   | { event: 'thinkingDelta'; data: { turnId: string; delta: string } }
@@ -56,6 +57,15 @@ export type AgentEventPayload =
 export type AgentEvent = AgentEventPayload & {
   protocolVersion: number;
 };
+
+export type SessionCatalogEventPayload =
+  | { event: 'sessionCreated'; data: { sessionId: string } }
+  | { event: 'sessionDeleted'; data: { sessionId: string } }
+  | { event: 'projectDeleted'; data: { workingDir: string } }
+  | {
+      event: 'sessionBranched';
+      data: { sessionId: string; sourceSessionId: string };
+    };
 
 export interface UserMessage {
   id: string;
@@ -183,6 +193,7 @@ export type Action =
   | { type: 'RENAME_SESSION'; projectId: string; sessionId: string; title: string }
   | { type: 'DELETE_SESSION'; projectId: string; sessionId: string }
   | { type: 'ADD_MESSAGE'; sessionId: string; message: Message }
+  | { type: 'UPSERT_USER_MESSAGE'; sessionId: string; turnId: string; content: string }
   | { type: 'APPEND_DELTA'; sessionId: string; turnId: string; delta: string }
   | { type: 'APPEND_REASONING_DELTA'; sessionId: string; turnId: string; delta: string }
   | {

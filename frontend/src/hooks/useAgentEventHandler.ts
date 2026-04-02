@@ -34,6 +34,20 @@ export function useAgentEventHandler({
         case 'sessionStarted':
           break;
 
+        case 'userMessage': {
+          const sessionId = resolveSessionId(event.data.turnId);
+          if (!sessionId) {
+            break;
+          }
+          dispatch({
+            type: 'UPSERT_USER_MESSAGE',
+            sessionId,
+            turnId: event.data.turnId,
+            content: event.data.content,
+          });
+          break;
+        }
+
         case 'phaseChanged': {
           if (event.data.turnId) {
             resolveSessionId(event.data.turnId);

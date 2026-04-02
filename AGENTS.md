@@ -63,6 +63,7 @@ protocol (纯 DTO，无业务依赖)
 
 ### Tauri/桌面端
 - **Sidecar**: 文件名需带 `-${TAURI_ENV_TARGET_TRIPLE}` 后缀，通过 `scripts/tauri-frontend.js` 构建
+- **桌面端多实例**: 新打开的 exe 会优先复用 `~/.astrcode/run.json` 指向的现有 server；只有没有可用实例时才会再起 sidecar，这样多个桌面实例才能共享同一会话事件流
 - **Bootstrap 时序**: Vite 先启动，sidecar 后启动；首个 API 请求须等 `window.__ASTRCODE_BOOTSTRAP__` 注入
 - **HTTP 桥接**: 鉴权用 bootstrap token，调 origin/CSP 时同步更新 CORS 白名单
 - **Windows 命令**: 不用 `npm.ps1`，用 `node` 脚本或 `npm.cmd` 启动前端
@@ -72,7 +73,7 @@ protocol (纯 DTO，无业务依赖)
 - **PR 评论修复前**: 先查 `git status --short` 和 `git diff`，避免覆盖未提交改动
 - **Protocol 独立**: `crates/protocol` 不得依赖 `core/runtime`；所有跨边界数据都通过显式 DTO 和 mapper 转换，避免重新出现“共享内部类型就是协议”的耦合
 - **Server 入口瘦身后**: `crates/server/src/main.rs` 只保留启动与装配；新增逻辑优先落到 `routes/`、`mapper.rs`、`bootstrap.rs`，避免重新把 HTTP 路由、DTO 转换、静态资源托管全部堆回入口
-- **当前 `cargo test --workspace` 在本机可能被 Tauri sidecar 权限拦截**: `src-tauri` 的 build script 访问 `binaries/astrcode-server-<triple>.exe` 时可能报 `Os { code: 5, kind: PermissionDenied }`。改 Rust 代码时先用 `cargo test --workspace --exclude astrcode` 验证业务 crate，再单独排查桌面端打包权限 
+- **Tauri sidecar 运行时副本**: 桌面端现在会先把 `astrcode-server` 复制到 `~/.astrcode/runtime/sidecars/` 的唯一副本再启动，避免 Windows 把 `target/debug/astrcode-server.exe` 锁死导致后续构建失败。若仍遇到 `Os { code: 5, kind: PermissionDenied }`，先确认没有遗留的旧版 `astrcode-server.exe` 仍在运行
 
 # 注意
 

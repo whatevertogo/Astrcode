@@ -132,7 +132,15 @@ impl EventTranslator {
                 });
                 self.phase_tracker.force_to(Phase::Idle, None);
             }
-            StorageEvent::UserMessage { .. } => {
+            StorageEvent::UserMessage { content, .. } => {
+                if let Some(turn_id) = turn_id_ref {
+                    push(AgentEvent::UserMessage {
+                        turn_id: turn_id.clone(),
+                        content: content.clone(),
+                    });
+                } else if !content.is_empty() {
+                    warn_missing_turn_id(stored.storage_seq, "userMessage");
+                }
                 if self.phase_tracker.current() != Phase::Thinking {
                     push(AgentEvent::PhaseChanged {
                         turn_id: turn_id.clone(),
@@ -316,6 +324,39 @@ mod tests {
 
     use super::*;
     use crate::{phase_of_storage_event, AgentEvent, StoredEvent, ToolOutputStream};
+
+    #[test]
+    fn user_message_replays_before_phase_change() {
+        let records = replay_records(
+            &[StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent::UserMessage {
+                    turn_id: Some("turn-1".to_string()),
+                    content: "hello".to_string(),
+                    timestamp: chrono::Utc::now(),
+                },
+            }],
+            None,
+        );
+
+        assert_eq!(records.len(), 2);
+        assert!(matches!(
+            records[0].event,
+            AgentEvent::PhaseChanged {
+                phase: Phase::Thinking,
+                ..
+            }
+        ));
+        assert!(matches!(
+            records[1].event,
+            AgentEvent::UserMessage {
+                ref turn_id,
+                ref content,
+            } if turn_id == "turn-1" && content == "hello"
+        ));
+        assert_eq!(records[0].event_id, "1.0");
+        assert_eq!(records[1].event_id, "1.1");
+    }
 
     #[test]
     fn tool_call_delta_replays_with_cached_tool_name() {

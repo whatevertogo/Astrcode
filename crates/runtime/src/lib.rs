@@ -41,6 +41,6 @@ pub use bootstrap::{bootstrap_runtime, RuntimeBootstrap};
 pub use runtime_governance::{RuntimeGovernance, RuntimeGovernanceSnapshot, RuntimeReloadResult};
 pub use service::{
     OperationMetricsSnapshot, PromptAccepted, ReplayMetricsSnapshot, ReplayPath,
-    RuntimeObservabilitySnapshot, RuntimeService, ServiceError, ServiceResult, SessionEventRecord,
-    SessionMessage, SessionReplay, SessionReplaySource,
+    RuntimeObservabilitySnapshot, RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent,
+    SessionEventRecord, SessionMessage, SessionReplay, SessionReplaySource,
 };

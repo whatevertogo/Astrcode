@@ -39,6 +39,10 @@ pub enum AgentEventPayload {
     SessionStarted {
         session_id: String,
     },
+    UserMessage {
+        turn_id: String,
+        content: String,
+    },
     PhaseChanged {
         turn_id: Option<String>,
         phase: PhaseDto,

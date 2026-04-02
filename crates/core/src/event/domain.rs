@@ -36,6 +36,13 @@ pub enum Phase {
 pub enum AgentEvent {
     /// 会话开始
     SessionStarted { session_id: String },
+    /// 用户消息
+    UserMessage {
+        /// 所属 Turn ID
+        turn_id: String,
+        /// 用户输入内容
+        content: String,
+    },
     /// 阶段变更（用于 UI 状态指示器）
     PhaseChanged {
         /// 所属 Turn ID（可能为空，如会话刚启动）

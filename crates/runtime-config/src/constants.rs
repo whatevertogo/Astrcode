@@ -16,8 +16,9 @@ pub const ENV_REFERENCE_PREFIX: &str = "env:";
 pub const LITERAL_VALUE_PREFIX: &str = "literal:";
 
 pub use astrcode_core::env::{
-    ANTHROPIC_API_KEY_ENV, ASTRCODE_HOME_DIR_ENV, ASTRCODE_PLUGIN_DIRS_ENV, ASTRCODE_TEST_HOME_ENV,
-    DEEPSEEK_API_KEY_ENV, TAURI_ENV_TARGET_TRIPLE_ENV,
+    ANTHROPIC_API_KEY_ENV, ASTRCODE_HOME_DIR_ENV, ASTRCODE_MAX_TOOL_CONCURRENCY_ENV,
+    ASTRCODE_PLUGIN_DIRS_ENV, ASTRCODE_TEST_HOME_ENV, DEEPSEEK_API_KEY_ENV,
+    TAURI_ENV_TARGET_TRIPLE_ENV,
 };
 
 /// Environment variables that affect where Astrcode stores local state.
@@ -32,6 +33,9 @@ pub const PROVIDER_API_KEY_ENV_VARS: &[&str] = &[DEEPSEEK_API_KEY_ENV, ANTHROPIC
 /// Environment variables required by the Tauri sidecar build pipeline.
 pub const BUILD_ENV_VARS: &[&str] = &[TAURI_ENV_TARGET_TRIPLE_ENV];
 
+/// Environment variables that tune runtime execution behavior.
+pub const RUNTIME_ENV_VARS: &[&str] = &[ASTRCODE_MAX_TOOL_CONCURRENCY_ENV];
+
 /// All Astrcode-defined environment variables, grouped above by responsibility.
 pub const ALL_ASTRCODE_ENV_VARS: &[&str] = &[
     ASTRCODE_HOME_DIR_ENV,
@@ -40,6 +44,7 @@ pub const ALL_ASTRCODE_ENV_VARS: &[&str] = &[
     DEEPSEEK_API_KEY_ENV,
     ANTHROPIC_API_KEY_ENV,
     TAURI_ENV_TARGET_TRIPLE_ENV,
+    ASTRCODE_MAX_TOOL_CONCURRENCY_ENV,
 ];
 
 /// Anthropic Messages API endpoint URL.
@@ -50,3 +55,18 @@ pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// Current configuration schema version.
 pub const CURRENT_CONFIG_VERSION: &str = "1";
+
+/// Default maximum number of concurrency-safe tools that may execute in parallel.
+const DEFAULT_MAX_TOOL_CONCURRENCY: usize = 10;
+
+/// Returns the maximum number of concurrency-safe tools that may execute in parallel.
+///
+/// Reads from `ASTRCODE_MAX_TOOL_CONCURRENCY` environment variable, falling back to
+/// the default of 10. Values are clamped to a minimum of 1.
+pub fn max_tool_concurrency() -> usize {
+    std::env::var(ASTRCODE_MAX_TOOL_CONCURRENCY_ENV)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_MAX_TOOL_CONCURRENCY)
+        .max(1)
+}

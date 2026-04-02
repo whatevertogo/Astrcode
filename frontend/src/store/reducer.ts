@@ -48,6 +48,19 @@ function findAssistantMessageIndex(
   return -1;
 }
 
+function findUserMessageIndex(
+  messages: AppState['projects'][number]['sessions'][number]['messages'],
+  turnId: string
+): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.kind === 'user' && message.turnId === turnId) {
+      return index;
+    }
+  }
+  return -1;
+}
+
 function moveUpdatedMessageToTail(
   messages: AppState['projects'][number]['sessions'][number]['messages'],
   targetIndex: number,
@@ -127,6 +140,7 @@ function findToolCallMessageIndex(
 
 export {
   findAssistantMessageIndex,
+  findUserMessageIndex,
   moveUpdatedMessageToTail,
   upsertAssistantTurnMessage,
   findToolCallMessageIndex,
@@ -211,6 +225,43 @@ export function reducer(state: AppState, action: Action): AppState {
           title = action.message.text.slice(0, 20) || '新会话';
         }
         return { ...session, title, messages: [...session.messages, action.message] };
+      });
+
+    case 'UPSERT_USER_MESSAGE':
+      return mapSession(state, action.sessionId, (session) => {
+        const targetIndex = findUserMessageIndex(session.messages, action.turnId);
+        const userMessage = {
+          id:
+            targetIndex >= 0 && session.messages[targetIndex]?.kind === 'user'
+              ? session.messages[targetIndex].id
+              : uuid(),
+          kind: 'user' as const,
+          turnId: action.turnId,
+          text: action.content,
+          timestamp:
+            targetIndex >= 0 && session.messages[targetIndex]?.kind === 'user'
+              ? session.messages[targetIndex].timestamp
+              : Date.now(),
+        };
+
+        let title = session.title;
+        if (session.messages.filter((message) => message.kind === 'user').length === 0) {
+          title = action.content.slice(0, 20) || '新会话';
+        }
+
+        if (targetIndex < 0) {
+          return {
+            ...session,
+            title,
+            messages: [...session.messages, userMessage],
+          };
+        }
+
+        return {
+          ...session,
+          title,
+          messages: moveUpdatedMessageToTail(session.messages, targetIndex, userMessage),
+        };
       });
 
     case 'APPEND_DELTA':

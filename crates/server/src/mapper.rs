@@ -11,13 +11,14 @@ use astrcode_protocol::http::{
     AgentEventEnvelope, AgentEventPayload, ConfigView, CurrentModelInfoDto, ModelOptionDto,
     OperationMetricsDto, PhaseDto, PluginHealthDto, PluginRuntimeStateDto, ProfileView,
     ReplayMetricsDto, RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto,
-    SessionListItem, SessionMessageDto, ToolCallResultDto, ToolOutputStreamDto, PROTOCOL_VERSION,
+    SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem, SessionMessageDto,
+    ToolCallResultDto, ToolOutputStreamDto, PROTOCOL_VERSION,
 };
 use astrcode_runtime::RuntimeGovernanceSnapshot;
 use astrcode_runtime::{
     is_env_var_name, list_model_options as resolve_model_options, resolve_active_selection,
     resolve_current_model as resolve_runtime_current_model, Config, OperationMetricsSnapshot,
-    ReplayMetricsSnapshot, RuntimeObservabilitySnapshot, SessionMessage,
+    ReplayMetricsSnapshot, RuntimeObservabilitySnapshot, SessionCatalogEvent, SessionMessage,
 };
 use axum::http::StatusCode;
 use axum::response::sse::Event;
@@ -130,6 +131,23 @@ pub(crate) fn to_sse_event(record: SessionEventRecord) -> Event {
     Event::default().id(record.event_id).data(payload)
 }
 
+pub(crate) fn to_session_catalog_sse_event(event: SessionCatalogEvent) -> Event {
+    let payload = serde_json::to_string(&SessionCatalogEventEnvelope::new(
+        to_session_catalog_event_dto(event),
+    ))
+    .unwrap_or_else(|error| {
+        serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "event": "projectDeleted",
+            "data": {
+                "workingDir": format!("serialization-error: {error}")
+            }
+        })
+        .to_string()
+    });
+    Event::default().data(payload)
+}
+
 pub(crate) fn parse_event_id(raw: &str) -> Option<(u64, u32)> {
     let (storage_seq, subindex) = raw.split_once('.')?;
     Some((storage_seq.parse().ok()?, subindex.parse().ok()?))
@@ -229,6 +247,9 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
         AgentEvent::SessionStarted { session_id } => {
             AgentEventPayload::SessionStarted { session_id }
         }
+        AgentEvent::UserMessage { turn_id, content } => {
+            AgentEventPayload::UserMessage { turn_id, content }
+        }
         AgentEvent::PhaseChanged { turn_id, phase } => AgentEventPayload::PhaseChanged {
             turn_id,
             phase: to_phase_dto(phase),
@@ -294,6 +315,29 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
             turn_id,
             code,
             message,
+        },
+    }
+}
+
+pub(crate) fn to_session_catalog_event_dto(
+    event: SessionCatalogEvent,
+) -> SessionCatalogEventPayload {
+    match event {
+        SessionCatalogEvent::SessionCreated { session_id } => {
+            SessionCatalogEventPayload::SessionCreated { session_id }
+        }
+        SessionCatalogEvent::SessionDeleted { session_id } => {
+            SessionCatalogEventPayload::SessionDeleted { session_id }
+        }
+        SessionCatalogEvent::ProjectDeleted { working_dir } => {
+            SessionCatalogEventPayload::ProjectDeleted { working_dir }
+        }
+        SessionCatalogEvent::SessionBranched {
+            session_id,
+            source_session_id,
+        } => SessionCatalogEventPayload::SessionBranched {
+            session_id,
+            source_session_id,
         },
     }
 }

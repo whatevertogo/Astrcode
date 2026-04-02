@@ -13,7 +13,7 @@ use uuid::Uuid;
 use super::session_ops::normalize_session_id;
 use super::session_state::SessionState;
 use super::support::{lock_anyhow, spawn_blocking_service};
-use super::{PromptAccepted, RuntimeService, ServiceError, ServiceResult};
+use super::{PromptAccepted, RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent};
 use crate::agent_loop::TurnOutcome;
 use astrcode_core::EventTranslator;
 
@@ -226,6 +226,10 @@ impl RuntimeService {
                     target_session_id = self
                         .branch_session_from_busy_turn(&source_session_id, &active_turn.turn_id)
                         .await?;
+                    self.emit_session_catalog_event(SessionCatalogEvent::SessionBranched {
+                        session_id: target_session_id.clone(),
+                        source_session_id: source_session_id.clone(),
+                    });
                     branched_from_session_id = Some(source_session_id);
                     branch_depth += 1;
                 }

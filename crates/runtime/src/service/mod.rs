@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent_loop::AgentLoop;
@@ -32,13 +32,15 @@ mod types;
 
 use self::session_state::SessionState;
 pub use self::types::{
-    PromptAccepted, ServiceError, ServiceResult, SessionEventRecord, SessionMessage, SessionReplay,
-    SessionReplaySource,
+    PromptAccepted, ServiceError, ServiceResult, SessionCatalogEvent, SessionEventRecord,
+    SessionMessage, SessionReplay, SessionReplaySource,
 };
 use observability::RuntimeObservability;
 pub use observability::{
     OperationMetricsSnapshot, ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot,
 };
+
+const SESSION_CATALOG_BROADCAST_CAPACITY: usize = 256;
 
 /// 运行时服务
 ///
@@ -67,6 +69,9 @@ pub struct RuntimeService {
     session_load_lock: Mutex<()>,
     /// 可观测性（指标收集）
     observability: Arc<RuntimeObservability>,
+    /// 跨窗口共享的会话目录广播。
+    /// 新建/删除/分叉会话后会发事件，驱动所有前端窗口刷新 sidebar 或跟随新分支。
+    session_catalog_events: broadcast::Sender<SessionCatalogEvent>,
     /// 关闭令牌（用于通知所有处理器停止）
     shutdown_token: CancellationToken,
 }
@@ -112,6 +117,7 @@ impl RuntimeService {
         )
         .with_policy_engine(Arc::clone(&policy))
         .with_approval_broker(Arc::clone(&approval));
+        let (session_catalog_events, _) = broadcast::channel(SESSION_CATALOG_BROADCAST_CAPACITY);
         Ok(Self {
             sessions: DashMap::new(),
             loop_: RwLock::new(Arc::new(loop_)),
@@ -121,6 +127,7 @@ impl RuntimeService {
             session_manager,
             session_load_lock: Mutex::new(()),
             observability: Arc::new(RuntimeObservability::default()),
+            session_catalog_events,
             shutdown_token: CancellationToken::new(),
         })
     }
@@ -174,6 +181,14 @@ impl RuntimeService {
 
     pub fn observability_snapshot(&self) -> RuntimeObservabilitySnapshot {
         self.observability.snapshot()
+    }
+
+    pub fn subscribe_session_catalog_events(&self) -> broadcast::Receiver<SessionCatalogEvent> {
+        self.session_catalog_events.subscribe()
+    }
+
+    pub(super) fn emit_session_catalog_event(&self, event: SessionCatalogEvent) {
+        let _ = self.session_catalog_events.send(event);
     }
 
     /// Initiates graceful shutdown:

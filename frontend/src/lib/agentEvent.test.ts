@@ -42,6 +42,19 @@ describe('normalizeAgentEvent protocol gate', () => {
     });
   });
 
+  it('accepts userMessage payloads', () => {
+    const normalized = normalizeAgentEvent({
+      protocolVersion: 1,
+      event: 'userMessage',
+      data: { turn_id: 'turn-user', content: 'hello' },
+    });
+
+    expect(normalized).toEqual({
+      event: 'userMessage',
+      data: { turnId: 'turn-user', content: 'hello' },
+    });
+  });
+
   it('accepts assistantMessage when content is empty but reasoning exists', () => {
     const normalized = normalizeAgentEvent({
       protocolVersion: 1,

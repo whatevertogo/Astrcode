@@ -17,6 +17,23 @@ pub struct SessionReplay {
     pub receiver: broadcast::Receiver<SessionEventRecord>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionCatalogEvent {
+    SessionCreated {
+        session_id: String,
+    },
+    SessionDeleted {
+        session_id: String,
+    },
+    ProjectDeleted {
+        working_dir: String,
+    },
+    SessionBranched {
+        session_id: String,
+        source_session_id: String,
+    },
+}
+
 #[async_trait]
 pub trait SessionReplaySource {
     async fn replay(

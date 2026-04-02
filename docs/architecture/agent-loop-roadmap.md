@@ -4,33 +4,10 @@
 > 创建：2026-04-01
 > 范围：`crates/runtime/src/agent_loop` 及相关模块
 
----
-
-## 背景
-
-当前 Astrcode 的 AgentLoop 采用简单 step 循环模型：
-
-```
-loop {
-    compose_prompt → call_llm → execute_tools(顺序) → repeat
-} until 无 tool_calls / cancel
-```
-
-该模型能完成基本对话，但与 Claude Code 等成熟实现相比存在以下短板：
-
-- **终止语义隐含**：`run_turn()` 返回 `Result<()>`，无法区分自然完成、取消还是错误
-- **工具顺序执行**：多个独立工具无法并发
-- **无上下文压缩**：长会话必然超出 context window
-- **错误直接终止**：413 / max_output_tokens 等可恢复错误无法重试
-
-> **为什么不设 `max_steps`？**
-> Claude Code 不限制单次 turn 的 API 轮次。实际的安全网是：用户主动中断（abort）、上下文压缩（auto-compact 防止溢出）、以及全局 `maxTurns`（限制整次对话而非单 turn）。`max_steps` 会误杀正在完成复杂任务的 LLM（比如连续 20 步重构），而真正空转的情况应由上下文压缩和用户中断来兜底。
 
 本文档定义 5 个演进阶段 + 1 个远期占位 + 3 个远期 TODO，每个阶段独立可交付、有明确验收标准。
 
----
-
-## P1：状态机化
+## P1：状态机化(已经完成)
 
 ### 目标
 
@@ -44,63 +21,7 @@ loop {
 
 ### 需求
 
-#### P2.1 `CapabilityDescriptor` 新增并发安全标记
-
-```rust
-pub struct CapabilityDescriptor {
-    // ...existing
-    pub concurrency_safe: bool,  // default: false
-}
-```
-
-- 现有工具默认 `false`，只有只读且无副作用的工具声明为 `true`
-- 候选标记为 `concurrency_safe: true` 的工具：`readFile`、`grep`、`findFiles`、`listDir`
-- 始终标记为 `false` 的工具：`editFile`、`writeFile`、`shell`
-
-#### P2.2 `tool_cycle` 分区执行
-
-将 `execute_tool_calls` 改为分区 + 并行模型：
-
-```
-tool_calls
-  → partition by concurrency_safe
-  → safe 组: futures::join_all（并行）
-  → unsafe 组: 顺序执行
-  → 收集所有结果，按原始 tool_call 顺序返回
-```
-
-关键约束：
-- **安全组全部完成后再执行不安全组**，避免读写冲突
-- **结果顺序与 tool_calls 原始顺序一致**，LLM 要求 tool_result 与 tool_use 一一对应
-- 取消信号在每组开始前检查
-
-#### P2.3 并行度上限
-
-引入可配置的并行度上限（默认 10）：
-
-```rust
-pub struct AgentLoop {
-    // ...existing
-    max_tool_concurrency: usize,  // default: 10
-}
-```
-
-### 验收标准
-
-- [ ] 两个 `concurrency_safe` 工具在同一 step 中并行执行
-- [ ] `concurrency_safe = false` 的工具始终顺序执行
-- [ ] tool result 顺序与 LLM 请求的 tool_call 顺序一致
-- [ ] 取消信号正确传播到并行任务
-- [ ] 无并发安全标记的工具行为与 P1 完全相同
-
-### 影响范围
-
-- `crates/protocol/src/plugin/descriptors.rs`（新增字段）
-- `crates/runtime/src/agent_loop/tool_cycle.rs`（核心改动）
-- `crates/runtime/src/agent_loop.rs`（新增 `max_tool_concurrency`）
-- `crates/tools/src/tools/*.rs`（标记并发安全）
-- 所有构建 `CapabilityDescriptor` 的测试 fixture
-
+#### P2.1 `CapabilityDescriptor` 新增并发安全标记(已经完成)
 ---
 
 ## P3：上下文压缩管线
@@ -116,7 +37,7 @@ pub struct AgentLoop {
 在 `turn_runner` 的 step 循环中，组装 `request_messages` 之后、调用 LLM 之前：
 
 - 对当前 `request_messages` 做 token 估算
-- 简单启发式：总字符数 / 4（英文）或 / 2（中文），或使用 `tiktoken-rs` 做精确计数
+- 简单启发式：、使用 `tiktoken-rs` 做精确计数
 - 将 token 数存入 `TurnState`，供后续 compact 决策使用
 - 通过 `StorageEvent` 或日志暴露当前 token 用量（可观测性）
 

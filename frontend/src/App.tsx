@@ -11,7 +11,9 @@ import Chat from './components/Chat/index';
 import SettingsModal from './components/Settings/SettingsModal';
 import { useAgent } from './hooks/useAgent';
 import { useAgentEventHandler } from './hooks/useAgentEventHandler';
+import { useSessionCatalogEvents } from './hooks/useSessionCatalogEvents';
 import { useSidebarResize } from './hooks/useSidebarResize';
+import type { SessionCatalogEventPayload } from './types';
 import styles from './App.module.css';
 
 const reducer = appReducer;
@@ -179,6 +181,33 @@ export default function App() {
     state.projects.find((project) => project.id === state.activeProjectId) ?? null;
   const activeSession =
     activeProject?.sessions.find((session) => session.id === state.activeSessionId) ?? null;
+
+  const handleSessionCatalogEvent = useCallback(
+    (event: SessionCatalogEventPayload) => {
+      switch (event.event) {
+        case 'sessionBranched':
+          if (activeSessionIdRef.current === event.data.sourceSessionId) {
+            void refreshSessions(event.data.sessionId);
+            return;
+          }
+          void refreshSessions();
+          return;
+        case 'sessionCreated':
+        case 'sessionDeleted':
+        case 'projectDeleted':
+          void refreshSessions();
+          return;
+      }
+    },
+    [refreshSessions]
+  );
+
+  useSessionCatalogEvents({
+    onEvent: handleSessionCatalogEvent,
+    onResync: () => {
+      void refreshSessions();
+    },
+  });
 
   const handleNewProject = async (workingDir: string) => {
     try {

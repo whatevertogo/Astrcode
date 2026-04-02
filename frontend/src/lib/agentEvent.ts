@@ -92,6 +92,15 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
     return { event: 'sessionStarted', data: { sessionId } };
   }
 
+  if (event === 'userMessage') {
+    const turnId = pickString(data, 'turnId', 'turn_id');
+    const content = pickStringAllowEmpty(data, 'content');
+    if (!turnId || content === undefined) {
+      return invalidEvent('userMessage requires turnId and content', raw);
+    }
+    return { event: 'userMessage', data: { turnId, content } };
+  }
+
   if (event === 'phaseChanged') {
     const phase = toPhase(data.phase);
     if (!phase) {

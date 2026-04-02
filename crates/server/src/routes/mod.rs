@@ -19,6 +19,7 @@ pub(crate) fn build_api_router() -> Router<AppState> {
             "/api/sessions",
             post(sessions::create_session).get(sessions::list_sessions),
         )
+        .route("/api/session-events", get(sessions::session_catalog_events))
         .route(
             "/api/sessions/:id/messages",
             get(sessions::session_messages),

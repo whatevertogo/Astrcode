@@ -21,3 +21,9 @@ pub fn default_config_path() -> Result<PathBuf> {
 pub fn astrcode_root_dir() -> Result<PathBuf> {
     Ok(resolve_home_dir()?.join(".astrcode"))
 }
+
+/// 运行期 sidecar 会先复制到用户目录下的独立副本，再从该副本启动，
+/// 这样构建产物可以被后续编译安全覆盖，不会被运行中的 Windows 进程锁住。
+pub fn runtime_sidecar_dir() -> Result<PathBuf> {
+    Ok(astrcode_root_dir()?.join("runtime").join("sidecars"))
+}

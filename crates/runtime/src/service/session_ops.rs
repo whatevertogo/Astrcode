@@ -11,7 +11,7 @@ use astrcode_core::{StorageEvent, StoredEvent};
 use super::replay::convert_events_to_messages;
 use super::session_state::{SessionState, SessionWriter};
 use super::support::spawn_blocking_service;
-use super::{RuntimeService, ServiceError, ServiceResult, SessionMessage};
+use super::{RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent, SessionMessage};
 use astrcode_core::{phase_of_storage_event, replay_records};
 
 impl RuntimeService {
@@ -68,7 +68,7 @@ impl RuntimeService {
         ));
         self.sessions.insert(session_id.clone(), state);
 
-        Ok(SessionMeta {
+        let meta = SessionMeta {
             session_id,
             working_dir: working_dir.to_string_lossy().to_string(),
             display_name: display_name_from_working_dir(&working_dir),
@@ -78,7 +78,13 @@ impl RuntimeService {
             parent_session_id: None,
             parent_storage_seq: None,
             phase: Phase::Idle,
-        })
+        };
+
+        self.emit_session_catalog_event(SessionCatalogEvent::SessionCreated {
+            session_id: meta.session_id.clone(),
+        });
+
+        Ok(meta)
     }
 
     pub async fn load_session_snapshot(
@@ -99,12 +105,17 @@ impl RuntimeService {
         self.interrupt(&normalized).await?;
         self.sessions.remove(&normalized);
         let session_manager = Arc::clone(&self.session_manager);
+        let delete_session_id = normalized.clone();
         spawn_blocking_service("delete session", move || {
             session_manager
-                .delete_session(&normalized)
+                .delete_session(&delete_session_id)
                 .map_err(ServiceError::from)
         })
-        .await
+        .await?;
+        self.emit_session_catalog_event(SessionCatalogEvent::SessionDeleted {
+            session_id: normalized,
+        });
+        Ok(())
     }
 
     pub async fn delete_project(&self, working_dir: &str) -> ServiceResult<DeleteProjectResult> {
@@ -129,12 +140,14 @@ impl RuntimeService {
 
         let delete_working_dir = working_dir.clone();
         let session_manager = Arc::clone(&self.session_manager);
-        spawn_blocking_service("delete project sessions", move || {
+        let result = spawn_blocking_service("delete project sessions", move || {
             session_manager
                 .delete_sessions_by_working_dir(&delete_working_dir)
                 .map_err(ServiceError::from)
         })
-        .await
+        .await?;
+        self.emit_session_catalog_event(SessionCatalogEvent::ProjectDeleted { working_dir });
+        Ok(result)
     }
 
     /// 确保会话已加载到内存中，使用双重检查锁定避免重复加载。

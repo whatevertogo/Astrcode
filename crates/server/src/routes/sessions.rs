@@ -20,7 +20,8 @@ use serde::Deserialize;
 
 use crate::auth::require_auth;
 use crate::mapper::{
-    format_event_id, parse_event_id, to_session_list_item, to_session_message_dto, to_sse_event,
+    format_event_id, parse_event_id, to_session_catalog_sse_event, to_session_list_item,
+    to_session_message_dto, to_sse_event,
 };
 use crate::{ApiError, AppState, SESSION_CURSOR_HEADER_NAME};
 
@@ -67,6 +68,34 @@ pub(crate) async fn list_sessions(
         .map(to_session_list_item)
         .collect();
     Ok(Json(sessions))
+}
+
+pub(crate) async fn session_catalog_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    require_auth(&state, &headers, None)?;
+    let mut receiver = state.service.subscribe_session_catalog_events();
+
+    let event_stream = stream! {
+        loop {
+            match receiver.recv().await {
+                Ok(event) => {
+                    yield Ok::<Event, Infallible>(to_session_catalog_sse_event(event));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
+
+    Ok(Sse::new(event_stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keepalive"),
+    ))
 }
 
 pub(crate) async fn session_messages(

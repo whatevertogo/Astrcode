@@ -4,6 +4,7 @@ mod event;
 mod model;
 mod runtime;
 mod session;
+mod session_event;
 
 pub use auth::{AuthExchangeRequest, AuthExchangeResponse};
 pub use config::{
@@ -23,3 +24,4 @@ pub use session::{
     CreateSessionRequest, DeleteProjectResultDto, PromptAcceptedResponse, PromptRequest,
     SessionListItem, SessionMessageDto,
 };
+pub use session_event::{SessionCatalogEventEnvelope, SessionCatalogEventPayload};
