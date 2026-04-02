@@ -198,10 +198,6 @@ impl CapabilityRouter {
             .collect()
     }
 
-    pub fn capability_names(&self) -> Vec<String> {
-        self.order.clone()
-    }
-
     pub fn descriptor(&self, name: &str) -> Option<CapabilityDescriptor> {
         self.invokers_by_name
             .get(name)
@@ -226,19 +222,6 @@ impl CapabilityRouter {
 
     pub fn tool_names(&self) -> &[String] {
         &self.tool_order
-    }
-
-    pub async fn invoke(
-        &self,
-        name: &str,
-        payload: Value,
-        ctx: &CapabilityContext,
-    ) -> Result<CapabilityExecutionResult> {
-        let invoker = self
-            .invokers_by_name
-            .get(name)
-            .ok_or_else(|| AstrError::Validation(format!("unknown capability '{name}'")))?;
-        invoker.invoke(payload, ctx).await
     }
 
     pub async fn execute_tool(

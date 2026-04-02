@@ -21,12 +21,8 @@ mod types;
 mod validation;
 
 // Public re-exports
-pub use api_key::is_env_var_name;
 pub use connection::test_connection;
-pub use constants::{
-    ANTHROPIC_MESSAGES_API_URL, ANTHROPIC_VERSION, CURRENT_CONFIG_VERSION, PROVIDER_KIND_ANTHROPIC,
-    PROVIDER_KIND_OPENAI,
-};
+pub use constants::{CURRENT_CONFIG_VERSION, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI};
 pub use editor::open_config_in_editor;
 pub use loader::{
     config_path, load_config, load_config_from_path, load_config_overlay_from_path,
@@ -440,5 +436,65 @@ mod tests {
         .expect_err("unsupported provider should fail");
 
         assert!(err.to_string().contains("unsupported provider_kind"));
+    }
+
+    #[test]
+    fn load_resolved_config_applies_project_overlay_without_touching_user_defaults() {
+        let _guard = TestEnvGuard::new();
+        std::env::remove_var("DEEPSEEK_API_KEY");
+        std::env::remove_var("ANTHROPIC_API_KEY");
+
+        let base = Config {
+            active_profile: "deepseek".to_string(),
+            active_model: "deepseek-chat".to_string(),
+            profiles: Config::default().profiles,
+            ..Config::default()
+        };
+        save_config(&base).expect("base config should save");
+
+        let project_dir = tempfile::tempdir().expect("tempdir should be created");
+        let overlay_path =
+            project_overlay_path(project_dir.path()).expect("overlay path should resolve");
+        std::fs::create_dir_all(overlay_path.parent().expect("overlay parent"))
+            .expect("overlay dir should exist");
+        std::fs::write(
+            &overlay_path,
+            serde_json::to_vec_pretty(&ConfigOverlay {
+                active_profile: Some("anthropic".to_string()),
+                active_model: Some("claude-opus-4-5".to_string()),
+                profiles: None,
+            })
+            .expect("overlay should serialize"),
+        )
+        .expect("overlay should be written");
+
+        let resolved =
+            load_resolved_config(Some(project_dir.path())).expect("resolved config should load");
+
+        assert_eq!(resolved.active_profile, "anthropic");
+        assert_eq!(resolved.active_model, "claude-opus-4-5");
+        assert_eq!(
+            resolved.profiles, base.profiles,
+            "unset overlay fields must preserve user-level values"
+        );
+    }
+
+    #[test]
+    fn project_overlay_path_is_stable_for_equivalent_paths() {
+        let _guard = TestEnvGuard::new();
+        let project_dir = tempfile::tempdir().expect("tempdir should be created");
+        let canonical =
+            std::fs::canonicalize(project_dir.path()).expect("path should canonicalize");
+        let dotted = canonical.join(".");
+
+        let canonical_path =
+            project_overlay_path(&canonical).expect("canonical overlay path should resolve");
+        let dotted_path =
+            project_overlay_path(&dotted).expect("dotted overlay path should resolve");
+
+        assert_eq!(
+            canonical_path, dotted_path,
+            "equivalent paths must hash into the same private project config bucket"
+        );
     }
 }

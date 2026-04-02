@@ -103,9 +103,12 @@ AstrCode 可以同时保留：
 
 - `crates/core/src/event/domain.rs` — `AgentEvent` 已定义为面向展示的运行时观测事件
 - `crates/core/src/event/types.rs` — `StorageEvent` 已定义为面向持久化/replay 的领域事件
-- 两者通过 `EventTranslator` 做投影转换，不强制等同
+- `crates/core/src/event/translate.rs` — `EventTranslator` 做投影转换，不强制等同
+- `crates/storage/src/session/event_log.rs` — `EventLog` append-only JSONL 持久化实现
+- `crates/storage/src/session/repository.rs` — `FileSystemSessionRepository` 会话管理
 
 仍待后续阶段完成的部分：
 
 - 把 `ContextStrategyDecision` 接进真正的 token budgeting / compaction 触发路径
+- 引入 runtime 级别 `EventBus` 作为独立 broadcast 机制
 - 为 Web / CLI / ACP 接入真正的人工审批 transport

@@ -177,12 +177,6 @@ fn collapse_extra_blank_lines(input: &str) -> String {
     collapsed
 }
 
-#[derive(Clone, Debug)]
-pub struct LlmResponse {
-    pub content: String,
-    pub tool_calls: Vec<ToolCallRequest>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::{split_assistant_content, ToolExecutionResult};

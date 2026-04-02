@@ -1,8 +1,8 @@
+use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use astrcode_core::store::StoreError;
 use astrcode_core::{
     phase_of_storage_event, DeleteProjectResult, Phase, SessionMeta, StorageEvent, StoredEventLine,
 };
@@ -11,85 +11,60 @@ use chrono::{DateTime, Utc};
 use crate::{internal_io_error, AstrError, Result};
 
 use super::event_log::EventLog;
-use super::paths::{canonical_session_id, is_valid_session_id, sessions_dir, validated_session_id};
+use super::paths::{
+    canonical_session_id, is_valid_session_id, project_sessions_dir_from_root, projects_root_dir,
+    session_file_name, session_storage_dirs, validated_session_id,
+};
 
 impl EventLog {
     pub fn list_sessions() -> Result<Vec<String>> {
-        let dir = sessions_dir()?;
-        Self::list_sessions_from_path(&dir)
+        let projects_root = projects_root_dir()?;
+        Self::list_sessions_from_path(&projects_root)
     }
 
     pub fn list_sessions_with_meta() -> Result<Vec<SessionMeta>> {
-        let dir = sessions_dir()?;
-        Self::list_sessions_with_meta_from_path(&dir)
+        let projects_root = projects_root_dir()?;
+        Self::list_sessions_with_meta_from_path(&projects_root)
     }
 
     pub fn delete_session(session_id: &str) -> Result<()> {
-        let dir = sessions_dir()?;
-        Self::delete_session_from_path(&dir, session_id)
+        let projects_root = projects_root_dir()?;
+        Self::delete_session_from_path(&projects_root, session_id)
     }
 
     pub fn delete_sessions_by_working_dir(working_dir: &str) -> Result<DeleteProjectResult> {
-        let dir = sessions_dir()?;
-        Self::delete_sessions_by_working_dir_from_path(&dir, working_dir)
+        let projects_root = projects_root_dir()?;
+        Self::delete_sessions_by_working_dir_from_path(&projects_root, working_dir)
     }
 
-    pub(crate) fn list_sessions_from_path(dir: &Path) -> Result<Vec<String>> {
-        if !dir.exists() {
+    pub(crate) fn list_sessions_from_path(projects_root: &Path) -> Result<Vec<String>> {
+        if !projects_root.exists() {
             return Ok(Vec::new());
         }
 
-        let mut ids = Vec::new();
-        for entry in
-            fs::read_dir(dir).map_err(|e| AstrError::io("failed to read sessions directory", e))?
-        {
-            let entry = entry?;
-            if !entry.file_type()?.is_file() {
-                continue;
-            }
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if let Some(id) = name
-                .strip_prefix("session-")
-                .and_then(|s| s.strip_suffix(".jsonl"))
-            {
-                if is_valid_session_id(id) {
-                    ids.push(id.to_string());
-                }
+        let mut ids = BTreeSet::new();
+        for path in Self::session_files_under_projects_root(projects_root)? {
+            if let Some(id) = session_id_from_path(&path) {
+                ids.insert(id);
             }
         }
-        ids.sort();
-        Ok(ids)
+
+        Ok(ids.into_iter().collect())
     }
 
-    pub(crate) fn list_sessions_with_meta_from_path(dir: &Path) -> Result<Vec<SessionMeta>> {
-        if !dir.exists() {
+    pub(crate) fn list_sessions_with_meta_from_path(
+        projects_root: &Path,
+    ) -> Result<Vec<SessionMeta>> {
+        if !projects_root.exists() {
             return Ok(Vec::new());
         }
 
         let mut metas = Vec::new();
-        for entry in
-            fs::read_dir(dir).map_err(|e| AstrError::io("failed to read sessions directory", e))?
-        {
-            let entry = entry?;
-            if !entry.file_type()?.is_file() {
-                continue;
-            }
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            let Some(id) = name
-                .strip_prefix("session-")
-                .and_then(|s| s.strip_suffix(".jsonl"))
-            else {
+        for path in Self::session_files_under_projects_root(projects_root)? {
+            let Some(id) = session_id_from_path(&path) else {
                 continue;
             };
 
-            if !is_valid_session_id(id) {
-                continue;
-            }
-
-            let canonical_id = canonical_session_id(id).to_string();
-            let path = entry.path();
             let (created_at, working_dir, title) = match Self::read_session_head_meta(&path) {
                 Ok(meta) => meta,
                 Err(error) => {
@@ -104,7 +79,7 @@ impl EventLog {
             let updated_at = Self::read_last_timestamp(&path).unwrap_or(created_at);
             let phase = Self::read_last_phase(&path).unwrap_or(Phase::Idle);
             metas.push(SessionMeta {
-                session_id: canonical_id,
+                session_id: canonical_session_id(&id).to_string(),
                 working_dir: working_dir.clone(),
                 display_name: session_display_name(&working_dir),
                 title,
@@ -124,39 +99,61 @@ impl EventLog {
         Ok(metas)
     }
 
-    pub(crate) fn delete_session_from_path(dir: &Path, session_id: &str) -> Result<()> {
-        let canonical_id = validated_session_id(session_id)?;
-        let canonical = dir.join(format!("session-{canonical_id}.jsonl"));
-        let legacy = dir.join(format!("session-{session_id}.jsonl"));
-        let target = if canonical.exists() {
-            canonical
-        } else if legacy != canonical && legacy.exists() {
-            legacy
-        } else {
-            return Err(StoreError::SessionNotFound(canonical.display().to_string()));
-        };
-
-        fs::remove_file(&target).map_err(|e| {
+    pub(crate) fn delete_session_from_path(projects_root: &Path, session_id: &str) -> Result<()> {
+        let target = Self::resolve_existing_session_path_from_root(projects_root, session_id)?;
+        fs::remove_file(&target).map_err(|error| {
             AstrError::io(
                 format!("failed to delete session file: {}", target.display()),
-                e,
+                error,
             )
         })?;
+        remove_empty_session_dir(target.parent())?;
         Ok(())
     }
 
     pub(crate) fn delete_sessions_by_working_dir_from_path(
-        dir: &Path,
+        projects_root: &Path,
         working_dir: &str,
     ) -> Result<DeleteProjectResult> {
-        let metas = Self::list_sessions_with_meta_from_path(dir)?;
+        let sessions_dir = project_sessions_dir_from_root(projects_root, Path::new(working_dir));
+        if !sessions_dir.exists() {
+            return Ok(DeleteProjectResult {
+                success_count: 0,
+                failed_session_ids: Vec::new(),
+            });
+        }
+
         let mut success_count = 0usize;
         let mut failed_session_ids = Vec::new();
+        for entry in fs::read_dir(&sessions_dir).map_err(|error| {
+            AstrError::io(
+                format!(
+                    "failed to read project sessions directory: {}",
+                    sessions_dir.display()
+                ),
+                error,
+            )
+        })? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
 
-        for meta in metas.into_iter().filter(|m| m.working_dir == working_dir) {
-            match Self::delete_session_from_path(dir, &meta.session_id) {
-                Ok(_) => success_count += 1,
-                Err(_) => failed_session_ids.push(meta.session_id),
+            let session_dir = entry.path();
+            let path = match session_file_path_in_dir(&session_dir) {
+                Ok(path) => path,
+                Err(_) => continue,
+            };
+            let Some(session_id) = session_id_from_path(&path) else {
+                continue;
+            };
+
+            match fs::remove_file(&path) {
+                Ok(()) => {
+                    let _ = remove_empty_session_dir(Some(&session_dir));
+                    success_count += 1;
+                }
+                Err(_) => failed_session_ids.push(session_id),
             }
         }
 
@@ -166,11 +163,64 @@ impl EventLog {
         })
     }
 
+    fn session_files_under_projects_root(projects_root: &Path) -> Result<Vec<PathBuf>> {
+        let mut files = Vec::new();
+        for sessions_dir in session_storage_dirs(projects_root)? {
+            for entry in fs::read_dir(&sessions_dir).map_err(|error| {
+                AstrError::io(
+                    format!(
+                        "failed to read sessions directory: {}",
+                        sessions_dir.display()
+                    ),
+                    error,
+                )
+            })? {
+                let entry = entry?;
+                if !entry.file_type()?.is_dir() {
+                    continue;
+                }
+
+                if let Ok(path) = session_file_path_in_dir(&entry.path()) {
+                    if path.is_file() {
+                        files.push(path);
+                    }
+                }
+            }
+        }
+        Ok(files)
+    }
+
+    fn resolve_existing_session_path_from_root(
+        projects_root: &Path,
+        session_id: &str,
+    ) -> Result<PathBuf> {
+        let session_id = validated_session_id(session_id)?;
+
+        for sessions_dir in session_storage_dirs(projects_root)? {
+            let candidate = sessions_dir
+                .join(&session_id)
+                .join(session_file_name(&session_id));
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+        }
+
+        Err(astrcode_core::store::StoreError::SessionNotFound(
+            projects_root
+                .join("<project>")
+                .join("sessions")
+                .join(&session_id)
+                .join(session_file_name(&session_id))
+                .display()
+                .to_string(),
+        ))
+    }
+
     fn read_session_head_meta(path: &Path) -> Result<(DateTime<Utc>, String, String)> {
-        let file = File::open(path).map_err(|e| {
+        let file = File::open(path).map_err(|error| {
             AstrError::io(
                 format!("failed to open session file: {}", path.display()),
-                e,
+                error,
             )
         })?;
         let reader = BufReader::new(file);
@@ -180,15 +230,15 @@ impl EventLog {
         let mut title = None;
 
         for (i, line) in reader.lines().enumerate() {
-            let line =
-                line.map_err(|e| AstrError::io("failed to read line from session file", e))?;
+            let line = line
+                .map_err(|error| AstrError::io("failed to read line from session file", error))?;
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
             }
 
             let event = serde_json::from_str::<StoredEventLine>(trimmed)
-                .map_err(|e| {
+                .map_err(|error| {
                     AstrError::parse(
                         format!(
                             "failed to parse head event at {}:{}: {}",
@@ -196,7 +246,7 @@ impl EventLog {
                             i + 1,
                             trimmed
                         ),
-                        e,
+                        error,
                     )
                 })?
                 .into_stored((i + 1) as u64)
@@ -205,12 +255,12 @@ impl EventLog {
             match event {
                 StorageEvent::SessionStart {
                     timestamp,
-                    working_dir: wd,
+                    working_dir: session_working_dir,
                     ..
                 } => {
                     if created_at.is_none() {
                         created_at = Some(timestamp);
-                        working_dir = Some(wd);
+                        working_dir = Some(session_working_dir);
                     }
                 }
                 StorageEvent::UserMessage { content, .. } if title.is_none() => {
@@ -253,35 +303,26 @@ impl EventLog {
 
     /// 从会话文件尾部扫描，查找满足 mapper 条件的最后一个值。
     ///
-    /// ## 算法（指数窗口扫描）
-    ///
-    /// 从文件末尾向前搜索，使用指数增长的读取窗口：
-    /// 1. 初始窗口 = 4KB，从 `len - window` 位置开始读取
-    /// 2. 如果读取位置不在文件开头，跳过第一行（可能是不完整的行）
-    /// 3. 如果跳过第一行后没有任何内容，窗口翻倍重试
-    /// 4. 对窗口内的行**从后向前**遍历，找到第一个匹配的值立即返回
-    /// 5. 如果窗口内没找到匹配值，翻倍窗口继续扫描更早的内容
-    ///
-    /// 这个策略避免了对大文件的全量扫描——对于只需要最后一个时间戳或阶段
-    /// 的场景，通常在第一次 4KB 读取中就能命中。
+    /// 使用指数窗口扫描，是因为 UI 列表只关心“最近更新时间/阶段”，
+    /// 没必要为了一个尾部值把整个 JSONL 全量读回内存。
     fn read_tail_value<T, F>(path: &Path, mut mapper: F) -> Result<Option<T>>
     where
         F: FnMut(&StorageEvent) -> Option<T>,
     {
-        let file = File::open(path).map_err(|e| {
+        let file = File::open(path).map_err(|error| {
             AstrError::io(
                 format!("failed to open session file: {}", path.display()),
-                e,
+                error,
             )
         })?;
         let mut reader = BufReader::new(file);
         let len = reader
             .get_ref()
             .metadata()
-            .map_err(|e| {
+            .map_err(|error| {
                 AstrError::io(
                     format!("failed to stat session file: {}", path.display()),
-                    e,
+                    error,
                 )
             })?
             .len();
@@ -304,7 +345,7 @@ impl EventLog {
             let slice = if start > 0 {
                 if let Some(pos) = bytes.iter().position(|b| *b == b'\n') {
                     &bytes[pos + 1..]
-                } else if start == 0 || window >= len {
+                } else if window >= len {
                     bytes.as_slice()
                 } else {
                     window = (window * 2).min(len);
@@ -322,14 +363,14 @@ impl EventLog {
                 }
 
                 let event = serde_json::from_str::<StoredEventLine>(trimmed)
-                    .map_err(|e| {
+                    .map_err(|error| {
                         AstrError::parse(
                             format!(
                                 "failed to parse tail event at {}: {}",
                                 path.display(),
                                 trimmed
                             ),
-                            e,
+                            error,
                         )
                     })?
                     .into_stored(0)
@@ -347,6 +388,60 @@ impl EventLog {
 
         Ok(None)
     }
+}
+
+fn session_id_from_path(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_string_lossy();
+    let id = name
+        .strip_prefix("session-")
+        .and_then(|value| value.strip_suffix(".jsonl"))?;
+    if is_valid_session_id(id) {
+        Some(id.to_string())
+    } else {
+        None
+    }
+}
+
+fn session_file_path_in_dir(session_dir: &Path) -> Result<PathBuf> {
+    let dir_name = session_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            internal_io_error(format!(
+                "session directory missing valid name: {}",
+                session_dir.display()
+            ))
+        })?;
+    let session_id = validated_session_id(dir_name)?;
+    Ok(session_dir.join(session_file_name(&session_id)))
+}
+
+fn remove_empty_session_dir(session_dir: Option<&Path>) -> Result<()> {
+    let Some(session_dir) = session_dir else {
+        return Ok(());
+    };
+
+    let mut entries = fs::read_dir(session_dir).map_err(|error| {
+        AstrError::io(
+            format!(
+                "failed to inspect session directory after delete: {}",
+                session_dir.display()
+            ),
+            error,
+        )
+    })?;
+    if entries.next().is_none() {
+        fs::remove_dir(session_dir).map_err(|error| {
+            AstrError::io(
+                format!(
+                    "failed to remove empty session directory: {}",
+                    session_dir.display()
+                ),
+                error,
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn timestamp_of_event(event: &StorageEvent) -> Option<DateTime<Utc>> {
@@ -387,12 +482,33 @@ fn title_from_user_message(content: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::io::Write;
 
     use chrono::TimeZone;
 
     use super::*;
-    use astrcode_core::StoredEvent;
+    use astrcode_core::{project::project_dir_name, StoredEvent};
+
+    fn write_stored_events(path: &Path, events: &[StoredEvent]) {
+        let payload = events
+            .iter()
+            .map(|event| serde_json::to_string(event).expect("event should serialize"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("session parent dir should exist");
+        }
+        fs::write(path, format!("{payload}\n")).expect("log should be written");
+    }
+
+    fn project_sessions_dir(root: &Path, working_dir: &str) -> PathBuf {
+        root.join(project_dir_name(Path::new(working_dir)))
+            .join("sessions")
+    }
+
+    fn session_dir(root: &Path, working_dir: &str, session_id: &str) -> PathBuf {
+        project_sessions_dir(root, working_dir).join(session_id)
+    }
 
     #[test]
     fn read_last_timestamp_uses_error_event_timestamp() {
@@ -467,5 +583,232 @@ mod tests {
         let phase = EventLog::read_last_phase(&path).expect("phase should resolve");
 
         assert_eq!(phase, Phase::CallingTool);
+    }
+
+    #[test]
+    fn list_sessions_returns_sorted_ids_across_projects() {
+        let tmp = tempfile::tempdir().expect("tempdir should be created");
+        let alpha_dir = tmp.path().join("alpha").join("sessions");
+        let beta_dir = tmp.path().join("beta").join("sessions");
+        fs::create_dir_all(&alpha_dir).expect("alpha sessions dir should exist");
+        fs::create_dir_all(&beta_dir).expect("beta sessions dir should exist");
+
+        let ids = [
+            ("alpha", "2026-03-01T10-00-00-aaaaaaaa"),
+            ("beta", "2026-03-02T12-30-00-bbbbbbbb"),
+            ("alpha", "2026-03-01T09-00-00-cccccccc"),
+        ];
+        for (project, id) in ids {
+            let dir = if project == "alpha" {
+                &alpha_dir
+            } else {
+                &beta_dir
+            };
+            let session_dir = dir.join(id);
+            fs::create_dir_all(&session_dir).expect("session dir should exist");
+            File::create(session_dir.join(format!("session-{id}.jsonl")))
+                .expect("session file should exist");
+        }
+
+        File::create(alpha_dir.join("other-file.txt")).expect("non-session file should exist");
+        let invalid_dir = beta_dir.join("evil..id");
+        fs::create_dir_all(&invalid_dir).expect("invalid dir should exist");
+        File::create(invalid_dir.join("session-evil..id.jsonl"))
+            .expect("invalid session file should exist");
+
+        let found = EventLog::list_sessions_from_path(tmp.path()).expect("sessions should list");
+
+        assert_eq!(
+            found,
+            vec![
+                "2026-03-01T09-00-00-cccccccc".to_string(),
+                "2026-03-01T10-00-00-aaaaaaaa".to_string(),
+                "2026-03-02T12-30-00-bbbbbbbb".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn delete_session_from_path_succeeds_and_removes_empty_session_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir should be created");
+        let sessions_dir = tmp.path().join("alpha").join("sessions");
+        fs::create_dir_all(&sessions_dir).expect("sessions dir should exist");
+        let id = "2026-03-08T10-00-00-aaaaaaaa";
+        let session_dir = sessions_dir.join(id);
+        fs::create_dir_all(&session_dir).expect("session dir should exist");
+        let path = session_dir.join(format!("session-{id}.jsonl"));
+        File::create(&path).expect("session file should exist");
+
+        EventLog::delete_session_from_path(tmp.path(), id).expect("delete should succeed");
+
+        assert!(!path.exists());
+        assert!(!session_dir.exists());
+    }
+
+    #[test]
+    fn delete_session_from_path_missing_returns_error() {
+        let tmp = tempfile::tempdir().expect("tempdir should be created");
+        let err = EventLog::delete_session_from_path(tmp.path(), "nonexistent-id")
+            .expect_err("missing session should fail");
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn delete_sessions_by_working_dir_deletes_target_project_directory_only() {
+        let tmp = tempfile::tempdir().expect("tempdir should be created");
+        let working_dir = r"D:\repo\alpha";
+        let other_working_dir = r"D:\repo\beta";
+        let id_a = "2026-03-08T10-00-00-aaaaaaaa";
+        let id_b = "2026-03-08T11-00-00-bbbbbbbb";
+        let id_other = "2026-03-08T12-00-00-cccccccc";
+        let timestamp = Utc
+            .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+            .single()
+            .expect("timestamp should be valid");
+        write_stored_events(
+            &session_dir(tmp.path(), working_dir, id_a).join(format!("session-{id_a}.jsonl")),
+            &[StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent::SessionStart {
+                    session_id: id_a.to_string(),
+                    timestamp,
+                    working_dir: working_dir.to_string(),
+                },
+            }],
+        );
+        write_stored_events(
+            &session_dir(tmp.path(), working_dir, id_b).join(format!("session-{id_b}.jsonl")),
+            &[StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent::SessionStart {
+                    session_id: id_b.to_string(),
+                    timestamp,
+                    working_dir: working_dir.to_string(),
+                },
+            }],
+        );
+        write_stored_events(
+            &session_dir(tmp.path(), other_working_dir, id_other)
+                .join(format!("session-{id_other}.jsonl")),
+            &[StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent::SessionStart {
+                    session_id: id_other.to_string(),
+                    timestamp,
+                    working_dir: other_working_dir.to_string(),
+                },
+            }],
+        );
+
+        let result = EventLog::delete_sessions_by_working_dir_from_path(tmp.path(), working_dir)
+            .expect("project delete should succeed");
+
+        assert_eq!(result.success_count, 2);
+        assert!(result.failed_session_ids.is_empty());
+        assert!(!session_dir(tmp.path(), working_dir, id_a).exists());
+        assert!(!session_dir(tmp.path(), working_dir, id_b).exists());
+        assert!(session_dir(tmp.path(), other_working_dir, id_other).exists());
+    }
+
+    #[test]
+    fn list_sessions_with_meta_reads_nested_project_sessions() {
+        let tmp = tempfile::tempdir().expect("tempdir should be created");
+        let working_dir = r"D:\repo\alpha";
+        let session_id = "2026-03-08T10-00-00-aaaaaaaa";
+        let path = session_dir(tmp.path(), working_dir, session_id)
+            .join(format!("session-{session_id}.jsonl"));
+        let timestamp = Utc
+            .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+            .single()
+            .expect("timestamp should be valid");
+        write_stored_events(
+            &path,
+            &[StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent::SessionStart {
+                    session_id: session_id.to_string(),
+                    timestamp,
+                    working_dir: working_dir.to_string(),
+                },
+            }],
+        );
+
+        let metas =
+            EventLog::list_sessions_with_meta_from_path(tmp.path()).expect("meta scan should work");
+
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].session_id, session_id);
+        assert_eq!(metas[0].working_dir, working_dir);
+        assert_eq!(metas[0].display_name, "alpha");
+    }
+
+    #[test]
+    fn delete_sessions_by_working_dir_ignores_non_session_files() {
+        let tmp = tempfile::tempdir().expect("tempdir should be created");
+        let working_dir = r"D:\repo\alpha";
+        let sessions_dir = project_sessions_dir(tmp.path(), working_dir);
+        fs::create_dir_all(&sessions_dir).expect("sessions dir should exist");
+        File::create(sessions_dir.join("notes.txt")).expect("non-session file should exist");
+        let id = "2026-03-08T10-00-00-aaaaaaaa";
+        let timestamp = Utc
+            .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+            .single()
+            .expect("timestamp should be valid");
+        write_stored_events(
+            &session_dir(tmp.path(), working_dir, id).join(format!("session-{id}.jsonl")),
+            &[StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent::SessionStart {
+                    session_id: id.to_string(),
+                    timestamp,
+                    working_dir: working_dir.to_string(),
+                },
+            }],
+        );
+
+        let result = EventLog::delete_sessions_by_working_dir_from_path(tmp.path(), working_dir)
+            .expect("project delete should succeed");
+
+        assert_eq!(result.success_count, 1);
+        assert!(sessions_dir.join("notes.txt").exists());
+    }
+
+    #[test]
+    fn delete_sessions_by_working_dir_skips_corrupted_files_without_false_failures() {
+        let tmp = tempfile::tempdir().expect("tempdir should be created");
+        let working_dir = r"D:\repo\alpha";
+        let sessions_dir = project_sessions_dir(tmp.path(), working_dir);
+        fs::create_dir_all(&sessions_dir).expect("sessions dir should exist");
+        let valid_id = "2026-03-08T10-00-00-aaaaaaaa";
+        let timestamp = Utc
+            .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+            .single()
+            .expect("timestamp should be valid");
+        write_stored_events(
+            &session_dir(tmp.path(), working_dir, valid_id)
+                .join(format!("session-{valid_id}.jsonl")),
+            &[StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent::SessionStart {
+                    session_id: valid_id.to_string(),
+                    timestamp,
+                    working_dir: working_dir.to_string(),
+                },
+            }],
+        );
+        let corrupted_dir = sessions_dir.join("evil..id");
+        fs::create_dir_all(&corrupted_dir).expect("corrupted dir should exist");
+        let mut corrupted = File::create(corrupted_dir.join("session-evil..id.jsonl"))
+            .expect("corrupted file should exist");
+        corrupted
+            .write_all(b"CORRUPTED")
+            .expect("write should work");
+
+        let result = EventLog::delete_sessions_by_working_dir_from_path(tmp.path(), working_dir)
+            .expect("project delete should succeed");
+
+        assert_eq!(result.success_count, 1);
+        assert!(result.failed_session_ids.is_empty());
+        assert!(corrupted_dir.join("session-evil..id.jsonl").exists());
     }
 }

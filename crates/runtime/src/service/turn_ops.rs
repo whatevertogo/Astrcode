@@ -26,6 +26,10 @@ impl RuntimeService {
         let cancel = CancelToken::new();
         {
             let mut guard = lock_anyhow(&session.cancel, "session cancel")?;
+            // 无锁互斥守卫：swap(true, SeqCst) 同时完成"测试是否已运行"和"标记为运行中"。
+            // SeqCst ordering 确保 running 标志的变更对所有 async task 可见，
+            // 包括可能正在读取 running 的 shutdown 路径。比 Acquire/Release 更强，
+            // 但此处的性能影响可忽略（每次 turn 只调用一次）。
             if session.running.swap(true, Ordering::SeqCst) {
                 return Err(ServiceError::Conflict(format!(
                     "session '{}' is already running",
@@ -81,6 +85,10 @@ impl RuntimeService {
 
             let succeeded = result.is_ok();
             if let Err(error) = result {
+                // 错误时同时发送 Error 和 TurnDone 事件。TurnDone 必须发送，
+                // 即使 turn 失败了——SSE 客户端依赖 TurnDone 来检测 turn 结束，
+                // 若不发送客户端会永远等待。let _ = 忽略 broadcast 结果是因为
+                // 无活跃订阅者时 send 返回 Err，这是良性情况。
                 let error_event = StorageEvent::Error {
                     turn_id: Some(turn_id.clone()),
                     message: error.to_string(),
@@ -97,6 +105,9 @@ impl RuntimeService {
             if let Ok(mut phase) = lock_anyhow(&state.phase, "session phase") {
                 *phase = translator.phase;
             }
+            // 重置 CancelToken：前一个 token 已被消费（正常完成或被取消），
+            // 必须替换为新的空 token 以"重新武装"会话，否则下一次 interrupt()
+            // 调用会触发一个已过期的 token，无法取消新的 turn。
             if let Ok(mut guard) = lock_anyhow(&state.cancel, "session cancel") {
                 *guard = CancelToken::new();
             }
@@ -135,6 +146,8 @@ impl RuntimeService {
     }
 }
 
+/// 异步版本：通过 spawn_blocking 将文件 I/O 委托给阻塞线程池。
+/// 用于 turn 开始前的初始 UserMessage 追加，不在热路径上。
 async fn append_and_broadcast(
     session: &SessionState,
     event: &StorageEvent,
@@ -148,6 +161,9 @@ async fn append_and_broadcast(
     Ok(())
 }
 
+/// 同步版本：直接在当前线程执行文件 I/O。
+/// 用于 run_turn 的 on_event 回调内部——回调已在 async 上下文中执行，
+/// 每个事件额外 spawn_blocking 一次的开销不可接受（可能每秒数十次）。
 fn append_and_broadcast_blocking(
     session: &SessionState,
     event: &StorageEvent,
@@ -178,7 +194,8 @@ mod tests {
     async fn append_and_broadcast_blocking_works_on_current_thread_runtime() {
         let _guard = TestEnvGuard::new();
         let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-        let log = EventLog::create("test-session").expect("event log should be created");
+        let log =
+            EventLog::create("test-session", temp_dir.path()).expect("event log should be created");
         let state = SessionState::new(
             temp_dir.path().to_path_buf(),
             Phase::Idle,

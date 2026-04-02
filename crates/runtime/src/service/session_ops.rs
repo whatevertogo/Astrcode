@@ -25,14 +25,6 @@ impl RuntimeService {
         .await
     }
 
-    pub async fn list_sessions(&self) -> ServiceResult<Vec<String>> {
-        let session_manager = Arc::clone(&self.session_manager);
-        spawn_blocking_service("list sessions", move || {
-            session_manager.list_sessions().map_err(ServiceError::from)
-        })
-        .await
-    }
-
     pub async fn create_session(
         &self,
         working_dir: impl Into<PathBuf>,
@@ -44,7 +36,7 @@ impl RuntimeService {
                 let working_dir = normalize_working_dir(working_dir)?;
                 let session_id = generate_session_id();
                 let mut log = session_manager
-                    .create_event_log(&session_id)
+                    .create_event_log(&session_id, &working_dir)
                     .map_err(ServiceError::from)?;
                 let created_at = Utc::now();
                 let session_start = StorageEvent::SessionStart {
@@ -83,13 +75,6 @@ impl RuntimeService {
             updated_at: created_at,
             phase: Phase::Idle,
         })
-    }
-
-    pub async fn load_session_messages(
-        &self,
-        session_id: &str,
-    ) -> ServiceResult<Vec<SessionMessage>> {
-        Ok(self.load_session_snapshot(session_id).await?.0)
     }
 
     pub async fn load_session_snapshot(
@@ -157,6 +142,12 @@ impl RuntimeService {
     ///
     /// 使用 `session_load_lock` 保证只有一个请求执行实际的磁盘加载，
     /// 其他请求等待锁释放后直接从 `sessions` map 中获取已加载的状态。
+    ///
+    /// ## 双重检查的 DashMap 安全性
+    ///
+    /// 第一次检查（`self.sessions.get`）是 DashMap 的无锁读操作，开销极低。
+    /// 第二次检查（锁内再 `get` 一次）是标准的 double-checked locking 模式。
+    /// DashMap 的内部分片锁保证了读取时的可见性，无需额外的同步原语。
     pub(super) async fn ensure_session_loaded(
         &self,
         session_id: &str,
@@ -206,6 +197,9 @@ impl RuntimeService {
                 .iter()
                 .map(|record| record.event.clone())
                 .collect::<Vec<_>>();
+            // 从全部历史事件重建投影。对大session（数千事件）有计算成本，
+            // 但发生在 load 路径（仅首次加载或服务重启时触发），不影响热路径。
+            // TODO:未来可考虑在 checkpoint 处快照投影状态以加速加载。
             let projector = AgentStateProjector::from_events(&events);
             let recent_records = replay_records(&stored, None);
             Ok((working_dir, phase, log, projector, recent_records))
@@ -280,6 +274,10 @@ pub(super) fn normalize_working_dir(working_dir: PathBuf) -> ServiceResult<PathB
         )));
     }
 
+    // canonicalize 解析符号链接并规范化路径，确保不同路径表示
+    // （如 macOS 的 /tmp → /private/tmp，Windows 的大小写差异）
+    // 映射到同一物理目录。这对会话-项目关联的正确性至关重要：
+    // 否则同一路径的两个表示会产生两个独立的会话集。
     std::fs::canonicalize(&path)
         .map_err(|e| {
             AstrError::io(
@@ -317,6 +315,8 @@ pub(super) async fn load_events(
 mod tests {
     use std::path::Path;
     use std::sync::Arc;
+
+    use astrcode_core::project::project_dir_name;
 
     use crate::test_support::{empty_capabilities, TestEnvGuard};
 
@@ -356,6 +356,40 @@ mod tests {
             .iter()
             .all(|state| std::ptr::eq(Arc::as_ptr(state), first)));
         assert_eq!(service.sessions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_session_persists_into_project_bucket_directory() {
+        let guard = TestEnvGuard::new();
+        let service = RuntimeService::from_capabilities(empty_capabilities()).unwrap();
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+
+        let meta = service
+            .create_session(temp_dir.path())
+            .await
+            .expect("session should be created");
+
+        let projects_root = guard.home_dir().join(".astrcode").join("projects");
+        assert!(
+            !guard
+                .home_dir()
+                .join(".astrcode")
+                .join("sessions")
+                .join(format!("session-{}.jsonl", meta.session_id))
+                .exists(),
+            "new layout should avoid writing fresh sessions back into the legacy flat root"
+        );
+
+        let bucket_dir = projects_root
+            .join(project_dir_name(temp_dir.path()))
+            .join("sessions");
+        let session_dir = bucket_dir.join(&meta.session_id);
+        assert!(
+            session_dir
+                .join(format!("session-{}.jsonl", meta.session_id))
+                .exists(),
+            "session file should be nested under a per-session directory inside the project bucket"
+        );
     }
 
     #[test]

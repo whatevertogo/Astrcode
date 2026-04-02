@@ -69,7 +69,7 @@ async fn install_test_loop(service: &RuntimeService, delay: Duration) {
 }
 
 fn seed_session_log(session_id: &str, working_dir: &Path, turns: usize) {
-    let log = EventLog::create(session_id).expect("session file should be created");
+    let log = EventLog::create(session_id, working_dir).expect("session file should be created");
     let path = log.path().to_path_buf();
     drop(log);
 

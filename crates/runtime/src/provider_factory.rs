@@ -9,6 +9,14 @@ use crate::llm::openai::OpenAiProvider;
 use crate::llm::LlmProvider;
 
 pub trait ProviderFactory: Send + Sync {
+    /// 返回 true 表示 factory 构建过程中会执行同步阻塞 I/O，
+    /// 调用方应将其切到 blocking 线程池，避免卡住 tokio worker。
+    ///
+    /// 默认值为 false：像测试里的静态 provider 或纯内存 factory 不需要额外调度，
+    /// 直接在当前 async 任务里构建可避免引入无意义的时序抖动。
+    fn build_requires_blocking_pool(&self) -> bool {
+        false
+    }
     fn build_for_working_dir(&self, working_dir: Option<PathBuf>) -> Result<Arc<dyn LlmProvider>>;
 }
 
@@ -32,6 +40,9 @@ impl BuiltProvider {
 }
 
 impl ProviderFactory for ConfigFileProviderFactory {
+    fn build_requires_blocking_pool(&self) -> bool {
+        true
+    }
     fn build_for_working_dir(&self, working_dir: Option<PathBuf>) -> Result<Arc<dyn LlmProvider>> {
         let config = load_resolved_config(working_dir.as_deref())?;
         let profile = select_profile(&config.profiles, &config.active_profile)?;
@@ -67,6 +78,9 @@ fn build_provider(profile: &Profile, model: String) -> Result<BuiltProvider> {
     }
 }
 
+/// 选择活跃配置。若 active 名称不匹配任何 profile，静默回退到第一个。
+/// 这是一种宽容降级策略：配置验证（save_config）通常能阻止不匹配的配置写入，
+/// 但运行时容错允许配置文件被手动编辑后出现不一致，避免直接拒绝服务。
 fn select_profile<'a>(profiles: &'a [Profile], active: &str) -> Result<&'a Profile> {
     profiles
         .iter()
@@ -75,6 +89,8 @@ fn select_profile<'a>(profiles: &'a [Profile], active: &str) -> Result<&'a Profi
         .ok_or(AstrError::NoProfilesConfigured)
 }
 
+/// 解析活跃模型。与 select_profile 相同的宽容回退策略：
+/// active_model 不在 profile.models 列表中时，回退到第一个模型。
 fn resolve_model(profile: &Profile, active_model: &str) -> Result<String> {
     if profile.models.iter().any(|model| model == active_model) {
         return Ok(active_model.to_string());

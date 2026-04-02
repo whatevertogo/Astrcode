@@ -55,10 +55,12 @@ Layer 2 负责把 core contract 组装为可运行 runtime，包括：
 当前 Layer 2 已拆分为多个独立 crate，保持编译隔离：
 
 - `crates/runtime/` — 运行时门面（`RuntimeService`、`AgentLoop`、bootstrap、governance）
+- `crates/storage/` — JSONL 会话持久化（`EventLog`、`FileSystemSessionRepository`）
 - `crates/runtime-config/` — 配置模型与加载/校验
 - `crates/runtime-llm/` — LLM 提供者抽象与 OpenAI/Anthropic 适配
 - `crates/runtime-prompt/` — Prompt 组装引擎与 Contributor 模式
 - `crates/plugin/` — 插件宿主（supervisor、peer、loader、transport）
+- `crates/tools/` — 内置工具实现（fs、shell 等）
 
 ### 3. Layer 3: Transports and External Adapters
 

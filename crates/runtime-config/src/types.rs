@@ -123,6 +123,12 @@ fn redacted_api_key(value: Option<&str>) -> &'static str {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Serde default factories (must be in the same module as the types they serve)
+//
+// 使用独立函数而非 `#[serde(default)]` + `Default` trait 的原因：
+// JSON 配置文件可能只有部分字段（用户手动编辑时删掉了某些键），每个字段需要
+// 自己的特定默认值（如 active_profile 默认 "deepseek" 而非空字符串），而
+// `#[serde(default)]` 只能调用类型的 `Default::default()`，无法为单个字段
+// 定制不同的默认值。
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn default_config_version() -> String {

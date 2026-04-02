@@ -37,13 +37,12 @@
 ```
 protocol (纯 DTO，无业务依赖)
     ↑
-  core (持久化状态、Tool trait、EventLog、SessionStore)
+  core (核心契约：Tool trait、Policy、Event 接口、持久化接口)
     ↑
-  tools (基于 core 的 Tool 实现)
-    ↑
-  runtime-config (配置加载/校验)    runtime-llm (LLM 提供者适配)    runtime-prompt (Prompt 组装引擎)
-    ↑                                   ↑                                ↑
-    +───────────────────── runtime (RuntimeService 门面) ─────────────────+
+  storage (JSONL 会话持久化实现)
+  tools (内置工具)    runtime-config (配置)    runtime-llm (LLM)    runtime-prompt (Prompt)    plugin (插件宿主)
+    ↑                     ↑                       ↑                     ↑                        ↑
+    +────────────── runtime (RuntimeService 门面) ──────────────────────────────────────────────────+
                                        ↑
                                     server (HTTP/SSE API)
                                        ↑
@@ -54,6 +53,7 @@ protocol (纯 DTO，无业务依赖)
 - `runtime-prompt`、`runtime-llm`、`runtime-config` 为从 `runtime` 拆分出的独立 crate，保持编译隔离。
 - `runtime` 作为门面组合上述三者，不重复实现具体逻辑。
 - `tools` 仅依赖 `core`，不直接依赖 `runtime`。
+- `storage` 从 `core` 提取持久化实现（`EventLog`、`FileSystemSessionRepository`）；`core` 只定义接口（`EventLogWriter`、`SessionManager`）。
 
 ### Server Is The Truth
 
@@ -62,7 +62,7 @@ protocol (纯 DTO，无业务依赖)
 
 ### Session / Event Model
 
-- 会话持久化在 `~/.astrcode/sessions/session-*.jsonl`。
+- 全局配置保持在 `~/.astrcode/config.json`；会话按项目落在 `~/.astrcode/projects/<project>/sessions/<session-id>/session-*.jsonl`。
 - JSONL 采用 append-only `StoredEvent { storage_seq, event }`；`storage_seq` 由会话 writer 独占分配。
 - `GET /api/sessions/:id/events` 先通过 `SessionReplaySource` 回放历史，再实时订阅广播；SSE 事件 id 形如 `{storage_seq}.{subindex}`。
 

@@ -14,7 +14,12 @@ use astrcode_core::{StorageEvent, StoredEvent};
 
 use super::support::{lock_anyhow, spawn_blocking_anyhow};
 
+// broadcast channel 容量。慢速 SSE 客户端若未在 2048 条事件内消费，旧事件会被丢弃。
+// 2048 是权衡值：足够覆盖一次完整 turn（通常 < 100 条事件），同时限制内存占用。
+// SSE 客户端丢失事件后的恢复策略是回退到磁盘回放（见 replay.rs）。
 const SESSION_BROADCAST_CAPACITY: usize = 2048;
+// 内存中保留的最近事件记录数。超过此限制时从头部淘汰旧记录（truncated = true）。
+// 4096 约覆盖 40-50 次典型 turn，足以满足大多数 SSE resume 场景无需回磁盘。
 const SESSION_RECENT_RECORD_LIMIT: usize = 4096;
 
 #[derive(Default)]
@@ -58,6 +63,8 @@ impl RecentSessionEvents {
         let first_cached = snapshot
             .first()
             .and_then(|record| parse_event_id(&record.event_id));
+        // 安全不变量：若缓存曾被截断（头部事件被淘汰），则请求的 cursor 若早于
+        // 缓存中最老的事件，就说明被请求的事件已不可恢复，必须回退到磁盘回放。
         if self.truncated && first_cached.is_some_and(|first_cached| last_seen < first_cached) {
             return None;
         }
@@ -75,6 +82,13 @@ impl RecentSessionEvents {
     }
 }
 
+/// 会话事件写入器，包装 `EventLogWriter` trait object。
+///
+/// 使用 `std::sync::Mutex` 而非 `tokio::sync::Mutex` 的原因：
+/// writer 被 `spawn_blocking` 上下文（`append_and_broadcast_blocking`）和
+/// 直接异步上下文（`SessionWriter::append`）交替调用，且临界区内只做纯文件 I/O，
+/// 没有任何 await 点。std::sync::Mutex 在此场景下更轻量，避免 tokio Mutex 的
+/// 额外开销和对 `Send` 闭包的要求。
 pub(super) struct SessionWriter {
     inner: StdMutex<Box<dyn EventLogWriter>>,
 }
@@ -136,6 +150,13 @@ impl SessionState {
         Ok(lock_anyhow(&self.projector, "session projector")?.snapshot())
     }
 
+    /// 三步原子操作：应用投影 → 翻译事件 → 推入内存缓存。
+    ///
+    /// 执行顺序（projector → translate → cache）是有意设计的：
+    /// projector 必须先于 cache 更新，确保后续的 `snapshot_projected_state()`
+    /// 调用看到的投影状态至少和缓存中的记录一致。两个锁分别获取而非一次性
+    /// 持有，因为 projector 更新和 cache 更新之间不存在竞争——它们只被
+    /// 同一个 turn 的顺序事件流调用。
     pub(super) fn translate_store_and_cache(
         &self,
         stored: &StoredEvent,
@@ -159,6 +180,11 @@ impl SessionState {
     }
 }
 
+/// 解析 SSE 事件 ID（格式：`{storage_seq}.{subindex}`）。
+///
+/// 宽容解析：格式非法时返回 `None` 而非错误。调用方（`records_after`）
+/// 收到 `None` 后会触发全量磁盘回放作为兜底，确保 SSE 客户端不会因
+/// 发送了畸形的 `Last-Event-ID` 头而丢失数据。
 fn parse_event_id(raw: &str) -> Option<(u64, u32)> {
     let (storage_seq, subindex) = raw.split_once('.')?;
     Some((storage_seq.parse().ok()?, subindex.parse().ok()?))

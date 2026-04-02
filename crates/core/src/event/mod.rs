@@ -26,6 +26,11 @@ pub use self::domain::{AgentEvent, Phase};
 pub use self::translate::{phase_of_storage_event, replay_records, EventTranslator};
 pub use self::types::{StorageEvent, StoredEvent, StoredEventLine};
 
+/// 生成全局唯一的会话 ID，格式为 `YYYY-MM-DDTHH-MM-SS-xxxxxxxx`。
+///
+/// 时间戳部分使用 `-` 而非 `:` 分隔（如 `T10-00-00` 而非 `T10:00:00`），
+/// 因为冒号在 Windows 文件名中非法，而 session ID 直接用于 `.jsonl` 文件名。
+/// 末尾 8 位 hex 取自 UUID v4，保证同一秒内生成的 ID 也不重复。
 pub fn generate_session_id() -> String {
     let dt = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S");
     let uuid = Uuid::new_v4().simple().to_string();

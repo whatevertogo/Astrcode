@@ -47,9 +47,12 @@ impl std::error::Error for ServiceError {}
 
 impl From<anyhow::Error> for ServiceError {
     fn from(value: anyhow::Error) -> Self {
-        // Try to downcast to ServiceError first (e.g. from spawn_blocking_service bridge),
-        // then to AstrError for better variant mapping.
-        // `downcast` returns ownership on Err, so we can chain attempts.
+        // 两级 downcast 链：spawn_blocking_service 将错误包装为 anyhow::Error
+        // 传输（因为 tokio::task::spawn_blocking 返回 JoinError + 闭包返回值
+        // 需要类型擦除）。此链尝试恢复原始错误变体以正确映射 HTTP 状态码：
+        // 1. 先尝试还原为 ServiceError（跨越 spawn_blocking 边界的业务错误）
+        // 2. 再尝试还原为 AstrError（底层领域错误）
+        // 3. 都失败则包装为 Internal
         let value = match value.downcast::<ServiceError>() {
             Ok(service_error) => return service_error,
             Err(value) => value,

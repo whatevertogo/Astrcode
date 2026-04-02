@@ -60,7 +60,10 @@ pub struct RuntimeService {
     config: Mutex<crate::config::Config>,
     /// 会话存储实现（负责 durable session 文件读写）
     session_manager: Arc<dyn SessionManager>,
-    /// 会话加载锁（防止并发加载同一会话）
+    /// 会话加载锁（防止并发加载同一会话）。
+    /// `Mutex<()>` 是 Tokio 中常见的"旋转门"模式——guard 不持有任何数据，
+    /// 仅用于确保互斥。相比使用专门的 AtomicBool + Notify 机制，
+    /// 这种方式更简洁且编译器能更好地优化。
     session_load_lock: Mutex<()>,
     /// 可观测性（指标收集）
     observability: Arc<RuntimeObservability>,
@@ -126,15 +129,6 @@ impl RuntimeService {
         self.loop_.read().await.clone()
     }
 
-    pub async fn replace_capabilities(&self, capabilities: CapabilityRouter) -> ServiceResult<()> {
-        self.replace_capabilities_with_prompt_inputs(
-            capabilities,
-            Vec::new(),
-            crate::builtin_skills::builtin_skills(),
-        )
-        .await
-    }
-
     pub async fn replace_capabilities_with_prompt_inputs(
         &self,
         capabilities: CapabilityRouter,
@@ -151,6 +145,9 @@ impl RuntimeService {
             .with_policy_engine(Arc::clone(&self.policy))
             .with_approval_broker(Arc::clone(&self.approval)),
         );
+        // 写锁会阻塞直到所有活跃 reader（即正在运行的 turn 通过 current_loop()
+        // 持有的读锁）释放。已运行的 turn 继续使用旧的 AgentLoop（通过 Arc 引用），
+        // 新 turn 则获取新的 loop。这是一种优雅的滚动替换模式——无需暂停服务。
         *self.loop_.write().await = next_loop;
         Ok(())
     }
@@ -177,11 +174,6 @@ impl RuntimeService {
 
     pub fn observability_snapshot(&self) -> RuntimeObservabilitySnapshot {
         self.observability.snapshot()
-    }
-
-    /// Returns a clone of the shutdown token for use in handlers
-    pub fn shutdown_token(&self) -> CancellationToken {
-        self.shutdown_token.clone()
     }
 
     /// Initiates graceful shutdown:
@@ -233,6 +225,9 @@ impl RuntimeService {
                 return;
             }
 
+            // 100ms 轮询检查所有会话是否空闲。使用轮询而非 push-based 通知
+            // （如 watch channel / Notify）是因为 shutdown 是低频操作，添加通知
+            // 机制需要在每个 turn 完成路径中增加额外的唤醒逻辑，收益不大。
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }

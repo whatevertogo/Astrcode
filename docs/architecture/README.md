@@ -1,87 +1,15 @@
-# AstrCode Architecture Design
+# AstrCode Architecture
 
-这些文档不是新的 ADR，而是对现有已接受 ADR 的补充说明，用于指导后续重构与模块拆分。
+已接受且仍然生效的 ADR：
 
-当前已接受且仍然生效的 ADR：
-
-- [ADR-0001: Freeze AstrCode Protocol V4 Wire Model](../adr/0001-astrcode-protocol-v4-wire-model.md)
+- [ADR-0001: Freeze Protocol V4 Wire Model](../adr/0001-astrcode-protocol-v4-wire-model.md)
 - [ADR-0002: Freeze Coding Profile Context Boundary](../adr/0002-astrcode-coding-profile-context.md)
 - [ADR-0003: Use Core-Owned Unified Capability Routing](../adr/0003-unified-capability-routing.md)
-- [ADR-0004: Freeze Layered Core, Runtime, and Transport Boundaries](../adr/0004-layered-core-runtime-transport-architecture.md)
+- [ADR-0004: Freeze Layered Architecture Boundaries](../adr/0004-layered-core-runtime-transport-architecture.md)
 - [ADR-0005: Split Policy Decision Plane from Event Observation Plane](../adr/0005-split-policy-decision-plane-from-event-observation-plane.md)
 
-这组文档解决的问题不是“协议该不该改”，而是：
+架构文档：
 
-- AgentLoop、Capability、Policy、Event 四类核心契约如何进一步冻结
-- runtime、plugin、transport 的职责如何重新拉开
-- 当前代码中哪些结构值得保留，哪些需要整理性重构
-- 后续的 skills、agents、approval、ACP/MCP 接入应该挂在哪一层
-
-建议阅读顺序：
-
-1. [01-layered-architecture.md](./01-layered-architecture.md)
-2. [02-core-contracts.md](./02-core-contracts.md)
-3. [03-runtime-assembly.md](./03-runtime-assembly.md)
-4. [04-events-approval-and-transports.md](./04-events-approval-and-transports.md)
-5. [05-refactor-roadmap.md](./05-refactor-roadmap.md)
-
-## Design Summary
-
-AstrCode 的目标架构收敛为三层：
-
-- Layer 1：不可变核心，只保留执行语义和平台契约
-- Layer 2：运行时装配层，负责把内置能力、外部插件、策略和持久化组装起来
-- Layer 3：外部接入层，负责 HTTP/SSE、Tauri/Web/CLI/ACP 等 transport 与客户端适配
-
-核心固定的不是某个具体 UI，也不是某个具体插件机制，而是四类平台契约：
-
-- AgentLoop Contract
-- Capability Contract
-- Policy Contract
-- Event Contract
-
-## Scope
-
-这些文档聚焦以下问题：
-
-- 如何在不推翻现有 `AgentLoop` 的前提下整理架构
-- 如何让 `Capability` 成为唯一一等动作模型
-- 如何把同步决策与异步观测分离
-- 如何把 `server is truth` 保留为产品架构原则，但不让 `server` 变成业务内核
-
-这些文档不解决以下问题：
-
-- 某个具体 provider 的实现细节
-- 某个具体 tool 的参数设计
-- 某个具体 UI 的交互稿
-- MCP / ACP 的完整协议映射细节
-
-## Current Code Anchors
-
-当前仓库里与这组文档最相关的代码锚点如下：
-
-- `crates/runtime/src/agent_loop.rs` — AgentLoop 主循环，持有 policy 和 approval
-- `crates/runtime/src/agent_loop/turn_runner.rs` — turn 执行入口，接入 model request policy
-- `crates/runtime/src/agent_loop/tool_cycle.rs` — tool call 执行路径，接入 capability call policy 三态
-- `crates/runtime/src/bootstrap.rs` — runtime bootstrap 入口，产出 `RuntimeBootstrap`
-- `crates/runtime/src/runtime_surface_assembler.rs` — built-in + plugin 组装为统一 capability surface
-- `crates/runtime/src/runtime_governance.rs` — reload / health / snapshot
-- `crates/runtime/src/approval_service.rs` — `ApprovalBroker` trait 与 `DefaultApprovalBroker`
-- `crates/runtime/src/builtin_capabilities.rs` — 内置工具通过 `ToolCapabilityInvoker` 注册
-- `crates/runtime/src/provider_factory.rs` — LLM provider 工厂（OpenAI / Anthropic）
-- `crates/runtime-config/src/lib.rs` — 配置模型与加载/校验（独立 crate）
-- `crates/runtime-llm/src/lib.rs` — LLM 提供者抽象与共享逻辑（独立 crate）
-- `crates/runtime-llm/src/openai.rs` / `anthropic.rs` — 具体 provider 实现
-- `crates/runtime-prompt/src/composer.rs` — Prompt 组装引擎与 Contributor 调度（独立 crate）
-- `crates/runtime-prompt/src/contributors/` — 系统提示各片段贡献者
-- `crates/core/src/registry/router.rs` — `CapabilityRouter` 统一能力路由
-- `crates/core/src/capability.rs` — `CapabilityDescriptor` / `CapabilityKind` 契约
-- `crates/core/src/policy/engine.rs` — `PolicyEngine` trait 与三态决策
-- `crates/core/src/event/domain.rs` — `AgentEvent` 运行时观测事件
-- `crates/core/src/event/types.rs` — `StorageEvent` 持久化领域事件
-- `crates/core/src/tool.rs` — `Tool` trait 与 `capability_descriptor()` 默认实现
-- `crates/server/src/main.rs` — HTTP/SSE server 入口，消费 `RuntimeBootstrap`
-- `crates/plugin/src/` — 插件宿主（supervisor、peer、loader、transport）
-- `crates/protocol/src/plugin/` — V4 插件协议消息类型与握手
-
-后续重构时，优先以这些文件为迁移入口，而不是从 UI 或单个 tool 开始逆向调整。
+- [architecture.md](./architecture.md) — 三层架构与四类核心契约（crate 依赖图、设计规则）
+- [refactor-roadmap.md](./refactor-roadmap.md) — 重构路线图与当前状态
+- [agent-loop-roadmap.md](./agent-loop-roadmap.md) — AgentLoop 演进计划（P1-P6 + 远期 TODO）

@@ -23,6 +23,7 @@ pub mod event;
 pub mod home;
 pub mod plugin;
 pub mod policy;
+pub mod project;
 pub mod projection;
 pub mod registry;
 pub mod runtime;
@@ -36,13 +37,13 @@ pub mod test_support;
 mod tool;
 
 pub use action::{
-    split_assistant_content, AssistantContentParts, LlmMessage, LlmResponse, ReasoningContent,
-    ToolCallRequest, ToolDefinition, ToolExecutionResult,
+    split_assistant_content, AssistantContentParts, LlmMessage, ReasoningContent, ToolCallRequest,
+    ToolDefinition, ToolExecutionResult,
 };
 pub use cancel::CancelToken;
 pub use capability::{
-    CapabilityDescriptor, CapabilityDescriptorBuilder, CapabilityKind, CapabilityNamespace,
-    DescriptorBuildError, PermissionHint, SideEffectLevel, StabilityLevel,
+    CapabilityDescriptor, CapabilityDescriptorBuilder, CapabilityKind, DescriptorBuildError,
+    PermissionHint, SideEffectLevel, StabilityLevel,
 };
 pub use error::{AstrError, Result, ResultExt};
 pub use event::{
@@ -61,10 +62,7 @@ pub use registry::{
     CapabilityRouterBuilder,
 };
 pub use registry::{ToolCapabilityInvoker, ToolRegistry, ToolRegistryBuilder};
-pub use runtime::{
-    KernelApi, ManagedRuntimeComponent, Orchestrator, RuntimeCoordinator, RuntimeHandle,
-    TurnContext, TurnOutcome,
-};
+pub use runtime::{ManagedRuntimeComponent, RuntimeCoordinator, RuntimeHandle};
 pub use session::{DeleteProjectResult, SessionEventRecord, SessionMessage, SessionMeta};
 pub use store::{EventLogWriter, SessionManager, StoreError, StoreResult};
 pub use tool::{

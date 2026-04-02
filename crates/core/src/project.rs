@@ -1,0 +1,198 @@
+use std::path::{Component, Path, PathBuf, Prefix};
+
+use uuid::Uuid;
+
+use crate::{home::resolve_home_dir, Result};
+
+const MAX_PROJECT_DIR_NAME_LEN: usize = 96;
+
+/// 返回 `~/.astrcode` 根目录。
+///
+/// 所有用户级和项目级持久化数据都应从这里派生，避免各 crate 自己拼装路径。
+pub fn astrcode_dir() -> Result<PathBuf> {
+    Ok(resolve_home_dir()?.join(".astrcode"))
+}
+
+/// 返回项目级持久化根目录 `~/.astrcode/projects`。
+pub fn projects_dir() -> Result<PathBuf> {
+    Ok(astrcode_dir()?.join("projects"))
+}
+
+/// 返回工作目录对应的项目目录名称。
+///
+/// 目录名优先保持人类可读，例如 `D:\project1` 会映射为 `D-project1`；
+/// 当路径过长时，再追加稳定 hash 截断，既保留可读性，也避免路径无限增长。
+pub fn project_dir_name(working_dir: &Path) -> String {
+    let canonical =
+        std::fs::canonicalize(working_dir).unwrap_or_else(|_| working_dir.to_path_buf());
+    let normalized = normalize_project_identity(&canonical);
+    let mut slug = components_to_slug(&normalized);
+    if slug.is_empty() {
+        slug = "default-project".to_string();
+    }
+
+    if slug.len() <= MAX_PROJECT_DIR_NAME_LEN {
+        return slug;
+    }
+
+    let stable_hash = stable_project_hash(&normalized);
+    let keep_len = MAX_PROJECT_DIR_NAME_LEN.saturating_sub(stable_hash.len() + 1);
+    slug.truncate(keep_len);
+    slug = slug.trim_end_matches(['-', '.', ' ']).to_string();
+    if slug.is_empty() {
+        stable_hash
+    } else {
+        format!("{slug}-{stable_hash}")
+    }
+}
+
+/// 返回工作目录的项目级持久化目录 `~/.astrcode/projects/<project>`。
+pub fn project_dir(working_dir: &Path) -> Result<PathBuf> {
+    Ok(projects_dir()?.join(project_dir_name(working_dir)))
+}
+
+fn normalize_project_identity(path: &Path) -> PathBuf {
+    if cfg!(windows) {
+        PathBuf::from(path.to_string_lossy().to_ascii_lowercase())
+    } else {
+        path.to_path_buf()
+    }
+}
+
+fn components_to_slug(path: &Path) -> String {
+    let mut segments = Vec::new();
+
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => {
+                if let Some(segment) = prefix_to_segment(prefix.kind()) {
+                    segments.push(segment);
+                }
+            }
+            Component::RootDir => {
+                if segments.is_empty() {
+                    segments.push("root".to_string());
+                }
+            }
+            Component::Normal(segment) => {
+                let sanitized = sanitize_component(&segment.to_string_lossy());
+                if !sanitized.is_empty() {
+                    segments.push(sanitized);
+                }
+            }
+            Component::CurDir | Component::ParentDir => {}
+        }
+    }
+
+    if cfg!(windows) && segments.first().is_some_and(|segment| segment == "root") {
+        segments.remove(0);
+    }
+
+    segments.join("-")
+}
+
+fn prefix_to_segment(prefix: Prefix<'_>) -> Option<String> {
+    match prefix {
+        Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+            Some((letter as char).to_ascii_uppercase().to_string())
+        }
+        Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+            let server = sanitize_component(&server.to_string_lossy());
+            let share = sanitize_component(&share.to_string_lossy());
+            let joined = [server, share]
+                .into_iter()
+                .filter(|segment| !segment.is_empty())
+                .collect::<Vec<_>>()
+                .join("-");
+            if joined.is_empty() {
+                None
+            } else {
+                Some(joined)
+            }
+        }
+        Prefix::DeviceNS(device) => {
+            let device = sanitize_component(&device.to_string_lossy());
+            if device.is_empty() {
+                None
+            } else {
+                Some(device)
+            }
+        }
+        Prefix::Verbatim(value) => {
+            let value = sanitize_component(&value.to_string_lossy());
+            if value.is_empty() {
+                None
+            } else {
+                Some(value)
+            }
+        }
+    }
+}
+
+fn sanitize_component(value: &str) -> String {
+    let mut sanitized = String::with_capacity(value.len());
+    let mut last_was_separator = false;
+
+    for ch in value.chars() {
+        let is_valid = ch.is_alphanumeric() || ch == '-' || ch == '_' || ch == '.';
+        if is_valid {
+            sanitized.push(ch);
+            last_was_separator = false;
+            continue;
+        }
+
+        if !last_was_separator {
+            sanitized.push('-');
+            last_was_separator = true;
+        }
+    }
+
+    sanitized
+        .trim_matches(['-', '.', ' '])
+        .chars()
+        .collect::<String>()
+}
+
+fn stable_project_hash(path: &Path) -> String {
+    let source = path.to_string_lossy();
+    Uuid::new_v5(&Uuid::NAMESPACE_URL, source.as_bytes())
+        .simple()
+        .to_string()[..8]
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn project_dir_name_uses_drive_and_segments() {
+        let path = Path::new(r"D:\workspace\project1");
+        assert_eq!(project_dir_name(path), "D-workspace-project1");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn project_dir_name_uses_root_and_segments() {
+        let path = Path::new("/workspace/project1");
+        assert_eq!(project_dir_name(path), "root-workspace-project1");
+    }
+
+    #[test]
+    fn project_dir_name_normalizes_invalid_filename_characters() {
+        let path = Path::new("demo folder/feature:alpha");
+        assert_eq!(project_dir_name(path), "demo-folder-feature-alpha");
+    }
+
+    #[test]
+    fn project_dir_name_truncates_with_stable_hash_when_needed() {
+        let long = format!("root/{}", "very-long-segment-".repeat(16));
+        let name = project_dir_name(Path::new(&long));
+        assert!(name.len() <= MAX_PROJECT_DIR_NAME_LEN);
+        assert!(
+            name.chars().rev().take(8).all(|ch| ch.is_ascii_hexdigit()),
+            "truncated project dirs should end with a short stable hash"
+        );
+    }
+}

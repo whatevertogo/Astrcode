@@ -43,6 +43,9 @@ impl Iterator for EventLogIterator {
                     )));
                 }
             };
+            // line_number 在空行检查之前递增，因此它追踪的是文件物理行号
+            // （含空行），而非逻辑事件索引。这样错误消息中的行号与文本编辑器
+            // 中看到的行号一致，方便调试定位。
             self.line_number += 1;
             let trimmed = line.trim();
             if trimmed.is_empty() {

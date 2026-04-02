@@ -158,6 +158,9 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
                         pending_tool_calls.remove(index);
                     let result = astrcode_core::ToolExecutionResult {
                         tool_call_id: tool_call_id.clone(),
+                        // ToolCall 事件总是包含工具名，但 ToolResult 事件可能为空
+                        // （如旧版格式或异常恢复场景）。此时使用匹配的 pending ToolCall
+                        // 中的工具名作为回退，确保前端能正确显示工具卡片。
                         tool_name: if stored_tool_name.is_empty() {
                             pending_tool_name
                         } else {
@@ -192,6 +195,10 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
         }
     }
 
+    // 孤立的 pending_tool_calls：工具被调用但未返回结果。
+    // 这代表两种场景：(1) 快照发生在 turn 执行中间（正常状态，前端显示 loading）；
+    // (2) 进程在工具执行期间崩溃（异常恢复，前端显示无结果的工具卡片）。
+    // 无论哪种情况，前端都需要看到这些 ToolCall 以保持 UI 一致性。
     for (turn_id, tool_call_id, tool_name, args) in pending_tool_calls {
         messages.push(SessionMessage::ToolCall {
             turn_id,

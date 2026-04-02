@@ -1,11 +1,10 @@
 //! Configuration loading utilities.
 
-use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use astrcode_core::project::project_dir;
 use astrcode_core::{AstrError, Result};
-use uuid::Uuid;
 
 use crate::types::{Config, ConfigOverlay};
 use crate::validation::normalize_config;
@@ -28,15 +27,8 @@ pub fn load_resolved_config(working_dir: Option<&Path>) -> Result<Config> {
     if let Some(working_dir) = working_dir {
         let project_path = project_overlay_path(working_dir)?;
         if let Some(overlay) = load_config_overlay_from_path(&project_path)? {
-            if let Some(active_profile) = overlay.active_profile {
-                config.active_profile = active_profile;
-            }
-            if let Some(active_model) = overlay.active_model {
-                config.active_model = active_model;
-            }
-            if let Some(profiles) = overlay.profiles {
-                config.profiles = profiles;
-            }
+            // Overlay 使用 Option 字段，避免 project 文件的 serde 默认值误覆盖 user 配置。
+            config = apply_overlay(config, overlay);
         }
     }
     normalize_config(config)
@@ -63,6 +55,8 @@ pub fn load_config_from_path(path: &Path) -> Result<Config> {
             ))
         })?;
 
+        // 首次启动时输出提示到 stdout，引导用户填写 API key。
+        // 这是 load_config 唯一的 stdout 副作用，仅在配置文件不存在时触发一次。
         println!("Config created at {}，请填写 apiKey", path.display());
         return normalize_config(default_cfg);
     }
@@ -82,24 +76,20 @@ pub fn load_config_overlay_from_path(path: &Path) -> Result<Option<ConfigOverlay
 
 /// Returns the private project overlay path for a working directory.
 pub fn project_overlay_path(working_dir: &Path) -> Result<PathBuf> {
-    let home = astrcode_core::home::resolve_home_dir()?;
-    Ok(home
-        .join(".astrcode")
-        .join("projects")
-        .join(stable_project_key(working_dir))
-        .join("config.json"))
+    Ok(project_dir(working_dir)?.join("config.json"))
 }
 
-fn stable_project_key(working_dir: &Path) -> String {
-    let canonical =
-        std::fs::canonicalize(working_dir).unwrap_or_else(|_| working_dir.to_path_buf());
-    let normalized: Cow<'_, str> = canonical.to_string_lossy();
-    let key_source = if cfg!(windows) {
-        normalized.to_ascii_lowercase()
-    } else {
-        normalized.into_owned()
-    };
-    Uuid::new_v5(&Uuid::NAMESPACE_URL, key_source.as_bytes()).to_string()
+fn apply_overlay(mut base: Config, overlay: ConfigOverlay) -> Config {
+    if let Some(active_profile) = overlay.active_profile {
+        base.active_profile = active_profile;
+    }
+    if let Some(active_model) = overlay.active_model {
+        base.active_model = active_model;
+    }
+    if let Some(profiles) = overlay.profiles {
+        base.profiles = profiles;
+    }
+    base
 }
 
 fn read_json_from_path<T>(path: &Path) -> Result<T>
@@ -113,6 +103,13 @@ where
 }
 
 /// Writes JSON atomically via a temp file and rename.
+///
+/// 写入策略：先写临时文件 → fsync → 原子重命名覆盖目标。在大多数 Unix 上
+/// `rename` 天然支持原子替换，但在 Windows 上 `std::fs::rename` 在目标已存在
+/// 时返回 `AlreadyExists`，因此需要三步替换：
+/// 1. 将原始文件重命名为 `.bak` 备份
+/// 2. 将临时文件重命名为目标文件
+/// 3. 若步骤 2 失败，从 `.bak` 恢复原始文件；临时文件故意保留以供手动恢复
 pub(crate) fn write_json_atomic(path: &Path, config: &Config) -> Result<()> {
     use std::io::Write;
 

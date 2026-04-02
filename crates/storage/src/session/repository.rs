@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use astrcode_core::store::{EventLogWriter, SessionManager, StoreResult};
 use astrcode_core::{DeleteProjectResult, SessionMeta, StoredEvent};
 
@@ -10,8 +12,12 @@ use super::paths::resolve_existing_session_path;
 pub struct FileSystemSessionRepository;
 
 impl SessionManager for FileSystemSessionRepository {
-    fn create_event_log(&self, session_id: &str) -> StoreResult<Box<dyn EventLogWriter>> {
-        Ok(Box::new(EventLog::create(session_id)?))
+    fn create_event_log(
+        &self,
+        session_id: &str,
+        working_dir: &Path,
+    ) -> StoreResult<Box<dyn EventLogWriter>> {
+        Ok(Box::new(EventLog::create(session_id, working_dir)?))
     }
 
     fn open_event_log(&self, session_id: &str) -> StoreResult<Box<dyn EventLogWriter>> {

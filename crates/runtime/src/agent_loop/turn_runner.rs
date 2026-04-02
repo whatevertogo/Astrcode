@@ -52,6 +52,9 @@ pub(crate) async fn run_turn(
             return Ok(());
         }
 
+        // 取消是协作式的，在 step 边界检查。若 LLM 正在执行慢速推理，
+        // 此处不会立即响应取消——实际的中断由 generate_response 内部的
+        // CancelToken 机制处理（取消时 provider 的 HTTP 连接会被 abort）。
         if cancel.is_cancelled() {
             finish_interrupted(turn_id, on_event)?;
             return Ok(());
@@ -84,6 +87,9 @@ pub(crate) async fn run_turn(
         log_prompt_diagnostics(&build_output.diagnostics);
         let plan = build_output.plan;
         let system_prompt = plan.render_system();
+        // 消息顺序契约：prepend_messages 包含行为引导（如"编辑前先检查文件"），
+        // append_messages 包含尾部指令或 few-shot 示例。用户历史消息夹在两者之间，
+        // 确保行为引导始终在对话开头，尾部指令在最后（最靠近模型注意力焦点）。
         let mut request_messages = plan.prepend_messages;
         request_messages.extend(messages.iter().cloned());
         request_messages.extend(plan.append_messages);
@@ -184,6 +190,12 @@ fn latest_user_message(messages: &[LlmMessage]) -> Option<&str> {
     })
 }
 
+/// 检查是否达到最大 step 数。
+///
+/// 达到上限时不作为错误处理——这是安全护栏而非故障。
+/// 正常场景下 agent 会持续使用工具直到任务完成，max_steps 防止
+/// LLM 陷入"反复调用工具"的无限循环。此时发出 TurnDone 而非 Error，
+/// SSE 客户端看到的是一次正常结束的 turn。
 fn reached_max_steps(max_steps: Option<usize>, step_index: usize) -> bool {
     let Some(max_steps) = max_steps else {
         return false;

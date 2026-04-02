@@ -11,9 +11,17 @@ pub(crate) async fn build_provider(
     factory: DynProviderFactory,
     working_dir: Option<PathBuf>,
 ) -> Result<Arc<dyn LlmProvider>> {
-    tokio::task::spawn_blocking(move || factory.build_for_working_dir(working_dir))
-        .await
-        .map_err(|e| astrcode_core::AstrError::Internal(format!("blocking task failed: {e}")))?
+    if factory.build_requires_blocking_pool() {
+        // 配置文件 factory 会同步读取磁盘，因此需要切到 blocking pool，
+        // 避免把 tokio worker 卡在 fs I/O 上。
+        tokio::task::spawn_blocking(move || factory.build_for_working_dir(working_dir))
+            .await
+            .map_err(|e| astrcode_core::AstrError::Internal(format!("blocking task failed: {e}")))?
+    } else {
+        // 纯内存 factory（尤其测试桩）直接构建，避免 spawn_blocking 的调度抖动
+        // 破坏流式 delta 的时序断言。
+        factory.build_for_working_dir(working_dir)
+    }
 }
 
 /// 调用 LLM 提供者并实时转发流式增量事件。
@@ -35,6 +43,10 @@ pub(crate) async fn generate_response(
     cancel: CancelToken,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
 ) -> Result<LlmOutput> {
+    // 使用 unbounded channel 而非 bounded 是安全的：生产者（LLM 流式传输）
+    // 受网络 I/O 带宽约束，消费者（select! 循环）以同等速度处理事件，
+    // 因此缓冲区中积压的数据始终只是少量未处理的 delta（几 KB 级别）。
+    // 若使用 bounded channel，反压逻辑会不必要地复杂化代码。
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<LlmEvent>();
     let sink: EventSink = Arc::new(move |event| {
         let _ = event_tx.send(event);
@@ -63,6 +75,10 @@ pub(crate) async fn generate_response(
                             token: text,
                         })?;
                     }
+                    // ThinkingSignature 是 Anthropic API 用于计费验证的不透明令牌，
+                    // 不含可显示内容，直接丢弃。ToolCallDelta 由 provider 内部
+                    // 聚合到最终 LlmOutput 中，也无需在此处理。
+                    // TODO:也许anthropic和openai格式需要统一一下内容和逻辑
                     Some(LlmEvent::ThinkingSignature(_)) => {}
                     Some(LlmEvent::ToolCallDelta { .. }) => {}
                     None => event_rx_open = false,
@@ -85,6 +101,7 @@ pub(crate) async fn generate_response(
                     token: text,
                 })?;
             }
+            // 同上：drain 阶段也丢弃这两种无需转发的事件类型
             LlmEvent::ThinkingSignature(_) | LlmEvent::ToolCallDelta { .. } => {}
         }
     }
