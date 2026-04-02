@@ -180,6 +180,8 @@ mod tests {
                 session_id: "s1".into(),
                 timestamp: ts(),
                 working_dir: "/tmp".into(),
+                parent_session_id: None,
+                parent_storage_seq: None,
             },
             StorageEvent::UserMessage {
                 turn_id: None,
@@ -202,6 +204,8 @@ mod tests {
                 session_id: "s1".into(),
                 timestamp: ts(),
                 working_dir: "/tmp".into(),
+                parent_session_id: None,
+                parent_storage_seq: None,
             },
             StorageEvent::UserMessage {
                 turn_id: None,
@@ -218,6 +222,7 @@ mod tests {
             StorageEvent::TurnDone {
                 turn_id: None,
                 timestamp: ts(),
+                reason: Some("completed".into()),
             },
         ];
         let state = project(&events);
@@ -233,6 +238,8 @@ mod tests {
                 session_id: "s1".into(),
                 timestamp: ts(),
                 working_dir: "/tmp".into(),
+                parent_session_id: None,
+                parent_storage_seq: None,
             },
             // Turn 1: user → assistant with tool call → tool result → final answer
             StorageEvent::UserMessage {
@@ -273,6 +280,7 @@ mod tests {
             StorageEvent::TurnDone {
                 turn_id: None,
                 timestamp: ts(),
+                reason: Some("completed".into()),
             },
             // Turn 2: simple user → assistant
             StorageEvent::UserMessage {
@@ -290,6 +298,7 @@ mod tests {
             StorageEvent::TurnDone {
                 turn_id: None,
                 timestamp: ts(),
+                reason: Some("completed".into()),
             },
         ];
         let state = project(&events);
@@ -336,6 +345,8 @@ mod tests {
                 session_id: "s1".into(),
                 timestamp: ts(),
                 working_dir: "/tmp".into(),
+                parent_session_id: None,
+                parent_storage_seq: None,
             },
             StorageEvent::UserMessage {
                 turn_id: None,
@@ -365,6 +376,7 @@ mod tests {
             StorageEvent::TurnDone {
                 turn_id: None,
                 timestamp: ts(),
+                reason: Some("completed".into()),
             },
         ];
         let state = project(&events);
@@ -379,6 +391,8 @@ mod tests {
                 session_id: "s1".into(),
                 timestamp: ts(),
                 working_dir: "/tmp".into(),
+                parent_session_id: None,
+                parent_storage_seq: None,
             },
             StorageEvent::UserMessage {
                 turn_id: None,
@@ -404,6 +418,7 @@ mod tests {
             StorageEvent::TurnDone {
                 turn_id: None,
                 timestamp: ts(),
+                reason: Some("completed".into()),
             },
         ];
 
@@ -435,6 +450,8 @@ mod tests {
                 session_id: "s1".into(),
                 timestamp: ts(),
                 working_dir: "/tmp".into(),
+                parent_session_id: None,
+                parent_storage_seq: None,
             },
             StorageEvent::UserMessage {
                 turn_id: None,
@@ -451,6 +468,7 @@ mod tests {
             StorageEvent::TurnDone {
                 turn_id: None,
                 timestamp: ts(),
+                reason: Some("completed".into()),
             },
         ];
 

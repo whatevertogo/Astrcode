@@ -1,4 +1,4 @@
-import React, { Component, useEffect, useRef } from 'react';
+import React, { Component, useCallback, useEffect, useRef } from 'react';
 import type { Message } from '../../types';
 import UserMessage from './UserMessage';
 import AssistantMessage from './AssistantMessage';
@@ -66,14 +66,38 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
 }
 
 export default function MessageList({ messages }: MessageListProps) {
+  const listRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const shouldStickToBottomRef = useRef(true);
+  const previousMessageCountRef = useRef(0);
+
+  const updateStickiness = useCallback(() => {
+    const container = listRef.current;
+    if (!container) {
+      shouldStickToBottomRef.current = true;
+      return;
+    }
+    const distanceFromBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    shouldStickToBottomRef.current = distanceFromBottom <= 48;
+  }, []);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView();
-  }, [messages]);
+    updateStickiness();
+  }, [updateStickiness]);
+
+  useEffect(() => {
+    const shouldAutoScroll =
+      previousMessageCountRef.current === 0 || shouldStickToBottomRef.current;
+    previousMessageCountRef.current = messages.length;
+    if (shouldAutoScroll) {
+      bottomRef.current?.scrollIntoView();
+      updateStickiness();
+    }
+  }, [messages, updateStickiness]);
 
   return (
-    <div className={styles.list}>
+    <div ref={listRef} className={styles.list} onScroll={updateStickiness}>
       {messages.length === 0 && <div className={styles.empty}>向 AstrCode 提问，开始对话...</div>}
       {messages.map((msg) => {
         if (msg.kind === 'user') {

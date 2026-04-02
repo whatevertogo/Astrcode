@@ -62,4 +62,23 @@ describe('normalizeAgentEvent protocol gate', () => {
       },
     });
   });
+
+  it('accepts empty string deltas for streaming events', () => {
+    const normalized = normalizeAgentEvent({
+      protocolVersion: 1,
+      event: 'modelDelta',
+      data: {
+        turnId: 'turn-empty',
+        delta: '',
+      },
+    });
+
+    expect(normalized).toEqual({
+      event: 'modelDelta',
+      data: {
+        turnId: 'turn-empty',
+        delta: '',
+      },
+    });
+  });
 });

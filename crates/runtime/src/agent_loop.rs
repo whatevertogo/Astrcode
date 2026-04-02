@@ -22,6 +22,26 @@ use astrcode_core::StorageEvent;
 use crate::builtin_skills::builtin_skills;
 use crate::prompt::{PromptDeclaration, SkillSpec};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnOutcome {
+    /// LLM 返回纯文本（无 tool_calls），自然结束。
+    Completed,
+    /// 用户取消或 CancelToken 触发。
+    Cancelled,
+    /// 不可恢复错误。
+    Error { message: String },
+}
+
+impl TurnOutcome {
+    fn reason(&self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Error { .. } => "error",
+        }
+    }
+}
+
 /// Agent 循环
 ///
 /// 负责执行单个 Agent Turn，包含：
@@ -37,8 +57,6 @@ pub struct AgentLoop {
     policy: Arc<dyn PolicyEngine>,
     /// 审批代理
     approval: Arc<dyn ApprovalBroker>,
-    /// 最大步数限制（防止无限循环）
-    max_steps: Option<usize>,
     /// Prompt 组装器
     prompt_composer: PromptComposer,
     /// Prompt 构建时可见的能力描述符。
@@ -72,7 +90,6 @@ impl AgentLoop {
             capabilities,
             policy: Arc::new(AllowAllPolicyEngine),
             approval: Arc::new(DefaultApprovalBroker),
-            max_steps: None,
             prompt_composer: PromptComposer::with_defaults(),
             prompt_capability_descriptors,
             prompt_declarations,
@@ -89,12 +106,6 @@ impl AgentLoop {
     /// 设置审批代理
     pub fn with_approval_broker(mut self, approval: Arc<dyn ApprovalBroker>) -> Self {
         self.approval = approval;
-        self
-    }
-
-    /// 设置最大步数
-    pub fn with_max_steps(mut self, max_steps: usize) -> Self {
-        self.max_steps = Some(max_steps);
         self
     }
 
@@ -127,7 +138,7 @@ impl AgentLoop {
         turn_id: &str,
         on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
         cancel: CancelToken,
-    ) -> Result<()> {
+    ) -> Result<TurnOutcome> {
         turn_runner::run_turn(self, state, turn_id, on_event, cancel).await
     }
 
@@ -157,12 +168,15 @@ impl AgentLoop {
 /// 完成 Turn（发出 TurnDone 事件）
 pub(crate) fn finish_turn(
     turn_id: &str,
+    outcome: TurnOutcome,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
-) -> Result<()> {
+) -> Result<TurnOutcome> {
     on_event(StorageEvent::TurnDone {
         turn_id: Some(turn_id.to_string()),
         timestamp: Utc::now(),
-    })
+        reason: Some(outcome.reason().to_string()),
+    })?;
+    Ok(outcome)
 }
 
 /// 完成并发出错误事件
@@ -170,21 +184,27 @@ pub(crate) fn finish_with_error(
     turn_id: &str,
     message: impl Into<String>,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
-) -> Result<()> {
+) -> Result<TurnOutcome> {
+    let message = message.into();
     on_event(StorageEvent::Error {
         turn_id: Some(turn_id.to_string()),
-        message: message.into(),
+        message: message.clone(),
         timestamp: Some(Utc::now()),
     })?;
-    finish_turn(turn_id, on_event)
+    finish_turn(turn_id, TurnOutcome::Error { message }, on_event)
 }
 
 /// 完成并发出中断事件
 pub(crate) fn finish_interrupted(
     turn_id: &str,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
-) -> Result<()> {
-    finish_with_error(turn_id, "interrupted", on_event)
+) -> Result<TurnOutcome> {
+    on_event(StorageEvent::Error {
+        turn_id: Some(turn_id.to_string()),
+        message: "interrupted".to_string(),
+        timestamp: Some(Utc::now()),
+    })?;
+    finish_turn(turn_id, TurnOutcome::Cancelled, on_event)
 }
 
 /// 创建内部错误

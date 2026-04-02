@@ -43,6 +43,8 @@ impl RuntimeService {
                     session_id: session_id.clone(),
                     timestamp: created_at,
                     working_dir: working_dir.to_string_lossy().to_string(),
+                    parent_session_id: None,
+                    parent_storage_seq: None,
                 };
                 let stored_session_start =
                     log.append(&session_start).map_err(ServiceError::from)?;
@@ -73,6 +75,8 @@ impl RuntimeService {
             title: "新会话".to_string(),
             created_at,
             updated_at: created_at,
+            parent_session_id: None,
+            parent_storage_seq: None,
             phase: Phase::Idle,
         })
     }
@@ -91,6 +95,7 @@ impl RuntimeService {
 
     pub async fn delete_session(&self, session_id: &str) -> ServiceResult<()> {
         let normalized = normalize_session_id(session_id);
+        let _guard = self.session_load_lock.lock().await;
         self.interrupt(&normalized).await?;
         self.sessions.remove(&normalized);
         let session_manager = Arc::clone(&self.session_manager);
@@ -242,10 +247,13 @@ impl RuntimeService {
 }
 
 pub(super) fn normalize_session_id(session_id: &str) -> String {
-    session_id
+    // session_id 既来自路径参数也来自前端状态；先裁掉首尾空白可以把
+    // copy/paste 带来的噪音折叠成同一个 canonical key，避免 Windows
+    // 文件名校验和 DashMap 命中结果出现分裂。
+    let trimmed = session_id.trim();
+    trimmed
         .strip_prefix("session-")
-        .unwrap_or(session_id)
-        .trim()
+        .unwrap_or(trimmed)
         .to_string()
 }
 
@@ -398,6 +406,13 @@ mod tests {
             normalize_session_id("session-session-2026-03-08T10-00-00-aaaaaaaa"),
             "session-2026-03-08T10-00-00-aaaaaaaa"
         );
+    }
+
+    #[test]
+    fn normalize_session_id_trims_outer_whitespace_before_removing_prefix() {
+        assert_eq!(normalize_session_id("session-abc "), "abc");
+        assert_eq!(normalize_session_id(" session-abc"), "abc");
+        assert_eq!(normalize_session_id(" abc "), "abc");
     }
 
     #[test]

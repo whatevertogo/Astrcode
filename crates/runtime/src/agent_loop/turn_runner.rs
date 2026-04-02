@@ -9,7 +9,7 @@ use astrcode_core::StorageEvent;
 
 use super::{
     finish_interrupted, finish_turn, finish_with_error, internal_error, llm_cycle, tool_cycle,
-    AgentLoop,
+    AgentLoop, TurnOutcome,
 };
 
 /// 执行一个完整的 agent turn（从用户提示到最终响应）。
@@ -28,7 +28,6 @@ use super::{
 ///
 /// ## 终止条件
 ///
-/// - `max_steps` 达到上限（防止无限循环）
 /// - LLM 返回纯文本（无工具调用）
 /// - 取消信号触发
 /// - 任何步骤返回错误
@@ -38,26 +37,25 @@ pub(crate) async fn run_turn(
     turn_id: &str,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
     cancel: CancelToken,
-) -> Result<()> {
+) -> Result<TurnOutcome> {
     let provider =
         llm_cycle::build_provider(agent_loop.factory.clone(), Some(state.working_dir.clone()))
-            .await
-            .map_err(internal_error)?;
+            .await;
+    let provider = match provider {
+        Ok(provider) => provider,
+        Err(error) => {
+            return finish_with_error(turn_id, internal_error(error).to_string(), on_event)
+        }
+    };
     let mut messages = state.messages.clone();
     let mut step_index = 0usize;
 
     loop {
-        if reached_max_steps(agent_loop.max_steps, step_index) {
-            finish_turn(turn_id, on_event)?;
-            return Ok(());
-        }
-
         // 取消是协作式的，在 step 边界检查。若 LLM 正在执行慢速推理，
         // 此处不会立即响应取消——实际的中断由 generate_response 内部的
         // CancelToken 机制处理（取消时 provider 的 HTTP 连接会被 abort）。
         if cancel.is_cancelled() {
-            finish_interrupted(turn_id, on_event)?;
-            return Ok(());
+            return finish_interrupted(turn_id, on_event);
         }
 
         let mut vars = HashMap::new();
@@ -80,8 +78,7 @@ pub(crate) async fn run_turn(
         let build_output = match agent_loop.prompt_composer.build(&ctx).await {
             Ok(output) => output,
             Err(error) => {
-                finish_with_error(turn_id, error.to_string(), on_event)?;
-                return Ok(());
+                return finish_with_error(turn_id, error.to_string(), on_event);
             }
         };
         log_prompt_diagnostics(&build_output.diagnostics);
@@ -108,8 +105,7 @@ pub(crate) async fn run_turn(
         {
             Ok(request) => request,
             Err(error) => {
-                finish_with_error(turn_id, error.to_string(), on_event)?;
-                return Ok(());
+                return finish_with_error(turn_id, error.to_string(), on_event);
             }
         };
 
@@ -124,12 +120,11 @@ pub(crate) async fn run_turn(
         {
             Ok(output) => output,
             Err(error) => {
-                if cancel.is_cancelled() {
-                    finish_interrupted(turn_id, on_event)?;
+                return if cancel.is_cancelled() {
+                    finish_interrupted(turn_id, on_event)
                 } else {
-                    finish_with_error(turn_id, error.to_string(), on_event)?;
-                }
-                return Ok(());
+                    finish_with_error(turn_id, error.to_string(), on_event)
+                };
             }
         };
 
@@ -155,28 +150,33 @@ pub(crate) async fn run_turn(
         });
 
         if tool_calls.is_empty() {
-            finish_turn(turn_id, on_event)?;
-            return Ok(());
+            return finish_turn(turn_id, TurnOutcome::Completed, on_event);
         }
 
+        let tool_cycle_outcome = match tool_cycle::execute_tool_calls(
+            agent_loop,
+            &agent_loop.capabilities,
+            tool_calls,
+            turn_id,
+            state,
+            step_index,
+            &mut messages,
+            on_event,
+            &cancel,
+        )
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                return finish_with_error(turn_id, internal_error(error).to_string(), on_event)
+            }
+        };
+
         if matches!(
-            tool_cycle::execute_tool_calls(
-                agent_loop,
-                &agent_loop.capabilities,
-                tool_calls,
-                turn_id,
-                state,
-                step_index,
-                &mut messages,
-                on_event,
-                &cancel,
-            )
-            .await
-            .map_err(internal_error)?,
+            tool_cycle_outcome,
             tool_cycle::ToolCycleOutcome::Interrupted
         ) {
-            finish_interrupted(turn_id, on_event)?;
-            return Ok(());
+            return finish_interrupted(turn_id, on_event);
         }
 
         step_index += 1;
@@ -188,28 +188,6 @@ fn latest_user_message(messages: &[LlmMessage]) -> Option<&str> {
         LlmMessage::User { content } => Some(content.as_str()),
         LlmMessage::Assistant { .. } | LlmMessage::Tool { .. } => None,
     })
-}
-
-/// 检查是否达到最大 step 数。
-///
-/// 达到上限时不作为错误处理——这是安全护栏而非故障。
-/// 正常场景下 agent 会持续使用工具直到任务完成，max_steps 防止
-/// LLM 陷入"反复调用工具"的无限循环。此时发出 TurnDone 而非 Error，
-/// SSE 客户端看到的是一次正常结束的 turn。
-fn reached_max_steps(max_steps: Option<usize>, step_index: usize) -> bool {
-    let Some(max_steps) = max_steps else {
-        return false;
-    };
-
-    if step_index >= max_steps {
-        log::warn!(
-            "[agent_loop] reached max tool iteration steps ({}), finishing turn gracefully",
-            max_steps
-        );
-        true
-    } else {
-        false
-    }
 }
 
 fn log_prompt_diagnostics(diagnostics: &PromptDiagnostics) {

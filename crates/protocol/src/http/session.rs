@@ -17,6 +17,10 @@ pub struct SessionListItem {
     pub title: String,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_storage_seq: Option<u64>,
     pub phase: PhaseDto,
 }
 
@@ -30,6 +34,9 @@ pub struct PromptRequest {
 #[serde(rename_all = "camelCase")]
 pub struct PromptAcceptedResponse {
     pub turn_id: String,
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branched_from_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

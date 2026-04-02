@@ -9,6 +9,10 @@ pub enum StorageEvent {
         session_id: String,
         timestamp: DateTime<Utc>,
         working_dir: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_storage_seq: Option<u64>,
     },
     UserMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -62,6 +66,8 @@ pub enum StorageEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
         timestamp: DateTime<Utc>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     Error {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -134,6 +140,21 @@ mod tests {
                 assert_eq!(metadata, None);
             }
             other => panic!("expected tool result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn turn_done_deserializes_legacy_lines_without_reason() {
+        let event: StorageEvent = serde_json::from_str(
+            r#"{"type":"turnDone","turn_id":"turn-1","timestamp":"2026-01-01T00:00:00Z"}"#,
+        )
+        .expect("legacy turn done should deserialize");
+
+        match event {
+            StorageEvent::TurnDone { reason, .. } => {
+                assert_eq!(reason, None);
+            }
+            other => panic!("expected turn done, got {other:?}"),
         }
     }
 }

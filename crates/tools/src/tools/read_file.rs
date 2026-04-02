@@ -73,15 +73,16 @@ impl Tool for ReadFileTool {
 
         let bytes = fs::read(&path)
             .map_err(|e| AstrError::io(format!("failed reading file '{}'", path.display()), e))?;
-
-        let truncated = bytes.len() > max_bytes;
-        let content_bytes = if truncated {
-            &bytes[..max_bytes]
+        let content = String::from_utf8_lossy(&bytes).to_string();
+        let truncated = content.len() > max_bytes;
+        let content = if truncated {
+            // `maxBytes` 仍按字节预算工作，但截断点必须落在 UTF-8 字符边界上，
+            // 否则中文/emoji 等多字节字符会在切片时被截断成无效字符串。
+            let truncate_at = content.floor_char_boundary(max_bytes);
+            content[..truncate_at].to_string()
         } else {
-            &bytes[..]
+            content
         };
-
-        let content = String::from_utf8_lossy(content_bytes).to_string();
 
         Ok(ToolExecutionResult {
             tool_call_id,
@@ -153,5 +154,27 @@ mod tests {
         let metadata = result.metadata.expect("metadata should exist");
         assert_eq!(metadata["bytes"], json!(6));
         assert_eq!(metadata["truncated"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn read_file_tool_truncates_at_utf8_char_boundary() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file = temp.path().join("sample.txt");
+        tokio::fs::write(&file, "你好a")
+            .await
+            .expect("write should work");
+
+        let tool = ReadFileTool;
+        let result = tool
+            .execute(
+                "tc4".to_string(),
+                json!({ "path": file.to_string_lossy(), "maxBytes": 4 }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("readFile should succeed");
+
+        assert_eq!(result.output, "你");
+        assert!(result.truncated);
     }
 }

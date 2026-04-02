@@ -175,7 +175,7 @@ describe('serverAuth', () => {
     expect(fetchMock).toHaveBeenCalledWith('/__astrcode__/run-info', {
       cache: 'no-store',
     });
-    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:5173/api/auth/exchange', {
+    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:64000/api/auth/exchange', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -183,6 +183,122 @@ describe('serverAuth', () => {
       body: JSON.stringify({ token: 'bootstrap-token' }),
     });
     expect(getServerAuthToken()).toBe('dev-session');
-    expect(getServerOrigin()).toBe('http://127.0.0.1:5173');
+    expect(getServerOrigin()).toBe('http://127.0.0.1:64000');
+  });
+
+  it('retries with a fresh bootstrap token after exchange failure consumes the first one', async () => {
+    vi.doMock('./tauri', () => ({
+      isTauriEnvironment: () => false,
+    }));
+    setWindowLocation('http://127.0.0.1:5173/');
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            token: 'bootstrap-token-1',
+            serverOrigin: 'http://127.0.0.1:65000/',
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            token: 'bootstrap-token-2',
+            serverOrigin: 'http://127.0.0.1:65000/',
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            ok: true,
+            token: 'recovered-session',
+            expiresAtMs: Date.now() + 60_000,
+          }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { ensureServerSession, getServerAuthToken } = await import('./serverAuth');
+
+    await ensureServerSession();
+
+    expect(getServerAuthToken()).toBe('recovered-session');
+    expect(fetchMock).toHaveBeenNthCalledWith(2, 'http://127.0.0.1:65000/api/auth/exchange', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ token: 'bootstrap-token-1' }),
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(4, 'http://127.0.0.1:65000/api/auth/exchange', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ token: 'bootstrap-token-2' }),
+    });
+  });
+
+  it('lets concurrent callers recover behind one retried bootstrap flow', async () => {
+    vi.doMock('./tauri', () => ({
+      isTauriEnvironment: () => false,
+    }));
+    setWindowLocation('http://127.0.0.1:5173/');
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            token: 'bootstrap-token-1',
+            serverOrigin: 'http://127.0.0.1:65100/',
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            token: 'bootstrap-token-2',
+            serverOrigin: 'http://127.0.0.1:65100/',
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            ok: true,
+            token: 'recovered-shared-session',
+            expiresAtMs: Date.now() + 60_000,
+          }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { ensureServerSession, getServerAuthToken } = await import('./serverAuth');
+
+    await Promise.all([ensureServerSession(), ensureServerSession()]);
+
+    expect(getServerAuthToken()).toBe('recovered-shared-session');
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenNthCalledWith(4, 'http://127.0.0.1:65100/api/auth/exchange', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ token: 'bootstrap-token-2' }),
+    });
   });
 });

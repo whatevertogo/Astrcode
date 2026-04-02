@@ -332,6 +332,7 @@ mod tests {
                 StorageEvent::TurnDone {
                     turn_id: Some("turn-1".to_string()),
                     timestamp: Utc.with_ymd_and_hms(2026, 3, 31, 15, 0, 2).unwrap(),
+                    reason: Some("completed".to_string()),
                 },
             ),
         ];

@@ -155,8 +155,8 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
 
   if (event === 'modelDelta') {
     const turnId = pickString(data, 'turnId', 'turn_id');
-    const delta = pickString(data, 'delta');
-    if (!turnId || delta === null) {
+    const delta = pickStringAllowEmpty(data, 'delta');
+    if (!turnId || delta === undefined) {
       return invalidEvent('modelDelta requires turnId and delta', raw);
     }
     return { event: 'modelDelta', data: { turnId, delta } };
@@ -164,8 +164,8 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
 
   if (event === 'thinkingDelta') {
     const turnId = pickString(data, 'turnId', 'turn_id');
-    const delta = pickString(data, 'delta');
-    if (!turnId || delta === null) {
+    const delta = pickStringAllowEmpty(data, 'delta');
+    if (!turnId || delta === undefined) {
       return invalidEvent('thinkingDelta requires turnId and delta', raw);
     }
     return { event: 'thinkingDelta', data: { turnId, delta } };

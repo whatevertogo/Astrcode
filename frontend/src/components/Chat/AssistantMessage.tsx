@@ -105,7 +105,7 @@ function AssistantMessage({ message }: AssistantMessageProps) {
                   <pre className={styles.thinkingContent}>{block}</pre>
                 </details>
               ))}
-              <div className={styles.streamingText}>{message.text}</div>
+              <div className={styles.streamingText}>{visibleText}</div>
             </>
           ) : (
             <>

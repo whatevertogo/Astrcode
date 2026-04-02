@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use anyhow::Result;
 use astrcode_core::{
     AgentState, AgentStateProjector, CancelToken, EventLogWriter, EventTranslator, Phase,
-    SessionEventRecord,
+    SessionEventRecord, SessionTurnLease,
 };
 use tokio::sync::broadcast;
 
@@ -117,6 +117,7 @@ pub(super) struct SessionState {
     pub(super) phase: StdMutex<Phase>,
     pub(super) running: AtomicBool,
     pub(super) cancel: StdMutex<CancelToken>,
+    pub(super) turn_lease: StdMutex<Option<Box<dyn SessionTurnLease>>>,
     pub(super) broadcaster: broadcast::Sender<SessionEventRecord>,
     pub(super) writer: Arc<SessionWriter>,
     projector: StdMutex<AgentStateProjector>,
@@ -139,6 +140,7 @@ impl SessionState {
             phase: StdMutex::new(phase),
             running: AtomicBool::new(false),
             cancel: StdMutex::new(CancelToken::new()),
+            turn_lease: StdMutex::new(None),
             broadcaster,
             writer,
             projector: StdMutex::new(projector),

@@ -56,6 +56,10 @@ pub struct SessionMeta {
     pub created_at: DateTime<Utc>,
     /// 会话最后更新时间
     pub updated_at: DateTime<Utc>,
+    /// 分叉来源 session。根会话为 None。
+    pub parent_session_id: Option<String>,
+    /// 分叉点在父 session 中的最后一个稳定 storage_seq。
+    pub parent_storage_seq: Option<u64>,
     /// 当前阶段
     pub phase: Phase,
 }

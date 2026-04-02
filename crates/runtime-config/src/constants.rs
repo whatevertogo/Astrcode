@@ -1,4 +1,5 @@
 //! Provider kind constants and configuration version constants.
+// 环境变量都放这里，避免在代码里散落。
 
 /// OpenAI-compatible provider kind identifier.
 pub const PROVIDER_KIND_OPENAI: &str = "openai-compatible";

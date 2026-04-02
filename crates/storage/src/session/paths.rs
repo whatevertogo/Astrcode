@@ -66,6 +66,24 @@ pub(crate) fn resolve_existing_session_path(session_id: &str) -> Result<PathBuf>
     ))
 }
 
+pub(crate) fn resolve_existing_session_dir(session_id: &str) -> Result<PathBuf> {
+    let path = resolve_existing_session_path(session_id)?;
+    path.parent().map(Path::to_path_buf).ok_or_else(|| {
+        internal_io_error(format!(
+            "session file '{}' has no parent directory",
+            path.display()
+        ))
+    })
+}
+
+pub(crate) fn session_turn_lock_path(session_id: &str) -> Result<PathBuf> {
+    Ok(resolve_existing_session_dir(session_id)?.join("active-turn.lock"))
+}
+
+pub(crate) fn session_turn_metadata_path(session_id: &str) -> Result<PathBuf> {
+    Ok(resolve_existing_session_dir(session_id)?.join("active-turn.json"))
+}
+
 pub(crate) fn session_storage_dirs(projects_root: &Path) -> Result<Vec<PathBuf>> {
     let mut dirs = Vec::new();
     if projects_root.exists() {

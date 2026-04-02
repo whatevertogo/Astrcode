@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use chrono::{DateTime, Utc};
+
 use crate::{DeleteProjectResult, SessionMeta, StorageEvent, StoredEvent};
 
 #[derive(Debug, thiserror::Error)]
@@ -52,6 +54,29 @@ pub trait EventLogWriter: Send + Sync {
     fn append(&mut self, event: &StorageEvent) -> StoreResult<StoredEvent>;
 }
 
+/// 跨进程 session turn 执行租约。
+///
+/// 该 trait 故意不暴露行为方法，只依赖 RAII 语义：当租约对象被 drop 时，
+/// 底层实现必须释放对应的跨进程 session 锁。这样 runtime 无需了解
+/// 文件锁、命名锁等具体机制，只需要持有租约直到 turn 结束。
+pub trait SessionTurnLease: Send + Sync {}
+
+/// 另一个执行者已经持有该 session 的 turn 执行权。
+///
+/// `turn_id` 是 branch 逻辑的关键输入：后发请求需要从「最后一个稳定完成的 turn」
+/// 分叉，所以必须知道当前正在进行的是哪个 turn，才能在复制历史时排除其事件。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionTurnBusy {
+    pub turn_id: String,
+    pub owner_pid: u32,
+    pub acquired_at: DateTime<Utc>,
+}
+
+pub enum SessionTurnAcquireResult {
+    Acquired(Box<dyn SessionTurnLease>),
+    Busy(SessionTurnBusy),
+}
+
 /// Session persistence contract used by runtime services.
 ///
 /// 与 `EventLogWriter` 相同的 `Send + Sync` 约束理由：`Arc<dyn SessionManager>`
@@ -69,6 +94,14 @@ pub trait SessionManager: Send + Sync {
         &self,
         session_id: &str,
     ) -> StoreResult<Box<dyn Iterator<Item = StoreResult<StoredEvent>> + Send>>;
+    /// 尝试获取某个 session 的 turn 执行权。
+    ///
+    /// 获取失败不算错误，而是返回 `Busy`，让调用方可以选择自动分叉新 session。
+    fn try_acquire_turn(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+    ) -> StoreResult<SessionTurnAcquireResult>;
     fn last_storage_seq(&self, session_id: &str) -> StoreResult<u64>;
     fn list_sessions(&self) -> StoreResult<Vec<String>>;
     fn list_sessions_with_meta(&self) -> StoreResult<Vec<SessionMeta>>;

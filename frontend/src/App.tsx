@@ -133,6 +133,19 @@ function groupSessionsByProject(sessionMetas: SessionMeta[]): Project[] {
   });
 }
 
+function replaceSessionMessages(
+  projects: Project[],
+  sessionId: string,
+  messages: Message[]
+): Project[] {
+  return projects.map((project) => ({
+    ...project,
+    sessions: project.sessions.map((session) =>
+      session.id === sessionId ? { ...session, messages } : session
+    ),
+  }));
+}
+
 function mapProject(
   state: AppState,
   projectId: string,
@@ -390,20 +403,27 @@ function reducer(state: AppState, action: Action): AppState {
         const exactMatchIndex = session.messages.findIndex(
           (message) => message.kind === 'toolCall' && message.toolCallId === action.toolCallId
         );
-        // 回退：从尾部向前找同名的 running tool call（不分配临时数组）
+        // 回退匹配必须同时限定 turn，且只能在候选唯一时使用，
+        // 否则同名工具并发执行时会把结果写进错误的卡片。
         let targetIndex = exactMatchIndex;
         if (targetIndex < 0) {
+          const fallbackCandidates: number[] = [];
           for (let i = session.messages.length - 1; i >= 0; i--) {
             const msg = session.messages[i];
+            const turnMatches =
+              action.turnId === null || action.turnId === undefined
+                ? msg.turnId === null || msg.turnId === undefined
+                : msg.turnId === action.turnId;
             if (
               msg.kind === 'toolCall' &&
               msg.status === 'running' &&
-              msg.toolName === action.toolName
+              msg.toolName === action.toolName &&
+              turnMatches
             ) {
-              targetIndex = i;
-              break;
+              fallbackCandidates.push(i);
             }
           }
+          targetIndex = fallbackCandidates.length === 1 ? fallbackCandidates[0] : -1;
         }
 
         if (targetIndex < 0) {
@@ -494,6 +514,7 @@ export default function App() {
   const phaseRef = useRef(state.phase);
   const turnSessionMapRef = useRef<Record<string, string>>({});
   const pendingSubmitSessionRef = useRef<string[]>([]);
+  const sessionActivationGenerationRef = useRef(0);
   const sidebarDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
   const releasePendingSubmitSession = useCallback((sessionId: string) => {
@@ -571,7 +592,7 @@ export default function App() {
     };
   }, [finishSidebarResize, isResizingSidebar]);
 
-  const handleAgentEvent = useCallback((event: AgentEventPayload) => {
+  const handleAgentEvent = (event: AgentEventPayload) => {
     const resolveSessionId = (turnId?: string | null): string | null => {
       return resolveSessionForTurn(
         turnSessionMapRef.current,
@@ -719,7 +740,7 @@ export default function App() {
         break;
       }
     }
-  }, []);
+  };
 
   const {
     createSession,
@@ -744,15 +765,24 @@ export default function App() {
 
   const loadAndActivateSession = useCallback(
     async (projectId: string, sessionId: string) => {
+      const activationGeneration = ++sessionActivationGenerationRef.current;
       disconnectSession();
-      dispatch({ type: 'SET_ACTIVE', projectId, sessionId });
       const snapshot = await loadSession(sessionId);
+      if (activationGeneration !== sessionActivationGenerationRef.current) {
+        return;
+      }
       dispatch({
         type: 'REPLACE_SESSION_MESSAGES',
         sessionId,
         messages: snapshot.messages.map(convertSessionMessage),
       });
+      // 先写入快照，再切换 active，避免会话切换瞬间渲染空白列表。
+      activeSessionIdRef.current = sessionId;
+      dispatch({ type: 'SET_ACTIVE', projectId, sessionId });
       await connectSession(sessionId, snapshot.cursor);
+      if (activationGeneration !== sessionActivationGenerationRef.current) {
+        return;
+      }
       setModelRefreshKey((value) => value + 1);
     },
     [connectSession, disconnectSession, loadSession]
@@ -760,33 +790,56 @@ export default function App() {
 
   const refreshSessions = useCallback(
     async (preferredSessionId?: string | null) => {
+      const activationGeneration = ++sessionActivationGenerationRef.current;
       const sessionMetas = await listSessionsWithMeta();
       const projects = groupSessionsByProject(sessionMetas);
       const availableSessionIds = new Set(sessionMetas.map((meta) => meta.sessionId));
       const nextSessionId =
         preferredSessionId && availableSessionIds.has(preferredSessionId)
           ? preferredSessionId
-          : state.activeSessionId && availableSessionIds.has(state.activeSessionId)
-            ? state.activeSessionId
+          : activeSessionIdRef.current && availableSessionIds.has(activeSessionIdRef.current)
+            ? activeSessionIdRef.current
             : (projects[0]?.sessions[0]?.id ?? null);
       const nextProjectId =
         projects.find((project) => project.sessions.some((session) => session.id === nextSessionId))
           ?.id ?? null;
 
+      if (nextProjectId && nextSessionId) {
+        disconnectSession();
+        const snapshot = await loadSession(nextSessionId);
+        if (activationGeneration !== sessionActivationGenerationRef.current) {
+          return;
+        }
+        const hydratedProjects = replaceSessionMessages(
+          projects,
+          nextSessionId,
+          snapshot.messages.map(convertSessionMessage)
+        );
+        activeSessionIdRef.current = nextSessionId;
+        dispatch({
+          type: 'INITIALIZE',
+          projects: hydratedProjects,
+          activeProjectId: nextProjectId,
+          activeSessionId: nextSessionId,
+        });
+        await connectSession(nextSessionId, snapshot.cursor);
+        if (activationGeneration !== sessionActivationGenerationRef.current) {
+          return;
+        }
+        setModelRefreshKey((value) => value + 1);
+        return;
+      }
+
+      activeSessionIdRef.current = null;
       dispatch({
         type: 'INITIALIZE',
         projects,
         activeProjectId: nextProjectId,
         activeSessionId: nextSessionId,
       });
-
-      if (nextProjectId && nextSessionId) {
-        await loadAndActivateSession(nextProjectId, nextSessionId);
-      } else {
-        disconnectSession();
-      }
+      disconnectSession();
     },
-    [disconnectSession, listSessionsWithMeta, loadAndActivateSession, state.activeSessionId]
+    [connectSession, disconnectSession, listSessionsWithMeta, loadSession]
   );
 
   useEffect(() => {
@@ -892,24 +945,47 @@ export default function App() {
       if (!sessionId) {
         return;
       }
+      if (phaseRef.current !== 'idle') {
+        return;
+      }
 
-      dispatch({
-        type: 'ADD_MESSAGE',
-        sessionId,
-        message: {
-          id: uuid(),
-          kind: 'user',
-          text: trimmed,
-          timestamp: Date.now(),
-        },
-      });
+      // 在请求真正发出前就切到 busy，封住同一事件循环内的双击重入窗口。
+      phaseRef.current = 'thinking';
+      dispatch({ type: 'SET_PHASE', phase: 'thinking' });
 
       pendingSubmitSessionRef.current.push(sessionId);
 
       try {
-        const turnId = await submitPrompt(sessionId, trimmed);
-        turnSessionMapRef.current[turnId] = turnSessionMapRef.current[turnId] ?? sessionId;
+        const submitted = await submitPrompt(sessionId, trimmed);
+        const effectiveSessionId = submitted.sessionId ?? sessionId;
+        turnSessionMapRef.current[submitted.turnId] =
+          turnSessionMapRef.current[submitted.turnId] ?? effectiveSessionId;
         releasePendingSubmitSession(sessionId);
+
+        if (
+          submitted.branchedFromSessionId &&
+          submitted.branchedFromSessionId === sessionId &&
+          effectiveSessionId !== sessionId
+        ) {
+          // 分叉成功后旧 session 的 turnDone 可能已经在切换期间到达并被忽略；
+          // 先本地兜底回 idle，避免 UI 把“正在思考”状态卡死到下一次刷新。
+          phaseRef.current = 'idle';
+          dispatch({ type: 'SET_PHASE', phase: 'idle' });
+          await refreshSessions(effectiveSessionId);
+          return;
+        }
+
+        dispatch({
+          type: 'ADD_MESSAGE',
+          sessionId: effectiveSessionId,
+          message: {
+            id: uuid(),
+            kind: 'user',
+            turnId: submitted.turnId,
+            text: trimmed,
+            timestamp: Date.now(),
+          },
+        });
       } catch (error) {
         releasePendingSubmitSession(sessionId);
         dispatch({
@@ -924,10 +1000,11 @@ export default function App() {
             timestamp: Date.now(),
           },
         });
+        phaseRef.current = 'idle';
         dispatch({ type: 'SET_PHASE', phase: 'idle' });
       }
     },
-    [releasePendingSubmitSession, submitPrompt]
+    [refreshSessions, releasePendingSubmitSession, submitPrompt]
   );
 
   const handleInterrupt = useCallback(async () => {

@@ -64,6 +64,12 @@ export interface SessionSnapshot {
   cursor: string | null;
 }
 
+export interface PromptSubmission {
+  turnId: string;
+  sessionId: string;
+  branchedFromSessionId?: string;
+}
+
 type UnknownRecord = Record<string, unknown>;
 
 /// 安全地将值转换为 Record 类型
@@ -259,11 +265,13 @@ function shouldRetryEventStream(error: unknown): boolean {
   return !message.includes('unauthorized') && !message.includes('403');
 }
 
+type SseStreamCloseReason = 'ended' | 'aborted';
+
 async function consumeSseStream(
   response: Response,
-  onMessage: (payload: string, eventId: string | null) => void,
+  onMessage: (payload: string, eventId: string | null, eventType: string) => void,
   signal: AbortSignal
-): Promise<void> {
+): Promise<SseStreamCloseReason> {
   if (!response.body) {
     throw new Error('event stream response has no body');
   }
@@ -273,15 +281,18 @@ async function consumeSseStream(
   let buffer = '';
   let dataLines: string[] = [];
   let eventId: string | null = null;
+  let eventType = 'message';
 
   const flushEvent = () => {
     if (dataLines.length === 0) {
+      eventType = 'message';
       return;
     }
     const payload = dataLines.join('\n');
     dataLines = [];
-    onMessage(payload, eventId);
+    onMessage(payload, eventId, eventType);
     eventId = null;
+    eventType = 'message';
   };
 
   while (!signal.aborted) {
@@ -306,6 +317,11 @@ async function consumeSseStream(
         eventId = line.slice(3).trimStart();
         continue;
       }
+      if (line.startsWith('event:')) {
+        const nextEventType = line.slice(6).trimStart();
+        eventType = nextEventType || 'message';
+        continue;
+      }
       if (line.startsWith('data:')) {
         dataLines.push(line.slice(5).trimStart());
       }
@@ -320,12 +336,18 @@ async function consumeSseStream(
         eventId = line.slice(3).trimStart();
         continue;
       }
+      if (line.startsWith('event:')) {
+        const nextEventType = line.slice(6).trimStart();
+        eventType = nextEventType || 'message';
+        continue;
+      }
       if (line.startsWith('data:')) {
         dataLines.push(line.slice(5).trimStart());
       }
     }
   }
   flushEvent();
+  return signal.aborted ? 'aborted' : 'ended';
 }
 
 export function useAgent(onEvent: (event: AgentEventPayload) => void) {
@@ -428,7 +450,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
           }
 
           reconnectAttemptRef.current = 0;
-          await consumeSseStream(
+          const closeReason = await consumeSseStream(
             response,
             (payload, eventId) => {
               // Check generation before processing each event
@@ -454,13 +476,10 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
             },
             controller.signal
           );
-          if (
-            !controller.signal.aborted &&
-            streamAbortRef.current === controller &&
-            connectedSessionIdRef.current === sessionId &&
-            streamGenerationRef.current === generation
-          ) {
-            scheduleReconnect();
+          if (closeReason === 'ended') {
+            // 服务端主动结束一个 SSE 响应通常代表会话已被替换或连接已终止。
+            // 这里盲目重连会把正常 EOF 放大成无限重连循环，因此只在异常路径下重试。
+            return;
           }
         } catch (error) {
           // Check generation before handling error
@@ -520,17 +539,20 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     return { messages, cursor };
   }, []);
 
-  const submitPrompt = useCallback(async (sessionId: string, text: string): Promise<string> => {
-    const response = await requestJson<{ turnId: string }>(
-      `/api/sessions/${encodeURIComponent(sessionId)}/prompts`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      }
-    );
-    return response.turnId;
-  }, []);
+  const submitPrompt = useCallback(
+    async (sessionId: string, text: string): Promise<PromptSubmission> => {
+      const response = await requestJson<PromptSubmission>(
+        `/api/sessions/${encodeURIComponent(sessionId)}/prompts`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        }
+      );
+      return response;
+    },
+    []
+  );
 
   const interrupt = useCallback(async (sessionId: string): Promise<void> => {
     await request(`/api/sessions/${encodeURIComponent(sessionId)}/interrupt`, {

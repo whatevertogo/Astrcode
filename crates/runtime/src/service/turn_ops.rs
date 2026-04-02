@@ -1,18 +1,30 @@
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use astrcode_core::{AstrError, CancelToken, Phase};
+use astrcode_core::{
+    generate_session_id, AstrError, CancelToken, Phase, SessionTurnAcquireResult, SessionTurnLease,
+    StorageEvent, StoredEvent,
+};
 use chrono::Utc;
 use uuid::Uuid;
 
-use astrcode_core::StorageEvent;
-
 use super::session_ops::normalize_session_id;
 use super::session_state::SessionState;
-use super::support::lock_anyhow;
+use super::support::{lock_anyhow, spawn_blocking_service};
 use super::{PromptAccepted, RuntimeService, ServiceError, ServiceResult};
+use crate::agent_loop::TurnOutcome;
 use astrcode_core::EventTranslator;
+
+struct SubmitTarget {
+    session_id: String,
+    branched_from_session_id: Option<String>,
+    session: Arc<SessionState>,
+    turn_lease: Box<dyn SessionTurnLease>,
+}
+
+const MAX_CONCURRENT_BRANCH_DEPTH: usize = 3;
 
 impl RuntimeService {
     pub async fn submit_prompt(
@@ -20,23 +32,26 @@ impl RuntimeService {
         session_id: &str,
         text: String,
     ) -> ServiceResult<PromptAccepted> {
-        let session_id = normalize_session_id(session_id);
-        let session = self.ensure_session_loaded(&session_id).await?;
         let turn_id = Uuid::new_v4().to_string();
+        let session_id = normalize_session_id(session_id);
+        let SubmitTarget {
+            session_id,
+            branched_from_session_id,
+            session,
+            turn_lease,
+        } = self.resolve_submit_target(&session_id, &turn_id).await?;
         let cancel = CancelToken::new();
         {
-            let mut guard = lock_anyhow(&session.cancel, "session cancel")?;
-            // 无锁互斥守卫：swap(true, SeqCst) 同时完成"测试是否已运行"和"标记为运行中"。
-            // SeqCst ordering 确保 running 标志的变更对所有 async task 可见，
-            // 包括可能正在读取 running 的 shutdown 路径。比 Acquire/Release 更强，
-            // 但此处的性能影响可忽略（每次 turn 只调用一次）。
+            let mut cancel_guard = lock_anyhow(&session.cancel, "session cancel")?;
+            let mut lease_guard = lock_anyhow(&session.turn_lease, "session turn lease")?;
             if session.running.swap(true, Ordering::SeqCst) {
                 return Err(ServiceError::Conflict(format!(
-                    "session '{}' is already running",
+                    "session '{}' entered an inconsistent running state",
                     session_id
                 )));
             }
-            *guard = cancel.clone();
+            *cancel_guard = cancel.clone();
+            *lease_guard = Some(turn_lease);
         }
 
         let state = session.clone();
@@ -45,6 +60,7 @@ impl RuntimeService {
 
         let accepted_turn_id = turn_id.clone();
         let observability = self.observability.clone();
+        let accepted_session_id = session_id.clone();
         tokio::spawn(async move {
             let turn_started_at = Instant::now();
             let initial_phase = lock_anyhow(&state.phase, "session phase")
@@ -73,8 +89,12 @@ impl RuntimeService {
                             &projected,
                             &turn_id,
                             &mut |event| {
-                                append_and_broadcast_blocking(&state, &event, &mut translator)
-                                    .map_err(|error| AstrError::Internal(error.to_string()))
+                                append_and_broadcast_from_turn_callback(
+                                    &state,
+                                    &event,
+                                    &mut translator,
+                                )
+                                .map_err(|error| AstrError::Internal(error.to_string()))
                             },
                             cancel.clone(),
                         )
@@ -83,8 +103,11 @@ impl RuntimeService {
                 Err(error) => Err(error),
             };
 
-            let succeeded = result.is_ok();
-            if let Err(error) = result {
+            let succeeded = matches!(
+                result.as_ref(),
+                Ok(TurnOutcome::Completed) | Ok(TurnOutcome::Cancelled)
+            );
+            if let Err(error) = &result {
                 // 错误时同时发送 Error 和 TurnDone 事件。TurnDone 必须发送，
                 // 即使 turn 失败了——SSE 客户端依赖 TurnDone 来检测 turn 结束，
                 // 若不发送客户端会永远等待。let _ = 忽略 broadcast 结果是因为
@@ -98,6 +121,7 @@ impl RuntimeService {
                 let turn_done = StorageEvent::TurnDone {
                     turn_id: Some(turn_id.clone()),
                     timestamp: Utc::now(),
+                    reason: Some("error".to_string()),
                 };
                 let _ = append_and_broadcast(&state, &turn_done, &mut translator).await;
             }
@@ -111,27 +135,46 @@ impl RuntimeService {
             if let Ok(mut guard) = lock_anyhow(&state.cancel, "session cancel") {
                 *guard = CancelToken::new();
             }
+            if let Ok(mut lease) = lock_anyhow(&state.turn_lease, "session turn lease") {
+                *lease = None;
+            }
             state.running.store(false, Ordering::SeqCst);
 
             let elapsed = turn_started_at.elapsed();
             observability.record_turn_execution(elapsed, succeeded);
-            if succeeded {
-                if elapsed.as_millis() >= 5_000 {
-                    log::warn!(
-                        "turn '{}' completed slowly in {}ms",
-                        turn_id,
-                        elapsed.as_millis()
-                    );
-                } else {
-                    log::info!("turn '{}' completed in {}ms", turn_id, elapsed.as_millis());
+            match &result {
+                Ok(TurnOutcome::Completed) => {
+                    if elapsed.as_millis() >= 5_000 {
+                        log::warn!(
+                            "turn '{}' completed slowly in {}ms",
+                            turn_id,
+                            elapsed.as_millis()
+                        );
+                    } else {
+                        log::info!("turn '{}' completed in {}ms", turn_id, elapsed.as_millis());
+                    }
                 }
-            } else {
-                log::warn!("turn '{}' failed in {}ms", turn_id, elapsed.as_millis());
+                Ok(TurnOutcome::Cancelled) => {
+                    log::info!("turn '{}' cancelled in {}ms", turn_id, elapsed.as_millis());
+                }
+                Ok(TurnOutcome::Error { message }) => {
+                    log::warn!(
+                        "turn '{}' ended with agent error in {}ms: {}",
+                        turn_id,
+                        elapsed.as_millis(),
+                        message
+                    );
+                }
+                Err(_) => {
+                    log::warn!("turn '{}' failed in {}ms", turn_id, elapsed.as_millis());
+                }
             }
         });
 
         Ok(PromptAccepted {
             turn_id: accepted_turn_id,
+            session_id: accepted_session_id,
+            branched_from_session_id,
         })
     }
 
@@ -144,6 +187,123 @@ impl RuntimeService {
         }
         Ok(())
     }
+}
+
+impl RuntimeService {
+    async fn resolve_submit_target(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+    ) -> ServiceResult<SubmitTarget> {
+        let mut target_session_id = session_id.to_string();
+        let mut branched_from_session_id = None;
+        let mut branch_depth = 0usize;
+
+        loop {
+            let session = self.ensure_session_loaded(&target_session_id).await?;
+            let session_manager = Arc::clone(&self.session_manager);
+            let acquire_session_id = target_session_id.clone();
+            let acquire_turn_id = turn_id.to_string();
+            let acquire_result = spawn_blocking_service("acquire session turn lease", move || {
+                session_manager
+                    .try_acquire_turn(&acquire_session_id, &acquire_turn_id)
+                    .map_err(ServiceError::from)
+            })
+            .await?;
+
+            match acquire_result {
+                SessionTurnAcquireResult::Acquired(turn_lease) => {
+                    return Ok(SubmitTarget {
+                        session_id: target_session_id,
+                        branched_from_session_id,
+                        session,
+                        turn_lease,
+                    });
+                }
+                SessionTurnAcquireResult::Busy(active_turn) => {
+                    ensure_branch_depth_within_limit(branch_depth)?;
+                    let source_session_id = target_session_id.clone();
+                    target_session_id = self
+                        .branch_session_from_busy_turn(&source_session_id, &active_turn.turn_id)
+                        .await?;
+                    branched_from_session_id = Some(source_session_id);
+                    branch_depth += 1;
+                }
+            }
+        }
+    }
+
+    async fn branch_session_from_busy_turn(
+        &self,
+        source_session_id: &str,
+        active_turn_id: &str,
+    ) -> ServiceResult<String> {
+        let session_manager = Arc::clone(&self.session_manager);
+        let source_session_id = source_session_id.to_string();
+        let active_turn_id = active_turn_id.to_string();
+        spawn_blocking_service("branch running session", move || {
+            let source_events = session_manager
+                .replay_events(&source_session_id)
+                .map_err(ServiceError::from)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(ServiceError::from)?;
+            let Some(first_event) = source_events.first() else {
+                return Err(ServiceError::NotFound(format!(
+                    "session '{}' is empty",
+                    source_session_id
+                )));
+            };
+            let working_dir = match &first_event.event {
+                StorageEvent::SessionStart { working_dir, .. } => {
+                    std::path::PathBuf::from(working_dir)
+                }
+                _ => {
+                    return Err(ServiceError::Internal(AstrError::Internal(format!(
+                        "session '{}' is missing sessionStart",
+                        source_session_id
+                    ))))
+                }
+            };
+
+            let stable_events = stable_events_before_active_turn(&source_events, &active_turn_id);
+            let parent_storage_seq = stable_events.last().map(|event| event.storage_seq);
+            let branched_session_id = generate_session_id();
+            let mut log = session_manager
+                .create_event_log(&branched_session_id, &working_dir)
+                .map_err(ServiceError::from)?;
+            log.append(&StorageEvent::SessionStart {
+                session_id: branched_session_id.clone(),
+                timestamp: Utc::now(),
+                working_dir: working_dir.to_string_lossy().to_string(),
+                parent_session_id: Some(source_session_id.clone()),
+                parent_storage_seq,
+            })
+            .map_err(ServiceError::from)?;
+
+            // 分叉只复制稳定完成的历史；当前活跃 turn 的任何事件都必须排除，
+            // 否则新分支会带着半截工具调用或流式输出继续运行，语义会变脏。
+            for stored in stable_events {
+                if matches!(stored.event, StorageEvent::SessionStart { .. }) {
+                    continue;
+                }
+                log.append(&stored.event).map_err(ServiceError::from)?;
+            }
+
+            Ok(branched_session_id)
+        })
+        .await
+    }
+}
+
+fn stable_events_before_active_turn(
+    events: &[StoredEvent],
+    active_turn_id: &str,
+) -> Vec<StoredEvent> {
+    let cutoff = events
+        .iter()
+        .position(|stored| stored.event.turn_id() == Some(active_turn_id))
+        .unwrap_or(events.len());
+    events[..cutoff].to_vec()
 }
 
 /// 异步版本：通过 spawn_blocking 将文件 I/O 委托给阻塞线程池。
@@ -177,6 +337,35 @@ fn append_and_broadcast_blocking(
     Ok(())
 }
 
+fn append_and_broadcast_from_turn_callback(
+    session: &SessionState,
+    event: &StorageEvent,
+    translator: &mut EventTranslator,
+) -> Result<()> {
+    match tokio::runtime::Handle::current().runtime_flavor() {
+        tokio::runtime::RuntimeFlavor::CurrentThread => {
+            append_and_broadcast_blocking(session, event, translator)
+        }
+        _ => tokio::task::block_in_place(|| {
+            // 只有 current-thread runtime 明确不支持 block_in_place。其余 flavor
+            // 默认按“可让出 worker”的路径处理，避免未来 Tokio 扩展 flavor 时
+            // 静默退回到直接阻塞事件循环。
+            tokio::runtime::Handle::current()
+                .block_on(append_and_broadcast(session, event, translator))
+        }),
+    }
+}
+
+fn ensure_branch_depth_within_limit(branch_depth: usize) -> ServiceResult<()> {
+    if branch_depth >= MAX_CONCURRENT_BRANCH_DEPTH {
+        return Err(ServiceError::Conflict(format!(
+            "too many concurrent branch attempts (limit: {})",
+            MAX_CONCURRENT_BRANCH_DEPTH
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -185,14 +374,13 @@ mod tests {
     use chrono::Utc;
 
     use astrcode_storage::session::EventLog;
+    use serde_json::json;
 
     use super::super::session_state::SessionWriter;
     use super::*;
     use crate::test_support::TestEnvGuard;
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn append_and_broadcast_blocking_works_on_current_thread_runtime() {
-        let _guard = TestEnvGuard::new();
+    fn build_test_state() -> (tempfile::TempDir, SessionState, EventTranslator) {
         let temp_dir = tempfile::tempdir().expect("tempdir should be created");
         let log =
             EventLog::create("test-session", temp_dir.path()).expect("event log should be created");
@@ -204,8 +392,14 @@ mod tests {
             Default::default(),
             Vec::new(),
         );
+        (temp_dir, state, EventTranslator::new(Phase::Idle))
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn append_and_broadcast_blocking_works_on_current_thread_runtime() {
+        let _guard = TestEnvGuard::new();
+        let (temp_dir, state, mut translator) = build_test_state();
         let mut receiver = state.broadcaster.subscribe();
-        let mut translator = EventTranslator::new(Phase::Idle);
 
         append_and_broadcast_blocking(
             &state,
@@ -213,6 +407,8 @@ mod tests {
                 session_id: "test-session".to_string(),
                 timestamp: Utc::now(),
                 working_dir: temp_dir.path().to_string_lossy().to_string(),
+                parent_session_id: None,
+                parent_storage_seq: None,
             },
             &mut translator,
         )
@@ -224,5 +420,100 @@ mod tests {
             record.event,
             AgentEvent::SessionStarted { ref session_id } if session_id == "test-session"
         ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn append_and_broadcast_from_turn_callback_works_on_multi_thread_runtime() {
+        let _guard = TestEnvGuard::new();
+        let (temp_dir, state, mut translator) = build_test_state();
+        let mut receiver = state.broadcaster.subscribe();
+
+        append_and_broadcast_from_turn_callback(
+            &state,
+            &StorageEvent::SessionStart {
+                session_id: "test-session".to_string(),
+                timestamp: Utc::now(),
+                working_dir: temp_dir.path().to_string_lossy().to_string(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
+            &mut translator,
+        )
+        .expect("append should succeed on multi-thread runtimes too");
+
+        let record = receiver.recv().await.expect("record should be broadcast");
+        assert_eq!(record.event_id, "1.0");
+    }
+
+    #[test]
+    fn stable_events_before_active_turn_stops_at_the_active_turn_boundary() {
+        let timestamp = Utc::now();
+        let events = vec![
+            StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent::SessionStart {
+                    session_id: "session-1".to_string(),
+                    timestamp,
+                    working_dir: "D:/workspace".to_string(),
+                    parent_session_id: None,
+                    parent_storage_seq: None,
+                },
+            },
+            StoredEvent {
+                storage_seq: 2,
+                event: StorageEvent::UserMessage {
+                    turn_id: Some("turn-1".to_string()),
+                    content: "first".to_string(),
+                    timestamp,
+                },
+            },
+            StoredEvent {
+                storage_seq: 3,
+                event: StorageEvent::TurnDone {
+                    turn_id: Some("turn-1".to_string()),
+                    timestamp,
+                    reason: Some("completed".to_string()),
+                },
+            },
+            StoredEvent {
+                storage_seq: 4,
+                event: StorageEvent::UserMessage {
+                    turn_id: Some("turn-2".to_string()),
+                    content: "second".to_string(),
+                    timestamp,
+                },
+            },
+            StoredEvent {
+                storage_seq: 5,
+                event: StorageEvent::ToolCall {
+                    turn_id: None,
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: "echo".to_string(),
+                    args: json!({"message": "legacy event without turn id"}),
+                },
+            },
+        ];
+
+        let stable = stable_events_before_active_turn(&events, "turn-2");
+        let stable_seq = stable
+            .iter()
+            .map(|event| event.storage_seq)
+            .collect::<Vec<_>>();
+
+        assert_eq!(stable_seq, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn branch_depth_guard_rejects_unbounded_branch_chains() {
+        let error = ensure_branch_depth_within_limit(MAX_CONCURRENT_BRANCH_DEPTH)
+            .expect_err("depth at the configured limit should be rejected");
+
+        assert!(matches!(error, ServiceError::Conflict(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("too many concurrent branch attempts"),
+            "conflict reason should explain why submit was rejected"
+        );
     }
 }

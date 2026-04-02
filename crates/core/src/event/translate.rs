@@ -106,6 +106,14 @@ pub struct EventTranslator {
     tool_call_names: HashMap<String, String>,
 }
 
+fn warn_missing_turn_id(storage_seq: u64, event_name: &str) {
+    log::warn!(
+        "dropping translated '{}' event at storage_seq {} because turn_id is missing",
+        event_name,
+        storage_seq
+    );
+}
+
 impl EventTranslator {
     /// 创建新的转换器
     pub fn new(phase: Phase) -> Self {
@@ -188,6 +196,8 @@ impl EventTranslator {
                         },
                         &mut records,
                     );
+                } else if !token.is_empty() {
+                    warn_missing_turn_id(stored.storage_seq, "modelDelta");
                 }
                 self.phase = Phase::Streaming;
             }
@@ -209,6 +219,8 @@ impl EventTranslator {
                         },
                         &mut records,
                     );
+                } else if !token.is_empty() {
+                    warn_missing_turn_id(stored.storage_seq, "thinkingDelta");
                 }
                 self.phase = Phase::Streaming;
             }
@@ -238,6 +250,8 @@ impl EventTranslator {
                             &mut records,
                         );
                     }
+                } else if !parts.visible_content.is_empty() || parts.reasoning_content.is_some() {
+                    warn_missing_turn_id(stored.storage_seq, "assistantMessage");
                 }
                 self.phase = Phase::Streaming;
             }
@@ -268,6 +282,8 @@ impl EventTranslator {
                         },
                         &mut records,
                     );
+                } else {
+                    warn_missing_turn_id(stored.storage_seq, "toolCallStart");
                 }
                 self.phase = Phase::CallingTool;
             }
@@ -308,6 +324,8 @@ impl EventTranslator {
                         },
                         &mut records,
                     );
+                } else {
+                    warn_missing_turn_id(stored.storage_seq, "toolCallResult");
                 }
                 self.phase = Phase::CallingTool;
             }
@@ -321,6 +339,8 @@ impl EventTranslator {
                 );
                 if let Some(turn_id) = turn_id.clone() {
                     push(AgentEvent::TurnDone { turn_id }, &mut records);
+                } else {
+                    warn_missing_turn_id(stored.storage_seq, "turnDone");
                 }
                 self.phase = Phase::Idle;
                 self.current_turn_id = None;

@@ -6,8 +6,8 @@
 use std::collections::HashSet;
 
 use astrcode_protocol::http::{
-    AuthExchangeRequest, AuthExchangeResponse, CreateSessionRequest, PromptRequest,
-    SaveActiveSelectionRequest, SessionListItem, SessionMessageDto,
+    AuthExchangeRequest, AuthExchangeResponse, CreateSessionRequest, PromptAcceptedResponse,
+    PromptRequest, SaveActiveSelectionRequest, SessionListItem, SessionMessageDto,
 };
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
@@ -384,6 +384,85 @@ async fn e2e_multiple_sessions_isolation() {
 
     assert_eq!(user_messages_a.len(), 1);
     assert_eq!(user_messages_b.len(), 1);
+}
+
+#[tokio::test]
+async fn e2e_concurrent_submit_branches_second_prompt() {
+    let (state, _guard) = test_state(None);
+    let app = build_api_router().with_state(state.clone());
+
+    let working_dir = std::env::temp_dir();
+    let working_dir = working_dir.canonicalize().unwrap_or(working_dir);
+    let working_dir = working_dir.to_string_lossy().to_string();
+
+    let create_req = auth_request("POST", "/api/sessions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&CreateSessionRequest {
+                working_dir: working_dir.clone(),
+            })
+            .expect("request should serialize"),
+        ))
+        .expect("request should build");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("response should return");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let created: SessionListItem = json_body(create_resp).await;
+
+    let submit_prompt = |session_id: &str, text: &str| {
+        let app_clone = app.clone();
+        let session_id = session_id.to_string();
+        let text = text.to_string();
+        async move {
+            let req = auth_request("POST", &format!("/api/sessions/{}/prompts", session_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&PromptRequest { text }).expect("request should serialize"),
+                ))
+                .expect("request should build");
+            let resp = app_clone
+                .oneshot(req)
+                .await
+                .expect("response should return");
+            assert_eq!(resp.status(), StatusCode::ACCEPTED);
+            json_body::<PromptAcceptedResponse>(resp).await
+        }
+    };
+
+    let first = submit_prompt(&created.session_id, "first").await;
+    let second = submit_prompt(&created.session_id, "second").await;
+
+    assert_eq!(first.session_id, created.session_id);
+    assert_eq!(first.branched_from_session_id, None);
+    assert_ne!(second.session_id, created.session_id);
+    assert_eq!(
+        second.branched_from_session_id.as_deref(),
+        Some(created.session_id.as_str())
+    );
+
+    let original_messages = wait_for_user_message_count(app.clone(), &created.session_id, 1).await;
+    let branched_messages = wait_for_user_message_count(app.clone(), &second.session_id, 1).await;
+
+    let original_user_messages = original_messages
+        .iter()
+        .filter_map(|message| match message {
+            SessionMessageDto::User { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let branched_user_messages = branched_messages
+        .iter()
+        .filter_map(|message| match message {
+            SessionMessageDto::User { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(original_user_messages, vec!["first"]);
+    assert_eq!(branched_user_messages, vec!["second"]);
 }
 
 // ---------------------------------------------------------------------------

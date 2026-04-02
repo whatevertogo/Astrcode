@@ -8,6 +8,8 @@ use tokio::sync::broadcast;
 #[derive(Debug, Clone)]
 pub struct PromptAccepted {
     pub turn_id: String,
+    pub session_id: String,
+    pub branched_from_session_id: Option<String>,
 }
 
 pub struct SessionReplay {

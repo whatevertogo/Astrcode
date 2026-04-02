@@ -1,0 +1,408 @@
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
+use std::time::Duration;
+
+use astrcode_core::store::{SessionTurnAcquireResult, SessionTurnBusy, SessionTurnLease};
+use chrono::Utc;
+use fs2::FileExt;
+use serde::{Deserialize, Serialize};
+
+use crate::{AstrError, Result};
+
+use super::paths::{session_turn_lock_path, session_turn_metadata_path};
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ActiveTurnLockPayload {
+    turn_id: String,
+    owner_pid: u32,
+    acquired_at: chrono::DateTime<Utc>,
+}
+
+const LOCK_PAYLOAD_RETRY_ATTEMPTS: usize = 8;
+const LOCK_PAYLOAD_RETRY_DELAY: Duration = Duration::from_millis(5);
+
+pub(super) fn try_acquire_session_turn(
+    session_id: &str,
+    turn_id: &str,
+) -> Result<SessionTurnAcquireResult> {
+    let path = session_turn_lock_path(session_id)?;
+    let metadata_path = session_turn_metadata_path(session_id)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .map_err(|error| {
+            AstrError::io(
+                format!("failed to open session turn lock: {}", path.display()),
+                error,
+            )
+        })?;
+
+    match file.try_lock_exclusive() {
+        Ok(()) => acquire_turn_lease(file, path, metadata_path, turn_id),
+        Err(error) if is_lock_contended(&error) => {
+            read_busy_payload_or_retry(file, path, metadata_path, turn_id)
+        }
+        Err(error) => Err(AstrError::io(
+            format!("failed to acquire session turn lock: {}", path.display()),
+            error,
+        )),
+    }
+}
+
+fn acquire_turn_lease(
+    file: File,
+    path: PathBuf,
+    metadata_path: PathBuf,
+    turn_id: &str,
+) -> Result<SessionTurnAcquireResult> {
+    let payload = ActiveTurnLockPayload {
+        turn_id: turn_id.to_string(),
+        owner_pid: std::process::id(),
+        acquired_at: Utc::now(),
+    };
+    write_lock_payload(&metadata_path, &payload)?;
+    Ok(SessionTurnAcquireResult::Acquired(Box::new(
+        FileSessionTurnLease {
+            file,
+            path,
+            metadata_path,
+        },
+    )))
+}
+
+fn read_busy_payload_or_retry(
+    file: File,
+    path: PathBuf,
+    metadata_path: PathBuf,
+    requested_turn_id: &str,
+) -> Result<SessionTurnAcquireResult> {
+    let file = file;
+    let mut last_retryable_error = None;
+
+    for attempt in 0..LOCK_PAYLOAD_RETRY_ATTEMPTS {
+        match read_lock_payload(&metadata_path) {
+            Ok(payload) => match file.try_lock_exclusive() {
+                Ok(()) => {
+                    // contended 结果和 metadata 读取不是原子操作；如果对方已经在两者之间
+                    // 释放了锁，就直接接管，避免把一把已空闲的 session 误判成 Busy。
+                    return acquire_turn_lease(file, path, metadata_path, requested_turn_id);
+                }
+                Err(lock_error) if is_lock_contended(&lock_error) => {
+                    return Ok(SessionTurnAcquireResult::Busy(session_turn_busy(payload)));
+                }
+                Err(lock_error) => {
+                    return Err(AstrError::io(
+                        format!(
+                            "failed to confirm busy session turn lock state: {}",
+                            path.display()
+                        ),
+                        lock_error,
+                    ));
+                }
+            },
+            Err(error) if should_retry_busy_payload_error(&error) => {
+                last_retryable_error = Some(error);
+
+                // metadata 与文件锁分离存储：拿到 contended 结果后，锁持有者可能还在
+                // 把 payload 刷盘，或者刚完成 unlock。这里短暂重试并趁锁释放时直接接管，
+                // 可以把瞬时竞态收敛成正常 acquire，而不是向上层抛 500。
+                match file.try_lock_exclusive() {
+                    Ok(()) => {
+                        return acquire_turn_lease(file, path, metadata_path, requested_turn_id);
+                    }
+                    Err(lock_error) if is_lock_contended(&lock_error) => {}
+                    Err(lock_error) => {
+                        return Err(AstrError::io(
+                            format!(
+                                "failed to retry session turn lock acquisition: {}",
+                                path.display()
+                            ),
+                            lock_error,
+                        ));
+                    }
+                }
+
+                if attempt + 1 < LOCK_PAYLOAD_RETRY_ATTEMPTS {
+                    std::thread::sleep(LOCK_PAYLOAD_RETRY_DELAY);
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(last_retryable_error.unwrap_or_else(|| {
+        AstrError::io(
+            format!(
+                "busy session turn metadata never became readable: {}",
+                metadata_path.display()
+            ),
+            std::io::Error::other("session turn payload was unavailable while lock stayed busy"),
+        )
+    }))
+}
+
+fn session_turn_busy(payload: ActiveTurnLockPayload) -> SessionTurnBusy {
+    SessionTurnBusy {
+        turn_id: payload.turn_id,
+        owner_pid: payload.owner_pid,
+        acquired_at: payload.acquired_at,
+    }
+}
+
+fn is_lock_contended(error: &std::io::Error) -> bool {
+    error.kind() == fs2::lock_contended_error().kind()
+        || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+}
+
+fn should_retry_busy_payload_error(error: &astrcode_core::StoreError) -> bool {
+    match error {
+        astrcode_core::StoreError::Io { source, .. } => {
+            source.kind() == std::io::ErrorKind::NotFound
+        }
+        astrcode_core::StoreError::Parse { .. } => true,
+        _ => false,
+    }
+}
+
+fn write_lock_payload(path: &PathBuf, payload: &ActiveTurnLockPayload) -> Result<()> {
+    let bytes = serde_json::to_vec_pretty(payload)
+        .map_err(|error| AstrError::parse("failed to serialize active turn lock payload", error))?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|error| {
+            AstrError::io(
+                format!("failed to open session turn metadata: {}", path.display()),
+                error,
+            )
+        })?;
+    file.set_len(0).map_err(|error| {
+        AstrError::io(
+            format!(
+                "failed to truncate session turn metadata: {}",
+                path.display()
+            ),
+            error,
+        )
+    })?;
+    file.seek(SeekFrom::Start(0)).map_err(|error| {
+        AstrError::io(
+            format!("failed to seek session turn metadata: {}", path.display()),
+            error,
+        )
+    })?;
+    file.write_all(&bytes).map_err(|error| {
+        AstrError::io(
+            format!("failed to write session turn metadata: {}", path.display()),
+            error,
+        )
+    })?;
+    file.flush().map_err(|error| {
+        AstrError::io(
+            format!("failed to flush session turn metadata: {}", path.display()),
+            error,
+        )
+    })?;
+    file.sync_all().map_err(|error| {
+        AstrError::io(
+            format!("failed to sync session turn metadata: {}", path.display()),
+            error,
+        )
+    })?;
+    Ok(())
+}
+
+fn read_lock_payload(path: &PathBuf) -> Result<ActiveTurnLockPayload> {
+    let mut file = OpenOptions::new().read(true).open(path).map_err(|error| {
+        AstrError::io(
+            format!(
+                "failed to open busy session turn metadata: {}",
+                path.display()
+            ),
+            error,
+        )
+    })?;
+    let mut raw = String::new();
+    file.read_to_string(&mut raw).map_err(|error| {
+        AstrError::io(
+            format!(
+                "failed to read busy session turn metadata: {}",
+                path.display()
+            ),
+            error,
+        )
+    })?;
+    serde_json::from_str(&raw).map_err(|error| {
+        AstrError::parse(
+            format!(
+                "failed to parse busy session turn lock payload '{}'",
+                path.display()
+            ),
+            error,
+        )
+    })
+}
+
+struct FileSessionTurnLease {
+    file: File,
+    path: PathBuf,
+    metadata_path: PathBuf,
+}
+
+impl Drop for FileSessionTurnLease {
+    fn drop(&mut self) {
+        if let Err(error) = self.file.unlock() {
+            log::warn!(
+                "failed to unlock session turn lock '{}': {}",
+                self.path.display(),
+                error
+            );
+            return;
+        }
+        if let Err(error) = std::fs::remove_file(&self.metadata_path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::warn!(
+                    "failed to remove session turn metadata '{}': {}",
+                    self.metadata_path.display(),
+                    error
+                );
+            }
+        }
+    }
+}
+
+impl SessionTurnLease for FileSessionTurnLease {}
+
+#[cfg(test)]
+mod tests {
+    use std::thread;
+
+    use astrcode_core::test_support::TestEnvGuard;
+    use fs2::FileExt;
+
+    use super::super::event_log::EventLog;
+    use super::*;
+
+    fn create_session_fixture(session_id: &str) -> tempfile::TempDir {
+        let working_dir = tempfile::tempdir().expect("tempdir should be created");
+        EventLog::create(session_id, working_dir.path()).expect("event log should be created");
+        working_dir
+    }
+
+    #[test]
+    fn second_acquire_reads_busy_payload_when_metadata_is_ready() {
+        let _guard = TestEnvGuard::new();
+        let _working_dir = create_session_fixture("lock-busy-ready");
+
+        let first = try_acquire_session_turn("lock-busy-ready", "turn-1")
+            .expect("first acquire should succeed");
+        let busy = try_acquire_session_turn("lock-busy-ready", "turn-2")
+            .expect("second acquire should return busy");
+
+        match busy {
+            SessionTurnAcquireResult::Busy(active_turn) => {
+                assert_eq!(active_turn.turn_id, "turn-1");
+            }
+            SessionTurnAcquireResult::Acquired(_) => {
+                panic!("second acquire must not take the lock while the first lease lives")
+            }
+        }
+
+        drop(first);
+    }
+
+    #[test]
+    fn missing_busy_metadata_retries_until_the_lock_is_released() {
+        let _guard = TestEnvGuard::new();
+        let _working_dir = create_session_fixture("lock-metadata-retry");
+
+        let lock_path =
+            session_turn_lock_path("lock-metadata-retry").expect("lock path should resolve");
+        let metadata_path = session_turn_metadata_path("lock-metadata-retry")
+            .expect("metadata path should resolve");
+        let holder = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .expect("lock file should open");
+        holder
+            .try_lock_exclusive()
+            .expect("holder should acquire lock");
+
+        let releaser = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(15));
+            holder.unlock().expect("holder should unlock cleanly");
+        });
+
+        let result = try_acquire_session_turn("lock-metadata-retry", "turn-2")
+            .expect("retry path should recover instead of failing");
+        releaser.join().expect("releaser should finish");
+
+        let lease = match result {
+            SessionTurnAcquireResult::Acquired(lease) => lease,
+            SessionTurnAcquireResult::Busy(_) => {
+                panic!("retry path should acquire once the stale lock is gone")
+            }
+        };
+
+        let payload =
+            read_lock_payload(&metadata_path).expect("recovered lease should rewrite payload");
+        assert_eq!(payload.turn_id, "turn-2");
+
+        drop(lease);
+        assert!(
+            !metadata_path.exists(),
+            "dropping a healthy lease should clean up its metadata file"
+        );
+    }
+
+    #[test]
+    fn invalid_busy_metadata_retries_until_a_new_owner_can_rewrite_it() {
+        let _guard = TestEnvGuard::new();
+        let _working_dir = create_session_fixture("lock-corrupt-metadata");
+
+        let lock_path =
+            session_turn_lock_path("lock-corrupt-metadata").expect("lock path should resolve");
+        let metadata_path = session_turn_metadata_path("lock-corrupt-metadata")
+            .expect("metadata path should resolve");
+        let holder = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .expect("lock file should open");
+        holder
+            .try_lock_exclusive()
+            .expect("holder should acquire lock");
+        std::fs::write(&metadata_path, "{").expect("corrupt metadata should be written");
+
+        let releaser = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(15));
+            holder.unlock().expect("holder should unlock cleanly");
+        });
+
+        let result = try_acquire_session_turn("lock-corrupt-metadata", "turn-3")
+            .expect("corrupt busy metadata should be recoverable once the lock is free");
+        releaser.join().expect("releaser should finish");
+
+        let lease = match result {
+            SessionTurnAcquireResult::Acquired(lease) => lease,
+            SessionTurnAcquireResult::Busy(_) => {
+                panic!("corrupt metadata should not leave the session permanently busy")
+            }
+        };
+
+        let payload =
+            read_lock_payload(&metadata_path).expect("new owner should replace corrupt metadata");
+        assert_eq!(payload.turn_id, "turn-3");
+
+        drop(lease);
+    }
+}

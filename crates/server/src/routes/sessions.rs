@@ -116,6 +116,8 @@ pub(crate) async fn submit_prompt(
         StatusCode::ACCEPTED,
         Json(PromptAcceptedResponse {
             turn_id: accepted.turn_id,
+            session_id: accepted.session_id,
+            branched_from_session_id: accepted.branched_from_session_id,
         }),
     ))
 }

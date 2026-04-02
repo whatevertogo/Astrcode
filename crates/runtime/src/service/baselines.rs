@@ -85,6 +85,8 @@ fn seed_session_log(session_id: &str, working_dir: &Path, turns: usize) {
             session_id: session_id.to_string(),
             timestamp: started_at,
             working_dir: working_dir.display().to_string(),
+            parent_session_id: None,
+            parent_storage_seq: None,
         },
     );
 
@@ -117,6 +119,7 @@ fn seed_session_log(session_id: &str, working_dir: &Path, turns: usize) {
             StorageEvent::TurnDone {
                 turn_id: Some(turn_id),
                 timestamp,
+                reason: Some("completed".to_string()),
             },
         );
     }
@@ -266,7 +269,7 @@ async fn reconnect_with_stale_cursor_falls_back_to_disk_and_records_it() {
 }
 
 #[tokio::test]
-async fn concurrent_submit_rejects_second_prompt_and_records_single_turn() {
+async fn concurrent_submit_branches_second_prompt_and_records_two_turns() {
     let _guard = TestEnvGuard::new();
     let service = RuntimeService::from_capabilities(empty_capabilities())
         .expect("runtime service should initialize");
@@ -278,21 +281,50 @@ async fn concurrent_submit_rejects_second_prompt_and_records_single_turn() {
         .await
         .expect("session should be created");
 
-    service
+    let first = service
         .submit_prompt(&session.session_id, "first".to_string())
         .await
         .expect("first prompt should be accepted");
     let second = service
         .submit_prompt(&session.session_id, "second".to_string())
         .await
-        .expect_err("second prompt should be rejected while the first turn runs");
-    assert!(
-        second.to_string().contains("is already running"),
-        "concurrent submission must fail with a running-session conflict"
+        .expect("second prompt should branch while the first turn runs");
+    assert_eq!(first.session_id, session.session_id);
+    assert_eq!(first.branched_from_session_id, None);
+    assert_ne!(second.session_id, session.session_id);
+    assert_eq!(
+        second.branched_from_session_id.as_deref(),
+        Some(session.session_id.as_str())
     );
 
     wait_until_idle(&service).await;
+    let (original_messages, _) = service
+        .load_session_snapshot(&session.session_id)
+        .await
+        .expect("original session snapshot should load");
+    let (branched_messages, _) = service
+        .load_session_snapshot(&second.session_id)
+        .await
+        .expect("branched session snapshot should load");
+
+    let original_user_messages = original_messages
+        .iter()
+        .filter_map(|message| match message {
+            crate::service::SessionMessage::User { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let branched_user_messages = branched_messages
+        .iter()
+        .filter_map(|message| match message {
+            crate::service::SessionMessage::User { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(original_user_messages, vec!["first"]);
+    assert_eq!(branched_user_messages, vec!["second"]);
+
     let metrics = service.observability_snapshot();
-    assert_eq!(metrics.turn_execution.total, 1);
+    assert_eq!(metrics.turn_execution.total, 2);
     assert_eq!(metrics.turn_execution.failures, 0);
 }

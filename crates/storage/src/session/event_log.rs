@@ -181,12 +181,34 @@ impl EventLog {
                 e,
             )
         })?;
+        let started_mid_line = if offset == 0 {
+            false
+        } else {
+            file.seek(std::io::SeekFrom::Start(offset - 1))
+                .map_err(|e| crate::AstrError::io("failed to seek in session file", e))?;
+            let mut previous = [0u8; 1];
+            file.read_exact(&mut previous)
+                .map_err(|e| crate::AstrError::io("failed to inspect session file tail", e))?;
+            previous[0] != b'\n'
+        };
         file.seek(std::io::SeekFrom::Start(offset))
             .map_err(|e| crate::AstrError::io("failed to seek in session file", e))?;
 
         let mut content = String::new();
         file.read_to_string(&mut content)
             .map_err(|e| crate::AstrError::io("failed to read session file tail", e))?;
+
+        if started_mid_line {
+            let Some((_, remaining)) = content.split_once('\n') else {
+                let mut last_seq: Option<u64> = None;
+                for event_result in EventLogIterator::from_path(path)? {
+                    let event = event_result?;
+                    last_seq = Some(event.storage_seq);
+                }
+                return Ok(last_seq.unwrap_or(0));
+            };
+            content = remaining.to_string();
+        }
 
         for line in content.lines().rev() {
             let trimmed = line.trim();
@@ -207,6 +229,36 @@ impl EventLog {
             last_seq = Some(event.storage_seq);
         }
         Ok(last_seq.unwrap_or(0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use astrcode_core::StorageEvent;
+    use chrono::Utc;
+
+    #[test]
+    fn last_storage_seq_tail_scan_skips_partial_first_line() {
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let path = temp_dir.path().join("session-test-session.jsonl");
+        let mut log = EventLog::create_at_path("test-session", path.clone()).expect("event log");
+
+        for index in 0..3 {
+            log.append_stored(&StorageEvent::AssistantFinal {
+                turn_id: Some(format!("turn-{index}")),
+                content: "x".repeat(40_000),
+                reasoning_content: None,
+                reasoning_signature: None,
+                timestamp: Some(Utc::now()),
+            })
+            .expect("append should succeed");
+        }
+
+        assert_eq!(
+            EventLog::last_storage_seq_from_path(&path).expect("tail scan should succeed"),
+            3
+        );
     }
 }
 

@@ -64,7 +64,10 @@ pub use registry::{
 pub use registry::{ToolCapabilityInvoker, ToolRegistry, ToolRegistryBuilder};
 pub use runtime::{ManagedRuntimeComponent, RuntimeCoordinator, RuntimeHandle};
 pub use session::{DeleteProjectResult, SessionEventRecord, SessionMessage, SessionMeta};
-pub use store::{EventLogWriter, SessionManager, StoreError, StoreResult};
+pub use store::{
+    EventLogWriter, SessionManager, SessionTurnAcquireResult, SessionTurnBusy, SessionTurnLease,
+    StoreError, StoreResult,
+};
 pub use tool::{
     SessionId, Tool, ToolCapabilityMetadata, ToolContext, ToolPromptMetadata,
     DEFAULT_MAX_OUTPUT_SIZE,

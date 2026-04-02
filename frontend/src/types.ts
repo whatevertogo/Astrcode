@@ -99,6 +99,8 @@ export interface SessionMeta {
   title: string;
   createdAt: string;
   updatedAt: string;
+  parentSessionId?: string;
+  parentStorageSeq?: number;
   phase: Phase;
 }
 

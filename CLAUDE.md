@@ -96,7 +96,10 @@ protocol (纯 DTO，无业务依赖)
 - **Windows Home 目录测试**: `dirs::home_dir()` 不受临时环境变量影响；用 `test_support::test_home_dir()` / `TestEnvGuard`
 - **PR 评论修复前**: 先查 `git status --short` 和 `git diff`，避免覆盖未提交改动
 - **代码审查单可能滞后**: 处理 review / issue 清单前，先打开对应文件确认问题在当前仓库里仍然存在；这里已经出现过审查结论落后于实现的情况（例如工具路径边界、turn 竞态、会话尾部扫描等项已先被修复）
-- **Runtime / Core 边界**: 可持久化状态、投影、注册表、事件存储放在 `crates/core`；`RuntimeService` 只持有进程内运行态（broadcast、cancel、活动 session），不要把运行态重新下沉进 core
 - **Protocol 独立**: `crates/protocol` 不得依赖 `core/runtime`；所有跨边界数据都通过显式 DTO 和 mapper 转换，避免重新出现“共享内部类型就是协议”的耦合
 - **Server 入口瘦身后**: `crates/server/src/main.rs` 只保留启动与装配；新增逻辑优先落到 `routes/`、`mapper.rs`、`bootstrap.rs`，避免重新把 HTTP 路由、DTO 转换、静态资源托管全部堆回入口
-- **当前 `cargo test --workspace` 在本机可能被 Tauri sidecar 权限拦截**: `src-tauri` 的 build script 访问 `binaries/astrcode-server-<triple>.exe` 时可能报 `Os { code: 5, kind: PermissionDenied }`。改 Rust 代码时先用 `cargo test --workspace --exclude astrcode` 验证业务 crate，再单独排查桌面端打包权限。
+- **当前 `cargo test --workspace` 在本机可能被 Tauri sidecar 权限拦截**: `src-tauri` 的 build script 访问 `binaries/astrcode-server-<triple>.exe` 时可能报 `Os { code: 5, kind: PermissionDenied }`。改 Rust 代码时先用 `cargo test --workspace --exclude astrcode` 验证业务 crate，再单独排查桌面端打包权限 
+
+# 注意
+
+- 环境变量都放runtime-config/src/constants.rs里面

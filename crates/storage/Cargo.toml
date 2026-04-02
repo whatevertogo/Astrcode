@@ -8,6 +8,7 @@ authors.workspace = true
 [dependencies]
 astrcode-core = { path = "../core" }
 chrono.workspace = true
+fs2.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true

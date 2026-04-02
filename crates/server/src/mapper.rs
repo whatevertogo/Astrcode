@@ -4,7 +4,7 @@
 //
 // 第二部分严格来说不属于 mapper——它包含活跃配置选择、模型枚举、API key 格式化等业务逻辑。
 // 当前放在这里是因为这些逻辑仅被 HTTP route 调用，且与 DTO 构造紧密耦合。
-// 如果未来配置解析变复杂，应考虑将 resolve_* 函数移到 runtime-config crate。
+// TODO:如果未来配置解析变复杂，应考虑将 resolve_* 函数移到 runtime-config crate。
 
 use astrcode_core::{
     plugin::PluginEntry, AgentEvent, CapabilityDescriptor, Phase, PluginHealth, PluginState,
@@ -34,6 +34,8 @@ pub(crate) fn to_session_list_item(meta: SessionMeta) -> SessionListItem {
         title: meta.title,
         created_at: meta.created_at.to_rfc3339(),
         updated_at: meta.updated_at.to_rfc3339(),
+        parent_session_id: meta.parent_session_id,
+        parent_storage_seq: meta.parent_storage_seq,
         phase: to_phase_dto(meta.phase),
     }
 }

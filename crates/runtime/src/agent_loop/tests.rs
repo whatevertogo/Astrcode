@@ -29,7 +29,7 @@ use astrcode_core::StorageEvent;
 use astrcode_core::ToolRegistry;
 use astrcode_core::{LlmMessage, ToolCallRequest, ToolDefinition, ToolExecutionResult};
 
-use super::AgentLoop;
+use super::{AgentLoop, TurnOutcome};
 
 fn make_state(user_text: &str) -> AgentState {
     AgentState {
@@ -432,8 +432,7 @@ async fn tool_events_are_ordered_and_turn_finishes() {
         .register(Box::new(QuickTool))
         .build();
     let factory = Arc::new(StaticProviderFactory { provider });
-    let loop_runner =
-        AgentLoop::from_capabilities(factory, capabilities_from_tools(tools)).with_max_steps(8);
+    let loop_runner = AgentLoop::from_capabilities(factory, capabilities_from_tools(tools));
     let state = make_state("list files");
 
     let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -443,10 +442,11 @@ async fn tool_events_are_ordered_and_turn_finishes() {
         Ok(())
     };
 
-    loop_runner
+    let outcome = loop_runner
         .run_turn(&state, "turn-1", &mut on_event, CancelToken::new())
         .await
         .expect("turn should complete");
+    assert_eq!(outcome, TurnOutcome::Completed);
 
     let events = events.lock().expect("lock").clone();
     let start_idx = events
@@ -464,6 +464,10 @@ async fn tool_events_are_ordered_and_turn_finishes() {
 
     assert!(start_idx < result_idx);
     assert!(result_idx < done_idx);
+    assert!(matches!(
+        &events[done_idx],
+        StorageEvent::TurnDone { reason, .. } if reason.as_deref() == Some("completed")
+    ));
 }
 
 #[tokio::test]
@@ -484,8 +488,7 @@ async fn interrupt_emits_error_and_turn_done() {
     let tools = ToolRegistry::builder().register(Box::new(SlowTool)).build();
 
     let factory = Arc::new(StaticProviderFactory { provider });
-    let loop_runner =
-        AgentLoop::from_capabilities(factory, capabilities_from_tools(tools)).with_max_steps(8);
+    let loop_runner = AgentLoop::from_capabilities(factory, capabilities_from_tools(tools));
     let state = make_state("run slow");
 
     let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -502,19 +505,23 @@ async fn interrupt_emits_error_and_turn_done() {
         events_clone.lock().expect("lock").push(e);
         Ok(())
     };
-    loop_runner
+    let outcome = loop_runner
         .run_turn(&state, "turn-2", &mut on_event, cancel)
         .await
         .expect("turn should end cleanly");
+    assert_eq!(outcome, TurnOutcome::Cancelled);
     cancel_task.await.expect("cancel task should join");
 
     let events = events.lock().expect("lock").clone();
     let has_error = events
         .iter()
         .any(|e| matches!(e, StorageEvent::Error { message, .. } if message == "interrupted"));
-    let has_done = events
-        .iter()
-        .any(|e| matches!(e, StorageEvent::TurnDone { .. }));
+    let has_done = events.iter().any(|e| {
+        matches!(
+            e,
+            StorageEvent::TurnDone { reason, .. } if reason.as_deref() == Some("cancelled")
+        )
+    });
 
     assert!(has_error, "should have Error(interrupted)");
     assert!(has_done, "should have TurnDone");
@@ -580,8 +587,8 @@ async fn deltas_emit_before_stream_completion() {
 }
 
 #[tokio::test]
-async fn reaching_max_steps_does_not_emit_error_event() {
-    let scripted = (0..8)
+async fn long_tool_chains_complete_without_a_step_cap() {
+    let mut scripted = (0..8)
         .map(|idx| LlmOutput {
             content: format!("step-{idx}"),
             tool_calls: vec![ToolCallRequest {
@@ -592,6 +599,11 @@ async fn reaching_max_steps_does_not_emit_error_event() {
             reasoning: None,
         })
         .collect::<Vec<_>>();
+    scripted.push(LlmOutput {
+        content: "done".to_string(),
+        tool_calls: vec![],
+        reasoning: None,
+    });
 
     let provider = Arc::new(ScriptedProvider {
         responses: Mutex::new(VecDeque::from(scripted)),
@@ -613,27 +625,28 @@ async fn reaching_max_steps_does_not_emit_error_event() {
         Ok(())
     };
 
-    loop_runner
+    let outcome = loop_runner
         .run_turn(&state, "turn-4", &mut on_event, CancelToken::new())
         .await
         .expect("turn should complete");
+    assert_eq!(outcome, TurnOutcome::Completed);
 
     let events = events.lock().expect("lock").clone();
-    let has_max_error = events.iter().any(|event| {
+    let tool_results = events
+        .iter()
+        .filter(|event| matches!(event, StorageEvent::ToolResult { .. }))
+        .count();
+    let has_turn_done = events.iter().any(|event| {
         matches!(
             event,
-            StorageEvent::Error { message, .. }
-            if message.contains("max tool iteration")
+            StorageEvent::TurnDone { reason, .. } if reason.as_deref() == Some("completed")
         )
     });
-    let has_turn_done = events
-        .iter()
-        .any(|event| matches!(event, StorageEvent::TurnDone { .. }));
 
-    assert!(has_turn_done, "should always emit TurnDone at max steps");
+    assert_eq!(tool_results, 8, "every scripted tool call should complete");
     assert!(
-        !has_max_error,
-        "max step exhaustion should not be surfaced as user-visible error"
+        has_turn_done,
+        "completed turns should carry the completed reason"
     );
 }
 
@@ -674,8 +687,7 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
         .build();
 
     let factory = Arc::new(StaticProviderFactory { provider });
-    let loop_runner =
-        AgentLoop::from_capabilities(factory, capabilities_from_tools(tools)).with_max_steps(8);
+    let loop_runner = AgentLoop::from_capabilities(factory, capabilities_from_tools(tools));
     let state = AgentState {
         session_id: "test".into(),
         working_dir: project.path().to_path_buf(),
@@ -774,8 +786,7 @@ async fn reuses_prompt_contributor_cache_across_llm_steps() {
         .build();
     let factory = Arc::new(StaticProviderFactory { provider });
     let loop_runner = AgentLoop::from_capabilities(factory, capabilities_from_tools(tools))
-        .with_prompt_composer(composer)
-        .with_max_steps(8);
+        .with_prompt_composer(composer);
     let state = make_state("cache prompt");
 
     loop_runner
@@ -888,8 +899,7 @@ async fn denied_tool_calls_emit_failure_without_executing_tool() {
         .with_policy_engine(Arc::new(DenyCapabilityPolicy {
             capability_name: "policyTool".to_string(),
             reason: "policy blocked tool".to_string(),
-        }))
-        .with_max_steps(8);
+        }));
     let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
     let events_clone = Arc::clone(&events);
     let mut on_event = move |event: StorageEvent| {
@@ -962,8 +972,7 @@ async fn ask_policy_uses_approval_broker_before_tool_execution() {
             prompt: "Allow policyTool?".to_string(),
             default: ApprovalDefault::Deny,
         }))
-        .with_approval_broker(broker)
-        .with_max_steps(8);
+        .with_approval_broker(broker);
 
     loop_runner
         .run_turn(
@@ -1023,8 +1032,7 @@ async fn denied_approval_returns_failed_tool_result_without_execution() {
             prompt: "Allow policyTool?".to_string(),
             default: ApprovalDefault::Allow,
         }))
-        .with_approval_broker(broker)
-        .with_max_steps(8);
+        .with_approval_broker(broker);
     let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
     let events_clone = Arc::clone(&events);
     let mut on_event = move |event: StorageEvent| {
@@ -1160,7 +1168,7 @@ async fn unified_capability_router_executes_builtin_and_plugin_tools() {
         .expect("capability router should build");
 
     let factory = Arc::new(StaticProviderFactory { provider });
-    let loop_runner = AgentLoop::from_capabilities(factory, capabilities).with_max_steps(8);
+    let loop_runner = AgentLoop::from_capabilities(factory, capabilities);
     let state = AgentState {
         session_id: "test".into(),
         working_dir: workspace.path().to_path_buf(),

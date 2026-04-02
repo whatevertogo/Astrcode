@@ -65,17 +65,18 @@ impl EventLog {
                 continue;
             };
 
-            let (created_at, working_dir, title) = match Self::read_session_head_meta(&path) {
-                Ok(meta) => meta,
-                Err(error) => {
-                    log::warn!(
-                        "skipping unreadable session file '{}': {}",
-                        path.display(),
-                        error
-                    );
-                    continue;
-                }
-            };
+            let (created_at, working_dir, title, parent_session_id, parent_storage_seq) =
+                match Self::read_session_head_meta(&path) {
+                    Ok(meta) => meta,
+                    Err(error) => {
+                        log::warn!(
+                            "skipping unreadable session file '{}': {}",
+                            path.display(),
+                            error
+                        );
+                        continue;
+                    }
+                };
             let updated_at = Self::read_last_timestamp(&path).unwrap_or(created_at);
             let phase = Self::read_last_phase(&path).unwrap_or(Phase::Idle);
             metas.push(SessionMeta {
@@ -85,6 +86,8 @@ impl EventLog {
                 title,
                 created_at,
                 updated_at,
+                parent_session_id,
+                parent_storage_seq,
                 phase,
             });
         }
@@ -216,7 +219,9 @@ impl EventLog {
         ))
     }
 
-    fn read_session_head_meta(path: &Path) -> Result<(DateTime<Utc>, String, String)> {
+    fn read_session_head_meta(
+        path: &Path,
+    ) -> Result<(DateTime<Utc>, String, String, Option<String>, Option<u64>)> {
         let file = File::open(path).map_err(|error| {
             AstrError::io(
                 format!("failed to open session file: {}", path.display()),
@@ -228,6 +233,8 @@ impl EventLog {
         let mut created_at = None;
         let mut working_dir = None;
         let mut title = None;
+        let mut parent_session_id = None;
+        let mut parent_storage_seq = None;
 
         for (i, line) in reader.lines().enumerate() {
             let line = line
@@ -256,11 +263,15 @@ impl EventLog {
                 StorageEvent::SessionStart {
                     timestamp,
                     working_dir: session_working_dir,
+                    parent_session_id: source_session_id,
+                    parent_storage_seq: source_storage_seq,
                     ..
                 } => {
                     if created_at.is_none() {
                         created_at = Some(timestamp);
                         working_dir = Some(session_working_dir);
+                        parent_session_id = source_session_id;
+                        parent_storage_seq = source_storage_seq;
                     }
                 }
                 StorageEvent::UserMessage { content, .. } if title.is_none() => {
@@ -282,7 +293,13 @@ impl EventLog {
         })?;
         let working_dir = working_dir.unwrap_or_default();
         let title = title.unwrap_or_else(|| "新会话".to_string());
-        Ok((created_at, working_dir, title))
+        Ok((
+            created_at,
+            working_dir,
+            title,
+            parent_session_id,
+            parent_storage_seq,
+        ))
     }
 
     fn read_last_timestamp(path: &Path) -> Result<DateTime<Utc>> {
@@ -529,6 +546,8 @@ mod tests {
                     session_id: "session-1".to_string(),
                     timestamp: created_at,
                     working_dir: "/tmp/project".to_string(),
+                    parent_session_id: None,
+                    parent_storage_seq: None,
                 },
             })
             .expect("session start should serialize"),
@@ -564,6 +583,8 @@ mod tests {
                     session_id: "session-2".to_string(),
                     timestamp: created_at,
                     working_dir: "/tmp/project".to_string(),
+                    parent_session_id: None,
+                    parent_storage_seq: None,
                 },
             })
             .expect("session start should serialize"),
@@ -673,6 +694,8 @@ mod tests {
                     session_id: id_a.to_string(),
                     timestamp,
                     working_dir: working_dir.to_string(),
+                    parent_session_id: None,
+                    parent_storage_seq: None,
                 },
             }],
         );
@@ -684,6 +707,8 @@ mod tests {
                     session_id: id_b.to_string(),
                     timestamp,
                     working_dir: working_dir.to_string(),
+                    parent_session_id: None,
+                    parent_storage_seq: None,
                 },
             }],
         );
@@ -696,6 +721,8 @@ mod tests {
                     session_id: id_other.to_string(),
                     timestamp,
                     working_dir: other_working_dir.to_string(),
+                    parent_session_id: None,
+                    parent_storage_seq: None,
                 },
             }],
         );
@@ -729,6 +756,8 @@ mod tests {
                     session_id: session_id.to_string(),
                     timestamp,
                     working_dir: working_dir.to_string(),
+                    parent_session_id: None,
+                    parent_storage_seq: None,
                 },
             }],
         );
@@ -762,6 +791,8 @@ mod tests {
                     session_id: id.to_string(),
                     timestamp,
                     working_dir: working_dir.to_string(),
+                    parent_session_id: None,
+                    parent_storage_seq: None,
                 },
             }],
         );
@@ -793,6 +824,8 @@ mod tests {
                     session_id: valid_id.to_string(),
                     timestamp,
                     working_dir: working_dir.to_string(),
+                    parent_session_id: None,
+                    parent_storage_seq: None,
                 },
             }],
         );

@@ -19,6 +19,7 @@ const BOOTSTRAP_WAIT_TIMEOUT_MS = 8000;
 const BOOTSTRAP_WAIT_INTERVAL_MS = 50;
 const BROWSER_BOOTSTRAP_PATH = '/__astrcode__/run-info';
 const LOCAL_DEV_PORT = '5173';
+const BOOTSTRAP_SESSION_ATTEMPTS = 2;
 
 interface BrowserBootstrapPayload {
   token?: string;
@@ -64,6 +65,15 @@ function cacheBootstrapToken(token: string): void {
 function cacheServerSession(token: string, expiresAtMs: number): void {
   sessionToken = token;
   sessionTokenExpiresAtMs = expiresAtMs;
+}
+
+function clearCachedBootstrapToken(): void {
+  bootstrapToken = null;
+}
+
+function clearServerSession(): void {
+  sessionToken = null;
+  sessionTokenExpiresAtMs = 0;
 }
 
 function hasDesktopBootstrap(): boolean {
@@ -164,33 +174,63 @@ function clearTokenFromUrl(): void {
   window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
 }
 
-export function ensureServerSession(): Promise<void> {
+async function bootstrapServerSession(): Promise<void> {
+  await waitForDesktopBootstrap();
+  if (!bootstrapToken) {
+    bootstrapToken = getBootstrapToken();
+    if (bootstrapToken) {
+      clearTokenFromUrl();
+    }
+  }
+  if (!bootstrapToken) {
+    await hydrateBrowserBootstrap();
+  }
+  if (!bootstrapToken) {
+    throw new Error('未找到可用于交换的 bootstrap 凭据。');
+  }
+  if (!sessionToken || Date.now() >= sessionTokenExpiresAtMs) {
+    try {
+      await exchangeBootstrapToken(bootstrapToken);
+    } catch (error) {
+      // exchange 失败后当前 bootstrap token 可能已经被服务端单次消费，
+      // 必须清空缓存，后续 ensure 才能重新走 bridge/注入拿到新的 token。
+      clearCachedBootstrapToken();
+      clearServerSession();
+      throw error;
+    }
+  }
+}
+
+function getOrStartBootstrapSession(): Promise<void> {
   if (!bootstrapSessionReady) {
-    bootstrapSessionReady = (async () => {
-      await waitForDesktopBootstrap();
-      if (!bootstrapToken) {
-        bootstrapToken = getBootstrapToken();
-        if (bootstrapToken) {
-          clearTokenFromUrl();
-        }
+    const pendingBootstrap = bootstrapServerSession();
+    const trackedBootstrap = pendingBootstrap.finally(() => {
+      if (bootstrapSessionReady === trackedBootstrap) {
+        bootstrapSessionReady = null;
       }
-      if (!bootstrapToken) {
-        await hydrateBrowserBootstrap();
-      }
-      if (!bootstrapToken) {
-        throw new Error('未找到可用于交换的 bootstrap 凭据。');
-      }
-      if (!sessionToken || Date.now() >= sessionTokenExpiresAtMs) {
-        await exchangeBootstrapToken(bootstrapToken);
-      }
-    })().finally(() => {
-      bootstrapSessionReady = null;
     });
+    bootstrapSessionReady = trackedBootstrap;
   }
 
-  return bootstrapSessionReady.then(() => {
-    if (!sessionToken) {
-      throw new Error('本地服务鉴权会话尚未建立。');
+  return bootstrapSessionReady;
+}
+
+export async function ensureServerSession(): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < BOOTSTRAP_SESSION_ATTEMPTS; attempt += 1) {
+    try {
+      await getOrStartBootstrapSession();
+      if (!sessionToken) {
+        throw new Error('本地服务鉴权会话尚未建立。');
+      }
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt + 1 >= BOOTSTRAP_SESSION_ATTEMPTS) {
+        throw error;
+      }
     }
-  });
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
