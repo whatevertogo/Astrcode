@@ -232,6 +232,12 @@ impl EventLog {
     }
 }
 
+impl EventLogWriter for EventLog {
+    fn append(&mut self, event: &StorageEvent) -> Result<StoredEvent> {
+        self.append_stored(event)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,11 +265,5 @@ mod tests {
             EventLog::last_storage_seq_from_path(&path).expect("tail scan should succeed"),
             3
         );
-    }
-}
-
-impl EventLogWriter for EventLog {
-    fn append(&mut self, event: &StorageEvent) -> Result<StoredEvent> {
-        self.append_stored(event)
     }
 }

@@ -329,6 +329,7 @@ mod tests {
             .expect("metadata path should resolve");
         let holder = OpenOptions::new()
             .create(true)
+            .truncate(true)
             .read(true)
             .write(true)
             .open(&lock_path)
@@ -375,6 +376,7 @@ mod tests {
             .expect("metadata path should resolve");
         let holder = OpenOptions::new()
             .create(true)
+            .truncate(true)
             .read(true)
             .write(true)
             .open(&lock_path)

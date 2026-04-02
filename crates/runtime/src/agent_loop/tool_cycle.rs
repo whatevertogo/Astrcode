@@ -4,6 +4,7 @@ use astrcode_core::{
     ApprovalPending, ApprovalResolution, CancelToken, CapabilityCall, PolicyVerdict, Result,
     ToolExecutionResult,
 };
+use tokio::sync::mpsc;
 
 use super::AgentLoop;
 use astrcode_core::AgentState;
@@ -118,10 +119,81 @@ async fn execute_raw_tool_call(
     })?;
 
     let start = Instant::now();
+    let (tool_output_tx, mut tool_output_rx) = mpsc::unbounded_channel();
+    let tool_call_for_execution = tool_call.clone();
+    let tool_ctx_for_execution = ctx.clone().with_tool_output_sender(tool_output_tx);
 
     // Yield before local IO-heavy tools so other tasks can make progress between tool calls.
     tokio::task::yield_now().await;
-    let mut result = capabilities.execute_tool(&tool_call, ctx).await;
+    let mut execute_tool = Some(Box::pin(async move {
+        capabilities
+            .execute_tool(&tool_call_for_execution, &tool_ctx_for_execution)
+            .await
+    }));
+    let mut execution_result = None;
+    let mut output_stream_open = true;
+
+    while execution_result.is_none() || output_stream_open {
+        if execution_result.is_none() {
+            tokio::select! {
+                result = execute_tool
+                    .as_mut()
+                    .expect("tool future should exist until it resolves")
+                    .as_mut() => {
+                    execution_result = Some(result);
+                    // Drop runtime's last sender clone as soon as the tool future resolves so the
+                    // receiver can observe channel closure after background reader threads drain.
+                    drop(execute_tool.take());
+                    // Safety: the tool future resolving guarantees all background reader threads
+                    // (e.g. shell stdout/stderr) have already been joined *inside* the tool impl
+                    // before it returned. Every sender clone is therefore dropped, so the channel
+                    // is already closed or will close as soon as the tokio runtime flushes
+                    // remaining buffered items. The drain loop below (recv() after this branch)
+                    // is safe to assume no new deltas can arrive — it only empties the buffer.
+                }
+                maybe_delta = tool_output_rx.recv(), if output_stream_open => {
+                    match maybe_delta {
+                        Some(delta) => {
+                            if let Err(error) = on_event(StorageEvent::ToolCallDelta {
+                                turn_id: Some(turn_id.to_string()),
+                                tool_call_id: delta.tool_call_id,
+                                tool_name: delta.tool_name,
+                                stream: delta.stream,
+                                delta: delta.delta,
+                            }) {
+                                ctx.cancel().cancel();
+                                return Err(error);
+                            }
+                        }
+                        None => {
+                            output_stream_open = false;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        match tool_output_rx.recv().await {
+            Some(delta) => {
+                if let Err(error) = on_event(StorageEvent::ToolCallDelta {
+                    turn_id: Some(turn_id.to_string()),
+                    tool_call_id: delta.tool_call_id,
+                    tool_name: delta.tool_name,
+                    stream: delta.stream,
+                    delta: delta.delta,
+                }) {
+                    ctx.cancel().cancel();
+                    return Err(error);
+                }
+            }
+            None => {
+                output_stream_open = false;
+            }
+        }
+    }
+
+    let mut result = execution_result.expect("tool execution future should resolve");
     result.duration_ms = start.elapsed().as_millis() as u64;
     on_event(StorageEvent::ToolResult {
         turn_id: Some(turn_id.to_string()),
