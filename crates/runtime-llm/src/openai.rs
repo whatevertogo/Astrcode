@@ -324,16 +324,18 @@ enum ParsedSseLine {
 /// 解析单行 SSE 文本。
 ///
 /// 期望格式：`data: <json>` 或 `data: [DONE]`。
-/// 空行或不带 `data: ` 前缀的行返回 `Ignore`。
+/// 兼容 `data:` 后跟零个或多个空格（即 `data:<json>` 和 `data:  <json>` 均合法）。
+/// 空行或不带 `data:` 前缀的行返回 `Ignore`。
 fn parse_sse_line(line: &str) -> Result<ParsedSseLine> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return Ok(ParsedSseLine::Ignore);
     }
 
-    let Some(data) = trimmed.strip_prefix("data: ") else {
+    let Some(after_prefix) = trimmed.strip_prefix("data:") else {
         return Ok(ParsedSseLine::Ignore);
     };
+    let data = after_prefix.trim_start();
 
     if data == "[DONE]" {
         return Ok(ParsedSseLine::Done);
@@ -790,6 +792,31 @@ mod tests {
     #[test]
     fn parse_sse_line_recognizes_done() {
         let parsed = parse_sse_line("data: [DONE]").expect("line should parse");
+        assert!(matches!(parsed, ParsedSseLine::Done));
+    }
+
+    #[test]
+    fn parse_sse_line_tolerates_no_space_after_data_colon() {
+        // Some OpenAI-compatible backends emit `data:<json>` without a space.
+        let parsed =
+            parse_sse_line(r#"data:{"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}"#)
+                .expect("line should parse");
+        assert!(matches!(parsed, ParsedSseLine::Chunk(_)));
+    }
+
+    #[test]
+    fn parse_sse_line_tolerates_multiple_spaces_after_data_colon() {
+        // Some OpenAI-compatible backends emit extra whitespace after `data:`.
+        let parsed = parse_sse_line(
+            r#"data:   {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}"#,
+        )
+        .expect("line should parse");
+        assert!(matches!(parsed, ParsedSseLine::Chunk(_)));
+    }
+
+    #[test]
+    fn parse_sse_line_done_tolerates_no_space() {
+        let parsed = parse_sse_line("data:[DONE]").expect("line should parse");
         assert!(matches!(parsed, ParsedSseLine::Done));
     }
 
