@@ -1,4 +1,4 @@
-//! Configuration data types: Config, Profile, and TestResult.
+//! Configuration data types: Config, RuntimeConfig, Profile, and TestResult.
 
 use std::fmt;
 
@@ -22,6 +22,8 @@ pub struct Config {
     pub active_profile: String,
     #[serde(default = "default_config_active_model")]
     pub active_model: String,
+    #[serde(default = "default_config_runtime")]
+    pub runtime: RuntimeConfig,
     #[serde(default = "default_config_profiles")]
     pub profiles: Vec<Profile>,
 }
@@ -30,6 +32,10 @@ pub struct Config {
 ///
 /// This file intentionally uses optional fields so project-specific values can
 /// override only the settings that differ from the user baseline.
+///
+/// Runtime-wide tuning is intentionally excluded here because the process owns a
+/// single shared `AgentLoop`; pretending those knobs are project-scoped would
+/// let config files express a distinction the runtime cannot actually enforce.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
@@ -40,12 +46,34 @@ pub struct ConfigOverlay {
     pub profiles: Option<Vec<Profile>>,
 }
 
+/// Process-wide runtime tuning knobs loaded from `~/.astrcode/config.json`.
+///
+/// These values intentionally live only in the user-level config instead of the
+/// per-project overlay because `RuntimeService` owns a single shared `AgentLoop`
+/// for the whole process. Allowing project overlays here would suggest the
+/// setting can vary per session, which the current runtime architecture cannot
+/// honor safely.
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+#[serde(default)]
+pub struct RuntimeConfig {
+    /// Optional override for the safe-tool parallelism cap.
+    ///
+    /// `None` means "fall back to OS env, then built-in default", which keeps
+    /// the runtime block extensible without forcing every new field to become
+    /// semantically "set" the moment we write the default config file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tool_concurrency: Option<usize>,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             version: CURRENT_CONFIG_VERSION.to_string(),
             active_profile: "deepseek".to_string(),
             active_model: "deepseek-chat".to_string(),
+            runtime: RuntimeConfig::default(),
             profiles: default_profiles(),
         }
     }
@@ -90,7 +118,16 @@ impl fmt::Debug for Config {
             .field("version", &self.version)
             .field("active_profile", &self.active_profile)
             .field("active_model", &self.active_model)
+            .field("runtime", &self.runtime)
             .field("profiles", &self.profiles)
+            .finish()
+    }
+}
+
+impl fmt::Debug for RuntimeConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RuntimeConfig")
+            .field("max_tool_concurrency", &self.max_tool_concurrency)
             .finish()
     }
 }
@@ -149,6 +186,10 @@ fn default_config_active_model() -> String {
 
 fn default_config_profiles() -> Vec<Profile> {
     default_profiles()
+}
+
+fn default_config_runtime() -> RuntimeConfig {
+    RuntimeConfig::default()
 }
 
 fn default_profiles() -> Vec<Profile> {

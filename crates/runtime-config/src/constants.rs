@@ -3,6 +3,8 @@
 //! Astrcode-specific environment variable names are grouped here by domain so
 //! configuration-related code and docs have a single categorized index.
 
+use crate::types::RuntimeConfig;
+
 /// OpenAI-compatible provider kind identifier.
 pub const PROVIDER_KIND_OPENAI: &str = "openai-compatible";
 
@@ -57,16 +59,34 @@ pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 pub const CURRENT_CONFIG_VERSION: &str = "1";
 
 /// Default maximum number of concurrency-safe tools that may execute in parallel.
-const DEFAULT_MAX_TOOL_CONCURRENCY: usize = 10;
+pub const DEFAULT_MAX_TOOL_CONCURRENCY: usize = 10;
 
-/// Returns the maximum number of concurrency-safe tools that may execute in parallel.
+/// Returns the maximum number of concurrency-safe tools from process env/defaults.
 ///
-/// Reads from `ASTRCODE_MAX_TOOL_CONCURRENCY` environment variable, falling back to
-/// the default of 10. Values are clamped to a minimum of 1.
+/// This helper is intentionally env-only so low-level callers that have not
+/// loaded `config.json` yet can still honor the OS override. Higher-level
+/// runtime services should prefer [`resolve_max_tool_concurrency`] so the
+/// user-configured `runtime.maxToolConcurrency` block stays authoritative.
 pub fn max_tool_concurrency() -> usize {
     std::env::var(ASTRCODE_MAX_TOOL_CONCURRENCY_ENV)
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_MAX_TOOL_CONCURRENCY)
+        .max(1)
+}
+
+/// Resolves the effective tool parallelism cap for a loaded runtime config.
+///
+/// Resolution order is:
+/// 1. `config.runtime.maxToolConcurrency`
+/// 2. `ASTRCODE_MAX_TOOL_CONCURRENCY`
+/// 3. built-in default
+///
+/// This keeps runtime tuning centralized in `config.json` without breaking
+/// existing env-based deployments and tests.
+pub fn resolve_max_tool_concurrency(runtime: &RuntimeConfig) -> usize {
+    runtime
+        .max_tool_concurrency
+        .unwrap_or_else(max_tool_concurrency)
         .max(1)
 }

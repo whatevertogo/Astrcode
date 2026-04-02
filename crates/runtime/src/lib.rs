@@ -32,8 +32,9 @@ pub use astrcode_runtime_config as config;
 pub use astrcode_runtime_config::{
     config_path, env_reference, is_env_var_name, list_model_options, load_config,
     load_resolved_config, open_config_in_editor, parse_env_value, resolve_active_selection,
-    resolve_current_model, resolve_env_value, save_config, test_connection, ActiveSelection,
-    Config, ConfigOverlay, CurrentModelSelection, ModelOption, ParsedEnvValue, Profile, TestResult,
+    resolve_current_model, resolve_env_value, resolve_max_tool_concurrency, save_config,
+    test_connection, ActiveSelection, Config, ConfigOverlay, CurrentModelSelection, ModelOption,
+    ParsedEnvValue, Profile, RuntimeConfig, TestResult,
 };
 pub use astrcode_runtime_llm as llm;
 pub use astrcode_runtime_prompt as prompt;

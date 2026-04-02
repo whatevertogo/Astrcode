@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent_loop::AgentLoop;
 use crate::approval_service::{ApprovalBroker, DefaultApprovalBroker};
-use crate::config::load_config;
+use crate::config::{load_config, resolve_max_tool_concurrency};
 use crate::prompt::{PromptDeclaration, SkillSpec};
 use crate::provider_factory::ConfigFileProviderFactory;
 use astrcode_core::{
@@ -109,12 +109,14 @@ impl RuntimeService {
         session_manager: Arc<dyn SessionManager>,
     ) -> ServiceResult<Self> {
         let config = load_config().map_err(ServiceError::from)?;
+        let max_tool_concurrency = resolve_max_tool_concurrency(&config.runtime);
         let loop_ = AgentLoop::from_capabilities_with_prompt_inputs(
             Arc::new(ConfigFileProviderFactory),
             capabilities,
             prompt_declarations,
             prompt_skills,
         )
+        .with_max_tool_concurrency(max_tool_concurrency)
         .with_policy_engine(Arc::clone(&policy))
         .with_approval_broker(Arc::clone(&approval));
         let (session_catalog_events, _) = broadcast::channel(SESSION_CATALOG_BROADCAST_CAPACITY);
@@ -142,6 +144,10 @@ impl RuntimeService {
         prompt_declarations: Vec<PromptDeclaration>,
         prompt_skills: Vec<SkillSpec>,
     ) -> ServiceResult<()> {
+        let max_tool_concurrency = {
+            let config = self.config.lock().await;
+            resolve_max_tool_concurrency(&config.runtime)
+        };
         let next_loop = Arc::new(
             AgentLoop::from_capabilities_with_prompt_inputs(
                 Arc::new(ConfigFileProviderFactory),
@@ -149,6 +155,7 @@ impl RuntimeService {
                 prompt_declarations,
                 prompt_skills,
             )
+            .with_max_tool_concurrency(max_tool_concurrency)
             .with_policy_engine(Arc::clone(&self.policy))
             .with_approval_broker(Arc::clone(&self.approval)),
         );

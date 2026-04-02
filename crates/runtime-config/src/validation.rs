@@ -43,6 +43,12 @@ fn migrate_config(config: &mut Config) -> Result<()> {
 
 /// Validates the configuration for correctness.
 pub fn validate_config(config: &Config) -> Result<()> {
+    if matches!(config.runtime.max_tool_concurrency, Some(0)) {
+        return Err(AstrError::Validation(
+            "runtime.maxToolConcurrency must be greater than 0".to_string(),
+        ));
+    }
+
     if config.profiles.is_empty() {
         return Err(AstrError::Validation(
             "config must contain at least one profile".to_string(),

@@ -71,7 +71,7 @@ impl RuntimeService {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{Config, Profile};
+    use crate::config::{save_config, Config, Profile, RuntimeConfig};
     use crate::test_support::{empty_capabilities, TestEnvGuard};
 
     use super::*;
@@ -116,5 +116,22 @@ mod tests {
 
         assert!(matches!(err, ServiceError::InvalidInput(_)));
         assert!(err.to_string().contains("does not exist in profile"));
+    }
+
+    #[tokio::test]
+    async fn service_uses_runtime_max_tool_concurrency_from_config_file() {
+        let _guard = TestEnvGuard::new();
+        save_config(&Config {
+            runtime: RuntimeConfig {
+                max_tool_concurrency: Some(6),
+            },
+            ..Config::default()
+        })
+        .expect("config should save");
+
+        let service = RuntimeService::from_capabilities(empty_capabilities()).expect("service");
+        let loop_ = service.current_loop().await;
+
+        assert_eq!(loop_.max_tool_concurrency(), 6);
     }
 }

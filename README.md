@@ -101,26 +101,40 @@ cd frontend && npm run build
 ```json
 {
   "version": "1",
-  "activeProfile": "default",
+  "activeProfile": "deepseek",
   "activeModel": "deepseek-chat",
+  "runtime": {},
   "profiles": [
     {
-      "name": "default",
+      "name": "deepseek",
       "providerKind": "openai-compatible",
       "baseUrl": "https://api.deepseek.com",
-      "apiKey": "DEEPSEEK_API_KEY",
+      "apiKey": "env:DEEPSEEK_API_KEY",
       "models": ["deepseek-chat", "deepseek-reasoner"]
     }
   ]
 }
 ```
 
+`runtime` 用于放置 AstrCode 自己的进程级运行参数，例如：
+
+```json
+{
+  "runtime": {
+    "maxToolConcurrency": 10
+  }
+}
+```
+
 ### API Key 配置
 
-`apiKey` 字段支持两种方式：
+`apiKey` 字段支持三种方式：
 
-1. **明文值**：直接填写 API Key（如 `sk-xxxx`）
-2. **环境变量名**：填写环境变量名称（如 `DEEPSEEK_API_KEY`），程序会自动读取
+1. **显式环境变量引用**：`env:DEEPSEEK_API_KEY`
+2. **明文字面量**：直接填写 API Key（如 `sk-xxxx`）
+3. **字面量前缀**：`literal:MY_VALUE`，用于强制把看起来像环境变量名的字符串按普通文本处理
+
+推荐优先使用 `env:...`，这样配置文件的含义最明确，不会让用户误以为 AstrCode 会自动把任意裸字符串当成环境变量读取。
 
 ### 内建环境变量
 
@@ -133,6 +147,7 @@ cd frontend && npm run build
 | Plugin | `ASTRCODE_PLUGIN_DIRS` | 追加插件发现目录，按系统路径分隔符解析 |
 | Provider 默认值 | `DEEPSEEK_API_KEY` | DeepSeek 默认 profile 的 API Key |
 | Provider 默认值 | `ANTHROPIC_API_KEY` | Anthropic 默认 profile 的 API Key |
+| Runtime | `ASTRCODE_MAX_TOOL_CONCURRENCY` | `runtime.maxToolConcurrency` 未设置时的并发工具上限兜底 |
 | Build / Tauri | `TAURI_ENV_TARGET_TRIPLE` | 构建 sidecar 时指定目标 triple |
 
 像 `OPENAI_API_KEY` 这类自定义 profile 使用的环境变量仍然允许自由命名，但不属于平台内建环境变量目录。
@@ -147,13 +162,13 @@ cd frontend && npm run build
     {
       "name": "deepseek",
       "baseUrl": "https://api.deepseek.com",
-      "apiKey": "DEEPSEEK_API_KEY",
+      "apiKey": "env:DEEPSEEK_API_KEY",
       "models": ["deepseek-chat"]
     },
     {
       "name": "openai",
       "baseUrl": "https://api.openai.com",
-      "apiKey": "OPENAI_API_KEY",
+      "apiKey": "env:OPENAI_API_KEY",
       "models": ["gpt-4o", "gpt-4o-mini"]
     }
   ]

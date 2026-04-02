@@ -25,11 +25,12 @@ mod validation;
 // Public re-exports
 pub use connection::test_connection;
 pub use constants::{
-    max_tool_concurrency, ALL_ASTRCODE_ENV_VARS, ANTHROPIC_API_KEY_ENV, ASTRCODE_HOME_DIR_ENV,
-    ASTRCODE_MAX_TOOL_CONCURRENCY_ENV, ASTRCODE_PLUGIN_DIRS_ENV, ASTRCODE_TEST_HOME_ENV,
-    BUILD_ENV_VARS, CURRENT_CONFIG_VERSION, DEEPSEEK_API_KEY_ENV, ENV_REFERENCE_PREFIX,
-    HOME_ENV_VARS, LITERAL_VALUE_PREFIX, PLUGIN_ENV_VARS, PROVIDER_API_KEY_ENV_VARS,
-    PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI, RUNTIME_ENV_VARS, TAURI_ENV_TARGET_TRIPLE_ENV,
+    max_tool_concurrency, resolve_max_tool_concurrency, ALL_ASTRCODE_ENV_VARS,
+    ANTHROPIC_API_KEY_ENV, ASTRCODE_HOME_DIR_ENV, ASTRCODE_MAX_TOOL_CONCURRENCY_ENV,
+    ASTRCODE_PLUGIN_DIRS_ENV, ASTRCODE_TEST_HOME_ENV, BUILD_ENV_VARS, CURRENT_CONFIG_VERSION,
+    DEEPSEEK_API_KEY_ENV, DEFAULT_MAX_TOOL_CONCURRENCY, ENV_REFERENCE_PREFIX, HOME_ENV_VARS,
+    LITERAL_VALUE_PREFIX, PLUGIN_ENV_VARS, PROVIDER_API_KEY_ENV_VARS, PROVIDER_KIND_ANTHROPIC,
+    PROVIDER_KIND_OPENAI, RUNTIME_ENV_VARS, TAURI_ENV_TARGET_TRIPLE_ENV,
 };
 pub use editor::open_config_in_editor;
 pub use env_resolver::{
@@ -44,7 +45,7 @@ pub use selection::{
     list_model_options, resolve_active_selection, resolve_current_model, ActiveSelection,
     CurrentModelSelection, ModelOption,
 };
-pub use types::{Config, ConfigOverlay, Profile, TestResult};
+pub use types::{Config, ConfigOverlay, Profile, RuntimeConfig, TestResult};
 pub use validation::validate_config;
 
 #[cfg(test)]
@@ -124,6 +125,10 @@ mod tests {
 
         let persisted =
             std::fs::read_to_string(&path).expect("persisted config should be readable");
+        assert!(
+            persisted.contains("\"runtime\": {}"),
+            "default config should expose the runtime block for future tuning"
+        );
         let parsed: Config =
             serde_json::from_str(&persisted).expect("persisted config should be valid json");
         assert_eq!(parsed, Config::default());
@@ -139,7 +144,42 @@ mod tests {
         assert_eq!(loaded.version, "1");
         assert_eq!(loaded.active_profile, Config::default().active_profile);
         assert_eq!(loaded.active_model, Config::default().active_model);
+        assert_eq!(loaded.runtime, Config::default().runtime);
         assert_eq!(loaded.profiles, Config::default().profiles);
+    }
+
+    #[test]
+    fn resolve_max_tool_concurrency_prefers_explicit_runtime_config() {
+        let _guard = TestEnvGuard::new();
+        std::env::set_var(ASTRCODE_MAX_TOOL_CONCURRENCY_ENV, "3");
+
+        let resolved = resolve_max_tool_concurrency(&RuntimeConfig {
+            max_tool_concurrency: Some(7),
+        });
+
+        std::env::remove_var(ASTRCODE_MAX_TOOL_CONCURRENCY_ENV);
+        assert_eq!(resolved, 7);
+    }
+
+    #[test]
+    fn resolve_max_tool_concurrency_falls_back_to_env_when_runtime_config_is_unset() {
+        let _guard = TestEnvGuard::new();
+        std::env::set_var(ASTRCODE_MAX_TOOL_CONCURRENCY_ENV, "4");
+
+        let resolved = resolve_max_tool_concurrency(&RuntimeConfig::default());
+
+        std::env::remove_var(ASTRCODE_MAX_TOOL_CONCURRENCY_ENV);
+        assert_eq!(resolved, 4);
+    }
+
+    #[test]
+    fn resolve_max_tool_concurrency_falls_back_to_default_when_nothing_is_configured() {
+        let _guard = TestEnvGuard::new();
+        std::env::remove_var(ASTRCODE_MAX_TOOL_CONCURRENCY_ENV);
+
+        let resolved = resolve_max_tool_concurrency(&RuntimeConfig::default());
+
+        assert_eq!(resolved, DEFAULT_MAX_TOOL_CONCURRENCY);
     }
 
     #[test]
@@ -308,6 +348,7 @@ mod tests {
             version: CURRENT_CONFIG_VERSION.to_string(),
             active_profile: "custom".to_string(),
             active_model: "gpt-4o-mini".to_string(),
+            runtime: RuntimeConfig::default(),
             profiles: vec![Profile {
                 name: "custom".to_string(),
                 provider_kind: PROVIDER_KIND_OPENAI.to_string(),
@@ -418,6 +459,7 @@ mod tests {
         let err = validate_config(&Config {
             active_profile: profile.name.clone(),
             active_model: profile.models[0].clone(),
+            runtime: RuntimeConfig::default(),
             profiles: vec![profile.clone(), profile],
             version: CURRENT_CONFIG_VERSION.to_string(),
         })
@@ -454,6 +496,21 @@ mod tests {
         assert!(err
             .to_string()
             .contains("max_tokens must be greater than 0"));
+    }
+
+    #[test]
+    fn validate_config_rejects_zero_runtime_max_tool_concurrency() {
+        let err = validate_config(&Config {
+            runtime: RuntimeConfig {
+                max_tool_concurrency: Some(0),
+            },
+            ..Config::default()
+        })
+        .expect_err("zero runtime maxToolConcurrency should fail");
+
+        assert!(err
+            .to_string()
+            .contains("runtime.maxToolConcurrency must be greater than 0"));
     }
 
     #[test]
