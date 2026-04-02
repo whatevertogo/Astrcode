@@ -16,6 +16,15 @@ use super::paths::{
     session_file_name, session_storage_dirs, validated_session_id,
 };
 
+/// 从 session JSONL 首行提取的元信息。
+struct SessionHeadMeta {
+    created_at: DateTime<Utc>,
+    working_dir: String,
+    title: String,
+    parent_session_id: Option<String>,
+    parent_storage_seq: Option<u64>,
+}
+
 impl EventLog {
     pub fn list_sessions() -> Result<Vec<String>> {
         let projects_root = projects_root_dir()?;
@@ -65,29 +74,28 @@ impl EventLog {
                 continue;
             };
 
-            let (created_at, working_dir, title, parent_session_id, parent_storage_seq) =
-                match Self::read_session_head_meta(&path) {
-                    Ok(meta) => meta,
-                    Err(error) => {
-                        log::warn!(
-                            "skipping unreadable session file '{}': {}",
-                            path.display(),
-                            error
-                        );
-                        continue;
-                    }
-                };
-            let updated_at = Self::read_last_timestamp(&path).unwrap_or(created_at);
+            let head_meta = match Self::read_session_head_meta(&path) {
+                Ok(meta) => meta,
+                Err(error) => {
+                    log::warn!(
+                        "skipping unreadable session file '{}': {}",
+                        path.display(),
+                        error
+                    );
+                    continue;
+                }
+            };
+            let updated_at = Self::read_last_timestamp(&path).unwrap_or(head_meta.created_at);
             let phase = Self::read_last_phase(&path).unwrap_or(Phase::Idle);
             metas.push(SessionMeta {
                 session_id: canonical_session_id(&id).to_string(),
-                working_dir: working_dir.clone(),
-                display_name: session_display_name(&working_dir),
-                title,
-                created_at,
+                working_dir: head_meta.working_dir.clone(),
+                display_name: session_display_name(&head_meta.working_dir),
+                title: head_meta.title,
+                created_at: head_meta.created_at,
                 updated_at,
-                parent_session_id,
-                parent_storage_seq,
+                parent_session_id: head_meta.parent_session_id,
+                parent_storage_seq: head_meta.parent_storage_seq,
                 phase,
             });
         }
@@ -219,9 +227,7 @@ impl EventLog {
         ))
     }
 
-    fn read_session_head_meta(
-        path: &Path,
-    ) -> Result<(DateTime<Utc>, String, String, Option<String>, Option<u64>)> {
+    fn read_session_head_meta(path: &Path) -> Result<SessionHeadMeta> {
         let file = File::open(path).map_err(|error| {
             AstrError::io(
                 format!("failed to open session file: {}", path.display()),
@@ -293,13 +299,13 @@ impl EventLog {
         })?;
         let working_dir = working_dir.unwrap_or_default();
         let title = title.unwrap_or_else(|| "新会话".to_string());
-        Ok((
+        Ok(SessionHeadMeta {
             created_at,
             working_dir,
             title,
             parent_session_id,
             parent_storage_seq,
-        ))
+        })
     }
 
     fn read_last_timestamp(path: &Path) -> Result<DateTime<Utc>> {

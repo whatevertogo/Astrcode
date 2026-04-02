@@ -1,5 +1,6 @@
 import { memo, useEffect, useState } from 'react';
 import type { ToolCallMessage, ToolStatus } from '../../types';
+import { classifyToolDiffLine, extractToolDiffMetadata } from '../../lib/toolDiff';
 import styles from './ToolCallBlock.module.css';
 
 const STATUS_ICON: Record<ToolStatus, string> = {
@@ -18,65 +19,26 @@ interface ToolCallBlockProps {
   message: ToolCallMessage;
 }
 
-interface ToolDiffMetadata {
-  path?: string;
-  patch: string;
-  addedLines?: number;
-  removedLines?: number;
-  truncated?: boolean;
-  hasChanges?: boolean;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return null;
-  }
-  return value as Record<string, unknown>;
-}
-
-function pickNumber(record: Record<string, unknown>, key: string): number | undefined {
-  const value = record[key];
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
-function extractDiffMetadata(metadata: unknown): ToolDiffMetadata | null {
-  const container = asRecord(metadata);
-  const diff = asRecord(container?.diff);
-  if (!container || !diff || typeof diff.patch !== 'string' || diff.patch.length === 0) {
-    return null;
-  }
-
-  return {
-    path: typeof container.path === 'string' ? container.path : undefined,
-    patch: diff.patch,
-    addedLines: pickNumber(diff, 'addedLines'),
-    removedLines: pickNumber(diff, 'removedLines'),
-    truncated: diff.truncated === true,
-    hasChanges: diff.hasChanges === true,
-  };
-}
-
 function patchLineClassName(line: string): string {
-  if (line.startsWith('+++') || line.startsWith('---')) {
-    return styles.patchLineMeta;
+  switch (classifyToolDiffLine(line)) {
+    case 'meta':
+      return styles.patchLineMeta;
+    case 'header':
+      return styles.patchLineHeader;
+    case 'add':
+      return styles.patchLineAdd;
+    case 'remove':
+      return styles.patchLineRemove;
+    case 'note':
+      return styles.patchLineNote;
+    case 'context':
+    default:
+      return styles.patchLineContext;
   }
-  if (line.startsWith('@@')) {
-    return styles.patchLineHeader;
-  }
-  if (line.startsWith('+')) {
-    return styles.patchLineAdd;
-  }
-  if (line.startsWith('-')) {
-    return styles.patchLineRemove;
-  }
-  if (line.startsWith('...')) {
-    return styles.patchLineNote;
-  }
-  return styles.patchLineContext;
 }
 
 function ToolCallBlock({ message }: ToolCallBlockProps) {
-  const diff = extractDiffMetadata(message.metadata);
+  const diff = extractToolDiffMetadata(message.metadata);
   const [expanded, setExpanded] = useState(false);
   const [userInteracted, setUserInteracted] = useState(false);
 

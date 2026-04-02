@@ -31,6 +31,7 @@ pub(super) fn try_acquire_session_turn(
     let metadata_path = session_turn_metadata_path(session_id)?;
     let file = OpenOptions::new()
         .create(true)
+        .truncate(true)
         .read(true)
         .write(true)
         .open(&path)
