@@ -399,6 +399,13 @@ fn extract_delta_block(payload: &Value) -> &Value {
     payload.get("delta").unwrap_or(payload)
 }
 
+/// 处理单个 Anthropic SSE 块，返回 `true` 表示流已结束。
+///
+/// Anthropic SSE 事件类型分派：
+/// - `content_block_start`: 新内容块开始（可能是文本或工具调用）
+/// - `content_block_delta`: 增量内容（文本/思考/签名/工具参数）
+/// - `message_stop`: 流结束信号，返回 true 通知上层停止读取
+/// - `message_start/delta/content_block_stop/ping`: 元数据事件，静默忽略
 fn process_sse_block(
     block: &str,
     accumulator: &mut LlmAccumulator,
@@ -408,11 +415,6 @@ fn process_sse_block(
         return Ok(false);
     };
 
-    // Anthropic SSE 事件类型分派：
-    // - content_block_start: 新内容块开始（可能是文本或工具调用）
-    // - content_block_delta: 增量内容（文本/思考/签名/工具参数）
-    // - message_stop: 流结束信号，返回 true 通知上层停止读取
-    // - message_start/delta/content_block_stop/ping: 元数据事件，静默忽略
     match event_type.as_str() {
         "content_block_start" => {
             let index = payload
@@ -421,6 +423,7 @@ fn process_sse_block(
                 .unwrap_or_default() as usize;
             let block = extract_start_block(&payload);
 
+            // 工具调用块开始时，发射 ToolCallDelta（id + name，参数为空）
             if block_type(block) == Some("tool_use") {
                 emit_event(
                     LlmEvent::ToolCallDelta {
@@ -445,6 +448,7 @@ fn process_sse_block(
                 .unwrap_or_default() as usize;
             let delta = extract_delta_block(&payload);
 
+            // 根据增量类型分派到对应的事件
             match block_type(delta) {
                 Some("text_delta") => {
                     if let Some(text) = delta.get("text").and_then(Value::as_str) {
@@ -466,6 +470,7 @@ fn process_sse_block(
                     }
                 }
                 Some("input_json_delta") => {
+                    // 工具调用参数增量，partial_json 是 JSON 的片段
                     emit_event(
                         LlmEvent::ToolCallDelta {
                             index,
@@ -486,6 +491,7 @@ fn process_sse_block(
             Ok(false)
         }
         "message_stop" => Ok(true),
+        // 元数据事件：静默忽略
         "message_start" | "message_delta" | "content_block_stop" | "ping" => Ok(false),
         other => {
             warn!("anthropic: unknown sse event: {}", other);
@@ -494,6 +500,16 @@ fn process_sse_block(
     }
 }
 
+/// 为 Claude 模型生成 extended thinking 配置。
+///
+/// 当模型名称以 `claude-` 开头且 max_tokens >= 2 时启用 thinking 模式，
+/// 预算 token 数为 max_tokens 的 75%（向下取整）。
+///
+/// ## 设计动机
+///
+/// Extended thinking 让 Claude 在输出前进行深度推理，提升复杂任务的回答质量。
+/// 预算设为 75% 是为了保留至少 25% 的 token 给实际输出内容。
+/// 如果预算为 0 或等于 max_tokens，则不启用（避免无意义配置）。
 fn thinking_config_for_model(model: &str, max_tokens: u32) -> Option<AnthropicThinking> {
     if !model.starts_with("claude-") || max_tokens < 2 {
         return None;
@@ -510,6 +526,10 @@ fn thinking_config_for_model(model: &str, max_tokens: u32) -> Option<AnthropicTh
     })
 }
 
+/// 在 SSE 缓冲区中查找下一个完整的 SSE 块边界。
+///
+/// Anthropic SSE 块由双换行符分隔（`\r\n\r\n` 或 `\n\n`）。
+/// 返回 `(块结束位置, 分隔符长度)`，如果未找到完整块则返回 `None`。
 fn next_sse_block(buffer: &str) -> Option<(usize, usize)> {
     if let Some(idx) = buffer.find("\r\n\r\n") {
         return Some((idx, 4));
@@ -555,6 +575,11 @@ fn flush_sse_buffer(
     Ok(done)
 }
 
+// ---------------------------------------------------------------------------
+// Anthropic API 请求/响应 DTO（仅用于 serde 序列化/反序列化）
+// ---------------------------------------------------------------------------
+
+/// Anthropic Messages API 请求体。
 #[derive(Debug, Serialize)]
 struct AnthropicRequest {
     model: String,
@@ -570,6 +595,10 @@ struct AnthropicRequest {
     thinking: Option<AnthropicThinking>,
 }
 
+/// Anthropic extended thinking 配置。
+///
+/// `budget_tokens` 指定推理过程可使用的最大 token 数，
+/// 不计入最终输出的 `max_tokens` 限制。
 #[derive(Debug, Serialize)]
 struct AnthropicThinking {
     #[serde(rename = "type")]
@@ -577,12 +606,17 @@ struct AnthropicThinking {
     budget_tokens: u32,
 }
 
+/// Anthropic 消息（包含角色和内容块数组）。
 #[derive(Debug, Serialize)]
 struct AnthropicMessage {
     role: String,
     content: Vec<AnthropicContentBlock>,
 }
 
+/// Anthropic 内容块——消息内容由多个块组成。
+///
+/// 使用 `#[serde(tag = "type")]` 实现内部标记序列化，
+/// 每个变体对应一个 `type` 值（`text`、`thinking`、`tool_use`、`tool_result`）。
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AnthropicContentBlock {
@@ -613,6 +647,9 @@ enum AnthropicContentBlock {
     },
 }
 
+/// Anthropic prompt caching 控制标记。
+///
+/// `type: "ephemeral"` 告诉 Anthropic 后端该块可作为缓存前缀的一部分。
 #[derive(Debug, Clone, Serialize)]
 struct AnthropicCacheControl {
     #[serde(rename = "type")]
@@ -620,6 +657,7 @@ struct AnthropicCacheControl {
 }
 
 impl AnthropicCacheControl {
+    /// 创建 ephemeral 类型的缓存控制标记。
     fn ephemeral() -> Self {
         Self {
             type_: "ephemeral".to_string(),
@@ -628,6 +666,7 @@ impl AnthropicCacheControl {
 }
 
 impl AnthropicContentBlock {
+    /// 为内容块设置或清除 cache_control 标记。
     fn set_cache_control(&mut self, enabled: bool) {
         let control = if enabled {
             Some(AnthropicCacheControl::ephemeral())
@@ -643,6 +682,7 @@ impl AnthropicContentBlock {
     }
 }
 
+/// Anthropic 工具定义。
 #[derive(Debug, Serialize)]
 struct AnthropicTool {
     name: String,
@@ -650,6 +690,11 @@ struct AnthropicTool {
     input_schema: Value,
 }
 
+/// Anthropic Messages API 非流式响应体。
+///
+/// NOTE: `content` 使用 `Vec<Value>` 而非强类型结构体，
+/// 因为 Anthropic 响应可能包含多种内容块类型（text / tool_use / thinking），
+/// 使用 `Value` 可以灵活处理未知或新增的块类型。
 #[derive(Debug, serde::Deserialize)]
 struct AnthropicResponse {
     content: Vec<Value>,
@@ -658,6 +703,7 @@ struct AnthropicResponse {
     usage: Option<AnthropicUsage>,
 }
 
+/// Anthropic 响应中的 token 用量统计。
 #[derive(Debug, serde::Deserialize)]
 struct AnthropicUsage {
     #[serde(default)]

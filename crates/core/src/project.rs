@@ -20,6 +20,14 @@ pub fn projects_dir() -> Result<PathBuf> {
 
 /// 返回工作目录对应的项目目录名称。
 ///
+/// ## 生成策略
+///
+/// 1. 规范化路径（Windows 转小写，确保同一项目不同大小写路径映射到同一目录）
+/// 2. 转换为 kebab-case slug
+/// 3. 如果超过 `MAX_PROJECT_DIR_NAME_LEN`，截断并追加稳定 hash
+///
+/// ## 设计动机
+///
 /// 目录名优先保持人类可读，例如 `D:\project1` 会映射为 `D-project1`；
 /// 当路径过长时，再追加稳定 hash 截断，既保留可读性，也避免路径无限增长。
 pub fn project_dir_name(working_dir: &Path) -> String {
@@ -51,6 +59,10 @@ pub fn project_dir(working_dir: &Path) -> Result<PathBuf> {
     Ok(projects_dir()?.join(project_dir_name(working_dir)))
 }
 
+/// 规范化项目标识路径
+///
+/// Windows 下将路径转为小写，确保 `D:\Project` 和 `D:\project` 映射到同一项目目录。
+/// Unix 下保持原样（文件系统区分大小写）。
 fn normalize_project_identity(path: &Path) -> PathBuf {
     if cfg!(windows) {
         PathBuf::from(path.to_string_lossy().to_ascii_lowercase())
@@ -59,6 +71,14 @@ fn normalize_project_identity(path: &Path) -> PathBuf {
     }
 }
 
+/// 将路径组件转换为 kebab-case slug
+///
+/// ## 处理规则
+///
+/// - **Prefix**（Windows 盘符）: `D:` → `D`，UNC 路径 → `server-share`
+/// - **RootDir**: 根目录 → `root`（Windows 下后续会移除）
+/// - **Normal**: 清理非法字符，连续非法字符合并为单个 `-`
+/// - **CurDir/ParentDir**: 忽略（`.` 和 `..`）
 fn components_to_slug(path: &Path) -> String {
     let mut segments = Vec::new();
 
@@ -84,6 +104,7 @@ fn components_to_slug(path: &Path) -> String {
         }
     }
 
+    // Windows 下移除开头的 "root"（因为盘符已经提供了足够的标识）
     if cfg!(windows) && segments.first().is_some_and(|segment| segment == "root") {
         segments.remove(0);
     }

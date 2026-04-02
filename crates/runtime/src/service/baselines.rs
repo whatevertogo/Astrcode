@@ -1,3 +1,15 @@
+//! # 基线测试 (Baseline Tests)
+//!
+//! 验证运行时关键路径的行为和指标收集是否正确，包括：
+//! - 长会话加载后的 prompt 提交不应触发重复水合
+//! - SSE 重连时缓存命中 vs 磁盘回退的指标记录
+//! - 并发提交时的分支会话行为
+//!
+//! ## 设计
+//!
+//! 使用静态 LLM Provider 模拟确定性输出，避免真实 API 调用的不确定性。
+//! 通过 `seed_session_log` 生成预定义的 JSONL 会话日志，验证回放和指标逻辑。
+
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -18,6 +30,9 @@ use crate::test_support::{empty_capabilities, TestEnvGuard};
 
 use super::{RuntimeService, SessionReplaySource};
 
+/// 静态 LLM Provider，返回预设输出并支持模拟延迟。
+///
+/// 用于测试中替代真实 LLM 调用，确保确定性和可重复性。
 struct StaticProvider {
     delay: Duration,
     output: LlmOutput,
@@ -33,6 +48,7 @@ impl LlmProvider for StaticProvider {
     }
 
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
+        // 支持取消检查，模拟真实 LLM 调用的中断行为
         if !self.delay.is_zero() {
             tokio::select! {
                 _ = crate::llm::cancelled(request.cancel.clone()) => return Err(AstrError::LlmInterrupted),
@@ -40,6 +56,7 @@ impl LlmProvider for StaticProvider {
             }
         }
 
+        // 模拟流式输出，逐个字符推送 delta
         if let Some(sink) = sink {
             for delta in self.output.content.chars() {
                 sink(LlmEvent::TextDelta(delta.to_string()));
@@ -50,6 +67,7 @@ impl LlmProvider for StaticProvider {
     }
 }
 
+/// 静态 Provider 工厂，始终返回同一个预配置的 Provider 实例。
 struct StaticProviderFactory {
     provider: Arc<dyn LlmProvider>,
 }
@@ -60,6 +78,7 @@ impl ProviderFactory for StaticProviderFactory {
     }
 }
 
+/// 为测试服务安装一个静态 AgentLoop，使用固定延迟和输出。
 async fn install_test_loop(service: &RuntimeService, delay: Duration) {
     let provider: Arc<dyn LlmProvider> = Arc::new(StaticProvider {
         delay,
@@ -75,6 +94,9 @@ async fn install_test_loop(service: &RuntimeService, delay: Duration) {
     *service.loop_.write().await = Arc::new(loop_);
 }
 
+/// 为测试会话播种预定义的 JSONL 日志。
+///
+/// 生成包含指定数量 Turn 的完整会话历史，用于验证回放和指标逻辑。
 fn seed_session_log(session_id: &str, working_dir: &Path, turns: usize) {
     let log = EventLog::create(session_id, working_dir).expect("session file should be created");
     let path = log.path().to_path_buf();
@@ -85,6 +107,7 @@ fn seed_session_log(session_id: &str, working_dir: &Path, turns: usize) {
     let started_at = Utc::now();
     let mut storage_seq = 1_u64;
 
+    // 写入会话开始事件
     write_stored_event(
         &mut writer,
         &mut storage_seq,
@@ -97,6 +120,7 @@ fn seed_session_log(session_id: &str, working_dir: &Path, turns: usize) {
         },
     );
 
+    // 写入指定数量的 Turn 事件（UserMessage + AssistantFinal + TurnDone）
     for turn_index in 0..turns {
         let timestamp = started_at + ChronoDuration::seconds(turn_index as i64 + 1);
         let turn_id = format!("turn-{turn_index}");
@@ -139,6 +163,7 @@ fn seed_session_log(session_id: &str, working_dir: &Path, turns: usize) {
         .expect("session file should sync");
 }
 
+/// 将单个存储事件序列化并写入 JSONL 文件。
 fn write_stored_event(writer: &mut BufWriter<File>, storage_seq: &mut u64, event: StorageEvent) {
     serde_json::to_writer(
         &mut *writer,
@@ -154,6 +179,7 @@ fn write_stored_event(writer: &mut BufWriter<File>, storage_seq: &mut u64, event
     *storage_seq += 1;
 }
 
+/// 等待所有会话变为空闲（无运行中的会话）。
 async fn wait_until_idle(service: &RuntimeService) {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -167,6 +193,10 @@ async fn wait_until_idle(service: &RuntimeService) {
     .expect("session should become idle");
 }
 
+/// 验证长会话加载后提交 prompt 不会触发重复水合，并正确记录 Turn 指标。
+///
+/// 场景：加载包含 512 个 Turn 的会话，然后提交新 prompt。
+/// 预期：水合计数不变（已加载的会话不应重新水合），Turn 执行计数 +1。
 #[tokio::test]
 async fn long_loaded_session_submit_avoids_extra_rehydrate_and_records_turn_metrics() {
     let _guard = TestEnvGuard::new();
@@ -202,6 +232,10 @@ async fn long_loaded_session_submit_avoids_extra_rehydrate_and_records_turn_metr
     );
 }
 
+/// 验证使用最新游标重连时命中缓存，不触发磁盘回放。
+///
+/// 场景：加载 64 个 Turn 的会话，使用最新游标重连。
+/// 预期：回放历史为空（缓存命中），缓存命中计数 +1。
 #[tokio::test]
 async fn reconnect_with_recent_cursor_uses_cached_tail_and_updates_metrics() {
     let _guard = TestEnvGuard::new();
@@ -241,6 +275,10 @@ async fn reconnect_with_recent_cursor_uses_cached_tail_and_updates_metrics() {
     );
 }
 
+/// 验证使用过期游标重连时回退到磁盘回放，并正确记录指标。
+///
+/// 场景：加载 1500 个 Turn 的会话，使用过期游标 "1.0" 重连。
+/// 预期：从磁盘恢复历史事件，磁盘回退计数 +1。
 #[tokio::test]
 async fn reconnect_with_stale_cursor_falls_back_to_disk_and_records_it() {
     let _guard = TestEnvGuard::new();
@@ -276,6 +314,10 @@ async fn reconnect_with_stale_cursor_falls_back_to_disk_and_records_it() {
     );
 }
 
+/// 验证并发提交时第二个 prompt 会分支到新会话，并正确记录两个 Turn。
+///
+/// 场景：在第一个 Turn 运行中提交第二个 prompt。
+/// 预期：第二个 prompt 分支到新会话，原始会话只包含 "first"，分支会话只包含 "second"。
 #[tokio::test]
 async fn concurrent_submit_branches_second_prompt_and_records_two_turns() {
     let _guard = TestEnvGuard::new();
@@ -315,6 +357,7 @@ async fn concurrent_submit_branches_second_prompt_and_records_two_turns() {
         .await
         .expect("branched session snapshot should load");
 
+    // 提取用户消息内容进行验证
     let original_user_messages = original_messages
         .iter()
         .filter_map(|message| match message {

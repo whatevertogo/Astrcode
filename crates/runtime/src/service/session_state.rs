@@ -1,3 +1,35 @@
+//! # 会话状态管理 (Session State Management)
+//!
+//! 管理单个会话的运行时状态，包括：
+//! - 事件广播（broadcast channel）供 SSE 客户端订阅
+//! - 事件持久化（SessionWriter 包装 EventLogWriter）
+//! - 内存缓存（RecentSessionEvents）支持快速 SSE 重连回放
+//! - 投影状态（AgentStateProjector）提供会话快照
+//! - 取消令牌和 Phase 状态管理
+//!
+//! ## 设计
+//!
+//! ### 事件广播与缓存策略
+//!
+//! - `SESSION_BROADCAST_CAPACITY` (2048): broadcast channel 容量，慢速 SSE 客户端若未
+//!   在 2048 条事件内消费，旧事件会被丢弃。这是权衡值：足够覆盖一次完整 turn（通常 < 100 条事件），
+//!   同时限制内存占用。
+//! - `SESSION_RECENT_RECORD_LIMIT` (4096): 内存中保留的最近事件记录数。超过此限制时从头部
+//!   淘汰旧记录（truncated = true）。约覆盖 40-50 次典型 turn，足以满足大多数 SSE resume 场景
+//!   无需回磁盘。
+//!
+//! ### 恢复策略
+//!
+//! SSE 客户端丢失事件后的恢复策略是回退到磁盘回放（见 `replay.rs`）。
+//! `RecentSessionEvents::records_after` 返回 `None` 时表示缓存不足以满足请求，
+//! 调用方应回退到磁盘回放。
+//!
+//! ### 锁选择
+//!
+//! `SessionWriter` 使用 `std::sync::Mutex` 而非 `tokio::sync::Mutex`，因为：
+//! writer 被 `spawn_blocking` 上下文和直接异步上下文交替调用，且临界区内只做纯文件 I/O，
+//! 没有任何 await 点。std::sync::Mutex 在此场景下更轻量，避免 tokio Mutex 的额外开销。
+
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -14,14 +46,19 @@ use astrcode_core::{StorageEvent, StoredEvent};
 
 use super::support::{lock_anyhow, spawn_blocking_anyhow};
 
-// broadcast channel 容量。慢速 SSE 客户端若未在 2048 条事件内消费，旧事件会被丢弃。
-// 2048 是权衡值：足够覆盖一次完整 turn（通常 < 100 条事件），同时限制内存占用。
-// SSE 客户端丢失事件后的恢复策略是回退到磁盘回放（见 replay.rs）。
+/// broadcast channel 容量。慢速 SSE 客户端若未在 2048 条事件内消费，旧事件会被丢弃。
+/// 2048 是权衡值：足够覆盖一次完整 turn（通常 < 100 条事件），同时限制内存占用。
+/// SSE 客户端丢失事件后的恢复策略是回退到磁盘回放（见 replay.rs）。
 const SESSION_BROADCAST_CAPACITY: usize = 2048;
-// 内存中保留的最近事件记录数。超过此限制时从头部淘汰旧记录（truncated = true）。
-// 4096 约覆盖 40-50 次典型 turn，足以满足大多数 SSE resume 场景无需回磁盘。
+/// 内存中保留的最近事件记录数。超过此限制时从头部淘汰旧记录（truncated = true）。
+/// 4096 约覆盖 40-50 次典型 turn，足以满足大多数 SSE resume 场景无需回磁盘。
 const SESSION_RECENT_RECORD_LIMIT: usize = 4096;
 
+/// 最近会话事件缓存
+///
+/// 使用 `VecDeque` 维护固定大小的事件环形缓冲区，支持 SSE 客户端快速重连回放。
+/// 当缓存被截断（truncated = true）时，表示头部事件已被淘汰，请求早期 cursor 的
+/// 客户端必须回退到磁盘回放。
 #[derive(Default)]
 struct RecentSessionEvents {
     records: VecDeque<SessionEventRecord>,
@@ -29,6 +66,7 @@ struct RecentSessionEvents {
 }
 
 impl RecentSessionEvents {
+    /// 替换全部记录，并检查是否超过限制需要截断。
     fn replace(&mut self, records: Vec<SessionEventRecord>) {
         self.records = VecDeque::from(records);
         self.truncated = self.records.len() > SESSION_RECENT_RECORD_LIMIT;
@@ -37,6 +75,7 @@ impl RecentSessionEvents {
         }
     }
 
+    /// 批量追加记录，超过限制时从头部淘汰。
     fn push_batch(&mut self, records: &[SessionEventRecord]) {
         for record in records {
             self.records.push_back(record.clone());
@@ -101,16 +140,21 @@ impl SessionWriter {
         }
     }
 
+    /// 在阻塞上下文中追加事件到 JSONL 文件。
     pub(super) fn append_blocking(&self, event: &StorageEvent) -> Result<StoredEvent> {
         let mut guard = lock_anyhow(&self.inner, "session writer")?;
         Ok(guard.append(event)?)
     }
 
+    /// 异步追加事件，内部桥接到阻塞线程池执行。
     pub(super) async fn append(self: Arc<Self>, event: StorageEvent) -> Result<StoredEvent> {
         spawn_blocking_anyhow("append session event", move || self.append_blocking(&event)).await
     }
 }
 
+/// 会话 Token 预算状态
+///
+/// 用于自动 continue 机制的会话级 token 消耗跟踪。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct SessionTokenBudgetState {
     pub total_budget: u64,
@@ -118,6 +162,19 @@ pub(super) struct SessionTokenBudgetState {
     pub continuation_count: u8,
 }
 
+/// 会话运行时状态
+///
+/// 包含单个会话的完整运行时上下文：
+/// - `phase`: 当前会话阶段（Idle, Running, Compacting 等）
+/// - `running`: 是否有 turn 正在执行
+/// - `cancel`: 取消令牌，用于中断正在运行的 turn
+/// - `turn_lease`: 当前 turn 的租约（防止并发 turn）
+/// - `token_budget`: 会话级 token 预算跟踪
+/// - `compact_failure_count`: 压缩失败计数器（运行时本地，重启后重置）
+/// - `broadcaster`: SSE 事件广播发送端
+/// - `writer`: 事件持久化写入器
+/// - `projector`: 状态投影器，将 StorageEvent 转换为 AgentState
+/// - `recent_records`: 内存中的最近事件缓存
 pub(super) struct SessionState {
     // 保留以备将来 session 级工作目录切换时使用；当前所有工具通过 ToolContext.working_dir 获取路径
     #[allow(dead_code)]
@@ -138,6 +195,9 @@ pub(super) struct SessionState {
 }
 
 impl SessionState {
+    /// 创建新的会话状态实例。
+    ///
+    /// 初始化 broadcast channel 和事件缓存，其他状态设为默认值。
     pub(super) fn new(
         working_dir: PathBuf,
         phase: Phase,
@@ -163,6 +223,7 @@ impl SessionState {
         }
     }
 
+    /// 获取当前投影的会话状态快照。
     pub(super) fn snapshot_projected_state(&self) -> Result<AgentState> {
         Ok(lock_anyhow(&self.projector, "session projector")?.snapshot())
     }
@@ -188,6 +249,9 @@ impl SessionState {
         Ok(records)
     }
 
+    /// 从内存缓存中获取指定 cursor 之后的事件。
+    ///
+    /// 返回 `None` 表示缓存不足，调用方应回退到磁盘回放。
     pub(super) fn recent_records_after(
         &self,
         last_event_id: Option<&str>,
@@ -222,6 +286,7 @@ mod tests {
         }
     }
 
+    /// 验证缓存命中时返回增量尾部事件。
     #[test]
     fn recent_records_after_returns_incremental_tail_when_cursor_is_cached() {
         let mut recent = RecentSessionEvents::default();
@@ -239,6 +304,7 @@ mod tests {
         );
     }
 
+    /// 验证 cursor 超出缓存范围时强制磁盘回放。
     #[test]
     fn recent_records_after_requires_disk_fallback_when_cursor_fell_out_of_cache() {
         let mut recent = RecentSessionEvents::default();
