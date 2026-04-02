@@ -3,7 +3,7 @@
 
 ## Workflow Checklist
 
-- Rust 代码改动：`cargo fmt --all -- --check && cargo test `
+- Rust 代码改动：`cargo fmt --all -- --check && cargo test --workspace --exclude astrcode`
 - 前端代码改动：`cd frontend && npm run typecheck && npm run lint && npm run format:check`
 - 依赖边界改动（`Cargo.lock`/`deny.toml`）：补跑 `cargo deny check bans`
 - 同时改 Rust 与前端：以上检查都要过

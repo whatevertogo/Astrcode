@@ -345,7 +345,7 @@ fn normalize_absolute_path(path: PathBuf) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_support::test_tool_context_for;
+    use crate::test_support::{canonical_tool_path, test_tool_context_for};
 
     use super::*;
 
@@ -407,7 +407,7 @@ mod tests {
 
         let resolved = resolve_path(&ctx, &file).expect("path should resolve");
 
-        assert_eq!(resolved, file);
+        assert_eq!(resolved, canonical_tool_path(&file));
     }
 
     #[test]

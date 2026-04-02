@@ -44,7 +44,7 @@ npm install
 cd frontend && npm install
 ```
 
-执行根目录或 `frontend` 的 `npm install` 时，会自动把仓库的 `core.hooksPath` 指向 `.githooks/`。之后每次 `git commit` 都会在提交前格式化已暂存的 Rust 文件和 `frontend/src` 下的 `ts` / `tsx` / `css` 文件，并把格式化结果重新加入暂存区。
+执行根目录或 `frontend` 的 `npm install` 时，会自动把仓库的 `core.hooksPath` 指向 `.githooks/`。之后每次 `git commit` 都会在提交前格式化已暂存的 Rust 文件和 `frontend/src` 下的 `ts` / `tsx` / `css` 文件；如果本次提交包含 Rust 改动，还会继续跑 `cargo clippy --workspace -- -D warnings` 和 `cargo test --workspace --exclude astrcode`，并把格式化结果重新加入暂存区。
 
 ### 开发模式
 

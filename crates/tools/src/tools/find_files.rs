@@ -162,7 +162,7 @@ fn looks_like_windows_drive_relative_path(pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::test_tool_context_for;
+    use crate::test_support::{canonical_tool_path, test_tool_context_for};
 
     #[tokio::test]
     async fn find_files_matches_direct_glob() {
@@ -190,7 +190,9 @@ mod tests {
         assert_eq!(paths.len(), 1);
         assert_eq!(
             paths[0],
-            temp.path().join("a.txt").to_string_lossy().to_string()
+            canonical_tool_path(temp.path().join("a.txt"))
+                .to_string_lossy()
+                .to_string()
         );
     }
 
@@ -327,7 +329,9 @@ mod tests {
         assert!(result.ok);
         assert_eq!(
             result.metadata.expect("metadata should exist")["root"],
-            json!(temp.path().to_string_lossy().to_string())
+            json!(canonical_tool_path(temp.path())
+                .to_string_lossy()
+                .to_string())
         );
     }
 

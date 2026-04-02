@@ -126,7 +126,7 @@ impl Tool for WriteFileTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::test_tool_context_for;
+    use crate::test_support::{canonical_tool_path, test_tool_context_for};
 
     #[tokio::test]
     async fn write_file_creates_new_file() {
@@ -153,7 +153,7 @@ mod tests {
         assert_eq!(content, "hello");
         assert_eq!(
             result.metadata.expect("metadata should exist")["path"],
-            json!(file.to_string_lossy().to_string())
+            json!(canonical_tool_path(&file).to_string_lossy().to_string())
         );
     }
 

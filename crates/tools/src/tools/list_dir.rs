@@ -116,7 +116,7 @@ impl Tool for ListDirTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::test_tool_context_for;
+    use crate::test_support::{canonical_tool_path, test_tool_context_for};
 
     #[tokio::test]
     async fn list_dir_tool_lists_entries() {
@@ -139,7 +139,9 @@ mod tests {
         assert!(result.output.contains("a.txt"));
         assert_eq!(
             result.metadata.expect("metadata should exist")["path"],
-            json!(temp.path().to_string_lossy().to_string())
+            json!(canonical_tool_path(temp.path())
+                .to_string_lossy()
+                .to_string())
         );
     }
 

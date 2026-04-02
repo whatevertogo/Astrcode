@@ -106,7 +106,7 @@ impl Tool for ReadFileTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::test_tool_context_for;
+    use crate::test_support::{canonical_tool_path, test_tool_context_for};
 
     #[tokio::test]
     async fn read_file_tool_reads_file() {
@@ -130,7 +130,7 @@ mod tests {
         assert_eq!(result.output, "hello from read_file");
         assert_eq!(
             result.metadata.expect("metadata should exist")["path"],
-            json!(file.to_string_lossy().to_string())
+            json!(canonical_tool_path(&file).to_string_lossy().to_string())
         );
     }
 

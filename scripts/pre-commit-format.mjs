@@ -64,6 +64,10 @@ if (stagedRustFiles.length > 0) {
 
   console.log('pre-commit: running clippy on workspace...');
   runWithInheritedOutput('cargo', ['clippy', '--workspace', '--', '-D', 'warnings']);
+
+  // Match CI's Rust test entrypoint so Windows-only regressions are blocked before push.
+  console.log('pre-commit: running Rust workspace tests...');
+  runWithInheritedOutput('cargo', ['test', '--workspace', '--exclude', 'astrcode']);
 }
 
 if (stagedFrontendFiles.length > 0) {

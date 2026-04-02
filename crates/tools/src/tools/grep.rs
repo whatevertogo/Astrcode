@@ -202,7 +202,7 @@ fn collect_candidate_files(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::test_tool_context_for;
+    use crate::test_support::{canonical_tool_path, test_tool_context_for};
 
     #[tokio::test]
     async fn grep_finds_matches_with_line_numbers() {
@@ -231,7 +231,10 @@ mod tests {
         assert_eq!(matches.len(), 2);
         assert_eq!(matches[0].line_no, 1);
         assert_eq!(matches[1].line_no, 3);
-        assert_eq!(matches[0].file, file.to_string_lossy().to_string());
+        assert_eq!(
+            matches[0].file,
+            canonical_tool_path(&file).to_string_lossy().to_string()
+        );
     }
 
     #[tokio::test]

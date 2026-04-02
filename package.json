@@ -7,7 +7,7 @@
     "dev:frontend": "cd frontend && npm run dev",
     "dev:tauri": "cargo tauri dev",
     "build": "cargo tauri build",
-    "check:rust": "cargo check --workspace && cargo test -p ipc",
+    "check:rust": "cargo check --workspace && cargo test --workspace --exclude astrcode",
     "check:ts": "cd frontend && npm run typecheck",
     "check": "npm run check:rust && npm run check:ts"
   },
