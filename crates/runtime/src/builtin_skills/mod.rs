@@ -1,16 +1,14 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use astrcode_core::home::resolve_home_dir;
 use log::warn;
 
-use crate::prompt::{parse_skill_md, SkillSource, SkillSpec};
+use crate::prompt::{is_valid_skill_name, parse_skill_md, SkillSource, SkillSpec};
 
 struct BundledSkillDefinition {
     id: &'static str,
     assets: &'static [BundledSkillAsset],
-    allowed_tools: &'static [&'static str],
-    expand_tool_guides: bool,
 }
 
 struct BundledSkillAsset {
@@ -18,14 +16,14 @@ struct BundledSkillAsset {
     content: &'static str,
 }
 
-const BUNDLED_SKILLS: &[BundledSkillDefinition] = &[];
+include!(concat!(env!("OUT_DIR"), "/bundled_skills.generated.rs"));
 
 pub(crate) fn builtin_skills() -> Vec<SkillSpec> {
     BUNDLED_SKILLS
         .iter()
         .map(|definition| {
-            // Bundled skills are shipped with the binary, so an invalid SKILL.md
-            // is a build-time authoring bug rather than optional user content.
+            // Bundled skills are authored inside this crate, so malformed
+            // markdown should fail fast instead of silently disappearing.
             let skill_markdown = definition
                 .assets
                 .iter()
@@ -35,22 +33,27 @@ pub(crate) fn builtin_skills() -> Vec<SkillSpec> {
             let mut skill = parse_skill_md(skill_markdown, definition.id, SkillSource::Builtin)
                 .unwrap_or_else(|| panic!("invalid bundled skill '{}'", definition.id));
             assert_valid_builtin_skill_identity(definition.id, &skill);
-            // Keep Claude-style SKILL.md files focused on invocation guidance.
-            // Execution metadata still lives in code so the file format stays
-            // migratable from external skill repos without extra Astrcode keys.
-            skill.allowed_tools = definition
-                .allowed_tools
+            skill.allowed_tools = bundled_skill_allowed_tools(definition.id)
                 .iter()
                 .map(|tool| (*tool).to_string())
                 .collect();
-            skill.expand_tool_guides = definition.expand_tool_guides;
             if let Some(skill_root) = materialize_builtin_skill_assets(definition) {
-                skill.reference_files = collect_reference_files(&skill_root);
+                skill.asset_files = collect_asset_files(&skill_root);
                 skill.skill_root = Some(skill_root.to_string_lossy().into_owned());
             }
             skill
         })
         .collect()
+}
+
+fn bundled_skill_allowed_tools(skill_id: &str) -> &'static [&'static str] {
+    match skill_id {
+        // This skill inspects diffs and shells out to git, so documenting the
+        // tool boundary here keeps SKILL.md Claude-compatible while runtime still
+        // knows which tools the workflow depends on.
+        "git-commit" => &["shell", "readFile", "grep", "findFiles", "listDir"],
+        _ => &[],
+    }
 }
 
 fn assert_valid_builtin_skill_identity(expected_id: &str, skill: &SkillSpec) {
@@ -59,10 +62,7 @@ fn assert_valid_builtin_skill_identity(expected_id: &str, skill: &SkillSpec) {
         "bundled skill frontmatter name must match its kebab-case folder name"
     );
     assert!(
-        skill
-            .name
-            .chars()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-'),
+        is_valid_skill_name(&skill.name),
         "bundled skill names may only contain lowercase ascii letters, digits, and hyphens"
     );
 }
@@ -86,6 +86,14 @@ fn materialize_builtin_skill_assets(definition: &BundledSkillDefinition) -> Opti
         .join(definition.id);
 
     for asset in definition.assets {
+        if !is_safe_relative_asset_path(asset.relative_path) {
+            warn!(
+                "skipping unsafe builtin skill asset '{}' for '{}'",
+                asset.relative_path, definition.id
+            );
+            return None;
+        }
+
         let asset_path = skill_root.join(
             asset
                 .relative_path
@@ -102,8 +110,9 @@ fn materialize_builtin_skill_assets(definition: &BundledSkillDefinition) -> Opti
                 return None;
             }
         }
-        // Materialize bundled assets onto disk so Claude-style references/ docs
-        // can be discovered and opened with the same file tools as user skills.
+
+        // Materialize the bundled tree onto disk so Claude-style `scripts/`
+        // assets are actually executable at runtime rather than being prompt-only.
         if let Err(error) = write_asset_if_changed(&asset_path, asset.content) {
             warn!(
                 "failed to materialize builtin skill asset '{}' for '{}': {}",
@@ -116,6 +125,14 @@ fn materialize_builtin_skill_assets(definition: &BundledSkillDefinition) -> Opti
     Some(skill_root)
 }
 
+fn is_safe_relative_asset_path(relative_path: &str) -> bool {
+    let path = Path::new(relative_path);
+    !path.is_absolute()
+        && path.components().all(|component| {
+            matches!(component, Component::Normal(_)) || matches!(component, Component::CurDir)
+        })
+}
+
 fn write_asset_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
     if fs::read_to_string(path).ok().as_deref() == Some(content) {
         return Ok(());
@@ -124,10 +141,10 @@ fn write_asset_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
     fs::write(path, content)
 }
 
-fn collect_reference_files(skill_root: &Path) -> Vec<String> {
-    let references_dir = skill_root.join("references");
+fn collect_asset_files(skill_root: &Path) -> Vec<String> {
     let mut files = Vec::new();
-    collect_files_recursive(&references_dir, skill_root, &mut files);
+    collect_files_recursive(skill_root, skill_root, &mut files);
+    files.retain(|path| path != "SKILL.md");
     files.sort();
     files
 }
@@ -158,20 +175,28 @@ fn collect_files_recursive(root: &Path, base_dir: &Path, files: &mut Vec<String>
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use astrcode_core::test_support::TestEnvGuard;
 
+    use super::*;
+
     #[test]
-    fn bundled_skills_parse_from_claude_style_skill_md_assets() {
+    fn bundled_skills_parse_from_claude_style_skill_directories() {
         let _guard = TestEnvGuard::new();
         let skills = builtin_skills();
 
-        assert_eq!(skills.len(), 0);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "git-commit");
     }
 
     #[test]
-    fn bundled_skills_materialize_claude_style_directory_layout() {
-        // No bundled skills remain; the git-commit skill is loaded from the
-        // user-level skills directory instead of the compiled-in bundle.
+    fn bundled_skills_materialize_directory_assets() {
+        let _guard = TestEnvGuard::new();
+        let skills = builtin_skills();
+
+        let skill_root = skills[0]
+            .skill_root
+            .as_ref()
+            .expect("builtin skill root should be materialized");
+        assert!(Path::new(skill_root).join("SKILL.md").is_file());
     }
 }

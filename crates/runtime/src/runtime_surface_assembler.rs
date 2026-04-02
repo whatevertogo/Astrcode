@@ -15,7 +15,7 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::builtin_capabilities::built_in_capability_invokers;
-use crate::prompt::{PromptDeclaration, PromptDeclarationSource};
+use crate::prompt::{PromptDeclaration, PromptDeclarationSource, SkillSpec};
 
 pub(crate) struct AssembledRuntimeSurface {
     pub(crate) router: CapabilityRouter,
@@ -204,11 +204,12 @@ pub(crate) async fn assemble_runtime_surface<I>(
     manifests: Vec<PluginManifest>,
     initializer: &I,
     plugin_registry: Arc<PluginRegistry>,
+    builtin_skills: Vec<SkillSpec>,
 ) -> std::result::Result<AssembledRuntimeSurface, AstrError>
 where
     I: PluginInitializer,
 {
-    let built_in_invokers = built_in_capability_invokers()?;
+    let built_in_invokers = built_in_capability_invokers(builtin_skills)?;
     let mut registered_capability_names: HashSet<String> = built_in_invokers
         .iter()
         .map(|invoker| invoker.descriptor().name)

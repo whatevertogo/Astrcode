@@ -17,6 +17,7 @@
 
 | 工具 | 描述 |
 |------|------|
+| `Skill` | 按需加载 Claude 风格 `SKILL.md` 指南与 `references/` / `scripts/` 等资源 |
 | `read_file` | 读取文件内容 |
 | `write_file` | 写入或创建文件，并返回结构化 diff metadata |
 | `edit_file` | 精确替换文件内容（唯一匹配验证），并返回结构化 diff metadata |
@@ -237,6 +238,12 @@ AstrCode/
 │  └─────────────┘    └──────────────┘   └─────────────┘ │
 └────────────────────────────────────────────────────────┘
 ```
+
+### Skill 架构
+
+- skill 采用 Claude 风格的两阶段模型：system prompt 先给模型看 skill 索引，命中后再调用内置 `Skill` tool 加载完整 `SKILL.md`。
+- skill 目录格式固定为 `skill-name/SKILL.md`，frontmatter 只认 `name` 和 `description`。
+- `references/`、`scripts/` 等目录会作为 skill 资产一起索引；builtin skill 整目录会在运行时物化到 `~/.astrcode/runtime/builtin-skills/`，方便 shell 直接执行其中脚本。
 
 ### Tauri 桌面端
 

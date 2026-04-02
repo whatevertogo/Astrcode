@@ -28,5 +28,5 @@ pub use skill_loader::{
     load_project_skills, load_user_skills, parse_skill_md, resolve_prompt_skills,
     skill_roots_cache_marker, SkillFrontmatter,
 };
-pub use skill_spec::{SkillSource, SkillSpec};
+pub use skill_spec::{is_valid_skill_name, normalize_skill_name, SkillSource, SkillSpec};
 pub use template::TemplateRenderError;

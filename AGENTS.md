@@ -59,6 +59,12 @@ protocol (纯 DTO，无业务依赖)
 - `shell` 工具按 stdout / stderr 增量流式输出；前端工具卡片会基于 `metadata.display.kind = terminal` 渲染终端视图，断线重连后通过 replay 恢复。
 - `writeFile` / `editFile` 的 diff 仍通过 metadata 驱动展示；diff/shell metadata 的解析逻辑优先收口到 `frontend/src/lib/`，避免在 `ToolCallBlock` 里散落协议细节。
 
+### Skill Architecture
+
+- Claude 风格 skill 走两阶段模型：system prompt 只暴露 skill 索引（`name` + `description`），真正的正文通过内置 `Skill` tool 按需加载。
+- `SKILL.md` frontmatter 只认 `name` 和 `description`，且 `name` 必须与文件夹名一致（kebab-case）；不要再往 markdown frontmatter 里塞 Astrcode 专用执行元数据。
+- skill 目录整体都是资源面，`references/`、`scripts/` 等资产会被索引并随 `Skill` tool 一起暴露；builtin skill 的整目录资源由 `crates/runtime/build.rs` 打包，不要再手写 `include_str!` 清单。
+
 ## Development Tips
 
 ### Tauri/桌面端

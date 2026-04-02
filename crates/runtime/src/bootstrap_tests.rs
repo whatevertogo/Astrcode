@@ -190,6 +190,11 @@ fn bootstrap_without_plugins_keeps_builtin_capabilities() {
         .any(|descriptor| descriptor.name == "shell"));
     assert!(bootstrap
         .coordinator
+        .capabilities()
+        .iter()
+        .any(|descriptor| descriptor.name == "Skill"));
+    assert!(bootstrap
+        .coordinator
         .plugin_registry()
         .snapshot()
         .is_empty());

@@ -91,16 +91,21 @@ impl RuntimeGovernance {
             )));
         }
 
-        let assembled =
-            assemble_runtime_surface(manifests, initializer, self.coordinator.plugin_registry())
-                .await
-                .map_err(ServiceError::Internal)?;
+        let builtin_skills = crate::builtin_skills::builtin_skills();
+        let assembled = assemble_runtime_surface(
+            manifests,
+            initializer,
+            self.coordinator.plugin_registry(),
+            builtin_skills.clone(),
+        )
+        .await
+        .map_err(ServiceError::Internal)?;
         let capability_surface = assembled.router.descriptors();
         self.service
             .replace_capabilities_with_prompt_inputs(
                 assembled.router,
                 assembled.prompt_declarations,
-                crate::builtin_skills::builtin_skills(),
+                builtin_skills,
             )
             .await?;
         let previous_active_plugins = {

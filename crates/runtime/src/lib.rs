@@ -25,6 +25,7 @@ mod provider_factory;
 mod runtime_governance;
 mod runtime_surface_assembler;
 mod service;
+mod skill_tool;
 #[cfg(test)]
 mod test_support;
 

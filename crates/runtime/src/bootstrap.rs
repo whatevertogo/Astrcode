@@ -30,15 +30,21 @@ where
     I: PluginInitializer,
 {
     let plugin_registry = Arc::new(PluginRegistry::default());
-    let assembled =
-        assemble_runtime_surface(manifests, initializer, Arc::clone(&plugin_registry)).await?;
+    let builtin_skills = crate::builtin_skills::builtin_skills();
+    let assembled = assemble_runtime_surface(
+        manifests,
+        initializer,
+        Arc::clone(&plugin_registry),
+        builtin_skills.clone(),
+    )
+    .await?;
     let capability_surface = assembled.router.descriptors();
     plugin_registry.replace_snapshot(assembled.plugin_entries);
     let service = Arc::new(
         RuntimeService::from_capabilities_with_prompt_inputs(
             assembled.router,
             assembled.prompt_declarations,
-            crate::builtin_skills::builtin_skills(),
+            builtin_skills,
         )
         .map_err(service_error_to_astr)?,
     );

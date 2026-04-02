@@ -7,7 +7,7 @@ use astrcode_core::LlmMessage;
 
 use super::contributors::{
     AgentsMdContributor, CapabilityPromptContributor, EnvironmentContributor, IdentityContributor,
-    SkillGuideContributor, SkillSummaryContributor,
+    SkillSummaryContributor, WorkflowExamplesContributor,
 };
 use super::diagnostics::{DiagnosticLevel, DiagnosticReason, PromptDiagnostic, PromptDiagnostics};
 use super::{
@@ -96,8 +96,8 @@ impl PromptComposer {
             .with_contributor(Arc::new(EnvironmentContributor))
             .with_contributor(Arc::new(AgentsMdContributor))
             .with_contributor(Arc::new(CapabilityPromptContributor))
-            .with_contributor(Arc::new(SkillGuideContributor))
             .with_contributor(Arc::new(SkillSummaryContributor))
+            .with_contributor(Arc::new(WorkflowExamplesContributor))
     }
 
     /// Appends a contributor to the chain.
