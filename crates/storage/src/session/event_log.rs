@@ -68,7 +68,7 @@ impl EventLog {
     /// 绕过正常路径解析逻辑，直接在给定路径创建文件，
     /// 以便测试可以精确控制文件位置。
     #[cfg(test)]
-    pub fn create_at_path(_session_id: &str, path: PathBuf) -> Result<Self> {
+    pub fn create_at_path(path: PathBuf) -> Result<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| {
                 crate::AstrError::io(
@@ -214,12 +214,7 @@ impl EventLog {
 
         const TAIL_THRESHOLD: u64 = 64 * 1024;
         if file_size <= TAIL_THRESHOLD {
-            let mut last_seq: Option<u64> = None;
-            for event_result in EventLogIterator::from_path(path)? {
-                let event = event_result?;
-                last_seq = Some(event.storage_seq);
-            }
-            return Ok(last_seq.unwrap_or(0));
+            return Self::scan_full_file_for_last_seq(path);
         }
 
         let offset = file_size - TAIL_THRESHOLD;
@@ -248,12 +243,7 @@ impl EventLog {
 
         if started_mid_line {
             let Some((_, remaining)) = content.split_once('\n') else {
-                let mut last_seq: Option<u64> = None;
-                for event_result in EventLogIterator::from_path(path)? {
-                    let event = event_result?;
-                    last_seq = Some(event.storage_seq);
-                }
-                return Ok(last_seq.unwrap_or(0));
+                return Self::scan_full_file_for_last_seq(path);
             };
             content = remaining.to_string();
         }
@@ -271,6 +261,11 @@ impl EventLog {
             }
         }
 
+        Self::scan_full_file_for_last_seq(path)
+    }
+
+    /// 全量扫描文件，返回最后一个事件的 storage_seq。
+    fn scan_full_file_for_last_seq(path: &Path) -> Result<u64> {
         let mut last_seq: Option<u64> = None;
         for event_result in EventLogIterator::from_path(path)? {
             let event = event_result?;
@@ -296,7 +291,7 @@ mod tests {
     fn last_storage_seq_tail_scan_skips_partial_first_line() {
         let temp_dir = tempfile::tempdir().expect("tempdir should be created");
         let path = temp_dir.path().join("session-test-session.jsonl");
-        let mut log = EventLog::create_at_path("test-session", path.clone()).expect("event log");
+        let mut log = EventLog::create_at_path(path.clone()).expect("event log");
 
         for index in 0..3 {
             log.append_stored(&StorageEvent::AssistantFinal {

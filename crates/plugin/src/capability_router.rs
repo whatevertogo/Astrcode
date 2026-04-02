@@ -64,7 +64,7 @@ pub trait PermissionChecker: Send + Sync {
 ///
 /// 用于开发环境或不需要权限隔离的场景。
 /// 生产环境应使用更严格的实现。
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub struct AllowAllPermissionChecker;
 
 impl PermissionChecker for AllowAllPermissionChecker {

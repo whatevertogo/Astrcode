@@ -50,7 +50,7 @@ pub struct Config {
     pub active_profile: String,
     #[serde(default = "default_config_active_model")]
     pub active_model: String,
-    #[serde(default = "default_config_runtime")]
+    #[serde(default)]
     pub runtime: RuntimeConfig,
     #[serde(default = "default_config_profiles")]
     pub profiles: Vec<Profile>,
@@ -159,7 +159,7 @@ impl Default for Config {
             active_profile: "deepseek".to_string(),
             active_model: "deepseek-chat".to_string(),
             runtime: RuntimeConfig::default(),
-            profiles: default_profiles(),
+            profiles: default_config_profiles(),
         }
     }
 }
@@ -300,14 +300,6 @@ fn default_config_active_model() -> String {
 }
 
 fn default_config_profiles() -> Vec<Profile> {
-    default_profiles()
-}
-
-fn default_config_runtime() -> RuntimeConfig {
-    RuntimeConfig::default()
-}
-
-fn default_profiles() -> Vec<Profile> {
     vec![
         Profile {
             name: "deepseek".to_string(),

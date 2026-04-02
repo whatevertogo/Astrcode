@@ -127,11 +127,6 @@ pub struct HookRegistry {
 }
 
 impl HookRegistry {
-    /// 创建空的注册表。
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// 注册一个策略钩子。
     ///
     /// ## 参数
@@ -216,18 +211,6 @@ pub struct PolicyHookChain {
 }
 
 impl PolicyHookChain {
-    /// 创建空的执行链。
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// 从注册表构建执行链。
-    ///
-    /// 等价于 `registry.policy_hook_chain()`。
-    pub fn from_registry(registry: &HookRegistry) -> Self {
-        registry.policy_hook_chain()
-    }
-
     /// 配置短路策略。
     ///
     /// 返回新的 `PolicyHookChain`（builder 风格），

@@ -24,9 +24,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use astrcode_core::{
-    phase_of_storage_event, DeleteProjectResult, Phase, SessionMeta, StorageEvent, StoredEventLine,
-};
+use astrcode_core::{DeleteProjectResult, Phase, SessionMeta, StorageEvent, StoredEventLine};
 use chrono::{DateTime, Utc};
 
 use crate::{internal_io_error, AstrError, Result};
@@ -395,10 +393,10 @@ impl EventLog {
     /// Phase 用于标识会话当前状态（Idle、CallingTool、WaitingForUser 等），
     /// 前端据此决定 UI 展示方式。
     fn read_last_phase(path: &Path) -> Result<Phase> {
-        Ok(
-            Self::read_tail_value(path, |event| Some(phase_of_event(event)))?
-                .unwrap_or(Phase::Idle),
-        )
+        Ok(Self::read_tail_value(path, |event| {
+            Some(astrcode_core::phase_of_storage_event(event))
+        })?
+        .unwrap_or(Phase::Idle))
     }
 
     /// 从会话文件尾部扫描，查找满足 mapper 条件的最后一个值。
@@ -568,12 +566,6 @@ fn timestamp_of_event(event: &StorageEvent) -> Option<DateTime<Utc>> {
         StorageEvent::Error { timestamp, .. } => timestamp.as_ref().cloned(),
         _ => None,
     }
-}
-
-/// 适配器：将 `phase_of_storage_event()`（返回 `Phase`）包装为 `Option<Phase>`，
-/// 以便作为 `read_tail_value()` 的 mapper 闭包使用。
-fn phase_of_event(event: &StorageEvent) -> Phase {
-    phase_of_storage_event(event)
 }
 
 /// 从工作目录字符串提取显示名称。

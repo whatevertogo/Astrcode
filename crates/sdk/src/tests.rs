@@ -228,7 +228,7 @@ fn policy_hook_returns_structured_decision() {
 #[test]
 fn hook_registry_composes_policy_hooks_in_order() {
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let registry = HookRegistry::new()
+    let registry = HookRegistry::default()
         .with_policy_hook(
             "first",
             TrackingPolicyHook {
@@ -263,7 +263,7 @@ fn hook_registry_composes_policy_hooks_in_order() {
 #[test]
 fn policy_hook_chain_short_circuits_after_first_deny() {
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let chain = PolicyHookChain::new()
+    let chain = PolicyHookChain::default()
         .with_hook(
             "allow",
             TrackingPolicyHook {
@@ -307,7 +307,7 @@ fn policy_hook_chain_short_circuits_after_first_deny() {
 #[test]
 fn policy_hook_chain_can_disable_short_circuit() {
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let chain = PolicyHookChain::new()
+    let chain = PolicyHookChain::default()
         .with_short_circuit(HookShortCircuit::Never)
         .with_hook(
             "deny",
@@ -340,7 +340,7 @@ fn policy_hook_chain_can_disable_short_circuit() {
 
 #[test]
 fn hook_registry_rejects_duplicate_policy_hook_names() {
-    let result = HookRegistry::new()
+    let result = HookRegistry::default()
         .with_policy_hook(
             "duplicate",
             TrackingPolicyHook {
