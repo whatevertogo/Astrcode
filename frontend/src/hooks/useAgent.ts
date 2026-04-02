@@ -1,23 +1,32 @@
 //! # Agent Hook
 //!
-//! 统一的 API 调用和 SSE 事件流管理。
+//! Orchestrates API calls and SSE event streaming.
 //!
-//! ## 核心功能
+//! ## Refactoring Notes
 //!
-//! - **会话管理**: 创建、加载、删除会话
-//! - **消息发送**: 提交用户 Prompt
-//! - **SSE 连接**: 连接会话事件流，支持断线重连
-//! - **配置管理**: 读取、保存配置
-//!
-//! ## SSE 断线重连
-//!
-//! - 使用指数退避策略（500ms 起始，最大 5s）
-//! - 通过 `lastEventId` 实现断点续传
-//! - 通过 `generation` 计数防止旧连接干扰
+//! API calls have been extracted into `lib/api/` so this hook only coordinates
+//! state, lifecycle, and reconnection logic. Tests can now target individual API
+//! modules in isolation.
 
 import { useCallback, useEffect, useRef } from 'react';
+import type { AgentEventPayload } from '../types';
+import { normalizeAgentEvent } from '../lib/agentEvent';
+import { getHostBridge } from '../lib/hostBridge';
+import { consumeSseStream } from '../lib/sse/consumer';
+import { ensureServerSession } from '../lib/serverAuth';
+import { request } from '../lib/api/client';
+import {
+  createSession,
+  deleteProject,
+  deleteSession,
+  interruptSession,
+  listSessionsWithMeta,
+  loadSession,
+  submitPrompt,
+} from '../lib/api/sessions';
+import { getConfig, saveActiveSelection } from '../lib/api/config';
+import { getCurrentModel, listAvailableModels, testConnection } from '../lib/api/models';
 import type {
-  AgentEventPayload,
   ConfigView,
   CurrentModelInfo,
   DeleteProjectResult,
@@ -25,10 +34,9 @@ import type {
   SessionMeta,
   TestResult,
 } from '../types';
-import { normalizeAgentEvent } from '../lib/agentEvent';
-import { getHostBridge } from '../lib/hostBridge';
-import { ensureServerSession, getServerAuthToken, getServerOrigin } from '../lib/serverAuth';
 
+// Re-export SessionMessage type that App.tsx depends on.
+// These union types provide proper narrowing so App.tsx knows `toolCallId` is required for toolCall kinds.
 export interface SessionUserMessage {
   kind: 'user';
   turnId?: string | null;
@@ -70,175 +78,6 @@ export interface PromptSubmission {
   branchedFromSessionId?: string;
 }
 
-type UnknownRecord = Record<string, unknown>;
-
-/// 安全地将值转换为 Record 类型
-function asRecord(value: unknown): UnknownRecord | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return null;
-  }
-  return value as UnknownRecord;
-}
-
-function pickString(record: UnknownRecord, ...keys: string[]): string | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === 'string') {
-      return value;
-    }
-  }
-  return undefined;
-}
-
-function pickOptionalString(record: UnknownRecord, ...keys: string[]): string | null | undefined {
-  for (const key of keys) {
-    if (!(key in record)) {
-      continue;
-    }
-    const value = record[key];
-    if (value === null || value === undefined) {
-      return null;
-    }
-    if (typeof value === 'string') {
-      return value;
-    }
-    return undefined;
-  }
-  return undefined;
-}
-
-function pickBoolean(record: UnknownRecord, ...keys: string[]): boolean | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === 'boolean') {
-      return value;
-    }
-  }
-  return undefined;
-}
-
-function pickNumber(record: UnknownRecord, ...keys: string[]): number | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      return value;
-    }
-  }
-  return undefined;
-}
-
-function normalizeSessionMessage(raw: unknown): SessionMessage {
-  const message = asRecord(raw);
-  if (!message) {
-    throw new Error(`invalid session message: ${String(raw)}`);
-  }
-
-  const kind = pickString(message, 'kind');
-  if (kind === 'user') {
-    return {
-      kind: 'user',
-      turnId: pickOptionalString(message, 'turnId', 'turn_id') ?? null,
-      content: pickString(message, 'content') ?? '',
-      timestamp: pickString(message, 'timestamp') ?? new Date().toISOString(),
-    };
-  }
-
-  if (kind === 'assistant') {
-    return {
-      kind: 'assistant',
-      turnId: pickOptionalString(message, 'turnId', 'turn_id') ?? null,
-      content: pickString(message, 'content') ?? '',
-      timestamp: pickString(message, 'timestamp') ?? new Date().toISOString(),
-      reasoningContent: pickString(message, 'reasoningContent', 'reasoning_content') ?? undefined,
-    };
-  }
-
-  if (kind === 'toolCall') {
-    return {
-      kind: 'toolCall',
-      turnId: pickOptionalString(message, 'turnId', 'turn_id') ?? null,
-      toolCallId: pickString(message, 'toolCallId', 'tool_call_id') ?? 'unknown',
-      toolName: pickString(message, 'toolName', 'tool_name') ?? '(unknown tool)',
-      args: message.args ?? null,
-      output: pickString(message, 'output'),
-      error: pickString(message, 'error'),
-      metadata: message.metadata,
-      ok: pickBoolean(message, 'ok'),
-      durationMs: pickNumber(message, 'durationMs', 'duration_ms'),
-    };
-  }
-
-  throw new Error(`unsupported session message kind: ${String(kind)}`);
-}
-
-function buildAuthHeaders(headers?: HeadersInit): Headers {
-  const merged = new Headers(headers);
-  const token = getServerAuthToken();
-  if (token) {
-    merged.set('x-astrcode-token', token);
-  }
-  return merged;
-}
-
-async function ensureOk(response: Response): Promise<void> {
-  if (response.ok) {
-    return;
-  }
-
-  let message = `${response.status} ${response.statusText}`;
-  try {
-    const payload = (await response.json()) as { error?: unknown };
-    if (typeof payload.error === 'string' && payload.error) {
-      message = payload.error;
-    }
-  } catch {
-    // ignore
-  }
-
-  throw new Error(message);
-}
-
-function normalizeFetchError(error: unknown): Error {
-  if (error instanceof Error && error.name === 'AbortError') {
-    return error;
-  }
-
-  if (error instanceof TypeError) {
-    if (window.__ASTRCODE_BOOTSTRAP__?.isDesktopHost) {
-      return new Error(
-        '无法连接本地服务，请确认 AstrCode 桌面端仍在运行；如果刚关闭了启动它的终端，请重新执行 `cargo tauri dev`。'
-      );
-    }
-    return new Error('无法连接后端服务，请确认本地 server 或网络连接正常。');
-  }
-
-  return error instanceof Error ? error : new Error(String(error));
-}
-
-async function requestResponse(path: string, init?: RequestInit): Promise<Response> {
-  await ensureServerSession();
-  try {
-    return await fetch(`${getServerOrigin()}${path}`, {
-      ...init,
-      headers: buildAuthHeaders(init?.headers),
-    });
-  } catch (error) {
-    throw normalizeFetchError(error);
-  }
-}
-
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await requestResponse(path, init);
-  await ensureOk(response);
-  return (await response.json()) as T;
-}
-
-async function request(path: string, init?: RequestInit): Promise<Response> {
-  const response = await requestResponse(path, init);
-  await ensureOk(response);
-  return response;
-}
-
 // SSE 重连配置
 const SSE_RECONNECT_BASE_DELAY_MS = 500;
 const SSE_RECONNECT_MAX_DELAY_MS = 5_000;
@@ -263,91 +102,6 @@ function shouldRetryEventStream(error: unknown): boolean {
   const message =
     error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
   return !message.includes('unauthorized') && !message.includes('403');
-}
-
-type SseStreamCloseReason = 'ended' | 'aborted';
-
-async function consumeSseStream(
-  response: Response,
-  onMessage: (payload: string, eventId: string | null, eventType: string) => void,
-  signal: AbortSignal
-): Promise<SseStreamCloseReason> {
-  if (!response.body) {
-    throw new Error('event stream response has no body');
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let dataLines: string[] = [];
-  let eventId: string | null = null;
-  let eventType = 'message';
-
-  const flushEvent = () => {
-    if (dataLines.length === 0) {
-      eventType = 'message';
-      return;
-    }
-    const payload = dataLines.join('\n');
-    dataLines = [];
-    onMessage(payload, eventId, eventType);
-    eventId = null;
-    eventType = 'message';
-  };
-
-  while (!signal.aborted) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
-    }
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop() ?? '';
-
-    for (const line of lines) {
-      if (line === '') {
-        flushEvent();
-        continue;
-      }
-      if (line.startsWith(':')) {
-        continue;
-      }
-      if (line.startsWith('id:')) {
-        eventId = line.slice(3).trimStart();
-        continue;
-      }
-      if (line.startsWith('event:')) {
-        const nextEventType = line.slice(6).trimStart();
-        eventType = nextEventType || 'message';
-        continue;
-      }
-      if (line.startsWith('data:')) {
-        dataLines.push(line.slice(5).trimStart());
-      }
-    }
-  }
-
-  buffer += decoder.decode();
-  if (buffer) {
-    const lines = buffer.split(/\r?\n/);
-    for (const line of lines) {
-      if (line.startsWith('id:')) {
-        eventId = line.slice(3).trimStart();
-        continue;
-      }
-      if (line.startsWith('event:')) {
-        const nextEventType = line.slice(6).trimStart();
-        eventType = nextEventType || 'message';
-        continue;
-      }
-      if (line.startsWith('data:')) {
-        dataLines.push(line.slice(5).trimStart());
-      }
-    }
-  }
-  flushEvent();
-  return signal.aborted ? 'aborted' : 'ended';
 }
 
 export function useAgent(onEvent: (event: AgentEventPayload) => void) {
@@ -519,99 +273,71 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     streamGenerationRef.current++;
   }, [clearReconnectTimer]);
 
-  const createSession = useCallback(async (workingDir: string): Promise<SessionMeta> => {
-    return requestJson<SessionMeta>('/api/sessions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workingDir }),
-    });
+  const handleCreateSession = useCallback(async (workingDir: string): Promise<SessionMeta> => {
+    return createSession(workingDir);
   }, []);
 
-  const listSessionsWithMeta = useCallback(async (): Promise<SessionMeta[]> => {
-    return requestJson<SessionMeta[]>('/api/sessions');
+  const handleListSessionsWithMeta = useCallback(async (): Promise<SessionMeta[]> => {
+    return listSessionsWithMeta();
   }, []);
 
-  const loadSession = useCallback(async (sessionId: string): Promise<SessionSnapshot> => {
-    const response = await request(`/api/sessions/${encodeURIComponent(sessionId)}/messages`);
-    const payload = (await response.json()) as unknown[];
-    const messages = payload.map(normalizeSessionMessage);
-    const cursor = response.headers.get('x-session-cursor');
-    return { messages, cursor };
+  const handleLoadSession = useCallback(async (sessionId: string): Promise<SessionSnapshot> => {
+    const { messages, cursor } = await loadSession(sessionId);
+    return { messages: messages as SessionMessage[], cursor };
   }, []);
 
-  const submitPrompt = useCallback(
+  const handleSubmitPrompt = useCallback(
     async (sessionId: string, text: string): Promise<PromptSubmission> => {
-      const response = await requestJson<PromptSubmission>(
-        `/api/sessions/${encodeURIComponent(sessionId)}/prompts`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text }),
-        }
-      );
+      const response = await submitPrompt(sessionId, text);
       return response;
     },
     []
   );
 
-  const interrupt = useCallback(async (sessionId: string): Promise<void> => {
-    await request(`/api/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
-      method: 'POST',
-    });
+  const handleInterrupt = useCallback(async (sessionId: string): Promise<void> => {
+    await interruptSession(sessionId);
   }, []);
 
-  const deleteSession = useCallback(async (sessionId: string): Promise<void> => {
-    await request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
-      method: 'DELETE',
-    });
+  const handleDeleteSession = useCallback(async (sessionId: string): Promise<void> => {
+    await deleteSession(sessionId);
   }, []);
 
-  const deleteProject = useCallback(async (workingDir: string): Promise<DeleteProjectResult> => {
-    return requestJson<DeleteProjectResult>(
-      `/api/projects?workingDir=${encodeURIComponent(workingDir)}`,
-      {
-        method: 'DELETE',
-      }
-    );
+  const handleDeleteProject = useCallback(
+    async (workingDir: string): Promise<DeleteProjectResult> => {
+      return deleteProject(workingDir);
+    },
+    []
+  );
+
+  const handleGetConfig = useCallback(async (): Promise<ConfigView> => {
+    return getConfig();
   }, []);
 
-  const getConfig = useCallback(async (): Promise<ConfigView> => {
-    return requestJson<ConfigView>('/api/config');
-  }, []);
-
-  const saveActiveSelection = useCallback(
+  const handleSaveActiveSelection = useCallback(
     async (activeProfile: string, activeModel: string): Promise<void> => {
-      await request('/api/config/active-selection', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ activeProfile, activeModel }),
-      });
+      await saveActiveSelection(activeProfile, activeModel);
     },
     []
   );
 
   const setModel = useCallback(
     async (profileName: string, model: string): Promise<void> => {
-      await saveActiveSelection(profileName, model);
+      await handleSaveActiveSelection(profileName, model);
     },
-    [saveActiveSelection]
+    [handleSaveActiveSelection]
   );
 
-  const getCurrentModel = useCallback(async (): Promise<CurrentModelInfo> => {
-    return requestJson<CurrentModelInfo>('/api/models/current');
+  const handleGetCurrentModel = useCallback(async (): Promise<CurrentModelInfo> => {
+    return getCurrentModel();
   }, []);
 
-  const listAvailableModels = useCallback(async (): Promise<ModelOption[]> => {
-    return requestJson<ModelOption[]>('/api/models');
+  const handleListAvailableModels = useCallback(async (): Promise<ModelOption[]> => {
+    return listAvailableModels();
   }, []);
 
-  const testConnection = useCallback(
+  const handleTestConnection = useCallback(
     async (profileName: string, model: string): Promise<TestResult> => {
-      return requestJson<TestResult>('/api/models/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profileName, model }),
-      });
+      return testConnection(profileName, model);
     },
     []
   );
@@ -625,21 +351,21 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
   }, []);
 
   return {
-    createSession,
-    listSessionsWithMeta,
-    loadSession,
+    createSession: handleCreateSession,
+    listSessionsWithMeta: handleListSessionsWithMeta,
+    loadSession: handleLoadSession,
     connectSession,
     disconnectSession,
-    submitPrompt,
-    interrupt,
-    deleteSession,
-    deleteProject,
-    getConfig,
-    saveActiveSelection,
+    submitPrompt: handleSubmitPrompt,
+    interrupt: handleInterrupt,
+    deleteSession: handleDeleteSession,
+    deleteProject: handleDeleteProject,
+    getConfig: handleGetConfig,
+    saveActiveSelection: handleSaveActiveSelection,
     setModel,
-    getCurrentModel,
-    listAvailableModels,
-    testConnection,
+    getCurrentModel: handleGetCurrentModel,
+    listAvailableModels: handleListAvailableModels,
+    testConnection: handleTestConnection,
     openConfigInEditor,
     selectDirectory,
     hostBridge: hostBridgeRef.current,
