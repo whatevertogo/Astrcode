@@ -61,6 +61,9 @@ if (stagedRustFiles.length > 0) {
   // Restrict rustfmt to staged files so a commit only rewrites code that is already part of the changeset.
   console.log(`pre-commit: formatting ${stagedRustFiles.length} Rust file(s).`);
   runWithInheritedOutput('cargo', ['fmt', '--all', '--', ...stagedRustFiles]);
+
+  console.log('pre-commit: running clippy on workspace...');
+  runWithInheritedOutput('cargo', ['clippy', '--workspace', '--', '-D', 'warnings']);
 }
 
 if (stagedFrontendFiles.length > 0) {
