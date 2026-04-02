@@ -1,3 +1,21 @@
+//! # 会话回放 (Session Replay)
+//!
+//! 实现 `SessionReplaySource` trait，为 SSE 客户端提供会话历史回放和实时订阅。
+//!
+//! ## 回放路径
+//!
+//! 1. **缓存路径（Cache）**: 优先从内存缓存（`RecentSessionEvents`）读取，快速返回
+//! 2. **磁盘回退（DiskFallback）**: 缓存不足时从磁盘 JSONL 文件加载
+//!
+//! ## 事件转换
+//!
+//! `convert_events_to_messages` 将存储事件序列转换为面向前端展示的会话消息列表。
+//! 关键设计决策：
+//! - **reasoning-only 消息合并**: 纯推理消息（无可见内容）如果有后续工具调用，
+//!   合并到工具调用消息中；否则丢弃（前端不需要展示空的推理块）
+//! - **工具调用聚合**: 同一 step 的多个工具调用聚合到一个消息中
+//! - **流式工具输出**: `ToolOutputDelta` 事件聚合为完整的工具结果
+
 use astrcode_core::{
     replay_records, split_assistant_content, AstrError, ToolOutputDelta, ToolOutputStream,
     UserMessageOrigin,

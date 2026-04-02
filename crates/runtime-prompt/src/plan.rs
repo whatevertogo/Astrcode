@@ -1,7 +1,21 @@
+//! Prompt 组装的最终计划。
+//!
+//! [`PromptPlan`] 是 [`PromptComposer::build`](crate::composer::PromptComposer::build)
+//! 的核心产出物，包含已渲染的 system blocks、prepend/append 消息和额外工具定义。
+//!
+//! # 渲染流程
+//!
+//! `render_system()` 将 system blocks 按优先级排序后拼接为完整的 system prompt 字符串。
+//! prepend/append 消息则直接作为 LLM 对话消息的一部分。
+
 use astrcode_core::{LlmMessage, ToolDefinition};
 
 use super::PromptBlock;
 
+/// Prompt 组装的最终计划。
+///
+/// 由 composer 经过收集、去重、条件过滤、依赖解析、模板渲染后生成。
+/// 调用方（通常是 `runtime` crate）将此计划转换为实际的 LLM API 请求。
 #[derive(Default, Clone, Debug)]
 pub struct PromptPlan {
     pub system_blocks: Vec<PromptBlock>,
@@ -11,6 +25,10 @@ pub struct PromptPlan {
 }
 
 impl PromptPlan {
+    /// 将 system blocks 渲染为完整的 system prompt 字符串。
+    ///
+    /// Blocks 按 `(priority, insertion_order)` 排序后，以 `[Title]\ncontent` 格式拼接。
+    /// 如果没有 system blocks，返回 `None`。
     pub fn render_system(&self) -> Option<String> {
         if self.system_blocks.is_empty() {
             return None;

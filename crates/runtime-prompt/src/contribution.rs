@@ -1,9 +1,24 @@
+//! Prompt 贡献的数据结构。
+//!
+//! [`PromptContribution`] 是 [`PromptContributor`](crate::PromptContributor) 的产出物，
+//! 包含一组 block 规格、贡献者变量和额外工具定义。
+
 use std::collections::{HashMap, HashSet};
 
 use astrcode_core::ToolDefinition;
 
 use super::BlockSpec;
 
+/// 单个 contributor 对 prompt 组装的贡献。
+///
+/// 每个 contributor 的 `contribute()` 方法返回此结构，composer 收集所有贡献后
+/// 进行去重、依赖解析和渲染。
+///
+/// # 字段说明
+///
+/// - `blocks`: 该 contributor 提供的 prompt 块规格列表
+/// - `contributor_vars`: 贡献者级别的变量，优先级高于 context 全局变量
+/// - `extra_tools`: 该 contributor 引入的额外工具定义（如 skill tool）
 #[derive(Default, Clone, Debug)]
 pub struct PromptContribution {
     pub blocks: Vec<BlockSpec>,
@@ -11,6 +26,10 @@ pub struct PromptContribution {
     pub extra_tools: Vec<ToolDefinition>,
 }
 
+/// 将额外工具定义追加到列表中，自动去重。
+///
+/// 当多个 contributor 都引入同名工具时，仅保留第一个。
+/// 这确保 tool list 中不会出现重复的工具定义。
 pub fn append_unique_tools(base: &mut Vec<ToolDefinition>, extra: Vec<ToolDefinition>) {
     let mut existing: HashSet<String> = base.iter().map(|tool| tool.name.clone()).collect();
 

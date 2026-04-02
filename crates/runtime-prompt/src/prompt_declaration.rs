@@ -1,9 +1,21 @@
+//! Prompt 声明的 DTO 定义。
+//!
+//! [`PromptDeclaration`] 是插件或 MCP 服务器向 prompt 组装管线注入内容的标准化格式。
+//! 与 skill 不同，prompt declaration 直接提供完整的 prompt 文本，而非按需加载。
+//!
+//! # 与 Skill 的区别
+//!
+//! - Skill：system prompt 中仅暴露索引（名称+描述），正文通过 `Skill` tool 按需加载
+//! - PromptDeclaration：直接注入到 system prompt 或对话消息中，始终可见
+
 use serde::{Deserialize, Serialize};
 
 use crate::{BlockKind, RenderTarget};
 
-/// Origin of a prompt declaration — kept separate from [`SkillSource`] because the two
-/// may diverge (e.g. a future `PromptDeclarationSource::System` vs `SkillSource::User`).
+/// Prompt 声明的来源。
+///
+/// 与 [`SkillSource`](crate::SkillSource) 保持独立，因为两者的来源集合可能不同
+///（如未来可能出现 `PromptDeclarationSource::System`）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptDeclarationSource {
@@ -26,7 +38,10 @@ impl PromptDeclarationSource {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptDeclarationKind {
+    /// 工具使用指南，映射到 [`BlockKind::ToolGuide`]。
     ToolGuide,
+    /// 扩展指令（插件或 MCP 注入的 prompt），默认类型。
+    /// 映射到 [`BlockKind::ExtensionInstruction`]。
     #[default]
     ExtensionInstruction,
 }
@@ -43,11 +58,16 @@ impl PromptDeclarationKind {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptDeclarationRenderTarget {
+    /// 渲染到 system prompt（默认）。
     #[default]
     System,
+    /// 插入到用户消息列表头部。
     PrependUser,
+    /// 插入到助手消息列表头部。
     PrependAssistant,
+    /// 追加到用户消息列表尾部。
     AppendUser,
+    /// 追加到助手消息列表尾部。
     AppendAssistant,
 }
 
@@ -63,6 +83,10 @@ impl PromptDeclarationRenderTarget {
     }
 }
 
+/// 插件或 MCP 服务器声明的 prompt 内容。
+///
+/// 这是一种"直接注入"式的 prompt 贡献，与 contributor 的编程式生成不同，
+/// prompt declaration 通过序列化数据（通常来自插件 API）直接定义 block 内容。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PromptDeclaration {

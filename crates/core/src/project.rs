@@ -1,9 +1,24 @@
+//! # 项目目录解析
+//!
+//! 负责将工作目录映射到 `~/.astrcode/projects/<slug>` 下的持久化目录。
+//!
+//! ## 设计动机
+//!
+//! 不同操作系统的路径格式差异很大（Windows 盘符、UNC 路径、Unix 绝对路径等），
+//! 此模块提供统一的 kebab-case slug 生成策略，确保：
+//! 1. 同一项目不同大小写路径映射到同一目录（Windows 下转小写）
+//! 2. 目录名保持人类可读性
+//! 3. 超长路径通过稳定 hash 截断，避免文件系统限制
+
 use std::path::{Component, Path, PathBuf, Prefix};
 
 use uuid::Uuid;
 
 use crate::{home::resolve_home_dir, Result};
 
+/// 项目目录名称的最大长度限制。
+///
+/// 超过此长度的路径名会被截断并追加稳定 hash。
 const MAX_PROJECT_DIR_NAME_LEN: usize = 96;
 
 /// 返回 `~/.astrcode` 根目录。

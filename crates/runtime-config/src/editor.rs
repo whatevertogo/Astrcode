@@ -1,5 +1,7 @@
-//! Utilities for opening the configuration file in the system's default editor.
-
+//! 在系统默认编辑器中打开配置文件的工具。
+//!
+//! 本模块提供跨平台的文件打开功能，支持 Windows（`cmd /c start`）、
+/// macOS（`open`）和 Linux（`xdg-open`）。
 use std::path::Path;
 use std::process::Command;
 
@@ -8,7 +10,10 @@ use astrcode_core::{AstrError, Result};
 use crate::loader::config_path;
 use crate::loader::load_config;
 
-/// Opens the configuration file in the system's default editor.
+/// 在系统默认编辑器中打开配置文件。
+///
+/// 先执行一次 `load_config()` 确保配置文件已初始化（首次启动时会自动创建），
+/// 然后使用平台相关的命令打开文件。
 pub fn open_config_in_editor() -> Result<()> {
     let _ = load_config()?;
     let path = config_path()?;
@@ -25,14 +30,23 @@ pub fn open_config_in_editor() -> Result<()> {
     Ok(())
 }
 
-/// Represents a platform-specific command to open a file.
+/// 平台特定的文件打开命令。
+///
+/// 封装了程序名和参数列表，用于跨平台打开配置文件。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OpenCommand {
     pub(crate) program: String,
     pub(crate) args: Vec<String>,
 }
 
-/// Returns the appropriate command to open a file on the given OS.
+/// 返回指定操作系统上打开文件的合适命令。
+///
+/// 支持的操作系统：
+/// - `windows`：`cmd /c start "" <path>`
+/// - `macos`：`open <path>`
+/// - `linux`：`xdg-open <path>`
+///
+/// 不支持的平台返回 `UnsupportedPlatform` 错误。
 pub(crate) fn platform_open_command(os: &str, path: &Path) -> Result<OpenCommand> {
     let rendered_path = path
         .to_str()

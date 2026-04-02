@@ -1,14 +1,25 @@
-// 本文件包含 Tauri 桌面端引导所需的全部基础设施：
-// - 前端静态文件服务（serve_frontend_build / attach_frontend_build / load_frontend_build）
-// - 运行信息文件管理（write_run_info / clear_run_info）—— Tauri 通过读取此文件发现 server 端口
-// - 浏览器引导 token 注入（inject_browser_bootstrap_html）—— 将认证 token 嵌入 HTML
-// - CORS 配置（build_cors_layer）—— 开发模式需要 localhost 双端口互通
-// - Token 生成（random_hex_token / bootstrap_token_expires_at_ms）
-// - 工作区根目录解析（workspace_root）
-//
-// 这些功能都与「server 如何被外部发现和认证」相关，放在一起是因为它们在启动流程中
-// 按顺序调用：生成 token → 写 run_info → 配 CORS → 挂载前端 → 注入 token 到 HTML。
-// 如果未来增加更多引导逻辑，可以考虑拆分为 bootstrap/ 子模块。
+//! # 服务器引导模块
+//!
+//! 本模块包含 Tauri 桌面端和浏览器开发服务器引导所需的全部基础设施。
+//!
+//! ## 职责范围
+//!
+//! - **前端静态文件服务**：加载 `frontend/dist/` 构建产物并注入 bootstrap token
+//! - **运行信息管理**：写入/清理 `~/.astrcode/run.json`，供 Tauri 发现 server 端口
+//! - **浏览器引导 token 注入**：将 `window.__ASTRCODE_BOOTSTRAP__` 嵌入 HTML
+//! - **CORS 配置**：开发模式下允许 Vite dev server (5173) 跨域访问
+//! - **Token 生成**：32 字节随机 hex token，bootstrap token 有效期 24 小时
+//!
+//! ## 启动流程
+//!
+//! 这些功能在启动时按顺序调用：
+//! 1. 生成 bootstrap token → 2. 写 `run.json` → 3. 配置 CORS →
+//! 4. 加载前端构建产物 → 5. 注入 token 到 HTML → 6. 挂载路由
+//!
+//! ## 多实例支持
+//!
+//! 桌面端新打开的 exe 会优先读取 `run.json` 指向的现有 server，
+//! 只有没有可用实例时才再起 sidecar。多个桌面实例共享同一会话事件流。
 
 use std::path::{Path as FsPath, PathBuf};
 
@@ -28,11 +39,21 @@ use tower_http::services::ServeDir;
 
 use crate::{ApiError, AppState, FrontendBuild, AUTH_HEADER_NAME, SESSION_CURSOR_HEADER_NAME};
 
-/// 从 core crate 导入，避免重复定义（仅测试使用）
-#[cfg(test)]
-pub(crate) use astrcode_core::home::ASTRCODE_HOME_DIR_ENV as APP_HOME_OVERRIDE_ENV;
+/// Bootstrap token 有效期（小时）。
+///
+/// 桌面端 sidecar 启动后 24 小时内有效，过期后需要重启 server 才能获取新 token。
 pub(crate) const BOOTSTRAP_TOKEN_TTL_HOURS: i64 = 24;
 
+/// 从 core crate 导入 home 目录环境变量名，供测试覆盖使用。
+///
+/// 仅在测试编译时可用，用于将 `dirs::home_dir()` 重定向到临时目录。
+#[cfg(test)]
+pub(crate) use astrcode_core::home::ASTRCODE_HOME_DIR_ENV as APP_HOME_OVERRIDE_ENV;
+
+/// 运行信息结构体。
+///
+/// 写入 `~/.astrcode/run.json`，包含 server 端口、bootstrap token、
+/// 进程 ID、启动时间和过期时间。Tauri 通过读取此文件发现已运行的 server 实例。
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RunInfo {
@@ -99,6 +120,11 @@ pub(crate) async fn serve_run_info(
     }))
 }
 
+/// 将前端路由挂载到 Axum 路由器。
+///
+/// 如果有前端构建产物，使用 fallback 处理器拦截所有未匹配的路由；
+/// 否则只挂载 `/` 返回服务器根路径提示。
+/// 这样开发模式下 API 可用，生产模式下 SPA 路由正常工作。
 pub(crate) fn attach_frontend_build(
     app: Router<AppState>,
     frontend_build: Option<FrontendBuild>,
@@ -110,6 +136,13 @@ pub(crate) fn attach_frontend_build(
     app.route("/", get(server_root))
 }
 
+/// 加载前端构建产物。
+///
+/// 检查 `frontend/dist/index.html` 是否存在，如果存在则读取内容
+/// 并注入 bootstrap token 脚本。返回 `None` 表示未构建前端，
+/// 服务器将只提供 API 路由。
+///
+/// 注入的 token 用于前端 Vite dev server 与 server 进行鉴权交换。
 pub(crate) fn load_frontend_build(
     server_origin: &str,
     token: &str,
@@ -133,6 +166,14 @@ pub(crate) fn load_frontend_build(
     }))
 }
 
+/// 提供前端静态文件服务。
+///
+/// 处理 SPA 路由：
+/// - 已知静态资源（含 `.` 的路径段）→ 直接从 `dist/` 提供
+/// - 未知路径 → 返回 `index.html`（前端路由接管）
+/// - 已知静态资源但 404 → 返回 404（不 fallback 到 index.html）
+///
+/// 仅响应 GET 和 HEAD 请求，其他方法返回 404。
 pub(crate) async fn serve_frontend_build(
     State(state): State<AppState>,
     request: Request<Body>,
@@ -167,10 +208,18 @@ pub(crate) async fn serve_frontend_build(
     }
 }
 
+/// 解析前端 dist 目录路径。
+///
+/// 路径为 `<workspace_root>/frontend/dist`，
+/// 由 Vite 构建产物输出位置决定。
 fn frontend_dist_dir() -> PathBuf {
     workspace_root().join("frontend").join("dist")
 }
 
+/// 解析工作区根目录。
+///
+/// 基于 `CARGO_MANIFEST_DIR`（即 `crates/server/`）向上两级
+/// 到达项目根目录。用于定位前端 dist 目录等相对路径。
 pub(crate) fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -179,6 +228,14 @@ pub(crate) fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// 将 bootstrap token 注入到 HTML 的 `<head>` 中。
+///
+/// 在 `</head>` 前插入 `<script>window.__ASTRCODE_BOOTSTRAP__ = ...</script>`，
+/// 前端通过读取该全局变量获取 server 地址和 token，
+/// 然后进行鉴权交换获取长期 API token。
+///
+/// 如果 HTML 中没有 `</head>` 标签则返回错误，
+/// 因为这通常意味着构建产物损坏或不是有效的 HTML。
 pub(crate) fn inject_browser_bootstrap_html(
     index_html: &str,
     server_origin: &str,
@@ -206,6 +263,10 @@ pub(crate) fn inject_browser_bootstrap_html(
     ))
 }
 
+/// 构造浏览器 index.html 响应。
+///
+/// 设置正确的 `Content-Type` 为 `text/html; charset=utf-8`，
+/// 确保浏览器正确解析注入的 bootstrap 脚本。
 fn browser_index_response(index_html: &str) -> Response {
     let mut response = index_html.to_owned().into_response();
     response.headers_mut().insert(
@@ -215,6 +276,22 @@ fn browser_index_response(index_html: &str) -> Response {
     response
 }
 
+/// 构建 CORS 层。
+///
+/// 允许的来源：
+/// - `http://localhost:5173` — Vite dev server
+/// - `http://127.0.0.1:5173` — Vite dev server（IP 形式）
+///
+/// 允许的方法：GET、POST、DELETE、OPTIONS
+///
+/// 允许的请求头：
+/// - `x-astrcode-token` — 认证 token
+/// - `content-type` — JSON 请求体
+/// - `last-event-id` — SSE 断点续传
+/// - `cache-control` — 缓存控制
+///
+/// 暴露的响应头：
+/// - `x-session-cursor` — 会话快照游标，用于 SSE 断点续传
 pub(crate) fn build_cors_layer() -> CorsLayer {
     CorsLayer::new()
         .allow_origin([
@@ -231,16 +308,31 @@ pub(crate) fn build_cors_layer() -> CorsLayer {
         .expose_headers([HeaderName::from_static(SESSION_CURSOR_HEADER_NAME)])
 }
 
+/// 生成 32 字节随机 hex token。
+///
+/// 用于 bootstrap 认证和 API 会话 token，
+/// 64 字符 hex 字符串提供 256 位熵，防止暴力破解。
 pub(crate) fn random_hex_token() -> String {
     let mut bytes = [0_u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
     bytes.iter().map(|byte| format!("{:02x}", byte)).collect()
 }
 
+/// 计算 bootstrap token 过期时间戳（毫秒）。
+///
+/// 基于给定的启动时间加上 `BOOTSTRAP_TOKEN_TTL_HOURS`（24 小时），
+/// 用于写入 `run.json` 和验证 token 有效性。
 pub(crate) fn bootstrap_token_expires_at_ms(started_at: chrono::DateTime<chrono::Utc>) -> i64 {
     (started_at + chrono::Duration::hours(BOOTSTRAP_TOKEN_TTL_HOURS)).timestamp_millis()
 }
 
+/// 写入运行信息到 `~/.astrcode/run.json`。
+///
+/// 包含端口、token、进程 ID、启动时间和过期时间。
+/// Tauri 桌面端通过读取此文件发现已运行的 server 实例，
+/// 避免重复启动 sidecar 进程。
+///
+/// 如果目录不存在会自动创建。写入失败会携带路径上下文信息。
 pub(crate) fn write_run_info(port: u16, token: &str, expires_at_ms: i64) -> AnyhowResult<()> {
     let path = run_info_path()?;
     if let Some(parent) = path.parent() {
@@ -263,6 +355,11 @@ pub(crate) fn write_run_info(port: u16, token: &str, expires_at_ms: i64) -> Anyh
     Ok(())
 }
 
+/// 清理运行信息文件。
+///
+/// 仅在文件存在且 PID 匹配时才删除，
+/// 避免误删其他 server 实例的 `run.json`。
+/// 文件不存在时静默返回 Ok，属于正常关闭流程。
 pub(crate) fn clear_run_info(expected_pid: u32) -> AnyhowResult<()> {
     let path = run_info_path()?;
     if !path.is_file() {

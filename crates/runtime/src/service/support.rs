@@ -1,3 +1,20 @@
+//! # 服务支持工具 (Service Support Utilities)
+//!
+//! 提供 `RuntimeService` 内部使用的辅助函数：
+//! - `lock_anyhow` - 将 `std::sync::Mutex` 的 PoisonError 转换为 anyhow 错误
+//! - `spawn_blocking_anyhow` - 在阻塞线程池上运行返回 `anyhow::Result` 的工作
+//! - `spawn_blocking_service` - 在阻塞线程池上运行返回 `ServiceResult` 的工作
+//!
+//! ## 为什么需要 spawn_blocking_service
+//!
+//! `RuntimeService` 中很多操作（如文件 I/O、配置解析）是阻塞的，
+//! 但服务本身是异步的。`spawn_blocking_service` 桥接了这个差距：
+//! 1. 将工作提交到 Tokio 的阻塞线程池
+//! 2. 保留 `ServiceError` 的原始变体（通过 anyhow 包装）
+//! 3. 在异步边界后恢复原始错误类型
+//!
+//! 这避免了每个调用点都重复写 `spawn_blocking` + 错误映射的样板代码。
+
 use std::sync::{Mutex as StdMutex, MutexGuard as StdMutexGuard};
 
 use anyhow::Result;

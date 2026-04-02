@@ -1,4 +1,18 @@
-//! Configuration loading utilities.
+//! 配置加载工具。
+//!
+//! 本模块负责从文件系统读取和初始化 Astrcode 配置。
+//!
+//! # 加载流程
+//!
+//! 1. [`config_path`] 确定默认配置文件路径（`~/.astrcode/config.json`）
+//! 2. [`load_config_from_path`] 读取 JSON 并执行规范化/验证
+//! 3. 若文件不存在，创建包含默认值的配置文件并输出提示到 stdout
+//! 4. [`load_resolved_config`] 可选地加载项目 overlay 并合并到用户配置
+//!
+//! # 首次启动行为
+//!
+//! `load_config()` 是此 crate 中唯一会向 stdout 打印的函数，仅在配置文件不存在时
+//! 触发一次，用于引导用户填写 API key。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,19 +23,32 @@ use astrcode_core::{AstrError, Result};
 use crate::types::{Config, ConfigOverlay};
 use crate::validation::normalize_config;
 
-/// Returns the path to the config file.
+/// 返回默认配置文件路径。
+///
+/// 路径为 `~/.astrcode/config.json`，其中 `~` 通过 `astrcode_core::home::resolve_home_dir()` 解析。
+/// 可通过 `ASTRCODE_HOME_DIR_ENV` 环境变量覆盖 home 目录。
 pub fn config_path() -> Result<PathBuf> {
     let home = astrcode_core::home::resolve_home_dir()?;
     Ok(home.join(".astrcode").join("config.json"))
 }
 
-/// Loads the configuration from the default path.
+/// 从默认路径加载配置。
+///
+/// 等价于 `load_config_from_path(&config_path()?)`。
 pub fn load_config() -> Result<Config> {
     let path = config_path()?;
     load_config_from_path(&path)
 }
 
-/// Loads the effective configuration for an optional working directory.
+/// 加载指定工作目录的有效配置（用户配置 + 可选项目 overlay）。
+///
+/// 加载流程：
+/// 1. 加载用户级配置 `~/.astrcode/config.json`
+/// 2. 若提供了工作目录，尝试加载项目 overlay `<project>/.astrcode/config.json`
+/// 3. 合并 overlay（仅覆盖显式设置的字段）
+/// 4. 执行规范化与验证
+///
+/// 这是 HTTP 请求入口应使用的函数，确保每个请求都获得考虑了项目上下文的完整配置。
 pub fn load_resolved_config(working_dir: Option<&Path>) -> Result<Config> {
     let mut config = load_config()?;
     if let Some(working_dir) = working_dir {
@@ -34,7 +61,9 @@ pub fn load_resolved_config(working_dir: Option<&Path>) -> Result<Config> {
     normalize_config(config)
 }
 
-/// Loads the configuration from a specific path.
+/// 从指定路径加载配置。
+///
+/// 若文件不存在，会自动创建父目录并写入默认配置。这是首次启动时初始化配置文件的入口。
 pub fn load_config_from_path(path: &Path) -> Result<Config> {
     if !path.exists() {
         let parent = path.parent().ok_or_else(|| {
@@ -66,7 +95,9 @@ pub fn load_config_from_path(path: &Path) -> Result<Config> {
         .map_err(|e| e.context(format!("failed to validate config at {}", path.display())))
 }
 
-/// Loads a project overlay if the file exists.
+/// 加载项目 overlay 配置（文件存在时）。
+///
+/// 若文件不存在返回 `None`，不报错。这使得项目 overlay 是完全可选的。
 pub fn load_config_overlay_from_path(path: &Path) -> Result<Option<ConfigOverlay>> {
     if !path.exists() {
         return Ok(None);
@@ -74,7 +105,10 @@ pub fn load_config_overlay_from_path(path: &Path) -> Result<Option<ConfigOverlay
     read_json_from_path(path).map(Some)
 }
 
-/// Returns the private project overlay path for a working directory.
+/// 返回指定工作目录的项目 overlay 路径。
+///
+/// 路径为 `<project>/.astrcode/config.json`，其中 `<project>` 通过
+/// `astrcode_core::project::project_dir(working_dir)` 解析。
 pub fn project_overlay_path(working_dir: &Path) -> Result<PathBuf> {
     Ok(project_dir(working_dir)?.join("config.json"))
 }

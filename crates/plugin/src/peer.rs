@@ -1,3 +1,44 @@
+//! 插件对等体（Peer）—— 管理与插件进程的双向 JSON-RPC 通信。
+//!
+//! ## 核心职责
+//!
+//! `Peer` 是宿主进程与插件进程之间的通信桥梁，负责：
+//! - 发送 `InitializeMessage` 完成握手协商
+//! - 发送 `InvokeMessage` 调用插件能力并等待 `ResultMessage`
+//! - 发送 `InvokeMessage(stream=true)` 获取流式 `StreamExecution`
+//! - 接收插件主动发起的能力调用（host-to-plugin 反向调用）
+//! - 处理 `CancelMessage` 取消请求
+//! - 管理后台读循环和所有活跃请求的生命周期
+//!
+//! ## 消息流
+//!
+//! ```text
+//! 宿主 (Peer)                              插件进程
+//! ──────────────                          ──────────────
+//! InitializeMessage ──────────────────►
+//!            ◄────────────────────── ResultMessage (initialize)
+//!
+//! InvokeMessage ─────────────────────►
+//!            ◄────────────────────── ResultMessage (unary)
+//!
+//! InvokeMessage(stream=true) ────────►
+//!            ◄────────────────────── EventMessage (started)
+//!            ◄────────────────────── EventMessage (delta) × N
+//!            ◄────────────────────── EventMessage (completed/failed)
+//!
+//!            ◄────────────────────── InvokeMessage (插件→宿主)
+//! InvokeMessage ─────────────────────► (宿主处理)
+//!            ◄────────────────────── ResultMessage
+//!
+//! CancelMessage ─────────────────────►
+//! ```
+//!
+//! ## 同步原语选择
+//!
+//! `read_loop_handle` 和 `invoke_handles` 使用 `std::sync::Mutex`（非 tokio Mutex），
+//! 因为这些字段只在短时间内持有锁（插入/取出 HashMap 条目），不需要跨 await 点。
+//! 使用 `std::sync::Mutex` 避免了 tokio Mutex 的额外开销和潜在的 "mutex held across await" 警告。
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -14,6 +55,9 @@ use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 use crate::{CapabilityRouter, EventEmitter, StreamExecution};
 
 /// 与插件进程的双向通信端。
+///
+/// `Peer` 封装了与单个插件进程的完整 JSON-RPC 生命周期，包括握手、
+/// 请求-响应、流式事件、取消和优雅关闭。
 ///
 /// ## 架构概览
 ///
@@ -60,6 +104,18 @@ struct PeerInner {
 }
 
 impl Peer {
+    /// 创建新的 Peer 并启动后台读循环。
+    ///
+    /// # 参数
+    ///
+    /// * `transport` - 底层传输层（通常是 stdio），负责序列化和发送/接收 JSON-RPC 消息
+    /// * `local_initialize` - 本地初始化信息，包含本端支持的能力和配置
+    /// * `router` - 能力路由器，用于处理插件反向调用宿主能力的请求
+    ///
+    /// # 注意
+    ///
+    /// 构造完成后立即启动后台读循环（`spawn_read_loop`），
+    /// 该循环会持续监听来自插件的入站消息。
     pub fn new(
         transport: Arc<dyn Transport>,
         local_initialize: InitializeMessage,
@@ -84,6 +140,21 @@ impl Peer {
         peer
     }
 
+    /// 发送初始化请求并等待插件响应，完成协议版本协商。
+    ///
+    /// 这是与插件通信的第一步。发送 `InitializeMessage` 后等待 `ResultMessage`，
+    /// 解析返回的 `InitializeResultData` 并验证协议版本兼容性。
+    ///
+    /// # 返回
+    ///
+    /// 返回协商后的 `InitializeResultData`，包含插件声明的能力列表、
+    /// 支持的 profiles 和元数据。
+    ///
+    /// # 错误
+    ///
+    /// - 返回的消息类型不是 `initialize` 时返回内部错误
+    /// - 插件返回 `success: false` 时返回对应的错误载荷
+    /// - 解析 JSON 失败时返回验证错误
     pub async fn initialize(&self) -> Result<InitializeResultData> {
         let request = self.inner.local_initialize.clone();
         let response = self.await_result(request).await?;
@@ -103,10 +174,39 @@ impl Peer {
         Ok(negotiated)
     }
 
+    /// 调用插件的某个能力并等待完整结果。
+    ///
+    /// 发送 `InvokeMessage`（`stream=false`），注册一个 oneshot channel 到
+    /// `pending_results`，然后等待对应的 `ResultMessage` 返回。
+    ///
+    /// # 参数
+    ///
+    /// * `request` - 调用请求，包含能力名称、输入参数和上下文
+    ///
+    /// # 返回
+    ///
+    /// 返回 `ResultMessage`，调用者需自行检查 `success` 字段判断成功与否。
     pub async fn invoke(&self, request: InvokeMessage) -> Result<ResultMessage> {
         self.await_result(request).await
     }
 
+    /// 以流式模式调用插件的某个能力。
+    ///
+    /// 与 `invoke()` 不同，此方法不会等待完整结果，而是返回一个 `StreamExecution`，
+    /// 调用者可以通过 `recv()` 逐步接收 `EventMessage` 增量事件。
+    ///
+    /// # 流程
+    ///
+    /// 1. 创建无界 channel，将 sender 注册到 `pending_streams`
+    /// 2. 发送 `InvokeMessage(stream=true)`
+    /// 3. 如果发送失败，清理已注册的 channel 并返回错误
+    /// 4. 发送成功则返回 `StreamExecution`，包含 receiver 和 request_id
+    ///
+    /// # 注意
+    ///
+    /// 流式事件（started → delta × N → completed/failed）会通过
+    /// `handle_event` 路由到对应的 channel。终端事件（completed/failed）
+    /// 到达后会自动从 `pending_streams` 中移除。
     pub async fn invoke_stream(&self, request: InvokeMessage) -> Result<StreamExecution> {
         let request_id = request.id.clone();
         let (sender, receiver) = mpsc::unbounded_channel();
@@ -123,6 +223,15 @@ impl Peer {
         Ok(StreamExecution::new(request_id, receiver))
     }
 
+    /// 取消一个正在进行的请求。
+    ///
+    /// 发送 `CancelMessage` 到插件进程。插件收到后应停止当前操作
+    /// 并返回一个 failed 的终端事件。
+    ///
+    /// # 参数
+    ///
+    /// * `request_id` - 要取消的请求 ID
+    /// * `reason` - 可选的取消原因，用于日志和调试
     pub async fn cancel(
         &self,
         request_id: impl Into<String>,
@@ -135,14 +244,25 @@ impl Peer {
         .await
     }
 
+    /// 获取插件在握手时返回的初始化结果。
+    ///
+    /// 返回 `None` 表示尚未完成 `initialize()` 调用。
     pub async fn remote_initialize(&self) -> Option<InitializeResultData> {
         self.inner.remote_initialize.lock().await.clone()
     }
 
+    /// 获取 Peer 关闭的原因。
+    ///
+    /// 返回 `None` 表示 Peer 仍在正常运行。
+    /// 一旦关闭原因被设置，Peer 将不再处理任何新消息。
     pub async fn closed_reason(&self) -> Option<String> {
         self.inner.closed_reason.lock().await.clone()
     }
 
+    /// 等待 Peer 关闭。
+    ///
+    /// 异步阻塞直到 `closed_reason` 被设置。使用 `Notify` 避免忙等待，
+    /// 每次被唤醒后重新检查条件以处理虚假唤醒。
     pub async fn wait_closed(&self) {
         loop {
             let notified = self.inner.closed_notify.notified();
@@ -153,6 +273,15 @@ impl Peer {
         }
     }
 
+    /// 启动后台读循环，持续监听来自插件的入站消息。
+    ///
+    /// 读循环在独立的 tokio task 中运行，负责：
+    /// - 从传输层读取原始 JSON 字符串
+    /// - 反序列化为 `PluginMessage`
+    /// - 分发到对应的处理器（handle_*）
+    ///
+    /// 如果读循环因任何原因退出（传输关闭、解析错误等），
+    /// 会触发 `close()` 并通知所有等待方。
     fn spawn_read_loop(&self) {
         let inner = Arc::clone(&self.inner);
         let handle = tokio::spawn(async move {
@@ -165,10 +294,16 @@ impl Peer {
         *self.inner.read_loop_handle.lock().unwrap() = Some(handle);
     }
 
-    /// Aborts the read loop and all active inbound invoke handlers.
+    /// 中止读循环和所有活跃的入站 invoke 处理器。
     ///
-    /// Called by Supervisor during shutdown so the peer's background tasks
-    /// don't linger after the process is terminated.
+    /// 由 `Supervisor` 在关闭时调用，确保 peer 的后台任务不会在进程终止后继续运行。
+    ///
+    /// # 清理顺序
+    ///
+    /// 1. 中止读循环（停止接收新消息）
+    /// 2. 中止所有入站 invoke 处理器（插件→宿主的调用）
+    /// 3. 取消所有入站请求的取消令牌
+    /// 4. 设置关闭原因，通知所有等待方
     pub async fn abort(&self) {
         if let Some(handle) = self.inner.read_loop_handle.lock().unwrap().take() {
             handle.abort();
@@ -186,6 +321,22 @@ impl Peer {
             .await;
     }
 
+    /// 发送请求并等待对应的结果。
+    ///
+    /// 这是 `invoke()` 和 `initialize()` 的底层实现。
+    ///
+    /// # 流程
+    ///
+    /// 1. 将请求转换为 `PluginMessage`
+    /// 2. 创建 oneshot channel，将 sender 注册到 `pending_results`
+    /// 3. 发送消息到插件
+    /// 4. 如果发送失败，清理已注册的 channel 并返回错误
+    /// 5. 等待 receiver 收到 `ResultMessage`
+    ///
+    /// # 注意
+    ///
+    /// 如果 peer 在读循环中关闭，所有 pending 的 oneshot sender 会被
+    /// 发送一个失败的结果，因此 `receiver.await` 会返回 `Err`（channel 关闭）。
     async fn await_result<T>(&self, request: T) -> Result<ResultMessage>
     where
         T: Into<InvokeOrInitialize>,
@@ -210,11 +361,16 @@ impl Peer {
         })
     }
 
+    /// 通过底层传输发送一条 JSON-RPC 消息。
     async fn send_message(&self, message: &PluginMessage) -> Result<()> {
         self.inner.send_message(message).await
     }
 }
 
+/// 统一封装 `InitializeMessage` 和 `InvokeMessage`。
+///
+/// 两种消息都遵循请求-响应模式：发送后等待 `ResultMessage`。
+/// 此枚举允许 `await_result` 泛型处理两种请求类型，避免代码重复。
 enum InvokeOrInitialize {
     Initialize(InitializeMessage),
     Invoke(InvokeMessage),
@@ -249,6 +405,16 @@ impl From<InvokeMessage> for InvokeOrInitialize {
 }
 
 impl PeerInner {
+    /// 后台读循环——持续监听来自插件的入站消息。
+    ///
+    /// # 退出条件
+    ///
+    /// - 传输层返回 `None`（管道关闭）→ 标记 "transport closed"
+    /// - 传输层返回错误 → 标记错误信息
+    /// - JSON 反序列化失败 → 标记 "failed to decode plugin message"
+    /// - 消息处理器返回错误 → 标记 "peer message handling failed"
+    ///
+    /// 任何退出都会调用 `close()` 通知所有等待方。
     async fn read_loop(self: Arc<Self>) {
         loop {
             match self.transport.recv().await {
@@ -279,6 +445,13 @@ impl PeerInner {
         }
     }
 
+    /// 分发入站消息到对应的处理器。
+    ///
+    /// # 注意
+    ///
+    /// `Invoke` 消息的处理器返回 `Ok(())` 因为实际的异步处理在
+    /// 独立的 tokio task 中进行，这里只负责 spawn 并立即返回。
+    /// 如果 spawn 或后续处理失败，会在 task 内部调用 `close()`。
     async fn handle_message(self: Arc<Self>, message: PluginMessage) -> Result<()> {
         match message {
             PluginMessage::Initialize(message) => self.handle_initialize(message).await,
@@ -292,6 +465,18 @@ impl PeerInner {
         }
     }
 
+    /// 处理插件发起的初始化请求（插件→宿主的反向握手）。
+    ///
+    /// 验证协议版本兼容性：如果插件声明的版本中包含 `PROTOCOL_VERSION`，
+    /// 则协商成功并返回本地能力信息；否则返回版本不匹配错误。
+    ///
+    /// # 成功响应
+    ///
+    /// 包含本地声明的能力、handlers、profiles 和元数据。
+    ///
+    /// # 失败响应
+    ///
+    /// 错误码为 `unsupported_version`，`retriable: false` 表示不应重试。
     async fn handle_initialize(&self, message: InitializeMessage) -> Result<()> {
         let InitializeMessage {
             id,
@@ -350,6 +535,22 @@ impl PeerInner {
         self.send_message(&PluginMessage::Result(response)).await
     }
 
+    /// 处理插件发起的能力调用请求（插件→宿主）。
+    ///
+    /// 此方法在独立的 tokio task 中执行，不阻塞读循环。
+    ///
+    /// # 生命周期管理
+    ///
+    /// 1. 创建 `CancelToken` 并注册到 `inbound_cancellations`
+    /// 2. 根据 `stream` 标志选择流式或一元处理
+    /// 3. 完成后清理取消令牌和 invoke handle
+    /// 4. 如果处理失败，关闭整个 peer（因为插件可能处于不一致状态）
+    ///
+    /// # 为什么失败时关闭 peer？
+    ///
+    /// 入站 invoke 是插件主动调用宿主能力，如果处理失败通常意味着
+    /// 宿主侧出现了严重问题（如能力未注册、权限拒绝等），
+    /// 继续运行可能导致更严重的不一致。
     async fn handle_invoke(self: Arc<Self>, message: InvokeMessage) {
         let request_id = message.id.clone();
         let run_self = Arc::clone(&self);
@@ -396,6 +597,10 @@ impl PeerInner {
             .insert(request_id, handle);
     }
 
+    /// 处理一元（非流式）入站调用。
+    ///
+    /// 通过 `CapabilityRouter` 调用本地能力，将结果封装为 `ResultMessage`
+    /// 发送回插件。流式调用使用 `EventEmitter::noop()` 因为一元调用不需要增量输出。
     async fn handle_unary_invoke(&self, message: InvokeMessage, cancel: CancelToken) -> Result<()> {
         let result = self
             .router
@@ -414,6 +619,22 @@ impl PeerInner {
         self.send_message(&PluginMessage::Result(response)).await
     }
 
+    /// 处理流式入站调用。
+    ///
+    /// 与一元调用不同，流式调用通过 `EventEmitter` 将增量事件
+    /// 实时发送回插件。
+    ///
+    /// # 流程
+    ///
+    /// 1. 发送 `Started` 事件，告知插件调用已开始
+    /// 2. 创建 `EventEmitter`，每个 `delta()` 调用都会通过传输层发送 `EventMessage`
+    /// 3. 调用 `CapabilityRouter` 执行实际能力
+    /// 4. 根据结果发送 `Completed` 或 `Failed` 终端事件
+    ///
+    /// # 取消处理
+    ///
+    /// 如果能力执行成功但 `cancel.is_cancelled()` 为 true，
+    /// 发送 `Failed` 事件（错误码 `cancelled`），因为结果可能不完整。
     async fn handle_streaming_invoke(
         self: &Arc<Self>,
         message: InvokeMessage,
@@ -497,6 +718,10 @@ impl PeerInner {
         self.send_message(&PluginMessage::Event(terminal)).await
     }
 
+    /// 处理插件返回的结果消息。
+    ///
+    /// 从 `pending_results` 中取出对应的 oneshot sender 并发送结果。
+    /// 如果没有匹配的 sender（可能是重复消息或已超时），则静默忽略。
     async fn handle_result(&self, message: ResultMessage) -> Result<()> {
         if let Some(sender) = self.pending_results.lock().await.remove(&message.id) {
             let _ = sender.send(message);
@@ -504,6 +729,11 @@ impl PeerInner {
         Ok(())
     }
 
+    /// 处理插件发送的事件消息。
+    ///
+    /// 将事件转发到 `pending_streams` 中对应的 channel。
+    /// 如果是终端事件（Completed/Failed），处理完后从 map 中移除，
+    /// 避免后续消息丢失时 channel 泄漏。
     async fn handle_event(&self, message: EventMessage) -> Result<()> {
         let is_terminal = matches!(message.phase, EventPhase::Completed | EventPhase::Failed);
         let mut streams = self.pending_streams.lock().await;
@@ -516,6 +746,10 @@ impl PeerInner {
         Ok(())
     }
 
+    /// 处理插件发送的取消请求。
+    ///
+    /// 从 `inbound_cancellations` 中取出对应的 `CancelToken` 并触发取消。
+    /// 如果没有匹配的 token（可能已处理完或从未注册），则静默忽略。
     async fn handle_cancel(&self, message: CancelMessage) -> Result<()> {
         if let Some(cancel) = self
             .inbound_cancellations
@@ -529,6 +763,9 @@ impl PeerInner {
         Ok(())
     }
 
+    /// 将本地初始化信息转换为 `InitializeResultData`。
+    ///
+    /// 用于响应插件的 `InitializeMessage`，告知插件本端支持的能力。
     fn local_result(&self) -> InitializeResultData {
         InitializeResultData {
             protocol_version: self.local_initialize.protocol_version.clone(),
@@ -540,10 +777,23 @@ impl PeerInner {
         }
     }
 
+    /// 通过底层传输发送一条 JSON-RPC 消息。
+    ///
+    /// 将 `PluginMessage` 序列化为 JSON 字符串后发送。
     async fn send_message(&self, message: &PluginMessage) -> Result<()> {
         send_message_via_transport(Arc::clone(&self.transport), message).await
     }
 
+    /// 关闭 Peer 并通知所有等待方。
+    ///
+    /// 这是一个幂等操作：如果已经关闭过，则直接返回。
+    ///
+    /// # 清理流程
+    ///
+    /// 1. 设置 `closed_reason`（防止重复关闭）
+    /// 2. 向所有 `pending_results` 发送失败结果
+    /// 3. 向所有 `pending_streams` 发送 failed 终端事件
+    /// 4. 唤醒所有等待 `closed_notify` 的异步任务
     async fn close(&self, reason: String) {
         let mut closed_reason = self.closed_reason.lock().await;
         if closed_reason.is_some() {
@@ -580,6 +830,12 @@ impl PeerInner {
     }
 }
 
+/// 将 JSON-RPC 消息序列化并通过传输层发送。
+///
+/// # 错误处理
+///
+/// - 序列化失败返回 `Validation` 错误（通常是消息结构问题）
+/// - 发送失败返回 `Internal` 错误（通常是传输层问题，如管道断裂）
 async fn send_message_via_transport(
     transport: Arc<dyn Transport>,
     message: &PluginMessage,
@@ -593,6 +849,17 @@ async fn send_message_via_transport(
         .map_err(|error| AstrError::Internal(format!("failed to send plugin message: {error}")))
 }
 
+/// 将 `AstrError` 转换为 JSON-RPC 错误载荷。
+///
+/// 根据错误类型映射到对应的错误码：
+/// - `Cancelled` / `LlmInterrupted` → `cancelled`
+/// - `Validation` → `validation_error`
+/// - `Io` → `io_error`
+/// - `Parse` → `parse_error`
+/// - 其他 → `internal_error`
+///
+/// `retriable` 字段继承自 `AstrError::is_retryable()`，
+/// 告知调用方是否应该重试。
 fn error_to_payload(error: &AstrError) -> ErrorPayload {
     ErrorPayload {
         code: match error {
@@ -609,6 +876,10 @@ fn error_to_payload(error: &AstrError) -> ErrorPayload {
     }
 }
 
+/// 将 `ResultMessage` 的错误载荷转换回 `AstrError`。
+///
+/// 特殊处理 `cancelled` 错误码，将其映射为 `AstrError::Cancelled`，
+/// 其他错误统一映射为 `Internal` 并保留原始错误信息。
 fn result_error_to_astr(result: ResultMessage) -> AstrError {
     let request_id = result.id;
     match result.error {

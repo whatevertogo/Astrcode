@@ -1,5 +1,22 @@
-//! Connection testing utilities for provider profiles.
-
+//! Provider 连接测试工具。
+//!
+//! 本模块提供 [`test_connection`] 函数，用于验证 Profile 配置是否可以正常连接到
+//! LLM Provider API。
+//!
+//! # 测试策略
+//!
+//! 向 Provider 发送一个最小化的请求（`max_tokens: 1`，内容为 `"hi"`），
+//! 根据响应状态判断连接状态：
+/// - 2xx：连接成功
+/// - 401：API Key 无效
+/// - 其他：HTTP 错误
+/// - 超时：网络不可达
+///
+/// # 返回值设计
+///
+/// 无论测试成功或失败都返回 `Ok(TestResult)`，HTTP 错误被封装在 `error` 字段中
+/// 而非作为 `Result::Err` 传播。这样调用方可以统一处理成功和失败两种情况，
+/// 便于前端展示具体的错误原因。
 use std::time::Duration;
 
 use astrcode_core::{AstrError, Result};
@@ -10,7 +27,15 @@ use crate::constants::{
 };
 use crate::types::{Profile, TestResult};
 
-/// Tests the connection to a provider using the given profile and model.
+/// 测试指定 Profile 和模型的 Provider 连接。
+///
+/// 发送一个最小化请求验证 API key 和网络连通性。
+/// 超时设置为 10 秒，避免长时间阻塞。
+///
+/// # 返回值
+///
+/// 始终返回 `Ok(TestResult)`，连接失败信息封装在 `TestResult.error` 中。
+/// 仅在不支持的 `provider_kind` 时返回 `Err`。
 pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResult> {
     // provider_kind 标识提供者类型而非 URL，Anthropic 使用固定 API 端点
     let provider = if profile.provider_kind == PROVIDER_KIND_ANTHROPIC {
@@ -78,7 +103,14 @@ pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResul
     }
 }
 
-/// Converts an HTTP response to a TestResult.
+/// 将 HTTP 响应转换为 [`TestResult`]。
+///
+/// 根据响应状态码分类：
+/// - 2xx：成功
+/// - 401：API Key 无效
+/// - 其他状态码：请求失败
+/// - 超时错误：连接超时
+/// - 其他错误：网络异常
 fn connection_result_from_response(
     response: std::result::Result<reqwest::Response, reqwest::Error>,
     provider: String,

@@ -1,3 +1,22 @@
+//! # Agent 状态投影
+//!
+//! 从事件流（`StorageEvent` 序列）中推导出 Agent 的当前状态。
+//!
+//! ## 核心设计
+//!
+//! - **纯函数**: `project()` 不产生任何副作用，相同输入总是产生相同输出
+//! - **增量应用**: `AgentStateProjector` 支持逐个事件应用，也支持批量处理
+//! - **消息重建**: 将 delta 事件（`AssistantDelta`）聚合为完整消息（`AssistantFinal`）
+//! - **上下文压缩**: 处理 `CompactApplied` 事件，替换旧消息为摘要
+//!
+//! ## 为什么需要投影？
+//!
+//! 事件日志是 append-only 的，但前端和运行时需要知道「当前状态」。
+//! 投影器从完整的事件历史中重建出：
+//! - 当前消息历史（用于下次 LLM 请求）
+//! - 当前阶段（用于 UI 状态指示器）
+//! - Turn 计数（用于统计和监控）
+
 use std::path::PathBuf;
 
 use crate::Phase;
@@ -7,12 +26,21 @@ use crate::{
     split_assistant_content, LlmMessage, ReasoningContent, ToolCallRequest, UserMessageOrigin,
 };
 
+/// Agent 的当前状态快照。
+///
+/// 由事件流投影而来，包含完整的消息历史和当前阶段。
+/// 用于在 turn 之间保持上下文，以及断线重连后恢复状态。
 #[derive(Debug, Clone)]
 pub struct AgentState {
+    /// 会话 ID
     pub session_id: String,
+    /// 工作目录
     pub working_dir: PathBuf,
+    /// 消息历史（用于下次 LLM 请求的上下文）
     pub messages: Vec<LlmMessage>,
+    /// 当前执行阶段
     pub phase: Phase,
+    /// 已完成的 turn 数量
     pub turn_count: usize,
 }
 
@@ -28,11 +56,28 @@ impl Default for AgentState {
     }
 }
 
+/// Agent 状态投影器。
+///
+/// 维护投影过程中的中间状态（如正在累积的 assistant 内容），
+/// 支持增量应用单个事件或批量处理事件序列。
+///
+/// ## 中间状态说明
+///
+/// - `pending_content`: 正在累积的 assistant 可见文本（来自 `AssistantFinal`）
+/// - `pending_reasoning`: 正在累积的推理内容
+/// - `pending_tool_calls`: 当前 assistant 消息关联的工具调用列表
+///
+/// 这些 pending 字段在遇到下一个 User/ToolResult/TurnDone 事件时
+/// 通过 `flush_pending_assistant()` 刷入消息历史。
 #[derive(Debug, Clone, Default)]
 pub struct AgentStateProjector {
+    /// 当前已投影的状态
     state: AgentState,
+    /// 等待刷入的 assistant 可见文本
     pending_content: Option<String>,
+    /// 等待刷入的推理内容
     pending_reasoning: Option<ReasoningContent>,
+    /// 等待刷入的工具调用列表
     pending_tool_calls: Vec<ToolCallRequest>,
 }
 

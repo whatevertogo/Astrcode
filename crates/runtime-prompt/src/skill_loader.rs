@@ -1,3 +1,31 @@
+//! Skill 加载与解析。
+//!
+//! 本模块负责从文件系统加载 skill 定义，支持多来源（builtin/user/project）。
+//!
+//! # Skill 目录结构
+//!
+//! 每个 skill 是一个文件夹，必须包含 `SKILL.md` 文件。`SKILL.md` 的 YAML frontmatter
+//! 仅包含 `name` 和 `description` 两个字段，正文为 skill 的详细指南。
+//!
+//! ```text
+//! skills/
+//!   git-commit/
+//!     SKILL.md          # frontmatter + 指南正文
+//!     references/       # 可选：参考资料
+//!     scripts/          # 可选：辅助脚本
+//! ```
+//!
+//! # 两阶段模型
+//!
+//! 1. **索引阶段**：解析 `SKILL.md` 的 frontmatter，获取 name + description
+//! 2. **按需加载**：当模型调用 `Skill` tool 时，加载完整 guide 和 asset_files
+//!
+//! # 覆盖优先级
+//!
+//! 同名 skill 按以下顺序覆盖：Builtin < User < Project
+//! 用户可以在 `~/.astrcode/skills/` 或 `~/.claude/skills/` 中放置自定义 skill，
+//! 在项目 `.astrcode/skills/` 中放置项目特定 skill。
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -8,15 +36,19 @@ use serde::Deserialize;
 use crate::contributors::cache_marker_for_path;
 use crate::{is_valid_skill_name, SkillSource, SkillSpec};
 
+/// Skill 文件名（固定为 SKILL.md）。
 pub const SKILL_FILE_NAME: &str = "SKILL.md";
 
-/// Tool name for the built-in Skill capability — shared between prompt
-/// contributors (gate on `"Skill"` in tool list) and the runtime tool impl.
+/// 内置 Skill 能力的 tool 名称。
+///
+/// 此常量在 prompt 贡献者（判断 tool list 中是否包含 "Skill"）
+/// 和 runtime tool 实现之间共享。
 pub const SKILL_TOOL_NAME: &str = "Skill";
 
-/// Claude-style skills intentionally keep frontmatter minimal: discovery only
-/// needs a stable name plus an aggressive description that tells the model when
-/// to call the Skill tool. Execution metadata belongs to runtime code instead.
+/// Claude-style skill 的 YAML frontmatter 结构。
+///
+/// 设计意图：frontmatter 仅保留发现所需的最小信息（name + description），
+/// 真正的执行元数据由 runtime 代码管理，不放入 markdown frontmatter。
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SkillFrontmatter {
@@ -24,6 +56,17 @@ pub struct SkillFrontmatter {
     pub description: String,
 }
 
+/// 解析 `SKILL.md` 内容为 [`SkillSpec`]。
+///
+/// # 校验规则
+///
+/// - 必须有 YAML frontmatter（`---` 包裹）
+/// - frontmatter 必须包含 `name` 和 `description`
+/// - `name` 必须与文件夹名（`fallback_id`）一致
+/// - `name` 必须为合法的 kebab-case 格式
+/// - 正文不能为空
+///
+/// 任何校验失败都会返回 `None` 并记录警告日志。
 pub fn parse_skill_md(content: &str, fallback_id: &str, source: SkillSource) -> Option<SkillSpec> {
     let normalized = normalize_skill_content(content);
     if normalized.trim().is_empty() {
@@ -84,6 +127,10 @@ pub fn parse_skill_md(content: &str, fallback_id: &str, source: SkillSource) -> 
     })
 }
 
+/// 从指定目录加载所有 skill。
+///
+/// 遍历目录下的每个子文件夹，查找 `SKILL.md` 并解析。
+/// 同时收集每个 skill 目录下的所有资产文件（用于运行时访问）。
 pub fn load_skills_from_dir(dir: &Path, source: SkillSource) -> Vec<SkillSpec> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -135,6 +182,13 @@ pub fn load_skills_from_dir(dir: &Path, source: SkillSource) -> Vec<SkillSpec> {
     skills
 }
 
+/// 加载用户级 skill。
+///
+/// 从两个位置加载：
+/// - `~/.claude/skills/`（兼容 Claude 风格的 skill）
+/// - `~/.astrcode/skills/`（Astrcode 专属 skill）
+///
+/// 同名 skill 以 `.astrcode` 版本为准（后者覆盖前者）。
 pub fn load_user_skills() -> Vec<SkillSpec> {
     let Some(home_dir) = resolve_user_home_dir() else {
         return Vec::new();
@@ -150,6 +204,10 @@ pub fn load_user_skills() -> Vec<SkillSpec> {
     merge_skill_layers(claude_skills, astrcode_skills)
 }
 
+/// 加载项目级 skill。
+///
+/// 从 `<working_dir>/.astrcode/skills/` 加载。
+/// 项目 skill 优先级高于用户 skill 和 builtin skill。
 pub fn load_project_skills(working_dir: &str) -> Vec<SkillSpec> {
     load_skills_from_dir(
         &PathBuf::from(working_dir).join(".astrcode").join("skills"),
@@ -157,11 +215,20 @@ pub fn load_project_skills(working_dir: &str) -> Vec<SkillSpec> {
     )
 }
 
+/// 解析 prompt 组装所需的完整 skill 列表。
+///
+/// 合并 builtin skills（来自参数）、user skills 和 project skills，
+/// 后者覆盖前者（同名 skill 取最后加载的版本）。
 pub fn resolve_prompt_skills(base_skills: &[SkillSpec], working_dir: &str) -> Vec<SkillSpec> {
     let with_user_skills = merge_skill_layers(base_skills.to_vec(), load_user_skills());
     merge_skill_layers(with_user_skills, load_project_skills(working_dir))
 }
 
+/// 生成 skill 根目录的缓存标记。
+///
+/// 基于用户 skill 目录和项目 skill 目录的文件元数据生成指纹，
+/// 用于 [`SkillSummaryContributor`](crate::contributors::SkillSummaryContributor)
+/// 检测 skill 目录变化以决定缓存是否失效。
 pub fn skill_roots_cache_marker(working_dir: &str) -> String {
     let mut markers = Vec::new();
 
@@ -183,6 +250,10 @@ pub fn skill_roots_cache_marker(working_dir: &str) -> String {
     markers.join("|")
 }
 
+/// 规范化 skill 文件内容。
+///
+/// 去除 BOM（\u{feff}），统一换行符为 \n。
+/// 确保不同编码和换行风格的文件都能被一致处理。
 fn normalize_skill_content(content: &str) -> String {
     content
         .trim_start_matches('\u{feff}')
@@ -190,6 +261,10 @@ fn normalize_skill_content(content: &str) -> String {
         .replace('\r', "\n")
 }
 
+/// 分割 YAML frontmatter 和正文。
+///
+/// 查找 `---\n...\n---` 包裹的区域，返回 (frontmatter, body)。
+/// 支持 frontmatter 在文件末尾结束（无后续正文）的情况。
 fn split_frontmatter(content: &str) -> Option<(&str, &str)> {
     if !content.starts_with("---\n") {
         return None;
@@ -205,6 +280,11 @@ fn split_frontmatter(content: &str) -> Option<(&str, &str)> {
         .map(|end| (&rest[..end], ""))
 }
 
+/// 解析用户主目录。
+///
+/// 失败时返回 `None` 并记录警告，不会抛出错误。
+/// 这是为了保证 skill 加载是"尽力而为"的——即使主目录无法解析，
+/// 也不应阻塞整个 prompt 组装流程。
 fn resolve_user_home_dir() -> Option<PathBuf> {
     match resolve_home_dir() {
         Ok(home_dir) => Some(home_dir),
@@ -215,6 +295,10 @@ fn resolve_user_home_dir() -> Option<PathBuf> {
     }
 }
 
+/// 合并两层 skill 列表，后者覆盖前者。
+///
+/// 同名 skill（按 `id` 匹配）以 `overrides` 中的版本为准。
+/// 这是实现 skill 覆盖优先级的核心逻辑。
 fn merge_skill_layers(mut base: Vec<SkillSpec>, overrides: Vec<SkillSpec>) -> Vec<SkillSpec> {
     for skill in overrides {
         if let Some(existing) = base.iter_mut().find(|candidate| candidate.id == skill.id) {
@@ -259,6 +343,10 @@ fn cache_marker_for_skill_root(root: &Path) -> String {
     format!("{}:[{}]", root.display(), markers.join(","))
 }
 
+/// 收集 skill 目录中的所有资产文件（排除 `SKILL.md`）。
+///
+/// 递归遍历 skill 目录，返回相对于 skill 根目录的文件路径列表。
+/// 这些文件在 skill 执行时可能被引用（如脚本、参考文档）。
 pub fn collect_asset_files(skill_dir: &Path) -> Vec<String> {
     let mut files = Vec::new();
     collect_files_recursive(skill_dir, skill_dir, &mut files);

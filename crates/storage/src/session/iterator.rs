@@ -1,3 +1,15 @@
+//! # JSONL 事件迭代器
+//!
+//! 提供 `EventLogIterator`，逐行流式读取 JSONL 会话文件中的 `StoredEvent`。
+//!
+//! ## 设计要点
+//!
+//! - **流式读取**：使用 `BufReader::lines()` 逐行读取，不会将整个文件加载到内存，
+//!   适合任意大小的会话文件。
+//! - **空行跳过**：自动跳过空白行，容忍文件末尾的多余换行。
+//! - **错误定位**：`line_number` 追踪物理行号（含空行），错误消息中的行号与
+//!   文本编辑器中显示的行号一致，方便调试。
+
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -6,14 +18,24 @@ use astrcode_core::{StoredEvent, StoredEventLine};
 
 use crate::Result;
 
-/// 逐行流式读取 JSONL 会话事件。
+/// 逐行流式读取 JSONL 会话事件的迭代器。
+///
+/// 每次 `next()` 调用读取一行 JSON，反序列化为 `StoredEventLine`，
+/// 并通过 `into_stored(line_number)` 附加物理行号生成 `StoredEvent`。
+/// 空行会被自动跳过，解析错误会作为 `Err` 返回而非 panic。
 pub struct EventLogIterator {
+    /// 底层缓冲读取器的行迭代器。
     lines: std::io::Lines<BufReader<File>>,
+    /// 当前物理行号（从 1 开始，含空行），用于错误定位和事件行号标记。
     line_number: u64,
+    /// 文件路径，用于错误消息中的上下文展示。
     path: PathBuf,
 }
 
 impl EventLogIterator {
+    /// 从指定路径打开 JSONL 文件并创建迭代器。
+    ///
+    /// 文件必须存在且可读，否则返回 IO 错误。
     pub fn from_path(path: &Path) -> Result<Self> {
         let file = File::open(path).map_err(|e| {
             crate::AstrError::io(

@@ -1,6 +1,12 @@
 //! # 会话类型定义
 //!
 //! 定义会话消息和事件记录的数据结构。
+//!
+//! ## 与存储事件的区别
+//!
+//! - `SessionMessage`: 面向前端展示的历史消息格式
+//! - `SessionEventRecord`: SSE 推送和会话回放的领域事件记录
+//! - `StorageEvent`: 面向持久化的 JSONL 事件格式
 
 use crate::{event, AgentEvent};
 

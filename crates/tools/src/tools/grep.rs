@@ -1,3 +1,14 @@
+//! # Grep 工具
+//!
+//! 实现 `grep` 工具，用于在文件或目录中搜索正则表达式匹配行。
+//!
+//! ## 设计要点
+//!
+//! - 支持递归搜索（`recursive: true`）和单层搜索
+//! - 可配置大小写敏感和最大匹配数
+//! - 默认最多返回 100 条匹配，避免超大输出
+//! - 无法读取的文件（如二进制文件）会被跳过并记录警告
+
 use astrcode_core::{
     AstrError, CancelToken, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext,
     ToolDefinition, ToolExecutionResult, ToolPromptMetadata,
@@ -14,6 +25,9 @@ use walkdir::WalkDir;
 
 use crate::tools::fs_common::{check_cancel, json_output, read_utf8_file, resolve_path};
 
+/// Grep 工具实现。
+///
+/// 在指定路径下搜索包含正则表达式匹配的文件内容。
 #[derive(Default)]
 pub struct GrepTool;
 
@@ -30,6 +44,9 @@ struct GrepArgs {
     max_matches: Option<usize>,
 }
 
+/// 单次正则匹配的结果。
+///
+/// 包含文件名、行号（1-based）和完整行内容。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct GrepMatch {
     file: String,

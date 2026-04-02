@@ -1,3 +1,9 @@
+//! Skill 摘要贡献者。
+//!
+//! 当 `Skill` tool 在可用工具列表中时，生成 skill 索引摘要 block。
+//! 这是两阶段 skill 模型的第一阶段：仅暴露 skill 名称和描述，
+//! 完整指南通过 `Skill` tool 按需加载。
+
 use async_trait::async_trait;
 
 use crate::{

@@ -1,3 +1,23 @@
+//! # DTO 映射层
+//!
+//! 本模块负责将内部领域类型（`core`/`runtime`/`storage`）投影为 HTTP 协议 DTO。
+//!
+//! ## 设计原则
+//!
+//! - **协议层映射**：配置选择和 fallback 规则已下沉到 `runtime-config`，这里只做纯映射，
+//!   避免服务端入口悄悄长出另一套配置业务逻辑。
+//! - **集中化**：所有 protocol 映射逻辑集中在此，`protocol` crate 保持独立，
+//!   不依赖 `core`/`runtime` 的内部类型。
+//! - **容错序列化**：SSE 事件序列化失败时返回结构化错误载荷而非断开连接。
+//!
+//! ## 映射分类
+//!
+//! - **会话相关**：`SessionMeta` → `SessionListItem`、`SessionMessage` → `SessionMessageDto`
+//! - **运行时相关**：`RuntimeGovernanceSnapshot` → `RuntimeStatusDto`
+//! - **事件相关**：`AgentEvent` → `AgentEventPayload`、`SessionCatalogEvent` → `SessionCatalogEventPayload`
+//! - **配置相关**：`Config` → `ConfigView`、模型选项解析
+//! - **SSE 工具**：事件 ID 解析/格式化（`{storage_seq}.{subindex}` 格式）
+
 // 本文件只负责把内部类型投影成 HTTP DTO。
 //
 // 配置选择和 fallback 规则已经下沉到 runtime-config，这里只做协议层映射，
@@ -25,6 +45,10 @@ use axum::response::sse::Event;
 
 use crate::ApiError;
 
+/// 将会话元数据映射为列表项 DTO。
+///
+/// 用于 `GET /api/sessions` 和 `POST /api/sessions` 的响应，
+/// 将时间戳转换为 RFC3339 字符串格式。
 pub(crate) fn to_session_list_item(meta: SessionMeta) -> SessionListItem {
     SessionListItem {
         session_id: meta.session_id,
@@ -39,6 +63,10 @@ pub(crate) fn to_session_list_item(meta: SessionMeta) -> SessionListItem {
     }
 }
 
+/// 将会话消息映射为 DTO。
+///
+/// 保持消息类型（User/Assistant/ToolCall）不变，仅做字段投影。
+/// ToolCall 类型消息包含完整的工具调用元数据（参数、输出、错误、耗时）。
 pub(crate) fn to_session_message_dto(message: SessionMessage) -> SessionMessageDto {
     match message {
         SessionMessage::User {
@@ -85,6 +113,10 @@ pub(crate) fn to_session_message_dto(message: SessionMessage) -> SessionMessageD
     }
 }
 
+/// 将运行时治理快照映射为运行时状态 DTO。
+///
+/// 包含运行时名称、类型、已加载会话数、运行中的会话 ID、
+/// 插件搜索路径、运行时指标、能力描述和插件状态。
 pub(crate) fn to_runtime_status_dto(snapshot: RuntimeGovernanceSnapshot) -> RuntimeStatusDto {
     RuntimeStatusDto {
         runtime_name: snapshot.runtime_name,
@@ -110,6 +142,11 @@ pub(crate) fn to_runtime_status_dto(snapshot: RuntimeGovernanceSnapshot) -> Runt
     }
 }
 
+/// 将会话事件记录转换为 SSE 事件。
+///
+/// 将 `SessionEventRecord` 包装为 `AgentEventEnvelope` 并序列化为 JSON，
+/// 附带协议版本号。序列化失败时返回结构化错误载荷而非 panic，
+/// 确保 SSE 连接不会因单条事件序列化失败而断开。
 pub(crate) fn to_sse_event(record: SessionEventRecord) -> Event {
     // Keep protocol mapping centralized so protocol stays independent from core/runtime types.
     let payload = serde_json::to_string(&AgentEventEnvelope {
@@ -131,6 +168,11 @@ pub(crate) fn to_sse_event(record: SessionEventRecord) -> Event {
     Event::default().id(record.event_id).data(payload)
 }
 
+/// 将会话目录事件转换为 SSE 事件。
+///
+/// 用于广播会话创建/删除、项目删除、会话分支等目录级变更。
+/// 序列化失败时返回 `projectDeleted` 事件并携带错误信息，
+/// 保证 SSE 流不会中断。
 pub(crate) fn to_session_catalog_sse_event(event: SessionCatalogEvent) -> Event {
     let payload = serde_json::to_string(&SessionCatalogEventEnvelope::new(
         to_session_catalog_event_dto(event),
@@ -148,15 +190,26 @@ pub(crate) fn to_session_catalog_sse_event(event: SessionCatalogEvent) -> Event 
     Event::default().data(payload)
 }
 
+/// 解析 SSE 事件 ID 为 `(storage_seq, subindex)` 元组。
+///
+/// 事件 ID 格式为 `{storage_seq}.{subindex}`，其中 `storage_seq` 是会话 writer
+/// 独占分配的单调递增序号，`subindex` 用于同一存储序号下的子事件排序。
+/// 解析失败返回 `None`，调用方应据此判断是否需要从磁盘回放。
 pub(crate) fn parse_event_id(raw: &str) -> Option<(u64, u32)> {
     let (storage_seq, subindex) = raw.split_once('.')?;
     Some((storage_seq.parse().ok()?, subindex.parse().ok()?))
 }
 
+/// 将 `(storage_seq, subindex)` 格式化为 SSE 事件 ID 字符串。
+///
+/// 与 `parse_event_id` 互为逆操作，用于 SSE lag 恢复时构造游标。
 pub(crate) fn format_event_id((storage_seq, subindex): (u64, u32)) -> String {
     format!("{storage_seq}.{subindex}")
 }
 
+/// 将内部 `Phase` 枚举映射为协议层 `PhaseDto`。
+///
+/// 阶段枚举用于前端渲染会话状态指示器（如思考中、工具调用中、流式输出等）。
 pub(crate) fn to_phase_dto(phase: Phase) -> PhaseDto {
     match phase {
         Phase::Idle => PhaseDto::Idle,
@@ -168,6 +221,9 @@ pub(crate) fn to_phase_dto(phase: Phase) -> PhaseDto {
     }
 }
 
+/// 将工具输出流类型映射为 DTO。
+///
+/// 用于 `ToolCallDelta` 事件，区分 stdout 和 stderr 输出流。
 fn to_tool_output_stream_dto(stream: astrcode_core::ToolOutputStream) -> ToolOutputStreamDto {
     match stream {
         astrcode_core::ToolOutputStream::Stdout => ToolOutputStreamDto::Stdout,
@@ -175,6 +231,10 @@ fn to_tool_output_stream_dto(stream: astrcode_core::ToolOutputStream) -> ToolOut
     }
 }
 
+/// 将能力描述符映射为 DTO。
+///
+/// `kind` 字段通过 serde_json 序列化后取字符串表示，
+/// 反序列化失败时降级为 "unknown"，避免协议层崩溃。
 fn to_runtime_capability_dto(descriptor: CapabilityDescriptor) -> RuntimeCapabilityDto {
     RuntimeCapabilityDto {
         name: descriptor.name,
@@ -188,6 +248,10 @@ fn to_runtime_capability_dto(descriptor: CapabilityDescriptor) -> RuntimeCapabil
     }
 }
 
+/// 将插件条目映射为 DTO。
+///
+/// 包含插件清单信息（名称、版本、描述）、运行时状态、健康度、
+/// 失败计数和最后检查时间，以及插件暴露的所有能力。
 fn to_runtime_plugin_dto(entry: PluginEntry) -> RuntimePluginDto {
     RuntimePluginDto {
         name: entry.manifest.name,
@@ -215,6 +279,10 @@ fn to_runtime_plugin_dto(entry: PluginEntry) -> RuntimePluginDto {
     }
 }
 
+/// 将运行时观测指标快照映射为 DTO。
+///
+/// 包含三个维度的指标：会话重连（session_rehydrate）、
+/// SSE 追赶（sse_catch_up）、轮次执行（turn_execution）。
 fn to_runtime_metrics_dto(snapshot: RuntimeObservabilitySnapshot) -> RuntimeMetricsDto {
     RuntimeMetricsDto {
         session_rehydrate: to_operation_metrics_dto(snapshot.session_rehydrate),
@@ -223,6 +291,10 @@ fn to_runtime_metrics_dto(snapshot: RuntimeObservabilitySnapshot) -> RuntimeMetr
     }
 }
 
+/// 将操作指标快照映射为 DTO。
+///
+/// 记录总执行次数、失败次数、总耗时、最近一次耗时和最大耗时，
+/// 用于前端展示运行时性能面板。
 fn to_operation_metrics_dto(snapshot: OperationMetricsSnapshot) -> OperationMetricsDto {
     OperationMetricsDto {
         total: snapshot.total,
@@ -233,6 +305,10 @@ fn to_operation_metrics_dto(snapshot: OperationMetricsSnapshot) -> OperationMetr
     }
 }
 
+/// 将回放指标快照映射为 DTO。
+///
+/// 在操作指标基础上增加缓存命中数、磁盘回退数和已恢复事件数，
+/// 用于衡量 SSE 断线重连后的事件恢复效率。
 fn to_replay_metrics_dto(snapshot: ReplayMetricsSnapshot) -> ReplayMetricsDto {
     ReplayMetricsDto {
         totals: to_operation_metrics_dto(snapshot.totals),
@@ -242,6 +318,12 @@ fn to_replay_metrics_dto(snapshot: ReplayMetricsSnapshot) -> ReplayMetricsDto {
     }
 }
 
+/// 将智能体事件映射为协议层事件载荷。
+///
+/// 这是 SSE 事件流的核心映射函数，覆盖智能体生命周期中的所有事件类型：
+/// 会话启动、用户消息、阶段变更、模型增量输出、思考增量、助手消息、
+/// 工具调用（开始/增量/结果）、轮次完成、错误。
+/// 工具调用增量输出会携带流类型（stdout/stderr）信息。
 pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
     match event {
         AgentEvent::SessionStarted { session_id } => {
@@ -302,7 +384,7 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
                 output: result.output,
                 error: result.error,
                 metadata: result.metadata,
-                duration_ms: u128::from(result.duration_ms),
+                duration_ms: result.duration_ms,
                 truncated: result.truncated,
             },
         },
@@ -319,6 +401,10 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
     }
 }
 
+/// 将会话目录事件映射为协议层载荷。
+///
+/// 目录事件用于前端同步会话列表变更，包括会话创建/删除、
+/// 项目删除（级联删除该工作目录下所有会话）、会话分支。
 pub(crate) fn to_session_catalog_event_dto(
     event: SessionCatalogEvent,
 ) -> SessionCatalogEventPayload {
@@ -342,6 +428,15 @@ pub(crate) fn to_session_catalog_event_dto(
     }
 }
 
+/// 构建配置视图 DTO。
+///
+/// 将内部 `Config` 转换为前端可展示的配置视图，包括：
+/// - 配置文件路径
+/// - 当前激活的 profile 和 model
+/// - 所有 profile 列表（API key 做脱敏预览）
+/// - 配置警告（如无 profile 时提示）
+///
+/// Profile 为空时直接返回带警告的视图，不走活跃选择解析。
 pub(crate) fn build_config_view(
     config: &Config,
     config_path: String,
@@ -383,6 +478,10 @@ pub(crate) fn build_config_view(
     })
 }
 
+/// 解析当前激活的模型信息。
+///
+/// 从配置中提取当前使用的 profile 名称、模型名称和提供者类型，
+/// 用于 `GET /api/models/current` 响应。
 pub(crate) fn resolve_current_model(config: &Config) -> Result<CurrentModelInfoDto, ApiError> {
     let selection = resolve_runtime_current_model(config).map_err(config_selection_error)?;
 
@@ -393,6 +492,10 @@ pub(crate) fn resolve_current_model(config: &Config) -> Result<CurrentModelInfoD
     })
 }
 
+/// 列出所有可用的模型选项。
+///
+/// 遍历配置中所有 profile 的模型，扁平化为列表，
+/// 用于 `GET /api/models` 响应，前端据此渲染模型选择器。
 pub(crate) fn list_model_options(config: &Config) -> Vec<ModelOptionDto> {
     resolve_model_options(config)
         .into_iter()
@@ -411,6 +514,18 @@ fn config_selection_error(error: anyhow::Error) -> ApiError {
     }
 }
 
+/// 生成 API key 的安全预览字符串。
+///
+/// 规则：
+/// - `None` 或空字符串 → "未配置"
+/// - `env:VAR_NAME` 前缀 → "环境变量: VAR_NAME"（不读取实际值）
+/// - `literal:KEY` 前缀 → 递归处理去掉前缀后的内容
+/// - 纯大写+下划线且是有效环境变量名 → "环境变量: NAME"
+/// - 长度 > 4 → 显示 "****" + 最后 4 个字符
+/// - 其他 → "****"
+///
+/// 这样前端可以展示 key 的来源类型（环境变量/字面量）和部分标识，
+/// 同时不会泄露完整的密钥内容。
 pub(crate) fn api_key_preview(api_key: Option<&str>) -> String {
     match api_key.map(str::trim) {
         None => "未配置".to_string(),

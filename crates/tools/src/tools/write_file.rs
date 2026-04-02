@@ -1,3 +1,13 @@
+//! # WriteFile 工具
+//!
+//! 实现 `writeFile` 工具，用于创建或完全覆盖文本文件。
+//!
+//! ## 设计要点
+//!
+//! - 支持 `createDirs` 参数自动创建父目录
+//! - 写入前读取现有内容以生成 diff 报告
+//! - 如果现有文件无法作为 UTF-8 读取，diff 不可用但不影响写入操作
+
 use crate::tools::fs_common::{
     build_text_change_report, check_cancel, read_utf8_file, resolve_path, write_text_file,
     TextChangeReport,
@@ -12,6 +22,9 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::time::Instant;
 
+/// WriteFile 工具实现。
+///
+/// 创建新文件或完全覆盖现有文件，自动生成变更 diff 报告。
 #[derive(Default)]
 pub struct WriteFileTool;
 

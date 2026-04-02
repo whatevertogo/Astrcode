@@ -1,3 +1,14 @@
+//! 能力（工具）指南贡献者。
+//!
+//! 从 [`CapabilityDescriptor`] 中提取工具的 prompt 元数据，
+//! 生成工具摘要块和详细指南块。
+//!
+//! # 设计原则
+//!
+//! - 当工具数量 ≤ 4 时，展开所有工具的详细指南
+//! - 超过 4 个工具时，仅展开标记为 `always_include` 的工具
+//! - 同时处理 [`PromptDeclaration`]（插件/MCP 注入的指南）
+
 use astrcode_core::{CapabilityDescriptor, ToolPromptMetadata};
 use async_trait::async_trait;
 

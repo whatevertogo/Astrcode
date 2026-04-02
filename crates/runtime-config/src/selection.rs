@@ -1,13 +1,25 @@
-//! Config selection helpers.
+//! 配置选择辅助函数。
 //!
-//! Keep fallback selection rules here so every surface resolves config the same
-//! way instead of teaching HTTP routes their own recovery logic.
+//! 本模块封装了 Profile 和 Model 的选择与回退逻辑，确保所有调用方（HTTP 路由、
+//! CLI、Tauri 命令）都以相同的方式解析配置，而不是各自实现独立的恢复逻辑。
+//!
+//! # 选择策略
+//!
+//! 1. 优先使用配置中的 `active_profile` 和 `active_model`
+//! 2. 若 `active_profile` 不存在，回退到第一个 Profile 并产生警告
+//! 3. 若 `active_model` 不在当前 Profile 的模型列表中，回退到第一个模型并产生警告
+//! 4. 若 Profile 的模型列表为空，返回错误
+//!
+//! 回退逻辑集中在此处，避免 HTTP 路由层各自实现不同的恢复策略。
 
 use anyhow::{anyhow, Result};
 
 use crate::{Config, Profile};
 
-/// Resolved active selection after applying profile/model fallbacks.
+/// 应用 Profile/Model 回退后的最终选择结果。
+///
+/// 包含解析后的活跃 Profile 名称、模型名称，以及可能的警告信息。
+/// 警告信息用于告知调用方发生了自动回退（如配置的 Profile 不存在）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveSelection {
     pub active_profile: String,
@@ -15,7 +27,10 @@ pub struct ActiveSelection {
     pub warning: Option<String>,
 }
 
-/// The effective model the runtime will use for the current config.
+/// 运行时当前将使用的有效模型信息。
+///
+/// 与 [`ActiveSelection`] 不同，此类型额外包含 `provider_kind` 字段，
+/// 供需要知道 API 协议格式的调用方使用（如 `runtime-llm` crate）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CurrentModelSelection {
     pub profile_name: String,
@@ -23,7 +38,10 @@ pub struct CurrentModelSelection {
     pub provider_kind: String,
 }
 
-/// A flattened model option that callers can project into their own DTOs.
+/// 扁平化的模型选项。
+///
+/// 将 Profile 和模型的嵌套关系展平为单层列表，供调用方投影到各自的 DTO 中。
+/// 典型用途：前端下拉菜单展示所有可用的 Profile-Model 组合。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelOption {
     pub profile_name: String,

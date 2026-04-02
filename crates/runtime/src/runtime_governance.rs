@@ -1,3 +1,26 @@
+//! # 运行时治理 (Runtime Governance)
+//!
+//! 提供运行时的治理和可观测性能力，包括：
+//! - 运行时快照（会话状态、插件健康、能力列表、指标）
+//! - 插件热重载（无需重启服务）
+//! - 插件健康探针刷新
+//!
+//! ## 重载约束
+//!
+//! 重载运行时能力时，不允许有任何正在运行的会话。这是为了保证
+//! 会话状态的一致性——如果会话正在执行 Turn，重载能力会导致
+//! 工具调用中断或状态不一致。
+//!
+//! ## 重载流程
+//!
+//! 1. 获取重载锁（防止并发重载）
+//! 2. 检查是否有运行中的会话（有则拒绝）
+//! 3. 重新发现插件并组装能力面
+//! 4. 替换 RuntimeService 的能力路由
+//! 5. 替换 RuntimeCoordinator 的能力面
+//! 6. 关闭旧的托管组件
+//! 7. 返回新的快照
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -25,9 +48,15 @@ pub struct RuntimeGovernanceSnapshot {
     pub plugins: Vec<PluginEntry>,
 }
 
+/// 运行时重载操作的结果。
+///
+/// 包含重载后的新快照和重载完成的时间戳，
+/// 供调用方确认重载是否成功以及何时生效。
 #[derive(Debug, Clone)]
 pub struct RuntimeReloadResult {
+    /// 重载后的运行时快照
     pub snapshot: RuntimeGovernanceSnapshot,
+    /// 重载完成的时间
     pub reloaded_at: DateTime<Utc>,
 }
 

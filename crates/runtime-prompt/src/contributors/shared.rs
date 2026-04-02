@@ -1,5 +1,9 @@
 //! Shared utilities for prompt contributors.
 
+//! 贡献者共享工具函数。
+//!
+//! 提供路径解析和缓存标记生成等跨 contributor 复用的基础设施。
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;

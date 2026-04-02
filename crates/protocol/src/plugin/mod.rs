@@ -1,3 +1,20 @@
+//! 插件协议模块
+//!
+//! 定义 host（runtime）与插件进程之间基于 JSON-RPC 的通信协议。
+//!
+//! ## 协议流程
+//!
+//! 1. **握手阶段**: host 发送 `InitializeMessage`，插件回复 `InitializeResultData`
+//!    （通过 `ResultMessage` 包装），双方交换能力描述和 peer 信息
+//! 2. **调用阶段**: host 发送 `InvokeMessage` 调用插件能力，插件通过 `EventMessage`
+//!    流式返回中间结果，最终以 `ResultMessage` 结束
+//! 3. **取消**: host 可随时发送 `CancelMessage` 中断进行中的调用
+//!
+//! ## 传输方式
+//!
+//! 插件通过 stdio 与 host 通信，消息以换行符分隔的 JSON 行格式传输。
+//! 传输层由 `transport` 模块的 `Transport` trait 抽象。
+
 mod descriptors;
 mod error;
 mod handshake;

@@ -1,3 +1,18 @@
+//! HTTP API 数据传输对象（DTO）模块
+//!
+//! 本模块定义了 server 与前端之间通过 HTTP/SSE 通信的所有请求/响应数据结构。
+//! 所有 DTO 使用 serde 进行序列化，字段采用 camelCase 命名以匹配前端约定。
+//!
+//! ## 子模块划分
+//!
+//! - `auth`: 认证相关 DTO（bootstrap token 交换 session token）
+//! - `config`: 配置查看、保存、连接测试相关 DTO
+//! - `event`: Agent 事件流 DTO，用于 SSE 实时推送和会话回放
+//! - `model`: 模型信息 DTO
+//! - `runtime`: 运行时状态、指标、插件健康度 DTO
+//! - `session`: 会话管理 DTO（创建、列表、提示词提交）
+//! - `session_event`: 会话目录事件 DTO（创建/删除/分支通知）
+
 mod auth;
 mod config;
 mod event;

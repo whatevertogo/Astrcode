@@ -1,3 +1,16 @@
+//! # 引导测试 (Bootstrap Tests)
+//!
+//! 验证运行时引导流程的正确性，包括：
+//! - 插件初始化成功时的完整引导
+//! - 插件初始化失败时的容错引导
+//! - 能力冲突时的确定性解决（先到先得）
+//! - 托管组件的有序关闭
+//!
+//! ## 设计
+//!
+//! 使用 `FakeInitializer` 模拟插件初始化过程，
+//! 通过预定义的响应映射控制每个插件的初始化结果。
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -289,7 +302,7 @@ fn bootstrap_rejects_duplicate_plugin_capabilities_deterministically() {
 fn bootstrap_marks_plugin_failed_when_descriptor_is_invalid() {
     let shutdowns = Arc::new(Mutex::new(Vec::new()));
     let mut invalid = capability("tool.invalid");
-    invalid.kind = CapabilityKind::custom("   ");
+    invalid.kind = CapabilityKind::new("   ");
     let initializer = FakeInitializer {
         responses: HashMap::from([(
             "alpha".to_string(),

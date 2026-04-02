@@ -1,3 +1,24 @@
+//! # 微压缩 (Microcompact)
+//!
+//! 轻量级上下文优化，不需要调用 LLM，直接在本地执行：
+//! - 截断过长的工具结果（超过 `max_tool_result_bytes`）
+//! - 清除标记为 `compact_clearable` 的旧工具结果
+//!
+//! ## 与完整压缩的区别
+//!
+//! | 特性 | 微压缩 | 完整压缩 |
+//! |------|--------|----------|
+//! | 是否需要 LLM | 否 | 是 |
+//! | 触发条件 | Token 压力 | 配置阈值 |
+//! | 操作 | 截断/清除 | 摘要替换 |
+//! | 速度 | 即时 | 需要 LLM 调用 |
+//!
+//! ## 设计决策
+//!
+//! - 保留最近的 N 个 Turn 不被微压缩影响
+//! - 工具结果截断时保留头部内容，添加截断提示
+//! - `compact_clearable` 工具的结果可以被完全清除（替换为占位文本）
+
 use std::collections::{HashMap, HashSet};
 
 use astrcode_core::{CapabilityDescriptor, LlmMessage, UserMessageOrigin};

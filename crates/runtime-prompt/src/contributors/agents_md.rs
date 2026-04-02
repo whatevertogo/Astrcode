@@ -1,3 +1,11 @@
+//! AGENTS.md 贡献者。
+//!
+//! 从两个位置加载 AGENTS.md 规则文件：
+//! - 用户级：`~/.astrcode/AGENTS.md`（适用于所有项目）
+//! - 项目级：`<working_dir>/AGENTS.md`（仅适用于当前项目）
+//!
+//! 两个文件同时存在时都会被包含到 prompt 中，分别作为 UserRules 和 ProjectRules block。
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -7,6 +15,10 @@ use log::warn;
 use super::shared::{cache_marker_for_path, user_astrcode_file_path};
 use crate::{BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor};
 
+/// AGENTS.md 贡献者。
+///
+/// 同时加载用户级和项目级 AGENTS.md，分别映射到 `UserRules` 和 `ProjectRules` block。
+/// 文件不存在时静默跳过，不阻塞整个 prompt 组装流程。
 pub struct AgentsMdContributor;
 
 pub fn user_agents_md_path() -> Option<PathBuf> {

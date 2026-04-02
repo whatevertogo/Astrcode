@@ -1,3 +1,9 @@
+//! 认证相关 DTO
+//!
+//! 定义 bootstrap token 与 session token 交换的请求/响应结构。
+//! 认证流程：server 启动时生成短期 bootstrap token → 嵌入前端 HTML →
+//! 前端用 bootstrap token 换取长期 session token → 后续所有 API 请求使用 session token。
+
 use serde::{Deserialize, Serialize};
 
 /// POST /api/auth/exchange 请求体——用短期 bootstrap token 换取长期 session token。

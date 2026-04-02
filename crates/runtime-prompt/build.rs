@@ -1,3 +1,20 @@
+//! 编译期 builtin skill 打包脚本。
+//!
+//! 在编译时扫描 `src/builtin_skills/` 目录，将所有 skill 文件（包括 SKILL.md
+//! 和 references/、scripts/ 等资产）通过 `include_str!` 嵌入到生成的 Rust 代码中。
+//!
+//! # 设计意图
+//!
+//! - 避免手写 `include_str!` 清单，新增 skill 只需在目录中创建文件夹
+//! - 编译期校验 skill 文件存在性，缺失文件会导致编译失败
+//! - 通过 `cargo:rerun-if-changed` 指令，仅在 skill 目录变化时重新生成
+//!
+//! # 生成产物
+//!
+//! 输出 `bundled_skills.generated.rs` 到 `OUT_DIR`，包含：
+//! - `BUNDLED_SKILLS` 常量：所有 skill 的定义和资产内容
+//! - 每个 skill 的 `id`、`relative_path` 和 `content`（通过 `include_str!` 嵌入）
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -1,3 +1,13 @@
+//! # ReadFile 工具
+//!
+//! 实现 `readFile` 工具，用于读取 UTF-8 文本文件内容。
+//!
+//! ## 设计要点
+//!
+//! - 默认最大读取 64KB，通过 `maxBytes` 参数可调整
+//! - 截断点必须在 UTF-8 字符边界上，避免多字节字符被截断成无效字符串
+//! - 返回 metadata 包含原始字节数和是否截断标记
+
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -11,6 +21,9 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
+/// ReadFile 工具实现。
+///
+/// 读取指定路径的 UTF-8 文本文件，支持按字节预算截断。
 #[derive(Default)]
 pub struct ReadFileTool;
 

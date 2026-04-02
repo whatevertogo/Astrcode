@@ -1,3 +1,27 @@
+//! # 会话路径解析
+//!
+//! 负责将 `session_id` 和 `working_dir` 映射到 `~/.astrcode/projects/<project>/sessions/`
+//! 下的具体文件路径。
+//!
+//! ## 路径约定
+//!
+//! ```text
+//! ~/.astrcode/
+//! └── projects/
+//!     └── <project-bucket>/          # 由 working_dir 哈希或名称映射
+//!         └── sessions/
+//!             └── <session-id>/
+//!                 ├── session-<session-id>.jsonl   # 事件日志
+//!                 ├── active-turn.lock             # 文件锁
+//!                 └── active-turn.json             # 锁元数据
+//! ```
+//!
+//! ## 安全设计
+//!
+//! - 所有 `session_id` 必须通过 `validated_session_id()` 校验，防止路径穿越攻击
+//! - 仅允许字母数字、`-`、`_`、`T` 字符，不允许 `:`（Windows 文件名非法）和 `.`（路径穿越）
+//! - `canonical_session_id()` 统一处理带/不带 `session-` 前缀的 ID，避免调用方各自处理
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -6,8 +30,10 @@ use astrcode_core::store::StoreError;
 
 use crate::{internal_io_error, AstrError, Result};
 
+/// 会话目录下的 sessions 子目录名称。
 const SESSIONS_DIR_NAME: &str = "sessions";
 
+/// 获取 Astrcode 项目根目录（`~/.astrcode/projects`）。
 pub(crate) fn projects_root_dir() -> Result<PathBuf> {
     projects_dir().map_err(|error| {
         internal_io_error(format!(
@@ -16,6 +42,10 @@ pub(crate) fn projects_root_dir() -> Result<PathBuf> {
     })
 }
 
+/// 获取指定工作目录对应的项目 sessions 目录。
+///
+/// 通过 `project_dir(working_dir)` 将工作目录映射到项目分桶，
+/// 再拼接 `sessions` 子目录。
 pub(crate) fn project_sessions_dir(working_dir: &Path) -> Result<PathBuf> {
     Ok(project_dir(working_dir)
         .map_err(|error| {
@@ -27,22 +57,39 @@ pub(crate) fn project_sessions_dir(working_dir: &Path) -> Result<PathBuf> {
         .join(SESSIONS_DIR_NAME))
 }
 
+/// 从项目根目录和工作目录计算 sessions 目录路径。
+///
+/// 与 `project_sessions_dir` 的区别在于此函数不依赖全局配置，
+/// 而是直接基于给定的 `projects_root` 计算，用于测试和跨根目录操作。
 pub(crate) fn project_sessions_dir_from_root(projects_root: &Path, working_dir: &Path) -> PathBuf {
     projects_root
         .join(project_dir_name(working_dir))
         .join(SESSIONS_DIR_NAME)
 }
 
+/// 计算指定会话的目录路径（不含文件名）。
+///
+/// 路径格式：`<project_sessions_dir>/<session_id>/`
 pub(crate) fn session_dir(session_id: &str, working_dir: &Path) -> Result<PathBuf> {
     let session_id = validated_session_id(session_id)?;
     Ok(project_sessions_dir(working_dir)?.join(&session_id))
 }
 
+/// 计算指定会话的 JSONL 文件完整路径。
+///
+/// 路径格式：`<project_sessions_dir>/<session_id>/session-<session_id>.jsonl`
 pub(crate) fn session_path(session_id: &str, working_dir: &Path) -> Result<PathBuf> {
     let session_id = validated_session_id(session_id)?;
     Ok(session_dir(&session_id, working_dir)?.join(session_file_name(&session_id)))
 }
 
+/// 查找已存在的会话文件路径。
+///
+/// 遍历所有项目的 sessions 目录，返回第一个匹配的文件路径。
+/// 如果未找到，返回 `SessionNotFound` 错误并附带期望的路径模式。
+///
+/// 此函数用于 `open()` 场景：调用者只知道 `session_id`，
+/// 不知道它属于哪个项目，需要跨项目查找。
 pub(crate) fn resolve_existing_session_path(session_id: &str) -> Result<PathBuf> {
     let session_id = validated_session_id(session_id)?;
     let projects_root = projects_root_dir()?;
@@ -66,6 +113,10 @@ pub(crate) fn resolve_existing_session_path(session_id: &str) -> Result<PathBuf>
     ))
 }
 
+/// 查找已存在的会话文件所在目录。
+///
+/// 基于 `resolve_existing_session_path` 的结果取其父目录，
+/// 用于定位锁文件和元数据文件的位置。
 pub(crate) fn resolve_existing_session_dir(session_id: &str) -> Result<PathBuf> {
     let path = resolve_existing_session_path(session_id)?;
     path.parent().map(Path::to_path_buf).ok_or_else(|| {
@@ -76,14 +127,26 @@ pub(crate) fn resolve_existing_session_dir(session_id: &str) -> Result<PathBuf> 
     })
 }
 
+/// 获取会话文件锁的路径。
+///
+/// 锁文件用于 `try_acquire_session_turn` 的独占文件锁，
+/// 防止多进程同时写入同一会话。
 pub(crate) fn session_turn_lock_path(session_id: &str) -> Result<PathBuf> {
     Ok(resolve_existing_session_dir(session_id)?.join("active-turn.lock"))
 }
 
+/// 获取会话锁元数据文件的路径。
+///
+/// 元数据文件包含当前锁持有者的 `turn_id`、`owner_pid`、`acquired_at`，
+/// 供竞争者读取以判断当前会话状态。
 pub(crate) fn session_turn_metadata_path(session_id: &str) -> Result<PathBuf> {
     Ok(resolve_existing_session_dir(session_id)?.join("active-turn.json"))
 }
 
+/// 枚举所有项目下的 sessions 目录。
+///
+/// 遍历 `projects_root` 下的每个子目录，查找其 `sessions` 子目录，
+/// 用于跨项目列出所有会话。
 pub(crate) fn session_storage_dirs(projects_root: &Path) -> Result<Vec<PathBuf>> {
     let mut dirs = Vec::new();
     if projects_root.exists() {
@@ -110,6 +173,9 @@ pub(crate) fn session_storage_dirs(projects_root: &Path) -> Result<Vec<PathBuf>>
     Ok(dirs)
 }
 
+/// 根据会话 ID 生成 JSONL 文件名。
+///
+/// 文件名格式：`session-<session_id>.jsonl`
 pub(crate) fn session_file_name(session_id: &str) -> String {
     format!("session-{session_id}.jsonl")
 }

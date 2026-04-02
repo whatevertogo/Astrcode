@@ -1,3 +1,14 @@
+//! # ListDir 工具
+//!
+//! 实现 `listDir` 工具，用于浅层列出目录内容。
+//!
+//! ## 设计要点
+//!
+//! - 仅返回一层目录/文件条目，不递归
+//! - 每个条目返回 `name`、`isDir`、`isFile`
+//! - 默认最多 200 条，超出标记 `truncated`
+//! - 未指定路径时使用上下文工作目录
+
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -11,6 +22,9 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
+/// ListDir 工具实现。
+///
+/// 列出指定目录的直接子条目（不递归），返回名称和类型信息。
 #[derive(Default)]
 pub struct ListDirTool;
 

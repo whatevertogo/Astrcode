@@ -13,7 +13,7 @@
 //! - [`registry`][]: 能力路由器（将能力调用分派到具体的 invoker）
 //! - [`runtime`][]: 运行时协调器接口
 //! - [`projection`][]: Agent 状态投影（从事件流推导状态）
-//! - [`action`][]: LLM 消息与工具调用相关的数据结构
+//! - `action`: LLM 消息与工具调用相关的数据结构
 
 mod action;
 mod cancel;

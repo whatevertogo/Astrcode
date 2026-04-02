@@ -1,6 +1,18 @@
 //! # 工具注册表
 //!
-//! 工具注册表负责管理所有可用的工具，并提供执行接口。
+//! 管理所有可用的工具，并提供执行接口。
+//!
+//! ## 核心类型
+//!
+//! - [`ToolRegistry`][]: 冻结后的只读工具注册表
+//! - [`ToolRegistryBuilder`][]: 构建器模式组装工具注册表
+//! - [`ToolCapabilityInvoker`][]: 将 `Tool` trait 适配为 `CapabilityInvoker`
+//!
+//! ## 与 CapabilityRouter 的关系
+//!
+//! `ToolRegistry` 是工具专用的注册表，而 `CapabilityRouter` 是通用的能力路由器。
+//! 通过 `into_capability_invokers()` 可以将工具注册表转换为通用能力调用器列表，
+//! 注册到 `CapabilityRouter` 中。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -84,15 +96,15 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Returns the names of all registered tools in registration order.
+    /// 获取所有已注册工具的名称（按注册顺序）。
     pub fn names(&self) -> &[String] {
         &self.order
     }
 
-    /// Executes a tool call with the given context.
+    /// 执行工具调用。
     ///
-    /// Returns a `ToolExecutionResult` indicating success or failure.
-    /// If the tool is not found, returns a failure result with an error message.
+    /// 根据工具名称查找对应执行器，若未找到返回失败结果。
+    /// 返回 `ToolExecutionResult` 指示执行成功或失败。
     pub async fn execute(&self, call: &ToolCallRequest, ctx: &ToolContext) -> ToolExecutionResult {
         let Some(tool) = self.tools.get(&call.name) else {
             return ToolExecutionResult {

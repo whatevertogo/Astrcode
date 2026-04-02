@@ -1,3 +1,24 @@
+//! # LLM 调用周期 (LLM Cycle)
+//!
+//! 负责与 LLM Provider 交互，包括：
+//! - Provider 构建（根据工作目录解析配置）
+//! - 流式响应处理（通过 unbounded channel + select 模式）
+//! - 增量事件转发（将 LLM delta 转换为 StorageEvent）
+//!
+//! ## 架构模式
+//!
+//! LLM Provider 的 `generate()` 方法接受一个 `EventSink` 回调来推送流式事件。
+//! 但我们需要在接收事件的同时等待 `generate()` 完成并获取最终结果。
+//! 使用 `tokio::select!` 同时等待这两个源：
+//! - `generate_future` 完成 → 返回最终 `LlmOutput`
+//! - `event_rx.recv()` → 实时转发增量 delta 为 `StorageEvent`
+//!
+//! ## 为什么使用 unbounded channel
+//!
+//! 生产者（LLM 流式传输）受网络 I/O 带宽约束，消费者（select! 循环）
+//! 以同等速度处理事件，因此缓冲区中积压的数据始终只是少量未处理的 delta。
+//! 若使用 bounded channel，反压逻辑会不必要地复杂化代码。
+
 use std::path::PathBuf;
 use std::sync::Arc;
 

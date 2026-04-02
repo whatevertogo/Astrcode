@@ -1,3 +1,27 @@
+//! # Token 使用跟踪 (Token Usage Tracking)
+//!
+//! 提供 Token 估算和跟踪能力，用于：
+//! - 构建 Prompt Token 快照（当前上下文大小、预算、窗口限制）
+//! - 估算消息和文本的 Token 数量
+//! - 判断是否需要触发压缩
+//!
+//! ## Token 估算启发式
+//!
+//! 当前使用简化的启发式估算：
+//! - 每条消息基础开销: 6 tokens
+//! - 每个工具调用基础开销: 12 tokens
+//! - 文本内容: 按字符数估算（粗略近似）
+//!
+//! ## 为什么不用精确 Tokenizer
+//!
+//! 精确 Token 计数需要 Provider 原生的 Tokenizer，当前后端未暴露此能力。
+//! 一旦后端暴露精确 Token 计算和上下文窗口元数据，应替换此启发式。
+//!
+//! ## 预算跟踪
+//!
+//! `TokenUsageTracker` 优先使用 Provider 报告的 usage 数据（最接近计费 Token），
+//! 若 Provider 未报告则回退到估算值。
+
 use astrcode_core::{LlmMessage, UserMessageOrigin};
 
 use crate::llm::{LlmUsage, ModelLimits};

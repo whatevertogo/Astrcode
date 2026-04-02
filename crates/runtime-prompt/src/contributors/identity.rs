@@ -1,3 +1,8 @@
+//! 身份贡献者。
+//!
+//! 从 `~/.astrcode/IDENTITY.md` 加载用户自定义身份定义，
+//! 若文件不存在则使用内置默认值。
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -7,6 +12,10 @@ use log::{info, warn};
 use super::shared::{cache_marker_for_path, user_astrcode_file_path};
 use crate::{BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor};
 
+/// 身份贡献者。
+///
+/// 负责生成 system prompt 中的身份定义部分。
+/// 优先读取 `~/.astrcode/IDENTITY.md`，不存在时使用默认描述。
 pub struct IdentityContributor;
 
 const DEFAULT_IDENTITY: &str = "\

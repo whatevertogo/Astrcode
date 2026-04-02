@@ -1,19 +1,44 @@
+//! # 存储事件类型
+//!
+//! 定义了持久化到 JSONL 日志中的事件格式。
+//!
+//! ## 与领域事件的区别
+//!
+//! `StorageEvent` 是面向存储的格式，直接序列化到 JSONL 文件；
+//! `AgentEvent` 是面向 SSE 推送的格式，由 [`EventTranslator`](crate::event::EventTranslator)
+//! 从 `StorageEvent` 转换而来。
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{ToolOutputStream, UserMessageOrigin};
 
+/// 上下文压缩的触发方式。
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CompactTrigger {
+    /// 自动触发（上下文窗口接近阈值时）
     Auto,
+    /// 手动触发（用户主动请求）
     Manual,
 }
 
+/// 存储事件。
+///
+/// 这是 append-only JSONL 日志中的事件格式，每种变体代表 Agent 运行时的一个关键动作。
+/// 与 `AgentEvent` 不同，`StorageEvent` 是持久化格式，不直接面向前端展示。
+///
+/// ## 事件生命周期
+///
+/// 1. 运行时产生事件 → 2. 通过 `EventLogWriter::append` 持久化 →
+/// 3. 通过 `EventTranslator` 转换为 `AgentEvent` → 4. SSE 推送到前端
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum StorageEvent {
+    /// 会话启动事件。
+    ///
+    /// 包含 `parent_session_id` 和 `parent_storage_seq` 用于支持 session 分叉。
     SessionStart {
         session_id: String,
         timestamp: DateTime<Utc>,
@@ -23,6 +48,7 @@ pub enum StorageEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent_storage_seq: Option<u64>,
     },
+    /// 用户输入消息。
     UserMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
@@ -31,16 +57,19 @@ pub enum StorageEvent {
         #[serde(default, skip_serializing_if = "is_default_user_message_origin")]
         origin: UserMessageOrigin,
     },
+    /// LLM 文本输出增量（流式响应片段）。
     AssistantDelta {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
         token: String,
     },
+    /// LLM 推理/思考内容增量。
     ThinkingDelta {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
         token: String,
     },
+    /// LLM 助手最终回复（完整内容）。
     AssistantFinal {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
@@ -52,6 +81,7 @@ pub enum StorageEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timestamp: Option<DateTime<Utc>>,
     },
+    /// 工具调用开始。
     ToolCall {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
@@ -59,6 +89,7 @@ pub enum StorageEvent {
         tool_name: String,
         args: Value,
     },
+    /// 工具流式输出增量。
     ToolCallDelta {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
@@ -68,6 +99,7 @@ pub enum StorageEvent {
         stream: ToolOutputStream,
         delta: String,
     },
+    /// 工具调用完成结果。
     ToolResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
@@ -82,6 +114,7 @@ pub enum StorageEvent {
         metadata: Option<Value>,
         duration_ms: u64,
     },
+    /// 上下文窗口指标快照（用于监控和压缩决策）。
     PromptMetrics {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
@@ -92,6 +125,7 @@ pub enum StorageEvent {
         threshold_tokens: u32,
         truncated_tool_results: u32,
     },
+    /// 上下文压缩已应用。
     CompactApplied {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
@@ -104,6 +138,7 @@ pub enum StorageEvent {
         tokens_freed: u32,
         timestamp: DateTime<Utc>,
     },
+    /// Turn 完成（一轮 Agent 循环结束）。
     TurnDone {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
@@ -111,6 +146,7 @@ pub enum StorageEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+    /// 错误事件。
     Error {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
@@ -121,6 +157,9 @@ pub enum StorageEvent {
 }
 
 impl StorageEvent {
+    /// 提取事件关联的 turn ID（如果存在）。
+    ///
+    /// `SessionStart` 没有 turn_id，返回 `None`。
     pub fn turn_id(&self) -> Option<&str> {
         match self {
             Self::UserMessage { turn_id, .. }
@@ -143,22 +182,40 @@ fn is_default_user_message_origin(origin: &UserMessageOrigin) -> bool {
     matches!(origin, UserMessageOrigin::User)
 }
 
+/// 已持久化的存储事件。
+///
+/// 包含单调递增的 `storage_seq`（由会话 writer 独占分配）和实际的事件内容。
+/// `storage_seq` 用于 SSE 断点续传和事件排序。
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredEvent {
+    /// 存储序号，单调递增，由会话 writer 独占分配
     pub storage_seq: u64,
+    /// 实际的事件内容
     #[serde(flatten)]
     pub event: StorageEvent,
 }
 
+/// JSONL 日志行的反序列化包装。
+///
+/// 支持两种格式：
+/// - `Stored`: 新格式，包含 `storage_seq` 字段
+/// - `Legacy`: 旧格式，没有 `storage_seq`，需要回退分配
+///
+/// 注意：Legacy 变体仅用于解析已有旧格式文件，新写入的事件始终使用 Stored 格式。
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(untagged)]
 pub enum StoredEventLine {
+    /// 新格式（包含 storage_seq）
     Stored(StoredEvent),
+    /// 旧格式（没有 storage_seq）
     Legacy(StorageEvent),
 }
 
 impl StoredEventLine {
+    /// 将日志行转换为 `StoredEvent`。
+    ///
+    /// 新格式直接使用；旧格式使用 `fallback_seq` 作为 `storage_seq`。
     pub fn into_stored(self, fallback_seq: u64) -> StoredEvent {
         match self {
             Self::Stored(stored) => stored,

@@ -1,3 +1,19 @@
+//! # 能力路由器
+//!
+//! 将能力调用分派到具体的执行器（`CapabilityInvoker`）。
+//!
+//! ## 核心概念
+//!
+//! - **CapabilityInvoker**: 统一的异步能力调用接口
+//! - **CapabilityRouter**: 根据能力名称路由到对应的 invoker
+//! - **CapabilityContext**: 调用上下文（会话、工作目录、取消令牌等）
+//!
+//! ## 工具调用适配
+//!
+//! `CapabilityRouter` 同时提供 `execute_tool` 方法，将通用的能力调用
+//! 适配为 LLM 工具调用格式（`ToolExecutionResult`）。这是一种 adapter view，
+//! 不是核心能力契约本身。
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,16 +28,29 @@ use crate::{
 };
 use tokio::sync::mpsc::UnboundedSender;
 
+/// 能力调用的上下文信息。
+///
+/// 从 `ToolContext` 转换而来，携带会话标识、工作目录、取消令牌
+/// 以及 profile 上下文等调用期元数据。
 #[derive(Clone, Debug)]
 pub struct CapabilityContext {
+    /// 请求唯一标识，用于追踪单次调用链路
     pub request_id: Option<String>,
+    /// 分布式追踪标识，关联同一请求的多个子操作
     pub trace_id: Option<String>,
+    /// 所属会话标识
     pub session_id: String,
+    /// 工作目录，工具执行时的当前路径
     pub working_dir: PathBuf,
+    /// 取消令牌，用于外部中断长时间运行的能力调用
     pub cancel: CancelToken,
+    /// 当前使用的 profile 名称
     pub profile: String,
+    /// profile 上下文，包含工作目录、仓库根目录等运行时配置
     pub profile_context: Value,
+    /// 调用方自定义元数据
     pub metadata: Value,
+    /// 工具增量输出发送器，用于流式推送工具执行结果
     pub tool_output_sender: Option<UnboundedSender<ToolOutputDelta>>,
 }
 
@@ -46,22 +75,34 @@ impl CapabilityContext {
     }
 }
 
+/// 能力执行结果。
+///
+/// 封装单次能力调用的执行状态、输出和耗时，
+/// 可转换为 `ToolExecutionResult` 以适配 LLM 工具调用协议。
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CapabilityExecutionResult {
+    /// 能力名称
     pub capability_name: String,
+    /// 是否执行成功
     pub success: bool,
+    /// 执行输出（JSON 值）
     pub output: Value,
+    /// 错误信息（仅在失败时设置）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// 执行元数据，如 diff 信息、终端输出类型等
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// 执行耗时（毫秒）
     pub duration_ms: u64,
+    /// 输出是否被截断
     #[serde(default)]
     pub truncated: bool,
 }
 
 impl CapabilityExecutionResult {
+    /// 构造成功结果。
     pub fn ok(capability_name: impl Into<String>, output: Value) -> Self {
         Self {
             capability_name: capability_name.into(),
@@ -74,6 +115,7 @@ impl CapabilityExecutionResult {
         }
     }
 
+    /// 构造失败结果。
     pub fn failure(
         capability_name: impl Into<String>,
         error: impl Into<String>,
@@ -90,6 +132,9 @@ impl CapabilityExecutionResult {
         }
     }
 
+    /// 将输出格式化为可读文本。
+    ///
+    /// 字符串直接返回，其他类型序列化为 pretty JSON。
     pub fn output_text(&self) -> String {
         match &self.output {
             Value::Null => String::new(),
@@ -98,6 +143,10 @@ impl CapabilityExecutionResult {
         }
     }
 
+    /// 转换为 LLM 工具执行结果。
+    ///
+    /// 将通用的能力执行结果映射为 `ToolExecutionResult`，
+    /// 以便前端渲染工具调用卡片。
     pub fn into_tool_execution_result(self, tool_call_id: String) -> ToolExecutionResult {
         let output = self.output_text();
         ToolExecutionResult {
@@ -113,10 +162,17 @@ impl CapabilityExecutionResult {
     }
 }
 
+/// 能力调用器 trait。
+///
+/// 所有能力执行器必须实现此 trait，路由器通过它统一分派调用。
 #[async_trait]
 pub trait CapabilityInvoker: Send + Sync {
+    /// 获取能力描述符，包含名称、类型、输入 schema 等元信息。
     fn descriptor(&self) -> CapabilityDescriptor;
 
+    /// 执行能力调用。
+    ///
+    /// `payload` 为调用参数，`ctx` 携带调用上下文。
     async fn invoke(
         &self,
         payload: Value,
@@ -124,6 +180,10 @@ pub trait CapabilityInvoker: Send + Sync {
     ) -> Result<CapabilityExecutionResult>;
 }
 
+/// 能力路由器构建器。
+///
+/// 采用 builder 模式逐步注册能力执行器，
+/// 在 `build` 时校验描述符合法性并检测重复注册。
 pub struct CapabilityRouterBuilder {
     invokers: Vec<Arc<dyn CapabilityInvoker>>,
 }
@@ -135,17 +195,24 @@ impl Default for CapabilityRouterBuilder {
 }
 
 impl CapabilityRouterBuilder {
+    /// 创建空构建器。
     pub fn new() -> Self {
         Self {
             invokers: Vec::new(),
         }
     }
 
+    /// 注册一个能力执行器。
+    ///
+    /// 返回自身以支持链式调用。
     pub fn register_invoker(mut self, invoker: Arc<dyn CapabilityInvoker>) -> Self {
         self.invokers.push(invoker);
         self
     }
 
+    /// 构建路由器。
+    ///
+    /// 校验所有描述符、检测重复注册，并构建工具名称索引。
     pub fn build(self) -> Result<CapabilityRouter> {
         let mut invokers_by_name = HashMap::new();
         let mut order = Vec::new();
@@ -182,6 +249,10 @@ impl CapabilityRouterBuilder {
     }
 }
 
+/// 能力路由器。
+///
+/// 根据能力名称将调用分派到对应的执行器，
+/// 同时维护工具可调用能力的有序列表供 LLM 使用。
 pub struct CapabilityRouter {
     invokers_by_name: HashMap<String, Arc<dyn CapabilityInvoker>>,
     order: Vec<String>,
@@ -189,10 +260,12 @@ pub struct CapabilityRouter {
 }
 
 impl CapabilityRouter {
+    /// 创建路由器构建器。
     pub fn builder() -> CapabilityRouterBuilder {
         CapabilityRouterBuilder::new()
     }
 
+    /// 获取所有已注册能力的描述符列表。
     pub fn descriptors(&self) -> Vec<CapabilityDescriptor> {
         self.order
             .iter()
@@ -201,6 +274,7 @@ impl CapabilityRouter {
             .collect()
     }
 
+    /// 按名称查询单个能力的描述符。
     pub fn descriptor(&self, name: &str) -> Option<CapabilityDescriptor> {
         self.invokers_by_name
             .get(name)
@@ -223,10 +297,15 @@ impl CapabilityRouter {
             .collect()
     }
 
+    /// 获取所有工具可调用能力的名称列表。
     pub fn tool_names(&self) -> &[String] {
         &self.tool_order
     }
 
+    /// 执行工具调用。
+    ///
+    /// 根据工具名称查找对应执行器，校验能力类型后分派调用，
+    /// 并将结果转换为 `ToolExecutionResult` 返回。
     pub async fn execute_tool(
         &self,
         call: &ToolCallRequest,

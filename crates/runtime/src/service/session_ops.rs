@@ -1,3 +1,23 @@
+//! # 会话操作 (Session Operations)
+//!
+//! 实现 `RuntimeService` 的会话生命周期管理，包括：
+//! - 创建会话（生成唯一 ID、初始化事件日志）
+//! - 加载会话快照（从磁盘读取历史事件）
+//! - 列出会话（带元数据）
+//! - 删除会话/项目
+//! - 分支会话（从现有会话创建新分支）
+//! - 提交 Prompt（触发 Turn 执行）
+//!
+//! ## 会话 ID 规范化
+//!
+//! 所有公开 API 接受会话 ID 时都会通过 `normalize_session_id` 处理，
+//! 去除前后空白，避免用户输入错误导致的会话查找失败。
+//!
+//! ## 分支会话
+//!
+//! 分支会话创建一个新的子会话，继承父会话的工作目录和历史事件。
+//! 分支深度限制为 3 层，避免过深的分支树导致性能问题。
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -259,6 +279,11 @@ impl RuntimeService {
     }
 }
 
+/// 规范化会话 ID，去除首尾空白并剥离 `session-` 前缀。
+///
+/// session_id 既来自路径参数也来自前端状态；先裁掉首尾空白可以把
+/// copy/paste 带来的噪音折叠成同一个 canonical key，避免 Windows
+/// 文件名校验和 DashMap 命中结果出现分裂。
 pub(super) fn normalize_session_id(session_id: &str) -> String {
     // session_id 既来自路径参数也来自前端状态；先裁掉首尾空白可以把
     // copy/paste 带来的噪音折叠成同一个 canonical key，避免 Windows
@@ -270,6 +295,10 @@ pub(super) fn normalize_session_id(session_id: &str) -> String {
         .to_string()
 }
 
+/// 规范化工作目录路径，验证其存在且为目录。
+///
+/// 若传入相对路径，会先解析为绝对路径再 canonicalize。
+/// 拒绝文件路径（必须是目录），确保会话-项目关联的正确性。
 pub(super) fn normalize_working_dir(working_dir: PathBuf) -> ServiceResult<PathBuf> {
     let path = if working_dir.is_absolute() {
         working_dir
@@ -309,6 +338,10 @@ pub(super) fn normalize_working_dir(working_dir: PathBuf) -> ServiceResult<PathB
         .map_err(ServiceError::from)
 }
 
+/// 从工作目录路径提取显示名称。
+///
+/// 优先使用路径的最后一部分（文件夹名），
+/// 若无法提取则回退到 "默认项目"。
 pub(super) fn display_name_from_working_dir(path: &Path) -> String {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -317,6 +350,10 @@ pub(super) fn display_name_from_working_dir(path: &Path) -> String {
         .to_string()
 }
 
+/// 从磁盘加载会话的全部历史事件。
+///
+/// 通过 `spawn_blocking_service` 将文件 I/O 委托给阻塞线程池，
+/// 避免阻塞 async 运行时。
 pub(super) async fn load_events(
     session_manager: Arc<dyn astrcode_core::SessionManager>,
     session_id: &str,

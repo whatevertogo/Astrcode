@@ -1,3 +1,23 @@
+//! # 工具执行周期 (Tool Cycle)
+//!
+//! 负责执行 LLM 请求的工具调用，包括：
+//! - 策略检查（Allow / Deny / Ask）
+//! - 审批流程（需要用户确认的工具调用）
+//! - 并发执行（只读工具可并行，写操作串行）
+//! - 结果收集和事件广播
+//!
+//! ## 执行策略
+//!
+//! 工具调用分为三类：
+//! - **安全调用**: 只读或幂等操作，可并发执行
+//! - **不安全调用**: 有副作用的操作，需串行执行
+//! - **被拒绝调用**: 策略拒绝或用户拒绝，直接返回错误结果
+//!
+//! ## 并发模型
+//!
+//! 安全工具使用 `FuturesUnordered` 并发执行，上限由 `max_tool_concurrency` 控制。
+//! 不安全工具按顺序执行，避免并发写冲突。
+
 use std::time::Instant;
 
 use astrcode_core::{
@@ -12,18 +32,27 @@ use astrcode_core::AgentState;
 use astrcode_core::StorageEvent;
 use astrcode_core::{CapabilityRouter, LlmMessage, ToolCallRequest};
 
+/// 工具执行周期的最终结果。
 pub(crate) enum ToolCycleOutcome {
+    /// 所有工具调用均已完成，可以继续下一轮 LLM 调用
     Completed,
+    /// 工具执行被用户取消（CancelToken 触发）
     Interrupted,
 }
 
+/// 待执行的工具调用，记录其在原始列表中的索引和调用详情。
 struct PendingToolCall {
+    /// 在原始 tool_calls 列表中的位置
     index: usize,
+    /// 工具调用请求
     tool_call: ToolCallRequest,
 }
 
+/// 单个工具调用的执行结果及可能缓冲的事件。
 struct CallOutcome {
+    /// 工具执行结果
     result: ToolExecutionResult,
+    /// 待刷入的事件列表（用于安全工具的并发执行路径）
     buffered_events: Option<Vec<StorageEvent>>,
 }
 

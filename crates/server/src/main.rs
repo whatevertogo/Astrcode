@@ -1,11 +1,17 @@
 //! # Astrcode HTTP 服务器
 //!
-//! 本库是 Astrcode 的 HTTP/SSE 服务器入口，负责：
+//! 本 crate 是 Astrcode 的 HTTP/SSE 服务器入口，负责：
 //!
-//! - **API 路由**: 暴露 REST API 和 SSE 端点
-//! - **认证**: Token 验证和会话管理
-//! - **静态资源**: 托管前端构建产物
-//! - **优雅关闭**: 处理 Ctrl+C 和 SIGTERM 信号
+//! - **API 路由**: 暴露 REST API 和 SSE 端点，所有业务逻辑的唯一入口
+//! - **认证**: Bootstrap token 验证和 API 会话管理
+//! - **静态资源**: 托管前端构建产物（生产模式）或提供 API-only 模式（开发模式）
+//! - **优雅关闭**: 处理 Ctrl+C 和 SIGTERM 信号，确保运行时正确清理
+//!
+//! ## 架构原则
+//!
+//! - **Server Is The Truth**: 所有会话、配置、模型、事件流业务入口只通过 HTTP/SSE API
+//! - 前端和 Tauri 都不得直接调用 `runtime`；Tauri 只保留窗口控制与宿主 GUI 能力
+//! - `main.rs` 只保留启动与装配；新增逻辑优先落到 `routes/`、`mapper.rs`、`bootstrap.rs`
 
 #![cfg_attr(
     all(not(debug_assertions), target_os = "windows"),
@@ -48,12 +54,22 @@ use crate::bootstrap::{
 };
 use crate::routes::build_api_router;
 
-/// 认证请求头名称
+/// 认证请求头名称。
+///
+/// 所有 API 请求通过此请求头携带认证 token，
+/// 备选方案是通过 `token` 查询参数传递（SSE EventSource 不支持自定义请求头）。
 pub(crate) const AUTH_HEADER_NAME: &str = "x-astrcode-token";
-/// 会话游标响应头名称（用于 SSE 断点续传）
+/// 会话游标响应头名称。
+///
+/// 用于 `GET /api/sessions/:id/messages` 响应，携带快照游标，
+/// 前端可据此实现增量更新。
 pub(crate) const SESSION_CURSOR_HEADER_NAME: &str = "x-session-cursor";
 
-/// 应用状态（共享给所有路由处理器）
+/// 应用状态（共享给所有路由处理器）。
+///
+/// 通过 Axum 的 `State` 提取器注入到每个路由处理器中，
+/// 包含运行时服务、协调器、治理、认证管理器和前端构建产物。
+/// 所有字段均为 `Arc` 或可 `Clone` 类型，支持多线程共享。
 #[derive(Clone)]
 pub(crate) struct AppState {
     /// 运行时服务
@@ -70,22 +86,31 @@ pub(crate) struct AppState {
     frontend_build: Option<FrontendBuild>,
 }
 
-/// 前端构建产物
+/// 前端构建产物。
+///
+/// 包含 dist 目录路径和注入过 bootstrap token 的 index.html 内容。
+/// 如果前端未构建，此字段为 `None`，服务器将只提供 API 路由。
 #[derive(Clone)]
 pub(crate) struct FrontendBuild {
     /// dist 目录路径
     dist_dir: PathBuf,
-    /// index.html 内容
+    /// index.html 内容（已注入 bootstrap token 脚本）
     index_html: Arc<String>,
 }
 
-/// 错误响应载荷
+/// 错误响应载荷。
+///
+/// 所有 API 错误统一返回此结构，包含 `error` 字段描述错误信息。
 #[derive(Debug, Serialize)]
 struct ErrorPayload {
     error: String,
 }
 
-/// API 错误
+/// API 错误。
+///
+/// 将业务逻辑错误映射为 HTTP 状态码和错误消息。
+/// 支持 400（无效输入）、401（未认证）、404（未找到）、
+/// 409（冲突）、500（内部错误）。
 #[derive(Debug)]
 pub(crate) struct ApiError {
     status: StatusCode,

@@ -1,3 +1,31 @@
+//! # Turn 执行器 (Turn Runner)
+//!
+//! 实现一个完整 Agent Turn 的执行流程，是 `AgentLoop` 的核心实现。
+//!
+//! ## Turn 内部的 Step 循环
+//!
+//! 一个 Turn 可能包含多个 Step（LLM 调用 → 工具执行 → 再调用 LLM → ...），
+//! 直到 LLM 不再请求工具调用为止。每个 Step 的流程：
+//!
+//! ```text
+//! 1. compose prompt  →  组装系统提示词 + 历史消息
+//! 2. call LLM        →  发送到 Provider，流式接收 delta
+//! 3. process result   →  如果有 tool_calls → 执行工具 → 回到步骤 1
+//!                       如果没有 tool_calls → Turn 结束
+//! ```
+//!
+//! ## 终止条件
+//!
+//! - LLM 返回纯文本（无工具调用）
+//! - 取消信号触发
+//! - 任何步骤返回错误
+//! - Token 预算耗尽
+//!
+//! ## Token 预算
+//!
+//! 用户可以在消息中指定 Token 预算（如 `+50k`），Turn 会在接近预算时
+//! 自动停止或请求继续（auto-continue nudge）。
+
 use astrcode_core::{CancelToken, Result};
 use std::collections::HashMap;
 

@@ -1,3 +1,14 @@
+//! # FindFiles 工具
+//!
+//! 实现 `findFiles` 工具，用于基于 glob 模式查找文件。
+//!
+//! ## 设计要点
+//!
+//! - 使用 `glob` crate 进行模式匹配，支持 `**` 递归
+//! - 路径沙箱检查：glob 模式不能逃逸工作目录
+//! - 默认最多返回 200 条结果
+//! - 返回结构化 JSON 数组，便于前端渲染
+
 use crate::tools::fs_common::{check_cancel, json_output, resolve_path};
 use astrcode_core::{
     AstrError, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
@@ -10,6 +21,9 @@ use serde_json::json;
 use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
+/// FindFiles 工具实现。
+///
+/// 基于 glob 模式在工作目录内查找匹配的文件路径。
 #[derive(Default)]
 pub struct FindFilesTool;
 

@@ -1,3 +1,13 @@
+//! # 统一错误类型
+//!
+//! 定义项目级错误枚举 `AstrError`，覆盖会话、配置、工具、LLM、IO、网络等所有错误域。
+//!
+//! ## 设计要点
+//!
+//! - 基于 `thiserror` 派生 `Error`，自动实现 `Display` 和 `Error` trait
+//! - 每个变体携带足够的上下文信息，便于日志记录和错误追踪
+//! - 通过 `From` 实现自动转换，减少调用方的 `map_err` 样板代码
+
 use std::env::VarError;
 
 use thiserror::Error;

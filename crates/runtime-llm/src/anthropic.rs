@@ -1,3 +1,25 @@
+//! # Anthropic Messages API 提供者
+//!
+//! 实现了 [`LlmProvider`] trait，对接 Anthropic Claude 系列模型。
+//!
+//! ## 协议特性
+//!
+//! - **Extended Thinking**: 自动为 Claude 模型启用深度推理模式（`thinking` 配置），
+//!   预算 token 设为 `max_tokens` 的 75%，保留至少 25% 给实际输出
+//! - **Prompt Caching**: 对最后 2 条消息标记 `ephemeral` 缓存控制，复用 KV cache
+//! - **SSE 流式解析**: Anthropic 使用多行 SSE 块格式（`event: ...\ndata: {...}\n\n`），
+//!   与 OpenAI 的单行 `data: {...}` 不同，因此有独立的解析逻辑
+//! - **内容块模型**: Anthropic 响应由多种内容块组成（text / tool_use / thinking），
+//!   使用 `Vec<Value>` 灵活处理未知或新增的块类型
+//!
+//! ## 流式事件分派
+//!
+//! Anthropic SSE 事件类型：
+//! - `content_block_start`: 新内容块开始（文本或工具调用）
+//! - `content_block_delta`: 增量内容（text_delta / thinking_delta / signature_delta / input_json_delta）
+//! - `message_stop`: 流结束信号
+//! - `message_start / message_delta / content_block_stop / ping`: 元数据事件，静默忽略
+
 use std::fmt;
 
 use astrcode_core::{AstrError, CancelToken, ReasoningContent, Result};
@@ -18,6 +40,15 @@ use astrcode_core::{LlmMessage, ToolCallRequest, ToolDefinition};
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+/// Anthropic Claude API 提供者实现。
+///
+/// 封装了 HTTP 客户端、API 密钥和模型配置，提供统一的 [`LlmProvider`] 接口。
+///
+/// ## 设计要点
+///
+/// - HTTP 客户端在构造时创建，使用共享的超时策略（连接 10s / 读取 90s）
+/// - `max_tokens` 同时控制请求体的上限和 extended thinking 的预算计算
+/// - Debug 实现会隐藏 API 密钥（显示为 `<redacted>`）
 #[derive(Clone)]
 pub struct AnthropicProvider {
     client: reqwest::Client,
@@ -38,6 +69,11 @@ impl fmt::Debug for AnthropicProvider {
 }
 
 impl AnthropicProvider {
+    /// 创建新的 Anthropic 提供者实例。
+    ///
+    /// `max_tokens` 参数同时用于：
+    /// 1. 请求体中的 `max_tokens` 字段（输出上限）
+    /// 2. Extended thinking 预算计算（75% 的 max_tokens）
     pub fn with_max_tokens(api_key: String, model: String, max_tokens: u32) -> Self {
         Self {
             client: build_http_client(),
@@ -47,6 +83,12 @@ impl AnthropicProvider {
         }
     }
 
+    /// 构建 Anthropic Messages API 请求体。
+    ///
+    /// - 将 `LlmMessage` 转换为 Anthropic 格式的内容块数组
+    /// - 对最后 2 条消息启用 prompt caching（KV cache 复用）
+    /// - 如果启用了工具，附加工具定义
+    /// - 根据模型名称和 max_tokens 自动配置 extended thinking
     fn build_request(
         &self,
         messages: &[LlmMessage],
@@ -204,6 +246,12 @@ impl LlmProvider for AnthropicProvider {
     }
 }
 
+/// 将 `LlmMessage` 转换为 Anthropic 格式的消息结构。
+///
+/// Anthropic 使用内容块数组（而非纯文本），因此需要按消息类型分派：
+/// - User 消息 → 单个 `text` 内容块
+/// - Assistant 消息 → 可能包含 `thinking`、`text`、`tool_use` 多个块
+/// - Tool 消息 → 单个 `tool_result` 内容块
 fn to_anthropic_messages(messages: &[LlmMessage]) -> Vec<AnthropicMessage> {
     messages
         .iter()
@@ -284,6 +332,7 @@ fn enable_message_caching(messages: &mut [AnthropicMessage], cache_depth: usize)
     }
 }
 
+/// 将 `ToolDefinition` 转换为 Anthropic 工具定义格式。
 fn to_anthropic_tools(tools: &[ToolDefinition]) -> Vec<AnthropicTool> {
     tools
         .iter()
@@ -295,6 +344,13 @@ fn to_anthropic_tools(tools: &[ToolDefinition]) -> Vec<AnthropicTool> {
         .collect()
 }
 
+/// 将 Anthropic 非流式响应转换为统一的 `LlmOutput`。
+///
+/// 遍历内容块数组，根据块类型分派：
+/// - `text`: 拼接到输出内容
+/// - `tool_use`: 提取 id、name、input 构造工具调用请求
+/// - `thinking`: 提取推理内容和签名
+/// - 未知类型：记录警告并跳过
 fn response_to_output(response: AnthropicResponse) -> LlmOutput {
     let mut output = LlmOutput::default();
     let _ = response.stop_reason;
@@ -351,10 +407,15 @@ fn response_to_output(response: AnthropicResponse) -> LlmOutput {
     output
 }
 
+/// 从 JSON Value 中提取内容块的类型字段。
 fn block_type(value: &Value) -> Option<&str> {
     value.get("type").and_then(Value::as_str)
 }
 
+/// 解析单个 Anthropic SSE 块。
+///
+/// Anthropic SSE 块由多行组成（`event: ...\ndata: {...}\n\n`），
+/// 本函数提取事件类型和 JSON payload，支持事件类型回退到 payload 中的 `type` 字段。
 fn parse_sse_block(block: &str) -> Result<Option<(String, Value)>> {
     let trimmed = block.trim();
     if trimmed.is_empty() {
@@ -391,10 +452,17 @@ fn parse_sse_block(block: &str) -> Result<Option<(String, Value)>> {
     Ok(Some((event_type, payload)))
 }
 
+/// 从 `content_block_start` 事件 payload 中提取内容块。
+///
+/// Anthropic 在 `content_block_start` 事件中将块数据放在 `content_block` 字段，
+/// 但某些事件可能直接放在根级别，因此有回退逻辑。
 fn extract_start_block(payload: &Value) -> &Value {
     payload.get("content_block").unwrap_or(payload)
 }
 
+/// 从 `content_block_delta` 事件 payload 中提取增量数据。
+///
+/// Anthropic 在 `content_block_delta` 事件中将增量数据放在 `delta` 字段。
 fn extract_delta_block(payload: &Value) -> &Value {
     payload.get("delta").unwrap_or(payload)
 }
@@ -580,6 +648,9 @@ fn flush_sse_buffer(
 // ---------------------------------------------------------------------------
 
 /// Anthropic Messages API 请求体。
+///
+/// 注意：`stream` 字段为 `Option<bool>`，`None` 时表示非流式模式，
+/// 这样可以在序列化时省略该字段（Anthropic API 默认非流式）。
 #[derive(Debug, Serialize)]
 struct AnthropicRequest {
     model: String,
@@ -599,6 +670,11 @@ struct AnthropicRequest {
 ///
 /// `budget_tokens` 指定推理过程可使用的最大 token 数，
 /// 不计入最终输出的 `max_tokens` 限制。
+///
+/// ## 设计动机
+///
+/// Extended thinking 让 Claude 在输出前进行深度推理，提升复杂任务的回答质量。
+/// 预算设为 75% 是为了保留至少 25% 的 token 给实际输出内容。
 #[derive(Debug, Serialize)]
 struct AnthropicThinking {
     #[serde(rename = "type")]
@@ -607,6 +683,9 @@ struct AnthropicThinking {
 }
 
 /// Anthropic 消息（包含角色和内容块数组）。
+///
+/// Anthropic 的消息结构与 OpenAI 不同：`content` 是内容块数组而非纯文本，
+/// 这使得单条消息可以混合文本、推理、工具调用等多种内容类型。
 #[derive(Debug, Serialize)]
 struct AnthropicMessage {
     role: String,
@@ -617,6 +696,11 @@ struct AnthropicMessage {
 ///
 /// 使用 `#[serde(tag = "type")]` 实现内部标记序列化，
 /// 每个变体对应一个 `type` 值（`text`、`thinking`、`tool_use`、`tool_result`）。
+///
+/// ## 缓存控制
+///
+/// 每个块可选携带 `cache_control` 字段，标记为 `ephemeral` 类型时，
+/// Anthropic 后端会将该块作为缓存前缀的一部分，用于 KV cache 复用。
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AnthropicContentBlock {
@@ -650,6 +734,7 @@ enum AnthropicContentBlock {
 /// Anthropic prompt caching 控制标记。
 ///
 /// `type: "ephemeral"` 告诉 Anthropic 后端该块可作为缓存前缀的一部分。
+/// 缓存是临时的（ephemeral），不保证长期有效，但在短时间内重复请求可以显著减少延迟。
 #[derive(Debug, Clone, Serialize)]
 struct AnthropicCacheControl {
     #[serde(rename = "type")]
@@ -667,6 +752,9 @@ impl AnthropicCacheControl {
 
 impl AnthropicContentBlock {
     /// 为内容块设置或清除 cache_control 标记。
+    ///
+    /// 通过模式匹配更新所有变体的 `cache_control` 字段，
+    /// 保持枚举变体间的修改逻辑集中。
     fn set_cache_control(&mut self, enabled: bool) {
         let control = if enabled {
             Some(AnthropicCacheControl::ephemeral())
@@ -683,6 +771,9 @@ impl AnthropicContentBlock {
 }
 
 /// Anthropic 工具定义。
+///
+/// 与 OpenAI 不同，Anthropic 工具定义不需要 `type` 字段，
+/// 直接使用 `name`、`description`、`input_schema` 三个字段。
 #[derive(Debug, Serialize)]
 struct AnthropicTool {
     name: String,
@@ -694,7 +785,7 @@ struct AnthropicTool {
 ///
 /// NOTE: `content` 使用 `Vec<Value>` 而非强类型结构体，
 /// 因为 Anthropic 响应可能包含多种内容块类型（text / tool_use / thinking），
-/// 使用 `Value` 可以灵活处理未知或新增的块类型。
+/// 使用 `Value` 可以灵活处理未知或新增的块类型，避免每次 API 更新都要修改 DTO。
 #[derive(Debug, serde::Deserialize)]
 struct AnthropicResponse {
     content: Vec<Value>,
@@ -704,6 +795,9 @@ struct AnthropicResponse {
 }
 
 /// Anthropic 响应中的 token 用量统计。
+///
+/// 两个字段均为 `Option` 且带 `#[serde(default)]`，
+/// 因为某些旧版 API 或特殊响应可能不包含用量信息。
 #[derive(Debug, serde::Deserialize)]
 struct AnthropicUsage {
     #[serde(default)]

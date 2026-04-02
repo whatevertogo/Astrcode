@@ -1,3 +1,25 @@
+//! # 上下文压缩 (Context Compaction)
+//!
+//! 当会话消息接近 LLM 上下文窗口限制时，自动压缩历史消息以释放空间。
+//!
+//! ## 压缩策略
+//!
+//! 1. 将消息分为前缀（可压缩）和后缀（保留最近 Turn）
+//! 2. 调用 LLM 对前缀生成摘要
+//! 3. 用摘要替换前缀，保留后缀不变
+//!
+//! ## 重试机制
+//!
+//! 如果压缩请求本身超出上下文窗口，会逐步丢弃最旧的 Turn 并重试，
+//! 最多重试 3 次。这是为了处理极端情况：即使前缀也可能超出窗口。
+//!
+//! ## 已知限制（TODO）
+//!
+//! - 当前仅支持文本消息，多模态消息需要额外处理
+//! - 仅支持后缀保留（suffix-preserving），不支持 Claude 风格的 "from" 方向部分压缩
+//! - 压缩后不恢复 prompt 附件（如文件内容），需要后续优化
+//! - 当前总是重新摘要完整前缀，未来可升级为增量重压缩（incremental recompact）
+
 use astrcode_core::{AstrError, CancelToken, LlmMessage, Result, UserMessageOrigin};
 use chrono::{DateTime, Utc};
 

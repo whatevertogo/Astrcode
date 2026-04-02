@@ -1,3 +1,35 @@
+//! # 会话轮次文件锁
+//!
+//! 通过操作系统级文件锁（`fs2::FileExt`）实现会话写入互斥，防止多进程
+//! 同时向同一会话的 JSONL 文件追加事件，保证 `storage_seq` 的单调性和独占分配。
+//!
+//! ## 锁机制
+//!
+//! - **锁文件**：`active-turn.lock` — 通过 `try_lock_exclusive()` 获取独占锁
+//! - **元数据文件**：`active-turn.json` — 存储当前持有者信息（`turn_id`、`owner_pid`、`acquired_at`）
+//! - **锁与元数据分离**：锁文件保证互斥，元数据文件供竞争者读取当前状态
+//!
+//! ## 获取流程
+//!
+//! 1. 打开锁文件并尝试 `try_lock_exclusive()`
+//! 2. 如果成功：写入元数据文件，返回 `Acquired(lease)`
+//! 3. 如果锁被占用（contended）：读取元数据文件，返回 `Busy(payload)`
+//! 4. 如果元数据文件尚不可读（持有者还未写入）：短暂重试（8 次 × 5ms），
+//!    重试期间如果锁已释放则直接接管
+//!
+//! ## 释放流程
+//!
+//! `FileSessionTurnLease` 的 `Drop` 实现中：
+//! 1. 释放文件锁（`file.unlock()`）
+//! 2. 删除元数据文件（忽略 NotFound 错误，因为可能已被新持有者覆盖）
+//!
+//! ## 竞态处理
+//!
+//! 锁状态检查和元数据读取不是原子操作，存在以下竞态：
+//! - 读取元数据时锁仍被占用 → 返回 Busy
+//! - 读取元数据后锁已释放 → 重试获取，成功则接管
+//! - 元数据文件不存在（持有者还未写入） → 短暂重试，超时后如果锁仍占用则返回 Busy
+
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -12,17 +44,30 @@ use crate::{AstrError, Result};
 
 use super::paths::{session_turn_lock_path, session_turn_metadata_path};
 
+/// 活跃轮次锁的元数据载荷。
+///
+/// 序列化到 `active-turn.json` 文件中，供竞争者读取以判断当前会话状态。
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ActiveTurnLockPayload {
+    /// 当前轮次 ID。
     turn_id: String,
+    /// 持有锁的进程 ID。
     owner_pid: u32,
+    /// 获取锁的时间戳。
     acquired_at: chrono::DateTime<Utc>,
 }
 
+/// 读取元数据文件的重试次数。
 const LOCK_PAYLOAD_RETRY_ATTEMPTS: usize = 8;
+/// 每次重试之间的等待时间。
 const LOCK_PAYLOAD_RETRY_DELAY: Duration = Duration::from_millis(5);
 
+/// 尝试获取会话轮次锁。
+///
+/// 如果锁空闲则获取并返回 `Acquired(lease)`；
+/// 如果锁被占用则读取元数据并返回 `Busy(payload)`；
+/// 如果元数据暂不可读则短暂重试，重试期间锁释放则直接接管。
 pub(super) fn try_acquire_session_turn(
     session_id: &str,
     turn_id: &str,
@@ -54,6 +99,10 @@ pub(super) fn try_acquire_session_turn(
     }
 }
 
+/// 获取锁成功后写入元数据并返回租约。
+///
+/// 将当前进程信息和时间戳写入 `active-turn.json`，
+/// 供后续竞争者读取以判断会话状态。
 fn acquire_turn_lease(
     file: File,
     path: PathBuf,
@@ -75,6 +124,10 @@ fn acquire_turn_lease(
     )))
 }
 
+/// 锁被占用时的处理逻辑。
+///
+/// 先尝试读取元数据文件获取当前持有者信息，如果元数据暂不可读（持有者
+/// 还未刷盘），则短暂重试。重试期间如果锁已释放则直接接管。
 fn read_busy_payload_or_retry(
     file: File,
     path: PathBuf,
@@ -146,6 +199,7 @@ fn read_busy_payload_or_retry(
     }))
 }
 
+/// 将锁元数据转换为 `SessionTurnBusy` 响应。
 fn session_turn_busy(payload: ActiveTurnLockPayload) -> SessionTurnBusy {
     SessionTurnBusy {
         turn_id: payload.turn_id,
@@ -154,11 +208,19 @@ fn session_turn_busy(payload: ActiveTurnLockPayload) -> SessionTurnBusy {
     }
 }
 
+/// 判断 IO 错误是否为锁竞争错误。
+///
+/// 不同平台的锁竞争错误码可能不同，此函数通过比较 `kind` 和 `raw_os_error`
+/// 来跨平台正确识别竞争状态。
 fn is_lock_contended(error: &std::io::Error) -> bool {
     error.kind() == fs2::lock_contended_error().kind()
         || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
 }
 
+/// 判断是否应该重试读取忙载荷。
+///
+/// 当元数据文件尚未创建（NotFound）或解析失败（Parse）时，
+/// 说明持有者可能还在写入过程中，可以短暂重试。
 fn should_retry_busy_payload_error(error: &astrcode_core::StoreError) -> bool {
     match error {
         astrcode_core::StoreError::Io { source, .. } => {

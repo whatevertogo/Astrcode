@@ -1,3 +1,29 @@
+//! # Shell 工具
+//!
+//! 实现 `shell` 内置工具，用于执行一次性非交互式 shell 命令。
+//!
+//! ## 架构设计
+//!
+//! Shell 工具是工具系统中最复杂的组件之一，需要处理：
+//! - **流式输出**: stdout/stderr 通过独立线程实时读取并增量广播到前端
+//! - **UTF-8 安全**: 跨读取边界的碎片 UTF-8 序列必须正确拼接，不能截断多字节字符
+//! - **输出截断**: 防止超长输出导致内存溢出或前端渲染卡顿
+//! - **取消支持**: 用户取消时立即 kill 子进程并清理资源
+//! - **跨平台**: Windows 默认 pwsh/powershell，Unix 默认 /bin/sh
+//!
+//! ## 流式读取机制
+//!
+//! 子进程的 stdout/stderr 各由一个独立线程读取（`spawn_stream_reader`），
+//! 按行分割并通过 `ctx.emit_stdout`/`ctx.emit_stderr` 增量广播。
+//! 前端基于 `metadata.display.kind = "terminal"` 渲染终端视图，
+//! 断线重连后通过 replay 恢复完整输出。
+//!
+//! ## 为什么不用异步 I/O
+//!
+//! `std::process::Command` 的 stdout/stderr 是同步 `Read` trait，
+//! 无法直接 await。使用 `thread::spawn` 将阻塞读取移到后台线程，
+//! 主线程轮询子进程退出状态，两者通过 `JoinHandle` 同步。
+
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -14,9 +40,17 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
+/// Shell 工具实现。
+///
+/// 执行一条非交互式 shell 命令，返回 stdout/stderr/exitCode。
+/// 支持流式输出、取消、跨平台 shell 自动检测。
 #[derive(Default)]
 pub struct ShellTool;
 
+/// Shell 工具的反序列化参数。
+///
+/// `command` 是必填项；`cwd` 和 `shell` 可选，
+/// 未指定时分别使用上下文工作目录和平台默认 shell。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ShellArgs {
@@ -27,11 +61,23 @@ struct ShellArgs {
     shell: Option<String>,
 }
 
+/// 平台相关的 shell 命令规范。
+///
+/// 将用户输入的 command 字符串转换为具体的可执行程序 + 参数列表，
+/// 屏蔽 Windows (PowerShell) 和 Unix (sh) 的差异。
 struct CommandSpec {
     program: String,
     args: Vec<String>,
 }
 
+/// 流输出捕获器，负责增量收集、截断控制和截断通知。
+///
+/// ## 为什么需要独立的 StreamCapture
+///
+/// 子进程可能产生任意大小的输出，不能全部缓存在内存中。
+/// `StreamCapture` 在流式读取的同时维护累计文本和字节计数，
+/// 达到 `limit` 后停止追加内容但继续计数，
+/// 最终在输出末尾附加截断通知，让前端和用户知道有内容被省略。
 struct StreamCapture {
     text: String,
     bytes_read: usize,
@@ -41,6 +87,9 @@ struct StreamCapture {
 }
 
 impl StreamCapture {
+    /// 创建新的流捕获器。
+    ///
+    /// `limit` 是单个流（stdout 或 stderr）的最大字符数预算。
     fn new(stream: ToolOutputStream, limit: usize) -> Self {
         Self {
             text: String::new(),
@@ -51,6 +100,14 @@ impl StreamCapture {
         }
     }
 
+    /// 将新数据块追加到捕获缓冲区，返回可发送给前端的可见文本。
+    ///
+    /// ## 截断策略
+    ///
+    /// 当累计文本达到 `limit` 时，后续内容不再追加到 `text`，
+    /// 但 `bytes_read` 继续计数以反映真实输出量。
+    /// 首次触发截断时会在末尾附加一条截断通知（如 `[stdout truncated after N bytes]`），
+    /// 后续调用返回空字符串，避免重复通知。
     fn push_chunk(&mut self, chunk: &str) -> String {
         self.bytes_read = self.bytes_read.saturating_add(chunk.len());
         if self.truncated || chunk.is_empty() {
@@ -77,6 +134,10 @@ impl StreamCapture {
         emitted
     }
 
+    /// 生成截断通知文本并追加到内部缓冲区。
+    ///
+    /// 通知格式如 `\n... [stdout truncated after 65536 bytes; later output omitted]\n`，
+    /// 让前端和用户明确知道输出被截断以及截断前的字节量。
     fn append_truncation_notice(&mut self) -> String {
         let label = match self.stream {
             ToolOutputStream::Stdout => "stdout",
@@ -91,6 +152,26 @@ impl StreamCapture {
     }
 }
 
+/// 在后台线程中从 `Read` 流读取数据并增量广播。
+///
+/// ## 为什么需要独立线程
+///
+/// `std::process::ChildStdout` 实现的是同步 `Read` trait，
+/// 无法在 async 上下文中直接 `.await`。此函数将阻塞读取
+/// 移到 `thread::spawn` 创建的后台线程，主线程通过
+/// `JoinHandle` 等待读取完成并获取最终捕获结果。
+///
+/// ## UTF-8 碎片处理
+///
+/// 每次 `read()` 可能返回不完整的 UTF-8 序列（如一个 3 字节中文字符
+/// 被拆到两次 read 之间）。`drain_decoded_utf8` 负责将完整字符
+/// 解码出来，不完整的字节保留到下次 read 再尝试。
+///
+/// ## 行缓冲与强制刷新
+///
+/// 默认按 `\n` 分割后逐行广播，保证前端终端视图的渲染粒度。
+/// 当 pending 缓冲区超过 4096 字节（超长无换行输出）时强制刷新，
+/// 避免单个超长行导致整个输出被缓存直到进程退出。
 fn spawn_stream_reader<R: Read + Send + 'static>(
     reader: R,
     stream: ToolOutputStream,
@@ -109,6 +190,9 @@ fn spawn_stream_reader<R: Read + Send + 'static>(
         loop {
             let read = reader.read(&mut chunk)?;
             if read == 0 {
+                // EOF: 将剩余的不完整 UTF-8 字节做 lossy 刷新，
+                // 保留任何不完整的尾部 UTF-8 字节而不是静默丢弃，
+                // 确保终端转录的完整性。
                 if !pending_bytes.is_empty() {
                     // A final lossy flush at EOF preserves any incomplete trailing UTF-8 bytes
                     // instead of silently dropping them from the terminal transcript.
@@ -140,7 +224,9 @@ fn spawn_stream_reader<R: Read + Send + 'static>(
             }
 
             pending_bytes.extend_from_slice(&chunk[..read]);
+            // 将已完成的 UTF-8 字符从 pending_bytes 中解码出来
             pending.push_str(&drain_decoded_utf8(&mut pending_bytes));
+            // 按行分割：每遇到一个换行符就提取并广播
             while let Some(newline_index) = pending.find('\n') {
                 let next_chunk = pending[..=newline_index].to_string();
                 pending.replace_range(..=newline_index, "");
@@ -160,8 +246,8 @@ fn spawn_stream_reader<R: Read + Send + 'static>(
             }
 
             if pending.len() >= 4096 {
-                // Extremely long lines should still stream progressively; otherwise a single
-                // no-newline command can hold the entire transcript until process exit.
+                // 超长无换行行：仍然需要渐进式流式输出，
+                // 否则单个无换行命令可以hold住整个转录直到进程退出。
                 let visible = capture.push_chunk(&pending);
                 pending.clear();
                 if visible.is_empty() {
@@ -183,6 +269,18 @@ fn spawn_stream_reader<R: Read + Send + 'static>(
     })
 }
 
+/// 从待解码字节缓冲区中提取完整的 UTF-8 字符。
+///
+/// ## UTF-8 增量解码策略
+///
+/// 进程输出可能在一个多字节字符的中间被截断（如 3 字节的中文字符
+/// 只读到了前 2 字节）。此函数：
+/// 1. 尝试将整个 `pending_bytes` 解码为 UTF-8
+/// 2. 如果成功，清空缓冲区并返回完整字符串
+/// 3. 如果失败但 `error_len` 为 None，说明剩余字节是不完整序列，
+///    保留到下次 read 再尝试（可能下一个 read 会补全）
+/// 4. 如果 `error_len` 有值，说明是无效字节序列，
+///    用 lossy 转换替换并继续
 fn drain_decoded_utf8(pending_bytes: &mut Vec<u8>) -> String {
     let mut decoded = String::new();
 
@@ -218,6 +316,12 @@ fn drain_decoded_utf8(pending_bytes: &mut Vec<u8>) -> String {
     decoded
 }
 
+/// 将 stdout 和 stderr 组合为最终输出文本。
+///
+/// 根据两个流的空/非空状态选择展示策略：
+/// - 都空：返回空字符串
+/// - 只有一个非空：直接返回该流内容
+/// - 都非空：用 `[stdout]`/`[stderr]` 标签分隔
 fn render_shell_output(stdout: &str, stderr: &str) -> String {
     match (stdout.is_empty(), stderr.is_empty()) {
         (true, true) => String::new(),
@@ -405,6 +509,15 @@ impl Tool for ShellTool {
     }
 }
 
+/// 根据平台和用户偏好构建 shell 命令规范。
+///
+/// ## 平台差异
+///
+/// - **Windows**: 优先使用 PowerShell (`pwsh` 或 `powershell`)，
+///   通过 `-NoProfile -Command` 执行，避免加载用户 profile 拖慢速度
+/// - **Unix**: 使用 `/bin/sh -lc` 执行命令
+///
+/// 用户可以通过 `shell` 参数覆盖默认 shell。
 fn command_spec(shell: Option<&str>, command: &str) -> CommandSpec {
     #[cfg(windows)]
     {
@@ -432,6 +545,11 @@ fn command_spec(shell: Option<&str>, command: &str) -> CommandSpec {
     }
 }
 
+/// 检测 Windows 平台默认 shell。
+///
+/// 优先使用 `pwsh`（PowerShell Core），如果不可用则回退到
+/// `powershell`（Windows PowerShell）。使用 `OnceLock` 确保
+/// 只检测一次，避免每次执行命令都重复探测。
 #[cfg(windows)]
 fn default_windows_shell() -> &'static str {
     use std::sync::OnceLock;

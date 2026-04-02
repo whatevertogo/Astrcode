@@ -1,3 +1,8 @@
+//! 环境贡献者。
+//!
+//! 生成包含工作目录、操作系统、日期和可用工具列表的环境信息 block。
+//! 使用模板渲染，在 composer 渲染阶段填充变量。
+
 use async_trait::async_trait;
 
 use crate::{BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor};

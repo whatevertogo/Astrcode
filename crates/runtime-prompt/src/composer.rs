@@ -1,3 +1,29 @@
+//! Prompt 组装引擎（PromptComposer）。
+//!
+//! 本模块是整个 prompt 组装管线的核心编排器。
+//!
+//! # 工作流程
+//!
+//! 1. **收集阶段**：依次调用每个 [`PromptContributor::contribute`] 收集 [`PromptContribution`]
+//! 2. **去重阶段**：过滤重复的 block id，保留首次出现的贡献
+//! 3. **条件过滤**：根据 [`BlockCondition`] 排除不满足条件的 block
+//! 4. **依赖解析**：采用波前式拓扑排序处理 block 间的依赖关系
+//! 5. **渲染阶段**：将模板中的 `{{variable}}` 占位符替换为实际值
+//! 6. **验证阶段**：检查渲染结果的有效性（非空标题、非空内容等）
+//! 7. **输出阶段**：根据 [`RenderTarget`] 将 block 分配到 system prompt 或对话消息
+//!
+//! # 缓存策略
+//!
+//! Contributor 的收集结果会被缓存，缓存键由 `contributor_id + cache_version + fingerprint` 组成。
+//! 当上下文未变化且 TTL 未过期时，直接复用缓存结果，避免重复的文件 I/O。
+//!
+//! # 依赖解析算法
+//!
+//! 采用波前式拓扑排序（wave-based topological sort）：
+//! 每轮迭代处理所有依赖已就绪的候选块，未就绪的推迟到下一轮。
+//! 如果一轮迭代中没有任何进展，说明存在循环依赖。
+//! 这种方式比标准 Kahn 算法更简单，且能自然地产生诊断信息。
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -16,18 +42,30 @@ use super::{
     TemplateRenderError, ValidationPolicy,
 };
 
+/// 验证级别。
+///
+/// 控制当 block 渲染或验证失败时的行为。
+/// 从宽松到严格依次为：关闭 → 警告 → 错误。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ValidationLevel {
+    /// 关闭验证，失败时静默跳过。
     Off,
+    /// 记录警告但继续构建（默认）。
     #[default]
     Warn,
+    /// 抛出错误，终止构建。
     Strict,
 }
 
+/// PromptComposer 的配置选项。
 #[derive(Debug, Clone)]
 pub struct PromptComposerOptions {
+    /// 是否启用诊断信息收集。
     pub enable_diagnostics: bool,
+    /// 验证级别，控制失败时的行为。
     pub validation_level: ValidationLevel,
+    /// 贡献者缓存的 TTL（Time-To-Live）。
+    /// 设为 0 表示永不过期（依赖指纹检测失效）。
     pub cache_ttl: Duration,
 }
 
@@ -41,18 +79,38 @@ impl Default for PromptComposerOptions {
     }
 }
 
+/// Prompt 组装引擎。
+///
+/// 负责收集所有 contributor 的贡献，进行去重、条件过滤、依赖解析、
+/// 模板渲染和验证，最终产出 [`PromptBuildOutput`]。
+///
+/// # 使用方式
+///
+/// ```ignore
+/// let composer = PromptComposer::with_defaults();
+/// let output = composer.build(&ctx).await?;
+/// let system_prompt = output.plan.render_system();
+/// ```
+///
+/// 也可以通过 `with_contributor()` 链式添加自定义贡献者。
 pub struct PromptComposer {
     contributors: Vec<Arc<dyn PromptContributor>>,
     options: PromptComposerOptions,
     contributor_cache: Mutex<HashMap<String, ContributorCacheEntry>>,
 }
 
+/// Prompt 构建的输出结果。
+///
+/// 包含组装好的 [`PromptPlan`] 和构建过程中收集的 [`PromptDiagnostics`]。
 #[derive(Debug, Clone)]
 pub struct PromptBuildOutput {
     pub plan: PromptPlan,
     pub diagnostics: PromptDiagnostics,
 }
 
+/// 贡献者缓存条目。
+///
+/// 当 contributor 的指纹未变化且 TTL 未过期时，复用此缓存条目。
 #[derive(Debug, Clone)]
 struct ContributorCacheEntry {
     fingerprint: String,
@@ -60,6 +118,9 @@ struct ContributorCacheEntry {
     contribution: PromptContribution,
 }
 
+/// 候选 block（尚未经过条件过滤和渲染）。
+///
+/// 由 contributor 产出的 [`BlockSpec`] 加上来源信息和插入顺序组成。
 #[derive(Debug, Clone)]
 struct CandidateBlock {
     spec: BlockSpec,
@@ -68,16 +129,23 @@ struct CandidateBlock {
     insertion_order: usize,
 }
 
+/// Block 在依赖解析后的最终状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BlockStatus {
+    /// 成功渲染。
     Success,
+    /// 因条件不满足被跳过。
     SkippedCondition,
+    /// 验证失败（如空内容、空标题）。
     FailedValidation,
+    /// 模板渲染失败。
     FailedRender,
+    /// 依赖项未就绪。
     MissingDependency,
 }
 
 impl PromptComposer {
+    /// 创建空的 composer，不注册任何贡献者。
     pub fn new(options: PromptComposerOptions) -> Self {
         Self {
             contributors: Vec::new(),
@@ -86,10 +154,15 @@ impl PromptComposer {
         }
     }
 
+    /// 使用默认选项和内置贡献者链创建 composer。
+    ///
+    /// 内置贡献者包括：Identity、Environment、AgentsMd、CapabilityPrompt、
+    /// SkillSummary、WorkflowExamples。
     pub fn with_defaults() -> Self {
         Self::with_options(PromptComposerOptions::default())
     }
 
+    /// 使用指定选项和内置贡献者链创建 composer。
     pub fn with_options(options: PromptComposerOptions) -> Self {
         Self::new(options)
             .with_contributor(Arc::new(IdentityContributor))
@@ -108,6 +181,18 @@ impl PromptComposer {
         self
     }
 
+    /// 执行完整的 prompt 组装管线。
+    ///
+    /// 返回 [`PromptBuildOutput`] 包含组装好的计划和诊断信息。
+    ///
+    /// # 管线步骤
+    ///
+    /// 1. 收集所有 contributor 的贡献（带缓存）
+    /// 2. 合并额外工具定义
+    /// 3. 去重 block id
+    /// 4. 条件过滤 + 波前式拓扑排序
+    /// 5. 模板渲染 + 验证
+    /// 6. 按 render_target 分配到 system/append/prepend
     pub async fn build(&self, ctx: &PromptContext) -> Result<PromptBuildOutput> {
         let mut diagnostics = PromptDiagnostics::default();
         let mut plan = PromptPlan::default();
@@ -138,6 +223,10 @@ impl PromptComposer {
         Ok(PromptBuildOutput { plan, diagnostics })
     }
 
+    /// 收集单个 contributor 的贡献，带缓存逻辑。
+    ///
+    /// 先检查缓存（指纹匹配 + TTL 未过期），命中则直接返回；
+    /// 否则调用 `contribute()` 并存储结果到缓存。
     async fn collect_contribution(
         &self,
         contributor: &dyn PromptContributor,

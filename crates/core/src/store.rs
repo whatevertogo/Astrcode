@@ -1,21 +1,43 @@
+//! # 持久化接口
+//!
+//! 定义了会话事件日志写入和会话管理的抽象接口。
+//!
+//! ## 核心契约
+//!
+//! - [`EventLogWriter`][]: append-only 事件日志写入器，由存储层实现
+//! - [`SessionManager`][]: 会话生命周期管理（创建、打开、回放、删除）
+//! - [`SessionTurnLease`]: 跨进程 session turn 执行租约（RAII 语义）
+//!
+//! ## 线程安全
+//!
+//! 所有 trait 都要求 `Send + Sync`，因为它们通过 `Arc<dyn Trait>`
+//! 在异步任务间共享，并传入 `spawn_blocking` 闭包中执行文件 I/O。
+
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
 
 use crate::{DeleteProjectResult, SessionMeta, StorageEvent, StoredEvent};
 
+/// 存储层错误类型。
+///
+/// 涵盖会话未找到、ID 无效、IO 错误和 JSON 解析错误。
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    /// 会话不存在
     #[error("session not found: {0}")]
     SessionNotFound(String),
+    /// 会话 ID 格式无效
     #[error("invalid session id: {0}")]
     InvalidSessionId(String),
+    /// IO 错误
     #[error("IO error: {context}")]
     Io {
         context: String,
         #[source]
         source: std::io::Error,
     },
+    /// JSON 解析错误
     #[error("parse error: {context}")]
     Parse {
         context: String,
@@ -44,13 +66,13 @@ impl From<serde_json::Error> for StoreError {
     }
 }
 
-/// Streaming writer handle for append-only session event logs.
+/// 追加写入型会话事件日志句柄。
 ///
 /// `Send + Sync` 约束是必须的：实现通过 `Arc<dyn EventLogWriter>` 在异步任务间
 /// 共享，并传入 `spawn_blocking` 闭包中执行文件 I/O。缺少这些约束会导致
 /// 编译错误，因为跨线程传递需要 `Send`，Arc 共享引用需要 `Sync`。
 pub trait EventLogWriter: Send + Sync {
-    /// Appends one storage event and returns the fully assigned stored record.
+    /// 追加一条存储事件并返回已分配序号的完整记录。
     fn append(&mut self, event: &StorageEvent) -> StoreResult<StoredEvent>;
 }
 

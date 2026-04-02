@@ -7,6 +7,11 @@
 //! - **审批流程**: 决定某个能力调用是否需要用户审批
 //! - **内容审查**: 检查/修改 LLM 请求和工具调用
 //! - **模型/工具护栏**: 为运行时提供统一的审批与请求检查入口
+//!
+//! ## 裁决流程
+//!
+//! 每次能力调用都会经过 `check_capability_call`，返回三种裁决之一：
+//! `Allow`（直接执行）、`Deny`（拒绝并说明原因）、`Ask`（等待用户审批）。
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -14,11 +19,8 @@ use serde_json::Value;
 
 use crate::{CapabilityDescriptor, LlmMessage, Result, ToolDefinition};
 
-/// Turn 范围的模型请求
-///
-/// 策略引擎可以检查或重写此请求，用于内容审查、敏感信息过滤等。
-#[derive(Debug, Clone)]
 /// Turn 范围的模型请求，策略层可在执行前检查或重写。
+#[derive(Debug, Clone)]
 pub struct ModelRequest {
     /// 消息历史
     pub messages: Vec<LlmMessage>,
@@ -203,23 +205,26 @@ impl<T> PolicyVerdict<T> {
     }
 }
 
-/// 策略引擎 trait
+/// 策略引擎 trait。
 ///
-/// 定义了策略引擎必须实现的接口。
+/// 定义了策略引擎必须实现的两个核心检查点：
+/// 1. `check_model_request`: 在发送 LLM 请求前，可检查/重写请求内容
+/// 2. `check_capability_call`: 在执行能力调用前，决定允许/拒绝/需审批
 #[async_trait]
 pub trait PolicyEngine: Send + Sync {
-    /// 检查/重写模型请求
+    /// 检查/重写模型请求。
     ///
-    /// 策略引擎可以修改请求内容，用于内容审查等。
+    /// 策略实现可以修改消息、工具列表或系统提示词，
+    /// 用于内容审查、敏感信息过滤等场景。
     async fn check_model_request(
         &self,
         request: ModelRequest,
         ctx: &PolicyContext,
     ) -> Result<ModelRequest>;
 
-    /// 检查能力调用是否需要审批
+    /// 检查能力调用是否需要审批。
     ///
-    /// 返回允许、拒绝或需用户审批。
+    /// 返回 `Allow`（直接执行）、`Deny`（拒绝）或 `Ask`（等待用户审批）。
     async fn check_capability_call(
         &self,
         call: CapabilityCall,
@@ -227,9 +232,9 @@ pub trait PolicyEngine: Send + Sync {
     ) -> Result<PolicyVerdict<CapabilityCall>>;
 }
 
-/// 允许所有操作的策略引擎
+/// 允许所有操作的策略引擎。
 ///
-/// 用于测试和不策略的场景。
+/// 用于测试和不启用策略的场景，所有请求和调用都直接放行。
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AllowAllPolicyEngine;
 

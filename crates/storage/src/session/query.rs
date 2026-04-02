@@ -1,3 +1,24 @@
+//! # 会话查询与管理
+//!
+//! 提供会话列表、元数据提取、删除、以及尾部值扫描等功能。
+//! 所有方法作为 `EventLog` 的 `impl` 块定义，与事件日志操作共享同一类型。
+//!
+//! ## 核心功能
+//!
+//! - **会话列表**：`list_sessions()` / `list_sessions_with_meta()` 扫描所有项目的
+//!   sessions 目录，返回会话 ID 列表或包含标题、时间、阶段的完整元数据
+//! - **会话删除**：`delete_session()` 删除单个会话文件并清理空目录；
+//!   `delete_sessions_by_working_dir()` 批量删除指定项目的所有会话
+//! - **尾部扫描**：`read_tail_value()` 使用指数窗口从文件尾部向前扫描，
+//!   高效提取最后一个时间戳或 Phase，避免全量加载大文件
+//! - **头部元数据**：`read_session_head_meta()` 从 JSONL 首行提取 `SessionStart`
+//!   事件中的创建时间、工作目录、父会话等信息
+//!
+//! ## 尾部扫描算法
+//!
+//! `read_tail_value()` 使用指数退避窗口（4096 → 8192 → 16384 → ...）从文件末尾
+//! 向前扫描，每次扩大窗口直到找到目标值或覆盖整个文件。这样对于常见的短会话
+//! 只需读取少量字节，而对于长会话也能在有限次迭代内完成。
 use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
@@ -15,37 +36,60 @@ use super::paths::{
     canonical_session_id, is_valid_session_id, project_sessions_dir_from_root, projects_root_dir,
     session_file_name, session_storage_dirs, validated_session_id,
 };
-
 /// 从 session JSONL 首行提取的元信息。
+///
+/// 通过解析 `SessionStart` 事件获取会话的创建时间、工作目录、标题、
+/// 以及父会话信息（用于会话分支/派生场景）。
 struct SessionHeadMeta {
+    /// 会话创建时间，来自 `SessionStart.timestamp`。
     created_at: DateTime<Utc>,
+    /// 会话关联的工作目录。
     working_dir: String,
+    /// 会话标题，从首个 `UserMessage` 内容提取（最多 20 字符）。
     title: String,
+    /// 父会话 ID，如果此会话是从另一个会话派生的。
     parent_session_id: Option<String>,
+    /// 父会话中的事件序号，标记派生起点。
     parent_storage_seq: Option<u64>,
 }
 
 impl EventLog {
+    /// 列出所有会话 ID。
+    ///
+    /// 扫描全局项目根目录下的所有 sessions 目录，返回去重排序后的会话 ID 列表。
     pub fn list_sessions() -> Result<Vec<String>> {
         let projects_root = projects_root_dir()?;
         Self::list_sessions_from_path(&projects_root)
     }
 
+    /// 列出所有会话及其完整元数据。
+    ///
+    /// 除会话 ID 外，还包含标题、创建/更新时间、工作目录、当前 Phase 等信息，
+    /// 用于前端会话列表展示。结果按 `updated_at` 降序排列。
     pub fn list_sessions_with_meta() -> Result<Vec<SessionMeta>> {
         let projects_root = projects_root_dir()?;
         Self::list_sessions_with_meta_from_path(&projects_root)
     }
 
+    /// 删除指定会话。
+    ///
+    /// 删除 JSONL 文件后，如果会话目录为空则一并删除。
     pub fn delete_session(session_id: &str) -> Result<()> {
         let projects_root = projects_root_dir()?;
         Self::delete_session_from_path(&projects_root, session_id)
     }
 
+    /// 删除指定工作目录对应项目的所有会话。
+    ///
+    /// 返回成功删除的会话数和失败的会话 ID 列表。
     pub fn delete_sessions_by_working_dir(working_dir: &str) -> Result<DeleteProjectResult> {
         let projects_root = projects_root_dir()?;
         Self::delete_sessions_by_working_dir_from_path(&projects_root, working_dir)
     }
 
+    /// 从指定项目根路径列出所有会话 ID。
+    ///
+    /// 内部方法，支持传入自定义 `projects_root`，用于测试和跨根目录操作。
     pub(crate) fn list_sessions_from_path(projects_root: &Path) -> Result<Vec<String>> {
         if !projects_root.exists() {
             return Ok(Vec::new());
@@ -61,6 +105,14 @@ impl EventLog {
         Ok(ids.into_iter().collect())
     }
 
+    /// 从指定项目根路径列出所有会话及其元数据。
+    ///
+    /// 对每个会话文件：
+    /// 1. 读取头部元数据（`SessionStart` 事件）
+    /// 2. 从尾部扫描最后更新时间（避免全量加载）
+    /// 3. 从尾部扫描最后 Phase
+    ///
+    /// 不可读的会话文件会被跳过并记录警告日志。
     pub(crate) fn list_sessions_with_meta_from_path(
         projects_root: &Path,
     ) -> Result<Vec<SessionMeta>> {
@@ -110,6 +162,9 @@ impl EventLog {
         Ok(metas)
     }
 
+    /// 从指定项目根路径删除单个会话。
+    ///
+    /// 删除 JSONL 文件后清理空目录。
     pub(crate) fn delete_session_from_path(projects_root: &Path, session_id: &str) -> Result<()> {
         let target = Self::resolve_existing_session_path_from_root(projects_root, session_id)?;
         fs::remove_file(&target).map_err(|error| {
@@ -122,6 +177,10 @@ impl EventLog {
         Ok(())
     }
 
+    /// 删除指定工作目录对应项目的所有会话。
+    ///
+    /// 逐个删除会话文件，删除成功后清理空目录。
+    /// 失败的会话 ID 会被收集到 `failed_session_ids` 中返回给调用者。
     pub(crate) fn delete_sessions_by_working_dir_from_path(
         projects_root: &Path,
         working_dir: &str,
@@ -174,6 +233,9 @@ impl EventLog {
         })
     }
 
+    /// 枚举指定项目根路径下的所有会话文件。
+    ///
+    /// 遍历所有项目的 sessions 目录，收集每个会话子目录下的 JSONL 文件路径。
     fn session_files_under_projects_root(projects_root: &Path) -> Result<Vec<PathBuf>> {
         let mut files = Vec::new();
         for sessions_dir in session_storage_dirs(projects_root)? {
@@ -201,6 +263,9 @@ impl EventLog {
         Ok(files)
     }
 
+    /// 从指定项目根路径查找已存在的会话文件。
+    ///
+    /// 遍历所有 sessions 目录，返回第一个匹配的文件路径。
     fn resolve_existing_session_path_from_root(
         projects_root: &Path,
         session_id: &str,
@@ -227,6 +292,11 @@ impl EventLog {
         ))
     }
 
+    /// 从会话文件头部读取元数据。
+    ///
+    /// 逐行解析 JSONL 文件，从 `SessionStart` 事件提取创建时间、工作目录、
+    /// 父会话信息，从首个 `UserMessage` 事件提取标题（截断至 20 字符）。
+    /// 找到所需信息后提前停止读取，避免扫描整个文件。
     fn read_session_head_meta(path: &Path) -> Result<SessionHeadMeta> {
         let file = File::open(path).map_err(|error| {
             AstrError::io(
@@ -308,6 +378,9 @@ impl EventLog {
         })
     }
 
+    /// 从会话文件尾部读取最后一个时间戳。
+    ///
+    /// 使用 `read_tail_value` 的指数窗口扫描，高效定位最后一个带时间戳的事件。
     fn read_last_timestamp(path: &Path) -> Result<DateTime<Utc>> {
         Self::read_tail_value(path, timestamp_of_event)?.ok_or_else(|| {
             internal_io_error(format!(
@@ -317,6 +390,10 @@ impl EventLog {
         })
     }
 
+    /// 从会话文件尾部读取最后一个事件的 Phase。
+    ///
+    /// Phase 用于标识会话当前状态（Idle、CallingTool、WaitingForUser 等），
+    /// 前端据此决定 UI 展示方式。
     fn read_last_phase(path: &Path) -> Result<Phase> {
         Ok(
             Self::read_tail_value(path, |event| Some(phase_of_event(event)))?
@@ -326,8 +403,9 @@ impl EventLog {
 
     /// 从会话文件尾部扫描，查找满足 mapper 条件的最后一个值。
     ///
-    /// 使用指数窗口扫描，是因为 UI 列表只关心“最近更新时间/阶段”，
-    /// 没必要为了一个尾部值把整个 JSONL 全量读回内存。
+    /// 使用指数窗口扫描（4096 → 8192 → 16384 → ...），是因为 UI 列表只关心
+    /// "最近更新时间/阶段"，没必要为了一个尾部值把整个 JSONL 全量读回内存。
+    /// 对于大多数会话，4096 字节的初始窗口就足够覆盖尾部事件。
     fn read_tail_value<T, F>(path: &Path, mut mapper: F) -> Result<Option<T>>
     where
         F: FnMut(&StorageEvent) -> Option<T>,
@@ -413,6 +491,10 @@ impl EventLog {
     }
 }
 
+/// 从文件路径中提取会话 ID。
+///
+/// 期望路径格式为 `.../sessions/<session-id>/session-<session-id>.jsonl`，
+/// 从文件名剥离 `session-` 前缀和 `.jsonl` 后缀后校验合法性。
 fn session_id_from_path(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_string_lossy();
     let id = name
@@ -425,6 +507,9 @@ fn session_id_from_path(path: &Path) -> Option<String> {
     }
 }
 
+/// 根据会话目录路径推导对应的 JSONL 文件路径。
+///
+/// 目录名即为 session_id，拼接标准文件名即可得到完整路径。
 fn session_file_path_in_dir(session_dir: &Path) -> Result<PathBuf> {
     let dir_name = session_dir
         .file_name()
@@ -439,6 +524,10 @@ fn session_file_path_in_dir(session_dir: &Path) -> Result<PathBuf> {
     Ok(session_dir.join(session_file_name(&session_id)))
 }
 
+/// 删除空的会话目录。
+///
+/// 在删除会话文件后调用，如果目录中不再有任何条目则一并删除目录，
+/// 避免留下空目录占用文件系统命名空间。
 fn remove_empty_session_dir(session_dir: Option<&Path>) -> Result<()> {
     let Some(session_dir) = session_dir else {
         return Ok(());
@@ -467,6 +556,9 @@ fn remove_empty_session_dir(session_dir: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
+/// 从事件中提取时间戳。
+///
+/// 仅对携带时间戳的事件类型返回 `Some`，用于 `read_last_timestamp` 的 mapper。
 fn timestamp_of_event(event: &StorageEvent) -> Option<DateTime<Utc>> {
     match event {
         StorageEvent::SessionStart { timestamp, .. } => Some(*timestamp),
@@ -484,6 +576,9 @@ fn phase_of_event(event: &StorageEvent) -> Phase {
     phase_of_storage_event(event)
 }
 
+/// 从工作目录字符串提取显示名称。
+///
+/// 取路径的最后一段（目录名），用于前端会话列表的项目列展示。
 fn session_display_name(working_dir: &str) -> String {
     let normalized = working_dir.trim_end_matches(['/', '\\']);
     normalized
@@ -493,6 +588,10 @@ fn session_display_name(working_dir: &str) -> String {
         .to_string()
 }
 
+/// 从用户消息内容中提取会话标题。
+///
+/// 截取前 20 个字符并去除首尾空白，作为会话的简短标题。
+/// 如果内容为空则返回默认标题 "新会话"。
 fn title_from_user_message(content: &str) -> String {
     let title: String = content.chars().take(20).collect();
     let title = title.trim();

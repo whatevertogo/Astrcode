@@ -1,3 +1,13 @@
+//! 内置 prompt 贡献者实现。
+//!
+//! 每个 contributor 负责一个特定领域的 prompt 内容生成：
+//! - [`IdentityContributor`]：AI 身份定义
+//! - [`EnvironmentContributor`]：工作环境信息
+//! - [`AgentsMdContributor`]：用户和项目级 AGENTS.md 规则
+//! - [`CapabilityPromptContributor`]：工具使用指南
+//! - [`SkillSummaryContributor`]：Skill 索引摘要
+//! - [`WorkflowExamplesContributor`]：Few-shot 示例对话
+
 pub mod agents_md;
 pub mod capability_prompt;
 pub mod environment;

@@ -1,3 +1,17 @@
+//! # Skill 工具 (Skill Tool)
+//!
+//! 实现内置 `Skill` 工具，允许 LLM 按需加载 Skill 的完整指令和资源路径。
+//!
+//! ## 两阶段模型
+//!
+//! System Prompt 只暴露 Skill 索引（`name` + `description`），
+//! 真正的正文通过 `Skill` tool 按需加载。这样避免将所有 Skill 的
+//! 完整内容都注入到每次 LLM 调用中，节省 Token 预算。
+//!
+//! ## Skill 名称匹配
+//!
+//! Skill 名称使用 kebab-case，匹配时进行归一化处理（忽略大小写、连字符）。
+
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -9,18 +23,29 @@ use astrcode_core::{
 
 use crate::prompt::{normalize_skill_name, resolve_prompt_skills, SkillSpec, SKILL_TOOL_NAME};
 
+/// Skill 工具的输入参数。
+///
+/// LLM 调用 Skill 工具时会提供 skill 名称（kebab-case）和可选的参数。
 #[derive(Debug, Deserialize)]
 struct SkillToolInput {
+    /// 要加载的 Skill 名称
     skill: String,
+    /// 可选的自由格式参数，供 Skill 指令参考
     #[serde(default)]
     args: Option<String>,
 }
 
+/// 内置 Skill 工具实现。
+///
+/// 允许 LLM 按需加载 Skill 的完整指令和资源路径，
+/// 避免将所有 Skill 内容都注入到每次 LLM 调用中。
 pub(crate) struct SkillTool {
+    /// 编译时打包的内置 Skill 列表
     base_skills: Vec<SkillSpec>,
 }
 
 impl SkillTool {
+    /// 从给定的 Skill 列表创建 Skill 工具实例。
     pub(crate) fn new(base_skills: Vec<SkillSpec>) -> Self {
         Self { base_skills }
     }

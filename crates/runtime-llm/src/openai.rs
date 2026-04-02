@@ -184,6 +184,9 @@ impl OpenAiProvider {
 
 /// 本地包装函数，使重试循环可以保持提供者特定的名称，
 /// 同时委托给 `AstrError` 中共享的重试分类逻辑。
+///
+/// 该函数目前直接调用 `AstrError::is_retryable()`，保留独立函数是为了
+/// 未来可能需要添加 OpenAI 特有的重试判断逻辑时方便扩展。
 fn is_retryable_transport_error(error: &AstrError) -> bool {
     error.is_retryable()
 }
@@ -279,6 +282,12 @@ impl LlmProvider for OpenAiProvider {
 ///
 /// 处理文本内容、工具调用和推理内容（`reasoning_content` 字段，
 /// 部分兼容 API 使用 `reasoning` 别名）。
+///
+/// ## 设计要点
+///
+/// - 工具调用参数可能不是合法 JSON，解析失败时回退为原始字符串
+/// - 推理内容为空字符串时不保留（避免无意义的空 reasoning 对象）
+/// - `usage` 参数在非流式路径下由调用方传入，流式路径下为 `None`
 fn message_to_output(message: OpenAiResponseMessage, usage: Option<LlmUsage>) -> LlmOutput {
     let content = message.content.unwrap_or_default();
     let tool_calls = message
@@ -312,6 +321,8 @@ fn message_to_output(message: OpenAiResponseMessage, usage: Option<LlmUsage>) ->
 /// SSE 行解析结果。
 ///
 /// OpenAI 兼容 API 的 SSE 格式为单行 `data: {...}`，每行独立一个 JSON chunk。
+/// 与 Anthropic 的多行 SSE 块不同，OpenAI 格式更简单：每行以 `data: ` 开头，
+/// 流结束由特殊的 `data: [DONE]` 标记。
 enum ParsedSseLine {
     /// 空行或无 data 前缀的行，应忽略
     Ignore,
@@ -325,6 +336,10 @@ enum ParsedSseLine {
 ///
 /// 期望格式：`data: <json>` 或 `data: [DONE]`。
 /// 空行或不带 `data: ` 前缀的行返回 `Ignore`。
+///
+/// ## 错误处理
+///
+/// JSON 解析失败会返回 `AstrError::Parse` 错误，这通常意味着后端响应格式异常。
 fn parse_sse_line(line: &str) -> Result<ParsedSseLine> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -347,6 +362,12 @@ fn parse_sse_line(line: &str) -> Result<ParsedSseLine> {
 /// 将 OpenAI 流式 chunk 转换为 `LlmEvent` 列表。
 ///
 /// 每个 choice 的 delta 可能包含文本、推理内容或工具调用增量。
+///
+/// ## 设计要点
+///
+/// - `finish_reason` 字段当前未使用，流结束由 `[DONE]` 标记判断
+/// - 空字符串的文本和推理内容会被过滤，避免发射无意义的空增量
+/// - 工具调用参数缺失时回退为空字符串，由累加器负责拼接
 fn apply_stream_chunk(chunk: OpenAiStreamChunk) -> Vec<LlmEvent> {
     let mut events = Vec::new();
 
@@ -386,6 +407,8 @@ fn apply_stream_chunk(chunk: OpenAiStreamChunk) -> Vec<LlmEvent> {
 }
 
 /// 处理单行 SSE 文本，返回 `true` 表示流已结束（遇到 `[DONE]`）。
+///
+/// 这是 SSE 处理链路的中间层：解析行 → 转换 chunk → 发射事件。
 fn process_sse_line(
     line: &str,
     accumulator: &mut LlmAccumulator,
@@ -408,6 +431,11 @@ fn process_sse_line(
 /// 由于 TCP 流可能将一行 SSE 分割到多个 chunk 中，
 /// 本函数使用 `sse_buffer` 累积未完成的行，等待后续 chunk 补齐。
 /// 返回 `true` 表示遇到 `[DONE]`，流应停止读取。
+///
+/// ## TCP 分片处理
+///
+/// TCP 是字节流协议，不保证消息边界。一个完整的 SSE 行可能被分成多个 TCP chunk，
+/// 因此不能假设每个 `chunk_text` 包含完整的 `data: {...}` 行。
 fn consume_sse_text_chunk(
     chunk_text: &str,
     sse_buffer: &mut String,
@@ -431,6 +459,9 @@ fn consume_sse_text_chunk(
 }
 
 /// 刷新 SSE 缓冲区中剩余的不完整行（流结束后的收尾处理）。
+///
+/// 当 HTTP 流结束时，缓冲区中可能还剩一行没有换行符。
+/// 本函数处理这最后一行并清空缓冲区。
 fn flush_sse_buffer(
     sse_buffer: &mut String,
     accumulator: &mut LlmAccumulator,
@@ -447,6 +478,9 @@ fn flush_sse_buffer(
 }
 
 /// 将 `ToolDefinition` 转换为 OpenAI 工具定义格式。
+///
+/// OpenAI 工具定义需要 `type: "function"` 包装层，
+/// 内部包含 `name`、`description`、`parameters`（JSON Schema）。
 fn to_openai_tool(def: &ToolDefinition) -> OpenAiTool {
     OpenAiTool {
         tool_type: "function".to_string(),
@@ -463,6 +497,11 @@ fn to_openai_tool(def: &ToolDefinition) -> OpenAiTool {
 /// - User 消息 → `role: "user"`
 /// - Assistant 消息 → `role: "assistant"`（包含 tool_calls 和可选 content）
 /// - Tool 消息 → `role: "tool"`（携带 tool_call_id 关联结果）
+///
+/// ## 设计要点
+///
+/// - Assistant 消息的 `reasoning` 字段当前不转换（OpenAI 兼容 API 不标准支持）
+/// - 空内容的 assistant 消息将 content 设为 `None` 而非空字符串
 fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
     match message {
         LlmMessage::User { content, .. } => OpenAiRequestMessage {
@@ -544,6 +583,11 @@ fn estimate_openai_context_window(model: &str) -> usize {
 ///
 /// OpenAI 的 prompt caching 通过复用缓存上下文来减少延迟和成本，
 /// 当请求前缀匹配时生效。标记尾部消息可以在多轮对话中有效复用历史 KV cache。
+///
+/// ## 与 Anthropic 的差异
+///
+/// OpenAI 使用 `prediction: { type: "content" }` 标记可缓存内容，
+/// 而 Anthropic 使用 `cache_control: { type: "ephemeral" }`。
 fn enable_message_caching(messages: &mut [OpenAiRequestMessage], cache_depth: usize) {
     if messages.is_empty() || cache_depth == 0 {
         return;
@@ -564,6 +608,10 @@ fn enable_message_caching(messages: &mut [OpenAiRequestMessage], cache_depth: us
 // ---------------------------------------------------------------------------
 
 /// OpenAI Chat Completions API 请求体。
+///
+/// 使用生命周期 `'a` 借用模型名称和工具选择字符串，
+/// 避免不必要的字符串克隆。`stream` 字段为 `bool`（非 `Option`），
+/// 因为 OpenAI API 始终需要该字段。
 #[derive(Debug, Serialize)]
 struct OpenAiChatRequest<'a> {
     model: &'a str,
@@ -577,6 +625,12 @@ struct OpenAiChatRequest<'a> {
 }
 
 /// OpenAI 请求消息（user / assistant / system / tool）。
+///
+/// 与 Anthropic 的内容块数组不同，OpenAI 使用扁平的消息结构：
+/// - `content`: 纯文本内容（assistant 消息可为空）
+/// - `tool_calls`: 工具调用列表（仅 assistant 消息使用）
+/// - `tool_call_id`: 关联的工具调用 ID（仅 tool 消息使用）
+/// - `cache_control`: prompt caching 标记（可选）
 #[derive(Debug, Serialize)]
 struct OpenAiRequestMessage {
     role: String,
@@ -593,6 +647,7 @@ struct OpenAiRequestMessage {
 /// OpenAI prompt caching 控制标记。
 ///
 /// `type: "content"` 告诉 OpenAI 后端该消息的内容可作为缓存前缀的一部分。
+/// 与 Anthropic 的 `ephemeral` 不同，OpenAI 使用 `content` 作为 prediction type。
 #[derive(Debug, Clone, Serialize)]
 struct OpenAiCacheControl {
     #[serde(rename = "type")]
@@ -600,6 +655,9 @@ struct OpenAiCacheControl {
 }
 
 /// OpenAI 工具定义（用于请求体中的 `tools` 字段）。
+///
+/// OpenAI 工具定义需要 `type: "function"` 包装层，
+/// 这是 OpenAI API 的固定约定，当前不支持其他工具类型。
 #[derive(Debug, Serialize)]
 struct OpenAiTool {
     #[serde(rename = "type")]
@@ -608,6 +666,8 @@ struct OpenAiTool {
 }
 
 /// OpenAI 工具的函数定义。
+///
+/// `parameters` 是 JSON Schema 对象，描述工具参数的类型和约束。
 #[derive(Debug, Serialize)]
 struct OpenAiToolFunction {
     name: String,
@@ -616,6 +676,8 @@ struct OpenAiToolFunction {
 }
 
 /// OpenAI 响应中的工具调用（请求体中 assistant 消息的 `tool_calls` 字段）。
+///
+/// 注意：这是请求体中的结构（序列化），与响应体中的 `OpenAiResponseToolCall` 不同。
 #[derive(Debug, Serialize)]
 struct OpenAiToolCall {
     id: String,
@@ -624,7 +686,10 @@ struct OpenAiToolCall {
     function: OpenAiToolCallFunction,
 }
 
-/// OpenAI 工具调用的函数部分。
+/// OpenAI 工具调用的函数部分（请求体中）。
+///
+/// `arguments` 为 JSON 字符串（已序列化），而非 `Value` 对象，
+/// 因为 OpenAI API 期望接收字符串形式的 JSON。
 #[derive(Debug, Serialize)]
 struct OpenAiToolCallFunction {
     name: String,
@@ -632,6 +697,8 @@ struct OpenAiToolCallFunction {
 }
 
 /// OpenAI Chat Completions API 非流式响应体。
+///
+/// 包含 `choices` 数组（通常只有一个元素）和可选的 `usage` 统计。
 #[derive(Debug, Deserialize)]
 struct OpenAiChatResponse {
     choices: Vec<OpenAiChoice>,
@@ -640,12 +707,17 @@ struct OpenAiChatResponse {
 }
 
 /// OpenAI 响应中的单个 choice。
+///
+/// 非流式响应中通常只有一个 choice，流式响应中每个 chunk 也包含一个 choice。
 #[derive(Debug, Deserialize)]
 struct OpenAiChoice {
     message: OpenAiResponseMessage,
 }
 
 /// OpenAI 响应消息（从 choice 中提取）。
+///
+/// `reasoning_content` 字段通过 `#[serde(alias = "reasoning")]` 兼容
+/// 部分 API 后端使用 `reasoning` 作为字段名的情况。
 #[derive(Debug, Deserialize)]
 struct OpenAiResponseMessage {
     content: Option<String>,
@@ -656,6 +728,9 @@ struct OpenAiResponseMessage {
 }
 
 /// OpenAI 响应中的 token 用量统计。
+///
+/// 两个字段均为 `Option` 且带 `#[serde(default)]`，
+/// 因为某些兼容 API 可能不返回用量信息。
 #[derive(Debug, Deserialize)]
 struct OpenAiUsage {
     #[serde(default)]
@@ -664,7 +739,9 @@ struct OpenAiUsage {
     completion_tokens: Option<u64>,
 }
 
-/// OpenAI 响应中的工具调用。
+/// OpenAI 响应中的工具调用（响应体中）。
+///
+/// 与请求体中的 `OpenAiToolCall` 不同，响应体中的工具调用不包含 `type` 字段。
 #[derive(Debug, Deserialize)]
 struct OpenAiResponseToolCall {
     id: String,
@@ -672,6 +749,8 @@ struct OpenAiResponseToolCall {
 }
 
 /// OpenAI 响应中工具调用的函数部分。
+///
+/// `arguments` 为 JSON 字符串（未解析），调用方需要自行反序列化。
 #[derive(Debug, Deserialize)]
 struct OpenAiResponseToolFunction {
     name: String,
@@ -679,12 +758,16 @@ struct OpenAiResponseToolFunction {
 }
 
 /// OpenAI 流式响应中的单个 chunk（对应一行 `data: {...}`）。
+///
+/// 每个 chunk 包含 `choices` 数组，每个 choice 的 delta 包含增量内容。
 #[derive(Debug, Deserialize)]
 struct OpenAiStreamChunk {
     choices: Vec<OpenAiStreamChoice>,
 }
 
 /// OpenAI 流式 chunk 中的单个 choice。
+///
+/// `finish_reason` 保留以兼容 API 响应结构，但当前流结束判断由 `[DONE]` 标记决定。
 #[derive(Debug, Deserialize)]
 struct OpenAiStreamChoice {
     delta: OpenAiStreamDelta,
@@ -694,6 +777,8 @@ struct OpenAiStreamChoice {
 }
 
 /// OpenAI 流式 delta（增量内容）。
+///
+/// `reasoning_content` 同样通过 `alias` 兼容 `reasoning` 字段名。
 #[derive(Debug, Deserialize)]
 struct OpenAiStreamDelta {
     content: Option<String>,
@@ -704,6 +789,10 @@ struct OpenAiStreamDelta {
 }
 
 /// OpenAI 流式响应中的工具调用增量。
+///
+/// 流式工具调用分多个 chunk 到达：
+/// - 首个 chunk 包含 `id` 和 `function.name`
+/// - 后续 chunk 只包含 `function.arguments` 的片段
 #[derive(Debug, Deserialize)]
 struct OpenAiStreamToolCall {
     index: usize,
@@ -712,6 +801,8 @@ struct OpenAiStreamToolCall {
 }
 
 /// OpenAI 流式工具调用的函数增量部分。
+///
+/// `name` 和 `arguments` 均为 `Option`，因为不同 chunk 中可能只出现其中一个。
 #[derive(Debug, Deserialize)]
 struct OpenAiStreamToolCallFunction {
     name: Option<String>,

@@ -1,5 +1,18 @@
+//! Skill 规格定义与名称校验。
+//!
+//! 本模块定义了 skill 的核心数据结构 [`SkillSpec`]，以及 skill 名称的校验和规范化逻辑。
+//!
+//! # Skill 名称规则
+//!
+//! Skill 名称必须为 kebab-case（小写字母、数字、连字符），且必须与文件夹名一致。
+//! 这是 Claude-style skill 的约定，确保名称的一致性和可预测性。
+
 use serde::{Deserialize, Serialize};
 
+/// Skill 的来源。
+///
+/// 用于追踪 skill 是从哪里加载的，影响覆盖优先级和诊断标签。
+/// 优先级顺序：Builtin < User < Project < Plugin < Mcp（后者覆盖前者）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillSource {
@@ -26,21 +39,35 @@ impl SkillSource {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillSpec {
+    /// Skill 的唯一标识符（kebab-case，与文件夹名一致）。
     pub id: String,
+    /// Skill 的显示名称（与 `id` 相同）。
     pub name: String,
+    /// Skill 的简短描述，用于 system prompt 中的索引展示。
+    ///
+    /// 这是两阶段 skill 模型的第一阶段：模型通过描述判断何时调用 `Skill` tool。
     pub description: String,
+    /// Skill 的完整指南正文。
+    ///
+    /// 在两阶段模型中，只有当模型调用 `Skill` tool 时才加载此内容。
     pub guide: String,
-    #[serde(default)]
+    /// Skill 目录的根路径（运行时填充）。
     pub skill_root: Option<String>,
-    #[serde(default)]
+    /// Skill 目录中的资产文件列表（如 `references/`、`scripts/` 下的文件）。
     pub asset_files: Vec<String>,
-    #[serde(default)]
+    /// 此 skill 允许调用的工具列表。
+    ///
+    /// 用于限制 skill 执行时的能力边界，builtin skill 由 `build.rs` 配置。
     pub allowed_tools: Vec<String>,
-    #[serde(default)]
+    /// Skill 的来源，影响覆盖优先级和诊断标签。
     pub source: SkillSource,
 }
 
 impl SkillSpec {
+    /// 检查此 skill 是否匹配请求的名称。
+    ///
+    /// 比较时进行大小写不敏感和斜杠容忍处理，
+    /// 使得 `/repo-search` 和 `REPO SEARCH` 都能匹配 `repo-search`。
     pub fn matches_requested_name(&self, requested_name: &str) -> bool {
         let requested_name = normalize_skill_name(requested_name);
         // `id` is already validated as kebab-case at parse time, so normalize
@@ -50,6 +77,10 @@ impl SkillSpec {
     }
 }
 
+/// 检查名称是否为合法的 skill 名称。
+///
+/// 合法名称仅允许小写 ASCII 字母、数字和连字符，且不能为空。
+/// 这是 Claude-style skill 的强制要求。
 pub fn is_valid_skill_name(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -57,6 +88,10 @@ pub fn is_valid_skill_name(name: &str) -> bool {
             .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
 }
 
+/// 规范化 skill 名称。
+///
+/// 将输入转换为小写、去除首尾空白和前导斜杠、将非字母数字字符替换为空格后合并。
+/// 用于用户输入与 skill id 的模糊匹配。
 pub fn normalize_skill_name(value: &str) -> String {
     value
         .trim()

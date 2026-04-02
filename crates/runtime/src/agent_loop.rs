@@ -1,6 +1,22 @@
-//! # Agent 循环
+//! # Agent 循环 (Agent Loop)
 //!
-//! 实现单个 Agent Turn 的执行逻辑。
+//! 实现单个 Agent Turn 的执行逻辑，是 Astrcode Agent 的核心驱动引擎。
+//!
+//! ## 职责
+//!
+//! `AgentLoop` 负责编排一个完整 Turn 的执行流程：
+//! 1. 构建 LLM Provider（根据工作目录解析配置）
+//! 2. 组装 Prompt（系统提示词 + 历史消息 + 工具描述）
+//! 3. 调用 LLM 并流式接收响应
+//! 4. 若有工具调用，执行工具并循环回到步骤 2
+//! 5. 处理 Token 预算和自动压缩
+//!
+//! ## 架构约束
+//!
+//! - `AgentLoop` 仅依赖 `core` 定义的接口，不直接依赖 `runtime` 门面
+//! - LLM Provider 通过 `ProviderFactory` 抽象，支持热替换
+//! - 工具执行通过 `CapabilityRouter` 路由，支持策略检查和审批
+//! - Prompt 组装通过 `PromptComposer` 独立实现，保持关注点分离
 
 mod llm_cycle;
 pub(crate) mod token_budget;
@@ -55,37 +71,48 @@ impl TurnOutcome {
 /// - LLM 调用（获取助手响应）
 /// - 工具执行（调用外部能力）
 /// - 策略检查（审批流程）
+/// - Token 预算管理和自动上下文压缩
+///
+/// ## 设计原则
+///
+/// `AgentLoop` 是纯执行引擎，不持有会话状态或持久化逻辑。
+/// 它通过回调 `on_event` 发出事件，由调用方（通常是 `RuntimeService`）
+/// 负责持久化和广播。这种设计使得 AgentLoop 可以在不同上下文中复用
+/// （如测试、CLI、HTTP 服务）。
 pub struct AgentLoop {
-    /// LLM 提供者工厂
+    /// LLM 提供者工厂，负责根据工作目录构建对应的 LLM Provider
     factory: DynProviderFactory,
-    /// 能力路由器（工具注册表）
+    /// 能力路由器（工具注册表），将工具名映射到执行器
     capabilities: CapabilityRouter,
-    /// 策略引擎
+    /// 策略引擎，决定能力调用是否需要审批
     policy: Arc<dyn PolicyEngine>,
-    /// 审批代理
+    /// 审批代理，处理需要用户确认的能力调用
     approval: Arc<dyn ApprovalBroker>,
-    /// Prompt 组装器
+    /// Prompt 组装器，负责构建系统提示词和消息序列
     prompt_composer: PromptComposer,
-    /// Prompt 构建时可见的能力描述符。
+    /// Prompt 构建时可见的能力描述符，用于注入到系统提示词中
     prompt_capability_descriptors: Vec<astrcode_core::CapabilityDescriptor>,
-    /// 归一化后的扩展 prompt 声明。
+    /// 归一化后的扩展 prompt 声明，包含自定义 prompt 模板
     prompt_declarations: Vec<PromptDeclaration>,
-    /// 当前运行时启用的高层 skill 指南。
+    /// 当前运行时启用的高层 skill 指南
     prompt_skills: Vec<SkillSpec>,
-    /// 单个 step 内允许并发执行的只读工具上限。
+    /// 单个 step 内允许并发执行的只读工具上限
     max_tool_concurrency: usize,
-    /// Whether request-level automatic compaction may run before a model step.
+    /// 是否允许在 model step 前自动执行上下文压缩
     auto_compact_enabled: bool,
-    /// Percentage of the effective context window at which compaction starts.
+    /// 触发压缩的上下文窗口百分比阈值
     compact_threshold_percent: u8,
-    /// Maximum bytes from a single tool result that may be shown to the model.
+    /// 单个工具结果最多展示给模型的字节数
     tool_result_max_bytes: usize,
-    /// Number of recent user turns that stay verbatim during compaction.
+    /// 压缩时保留的最近用户 Turn 数量（保持原文不被压缩）
     compact_keep_recent_turns: usize,
 }
 
 impl AgentLoop {
     /// 从能力路由器创建 AgentLoop
+    ///
+    /// 使用默认策略引擎（AllowAll）和默认审批代理（DefaultApprovalBroker）。
+    /// 适用于不需要审批控制的场景。
     pub fn from_capabilities(factory: DynProviderFactory, capabilities: CapabilityRouter) -> Self {
         Self::from_capabilities_with_prompt_inputs(
             factory,
@@ -95,6 +122,10 @@ impl AgentLoop {
         )
     }
 
+    /// 从能力路由器和自定义 Prompt 输入创建 AgentLoop
+    ///
+    /// 允许调用方注入自定义 prompt 声明和 skill 列表，
+    /// 用于扩展或覆盖默认的 prompt 行为。
     pub fn from_capabilities_with_prompt_inputs(
         factory: DynProviderFactory,
         capabilities: CapabilityRouter,
@@ -122,12 +153,16 @@ impl AgentLoop {
     }
 
     /// 设置策略引擎
+    ///
+    /// 用于替换默认的 AllowAll 策略引擎，实现细粒度的能力调用控制。
     pub fn with_policy_engine(mut self, policy: Arc<dyn PolicyEngine>) -> Self {
         self.policy = policy;
         self
     }
 
     /// 设置审批代理
+    ///
+    /// 用于替换默认的 DefaultApprovalBroker，实现用户交互式的审批流程。
     pub fn with_approval_broker(mut self, approval: Arc<dyn ApprovalBroker>) -> Self {
         self.approval = approval;
         self
@@ -141,21 +176,31 @@ impl AgentLoop {
         self
     }
 
+    /// 是否启用自动上下文压缩
     pub fn with_auto_compact_enabled(mut self, auto_compact_enabled: bool) -> Self {
         self.auto_compact_enabled = auto_compact_enabled;
         self
     }
 
+    /// 设置触发压缩的上下文窗口百分比
+    ///
+    /// 值会被钳制到 1-100 范围内，避免配置错误导致异常行为。
     pub fn with_compact_threshold_percent(mut self, compact_threshold_percent: u8) -> Self {
         self.compact_threshold_percent = compact_threshold_percent.clamp(1, 100);
         self
     }
 
+    /// 设置单个工具结果的最大展示字节数
+    ///
+    /// 最小值会被钳制到 1，避免配置错误导致工具结果完全被截断。
     pub fn with_tool_result_max_bytes(mut self, tool_result_max_bytes: usize) -> Self {
         self.tool_result_max_bytes = tool_result_max_bytes.max(1);
         self
     }
 
+    /// 设置压缩时保留的最近 Turn 数量
+    ///
+    /// 最小值会被钳制到 1，确保至少保留一个最近的 Turn 不被压缩。
     pub fn with_compact_keep_recent_turns(mut self, compact_keep_recent_turns: usize) -> Self {
         self.compact_keep_recent_turns = compact_keep_recent_turns.max(1);
         self
@@ -194,6 +239,9 @@ impl AgentLoop {
         turn_runner::run_turn(self, state, turn_id, on_event, cancel, true).await
     }
 
+    /// 执行 Turn 但不发送 TurnDone/TurnFailed 事件
+    ///
+    /// 用于内部场景（如自动压缩），调用方需要自行处理 Turn 的完成状态。
     pub(crate) async fn run_turn_without_finish(
         &self,
         state: &AgentState,
@@ -205,11 +253,15 @@ impl AgentLoop {
     }
 
     /// 创建工具执行上下文
+    ///
+    /// 包含会话 ID、工作目录和取消令牌，供工具执行时访问。
     pub(crate) fn tool_context(&self, state: &AgentState, cancel: CancelToken) -> ToolContext {
         ToolContext::new(state.session_id.clone(), state.working_dir.clone(), cancel)
     }
 
     /// 创建策略上下文
+    ///
+    /// 包含会话 ID、Turn ID、Step 索引和工作目录，供策略引擎评估能力调用。
     pub(crate) fn policy_context(
         &self,
         state: &AgentState,

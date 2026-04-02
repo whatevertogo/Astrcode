@@ -1,3 +1,18 @@
+//! # HTTP 路由模块
+//!
+//! 本模块定义所有 HTTP/SSE API 路由，按业务领域拆分为子模块：
+//!
+//! - **sessions**：会话 CRUD、提示提交、事件流（SSE）
+//! - **config**：配置查看和活跃选择保存
+//! - **model**：模型列表、当前模型、连接测试
+//! - **runtime**：运行时状态、插件重载
+//!
+//! ## 路由约定
+//!
+//! - 所有业务端点挂载在 `/api` 前缀下
+//! - Bootstrap 相关端点（`/__astrcode__/run-info`）在路由构建时直接挂载
+//! - 认证交换端点 `/api/auth/exchange` 在此模块定义，不走子模块
+
 pub(crate) mod config;
 pub(crate) mod model;
 pub(crate) mod runtime;
@@ -11,6 +26,43 @@ use axum::{Json, Router};
 use crate::bootstrap::serve_run_info;
 use crate::{ApiError, AppState};
 
+/// 构建完整的 API 路由器。
+///
+/// 将所有子模块的路由和 bootstrap 端点组装到一个 `Router<AppState>` 中。
+/// 路由按业务领域分组，每个端点绑定到对应的处理器函数。
+///
+/// ## 路由清单
+///
+/// ### Bootstrap
+/// - `GET /__astrcode__/run-info` — 返回 bootstrap token（浏览器开发用）
+///
+/// ### 认证
+/// - `POST /api/auth/exchange` — 用 bootstrap token 交换 API 会话 token
+///
+/// ### 会话
+/// - `POST /api/sessions` — 创建新会话
+/// - `GET /api/sessions` — 列出所有会话
+/// - `GET /api/session-events` — 订阅会话目录事件（SSE）
+/// - `GET /api/sessions/:id/messages` — 获取会话消息快照
+/// - `POST /api/sessions/:id/prompts` — 提交用户提示
+/// - `POST /api/sessions/:id/compact` — 压缩会话上下文
+/// - `POST /api/sessions/:id/interrupt` — 中断会话执行
+/// - `GET /api/sessions/:id/events` — 订阅会话事件流（SSE，支持断点续传）
+/// - `DELETE /api/sessions/:id` — 删除单个会话
+/// - `DELETE /api/projects` — 删除整个项目（级联删除所有会话）
+///
+/// ### 配置
+/// - `GET /api/config` — 获取当前配置视图
+/// - `POST /api/config/active-selection` — 保存活跃的 profile/model 选择
+///
+/// ### 模型
+/// - `GET /api/models/current` — 获取当前激活的模型信息
+/// - `GET /api/models` — 列出所有可用模型选项
+/// - `POST /api/models/test` — 测试模型连接
+///
+/// ### 运行时
+/// - `GET /api/runtime/plugins` — 获取运行时插件状态
+/// - `POST /api/runtime/plugins/reload` — 重载运行时插件
 pub(crate) fn build_api_router() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/__astrcode__/run-info", get(serve_run_info))

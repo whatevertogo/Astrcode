@@ -1,3 +1,20 @@
+//! # 文件系统公共工具
+//!
+//! 提供所有文件工具共享的基础设施：
+//!
+//! - **路径沙箱**: `resolve_path` 确保所有路径操作不逃逸工作目录
+//! - **取消检查**: `check_cancel` 在长操作的关键节点检查用户取消
+//! - **文件 I/O**: `read_utf8_file` / `write_text_file` 统一 UTF-8 读写
+//! - **Diff 生成**: `build_text_change_report` 手工实现 unified diff
+//! - **JSON 序列化**: `json_output` 统一工具输出的 JSON 编码
+//!
+//! ## Metadata 约定
+//!
+//! - 路径字段统一返回绝对路径字符串
+//! - `count`/`bytes`/`truncated`/`skipped_files` 在适用时提供
+//! - `metadata` 是机器可读的契约；`output` 仅供展示
+//! - 结构化机器数据不应嵌入到 `output` 字符串中
+
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -11,6 +28,10 @@ use serde_json::{json, Value};
 // - metadata is the machine-readable contract; output is display text only.
 // - Structured machine data should not be embedded into output strings.
 
+/// 检查取消标记，如果已取消则返回 `AstrError::Cancelled`。
+///
+/// 在长操作（遍历目录、逐行搜索、大文件读取）的关键节点调用，
+/// 确保用户取消能快速响应。
 pub fn check_cancel(cancel: &CancelToken, _tool_name: &str) -> Result<()> {
     if cancel.is_cancelled() {
         return Err(AstrError::Cancelled);
@@ -18,6 +39,20 @@ pub fn check_cancel(cancel: &CancelToken, _tool_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// 将路径解析为工作目录内的绝对路径。
+///
+/// ## 沙箱检查流程
+///
+/// 1. 获取并 canonicalize 工作目录作为根路径
+/// 2. 相对路径基于工作目录拼接，绝对路径直接使用
+/// 3. 对拼接后的路径进行词法归一化 + 边界解析
+/// 4. 检查解析后的路径是否在工作目录内，拒绝逃逸路径
+///
+/// ## 为什么需要 `resolve_for_boundary_check`
+///
+/// `fs::canonicalize` 要求路径在磁盘上存在，但 writeFile/editFile
+/// 经常操作尚不存在的文件。`resolve_for_boundary_check` 从路径尾部
+/// 向上找到第一个存在的祖先进行 canonicalize，再拼回缺失部分。
 pub fn resolve_path(ctx: &ToolContext, path: &Path) -> Result<PathBuf> {
     let working_dir = canonicalize_path(
         ctx.working_dir(),
@@ -44,11 +79,19 @@ pub fn resolve_path(ctx: &ToolContext, path: &Path) -> Result<PathBuf> {
     )))
 }
 
+/// 读取文件内容为 UTF-8 字符串。
+///
+/// 如果文件包含无效 UTF-8 字节，读取将失败。调用方应决定如何处理
+/// （如 writeFile 在生成 diff 时遇到非 UTF-8 会跳过 diff 但不影响写入）。
 pub async fn read_utf8_file(path: &Path) -> Result<String> {
     fs::read_to_string(path)
         .map_err(|e| AstrError::io(format!("failed reading file '{}'", path.display()), e))
 }
 
+/// 将文本内容写入文件。
+///
+/// 当 `create_dirs` 为 true 时，自动创建所有缺失的父目录。
+/// 返回写入的字节数（即 content 的 UTF-8 字节长度）。
 pub async fn write_text_file(path: &Path, content: &str, create_dirs: bool) -> Result<usize> {
     if create_dirs {
         if let Some(parent) = path.parent() {
@@ -67,15 +110,33 @@ pub async fn write_text_file(path: &Path, content: &str, create_dirs: bool) -> R
     Ok(content.len())
 }
 
+/// 将值序列化为 JSON 字符串，用于工具的结构化输出。
 pub fn json_output<T: Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).map_err(|e| AstrError::parse("failed to serialize output", e))
 }
 
+/// 文本变更报告，包含人类可读的摘要和机器可读的 metadata。
+///
+/// 由 `build_text_change_report` 生成，用于 writeFile 和 editFile
+/// 的执行结果，向用户和前端展示变更的 diff 信息。
 pub struct TextChangeReport {
     pub summary: String,
     pub metadata: Value,
 }
 
+/// 构建文本变更报告，包含 unified diff 和变更统计。
+///
+/// ## 参数
+///
+/// - `path`: 文件路径，用于 diff 标签和报告路径
+/// - `change_type`: 变更类型（如 `"created"` / `"updated"`）
+/// - `before`: 变更前的内容，`None` 表示新文件
+/// - `after`: 变更后的内容
+///
+/// ## 输出
+///
+/// `summary` 是简短的人类可读描述（如 `updated path/to/file.rs (+5 -2)`），
+/// `metadata` 包含完整的 diff patch、增减行数和截断标记。
 pub fn build_text_change_report(
     path: &Path,
     change_type: &'static str,

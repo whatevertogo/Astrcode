@@ -255,7 +255,7 @@ fn capability_builder_accepts_custom_kind_strings() {
 
 #[test]
 fn capability_builder_rejects_blank_custom_kind() {
-    let error = CapabilityDescriptor::builder("workspace.index", CapabilityKind::custom("  "))
+    let error = CapabilityDescriptor::builder("workspace.index", CapabilityKind::new("  "))
         .description("Indexes workspace symbols")
         .schema(json!({ "type": "object" }), json!({ "type": "object" }))
         .build()
@@ -276,7 +276,7 @@ fn capability_kind_deserialization_trims_whitespace() {
 fn capability_validate_rejects_direct_blank_kind() {
     let descriptor = CapabilityDescriptor {
         name: "workspace.index".to_string(),
-        kind: CapabilityKind::custom("  "),
+        kind: CapabilityKind::new("  "),
         description: "Indexes workspace symbols".to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({ "type": "object" }),

@@ -1,3 +1,18 @@
+//! # EditFile 工具
+//!
+//! 实现 `editFile` 工具，用于在文件中进行精确的字符串替换。
+//!
+//! ## 安全机制
+//!
+//! - `oldStr` 必须在文件中**恰好出现一次**，否则拒绝编辑
+//! - 支持重叠匹配检测（如在 `"ababa"` 中搜索 `"aba"` 会找到两个位置）
+//! - 编辑前/后均检查取消标记，避免长文件操作无法中断
+//!
+//! ## 与 writeFile 的区别
+//!
+//! `writeFile` 用于完全覆盖，`editFile` 用于窄范围修改。
+//! 优先使用 `editFile` 可以保持变更更小、更容易验证。
+
 use crate::tools::fs_common::{
     build_text_change_report, check_cancel, read_utf8_file, resolve_path, write_text_file,
 };
@@ -11,6 +26,10 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::time::Instant;
 
+/// EditFile 工具实现。
+///
+/// 在文件中查找唯一出现的 `oldStr` 并替换为 `newStr`。
+/// 如果 `oldStr` 出现 0 次或多次，编辑被拒绝以防止意外修改。
 #[derive(Default)]
 pub struct EditFileTool;
 

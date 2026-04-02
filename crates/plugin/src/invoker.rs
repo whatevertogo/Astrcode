@@ -1,3 +1,14 @@
+//! 插件能力调用器。
+//!
+//! 本模块实现 `CapabilityInvoker` trait 的插件版本，
+//! 将 core 层的能力调用请求转换为插件协议的 `InvokeMessage`。
+//!
+//! ## 职责
+//!
+//! - 将 `CapabilityContext` 转换为插件协议的 `InvocationContext`
+//! - 根据能力是否支持流式选择 `invoke` 或 `invoke_stream`
+//! - 将插件返回的结果转换为 `CapabilityExecutionResult`
+
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -12,6 +23,16 @@ use uuid::Uuid;
 
 use crate::{Peer, StreamExecution, Supervisor};
 
+/// 插件能力的调用器实现。
+///
+/// 将 `core::CapabilityInvoker` trait 适配到插件协议的 `Peer`。
+/// 每个实例对应一个远程插件能力。
+///
+/// # 架构位置
+///
+/// ```text
+/// Runtime → CapabilityInvoker (此结构体) → Peer → Transport → 插件进程
+/// ```
 #[derive(Clone)]
 pub struct PluginCapabilityInvoker {
     peer: Peer,
@@ -20,6 +41,10 @@ pub struct PluginCapabilityInvoker {
 }
 
 impl PluginCapabilityInvoker {
+    /// 从协议描述符创建调用器。
+    ///
+    /// `remote_name` 保存原始的能力名称，因为 `descriptor.name` 可能在
+    /// 适配过程中被修改（如添加命名空间前缀）。
     pub fn from_protocol_descriptor(peer: Peer, descriptor: CapabilityDescriptor) -> Self {
         Self {
             remote_name: descriptor.name.clone(),
@@ -35,6 +60,18 @@ impl CapabilityInvoker for PluginCapabilityInvoker {
         self.descriptor.clone()
     }
 
+    /// 执行能力调用。
+    ///
+    /// 根据能力的 `streaming` 标志选择调用模式：
+    /// - 流式模式：通过 `invoke_stream` 获取 `StreamExecution`，
+    ///   然后收集所有 delta 事件直到终端事件
+    /// - 一元模式：通过 `invoke` 等待完整结果
+    ///
+    /// # 返回
+    ///
+    /// 总是返回 `Ok(CapabilityExecutionResult)`，即使插件调用失败。
+    /// 成功与否通过 `CapabilityExecutionResult::success` 字段判断。
+    /// 只有在传输层错误时才返回 `Err`。
     async fn invoke(
         &self,
         payload: Value,
@@ -96,6 +133,10 @@ impl CapabilityInvoker for PluginCapabilityInvoker {
 }
 
 impl Supervisor {
+    /// 获取此插件所有能力的调用器列表。
+    ///
+    /// 每个调用器封装了一个远程插件能力，实现了 `core::CapabilityInvoker` trait，
+    /// 可以被 runtime 统一调度。
     pub fn capability_invokers(&self) -> Vec<Arc<dyn CapabilityInvoker>> {
         self.remote_initialize()
             .capabilities
@@ -110,11 +151,24 @@ impl Supervisor {
             .collect()
     }
 
+    /// 获取此插件声明的核心能力描述符列表。
+    ///
+    /// 与 `capability_invokers()` 不同，此方法返回原始的描述符，
+    /// 不包装为调用器。用于向宿主展示插件提供了哪些能力。
     pub fn core_capabilities(&self) -> Vec<CapabilityDescriptor> {
         self.remote_initialize().capabilities.clone()
     }
 }
 
+/// 完成流式调用并收集结果。
+///
+/// 从 `StreamExecution` 中读取所有事件，收集 delta 事件到 `streamEvents` 元数据中，
+/// 直到收到终端事件（Completed 或 Failed）。
+///
+/// # 错误处理
+///
+/// 如果 channel 关闭但未收到终端事件，返回 `Internal` 错误。
+/// 这通常意味着插件异常退出或传输层断裂。
 async fn finish_stream_invocation(
     capability_name: String,
     stream: &mut StreamExecution,
@@ -167,6 +221,17 @@ async fn finish_stream_invocation(
     ))
 }
 
+/// 将 `core::CapabilityContext` 转换为插件协议的 `InvocationContext`。
+///
+/// 主要映射字段：
+/// - `request_id`：如果为空则生成 UUID
+/// - `working_dir`：同时填充 `working_dir` 和 `repo_root`
+/// - `session_id`、`trace_id`、`profile` 等直接映射
+///
+/// # 注意
+///
+/// 某些字段（如 `caller`、`deadline_ms`、`budget`、`branch`）
+/// 当前未映射，保留为 `None`。这些是未来扩展点。
 fn to_invocation_context(ctx: &CapabilityContext) -> InvocationContext {
     let working_dir = ctx.working_dir.to_string_lossy().into_owned();
     InvocationContext {

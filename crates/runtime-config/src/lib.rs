@@ -1,14 +1,40 @@
-//! Runtime configuration crate.
+//! 运行时配置管理 crate。
 //!
-//! This crate handles loading, saving, and validation of application configuration,
-//! including LLM provider profiles and API key resolution.
+//! # 职责
 //!
-//! # v1 Assumptions
-//! - Missing fields are filled from `Default` without warnings.
-//! - Empty `version` / `active_profile` / `active_model` values are normalized during load.
-//! - `active_profile` / `active_model` are cross-validated against `profiles`.
-//! - `provider_kind` is validated against the supported providers.
-//! - `load_config()` is allowed to print once to stdout during first-time initialization.
+//! 本 crate 负责 Astrcode 运行时配置的完整生命周期：
+//! - **加载**：从 `~/.astrcode/config.json` 读取用户配置，支持项目级 overlay 覆盖
+//! - **保存**：原子写入策略，跨平台兼容（Windows 三步替换 / Unix rename）
+//! - **验证**：schema 校验、provider 合法性检查、active_profile/active_model 交叉验证
+//! - **解析**：API key 环境变量解析、模型选择回退逻辑、运行时参数解析
+//!
+//! # 架构定位
+//!
+//! 在 crate 依赖关系中，`runtime-config` 是独立 crate，仅依赖 `core` 和 `protocol`。
+//! 它不依赖 `runtime` 门面，避免循环依赖。配置数据通过显式类型（[`Config`]、[`Profile`]）
+//! 跨边界传递。
+//!
+//! # 配置存储
+//!
+//! - 用户级配置：`~/.astrcode/config.json`
+//! - 项目级 overlay：`<project>/.astrcode/config.json`（仅覆盖 active_profile/active_model/profiles）
+//! - 运行时调优参数（如 max_tool_concurrency）仅存在于用户级配置，因为 `RuntimeService`
+//!   拥有单一共享的 `AgentLoop`，项目级隔离在当前架构下无法安全实现
+//!
+//! # API Key 解析策略
+//!
+//! Profile 中的 `api_key` 支持三种格式：
+//! - `literal:<value>`：直接使用字面值，跳过环境变量解析
+//! - `env:<NAME>`：强制从环境变量读取，缺失时报错
+//! - 裸值（如 `MY_API_KEY`）：若符合环境变量命名规范（大写字母+数字+下划线且含下划线），
+//!   尝试从环境变量读取；若环境变量不存在则作为字面值回退（兼容旧版配置）
+//!
+//! # v1 设计假设
+//! - 缺失字段通过 `Default` 填充，不产生警告
+//! - 空白的 `version` / `active_profile` / `active_model` 在加载时自动规范化
+//! - `active_profile` / `active_model` 会与 `profiles` 列表交叉验证
+//! - `provider_kind` 仅支持 `openai-compatible` 和 `anthropic`
+//! - `load_config()` 仅在首次初始化时向 stdout 打印一次提示
 
 // Internal modules
 mod api_key;

@@ -1,5 +1,19 @@
+//! Prompt 模板引擎。
+//!
+//! 提供简单的 `{{variable}}` 占位符替换功能。
+//! 模板由 [`BlockContent::Template`](crate::BlockContent::Template) 使用，
+//! 在 [`PromptComposer`](crate::composer::PromptComposer) 渲染阶段解析。
+//!
+//! # 设计选择
+//!
+//! 采用极简的 `{{key}}` 语法而非完整的模板语言（如 Handlebars），
+//! 因为 prompt 模板只需要变量替换，不需要条件、循环等复杂逻辑。
+
 use std::borrow::Cow;
 
+/// Prompt 模板，包含 `{{variable}}` 占位符。
+///
+/// 通过 [`render`](Self::render) 方法传入变量解析器，生成最终字符串。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptTemplate {
     source: Cow<'static, str>,
@@ -12,6 +26,10 @@ impl PromptTemplate {
         }
     }
 
+    /// 渲染模板，将占位符替换为实际值。
+    ///
+    /// `resolver` 闭包接收变量名，返回 `Some(value)` 或 `None`（表示变量缺失）。
+    /// 当遇到缺失的变量时，返回 [`TemplateRenderError::MissingVariable`]。
     pub fn render<F>(&self, mut resolver: F) -> Result<String, TemplateRenderError>
     where
         F: FnMut(&str) -> Option<String>,
@@ -45,6 +63,9 @@ impl PromptTemplate {
     }
 }
 
+/// 模板渲染错误。
+///
+/// 当模板格式不正确或变量缺失时返回。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TemplateRenderError {
     EmptyPlaceholder,

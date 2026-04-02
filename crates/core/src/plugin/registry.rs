@@ -1,40 +1,80 @@
+//! # 插件注册表
+//!
+//! 管理已发现插件的生命周期状态、健康检查和能力声明。
+//!
+//! ## 设计要点
+//!
+//! - 使用 `RwLock<BTreeMap>` 保证线程安全和有序遍历
+//! - 插件状态机：`Discovered` → `Initialized` / `Failed`
+//! - 健康状态独立于生命周期状态（`Healthy` / `Degraded` / `Unavailable`）
+//! - 支持运行时快照替换（用于插件热重载场景）
+
 use std::collections::BTreeMap;
 use std::sync::RwLock;
 
 use crate::{CapabilityDescriptor, PluginManifest};
 
+/// 插件生命周期状态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginState {
+    /// 已发现（清单已加载，但尚未初始化）
     Discovered,
+    /// 已初始化（能力已注册，可以正常调用）
     Initialized,
+    /// 初始化失败
     Failed,
 }
 
+/// 插件健康状态。
+///
+/// 与 `PluginState` 不同，健康状态反映运行时状况，
+/// 一个已初始化的插件可能因网络问题变为 `Degraded`。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginHealth {
+    /// 尚未检查
     Unknown,
+    /// 正常运行
     Healthy,
+    /// 部分功能异常
     Degraded,
+    /// 不可用
     Unavailable,
 }
 
+/// 插件注册表条目。
+///
+/// 包含插件的完整运行时状态：清单、生命周期状态、健康状态、失败记录等。
 #[derive(Debug, Clone)]
 pub struct PluginEntry {
+    /// 插件清单
     pub manifest: PluginManifest,
+    /// 生命周期状态
     pub state: PluginState,
+    /// 健康状态
     pub health: PluginHealth,
+    /// 连续失败次数
     pub failure_count: u32,
+    /// 已注册的能力列表
     pub capabilities: Vec<CapabilityDescriptor>,
+    /// 失败原因（仅在失败时设置）
     pub failure: Option<String>,
+    /// 最后一次健康检查时间
     pub last_checked_at: Option<String>,
 }
 
+/// 插件注册表。
+///
+/// 线程安全的插件状态存储，支持并发读写。
+/// 使用 `RwLock` 而非 `Mutex` 因为读操作远多于写操作。
 #[derive(Debug, Default)]
 pub struct PluginRegistry {
     plugins: RwLock<BTreeMap<String, PluginEntry>>,
 }
 
 impl PluginRegistry {
+    /// 记录一个新发现的插件。
+    ///
+    /// 如果同名插件已存在，会被覆盖。
     pub fn record_discovered(&self, manifest: PluginManifest) {
         self.upsert(PluginEntry {
             manifest,
@@ -47,6 +87,9 @@ impl PluginRegistry {
         });
     }
 
+    /// 记录插件初始化成功，将状态推进到 `Initialized`。
+    ///
+    /// 初始化成功后健康状态重置为 `Healthy`，失败计数清零。
     pub fn record_initialized(
         &self,
         manifest: PluginManifest,
@@ -63,6 +106,9 @@ impl PluginRegistry {
         });
     }
 
+    /// 记录插件初始化失败，将状态标记为 `Failed`。
+    ///
+    /// 失败后健康状态设为 `Unavailable`，并记录失败原因。
     pub fn record_failed(
         &self,
         manifest: PluginManifest,
@@ -80,6 +126,9 @@ impl PluginRegistry {
         });
     }
 
+    /// 按名称查询插件条目。
+    ///
+    /// 返回 `None` 表示该插件尚未被发现或已从注册表中移除。
     pub fn get(&self, name: &str) -> Option<PluginEntry> {
         self.plugins
             .read()
@@ -88,6 +137,10 @@ impl PluginRegistry {
             .cloned()
     }
 
+    /// 获取所有插件条目的快照。
+    ///
+    /// 返回当前注册表中所有插件的副本，调用方持有快照后
+    /// 注册表的后续变更不会影响已返回的快照。
     pub fn snapshot(&self) -> Vec<PluginEntry> {
         self.plugins
             .read()
@@ -97,6 +150,10 @@ impl PluginRegistry {
             .collect()
     }
 
+    /// 原子替换整个插件注册表快照。
+    ///
+    /// 用于插件热重载场景：新插件集合一次性替换旧集合，
+    /// 避免逐条更新导致中间状态不一致。
     pub fn replace_snapshot(&self, entries: Vec<PluginEntry>) {
         let mut plugins = self.plugins.write().expect("plugin registry lock poisoned");
         plugins.clear();
@@ -105,6 +162,10 @@ impl PluginRegistry {
         }
     }
 
+    /// 记录插件运行时成功事件。
+    ///
+    /// 将健康状态重置为 `Healthy` 并清零失败计数，
+    /// 表明插件当前运行正常。
     pub fn record_runtime_success(&self, name: &str, checked_at: String) {
         self.mutate(name, |entry| {
             if entry.state == PluginState::Initialized {
@@ -116,6 +177,10 @@ impl PluginRegistry {
         });
     }
 
+    /// 记录插件运行时失败事件。
+    ///
+    /// 失败计数递增；连续失败 3 次及以上时健康状态降级为 `Unavailable`，
+    /// 否则标记为 `Degraded`。用于实现渐进式健康度评估。
     pub fn record_runtime_failure(
         &self,
         name: &str,
@@ -139,6 +204,10 @@ impl PluginRegistry {
         });
     }
 
+    /// 记录一次主动健康探测结果。
+    ///
+    /// 与 `record_runtime_success/failure` 不同，此方法允许调用方
+    /// 直接指定健康状态，适用于自定义健康检查逻辑。
     pub fn record_health_probe(
         &self,
         name: &str,

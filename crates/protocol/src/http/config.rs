@@ -1,43 +1,76 @@
+//! 配置管理相关 DTO
+//!
+//! 定义配置查看、保存、连接测试的请求/响应结构。
+//! 配置数据包括 profile（提供商配置）、活跃模型选择等。
+
 use serde::{Deserialize, Serialize};
 
+/// 配置文件中单个 profile 的只读视图。
+///
+/// 用于 `GET /api/config` 响应中返回每个 profile 的摘要信息。
+/// `api_key_preview` 仅包含密钥的部分字符，避免完整暴露。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileView {
+    /// 配置文件中的 profile 名称
     pub name: String,
+    /// API 基础 URL
     pub base_url: String,
+    /// API 密钥的部分预览（脱敏显示）
     pub api_key_preview: String,
+    /// 此 profile 下可用的模型 ID 列表
     pub models: Vec<String>,
 }
 
+/// 全局配置的只读视图。
+///
+/// 用于 `GET /api/config` 响应，返回当前活跃配置摘要。
+/// `warning` 字段在配置存在问题时（如 profile 不存在、模型不可用）提供警告信息。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigView {
+    /// 配置文件在磁盘上的绝对路径
     pub config_path: String,
+    /// 当前活跃的 profile 名称
     pub active_profile: String,
+    /// 当前活跃的模型 ID
     pub active_model: String,
+    /// 所有已配置的 profile 列表
     pub profiles: Vec<ProfileView>,
+    /// 配置警告信息（如 profile 不存在、模型不可用等），无问题时为 None
     pub warning: Option<String>,
 }
 
+/// `PUT /api/config/selection` 请求体——保存用户的活跃 profile 和模型选择。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveActiveSelectionRequest {
+    /// 要设为活跃的 profile 名称
     pub active_profile: String,
+    /// 要设为活跃的模型 ID
     pub active_model: String,
 }
 
+/// `POST /api/config/test-connection` 请求体——测试指定 profile 和模型的连接。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TestConnectionRequest {
+    /// 要测试的 profile 名称
     pub profile_name: String,
+    /// 要测试的模型 ID
     pub model: String,
 }
 
+/// `POST /api/config/test-connection` 响应体——连接测试结果。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TestResultDto {
+    /// 连接测试是否成功
     pub success: bool,
+    /// 实际测试的提供商类型
     pub provider: String,
+    /// 实际测试的模型 ID
     pub model: String,
+    /// 失败时的错误信息
     pub error: Option<String>,
 }

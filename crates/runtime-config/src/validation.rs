@@ -1,4 +1,14 @@
-//! Configuration normalization, migration, and validation.
+//! 配置规范化、迁移与验证。
+//!
+//! 本模块确保加载和保存的配置始终处于合法状态：
+//! - **迁移**：空白 version 字段迁移到当前版本，空白 active_profile/active_model 填充默认值
+//! - **验证**：检查 Provider 类型合法性、Profile 名称唯一性、模型列表非空、
+//!   active_profile/active_model 交叉引用合法性、运行时参数范围
+//!
+//! # 验证失败策略
+//!
+//! 验证失败返回 `AstrError::Validation` 错误，包含具体的字段名称和原因。
+//! 错误信息会被传播到 HTTP 响应中，供前端展示给用户。
 
 use std::collections::HashSet;
 
@@ -7,14 +17,24 @@ use astrcode_core::{AstrError, Result};
 use crate::constants::{CURRENT_CONFIG_VERSION, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI};
 use crate::types::Config;
 
-/// Normalizes and validates the configuration.
+/// 规范化并验证配置。
+///
+/// 依次执行迁移（[`migrate_config`]）和验证（[`validate_config`]），
+/// 确保配置处于合法且最新的状态。
 pub fn normalize_config(mut config: Config) -> Result<Config> {
     migrate_config(&mut config)?;
     validate_config(&config)?;
     Ok(config)
 }
 
-/// Migrates the configuration to the current version.
+/// 将配置迁移到当前 schema 版本。
+///
+/// 处理以下迁移场景：
+/// - 空白 `version` → 填充为 [`CURRENT_CONFIG_VERSION`]
+/// - 空白 `active_profile` → 填充为默认 Profile 名称
+/// - 空白 `active_model` → 填充为默认模型名称
+///
+/// 不支持的版本号会返回验证错误。
 fn migrate_config(config: &mut Config) -> Result<()> {
     if config.version.trim().is_empty() {
         config.version = CURRENT_CONFIG_VERSION.to_string();
@@ -41,7 +61,19 @@ fn migrate_config(config: &mut Config) -> Result<()> {
     Ok(())
 }
 
-/// Validates the configuration for correctness.
+/// 验证配置的合法性。
+///
+/// 检查项包括：
+/// - 运行时参数必须大于 0（`max_tool_concurrency`、`tool_result_max_bytes` 等）
+/// - `compact_threshold_percent` 必须在 1-100 范围内
+/// - 至少包含一个 Profile
+/// - Profile 名称不能为空且必须唯一
+/// - 每个 Profile 必须至少有一个模型
+/// - `max_tokens` 必须大于 0
+/// - `provider_kind` 必须是支持的类型（`openai-compatible` 或 `anthropic`）
+/// - OpenAI 兼容 Provider 的 `base_url` 不能为空
+/// - `active_profile` 必须存在于 `profiles` 列表中
+/// - `active_model` 必须存在于 `active_profile` 的 `models` 列表中
 pub fn validate_config(config: &Config) -> Result<()> {
     if matches!(config.runtime.max_tool_concurrency, Some(0)) {
         return Err(AstrError::Validation(

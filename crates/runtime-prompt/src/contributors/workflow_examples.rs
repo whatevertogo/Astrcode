@@ -1,3 +1,8 @@
+//! 工作流示例贡献者。
+//!
+//! 提供 few-shot 示例对话，教导模型"先收集上下文再修改代码"的行为模式。
+//! 仅在第一步（step_index == 0）时生效，以 prepend 方式插入到对话消息中。
+
 use async_trait::async_trait;
 
 use crate::{

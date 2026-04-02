@@ -1,3 +1,13 @@
+//! # Agent Loop 集成测试
+//!
+//! 验证 AgentLoop 的完整执行流程，包括：
+//! - 基本 Turn 执行（LLM 返回纯文本）
+//! - 工具调用循环（LLM 请求工具 → 执行 → 反馈 → 完成）
+//! - 取消处理（Turn 中途取消）
+//! - 错误处理（LLM 调用失败、工具执行失败）
+//! - Token 预算（预算耗尽时停止）
+//! - 审批流程（需要用户确认的工具调用）
+
 use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;

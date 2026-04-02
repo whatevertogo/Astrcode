@@ -1,3 +1,31 @@
+//! # Turn 执行操作 (Turn Execution Operations)
+//!
+//! 实现 `RuntimeService` 的 Turn 生命周期管理，包括：
+//! - 提交用户 Prompt 并启动异步 Turn 执行
+//! - 会话分支（当目标会话正忙时自动创建分支）
+//! - Turn 链执行（支持自动续跑 Token 预算未耗尽的情况）
+//! - 中断、手动压缩会话
+//!
+//! ## Turn 提交流程
+//!
+//! 1. 解析 Token 预算标记（如 `@budget:4000`）
+//! 2. 解析提交目标（若会话正忙则自动分支）
+//! 3. 获取 Turn Lease 和 CancelToken
+//! 4. 在后台任务中执行 Turn 链
+//! 5. Turn 完成后重置状态并广播结果
+//!
+//! ## 自动分支机制
+//!
+//! 当用户向正在运行的会话提交新 Prompt 时，系统会自动创建分支会话，
+//! 继承父会话的稳定历史（排除当前活跃 Turn 的未完成事件）。
+//! 分支深度限制为 3 层，防止过深的分支树影响性能。
+//!
+//! ## Token 预算与自动续跑
+//!
+//! 若 Turn 完成后 Token 预算未耗尽且满足最小增量要求，
+//! 系统会自动注入 `AutoContinueNudge` 消息触发下一轮 Turn，
+//! 直到预算耗尽或达到最大续跑次数。
+
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
@@ -27,33 +55,57 @@ use crate::config::{
 use crate::context_window::{auto_compact, estimate_text_tokens, CompactConfig};
 use astrcode_core::EventTranslator;
 
+/// Turn 提交的目标会话及其执行上下文。
+///
+/// 包含会话状态、Turn Lease（用于并发控制）以及可能的分支来源信息。
 struct SubmitTarget {
+    /// 实际执行 Turn 的会话 ID（可能是分支后的新会话）
     session_id: String,
+    /// 若发生了分支，记录父会话 ID
     branched_from_session_id: Option<String>,
+    /// 会话运行时状态
     session: Arc<SessionState>,
+    /// Turn 独占锁，保证同一时刻只有一个 Turn 在执行
     turn_lease: Box<dyn SessionTurnLease>,
 }
 
+/// 最大允许的并发分支深度。
+///
+/// 超过此深度说明存在过多的并发提交，应拒绝以避免分支树膨胀。
 const MAX_CONCURRENT_BRANCH_DEPTH: usize = 3;
 
+/// Token 预算相关的配置参数。
 #[derive(Debug, Clone, Copy)]
 struct BudgetSettings {
+    /// 触发自动续跑所需的最小剩余 Token 数
     continuation_min_delta_tokens: usize,
+    /// 单个 Turn 允许的最大自动续跑次数
     max_continuations: u8,
 }
 
+/// Turn 执行过程中的统计信息。
+///
+/// 用于跟踪 Token 消耗，支持预算检查和自动续跑决策。
 #[derive(Debug, Default, Clone, Copy)]
 struct TurnExecutionStats {
+    /// 累计估算的 Token 使用量（含 prompt + assistant output）
     estimated_tokens_used: u64,
+    /// 最近一次助手输出的 Token 数
     last_assistant_output_tokens: usize,
+    /// 待计入的 prompt Token 数（仅在模型真正响应后才计费）
     pending_prompt_tokens: Option<u64>,
 }
 
 impl TurnExecutionStats {
+    /// 记录 prompt 的 Token 指标，但暂不计入总消耗。
+    ///
+    /// 这样设计是为了避免纯压缩（compaction-only）快照消耗续跑预算——
+    /// 只有当模型实际产生响应后，才通过 `flush_pending_prompt_tokens` 计费。
     fn record_prompt_metrics(&mut self, estimated_tokens: u32) {
         self.pending_prompt_tokens = Some(estimated_tokens as u64);
     }
 
+    /// 记录助手输出内容的 Token 数，并在此时刷入待计的 prompt Token。
     fn record_assistant_output(&mut self, content: &str, reasoning_content: Option<&str>) {
         // Only charge the prompt snapshot once the model actually produced a response, so
         // compaction-only snapshots do not consume the session's continuation budget.
@@ -68,6 +120,7 @@ impl TurnExecutionStats {
         self.last_assistant_output_tokens = output_tokens;
     }
 
+    /// 将待计的 prompt Token 刷入总消耗。
     fn flush_pending_prompt_tokens(&mut self) {
         if let Some(prompt_tokens) = self.pending_prompt_tokens.take() {
             self.estimated_tokens_used = self.estimated_tokens_used.saturating_add(prompt_tokens);

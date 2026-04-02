@@ -1,33 +1,64 @@
+//! # 可观测性 (Observability)
+//!
+//! 收集运行时服务的操作指标，包括：
+//! - 会话重水合（Session Rehydrate）：加载已有会话的成功率和耗时
+//! - SSE 追赶（SSE Catch-up）：客户端重连时回放历史的路径和恢复事件数
+//! - Turn 执行（Turn Execution）：Turn 执行的成功率和耗时
+//!
+//! ## 设计
+//!
+//! 使用原子计数器（`AtomicU64`）记录指标，避免锁竞争。
+//! 所有记录操作都是无锁的，适合高频调用。
+//! 快照（`snapshot()`）返回当前指标的只读副本，供外部查询。
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+/// 回放路径：优先缓存，不足时回退到磁盘。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplayPath {
+    /// 从内存缓存读取（快速路径）
     Cache,
+    /// 从磁盘 JSONL 文件加载（慢速回退路径）
     DiskFallback,
 }
 
+/// 单一操作的指标快照。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OperationMetricsSnapshot {
+    /// 总操作次数
     pub total: u64,
+    /// 失败次数
     pub failures: u64,
+    /// 累计耗时（毫秒）
     pub total_duration_ms: u64,
+    /// 最近一次操作的耗时（毫秒）
     pub last_duration_ms: u64,
+    /// 历史最大单次操作耗时（毫秒）
     pub max_duration_ms: u64,
 }
 
+/// SSE 回放操作的指标快照。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReplayMetricsSnapshot {
+    /// 基础操作指标（总次数、失败率、耗时等）
     pub totals: OperationMetricsSnapshot,
+    /// 缓存命中次数
     pub cache_hits: u64,
+    /// 磁盘回退次数（说明缓存不足的情况）
     pub disk_fallbacks: u64,
+    /// 成功恢复的事件总数
     pub recovered_events: u64,
 }
 
+/// 运行时可观测性快照，包含三类操作的指标。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeObservabilitySnapshot {
+    /// 会话重水合（从磁盘加载已有会话）的指标
     pub session_rehydrate: OperationMetricsSnapshot,
+    /// SSE 追赶（客户端重连时回放历史）的指标
     pub sse_catch_up: ReplayMetricsSnapshot,
+    /// Turn 执行的指标
     pub turn_execution: OperationMetricsSnapshot,
 }
 
@@ -67,12 +98,18 @@ impl RuntimeObservability {
     }
 }
 
+/// 单一操作的指标收集器，使用原子计数器避免锁竞争。
 #[derive(Default)]
 struct OperationMetrics {
+    /// 总操作次数
     total: AtomicU64,
+    /// 失败次数
     failures: AtomicU64,
+    /// 累计耗时（毫秒）
     total_duration_ms: AtomicU64,
+    /// 最近一次操作的耗时（毫秒）
     last_duration_ms: AtomicU64,
+    /// 历史最大单次操作耗时（毫秒）
     max_duration_ms: AtomicU64,
 }
 
@@ -105,11 +142,16 @@ impl OperationMetrics {
     }
 }
 
+/// SSE 回放指标收集器，在基础操作指标之上增加缓存/磁盘路径统计。
 #[derive(Default)]
 struct ReplayMetrics {
+    /// 基础操作指标
     totals: OperationMetrics,
+    /// 缓存命中次数
     cache_hits: AtomicU64,
+    /// 磁盘回退次数
     disk_fallbacks: AtomicU64,
+    /// 成功恢复的事件总数
     recovered_events: AtomicU64,
 }
 

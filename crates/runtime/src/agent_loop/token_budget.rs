@@ -1,3 +1,24 @@
+//! # Token 预算管理 (Token Budget)
+//!
+//! 解析用户消息中的 Token 预算标记（如 `+50k`、`+1.5m`、`use 100k tokens`），
+//! 并在 Turn 执行过程中检查预算使用情况。
+//!
+//! ## 预算标记格式
+//!
+//! - 简写格式: `+50k`、`+1.5m`（k = 1000, m = 1000000）
+//! - 短语格式: `use 100k tokens`
+//!
+//! ## 预算决策
+//!
+//! - **Continue**: 预算充足，继续执行
+//! - **Stop**: 预算为 0，立即停止
+//! - **DiminishingReturns**: 接近预算上限且最近增量很小，停止以避免浪费
+//!
+//! ## Auto-Continue Nudge
+//!
+//! 当 Turn 接近预算但未耗尽时，会生成一个自动继续提示（nudge），
+//! 告诉 LLM 已使用了多少预算，鼓励其继续工作。
+
 use regex::Regex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

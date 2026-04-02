@@ -1,3 +1,20 @@
+//! # LLM Provider 工厂 (Provider Factory)
+//!
+//! 负责根据工作目录的配置构建对应的 LLM Provider 实例。
+//!
+//! ## 设计
+//!
+//! `ProviderFactory` trait 抽象了 Provider 的构建过程，支持：
+//! - 从配置文件读取 Profile 和 Model 选择
+//! - 根据 Provider 类型（OpenAI / Anthropic）构建对应的 Provider
+//! - 标记是否需要阻塞线程池执行（磁盘 I/O 相关）
+//!
+//! ## 宽容降级策略
+//!
+//! `select_profile` 和 `resolve_model` 在配置不一致时静默回退到第一个可用值，
+//! 而非直接报错。这是因为配置文件可能被手动编辑后出现不一致，
+//! 宽容降级可以避免直接拒绝服务。
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
