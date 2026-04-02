@@ -614,6 +614,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
+    use astrcode_core::test_support::TestEnvGuard;
     use async_trait::async_trait;
     use tokio::time::sleep;
 
@@ -671,6 +672,7 @@ mod tests {
 
     #[tokio::test]
     async fn with_defaults_build_includes_identity_block() {
+        let _guard = TestEnvGuard::new();
         let project = tempfile::tempdir().expect("tempdir should be created");
         let composer = PromptComposer::with_defaults();
 
@@ -688,6 +690,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_appends_custom_contributor_output() {
+        let _guard = TestEnvGuard::new();
         let project = tempfile::tempdir().expect("tempdir should be created");
         let composer =
             PromptComposer::with_defaults().with_contributor(Arc::new(StaticContributor));
@@ -706,6 +709,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_reuses_contributor_cache_for_same_context() {
+        let _guard = TestEnvGuard::new();
         let project = tempfile::tempdir().expect("tempdir should be created");
         let calls = Arc::new(AtomicUsize::new(0));
         let composer =
@@ -728,6 +732,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_expires_contributor_cache_after_ttl() {
+        let _guard = TestEnvGuard::new();
         let project = tempfile::tempdir().expect("tempdir should be created");
         let calls = Arc::new(AtomicUsize::new(0));
         let composer = PromptComposer::with_options(PromptComposerOptions {
@@ -754,6 +759,7 @@ mod tests {
 
     #[tokio::test]
     async fn template_resolution_prefers_block_then_contributor_then_context_then_builtin() {
+        let _guard = TestEnvGuard::new();
         struct TemplateContributor;
 
         #[async_trait]
@@ -804,6 +810,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_dependency_after_condition_skip_emits_diagnostic() {
+        let _guard = TestEnvGuard::new();
         struct ConditionalContributor;
 
         #[async_trait]
@@ -846,6 +853,7 @@ mod tests {
 
     #[tokio::test]
     async fn strict_validation_bubbles_up_error() {
+        let _guard = TestEnvGuard::new();
         struct InvalidContributor;
 
         #[async_trait]

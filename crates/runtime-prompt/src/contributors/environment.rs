@@ -25,11 +25,14 @@ impl PromptContributor for EnvironmentContributor {
 
 #[cfg(test)]
 mod tests {
+    use astrcode_core::test_support::TestEnvGuard;
+
     use super::*;
     use crate::PromptComposer;
 
     #[tokio::test]
     async fn includes_working_dir_os_date_and_tool_names() {
+        let _guard = TestEnvGuard::new();
         let composer = PromptComposer::with_defaults();
         let ctx = PromptContext {
             working_dir: "/workspace/demo".to_string(),
