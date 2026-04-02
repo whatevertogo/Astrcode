@@ -8,6 +8,8 @@ use axum::Router;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
+use astrcode_runtime::config::{DEEPSEEK_API_KEY_ENV, ENV_REFERENCE_PREFIX};
+
 use crate::auth::secure_token_eq;
 use crate::bootstrap::{build_cors_layer, inject_browser_bootstrap_html, serve_frontend_build};
 use crate::mapper::api_key_preview;
@@ -258,8 +260,11 @@ fn secure_token_eq_requires_exact_match() {
 #[test]
 fn api_key_preview_supports_explicit_env_and_literal_prefixes() {
     assert_eq!(
-        api_key_preview(Some("env:DEEPSEEK_API_KEY")),
-        "环境变量: DEEPSEEK_API_KEY"
+        api_key_preview(Some(&format!(
+            "{}{}",
+            ENV_REFERENCE_PREFIX, DEEPSEEK_API_KEY_ENV
+        ))),
+        format!("环境变量: {}", DEEPSEEK_API_KEY_ENV)
     );
     assert_eq!(api_key_preview(Some("literal:ABCD1234")), "****1234");
 }

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use astrcode_core::home::{ASTRCODE_HOME_DIR_ENV, ASTRCODE_TEST_HOME_ENV};
+use astrcode_core::env::{ASTRCODE_HOME_DIR_ENV, ASTRCODE_TEST_HOME_ENV};
 use log::warn;
 
 /// Resolves a path to a file under `~/.astrcode/` (or the configured home override).

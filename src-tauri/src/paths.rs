@@ -1,8 +1,11 @@
 use anyhow::{anyhow, Result};
+use astrcode_core::env::ASTRCODE_HOME_DIR_ENV;
 use std::path::PathBuf;
 
 pub fn resolve_home_dir() -> Result<PathBuf> {
-    if let Some(home) = std::env::var_os("ASTRCODE_HOME_DIR") {
+    // Keep the desktop shell aligned with the workspace env catalog in
+    // `runtime-config/constants.rs`, which re-exports this core constant.
+    if let Some(home) = std::env::var_os(ASTRCODE_HOME_DIR_ENV) {
         if !home.is_empty() {
             return Ok(PathBuf::from(home));
         }

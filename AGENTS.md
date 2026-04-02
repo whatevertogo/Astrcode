@@ -102,4 +102,4 @@ protocol (纯 DTO，无业务依赖)
 
 # 注意
 
-- 环境变量都放runtime-config/src/constants.rs里面
+- 项目自定义环境变量常量的底层源头放 `crates/core/src/env.rs`；`crates/runtime-config/src/constants.rs` 负责按 home / plugin / provider / build 分类聚合与对外导出，新增环境变量时不要散落硬编码

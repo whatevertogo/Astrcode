@@ -14,7 +14,8 @@
 
 ## 本地接入
 
-把插件目录加入 `ASTRCODE_PLUGIN_DIRS` 后启动 server：
+把插件目录加入 `ASTRCODE_PLUGIN_DIRS` 后启动 server。
+这个环境变量已收口到 `crates/runtime-config/src/constants.rs` 的 plugin 分类：
 
 ```powershell
 $env:ASTRCODE_PLUGIN_DIRS = (Resolve-Path "examples/plugins/repo-inspector")

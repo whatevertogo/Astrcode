@@ -18,8 +18,8 @@ use astrcode_protocol::http::{
 };
 use astrcode_runtime::RuntimeGovernanceSnapshot;
 use astrcode_runtime::{
-    Config, OperationMetricsSnapshot, Profile, ReplayMetricsSnapshot, RuntimeObservabilitySnapshot,
-    SessionMessage,
+    is_env_var_name, Config, OperationMetricsSnapshot, Profile, ReplayMetricsSnapshot,
+    RuntimeObservabilitySnapshot, SessionMessage,
 };
 use axum::http::StatusCode;
 use axum::response::sse::Event;
@@ -447,11 +447,4 @@ pub(crate) fn api_key_preview(api_key: Option<&str>) -> String {
         }
         Some(_) => "****".to_string(),
     }
-}
-
-fn is_env_var_name(value: &str) -> bool {
-    value
-        .chars()
-        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-        && value.contains('_')
 }

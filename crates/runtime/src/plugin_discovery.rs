@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
-use astrcode_core::{AstrError, PluginManifest};
+use astrcode_core::{env::ASTRCODE_PLUGIN_DIRS_ENV, AstrError, PluginManifest};
 use astrcode_plugin::PluginLoader;
 
 pub(crate) fn configured_plugin_paths() -> Vec<PathBuf> {
-    match std::env::var_os("ASTRCODE_PLUGIN_DIRS") {
+    match std::env::var_os(ASTRCODE_PLUGIN_DIRS_ENV) {
         Some(raw_paths) => std::env::split_paths(&raw_paths).collect(),
         None => Vec::new(),
     }

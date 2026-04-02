@@ -22,6 +22,8 @@ const args =
 const cargoCommand = process.platform === "win32" ? "cargo.exe" : "cargo";
 
 function resolveTargetTriple() {
+  // Keep this env name aligned with the categorized catalog in
+  // `crates/runtime-config/src/constants.rs`.
   const envTriple = process.env.TAURI_ENV_TARGET_TRIPLE?.trim();
   if (envTriple) {
     return envTriple;

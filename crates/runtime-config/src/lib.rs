@@ -15,6 +15,7 @@ mod api_key;
 mod connection;
 mod constants;
 mod editor;
+mod env;
 mod loader;
 mod saver;
 mod types;
@@ -22,8 +23,15 @@ mod validation;
 
 // Public re-exports
 pub use connection::test_connection;
-pub use constants::{CURRENT_CONFIG_VERSION, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI};
+pub use constants::{
+    ALL_ASTRCODE_ENV_VARS, ANTHROPIC_API_KEY_ENV, ASTRCODE_HOME_DIR_ENV, ASTRCODE_PLUGIN_DIRS_ENV,
+    ASTRCODE_TEST_HOME_ENV, BUILD_ENV_VARS, CURRENT_CONFIG_VERSION, DEEPSEEK_API_KEY_ENV,
+    ENV_REFERENCE_PREFIX, HOME_ENV_VARS, LITERAL_VALUE_PREFIX, PLUGIN_ENV_VARS,
+    PROVIDER_API_KEY_ENV_VARS, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI,
+    TAURI_ENV_TARGET_TRIPLE_ENV,
+};
 pub use editor::open_config_in_editor;
+pub use env::{env_reference, is_env_var_name, parse_env_value, resolve_env_value, ParsedEnvValue};
 pub use loader::{
     config_path, load_config, load_config_from_path, load_config_overlay_from_path,
     load_resolved_config, project_overlay_path,
@@ -64,9 +72,40 @@ mod tests {
     }
 
     #[test]
+    fn resolve_env_value_prefers_environment_for_legacy_env_like_defaults() {
+        let _guard = TestEnvGuard::new();
+        let env_name = unique_env_name();
+        std::env::set_var(&env_name, "resolved-from-env");
+
+        let resolved = resolve_env_value(&env_name).expect("env-like default should resolve");
+
+        assert_eq!(resolved, "resolved-from-env");
+        std::env::remove_var(&env_name);
+    }
+
+    #[test]
+    fn resolve_env_value_keeps_legacy_env_like_default_when_env_is_missing() {
+        let _guard = TestEnvGuard::new();
+        let env_name = unique_env_name();
+        std::env::remove_var(&env_name);
+
+        let resolved = resolve_env_value(&env_name).expect("missing env should keep raw value");
+
+        assert_eq!(resolved, env_name);
+    }
+
+    #[test]
+    fn env_reference_formats_explicit_env_prefix() {
+        assert_eq!(
+            env_reference(DEEPSEEK_API_KEY_ENV),
+            format!("{}{}", ENV_REFERENCE_PREFIX, DEEPSEEK_API_KEY_ENV)
+        );
+    }
+
+    #[test]
     fn first_load_creates_config_file_with_defaults() {
         let _guard = TestEnvGuard::new();
-        std::env::remove_var("DEEPSEEK_API_KEY");
+        std::env::remove_var(DEEPSEEK_API_KEY_ENV);
 
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let path = temp.path().join(".astrcode").join("config.json");
@@ -246,8 +285,8 @@ mod tests {
 
         let rendered = format!("{:?}", config);
 
-        assert!(!rendered.contains("DEEPSEEK_API_KEY"));
-        assert!(!rendered.contains("ANTHROPIC_API_KEY"));
+        assert!(!rendered.contains(DEEPSEEK_API_KEY_ENV));
+        assert!(!rendered.contains(ANTHROPIC_API_KEY_ENV));
         assert!(rendered.contains("<redacted>"));
     }
 
@@ -441,8 +480,8 @@ mod tests {
     #[test]
     fn load_resolved_config_applies_project_overlay_without_touching_user_defaults() {
         let _guard = TestEnvGuard::new();
-        std::env::remove_var("DEEPSEEK_API_KEY");
-        std::env::remove_var("ANTHROPIC_API_KEY");
+        std::env::remove_var(DEEPSEEK_API_KEY_ENV);
+        std::env::remove_var(ANTHROPIC_API_KEY_ENV);
 
         let base = Config {
             active_profile: "deepseek".to_string(),

@@ -7,11 +7,7 @@ use std::path::PathBuf;
 
 use crate::{AstrError, Result};
 
-/// 环境变量名，用于覆盖 Astrcode 的生产 home 目录
-pub const ASTRCODE_HOME_DIR_ENV: &str = "ASTRCODE_HOME_DIR";
-
-/// 环境变量名，用于覆盖 Astrcode 的测试 home 目录（仅用于测试隔离）
-pub const ASTRCODE_TEST_HOME_ENV: &str = "ASTRCODE_TEST_HOME";
+pub use crate::env::{ASTRCODE_HOME_DIR_ENV, ASTRCODE_TEST_HOME_ENV};
 
 /// Resolves the home directory for Astrcode storage.
 ///

@@ -1,9 +1,10 @@
+use astrcode_core::env::TAURI_ENV_TARGET_TRIPLE_ENV;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
 
 fn ensure_sidecar_placeholder() {
-    let target_triple = env::var("TAURI_ENV_TARGET_TRIPLE")
+    let target_triple = env::var(TAURI_ENV_TARGET_TRIPLE_ENV)
         .or_else(|_| env::var("TARGET"))
         .expect("target triple should be available during build");
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();

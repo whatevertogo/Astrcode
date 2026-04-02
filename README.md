@@ -122,6 +122,21 @@ cd frontend && npm run build
 1. **明文值**：直接填写 API Key（如 `sk-xxxx`）
 2. **环境变量名**：填写环境变量名称（如 `DEEPSEEK_API_KEY`），程序会自动读取
 
+### 内建环境变量
+
+项目自定义环境变量按类别集中维护在 `crates/runtime-config/src/constants.rs`，底层常量源头在 `crates/core/src/env.rs`，避免低层 crate 反向依赖配置 crate。
+
+| 类别 | 环境变量 | 作用 |
+|------|------|------|
+| Home / 测试隔离 | `ASTRCODE_HOME_DIR` | 覆盖 Astrcode 的 home 目录 |
+| Home / 测试隔离 | `ASTRCODE_TEST_HOME` | 为测试隔离临时 home 目录 |
+| Plugin | `ASTRCODE_PLUGIN_DIRS` | 追加插件发现目录，按系统路径分隔符解析 |
+| Provider 默认值 | `DEEPSEEK_API_KEY` | DeepSeek 默认 profile 的 API Key |
+| Provider 默认值 | `ANTHROPIC_API_KEY` | Anthropic 默认 profile 的 API Key |
+| Build / Tauri | `TAURI_ENV_TARGET_TRIPLE` | 构建 sidecar 时指定目标 triple |
+
+像 `OPENAI_API_KEY` 这类自定义 profile 使用的环境变量仍然允许自由命名，但不属于平台内建环境变量目录。
+
 ### 多 Profile 配置
 
 可配置多个 API 提供商，在设置界面切换：

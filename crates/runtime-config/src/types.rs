@@ -4,7 +4,11 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{CURRENT_CONFIG_VERSION, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI};
+use crate::constants::{
+    ANTHROPIC_API_KEY_ENV, CURRENT_CONFIG_VERSION, DEEPSEEK_API_KEY_ENV, PROVIDER_KIND_ANTHROPIC,
+    PROVIDER_KIND_OPENAI,
+};
+use crate::env::env_reference;
 
 /// Top-level application configuration.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -73,7 +77,7 @@ impl Default for Profile {
             name: "deepseek".to_string(),
             provider_kind: PROVIDER_KIND_OPENAI.to_string(),
             base_url: "https://api.deepseek.com".to_string(),
-            api_key: Some("env:DEEPSEEK_API_KEY".to_string()),
+            api_key: Some(env_reference(DEEPSEEK_API_KEY_ENV)),
             models: vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
             max_tokens: 8096,
         }
@@ -153,7 +157,7 @@ fn default_profiles() -> Vec<Profile> {
             name: "deepseek".to_string(),
             provider_kind: PROVIDER_KIND_OPENAI.to_string(),
             base_url: "https://api.deepseek.com".to_string(),
-            api_key: Some("env:DEEPSEEK_API_KEY".to_string()),
+            api_key: Some(env_reference(DEEPSEEK_API_KEY_ENV)),
             models: vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
             max_tokens: 8096,
         },
@@ -161,7 +165,7 @@ fn default_profiles() -> Vec<Profile> {
             name: "anthropic".to_string(),
             provider_kind: PROVIDER_KIND_ANTHROPIC.to_string(),
             base_url: String::new(),
-            api_key: Some("env:ANTHROPIC_API_KEY".to_string()),
+            api_key: Some(env_reference(ANTHROPIC_API_KEY_ENV)),
             models: vec![
                 "claude-sonnet-4-5-20251001".to_string(),
                 "claude-opus-4-5".to_string(),
@@ -184,7 +188,7 @@ fn default_profile_base_url() -> String {
 }
 
 fn default_profile_api_key() -> Option<String> {
-    Some("env:DEEPSEEK_API_KEY".to_string())
+    Some(env_reference(DEEPSEEK_API_KEY_ENV))
 }
 
 fn default_profile_models() -> Vec<String> {

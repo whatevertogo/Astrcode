@@ -18,6 +18,7 @@
 mod action;
 mod cancel;
 pub mod capability;
+pub mod env;
 mod error;
 pub mod event;
 pub mod home;

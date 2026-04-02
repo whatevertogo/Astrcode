@@ -3,7 +3,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use tempfile::TempDir;
 
-pub const TEST_HOME_ENV: &str = "ASTRCODE_TEST_HOME";
+pub use crate::env::ASTRCODE_TEST_HOME_ENV as TEST_HOME_ENV;
 
 pub fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
