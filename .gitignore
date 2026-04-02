@@ -47,3 +47,6 @@ coverage/
 # Tauri build artifacts
 /src-tauri/icons/*.png
 !/src-tauri/icons/icon.png
+
+# AI
+.kilo/
