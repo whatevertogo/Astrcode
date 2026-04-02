@@ -1,15 +1,21 @@
 {
   "scripts": {
     "postinstall": "node scripts/setup-git-hooks.mjs",
+    "hook:pre-commit": "node scripts/pre-commit-fast.mjs",
+    "hook:pre-push": "node scripts/pre-push-check.mjs",
     "dev": "powershell -ExecutionPolicy Bypass -File scripts/dev.ps1",
     "dev:win": "powershell -ExecutionPolicy Bypass -File scripts/dev.ps1",
     "dev:unix": "bash scripts/dev.sh",
     "dev:frontend": "cd frontend && npm run dev",
     "dev:tauri": "cargo tauri dev",
     "build": "cargo tauri build",
-    "check:rust": "cargo check --workspace && cargo test --workspace --exclude astrcode",
-    "check:ts": "cd frontend && npm run typecheck",
-    "check": "npm run check:rust && npm run check:ts"
+    "check:rust:push": "cargo check --workspace && cargo test --workspace --exclude astrcode --lib",
+    "check:frontend:push": "cd frontend && npm run typecheck",
+    "check:push": "npm run check:rust:push && npm run check:frontend:push",
+    "check:rust:ci": "cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --workspace --exclude astrcode",
+    "check:frontend:ci": "cd frontend && npm run typecheck && npm run lint && npm run format:check",
+    "check:ci": "npm run check:rust:ci && npm run check:frontend:ci",
+    "check": "npm run check:push"
   },
   "devDependencies": {
     "@types/node": "^25.3.5"

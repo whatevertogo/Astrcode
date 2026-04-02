@@ -37,14 +37,18 @@
 ### 安装依赖
 
 ```bash
-# 安装仓库级工具（会自动注册 .githooks/pre-commit）
+# 安装仓库级工具（会自动注册 .githooks/pre-commit / pre-push）
 npm install
 
 # 安装前端依赖
 cd frontend && npm install
 ```
 
-执行根目录或 `frontend` 的 `npm install` 时，会自动把仓库的 `core.hooksPath` 指向 `.githooks/`。之后每次 `git commit` 都会在提交前格式化已暂存的 Rust 文件和 `frontend/src` 下的 `ts` / `tsx` / `css` 文件；如果本次提交包含 Rust 改动，还会继续跑 `cargo clippy --workspace -- -D warnings` 和 `cargo test --workspace --exclude astrcode`，并把格式化结果重新加入暂存区。
+执行根目录或 `frontend` 的 `npm install` 时，会自动把仓库的 `core.hooksPath` 指向 `.githooks/`。仓库现在按三层校验运行：
+
+- `pre-commit`：只做快检查，自动格式化 Rust / 前端改动，修复已暂存 TS/TSX 的 ESLint 问题，并阻止大文件、冲突标记和明显密钥泄漏进入提交。
+- `pre-push`：做中等检查，运行 `cargo check --workspace`、`cargo test --workspace --exclude astrcode --lib` 和前端 `typecheck`。
+- GitHub Actions：保留完整校验，执行格式检查、clippy、全量 Rust 测试、前端 lint/format 校验，以及依赖审查与发布构建流程。
 
 ### 开发模式
 
@@ -293,13 +297,15 @@ Tauri 仅作为"薄壳"，负责：
 ### 代码检查
 
 ```bash
-# Rust 代码检查
+# 本地 push 前检查
 make check
-# 或
-cargo check --workspace
-cargo test --workspace --exclude astrcode
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features
+
+# 与 CI 对齐的完整检查
+make check-ci
+
+# 或直接运行 npm 脚本
+npm run check:push
+npm run check:ci
 
 # 前端检查
 cd frontend
@@ -321,7 +327,10 @@ cd frontend && npm run format
 ### 测试
 
 ```bash
-# 运行业务 Rust 测试
+# push 前 Rust 测试子集
+cargo test --workspace --exclude astrcode --lib
+
+# 与 CI 对齐的全量 Rust 测试
 cargo test --workspace --exclude astrcode
 
 # 运行前端测试
@@ -336,10 +345,10 @@ cargo deny check bans
 
 ## CI/CD
 
-项目使用 4 个 GitHub Actions workflow：
+项目使用 4 个 GitHub Actions workflow，分工如下：
 
-- `rust-check`：`cargo fmt --all -- --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --workspace --exclude astrcode`
-- `frontend-check`：`cd frontend && npm run typecheck && npm run lint && npm run format:check`
+- `rust-check`：完整 Rust 质量门禁，执行 `cargo fmt --all -- --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --workspace --exclude astrcode`
+- `frontend-check`：完整前端门禁，执行 `cd frontend && npm run typecheck && npm run lint && npm run format:check`
 - `dependency-audit`：当 `Cargo.lock` 或 `deny.toml` 变更时执行 `cargo deny check bans`
 - `tauri-build`：在发布 tag 时构建 Tauri 桌面端
 
