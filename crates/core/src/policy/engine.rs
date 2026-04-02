@@ -6,7 +6,7 @@
 //!
 //! - **审批流程**: 决定某个能力调用是否需要用户审批
 //! - **内容审查**: 检查/修改 LLM 请求和工具调用
-//! - **上下文策略**: 当上下文压力过大时决定压缩策略
+//! - **模型/工具护栏**: 为运行时提供统一的审批与请求检查入口
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -203,35 +203,6 @@ impl<T> PolicyVerdict<T> {
     }
 }
 
-/// 上下文压力输入
-///
-/// 用于决策如何处理过长的上下文。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContextPressureInput {
-    /// 已使用 token 数
-    pub used_tokens: u32,
-    /// Token 上限
-    pub limit_tokens: u32,
-}
-
-/// 上下文策略决策
-///
-/// 当上下文过长时，策略引擎决定如何处理。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ContextStrategyDecision {
-    /// 紧凑化（移除冗余）
-    Compact,
-    /// 摘要化（将旧消息摘要）
-    Summarize,
-    /// 截断（丢弃旧消息）
-    Truncate,
-    /// 忽略（不做处理）
-    #[default]
-    Ignore,
-}
-
 /// 策略引擎 trait
 ///
 /// 定义了策略引擎必须实现的接口。
@@ -254,15 +225,6 @@ pub trait PolicyEngine: Send + Sync {
         call: CapabilityCall,
         ctx: &PolicyContext,
     ) -> Result<PolicyVerdict<CapabilityCall>>;
-
-    /// 决策上下文策略
-    ///
-    /// 当上下文压力过大时，决定如何处理。
-    async fn decide_context_strategy(
-        &self,
-        input: ContextPressureInput,
-        ctx: &PolicyContext,
-    ) -> Result<ContextStrategyDecision>;
 }
 
 /// 允许所有操作的策略引擎
@@ -288,14 +250,6 @@ impl PolicyEngine for AllowAllPolicyEngine {
     ) -> Result<PolicyVerdict<CapabilityCall>> {
         Ok(PolicyVerdict::Allow(call))
     }
-
-    async fn decide_context_strategy(
-        &self,
-        _input: ContextPressureInput,
-        _ctx: &PolicyContext,
-    ) -> Result<ContextStrategyDecision> {
-        Ok(ContextStrategyDecision::Ignore)
-    }
 }
 
 #[cfg(test)]
@@ -303,8 +257,8 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{
-        AllowAllPolicyEngine, ApprovalDefault, ApprovalRequest, ContextPressureInput,
-        ContextStrategyDecision, PolicyContext, PolicyEngine, PolicyVerdict,
+        AllowAllPolicyEngine, ApprovalDefault, ApprovalRequest, PolicyContext, PolicyEngine,
+        PolicyVerdict,
     };
     use crate::{
         CapabilityDescriptor, CapabilityKind, ModelRequest, SideEffectLevel, StabilityLevel,
@@ -341,7 +295,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn allow_all_policy_preserves_requests_and_ignores_context_pressure() {
+    async fn allow_all_policy_preserves_requests() {
         let policy = AllowAllPolicyEngine;
         let request = ModelRequest {
             messages: vec![],
@@ -368,19 +322,6 @@ mod tests {
                 .await
                 .expect("call should pass"),
             PolicyVerdict::Allow(call)
-        );
-        assert_eq!(
-            policy
-                .decide_context_strategy(
-                    ContextPressureInput {
-                        used_tokens: 10,
-                        limit_tokens: 100,
-                    },
-                    &policy_context(),
-                )
-                .await
-                .expect("context strategy should be returned"),
-            ContextStrategyDecision::Ignore
         );
     }
 

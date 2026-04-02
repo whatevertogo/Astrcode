@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use astrcode_core::home::resolve_home_dir;
 use log::warn;
 
-use crate::prompt::{
+use crate::{
     collect_asset_files, is_valid_skill_name, parse_skill_md, SkillSource, SkillSpec,
     SKILL_FILE_NAME,
 };
@@ -21,7 +21,7 @@ struct BundledSkillAsset {
 
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.generated.rs"));
 
-pub(crate) fn builtin_skills() -> Vec<SkillSpec> {
+pub fn load_builtin_skills() -> Vec<SkillSpec> {
     BUNDLED_SKILLS
         .iter()
         .map(|definition| {
@@ -51,9 +51,8 @@ pub(crate) fn builtin_skills() -> Vec<SkillSpec> {
 
 fn bundled_skill_allowed_tools(skill_id: &str) -> &'static [&'static str] {
     match skill_id {
-        // This skill inspects diffs and shells out to git, so documenting the
-        // tool boundary here keeps SKILL.md Claude-compatible while runtime still
-        // knows which tools the workflow depends on.
+        // The skill contract stays Claude-compatible in markdown, while runtime
+        // records the actual tool boundary here for the Skill capability output.
         "git-commit" => &["shell", "readFile", "grep", "findFiles", "listDir"],
         _ => &[],
     }
@@ -114,8 +113,8 @@ fn materialize_builtin_skill_assets(definition: &BundledSkillDefinition) -> Opti
             }
         }
 
-        // Materialize the bundled tree onto disk so Claude-style `scripts/`
-        // assets are actually executable at runtime rather than being prompt-only.
+        // Materialize the bundled tree so `scripts/` and `references/` stay
+        // executable/readable at runtime instead of living only in prompt text.
         if let Err(error) = write_asset_if_changed(&asset_path, asset.content) {
             warn!(
                 "failed to materialize builtin skill asset '{}' for '{}': {}",
@@ -153,7 +152,7 @@ mod tests {
     #[test]
     fn bundled_skills_parse_from_claude_style_skill_directories() {
         let _guard = TestEnvGuard::new();
-        let skills = builtin_skills();
+        let skills = load_builtin_skills();
 
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].id, "git-commit");
@@ -162,7 +161,7 @@ mod tests {
     #[test]
     fn bundled_skills_materialize_directory_assets() {
         let _guard = TestEnvGuard::new();
-        let skills = builtin_skills();
+        let skills = load_builtin_skills();
 
         let skill_root = skills[0]
             .skill_root

@@ -1,4 +1,5 @@
 pub mod block;
+mod builtin_skills;
 pub mod composer;
 pub mod context;
 pub mod contribution;
@@ -14,6 +15,7 @@ pub mod template;
 pub use block::{
     BlockCondition, BlockContent, BlockKind, BlockSpec, PromptBlock, RenderTarget, ValidationPolicy,
 };
+pub use builtin_skills::load_builtin_skills;
 pub use composer::{PromptComposer, PromptComposerOptions, ValidationLevel};
 pub use context::PromptContext;
 pub use contribution::{append_unique_tools, PromptContribution};

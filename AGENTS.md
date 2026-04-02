@@ -63,7 +63,7 @@ protocol (纯 DTO，无业务依赖)
 
 - Claude 风格 skill 走两阶段模型：system prompt 只暴露 skill 索引（`name` + `description`），真正的正文通过内置 `Skill` tool 按需加载。
 - `SKILL.md` frontmatter 只认 `name` 和 `description`，且 `name` 必须与文件夹名一致（kebab-case）；不要再往 markdown frontmatter 里塞 Astrcode 专用执行元数据。
-- skill 目录整体都是资源面，`references/`、`scripts/` 等资产会被索引并随 `Skill` tool 一起暴露；builtin skill 的整目录资源由 `crates/runtime/build.rs` 打包，不要再手写 `include_str!` 清单。
+- skill 目录整体都是资源面，`references/`、`scripts/` 等资产会被索引并随 `Skill` tool 一起暴露；builtin skill 的整目录资源由 `crates/runtime-prompt/build.rs` 打包，不要再手写 `include_str!` 清单。
 
 ## Development Tips
 

@@ -84,7 +84,7 @@ impl RuntimeService {
         Self::from_capabilities_with_prompt_inputs(
             capabilities,
             Vec::new(),
-            crate::builtin_skills::builtin_skills(),
+            crate::prompt::load_builtin_skills(),
         )
     }
 

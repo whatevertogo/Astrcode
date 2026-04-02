@@ -15,17 +15,16 @@ use super::session_state::{SessionState, SessionTokenBudgetState};
 use super::support::{lock_anyhow, spawn_blocking_service};
 use super::{PromptAccepted, RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent};
 use crate::agent_loop::{
-    compaction::{self, CompactConfig},
     token_budget::{
         build_auto_continue_nudge, check_token_budget, strip_token_budget_marker,
         TokenBudgetDecision,
     },
-    token_usage::estimate_text_tokens,
     TurnOutcome,
 };
 use crate::config::{
     resolve_continuation_min_delta_tokens, resolve_default_token_budget, resolve_max_continuations,
 };
+use crate::context_window::{auto_compact, estimate_text_tokens, CompactConfig};
 use astrcode_core::EventTranslator;
 
 struct SubmitTarget {
@@ -270,7 +269,7 @@ impl RuntimeService {
             .build_provider(Some(projected.working_dir.clone()))
             .await
             .map_err(ServiceError::from)?;
-        let compact_result = compaction::auto_compact(
+        let compact_result = auto_compact(
             provider.as_ref(),
             &projected.messages,
             None,

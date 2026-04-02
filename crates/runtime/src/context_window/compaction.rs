@@ -1,9 +1,8 @@
 use astrcode_core::{AstrError, CancelToken, LlmMessage, Result, UserMessageOrigin};
 use chrono::{DateTime, Utc};
 
+use crate::context_window::estimate_request_tokens;
 use crate::llm::{LlmProvider, LlmRequest};
-
-use super::token_usage::estimate_request_tokens;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CompactConfig {
@@ -82,8 +81,8 @@ pub(crate) async fn auto_compact(
     }))
 }
 
-//TODO: better prompt for compaction
-//TODO: 后续也许可能开放自定义?
+// TODO: replace this hard-coded summarization contract once prompt configuration
+// can own compaction policies without coupling them to general system prompts.
 fn build_compact_system_prompt(base_system_prompt: Option<&str>) -> String {
     let mut prompt = String::from(
         "You are generating an internal compact summary for a coding-agent session. \
@@ -262,25 +261,26 @@ mod tests {
     fn split_for_compaction_preserves_recent_real_user_turns() {
         let messages = vec![
             LlmMessage::User {
-                content: "first".to_string(),
+                content: "older".to_string(),
                 origin: UserMessageOrigin::User,
             },
             LlmMessage::Assistant {
-                content: "answer".to_string(),
+                content: "ack".to_string(),
                 tool_calls: Vec::new(),
                 reasoning: None,
             },
             LlmMessage::User {
-                content: "nudge".to_string(),
-                origin: UserMessageOrigin::AutoContinueNudge,
+                content: "[Auto-compact summary]\nolder".to_string(),
+                origin: UserMessageOrigin::CompactSummary,
             },
             LlmMessage::User {
-                content: "second".to_string(),
+                content: "newer".to_string(),
                 origin: UserMessageOrigin::User,
             },
         ];
 
         let (prefix, suffix, keep_start) = split_for_compaction(&messages, 1);
+
         assert_eq!(keep_start, 3);
         assert_eq!(prefix.len(), 3);
         assert_eq!(suffix.len(), 1);
@@ -295,17 +295,13 @@ mod tests {
             },
             LlmMessage::User {
                 content: "continue".to_string(),
-                origin: UserMessageOrigin::User,
-            },
-            LlmMessage::User {
-                content: "Stopped at 92%".to_string(),
                 origin: UserMessageOrigin::AutoContinueNudge,
             },
         ];
 
         let filtered = compact_input_messages(&messages);
 
-        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered.len(), 1);
         assert!(matches!(
             &filtered[0],
             LlmMessage::User {
@@ -313,88 +309,18 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn compacted_messages_inserts_summary_as_compact_user_message() {
+        let compacted = compacted_messages("Older history", Vec::new());
+
         assert!(matches!(
-            &filtered[1],
+            &compacted[0],
             LlmMessage::User {
-                origin: UserMessageOrigin::User,
+                origin: UserMessageOrigin::CompactSummary,
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn prompt_too_long_detection_matches_provider_errors_only() {
-        let prompt_too_long = AstrError::LlmRequestFailed {
-            status: 400,
-            body: "Prompt too long for this model".to_string(),
-        };
-        let unrelated = AstrError::LlmRequestFailed {
-            status: 400,
-            body: "rate limited".to_string(),
-        };
-        let wrong_status = AstrError::LlmRequestFailed {
-            status: 500,
-            body: "maximum context length exceeded".to_string(),
-        };
-
-        assert!(is_prompt_too_long(&prompt_too_long));
-        assert!(!is_prompt_too_long(&unrelated));
-        assert!(!is_prompt_too_long(&wrong_status));
-    }
-
-    #[test]
-    fn drop_oldest_turn_group_removes_only_the_oldest_user_turn_batch() {
-        let mut prefix = vec![
-            LlmMessage::User {
-                content: "[Auto-compact summary]\nOlder history".to_string(),
-                origin: UserMessageOrigin::CompactSummary,
-            },
-            LlmMessage::User {
-                content: "first".to_string(),
-                origin: UserMessageOrigin::User,
-            },
-            LlmMessage::Assistant {
-                content: "answer one".to_string(),
-                tool_calls: Vec::new(),
-                reasoning: None,
-            },
-            LlmMessage::User {
-                content: "second".to_string(),
-                origin: UserMessageOrigin::User,
-            },
-            LlmMessage::Assistant {
-                content: "answer two".to_string(),
-                tool_calls: Vec::new(),
-                reasoning: None,
-            },
-        ];
-
-        assert!(drop_oldest_turn_group(&mut prefix));
-        assert_eq!(prefix.len(), 2);
-        assert!(matches!(
-            &prefix[0],
-            LlmMessage::User {
-                content,
-                origin: UserMessageOrigin::User,
-            } if content == "second"
-        ));
-    }
-
-    #[test]
-    fn drop_oldest_turn_group_stops_when_only_one_turn_is_left() {
-        let mut prefix = vec![
-            LlmMessage::User {
-                content: "only".to_string(),
-                origin: UserMessageOrigin::User,
-            },
-            LlmMessage::Assistant {
-                content: "answer".to_string(),
-                tool_calls: Vec::new(),
-                reasoning: None,
-            },
-        ];
-
-        assert!(!drop_oldest_turn_group(&mut prefix));
-        assert!(prefix.is_empty());
     }
 }

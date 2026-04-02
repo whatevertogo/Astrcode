@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use astrcode_core::{CapabilityDescriptor, LlmMessage, UserMessageOrigin};
 
-use super::token_usage::estimate_message_tokens;
+use crate::context_window::estimate_message_tokens;
 
 #[derive(Debug, Clone)]
 pub(crate) struct MicrocompactResult {

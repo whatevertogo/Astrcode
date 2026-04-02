@@ -8,7 +8,7 @@
 //! - [`session`][]: 会话管理与持久化
 //! - [`tool`][]: Tool trait 定义（插件系统的基础抽象）
 //! - [`capability`][]: 能力描述符（用于策略引擎和 UI 展示）
-//! - [`policy`][]: 策略引擎 trait（审批、内容审查、上下文压缩决策）
+//! - [`policy`][]: 策略引擎 trait（审批与模型/工具请求检查）
 //! - [`plugin`][]: 插件清单与注册表
 //! - [`registry`][]: 能力路由器（将能力调用分派到具体的 invoker）
 //! - [`runtime`][]: 运行时协调器接口
@@ -54,8 +54,7 @@ pub use event::{
 pub use plugin::{PluginHealth, PluginManifest, PluginRegistry, PluginState, PluginType};
 pub use policy::{
     AllowAllPolicyEngine, ApprovalDefault, ApprovalPending, ApprovalRequest, ApprovalResolution,
-    CapabilityCall, ContextPressureInput, ContextStrategyDecision, ModelRequest, PolicyContext,
-    PolicyEngine, PolicyVerdict,
+    CapabilityCall, ModelRequest, PolicyContext, PolicyEngine, PolicyVerdict,
 };
 pub use projection::{project, AgentState, AgentStateProjector};
 pub use registry::{

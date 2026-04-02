@@ -2,11 +2,8 @@
 //!
 //! 实现单个 Agent Turn 的执行逻辑。
 
-pub(crate) mod compaction;
 mod llm_cycle;
-pub(crate) mod microcompact;
 pub(crate) mod token_budget;
-pub(crate) mod token_usage;
 mod tool_cycle;
 mod turn_runner;
 
@@ -25,8 +22,7 @@ use crate::provider_factory::DynProviderFactory;
 use astrcode_core::AgentState;
 use astrcode_core::StorageEvent;
 
-use crate::builtin_skills::builtin_skills;
-use crate::prompt::{PromptDeclaration, SkillSpec};
+use crate::prompt::{load_builtin_skills, PromptDeclaration, SkillSpec};
 
 use astrcode_runtime_config::{
     max_tool_concurrency, DEFAULT_AUTO_COMPACT_ENABLED, DEFAULT_COMPACT_KEEP_RECENT_TURNS,
@@ -95,7 +91,7 @@ impl AgentLoop {
             factory,
             capabilities,
             Vec::new(),
-            builtin_skills(),
+            load_builtin_skills(),
         )
     }
 

@@ -7,11 +7,14 @@ use astrcode_core::LlmMessage;
 use astrcode_core::ModelRequest;
 use astrcode_core::StorageEvent;
 
+use crate::context_window::{
+    apply_microcompact, auto_compact, build_prompt_snapshot, effective_context_window,
+    should_compact, CompactConfig, TokenUsageTracker,
+};
+
 use super::{
-    compaction::{self, CompactConfig},
-    finish_interrupted, finish_turn, finish_with_error, internal_error, llm_cycle, microcompact,
-    token_usage::{self, TokenUsageTracker},
-    tool_cycle, AgentLoop, TurnOutcome,
+    finish_interrupted, finish_turn, finish_with_error, internal_error, llm_cycle, tool_cycle,
+    AgentLoop, TurnOutcome,
 };
 
 /// 执行一个完整的 agent turn（从用户提示到最终响应）。
@@ -100,15 +103,15 @@ pub(crate) async fn run_turn(
         let mut request_messages = plan.prepend_messages;
         request_messages.extend(messages.iter().cloned());
         request_messages.extend(plan.append_messages);
-        let microcompact_result = microcompact::apply_microcompact(
+        let microcompact_result = apply_microcompact(
             &request_messages,
             &agent_loop.prompt_capability_descriptors,
             agent_loop.tool_result_max_bytes(),
             agent_loop.compact_keep_recent_turns(),
-            token_usage::effective_context_window(model_limits),
+            effective_context_window(model_limits),
         );
         request_messages = microcompact_result.messages;
-        let prompt_snapshot = token_usage::build_prompt_snapshot(
+        let prompt_snapshot = build_prompt_snapshot(
             &token_tracker,
             &request_messages,
             system_prompt.as_deref(),
@@ -126,8 +129,8 @@ pub(crate) async fn run_turn(
                 .truncated_tool_results
                 .min(u32::MAX as usize) as u32,
         })?;
-        if agent_loop.auto_compact_enabled() && token_usage::should_compact(prompt_snapshot) {
-            let compact_result = match compaction::auto_compact(
+        if agent_loop.auto_compact_enabled() && should_compact(prompt_snapshot) {
+            let compact_result = match auto_compact(
                 provider.as_ref(),
                 &messages,
                 system_prompt.as_deref(),

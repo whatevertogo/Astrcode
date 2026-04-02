@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 use crate::approval_service::ApprovalBroker;
 use astrcode_core::{
     ApprovalDefault, ApprovalRequest, ApprovalResolution, AstrError, CancelToken, CapabilityCall,
-    CapabilityRouter as CoreCapabilityRouter, ContextPressureInput, ContextStrategyDecision,
-    ModelRequest, Phase, PluginManifest, PluginType, PolicyContext, PolicyEngine, PolicyVerdict,
-    Result, Tool, ToolCapabilityMetadata, ToolContext, UserMessageOrigin,
+    CapabilityRouter as CoreCapabilityRouter, ModelRequest, Phase, PluginManifest, PluginType,
+    PolicyContext, PolicyEngine, PolicyVerdict, Result, Tool, ToolCapabilityMetadata, ToolContext,
+    UserMessageOrigin,
 };
 use astrcode_plugin::Supervisor;
 use astrcode_protocol::plugin::{PeerDescriptor, PeerRole};
@@ -183,14 +183,6 @@ impl PolicyEngine for RewriteSystemPromptPolicy {
     ) -> Result<PolicyVerdict<CapabilityCall>> {
         Ok(PolicyVerdict::Allow(call))
     }
-
-    async fn decide_context_strategy(
-        &self,
-        _input: ContextPressureInput,
-        _ctx: &PolicyContext,
-    ) -> Result<ContextStrategyDecision> {
-        Ok(ContextStrategyDecision::Ignore)
-    }
 }
 
 #[async_trait]
@@ -213,14 +205,6 @@ impl PolicyEngine for DenyCapabilityPolicy {
         } else {
             Ok(PolicyVerdict::Allow(call))
         }
-    }
-
-    async fn decide_context_strategy(
-        &self,
-        _input: ContextPressureInput,
-        _ctx: &PolicyContext,
-    ) -> Result<ContextStrategyDecision> {
-        Ok(ContextStrategyDecision::Ignore)
     }
 }
 
@@ -255,14 +239,6 @@ impl PolicyEngine for AskCapabilityPolicy {
         } else {
             Ok(PolicyVerdict::Allow(call))
         }
-    }
-
-    async fn decide_context_strategy(
-        &self,
-        _input: ContextPressureInput,
-        _ctx: &PolicyContext,
-    ) -> Result<ContextStrategyDecision> {
-        Ok(ContextStrategyDecision::Ignore)
     }
 }
 
