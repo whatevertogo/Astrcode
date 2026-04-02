@@ -232,18 +232,7 @@ where
     });
 
     for manifest in manifests {
-        plugin_entries.insert(
-            manifest.name.clone(),
-            PluginEntry {
-                manifest: manifest.clone(),
-                state: astrcode_core::PluginState::Discovered,
-                health: PluginHealth::Unknown,
-                failure_count: 0,
-                capabilities: Vec::new(),
-                failure: None,
-                last_checked_at: None,
-            },
-        );
+        plugin_entries.insert(manifest.name.clone(), make_discovered_entry(&manifest));
 
         let loaded_plugin = match initializer.initialize(&manifest).await {
             Ok(loaded_plugin) => loaded_plugin,
@@ -251,15 +240,7 @@ where
                 log::error!("failed to initialize plugin '{}': {}", manifest.name, error);
                 plugin_entries.insert(
                     manifest.name.clone(),
-                    PluginEntry {
-                        manifest,
-                        state: astrcode_core::PluginState::Failed,
-                        health: PluginHealth::Unavailable,
-                        failure_count: 1,
-                        capabilities: Vec::new(),
-                        failure: Some(error.to_string()),
-                        last_checked_at: None,
-                    },
+                    make_failed_entry(manifest, Vec::new(), error.to_string()),
                 );
                 continue;
             }
@@ -269,15 +250,11 @@ where
             log::error!("failed to register plugin '{}': {}", manifest.name, failure);
             plugin_entries.insert(
                 manifest.name.clone(),
-                PluginEntry {
-                    manifest: manifest.clone(),
-                    state: astrcode_core::PluginState::Failed,
-                    health: PluginHealth::Unavailable,
-                    failure_count: 1,
-                    capabilities: loaded_plugin.capabilities.clone(),
-                    failure: Some(failure),
-                    last_checked_at: None,
-                },
+                make_failed_entry(
+                    manifest.clone(),
+                    loaded_plugin.capabilities.clone(),
+                    failure,
+                ),
             );
             if let Err(error) = loaded_plugin.component.shutdown_component().await {
                 log::warn!(
@@ -299,15 +276,11 @@ where
             log::error!("failed to register plugin '{}': {}", manifest.name, failure);
             plugin_entries.insert(
                 manifest.name.clone(),
-                PluginEntry {
-                    manifest: manifest.clone(),
-                    state: astrcode_core::PluginState::Failed,
-                    health: PluginHealth::Unavailable,
-                    failure_count: 1,
-                    capabilities: loaded_plugin.capabilities.clone(),
-                    failure: Some(failure),
-                    last_checked_at: None,
-                },
+                make_failed_entry(
+                    manifest.clone(),
+                    loaded_plugin.capabilities.clone(),
+                    failure,
+                ),
             );
             if let Err(error) = loaded_plugin.component.shutdown_component().await {
                 log::warn!(
@@ -332,15 +305,7 @@ where
         prompt_declarations.extend(loaded_plugin.prompt_declarations.clone());
         plugin_entries.insert(
             manifest.name.clone(),
-            PluginEntry {
-                manifest: manifest.clone(),
-                state: astrcode_core::PluginState::Initialized,
-                health: PluginHealth::Healthy,
-                failure_count: 0,
-                capabilities: loaded_plugin.capabilities.clone(),
-                failure: None,
-                last_checked_at: None,
-            },
+            make_initialized_entry(&manifest, loaded_plugin.capabilities.clone()),
         );
         log::info!("loaded plugin '{}'", manifest.name);
         managed_components
@@ -373,6 +338,52 @@ pub(crate) fn conflicting_capability_name(
         }
     }
     None
+}
+
+/// 创建初始发现状态的插件条目
+fn make_discovered_entry(manifest: &PluginManifest) -> PluginEntry {
+    PluginEntry {
+        manifest: manifest.clone(),
+        state: astrcode_core::PluginState::Discovered,
+        health: PluginHealth::Unknown,
+        failure_count: 0,
+        capabilities: Vec::new(),
+        failure: None,
+        last_checked_at: None,
+    }
+}
+
+/// 创建失败状态的插件条目
+fn make_failed_entry(
+    manifest: PluginManifest,
+    capabilities: Vec<CapabilityDescriptor>,
+    failure: String,
+) -> PluginEntry {
+    PluginEntry {
+        manifest,
+        state: astrcode_core::PluginState::Failed,
+        health: PluginHealth::Unavailable,
+        failure_count: 1,
+        capabilities,
+        failure: Some(failure),
+        last_checked_at: None,
+    }
+}
+
+/// 初始化成功状态的插件条目
+fn make_initialized_entry(
+    manifest: &PluginManifest,
+    capabilities: Vec<CapabilityDescriptor>,
+) -> PluginEntry {
+    PluginEntry {
+        manifest: manifest.clone(),
+        state: astrcode_core::PluginState::Initialized,
+        health: PluginHealth::Healthy,
+        failure_count: 0,
+        capabilities,
+        failure: None,
+        last_checked_at: None,
+    }
 }
 
 fn invalid_capability_reason(capabilities: &[CapabilityDescriptor]) -> Option<String> {

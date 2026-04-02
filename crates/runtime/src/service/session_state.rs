@@ -54,14 +54,15 @@ impl RecentSessionEvents {
     /// - `last_event_id == None` 且缓存曾被截断 → 完整历史不在缓存中，必须走磁盘
     /// - `last_event_id` 对应的事件早于缓存中最老的事件 → 被截断的部分无法提供
     fn records_after(&self, last_event_id: Option<&str>) -> Option<Vec<SessionEventRecord>> {
-        let snapshot = self.records.iter().cloned().collect::<Vec<_>>();
+        // 无 cursor 时：若缓存未被截断，返回全部记录；否则需要回退磁盘
         let Some(last_event_id) = last_event_id else {
-            return (!self.truncated).then_some(snapshot);
+            return (!self.truncated).then_some(self.records.iter().cloned().collect());
         };
 
         let last_seen = parse_event_id(last_event_id)?;
-        let first_cached = snapshot
-            .first()
+        let first_cached = self
+            .records
+            .front()
             .and_then(|record| parse_event_id(&record.event_id));
         // 安全不变量：若缓存曾被截断（头部事件被淘汰），则请求的 cursor 若早于
         // 缓存中最老的事件，就说明被请求的事件已不可恢复，必须回退到磁盘回放。
@@ -70,12 +71,12 @@ impl RecentSessionEvents {
         }
 
         Some(
-            snapshot
-                .into_iter()
-                .filter(|record| {
+            self.records
+                .iter()
+                .filter_map(|record| {
                     parse_event_id(&record.event_id)
-                        .map(|event_id| event_id > last_seen)
-                        .unwrap_or(false)
+                        .filter(|event_id| *event_id > last_seen)
+                        .map(|_| record.clone())
                 })
                 .collect(),
         )
