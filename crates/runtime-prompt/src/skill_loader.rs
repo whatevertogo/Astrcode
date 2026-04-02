@@ -19,6 +19,10 @@ pub struct SkillFrontmatter {
     pub description: Option<String>,
     #[serde(alias = "whenToUse")]
     pub when_to_use: Option<String>,
+    #[serde(alias = "allowed-tools")]
+    pub allowed_tools: Option<StringList>,
+    #[serde(alias = "expand-tool-guides")]
+    pub expand_tool_guides: Option<bool>,
 }
 
 pub fn parse_skill_md(content: &str, fallback_id: &str, source: SkillSource) -> Option<SkillSpec> {
@@ -56,10 +60,19 @@ pub fn parse_skill_md(content: &str, fallback_id: &str, source: SkillSource) -> 
         name,
         description,
         guide,
-        required_tools: Vec::new(),
+        skill_root: None,
+        reference_files: Vec::new(),
+        allowed_tools: frontmatter
+            .allowed_tools
+            .unwrap_or_default()
+            .into_vec()
+            .into_iter()
+            .map(|tool| tool.trim().to_string())
+            .filter(|tool| !tool.is_empty())
+            .collect(),
         triggers: Vec::new(),
         source,
-        expand_tool_guides: false,
+        expand_tool_guides: frontmatter.expand_tool_guides.unwrap_or(false),
     })
 }
 
@@ -111,7 +124,9 @@ pub fn load_skills_from_dir(dir: &Path, source: SkillSource) -> Vec<SkillSpec> {
             }
         };
 
-        if let Some(skill) = parse_skill_md(&content, &fallback_id, source.clone()) {
+        if let Some(mut skill) = parse_skill_md(&content, &fallback_id, source.clone()) {
+            skill.skill_root = Some(skill_dir.to_string_lossy().into_owned());
+            skill.reference_files = collect_reference_files(&skill_dir);
             skills.push(skill);
         }
     }
@@ -214,6 +229,28 @@ fn build_skill_description(description: Option<String>, when_to_use: Option<Stri
     }
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum StringList {
+    Single(String),
+    Many(Vec<String>),
+}
+
+impl Default for StringList {
+    fn default() -> Self {
+        Self::Many(Vec::new())
+    }
+}
+
+impl StringList {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            Self::Single(value) => vec![value],
+            Self::Many(values) => values,
+        }
+    }
+}
+
 fn merge_skill_layers(mut base: Vec<SkillSpec>, overrides: Vec<SkillSpec>) -> Vec<SkillSpec> {
     for skill in overrides {
         if let Some(existing) = base.iter_mut().find(|candidate| candidate.id == skill.id) {
@@ -247,16 +284,62 @@ fn cache_marker_for_skill_root(root: &Path) -> String {
         if !file_type.is_dir() {
             continue;
         }
-        let skill_path = entry.path().join(SKILL_FILE_NAME);
         markers.push(format!(
-            "{}={}",
-            skill_path.display(),
-            cache_marker_for_path(&skill_path)
+            "{}=[{}]",
+            entry.path().display(),
+            cache_markers_for_skill_dir(&entry.path()).join(",")
         ));
     }
     markers.sort();
 
     format!("{}:[{}]", root.display(), markers.join(","))
+}
+
+fn collect_reference_files(skill_dir: &Path) -> Vec<String> {
+    let references_dir = skill_dir.join("references");
+    let mut files = Vec::new();
+    collect_files_recursive(&references_dir, skill_dir, &mut files);
+    files.sort();
+    files
+}
+
+fn cache_markers_for_skill_dir(skill_dir: &Path) -> Vec<String> {
+    let mut markers = Vec::new();
+    let skill_path = skill_dir.join(SKILL_FILE_NAME);
+    markers.push(format!(
+        "{}={}",
+        SKILL_FILE_NAME,
+        cache_marker_for_path(&skill_path)
+    ));
+    for reference in collect_reference_files(skill_dir) {
+        let path = skill_dir.join(reference.replace('/', std::path::MAIN_SEPARATOR_STR));
+        markers.push(format!("{}={}", reference, cache_marker_for_path(&path)));
+    }
+    markers
+}
+
+fn collect_files_recursive(root: &Path, base_dir: &Path, files: &mut Vec<String>) {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            collect_files_recursive(&path, base_dir, files);
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        if let Ok(relative) = path.strip_prefix(base_dir) {
+            files.push(relative.to_string_lossy().replace('\\', "/"));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -276,7 +359,7 @@ mod tests {
     #[test]
     fn parse_skill_md_with_frontmatter() {
         let parsed = parse_skill_md(
-            "---\nname: Git Commit\ndescription: Commit workflow\nwhen_to_use: When the user asks for commits\n---\n# Guide\nUse commit skill.\n",
+            "---\nname: Git Commit\ndescription: Commit workflow\nwhen_to_use: When the user asks for commits\nallowed-tools:\n  - readFile\n  - grep\nexpand-tool-guides: true\n---\n# Guide\nUse commit skill.\n",
             "git-commit",
             SkillSource::User,
         )
@@ -289,6 +372,11 @@ mod tests {
             "Commit workflow\nWhen to use: When the user asks for commits"
         );
         assert_eq!(parsed.guide, "# Guide\nUse commit skill.");
+        assert_eq!(
+            parsed.allowed_tools,
+            vec!["readFile".to_string(), "grep".to_string()]
+        );
+        assert!(parsed.expand_tool_guides);
         assert_eq!(parsed.source, SkillSource::User);
     }
 
@@ -305,6 +393,20 @@ mod tests {
         assert_eq!(parsed.name, "repo-search");
         assert_eq!(parsed.description, "");
         assert_eq!(parsed.guide, "# Guide\nUse grep first.");
+        assert!(parsed.allowed_tools.is_empty());
+        assert!(!parsed.expand_tool_guides);
+    }
+
+    #[test]
+    fn parse_skill_md_accepts_single_allowed_tool_string() {
+        let parsed = parse_skill_md(
+            "---\nallowed-tools: shell\n---\nUse shell carefully.",
+            "shell-safety",
+            SkillSource::Builtin,
+        )
+        .expect("single allowed tool should parse");
+
+        assert_eq!(parsed.allowed_tools, vec!["shell".to_string()]);
     }
 
     #[test]
@@ -362,6 +464,31 @@ mod tests {
 
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].id, "git-commit");
+        assert!(skills[0]
+            .skill_root
+            .as_deref()
+            .is_some_and(|root| root.ends_with("git-commit")));
+    }
+
+    #[test]
+    fn load_skills_from_dir_indexes_reference_files() {
+        let dir = tempfile::tempdir().expect("tempdir should be created");
+        let skill_root = dir.path().join("repo-search");
+        write_skill(dir.path(), "repo-search", "# Search guide");
+        fs::create_dir_all(skill_root.join("references")).expect("references dir should exist");
+        fs::write(
+            skill_root.join("references").join("do.md"),
+            "read this when needed",
+        )
+        .expect("reference file should be written");
+
+        let skills = load_skills_from_dir(dir.path(), SkillSource::Project);
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(
+            skills[0].reference_files,
+            vec!["references/do.md".to_string()]
+        );
     }
 
     #[test]
@@ -399,7 +526,9 @@ mod tests {
                 name: "Builtin skill".to_string(),
                 description: "builtin".to_string(),
                 guide: "Builtin guide".to_string(),
-                required_tools: Vec::new(),
+                skill_root: None,
+                reference_files: Vec::new(),
+                allowed_tools: Vec::new(),
                 triggers: Vec::new(),
                 source: SkillSource::Builtin,
                 expand_tool_guides: false,

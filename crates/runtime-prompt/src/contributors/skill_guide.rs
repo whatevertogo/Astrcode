@@ -14,7 +14,7 @@ impl PromptContributor for SkillGuideContributor {
     }
 
     fn cache_version(&self) -> u64 {
-        2
+        3
     }
 
     fn cache_fingerprint(&self, ctx: &PromptContext) -> String {
@@ -44,10 +44,27 @@ impl PromptContributor for SkillGuideContributor {
                     }
                     content_sections.push(skill.guide.trim().to_string());
                     let mut content = content_sections.join("\n\n");
-                    if !skill.required_tools.is_empty() {
+                    if !skill.allowed_tools.is_empty() {
                         content.push_str(&format!(
-                            "\n\nRequired tools: {}",
-                            skill.required_tools.join(", ")
+                            "\n\nAllowed tools: {}",
+                            skill.allowed_tools.join(", ")
+                        ));
+                    }
+                    if let Some(skill_root) = &skill.skill_root {
+                        content.push_str(&format!(
+                            "\n\nBase directory for this skill: {}",
+                            skill_root
+                        ));
+                    }
+                    if !skill.reference_files.is_empty() {
+                        content.push_str(&format!(
+                            "\nReference files:\n{}",
+                            skill
+                                .reference_files
+                                .iter()
+                                .map(|path| format!("- {}", path))
+                                .collect::<Vec<_>>()
+                                .join("\n")
                         ));
                     }
                     if !skill.triggers.is_empty() {
@@ -82,7 +99,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn only_includes_skills_when_required_tools_and_triggers_match() {
+    async fn only_includes_skills_when_allowed_tools_and_triggers_match() {
         let contribution = SkillGuideContributor
             .contribute(&PromptContext {
                 working_dir: "/workspace/demo".to_string(),
@@ -95,7 +112,9 @@ mod tests {
                         name: "Matching".to_string(),
                         description: "matching".to_string(),
                         guide: "Use shell after grep.".to_string(),
-                        required_tools: vec!["shell".to_string(), "grep".to_string()],
+                        skill_root: Some("/workspace/demo/.astrcode/skills/matching".to_string()),
+                        reference_files: vec!["references/do.md".to_string()],
+                        allowed_tools: vec!["shell".to_string(), "grep".to_string()],
                         triggers: vec!["search".to_string()],
                         source: SkillSource::Builtin,
                         expand_tool_guides: true,
@@ -105,7 +124,9 @@ mod tests {
                         name: "Missing".to_string(),
                         description: "missing".to_string(),
                         guide: "missing".to_string(),
-                        required_tools: vec!["edit_file".to_string()],
+                        skill_root: None,
+                        reference_files: Vec::new(),
+                        allowed_tools: vec!["edit_file".to_string()],
                         triggers: vec![],
                         source: SkillSource::Builtin,
                         expand_tool_guides: false,
@@ -122,6 +143,12 @@ mod tests {
 
         assert_eq!(contribution.blocks.len(), 1);
         assert_eq!(contribution.blocks[0].id, "skill-guide-matching");
+        let crate::BlockContent::Text(content) = &contribution.blocks[0].content else {
+            panic!("skill guide blocks should render as text");
+        };
+        assert!(content
+            .contains("Base directory for this skill: /workspace/demo/.astrcode/skills/matching"));
+        assert!(content.contains("references/do.md"));
     }
 
     #[tokio::test]

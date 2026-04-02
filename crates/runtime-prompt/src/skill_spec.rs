@@ -31,7 +31,11 @@ pub struct SkillSpec {
     pub description: String,
     pub guide: String,
     #[serde(default)]
-    pub required_tools: Vec<String>,
+    pub skill_root: Option<String>,
+    #[serde(default)]
+    pub reference_files: Vec<String>,
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
     #[serde(default)]
     pub triggers: Vec<String>,
     #[serde(default)]
@@ -42,25 +46,22 @@ pub struct SkillSpec {
 
 impl SkillSpec {
     pub fn matches(&self, tool_names: &[String], latest_user_message: Option<&str>) -> bool {
-        self.matches_required_tools(tool_names) && self.matches_triggers(latest_user_message)
+        self.matches_allowed_tools(tool_names) && self.matches_triggers(latest_user_message)
     }
 
-    pub fn matches_required_tools(&self, tool_names: &[String]) -> bool {
-        self.required_tools
+    pub fn matches_allowed_tools(&self, tool_names: &[String]) -> bool {
+        self.allowed_tools
             .iter()
             .all(|required| tool_names.iter().any(|tool_name| tool_name == required))
     }
 
     pub fn matches_triggers(&self, latest_user_message: Option<&str>) -> bool {
         if self.triggers.is_empty() {
-            return match self.source {
-                // Claude-style SKILL.md files do not ship explicit trigger arrays, so we
-                // fall back to the skill id/name/description instead of matching every request.
-                SkillSource::User | SkillSource::Project => {
-                    self.matches_implicit_triggers(latest_user_message)
-                }
-                _ => true,
-            };
+            // Claude-style SKILL.md files do not rely on explicit trigger arrays.
+            // When no manual triggers are present, every skill source falls back to
+            // id/name/description matching so bundled and custom skills share one
+            // activation model instead of two subtly different systems.
+            return self.matches_implicit_triggers(latest_user_message);
         }
 
         let Some(latest_user_message) = latest_user_message else {
@@ -106,14 +107,23 @@ impl SkillSpec {
     fn implicit_trigger_phrases(&self) -> Vec<String> {
         let mut phrases = Vec::new();
         for candidate in [&self.id, &self.name, &self.description] {
-            let normalized = normalize_for_matching(candidate);
-            if !normalized.is_empty() && !phrases.iter().any(|existing| existing == &normalized) {
-                phrases.push(normalized);
+            for phrase in split_candidate_phrases(candidate) {
+                if !phrases.iter().any(|existing| existing == &phrase) {
+                    phrases.push(phrase);
+                }
             }
         }
 
         phrases
     }
+}
+
+fn split_candidate_phrases(value: &str) -> Vec<String> {
+    value
+        .split(['\n', ',', ';', '.', '(', ')'])
+        .map(normalize_for_matching)
+        .filter(|phrase| !phrase.is_empty())
+        .collect()
 }
 
 fn normalize_for_matching(value: &str) -> String {
@@ -142,7 +152,9 @@ mod tests {
             name: name.to_string(),
             description: description.to_string(),
             guide: "guide".to_string(),
-            required_tools: Vec::new(),
+            skill_root: None,
+            reference_files: Vec::new(),
+            allowed_tools: Vec::new(),
             triggers: Vec::new(),
             source: SkillSource::Project,
             expand_tool_guides: false,
@@ -159,5 +171,26 @@ mod tests {
 
         assert!(skill.matches_triggers(Some("search the repo for errors")));
         assert!(!skill.matches_triggers(Some("format this file")));
+    }
+
+    #[test]
+    fn builtin_skill_with_empty_triggers_uses_implicit_matching_too() {
+        let skill = SkillSpec {
+            id: "code-modification".to_string(),
+            name: "Code Modification".to_string(),
+            description:
+                "When to use: when the user asks to fix, implement, refactor, or otherwise modify code"
+                    .to_string(),
+            guide: "guide".to_string(),
+            skill_root: None,
+            reference_files: Vec::new(),
+            allowed_tools: Vec::new(),
+            triggers: Vec::new(),
+            source: SkillSource::Builtin,
+            expand_tool_guides: false,
+        };
+
+        assert!(skill.matches_triggers(Some("please refactor this module")));
+        assert!(!skill.matches_triggers(Some("list my sessions")));
     }
 }
