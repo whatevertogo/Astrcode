@@ -172,7 +172,10 @@ impl StoredEventLine {
 
 #[cfg(test)]
 mod tests {
-    use super::StorageEvent;
+    use chrono::{TimeZone, Utc};
+    use serde_json::Value;
+
+    use super::{CompactTrigger, StorageEvent};
 
     #[test]
     fn tool_result_deserializes_legacy_lines_without_error_or_metadata() {
@@ -205,5 +208,119 @@ mod tests {
             }
             other => panic!("expected turn done, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn prompt_metrics_round_trip_preserves_all_fields() {
+        let event = StorageEvent::PromptMetrics {
+            turn_id: Some("turn-1".to_string()),
+            step_index: 2,
+            estimated_tokens: 1_234,
+            context_window: 128_000,
+            effective_window: 108_000,
+            threshold_tokens: 97_200,
+            truncated_tool_results: 3,
+        };
+
+        let encoded = serde_json::to_value(&event).expect("event should serialize");
+        let decoded: StorageEvent =
+            serde_json::from_value(encoded.clone()).expect("event should deserialize");
+
+        match decoded {
+            StorageEvent::PromptMetrics {
+                turn_id,
+                step_index,
+                estimated_tokens,
+                context_window,
+                effective_window,
+                threshold_tokens,
+                truncated_tool_results,
+            } => {
+                assert_eq!(turn_id.as_deref(), Some("turn-1"));
+                assert_eq!(step_index, 2);
+                assert_eq!(estimated_tokens, 1_234);
+                assert_eq!(context_window, 128_000);
+                assert_eq!(effective_window, 108_000);
+                assert_eq!(threshold_tokens, 97_200);
+                assert_eq!(truncated_tool_results, 3);
+            }
+            other => panic!("expected prompt metrics, got {other:?}"),
+        }
+
+        let expected: Value = serde_json::json!({
+            "type": "promptMetrics",
+            "turn_id": "turn-1",
+            "step_index": 2,
+            "estimated_tokens": 1234,
+            "context_window": 128000,
+            "effective_window": 108000,
+            "threshold_tokens": 97200,
+            "truncated_tool_results": 3,
+        });
+        assert_eq!(encoded, expected);
+    }
+
+    #[test]
+    fn compact_applied_round_trip_preserves_all_fields() {
+        let timestamp = Utc
+            .with_ymd_and_hms(2026, 1, 2, 3, 4, 5)
+            .single()
+            .expect("timestamp should build");
+        let event = StorageEvent::CompactApplied {
+            turn_id: Some("turn-2".to_string()),
+            trigger: CompactTrigger::Manual,
+            summary: "condensed work".to_string(),
+            preserved_recent_turns: 2,
+            pre_tokens: 2_000,
+            post_tokens_estimate: 600,
+            messages_removed: 5,
+            tokens_freed: 1_400,
+            timestamp,
+        };
+
+        let encoded = serde_json::to_value(&event).expect("event should serialize");
+        let decoded: StorageEvent =
+            serde_json::from_value(encoded.clone()).expect("event should deserialize");
+
+        match decoded {
+            StorageEvent::CompactApplied {
+                turn_id,
+                trigger,
+                summary,
+                preserved_recent_turns,
+                pre_tokens,
+                post_tokens_estimate,
+                messages_removed,
+                tokens_freed,
+                timestamp: decoded_timestamp,
+            } => {
+                assert_eq!(turn_id.as_deref(), Some("turn-2"));
+                assert_eq!(trigger, CompactTrigger::Manual);
+                assert_eq!(summary, "condensed work");
+                assert_eq!(preserved_recent_turns, 2);
+                assert_eq!(pre_tokens, 2_000);
+                assert_eq!(post_tokens_estimate, 600);
+                assert_eq!(messages_removed, 5);
+                assert_eq!(tokens_freed, 1_400);
+                assert_eq!(decoded_timestamp, timestamp);
+            }
+            other => panic!("expected compact applied, got {other:?}"),
+        }
+
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "type": "compactApplied",
+                "turn_id": "turn-2",
+                "trigger": "manual",
+                "summary": "condensed work",
+                "preserved_recent_turns": 2,
+                "pre_tokens": 2000,
+                "post_tokens_estimate": 600,
+                "messages_removed": 5,
+                "tokens_freed": 1400,
+                "timestamp": "2026-01-02T03:04:05Z",
+            })
+        );
     }
 }

@@ -559,4 +559,86 @@ mod tests {
         assert_eq!(incremental.turn_count, batch.turn_count);
         assert_eq!(incremental.messages.len(), batch.messages.len());
     }
+
+    #[test]
+    fn compact_applied_replaces_old_prefix_with_a_compact_summary_message() {
+        let events = vec![
+            StorageEvent::SessionStart {
+                session_id: "s1".into(),
+                timestamp: ts(),
+                working_dir: "/tmp".into(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
+            StorageEvent::UserMessage {
+                turn_id: Some("turn-1".into()),
+                content: "first".into(),
+                origin: UserMessageOrigin::User,
+                timestamp: ts(),
+            },
+            StorageEvent::AssistantFinal {
+                turn_id: Some("turn-1".into()),
+                content: "first-answer".into(),
+                reasoning_content: None,
+                reasoning_signature: None,
+                timestamp: None,
+            },
+            StorageEvent::TurnDone {
+                turn_id: Some("turn-1".into()),
+                timestamp: ts(),
+                reason: Some("completed".into()),
+            },
+            StorageEvent::UserMessage {
+                turn_id: Some("turn-2".into()),
+                content: "second".into(),
+                origin: UserMessageOrigin::User,
+                timestamp: ts(),
+            },
+            StorageEvent::AssistantFinal {
+                turn_id: Some("turn-2".into()),
+                content: "second-answer".into(),
+                reasoning_content: None,
+                reasoning_signature: None,
+                timestamp: None,
+            },
+            StorageEvent::TurnDone {
+                turn_id: Some("turn-2".into()),
+                timestamp: ts(),
+                reason: Some("completed".into()),
+            },
+            StorageEvent::CompactApplied {
+                turn_id: None,
+                trigger: crate::event::CompactTrigger::Manual,
+                summary: "condensed work".into(),
+                preserved_recent_turns: 1,
+                pre_tokens: 400,
+                post_tokens_estimate: 120,
+                messages_removed: 2,
+                tokens_freed: 280,
+                timestamp: ts(),
+            },
+        ];
+
+        let state = project(&events);
+
+        assert_eq!(state.messages.len(), 3);
+        assert!(matches!(
+            &state.messages[0],
+            LlmMessage::User {
+                content,
+                origin: UserMessageOrigin::CompactSummary,
+            } if content.contains("condensed work")
+        ));
+        assert!(matches!(
+            &state.messages[1],
+            LlmMessage::User {
+                content,
+                origin: UserMessageOrigin::User,
+            } if content == "second"
+        ));
+        assert!(matches!(
+            &state.messages[2],
+            LlmMessage::Assistant { content, .. } if content == "second-answer"
+        ));
+    }
 }

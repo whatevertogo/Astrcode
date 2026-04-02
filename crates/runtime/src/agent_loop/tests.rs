@@ -1796,3 +1796,87 @@ async fn unified_capability_router_executes_builtin_and_plugin_tools() {
         .await
         .expect("supervisor should shut down");
 }
+
+#[tokio::test]
+async fn auto_compact_emits_compact_applied_before_retrying_the_turn() {
+    let _guard = TestEnvGuard::new();
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([
+            LlmOutput {
+                content: "<analysis>trimmed</analysis><summary>condensed history</summary>"
+                    .to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+            },
+            LlmOutput {
+                content: "final answer".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+            },
+        ])),
+        delay: Duration::from_millis(0),
+    });
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::from_capabilities(factory, empty_capabilities())
+        .with_auto_compact_enabled(true)
+        .with_compact_threshold_percent(1)
+        .with_compact_keep_recent_turns(1);
+    let state = AgentState {
+        session_id: "test".into(),
+        working_dir: std::env::temp_dir(),
+        messages: vec![
+            LlmMessage::User {
+                content: "legacy ".repeat(1_500),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "ack".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+            LlmMessage::User {
+                content: "current ask".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ],
+        phase: Phase::Thinking,
+        turn_count: 0,
+    };
+    let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = Arc::clone(&events);
+    let mut on_event = move |event: StorageEvent| {
+        events_clone.lock().expect("events lock").push(event);
+        Ok(())
+    };
+
+    let outcome = loop_runner
+        .run_turn(
+            &state,
+            "turn-auto-compact",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+
+    assert!(matches!(outcome, TurnOutcome::Completed));
+    let events = events.lock().expect("events lock");
+    assert!(matches!(
+        events.first(),
+        Some(StorageEvent::PromptMetrics { .. })
+    ));
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StorageEvent::CompactApplied { summary, .. } if summary == "condensed history"
+        )
+    }));
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StorageEvent::AssistantFinal { content, .. } if content == "final answer"
+        )
+    }));
+}

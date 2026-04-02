@@ -321,4 +321,80 @@ mod tests {
             }
         ));
     }
+
+    #[test]
+    fn prompt_too_long_detection_matches_provider_errors_only() {
+        let prompt_too_long = AstrError::LlmRequestFailed {
+            status: 400,
+            body: "Prompt too long for this model".to_string(),
+        };
+        let unrelated = AstrError::LlmRequestFailed {
+            status: 400,
+            body: "rate limited".to_string(),
+        };
+        let wrong_status = AstrError::LlmRequestFailed {
+            status: 500,
+            body: "maximum context length exceeded".to_string(),
+        };
+
+        assert!(is_prompt_too_long(&prompt_too_long));
+        assert!(!is_prompt_too_long(&unrelated));
+        assert!(!is_prompt_too_long(&wrong_status));
+    }
+
+    #[test]
+    fn drop_oldest_turn_group_removes_only_the_oldest_user_turn_batch() {
+        let mut prefix = vec![
+            LlmMessage::User {
+                content: "[Auto-compact summary]\nOlder history".to_string(),
+                origin: UserMessageOrigin::CompactSummary,
+            },
+            LlmMessage::User {
+                content: "first".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "answer one".to_string(),
+                tool_calls: Vec::new(),
+                reasoning: None,
+            },
+            LlmMessage::User {
+                content: "second".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "answer two".to_string(),
+                tool_calls: Vec::new(),
+                reasoning: None,
+            },
+        ];
+
+        assert!(drop_oldest_turn_group(&mut prefix));
+        assert_eq!(prefix.len(), 2);
+        assert!(matches!(
+            &prefix[0],
+            LlmMessage::User {
+                content,
+                origin: UserMessageOrigin::User,
+            } if content == "second"
+        ));
+    }
+
+    #[test]
+    fn drop_oldest_turn_group_stops_when_only_one_turn_is_left() {
+        let mut prefix = vec![
+            LlmMessage::User {
+                content: "only".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "answer".to_string(),
+                tool_calls: Vec::new(),
+                reasoning: None,
+            },
+        ];
+
+        assert!(!drop_oldest_turn_group(&mut prefix));
+        assert!(prefix.is_empty());
+    }
 }

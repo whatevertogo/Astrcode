@@ -4,18 +4,32 @@
 //! requiring a real LLM provider or external services.
 
 use std::collections::HashSet;
+use std::net::TcpListener;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
+use astrcode_core::project::project_dir_name;
+use astrcode_core::{CapabilityRouter, PluginRegistry, RuntimeCoordinator, RuntimeHandle};
 use astrcode_protocol::http::{
     AuthExchangeRequest, AuthExchangeResponse, CreateSessionRequest, PromptAcceptedResponse,
     PromptRequest, SaveActiveSelectionRequest, SessionListItem, SessionMessageDto,
 };
+use astrcode_runtime::config::PROVIDER_KIND_OPENAI;
+use astrcode_runtime::{
+    save_config, Config, Profile, RuntimeConfig, RuntimeGovernance, RuntimeService,
+};
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
+use crate::auth::{AuthSessionManager, BootstrapAuth};
+use crate::bootstrap::APP_HOME_OVERRIDE_ENV;
 use crate::routes::build_api_router;
-use crate::test_support::test_state;
-use crate::AUTH_HEADER_NAME;
+use crate::test_support::{test_state, ServerTestEnvGuard};
+use crate::{AppState, AUTH_HEADER_NAME};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -35,6 +49,35 @@ async fn json_body<T: serde::de::DeserializeOwned>(response: axum::http::Respons
         .await
         .expect("response body should be readable");
     serde_json::from_slice(&bytes).expect("response should deserialize to expected type")
+}
+
+/// Wait until the background prompt task has persisted the expected number of session messages.
+async fn wait_for_total_message_count(
+    app: axum::Router,
+    session_id: &str,
+    expected_count: usize,
+) -> Vec<SessionMessageDto> {
+    for _ in 0..40 {
+        let messages_req = auth_request("GET", &format!("/api/sessions/{session_id}/messages"))
+            .body(Body::empty())
+            .expect("request should build");
+
+        let messages_resp = app
+            .clone()
+            .oneshot(messages_req)
+            .await
+            .expect("response should return");
+        assert_eq!(messages_resp.status(), StatusCode::OK);
+
+        let messages: Vec<SessionMessageDto> = json_body(messages_resp).await;
+        if messages.len() == expected_count {
+            return messages;
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+    }
+
+    panic!("timed out waiting for {expected_count} total messages in session {session_id}");
 }
 
 /// Wait until the background prompt task has persisted the expected number of user messages.
@@ -86,6 +129,137 @@ fn encode_query_value(value: &str) -> String {
         }
     }
     encoded
+}
+
+fn configured_state_with_openai_server(base_url: &str) -> (AppState, ServerTestEnvGuard) {
+    let guard = ServerTestEnvGuard::new();
+    save_config(&Config {
+        active_profile: "local-openai".to_string(),
+        active_model: "model-a".to_string(),
+        runtime: RuntimeConfig {
+            compact_keep_recent_turns: Some(2),
+            ..RuntimeConfig::default()
+        },
+        profiles: vec![Profile {
+            name: "local-openai".to_string(),
+            provider_kind: PROVIDER_KIND_OPENAI.to_string(),
+            base_url: base_url.to_string(),
+            api_key: Some("sk-test".to_string()),
+            models: vec!["model-a".to_string()],
+            ..Profile::default()
+        }],
+        ..Config::default()
+    })
+    .expect("test config should save");
+
+    let capabilities = CapabilityRouter::builder()
+        .build()
+        .expect("empty capability router should build");
+    let service = Arc::new(
+        RuntimeService::from_capabilities(capabilities).expect("runtime service should initialize"),
+    );
+    let runtime: Arc<dyn RuntimeHandle> = service.clone();
+    let coordinator = Arc::new(RuntimeCoordinator::new(
+        runtime,
+        Arc::new(PluginRegistry::default()),
+        Vec::new(),
+    ));
+    let runtime_governance = Arc::new(RuntimeGovernance::from_runtime(
+        Arc::clone(&service),
+        Arc::clone(&coordinator),
+    ));
+    let auth_sessions = Arc::new(AuthSessionManager::default());
+    auth_sessions.issue_test_token("browser-token");
+
+    (
+        AppState {
+            service,
+            coordinator,
+            runtime_governance,
+            auth_sessions,
+            bootstrap_auth: BootstrapAuth::new(
+                "browser-token".to_string(),
+                chrono::Utc::now().timestamp_millis() + 60_000,
+            ),
+            frontend_build: None,
+        },
+        guard,
+    )
+}
+
+fn spawn_openai_chat_server(
+    content: &str,
+    delay: Duration,
+    max_requests: usize,
+) -> (String, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+    listener
+        .set_nonblocking(true)
+        .expect("listener should be nonblocking");
+    let listener = tokio::net::TcpListener::from_std(listener).expect("tokio listener");
+    let content = content.to_string();
+
+    let handle = tokio::spawn(async move {
+        for _ in 0..max_requests {
+            let (mut socket, _) = listener.accept().await.expect("accept should work");
+            let mut buf = [0_u8; 16_384];
+            let bytes_read = socket.read(&mut buf).await.expect("request should read");
+            let request = String::from_utf8_lossy(&buf[..bytes_read]);
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            let response_body = if request.contains("\"stream\":true") {
+                format!(
+                    "data: {}\n\ndata: [DONE]\n\n",
+                    serde_json::json!({
+                        "choices": [{
+                            "delta": { "content": content },
+                            "finish_reason": "stop",
+                        }]
+                    })
+                )
+            } else {
+                serde_json::json!({
+                    "choices": [{
+                        "message": {
+                            "content": content,
+                        }
+                    }]
+                })
+                .to_string()
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                if request.contains("\"stream\":true") {
+                    "text/event-stream"
+                } else {
+                    "application/json"
+                },
+                response_body.len(),
+                response_body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("response should be written");
+            let _ = socket.shutdown().await;
+        }
+    });
+
+    (format!("http://{}", addr), handle)
+}
+
+fn session_log_path(session_id: &str, working_dir: &Path) -> std::path::PathBuf {
+    let app_home =
+        std::env::var_os(APP_HOME_OVERRIDE_ENV).expect("test home override should exist");
+    std::path::PathBuf::from(app_home)
+        .join(".astrcode")
+        .join("projects")
+        .join(project_dir_name(working_dir))
+        .join("sessions")
+        .join(session_id)
+        .join(format!("session-{session_id}.jsonl"))
 }
 
 // ---------------------------------------------------------------------------
@@ -828,4 +1002,148 @@ async fn e2e_project_delete() {
         result.get("successCount").and_then(|value| value.as_u64()),
         Some(1)
     );
+}
+
+#[tokio::test]
+async fn e2e_manual_compact_endpoint_persists_a_compact_summary() {
+    let (base_url, server_handle) = spawn_openai_chat_server(
+        "<analysis>ok</analysis><summary>condensed history</summary>",
+        Duration::ZERO,
+        4,
+    );
+    let (state, _guard) = configured_state_with_openai_server(&base_url);
+    let app = build_api_router().with_state(state);
+
+    let working_dir = std::env::temp_dir();
+    let working_dir = working_dir.canonicalize().unwrap_or(working_dir);
+    let working_dir_str = working_dir.to_string_lossy().to_string();
+    let create_req = auth_request("POST", "/api/sessions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&CreateSessionRequest {
+                working_dir: working_dir_str,
+            })
+            .expect("request should serialize"),
+        ))
+        .expect("request should build");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("response should return");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let created: SessionListItem = json_body(create_resp).await;
+
+    for expected_total_messages in [2usize, 4, 6] {
+        let prompt_req = auth_request(
+            "POST",
+            &format!("/api/sessions/{}/prompts", created.session_id),
+        )
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&PromptRequest {
+                text: format!("prompt-{expected_total_messages}"),
+            })
+            .expect("request should serialize"),
+        ))
+        .expect("request should build");
+        let prompt_resp = app
+            .clone()
+            .oneshot(prompt_req)
+            .await
+            .expect("response should return");
+        assert_eq!(prompt_resp.status(), StatusCode::ACCEPTED);
+        wait_for_total_message_count(app.clone(), &created.session_id, expected_total_messages)
+            .await;
+    }
+
+    let compact_req = auth_request(
+        "POST",
+        &format!("/api/sessions/{}/compact", created.session_id),
+    )
+    .body(Body::empty())
+    .expect("request should build");
+    let compact_resp = app
+        .clone()
+        .oneshot(compact_req)
+        .await
+        .expect("response should return");
+    assert_eq!(compact_resp.status(), StatusCode::NO_CONTENT);
+
+    let session_log = session_log_path(&created.session_id, &working_dir);
+    let log_contents =
+        std::fs::read_to_string(&session_log).expect("session log should be readable");
+    assert!(
+        log_contents.contains("\"type\":\"compactApplied\""),
+        "manual compact should persist a compactApplied event to the session log"
+    );
+    assert!(
+        log_contents.contains("condensed history"),
+        "the persisted compaction event should include the generated summary"
+    );
+
+    server_handle.await.expect("server should finish");
+}
+
+#[tokio::test]
+async fn e2e_manual_compact_endpoint_rejects_busy_sessions() {
+    let (base_url, server_handle) =
+        spawn_openai_chat_server("slow response", Duration::from_millis(300), 1);
+    let (state, _guard) = configured_state_with_openai_server(&base_url);
+    let app = build_api_router().with_state(state);
+
+    let working_dir = std::env::temp_dir();
+    let working_dir = working_dir.canonicalize().unwrap_or(working_dir);
+    let working_dir_str = working_dir.to_string_lossy().to_string();
+    let create_req = auth_request("POST", "/api/sessions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&CreateSessionRequest {
+                working_dir: working_dir_str,
+            })
+            .expect("request should serialize"),
+        ))
+        .expect("request should build");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("response should return");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let created: SessionListItem = json_body(create_resp).await;
+
+    let prompt_req = auth_request(
+        "POST",
+        &format!("/api/sessions/{}/prompts", created.session_id),
+    )
+    .header("content-type", "application/json")
+    .body(Body::from(
+        serde_json::to_vec(&PromptRequest {
+            text: "busy prompt".to_string(),
+        })
+        .expect("request should serialize"),
+    ))
+    .expect("request should build");
+    let prompt_resp = app
+        .clone()
+        .oneshot(prompt_req)
+        .await
+        .expect("response should return");
+    assert_eq!(prompt_resp.status(), StatusCode::ACCEPTED);
+
+    let compact_req = auth_request(
+        "POST",
+        &format!("/api/sessions/{}/compact", created.session_id),
+    )
+    .body(Body::empty())
+    .expect("request should build");
+    let compact_resp = app
+        .clone()
+        .oneshot(compact_req)
+        .await
+        .expect("response should return");
+    assert_eq!(compact_resp.status(), StatusCode::CONFLICT);
+
+    wait_for_total_message_count(app.clone(), &created.session_id, 2).await;
+    server_handle.await.expect("server should finish");
 }

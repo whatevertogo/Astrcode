@@ -165,4 +165,28 @@ mod tests {
             TokenBudgetDecision::DiminishingReturns
         );
     }
+
+    #[test]
+    fn zero_budget_stops_immediately() {
+        assert_eq!(
+            check_token_budget(0, 0, 0, 1_000, 100, 3),
+            TokenBudgetDecision::Stop
+        );
+    }
+
+    #[test]
+    fn under_ninety_percent_continues_without_diminishing_returns_checks() {
+        assert_eq!(
+            check_token_budget(899, 1_000, 99, 0, usize::MAX, 0),
+            TokenBudgetDecision::Continue
+        );
+    }
+
+    #[test]
+    fn above_ninety_percent_continues_when_delta_is_still_large_enough() {
+        assert_eq!(
+            check_token_budget(950, 1_000, 0, 600, 500, 3),
+            TokenBudgetDecision::Continue
+        );
+    }
 }

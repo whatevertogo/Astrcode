@@ -950,4 +950,28 @@ mod tests {
         ));
         assert!(!is_retryable_status(reqwest::StatusCode::BAD_REQUEST));
     }
+
+    #[test]
+    fn estimate_context_window_covers_known_openai_compatible_families() {
+        for model in [
+            "deepseek-chat",
+            "gpt-4o-mini",
+            "gpt-4o",
+            "gpt-4.1-mini",
+            "gpt-5",
+            "o3-mini",
+        ] {
+            assert_eq!(
+                estimate_openai_context_window(model),
+                128_000,
+                "model {model} should keep the documented heuristic window"
+            );
+        }
+    }
+
+    #[test]
+    fn estimate_context_window_is_case_insensitive_and_has_a_stable_fallback() {
+        assert_eq!(estimate_openai_context_window("GPT-4.1-MINI"), 128_000);
+        assert_eq!(estimate_openai_context_window("custom-backend"), 128_000);
+    }
 }

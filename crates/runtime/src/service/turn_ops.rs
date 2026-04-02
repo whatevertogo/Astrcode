@@ -637,9 +637,11 @@ fn ensure_branch_depth_within_limit(branch_depth: usize) -> ServiceResult<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::sync::Arc;
 
     use astrcode_core::AgentEvent;
+    use async_trait::async_trait;
     use chrono::Utc;
 
     use astrcode_storage::session::EventLog;
@@ -647,7 +649,55 @@ mod tests {
 
     use super::super::session_state::SessionWriter;
     use super::*;
+    use crate::llm::{EventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
+    use crate::provider_factory::ProviderFactory;
     use crate::test_support::TestEnvGuard;
+
+    struct ScriptedProvider {
+        responses: std::sync::Mutex<VecDeque<LlmOutput>>,
+    }
+
+    struct StaticProviderFactory {
+        provider: Arc<dyn LlmProvider>,
+    }
+
+    impl ProviderFactory for StaticProviderFactory {
+        fn build_for_working_dir(
+            &self,
+            _working_dir: Option<std::path::PathBuf>,
+        ) -> astrcode_core::Result<Arc<dyn LlmProvider>> {
+            Ok(Arc::clone(&self.provider))
+        }
+    }
+
+    #[async_trait]
+    impl LlmProvider for ScriptedProvider {
+        fn model_limits(&self) -> ModelLimits {
+            ModelLimits {
+                context_window: 200_000,
+                max_output_tokens: 4_096,
+            }
+        }
+
+        async fn generate(
+            &self,
+            _request: LlmRequest,
+            sink: Option<EventSink>,
+        ) -> astrcode_core::Result<LlmOutput> {
+            let output = self
+                .responses
+                .lock()
+                .expect("responses lock")
+                .pop_front()
+                .expect("scripted response should be available");
+            if let Some(sink) = sink {
+                for token in output.content.chars() {
+                    sink(crate::llm::LlmEvent::TextDelta(token.to_string()));
+                }
+            }
+            Ok(output)
+        }
+    }
 
     fn build_test_state() -> (tempfile::TempDir, SessionState, EventTranslator) {
         let temp_dir = tempfile::tempdir().expect("tempdir should be created");
@@ -823,6 +873,110 @@ mod tests {
         assert!(
             stats.estimated_tokens_used >= 800,
             "the prompt charge should be applied once the model actually responded"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn execute_turn_chain_appends_a_single_auto_continue_nudge_before_stopping() {
+        let _guard = TestEnvGuard::new();
+        let (temp_dir, state, mut translator) = build_test_state();
+        let provider: Arc<dyn LlmProvider> = Arc::new(ScriptedProvider {
+            responses: std::sync::Mutex::new(VecDeque::from([
+                LlmOutput {
+                    content: "a".repeat(240),
+                    ..LlmOutput::default()
+                },
+                LlmOutput {
+                    content: "done".to_string(),
+                    ..LlmOutput::default()
+                },
+            ])),
+        });
+        let loop_ = crate::agent_loop::AgentLoop::from_capabilities(
+            Arc::new(StaticProviderFactory { provider }),
+            crate::test_support::empty_capabilities(),
+        );
+
+        append_and_broadcast(
+            &state,
+            &StorageEvent::SessionStart {
+                session_id: "test-session".to_string(),
+                timestamp: Utc::now(),
+                working_dir: temp_dir.path().to_string_lossy().to_string(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
+            &mut translator,
+        )
+        .await
+        .expect("session start should persist");
+        append_and_broadcast(
+            &state,
+            &StorageEvent::UserMessage {
+                turn_id: Some("turn-auto".to_string()),
+                content: "work ".repeat(200),
+                origin: UserMessageOrigin::User,
+                timestamp: Utc::now(),
+            },
+            &mut translator,
+        )
+        .await
+        .expect("user message should persist");
+
+        *lock_anyhow(&state.token_budget, "session token budget").expect("budget lock") =
+            Some(SessionTokenBudgetState {
+                total_budget: 1_000,
+                used_tokens: 850,
+                continuation_count: 0,
+            });
+
+        let outcome = execute_turn_chain(
+            &state,
+            &loop_,
+            "turn-auto",
+            CancelToken::new(),
+            &mut translator,
+            BudgetSettings {
+                continuation_min_delta_tokens: 1,
+                max_continuations: 1,
+            },
+        )
+        .await
+        .expect("turn chain should complete");
+
+        assert!(matches!(outcome, TurnOutcome::Completed));
+
+        let projected = state
+            .snapshot_projected_state()
+            .expect("projected state should be readable");
+        assert_eq!(projected.messages.len(), 4);
+        assert!(matches!(
+            &projected.messages[0],
+            astrcode_core::LlmMessage::User {
+                origin: UserMessageOrigin::User,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &projected.messages[1],
+            astrcode_core::LlmMessage::Assistant { content, .. } if content.len() == 240
+        ));
+        assert!(matches!(
+            &projected.messages[2],
+            astrcode_core::LlmMessage::User {
+                content,
+                origin: UserMessageOrigin::AutoContinueNudge,
+            } if content.contains("Stopped at")
+        ));
+        assert!(matches!(
+            &projected.messages[3],
+            astrcode_core::LlmMessage::Assistant { content, .. } if content == "done"
+        ));
+        assert!(
+            lock_anyhow(&state.token_budget, "session token budget")
+                .expect("budget lock")
+                .is_none(),
+            "the budget state should be cleared once the chain stops continuing"
         );
     }
 }
