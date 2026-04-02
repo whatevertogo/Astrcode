@@ -58,7 +58,7 @@ tools (内置工具)    runtime-config (配置)    runtime-llm (LLM)    runtime-
 | `tools` | 内置工具（fs、shell 等），通过 `ToolCapabilityInvoker` 注册 |
 | `runtime-config` | 配置模型与加载/校验 |
 | `runtime-llm` | LLM 提供者抽象与 OpenAI/Anthropic 适配 |
-| `runtime-prompt` | Prompt Contributor 模式（Identity/AgentsMd/Environment/SkillSummary） |
+| `runtime-prompt` | Prompt Contributor 模式（Identity/AgentsMd/Environment/Skill 索引） |
 | `plugin` | 插件宿主（supervisor、peer、transport） |
 | `runtime` | 门面：`AgentLoop` + `RuntimeService` + bootstrap + governance |
 
@@ -67,6 +67,9 @@ tools (内置工具)    runtime-config (配置)    runtime-llm (LLM)    runtime-
 - `runtime/src/runtime_surface_assembler.rs` — 统一 capability surface 装配
 - `runtime/src/runtime_governance.rs` — reload / health / snapshot
 - `runtime/src/agent_loop/` — `turn_runner.rs`、`tool_cycle.rs`、`llm_cycle.rs`
+
+Skill 相关的实现说明见：
+- [skills-architecture.md](./skills-architecture.md)
 
 ### Layer 3: Transports
 

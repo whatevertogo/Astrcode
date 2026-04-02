@@ -11,5 +11,6 @@
 架构文档：
 
 - [architecture.md](./architecture.md) — 三层架构与四类核心契约（crate 依赖图、设计规则）
+- [skills-architecture.md](./skills-architecture.md) — Claude 风格两阶段 skill 架构（目录格式、Skill tool、资源模型）
 - [refactor-roadmap.md](./refactor-roadmap.md) — 重构路线图与当前状态
 - [agent-loop-roadmap.md](./agent-loop-roadmap.md) — AgentLoop 演进计划（P1-P6 + 远期 TODO）
