@@ -4,13 +4,16 @@ import { fileURLToPath } from 'node:url';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '..');
-const npxCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+// On Windows, .cmd shims (like npx.cmd) must be spawned through a shell.
+const isWindows = process.platform === 'win32';
+const npxCommand = isWindows ? 'npx' : 'npx';
 
 function run(command, args, options = {}) {
   return execFileSync(command, args, {
     cwd: repoRoot,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
+    shell: isWindows,
     ...options,
   }).trim();
 }
@@ -19,6 +22,7 @@ function runWithInheritedOutput(command, args) {
   execFileSync(command, args, {
     cwd: repoRoot,
     stdio: 'inherit',
+    shell: isWindows,
   });
 }
 
