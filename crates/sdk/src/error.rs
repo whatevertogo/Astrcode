@@ -318,9 +318,11 @@ impl From<std::io::Error> for SdkError {
 
 impl From<serde_json::Error> for SdkError {
     fn from(value: serde_json::Error) -> Self {
-        Self::Validation {
+        Self::Serde {
+            capability: "unknown".to_string(),
+            stage: ToolSerdeStage::DecodeInput,
+            rust_type: "unknown",
             message: value.to_string(),
-            details: Value::Null,
         }
     }
 }
