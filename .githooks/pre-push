@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+# Push is the right place for medium-weight validation because it happens less often than commit.
+node scripts/pre-push-check.mjs

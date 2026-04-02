@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '..');
 const hooksPath = '.githooks';
-const preCommitHookPath = resolve(repoRoot, hooksPath, 'pre-commit');
+const requiredHookFiles = ['pre-commit', 'pre-push'];
 
 function runGit(args) {
   return execFileSync('git', args, {
@@ -22,9 +22,14 @@ if (process.env.CI === 'true') {
   process.exit(0);
 }
 
-if (!existsSync(preCommitHookPath)) {
-  // Fail open so dependency installation still succeeds even if the hook file is missing.
-  console.warn('Skipping git hook installation because .githooks/pre-commit is missing.');
+if (requiredHookFiles.some((file) => !existsSync(resolve(repoRoot, hooksPath, file)))) {
+  // Fail open so dependency installation still succeeds from source archives, but keep the warning
+  // explicit because missing hook wrappers mean the repo is no longer enforcing the documented flow.
+  console.warn(
+    `Skipping git hook installation because one of ${requiredHookFiles
+      .map((file) => `${hooksPath}/${file}`)
+      .join(', ')} is missing.`,
+  );
   process.exit(0);
 }
 
@@ -42,8 +47,10 @@ try {
 }
 
 try {
-  // The tracked hook is stored in the repo, but Unix users still need the executable bit locally.
-  chmodSync(preCommitHookPath, 0o755);
+  // The tracked wrappers live in git, but Unix users still need the executable bit locally.
+  for (const hookFile of requiredHookFiles) {
+    chmodSync(resolve(repoRoot, hooksPath, hookFile), 0o755);
+  }
 } catch {
   // Windows ignores chmod and some filesystems reject it, so keep the installation best-effort.
 }

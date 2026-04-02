@@ -1,3 +1,24 @@
+//! # 运行时能力面组装 (Runtime Surface Assembler)
+//!
+//! 负责将内置工具和外部插件的能力统一组装到 `CapabilityRouter` 中。
+//!
+//! ## 组装流程
+//!
+//! 1. 收集内置工具（shell, readFile, writeFile 等）的 invoker
+//! 2. 对插件清单按名称/版本排序（保证确定性冲突解决）
+//! 3. 逐个初始化插件：通过 `PluginInitializer` 启动进程并握手
+//! 4. 对每个插件分三种结果：
+//!    - **成功**: 注册其能力到 router，记录为活跃插件
+//!    - **能力冲突**: 如果能力名已被注册，跳过该插件，记录为健康冲突
+//!    - **初始化失败**: 跳过该插件，记录为不健康
+//! 5. 返回组装结果：router + 所有插件条目（含活跃/跳过/失败的） + 需要管理的组件
+//!
+//! ## 关键约束
+//!
+//! - 能力名必须全局唯一：先到先得，排序保证确定性
+//! - 插件初始化失败不阻塞其他插件
+//! - 返回的 `managed_components` 需要在 shutdown 时有序关闭
+
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,6 +38,9 @@ use serde_json::Value;
 use crate::builtin_capabilities::built_in_capability_invokers;
 use crate::prompt::{PromptDeclaration, PromptDeclarationSource, SkillSpec};
 
+/// 组装后的运行时能力面
+///
+/// 包含所有成功注册的能力路由、prompt 声明、插件条目和需要管理的组件。
 pub(crate) struct AssembledRuntimeSurface {
     pub(crate) router: CapabilityRouter,
     pub(crate) prompt_declarations: Vec<PromptDeclaration>,
@@ -25,12 +49,18 @@ pub(crate) struct AssembledRuntimeSurface {
     pub(crate) active_plugins: Vec<ActivePluginRuntime>,
 }
 
+/// 活跃插件运行时
+///
+/// 代表成功初始化并注册到路由器的插件实例。
 #[derive(Clone)]
 pub(crate) struct ActivePluginRuntime {
     pub(crate) name: String,
     pub(crate) component: Arc<dyn ManagedPluginComponent>,
 }
 
+/// 加载完成的插件
+///
+/// 包含插件组件、能力描述符、调用器和 prompt 声明。
 pub(crate) struct LoadedPlugin {
     pub(crate) component: Arc<dyn ManagedPluginComponent>,
     pub(crate) capabilities: Vec<CapabilityDescriptor>,
@@ -38,17 +68,26 @@ pub(crate) struct LoadedPlugin {
     pub(crate) prompt_declarations: Vec<PromptDeclaration>,
 }
 
+/// 插件健康状态报告
+///
+/// 包装 `PluginHealth` 并附加可选的消息说明。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedPluginHealth {
     pub(crate) health: PluginHealth,
     pub(crate) message: Option<String>,
 }
 
+/// 可管理插件组件 trait
+///
+/// 扩展 `ManagedRuntimeComponent`，提供健康状态报告能力。
 #[async_trait]
 pub(crate) trait ManagedPluginComponent: ManagedRuntimeComponent {
     async fn health_report(&self) -> std::result::Result<ManagedPluginHealth, AstrError>;
 }
 
+/// 为 `Supervisor` 实现 `ManagedPluginComponent`
+///
+/// 将 Supervisor 的健康状态映射为插件健康状态。
 #[async_trait]
 impl ManagedPluginComponent for Supervisor {
     async fn health_report(&self) -> std::result::Result<ManagedPluginHealth, AstrError> {
@@ -66,6 +105,10 @@ impl ManagedPluginComponent for Supervisor {
     }
 }
 
+/// 带治理的插件能力调用器
+///
+/// 包装原始插件调用器，在调用前后更新 `PluginRegistry` 中的运行时统计，
+/// 并在插件不健康时短路返回失败。
 struct GovernedPluginInvoker {
     plugin_name: String,
     inner: Arc<dyn CapabilityInvoker>,
@@ -83,6 +126,7 @@ impl CapabilityInvoker for GovernedPluginInvoker {
         payload: Value,
         ctx: &astrcode_core::CapabilityContext,
     ) -> astrcode_core::Result<CapabilityExecutionResult> {
+        // 健康检查：插件不健康时短路返回失败，避免调用已失效的插件
         if let Some(entry) = self.plugin_registry.get(&self.plugin_name) {
             if matches!(entry.health, PluginHealth::Unavailable) {
                 return Ok(CapabilityExecutionResult::failure(
@@ -95,6 +139,7 @@ impl CapabilityInvoker for GovernedPluginInvoker {
             }
         }
 
+        // 执行调用并记录耗时和结果
         let started_at = Instant::now();
         let invocation = self.inner.invoke(payload, ctx).await;
         let checked_at = Utc::now().to_rfc3339();
@@ -137,6 +182,9 @@ impl CapabilityInvoker for GovernedPluginInvoker {
     }
 }
 
+/// 插件初始化器 trait
+///
+/// 抽象插件的启动和握手过程，便于测试和不同插件类型的扩展。
 #[async_trait]
 pub(crate) trait PluginInitializer: Send + Sync {
     async fn initialize(
@@ -145,11 +193,17 @@ pub(crate) trait PluginInitializer: Send + Sync {
     ) -> std::result::Result<LoadedPlugin, AstrError>;
 }
 
+/// 基于 Supervisor 的插件初始化器
+///
+/// 使用 `PluginLoader` 启动插件进程并完成 MCP 握手。
 pub(crate) struct SupervisorPluginInitializer {
     loader: PluginLoader,
 }
 
 impl SupervisorPluginInitializer {
+    /// 创建新的 Supervisor 插件初始化器。
+    ///
+    /// `search_paths` 指定插件可执行文件的搜索路径列表。
     pub(crate) fn new(search_paths: Vec<PathBuf>) -> Self {
         Self {
             loader: PluginLoader { search_paths },
@@ -159,6 +213,7 @@ impl SupervisorPluginInitializer {
 
 #[async_trait]
 impl PluginInitializer for SupervisorPluginInitializer {
+    /// 初始化单个插件：启动进程、完成 MCP 握手、提取能力。
     async fn initialize(
         &self,
         manifest: &PluginManifest,
@@ -325,6 +380,10 @@ where
     })
 }
 
+/// 检查插件能力列表中是否存在与已注册能力冲突的名称。
+///
+/// 返回第一个冲突的能力名，如果没有冲突则返回 `None`。
+/// 同时检查插件内部是否存在重复的能力名。
 pub(crate) fn conflicting_capability_name(
     registered_capability_names: &HashSet<String>,
     capabilities: &[CapabilityDescriptor],
@@ -340,6 +399,9 @@ pub(crate) fn conflicting_capability_name(
     None
 }
 
+/// 创建"已发现"状态的插件条目。
+///
+/// 表示插件清单已被扫描到，但尚未初始化。
 fn make_discovered_entry(manifest: &PluginManifest) -> PluginEntry {
     PluginEntry {
         manifest: manifest.clone(),
@@ -352,6 +414,9 @@ fn make_discovered_entry(manifest: &PluginManifest) -> PluginEntry {
     }
 }
 
+/// 创建"失败"状态的插件条目。
+///
+/// 表示插件初始化或注册过程中发生了错误。
 fn make_failed_entry(
     manifest: PluginManifest,
     capabilities: Vec<CapabilityDescriptor>,
@@ -368,6 +433,9 @@ fn make_failed_entry(
     }
 }
 
+/// 创建"已初始化"状态的插件条目。
+///
+/// 表示插件成功加载并注册到路由器中。
 fn make_initialized_entry(
     manifest: &PluginManifest,
     capabilities: Vec<CapabilityDescriptor>,
@@ -383,6 +451,9 @@ fn make_initialized_entry(
     }
 }
 
+/// 检查能力列表是否存在无效的条目。
+///
+/// 返回第一个验证失败的能力的错误信息，如果全部有效则返回 `None`。
 fn invalid_capability_reason(capabilities: &[CapabilityDescriptor]) -> Option<String> {
     capabilities.iter().find_map(|capability| {
         capability.validate().err().map(|error| {

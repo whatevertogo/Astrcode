@@ -15,5 +15,13 @@ tauri:
 
 check:
 	cargo check --workspace
-	cargo test --workspace
+	cargo test --workspace --exclude astrcode --lib
 	cd frontend && npm run typecheck
+
+check-ci:
+	cargo fmt --all -- --check
+	cargo clippy --all-targets --all-features -- -D warnings
+	cargo test --workspace --exclude astrcode
+	cd frontend && npm run typecheck
+	cd frontend && npm run lint
+	cd frontend && npm run format:check

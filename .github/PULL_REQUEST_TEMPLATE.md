@@ -48,21 +48,24 @@
 
 **测试命令：**
 ```bash
-# Rust 测试
-cargo test --workspace
+# Rust 全量检查
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --workspace --exclude astrcode
 
-# 前端类型检查
-cd frontend && npm run typecheck
+# 前端完整检查
+cd frontend && npm run typecheck && npm run lint && npm run format:check
 ```
 
 ---
 
 ## 七、Checklist
 - [ ] 代码已通过 `cargo fmt --all -- --check`
-- [ ] 代码已通过 `cargo clippy --all-targets --all-features`
-- [ ] 测试已通过 `cargo test --workspace`
+- [ ] 代码已通过 `cargo clippy --all-targets --all-features -- -D warnings`
+- [ ] 测试已通过 `cargo test --workspace --exclude astrcode`
 - [ ] 前端类型检查已通过 `npm run typecheck`
 - [ ] 前端 lint 已通过 `npm run lint`
+- [ ] 前端格式检查已通过 `npm run format:check`
 - [ ] 已添加必要的注释
 - [ ] 已更新相关文档
 - [ ] 无 Breaking Changes（或已明确说明）

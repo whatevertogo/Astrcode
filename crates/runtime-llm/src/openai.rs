@@ -518,11 +518,27 @@ fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
     }
 }
 
-/// 估算 OpenAI 兼容模型的上下文窗口大小。
+/// 基于模型名称估算 OpenAI 兼容模型的上下文窗口大小。
 ///
-/// 当前统一返回保守默认值 128k。
-/// TODO: 当 OpenAI 兼容后端暴露精确的上下文窗口元数据时，应改为从提供者元数据读取。
-fn estimate_openai_context_window(_model: &str) -> usize {
+/// 当前所有已知模型族（DeepSeek、GPT-4o、GPT-4.1、GPT-5、o 系列）统一返回 128k。
+/// 这是一个保守的默认值，实际值应来自提供者元数据。
+///
+/// NOTE: 该函数目前返回固定值，本质上是一个占位实现。
+/// 当 OpenAI 兼容后端暴露精确的上下文窗口元数据时应移除。
+fn estimate_openai_context_window(model: &str) -> usize {
+    let model = model.to_ascii_lowercase();
+    if model.contains("deepseek") {
+        return 128_000;
+    }
+    if model.contains("gpt-4o-mini") {
+        return 128_000;
+    }
+    if model.contains("gpt-4o") || model.contains("gpt-4.1") || model.starts_with("gpt-5") {
+        return 128_000;
+    }
+    if model.starts_with('o') {
+        return 128_000;
+    }
     128_000
 }
 

@@ -3,8 +3,9 @@
 
 ## Workflow Checklist
 
-- Rust 代码改动：`cargo fmt --all -- --check && cargo test --workspace --exclude astrcode`
-- 前端代码改动：`cd frontend && npm run typecheck && npm run lint && npm run format:check`
+- pre-commit：只保留快检查，负责自动 format、前端改动的快速 lint fix，以及大文件 / 冲突标记 / 明显密钥泄漏拦截
+- pre-push：运行中等检查，推荐命令：`cargo check --workspace && cargo test --workspace --exclude astrcode --lib && cd frontend && npm run typecheck`
+- CI 对齐的完整检查：`cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --workspace --exclude astrcode && cd frontend && npm run typecheck && npm run lint && npm run format:check`
 - 依赖边界改动（`Cargo.lock`/`deny.toml`）：补跑 `cargo deny check bans`
 - 同时改 Rust 与前端：以上检查都要过
 - CI 已配置 4 个工作流（`rust-check` / `frontend-check` / `tauri-build` / `dependency-audit`），推送到 `master` 或开 PR 自动触发
@@ -13,7 +14,7 @@
 
 ### Rust
 
-- Use `cargo fmt --all`,`cargo clippy --all-targets --all-features -- -D warnings` before committing
+- Use `cargo fmt --all` for local edits, and keep `cargo clippy --all-targets --all-features -- -D warnings` green in the CI-facing validation flow
 - Follow standard Rust naming: `snake_case` for functions/variables, `PascalCase` for types
 - Async functions should return `anyhow::Result<T>`
 
