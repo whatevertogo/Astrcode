@@ -18,35 +18,7 @@ struct BundledSkillAsset {
     content: &'static str,
 }
 
-const BUNDLED_SKILLS: &[BundledSkillDefinition] = &[
-    BundledSkillDefinition {
-        id: "code-modification",
-        assets: &[BundledSkillAsset {
-            relative_path: "SKILL.md",
-            content: include_str!("code-modification/SKILL.md"),
-        }],
-        allowed_tools: &["readFile", "editFile", "writeFile"],
-        expand_tool_guides: true,
-    },
-    BundledSkillDefinition {
-        id: "codebase-exploration",
-        assets: &[BundledSkillAsset {
-            relative_path: "SKILL.md",
-            content: include_str!("codebase-exploration/SKILL.md"),
-        }],
-        allowed_tools: &["listDir", "findFiles", "grep", "readFile"],
-        expand_tool_guides: false,
-    },
-    BundledSkillDefinition {
-        id: "shell-safety",
-        assets: &[BundledSkillAsset {
-            relative_path: "SKILL.md",
-            content: include_str!("shell-safety/SKILL.md"),
-        }],
-        allowed_tools: &["shell"],
-        expand_tool_guides: true,
-    },
-];
+const BUNDLED_SKILLS: &[BundledSkillDefinition] = &[];
 
 pub(crate) fn builtin_skills() -> Vec<SkillSpec> {
     BUNDLED_SKILLS
@@ -194,36 +166,12 @@ mod tests {
         let _guard = TestEnvGuard::new();
         let skills = builtin_skills();
 
-        assert_eq!(skills.len(), 3);
-        assert!(skills.iter().all(|skill| skill.triggers.is_empty()));
-        assert!(skills
-            .iter()
-            .any(|skill| skill.id == "code-modification" && skill.expand_tool_guides));
-        assert!(skills.iter().any(|skill| {
-            skill.id == "shell-safety" && skill.allowed_tools == vec!["shell".to_string()]
-        }));
-        assert!(skills.iter().all(|skill| skill.skill_root.is_some()));
+        assert_eq!(skills.len(), 0);
     }
 
     #[test]
     fn bundled_skills_materialize_claude_style_directory_layout() {
-        let guard = TestEnvGuard::new();
-        let skills = builtin_skills();
-        let code_modification = skills
-            .iter()
-            .find(|skill| skill.id == "code-modification")
-            .expect("code-modification skill should exist");
-        let skill_root = PathBuf::from(
-            code_modification
-                .skill_root
-                .as_ref()
-                .expect("bundled skill should expose a real root"),
-        );
-
-        assert!(skill_root.starts_with(guard.home_dir().join(".astrcode")));
-        assert_eq!(
-            fs::read_to_string(skill_root.join("SKILL.md")).expect("SKILL.md should exist"),
-            include_str!("code-modification/SKILL.md")
-        );
+        // No bundled skills remain; the git-commit skill is loaded from the
+        // user-level skills directory instead of the compiled-in bundle.
     }
 }
