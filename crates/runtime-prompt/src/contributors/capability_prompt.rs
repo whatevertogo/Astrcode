@@ -2,8 +2,8 @@ use astrcode_core::{CapabilityDescriptor, ToolPromptMetadata};
 use async_trait::async_trait;
 
 use crate::{
-    BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor, PromptDeclaration,
-    PromptDeclarationKind,
+    resolve_prompt_skills, skill_roots_cache_marker, BlockKind, BlockSpec, PromptContext,
+    PromptContribution, PromptContributor, PromptDeclaration, PromptDeclarationKind, SkillSpec,
 };
 
 pub struct CapabilityPromptContributor;
@@ -17,12 +17,21 @@ impl PromptContributor for CapabilityPromptContributor {
     }
 
     fn cache_version(&self) -> u64 {
-        2
+        3
+    }
+
+    fn cache_fingerprint(&self, ctx: &PromptContext) -> String {
+        format!(
+            "{}|{}",
+            ctx.contributor_cache_fingerprint(),
+            skill_roots_cache_marker(&ctx.working_dir)
+        )
     }
 
     async fn contribute(&self, ctx: &PromptContext) -> PromptContribution {
         let mut blocks = Vec::new();
         let tool_guides = collect_tool_guides(&ctx.capability_descriptors);
+        let resolved_skills = resolve_prompt_skills(&ctx.skills, &ctx.working_dir);
         if !tool_guides.is_empty() {
             blocks.push(build_tool_summary_block(&tool_guides));
         }
@@ -31,7 +40,8 @@ impl PromptContributor for CapabilityPromptContributor {
             tool_guides
                 .iter()
                 .filter(|guide| {
-                    guide.prompt.always_include || should_expand_tool_guides(ctx, tool_guides.len())
+                    guide.prompt.always_include
+                        || should_expand_tool_guides(ctx, &resolved_skills, tool_guides.len())
                 })
                 .map(build_detailed_tool_block),
         );
@@ -87,12 +97,17 @@ fn collect_tool_guides(capability_descriptors: &[CapabilityDescriptor]) -> Vec<T
     guides
 }
 
-fn should_expand_tool_guides(ctx: &PromptContext, tool_guide_count: usize) -> bool {
-    tool_guide_count <= MAX_ALWAYS_ON_DETAILED_GUIDES || matched_skill_wants_tool_guides(ctx)
+fn should_expand_tool_guides(
+    ctx: &PromptContext,
+    resolved_skills: &[SkillSpec],
+    tool_guide_count: usize,
+) -> bool {
+    tool_guide_count <= MAX_ALWAYS_ON_DETAILED_GUIDES
+        || matched_skill_wants_tool_guides(ctx, resolved_skills)
 }
 
-fn matched_skill_wants_tool_guides(ctx: &PromptContext) -> bool {
-    ctx.skills
+fn matched_skill_wants_tool_guides(ctx: &PromptContext, resolved_skills: &[SkillSpec]) -> bool {
+    resolved_skills
         .iter()
         .filter(|skill| skill.matches(&ctx.tool_names, ctx.latest_user_message()))
         .any(|skill| skill.expand_tool_guides)
@@ -200,10 +215,14 @@ fn build_prompt_declaration_block(declaration: &PromptDeclaration) -> BlockSpec 
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use astrcode_core::test_support::TestEnvGuard;
     use astrcode_core::{CapabilityDescriptor, CapabilityKind, ToolPromptMetadata};
     use serde_json::json;
 
     use super::*;
+    use crate::{SkillSource, SkillSpec};
 
     fn tool_descriptor(name: &str) -> CapabilityDescriptor {
         CapabilityDescriptor::builder(name, CapabilityKind::tool())
@@ -256,5 +275,53 @@ mod tests {
         assert!(contribution.blocks.iter().any(|block| {
             block.id == "plugin-guide" && block.kind == BlockKind::ExtensionInstruction
         }));
+    }
+
+    #[tokio::test]
+    async fn project_skill_override_can_disable_detailed_tool_guides() {
+        let _guard = TestEnvGuard::new();
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let skill_dir = project
+            .path()
+            .join(".astrcode")
+            .join("skills")
+            .join("tool-expander");
+        fs::create_dir_all(&skill_dir).expect("skill directory should be created");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: Tool Expander\nwhen_to_use: When the user asks for the tool expander workflow\n---\nUse the project override.\n",
+        )
+        .expect("skill file should be written");
+
+        let mut ctx = context();
+        ctx.working_dir = project.path().to_string_lossy().into_owned();
+        ctx.capability_descriptors = vec![
+            tool_descriptor("alpha"),
+            tool_descriptor("beta"),
+            tool_descriptor("gamma"),
+            tool_descriptor("delta"),
+            tool_descriptor("epsilon"),
+        ];
+        ctx.vars.insert(
+            "turn.user_message".to_string(),
+            "run the tool expander workflow".to_string(),
+        );
+        ctx.skills = vec![SkillSpec {
+            id: "tool-expander".to_string(),
+            name: "Tool Expander".to_string(),
+            description: "expand".to_string(),
+            guide: "expand".to_string(),
+            required_tools: Vec::new(),
+            triggers: vec!["tool expander workflow".to_string()],
+            source: SkillSource::Builtin,
+            expand_tool_guides: true,
+        }];
+
+        let contribution = CapabilityPromptContributor.contribute(&ctx).await;
+
+        assert!(!contribution
+            .blocks
+            .iter()
+            .any(|block| block.id == "tool-guide-epsilon"));
     }
 }

@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 
-use crate::{BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor};
+use crate::{
+    resolve_prompt_skills, skill_roots_cache_marker, BlockKind, BlockSpec, PromptContext,
+    PromptContribution, PromptContributor,
+};
 
 pub struct SkillGuideContributor;
 
@@ -10,9 +13,21 @@ impl PromptContributor for SkillGuideContributor {
         "skill-guide"
     }
 
+    fn cache_version(&self) -> u64 {
+        2
+    }
+
+    fn cache_fingerprint(&self, ctx: &PromptContext) -> String {
+        format!(
+            "{}|{}",
+            ctx.contributor_cache_fingerprint(),
+            skill_roots_cache_marker(&ctx.working_dir)
+        )
+    }
+
     async fn contribute(&self, ctx: &PromptContext) -> PromptContribution {
-        let mut matching_skills = ctx
-            .skills
+        let resolved_skills = resolve_prompt_skills(&ctx.skills, &ctx.working_dir);
+        let mut matching_skills = resolved_skills
             .iter()
             .filter(|skill| skill.matches(&ctx.tool_names, ctx.latest_user_message()))
             .cloned()
@@ -23,8 +38,12 @@ impl PromptContributor for SkillGuideContributor {
             blocks: matching_skills
                 .iter()
                 .map(|skill| {
-                    let mut content =
-                        format!("{}\n\n{}", skill.description.trim(), skill.guide.trim());
+                    let mut content_sections = Vec::new();
+                    if !skill.description.trim().is_empty() {
+                        content_sections.push(skill.description.trim().to_string());
+                    }
+                    content_sections.push(skill.guide.trim().to_string());
+                    let mut content = content_sections.join("\n\n");
                     if !skill.required_tools.is_empty() {
                         content.push_str(&format!(
                             "\n\nRequired tools: {}",
@@ -54,6 +73,10 @@ impl PromptContributor for SkillGuideContributor {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use astrcode_core::test_support::TestEnvGuard;
+
     use crate::{PromptContext, SkillSource, SkillSpec};
 
     use super::*;
@@ -99,5 +122,41 @@ mod tests {
 
         assert_eq!(contribution.blocks.len(), 1);
         assert_eq!(contribution.blocks[0].id, "skill-guide-matching");
+    }
+
+    #[tokio::test]
+    async fn includes_project_skill_blocks_when_project_directory_matches() {
+        let _guard = TestEnvGuard::new();
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let skill_dir = project
+            .path()
+            .join(".astrcode")
+            .join("skills")
+            .join("project-search");
+        fs::create_dir_all(&skill_dir).expect("skill directory should be created");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: Project Search\nwhen_to_use: When the user needs project search help\n---\nUse the project skill.\n",
+        )
+        .expect("skill file should be written");
+
+        let contribution = SkillGuideContributor
+            .contribute(&PromptContext {
+                working_dir: project.path().to_string_lossy().into_owned(),
+                tool_names: vec!["shell".to_string()],
+                capability_descriptors: Vec::new(),
+                prompt_declarations: Vec::new(),
+                skills: Vec::new(),
+                step_index: 0,
+                turn_index: 0,
+                vars: std::collections::HashMap::from([(
+                    "turn.user_message".to_string(),
+                    "search the project for this flow".to_string(),
+                )]),
+            })
+            .await;
+
+        assert_eq!(contribution.blocks.len(), 1);
+        assert_eq!(contribution.blocks[0].id, "skill-guide-project-search");
     }
 }

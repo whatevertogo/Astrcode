@@ -43,11 +43,14 @@ impl PromptContributor for SkillSummaryContributor {
 
 #[cfg(test)]
 mod tests {
+    use astrcode_core::test_support::TestEnvGuard;
+
     use super::*;
     use crate::{PromptComposer, PromptComposerOptions, ValidationLevel};
 
     #[tokio::test]
     async fn adds_skill_summary_and_first_step_examples() {
+        let _guard = TestEnvGuard::new();
         let composer = PromptComposer::with_options(PromptComposerOptions {
             validation_level: ValidationLevel::Strict,
             ..PromptComposerOptions::default()

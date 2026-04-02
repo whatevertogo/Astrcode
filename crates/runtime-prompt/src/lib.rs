@@ -7,6 +7,7 @@ pub mod contributors;
 pub mod diagnostics;
 pub mod plan;
 pub mod prompt_declaration;
+pub mod skill_loader;
 pub mod skill_spec;
 pub mod template;
 
@@ -22,6 +23,10 @@ pub use plan::PromptPlan;
 pub use prompt_declaration::{
     PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
     PromptDeclarationSource,
+};
+pub use skill_loader::{
+    load_project_skills, load_user_skills, parse_skill_md, resolve_prompt_skills,
+    skill_roots_cache_marker, SkillFrontmatter,
 };
 pub use skill_spec::{SkillSource, SkillSpec};
 pub use template::TemplateRenderError;
