@@ -73,6 +73,19 @@ pub(crate) struct ContextStageContext<'a> {
     pub tool_result_max_bytes: usize,
 }
 
+/// 组装模型可见上下文包时所需的 per-step 输入。
+///
+/// 这样 `build_bundle` 只接受一个语义化参数，避免 turn runner 继续把一串相关值手工
+/// 展开传递给 pipeline。
+pub(crate) struct ContextBundleInput<'a> {
+    pub turn_id: &'a str,
+    pub step_index: usize,
+    pub prior_compaction_view: Option<&'a ConversationView>,
+    pub capability_descriptors: &'a [CapabilityDescriptor],
+    pub keep_recent_turns: usize,
+    pub model_context_window: usize,
+}
+
 /// Pipeline stage。
 ///
 /// 约束：stage 只做同步纯变换，不做 IO、不发事件、不做审批，也不触发 compact。
@@ -117,23 +130,18 @@ impl ContextRuntime {
     pub(crate) fn build_bundle(
         &self,
         state: &AgentState,
-        turn_id: &str,
-        step_index: usize,
-        prior_compaction_view: Option<&ConversationView>,
-        capability_descriptors: &[CapabilityDescriptor],
-        keep_recent_turns: usize,
-        model_context_window: usize,
+        input: ContextBundleInput<'_>,
     ) -> Result<ContextBundle> {
         let ctx = ContextStageContext {
             session_id: &state.session_id,
             working_dir: &state.working_dir,
-            turn_id,
-            step_index,
+            turn_id: input.turn_id,
+            step_index: input.step_index,
             base_messages: &state.messages,
-            prior_compaction_view,
-            capability_descriptors,
-            keep_recent_turns,
-            model_context_window,
+            prior_compaction_view: input.prior_compaction_view,
+            capability_descriptors: input.capability_descriptors,
+            keep_recent_turns: input.keep_recent_turns,
+            model_context_window: input.model_context_window,
             tool_result_max_bytes: self.tool_result_max_bytes,
         };
         let mut bundle = ContextBundle::default();
@@ -291,7 +299,17 @@ mod tests {
         }]);
 
         let bundle = ContextRuntime::new(100_000)
-            .build_bundle(&state, "turn-1", 0, None, &[], 1, 8_192)
+            .build_bundle(
+                &state,
+                ContextBundleInput {
+                    turn_id: "turn-1",
+                    step_index: 0,
+                    prior_compaction_view: None,
+                    capability_descriptors: &[],
+                    keep_recent_turns: 1,
+                    model_context_window: 8_192,
+                },
+            )
             .expect("bundle should build");
 
         assert_eq!(bundle.conversation.messages.len(), state.messages.len());
@@ -313,7 +331,17 @@ mod tests {
         }]);
 
         let bundle = ContextRuntime::new(100_000)
-            .build_bundle(&state, "turn-1", 1, Some(&compacted), &[], 1, 8_192)
+            .build_bundle(
+                &state,
+                ContextBundleInput {
+                    turn_id: "turn-1",
+                    step_index: 1,
+                    prior_compaction_view: Some(&compacted),
+                    capability_descriptors: &[],
+                    keep_recent_turns: 1,
+                    model_context_window: 8_192,
+                },
+            )
             .expect("bundle should build");
 
         assert_eq!(bundle.conversation.messages.len(), compacted.messages.len());
@@ -362,7 +390,17 @@ mod tests {
         ]);
 
         let bundle = runtime
-            .build_bundle(&make_state(Vec::new()), "turn-1", 0, None, &[], 1, 8_192)
+            .build_bundle(
+                &make_state(Vec::new()),
+                ContextBundleInput {
+                    turn_id: "turn-1",
+                    step_index: 0,
+                    prior_compaction_view: None,
+                    capability_descriptors: &[],
+                    keep_recent_turns: 1,
+                    model_context_window: 8_192,
+                },
+            )
             .expect("bundle should build");
 
         assert_eq!(
@@ -380,7 +418,17 @@ mod tests {
         }]);
 
         let bundle = ContextRuntime::new(100_000)
-            .build_bundle(&state, "turn-2", 7, None, &[], 1, 8_192)
+            .build_bundle(
+                &state,
+                ContextBundleInput {
+                    turn_id: "turn-2",
+                    step_index: 7,
+                    prior_compaction_view: None,
+                    capability_descriptors: &[],
+                    keep_recent_turns: 1,
+                    model_context_window: 8_192,
+                },
+            )
             .expect("bundle should build");
 
         assert_eq!(bundle.workset.len(), 1);
@@ -426,7 +474,17 @@ mod tests {
             ];
 
         let bundle = ContextRuntime::new(128)
-            .build_bundle(&state, "turn-3", 0, None, &descriptors, 1, 8_192)
+            .build_bundle(
+                &state,
+                ContextBundleInput {
+                    turn_id: "turn-3",
+                    step_index: 0,
+                    prior_compaction_view: None,
+                    capability_descriptors: &descriptors,
+                    keep_recent_turns: 1,
+                    model_context_window: 8_192,
+                },
+            )
             .expect("bundle should build");
 
         assert_eq!(bundle.truncated_tool_results, 1);

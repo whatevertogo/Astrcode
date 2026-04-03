@@ -50,7 +50,7 @@ impl RuntimeService {
                 ServiceError::InvalidInput(format!("profile '{}' does not exist", active_profile))
             })?;
 
-        if !profile.models.iter().any(|model| model == &active_model) {
+        if !profile.models.iter().any(|model| model.id == active_model) {
             return Err(ServiceError::InvalidInput(format!(
                 "model '{}' does not exist in profile '{}'",
                 active_model, active_profile
@@ -106,7 +106,7 @@ impl RuntimeService {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{save_config, Config, Profile, RuntimeConfig};
+    use crate::config::{save_config, Config, ModelConfig, Profile, RuntimeConfig};
     use crate::test_support::{empty_capabilities, TestEnvGuard};
 
     use super::*;
@@ -138,7 +138,11 @@ mod tests {
                 active_model: "model-a".to_string(),
                 profiles: vec![Profile {
                     name: "custom".to_string(),
-                    models: vec!["model-a".to_string()],
+                    models: vec![ModelConfig {
+                        id: "model-a".to_string(),
+                        max_tokens: Some(8096),
+                        context_limit: Some(128_000),
+                    }],
                     api_key: Some("TEST_API_KEY".to_string()),
                     ..Profile::default()
                 }],

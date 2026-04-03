@@ -47,8 +47,10 @@ pub struct OpenAiProvider {
     api_key: String,
     /// 模型名称（如 `gpt-4o`、`deepseek-chat`）
     model: String,
-    /// 最大输出 token 数
-    max_tokens: u32,
+    /// 运行时已解析好的模型 limits。
+    ///
+    /// 这样 provider 不再自己猜上下文窗口，也不会继续依赖过时的 profile 级配置。
+    limits: ModelLimits,
 }
 
 impl fmt::Debug for OpenAiProvider {
@@ -58,20 +60,20 @@ impl fmt::Debug for OpenAiProvider {
             .field("base_url", &self.base_url)
             .field("api_key", &"<redacted>")
             .field("model", &self.model)
-            .field("max_tokens", &self.max_tokens)
+            .field("limits", &self.limits)
             .finish()
     }
 }
 
 impl OpenAiProvider {
     /// 创建新的 OpenAI 兼容提供者实例。
-    pub fn new(base_url: String, api_key: String, model: String, max_tokens: u32) -> Self {
+    pub fn new(base_url: String, api_key: String, model: String, limits: ModelLimits) -> Self {
         Self {
             client: build_http_client(),
             base_url,
             api_key,
             model,
-            max_tokens,
+            limits,
         }
     }
 
@@ -107,7 +109,7 @@ impl OpenAiProvider {
 
         OpenAiChatRequest {
             model: &self.model,
-            max_tokens: self.max_tokens,
+            max_tokens: self.limits.max_output_tokens.min(u32::MAX as usize) as u32,
             messages: request_messages,
             tools: if tools.is_empty() {
                 None
@@ -284,15 +286,10 @@ impl LlmProvider for OpenAiProvider {
 
     /// 返回当前模型的上下文窗口估算。
     ///
-    /// 基于模型名称的启发式匹配，当前所有已知模型族统一返回 128k。
-    ///
-    /// TODO(claude-auto-compact): 当 OpenAI 兼容后端暴露权威的上下文窗口信息时，
-    /// 应替换为提供者/模型元数据而非模型名称启发式。
+    /// OpenAI-compatible provider 不再在这里临时猜测 limits，而是直接回放 provider
+    /// 构造阶段已经解析好的逐模型配置。
     fn model_limits(&self) -> ModelLimits {
-        ModelLimits {
-            context_window: estimate_openai_context_window(&self.model),
-            max_output_tokens: self.max_tokens as usize,
-        }
+        self.limits
     }
 }
 
@@ -606,14 +603,6 @@ fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
     }
 }
 
-/// 估算 OpenAI 兼容模型的上下文窗口大小。
-///
-/// 当前所有已知模型族统一返回 128k 保守默认值。
-/// 当 OpenAI 兼容后端暴露精确的上下文窗口元数据时应替换为提供者报告的值。
-fn estimate_openai_context_window(_model: &str) -> usize {
-    128_000
-}
-
 /// 对最后 `cache_depth` 条消息启用 prompt caching。
 ///
 /// OpenAI 的 prompt caching 通过复用缓存上下文来减少延迟和成本，
@@ -909,7 +898,10 @@ mod tests {
             "http://127.0.0.1:12345".to_string(),
             "sk-test".to_string(),
             "model-a".to_string(),
-            2048,
+            ModelLimits {
+                context_window: 128_000,
+                max_output_tokens: 2048,
+            },
         );
         let messages = [LlmMessage::User {
             content: "hi".to_string(),
@@ -947,8 +939,15 @@ mod tests {
             body
         );
         let (base_url, handle) = spawn_server(response);
-        let provider =
-            OpenAiProvider::new(base_url, "sk-test".to_string(), "model-a".to_string(), 2048);
+        let provider = OpenAiProvider::new(
+            base_url,
+            "sk-test".to_string(),
+            "model-a".to_string(),
+            ModelLimits {
+                context_window: 128_000,
+                max_output_tokens: 2048,
+            },
+        );
 
         let output = provider
             .generate(
@@ -1004,8 +1003,15 @@ mod tests {
             body
         );
         let (base_url, handle) = spawn_server(response);
-        let provider =
-            OpenAiProvider::new(base_url, "sk-test".to_string(), "model-a".to_string(), 2048);
+        let provider = OpenAiProvider::new(
+            base_url,
+            "sk-test".to_string(),
+            "model-a".to_string(),
+            ModelLimits {
+                context_window: 128_000,
+                max_output_tokens: 2048,
+            },
+        );
         let events = Arc::new(Mutex::new(Vec::new()));
 
         let output = provider

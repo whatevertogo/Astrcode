@@ -37,7 +37,7 @@ pub use astrcode_runtime_config::{
     resolve_current_model, resolve_default_token_budget, resolve_env_value,
     resolve_max_continuations, resolve_max_tool_concurrency, resolve_tool_result_max_bytes,
     save_config, test_connection, ActiveSelection, Config, ConfigOverlay, CurrentModelSelection,
-    ModelOption, ParsedEnvValue, Profile, RuntimeConfig, TestResult,
+    ModelConfig, ModelOption, ParsedEnvValue, Profile, RuntimeConfig, TestResult,
 };
 pub use astrcode_runtime_llm as llm;
 pub use astrcode_runtime_prompt as prompt;

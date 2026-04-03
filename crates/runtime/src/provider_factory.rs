@@ -1,28 +1,25 @@
-//! # LLM Provider 工厂 (Provider Factory)
+//! # LLM Provider 工厂
 //!
-//! 负责根据工作目录的配置构建对应的 LLM Provider 实例。
+//! 负责根据工作目录解析有效配置，并构建带有统一模型 limits 的 provider 实例。
 //!
 //! ## 设计
 //!
-//! `ProviderFactory` trait 抽象了 Provider 的构建过程，支持：
-//! - 从配置文件读取 Profile 和 Model 选择
-//! - 根据 Provider 类型（OpenAI / Anthropic）构建对应的 Provider
-//! - 标记是否需要阻塞线程池执行（磁盘 I/O 相关）
-//!
-//! ## 宽容降级策略
-//!
-//! `select_profile` 和 `resolve_model` 在配置不一致时静默回退到第一个可用值，
-//! 而非直接报错。这是因为配置文件可能被手动编辑后出现不一致，
-//! 宽容降级可以避免直接拒绝服务。
+//! - 配置选择与回退继续委托给 `runtime-config`
+//! - OpenAI-compatible 模型 limits 只读取本地逐模型配置
+//! - Anthropic 优先走 Models API 拉取权威 limits，本地逐模型配置只作为失败兜底
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use astrcode_core::{AstrError, Result};
 use astrcode_runtime_agent_loop::ProviderFactory;
-use astrcode_runtime_llm::LlmProvider;
+use astrcode_runtime_llm::{LlmProvider, ModelLimits};
+use serde::Deserialize;
 
-use crate::config::{load_resolved_config, Profile, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI};
+use crate::config::{
+    load_resolved_config, resolve_model_for_profile, ModelConfig, Profile,
+    ANTHROPIC_MODELS_API_URL, ANTHROPIC_VERSION, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI,
+};
 use crate::llm::anthropic::AnthropicProvider;
 use crate::llm::openai::OpenAiProvider;
 
@@ -47,17 +44,24 @@ impl ProviderFactory for ConfigFileProviderFactory {
     fn build_requires_blocking_pool(&self) -> bool {
         true
     }
+
     fn build_for_working_dir(&self, working_dir: Option<PathBuf>) -> Result<Arc<dyn LlmProvider>> {
         let config = load_resolved_config(working_dir.as_deref())?;
         let profile = select_profile(&config.profiles, &config.active_profile)?;
-        let model = resolve_model(profile, &config.active_model)?;
+        let model = resolve_model_for_profile(profile, &config.active_model)?.ok_or_else(|| {
+            AstrError::ModelNotFound {
+                profile: profile.name.clone(),
+                model: config.active_model.clone(),
+            }
+        })?;
         let provider = build_provider(profile, model)?;
         Ok(provider.into_dyn())
     }
 }
 
-fn build_provider(profile: &Profile, model: String) -> Result<BuiltProvider> {
+fn build_provider(profile: &Profile, model: &ModelConfig) -> Result<BuiltProvider> {
     let api_key = profile.resolve_api_key()?;
+    let limits = resolve_model_limits(profile, model, &api_key)?;
 
     match profile.provider_kind.as_str() {
         PROVIDER_KIND_OPENAI => {
@@ -71,43 +75,148 @@ fn build_provider(profile: &Profile, model: String) -> Result<BuiltProvider> {
             Ok(BuiltProvider::OpenAi(OpenAiProvider::new(
                 profile.base_url.clone(),
                 api_key,
-                model,
-                profile.max_tokens,
+                model.id.clone(),
+                limits,
             )))
         }
-        PROVIDER_KIND_ANTHROPIC => Ok(BuiltProvider::Anthropic(
-            AnthropicProvider::with_max_tokens(api_key, model, profile.max_tokens),
-        )),
+        PROVIDER_KIND_ANTHROPIC => Ok(BuiltProvider::Anthropic(AnthropicProvider::new(
+            api_key,
+            model.id.clone(),
+            limits,
+        ))),
         other => Err(AstrError::UnsupportedProvider(other.to_string())),
     }
 }
 
+fn resolve_model_limits(
+    profile: &Profile,
+    model: &ModelConfig,
+    api_key: &str,
+) -> Result<ModelLimits> {
+    match profile.provider_kind.as_str() {
+        PROVIDER_KIND_OPENAI => resolve_openai_model_limits(profile, model),
+        PROVIDER_KIND_ANTHROPIC => resolve_anthropic_model_limits(model, api_key),
+        other => Err(AstrError::UnsupportedProvider(other.to_string())),
+    }
+}
+
+fn resolve_openai_model_limits(profile: &Profile, model: &ModelConfig) -> Result<ModelLimits> {
+    model_limits_from_local_override(model).ok_or_else(|| {
+        AstrError::Validation(format!(
+            "openai-compatible profile '{}' model '{}' must set both maxTokens and contextLimit",
+            profile.name, model.id
+        ))
+    })
+}
+
+fn resolve_anthropic_model_limits(model: &ModelConfig, api_key: &str) -> Result<ModelLimits> {
+    let local_limits = model_limits_from_local_override(model);
+
+    match fetch_anthropic_model_metadata(api_key, &model.id) {
+        Ok(metadata) => metadata
+            .into_model_limits(&model.id)
+            .or_else(|error| local_limits.ok_or(error)),
+        Err(error) => local_limits.ok_or(error),
+    }
+}
+
+fn model_limits_from_local_override(model: &ModelConfig) -> Option<ModelLimits> {
+    match (model.context_limit, model.max_tokens) {
+        (Some(context_window), Some(max_output_tokens))
+            if context_window > 0 && max_output_tokens > 0 =>
+        {
+            Some(ModelLimits {
+                context_window,
+                max_output_tokens: max_output_tokens as usize,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn fetch_anthropic_model_metadata(api_key: &str, model_id: &str) -> Result<AnthropicModelMetadata> {
+    let api_key = api_key.to_string();
+    let model_id = model_id.to_string();
+
+    // provider 构造是同步接口。这里显式起一个独立线程来跑一次短生命周期的 Tokio runtime，
+    // 避免在已有 async runtime 上错误地嵌套 `block_on`。
+    std::thread::spawn(move || -> Result<AnthropicModelMetadata> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| {
+                AstrError::Internal(format!("failed to build metadata runtime: {error}"))
+            })?;
+
+        runtime.block_on(async move {
+            let response = reqwest::Client::new()
+                .get(format!("{}/{}", ANTHROPIC_MODELS_API_URL, model_id))
+                .header("x-api-key", api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await
+                .map_err(|error| {
+                    AstrError::http("failed to fetch anthropic model metadata", error)
+                })?;
+
+            let status = response.status();
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(AstrError::InvalidApiKey("Anthropic".to_string()));
+            }
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                return Err(AstrError::LlmRequestFailed {
+                    status: status.as_u16(),
+                    body,
+                });
+            }
+
+            response
+                .json::<AnthropicModelMetadata>()
+                .await
+                .map_err(|error| {
+                    AstrError::http("failed to parse anthropic model metadata response", error)
+                })
+        })
+    })
+    .join()
+    .map_err(|_| AstrError::Internal("anthropic metadata thread panicked".to_string()))?
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicModelMetadata {
+    #[serde(default)]
+    max_input_tokens: usize,
+    #[serde(default)]
+    max_tokens: usize,
+}
+
+impl AnthropicModelMetadata {
+    fn into_model_limits(self, model_id: &str) -> Result<ModelLimits> {
+        if self.max_input_tokens == 0 || self.max_tokens == 0 {
+            return Err(AstrError::Validation(format!(
+                "anthropic model '{}' returned invalid limits: max_input_tokens={}, max_tokens={}",
+                model_id, self.max_input_tokens, self.max_tokens
+            )));
+        }
+
+        Ok(ModelLimits {
+            context_window: self.max_input_tokens,
+            max_output_tokens: self.max_tokens,
+        })
+    }
+}
+
 /// 选择活跃配置。若 active 名称不匹配任何 profile，静默回退到第一个。
-/// 这是一种宽容降级策略：配置验证（save_config）通常能阻止不匹配的配置写入，
-/// 但运行时容错允许配置文件被手动编辑后出现不一致，避免直接拒绝服务。
+/// 这是一种宽容降级策略：配置验证通常能阻止不匹配的配置写入，但运行时容错允许
+/// 手工编辑配置后仍能以第一个可用 profile 启动。
 fn select_profile<'a>(profiles: &'a [Profile], active: &str) -> Result<&'a Profile> {
     profiles
         .iter()
         .find(|profile| profile.name == active)
         .or_else(|| profiles.first())
         .ok_or(AstrError::NoProfilesConfigured)
-}
-
-/// 解析活跃模型。与 select_profile 相同的宽容回退策略：
-/// active_model 不在 profile.models 列表中时，回退到第一个模型。
-fn resolve_model(profile: &Profile, active_model: &str) -> Result<String> {
-    if profile.models.iter().any(|model| model == active_model) {
-        return Ok(active_model.to_string());
-    }
-
-    profile
-        .models
-        .first()
-        .cloned()
-        .ok_or_else(|| AstrError::ModelNotFound {
-            profile: profile.name.clone(),
-            model: String::new(),
-        })
 }
 
 #[cfg(test)]
@@ -117,38 +226,45 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn resolve_model_prefers_active_model_when_present() {
-        let profile = Profile {
-            models: vec!["model-a".to_string(), "model-b".to_string()],
-            ..Profile::default()
-        };
-
-        let model = resolve_model(&profile, "model-b").expect("active model should win");
-        assert_eq!(model, "model-b");
+    fn model(id: &str) -> ModelConfig {
+        ModelConfig::new(id)
     }
 
     #[test]
-    fn resolve_model_falls_back_to_first_profile_model() {
+    fn resolve_openai_model_limits_requires_manual_values() {
         let profile = Profile {
-            models: vec!["model-a".to_string(), "model-b".to_string()],
+            name: "openai".to_string(),
+            provider_kind: PROVIDER_KIND_OPENAI.to_string(),
+            models: vec![model("gpt-4o")],
             ..Profile::default()
         };
 
-        let model = resolve_model(&profile, "missing-model").expect("first model should be used");
-        assert_eq!(model, "model-a");
+        let error = resolve_openai_model_limits(&profile, &profile.models[0])
+            .expect_err("missing manual limits should fail");
+
+        assert!(error
+            .to_string()
+            .contains("must set both maxTokens and contextLimit"));
     }
 
     #[test]
-    fn resolve_model_errors_when_profile_has_no_models() {
-        let profile = Profile {
-            name: "custom".to_string(),
-            models: vec![],
-            ..Profile::default()
+    fn resolve_anthropic_model_limits_uses_local_fallback_when_remote_fails() {
+        let model = ModelConfig {
+            id: "claude".to_string(),
+            max_tokens: Some(4096),
+            context_limit: Some(200_000),
         };
 
-        let err = resolve_model(&profile, "missing-model").expect_err("empty models should fail");
-        assert!(err.to_string().contains("custom"));
+        let limits = resolve_anthropic_model_limits(&model, "sk-test")
+            .expect("local fallback should be accepted when remote call fails");
+
+        assert_eq!(
+            limits,
+            ModelLimits {
+                context_window: 200_000,
+                max_output_tokens: 4096,
+            }
+        );
     }
 
     #[test]
@@ -158,11 +274,14 @@ mod tests {
             provider_kind: PROVIDER_KIND_OPENAI.to_string(),
             base_url: "https://example.com".to_string(),
             api_key: Some("sk-test".to_string()),
-            models: vec!["model-a".to_string()],
-            max_tokens: 8096,
+            models: vec![ModelConfig {
+                id: "model-a".to_string(),
+                max_tokens: Some(8096),
+                context_limit: Some(128_000),
+            }],
         };
 
-        let provider = build_provider(&profile, "model-a".to_string()).expect("build should work");
+        let provider = build_provider(&profile, &profile.models[0]).expect("build should work");
         assert!(matches!(provider, BuiltProvider::OpenAi(_)));
     }
 
@@ -173,27 +292,33 @@ mod tests {
             provider_kind: PROVIDER_KIND_OPENAI.to_string(),
             base_url: "   ".to_string(),
             api_key: Some("sk-test".to_string()),
-            models: vec!["model-a".to_string()],
-            max_tokens: Profile::default().max_tokens,
+            models: vec![ModelConfig {
+                id: "model-a".to_string(),
+                max_tokens: Some(8096),
+                context_limit: Some(128_000),
+            }],
         };
 
-        let err = build_provider(&profile, "model-a".to_string())
-            .expect_err("missing base url should fail");
+        let err =
+            build_provider(&profile, &profile.models[0]).expect_err("missing base url should fail");
         assert!(err.to_string().contains("缺少 baseUrl"));
     }
 
     #[test]
-    fn build_provider_uses_anthropic_branch() {
+    fn build_provider_uses_anthropic_branch_when_local_limits_exist() {
         let profile = Profile {
             name: "anthropic".to_string(),
             provider_kind: PROVIDER_KIND_ANTHROPIC.to_string(),
             base_url: String::new(),
             api_key: Some("sk-ant".to_string()),
-            models: vec!["claude".to_string()],
-            max_tokens: Profile::default().max_tokens,
+            models: vec![ModelConfig {
+                id: "claude".to_string(),
+                max_tokens: Some(4096),
+                context_limit: Some(200_000),
+            }],
         };
 
-        let provider = build_provider(&profile, "claude".to_string()).expect("build should work");
+        let provider = build_provider(&profile, &profile.models[0]).expect("build should work");
         assert!(matches!(provider, BuiltProvider::Anthropic(_)));
     }
 
@@ -204,12 +329,15 @@ mod tests {
             provider_kind: "unknown".to_string(),
             base_url: "https://example.com".to_string(),
             api_key: Some("sk-test".to_string()),
-            models: vec!["model-a".to_string()],
-            max_tokens: Profile::default().max_tokens,
+            models: vec![ModelConfig {
+                id: "model-a".to_string(),
+                max_tokens: Some(8096),
+                context_limit: Some(128_000),
+            }],
         };
 
         let err =
-            build_provider(&profile, "model-a".to_string()).expect_err("unknown kind should fail");
+            build_provider(&profile, &profile.models[0]).expect_err("unknown kind should fail");
         assert!(err.to_string().contains("unsupported provider"));
     }
 
@@ -222,7 +350,18 @@ mod tests {
             active_model: "model-b".to_string(),
             profiles: vec![Profile {
                 api_key: Some("sk-test".to_string()),
-                models: vec!["model-a".to_string(), "model-b".to_string()],
+                models: vec![
+                    ModelConfig {
+                        id: "model-a".to_string(),
+                        max_tokens: Some(8096),
+                        context_limit: Some(128_000),
+                    },
+                    ModelConfig {
+                        id: "model-b".to_string(),
+                        max_tokens: Some(8096),
+                        context_limit: Some(128_000),
+                    },
+                ],
                 ..Profile::default()
             }],
             ..Config::default()
@@ -247,7 +386,18 @@ mod tests {
             active_model: "missing-model".to_string(),
             profiles: vec![Profile {
                 api_key: Some("sk-test".to_string()),
-                models: vec!["model-a".to_string(), "model-b".to_string()],
+                models: vec![
+                    ModelConfig {
+                        id: "model-a".to_string(),
+                        max_tokens: Some(8096),
+                        context_limit: Some(128_000),
+                    },
+                    ModelConfig {
+                        id: "model-b".to_string(),
+                        max_tokens: Some(8096),
+                        context_limit: Some(128_000),
+                    },
+                ],
                 ..Profile::default()
             }],
             ..Config::default()

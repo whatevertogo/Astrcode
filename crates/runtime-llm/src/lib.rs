@@ -201,7 +201,8 @@ impl FinishReason {
 
 /// 模型能力限制，用于请求预算决策。
 ///
-/// 包含上下文窗口大小和最大输出 token 数，由具体提供者根据模型名称启发式估算。
+/// 包含上下文窗口大小和最大输出 token 数。它们在 provider 构造阶段就已经被解析为权威值
+/// 或本地手动值，后续的 agent loop 只消费这一份统一结果。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModelLimits {
     /// 模型支持的上下文窗口大小（token 数）
@@ -420,8 +421,7 @@ pub trait LlmProvider: Send + Sync {
     ///
     /// 用于调用方判断当前消息历史是否接近上下文限制，触发压缩或截断。
     ///
-    /// TODO(claude-auto-compact): 当上游 API 暴露精确的上下文窗口元数据时，
-    /// 应替换为提供者报告的权威值而非模型名称启发式。
+    /// 返回值应已经是 provider 构造阶段解析好的稳定 limits，而不是在这里临时猜测。
     fn model_limits(&self) -> ModelLimits;
 }
 

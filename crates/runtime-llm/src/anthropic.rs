@@ -47,14 +47,17 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// ## 设计要点
 ///
 /// - HTTP 客户端在构造时创建，使用共享的超时策略（连接 10s / 读取 90s）
-/// - `max_tokens` 同时控制请求体的上限和 extended thinking 的预算计算
+/// - `limits.max_output_tokens` 同时控制请求体的上限和 extended thinking 的预算计算
 /// - Debug 实现会隐藏 API 密钥（显示为 `<redacted>`）
 #[derive(Clone)]
 pub struct AnthropicProvider {
     client: reqwest::Client,
     api_key: String,
     model: String,
-    max_tokens: u32,
+    /// 运行时已解析好的模型 limits。
+    ///
+    /// Anthropic 的上下文窗口来自 Models API，不应该继续在 provider 内写死。
+    limits: ModelLimits,
 }
 
 impl fmt::Debug for AnthropicProvider {
@@ -63,7 +66,7 @@ impl fmt::Debug for AnthropicProvider {
             .field("client", &self.client)
             .field("api_key", &"<redacted>")
             .field("model", &self.model)
-            .field("max_tokens", &self.max_tokens)
+            .field("limits", &self.limits)
             .finish()
     }
 }
@@ -71,15 +74,15 @@ impl fmt::Debug for AnthropicProvider {
 impl AnthropicProvider {
     /// 创建新的 Anthropic 提供者实例。
     ///
-    /// `max_tokens` 参数同时用于：
+    /// `limits.max_output_tokens` 同时用于：
     /// 1. 请求体中的 `max_tokens` 字段（输出上限）
     /// 2. Extended thinking 预算计算（75% 的 max_tokens）
-    pub fn with_max_tokens(api_key: String, model: String, max_tokens: u32) -> Self {
+    pub fn new(api_key: String, model: String, limits: ModelLimits) -> Self {
         Self {
             client: build_http_client(),
             api_key,
             model,
-            max_tokens,
+            limits,
         }
     }
 
@@ -102,7 +105,7 @@ impl AnthropicProvider {
 
         AnthropicRequest {
             model: self.model.clone(),
-            max_tokens: self.max_tokens,
+            max_tokens: self.limits.max_output_tokens.min(u32::MAX as usize) as u32,
             messages: anthropic_messages,
             system: system_prompt.map(str::to_string),
             tools: if tools.is_empty() {
@@ -111,7 +114,10 @@ impl AnthropicProvider {
                 Some(to_anthropic_tools(tools))
             },
             stream: stream.then_some(true),
-            thinking: thinking_config_for_model(&self.model, self.max_tokens),
+            thinking: thinking_config_for_model(
+                &self.model,
+                self.limits.max_output_tokens.min(u32::MAX as usize) as u32,
+            ),
         }
     }
 
@@ -253,12 +259,7 @@ impl LlmProvider for AnthropicProvider {
     }
 
     fn model_limits(&self) -> ModelLimits {
-        ModelLimits {
-            // Claude model families currently expose 200k-class context windows. We keep the
-            // heuristic conservative and local until provider APIs return explicit limits.
-            context_window: 200_000,
-            max_output_tokens: self.max_tokens as usize,
-        }
+        self.limits
     }
 }
 
@@ -993,10 +994,13 @@ mod tests {
 
     #[test]
     fn build_request_serializes_system_and_thinking_when_applicable() {
-        let provider = AnthropicProvider::with_max_tokens(
+        let provider = AnthropicProvider::new(
             "sk-ant-test".to_string(),
             "claude-sonnet-4-5".to_string(),
-            8096,
+            ModelLimits {
+                context_window: 200_000,
+                max_output_tokens: 8096,
+            },
         );
         let request = provider.build_request(
             &[LlmMessage::User {

@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use astrcode_core::{AstrError, Result};
 
 use crate::constants::{CURRENT_CONFIG_VERSION, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI};
-use crate::types::Config;
+use crate::types::{Config, ModelConfig};
 
 /// 规范化并验证配置。
 ///
@@ -66,9 +66,10 @@ fn migrate_config(config: &mut Config) -> Result<()> {
 /// - 至少包含一个 Profile
 /// - Profile 名称不能为空且必须唯一
 /// - 每个 Profile 必须至少有一个模型
-/// - `max_tokens` 必须大于 0
+/// - 每个模型名称不能为空，且在同一 Profile 内必须唯一
 /// - `provider_kind` 必须是支持的类型（`openai-compatible` 或 `anthropic`）
 /// - OpenAI 兼容 Provider 的 `base_url` 不能为空
+/// - OpenAI-compatible 模型必须显式配置 `maxTokens` 与 `contextLimit`
 /// - `active_profile` 必须存在于 `profiles` 列表中
 /// - `active_model` 必须存在于 `active_profile` 的 `models` 列表中
 pub fn validate_config(config: &Config) -> Result<()> {
@@ -130,12 +131,12 @@ pub fn validate_config(config: &Config) -> Result<()> {
                 profile.name
             )));
         }
-        if profile.max_tokens == 0 {
-            return Err(AstrError::Validation(format!(
-                "profile '{}' max_tokens must be greater than 0",
-                profile.name
-            )));
+
+        let mut seen_model_ids = HashSet::new();
+        for model in &profile.models {
+            validate_model(profile.name.as_str(), model, &mut seen_model_ids)?;
         }
+
         match profile.provider_kind.as_str() {
             PROVIDER_KIND_OPENAI => {
                 if profile.base_url.trim().is_empty() {
@@ -143,6 +144,15 @@ pub fn validate_config(config: &Config) -> Result<()> {
                         "profile '{}' base_url cannot be empty",
                         profile.name
                     )));
+                }
+
+                for model in &profile.models {
+                    if model.max_tokens.is_none() || model.context_limit.is_none() {
+                        return Err(AstrError::Validation(format!(
+                            "openai-compatible profile '{}' model '{}' must set both maxTokens and contextLimit",
+                            profile.name, model.id
+                        )));
+                    }
                 }
             }
             PROVIDER_KIND_ANTHROPIC => {}
@@ -168,7 +178,7 @@ pub fn validate_config(config: &Config) -> Result<()> {
     if !active_profile
         .models
         .iter()
-        .any(|model| model == &config.active_model)
+        .any(|model| model.id == config.active_model)
     {
         return Err(AstrError::Validation(format!(
             "active_model '{}' is not configured under profile '{}'",
@@ -176,5 +186,36 @@ pub fn validate_config(config: &Config) -> Result<()> {
         )));
     }
 
+    Ok(())
+}
+fn validate_model(
+    profile_name: &str,
+    model: &ModelConfig,
+    seen_model_ids: &mut HashSet<String>,
+) -> Result<()> {
+    if model.id.trim().is_empty() {
+        return Err(AstrError::Validation(format!(
+            "profile '{}' has a model with empty id",
+            profile_name
+        )));
+    }
+    if !seen_model_ids.insert(model.id.clone()) {
+        return Err(AstrError::Validation(format!(
+            "profile '{}' has duplicate model id '{}'",
+            profile_name, model.id
+        )));
+    }
+    if matches!(model.max_tokens, Some(0)) {
+        return Err(AstrError::Validation(format!(
+            "profile '{}' model '{}' maxTokens must be greater than 0",
+            profile_name, model.id
+        )));
+    }
+    if matches!(model.context_limit, Some(0)) {
+        return Err(AstrError::Validation(format!(
+            "profile '{}' model '{}' contextLimit must be greater than 0",
+            profile_name, model.id
+        )));
+    }
     Ok(())
 }

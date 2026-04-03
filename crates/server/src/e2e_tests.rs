@@ -17,7 +17,7 @@ use astrcode_protocol::http::{
 };
 use astrcode_runtime::config::PROVIDER_KIND_OPENAI;
 use astrcode_runtime::{
-    save_config, Config, Profile, RuntimeConfig, RuntimeGovernance, RuntimeService,
+    save_config, Config, ModelConfig, Profile, RuntimeConfig, RuntimeGovernance, RuntimeService,
 };
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
@@ -145,8 +145,11 @@ fn configured_state_with_openai_server(base_url: &str) -> (AppState, ServerTestE
             provider_kind: PROVIDER_KIND_OPENAI.to_string(),
             base_url: base_url.to_string(),
             api_key: Some("sk-test".to_string()),
-            models: vec!["model-a".to_string()],
-            ..Profile::default()
+            models: vec![ModelConfig {
+                id: "model-a".to_string(),
+                max_tokens: Some(8096),
+                context_limit: Some(128_000),
+            }],
         }],
         ..Config::default()
     })

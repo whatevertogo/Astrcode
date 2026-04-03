@@ -456,7 +456,11 @@ pub(crate) fn build_config_view(
             name: profile.name.clone(),
             base_url: profile.base_url.clone(),
             api_key_preview: api_key_preview(profile.api_key.as_deref()),
-            models: profile.models.clone(),
+            models: profile
+                .models
+                .iter()
+                .map(|model| model.id.clone())
+                .collect(),
         })
         .collect::<Vec<_>>();
 

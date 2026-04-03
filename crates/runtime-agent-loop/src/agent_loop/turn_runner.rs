@@ -37,7 +37,7 @@ use super::{
     AgentLoop, TurnOutcome,
 };
 use crate::compaction_runtime::{CompactionArtifact, CompactionReason, CompactionTailSnapshot};
-use crate::context_pipeline::ConversationView;
+use crate::context_pipeline::{ContextBundleInput, ConversationView};
 use crate::context_window::{is_prompt_too_long, TokenUsageTracker};
 use crate::request_assembler::{PreparedRequest, StepRequestConfig};
 
@@ -112,12 +112,14 @@ pub(crate) async fn run_turn(
 
         let bundle = match agent_loop.context.build_bundle(
             state,
-            turn_id,
-            step_index,
-            Some(&conversation),
-            agent_loop.prompt.capability_descriptors(),
-            agent_loop.compact_keep_recent_turns(),
-            model_limits.context_window,
+            ContextBundleInput {
+                turn_id,
+                step_index,
+                prior_compaction_view: Some(&conversation),
+                capability_descriptors: agent_loop.prompt.capability_descriptors(),
+                keep_recent_turns: agent_loop.compact_keep_recent_turns(),
+                model_context_window: model_limits.context_window,
+            },
         ) {
             Ok(bundle) => bundle,
             Err(error) => {
@@ -228,83 +230,81 @@ pub(crate) async fn run_turn(
         // 当 LLM 调用返回 prompt too long 错误时，自动触发压缩并重试。
         // 与 compaction.rs 中的 compact 阶段重试不同，这是在 turn 执行层面的恢复。
         let mut reactive_compact_attempts = 0usize;
-        let output = loop {
-            match llm_cycle::generate_response(
-                &provider,
-                request.clone(),
-                turn_id,
-                cancel.clone(),
-                on_event,
-            )
-            .await
-            {
-                Ok(output) => break output,
-                Err(error) => {
-                    // 使用结构化错误分类判断是否为 prompt too long (P4.3)
-                    let is_too_long = is_prompt_too_long(&error);
-                    if is_too_long
-                        && agent_loop.auto_compact_enabled()
-                        && reactive_compact_attempts < MAX_REACTIVE_COMPACT_ATTEMPTS
-                    {
-                        reactive_compact_attempts += 1;
-                        log::warn!(
-                            "[turn {}] LLM returned prompt too long, attempting reactive compact ({}/{})",
-                            turn_id,
-                            reactive_compact_attempts,
-                            MAX_REACTIVE_COMPACT_ATTEMPTS
-                        );
+        let output = match llm_cycle::generate_response(
+            &provider,
+            request.clone(),
+            turn_id,
+            cancel.clone(),
+            on_event,
+        )
+        .await
+        {
+            Ok(output) => output,
+            Err(error) => {
+                // 使用结构化错误分类判断是否为 prompt too long (P4.3)
+                let is_too_long = is_prompt_too_long(&error);
+                if is_too_long
+                    && agent_loop.auto_compact_enabled()
+                    && reactive_compact_attempts < MAX_REACTIVE_COMPACT_ATTEMPTS
+                {
+                    reactive_compact_attempts += 1;
+                    log::warn!(
+                        "[turn {}] LLM returned prompt too long, attempting reactive compact ({}/{})",
+                        turn_id,
+                        reactive_compact_attempts,
+                        MAX_REACTIVE_COMPACT_ATTEMPTS
+                    );
 
-                        match maybe_compact_conversation(
-                            agent_loop,
-                            CompactContext {
-                                provider: &provider,
-                                conversation: &conversation,
-                                base_system_prompt: system_prompt_for_retry.as_deref(),
-                                reason: CompactionReason::Reactive,
-                                turn_id,
-                                cancel: cancel.clone(),
-                                tail: compaction_tail.clone(),
-                            },
-                            on_event,
-                        )
-                        .await
-                        {
-                            Ok(Some(compacted_view)) => {
-                                conversation = compacted_view;
-                                continue 'step;
-                            }
-                            Ok(None) => {
-                                // compact 返回 None 表示无可压缩内容，无法恢复
-                                return report_error(
-                                    turn_id,
-                                    format!(
-                                        "prompt too long but no compressible history available after {} attempts",
-                                        reactive_compact_attempts
-                                    ),
-                                    on_event,
-                                    emit_turn_done,
-                                );
-                            }
-                            Err(compact_error) => {
-                                if cancel.is_cancelled() {
-                                    return report_interrupted(turn_id, on_event, emit_turn_done);
-                                }
-                                return report_error(
-                                    turn_id,
-                                    format!(
-                                        "reactive compact failed after {} attempts: {}",
-                                        reactive_compact_attempts, compact_error
-                                    ),
-                                    on_event,
-                                    emit_turn_done,
-                                );
-                            }
+                    match maybe_compact_conversation(
+                        agent_loop,
+                        CompactContext {
+                            provider: &provider,
+                            conversation: &conversation,
+                            base_system_prompt: system_prompt_for_retry.as_deref(),
+                            reason: CompactionReason::Reactive,
+                            turn_id,
+                            cancel: cancel.clone(),
+                            tail: compaction_tail.clone(),
+                        },
+                        on_event,
+                    )
+                    .await
+                    {
+                        Ok(Some(compacted_view)) => {
+                            conversation = compacted_view;
+                            continue 'step;
                         }
-                    } else if cancel.is_cancelled() {
-                        return report_interrupted(turn_id, on_event, emit_turn_done);
-                    } else {
-                        return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
+                        Ok(None) => {
+                            // compact 返回 None 表示无可压缩内容，无法恢复
+                            return report_error(
+                                turn_id,
+                                format!(
+                                    "prompt too long but no compressible history available after {} attempts",
+                                    reactive_compact_attempts
+                                ),
+                                on_event,
+                                emit_turn_done,
+                            );
+                        }
+                        Err(compact_error) => {
+                            if cancel.is_cancelled() {
+                                return report_interrupted(turn_id, on_event, emit_turn_done);
+                            }
+                            return report_error(
+                                turn_id,
+                                format!(
+                                    "reactive compact failed after {} attempts: {}",
+                                    reactive_compact_attempts, compact_error
+                                ),
+                                on_event,
+                                emit_turn_done,
+                            );
+                        }
                     }
+                } else if cancel.is_cancelled() {
+                    return report_interrupted(turn_id, on_event, emit_turn_done);
+                } else {
+                    return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
                 }
             }
         };

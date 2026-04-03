@@ -10,7 +10,7 @@ core (核心契约：Event/Policy/Capability/Tool trait + 持久化接口)
 storage (JSONL 会话持久化实现)
 tools (内置工具)    runtime-config (配置)    runtime-llm (LLM)    runtime-prompt (Prompt)    runtime-skill-loader (Skill)    plugin (插件宿主)    sdk (插件 SDK)
     ↑                     ↑                       ↑                     ↑                          ↑                          ↑                    ↑
-    +────────────── runtime-agent-loop (AgentLoop 执行引擎) ──────────────────────────────────────────────────────+
+    +────────────── runtime-agent-loop (AgentLoop 执行引擎) ──────────────────
                                         ↑
                           runtime (RuntimeService 门面，re-export 子 crate)
                                         ↑
@@ -120,12 +120,6 @@ tools (内置工具)    runtime-config (配置)    runtime-llm (LLM)    runtime-
 - `plugin_discovery.rs` — 插件发现
 - `plugin_skill_materializer.rs` — 插件 skill 资源落盘
 - `runtime_governance.rs` — 配置热重载、插件健康监控
-
-**模型 limits 解析**:
-- `runtime-config` 把 `Profile.models` 规范化为逐模型对象 `{ id, maxTokens?, contextLimit? }`
-- OpenAI-compatible 模型的 `maxTokens/contextLimit` 只来自本地配置
-- Anthropic 模型在 `runtime::provider_factory` 构造 provider 前调用 `GET /v1/models/{model_id}` 拉取 `max_input_tokens/max_tokens`，本地值仅作失败兜底
-- `runtime-llm` provider 内部只消费已经解析好的 `ModelLimits`，不再各自硬编码 128k / 200k
 
 ### Layer 3: Transports
 

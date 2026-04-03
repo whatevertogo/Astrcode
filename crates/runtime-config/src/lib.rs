@@ -55,14 +55,15 @@ pub use constants::{
     resolve_compact_threshold_percent, resolve_continuation_min_delta_tokens,
     resolve_default_token_budget, resolve_max_continuations, resolve_max_tool_concurrency,
     resolve_tool_result_max_bytes, ALL_ASTRCODE_ENV_VARS, ANTHROPIC_API_KEY_ENV,
-    ASTRCODE_HOME_DIR_ENV, ASTRCODE_MAX_TOOL_CONCURRENCY_ENV, ASTRCODE_PLUGIN_DIRS_ENV,
-    ASTRCODE_TEST_HOME_ENV, BUILD_ENV_VARS, CURRENT_CONFIG_VERSION, DEEPSEEK_API_KEY_ENV,
-    DEFAULT_AUTO_COMPACT_ENABLED, DEFAULT_COMPACT_KEEP_RECENT_TURNS,
-    DEFAULT_COMPACT_THRESHOLD_PERCENT, DEFAULT_CONTINUATION_MIN_DELTA_TOKENS,
-    DEFAULT_MAX_CONTINUATIONS, DEFAULT_MAX_TOOL_CONCURRENCY, DEFAULT_TOKEN_BUDGET,
-    DEFAULT_TOOL_RESULT_MAX_BYTES, ENV_REFERENCE_PREFIX, HOME_ENV_VARS, LITERAL_VALUE_PREFIX,
-    PLUGIN_ENV_VARS, PROVIDER_API_KEY_ENV_VARS, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI,
-    RUNTIME_ENV_VARS, TAURI_ENV_TARGET_TRIPLE_ENV,
+    ANTHROPIC_MESSAGES_API_URL, ANTHROPIC_MODELS_API_URL, ANTHROPIC_VERSION, ASTRCODE_HOME_DIR_ENV,
+    ASTRCODE_MAX_TOOL_CONCURRENCY_ENV, ASTRCODE_PLUGIN_DIRS_ENV, ASTRCODE_TEST_HOME_ENV,
+    BUILD_ENV_VARS, CURRENT_CONFIG_VERSION, DEEPSEEK_API_KEY_ENV, DEFAULT_AUTO_COMPACT_ENABLED,
+    DEFAULT_COMPACT_KEEP_RECENT_TURNS, DEFAULT_COMPACT_THRESHOLD_PERCENT,
+    DEFAULT_CONTINUATION_MIN_DELTA_TOKENS, DEFAULT_MAX_CONTINUATIONS, DEFAULT_MAX_TOOL_CONCURRENCY,
+    DEFAULT_OPENAI_CONTEXT_LIMIT, DEFAULT_TOKEN_BUDGET, DEFAULT_TOOL_RESULT_MAX_BYTES,
+    ENV_REFERENCE_PREFIX, HOME_ENV_VARS, LITERAL_VALUE_PREFIX, PLUGIN_ENV_VARS,
+    PROVIDER_API_KEY_ENV_VARS, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI, RUNTIME_ENV_VARS,
+    TAURI_ENV_TARGET_TRIPLE_ENV,
 };
 pub use editor::open_config_in_editor;
 pub use env_resolver::{
@@ -74,10 +75,11 @@ pub use loader::{
 };
 pub use saver::{save_config, save_config_to_path};
 pub use selection::{
-    list_model_options, resolve_active_selection, resolve_current_model, ActiveSelection,
-    CurrentModelSelection, ModelOption,
+    list_model_options, resolve_active_selection, resolve_current_model, resolve_model_for_profile,
+    resolve_selected_model_config, ActiveSelection, CurrentModelSelection, ModelOption,
+    ResolvedModelConfig,
 };
-pub use types::{Config, ConfigOverlay, Profile, RuntimeConfig, TestResult};
+pub use types::{Config, ConfigOverlay, ModelConfig, Profile, RuntimeConfig, TestResult};
 pub use validation::validate_config;
 
 #[cfg(test)]
@@ -281,8 +283,11 @@ mod tests {
                 provider_kind: PROVIDER_KIND_OPENAI.to_string(),
                 base_url: "https://example.com".to_string(),
                 api_key: Some("MY_TEST_KEY".to_string()),
-                models: vec!["gpt-4o-mini".to_string()],
-                max_tokens: 8096,
+                models: vec![ModelConfig {
+                    id: "gpt-4o-mini".to_string(),
+                    max_tokens: Some(8096),
+                    context_limit: Some(DEFAULT_OPENAI_CONTEXT_LIMIT),
+                }],
             }],
         };
 
@@ -345,7 +350,7 @@ mod tests {
         let profile = Profile::default();
         let err = validate_config(&Config {
             active_profile: profile.name.clone(),
-            active_model: profile.models[0].clone(),
+            active_model: profile.models[0].id.clone(),
             runtime: RuntimeConfig::default(),
             profiles: vec![profile.clone(), profile],
             version: CURRENT_CONFIG_VERSION.to_string(),

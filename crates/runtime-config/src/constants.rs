@@ -102,8 +102,18 @@ pub const ALL_ASTRCODE_ENV_VARS: &[&str] = &[
 /// Anthropic Messages API endpoint URL.
 pub const ANTHROPIC_MESSAGES_API_URL: &str = "https://api.anthropic.com/v1/messages";
 
+/// Anthropic Models API endpoint URL.
+///
+/// 用于按模型 ID 拉取权威的上下文窗口和最大输出 token 元数据。
+pub const ANTHROPIC_MODELS_API_URL: &str = "https://api.anthropic.com/v1/models";
+
 /// Anthropic API version.
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+/// OpenAI-compatible 模型的保守默认上下文窗口。
+///
+/// 用于默认生成的 OpenAI-compatible profile，避免首次创建配置文件时出现空 limits。
+pub const DEFAULT_OPENAI_CONTEXT_LIMIT: usize = 128_000;
 
 /// 配置 schema 的当前版本号。
 ///
