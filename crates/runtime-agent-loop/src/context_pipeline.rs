@@ -220,9 +220,9 @@ impl ContextStage for CompactionViewStage {
 
 /// Trim tool noise directly on the model-visible conversation view.
 ///
-/// We run microcompact here so request assembly becomes a pure serialization step. That keeps
-/// prompt/context selection separate from request encoding and removes the last request-level
-/// mutation path from `RequestAssembler`.
+/// Microcompact now lives in the pipeline so request assembly stays a pure encoding step. That
+/// keeps tool-result pruning in the same place as the rest of context material selection instead
+/// of letting `RequestAssembler` mutate the conversation after the fact.
 struct ToolNoiseTrimStage;
 
 impl ContextStage for ToolNoiseTrimStage {
@@ -268,7 +268,8 @@ impl ContextStage for BudgetTrimStage {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use astrcode_core::{LlmMessage, UserMessageOrigin};
+    use astrcode_core::{CapabilityKind, LlmMessage, UserMessageOrigin};
+    use serde_json::json;
 
     use super::*;
 
@@ -290,7 +291,7 @@ mod tests {
         }]);
 
         let bundle = ContextRuntime::new(100_000)
-            .build_bundle(&state, "turn-1", 0, None)
+            .build_bundle(&state, "turn-1", 0, None, &[], 1, 8_192)
             .expect("bundle should build");
 
         assert_eq!(bundle.conversation.messages.len(), state.messages.len());
@@ -312,7 +313,7 @@ mod tests {
         }]);
 
         let bundle = ContextRuntime::new(100_000)
-            .build_bundle(&state, "turn-1", 1, Some(&compacted))
+            .build_bundle(&state, "turn-1", 1, Some(&compacted), &[], 1, 8_192)
             .expect("bundle should build");
 
         assert_eq!(bundle.conversation.messages.len(), compacted.messages.len());
@@ -361,7 +362,7 @@ mod tests {
         ]);
 
         let bundle = runtime
-            .build_bundle(&make_state(Vec::new()), "turn-1", 0, None)
+            .build_bundle(&make_state(Vec::new()), "turn-1", 0, None, &[], 1, 8_192)
             .expect("bundle should build");
 
         assert_eq!(
@@ -379,7 +380,7 @@ mod tests {
         }]);
 
         let bundle = ContextRuntime::new(100_000)
-            .build_bundle(&state, "turn-2", 7, None)
+            .build_bundle(&state, "turn-2", 7, None, &[], 1, 8_192)
             .expect("bundle should build");
 
         assert_eq!(bundle.workset.len(), 1);
@@ -387,5 +388,51 @@ mod tests {
             .diagnostics
             .iter()
             .any(|item| item.stage == "workset" && item.message.contains("step=7")));
+    }
+
+    #[test]
+    fn tool_noise_trim_stage_runs_microcompact_inside_pipeline() {
+        let state = make_state(vec![
+            LlmMessage::User {
+                content: "inspect".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: String::new(),
+                tool_calls: vec![astrcode_core::ToolCallRequest {
+                    id: "call-1".to_string(),
+                    name: "readFile".to_string(),
+                    args: json!({"path":"Cargo.toml"}),
+                }],
+                reasoning: None,
+            },
+            LlmMessage::Tool {
+                tool_call_id: "call-1".to_string(),
+                content: "x".repeat(512),
+            },
+            LlmMessage::User {
+                content: "follow up".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ]);
+        let descriptors =
+            vec![
+                astrcode_core::CapabilityDescriptor::builder("readFile", CapabilityKind::tool())
+                    .description("test")
+                    .schema(json!({"type":"object"}), json!({"type":"string"}))
+                    .compact_clearable(true)
+                    .build()
+                    .expect("descriptor should build"),
+            ];
+
+        let bundle = ContextRuntime::new(128)
+            .build_bundle(&state, "turn-3", 0, None, &descriptors, 1, 8_192)
+            .expect("bundle should build");
+
+        assert_eq!(bundle.truncated_tool_results, 1);
+        assert!(matches!(
+            &bundle.conversation.messages[2],
+            LlmMessage::Tool { content, .. } if content.contains("[cleared older tool result")
+        ));
     }
 }

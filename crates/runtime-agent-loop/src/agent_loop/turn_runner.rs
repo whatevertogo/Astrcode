@@ -39,7 +39,7 @@ use super::{
 use crate::compaction_runtime::{CompactionArtifact, CompactionReason, CompactionTailSnapshot};
 use crate::context_pipeline::ConversationView;
 use crate::context_window::{is_prompt_too_long, TokenUsageTracker};
-use crate::request_assembler::{CompactionRebuildConfig, PreparedRequest, StepRequestConfig};
+use crate::request_assembler::{PreparedRequest, StepRequestConfig};
 
 // ---------------------------------------------------------------------------
 // Error recovery constants (P4)
@@ -101,7 +101,7 @@ pub(crate) async fn run_turn(
     let model_limits = provider.model_limits();
     let mut token_tracker = TokenUsageTracker::default();
 
-    loop {
+    'step: loop {
         // 取消是协作式的，在 step 边界检查。若 LLM 正在执行慢速推理，
         // 此处不会立即响应取消——实际的中断由 generate_response 内部的
         // CancelToken 机制处理（取消时 provider 的 HTTP 连接会被 abort）。
@@ -109,16 +109,20 @@ pub(crate) async fn run_turn(
             return report_interrupted(turn_id, on_event, emit_turn_done);
         }
 
-        let bundle =
-            match agent_loop
-                .context
-                .build_bundle(state, turn_id, step_index, Some(&conversation))
-            {
-                Ok(bundle) => bundle,
-                Err(error) => {
-                    return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
-                }
-            };
+        let bundle = match agent_loop.context.build_bundle(
+            state,
+            turn_id,
+            step_index,
+            Some(&conversation),
+            agent_loop.prompt.capability_descriptors(),
+            agent_loop.compact_keep_recent_turns(),
+            model_limits.context_window,
+        ) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
+            }
+        };
 
         let build_output = match agent_loop
             .prompt
@@ -141,13 +145,8 @@ pub(crate) async fn run_turn(
                 prompt: &plan,
                 context: bundle.clone(),
                 tools: agent_loop.capabilities.tool_definitions(),
-                microcompact: crate::request_assembler::MicrocompactConfig {
-                    capability_descriptors: agent_loop.prompt.capability_descriptors(),
-                    tool_result_max_bytes: agent_loop.tool_result_max_bytes(),
-                    keep_recent_turns: agent_loop.compact_keep_recent_turns(),
-                    model_context_window: model_limits.context_window,
-                    compact_threshold_percent: agent_loop.compact_threshold_percent(),
-                },
+                model_context_window: model_limits.context_window,
+                compact_threshold_percent: agent_loop.compact_threshold_percent(),
             },
             &token_tracker,
         ) {
@@ -213,7 +212,7 @@ pub(crate) async fn run_turn(
         let policy_ctx = agent_loop.policy_context(state, turn_id, step_index);
         // 保留 system_prompt 和 plan 的克隆，用于 reactive compact 重试 (P4.1)
         let system_prompt_for_retry = request.system_prompt.clone();
-        let mut request = match agent_loop
+        let request = match agent_loop
             .policy
             .check_model_request(request, &policy_ctx)
             .await
@@ -271,24 +270,7 @@ pub(crate) async fn run_turn(
                         {
                             Ok(Some(compacted_view)) => {
                                 conversation = compacted_view;
-                                agent_loop
-                                    .request_assembler
-                                    .rebuild_request_after_compaction(
-                                        &mut request,
-                                        &plan,
-                                        &conversation,
-                                        CompactionRebuildConfig {
-                                            capability_descriptors: agent_loop
-                                                .prompt
-                                                .capability_descriptors(),
-                                            tool_result_max_bytes: agent_loop
-                                                .tool_result_max_bytes(),
-                                            keep_recent_turns: agent_loop
-                                                .compact_keep_recent_turns(),
-                                            model_context_window: model_limits.context_window,
-                                        },
-                                    );
-                                continue;
+                                continue 'step;
                             }
                             Ok(None) => {
                                 // compact 返回 None 表示无可压缩内容，无法恢复

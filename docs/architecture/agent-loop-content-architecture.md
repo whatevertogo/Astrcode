@@ -155,7 +155,8 @@ pub struct ContextBundle {
 
 分类目的：防止 stage 长成"什么都能干"的 God Object；每个 stage 应只属于一类职责。
 
-> 当前 `ToolNoiseTrimStage` 先作为纯裁剪 stage 占位；`microcompact` 仍临时留在 `RequestAssembler` 附近，因为它需要完整 request shape 与 capability descriptors，而不只是 `ConversationView`。
+> `ToolNoiseTrimStage` 现在负责 conversation 级 microcompact；`RequestAssembler` 只做最终请求编码与快照，
+> 不再承担工具结果裁剪职责。
 
 约束：
 
