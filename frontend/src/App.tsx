@@ -13,8 +13,8 @@ import { useAgent } from './hooks/useAgent';
 import { useAgentEventHandler } from './hooks/useAgentEventHandler';
 import { useSessionCatalogEvents } from './hooks/useSessionCatalogEvents';
 import { useSidebarResize } from './hooks/useSidebarResize';
+import { cn } from './lib/utils';
 import type { SessionCatalogEventPayload } from './types';
-import styles from './App.module.css';
 
 const reducer = appReducer;
 
@@ -69,6 +69,7 @@ export default function App() {
     interrupt,
     deleteSession,
     deleteProject,
+    listComposerOptions,
     getConfig,
     saveActiveSelection,
     setModel,
@@ -359,8 +360,8 @@ export default function App() {
   }, [interrupt]);
 
   return (
-    <div className={styles.app}>
-      <div className={styles.sidebarPane} style={{ width: `${sidebarWidth}px` }}>
+    <div className="flex h-screen overflow-hidden bg-[var(--app-bg)] text-[var(--text-primary)]">
+      <div className="flex-none min-w-0" style={{ width: `${sidebarWidth}px` }}>
         <Sidebar
           projects={state.projects}
           activeSessionId={state.activeSessionId}
@@ -385,7 +386,10 @@ export default function App() {
         />
       </div>
       <div
-        className={`${styles.sidebarResizer} ${isResizingSidebar ? styles.sidebarResizerActive : ''}`}
+        className={cn(
+          'relative w-[10px] flex-none cursor-col-resize bg-transparent outline-none before:absolute before:inset-y-0 before:left-1/2 before:w-[1px] before:-translate-x-1/2 before:bg-[var(--border)] hover:before:w-[2px] hover:before:bg-[var(--border-strong)] focus-visible:before:w-[2px] focus-visible:before:bg-[var(--border-strong)] before:transition-all before:duration-150 before:ease-out',
+          isResizingSidebar && 'before:w-[2px] before:bg-[var(--border-strong)]'
+        )}
         role="separator"
         aria-label="调整侧边栏宽度"
         aria-orientation="vertical"
@@ -405,6 +409,7 @@ export default function App() {
         }}
         onSubmitPrompt={handleSubmit}
         onInterrupt={handleInterrupt}
+        listComposerOptions={listComposerOptions}
         modelRefreshKey={modelRefreshKey}
         getCurrentModel={getCurrentModel}
         listAvailableModels={listAvailableModels}

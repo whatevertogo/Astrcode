@@ -15,6 +15,7 @@ import { getHostBridge } from '../lib/hostBridge';
 import { consumeSseStream } from '../lib/sse/consumer';
 import { ensureServerSession } from '../lib/serverAuth';
 import { request } from '../lib/api/client';
+import { listComposerOptions } from '../lib/api/composer';
 import {
   createSession,
   deleteProject,
@@ -27,6 +28,7 @@ import {
 import { getConfig, saveActiveSelection } from '../lib/api/config';
 import { getCurrentModel, listAvailableModels, testConnection } from '../lib/api/models';
 import type {
+  ComposerOption,
   ConfigView,
   CurrentModelInfo,
   DeleteProjectResult,
@@ -309,6 +311,13 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     []
   );
 
+  const handleListComposerOptions = useCallback(
+    async (sessionId: string, query: string, signal?: AbortSignal): Promise<ComposerOption[]> => {
+      return listComposerOptions(sessionId, query, signal);
+    },
+    []
+  );
+
   const handleGetConfig = useCallback(async (): Promise<ConfigView> => {
     return getConfig();
   }, []);
@@ -360,6 +369,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     interrupt: handleInterrupt,
     deleteSession: handleDeleteSession,
     deleteProject: handleDeleteProject,
+    listComposerOptions: handleListComposerOptions,
     getConfig: handleGetConfig,
     saveActiveSelection: handleSaveActiveSelection,
     setModel,

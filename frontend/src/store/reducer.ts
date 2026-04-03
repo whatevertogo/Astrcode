@@ -41,8 +41,16 @@ function findAssistantMessageIndex(
 ): number {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (message.kind === 'assistant' && message.turnId === turnId) {
-      return index;
+    if (message.turnId === turnId) {
+      if (message.kind === 'assistant') {
+        return index;
+      }
+      if (message.kind === 'toolCall') {
+        // If we encouter a tool call for the same turn before finding an assistant message
+        // (since we iterate backwards), it means the contiguous assistant stream is broken.
+        // Returning -1 forces creating a new AssistantMessage to appear chronologically AFTER the tool.
+        return -1;
+      }
     }
   }
   return -1;

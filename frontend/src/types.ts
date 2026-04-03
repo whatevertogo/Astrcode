@@ -164,6 +164,18 @@ export interface ModelOption {
   providerKind: string;
 }
 
+export type ComposerOptionKind = 'skill' | 'capability';
+
+export interface ComposerOption {
+  kind: ComposerOptionKind;
+  id: string;
+  title: string;
+  description: string;
+  insertText: string;
+  badges: string[];
+  keywords: string[];
+}
+
 export interface Project {
   id: string;
   name: string;

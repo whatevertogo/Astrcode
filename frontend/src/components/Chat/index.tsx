@@ -1,8 +1,14 @@
-import type { CurrentModelInfo, ModelOption, Phase, Project, Session } from '../../types';
+import type {
+  ComposerOption,
+  CurrentModelInfo,
+  ModelOption,
+  Phase,
+  Project,
+  Session,
+} from '../../types';
 import TopBar from './TopBar';
 import MessageList from './MessageList';
 import InputBar from './InputBar';
-import styles from './Chat.module.css';
 
 interface ChatProps {
   project: Project | null;
@@ -11,6 +17,11 @@ interface ChatProps {
   onNewSession: () => void;
   onSubmitPrompt: (text: string) => void | Promise<void>;
   onInterrupt: () => void | Promise<void>;
+  listComposerOptions: (
+    sessionId: string,
+    query: string,
+    signal?: AbortSignal
+  ) => Promise<ComposerOption[]>;
   modelRefreshKey: number;
   getCurrentModel: () => Promise<CurrentModelInfo>;
   listAvailableModels: () => Promise<ModelOption[]>;
@@ -24,13 +35,14 @@ export default function Chat({
   onNewSession,
   onSubmitPrompt,
   onInterrupt,
+  listComposerOptions,
   modelRefreshKey,
   getCurrentModel,
   listAvailableModels,
   setModel,
 }: ChatProps) {
   return (
-    <div className={styles.chat}>
+    <div className="chat">
       <TopBar
         projectName={project?.name ?? null}
         sessionTitle={session?.title ?? null}
@@ -46,6 +58,7 @@ export default function Chat({
         phase={phase}
         onSubmit={onSubmitPrompt}
         onInterrupt={onInterrupt}
+        listComposerOptions={listComposerOptions}
       />
     </div>
   );

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 import type { Plugin } from 'vite';
 import { defineConfig } from 'vitest/config';
 
@@ -119,7 +120,7 @@ console.log(
     '(optional at startup - browser bridge will connect directly when run.json is ready)'
 );
 export default defineConfig({
-  plugins: [react(), astrcodeBrowserBootstrapPlugin()],
+  plugins: [react(), tailwindcss(), astrcodeBrowserBootstrapPlugin()],
   server: {
     host: '127.0.0.1',
     port: 5173,

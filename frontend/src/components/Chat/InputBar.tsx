@@ -1,15 +1,25 @@
 import React, { useRef, useState } from 'react';
-import type { Phase } from '../../types';
-import styles from './InputBar.module.css';
+import type { ComposerOption, Phase } from '../../types';
 
 interface InputBarProps {
   workingDir: string;
   phase: Phase;
   onSubmit: (text: string) => void | Promise<void>;
   onInterrupt: () => void | Promise<void>;
+  listComposerOptions: (
+    sessionId: string,
+    query: string,
+    signal?: AbortSignal
+  ) => Promise<ComposerOption[]>;
 }
 
-export default function InputBar({ workingDir, phase, onSubmit, onInterrupt }: InputBarProps) {
+export default function InputBar({
+  workingDir,
+  phase,
+  onSubmit,
+  onInterrupt,
+  listComposerOptions: _listComposerOptions,
+}: InputBarProps) {
   const [value, setValue] = useState('');
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -43,12 +53,18 @@ export default function InputBar({ workingDir, phase, onSubmit, onInterrupt }: I
   };
 
   return (
-    <div className={styles.composerWrap}>
-      <div className={styles.inputBar}>
+    <div className="px-8 pt-4 pb-[18px] bg-[var(--panel-bg)] flex-shrink-0">
+      <div className="w-full max-w-[860px] mx-auto bg-[linear-gradient(180deg,rgba(255,255,255,0.96)_0%,rgba(253,248,241,0.98)_100%)] border border-[rgba(230,220,205,0.95)] rounded-[24px] shadow-[0_24px_42px_rgba(117,90,52,0.1),inset_0_1px_0_rgba(255,255,255,0.82)] overflow-hidden transition-[border-color,box-shadow,transform] duration-[180ms] ease-out focus-within:border-[rgba(122,185,153,0.56)] focus-within:shadow-[0_0_0_4px_rgba(57,201,143,0.12),0_28px_48px_rgba(117,90,52,0.13)] focus-within:-translate-y-px">
         {workingDir && (
-          <div className={styles.workingDirRow} title={workingDir}>
-            <span className={styles.workingDirIcon} aria-hidden="true">
-              <svg viewBox="0 0 20 20">
+          <div
+            className="flex items-center gap-2 px-4 py-2.5 border-b border-[var(--border)] text-[var(--text-secondary)] bg-white/40"
+            title={workingDir}
+          >
+            <span
+              className="w-3.5 h-3.5 inline-flex items-center justify-center flex-shrink-0"
+              aria-hidden="true"
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 20 20">
                 <path
                   d="M2.5 5.75A1.75 1.75 0 0 1 4.25 4h4.03c.46 0 .9.18 1.23.5l1.02 1c.32.3.74.47 1.18.47h4.04A1.75 1.75 0 0 1 17.5 7.72v6.53A1.75 1.75 0 0 1 15.75 16H4.25A1.75 1.75 0 0 1 2.5 14.25V5.75Z"
                   fill="none"
@@ -58,13 +74,15 @@ export default function InputBar({ workingDir, phase, onSubmit, onInterrupt }: I
                 />
               </svg>
             </span>
-            <div className={styles.workingDir}>{workingDir}</div>
+            <div className="overflow-hidden text-ellipsis whitespace-nowrap text-xs font-mono">
+              {workingDir}
+            </div>
           </div>
         )}
-        <div className={styles.row}>
+        <div className="flex items-end gap-3 px-4 py-3.5">
           <textarea
             ref={textareaRef}
-            className={styles.textarea}
+            className="flex-1 min-h-[70px] max-h-[240px] text-[var(--text-primary)] text-[15px] leading-[1.75] overflow-y-auto placeholder:text-[var(--text-muted)] disabled:opacity-60 disabled:cursor-not-allowed border-0 bg-transparent focus:outline-none resize-none p-0"
             placeholder="向 AstrCode 提问..."
             value={value}
             disabled={isBusy}
@@ -76,7 +94,7 @@ export default function InputBar({ workingDir, phase, onSubmit, onInterrupt }: I
           />
           {isBusy ? (
             <button
-              className={styles.interruptBtn}
+              className="h-9.5 px-3.5 bg-[var(--danger-soft)] text-[var(--danger)] border border-[#f2d2cc] rounded-xl text-[13px] font-semibold flex-shrink-0 transition-colors duration-150 ease-out hover:bg-[#ffe7e2]"
               type="button"
               onClick={() => void onInterrupt()}
             >
@@ -84,7 +102,7 @@ export default function InputBar({ workingDir, phase, onSubmit, onInterrupt }: I
             </button>
           ) : (
             <button
-              className={styles.sendBtn}
+              className="w-10.5 h-10.5 inline-flex items-center justify-center bg-gradient-to-b from-[#35302b] to-[#26211d] text-white rounded-xl flex-shrink-0 transition-[transform,background-color,opacity,box-shadow] duration-150 ease-out shadow-[0_14px_26px_rgba(47,43,39,0.16)] hover:from-[#2f2b27] hover:to-[#1f1b17] hover:-translate-y-px hover:scale-105 hover:shadow-[0_18px_32px_rgba(47,43,39,0.2)] focus-visible:outline-none focus-visible:shadow-[0_0_0_4px_rgba(57,201,143,0.16),0_18px_32px_rgba(47,43,39,0.2)] disabled:opacity-35 disabled:cursor-not-allowed [&_svg]:w-[18px] [&_svg]:h-[18px]"
               type="button"
               onClick={submit}
               disabled={!value.trim()}
@@ -101,7 +119,9 @@ export default function InputBar({ workingDir, phase, onSubmit, onInterrupt }: I
           )}
         </div>
       </div>
-      <div className={styles.disclaimer}>AI 可能会产生误导性信息，请核实重要内容</div>
+      <div className="w-full max-w-[860px] mx-auto mt-2.5 text-center text-xs text-[var(--text-muted)]">
+        AI 可能会产生误导性信息，请核实重要内容
+      </div>
     </div>
   );
 }
