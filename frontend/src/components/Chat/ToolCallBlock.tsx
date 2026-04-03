@@ -1,7 +1,7 @@
 import { memo, useEffect, useState } from 'react';
 import type { ToolCallMessage, ToolStatus } from '../../types';
 import { classifyToolDiffLine, extractToolDiffMetadata } from '../../lib/toolDiff';
-import { extractToolShellDisplay } from '../../lib/toolDisplay';
+import { extractToolShellDisplay, formatToolShellPreview } from '../../lib/toolDisplay';
 import styles from './ToolCallBlock.module.css';
 
 const STATUS_ICON: Record<ToolStatus, string> = {
@@ -53,19 +53,13 @@ function formatDiffPreview(message: ToolCallMessage): string {
 }
 
 function shellPreview(message: ToolCallMessage): string {
-  const shell = extractToolShellDisplay(message.metadata);
-  if (!shell) {
-    return message.error ?? message.output ?? (message.status === 'running' ? '执行中...' : '');
-  }
-
-  const latestChunk = shell.segments[shell.segments.length - 1]?.text ?? message.output ?? '';
-  const lines = latestChunk
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const latestLine = lines[lines.length - 1];
-  const header = shell.command ? `$ ${shell.command}` : message.toolName;
-  return latestLine ? `${header}  ${latestLine}` : header;
+  return formatToolShellPreview(
+    extractToolShellDisplay(message.metadata),
+    message.toolName,
+    message.output,
+    message.error,
+    message.status === 'running' ? '执行中...' : ''
+  );
 }
 
 function ToolCallBlock({ message }: ToolCallBlockProps) {

@@ -92,6 +92,33 @@ export function extractToolShellDisplay(metadata: unknown): ToolShellDisplayMeta
   };
 }
 
+export function formatToolShellPreview(
+  display: ToolShellDisplayMetadata | null,
+  fallbackToolName: string,
+  fallbackOutput?: string,
+  fallbackError?: string,
+  fallbackRunningText = '执行中...'
+): string {
+  if (!display) {
+    return fallbackError ?? fallbackOutput ?? fallbackRunningText;
+  }
+
+  const latestChunk = display.segments[display.segments.length - 1]?.text ?? fallbackOutput ?? '';
+  const lines = latestChunk
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const latestLine = lines[lines.length - 1];
+  // Include the resolved shell in collapsed previews so users can tell at a glance
+  // whether the command ran under pwsh, powershell, or /bin/sh without expanding.
+  const commandLabel = display.command ? `$ ${display.command}` : fallbackToolName;
+  const prefix = [display.shell ? `[${display.shell}]` : '', commandLabel]
+    .filter(Boolean)
+    .join(' ');
+
+  return latestLine ? `${prefix}  ${latestLine}` : prefix;
+}
+
 export function appendToolDeltaMetadata(
   metadata: unknown,
   toolName: string,

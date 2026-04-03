@@ -334,11 +334,12 @@ fn render_shell_output(stdout: &str, stderr: &str) -> String {
 #[async_trait]
 impl Tool for ShellTool {
     fn definition(&self) -> ToolDefinition {
+        let default_shell = default_shell_for_prompt();
         ToolDefinition {
             name: "shell".to_string(),
-            description:
-                "Execute a non-interactive shell command once and return stdout/stderr/exitCode."
-                    .to_string(),
+            description: format!(
+                "Execute a non-interactive shell command once with the current default shell ({default_shell}) unless `shell` overrides it; return stdout/stderr/exitCode."
+            ),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -353,14 +354,19 @@ impl Tool for ShellTool {
     }
 
     fn capability_metadata(&self) -> ToolCapabilityMetadata {
+        let default_shell = default_shell_for_prompt();
         ToolCapabilityMetadata::builtin()
             .tags(["process", "shell"])
             .permission("shell.exec")
             .side_effect(SideEffectLevel::External)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Run a one-shot shell command when file tools or search tools are not precise enough.",
-                    "Use `shell` for non-interactive commands that are easier to express as a single command line than as a dedicated file tool. Keep commands scoped to the workspace, explain risky commands before running them, and prefer read-only inspection before mutation.",
+                    format!(
+                        "Run a one-shot shell command with the current default shell (`{default_shell}`) when file tools or search tools are not precise enough."
+                    ),
+                    format!(
+                        "Use `shell` for non-interactive commands that are easier to express as a single command line than as a dedicated file tool. This session defaults to `{default_shell}` unless the `shell` argument explicitly overrides it. Keep commands scoped to the workspace, explain risky commands before running them, and prefer read-only inspection before mutation."
+                    ),
                 )
                 .caveat("Shell commands can mutate the workspace or external system state, so keep them narrowly scoped.")
                 .example("Inspect repository status or run a targeted build/test command.")
@@ -542,6 +548,18 @@ fn command_spec(shell: Option<&str>, command: &str) -> CommandSpec {
             program,
             args: vec!["-lc".to_string(), command.to_string()],
         }
+    }
+}
+
+fn default_shell_for_prompt() -> &'static str {
+    #[cfg(windows)]
+    {
+        default_windows_shell()
+    }
+
+    #[cfg(not(windows))]
+    {
+        "/bin/sh"
     }
 }
 
@@ -748,5 +766,19 @@ mod tests {
             .expect_err("blank command should fail");
 
         assert!(matches!(err, AstrError::Validation(_)));
+    }
+
+    #[test]
+    fn shell_tool_definition_and_prompt_include_default_shell() {
+        let tool = ShellTool;
+        let definition = tool.definition();
+        let prompt = tool
+            .capability_metadata()
+            .prompt
+            .expect("shell prompt metadata should exist");
+
+        assert!(definition.description.contains(default_shell_for_prompt()));
+        assert!(prompt.summary.contains(default_shell_for_prompt()));
+        assert!(prompt.guide.contains(default_shell_for_prompt()));
     }
 }

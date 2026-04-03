@@ -1,6 +1,6 @@
 //! 环境贡献者。
 //!
-//! 生成包含工作目录、操作系统、日期和可用工具列表的环境信息 block。
+//! 生成包含工作目录、操作系统、默认 shell、日期和可用工具列表的环境信息 block。
 //! 使用模板渲染，在 composer 渲染阶段填充变量。
 
 use async_trait::async_trait;
@@ -21,7 +21,7 @@ impl PromptContributor for EnvironmentContributor {
                 "environment",
                 BlockKind::Environment,
                 "Environment",
-                "Working directory: {{project.working_dir}}\nOS: {{env.os}}\nDate: {{run.date}}\nAvailable tools: {{tools.names}}",
+                "Working directory: {{project.working_dir}}\nOS: {{env.os}}\nShell: {{env.shell}}\nDate: {{run.date}}\nAvailable tools: {{tools.names}}",
             )],
             ..PromptContribution::default()
         }
@@ -36,7 +36,7 @@ mod tests {
     use crate::PromptComposer;
 
     #[tokio::test]
-    async fn includes_working_dir_os_date_and_tool_names() {
+    async fn includes_working_dir_os_shell_date_and_tool_names() {
         let _guard = TestEnvGuard::new();
         let composer = PromptComposer::with_defaults();
         let ctx = PromptContext {
@@ -62,6 +62,7 @@ mod tests {
         assert!(block
             .content
             .contains(&format!("OS: {}", std::env::consts::OS)));
+        assert!(block.content.contains("Shell: "));
         assert!(block.content.contains("Date: "));
         assert!(block.content.contains("Available tools: shell, readFile"));
     }

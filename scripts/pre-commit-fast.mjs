@@ -66,9 +66,12 @@ if (stagedFrontendFormatFiles.length > 0) {
 if (stagedFrontendLintFiles.length > 0) {
   // Restrict ESLint to changed source files so pre-commit catches obvious local issues without
   // turning every commit into a repo-wide lint pass.
+  // ESLint 的 flat config 位于 frontend/eslint.config.js，必须从前端目录运行才能正确加载配置，
+  // 因此去掉路径前端的 'frontend/' 前缀，改为从前端目录执行。
   console.log(`pre-commit: lint-fixing ${stagedFrontendLintFiles.length} frontend TS/TSX file(s).`);
-  runWithInheritedOutput('npx', ['--prefix', 'frontend', 'eslint', '--fix', ...stagedFrontendLintFiles], {
-    cwd: repoRoot,
+  const relativeFiles = stagedFrontendLintFiles.map((f) => f.replace(/^frontend\//u, ''));
+  runWithInheritedOutput('npx', ['eslint', '--fix', ...relativeFiles], {
+    cwd: `${repoRoot}/frontend`,
   });
 }
 

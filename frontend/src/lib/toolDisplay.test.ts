@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { appendToolDeltaMetadata, extractToolShellDisplay, mergeToolMetadata } from './toolDisplay';
+import {
+  appendToolDeltaMetadata,
+  extractToolShellDisplay,
+  formatToolShellPreview,
+  mergeToolMetadata,
+} from './toolDisplay';
 
 describe('toolDisplay shell metadata helpers', () => {
   it('extracts terminal display metadata and segments', () => {
@@ -75,5 +80,21 @@ describe('toolDisplay shell metadata helpers', () => {
       exitCode: 0,
       segments: [{ stream: 'stdout', text: 'running\\n' }],
     });
+  });
+
+  it('formats collapsed shell previews with the resolved shell name', () => {
+    const preview = formatToolShellPreview(
+      {
+        kind: 'terminal',
+        command: 'cargo test',
+        cwd: '/repo',
+        shell: 'pwsh',
+        exitCode: 0,
+        segments: [{ stream: 'stdout', text: 'ok\n' }],
+      },
+      'shell'
+    );
+
+    expect(preview).toBe('[pwsh] $ cargo test  ok');
   });
 });
