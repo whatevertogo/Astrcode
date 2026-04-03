@@ -73,7 +73,6 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
   const toolName = message.toolName ?? '(unknown tool)';
   const shortId = toolCallId.slice(-6);
   const duration = typeof message.durationMs === 'number' ? `${message.durationMs}ms` : '';
-  const preview = diff ? formatDiffPreview(message) : shellPreview(message);
 
   // 仅在用户未交互且工具状态变为终态时自动展开一次
   useEffect(() => {
@@ -142,8 +141,6 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
             <span className={styles.chevron}>{expanded ? '⌃' : '⌄'}</span>
           </span>
         </button>
-
-        {!expanded && preview && <div className={styles.preview}>{preview}</div>}
 
         {expanded && (
           <div className={styles.body}>
