@@ -219,6 +219,7 @@ pub(crate) trait CompactionRebuilder: Send + Sync {
 pub(crate) struct CompactionRuntime {
     enabled: bool,
     keep_recent_turns: usize,
+    threshold_percent: u8,
     pub(crate) policy: Arc<dyn CompactionPolicy>,
     pub(crate) strategy: Arc<dyn CompactionStrategy>,
     pub(crate) rebuilder: Arc<dyn CompactionRebuilder>,
@@ -228,6 +229,7 @@ impl CompactionRuntime {
     pub(crate) fn new(
         enabled: bool,
         keep_recent_turns: usize,
+        threshold_percent: u8,
         policy: Arc<dyn CompactionPolicy>,
         strategy: Arc<dyn CompactionStrategy>,
         rebuilder: Arc<dyn CompactionRebuilder>,
@@ -235,6 +237,7 @@ impl CompactionRuntime {
         Self {
             enabled,
             keep_recent_turns: keep_recent_turns.max(1),
+            threshold_percent: threshold_percent.clamp(1, 100),
             policy,
             strategy,
             rebuilder,
@@ -247,6 +250,10 @@ impl CompactionRuntime {
 
     pub(crate) fn keep_recent_turns(&self) -> usize {
         self.keep_recent_turns
+    }
+
+    pub(crate) fn threshold_percent(&self) -> u8 {
+        self.threshold_percent
     }
 
     pub(crate) fn build_context_decision(
@@ -457,6 +464,7 @@ mod tests {
         let runtime = CompactionRuntime::new(
             true,
             1,
+            80,
             Arc::new(ThresholdCompactionPolicy::new(true)),
             Arc::new(AutoCompactStrategy),
             Arc::new(ConversationViewRebuilder),
@@ -480,6 +488,7 @@ mod tests {
         let runtime = CompactionRuntime::new(
             false,
             1,
+            80,
             Arc::new(ThresholdCompactionPolicy::new(false)),
             Arc::new(AutoCompactStrategy),
             Arc::new(ConversationViewRebuilder),

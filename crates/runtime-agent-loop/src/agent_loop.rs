@@ -103,10 +103,6 @@ pub struct AgentLoop {
     request_assembler: RequestAssembler,
     /// 单个 step 内允许并发执行的只读工具上限
     max_tool_concurrency: usize,
-    /// 触发压缩的上下文窗口百分比阈值
-    compact_threshold_percent: u8,
-    /// 单个工具结果最多展示给模型的字节数
-    tool_result_max_bytes: usize,
 }
 
 impl AgentLoop {
@@ -147,10 +143,11 @@ impl AgentLoop {
                 prompt_declarations,
                 skill_catalog,
             ),
-            context: ContextRuntime::default(),
+            context: ContextRuntime::new(DEFAULT_TOOL_RESULT_MAX_BYTES),
             compaction: CompactionRuntime::new(
                 DEFAULT_AUTO_COMPACT_ENABLED,
                 DEFAULT_COMPACT_KEEP_RECENT_TURNS as usize,
+                DEFAULT_COMPACT_THRESHOLD_PERCENT,
                 Arc::new(ThresholdCompactionPolicy::new(DEFAULT_AUTO_COMPACT_ENABLED)),
                 Arc::new(AutoCompactStrategy),
                 Arc::new(ConversationViewRebuilder),
@@ -159,8 +156,6 @@ impl AgentLoop {
             // 默认并行度统一从 runtime-config 读取，这样环境变量覆盖和
             // 直接构造 AgentLoop 的默认行为保持同一套来源。
             max_tool_concurrency: max_tool_concurrency(),
-            compact_threshold_percent: DEFAULT_COMPACT_THRESHOLD_PERCENT,
-            tool_result_max_bytes: DEFAULT_TOOL_RESULT_MAX_BYTES,
         }
     }
 
@@ -193,26 +188,11 @@ impl AgentLoop {
         self.compaction = CompactionRuntime::new(
             auto_compact_enabled,
             self.compaction.keep_recent_turns(),
+            self.compaction.threshold_percent(),
             Arc::new(ThresholdCompactionPolicy::new(auto_compact_enabled)),
             self.compaction.strategy.clone(),
             self.compaction.rebuilder.clone(),
         );
-        self
-    }
-
-    /// 设置触发压缩的上下文窗口百分比
-    ///
-    /// 值会被钳制到 1-100 范围内，避免配置错误导致异常行为。
-    pub fn with_compact_threshold_percent(mut self, compact_threshold_percent: u8) -> Self {
-        self.compact_threshold_percent = compact_threshold_percent.clamp(1, 100);
-        self
-    }
-
-    /// 设置单个工具结果的最大展示字节数
-    ///
-    /// 最小值会被钳制到 1，避免配置错误导致工具结果完全被截断。
-    pub fn with_tool_result_max_bytes(mut self, tool_result_max_bytes: usize) -> Self {
-        self.tool_result_max_bytes = tool_result_max_bytes.max(1);
         self
     }
 
@@ -223,6 +203,7 @@ impl AgentLoop {
         self.compaction = CompactionRuntime::new(
             self.compaction.auto_compact_enabled(),
             compact_keep_recent_turns.max(1),
+            self.compaction.threshold_percent(),
             Arc::new(ThresholdCompactionPolicy::new(
                 self.compaction.auto_compact_enabled(),
             )),
@@ -433,11 +414,36 @@ impl AgentLoop {
     }
 
     pub fn compact_threshold_percent(&self) -> u8 {
-        self.compact_threshold_percent
+        self.compaction.threshold_percent()
     }
 
     pub fn tool_result_max_bytes(&self) -> usize {
-        self.tool_result_max_bytes
+        self.context.tool_result_max_bytes()
+    }
+
+    /// 设置单个工具结果的最大展示字节数
+    ///
+    /// 该值实际上由 ContextRuntime 持有，此处保留 builder 方法以保持
+    /// RuntimeService 装配层的调用兼容性。
+    pub fn with_tool_result_max_bytes(mut self, tool_result_max_bytes: usize) -> Self {
+        self.context = ContextRuntime::new(tool_result_max_bytes);
+        self
+    }
+
+    /// 设置触发压缩的上下文窗口百分比
+    ///
+    /// 该值实际上由 CompactionRuntime 持有，此处保留 builder 方法以保持
+    /// RuntimeService 装配层的调用兼容性。
+    pub fn with_compact_threshold_percent(mut self, compact_threshold_percent: u8) -> Self {
+        self.compaction = CompactionRuntime::new(
+            self.compaction.auto_compact_enabled(),
+            self.compaction.keep_recent_turns(),
+            compact_threshold_percent,
+            self.compaction.policy.clone(),
+            self.compaction.strategy.clone(),
+            self.compaction.rebuilder.clone(),
+        );
+        self
     }
 
     pub fn compact_keep_recent_turns(&self) -> usize {

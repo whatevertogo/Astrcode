@@ -6,7 +6,9 @@
 
 use std::path::Path;
 
-use astrcode_core::{AgentState, LlmMessage, Result};
+use astrcode_core::{AgentState, CapabilityDescriptor, LlmMessage, Result};
+
+use crate::context_window::{apply_microcompact, effective_context_window};
 
 /// 当前对模型可见的会话视图。
 ///
@@ -52,6 +54,7 @@ pub(crate) struct ContextBundle {
     pub memory: Vec<ContextBlock>,
     pub diagnostics: Vec<ContextDiagnostic>,
     pub budget_state: TokenBudgetState,
+    pub truncated_tool_results: usize,
 }
 
 /// Stage 的只读输入快照。
@@ -64,6 +67,10 @@ pub(crate) struct ContextStageContext<'a> {
     pub step_index: usize,
     pub base_messages: &'a [LlmMessage],
     pub prior_compaction_view: Option<&'a ConversationView>,
+    pub capability_descriptors: &'a [CapabilityDescriptor],
+    pub keep_recent_turns: usize,
+    pub model_context_window: usize,
+    pub tool_result_max_bytes: usize,
 }
 
 /// Pipeline stage。
@@ -76,10 +83,11 @@ pub(crate) trait ContextStage: Send + Sync {
 /// Runtime-facing pipeline wrapper.
 pub(crate) struct ContextRuntime {
     stages: Vec<Box<dyn ContextStage>>,
+    tool_result_max_bytes: usize,
 }
 
-impl Default for ContextRuntime {
-    fn default() -> Self {
+impl ContextRuntime {
+    pub fn new(tool_result_max_bytes: usize) -> Self {
         Self {
             stages: vec![
                 Box::new(BaselineStage),
@@ -89,11 +97,22 @@ impl Default for ContextRuntime {
                 Box::new(ToolNoiseTrimStage),
                 Box::new(BudgetTrimStage),
             ],
+            tool_result_max_bytes: tool_result_max_bytes.max(1),
         }
     }
-}
 
-impl ContextRuntime {
+    #[cfg(test)]
+    fn from_stages(stages: Vec<Box<dyn ContextStage>>) -> Self {
+        Self {
+            stages,
+            tool_result_max_bytes: 100_000, // 测试默认值，与 runtime-config 保持一致
+        }
+    }
+
+    pub(crate) fn tool_result_max_bytes(&self) -> usize {
+        self.tool_result_max_bytes
+    }
+
     /// Build the model-visible context bundle from readonly loop inputs.
     pub(crate) fn build_bundle(
         &self,
@@ -101,6 +120,9 @@ impl ContextRuntime {
         turn_id: &str,
         step_index: usize,
         prior_compaction_view: Option<&ConversationView>,
+        capability_descriptors: &[CapabilityDescriptor],
+        keep_recent_turns: usize,
+        model_context_window: usize,
     ) -> Result<ContextBundle> {
         let ctx = ContextStageContext {
             session_id: &state.session_id,
@@ -109,17 +131,16 @@ impl ContextRuntime {
             step_index,
             base_messages: &state.messages,
             prior_compaction_view,
+            capability_descriptors,
+            keep_recent_turns,
+            model_context_window,
+            tool_result_max_bytes: self.tool_result_max_bytes,
         };
         let mut bundle = ContextBundle::default();
         for stage in &self.stages {
             bundle = stage.apply(bundle, &ctx)?;
         }
         Ok(bundle)
-    }
-
-    #[cfg(test)]
-    fn from_stages(stages: Vec<Box<dyn ContextStage>>) -> Self {
-        Self { stages }
     }
 }
 
@@ -197,19 +218,31 @@ impl ContextStage for CompactionViewStage {
     }
 }
 
-/// Placeholder for future conversation-only pruning.
+/// Trim tool noise directly on the model-visible conversation view.
 ///
-/// `apply_microcompact` still lives near request assembly because it needs the full request shape
-/// and capability descriptors, not just the raw conversation view.
-/// This stage is intentionally a no-op until microcompact is migrated into the pipeline.
+/// We run microcompact here so request assembly becomes a pure serialization step. That keeps
+/// prompt/context selection separate from request encoding and removes the last request-level
+/// mutation path from `RequestAssembler`.
 struct ToolNoiseTrimStage;
 
 impl ContextStage for ToolNoiseTrimStage {
     fn apply(
         &self,
-        bundle: ContextBundle,
-        _ctx: &ContextStageContext<'_>,
+        mut bundle: ContextBundle,
+        ctx: &ContextStageContext<'_>,
     ) -> Result<ContextBundle> {
+        let result = apply_microcompact(
+            &bundle.conversation.messages,
+            ctx.capability_descriptors,
+            ctx.tool_result_max_bytes,
+            ctx.keep_recent_turns,
+            effective_context_window(astrcode_runtime_llm::ModelLimits {
+                context_window: ctx.model_context_window,
+                max_output_tokens: 0,
+            }),
+        );
+        bundle.conversation = ConversationView::new(result.messages);
+        bundle.truncated_tool_results = result.truncated_tool_results;
         Ok(bundle)
     }
 }
@@ -256,7 +289,7 @@ mod tests {
             origin: UserMessageOrigin::User,
         }]);
 
-        let bundle = ContextRuntime::default()
+        let bundle = ContextRuntime::new(100_000)
             .build_bundle(&state, "turn-1", 0, None)
             .expect("bundle should build");
 
@@ -278,7 +311,7 @@ mod tests {
             origin: UserMessageOrigin::CompactSummary,
         }]);
 
-        let bundle = ContextRuntime::default()
+        let bundle = ContextRuntime::new(100_000)
             .build_bundle(&state, "turn-1", 1, Some(&compacted))
             .expect("bundle should build");
 
@@ -345,7 +378,7 @@ mod tests {
             origin: UserMessageOrigin::User,
         }]);
 
-        let bundle = ContextRuntime::default()
+        let bundle = ContextRuntime::new(100_000)
             .build_bundle(&state, "turn-2", 7, None)
             .expect("bundle should build");
 
