@@ -71,7 +71,8 @@ impl Tool for FindFilesTool {
                 )
                 .caveat("Patterns must stay inside the workspace; use `**` explicitly when you need recursive matching.")
                 .example("Locate all `Cargo.toml`, `package.json`, or `*.tsx` files under the repo.")
-                .prompt_tag("search"),
+                .prompt_tag("search")
+                .always_include(true),
             )
     }
 

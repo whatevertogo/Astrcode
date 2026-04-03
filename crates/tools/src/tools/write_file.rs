@@ -68,7 +68,8 @@ impl Tool for WriteFileTool {
                 )
                 .caveat("It overwrites existing file contents, so only use it when a full replacement is intentional.")
                 .example("Create a new config file or rewrite a small generated artifact with known final content.")
-                .prompt_tag("filesystem"),
+                .prompt_tag("filesystem")
+                .always_include(true),
             )
     }
 
