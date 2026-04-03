@@ -136,6 +136,8 @@ P1 (状态机化) ✅
 P6 (子 Agent，独立于 P2-P5，远期占位) ✗
 ```
 
+# P7: Phase 9: ACP / MCP Entry Points — Not Started
+
 ---
 
 ## 远期 TODO
