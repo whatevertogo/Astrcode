@@ -1,32 +1,30 @@
 .wrapper {
-  display: flex;
-  align-items: flex-start;
-  gap: 0;
+  display: block; /* details element, no flex */
+  margin: 0 0 4px;
   animation: blockEnter 320ms cubic-bezier(0.2, 1, 0.32, 1);
 }
 
-.avatar {
+.avatar,
+.block,
+.header,
+.headerMain,
+.headerMeta,
+.statusIcon,
+.spinning,
+.toolName,
+.callId,
+.duration,
+.toggleLabel,
+.chevron,
+.chevronExpanded {
   display: none;
 }
 
-.avatar svg {
-  width: 16px;
-  height: 16px;
-}
-
-.block {
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  overflow: visible;
-  flex: 1;
-  min-width: 0;
-}
-
-.header {
-  display: inline-flex;
+/* ---------- summary line (the "已运行 ..." header) ---------- */
+.summary {
+  display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding: 4px 0;
   min-height: 24px;
   cursor: pointer;
@@ -36,95 +34,48 @@
   border-radius: 0;
   color: var(--text-secondary);
   transition: opacity 150ms ease;
-  margin-left: 44px; /* match the indentation of the avatar */
+  font-size: 13px;
+  font-weight: 400;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  list-style: none;
+  flex-wrap: nowrap;
 }
 
-.header:hover {
-  opacity: 0.8;
+.summary::-webkit-details-marker {
+  display: none;
 }
 
-.headerMain,
-.headerMeta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+.summary:hover {
+  opacity: 0.7;
+}
+
+.summaryText {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   min-width: 0;
 }
 
-.headerMain {
-  flex: 1;
-}
-
-.statusIcon {
-  width: 18px;
-  height: 18px;
+.summaryChevron {
+  width: 14px;
+  height: 14px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  font-size: 13px;
-  color: var(--text-secondary) !important;
-  background: transparent !important;
-}
-
-.spinning {
-  animation: spin 0.8s linear infinite;
-}
-
-.toolName {
-  font-size: 14px;
   color: var(--text-secondary);
-  font-weight: 500;
-  font-family: inherit;
-  min-width: 0;
-}
-
-.callId,
-.duration,
-.toggleLabel {
-  display: none;
-}
-
-.chevron {
-  width: 16px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-secondary);
+  opacity: 0.5;
   transition: transform 150ms ease;
-  opacity: 0.6;
 }
 
-.chevronExpanded {
+.wrapper[open] .summaryChevron {
   transform: rotate(90deg);
 }
 
+/* ---------- expanded body ---------- */
 .body {
-  margin-top: 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  animation: bodyExpand 150ms ease;
-  margin-left: 44px;
-}
-
-.body.expanded {
-  border-left: 2px solid rgba(0, 0, 0, 0.1);
-  border-radius: 0;
-  border-top: none;
-  border-right: none;
-  border-bottom: none;
-  background: transparent;
-  padding-left: 16px;
+  margin-top: 4px;
   margin-bottom: 8px;
-}
-
-.summary {
-  padding: 0 0 12px 0;
-  font-size: 13px;
-  color: var(--text-secondary);
-  line-height: 1.6;
 }
 
 .diffMeta {
@@ -172,6 +123,13 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
+}
+
+.outputSummary {
+  padding: 0 0 12px 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
 }
 
 .shellMeta {
