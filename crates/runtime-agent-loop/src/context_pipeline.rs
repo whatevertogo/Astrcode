@@ -1,8 +1,40 @@
-//! 用于构建模型可见会话包的上下文管道
+//! # Context Pipeline（上下文管道）
 //!
-//! 该管道有意保持简洁：各阶段仅将只读快照转换为`ContextBundle`
-//! 它们不会与提供者交互、触发事件或决定循环是否应压缩/重试
-//! 这将“可用的材料是什么”与“循环何时使用它”分开
+//! ## 职责
+//!
+//! 通过可组合的 pipeline stages 构建模型可见的上下文包（`ContextBundle`）。
+//! 将"可用的材料是什么"与"循环何时使用它"严格分离，各阶段只做同步纯变换。
+//!
+//! ## 在 Turn 流程中的作用
+//!
+//! - **调用时机**：每个 step 开始时，`turn_runner` 调用 `build_bundle()`
+//! - **输入**：`AgentState` + `ContextBundleInput`（turn_id/step_index/compaction view/模型窗口等）
+//! - **输出**：`ContextBundle`（包含 `ConversationView`、workset、memory、诊断信息）
+//! - **不变约束**：stage 不做 IO、不发事件、不做审批、不触发 compact
+//!
+//! ## Pipeline Stages（按执行顺序）
+//!
+//! | Stage | 职责 |
+//! |-------|------|
+//! | `BaselineStage` | 将 `AgentState.messages` 物化为初始对话视图 |
+//! | `RecentTailStage` | 占位，当前 `AgentState.messages` 已包含完整尾部视图 |
+//! | `WorksetStage` | 注入工作目录等结构化工作集槽位 |
+//! | `CompactionViewStage` | 若已有压缩后的窄视图，覆盖 baseline 对话视图 |
+//! | `ToolNoiseTrimStage` | 运行 microcompact，裁剪大工具结果、清理安全工具元数据 |
+//! | `BudgetTrimStage` | 占位，未来实现 token budget 感知的主动裁剪 |
+//!
+//! ## 依赖和协作
+//!
+//! - **使用** `apply_microcompact` / `effective_context_window` 执行工具噪声裁剪
+//! - **被调用方**：`turn_runner` 在每个 step 中调用 `build_bundle()`
+//! - **输出给**：`PromptRuntime.build_plan()` 和 `RequestAssembler` 消费 `ContextBundle`
+//! - **与 Compaction 的关系**：Compaction 重建 `ConversationView` 后，通过 `prior_compaction_view`
+//!   传入管道，`CompactionViewStage` 负责将其注入到 bundle 中
+//!
+//! ## 关键设计
+//!
+//! - `tool_result_max_bytes()` 暴露给 `AgentLoop`，供 `RuntimeService` 装配时查询
+//! - `ContextBundleInput` 结构体收口了 6 个 per-step 参数，避免函数参数膨胀
 
 use std::path::Path;
 

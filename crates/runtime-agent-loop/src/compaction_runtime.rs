@@ -1,7 +1,45 @@
-//! 压缩运行时原语
+//! # Compaction Runtime（压缩运行时）
 //!
-//! 此模块将“我们是否应该压缩”、“我们如何压缩”和“我们重建什么会话视图”分开
-//! 以便循环可以在不将每个分支内联到 `turn_runner` 中的情况下切换策略
+//! ## 职责
+//!
+//! 统一管理上下文压缩的触发策略、决策和执行。
+//! 将"是否应该压缩"、"如何压缩"和"重建什么会话视图"三个关注点分离，
+//! 使 AgentLoop 可以在不将每个分支内联到 `turn_runner` 的情况下切换策略。
+//!
+//! ## 在 Turn 流程中的作用
+//!
+//! - **调用时机 1**：每个 step 中，`policy.decide_context_strategy()` 评估是否需要压缩
+//! - **调用时机 2**：若策略返回 `Compact`，`turn_runner` 调用 `compact()` 执行压缩
+//! - **调用时机 3**：LLM 返回 413 prompt-too-long 时，触发 reactive compact
+//! - **调用时机 4**：用户手动触发压缩时，`manual_compact_event()` 被调用
+//! - **输入**：LLM Provider、当前 `ConversationView`、可选的 system prompt、压缩原因
+//! - **输出**：可选的 `CompactionArtifact` + 重建后的 `ConversationView`
+//!
+//! ## 依赖和协作
+//!
+//! - **使用** `astrcode_core::{CompactTrigger, ContextStrategy, ContextDecisionInput}`
+//!   进行策略决策和触发评估
+//! - **使用** `auto_compact()` / `should_compact()` 执行实际的 token 级压缩
+//! - **使用** `LlmMessage` 序列调用 LLM 生成压缩摘要
+//! - **被调用方**：`turn_runner` 中的 `maybe_compact_conversation()` 辅助函数
+//! - **被调用方**：`AgentLoop::manual_compact_event()` 用于用户主动压缩
+//! - **输出给**：`turn_runner` 将 `compacted_view` 赋值给本地 `conversation` 变量，
+//!   并在下一个 step 中通过 `prior_compaction_view` 传给 `ContextPipeline`
+//!
+//! ## 三种压缩原因
+//!
+//! | 原因 | 触发时机 | 策略 |
+//! |------|----------|------|
+//! | `Auto` | 上下文窗口使用率超过阈值 | `ThresholdCompactionPolicy` |
+//! | `Reactive` | LLM 返回 413 prompt-too-long | 自动触发，最多重试 3 次 |
+//! | `Manual` | 用户主动触发 | 与 Auto 共享同一条压缩路径 |
+//!
+//! ## 关键设计
+//!
+//! - `CompactionRuntime` 持有三个协作者：`policy`（触发策略）、`strategy`（自动压缩策略）、
+//!   `rebuilder`（对话视图重建器），各自通过 trait 抽象，可独立替换
+//! - `CompactionTailSnapshot` 携带最近 N 个 turn 的消息快照，用于压缩后保留尾部上下文
+//! - `rebuild_conversation()` 将 artifact 转换为 `ConversationView`，供 pipeline 注入
 
 use std::sync::{Arc, Mutex as StdMutex};
 

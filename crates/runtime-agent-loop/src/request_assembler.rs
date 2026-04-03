@@ -1,7 +1,34 @@
-//！请求程序集边界。
-//！
-//！及时规划决定指令支架，上下文规划决定模型可见
-//！对话，该模块执行两者之间的最终请求编码步骤
+//! # Request Assembler（请求装配器）
+//!
+//! ## 职责
+//!
+//! 执行 Prompt Plan 和 Context Bundle 之间的最终请求编码步骤。
+//! Prompt Planner 决定指令支架，Context Pipeline 决定模型可见对话，
+//! 本模块将两者合并为完整的 `ModelRequest`，并生成 prompt 快照用于指标上报。
+//!
+//! ## 在 Turn 流程中的作用
+//!
+//! - **调用时机**：每个 step 中，`build_plan()` 和 `decide_context_strategy()` 之后
+//! - **输入**：`StepRequestConfig`（prompt plan + context bundle + 工具列表 + 模型窗口）
+//!              + `TokenUsageTracker`（当前 token 使用统计）
+//! - **输出**：`PreparedRequest`（`ModelRequest` + `PromptTokenSnapshot` + 截断计数）
+//!
+//! ## 依赖和协作
+//!
+//! - **使用** `build_prompt_snapshot()` 生成 token 估算快照（system tokens + message tokens）
+//! - **使用** `append_unique_tools()` 将工具定义去重后注入到 `ModelRequest.tools`
+//! - **使用** `ContextBundle.conversation` 获取裁剪后的模型可见消息列表
+//! - **使用** `PromptPlan` 获取系统提示词和可选规划结果
+//! - **被调用方**：`turn_runner` 在 LLM 调用前调用 `build_step_request()`
+//! - **输出给**：`llm_cycle::generate_response()` 消费 `ModelRequest`
+//!                 `on_event(StorageEvent::PromptMetrics {...})` 消费 `PromptTokenSnapshot`
+//!
+//! ## 关键设计
+//!
+//! - `StepRequestConfig` 结构体将 5 个相关参数打包为一个，避免函数签名膨胀
+//! - `PromptTokenSnapshot` 携带 context_tokens / threshold_tokens / effective_window 等字段，
+//!   供 `CompactionRuntime` 决策时使用
+//! - `truncated_tool_results` 返回被 microcompact 裁剪的工具结果数量，上报给前端指标
 
 use astrcode_core::{LlmMessage, ModelRequest, Result, ToolDefinition};
 use astrcode_runtime_prompt::{append_unique_tools, PromptPlan};

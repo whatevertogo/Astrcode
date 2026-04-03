@@ -1,6 +1,26 @@
-//! # 审批代理
+//! # Approval Broker（审批代理）
 //!
-//! 审批代理负责处理需要用户确认的能力调用。
+//! ## 职责
+//!
+//! 负责处理需要用户确认的能力调用，实现交互式审批流程。
+//! 当策略引擎判定某个工具调用需要审批时，AgentLoop 会通过此接口阻塞等待用户决定。
+//!
+//! ## 在 Turn 流程中的作用
+//!
+//! - **调用时机**：工具执行前，`tool_cycle` 在策略返回 `RequiresApproval` 后调用
+//! - **输入**：`ApprovalRequest`（工具名、参数、策略给出的默认决策）
+//! - **输出**：`ApprovalResolution`（Allow/Deny/AllowModified）
+//! - **阻塞行为**：调用方会等待直到用户响应或 `CancelToken` 触发
+//!
+//! ## 依赖和协作
+//!
+//! - **使用** `astrcode_core::{ApprovalRequest, ApprovalResolution, CancelToken}`
+//! - **被调用方**：`tool_cycle` 中的 `ask_approval()` 辅助函数
+//! - **传输无关**：trait 设计刻意与传输层解耦，CLI、Web UI、Tauri 均可实现此接口
+//!
+//! ## 默认实现
+//!
+//! `DefaultApprovalBroker` 直接返回请求的默认决策（无需用户交互），用于测试和无审批场景。
 
 use async_trait::async_trait;
 

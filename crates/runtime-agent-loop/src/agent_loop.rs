@@ -11,6 +11,37 @@
 //! 4. 若有工具调用，执行工具并循环回到步骤 2
 //! 5. 处理 Token 预算和自动压缩
 //!
+//! ## 核心组件
+//!
+//! `AgentLoop` 由以下运行时组件协同工作，每个组件各司其职：
+//!
+//! | 组件 | 职责 | 使用的依赖 | 说明 |
+//! |------|------|------------|------|
+//! | **`factory`** | LLM Provider 工厂 | `DynProviderFactory` | 根据工作目录解析配置文件，构建对应的 LLM Provider（OpenAI/Anthropic），负责 API 密钥和模型 limits 解析 |
+//! | **`capabilities`** | 能力路由器/工具注册表 | `CapabilityRouter` | 将工具名称映射到具体的执行器，支持内置工具和插件工具，提供工具定义列表给 prompt 组装 |
+//! | **`policy`** | 策略引擎 | `Arc<dyn PolicyEngine>` | 评估每个能力调用是否需要审批，实现细粒度的访问控制（如 allow-all/deny-all/conditional） |
+//! | **`approval`** | 审批代理 | `Arc<dyn ApprovalBroker>` | 处理需要用户确认的工具调用，阻塞执行直到用户允许或拒绝（交互式审批流程） |
+//! | **`prompt`** | Prompt 运行时 | `PromptRuntime` | 桥接 PromptComposer 与 loop 输入快照，按需加载 skill 内容，组装完整的系统提示词和规划结果 |
+//! | **`context`** | Context 运行时 | `ContextRuntime` | 通过 pipeline stages 构建模型可见的上下文包（conversation view），处理消息裁剪、工作集注入、工具结果截断 |
+//! | **`compaction`** | Compaction 运行时 | `CompactionRuntime` | 统一管理上下文压缩的触发策略/决策/重建，支持自动压缩（阈值触发）和手动压缩（用户主动触发） |
+//! | **`request_assembler`** | 请求装配器 | `RequestAssembler` | 最终请求装配边界，将 prompt plan + context bundle + 工具定义组装为 LLM API 请求，并生成 prompt 快照用于指标上报 |
+//!
+//! ## Turn 执行流中各组件的调用顺序
+//!
+//! ```
+//! 1. factory.build_for_working_dir() → 构建 LLM Provider
+//! 2. context.build_bundle() → 构建模型可见上下文包（含 conversation view）
+//! 3. prompt.build_plan() → 组装系统提示词，生成 plan
+//! 4. request_assembler.build_step_request() → 组装完整的 LLM 请求体
+//! 5. policy.decide_context_strategy() → 决定是否需要压缩
+//! 6. compaction.* → 若需要压缩，执行上下文压缩并重写 conversation view
+//! 7. policy.check_model_request() → 策略检查/重写请求
+//! 8. llm_cycle::generate_response() → 调用 LLM
+//! 9. policy.* / approval.* → 工具调用前的策略检查和审批
+//! 10. capabilities.execute() → 执行工具调用
+//! → 循环回到步骤 2，直到 LLM 不再请求工具调用
+//! ```
+//!
 //! ## 架构约束
 //!
 //! - `AgentLoop` 仅依赖 `core` 定义的接口，不直接依赖 `runtime` 门面

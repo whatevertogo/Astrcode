@@ -1,7 +1,32 @@
-//! 提示运行时适配器
+//! # Prompt Runtime（提示运行时）
 //!
-//! 此包装器将提示特定的输入和转换保持在 `runtime-prompt` 附近
-//! 而不让 `turn_runner` 直接接触贡献者/配置/技能的详细信息
+//! ## 职责
+//!
+//! 桥接 `PromptComposer` 与 AgentLoop 的输入快照，负责在每个 step 中
+//! 组装完整的系统提示词和规划结果（PromptPlan）。
+//! 隔离了 turn_runner 与 prompt 贡献者/配置/skill 的复杂细节。
+//!
+//! ## 在 Turn 流程中的作用
+//!
+//! - **调用时机**：每个 step 开始构建请求时，`turn_runner` 调用 `build_plan()`
+//! - **输入**：`AgentState`（会话状态）、`ConversationView`（模型可见消息）、`step_index`
+//! - **输出**：`PromptBuildOutput`（包含组装好的 `PromptPlan` 和诊断信息）
+//! - **缓存行为**：跨 step 复用 `PromptComposer` 的 KV cache 贡献者数据
+//!
+//! ## 依赖和协作
+//!
+//! - **使用** `astrcode_runtime_prompt::PromptComposer` 执行实际的提示词组装
+//! - **使用** `CapabilityDescriptor` 列表供贡献者生成工具摘要
+//! - **使用** `SkillCatalog` 实现两阶段 skill 暴露（索引 + 按需加载）
+//! - **使用** `PromptDeclaration` 支持调用方注入自定义 prompt 块
+//! - **被调用方**：`turn_runner` 在每个 step 中调用 `build_plan()`
+//! - **输出给**：`RequestAssembler` 使用 `PromptPlan` 构建最终 LLM 请求
+//!
+//! ## 关键设计
+//!
+//! - `capability_descriptors()` 暴露与 prompt 一致的工具列表，供前端候选接口复用，避免漂移
+//! - `skill_catalog()` 暴露统一的 skill 目录，供 skill tool 按需加载
+//! - 持有 `tool_names` 列表，供 prompt composer 在环境变量块中注入工具名
 
 use std::collections::HashMap;
 use std::sync::Arc;
