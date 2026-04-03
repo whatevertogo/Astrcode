@@ -354,7 +354,13 @@ cargo deny check bans
 
 ## 许可证
 
-MIT License
+本项目采用 **Apache License 2.0 with Commons Clause** 许可证。
+
+- ✅ 个人使用、学习和研究：**允许**
+- ✅ 非商业开源项目使用：**允许**
+- ⚠️ **商业用途**：需先获得作者许可，请联系作者
+
+详见 [LICENSE](LICENSE) 文件了解详情。
 
 ## 致谢
 

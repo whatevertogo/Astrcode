@@ -1,7 +1,7 @@
-//! Compaction runtime primitives.
+//! 压缩运行时原语
 //!
-//! This module separates "should we compact", "how do we compact", and "what conversation view do
-//! we rebuild" so the loop can swap strategies without inlining every branch into `turn_runner`.
+//! 此模块将“我们是否应该压缩”、“我们如何压缩”和“我们重建什么会话视图”分开
+//! 以便循环可以在不将每个分支内联到 `turn_runner` 中的情况下切换策略
 
 use std::sync::{Arc, Mutex as StdMutex};
 
