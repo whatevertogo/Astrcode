@@ -163,6 +163,17 @@
   padding-left: 24px;
 }
 
+/* Restore list bullets (often hidden by global resets) */
+.content ul {
+  list-style-type: disc;
+  list-style-position: outside;
+}
+
+.content ol {
+  list-style-type: decimal;
+  list-style-position: outside;
+}
+
 .content li {
   margin-bottom: 6px;
 }
