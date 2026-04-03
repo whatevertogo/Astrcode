@@ -60,6 +60,7 @@ export default function Chat({
       />
       <MessageList messages={session?.messages ?? []} />
       <InputBar
+        sessionId={session?.id ?? null}
         workingDir={project?.workingDir ?? ''}
         phase={phase}
         onSubmit={onSubmitPrompt}
