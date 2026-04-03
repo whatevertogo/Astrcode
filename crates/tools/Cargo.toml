@@ -9,12 +9,13 @@ authors.workspace = true
 astrcode-core = { path = "../core" }
 async-trait.workspace = true
 glob.workspace = true
+globset.workspace = true
+ignore.workspace = true
 log.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-walkdir.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

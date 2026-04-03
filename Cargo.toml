@@ -48,3 +48,5 @@ tempfile = "3"
 thiserror = "1"
 tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 walkdir = "2"
+ignore = "0.4"
+globset = "0.4"
