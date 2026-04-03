@@ -201,6 +201,10 @@ fn render_skill_content(skill: &SkillSpec, args: Option<&str>, session_id: &str)
     sections.join("\n\n")
 }
 
+/// 规范化 skill 资源路径中的分隔符。
+///
+/// 将 Windows 风格的反斜杠转换为正斜杠，确保路径在不同操作系统下的一致性。
+/// 这对于 skill 目录的跨平台共享和缓存键计算至关重要。
 fn normalize_skill_path(path: &str) -> String {
     path.replace('\\', "/")
 }

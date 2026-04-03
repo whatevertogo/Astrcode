@@ -206,8 +206,11 @@ impl LayeredPromptBuilder {
             .await?;
         merge_contribution(&mut all_blocks, &mut extra_tools, dynamic);
 
+        // 注意：此处仅收集了 BlockSpec（原始规格），尚未进行模板渲染、条件过滤、
+        // 依赖解析等处理。完整的 block 渲染逻辑需要复用 PromptComposer 的 resolve_candidates
+        // 流程，当前作为临时方案保持为空，后续需要实现。
         let plan = PromptPlan {
-            system_blocks: Vec::new(), // TODO: 需要完整的 block 渲染逻辑
+            system_blocks: Vec::new(), // TODO: 需要完整的 block 渲染逻辑（模板渲染 + 条件过滤 + 依赖解析）
             prepend_messages: Vec::new(),
             append_messages: Vec::new(),
             extra_tools,
@@ -235,8 +238,12 @@ impl LayeredPromptBuilder {
         let fingerprint = compute_layer_fingerprint(contributors, ctx);
 
         // 检查缓存（仅读取，不持有锁过await点）
+        // 安全：lock() 前无 await 点且持有时间短，不会触发 Mutex poison
         let cached_entry = {
-            let cache = self.cache.lock().unwrap();
+            let cache = self
+                .cache
+                .lock()
+                .expect("cache lock should not be poisoned");
             let cached = match layer_type {
                 LayerType::Stable => &cache.stable,
                 LayerType::SemiStable => &cache.semi_stable,
@@ -267,7 +274,11 @@ impl LayeredPromptBuilder {
             .await?;
 
         // 更新缓存
-        let mut cache = self.cache.lock().unwrap();
+        // 安全：lock() 前无 await 点且持有时间短，不会触发 Mutex poison
+        let mut cache = self
+            .cache
+            .lock()
+            .expect("cache lock should not be poisoned");
         let entry = LayerCacheEntry {
             fingerprint,
             cached_at: Instant::now(),
