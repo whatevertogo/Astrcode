@@ -4,13 +4,17 @@
 //!
 //! ## 设计要点
 //!
+//! - 使用 `ignore` crate（ripgrep 同源）进行 .gitignore 感知的文件遍历
 //! - 支持递归搜索（`recursive: true`）和单层搜索
-//! - 可配置大小写敏感和最大匹配数
+//! - 可配置大小写敏感、glob 过滤、文件类型过滤、上下文行
+//! - 三种输出模式：content / files_with_matches / count
 //! - 支持 `offset` 分页，LLM 可迭代获取超出 `maxMatches` 的后续结果
 //! - `GrepMatch` 增加 `match_text` 字段，精确提取匹配到的子串
+//! - 超过 500 字符的行自动截断，避免 minified 文件污染 context window
 //! - 空结果返回友好提示文本，避免空输出触发 stop sequence
 
 use std::{
+    collections::VecDeque,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -24,11 +28,14 @@ use log::warn;
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use walkdir::WalkDir;
 
 use crate::tools::fs_common::{
     check_cancel, maybe_persist_large_tool_result, read_utf8_file, resolve_path,
 };
+
+/// 匹配行最大显示字符数。
+/// 超过此长度的行被截断并追加 `...`，避免 minified JS/CSS 污染 context window。
+const MAX_LINE_DISPLAY: usize = 500;
 
 /// Grep 工具实现。
 ///
@@ -50,6 +57,39 @@ struct GrepArgs {
     /// 跳过的匹配数量，用于分页获取后续结果。
     #[serde(default)]
     offset: Option<usize>,
+    /// Glob 过滤器，如 "*.rs", "*.{ts,tsx}"。
+    #[serde(default)]
+    glob: Option<String>,
+    /// 文件类型过滤，如 "rust", "typescript"。
+    #[serde(default)]
+    file_type: Option<String>,
+    /// 匹配行前 N 行上下文。
+    #[serde(default)]
+    before_context: Option<usize>,
+    /// 匹配行后 N 行上下文。
+    #[serde(default)]
+    after_context: Option<usize>,
+    /// 输出模式: content / files_with_matches / count。
+    #[serde(default)]
+    output_mode: Option<GrepOutputMode>,
+}
+
+/// Grep 输出模式。
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum GrepOutputMode {
+    /// 返回匹配行内容（默认）。
+    Content,
+    /// 仅返回包含匹配的文件路径列表。
+    FilesWithMatches,
+    /// 返回每个文件的匹配计数。
+    Count,
+}
+
+impl Default for GrepOutputMode {
+    fn default() -> Self {
+        Self::Content
+    }
 }
 
 /// 单次正则匹配的结果。
@@ -61,11 +101,24 @@ struct GrepMatch {
     file: String,
     /// 匹配行号（1-based）。
     line_no: usize,
-    /// 完整行内容。
+    /// 完整行内容（超长行已截断）。
     line: String,
     /// 精确匹配到的子串，帮助 LLM 快速定位关键片段。
     #[serde(skip_serializing_if = "Option::is_none")]
     match_text: Option<String>,
+    /// 匹配行前的上下文行。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    before: Option<Vec<String>>,
+    /// 匹配行后的上下文行。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    after: Option<Vec<String>>,
+}
+
+/// count 模式下每个文件的匹配计数。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct GrepFileCount {
+    file: String,
+    count: usize,
 }
 
 #[async_trait]
@@ -101,6 +154,29 @@ impl Tool for GrepTool {
                         "type": "integer",
                         "minimum": 0,
                         "description": "Number of matches to skip for pagination"
+                    },
+                    "glob": {
+                        "type": "string",
+                        "description": "Glob filter for file paths, e.g. '*.rs', '*.{ts,tsx}'"
+                    },
+                    "fileType": {
+                        "type": "string",
+                        "description": "File type filter, e.g. 'rust', 'typescript', 'python'"
+                    },
+                    "beforeContext": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Lines of context before each match"
+                    },
+                    "afterContext": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Lines of context after each match"
+                    },
+                    "outputMode": {
+                        "type": "string",
+                        "enum": ["content", "files_with_matches", "count"],
+                        "description": "Output mode (default: content)"
                     }
                 },
                 "required": ["pattern", "path"],
@@ -126,7 +202,8 @@ impl Tool for GrepTool {
                 .caveat(
                     "Regex patterns can over-match; narrow the path or cap `maxMatches` before \
                      drawing conclusions from broad searches. When `truncated` is true and \
-                     `has_more` is true, use `offset` to fetch the next page.",
+                     `has_more` is true, use `offset` to fetch the next page. Use `glob` and \
+                     `fileType` to narrow results.",
                 )
                 .example(
                     "Find all references to a symbol, config key, or error string inside a module \
@@ -156,40 +233,244 @@ impl Tool for GrepTool {
                 name: "grep".to_string(),
                 reason: format!("invalid regex: {}", error),
             })?;
+
+        let output_mode = args.output_mode.unwrap_or_default();
         let max_matches = args.max_matches.unwrap_or(100);
         let offset = args.offset.unwrap_or(0);
-        let mut matches = Vec::new();
-        let mut total_in_page = 0usize;
-        let mut skipped_files = 0usize;
-        let mut hit_limit = false;
+        let glob_matcher = build_glob_matcher(args.glob.as_deref())?;
+        let type_extensions = args.file_type.as_deref().and_then(extensions_for_file_type);
+        let context_before = args.before_context.unwrap_or(0);
+        let context_after = args.after_context.unwrap_or(0);
 
-        let files = collect_candidate_files(&path, args.recursive, ctx.cancel())?;
-        for file in files {
-            check_cancel(ctx.cancel())?;
+        let files = collect_candidate_files(
+            &path,
+            args.recursive,
+            ctx.cancel(),
+            glob_matcher.as_ref(),
+            type_extensions,
+        )?;
 
-            let content = match read_utf8_file(&file).await {
-                Ok(content) => content,
-                Err(error) => {
-                    warn!("grep: skipping '{}': {error}", file.display());
-                    skipped_files += 1;
-                    continue;
-                },
-            };
+        match output_mode {
+            GrepOutputMode::Content => {
+                let result = search_content_mode(
+                    &files,
+                    &regex,
+                    max_matches,
+                    offset,
+                    context_before,
+                    context_after,
+                    ctx.cancel(),
+                )
+                .await?;
+                build_content_result(
+                    tool_call_id,
+                    result.matches,
+                    result.has_more,
+                    result.skipped_files,
+                    &args,
+                    started_at,
+                    ctx,
+                )
+            },
+            GrepOutputMode::FilesWithMatches => {
+                let result =
+                    search_files_mode(&files, &regex, max_matches, offset, ctx.cancel()).await?;
+                let output = if result.matched_files.is_empty() {
+                    if offset > 0 {
+                        "No more matches found (all remaining results after offset have been \
+                         exhausted)."
+                            .to_string()
+                    } else {
+                        "No matches found for the given pattern.".to_string()
+                    }
+                } else {
+                    serde_json::to_string(&result.matched_files)
+                        .map_err(|e| AstrError::parse("failed to serialize grep results", e))?
+                };
+                let final_output = maybe_persist_large_tool_result(
+                    ctx.working_dir(),
+                    &tool_call_id,
+                    &output,
+                    true,
+                );
+                let is_persisted = final_output.starts_with("<persisted-output>");
+                Ok(ToolExecutionResult {
+                    tool_call_id,
+                    tool_name: "grep".to_string(),
+                    ok: true,
+                    output: final_output,
+                    error: None,
+                    metadata: Some(json!({
+                        "pattern": args.pattern,
+                        "returned": result.matched_files.len(),
+                        "has_more": result.has_more,
+                        "truncated": result.has_more || is_persisted,
+                        "skipped_files": result.skipped_files,
+                        "output_mode": "files_with_matches",
+                    })),
+                    duration_ms: started_at.elapsed().as_millis() as u64,
+                    truncated: result.has_more,
+                })
+            },
+            GrepOutputMode::Count => {
+                let result = search_count_mode(&files, &regex, ctx.cancel()).await?;
+                let output = serde_json::to_string(&result.counts)
+                    .map_err(|e| AstrError::parse("failed to serialize count results", e))?;
+                let final_output = maybe_persist_large_tool_result(
+                    ctx.working_dir(),
+                    &tool_call_id,
+                    &output,
+                    true,
+                );
+                let is_persisted = final_output.starts_with("<persisted-output>");
+                Ok(ToolExecutionResult {
+                    tool_call_id,
+                    tool_name: "grep".to_string(),
+                    ok: true,
+                    output: final_output,
+                    error: None,
+                    metadata: Some(json!({
+                        "pattern": args.pattern,
+                        "total_files": result.counts.len(),
+                        "truncated": is_persisted,
+                        "skipped_files": result.skipped_files,
+                        "output_mode": "count",
+                    })),
+                    duration_ms: started_at.elapsed().as_millis() as u64,
+                    truncated: false,
+                })
+            },
+        }
+    }
+}
 
-            for (index, line) in content.lines().enumerate() {
-                check_cancel(ctx.cancel())?;
+// ---------------------------------------------------------------------------
+// 搜索模式实现
+// ---------------------------------------------------------------------------
+
+struct ContentSearchResult {
+    matches: Vec<GrepMatch>,
+    has_more: bool,
+    skipped_files: usize,
+}
+
+/// content 模式：逐文件逐行匹配，收集 GrepMatch。
+async fn search_content_mode(
+    files: &[PathBuf],
+    regex: &regex::Regex,
+    max_matches: usize,
+    offset: usize,
+    context_before: usize,
+    context_after: usize,
+    cancel: &CancelToken,
+) -> Result<ContentSearchResult> {
+    let mut matches = Vec::new();
+    let mut total_in_page = 0usize;
+    let mut skipped_files = 0usize;
+    let mut hit_limit = false;
+
+    for file in files {
+        check_cancel(cancel)?;
+
+        let content = match read_utf8_file(file).await {
+            Ok(content) => content,
+            Err(error) => {
+                warn!("grep: skipping '{}': {error}", file.display());
+                skipped_files += 1;
+                continue;
+            },
+        };
+
+        // 需要上下文时，先将所有行收集为 Vec 以支持向后查看
+        let need_context = context_before > 0 || context_after > 0;
+        if need_context {
+            let all_lines: Vec<&str> = content.lines().collect();
+            let mut recent_lines: VecDeque<(usize, &str)> = VecDeque::with_capacity(context_before);
+
+            for (index, &line) in all_lines.iter().enumerate() {
+                check_cancel(cancel)?;
                 if regex.is_match(line) {
                     total_in_page += 1;
-                    // 跳过 offset 之前的匹配
                     if total_in_page <= offset {
+                        // 维护 ring buffer 即使跳过匹配
+                        if context_before > 0 {
+                            recent_lines.push_back((index, line));
+                            while recent_lines.len() > context_before {
+                                recent_lines.pop_front();
+                            }
+                        }
                         continue;
                     }
-                    let match_text = extract_match_text(&regex, line);
+
+                    let before = if context_before > 0 {
+                        let ctx_lines: Vec<String> =
+                            recent_lines.iter().map(|(_, l)| truncate_line(l)).collect();
+                        if ctx_lines.is_empty() {
+                            None
+                        } else {
+                            Some(ctx_lines)
+                        }
+                    } else {
+                        None
+                    };
+
+                    let after = if context_after > 0 {
+                        let ctx_lines: Vec<String> = all_lines
+                            .iter()
+                            .skip(index + 1)
+                            .take(context_after)
+                            .map(|l| truncate_line(l))
+                            .collect();
+                        if ctx_lines.is_empty() {
+                            None
+                        } else {
+                            Some(ctx_lines)
+                        }
+                    } else {
+                        None
+                    };
+
+                    let match_text = extract_match_text(regex, line);
                     matches.push(GrepMatch {
                         file: file.to_string_lossy().to_string(),
                         line_no: index + 1,
-                        line: line.to_string(),
+                        line: truncate_line(line),
                         match_text,
+                        before,
+                        after,
+                    });
+
+                    if matches.len() >= max_matches {
+                        hit_limit = true;
+                        break;
+                    }
+                }
+
+                // 维护 ring buffer
+                if context_before > 0 {
+                    recent_lines.push_back((index, line));
+                    while recent_lines.len() > context_before {
+                        recent_lines.pop_front();
+                    }
+                }
+            }
+        } else {
+            // 无上下文：保持原有逐行流式处理，内存更友好
+            for (index, line) in content.lines().enumerate() {
+                check_cancel(cancel)?;
+                if regex.is_match(line) {
+                    total_in_page += 1;
+                    if total_in_page <= offset {
+                        continue;
+                    }
+                    let match_text = extract_match_text(regex, line);
+                    matches.push(GrepMatch {
+                        file: file.to_string_lossy().to_string(),
+                        line_no: index + 1,
+                        line: truncate_line(line),
+                        match_text,
+                        before: None,
+                        after: None,
                     });
                     if matches.len() >= max_matches {
                         hit_limit = true;
@@ -197,61 +478,193 @@ impl Tool for GrepTool {
                     }
                 }
             }
+        }
 
-            if hit_limit {
+        if hit_limit {
+            break;
+        }
+    }
+
+    Ok(ContentSearchResult {
+        matches,
+        has_more: hit_limit,
+        skipped_files,
+    })
+}
+
+struct FilesSearchResult {
+    matched_files: Vec<String>,
+    has_more: bool,
+    skipped_files: usize,
+}
+
+/// files_with_matches 模式：每个文件首个匹配即收录，跳过该文件后续行。
+async fn search_files_mode(
+    files: &[PathBuf],
+    regex: &regex::Regex,
+    max_matches: usize,
+    offset: usize,
+    cancel: &CancelToken,
+) -> Result<FilesSearchResult> {
+    let mut matched_files = Vec::new();
+    let mut total_in_page = 0usize;
+    let mut skipped_files = 0usize;
+
+    for file in files {
+        check_cancel(cancel)?;
+
+        let content = match read_utf8_file(file).await {
+            Ok(content) => content,
+            Err(error) => {
+                warn!("grep: skipping '{}': {error}", file.display());
+                skipped_files += 1;
+                continue;
+            },
+        };
+
+        let mut file_has_match = false;
+        for line in content.lines() {
+            if regex.is_match(line) {
+                file_has_match = true;
                 break;
             }
         }
 
-        // `hit_limit` 表示达到 maxMatches 上限，可能有更多结果未扫描。
-        // 不继续扫描剩余文件以获取精确 total_found，因为遍历整个仓库
-        // 可能很慢（尤其是递归搜索）。
-        let has_more = hit_limit;
-
-        // 空结果返回友好提示文本，避免空输出触发 stop sequence
-        let output = if matches.is_empty() {
-            if offset > 0 {
-                "No more matches found (all remaining results after offset have been exhausted)."
-                    .to_string()
-            } else {
-                "No matches found for the given pattern.".to_string()
+        if file_has_match {
+            total_in_page += 1;
+            if total_in_page <= offset {
+                continue;
             }
-        } else {
-            serde_json::to_string(&matches)
-                .map_err(|e| AstrError::parse("failed to serialize grep matches", e))?
-        };
-
-        // 溢出存盘检查
-        // TODO: session_dir() 尚未注入 ToolContext，暂时使用 force_inline 跳过存盘。
-        // 需要在 runtime 层将 ~/<project>/sessions/<id>/ 路径注入 ToolContext。
-        let final_output =
-            maybe_persist_large_tool_result(ctx.working_dir(), &tool_call_id, &output, true);
-        let is_persisted = final_output.starts_with("<persisted-output>");
-
-        Ok(ToolExecutionResult {
-            tool_call_id,
-            tool_name: "grep".to_string(),
-            ok: true,
-            output: final_output,
-            error: None,
-            metadata: Some(json!({
-                "pattern": args.pattern,
-                "returned": matches.len(),
-                "has_more": has_more,
-                "truncated": has_more || is_persisted,
-                "skipped_files": skipped_files,
-                "offset_applied": offset,
-            })),
-            duration_ms: started_at.elapsed().as_millis() as u64,
-            truncated: has_more,
-        })
+            matched_files.push(file.to_string_lossy().to_string());
+            if matched_files.len() >= max_matches {
+                return Ok(FilesSearchResult {
+                    matched_files,
+                    has_more: true,
+                    skipped_files,
+                });
+            }
+        }
     }
+
+    Ok(FilesSearchResult {
+        matched_files,
+        has_more: false,
+        skipped_files,
+    })
 }
 
+struct CountSearchResult {
+    counts: Vec<GrepFileCount>,
+    skipped_files: usize,
+}
+
+/// count 模式：统计每个文件的匹配数。
+async fn search_count_mode(
+    files: &[PathBuf],
+    regex: &regex::Regex,
+    cancel: &CancelToken,
+) -> Result<CountSearchResult> {
+    let mut counts = Vec::new();
+    let mut skipped_files = 0usize;
+
+    for file in files {
+        check_cancel(cancel)?;
+
+        let content = match read_utf8_file(file).await {
+            Ok(content) => content,
+            Err(error) => {
+                warn!("grep: skipping '{}': {error}", file.display());
+                skipped_files += 1;
+                continue;
+            },
+        };
+
+        let mut file_count = 0usize;
+        for line in content.lines() {
+            if regex.is_match(line) {
+                file_count += 1;
+            }
+        }
+
+        if file_count > 0 {
+            counts.push(GrepFileCount {
+                file: file.to_string_lossy().to_string(),
+                count: file_count,
+            });
+        }
+    }
+
+    Ok(CountSearchResult {
+        counts,
+        skipped_files,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// 辅助函数
+// ---------------------------------------------------------------------------
+
+/// 构建 content 模式的 ToolExecutionResult。
+fn build_content_result(
+    tool_call_id: String,
+    matches: Vec<GrepMatch>,
+    has_more: bool,
+    skipped_files: usize,
+    args: &GrepArgs,
+    started_at: Instant,
+    ctx: &ToolContext,
+) -> Result<ToolExecutionResult> {
+    let offset = args.offset.unwrap_or(0);
+
+    // 空结果返回友好提示文本，避免空输出触发 stop sequence
+    let output = if matches.is_empty() {
+        if offset > 0 {
+            "No more matches found (all remaining results after offset have been exhausted)."
+                .to_string()
+        } else {
+            "No matches found for the given pattern.".to_string()
+        }
+    } else {
+        serde_json::to_string(&matches)
+            .map_err(|e| AstrError::parse("failed to serialize grep matches", e))?
+    };
+
+    // 溢出存盘检查
+    // TODO: session_dir() 尚未注入 ToolContext，暂时使用 force_inline 跳过存盘。
+    let final_output =
+        maybe_persist_large_tool_result(ctx.working_dir(), &tool_call_id, &output, true);
+    let is_persisted = final_output.starts_with("<persisted-output>");
+
+    Ok(ToolExecutionResult {
+        tool_call_id,
+        tool_name: "grep".to_string(),
+        ok: true,
+        output: final_output,
+        error: None,
+        metadata: Some(json!({
+            "pattern": args.pattern,
+            "returned": matches.len(),
+            "has_more": has_more,
+            "truncated": has_more || is_persisted,
+            "skipped_files": skipped_files,
+            "offset_applied": offset,
+        })),
+        duration_ms: started_at.elapsed().as_millis() as u64,
+        truncated: has_more,
+    })
+}
+
+/// 收集候选文件列表。
+///
+/// 使用 `ignore` crate（ripgrep 同源）进行 .gitignore 感知的文件遍历，
+/// 自动排除 `.git`、`node_modules`、`target` 等噪音目录。
+/// 非递归模式保持原有 `read_dir` 逻辑。
 fn collect_candidate_files(
     path: &Path,
     recursive: bool,
     cancel: &CancelToken,
+    glob_matcher: Option<&globset::GlobSet>,
+    type_extensions: Option<&'static [&'static str]>,
 ) -> Result<Vec<PathBuf>> {
     if path.is_file() {
         return Ok(vec![path.to_path_buf()]);
@@ -264,34 +677,133 @@ fn collect_candidate_files(
         )));
     }
 
-    if recursive {
+    if !recursive {
+        // 非递归：保持原有 read_dir 逻辑
         let mut files = Vec::new();
-        for entry in WalkDir::new(path) {
+        let read_dir = std::fs::read_dir(path).map_err(|e| {
+            AstrError::io(format!("failed reading directory '{}'", path.display()), e)
+        })?;
+        for entry in read_dir {
             check_cancel(cancel)?;
-            let entry = entry.map_err(|e| {
-                AstrError::io(
-                    format!("failed walking '{}'", path.display()),
-                    std::io::Error::other(e.to_string()),
-                )
-            })?;
-            if entry.file_type().is_file() {
-                files.push(entry.path().to_path_buf());
+            let entry = entry?;
+            if entry.file_type()?.is_file() {
+                let p = entry.path();
+                if passes_filters(&p, glob_matcher, type_extensions) {
+                    files.push(p);
+                }
             }
         }
         return Ok(files);
     }
 
+    // 递归：使用 ignore crate 遍历，自动尊重 .gitignore / .ignore
     let mut files = Vec::new();
-    let read_dir = std::fs::read_dir(path)
-        .map_err(|e| AstrError::io(format!("failed reading directory '{}'", path.display()), e))?;
-    for entry in read_dir {
+    let mut builder = ignore::WalkBuilder::new(path);
+    builder
+        .hidden(false)      // agent 需要看到 .env.example 等隐藏文件
+        .git_ignore(true)   // 尊重 .gitignore
+        .git_global(true)   // 尊重全局 gitignore
+        .git_exclude(true)  // 尊重 .git/info/exclude
+        .ignore(true); // 尊重 .ignore
+
+    for result in builder.build() {
         check_cancel(cancel)?;
-        let entry = entry?;
-        if entry.file_type()?.is_file() {
-            files.push(entry.path());
+        let entry = result.map_err(|e| {
+            AstrError::io(
+                format!("failed walking '{}'", path.display()),
+                std::io::Error::other(e.to_string()),
+            )
+        })?;
+        if entry.file_type().map_or(false, |ft| ft.is_file()) {
+            let p = entry.path().to_path_buf();
+            if passes_filters(&p, glob_matcher, type_extensions) {
+                files.push(p);
+            }
         }
     }
+
     Ok(files)
+}
+
+/// 检查文件路径是否通过 glob 和文件类型过滤器。
+fn passes_filters(
+    path: &Path,
+    glob_matcher: Option<&globset::GlobSet>,
+    type_extensions: Option<&'static [&'static str]>,
+) -> bool {
+    if let Some(matcher) = glob_matcher {
+        // globset 匹配需要文件名或相对路径，这里匹配完整路径
+        if !matcher.is_match(path) && !matcher.is_match(path.file_name().unwrap_or_default()) {
+            return false;
+        }
+    }
+    if let Some(extensions) = type_extensions {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !extensions.contains(&ext) {
+            return false;
+        }
+    }
+    true
+}
+
+/// 从 glob 字符串构建 GlobSet 匹配器。
+fn build_glob_matcher(glob: Option<&str>) -> Result<Option<globset::GlobSet>> {
+    let Some(pattern) = glob else {
+        return Ok(None);
+    };
+    let glob = globset::GlobBuilder::new(pattern)
+        .literal_separator(false)
+        .build()
+        .map_err(|e| AstrError::Validation(format!("invalid glob pattern '{}': {}", pattern, e)))?;
+    // We return a GlobSet instead of a one-off matcher so the rest of the search pipeline keeps a
+    // single matching API regardless of whether more include patterns are added later.
+    let mut builder = globset::GlobSetBuilder::new();
+    builder.add(glob);
+    let globset = builder.build().map_err(|e| {
+        AstrError::Validation(format!("failed to build glob matcher '{}': {}", pattern, e))
+    })?;
+    Ok(Some(globset))
+}
+
+/// 将文件类型字符串映射到扩展名列表。
+///
+/// 仅包含常见语言/格式，无需外部依赖。
+/// 返回 None 表示未知类型（不做过滤）。
+fn extensions_for_file_type(file_type: &str) -> Option<&'static [&'static str]> {
+    match file_type {
+        "rust" => Some(&["rs"]),
+        "python" | "py" => Some(&["py", "pyi", "pyw"]),
+        "javascript" | "js" => Some(&["js", "mjs", "cjs"]),
+        "typescript" | "ts" => Some(&["ts", "tsx", "mts", "cts"]),
+        "go" => Some(&["go"]),
+        "java" => Some(&["java"]),
+        "c" => Some(&["c", "h"]),
+        "cpp" | "c++" => Some(&["cpp", "hpp", "cc", "hh", "cxx", "hxx"]),
+        "ruby" | "rb" => Some(&["rb"]),
+        "swift" => Some(&["swift"]),
+        "kotlin" | "kt" => Some(&["kt", "kts"]),
+        "css" => Some(&["css", "scss", "sass", "less"]),
+        "html" => Some(&["html", "htm"]),
+        "json" => Some(&["json"]),
+        "yaml" => Some(&["yaml", "yml"]),
+        "markdown" | "md" => Some(&["md", "mdx"]),
+        "shell" | "sh" => Some(&["sh", "bash", "zsh"]),
+        "toml" => Some(&["toml"]),
+        "xml" => Some(&["xml", "xsl", "xsd", "svg"]),
+        "sql" => Some(&["sql"]),
+        _ => None,
+    }
+}
+
+/// 截断超长行到 MAX_LINE_DISPLAY 字符，追加 `...`。
+///
+/// 使用 `floor_char_boundary` 确保 UTF-8 安全截断。
+fn truncate_line(line: &str) -> String {
+    if line.len() <= MAX_LINE_DISPLAY {
+        return line.to_string();
+    }
+    let truncated = line.floor_char_boundary(MAX_LINE_DISPLAY.saturating_sub(3));
+    format!("{truncated}...")
 }
 
 /// 从匹配行中提取精确匹配到的子串。
@@ -483,6 +995,238 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn grep_files_with_matches_mode_returns_only_file_paths() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file1 = temp.path().join("a.rs");
+        let file2 = temp.path().join("b.rs");
+        tokio::fs::write(&file1, "pub fn a() {}\npub fn b() {}\n")
+            .await
+            .expect("seed write should work");
+        tokio::fs::write(&file2, "let x = 1;\n")
+            .await
+            .expect("seed write should work");
+        let tool = GrepTool;
+
+        let result = tool
+            .execute(
+                "tc-grep-files".to_string(),
+                json!({
+                    "pattern": "pub fn",
+                    "path": temp.path().to_string_lossy(),
+                    "outputMode": "files_with_matches"
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("grep should succeed");
+
+        assert!(result.ok);
+        let files: Vec<String> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("a.rs"));
+    }
+
+    #[tokio::test]
+    async fn grep_count_mode_returns_match_counts() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file = temp.path().join("lib.rs");
+        tokio::fs::write(&file, "pub fn a() {}\nlet x = 1;\npub fn b() {}\n")
+            .await
+            .expect("seed write should work");
+        let tool = GrepTool;
+
+        let result = tool
+            .execute(
+                "tc-grep-count".to_string(),
+                json!({
+                    "pattern": "pub fn",
+                    "path": file.to_string_lossy(),
+                    "outputMode": "count"
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("grep should succeed");
+
+        assert!(result.ok);
+        let counts: Vec<GrepFileCount> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts[0].count, 2);
+    }
+
+    #[tokio::test]
+    async fn grep_glob_filter_excludes_non_matching_files() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let rs_file = temp.path().join("code.rs");
+        let py_file = temp.path().join("code.py");
+        tokio::fs::write(&rs_file, "pub fn main() {}\n")
+            .await
+            .expect("seed write should work");
+        tokio::fs::write(&py_file, "def main(): pass\n")
+            .await
+            .expect("seed write should work");
+        let tool = GrepTool;
+
+        let result = tool
+            .execute(
+                "tc-grep-glob".to_string(),
+                json!({
+                    "pattern": "main",
+                    "path": temp.path().to_string_lossy(),
+                    "glob": "*.rs"
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("grep should succeed");
+
+        let matches: Vec<GrepMatch> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].file.ends_with("code.rs"));
+    }
+
+    #[tokio::test]
+    async fn grep_file_type_filter_works() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let rs_file = temp.path().join("code.rs");
+        let ts_file = temp.path().join("code.ts");
+        tokio::fs::write(&rs_file, "pub fn hello() {}\n")
+            .await
+            .expect("seed write should work");
+        tokio::fs::write(&ts_file, "function hello() {}\n")
+            .await
+            .expect("seed write should work");
+        let tool = GrepTool;
+
+        let result = tool
+            .execute(
+                "tc-grep-type".to_string(),
+                json!({
+                    "pattern": "hello",
+                    "path": temp.path().to_string_lossy(),
+                    "fileType": "rust"
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("grep should succeed");
+
+        let matches: Vec<GrepMatch> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].file.ends_with("code.rs"));
+    }
+
+    #[tokio::test]
+    async fn grep_context_lines_are_included() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file = temp.path().join("lib.rs");
+        tokio::fs::write(&file, "line1\nline2\nTARGET line3\nline4\nline5\n")
+            .await
+            .expect("seed write should work");
+        let tool = GrepTool;
+
+        let result = tool
+            .execute(
+                "tc-grep-ctx".to_string(),
+                json!({
+                    "pattern": "TARGET",
+                    "path": file.to_string_lossy(),
+                    "beforeContext": 2,
+                    "afterContext": 2
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("grep should succeed");
+
+        let matches: Vec<GrepMatch> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].before.as_ref().unwrap().len(), 2);
+        assert_eq!(matches[0].before.as_ref().unwrap()[0], "line1");
+        assert_eq!(matches[0].before.as_ref().unwrap()[1], "line2");
+        assert_eq!(matches[0].after.as_ref().unwrap().len(), 2);
+        assert_eq!(matches[0].after.as_ref().unwrap()[0], "line4");
+        assert_eq!(matches[0].after.as_ref().unwrap()[1], "line5");
+    }
+
+    #[tokio::test]
+    async fn grep_truncates_long_lines() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file = temp.path().join("min.js");
+        let long_line = "x".repeat(1000);
+        tokio::fs::write(&file, format!("{long_line}\n"))
+            .await
+            .expect("seed write should work");
+        let tool = GrepTool;
+
+        let result = tool
+            .execute(
+                "tc-grep-trunc".to_string(),
+                json!({
+                    "pattern": "x",
+                    "path": file.to_string_lossy(),
+                    "maxMatches": 1
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("grep should succeed");
+
+        let matches: Vec<GrepMatch> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        assert_eq!(matches.len(), 1);
+        // 500 - 3("...") = 497 个字符 + "..."
+        assert!(matches[0].line.len() <= 503);
+        assert!(matches[0].line.ends_with("..."));
+    }
+
+    #[tokio::test]
+    async fn grep_respects_gitignore() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        // 创建 .gitignore 排除 *.log
+        tokio::fs::write(temp.path().join(".gitignore"), "*.log\n")
+            .await
+            .expect("write gitignore");
+        // 创建 .git 目录使 ignore crate 认为这是 git 仓库
+        tokio::fs::create_dir(temp.path().join(".git"))
+            .await
+            .expect("create .git dir");
+        let log_file = temp.path().join("app.log");
+        let rs_file = temp.path().join("main.rs");
+        tokio::fs::write(&log_file, "error: TARGET\n")
+            .await
+            .expect("write log");
+        tokio::fs::write(&rs_file, "// TARGET\n")
+            .await
+            .expect("write rs");
+
+        let tool = GrepTool;
+        let result = tool
+            .execute(
+                "tc-grep-gitignore".to_string(),
+                json!({
+                    "pattern": "TARGET",
+                    "path": temp.path().to_string_lossy(),
+                    "recursive": true
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("grep should succeed");
+
+        let matches: Vec<GrepMatch> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        // .log 文件应被 .gitignore 排除
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].file.ends_with("main.rs"));
+    }
+
     #[test]
     fn extract_match_text_returns_first_capture_group() {
         let re = regex::Regex::new(r"fn\s+(\w+)").unwrap();
@@ -495,5 +1239,29 @@ mod tests {
         let re = regex::Regex::new(r"pub fn").unwrap();
         let text = extract_match_text(&re, "pub fn main()");
         assert_eq!(text, Some("pub fn".to_string()));
+    }
+
+    #[test]
+    fn truncate_line_short_lines_unchanged() {
+        assert_eq!(truncate_line("hello"), "hello");
+        assert_eq!(truncate_line(&"x".repeat(500)), "x".repeat(500));
+    }
+
+    #[test]
+    fn truncate_line_long_lines_get_ellipsis() {
+        let input = "x".repeat(1000);
+        let truncated = truncate_line(&input);
+        assert!(truncated.len() <= 503);
+        assert!(truncated.ends_with("..."));
+    }
+
+    #[test]
+    fn file_type_mapping_returns_known_types() {
+        assert_eq!(extensions_for_file_type("rust"), Some(&["rs"][..]));
+        assert_eq!(
+            extensions_for_file_type("typescript"),
+            Some(&["ts", "tsx", "mts", "cts"][..])
+        );
+        assert_eq!(extensions_for_file_type("unknown"), None);
     }
 }
