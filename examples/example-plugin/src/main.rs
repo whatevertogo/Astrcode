@@ -1,7 +1,9 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use std::sync::Arc;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    pin::Pin,
+    sync::Arc,
+};
 
 use astrcode_core::{AstrError, CancelToken, Result};
 use astrcode_plugin::{CapabilityHandler, CapabilityRouter, EventEmitter, Worker};
@@ -14,7 +16,7 @@ use astrcode_sdk::{
     ToolResult,
 };
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 struct RegisteredToolAdapter {
     registration: ToolRegistration,

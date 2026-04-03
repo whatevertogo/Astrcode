@@ -14,19 +14,17 @@
 //! 适配为 LLM 工具调用格式（`ToolExecutionResult`）。这是一种 adapter view，
 //! 不是核心能力契约本身。
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     AstrError, CancelToken, CapabilityDescriptor, Result, ToolCallRequest, ToolContext,
     ToolDefinition, ToolExecutionResult, ToolOutputDelta,
 };
-use tokio::sync::mpsc::UnboundedSender;
 
 /// 能力调用的上下文信息。
 ///
@@ -370,7 +368,7 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use super::{CapabilityExecutionResult, CapabilityInvoker, CapabilityRouter};
     use crate::{

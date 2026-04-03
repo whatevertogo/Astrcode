@@ -28,7 +28,7 @@
 //!
 //! ## Turn 执行流中各组件的调用顺序
 //!
-//! ```
+//! ```text
 //! 1. factory.build_for_working_dir() → 构建 LLM Provider
 //! 2. context.build_bundle() → 构建模型可见上下文包（含 conversation view）
 //! 3. prompt.build_plan() → 组装系统提示词，生成 plan
@@ -54,31 +54,31 @@ pub mod token_budget;
 mod tool_cycle;
 mod turn_runner;
 
+use std::{path::PathBuf, sync::Arc};
+
 use astrcode_core::{
-    AllowAllPolicyEngine, AstrError, CancelToken, CapabilityDescriptor, CapabilityRouter,
-    PolicyContext, PolicyEngine, Result, StorageEvent, ToolContext,
+    AgentState, AllowAllPolicyEngine, AstrError, CancelToken, CapabilityDescriptor,
+    CapabilityRouter, PolicyContext, PolicyEngine, Result, StorageEvent, ToolContext,
+};
+use astrcode_runtime_config::{
+    DEFAULT_AUTO_COMPACT_ENABLED, DEFAULT_COMPACT_KEEP_RECENT_TURNS,
+    DEFAULT_COMPACT_THRESHOLD_PERCENT, DEFAULT_TOOL_RESULT_MAX_BYTES, max_tool_concurrency,
 };
 use astrcode_runtime_llm::LlmProvider;
 use astrcode_runtime_prompt::{PromptComposer, PromptDeclaration};
-use astrcode_runtime_skill_loader::{load_builtin_skills, SkillCatalog};
+use astrcode_runtime_skill_loader::{SkillCatalog, load_builtin_skills};
 use chrono::Utc;
-use std::path::PathBuf;
-use std::sync::Arc;
 
-use crate::approval_service::{ApprovalBroker, DefaultApprovalBroker};
-use crate::compaction_runtime::{
-    AutoCompactStrategy, CompactionReason, CompactionRuntime, CompactionTailSnapshot,
-    ConversationViewRebuilder, ThresholdCompactionPolicy,
-};
-use crate::context_pipeline::ContextRuntime;
-use crate::prompt_runtime::PromptRuntime;
-use crate::provider_factory::DynProviderFactory;
-use crate::request_assembler::RequestAssembler;
-use astrcode_core::AgentState;
-
-use astrcode_runtime_config::{
-    max_tool_concurrency, DEFAULT_AUTO_COMPACT_ENABLED, DEFAULT_COMPACT_KEEP_RECENT_TURNS,
-    DEFAULT_COMPACT_THRESHOLD_PERCENT, DEFAULT_TOOL_RESULT_MAX_BYTES,
+use crate::{
+    approval_service::{ApprovalBroker, DefaultApprovalBroker},
+    compaction_runtime::{
+        AutoCompactStrategy, CompactionReason, CompactionRuntime, CompactionTailSnapshot,
+        ConversationViewRebuilder, ThresholdCompactionPolicy,
+    },
+    context_pipeline::ContextRuntime,
+    prompt_runtime::PromptRuntime,
+    provider_factory::DynProviderFactory,
+    request_assembler::RequestAssembler,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

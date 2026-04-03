@@ -1,6 +1,7 @@
-use anyhow::{anyhow, Result};
-use astrcode_core::env::ASTRCODE_HOME_DIR_ENV;
 use std::path::PathBuf;
+
+use anyhow::{Result, anyhow};
+use astrcode_core::env::ASTRCODE_HOME_DIR_ENV;
 
 pub fn resolve_home_dir() -> Result<PathBuf> {
     // Keep the desktop shell aligned with the workspace env catalog in

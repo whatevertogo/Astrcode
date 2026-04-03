@@ -22,13 +22,17 @@
 //! - 仅允许字母数字、`-`、`_`、`T` 字符，不允许 `:`（Windows 文件名非法）和 `.`（路径穿越）
 //! - `canonical_session_id()` 统一处理带/不带 `session-` 前缀的 ID，避免调用方各自处理
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
-use astrcode_core::project::{project_dir, project_dir_name, projects_dir};
-use astrcode_core::store::StoreError;
+use astrcode_core::{
+    project::{project_dir, project_dir_name, projects_dir},
+    store::StoreError,
+};
 
-use crate::{internal_io_error, io_error, Result};
+use crate::{Result, internal_io_error, io_error};
 
 /// 会话目录下的 sessions 子目录名称。
 const SESSIONS_DIR_NAME: &str = "sessions";

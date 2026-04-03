@@ -12,19 +12,18 @@
 //!
 //! Skill 名称使用 kebab-case，匹配时进行归一化处理（忽略大小写、连字符）。
 
-use async_trait::async_trait;
-use serde::Deserialize;
-use serde_json::{json, Value};
 use std::sync::Arc;
 
 use astrcode_core::{
     Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
     ToolExecutionResult, ToolPromptMetadata,
 };
-
 use astrcode_runtime_skill_loader::{
-    normalize_skill_name, SkillCatalog, SkillSpec, SKILL_TOOL_NAME,
+    SKILL_TOOL_NAME, SkillCatalog, SkillSpec, normalize_skill_name,
 };
+use async_trait::async_trait;
+use serde::Deserialize;
+use serde_json::{Value, json};
 
 /// Skill 工具的输入参数。
 ///
@@ -86,7 +85,8 @@ impl Tool for SkillTool {
             .side_effect(SideEffectLevel::None)
             .prompt(ToolPromptMetadata::new(
                 "Loads a skill's full instructions and resource paths on demand.",
-                "Use `Skill` when the system skill index says a task matches a named skill. Call it before continuing with the task.",
+                "Use `Skill` when the system skill index says a task matches a named skill. Call \
+                 it before continuing with the task.",
             ))
     }
 
@@ -103,7 +103,7 @@ impl Tool for SkillTool {
                     tool_call_id,
                     format!("invalid Skill input: {error}"),
                 ));
-            }
+            },
         };
 
         let working_dir = ctx.working_dir().to_string_lossy().into_owned();
@@ -211,13 +211,11 @@ fn normalize_skill_path(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use astrcode_core::{CancelToken, ToolContext, test_support::TestEnvGuard};
+    use astrcode_runtime_skill_loader::SkillSource;
     use serde_json::json;
 
-    use astrcode_core::test_support::TestEnvGuard;
-    use astrcode_core::{CancelToken, ToolContext};
-
     use super::*;
-    use astrcode_runtime_skill_loader::SkillSource;
 
     fn tool_context() -> ToolContext {
         ToolContext::new(
@@ -254,9 +252,11 @@ mod tests {
             .expect("skill tool should execute");
 
         assert!(result.ok);
-        assert!(result
-            .output
-            .contains("Base directory for this skill: C:/skills/git-commit"));
+        assert!(
+            result
+                .output
+                .contains("Base directory for this skill: C:/skills/git-commit")
+        );
         assert!(result.output.contains("session-1"));
         assert!(result.output.contains("scripts/run.sh"));
     }
@@ -275,10 +275,12 @@ mod tests {
             .expect("skill tool should execute");
 
         assert!(!result.ok);
-        assert!(result
-            .error
-            .as_deref()
-            .is_some_and(|message| message.contains("unknown skill")));
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|message| message.contains("unknown skill"))
+        );
     }
 
     #[tokio::test]

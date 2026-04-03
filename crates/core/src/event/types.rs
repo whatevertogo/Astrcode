@@ -247,7 +247,7 @@ mod tests {
             } => {
                 assert_eq!(error, None);
                 assert_eq!(metadata, None);
-            }
+            },
             other => panic!("expected tool result, got {other:?}"),
         }
     }
@@ -262,7 +262,7 @@ mod tests {
         match event {
             StorageEvent::TurnDone { reason, .. } => {
                 assert_eq!(reason, None);
-            }
+            },
             other => panic!("expected turn done, got {other:?}"),
         }
     }
@@ -300,7 +300,7 @@ mod tests {
                 assert_eq!(effective_window, 108_000);
                 assert_eq!(threshold_tokens, 97_200);
                 assert_eq!(truncated_tool_results, 3);
-            }
+            },
             other => panic!("expected prompt metrics, got {other:?}"),
         }
 
@@ -360,7 +360,7 @@ mod tests {
                 assert_eq!(messages_removed, 5);
                 assert_eq!(tokens_freed, 1_400);
                 assert_eq!(decoded_timestamp, timestamp);
-            }
+            },
             other => panic!("expected compact applied, got {other:?}"),
         }
 

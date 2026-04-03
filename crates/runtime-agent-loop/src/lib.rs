@@ -9,15 +9,18 @@ mod prompt_runtime;
 pub mod provider_factory;
 mod request_assembler;
 
-pub use agent_loop::token_budget::{
-    build_auto_continue_nudge, check_token_budget, strip_token_budget_marker, TokenBudgetDecision,
+pub use agent_loop::{
+    AgentLoop, TurnOutcome,
+    token_budget::{
+        TokenBudgetDecision, build_auto_continue_nudge, check_token_budget,
+        strip_token_budget_marker,
+    },
 };
-pub use agent_loop::{AgentLoop, TurnOutcome};
 pub use approval_service::{ApprovalBroker, DefaultApprovalBroker};
 pub use compaction_runtime::CompactionTailSnapshot;
 pub use context_window::{
-    auto_compact, build_prompt_snapshot, effective_context_window, estimate_message_tokens,
+    CompactConfig, CompactResult, PromptTokenSnapshot, TokenUsageTracker, auto_compact,
+    build_prompt_snapshot, effective_context_window, estimate_message_tokens,
     estimate_request_tokens, estimate_text_tokens, is_prompt_too_long, should_compact,
-    CompactConfig, CompactResult, PromptTokenSnapshot, TokenUsageTracker,
 };
 pub use provider_factory::{DynProviderFactory, ProviderFactory};

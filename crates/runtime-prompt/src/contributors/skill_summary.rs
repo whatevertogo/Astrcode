@@ -4,7 +4,7 @@
 //! 这是两阶段 skill 模型的第一阶段：仅暴露 skill 名称和描述，
 //! 完整指南通过 `Skill` tool 按需加载。
 
-use astrcode_runtime_skill_loader::{skill_roots_cache_marker, SKILL_TOOL_NAME};
+use astrcode_runtime_skill_loader::{SKILL_TOOL_NAME, skill_roots_cache_marker};
 use async_trait::async_trait;
 
 use crate::{BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor};
@@ -47,21 +47,25 @@ impl PromptContributor for SkillSummaryContributor {
         }
 
         let mut content = String::from(
-            "Execute a skill within the main conversation.\n\nWhen a task matches one of the available skills, call the `Skill` tool before continuing. Do not mention a skill without calling `Skill`.\n\nAvailable skills:\n",
+            "Execute a skill within the main conversation.\n\nWhen a task matches one of the \
+             available skills, call the `Skill` tool before continuing. Do not mention a skill \
+             without calling `Skill`.\n\nAvailable skills:\n",
         );
         for skill in skills {
             content.push_str(&format!("- {}: {}\n", skill.id, skill.description.trim()));
         }
 
         PromptContribution {
-            blocks: vec![BlockSpec::system_text(
-                "skill-summary",
-                BlockKind::Skill,
-                "Skill Summary",
-                content.trim_end().to_string(),
-            )
-            .with_category("skills")
-            .with_tag("source:skill-index")],
+            blocks: vec![
+                BlockSpec::system_text(
+                    "skill-summary",
+                    BlockKind::Skill,
+                    "Skill Summary",
+                    content.trim_end().to_string(),
+                )
+                .with_category("skills")
+                .with_tag("source:skill-index"),
+            ],
             ..PromptContribution::default()
         }
     }
@@ -87,9 +91,9 @@ mod tests {
                 skills: vec![SkillSpec {
                     id: "git-commit".to_string(),
                     name: "git-commit".to_string(),
-                    description:
-                        "Use this skill when the user asks you to write and run a git commit."
-                            .to_string(),
+                    description: "Use this skill when the user asks you to write and run a git \
+                                  commit."
+                        .to_string(),
                     guide: "# Guide".to_string(),
                     skill_root: None,
                     asset_files: Vec::new(),

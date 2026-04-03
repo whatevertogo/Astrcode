@@ -9,20 +9,22 @@
 //! - **同步刷盘**：每次 `append_stored` 后执行 `flush` + `sync_all`，确保数据持久化到磁盘，
 //!   避免进程崩溃导致事件丢失。
 //! - **Drop 安全**：`Drop` 实现中再次 flush 和 sync，防止遗漏未刷盘的数据。
-//! - **尾部扫描优化**：`last_storage_seq_from_path` 对大文件只读取尾部 64KB，
-//!   避免全量加载整个 JSONL 文件。
+//! - **尾部扫描优化**：`last_storage_seq_from_path` 对大文件只读取尾部 64KB， 避免全量加载整个
+//!   JSONL 文件。
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{BufWriter, Read, Seek, Write};
-use std::path::{Path, PathBuf};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{BufWriter, Read, Seek, Write},
+    path::{Path, PathBuf},
+};
 
-use astrcode_core::store::EventLogWriter;
-use astrcode_core::{StorageEvent, StoredEvent};
+use astrcode_core::{StorageEvent, StoredEvent, store::EventLogWriter};
 
+use super::{
+    iterator::EventLogIterator,
+    paths::{resolve_existing_session_path, session_path},
+};
 use crate::Result;
-
-use super::iterator::EventLogIterator;
-use super::paths::{resolve_existing_session_path, session_path};
 
 /// 文件系统 JSONL 事件日志 writer。
 ///
@@ -283,9 +285,10 @@ impl EventLogWriter for EventLog {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use astrcode_core::StorageEvent;
     use chrono::Utc;
+
+    use super::*;
 
     #[test]
     fn last_storage_seq_tail_scan_skips_partial_first_line() {

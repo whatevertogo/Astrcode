@@ -5,12 +5,12 @@
 //!
 //! ## 核心功能
 //!
-//! - **会话列表**：`list_sessions()` / `list_sessions_with_meta()` 扫描所有项目的
-//!   sessions 目录，返回会话 ID 列表或包含标题、时间、阶段的完整元数据
+//! - **会话列表**：`list_sessions()` / `list_sessions_with_meta()` 扫描所有项目的 sessions
+//!   目录，返回会话 ID 列表或包含标题、时间、阶段的完整元数据
 //! - **会话删除**：`delete_session()` 删除单个会话文件并清理空目录；
 //!   `delete_sessions_by_working_dir()` 批量删除指定项目的所有会话
-//! - **尾部扫描**：`read_tail_value()` 使用指数窗口从文件尾部向前扫描，
-//!   高效提取最后一个时间戳或 Phase，避免全量加载大文件
+//! - **尾部扫描**：`read_tail_value()` 使用指数窗口从文件尾部向前扫描， 高效提取最后一个时间戳或
+//!   Phase，避免全量加载大文件
 //! - **头部元数据**：`read_session_head_meta()` 从 JSONL 首行提取 `SessionStart`
 //!   事件中的创建时间、工作目录、父会话等信息
 //!
@@ -19,21 +19,24 @@
 //! `read_tail_value()` 使用指数退避窗口（4096 → 8192 → 16384 → ...）从文件末尾
 //! 向前扫描，每次扩大窗口直到找到目标值或覆盖整个文件。这样对于常见的短会话
 //! 只需读取少量字节，而对于长会话也能在有限次迭代内完成。
-use std::collections::BTreeSet;
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeSet,
+    fs::{self, File},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    path::{Path, PathBuf},
+};
 
 use astrcode_core::{DeleteProjectResult, Phase, SessionMeta, StorageEvent, StoredEventLine};
 use chrono::{DateTime, Utc};
 
-use crate::{internal_io_error, io_error, parse_error, Result};
-
-use super::event_log::EventLog;
-use super::paths::{
-    canonical_session_id, is_valid_session_id, project_sessions_dir_from_root, projects_root_dir,
-    session_file_name, session_storage_dirs, validated_session_id,
+use super::{
+    event_log::EventLog,
+    paths::{
+        canonical_session_id, is_valid_session_id, project_sessions_dir_from_root,
+        projects_root_dir, session_file_name, session_storage_dirs, validated_session_id,
+    },
 };
+use crate::{Result, internal_io_error, io_error, parse_error};
 /// 从 session JSONL 首行提取的元信息。
 ///
 /// 通过解析 `SessionStart` 事件获取会话的创建时间、工作目录、标题、
@@ -133,7 +136,7 @@ impl EventLog {
                         error
                     );
                     continue;
-                }
+                },
             };
             let updated_at = Self::read_last_timestamp(&path).unwrap_or(head_meta.created_at);
             let phase = Self::read_last_phase(&path).unwrap_or(Phase::Idle);
@@ -220,7 +223,7 @@ impl EventLog {
                 Ok(()) => {
                     let _ = remove_empty_session_dir(Some(&session_dir));
                     success_count += 1;
-                }
+                },
                 Err(_) => failed_session_ids.push(session_id),
             }
         }
@@ -347,11 +350,11 @@ impl EventLog {
                         parent_session_id = source_session_id;
                         parent_storage_seq = source_storage_seq;
                     }
-                }
+                },
                 StorageEvent::UserMessage { content, .. } if title.is_none() => {
                     title = Some(title_from_user_message(&content));
-                }
-                _ => {}
+                },
+                _ => {},
             }
 
             if created_at.is_some() && title.is_some() {
@@ -596,10 +599,10 @@ fn title_from_user_message(content: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use astrcode_core::{StoredEvent, project::project_dir_name};
     use chrono::TimeZone;
 
     use super::*;
-    use astrcode_core::{project::project_dir_name, StoredEvent};
 
     fn write_stored_events(path: &Path, events: &[StoredEvent]) {
         let payload = events

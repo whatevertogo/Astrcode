@@ -26,8 +26,7 @@
 //! 如果 broadcast channel 发生 lag（客户端消费太慢），
 //! 会自动从磁盘重新回放补齐丢失的事件。
 
-use std::convert::Infallible;
-use std::time::Duration;
+use std::{convert::Infallible, time::Duration};
 
 use astrcode_protocol::http::{
     CreateSessionRequest, DeleteProjectResultDto, PromptAcceptedResponse, PromptRequest,
@@ -35,19 +34,25 @@ use astrcode_protocol::http::{
 };
 use astrcode_runtime::{PromptAccepted, SessionReplaySource};
 use async_stream::stream;
-use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{IntoResponse, Response};
-use axum::Json;
+use axum::{
+    Json,
+    extract::{Path, Query, State},
+    http::{HeaderMap, StatusCode},
+    response::{
+        IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
+    },
+};
 use serde::Deserialize;
 
-use crate::auth::require_auth;
-use crate::mapper::{
-    format_event_id, parse_event_id, to_session_catalog_sse_event, to_session_list_item,
-    to_session_message_dto, to_sse_event,
+use crate::{
+    ApiError, AppState, SESSION_CURSOR_HEADER_NAME,
+    auth::require_auth,
+    mapper::{
+        format_event_id, parse_event_id, to_session_catalog_sse_event, to_session_list_item,
+        to_session_message_dto, to_sse_event,
+    },
 };
-use crate::{ApiError, AppState, SESSION_CURSOR_HEADER_NAME};
 
 /// 删除项目查询参数。
 ///

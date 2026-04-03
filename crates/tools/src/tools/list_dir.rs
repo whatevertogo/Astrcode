@@ -9,11 +9,8 @@
 //! - 默认最多 200 条，超出标记 `truncated`
 //! - 未指定路径时使用上下文工作目录
 
-use std::fs;
-use std::path::PathBuf;
-use std::time::Instant;
+use std::{fs, path::PathBuf, time::Instant};
 
-use crate::tools::fs_common::{check_cancel, resolve_path};
 use astrcode_core::{
     AstrError, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
     ToolExecutionResult, ToolPromptMetadata,
@@ -21,6 +18,8 @@ use astrcode_core::{
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
+
+use crate::tools::fs_common::{check_cancel, resolve_path};
 
 /// ListDir 工具实现。
 ///
@@ -63,11 +62,19 @@ impl Tool for ListDirTool {
             .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
-                    "List the immediate contents of a directory before drilling into specific files.",
-                    "Use `listDir` to understand repository structure, confirm filenames, and narrow the search space before calling read or edit tools. Prefer it over shell directory listings because it returns structured metadata.",
+                    "List the immediate contents of a directory before drilling into specific \
+                     files.",
+                    "Use `listDir` to understand repository structure, confirm filenames, and \
+                     narrow the search space before calling read or edit tools. Prefer it over \
+                     shell directory listings because it returns structured metadata.",
                 )
-                .caveat("It only returns a shallow directory listing; use `findFiles` for recursive discovery.")
-                .example("Check which packages or source folders exist under the current workspace.")
+                .caveat(
+                    "It only returns a shallow directory listing; use `findFiles` for recursive \
+                     discovery.",
+                )
+                .example(
+                    "Check which packages or source folders exist under the current workspace.",
+                )
                 .prompt_tag("filesystem"),
             )
     }
@@ -153,9 +160,11 @@ mod tests {
         assert!(result.output.contains("a.txt"));
         assert_eq!(
             result.metadata.expect("metadata should exist")["path"],
-            json!(canonical_tool_path(temp.path())
-                .to_string_lossy()
-                .to_string())
+            json!(
+                canonical_tool_path(temp.path())
+                    .to_string_lossy()
+                    .to_string()
+            )
         );
     }
 

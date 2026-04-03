@@ -17,8 +17,7 @@
 
 use astrcode_core::{AstrError, Result};
 
-use crate::env_resolver::resolve_env_value;
-use crate::types::Profile;
+use crate::{env_resolver::resolve_env_value, types::Profile};
 
 impl Profile {
     /// 解析 Profile 的 API key。
@@ -40,8 +39,8 @@ impl Profile {
                 return Err(AstrError::MissingApiKey(format!(
                     "profile '{}' 未配置 apiKey",
                     self.name
-                )))
-            }
+                )));
+            },
             Some(s) => s.trim().to_string(),
         };
 
@@ -56,7 +55,7 @@ impl Profile {
             // Preserve profile context here so callers keep seeing the same actionable error.
             AstrError::Validation(message) => {
                 AstrError::Validation(format!("profile '{}' 的 apiKey {}", self.name, message))
-            }
+            },
             other => other,
         })?;
         if resolved.is_empty() {

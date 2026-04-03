@@ -3,17 +3,16 @@
 //! 覆盖：
 //! - max_tokens 截断时自动注入 nudge 继续生成
 
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 use astrcode_core::{CancelToken, StorageEvent};
 use astrcode_runtime_llm::{FinishReason, LlmOutput};
 
-use super::fixtures::*;
-use super::test_support::empty_capabilities;
-use crate::agent_loop::TurnOutcome;
-use crate::AgentLoop;
+use super::{fixtures::*, test_support::empty_capabilities};
+use crate::{AgentLoop, agent_loop::TurnOutcome};
 
 /// P4.2: max_tokens 截断时自动注入 nudge 继续生成。
 ///

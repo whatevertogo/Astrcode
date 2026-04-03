@@ -17,12 +17,11 @@
 
 use std::collections::HashMap;
 
-use crate::{
-    session::SessionEventRecord, split_assistant_content, AgentEvent, Phase, StorageEvent,
-    StoredEvent, ToolExecutionResult, UserMessageOrigin,
-};
-
 use super::phase::PhaseTracker;
+use crate::{
+    AgentEvent, Phase, StorageEvent, StoredEvent, ToolExecutionResult, UserMessageOrigin,
+    session::SessionEventRecord, split_assistant_content,
+};
 
 /// 回放存储事件为会话事件记录
 ///
@@ -131,7 +130,7 @@ impl EventTranslator {
                     session_id: session_id.clone(),
                 });
                 self.phase_tracker.force_to(Phase::Idle, None);
-            }
+            },
             StorageEvent::UserMessage {
                 content, origin, ..
             } => {
@@ -153,8 +152,8 @@ impl EventTranslator {
                 }
                 self.phase_tracker
                     .force_to(Phase::Thinking, turn_id.clone());
-            }
-            StorageEvent::PromptMetrics { .. } | StorageEvent::CompactApplied { .. } => {}
+            },
+            StorageEvent::PromptMetrics { .. } | StorageEvent::CompactApplied { .. } => {},
             StorageEvent::AssistantDelta { token, .. } => {
                 if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::ModelDelta {
@@ -164,7 +163,7 @@ impl EventTranslator {
                 } else if !token.is_empty() {
                     warn_missing_turn_id(stored.storage_seq, "modelDelta");
                 }
-            }
+            },
             StorageEvent::ThinkingDelta { token, .. } => {
                 if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::ThinkingDelta {
@@ -174,7 +173,7 @@ impl EventTranslator {
                 } else if !token.is_empty() {
                     warn_missing_turn_id(stored.storage_seq, "thinkingDelta");
                 }
-            }
+            },
             StorageEvent::AssistantFinal {
                 content,
                 reasoning_content,
@@ -194,7 +193,7 @@ impl EventTranslator {
                 } else if has_content {
                     warn_missing_turn_id(stored.storage_seq, "assistantMessage");
                 }
-            }
+            },
             StorageEvent::ToolCall {
                 tool_call_id,
                 tool_name,
@@ -213,7 +212,7 @@ impl EventTranslator {
                 } else {
                     warn_missing_turn_id(stored.storage_seq, "toolCallStart");
                 }
-            }
+            },
             StorageEvent::ToolCallDelta {
                 tool_call_id,
                 tool_name,
@@ -240,7 +239,7 @@ impl EventTranslator {
                 } else if !delta.is_empty() {
                     warn_missing_turn_id(stored.storage_seq, "toolCallDelta");
                 }
-            }
+            },
             StorageEvent::ToolResult {
                 tool_call_id,
                 tool_name,
@@ -274,7 +273,7 @@ impl EventTranslator {
                 } else {
                     warn_missing_turn_id(stored.storage_seq, "toolCallResult");
                 }
-            }
+            },
             StorageEvent::TurnDone { .. } => {
                 if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::TurnDone {
@@ -285,7 +284,7 @@ impl EventTranslator {
                 }
                 self.phase_tracker.force_to(Phase::Idle, None);
                 self.current_turn_id = None;
-            }
+            },
             StorageEvent::Error { message, .. } => {
                 push(AgentEvent::Error {
                     turn_id: turn_id.clone(),
@@ -299,7 +298,7 @@ impl EventTranslator {
                 if message == "interrupted" {
                     self.phase_tracker.force_to(Phase::Interrupted, turn_id);
                 }
-            }
+            },
         }
     }
 
@@ -316,7 +315,7 @@ impl EventTranslator {
                 let turn_id = format!("legacy-turn-{}", self.legacy_turn_index);
                 self.current_turn_id = Some(turn_id.clone());
                 Some(turn_id)
-            }
+            },
             StorageEvent::SessionStart { .. } => None,
             _ => self.current_turn_id.clone(),
         }
@@ -328,8 +327,9 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::UserMessageOrigin;
-    use crate::{phase_of_storage_event, AgentEvent, StoredEvent, ToolOutputStream};
+    use crate::{
+        AgentEvent, StoredEvent, ToolOutputStream, UserMessageOrigin, phase_of_storage_event,
+    };
 
     #[test]
     fn user_message_replays_before_phase_change() {

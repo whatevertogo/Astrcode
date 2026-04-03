@@ -1,12 +1,14 @@
 use std::path::Path;
 
-use astrcode_core::store::{EventLogWriter, SessionManager, SessionTurnAcquireResult, StoreResult};
-use astrcode_core::{DeleteProjectResult, SessionMeta, StoredEvent};
+use astrcode_core::{
+    DeleteProjectResult, SessionMeta, StoredEvent,
+    store::{EventLogWriter, SessionManager, SessionTurnAcquireResult, StoreResult},
+};
 
-use super::event_log::EventLog;
-use super::iterator::EventLogIterator;
-use super::paths::resolve_existing_session_path;
-use super::turn_lock::try_acquire_session_turn;
+use super::{
+    event_log::EventLog, iterator::EventLogIterator, paths::resolve_existing_session_path,
+    turn_lock::try_acquire_session_turn,
+};
 
 /// 基于本地文件系统的会话仓储实现。
 #[derive(Debug, Default, Clone, Copy)]

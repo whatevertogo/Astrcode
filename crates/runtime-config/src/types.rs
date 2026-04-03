@@ -17,11 +17,13 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{
-    ANTHROPIC_API_KEY_ENV, CURRENT_CONFIG_VERSION, DEEPSEEK_API_KEY_ENV,
-    DEFAULT_OPENAI_CONTEXT_LIMIT, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI,
+use crate::{
+    constants::{
+        ANTHROPIC_API_KEY_ENV, CURRENT_CONFIG_VERSION, DEEPSEEK_API_KEY_ENV,
+        DEFAULT_OPENAI_CONTEXT_LIMIT, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI,
+    },
+    env_resolver::env_reference,
 };
-use crate::env_resolver::env_reference;
 
 /// 顶层应用配置
 ///
@@ -111,9 +113,9 @@ impl Default for Config {
 
 /// 单个模型配置。
 ///
-/// OpenAI-compatible profile 必须手动提供 `max_tokens` 与 `context_limit`，因为统一协议不暴露稳定的模型 limits
-/// Anthropic 则优先通过 Models API 自动探测，配置中的这两个值
-/// 只作为远端探测失败时的本地兜底。
+/// OpenAI-compatible profile 必须手动提供 `max_tokens` 与
+/// `context_limit`，因为统一协议不暴露稳定的模型 limits Anthropic 则优先通过 Models API
+/// 自动探测，配置中的这两个值 只作为远端探测失败时的本地兜底。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]

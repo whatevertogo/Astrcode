@@ -77,7 +77,8 @@ pub(crate) fn apply_microcompact(
         };
         if clearable_tools.contains(tool_name) {
             *content = format!(
-                "[cleared older tool result from '{tool_name}' to reduce prompt size; reload it if needed]"
+                "[cleared older tool result from '{tool_name}' to reduce prompt size; reload it \
+                 if needed]"
             );
         }
     }
@@ -195,7 +196,7 @@ mod tests {
         match &result.messages[2] {
             LlmMessage::Tool { content, .. } => {
                 assert!(content.contains("[cleared older tool result"));
-            }
+            },
             other => panic!("expected tool message, got {other:?}"),
         }
     }

@@ -22,9 +22,8 @@
 //!
 //! `DefaultApprovalBroker` 直接返回请求的默认决策（无需用户交互），用于测试和无审批场景。
 
-use async_trait::async_trait;
-
 use astrcode_core::{ApprovalRequest, ApprovalResolution, CancelToken, Result};
+use async_trait::async_trait;
 
 /// 审批代理 trait
 ///
@@ -60,13 +59,13 @@ impl ApprovalBroker for DefaultApprovalBroker {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
-    use super::{ApprovalBroker, DefaultApprovalBroker};
     use astrcode_core::{
         ApprovalDefault, ApprovalRequest, CancelToken, CapabilityDescriptor, CapabilityKind,
         SideEffectLevel, StabilityLevel,
     };
+    use serde_json::json;
+
+    use super::{ApprovalBroker, DefaultApprovalBroker};
 
     fn request(default: ApprovalDefault) -> ApprovalRequest {
         ApprovalRequest {

@@ -18,21 +18,24 @@
 //! 分支会话创建一个新的子会话，继承父会话的工作目录和历史事件。
 //! 分支深度限制为 3 层，避免过深的分支树导致性能问题。
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Instant;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
 
-use astrcode_core::{AgentStateProjector, AstrError, Phase};
+use astrcode_core::{
+    AgentStateProjector, AstrError, DeleteProjectResult, Phase, SessionMeta, StorageEvent,
+    StoredEvent, generate_session_id, phase_of_storage_event, replay_records,
+};
 use chrono::Utc;
 
-use astrcode_core::{generate_session_id, DeleteProjectResult, SessionMeta};
-use astrcode_core::{StorageEvent, StoredEvent};
-
-use super::replay::convert_events_to_messages;
-use super::session_state::{SessionState, SessionWriter};
-use super::support::spawn_blocking_service;
-use super::{RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent, SessionMessage};
-use astrcode_core::{phase_of_storage_event, replay_records};
+use super::{
+    RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent, SessionMessage,
+    replay::convert_events_to_messages,
+    session_state::{SessionState, SessionWriter},
+    support::spawn_blocking_service,
+};
 
 impl RuntimeService {
     pub async fn list_sessions_with_meta(&self) -> ServiceResult<Vec<SessionMeta>> {
@@ -221,8 +224,8 @@ impl RuntimeService {
                     return Err(ServiceError::Internal(AstrError::Internal(format!(
                         "session '{}' is missing sessionStart",
                         session_id_owned
-                    ))))
-                }
+                    ))));
+                },
             };
             let phase = stored
                 .last()
@@ -254,7 +257,7 @@ impl RuntimeService {
                         elapsed.as_millis()
                     );
                 }
-            }
+            },
             Err(error) => {
                 self.observability.record_session_rehydrate(elapsed, false);
                 log::error!(
@@ -263,7 +266,7 @@ impl RuntimeService {
                     elapsed.as_millis(),
                     error
                 );
-            }
+            },
         }
         let (_working_dir, phase, log, projector, recent_records, recent_stored) = load_result?;
 
@@ -371,14 +374,12 @@ pub(super) async fn load_events(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-    use std::sync::Arc;
+    use std::{path::Path, sync::Arc};
 
     use astrcode_core::project::project_dir_name;
 
-    use crate::test_support::{empty_capabilities, TestEnvGuard};
-
     use super::*;
+    use crate::test_support::{TestEnvGuard, empty_capabilities};
 
     #[tokio::test]
     async fn ensure_session_loaded_reuses_single_state_under_concurrency() {
@@ -410,9 +411,11 @@ mod tests {
             .collect::<Vec<_>>();
 
         let first = Arc::as_ptr(&states[0]);
-        assert!(states
-            .iter()
-            .all(|state| std::ptr::eq(Arc::as_ptr(state), first)));
+        assert!(
+            states
+                .iter()
+                .all(|state| std::ptr::eq(Arc::as_ptr(state), first))
+        );
         assert_eq!(service.sessions.len(), 1);
     }
 

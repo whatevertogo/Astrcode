@@ -9,8 +9,7 @@
 //! - 根据能力是否支持流式选择 `invoke` 或 `invoke_stream`
 //! - 将插件返回的结果转换为 `CapabilityExecutionResult`
 
-use std::sync::Arc;
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
     AstrError, CapabilityContext, CapabilityDescriptor, CapabilityExecutionResult,
@@ -18,7 +17,7 @@ use astrcode_core::{
 };
 use astrcode_protocol::plugin::{EventPhase, InvocationContext, WorkspaceRef};
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{Peer, StreamExecution, Supervisor};
@@ -63,8 +62,8 @@ impl CapabilityInvoker for PluginCapabilityInvoker {
     /// 执行能力调用。
     ///
     /// 根据能力的 `streaming` 标志选择调用模式：
-    /// - 流式模式：通过 `invoke_stream` 获取 `StreamExecution`，
-    ///   然后收集所有 delta 事件直到终端事件
+    /// - 流式模式：通过 `invoke_stream` 获取 `StreamExecution`， 然后收集所有 delta
+    ///   事件直到终端事件
     /// - 一元模式：通过 `invoke` 等待完整结果
     ///
     /// # 返回
@@ -179,14 +178,14 @@ async fn finish_stream_invocation(
 
     while let Some(event) = stream.recv().await {
         match event.phase {
-            EventPhase::Started => {}
+            EventPhase::Started => {},
             EventPhase::Delta => {
                 deltas.push(json!({
                     "event": event.event,
                     "payload": event.payload,
                     "seq": event.seq,
                 }));
-            }
+            },
             EventPhase::Completed => {
                 return Ok(CapabilityExecutionResult {
                     capability_name,
@@ -197,7 +196,7 @@ async fn finish_stream_invocation(
                     duration_ms: started_at.elapsed().as_millis() as u64,
                     truncated: false,
                 });
-            }
+            },
             EventPhase::Failed => {
                 let error = event
                     .error
@@ -212,7 +211,7 @@ async fn finish_stream_invocation(
                     duration_ms: started_at.elapsed().as_millis() as u64,
                     truncated: false,
                 });
-            }
+            },
         }
     }
 

@@ -7,8 +7,7 @@ use std::process::Command;
 
 use astrcode_core::{AstrError, Result};
 
-use crate::loader::config_path;
-use crate::loader::load_config;
+use crate::loader::{config_path, load_config};
 
 /// 在系统默认编辑器中打开配置文件。
 ///

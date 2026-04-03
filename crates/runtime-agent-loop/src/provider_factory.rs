@@ -24,8 +24,7 @@
 //! - `build_requires_blocking_pool()` 标记是否需要在线程池执行（磁盘 I/O 相关）
 //! - 返回的 provider 已包含解析好的上下文窗口和 max_output_tokens，后续 agent loop 不再猜测
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use astrcode_core::Result;
 use astrcode_runtime_llm::LlmProvider;

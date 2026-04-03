@@ -16,22 +16,19 @@
 //! - **工具调用聚合**: 同一 step 的多个工具调用聚合到一个消息中
 //! - **流式工具输出**: `ToolOutputDelta` 事件聚合为完整的工具结果
 
+use std::{collections::HashMap, sync::Arc, time::Instant};
+
 use astrcode_core::{
-    replay_records, split_assistant_content, AstrError, ToolOutputDelta, ToolOutputStream,
-    UserMessageOrigin,
+    AstrError, StorageEvent, StoredEvent, ToolOutputDelta, ToolOutputStream, UserMessageOrigin,
+    replay_records, split_assistant_content,
 };
 use async_trait::async_trait;
 use chrono::Utc;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Instant;
+use serde_json::{Map, Value, json};
 
-use astrcode_core::{StorageEvent, StoredEvent};
-use serde_json::{json, Map, Value};
-
-use super::session_ops::{load_events, normalize_session_id};
 use super::{
     ReplayPath, RuntimeService, ServiceResult, SessionMessage, SessionReplay, SessionReplaySource,
+    session_ops::{load_events, normalize_session_id},
 };
 
 #[async_trait]
@@ -73,7 +70,7 @@ impl SessionReplaySource for RuntimeService {
                         elapsed.as_millis()
                     );
                 }
-            }
+            },
             Err(error) => {
                 self.observability
                     .record_sse_catch_up(elapsed, false, ReplayPath::DiskFallback, 0);
@@ -83,7 +80,7 @@ impl SessionReplaySource for RuntimeService {
                     elapsed.as_millis(),
                     error
                 );
-            }
+            },
         }
         let (history, _) = replay_result?;
         Ok(SessionReplay { history, receiver })
@@ -119,7 +116,7 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
                     content: content.clone(),
                     timestamp: timestamp.to_rfc3339(),
                 });
-            }
+            },
             StorageEvent::AssistantFinal {
                 turn_id,
                 content,
@@ -153,7 +150,7 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
                     timestamp,
                     reasoning_content: parts.reasoning_content,
                 });
-            }
+            },
             StorageEvent::ToolCall {
                 turn_id,
                 tool_call_id,
@@ -193,7 +190,7 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
                         delta: delta.clone(),
                     });
                 }
-            }
+            },
             StorageEvent::ToolResult {
                 turn_id,
                 tool_call_id,
@@ -249,14 +246,14 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
                         duration_ms: Some(*duration_ms),
                     });
                 }
-            }
-            StorageEvent::PromptMetrics { .. } | StorageEvent::CompactApplied { .. } => {}
+            },
+            StorageEvent::PromptMetrics { .. } | StorageEvent::CompactApplied { .. } => {},
             StorageEvent::TurnDone { turn_id, .. } | StorageEvent::Error { turn_id, .. } => {
                 if let Some(turn_id) = turn_id {
                     pending_reasoning_only_assistants.remove(turn_id);
                 }
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 
@@ -591,7 +588,7 @@ mod tests {
                 assert_eq!(tool_name, "shell");
                 assert_eq!(output.as_deref(), Some("ok\nwarn\n"));
                 metadata.as_ref().expect("shell metadata should exist")
-            }
+            },
             other => panic!("expected tool call message, got {other:?}"),
         };
 

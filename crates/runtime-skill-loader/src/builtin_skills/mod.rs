@@ -10,15 +10,17 @@
 //! 物化到 `~/.astrcode/runtime/builtin-skills/<skill-id>/` 目录，
 //! 以便运行时作为可执行/可读资源访问，而非仅存在于 prompt 文本中。
 
-use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::{
+    fs,
+    path::{Component, Path, PathBuf},
+};
 
 use astrcode_core::home::resolve_home_dir;
 use log::warn;
 
 use crate::{
-    collect_asset_files, is_valid_skill_name, parse_skill_md, SkillSource, SkillSpec,
-    SKILL_FILE_NAME,
+    SKILL_FILE_NAME, SkillSource, SkillSpec, collect_asset_files, is_valid_skill_name,
+    parse_skill_md,
 };
 
 /// 编译期生成的 skill 定义结构。
@@ -122,7 +124,7 @@ fn materialize_builtin_skill_assets(definition: &BundledSkillDefinition) -> Opti
                 definition.id, error
             );
             return None;
-        }
+        },
     };
 
     let skill_root = home_dir

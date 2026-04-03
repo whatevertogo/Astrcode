@@ -15,9 +15,11 @@
 use std::pin::Pin;
 
 use async_trait::async_trait;
-use tokio::io::{self, AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::process::{ChildStdin, ChildStdout};
-use tokio::sync::Mutex;
+use tokio::{
+    io::{self, AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader},
+    process::{ChildStdin, ChildStdout},
+    sync::Mutex,
+};
 
 use super::Transport;
 

@@ -24,22 +24,24 @@
 //! 如果一轮迭代中没有任何进展，说明存在循环依赖。
 //! 这种方式比标准 Kahn 算法更简单，且能自然地产生诊断信息。
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use astrcode_core::{LlmMessage, UserMessageOrigin};
 
-use super::contributors::{
-    AgentsMdContributor, CapabilityPromptContributor, EnvironmentContributor, IdentityContributor,
-    SkillSummaryContributor, WorkflowExamplesContributor,
-};
-use super::diagnostics::{DiagnosticLevel, DiagnosticReason, PromptDiagnostic, PromptDiagnostics};
 use super::{
-    append_unique_tools, BlockCondition, BlockContent, BlockKind, BlockSpec, PromptBlock,
-    PromptContext, PromptContribution, PromptContributor, PromptPlan, RenderTarget,
-    TemplateRenderError, ValidationPolicy,
+    BlockCondition, BlockContent, BlockKind, BlockSpec, PromptBlock, PromptContext,
+    PromptContribution, PromptContributor, PromptPlan, RenderTarget, TemplateRenderError,
+    ValidationPolicy, append_unique_tools,
+    contributors::{
+        AgentsMdContributor, CapabilityPromptContributor, EnvironmentContributor,
+        IdentityContributor, SkillSummaryContributor, WorkflowExamplesContributor,
+    },
+    diagnostics::{DiagnosticLevel, DiagnosticReason, PromptDiagnostic, PromptDiagnostics},
 };
 
 /// 验证级别。
@@ -369,13 +371,13 @@ impl PromptComposer {
                                 self.push_rendered(plan, rendered, &candidate);
                                 statuses
                                     .insert(candidate.spec.id.to_string(), BlockStatus::Success);
-                            }
+                            },
                             None => {
                                 statuses
                                     .insert(candidate.spec.id.to_string(), BlockStatus::Skipped);
-                            }
+                            },
                         }
-                    }
+                    },
                     DependencyState::Blocked(dependency_id) => {
                         progressed = true;
                         statuses.insert(candidate.spec.id.to_string(), BlockStatus::Skipped);
@@ -386,11 +388,12 @@ impl PromptComposer {
                             Some(candidate.contributor_id.to_string()),
                             DiagnosticReason::MissingDependency { dependency_id },
                             Some(
-                                "Check whether the dependency exists and was not skipped or invalidated."
+                                "Check whether the dependency exists and was not skipped or \
+                                 invalidated."
                                     .to_string(),
                             ),
                         );
-                    }
+                    },
                     DependencyState::Pending => next_pending.push(candidate),
                 }
             }
@@ -444,7 +447,7 @@ impl PromptComposer {
                     .or_else(|| ctx.resolve_builtin_var(key))
                     .as_deref()
                     == Some(expected.as_str())
-            }
+            },
         }
     }
 
@@ -461,7 +464,7 @@ impl PromptComposer {
             }
 
             match statuses.get(&dependency_id) {
-                Some(BlockStatus::Success) => {}
+                Some(BlockStatus::Success) => {},
                 Some(BlockStatus::Skipped) => return DependencyState::Blocked(dependency_id),
                 None => return DependencyState::Pending,
             }
@@ -496,13 +499,14 @@ impl PromptComposer {
                         Some(candidate.contributor_id.to_string()),
                         DiagnosticReason::TemplateVariableMissing { variable },
                         Some(
-                            "Provide the variable in block vars, contributor vars, PromptContext vars, or builtins."
+                            "Provide the variable in block vars, contributor vars, PromptContext \
+                             vars, or builtins."
                                 .to_string(),
                         ),
                         candidate.spec.validation_policy,
                     )?;
                     return Ok(None);
-                }
+                },
                 Err(error) => {
                     self.handle_failure(
                         diagnostics,
@@ -515,7 +519,7 @@ impl PromptComposer {
                         candidate.spec.validation_policy,
                     )?;
                     return Ok(None);
-                }
+                },
             },
         };
 
@@ -622,7 +626,7 @@ impl PromptComposer {
                     suggestion,
                 );
                 Ok(())
-            }
+            },
             ValidationLevel::Strict => Err(anyhow!("prompt block validation failed: {:?}", reason)),
         }
     }
@@ -667,8 +671,7 @@ enum DependencyState {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::{collections::HashMap, sync::Arc};
 
     use astrcode_core::test_support::TestEnvGuard;
     use async_trait::async_trait;
@@ -699,11 +702,13 @@ mod tests {
             .await
             .expect("build should succeed");
 
-        assert!(output
-            .plan
-            .system_blocks
-            .iter()
-            .any(|block| block.kind == BlockKind::Identity));
+        assert!(
+            output
+                .plan
+                .system_blocks
+                .iter()
+                .any(|block| block.kind == BlockKind::Identity)
+        );
     }
 
     #[tokio::test]
@@ -719,13 +724,15 @@ mod tests {
 
             async fn contribute(&self, _ctx: &PromptContext) -> PromptContribution {
                 let mut contribution = PromptContribution {
-                    blocks: vec![BlockSpec::system_template(
-                        "scoped",
-                        BlockKind::Skill,
-                        "Skill",
-                        "{{name}}|{{project.name}}|{{project.working_dir}}|{{env.os}}",
-                    )
-                    .with_var("name", "block")],
+                    blocks: vec![
+                        BlockSpec::system_template(
+                            "scoped",
+                            BlockKind::Skill,
+                            "Skill",
+                            "{{name}}|{{project.name}}|{{project.working_dir}}|{{env.os}}",
+                        )
+                        .with_var("name", "block"),
+                    ],
                     ..PromptContribution::default()
                 };
                 contribution
@@ -752,9 +759,11 @@ mod tests {
             .find(|block| block.id == "scoped")
             .expect("scoped block should exist");
 
-        assert!(block
-            .content
-            .starts_with("block|contributor|/workspace/demo|"));
+        assert!(
+            block
+                .content
+                .starts_with("block|contributor|/workspace/demo|")
+        );
     }
 
     #[tokio::test]

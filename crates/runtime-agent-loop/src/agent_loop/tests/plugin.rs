@@ -3,11 +3,12 @@
 //! 覆盖：
 //! - 内置工具与插件工具统一路由执行
 
-use std::collections::VecDeque;
-use std::fs;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::{
+    collections::VecDeque,
+    fs,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use astrcode_core::{
     CancelToken, Phase, PluginManifest, PluginType, StorageEvent, ToolCallRequest,

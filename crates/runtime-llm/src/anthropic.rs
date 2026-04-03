@@ -4,25 +4,28 @@
 //!
 //! ## 协议特性
 //!
-//! - **Extended Thinking**: 自动为 Claude 模型启用深度推理模式（`thinking` 配置），
-//!   预算 token 设为 `max_tokens` 的 75%，保留至少 25% 给实际输出
+//! - **Extended Thinking**: 自动为 Claude 模型启用深度推理模式（`thinking` 配置）， 预算 token 设为
+//!   `max_tokens` 的 75%，保留至少 25% 给实际输出
 //! - **Prompt Caching**: 对最后 2 条消息标记 `ephemeral` 缓存控制，复用 KV cache
-//! - **SSE 流式解析**: Anthropic 使用多行 SSE 块格式（`event: ...\ndata: {...}\n\n`），
-//!   与 OpenAI 的单行 `data: {...}` 不同，因此有独立的解析逻辑
-//! - **内容块模型**: Anthropic 响应由多种内容块组成（text / tool_use / thinking），
-//!   使用 `Vec<Value>` 灵活处理未知或新增的块类型
+//! - **SSE 流式解析**: Anthropic 使用多行 SSE 块格式（`event: ...\ndata: {...}\n\n`）， 与 OpenAI
+//!   的单行 `data: {...}` 不同，因此有独立的解析逻辑
+//! - **内容块模型**: Anthropic 响应由多种内容块组成（text / tool_use / thinking）， 使用
+//!   `Vec<Value>` 灵活处理未知或新增的块类型
 //!
 //! ## 流式事件分派
 //!
 //! Anthropic SSE 事件类型：
 //! - `content_block_start`: 新内容块开始（文本或工具调用）
-//! - `content_block_delta`: 增量内容（text_delta / thinking_delta / signature_delta / input_json_delta）
+//! - `content_block_delta`: 增量内容（text_delta / thinking_delta / signature_delta /
+//!   input_json_delta）
 //! - `message_stop`: 流结束信号
 //! - `message_start / message_delta / content_block_stop / ping`: 元数据事件，静默忽略
 
 use std::fmt;
 
-use astrcode_core::{AstrError, CancelToken, ReasoningContent, Result};
+use astrcode_core::{
+    AstrError, CancelToken, LlmMessage, ReasoningContent, Result, ToolCallRequest, ToolDefinition,
+};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use log::warn;
@@ -31,11 +34,10 @@ use serde_json::Value;
 use tokio::select;
 
 use crate::{
-    build_http_client, classify_http_error, emit_event, is_retryable_status, wait_retry_delay,
     EventSink, FinishReason, LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest,
-    LlmUsage, ModelLimits, MAX_RETRIES,
+    LlmUsage, MAX_RETRIES, ModelLimits, build_http_client, classify_http_error, emit_event,
+    is_retryable_status, wait_retry_delay,
 };
-use astrcode_core::{LlmMessage, ToolCallRequest, ToolDefinition};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -161,14 +163,14 @@ impl AnthropicProvider {
 
                     // 使用结构化错误分类 (P4.3)
                     return Err(classify_http_error(status.as_u16(), &body).into());
-                }
+                },
                 Err(error) => {
                     if error.is_retryable() && attempt < MAX_RETRIES {
                         wait_retry_delay(attempt, cancel.clone()).await?;
                         continue;
                     }
                     return Err(error);
-                }
+                },
             }
         }
 
@@ -199,7 +201,7 @@ impl LlmProvider for AnthropicProvider {
                     .await
                     .map_err(|e| AstrError::http("failed to parse anthropic response", e))?;
                 Ok(response_to_output(payload))
-            }
+            },
             Some(sink) => {
                 let mut stream = response.bytes_stream();
                 let mut sse_buffer = String::new();
@@ -254,7 +256,7 @@ impl LlmProvider for AnthropicProvider {
                     output.finish_reason = FinishReason::from_api_value(reason);
                 }
                 Ok(output)
-            }
+            },
         }
     }
 
@@ -314,7 +316,7 @@ fn to_anthropic_messages(messages: &[LlmMessage]) -> Vec<AnthropicMessage> {
                     role: "assistant".to_string(),
                     content: blocks,
                 }
-            }
+            },
             LlmMessage::Tool {
                 tool_call_id,
                 content,
@@ -391,25 +393,25 @@ fn response_to_output(response: AnthropicResponse) -> LlmOutput {
                 if let Some(text) = block.get("text").and_then(Value::as_str) {
                     content.push_str(text);
                 }
-            }
+            },
             Some("tool_use") => {
                 let id = match block.get("id").and_then(Value::as_str) {
                     Some(id) if !id.is_empty() => id.to_string(),
                     _ => {
                         warn!("anthropic: tool_use block missing non-empty id, skipping");
                         continue;
-                    }
+                    },
                 };
                 let name = match block.get("name").and_then(Value::as_str) {
                     Some(name) if !name.is_empty() => name.to_string(),
                     _ => {
                         warn!("anthropic: tool_use block missing non-empty name, skipping");
                         continue;
-                    }
+                    },
                 };
                 let args = block.get("input").cloned().unwrap_or(Value::Null);
                 tool_calls.push(ToolCallRequest { id, name, args });
-            }
+            },
             Some("thinking") => {
                 if let Some(thinking) = block.get("thinking").and_then(Value::as_str) {
                     reasoning = Some(ReasoningContent {
@@ -420,13 +422,13 @@ fn response_to_output(response: AnthropicResponse) -> LlmOutput {
                             .map(str::to_string),
                     });
                 }
-            }
+            },
             Some(other) => {
                 warn!("anthropic: unknown content block type: {}", other);
-            }
+            },
             None => {
                 warn!("anthropic: content block missing type");
-            }
+            },
         }
     }
 
@@ -567,7 +569,7 @@ fn process_sse_block(
                 );
             }
             Ok((false, None))
-        }
+        },
         "content_block_delta" => {
             let index = payload
                 .get("index")
@@ -581,12 +583,12 @@ fn process_sse_block(
                     if let Some(text) = delta.get("text").and_then(Value::as_str) {
                         emit_event(LlmEvent::TextDelta(text.to_string()), accumulator, sink);
                     }
-                }
+                },
                 Some("thinking_delta") => {
                     if let Some(text) = delta.get("thinking").and_then(Value::as_str) {
                         emit_event(LlmEvent::ThinkingDelta(text.to_string()), accumulator, sink);
                     }
-                }
+                },
                 Some("signature_delta") => {
                     if let Some(signature) = delta.get("signature").and_then(Value::as_str) {
                         emit_event(
@@ -595,7 +597,7 @@ fn process_sse_block(
                             sink,
                         );
                     }
-                }
+                },
                 Some("input_json_delta") => {
                     // 工具调用参数增量，partial_json 是 JSON 的片段
                     emit_event(
@@ -612,11 +614,11 @@ fn process_sse_block(
                         accumulator,
                         sink,
                     );
-                }
-                _ => {}
+                },
+                _ => {},
             }
             Ok((false, None))
-        }
+        },
         "message_stop" => Ok((true, None)),
         // message_delta 可能包含 stop_reason (P4.2)
         "message_delta" => {
@@ -626,12 +628,12 @@ fn process_sse_block(
                 .and_then(Value::as_str)
                 .map(str::to_string);
             Ok((false, stop_reason))
-        }
+        },
         "message_start" | "content_block_stop" | "ping" => Ok((false, None)),
         other => {
             warn!("anthropic: unknown sse event: {}", other);
             Ok((false, None))
-        }
+        },
     }
 }
 
@@ -936,9 +938,11 @@ mod tests {
             "event: content_block_start\n",
             "data: {\"index\":1,\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"search\"}\n\n",
             "event: content_block_delta\n",
-            "data: {\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"q\\\":\\\"ru\"}}\n\n",
+            "data: {\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"\
+             q\\\":\\\"ru\"}}\n\n",
             "event: content_block_delta\n",
-            "data: {\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"st\\\"}\"}}\n\n",
+            "data: {\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"st\\\"\
+             }\"}}\n\n",
             "event: content_block_delta\n",
             "data: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
             "event: message_stop\n",
@@ -969,9 +973,11 @@ mod tests {
                     && arguments_delta.is_empty()
             )
         }));
-        assert!(events
-            .iter()
-            .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "hello")));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "hello"))
+        );
         assert_eq!(output.content, "hello");
         assert_eq!(output.tool_calls.len(), 1);
         assert_eq!(output.tool_calls[0].args, json!({ "q": "rust" }));

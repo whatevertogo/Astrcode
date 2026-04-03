@@ -6,9 +6,13 @@
 //! - 需要审批的工具调用
 //! - 审批拒绝
 
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use astrcode_core::{
     ApprovalDefault, ApprovalResolution, CancelToken, StorageEvent, ToolCallRequest,
@@ -16,8 +20,10 @@ use astrcode_core::{
 use astrcode_runtime_llm::LlmOutput;
 use serde_json::json;
 
-use super::fixtures::*;
-use super::test_support::{capabilities_from_tools, empty_capabilities};
+use super::{
+    fixtures::*,
+    test_support::{capabilities_from_tools, empty_capabilities},
+};
 use crate::AgentLoop;
 
 #[tokio::test]

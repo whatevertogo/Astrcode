@@ -9,8 +9,7 @@
 //! - 健康状态独立于生命周期状态（`Healthy` / `Degraded` / `Unavailable`）
 //! - 支持运行时快照替换（用于插件热重载场景）
 
-use std::collections::BTreeMap;
-use std::sync::RwLock;
+use std::{collections::BTreeMap, sync::RwLock};
 
 use crate::{CapabilityDescriptor, PluginManifest};
 

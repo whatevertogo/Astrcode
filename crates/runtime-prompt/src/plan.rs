@@ -50,8 +50,7 @@ impl PromptPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::BlockMetadata;
-    use crate::{BlockKind, PromptBlock};
+    use crate::{BlockKind, PromptBlock, block::BlockMetadata};
 
     #[test]
     fn render_system_returns_none_when_empty() {

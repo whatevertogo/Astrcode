@@ -1,11 +1,11 @@
 use astrcode_protocol::http::{AuthExchangeRequest, AuthExchangeResponse};
-use axum::body::{to_bytes, Body};
-use axum::http::{Request, StatusCode};
+use axum::{
+    body::{Body, to_bytes},
+    http::{Request, StatusCode},
+};
 use tower::ServiceExt;
 
-use crate::auth::BootstrapAuth;
-use crate::routes::build_api_router;
-use crate::test_support::test_state;
+use crate::{auth::BootstrapAuth, routes::build_api_router, test_support::test_state};
 
 #[tokio::test]
 async fn exchange_auth_issues_session_token_for_valid_bootstrap() {

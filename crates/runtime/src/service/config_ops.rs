@@ -14,10 +14,8 @@
 
 use std::path::PathBuf;
 
+use super::{RuntimeService, ServiceError, ServiceResult, support::spawn_blocking_service};
 use crate::config::{config_path, open_config_in_editor, save_config, test_connection};
-
-use super::support::spawn_blocking_service;
-use super::{RuntimeService, ServiceError, ServiceResult};
 
 impl RuntimeService {
     /// 获取当前运行时配置的完整快照。
@@ -106,10 +104,11 @@ impl RuntimeService {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{save_config, Config, ModelConfig, Profile, RuntimeConfig};
-    use crate::test_support::{empty_capabilities, TestEnvGuard};
-
     use super::*;
+    use crate::{
+        config::{Config, ModelConfig, Profile, RuntimeConfig, save_config},
+        test_support::{TestEnvGuard, empty_capabilities},
+    };
 
     /// 验证保存活跃选择时，不存在的 profile 会被拒绝。
     #[tokio::test]

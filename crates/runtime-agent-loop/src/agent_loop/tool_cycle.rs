@@ -21,16 +21,13 @@
 use std::time::Instant;
 
 use astrcode_core::{
-    ApprovalPending, ApprovalResolution, CancelToken, CapabilityCall, PolicyVerdict, Result,
-    ToolExecutionResult,
+    AgentState, ApprovalPending, ApprovalResolution, CancelToken, CapabilityCall, CapabilityRouter,
+    LlmMessage, PolicyVerdict, Result, StorageEvent, ToolCallRequest, ToolExecutionResult,
 };
 use futures_util::stream::{self, StreamExt};
 use tokio::sync::mpsc;
 
 use super::AgentLoop;
-use astrcode_core::AgentState;
-use astrcode_core::StorageEvent;
-use astrcode_core::{CapabilityRouter, LlmMessage, ToolCallRequest};
 
 /// 工具执行周期的最终结果。
 pub(crate) enum ToolCycleOutcome {
@@ -102,14 +99,14 @@ pub(crate) async fn execute_tool_calls(
                         &mut safe_calls,
                         &mut unsafe_calls,
                     );
-                }
+                },
                 PolicyVerdict::Deny { reason } => {
                     denied_tool_result(&call, turn_id, &reason, on_event)?;
                     outcomes[index] = Some(CallOutcome {
                         result: denial_result(&call, reason),
                         buffered_events: None,
                     });
-                }
+                },
                 PolicyVerdict::Ask(pending) => {
                     let ApprovalPending { request, action } = *pending;
                     let pending_call = normalized_tool_call(&proposed_call, action)?;
@@ -131,7 +128,7 @@ pub(crate) async fn execute_tool_calls(
                             buffered_events: None,
                         });
                     }
-                }
+                },
             }
         } else {
             unsafe_calls.push(PendingToolCall {
@@ -365,10 +362,10 @@ async fn execute_raw_tool_call(
                     ctx.cancel().cancel();
                     return Err(error);
                 }
-            }
+            },
             None => {
                 output_stream_open = false;
-            }
+            },
         }
     }
 

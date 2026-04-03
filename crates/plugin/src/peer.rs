@@ -39,18 +39,24 @@
 //! 因为这些字段只在短时间内持有锁（插入/取出 HashMap 条目），不需要跨 await 点。
 //! 使用 `std::sync::Mutex` 避免了 tokio Mutex 的额外开销和潜在的 "mutex held across await" 警告。
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use astrcode_core::{AstrError, CancelToken, Result};
-use astrcode_protocol::plugin::{
-    CancelMessage, ErrorPayload, EventMessage, EventPhase, InitializeMessage, InitializeResultData,
-    InvokeMessage, PluginMessage, ResultMessage, PROTOCOL_VERSION,
+use astrcode_protocol::{
+    plugin::{
+        CancelMessage, ErrorPayload, EventMessage, EventPhase, InitializeMessage,
+        InitializeResultData, InvokeMessage, PROTOCOL_VERSION, PluginMessage, ResultMessage,
+    },
+    transport::Transport,
 };
-use astrcode_protocol::transport::Transport;
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, oneshot, Mutex, Notify};
+use serde_json::{Value, json};
+use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 
 use crate::{CapabilityRouter, EventEmitter, StreamExecution};
 
@@ -438,22 +444,22 @@ impl PeerInner {
                             self.close(format!("failed to decode plugin message: {error}"))
                                 .await;
                             break;
-                        }
+                        },
                     };
                     if let Err(error) = Arc::clone(&self).handle_message(message).await {
                         self.close(format!("peer message handling failed: {error}"))
                             .await;
                         break;
                     }
-                }
+                },
                 Ok(None) => {
                     self.close("transport closed".to_string()).await;
                     break;
-                }
+                },
                 Err(error) => {
                     self.close(error).await;
                     break;
-                }
+                },
             }
         }
     }
@@ -471,7 +477,7 @@ impl PeerInner {
             PluginMessage::Invoke(message) => {
                 self.handle_invoke(message).await;
                 Ok(())
-            }
+            },
             PluginMessage::Result(message) => self.handle_result(message).await,
             PluginMessage::Event(message) => self.handle_event(message).await,
             PluginMessage::Cancel(message) => self.handle_cancel(message).await,

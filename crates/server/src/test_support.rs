@@ -3,9 +3,11 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use astrcode_core::{CapabilityRouter, PluginRegistry, RuntimeCoordinator, RuntimeHandle};
 use astrcode_runtime::{RuntimeGovernance, RuntimeService};
 
-use crate::auth::{AuthSessionManager, BootstrapAuth};
-use crate::bootstrap::APP_HOME_OVERRIDE_ENV;
-use crate::{AppState, FrontendBuild};
+use crate::{
+    AppState, FrontendBuild,
+    auth::{AuthSessionManager, BootstrapAuth},
+    bootstrap::APP_HOME_OVERRIDE_ENV,
+};
 
 pub(crate) fn server_test_env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

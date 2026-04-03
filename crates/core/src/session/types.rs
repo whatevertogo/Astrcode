@@ -8,9 +8,9 @@
 //! - `SessionEventRecord`: SSE 推送和会话回放的领域事件记录
 //! - `StorageEvent`: 面向持久化的 JSONL 事件格式
 
-use crate::{event, AgentEvent};
-
 pub use event::{DeleteProjectResult, SessionMeta};
+
+use crate::{AgentEvent, event};
 
 /// 会话消息
 ///

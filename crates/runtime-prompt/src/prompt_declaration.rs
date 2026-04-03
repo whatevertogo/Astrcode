@@ -15,7 +15,7 @@ use crate::{BlockKind, RenderTarget};
 /// Prompt 声明的来源。
 ///
 /// 与 `astrcode_runtime_skill_loader::SkillSource` 保持独立，因为两者的来源集合可能不同
-///（如未来可能出现 `PromptDeclarationSource::System`）。
+/// （如未来可能出现 `PromptDeclarationSource::System`）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptDeclarationSource {

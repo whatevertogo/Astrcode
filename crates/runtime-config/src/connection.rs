@@ -22,10 +22,13 @@ use std::time::Duration;
 use astrcode_core::{AstrError, Result};
 use serde_json::json;
 
-use crate::constants::{
-    ANTHROPIC_MESSAGES_API_URL, ANTHROPIC_VERSION, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI,
+use crate::{
+    constants::{
+        ANTHROPIC_MESSAGES_API_URL, ANTHROPIC_VERSION, PROVIDER_KIND_ANTHROPIC,
+        PROVIDER_KIND_OPENAI,
+    },
+    types::{Profile, TestResult},
 };
-use crate::types::{Profile, TestResult};
 
 /// 测试指定 Profile 和模型的 Provider 连接。
 ///
@@ -52,7 +55,7 @@ pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResul
                 model: model.to_string(),
                 error: Some(err.to_string()),
             });
-        }
+        },
     };
 
     match profile.provider_kind.as_str() {
@@ -77,7 +80,7 @@ pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResul
                 .await;
 
             Ok(connection_result_from_response(response, provider, model))
-        }
+        },
         PROVIDER_KIND_ANTHROPIC => {
             let response = reqwest::Client::new()
                 .post(&provider)
@@ -98,7 +101,7 @@ pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResul
                 .await;
 
             Ok(connection_result_from_response(response, provider, model))
-        }
+        },
         other => Err(AstrError::UnsupportedProvider(other.to_string())),
     }
 }
@@ -141,7 +144,7 @@ fn connection_result_from_response(
                     error: Some(format!("请求失败: {}", status)),
                 }
             }
-        }
+        },
         Err(err) if err.is_timeout() => TestResult {
             success: false,
             provider,

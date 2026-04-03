@@ -39,8 +39,9 @@ pub mod test_support;
 mod tool;
 
 pub use action::{
-    split_assistant_content, AssistantContentParts, LlmMessage, ReasoningContent, ToolCallRequest,
-    ToolDefinition, ToolExecutionResult, ToolOutputDelta, ToolOutputStream, UserMessageOrigin,
+    AssistantContentParts, LlmMessage, ReasoningContent, ToolCallRequest, ToolDefinition,
+    ToolExecutionResult, ToolOutputDelta, ToolOutputStream, UserMessageOrigin,
+    split_assistant_content,
 };
 pub use cancel::CancelToken;
 pub use capability::{
@@ -49,22 +50,21 @@ pub use capability::{
 };
 pub use error::{AstrError, Result, ResultExt};
 pub use event::{
-    generate_session_id, phase_of_storage_event, replay_records, AgentEvent, CompactTrigger,
-    EventTranslator, Phase, StorageEvent, StoredEvent, StoredEventLine,
+    AgentEvent, CompactTrigger, EventTranslator, Phase, StorageEvent, StoredEvent, StoredEventLine,
+    generate_session_id, phase_of_storage_event, replay_records,
 };
-pub use local_server::{LocalServerInfo, LOCAL_SERVER_READY_PREFIX};
+pub use local_server::{LOCAL_SERVER_READY_PREFIX, LocalServerInfo};
 pub use plugin::{PluginHealth, PluginManifest, PluginRegistry, PluginState, PluginType};
 pub use policy::{
     AllowAllPolicyEngine, ApprovalDefault, ApprovalPending, ApprovalRequest, ApprovalResolution,
     CapabilityCall, ContextDecisionInput, ContextStrategy, ModelRequest, PolicyContext,
     PolicyEngine, PolicyVerdict,
 };
-pub use projection::{format_compact_summary, project, AgentState, AgentStateProjector};
+pub use projection::{AgentState, AgentStateProjector, format_compact_summary, project};
 pub use registry::{
     CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, CapabilityRouter,
-    CapabilityRouterBuilder,
+    CapabilityRouterBuilder, ToolCapabilityInvoker, ToolRegistry, ToolRegistryBuilder,
 };
-pub use registry::{ToolCapabilityInvoker, ToolRegistry, ToolRegistryBuilder};
 pub use runtime::{ManagedRuntimeComponent, RuntimeCoordinator, RuntimeHandle};
 pub use session::{DeleteProjectResult, SessionEventRecord, SessionMessage, SessionMeta};
 pub use store::{
@@ -72,6 +72,6 @@ pub use store::{
     StoreError, StoreResult,
 };
 pub use tool::{
-    SessionId, Tool, ToolCapabilityMetadata, ToolContext, ToolPromptMetadata,
-    DEFAULT_MAX_OUTPUT_SIZE,
+    DEFAULT_MAX_OUTPUT_SIZE, SessionId, Tool, ToolCapabilityMetadata, ToolContext,
+    ToolPromptMetadata,
 };

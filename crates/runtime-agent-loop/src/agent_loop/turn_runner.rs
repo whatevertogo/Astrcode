@@ -26,20 +26,19 @@
 //! 用户可以在消息中指定 Token 预算（如 `+50k`），Turn 会在接近预算时
 //! 自动停止或请求继续（auto-continue nudge）。
 
-use astrcode_core::{CancelToken, ContextStrategy, Result};
-
-use astrcode_core::AgentState;
-use astrcode_core::StorageEvent;
+use astrcode_core::{AgentState, CancelToken, ContextStrategy, Result, StorageEvent};
 use astrcode_runtime_prompt::{DiagnosticLevel, PromptDiagnostics};
 
 use super::{
-    finish_interrupted, finish_turn, finish_with_error, internal_error, llm_cycle, tool_cycle,
-    AgentLoop, TurnOutcome,
+    AgentLoop, TurnOutcome, finish_interrupted, finish_turn, finish_with_error, internal_error,
+    llm_cycle, tool_cycle,
 };
-use crate::compaction_runtime::{CompactionArtifact, CompactionReason, CompactionTailSnapshot};
-use crate::context_pipeline::{ContextBundleInput, ConversationView};
-use crate::context_window::{is_prompt_too_long, TokenUsageTracker};
-use crate::request_assembler::{PreparedRequest, StepRequestConfig};
+use crate::{
+    compaction_runtime::{CompactionArtifact, CompactionReason, CompactionTailSnapshot},
+    context_pipeline::{ContextBundleInput, ConversationView},
+    context_window::{TokenUsageTracker, is_prompt_too_long},
+    request_assembler::{PreparedRequest, StepRequestConfig},
+};
 
 // ---------------------------------------------------------------------------
 // Error recovery constants (P4)
@@ -93,8 +92,8 @@ pub(crate) async fn run_turn(
                 internal_error(error).to_string(),
                 on_event,
                 emit_turn_done,
-            )
-        }
+            );
+        },
     };
     let mut conversation = ConversationView::new(state.messages.clone());
     let mut step_index = 0usize;
@@ -124,7 +123,7 @@ pub(crate) async fn run_turn(
             Ok(bundle) => bundle,
             Err(error) => {
                 return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
-            }
+            },
         };
 
         let build_output = match agent_loop
@@ -135,7 +134,7 @@ pub(crate) async fn run_turn(
             Ok(output) => output,
             Err(error) => {
                 return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
-            }
+            },
         };
         log_prompt_diagnostics(&build_output.diagnostics);
         let plan = build_output.plan;
@@ -156,7 +155,7 @@ pub(crate) async fn run_turn(
             Ok(prepared) => prepared,
             Err(error) => {
                 return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
-            }
+            },
         };
         on_event(StorageEvent::PromptMetrics {
             turn_id: Some(turn_id.to_string()),
@@ -179,7 +178,7 @@ pub(crate) async fn run_turn(
             Ok(strategy) => strategy,
             Err(error) => {
                 return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
-            }
+            },
         };
         if matches!(context_strategy, ContextStrategy::Compact) {
             let system_prompt_for_compact = request.system_prompt.clone();
@@ -201,15 +200,15 @@ pub(crate) async fn run_turn(
                 Ok(Some(compacted_view)) => {
                     conversation = compacted_view;
                     continue;
-                }
-                Ok(None) => {}
+                },
+                Ok(None) => {},
                 Err(error) => {
                     return if cancel.is_cancelled() {
                         report_interrupted(turn_id, on_event, emit_turn_done)
                     } else {
                         report_error(turn_id, error.to_string(), on_event, emit_turn_done)
                     };
-                }
+                },
             }
         }
         let policy_ctx = agent_loop.policy_context(state, turn_id, step_index);
@@ -223,7 +222,7 @@ pub(crate) async fn run_turn(
             Ok(request) => request,
             Err(error) => {
                 return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
-            }
+            },
         };
 
         // 413 prompt too long → turn 级别 reactive compact
@@ -249,7 +248,8 @@ pub(crate) async fn run_turn(
                 {
                     reactive_compact_attempts += 1;
                     log::warn!(
-                        "[turn {}] LLM returned prompt too long, attempting reactive compact ({}/{})",
+                        "[turn {}] LLM returned prompt too long, attempting reactive compact \
+                         ({}/{})",
                         turn_id,
                         reactive_compact_attempts,
                         MAX_REACTIVE_COMPACT_ATTEMPTS
@@ -273,19 +273,20 @@ pub(crate) async fn run_turn(
                         Ok(Some(compacted_view)) => {
                             conversation = compacted_view;
                             continue 'step;
-                        }
+                        },
                         Ok(None) => {
                             // compact 返回 None 表示无可压缩内容，无法恢复
                             return report_error(
                                 turn_id,
                                 format!(
-                                    "prompt too long but no compressible history available after {} attempts",
+                                    "prompt too long but no compressible history available after \
+                                     {} attempts",
                                     reactive_compact_attempts
                                 ),
                                 on_event,
                                 emit_turn_done,
                             );
-                        }
+                        },
                         Err(compact_error) => {
                             if cancel.is_cancelled() {
                                 return report_interrupted(turn_id, on_event, emit_turn_done);
@@ -299,14 +300,14 @@ pub(crate) async fn run_turn(
                                 on_event,
                                 emit_turn_done,
                             );
-                        }
+                        },
                     }
                 } else if cancel.is_cancelled() {
                     return report_interrupted(turn_id, on_event, emit_turn_done);
                 } else {
                     return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
                 }
-            }
+            },
         };
         token_tracker.record_usage(output.usage);
 
@@ -391,8 +392,8 @@ pub(crate) async fn run_turn(
                     internal_error(error).to_string(),
                     on_event,
                     emit_turn_done,
-                )
-            }
+                );
+            },
         };
 
         if matches!(
@@ -460,7 +461,8 @@ fn log_prompt_diagnostics(diagnostics: &PromptDiagnostics) {
         let block_id = diagnostic.block_id.as_deref().unwrap_or("-");
         let contributor_id = diagnostic.contributor_id.as_deref().unwrap_or("-");
         let message = format!(
-            "prompt diagnostic contributor={contributor_id} block={block_id} reason={:?} suggestion={}",
+            "prompt diagnostic contributor={contributor_id} block={block_id} reason={:?} \
+             suggestion={}",
             diagnostic.reason,
             diagnostic.suggestion.as_deref().unwrap_or("-")
         );

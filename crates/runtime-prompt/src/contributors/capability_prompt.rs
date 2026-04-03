@@ -89,7 +89,7 @@ fn collect_tool_guides(capability_descriptors: &[CapabilityDescriptor]) -> Vec<T
                                 error
                             );
                             None
-                        }
+                        },
                     },
                 )?;
             Some(ToolGuideEntry {
@@ -108,7 +108,8 @@ fn should_expand_tool_guides(tool_guide_count: usize) -> bool {
 
 fn build_tool_summary_block(tool_guides: &[ToolGuideEntry]) -> BlockSpec {
     let mut content = String::from(
-        "Use the narrowest tool that can answer the request. Prefer read-only inspection before mutation.\n",
+        "Use the narrowest tool that can answer the request. Prefer read-only inspection before \
+         mutation.\n",
     );
     for guide in tool_guides {
         let caveat = guide
@@ -208,8 +209,9 @@ fn build_prompt_declaration_block(declaration: &PromptDeclaration) -> BlockSpec 
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::test_support::TestEnvGuard;
-    use astrcode_core::{CapabilityDescriptor, CapabilityKind, ToolPromptMetadata};
+    use astrcode_core::{
+        CapabilityDescriptor, CapabilityKind, ToolPromptMetadata, test_support::TestEnvGuard,
+    };
     use serde_json::json;
 
     use super::*;
@@ -262,10 +264,12 @@ mod tests {
     async fn contributes_tool_summary_and_extension_instruction_blocks() {
         let contribution = CapabilityPromptContributor.contribute(&context()).await;
 
-        assert!(contribution
-            .blocks
-            .iter()
-            .any(|block| block.id == "tool-summary" && block.kind == BlockKind::ToolGuide));
+        assert!(
+            contribution
+                .blocks
+                .iter()
+                .any(|block| block.id == "tool-summary" && block.kind == BlockKind::ToolGuide)
+        );
         assert!(contribution.blocks.iter().any(|block| {
             block.id == "plugin-guide" && block.kind == BlockKind::ExtensionInstruction
         }));
@@ -285,13 +289,17 @@ mod tests {
 
         let contribution = CapabilityPromptContributor.contribute(&ctx).await;
 
-        assert!(contribution
-            .blocks
-            .iter()
-            .any(|block| block.id == "tool-guide-epsilon"));
-        assert!(!contribution
-            .blocks
-            .iter()
-            .any(|block| block.id == "tool-guide-alpha"));
+        assert!(
+            contribution
+                .blocks
+                .iter()
+                .any(|block| block.id == "tool-guide-epsilon")
+        );
+        assert!(
+            !contribution
+                .blocks
+                .iter()
+                .any(|block| block.id == "tool-guide-alpha")
+        );
     }
 }

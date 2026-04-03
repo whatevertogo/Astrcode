@@ -5,9 +5,8 @@
 
 use std::path::PathBuf;
 
-use crate::{AstrError, Result};
-
 pub use crate::env::{ASTRCODE_HOME_DIR_ENV, ASTRCODE_TEST_HOME_ENV};
+use crate::{AstrError, Result};
 
 /// Resolves the home directory for Astrcode storage.
 ///

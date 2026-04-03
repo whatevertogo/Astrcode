@@ -16,8 +16,7 @@
 //! 4. 执行权限检查
 //! 5. 调用 handler.invoke() 执行实际逻辑
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use astrcode_core::{AstrError, CancelToken, Result};
 use astrcode_protocol::plugin::{CapabilityDescriptor, InvocationContext};
@@ -217,9 +216,10 @@ impl CapabilityRouter {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use astrcode_protocol::plugin::{CapabilityKind, SideEffectLevel, StabilityLevel};
     use serde_json::json;
+
+    use super::*;
 
     struct SampleHandler;
 

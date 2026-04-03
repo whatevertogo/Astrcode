@@ -8,10 +8,8 @@
 //! - 写入前读取现有内容以生成 diff 报告
 //! - 如果现有文件无法作为 UTF-8 读取，diff 不可用但不影响写入操作
 
-use crate::tools::fs_common::{
-    build_text_change_report, check_cancel, read_utf8_file, resolve_path, write_text_file,
-    TextChangeReport,
-};
+use std::{path::PathBuf, time::Instant};
+
 use astrcode_core::{
     AstrError, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
     ToolExecutionResult, ToolPromptMetadata,
@@ -19,8 +17,11 @@ use astrcode_core::{
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
-use std::path::PathBuf;
-use std::time::Instant;
+
+use crate::tools::fs_common::{
+    TextChangeReport, build_text_change_report, check_cancel, read_utf8_file, resolve_path,
+    write_text_file,
+};
 
 /// WriteFile 工具实现。
 ///
@@ -64,10 +65,18 @@ impl Tool for WriteFileTool {
             .prompt(
                 ToolPromptMetadata::new(
                     "Create or fully replace a text file when the whole target content is known.",
-                    "Use `writeFile` for file creation, regeneration, or full rewrites. Prefer `editFile` when you only need to replace a small unique region, because that keeps the change narrower and easier to validate.",
+                    "Use `writeFile` for file creation, regeneration, or full rewrites. Prefer \
+                     `editFile` when you only need to replace a small unique region, because that \
+                     keeps the change narrower and easier to validate.",
                 )
-                .caveat("It overwrites existing file contents, so only use it when a full replacement is intentional.")
-                .example("Create a new config file or rewrite a small generated artifact with known final content.")
+                .caveat(
+                    "It overwrites existing file contents, so only use it when a full replacement \
+                     is intentional.",
+                )
+                .example(
+                    "Create a new config file or rewrite a small generated artifact with known \
+                     final content.",
+                )
                 .prompt_tag("filesystem")
                 .always_include(true),
             )
@@ -91,12 +100,13 @@ impl Tool for WriteFileTool {
                 Ok(content) => Some(content),
                 Err(error) => {
                     log::warn!(
-                        "writeFile skipped diff metadata for '{}' because the existing file could not be read as UTF-8: {}",
+                        "writeFile skipped diff metadata for '{}' because the existing file could \
+                         not be read as UTF-8: {}",
                         path.display(),
                         error
                     );
                     None
-                }
+                },
             }
         } else {
             None
@@ -198,10 +208,12 @@ mod tests {
             .expect("file should be readable");
         assert_eq!(content, "new");
         let metadata = result.metadata.expect("metadata should exist");
-        assert!(metadata["diff"]["patch"]
-            .as_str()
-            .expect("patch should exist")
-            .contains("+new"));
+        assert!(
+            metadata["diff"]["patch"]
+                .as_str()
+                .expect("patch should exist")
+                .contains("+new")
+        );
     }
 
     #[tokio::test]

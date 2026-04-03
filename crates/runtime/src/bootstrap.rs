@@ -21,12 +21,14 @@ use std::sync::Arc;
 
 use astrcode_core::{AstrError, PluginManifest, PluginRegistry, RuntimeCoordinator, RuntimeHandle};
 
-use crate::plugin_discovery::{configured_plugin_paths, discover_plugin_manifests_in};
-use crate::runtime_governance::RuntimeGovernance;
-use crate::runtime_surface_assembler::{
-    assemble_runtime_surface, PluginInitializer, SupervisorPluginInitializer,
+use crate::{
+    RuntimeService, ServiceError,
+    plugin_discovery::{configured_plugin_paths, discover_plugin_manifests_in},
+    runtime_governance::RuntimeGovernance,
+    runtime_surface_assembler::{
+        PluginInitializer, SupervisorPluginInitializer, assemble_runtime_surface,
+    },
 };
-use crate::{RuntimeService, ServiceError};
 
 /// 运行时引导完成后的结果容器。
 ///

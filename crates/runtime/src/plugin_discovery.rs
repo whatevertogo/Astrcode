@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use astrcode_core::{env::ASTRCODE_PLUGIN_DIRS_ENV, AstrError, PluginManifest};
+use astrcode_core::{AstrError, PluginManifest, env::ASTRCODE_PLUGIN_DIRS_ENV};
 use astrcode_plugin::PluginLoader;
 
 /// 从环境变量读取插件搜索路径。

@@ -2,22 +2,20 @@
 //!
 //! 本模块实现两层认证机制：
 //!
-//! 1. **Bootstrap Auth**：server 启动时生成的短期 token（24 小时），
-//!    用于前端 Vite dev server 与 server 进行初始鉴权交换。
-//! 2. **API Session Auth**：通过 `/api/auth/exchange` 交换获得的长期 token（8 小时），
-//!    用于所有后续 API 请求的认证。
+//! 1. **Bootstrap Auth**：server 启动时生成的短期 token（24 小时）， 用于前端 Vite dev server 与
+//!    server 进行初始鉴权交换。
+//! 2. **API Session Auth**：通过 `/api/auth/exchange` 交换获得的长期 token（8 小时）， 用于所有后续
+//!    API 请求的认证。
 //!
 //! Token 通过 `x-astrcode-token` 请求头或 `token` 查询参数传递，
 //! 比较使用常量时间比较函数防止时序攻击。
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::{collections::HashMap, sync::Mutex};
 
 use axum::http::HeaderMap;
 use chrono::{Duration, Utc};
 
-use crate::bootstrap::random_hex_token;
-use crate::{ApiError, AppState, AUTH_HEADER_NAME};
+use crate::{AUTH_HEADER_NAME, ApiError, AppState, bootstrap::random_hex_token};
 
 /// API 会话 token 有效期（小时）。
 ///

@@ -7,8 +7,10 @@
 //! 使用 `Arc<AtomicBool>` 而非 `tokio::CancellationToken`，是为了保持 core crate
 //! 不依赖 tokio。core 只定义接口，运行时依赖由上层 crate 注入。
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 /// 跨线程共享的取消信号。
 ///

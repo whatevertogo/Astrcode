@@ -8,12 +8,13 @@
 //! - 截断点必须在 UTF-8 字符边界上，避免多字节字符被截断成无效字符串
 //! - 返回 metadata 包含原始字节数和是否截断标记
 
-use std::fs::{self, File};
-use std::io::Read;
-use std::path::PathBuf;
-use std::time::Instant;
+use std::{
+    fs::{self, File},
+    io::Read,
+    path::PathBuf,
+    time::Instant,
+};
 
-use crate::tools::fs_common::{check_cancel, resolve_path};
 use astrcode_core::{
     AstrError, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
     ToolExecutionResult, ToolPromptMetadata,
@@ -21,6 +22,8 @@ use astrcode_core::{
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
+
+use crate::tools::fs_common::{check_cancel, resolve_path};
 
 /// ReadFile 工具实现。
 ///
@@ -63,11 +66,20 @@ impl Tool for ReadFileTool {
             .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Read the exact contents of a text file when you need authoritative code or config context.",
-                    "Use `readFile` after you have identified the right path with `findFiles` or `grep`. It is the primary source of truth for code analysis, debugging, and planning edits because it returns the file contents directly.",
+                    "Read the exact contents of a text file when you need authoritative code or \
+                     config context.",
+                    "Use `readFile` after you have identified the right path with `findFiles` or \
+                     `grep`. It is the primary source of truth for code analysis, debugging, and \
+                     planning edits because it returns the file contents directly.",
                 )
-                .caveat("Large files can be truncated by `maxBytes`, so confirm whether truncation happened before making claims about the tail of a file.")
-                .example("Open the implementation of a function or inspect a config file before editing it.")
+                .caveat(
+                    "Large files can be truncated by `maxBytes`, so confirm whether truncation \
+                     happened before making claims about the tail of a file.",
+                )
+                .example(
+                    "Open the implementation of a function or inspect a config file before \
+                     editing it.",
+                )
                 .prompt_tag("filesystem")
                 .always_include(true),
             )

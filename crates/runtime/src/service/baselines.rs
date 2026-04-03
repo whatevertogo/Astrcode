@@ -10,25 +10,25 @@
 //! 使用静态 LLM Provider 模拟确定性输出，避免真实 API 调用的不确定性。
 //! 通过 `seed_session_log` 生成预定义的 JSONL 会话日志，验证回放和指标逻辑。
 
-use std::fs::File;
-use std::io::{BufWriter, Write};
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    fs::File,
+    io::{BufWriter, Write},
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
+use astrcode_core::{AstrError, Result, StorageEvent, StoredEvent, UserMessageOrigin};
+use astrcode_runtime_agent_loop::{AgentLoop, ProviderFactory};
+use astrcode_storage::session::EventLog;
 use async_trait::async_trait;
 use chrono::{Duration as ChronoDuration, Utc};
 
-use astrcode_core::{AstrError, Result, StorageEvent, StoredEvent, UserMessageOrigin};
-use astrcode_storage::session::EventLog;
-
-use crate::llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
-use crate::test_support::{empty_capabilities, TestEnvGuard};
-use astrcode_runtime_agent_loop::AgentLoop;
-use astrcode_runtime_agent_loop::ProviderFactory;
-
 use super::{RuntimeService, SessionReplaySource};
+use crate::{
+    llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest, ModelLimits},
+    test_support::{TestEnvGuard, empty_capabilities},
+};
 
 /// 静态 LLM Provider，返回预设输出并支持模拟延迟。
 ///

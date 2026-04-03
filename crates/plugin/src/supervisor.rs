@@ -20,15 +20,14 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use tokio::sync::Mutex;
-
 use astrcode_core::{ManagedRuntimeComponent, PluginManifest, Result};
 use astrcode_protocol::plugin::{
-    CapabilityDescriptor, InitializeMessage, InitializeResultData, InvokeMessage, PeerDescriptor,
-    ProfileDescriptor, ResultMessage, PROTOCOL_VERSION,
+    CapabilityDescriptor, InitializeMessage, InitializeResultData, InvokeMessage, PROTOCOL_VERSION,
+    PeerDescriptor, ProfileDescriptor, ResultMessage,
 };
-use serde_json::{json, Value};
+use async_trait::async_trait;
+use serde_json::{Value, json};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{CapabilityRouter, Peer, PluginProcess, StreamExecution};
@@ -109,7 +108,7 @@ impl Supervisor {
                     );
                 }
                 return Err(error);
-            }
+            },
         };
         Ok(Self {
             manifest_name,

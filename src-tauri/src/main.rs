@@ -6,24 +6,28 @@
 mod commands;
 mod instance;
 mod paths;
-use std::io::{ErrorKind, Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::{
+    io::{ErrorKind, Read, Write},
+    net::{SocketAddr, TcpStream, ToSocketAddrs},
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, sync_channel},
+    },
+    time::Duration,
+};
 
-use crate::paths::{resolve_home_dir, runtime_sidecar_dir};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use astrcode_core::LocalServerInfo;
 use instance::{DesktopInstanceCoordinator, InstanceBootstrap};
-use tauri::async_runtime;
-use tauri::{Manager, Url, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, Url, WebviewUrl, WebviewWindowBuilder, async_runtime};
 use tauri_plugin_shell::{
-    process::{CommandChild, CommandEvent},
     ShellExt,
+    process::{CommandChild, CommandEvent},
 };
+
+use crate::paths::{resolve_home_dir, runtime_sidecar_dir};
 
 type SpawnedSidecarPath = Arc<Mutex<Option<PathBuf>>>;
 
@@ -244,13 +248,14 @@ fn spawn_server_process(
             if let Err(remove_error) = std::fs::remove_file(&detached_sidecar_path) {
                 if remove_error.kind() != ErrorKind::NotFound {
                     eprintln!(
-                        "[astrcode-server cleanup] failed to remove unspawned detached sidecar '{}': {remove_error}",
+                        "[astrcode-server cleanup] failed to remove unspawned detached sidecar \
+                         '{}': {remove_error}",
                         detached_sidecar_path.display()
                     );
                 }
             }
             return Err(error);
-        }
+        },
     };
     {
         let mut slot = spawned_sidecar_path
@@ -277,21 +282,21 @@ fn spawn_server_process(
                             Ok(Some(info)) => {
                                 let _ = tx.send(Ok(info));
                                 ready_tx = None;
-                            }
-                            Ok(None) => {}
+                            },
+                            Ok(None) => {},
                             Err(error) => {
                                 let _ = tx.send(Err(error));
                                 ready_tx = None;
-                            }
+                            },
                         }
                     }
-                }
+                },
                 CommandEvent::Stderr(line) => {
                     eprintln!(
                         "[astrcode-server stderr] {}",
                         String::from_utf8_lossy(&line)
                     );
-                }
+                },
                 CommandEvent::Error(error) => {
                     if let Some(tx) = ready_tx.take() {
                         let _ = tx.send(Err(anyhow!(
@@ -307,7 +312,7 @@ fn spawn_server_process(
                         );
                         app_handle.exit(1);
                     }
-                }
+                },
                 CommandEvent::Terminated(payload) => {
                     if let Some(tx) = ready_tx.take() {
                         let _ = tx.send(Err(anyhow!(
@@ -333,8 +338,8 @@ fn spawn_server_process(
                     );
                     let exit_code = payload.code.filter(|code| *code != 0).unwrap_or(1);
                     app_handle.exit(exit_code);
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
 
@@ -469,7 +474,7 @@ fn cleanup_spawned_sidecar(spawned_sidecar_path: &SpawnedSidecarPath) {
         Err(_) => {
             eprintln!("[astrcode-server cleanup] spawned sidecar path mutex poisoned");
             return;
-        }
+        },
     };
     let Some(path) = path else {
         return;
@@ -520,7 +525,7 @@ fn probe_server_http_ready(port: u16) -> Result<bool> {
         Err(error) => {
             return Err(error)
                 .with_context(|| format!("failed to connect to astrcode-server on port {port}"));
-        }
+        },
     };
 
     stream
@@ -540,7 +545,7 @@ fn probe_server_http_ready(port: u16) -> Result<bool> {
             let response_head = String::from_utf8_lossy(&buffer[..read]);
             Ok(response_head.starts_with("HTTP/1.1 200")
                 || response_head.starts_with("HTTP/1.0 200"))
-        }
+        },
         Err(error) if is_connection_refused(&error) => Ok(false),
         Err(error) => Err(error).context("failed to read server readiness probe"),
     }
@@ -566,8 +571,8 @@ fn try_parse_sidecar_ready_chunk(
             Err(error) => {
                 return Err(anyhow!(
                     "failed to parse sidecar ready line from stdout: {error}"
-                ))
-            }
+                ));
+            },
         }
     }
 

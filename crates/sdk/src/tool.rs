@@ -35,12 +35,10 @@
 //! let registration = ToolRegistration::new(MyTool);
 //! ```
 
-use std::future::Future;
-use std::pin::Pin;
+use std::{future::Future, pin::Pin};
 
 use astrcode_protocol::plugin::CapabilityDescriptor;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 use crate::{PluginContext, SdkError, StreamWriter, ToolSerdeStage};

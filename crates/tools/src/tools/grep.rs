@@ -9,6 +9,11 @@
 //! - 默认最多返回 100 条匹配，避免超大输出
 //! - 无法读取的文件（如二进制文件）会被跳过并记录警告
 
+use std::{
+    path::{Path, PathBuf},
+    time::Instant,
+};
+
 use astrcode_core::{
     AstrError, CancelToken, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext,
     ToolDefinition, ToolExecutionResult, ToolPromptMetadata,
@@ -18,9 +23,6 @@ use log::warn;
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::path::Path;
-use std::path::PathBuf;
-use std::time::Instant;
 use walkdir::WalkDir;
 
 use crate::tools::fs_common::{check_cancel, json_output, read_utf8_file, resolve_path};
@@ -59,7 +61,9 @@ impl Tool for GrepTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "grep".to_string(),
-            description: "Search for a regex pattern in a file or directory. Returns matching lines with file path and line number.".to_string(),
+            description: "Search for a regex pattern in a file or directory. Returns matching \
+                          lines with file path and line number."
+                .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -84,11 +88,19 @@ impl Tool for GrepTool {
             .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Search file contents by regex when you need to locate code, config keys, or repeated text patterns.",
-                    "Use `grep` after scoping the search path. It is the fastest way to answer where something is defined or referenced before opening specific files.",
+                    "Search file contents by regex when you need to locate code, config keys, or \
+                     repeated text patterns.",
+                    "Use `grep` after scoping the search path. It is the fastest way to answer \
+                     where something is defined or referenced before opening specific files.",
                 )
-                .caveat("Regex patterns can over-match; narrow the path or cap `maxMatches` before drawing conclusions from broad searches.")
-                .example("Find all references to a symbol, config key, or error string inside a module or repository subtree.")
+                .caveat(
+                    "Regex patterns can over-match; narrow the path or cap `maxMatches` before \
+                     drawing conclusions from broad searches.",
+                )
+                .example(
+                    "Find all references to a symbol, config key, or error string inside a module \
+                     or repository subtree.",
+                )
                 .prompt_tag("search")
                 .always_include(true),
             )
@@ -128,7 +140,7 @@ impl Tool for GrepTool {
                     warn!("grep: skipping '{}': {}", file.display(), error);
                     skipped_files += 1;
                     continue;
-                }
+                },
             };
 
             for (index, line) in content.lines().enumerate() {

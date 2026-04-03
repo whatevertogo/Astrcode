@@ -17,8 +17,8 @@
 //! 流式响应通过 SSE（Server-Sent Events）协议传输，本 crate 使用 [`LlmAccumulator`]
 //! 将增量事件重新组装为完整的 [`LlmOutput`]：
 //! 1. HTTP 响应流逐块读取字节
-//! 2. 按 SSE 协议解析出事件块（Anthropic 使用多行 `event:/data:` 格式，
-//!    OpenAI 使用单行 `data: {...}` 格式）
+//! 2. 按 SSE 协议解析出事件块（Anthropic 使用多行 `event:/data:` 格式， OpenAI 使用单行 `data:
+//!    {...}` 格式）
 //! 3. 每个事件通过 [`emit_event`] 同时发送到外部 `EventSink` 和内部累加器
 //! 4. 流结束后，累加器输出包含完整文本、工具调用和推理内容的 [`LlmOutput`]
 //!
@@ -41,17 +41,16 @@
 //! - [`anthropic`] — Anthropic Messages API 实现
 //! - [`openai`] — OpenAI Chat Completions API 兼容实现
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use astrcode_core::{AstrError, CancelToken, ModelRequest, ReasoningContent, Result};
+use astrcode_core::{
+    AstrError, CancelToken, LlmMessage, ModelRequest, ReasoningContent, Result, ToolCallRequest,
+    ToolDefinition,
+};
 use async_trait::async_trait;
 use log::warn;
 use serde_json::Value;
 use tokio::{select, time::sleep};
-
-use astrcode_core::{LlmMessage, ToolCallRequest, ToolDefinition};
 
 pub mod anthropic;
 pub mod openai;
@@ -97,13 +96,13 @@ impl std::fmt::Display for LlmError {
         match self {
             LlmError::PromptTooLong { status, body } => {
                 write!(f, "prompt too long (HTTP {status}): {body}")
-            }
+            },
             LlmError::ClientError { status, body } => {
                 write!(f, "client error (HTTP {status}): {body}")
-            }
+            },
             LlmError::ServerError { status, body } => {
                 write!(f, "server error (HTTP {status}): {body}")
-            }
+            },
             LlmError::Transport(msg) => write!(f, "transport error: {msg}"),
             LlmError::Interrupted => write!(f, "LLM request interrupted"),
             LlmError::StreamParse(msg) => write!(f, "stream parse error: {msg}"),
@@ -116,7 +115,7 @@ impl From<LlmError> for AstrError {
         match err {
             LlmError::PromptTooLong { status, body } => {
                 AstrError::LlmRequestFailed { status, body }
-            }
+            },
             LlmError::ClientError { status, body } => AstrError::LlmRequestFailed { status, body },
             LlmError::ServerError { status, body } => AstrError::LlmRequestFailed { status, body },
             LlmError::Transport(msg) => AstrError::Network(msg),
@@ -445,13 +444,13 @@ impl LlmAccumulator {
         match event {
             LlmEvent::TextDelta(text) => {
                 self.content.push_str(text);
-            }
+            },
             LlmEvent::ThinkingDelta(text) => {
                 self.thinking.push_str(text);
-            }
+            },
             LlmEvent::ThinkingSignature(signature) => {
                 self.thinking_signature = Some(signature.clone());
-            }
+            },
             LlmEvent::ToolCallDelta {
                 index,
                 id,
@@ -466,7 +465,7 @@ impl LlmAccumulator {
                     entry.name = value.clone();
                 }
                 entry.arguments.push_str(arguments_delta);
-            }
+            },
         }
     }
 
@@ -483,11 +482,12 @@ impl LlmAccumulator {
                         // JSON 解析失败时降级为原始字符串，并记录警告日志
                         // 这通常意味着 LLM 返回了格式错误的工具参数
                         warn!(
-                            "failed to parse tool call '{}' arguments as JSON: {}, falling back to raw string",
+                            "failed to parse tool call '{}' arguments as JSON: {}, falling back \
+                             to raw string",
                             call.name, error
                         );
                         Value::String(call.arguments)
-                    }
+                    },
                 };
                 ToolCallRequest {
                     id: call.id,

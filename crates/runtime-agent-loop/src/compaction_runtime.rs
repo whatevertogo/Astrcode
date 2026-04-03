@@ -23,8 +23,8 @@
 //! - **使用** `LlmMessage` 序列调用 LLM 生成压缩摘要
 //! - **被调用方**：`turn_runner` 中的 `maybe_compact_conversation()` 辅助函数
 //! - **被调用方**：`AgentLoop::manual_compact_event()` 用于用户主动压缩
-//! - **输出给**：`turn_runner` 将 `compacted_view` 赋值给本地 `conversation` 变量，
-//!   并在下一个 step 中通过 `prior_compaction_view` 传给 `ContextPipeline`
+//! - **输出给**：`turn_runner` 将 `compacted_view` 赋值给本地 `conversation` 变量， 并在下一个 step
+//!   中通过 `prior_compaction_view` 传给 `ContextPipeline`
 //!
 //! ## 三种压缩原因
 //!
@@ -44,15 +44,17 @@
 use std::sync::{Arc, Mutex as StdMutex};
 
 use astrcode_core::{
-    format_compact_summary, project, CancelToken, CompactTrigger, ContextDecisionInput,
-    ContextStrategy, LlmMessage, Result, StorageEvent, StoredEvent, UserMessageOrigin,
+    CancelToken, CompactTrigger, ContextDecisionInput, ContextStrategy, LlmMessage, Result,
+    StorageEvent, StoredEvent, UserMessageOrigin, format_compact_summary, project,
 };
 use astrcode_runtime_llm::LlmProvider;
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::context_pipeline::ConversationView;
-use crate::context_window::{auto_compact, should_compact, CompactConfig, PromptTokenSnapshot};
+use crate::{
+    context_pipeline::ConversationView,
+    context_window::{CompactConfig, PromptTokenSnapshot, auto_compact, should_compact},
+};
 
 /// Why a compaction attempt happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,7 +158,7 @@ fn tail_snapshot_from_messages(
                 } => {
                     current_turn += 1;
                     Some(format!("tail-turn-{current_turn}"))
-                }
+                },
                 _ if current_turn > 0 => Some(format!("tail-turn-{current_turn}")),
                 _ => None,
             };
@@ -401,7 +403,8 @@ impl CompactionStrategy for AutoCompactStrategy {
             strategy_id: "suffix_preserving_summary".to_string(),
             pre_tokens: result.pre_tokens,
             post_tokens_estimate: result.post_tokens_estimate,
-            compacted_at_seq: 0, // TODO: wire real storage_seq from event log for session rebuild & debugging
+            compacted_at_seq: 0, /* TODO: wire real storage_seq from event log for session
+                                  * rebuild & debugging */
             trigger: input.reason,
             preserved_recent_turns: result.preserved_recent_turns,
             messages_removed: result.messages_removed,

@@ -26,29 +26,31 @@
 //! 系统会自动注入 `AutoContinueNudge` 消息触发下一轮 Turn，
 //! 直到预算耗尽或达到最大续跑次数。
 
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Instant;
+use std::{
+    sync::{Arc, Mutex as StdMutex, atomic::Ordering},
+    time::Instant,
+};
 
 use anyhow::Result;
 use astrcode_core::{
-    generate_session_id, AstrError, CancelToken, Phase, SessionTurnAcquireResult, SessionTurnLease,
-    StorageEvent, StoredEvent, UserMessageOrigin,
+    AstrError, CancelToken, EventTranslator, Phase, SessionTurnAcquireResult, SessionTurnLease,
+    StorageEvent, StoredEvent, UserMessageOrigin, generate_session_id,
+};
+use astrcode_runtime_agent_loop::{
+    CompactionTailSnapshot, TokenBudgetDecision, TurnOutcome, build_auto_continue_nudge,
+    check_token_budget, estimate_text_tokens, strip_token_budget_marker,
 };
 use chrono::Utc;
 use uuid::Uuid;
 
-use super::session_ops::normalize_session_id;
-use super::session_state::{SessionState, SessionTokenBudgetState};
-use super::support::{lock_anyhow, spawn_blocking_service};
-use super::{PromptAccepted, RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent};
+use super::{
+    PromptAccepted, RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent,
+    session_ops::normalize_session_id,
+    session_state::{SessionState, SessionTokenBudgetState},
+    support::{lock_anyhow, spawn_blocking_service},
+};
 use crate::config::{
     resolve_continuation_min_delta_tokens, resolve_default_token_budget, resolve_max_continuations,
-};
-use astrcode_core::EventTranslator;
-use astrcode_runtime_agent_loop::{
-    build_auto_continue_nudge, check_token_budget, estimate_text_tokens, strip_token_budget_marker,
-    CompactionTailSnapshot, TokenBudgetDecision, TurnOutcome,
 };
 
 /// Turn 提交的目标会话及其执行上下文。
@@ -193,7 +195,7 @@ impl RuntimeService {
                         budget_settings,
                     )
                     .await
-                }
+                },
                 Err(error) => Err(AstrError::Internal(error.to_string())),
             };
             let result = task_result;
@@ -251,10 +253,10 @@ impl RuntimeService {
                     } else {
                         log::info!("turn '{}' completed in {}ms", turn_id, elapsed.as_millis());
                     }
-                }
+                },
                 Ok(TurnOutcome::Cancelled) => {
                     log::info!("turn '{}' cancelled in {}ms", turn_id, elapsed.as_millis());
-                }
+                },
                 Ok(TurnOutcome::Error { message }) => {
                     log::warn!(
                         "turn '{}' ended with agent error in {}ms: {}",
@@ -262,10 +264,10 @@ impl RuntimeService {
                         elapsed.as_millis(),
                         message
                     );
-                }
+                },
                 Err(_) => {
                     log::warn!("turn '{}' failed in {}ms", turn_id, elapsed.as_millis());
-                }
+                },
             }
         });
 
@@ -464,15 +466,15 @@ fn observe_turn_event(stats: &mut TurnExecutionStats, event: &StorageEvent) {
             estimated_tokens, ..
         } => {
             stats.record_prompt_metrics(*estimated_tokens);
-        }
+        },
         StorageEvent::AssistantFinal {
             content,
             reasoning_content,
             ..
         } => {
             stats.record_assistant_output(content, reasoning_content.as_deref());
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -514,7 +516,7 @@ impl RuntimeService {
                         session,
                         turn_lease,
                     });
-                }
+                },
                 SessionTurnAcquireResult::Busy(active_turn) => {
                     ensure_branch_depth_within_limit(branch_depth)?;
                     let source_session_id = target_session_id.clone();
@@ -527,7 +529,7 @@ impl RuntimeService {
                     });
                     branched_from_session_id = Some(source_session_id);
                     branch_depth += 1;
-                }
+                },
             }
         }
     }
@@ -555,13 +557,13 @@ impl RuntimeService {
             let working_dir = match &first_event.event {
                 StorageEvent::SessionStart { working_dir, .. } => {
                     std::path::PathBuf::from(working_dir)
-                }
+                },
                 _ => {
                     return Err(ServiceError::Internal(AstrError::Internal(format!(
                         "session '{}' is missing sessionStart",
                         source_session_id
-                    ))))
-                }
+                    ))));
+                },
             };
 
             let stable_events = stable_events_before_active_turn(&source_events, &active_turn_id);
@@ -644,7 +646,7 @@ fn append_and_broadcast_from_turn_callback(
     match tokio::runtime::Handle::current().runtime_flavor() {
         tokio::runtime::RuntimeFlavor::CurrentThread => {
             append_and_broadcast_blocking(session, event, translator)
-        }
+        },
         _ => tokio::task::block_in_place(|| {
             append_and_broadcast_blocking(session, event, translator)
         }),
@@ -702,21 +704,20 @@ fn ensure_branch_depth_within_limit(branch_depth: usize) -> ServiceResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
-    use std::sync::Arc;
+    use std::{collections::VecDeque, sync::Arc};
 
     use astrcode_core::AgentEvent;
+    use astrcode_runtime_agent_loop::ProviderFactory;
+    use astrcode_storage::session::EventLog;
     use async_trait::async_trait;
     use chrono::Utc;
-
-    use astrcode_storage::session::EventLog;
     use serde_json::json;
 
-    use super::super::session_state::SessionWriter;
-    use super::*;
-    use crate::llm::{EventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
-    use crate::test_support::TestEnvGuard;
-    use astrcode_runtime_agent_loop::ProviderFactory;
+    use super::{super::session_state::SessionWriter, *};
+    use crate::{
+        llm::{EventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits},
+        test_support::TestEnvGuard,
+    };
 
     struct ScriptedProvider {
         responses: std::sync::Mutex<VecDeque<LlmOutput>>,

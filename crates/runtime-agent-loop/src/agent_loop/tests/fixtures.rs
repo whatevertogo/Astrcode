@@ -1,25 +1,27 @@
 //! 测试夹具：共享的 Provider、Tool、Policy、Broker 等测试基础设施。
 
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use astrcode_core::{
-    ApprovalDefault, ApprovalRequest, ApprovalResolution, AstrError, CancelToken, CapabilityCall,
-    ModelRequest, Phase, PolicyContext, PolicyEngine, PolicyVerdict, Result, Tool,
-    ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult, UserMessageOrigin,
+    AgentState, ApprovalDefault, ApprovalRequest, ApprovalResolution, AstrError, CancelToken,
+    CapabilityCall, LlmMessage, ModelRequest, Phase, PolicyContext, PolicyEngine, PolicyVerdict,
+    Result, StorageEvent, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
+    ToolExecutionResult, UserMessageOrigin,
 };
 use astrcode_runtime_llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
 use astrcode_runtime_prompt::{
     BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor,
 };
 use serde_json::json;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
-use astrcode_core::{AgentState, LlmMessage, StorageEvent};
-
-use crate::provider_factory::ProviderFactory;
-use crate::ApprovalBroker;
+use crate::{ApprovalBroker, provider_factory::ProviderFactory};
 
 // ---------------------------------------------------------------------------
 // AgentState 工厂

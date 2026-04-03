@@ -23,8 +23,10 @@
 //! // guard drop 时自动恢复原始环境变量
 //! ```
 
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Mutex, MutexGuard, OnceLock},
+};
 
 use tempfile::TempDir;
 

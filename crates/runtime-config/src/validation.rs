@@ -14,8 +14,10 @@ use std::collections::HashSet;
 
 use astrcode_core::{AstrError, Result};
 
-use crate::constants::{CURRENT_CONFIG_VERSION, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI};
-use crate::types::{Config, ModelConfig};
+use crate::{
+    constants::{CURRENT_CONFIG_VERSION, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI},
+    types::{Config, ModelConfig},
+};
 
 /// 规范化并验证配置。
 ///
@@ -149,19 +151,20 @@ pub fn validate_config(config: &Config) -> Result<()> {
                 for model in &profile.models {
                     if model.max_tokens.is_none() || model.context_limit.is_none() {
                         return Err(AstrError::Validation(format!(
-                            "openai-compatible profile '{}' model '{}' must set both maxTokens and contextLimit",
+                            "openai-compatible profile '{}' model '{}' must set both maxTokens \
+                             and contextLimit",
                             profile.name, model.id
                         )));
                     }
                 }
-            }
-            PROVIDER_KIND_ANTHROPIC => {}
+            },
+            PROVIDER_KIND_ANTHROPIC => {},
             other => {
                 return Err(AstrError::Validation(format!(
                     "profile '{}' has unsupported provider_kind '{}'",
                     profile.name, other
-                )))
-            }
+                )));
+            },
         }
     }
 

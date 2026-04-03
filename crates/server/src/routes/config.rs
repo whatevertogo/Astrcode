@@ -5,13 +5,13 @@
 //! - `POST /api/config/active-selection` — 保存活跃的 profile/model 选择
 
 use astrcode_protocol::http::{ConfigView, SaveActiveSelectionRequest};
-use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+};
 
-use crate::auth::require_auth;
-use crate::mapper::build_config_view;
-use crate::{ApiError, AppState};
+use crate::{ApiError, AppState, auth::require_auth, mapper::build_config_view};
 
 /// 获取当前配置视图。
 ///

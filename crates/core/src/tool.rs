@@ -8,12 +8,11 @@
 //! - **ToolContext**: 工具执行时的上下文信息（会话 ID、工作目录、取消令牌）
 //! - **ToolCapabilityMetadata**: 工具的能力元数据（用于策略引擎的权限判断）
 
-use std::fmt;
-use std::path::PathBuf;
+use std::{fmt, path::PathBuf};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{

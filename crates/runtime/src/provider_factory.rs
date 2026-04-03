@@ -8,20 +8,20 @@
 //! - OpenAI-compatible 模型 limits 只读取本地逐模型配置
 //! - Anthropic 优先走 Models API 拉取权威 limits，本地逐模型配置只作为失败兜底
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use astrcode_core::{AstrError, Result};
 use astrcode_runtime_agent_loop::ProviderFactory;
 use astrcode_runtime_llm::{LlmProvider, ModelLimits};
 use serde::Deserialize;
 
-use crate::config::{
-    load_resolved_config, resolve_model_for_profile, ModelConfig, Profile,
-    ANTHROPIC_MODELS_API_URL, ANTHROPIC_VERSION, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI,
+use crate::{
+    config::{
+        ANTHROPIC_MODELS_API_URL, ANTHROPIC_VERSION, ModelConfig, PROVIDER_KIND_ANTHROPIC,
+        PROVIDER_KIND_OPENAI, Profile, load_resolved_config, resolve_model_for_profile,
+    },
+    llm::{anthropic::AnthropicProvider, openai::OpenAiProvider},
 };
-use crate::llm::anthropic::AnthropicProvider;
-use crate::llm::openai::OpenAiProvider;
 
 pub struct ConfigFileProviderFactory;
 
@@ -78,7 +78,7 @@ fn build_provider(profile: &Profile, model: &ModelConfig) -> Result<BuiltProvide
                 model.id.clone(),
                 limits,
             )))
-        }
+        },
         PROVIDER_KIND_ANTHROPIC => Ok(BuiltProvider::Anthropic(AnthropicProvider::new(
             api_key,
             model.id.clone(),
@@ -129,7 +129,7 @@ fn model_limits_from_local_override(model: &ModelConfig) -> Option<ModelLimits> 
                 context_window,
                 max_output_tokens: max_output_tokens as usize,
             })
-        }
+        },
         _ => None,
     }
 }
@@ -221,10 +221,11 @@ fn select_profile<'a>(profiles: &'a [Profile], active: &str) -> Result<&'a Profi
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{save_config, Config};
-    use crate::test_support::TestEnvGuard;
-
     use super::*;
+    use crate::{
+        config::{Config, save_config},
+        test_support::TestEnvGuard,
+    };
 
     fn model(id: &str) -> ModelConfig {
         ModelConfig::new(id)
@@ -242,9 +243,11 @@ mod tests {
         let error = resolve_openai_model_limits(&profile, &profile.models[0])
             .expect_err("missing manual limits should fail");
 
-        assert!(error
-            .to_string()
-            .contains("must set both maxTokens and contextLimit"));
+        assert!(
+            error
+                .to_string()
+                .contains("must set both maxTokens and contextLimit")
+        );
     }
 
     #[test]

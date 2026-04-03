@@ -8,13 +8,13 @@
 use astrcode_protocol::http::{
     CurrentModelInfoDto, ModelOptionDto, TestConnectionRequest, TestResultDto,
 };
-use axum::extract::State;
-use axum::http::HeaderMap;
-use axum::Json;
+use axum::{Json, extract::State, http::HeaderMap};
 
-use crate::auth::require_auth;
-use crate::mapper::{list_model_options, resolve_current_model};
-use crate::{ApiError, AppState};
+use crate::{
+    ApiError, AppState,
+    auth::require_auth,
+    mapper::{list_model_options, resolve_current_model},
+};
 
 /// 获取当前激活的模型信息。
 ///

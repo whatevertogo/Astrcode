@@ -6,8 +6,10 @@
 //!
 //! 两个文件同时存在时都会被包含到 prompt 中，分别作为 UserRules 和 ProjectRules block。
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use async_trait::async_trait;
 use log::warn;
@@ -39,7 +41,7 @@ pub fn load_agents_md(path: &Path) -> Option<String> {
         Err(error) => {
             warn!("failed to read {}: {}", path.display(), error);
             None
-        }
+        },
     }
 }
 
@@ -146,13 +148,17 @@ mod tests {
             .await;
 
         assert_eq!(contribution.blocks.len(), 2);
-        assert!(contribution
-            .blocks
-            .iter()
-            .any(|block| block.kind == BlockKind::UserRules));
-        assert!(contribution
-            .blocks
-            .iter()
-            .any(|block| block.kind == BlockKind::ProjectRules));
+        assert!(
+            contribution
+                .blocks
+                .iter()
+                .any(|block| block.kind == BlockKind::UserRules)
+        );
+        assert!(
+            contribution
+                .blocks
+                .iter()
+                .any(|block| block.kind == BlockKind::ProjectRules)
+        );
     }
 }

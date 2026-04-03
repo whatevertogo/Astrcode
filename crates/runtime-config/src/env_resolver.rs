@@ -85,7 +85,7 @@ pub fn resolve_env_value(raw: &str) -> Result<String> {
             .map_err(|_| AstrError::EnvVarNotFound(format!("环境变量 {} 未设置", env_name))),
         ParsedEnvValue::OptionalEnv(env_name) => {
             Ok(std::env::var(env_name).unwrap_or_else(|_| env_name.to_string()))
-        }
+        },
     }
 }
 

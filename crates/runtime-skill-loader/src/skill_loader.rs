@@ -26,15 +26,17 @@
 //! 在项目 `.astrcode/skills/` 中放置项目特定 skill；这些层级的最终覆盖顺序
 //! 由 `SkillCatalog` 决定。
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 
 use astrcode_core::home::resolve_home_dir;
 use log::warn;
 use serde::Deserialize;
 
-use crate::{is_valid_skill_name, SkillSource, SkillSpec};
+use crate::{SkillSource, SkillSpec, is_valid_skill_name};
 
 /// Skill 文件名（固定为 SKILL.md）。
 pub const SKILL_FILE_NAME: &str = "SKILL.md";
@@ -79,12 +81,12 @@ pub fn parse_skill_md(content: &str, fallback_id: &str, source: SkillSource) -> 
             Err(error) => {
                 warn!("failed to parse frontmatter for skill '{fallback_id}': {error}");
                 return None;
-            }
+            },
         },
         None => {
             warn!("skill '{fallback_id}' is missing YAML frontmatter; expected name + description");
             return None;
-        }
+        },
     };
 
     let name = frontmatter.name.trim().to_string();
@@ -150,7 +152,7 @@ pub fn load_skills_from_dir(dir: &Path, source: SkillSource) -> Vec<SkillSpec> {
                     entry.path().display()
                 );
                 continue;
-            }
+            },
         };
         if !file_type.is_dir() {
             continue;
@@ -169,7 +171,7 @@ pub fn load_skills_from_dir(dir: &Path, source: SkillSource) -> Vec<SkillSpec> {
             Err(error) => {
                 warn!("failed to read {}: {error}", skill_path.display());
                 continue;
-            }
+            },
         };
 
         if let Some(mut skill) = parse_skill_md(&content, &fallback_id, source.clone()) {
@@ -279,7 +281,7 @@ fn resolve_user_home_dir() -> Option<PathBuf> {
         Err(error) => {
             warn!("failed to resolve home directory for skills: {error}");
             None
-        }
+        },
     }
 }
 
@@ -294,7 +296,7 @@ fn cache_marker_for_path(path: &Path) -> String {
                 .unwrap_or_default();
 
             format!("present:{}:{modified}", metadata.len())
-        }
+        },
         Err(_) => "missing".to_string(),
     }
 }
@@ -309,7 +311,7 @@ fn cache_marker_for_skill_root(root: &Path) -> String {
         Err(error) => {
             warn!("failed to read skill directory {}: {error}", root.display());
             return format!("{}=unreadable", root.display());
-        }
+        },
     };
 
     let mut markers = Vec::new();
@@ -397,7 +399,8 @@ mod tests {
     #[test]
     fn parse_skill_md_with_claude_style_frontmatter() {
         let parsed = parse_skill_md(
-            "---\nname: git-commit\ndescription: Use this skill when the user asks for a commit workflow.\n---\n# Guide\nUse commit skill.\n",
+            "---\nname: git-commit\ndescription: Use this skill when the user asks for a commit \
+             workflow.\n---\n# Guide\nUse commit skill.\n",
             "git-commit",
             SkillSource::User,
         )

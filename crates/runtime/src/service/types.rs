@@ -88,7 +88,7 @@ impl Display for ServiceError {
         match self {
             Self::NotFound(message) | Self::Conflict(message) | Self::InvalidInput(message) => {
                 f.write_str(message)
-            }
+            },
             Self::Internal(error) => Display::fmt(error, f),
         }
     }
@@ -129,17 +129,17 @@ impl From<AstrError> for ServiceError {
             AstrError::ProjectNotFound(id) => Self::NotFound(format!("project not found: {}", id)),
             AstrError::TurnInProgress(id) => {
                 Self::Conflict(format!("turn already in progress: {}", id))
-            }
+            },
             AstrError::Validation(msg) => Self::InvalidInput(msg.clone()),
             AstrError::InvalidSessionId(id) => {
                 Self::InvalidInput(format!("invalid session id: {}", id))
-            }
+            },
             AstrError::MissingApiKey(profile) => {
                 Self::InvalidInput(format!("missing api key for profile: {}", profile))
-            }
+            },
             AstrError::MissingBaseUrl(profile) => {
                 Self::InvalidInput(format!("missing base url for profile: {}", profile))
-            }
+            },
             _ => Self::Internal(value),
         }
     }
@@ -151,7 +151,7 @@ impl From<StoreError> for ServiceError {
             StoreError::SessionNotFound(id) => Self::NotFound(format!("session not found: {}", id)),
             StoreError::InvalidSessionId(id) => {
                 Self::InvalidInput(format!("invalid session id: {}", id))
-            }
+            },
             StoreError::Io { context, .. } => Self::Internal(AstrError::Internal(context)),
             StoreError::Parse { context, .. } => Self::Internal(AstrError::Internal(context)),
         }

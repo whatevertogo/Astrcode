@@ -19,26 +19,30 @@
 //! - 插件初始化失败不阻塞其他插件
 //! - 返回的 `managed_components` 需要在 shutdown 时有序关闭
 
-use std::collections::{BTreeMap, HashSet};
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Instant;
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::PathBuf,
+    sync::Arc,
+    time::Instant,
+};
 
 use astrcode_core::{
-    plugin::PluginEntry, AstrError, CapabilityDescriptor, CapabilityExecutionResult,
-    CapabilityInvoker, CapabilityRouter, ManagedRuntimeComponent, PluginHealth, PluginManifest,
-    PluginRegistry,
+    AstrError, CapabilityDescriptor, CapabilityExecutionResult, CapabilityInvoker,
+    CapabilityRouter, ManagedRuntimeComponent, PluginHealth, PluginManifest, PluginRegistry,
+    plugin::PluginEntry,
 };
 use astrcode_plugin::{PluginLoader, Supervisor, SupervisorHealth};
 use astrcode_protocol::plugin::{PeerDescriptor, PeerRole, SkillDescriptor};
+use astrcode_runtime_prompt::{PromptDeclaration, PromptDeclarationSource};
+use astrcode_runtime_skill_loader::{SkillCatalog, SkillSpec, merge_skill_layers};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::Value;
 
-use crate::builtin_capabilities::built_in_capability_invokers;
-use crate::plugin_skill_materializer::materialize_plugin_skills;
-use astrcode_runtime_prompt::{PromptDeclaration, PromptDeclarationSource};
-use astrcode_runtime_skill_loader::{merge_skill_layers, SkillCatalog, SkillSpec};
+use crate::{
+    builtin_capabilities::built_in_capability_invokers,
+    plugin_skill_materializer::materialize_plugin_skills,
+};
 
 /// 组装后的运行时能力面
 ///
@@ -160,7 +164,7 @@ impl CapabilityInvoker for GovernedPluginInvoker {
             Ok(result) if result.success => {
                 self.plugin_registry
                     .record_runtime_success(&self.plugin_name, checked_at);
-            }
+            },
             Ok(result) => {
                 self.plugin_registry.record_runtime_failure(
                     &self.plugin_name,
@@ -176,7 +180,7 @@ impl CapabilityInvoker for GovernedPluginInvoker {
                     result.capability_name,
                     started_at.elapsed().as_millis()
                 );
-            }
+            },
             Err(error) => {
                 self.plugin_registry.record_runtime_failure(
                     &self.plugin_name,
@@ -189,7 +193,7 @@ impl CapabilityInvoker for GovernedPluginInvoker {
                     started_at.elapsed().as_millis(),
                     error
                 );
-            }
+            },
         }
         invocation
     }
@@ -318,7 +322,7 @@ where
                     make_failed_entry(manifest, Vec::new(), error.to_string(), Vec::new()),
                 );
                 continue;
-            }
+            },
         };
 
         if let Some(failure) = invalid_capability_reason(&loaded_plugin.capabilities) {
@@ -560,7 +564,8 @@ fn normalize_prompt_declarations(plugin_name: &str, metadata: &Value) -> Vec<Pro
                 }
                 if !seen_block_ids.insert(declaration.block_id.clone()) {
                     log::warn!(
-                        "plugin '{}' prompt declaration '{}' is duplicated; keeping the first declaration only",
+                        "plugin '{}' prompt declaration '{}' is duplicated; keeping the first \
+                         declaration only",
                         plugin_name,
                         declaration.block_id
                     );
@@ -569,7 +574,7 @@ fn normalize_prompt_declarations(plugin_name: &str, metadata: &Value) -> Vec<Pro
                 declaration.source = PromptDeclarationSource::Plugin;
                 declaration.origin = Some(plugin_name.to_string());
                 declarations.push(declaration);
-            }
+            },
             Err(error) => {
                 log::warn!(
                     "plugin '{}' prompt declaration {} is invalid JSON schema: {}",
@@ -577,7 +582,7 @@ fn normalize_prompt_declarations(plugin_name: &str, metadata: &Value) -> Vec<Pro
                     index,
                     error
                 );
-            }
+            },
         }
     }
 

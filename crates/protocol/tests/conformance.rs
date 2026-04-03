@@ -1,12 +1,11 @@
-use serde_json::{json, Value};
-
 use astrcode_protocol::plugin::{
     BudgetHint, CallerRef, CancelMessage, CapabilityDescriptor, CapabilityKind, ErrorPayload,
     EventMessage, EventPhase, FilterDescriptor, HandlerDescriptor, InitializeMessage,
-    InitializeResultData, InvocationContext, PeerDescriptor, PeerRole, PermissionHint,
-    PluginMessage, ProfileDescriptor, ResultMessage, SideEffectLevel, StabilityLevel,
-    TriggerDescriptor, WorkspaceRef, PROTOCOL_VERSION,
+    InitializeResultData, InvocationContext, PROTOCOL_VERSION, PeerDescriptor, PeerRole,
+    PermissionHint, PluginMessage, ProfileDescriptor, ResultMessage, SideEffectLevel,
+    StabilityLevel, TriggerDescriptor, WorkspaceRef,
 };
+use serde_json::{Value, json};
 
 fn fixture(name: &str) -> Value {
     let path = match name {

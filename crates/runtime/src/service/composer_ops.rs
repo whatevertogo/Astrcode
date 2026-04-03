@@ -8,12 +8,12 @@
 //! 因此前端候选查询应该在 service 层统一组装，而不是让前端自行拼接多套来源。
 
 use astrcode_core::{CapabilityDescriptor, ToolPromptMetadata};
+use astrcode_runtime_skill_loader::{SkillSource, SkillSpec};
 
 use super::{
-    session_ops::normalize_session_id, ComposerOption, ComposerOptionKind, ComposerOptionsRequest,
-    RuntimeService, ServiceResult,
+    ComposerOption, ComposerOptionKind, ComposerOptionsRequest, RuntimeService, ServiceResult,
+    session_ops::normalize_session_id,
 };
-use astrcode_runtime_skill_loader::{SkillSource, SkillSpec};
 
 impl RuntimeService {
     /// 列出某个会话上下文下的输入候选项。
@@ -184,19 +184,18 @@ fn capability_to_option(descriptor: CapabilityDescriptor) -> ComposerOption {
 mod tests {
     use std::sync::Arc;
 
+    use astrcode_core::{
+        Result, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
+        ToolPromptMetadata, ToolRegistry,
+    };
+    use astrcode_runtime_skill_loader::{SkillCatalog, SkillSource, SkillSpec};
     use serde_json::json;
 
-    use astrcode_core::{Result, ToolContext};
-    use astrcode_core::{
-        Tool, ToolCapabilityMetadata, ToolDefinition, ToolExecutionResult, ToolPromptMetadata,
-        ToolRegistry,
-    };
-
-    use crate::test_support::{capabilities_from_tools, TestEnvGuard};
-    use crate::{ComposerOptionsRequest, RuntimeService};
-    use astrcode_runtime_skill_loader::{SkillCatalog, SkillSource, SkillSpec};
-
     use super::ComposerOptionKind;
+    use crate::{
+        ComposerOptionsRequest, RuntimeService,
+        test_support::{TestEnvGuard, capabilities_from_tools},
+    };
 
     struct DemoTool;
 
@@ -274,9 +273,11 @@ mod tests {
             .await
             .expect("composer options should load");
 
-        assert!(items
-            .iter()
-            .any(|item| { item.kind == ComposerOptionKind::Skill && item.id == "clarify-first" }));
+        assert!(
+            items.iter().any(|item| {
+                item.kind == ComposerOptionKind::Skill && item.id == "clarify-first"
+            })
+        );
         assert!(items.iter().any(|item| {
             item.kind == ComposerOptionKind::Capability && item.id == "demo.search"
         }));

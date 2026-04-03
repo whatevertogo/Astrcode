@@ -1,14 +1,13 @@
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use astrcode_core::{PluginManifest, PluginType, Result};
 use astrcode_plugin::{
-    default_initialize_message, default_profiles, CapabilityRouter, Peer, PluginProcess, Supervisor,
+    CapabilityRouter, Peer, PluginProcess, Supervisor, default_initialize_message, default_profiles,
 };
 use astrcode_protocol::plugin::{
     EventPhase, InvocationContext, PeerDescriptor, PeerRole, WorkspaceRef,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::time::{sleep, timeout};
 
 fn fixture_manifest() -> PluginManifest {
@@ -74,11 +73,13 @@ async fn stdio_supervisor_initializes_and_invokes_unary_capability() -> Result<(
     let supervisor = Supervisor::start(&manifest, local_peer()).await?;
 
     assert_eq!(supervisor.remote_initialize().peer.role, PeerRole::Worker);
-    assert!(supervisor
-        .remote_initialize()
-        .capabilities
-        .iter()
-        .any(|capability| capability.name == "tool.echo"));
+    assert!(
+        supervisor
+            .remote_initialize()
+            .capabilities
+            .iter()
+            .any(|capability| capability.name == "tool.echo")
+    );
 
     let response = supervisor
         .invoke(

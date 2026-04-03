@@ -1,18 +1,16 @@
-use axum::body::to_bytes;
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use tower::ServiceExt;
-
 use astrcode_core::{
-    plugin::PluginEntry, CapabilityDescriptor, CapabilityKind, PluginHealth, PluginState,
-    SideEffectLevel, StabilityLevel,
+    CapabilityDescriptor, CapabilityKind, PluginHealth, PluginState, SideEffectLevel,
+    StabilityLevel, plugin::PluginEntry,
 };
 use astrcode_protocol::http::RuntimeStatusDto;
+use axum::{
+    body::{Body, to_bytes},
+    http::{Request, StatusCode},
+};
 use serde_json::json;
+use tower::ServiceExt;
 
-use crate::routes::build_api_router;
-use crate::test_support::test_state;
-use crate::AUTH_HEADER_NAME;
+use crate::{AUTH_HEADER_NAME, routes::build_api_router, test_support::test_state};
 
 #[tokio::test]
 async fn runtime_status_requires_authentication() {
@@ -114,10 +112,12 @@ async fn runtime_status_exposes_plugin_warnings() {
     let payload: RuntimeStatusDto =
         serde_json::from_slice(&bytes).expect("runtime status should deserialize");
     assert_eq!(payload.plugins.len(), 1);
-    assert!(payload.plugins[0]
-        .warnings
-        .iter()
-        .any(|warning| warning.contains("missing.tool")));
+    assert!(
+        payload.plugins[0]
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("missing.tool"))
+    );
 }
 
 #[tokio::test]

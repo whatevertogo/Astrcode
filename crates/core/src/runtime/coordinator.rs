@@ -13,8 +13,8 @@
 use std::sync::{Arc, RwLock};
 
 use crate::{
-    plugin::PluginEntry, AstrError, CapabilityDescriptor, ManagedRuntimeComponent, PluginRegistry,
-    Result, RuntimeHandle,
+    AstrError, CapabilityDescriptor, ManagedRuntimeComponent, PluginRegistry, Result,
+    RuntimeHandle, plugin::PluginEntry,
 };
 
 /// 运行时协调器。
@@ -24,8 +24,7 @@ use crate::{
 ///
 /// ## 设计要点
 ///
-/// - 通过 `replace_runtime_surface` 实现原子化的运行时表面替换，
-///   用于插件热重载或运行时切换场景
+/// - 通过 `replace_runtime_surface` 实现原子化的运行时表面替换， 用于插件热重载或运行时切换场景
 /// - 关闭时按确定顺序先停止运行时，再逐个关闭托管组件
 pub struct RuntimeCoordinator {
     /// 当前活跃的运行时句柄
@@ -171,9 +170,9 @@ mod tests {
 
     use super::RuntimeCoordinator;
     use crate::{
-        plugin::{PluginEntry, PluginHealth},
         AstrError, CapabilityDescriptor, CapabilityKind, ManagedRuntimeComponent, PluginRegistry,
         Result, RuntimeHandle, SideEffectLevel, StabilityLevel,
+        plugin::{PluginEntry, PluginHealth},
     };
 
     struct FakeRuntimeHandle {

@@ -312,7 +312,7 @@ impl PolicyEngine for AllowAllPolicyEngine {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use super::{
         AllowAllPolicyEngine, ApprovalDefault, ApprovalRequest, ContextDecisionInput,

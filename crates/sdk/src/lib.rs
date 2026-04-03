@@ -80,6 +80,6 @@ pub use hook::{
     RegisteredPolicyHook,
 };
 // Re-export serde for convenience, so plugin authors don't need a separate dependency.
-pub use serde::{de::DeserializeOwned, Serialize};
+pub use serde::{Serialize, de::DeserializeOwned};
 pub use stream::{StreamChunk, StreamWriter};
 pub use tool::{DynToolHandler, ToolFuture, ToolHandler, ToolRegistration, ToolResult};

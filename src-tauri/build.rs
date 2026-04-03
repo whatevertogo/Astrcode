@@ -1,7 +1,6 @@
+use std::{env, fs, path::PathBuf};
+
 use astrcode_core::env::TAURI_ENV_TARGET_TRIPLE_ENV;
-use std::env;
-use std::fs;
-use std::path::PathBuf;
 
 fn ensure_sidecar_placeholder() {
     let target_triple = env::var(TAURI_ENV_TARGET_TRIPLE_ENV)

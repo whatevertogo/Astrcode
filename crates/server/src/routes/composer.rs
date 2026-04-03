@@ -5,14 +5,14 @@
 
 use astrcode_protocol::http::ComposerOptionsResponseDto;
 use astrcode_runtime::{ComposerOptionKind, ComposerOptionsRequest};
-use axum::extract::{Path, Query, State};
-use axum::http::HeaderMap;
-use axum::Json;
+use axum::{
+    Json,
+    extract::{Path, Query, State},
+    http::HeaderMap,
+};
 use serde::Deserialize;
 
-use crate::auth::require_auth;
-use crate::mapper::to_composer_options_response;
-use crate::{ApiError, AppState};
+use crate::{ApiError, AppState, auth::require_auth, mapper::to_composer_options_response};
 
 /// 输入候选查询参数。
 ///
@@ -69,8 +69,8 @@ fn parse_composer_option_kinds(raw: Option<&str>) -> Result<Vec<ComposerOptionKi
                 return Err(ApiError {
                     status: axum::http::StatusCode::BAD_REQUEST,
                     message: format!("unsupported composer option kind: {token}"),
-                })
-            }
+                });
+            },
         };
         if !parsed.contains(&kind) {
             parsed.push(kind);

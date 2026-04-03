@@ -28,12 +28,11 @@
 //! - `skill_catalog()` 暴露统一的 skill 目录，供 skill tool 按需加载
 //! - 持有 `tool_names` 列表，供 prompt composer 在环境变量块中注入工具名
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use astrcode_core::{AgentState, AstrError, CapabilityDescriptor, Result};
 use astrcode_runtime_prompt::{
-    composer::PromptBuildOutput, PromptComposer, PromptContext, PromptDeclaration,
+    PromptComposer, PromptContext, PromptDeclaration, composer::PromptBuildOutput,
 };
 use astrcode_runtime_skill_loader::SkillCatalog;
 
@@ -116,6 +115,6 @@ fn latest_user_message(messages: &[astrcode_core::LlmMessage]) -> Option<&str> {
         astrcode_core::LlmMessage::User { content, .. } => Some(content.as_str()),
         astrcode_core::LlmMessage::Assistant { .. } | astrcode_core::LlmMessage::Tool { .. } => {
             None
-        }
+        },
     })
 }

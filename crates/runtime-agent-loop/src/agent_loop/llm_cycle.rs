@@ -19,15 +19,13 @@
 //! 以同等速度处理事件，因此缓冲区中积压的数据始终只是少量未处理的 delta。
 //! 若使用 bounded channel，反压逻辑会不必要地复杂化代码。
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
-use astrcode_core::{CancelToken, ModelRequest, Result};
+use astrcode_core::{CancelToken, ModelRequest, Result, StorageEvent};
+use astrcode_runtime_llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
 use tokio::sync::mpsc;
 
 use crate::provider_factory::DynProviderFactory;
-use astrcode_core::StorageEvent;
-use astrcode_runtime_llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
 pub(crate) async fn build_provider(
     factory: DynProviderFactory,
     working_dir: Option<PathBuf>,
@@ -108,8 +106,9 @@ pub(crate) async fn generate_response(
         }
     };
 
-    // Drain any residual events buffered between generate() completing and the select! loop exiting.
-    // These are events the provider pushed right before returning, after the last select! iteration.
+    // Drain any residual events buffered between generate() completing and the select! loop
+    // exiting. These are events the provider pushed right before returning, after the last
+    // select! iteration.
     while let Ok(event) = event_rx.try_recv() {
         match event {
             LlmEvent::TextDelta(text) => {
@@ -117,14 +116,14 @@ pub(crate) async fn generate_response(
                     turn_id: Some(turn_id.to_string()),
                     token: text,
                 })?;
-            }
+            },
             LlmEvent::ThinkingDelta(text) => {
                 on_event(StorageEvent::ThinkingDelta {
                     turn_id: Some(turn_id.to_string()),
                     token: text,
                 })?;
-            }
-            LlmEvent::ThinkingSignature(_) | LlmEvent::ToolCallDelta { .. } => {}
+            },
+            LlmEvent::ThinkingSignature(_) | LlmEvent::ToolCallDelta { .. } => {},
         }
     }
 

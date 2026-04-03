@@ -33,24 +33,26 @@ mod runtime_routes_tests;
 #[cfg(test)]
 mod test_support;
 
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
-use anyhow::{anyhow, Result as AnyhowResult};
+use anyhow::{Result as AnyhowResult, anyhow};
 use astrcode_core::{AstrError, LocalServerInfo, RuntimeCoordinator};
-use astrcode_runtime::{bootstrap_runtime, RuntimeGovernance, RuntimeService, ServiceError};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
-use axum::{Json, Router};
+use astrcode_runtime::{RuntimeGovernance, RuntimeService, ServiceError, bootstrap_runtime};
+use axum::{
+    Json, Router,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use serde::Serialize;
 
-use crate::auth::{AuthSessionManager, BootstrapAuth};
-use crate::bootstrap::{
-    attach_frontend_build, bootstrap_token_expires_at_ms, build_cors_layer, clear_run_info,
-    load_frontend_build, random_hex_token, write_run_info,
+use crate::{
+    auth::{AuthSessionManager, BootstrapAuth},
+    bootstrap::{
+        attach_frontend_build, bootstrap_token_expires_at_ms, build_cors_layer, clear_run_info,
+        load_frontend_build, random_hex_token, write_run_info,
+    },
+    routes::build_api_router,
 };
-use crate::routes::build_api_router;
 
 /// 认证请求头名称。
 ///

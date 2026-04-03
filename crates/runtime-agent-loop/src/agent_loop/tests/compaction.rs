@@ -7,17 +7,16 @@
 //! - reactive compact 无可压缩内容时正确报错
 //! - 不可恢复错误不触发 compact
 
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 use astrcode_core::{AstrError, CancelToken, LlmMessage, Phase, StorageEvent, UserMessageOrigin};
 use astrcode_runtime_llm::LlmOutput;
 
-use super::fixtures::*;
-use super::test_support::empty_capabilities;
-use crate::agent_loop::TurnOutcome;
-use crate::compaction_runtime::CompactionTailSnapshot;
-use crate::AgentLoop;
+use super::{fixtures::*, test_support::empty_capabilities};
+use crate::{AgentLoop, agent_loop::TurnOutcome, compaction_runtime::CompactionTailSnapshot};
 
 #[tokio::test]
 async fn auto_compact_emits_compact_applied_before_retrying_the_turn() {
@@ -303,7 +302,8 @@ async fn p4_1_reactive_compact_fails_when_no_compressible_history() {
 
     assert!(
         matches!(outcome, TurnOutcome::Error { .. }),
-        "turn should end with Error outcome when no compressible history available, got: {outcome:?}"
+        "turn should end with Error outcome when no compressible history available, got: \
+         {outcome:?}"
     );
 }
 

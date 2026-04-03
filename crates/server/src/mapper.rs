@@ -6,39 +6,38 @@
 //!
 //! - **协议层映射**：配置选择和 fallback 规则已下沉到 `runtime-config`，这里只做纯映射，
 //!   避免服务端入口悄悄长出另一套配置业务逻辑。
-//! - **集中化**：所有 protocol 映射逻辑集中在此，`protocol` crate 保持独立，
-//!   不依赖 `core`/`runtime` 的内部类型。
+//! - **集中化**：所有 protocol 映射逻辑集中在此，`protocol` crate 保持独立， 不依赖
+//!   `core`/`runtime` 的内部类型。
 //! - **容错序列化**：SSE 事件序列化失败时返回结构化错误载荷而非断开连接。
 //!
 //! ## 映射分类
 //!
 //! - **会话相关**：`SessionMeta` → `SessionListItem`、`SessionMessage` → `SessionMessageDto`
 //! - **运行时相关**：`RuntimeGovernanceSnapshot` → `RuntimeStatusDto`
-//! - **事件相关**：`AgentEvent` → `AgentEventPayload`、`SessionCatalogEvent` → `SessionCatalogEventPayload`
+//! - **事件相关**：`AgentEvent` → `AgentEventPayload`、`SessionCatalogEvent` →
+//!   `SessionCatalogEventPayload`
 //! - **配置相关**：`Config` → `ConfigView`、模型选项解析
 //! - **SSE 工具**：事件 ID 解析/格式化（`{storage_seq}.{subindex}` 格式）
 
 use astrcode_core::{
-    plugin::PluginEntry, AgentEvent, AstrError, CapabilityDescriptor, Phase, PluginHealth,
-    PluginState, SessionEventRecord, SessionMeta,
+    AgentEvent, AstrError, CapabilityDescriptor, Phase, PluginHealth, PluginState,
+    SessionEventRecord, SessionMeta, plugin::PluginEntry,
 };
 use astrcode_protocol::http::{
     AgentEventEnvelope, AgentEventPayload, ComposerOptionDto, ComposerOptionKindDto,
     ComposerOptionsResponseDto, ConfigView, CurrentModelInfoDto, ModelOptionDto,
-    OperationMetricsDto, PhaseDto, PluginHealthDto, PluginRuntimeStateDto, ProfileView,
-    ReplayMetricsDto, RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto,
-    SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem, SessionMessageDto,
-    ToolCallResultDto, ToolOutputStreamDto, PROTOCOL_VERSION,
+    OperationMetricsDto, PROTOCOL_VERSION, PhaseDto, PluginHealthDto, PluginRuntimeStateDto,
+    ProfileView, ReplayMetricsDto, RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto,
+    RuntimeStatusDto, SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem,
+    SessionMessageDto, ToolCallResultDto, ToolOutputStreamDto,
 };
-use astrcode_runtime::RuntimeGovernanceSnapshot;
 use astrcode_runtime::{
+    ComposerOption, ComposerOptionKind, Config, OperationMetricsSnapshot, ReplayMetricsSnapshot,
+    RuntimeGovernanceSnapshot, RuntimeObservabilitySnapshot, SessionCatalogEvent, SessionMessage,
     is_env_var_name, list_model_options as resolve_model_options, resolve_active_selection,
-    resolve_current_model as resolve_runtime_current_model, ComposerOption, ComposerOptionKind,
-    Config, OperationMetricsSnapshot, ReplayMetricsSnapshot, RuntimeObservabilitySnapshot,
-    SessionCatalogEvent, SessionMessage,
+    resolve_current_model as resolve_runtime_current_model,
 };
-use axum::http::StatusCode;
-use axum::response::sse::Event;
+use axum::{http::StatusCode, response::sse::Event};
 
 use crate::ApiError;
 
@@ -326,20 +325,20 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
     match event {
         AgentEvent::SessionStarted { session_id } => {
             AgentEventPayload::SessionStarted { session_id }
-        }
+        },
         AgentEvent::UserMessage { turn_id, content } => {
             AgentEventPayload::UserMessage { turn_id, content }
-        }
+        },
         AgentEvent::PhaseChanged { turn_id, phase } => AgentEventPayload::PhaseChanged {
             turn_id,
             phase: to_phase_dto(phase),
         },
         AgentEvent::ModelDelta { turn_id, delta } => {
             AgentEventPayload::ModelDelta { turn_id, delta }
-        }
+        },
         AgentEvent::ThinkingDelta { turn_id, delta } => {
             AgentEventPayload::ThinkingDelta { turn_id, delta }
-        }
+        },
         AgentEvent::AssistantMessage {
             turn_id,
             content,
@@ -409,13 +408,13 @@ pub(crate) fn to_session_catalog_event_dto(
     match event {
         SessionCatalogEvent::SessionCreated { session_id } => {
             SessionCatalogEventPayload::SessionCreated { session_id }
-        }
+        },
         SessionCatalogEvent::SessionDeleted { session_id } => {
             SessionCatalogEventPayload::SessionDeleted { session_id }
-        }
+        },
         SessionCatalogEvent::ProjectDeleted { working_dir } => {
             SessionCatalogEventPayload::ProjectDeleted { working_dir }
-        }
+        },
         SessionCatalogEvent::SessionBranched {
             session_id,
             source_session_id,
@@ -561,14 +560,14 @@ pub(crate) fn api_key_preview(api_key: Option<&str>) -> String {
             } else {
                 format!("环境变量: {}", env_name)
             }
-        }
+        },
         Some(value) if value.starts_with("literal:") => {
             let key = value.trim_start_matches("literal:").trim();
             masked_key_preview(key)
-        }
+        },
         Some(value) if is_env_var_name(value) && std::env::var_os(value).is_some() => {
             format!("环境变量: {}", value)
-        }
+        },
         Some(value) => masked_key_preview(value),
     }
 }

@@ -11,9 +11,11 @@
 //! 使用 `FakeInitializer` 模拟插件初始化过程，
 //! 通过预定义的响应映射控制每个插件的初始化结果。
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use astrcode_core::{
     CapabilityContext, CapabilityDescriptor, CapabilityExecutionResult, CapabilityInvoker,
@@ -21,15 +23,17 @@ use astrcode_core::{
     SideEffectLevel, StabilityLevel,
 };
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::bootstrap::{bootstrap_runtime_from_manifests, RuntimeBootstrap};
-use crate::runtime_surface_assembler::{
-    conflicting_capability_name, LoadedPlugin, ManagedPluginComponent, ManagedPluginHealth,
-    PluginInitializer,
+use crate::{
+    ComposerOptionKind, ComposerOptionsRequest,
+    bootstrap::{RuntimeBootstrap, bootstrap_runtime_from_manifests},
+    runtime_surface_assembler::{
+        LoadedPlugin, ManagedPluginComponent, ManagedPluginHealth, PluginInitializer,
+        conflicting_capability_name,
+    },
+    test_support::TestEnvGuard,
 };
-use crate::test_support::TestEnvGuard;
-use crate::{ComposerOptionKind, ComposerOptionsRequest};
 
 struct FakeInitializer {
     responses: HashMap<String, FakePluginResponse>,
@@ -63,7 +67,7 @@ impl PluginInitializer for FakeInitializer {
             }),
             FakePluginResponse::Failed(message) => {
                 Err(astrcode_core::AstrError::Internal(message.clone()))
-            }
+            },
         }
     }
 }
@@ -217,21 +221,27 @@ fn bootstrap_without_plugins_keeps_builtin_capabilities() {
     };
     let (bootstrap, _guard) = bootstrap_from(Vec::new(), initializer);
 
-    assert!(bootstrap
-        .coordinator
-        .capabilities()
-        .iter()
-        .any(|descriptor| descriptor.name == "shell"));
-    assert!(bootstrap
-        .coordinator
-        .capabilities()
-        .iter()
-        .any(|descriptor| descriptor.name == "Skill"));
-    assert!(bootstrap
-        .coordinator
-        .plugin_registry()
-        .snapshot()
-        .is_empty());
+    assert!(
+        bootstrap
+            .coordinator
+            .capabilities()
+            .iter()
+            .any(|descriptor| descriptor.name == "shell")
+    );
+    assert!(
+        bootstrap
+            .coordinator
+            .capabilities()
+            .iter()
+            .any(|descriptor| descriptor.name == "Skill")
+    );
+    assert!(
+        bootstrap
+            .coordinator
+            .plugin_registry()
+            .snapshot()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -267,11 +277,13 @@ fn bootstrap_records_initialized_and_failed_plugins_without_aborting_server() {
         beta.failure.as_deref(),
         Some("internal error: handshake failed")
     );
-    assert!(bootstrap
-        .coordinator
-        .capabilities()
-        .iter()
-        .any(|descriptor| descriptor.name == "tool.alpha"));
+    assert!(
+        bootstrap
+            .coordinator
+            .capabilities()
+            .iter()
+            .any(|descriptor| descriptor.name == "tool.alpha")
+    );
 }
 
 #[test]
@@ -389,10 +401,12 @@ fn bootstrap_marks_plugin_failed_when_descriptor_is_invalid() {
 
     assert_eq!(alpha.state, PluginState::Failed);
     assert_eq!(alpha.health, PluginHealth::Unavailable);
-    assert!(alpha
-        .failure
-        .as_deref()
-        .is_some_and(|message| message.contains("invalid")));
+    assert!(
+        alpha
+            .failure
+            .as_deref()
+            .is_some_and(|message| message.contains("invalid"))
+    );
     assert_eq!(
         shutdowns.lock().expect("shutdown log").clone(),
         vec!["alpha".to_string()]

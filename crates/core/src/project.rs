@@ -14,7 +14,7 @@ use std::path::{Component, Path, PathBuf, Prefix};
 
 use uuid::Uuid;
 
-use crate::{home::resolve_home_dir, Result};
+use crate::{Result, home::resolve_home_dir};
 
 /// 项目目录名称的最大长度限制。
 ///
@@ -103,19 +103,19 @@ fn components_to_slug(path: &Path) -> String {
                 if let Some(segment) = prefix_to_segment(prefix.kind()) {
                     segments.push(segment);
                 }
-            }
+            },
             Component::RootDir => {
                 if segments.is_empty() {
                     segments.push("root".to_string());
                 }
-            }
+            },
             Component::Normal(segment) => {
                 let sanitized = sanitize_component(&segment.to_string_lossy());
                 if !sanitized.is_empty() {
                     segments.push(sanitized);
                 }
-            }
-            Component::CurDir | Component::ParentDir => {}
+            },
+            Component::CurDir | Component::ParentDir => {},
         }
     }
 
@@ -131,7 +131,7 @@ fn prefix_to_segment(prefix: Prefix<'_>) -> Option<String> {
     match prefix {
         Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
             Some((letter as char).to_ascii_uppercase().to_string())
-        }
+        },
         Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
             let server = sanitize_component(&server.to_string_lossy());
             let share = sanitize_component(&share.to_string_lossy());
@@ -145,7 +145,7 @@ fn prefix_to_segment(prefix: Prefix<'_>) -> Option<String> {
             } else {
                 Some(joined)
             }
-        }
+        },
         Prefix::DeviceNS(device) => {
             let device = sanitize_component(&device.to_string_lossy());
             if device.is_empty() {
@@ -153,15 +153,11 @@ fn prefix_to_segment(prefix: Prefix<'_>) -> Option<String> {
             } else {
                 Some(device)
             }
-        }
+        },
         Prefix::Verbatim(value) => {
             let value = sanitize_component(&value.to_string_lossy());
-            if value.is_empty() {
-                None
-            } else {
-                Some(value)
-            }
-        }
+            if value.is_empty() { None } else { Some(value) }
+        },
     }
 }
 

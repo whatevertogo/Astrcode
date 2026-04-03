@@ -21,20 +21,22 @@
 //! 6. 关闭旧的托管组件
 //! 7. 返回新的快照
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use astrcode_core::{
-    plugin::PluginEntry, CapabilityDescriptor, PluginHealth, PluginManifest, RuntimeCoordinator,
+    CapabilityDescriptor, PluginHealth, PluginManifest, RuntimeCoordinator, plugin::PluginEntry,
 };
 use chrono::{DateTime, Utc};
 use tokio::sync::{Mutex, RwLock};
 
-use crate::plugin_discovery::{configured_plugin_paths, discover_plugin_manifests_in};
-use crate::runtime_surface_assembler::{
-    assemble_runtime_surface, ActivePluginRuntime, PluginInitializer, SupervisorPluginInitializer,
+use crate::{
+    RuntimeObservabilitySnapshot, RuntimeService, ServiceError,
+    plugin_discovery::{configured_plugin_paths, discover_plugin_manifests_in},
+    runtime_surface_assembler::{
+        ActivePluginRuntime, PluginInitializer, SupervisorPluginInitializer,
+        assemble_runtime_surface,
+    },
 };
-use crate::{RuntimeObservabilitySnapshot, RuntimeService, ServiceError};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeGovernanceSnapshot {
@@ -193,7 +195,7 @@ impl RuntimeGovernance {
                             None,
                             checked_at,
                         );
-                    }
+                    },
                     PluginHealth::Unavailable | PluginHealth::Degraded | PluginHealth::Unknown => {
                         let message = report
                             .message
@@ -204,7 +206,7 @@ impl RuntimeGovernance {
                             Some(message),
                             checked_at,
                         );
-                    }
+                    },
                 },
                 Err(error) => {
                     self.coordinator.plugin_registry().record_health_probe(
@@ -213,7 +215,7 @@ impl RuntimeGovernance {
                         Some(error.to_string()),
                         checked_at,
                     );
-                }
+                },
             }
         }
     }

@@ -24,8 +24,10 @@ use std::sync::{Arc, RwLock};
 
 use log::debug;
 
-use crate::skill_loader::{load_project_skills, load_user_skills};
-use crate::SkillSpec;
+use crate::{
+    SkillSpec,
+    skill_loader::{load_project_skills, load_user_skills},
+};
 
 /// Skill 目录，持有 base skills 并提供统一的解析入口。
 ///

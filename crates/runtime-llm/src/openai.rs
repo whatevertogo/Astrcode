@@ -29,9 +29,9 @@ use serde_json::Value;
 use tokio::select;
 
 use crate::{
-    build_http_client, emit_event, is_retryable_status, wait_retry_delay, EventSink, FinishReason,
-    LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest, LlmUsage, ModelLimits,
-    MAX_RETRIES,
+    EventSink, FinishReason, LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest,
+    LlmUsage, MAX_RETRIES, ModelLimits, build_http_client, emit_event, is_retryable_status,
+    wait_retry_delay,
 };
 
 /// OpenAI 兼容 API 的 LLM 提供者实现。
@@ -167,14 +167,14 @@ impl OpenAiProvider {
                         status: status.as_u16(),
                         body,
                     });
-                }
+                },
                 Err(error) => {
                     if error.is_retryable() && attempt < MAX_RETRIES {
                         wait_retry_delay(attempt, cancel.clone()).await?;
                         continue;
                     }
                     return Err(error);
-                }
+                },
             }
         }
 
@@ -223,7 +223,7 @@ impl LlmProvider for OpenAiProvider {
                     usage,
                     first_choice.finish_reason,
                 ))
-            }
+            },
             Some(sink) => {
                 // 流式路径：逐块读取 SSE 响应
                 let mut body_stream = response.bytes_stream();
@@ -280,7 +280,7 @@ impl LlmProvider for OpenAiProvider {
                     output.finish_reason = FinishReason::from_api_value(reason);
                 }
                 Ok(output)
-            }
+            },
         }
     }
 
@@ -461,7 +461,7 @@ fn process_sse_line(
                 emit_event(event, accumulator, sink);
             }
             Ok((false, finish_reason))
-        }
+        },
     }
 }
 
@@ -837,13 +837,17 @@ struct OpenAiStreamToolCallFunction {
 
 #[cfg(test)]
 mod tests {
-    use std::net::TcpListener;
-    use std::sync::{Arc, Mutex};
+    use std::{
+        net::TcpListener,
+        sync::{Arc, Mutex},
+    };
 
     use astrcode_core::{CancelToken, UserMessageOrigin};
     use serde_json::json;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::task::JoinHandle;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        task::JoinHandle,
+    };
 
     use super::*;
     use crate::sink_collector;
@@ -934,7 +938,8 @@ mod tests {
         })
         .to_string();
         let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: \
+             {}\r\nconnection: close\r\n\r\n{}",
             body.len(),
             body
         );
@@ -998,7 +1003,8 @@ mod tests {
             })
         );
         let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: \
+             no-cache\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
             body.len(),
             body
         );
@@ -1032,9 +1038,11 @@ mod tests {
         handle.await.expect("server should join");
         let events = events.lock().expect("lock").clone();
 
-        assert!(events
-            .iter()
-            .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "hel")));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "hel"))
+        );
         assert!(events.iter().any(|event| {
             matches!(
                 event,

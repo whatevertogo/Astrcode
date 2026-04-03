@@ -6,7 +6,8 @@
 //! ## 锁机制
 //!
 //! - **锁文件**：`active-turn.lock` — 通过 `try_lock_exclusive()` 获取独占锁
-//! - **元数据文件**：`active-turn.json` — 存储当前持有者信息（`turn_id`、`owner_pid`、`acquired_at`）
+//! - **元数据文件**：`active-turn.json` —
+//!   存储当前持有者信息（`turn_id`、`owner_pid`、`acquired_at`）
 //! - **锁与元数据分离**：锁文件保证互斥，元数据文件供竞争者读取当前状态
 //!
 //! ## 获取流程
@@ -30,19 +31,20 @@
 //! - 读取元数据后锁已释放 → 重试获取，成功则接管
 //! - 元数据文件不存在（持有者还未写入） → 短暂重试，超时后如果锁仍占用则返回 Busy
 
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::{
+    fs::{File, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use astrcode_core::store::{SessionTurnAcquireResult, SessionTurnBusy, SessionTurnLease};
 use chrono::Utc;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-use crate::{io_error, parse_error, Result};
-
 use super::paths::{session_turn_lock_path, session_turn_metadata_path};
+use crate::{Result, io_error, parse_error};
 
 /// 活跃轮次锁的元数据载荷。
 ///
@@ -91,7 +93,7 @@ pub(super) fn try_acquire_session_turn(
         Ok(()) => acquire_turn_lease(file, path, metadata_path, turn_id),
         Err(error) if is_lock_contended(&error) => {
             read_busy_payload_or_retry(file, path, metadata_path, turn_id)
-        }
+        },
         Err(error) => Err(io_error(
             format!("failed to acquire session turn lock: {}", path.display()),
             error,
@@ -143,10 +145,10 @@ fn read_busy_payload_or_retry(
                     // contended 结果和 metadata 读取不是原子操作；如果对方已经在两者之间
                     // 释放了锁，就直接接管，避免把一把已空闲的 session 误判成 Busy。
                     return acquire_turn_lease(file, path, metadata_path, requested_turn_id);
-                }
+                },
                 Err(lock_error) if is_lock_contended(&lock_error) => {
                     return Ok(SessionTurnAcquireResult::Busy(session_turn_busy(payload)));
-                }
+                },
                 Err(lock_error) => {
                     return Err(io_error(
                         format!(
@@ -155,7 +157,7 @@ fn read_busy_payload_or_retry(
                         ),
                         lock_error,
                     ));
-                }
+                },
             },
             Err(error) if should_retry_busy_payload_error(&error) => {
                 last_retryable_error = Some(error);
@@ -166,8 +168,8 @@ fn read_busy_payload_or_retry(
                 match file.try_lock_exclusive() {
                     Ok(()) => {
                         return acquire_turn_lease(file, path, metadata_path, requested_turn_id);
-                    }
-                    Err(lock_error) if is_lock_contended(&lock_error) => {}
+                    },
+                    Err(lock_error) if is_lock_contended(&lock_error) => {},
                     Err(lock_error) => {
                         return Err(io_error(
                             format!(
@@ -176,13 +178,13 @@ fn read_busy_payload_or_retry(
                             ),
                             lock_error,
                         ));
-                    }
+                    },
                 }
 
                 if attempt + 1 < LOCK_PAYLOAD_RETRY_ATTEMPTS {
                     std::thread::sleep(LOCK_PAYLOAD_RETRY_DELAY);
                 }
-            }
+            },
             Err(error) => return Err(error),
         }
     }
@@ -224,7 +226,7 @@ fn should_retry_busy_payload_error(error: &astrcode_core::StoreError) -> bool {
     match error {
         astrcode_core::StoreError::Io { source, .. } => {
             source.kind() == std::io::ErrorKind::NotFound
-        }
+        },
         astrcode_core::StoreError::Parse { .. } => true,
         _ => false,
     }
@@ -348,8 +350,7 @@ mod tests {
     use astrcode_core::test_support::TestEnvGuard;
     use fs2::FileExt;
 
-    use super::super::event_log::EventLog;
-    use super::*;
+    use super::{super::event_log::EventLog, *};
 
     fn create_session_fixture(session_id: &str) -> tempfile::TempDir {
         let working_dir = tempfile::tempdir().expect("tempdir should be created");
@@ -370,10 +371,10 @@ mod tests {
         match busy {
             SessionTurnAcquireResult::Busy(active_turn) => {
                 assert_eq!(active_turn.turn_id, "turn-1");
-            }
+            },
             SessionTurnAcquireResult::Acquired(_) => {
                 panic!("second acquire must not take the lock while the first lease lives")
-            }
+            },
         }
 
         drop(first);
@@ -412,7 +413,7 @@ mod tests {
             SessionTurnAcquireResult::Acquired(lease) => lease,
             SessionTurnAcquireResult::Busy(_) => {
                 panic!("retry path should acquire once the stale lock is gone")
-            }
+            },
         };
 
         let payload =
@@ -460,7 +461,7 @@ mod tests {
             SessionTurnAcquireResult::Acquired(lease) => lease,
             SessionTurnAcquireResult::Busy(_) => {
                 panic!("corrupt metadata should not leave the session permanently busy")
-            }
+            },
         };
 
         let payload =

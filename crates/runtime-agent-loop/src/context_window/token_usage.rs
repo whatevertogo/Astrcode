@@ -23,7 +23,6 @@
 //! 若 Provider 未报告则回退到估算值。
 
 use astrcode_core::{LlmMessage, UserMessageOrigin};
-
 use astrcode_runtime_llm::{LlmUsage, ModelLimits};
 
 pub(crate) const SUMMARY_RESERVE_TOKENS: usize = 20_000;
@@ -115,7 +114,7 @@ pub fn estimate_message_tokens(message: &LlmMessage) -> usize {
                     UserMessageOrigin::AutoContinueNudge => 8,
                     UserMessageOrigin::CompactSummary => 16,
                 }
-        }
+        },
         LlmMessage::Assistant {
             content,
             tool_calls,
@@ -135,13 +134,13 @@ pub fn estimate_message_tokens(message: &LlmMessage) -> usize {
                             + estimate_json_tokens(&call.args.to_string())
                     })
                     .sum::<usize>()
-        }
+        },
         LlmMessage::Tool {
             tool_call_id,
             content,
         } => {
             MESSAGE_BASE_TOKENS + estimate_text_tokens(tool_call_id) + estimate_text_tokens(content)
-        }
+        },
     }
 }
 

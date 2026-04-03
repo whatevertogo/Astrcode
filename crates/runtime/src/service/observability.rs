@@ -11,8 +11,10 @@
 //! 所有记录操作都是无锁的，适合高频调用。
 //! 快照（`snapshot()`）返回当前指标的只读副本，供外部查询。
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 /// 回放路径：优先缓存，不足时回退到磁盘。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,10 +163,10 @@ impl ReplayMetrics {
         match path {
             ReplayPath::Cache => {
                 self.cache_hits.fetch_add(1, Ordering::Relaxed);
-            }
+            },
             ReplayPath::DiskFallback => {
                 self.disk_fallbacks.fetch_add(1, Ordering::Relaxed);
-            }
+            },
         }
         self.recovered_events
             .fetch_add(recovered_events, Ordering::Relaxed);

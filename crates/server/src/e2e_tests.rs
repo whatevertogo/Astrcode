@@ -3,33 +3,36 @@
 //! These tests exercise the full request → response → event flow without
 //! requiring a real LLM provider or external services.
 
-use std::collections::HashSet;
-use std::net::TcpListener;
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::HashSet, net::TcpListener, path::Path, sync::Arc, time::Duration};
 
-use astrcode_core::project::project_dir_name;
-use astrcode_core::{CapabilityRouter, PluginRegistry, RuntimeCoordinator, RuntimeHandle};
+use astrcode_core::{
+    CapabilityRouter, PluginRegistry, RuntimeCoordinator, RuntimeHandle, project::project_dir_name,
+};
 use astrcode_protocol::http::{
     CreateSessionRequest, PromptAcceptedResponse, PromptRequest, SaveActiveSelectionRequest,
     SessionListItem, SessionMessageDto,
 };
-use astrcode_runtime::config::PROVIDER_KIND_OPENAI;
 use astrcode_runtime::{
-    save_config, Config, ModelConfig, Profile, RuntimeConfig, RuntimeGovernance, RuntimeService,
+    Config, ModelConfig, Profile, RuntimeConfig, RuntimeGovernance, RuntimeService,
+    config::PROVIDER_KIND_OPENAI, save_config,
 };
-use axum::body::{to_bytes, Body};
-use axum::http::{Request, StatusCode};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::task::JoinHandle;
+use axum::{
+    body::{Body, to_bytes},
+    http::{Request, StatusCode},
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    task::JoinHandle,
+};
 use tower::ServiceExt;
 
-use crate::auth::{AuthSessionManager, BootstrapAuth};
-use crate::bootstrap::APP_HOME_OVERRIDE_ENV;
-use crate::routes::build_api_router;
-use crate::test_support::{test_state, ServerTestEnvGuard};
-use crate::{AppState, AUTH_HEADER_NAME};
+use crate::{
+    AUTH_HEADER_NAME, AppState,
+    auth::{AuthSessionManager, BootstrapAuth},
+    bootstrap::APP_HOME_OVERRIDE_ENV,
+    routes::build_api_router,
+    test_support::{ServerTestEnvGuard, test_state},
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -122,10 +125,10 @@ fn encode_query_value(value: &str) -> String {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
                 encoded.push(byte as char);
-            }
+            },
             _ => {
                 write!(&mut encoded, "%{byte:02X}").expect("writing to string should succeed");
-            }
+            },
         }
     }
     encoded
@@ -233,7 +236,8 @@ fn spawn_openai_chat_server(
                 .to_string()
             };
             let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                "HTTP/1.1 200 OK\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: \
+                 close\r\n\r\n{}",
                 if request.contains("\"stream\":true") {
                     "text/event-stream"
                 } else {
@@ -661,8 +665,9 @@ async fn e2e_config_get_and_update() {
         .await
         .expect("response should return");
 
-    // The endpoint should either succeed (NO_CONTENT) or reject due to missing profile (BAD_REQUEST)
-    // Both are valid responses - we're testing the HTTP layer, not config validation
+    // The endpoint should either succeed (NO_CONTENT) or reject due to missing profile
+    // (BAD_REQUEST) Both are valid responses - we're testing the HTTP layer, not config
+    // validation
     assert!(
         update_resp.status() == StatusCode::NO_CONTENT
             || update_resp.status() == StatusCode::BAD_REQUEST

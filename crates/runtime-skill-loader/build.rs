@@ -15,9 +15,10 @@
 //! - `BUNDLED_SKILLS` 常量：所有 skill 的定义和资产内容
 //! - 每个 skill 的 `id`、`relative_path` 和 `content`（通过 `include_str!` 嵌入）
 
-use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));

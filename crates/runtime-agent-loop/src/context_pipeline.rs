@@ -464,10 +464,12 @@ mod tests {
             .expect("bundle should build");
 
         assert_eq!(bundle.workset.len(), 1);
-        assert!(bundle
-            .diagnostics
-            .iter()
-            .any(|item| item.stage == "workset" && item.message.contains("step=7")));
+        assert!(
+            bundle
+                .diagnostics
+                .iter()
+                .any(|item| item.stage == "workset" && item.message.contains("step=7"))
+        );
     }
 
     #[test]
@@ -495,15 +497,14 @@ mod tests {
                 origin: UserMessageOrigin::User,
             },
         ]);
-        let descriptors =
-            vec![
-                astrcode_core::CapabilityDescriptor::builder("readFile", CapabilityKind::tool())
-                    .description("test")
-                    .schema(json!({"type":"object"}), json!({"type":"string"}))
-                    .compact_clearable(true)
-                    .build()
-                    .expect("descriptor should build"),
-            ];
+        let descriptors = vec![
+            astrcode_core::CapabilityDescriptor::builder("readFile", CapabilityKind::tool())
+                .description("test")
+                .schema(json!({"type":"object"}), json!({"type":"string"}))
+                .compact_clearable(true)
+                .build()
+                .expect("descriptor should build"),
+        ];
 
         let bundle = ContextRuntime::new(128)
             .build_bundle(

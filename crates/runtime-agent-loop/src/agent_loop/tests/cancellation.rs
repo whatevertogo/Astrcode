@@ -5,19 +5,21 @@
 //! - 并行安全工具取消传播
 //! - LLM 流式输出中取消
 
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 use astrcode_core::{CancelToken, StorageEvent, ToolCallRequest};
 use astrcode_runtime_llm::LlmOutput;
 use serde_json::json;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
-use super::fixtures::*;
-use super::test_support::{capabilities_from_tools, empty_capabilities};
-use crate::agent_loop::TurnOutcome;
-use crate::AgentLoop;
+use super::{
+    fixtures::*,
+    test_support::{capabilities_from_tools, empty_capabilities},
+};
+use crate::{AgentLoop, agent_loop::TurnOutcome};
 
 #[tokio::test]
 async fn interrupt_emits_error_and_turn_done() {
@@ -191,9 +193,11 @@ async fn deltas_emit_before_stream_completion() {
     .expect("delta should be emitted before streaming completes");
 
     let snapshot = events.lock().expect("lock").clone();
-    assert!(snapshot
-        .iter()
-        .any(|event| matches!(event, StorageEvent::AssistantDelta { .. })));
+    assert!(
+        snapshot
+            .iter()
+            .any(|event| matches!(event, StorageEvent::AssistantDelta { .. }))
+    );
     assert!(
         !snapshot
             .iter()

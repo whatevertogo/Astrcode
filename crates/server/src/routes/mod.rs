@@ -21,12 +21,13 @@ pub(crate) mod runtime;
 pub(crate) mod sessions;
 
 use astrcode_protocol::http::{AuthExchangeRequest, AuthExchangeResponse};
-use axum::extract::State;
-use axum::routing::{delete, get, post};
-use axum::{Json, Router};
+use axum::{
+    Json, Router,
+    extract::State,
+    routing::{delete, get, post},
+};
 
-use crate::bootstrap::serve_run_info;
-use crate::{ApiError, AppState};
+use crate::{ApiError, AppState, bootstrap::serve_run_info};
 
 /// 构建完整的 API 路由器。
 ///

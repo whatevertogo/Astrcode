@@ -6,7 +6,8 @@
 //!
 //! - **JSONL 格式**: 每行一个 JSON 事件，append-only 写入
 //! - **存储序号 (storage_seq)**: 每个事件携带单调递增的序号，用于 SSE 的 `id` 字段实现断点续传
-//! - **子序号 (subindex)**: 一个存储事件可能产生多个领域事件，通过 `{storage_seq}.{subindex}` 唯一标识
+//! - **子序号 (subindex)**: 一个存储事件可能产生多个领域事件，通过 `{storage_seq}.{subindex}`
+//!   唯一标识
 //!
 //! ## 模块说明
 //!
@@ -23,10 +24,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub use self::domain::{AgentEvent, Phase};
-pub use self::phase::{target_phase as phase_of_storage_event, PhaseTracker};
-pub use self::translate::{replay_records, EventTranslator};
-pub use self::types::{CompactTrigger, StorageEvent, StoredEvent, StoredEventLine};
+pub use self::{
+    domain::{AgentEvent, Phase},
+    phase::{PhaseTracker, target_phase as phase_of_storage_event},
+    translate::{EventTranslator, replay_records},
+    types::{CompactTrigger, StorageEvent, StoredEvent, StoredEventLine},
+};
 
 /// 生成全局唯一的会话 ID，格式为 `YYYY-MM-DDTHH-MM-SS-xxxxxxxx`。
 ///

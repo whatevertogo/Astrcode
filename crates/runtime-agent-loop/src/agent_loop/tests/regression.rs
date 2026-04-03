@@ -10,9 +10,13 @@
 //! - policy deny
 //! - policy ask
 
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use astrcode_core::{
     ApprovalDefault, ApprovalResolution, CancelToken, LlmMessage, Phase, StorageEvent,
@@ -21,10 +25,11 @@ use astrcode_core::{
 use astrcode_runtime_llm::LlmOutput;
 use serde_json::json;
 
-use super::fixtures::*;
-use super::test_support::{capabilities_from_tools, empty_capabilities};
-use crate::agent_loop::TurnOutcome;
-use crate::AgentLoop;
+use super::{
+    fixtures::*,
+    test_support::{capabilities_from_tools, empty_capabilities},
+};
+use crate::{AgentLoop, agent_loop::TurnOutcome};
 
 // ---------------------------------------------------------------------------
 // 基础场景矩阵
@@ -113,7 +118,7 @@ async fn phase0_behavior_regression_matrix_keeps_core_turn_outcomes_stable() {
                     empty_capabilities(),
                     cancel,
                 )
-            }
+            },
         };
 
         let loop_runner = AgentLoop::from_capabilities(
@@ -284,9 +289,11 @@ async fn phase0_behavior_regression_covers_compaction_and_policy_edges() {
 
         assert!(matches!(outcome, TurnOutcome::Completed));
         let events = events.lock().expect("events lock");
-        assert!(events
-            .iter()
-            .any(|event| matches!(event, StorageEvent::CompactApplied { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, StorageEvent::CompactApplied { .. }))
+        );
         assert!(events.iter().any(|event| {
             matches!(
                 event,

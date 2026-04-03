@@ -21,10 +21,10 @@
 //! - 当前总是重新摘要完整前缀，未来可升级为增量重压缩（incremental recompact）
 
 use astrcode_core::{AstrError, CancelToken, LlmMessage, Result, UserMessageOrigin};
+use astrcode_runtime_llm::{LlmProvider, LlmRequest};
 use chrono::{DateTime, Utc};
 
 use crate::context_window::estimate_request_tokens;
-use astrcode_runtime_llm::{LlmProvider, LlmRequest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompactConfig {
@@ -83,7 +83,7 @@ pub async fn auto_compact(
                 if !drop_oldest_turn_group(&mut prefix) {
                     return Err(error);
                 }
-            }
+            },
             Err(error) => return Err(error),
         }
     };
@@ -107,24 +107,15 @@ pub async fn auto_compact(
 // 替换此硬编码的摘要合约为更结构化的输入（如 JSON）以支持更丰富的摘要内容和更可靠的解析。
 fn build_compact_system_prompt(base_system_prompt: Option<&str>) -> String {
     let mut prompt = String::from(
-        "You are generating an internal compact summary for a coding-agent session. \
-Summarize the provided conversation prefix so the agent can continue work without losing technical context.\n\n\
-Rules:\n\
-- Never call tools.\n\
-- Keep the summary factual and implementation-oriented.\n\
-- Ignore synthetic auto-continue nudges.\n\
-- Do not address the end user.\n\
-- Return exactly two XML blocks: <analysis>...</analysis> and <summary>...</summary>.\n\
-- The <summary> block must contain these sections in order:\n\
-  1. Primary Request and Intent\n\
-  2. Key Technical Concepts\n\
-  3. Files and Code Sections\n\
-  4. Errors and fixes\n\
-  5. Problem Solving\n\
-  6. All user messages\n\
-  7. Pending Tasks\n\
-  8. Current Work\n\
-  9. Optional Next Step\n",
+        "You are generating an internal compact summary for a coding-agent session. Summarize the \
+         provided conversation prefix so the agent can continue work without losing technical \
+         context.\n\nRules:\n- Never call tools.\n- Keep the summary factual and \
+         implementation-oriented.\n- Ignore synthetic auto-continue nudges.\n- Do not address the \
+         end user.\n- Return exactly two XML blocks: <analysis>...</analysis> and \
+         <summary>...</summary>.\n- The <summary> block must contain these sections in order:\n1. \
+         Primary Request and Intent\n2. Key Technical Concepts\n3. Files and Code Sections\n4. \
+         Errors and fixes\n5. Problem Solving\n6. All user messages\n7. Pending Tasks\n8. Current \
+         Work\n9. Optional Next Step\n",
     );
 
     if let Some(base_system_prompt) = base_system_prompt.filter(|value| !value.trim().is_empty()) {
@@ -223,7 +214,8 @@ fn drop_oldest_turn_group(prefix: &mut Vec<LlmMessage>) -> bool {
 fn compacted_messages(summary: &str, suffix: Vec<LlmMessage>) -> Vec<LlmMessage> {
     let mut messages = vec![LlmMessage::User {
         content: format!(
-            "[Auto-compact summary]\n{}\n\nContinue from this summary without repeating it to the user.",
+            "[Auto-compact summary]\n{}\n\nContinue from this summary without repeating it to the \
+             user.",
             summary.trim()
         ),
         origin: UserMessageOrigin::CompactSummary,
@@ -265,7 +257,7 @@ pub fn is_prompt_too_long(error: &astrcode_core::AstrError) -> bool {
                     || body_lower.contains("context length")
                     || body_lower.contains("maximum context")
                     || body_lower.contains("too many tokens"))
-        }
+        },
         _ => false,
     }
 }

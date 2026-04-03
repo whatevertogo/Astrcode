@@ -19,7 +19,7 @@ pub mod workflow_examples;
 pub use agents_md::AgentsMdContributor;
 pub use capability_prompt::CapabilityPromptContributor;
 pub use environment::EnvironmentContributor;
-pub use identity::{load_identity_md, user_identity_md_path, IdentityContributor};
+pub use identity::{IdentityContributor, load_identity_md, user_identity_md_path};
 pub use shared::{cache_marker_for_path, user_astrcode_file_path};
 pub use skill_summary::SkillSummaryContributor;
 pub use workflow_examples::WorkflowExamplesContributor;

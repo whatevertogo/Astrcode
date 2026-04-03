@@ -129,5 +129,5 @@ pub trait SessionManager: Send + Sync {
     fn list_sessions_with_meta(&self) -> StoreResult<Vec<SessionMeta>>;
     fn delete_session(&self, session_id: &str) -> StoreResult<()>;
     fn delete_sessions_by_working_dir(&self, working_dir: &str)
-        -> StoreResult<DeleteProjectResult>;
+    -> StoreResult<DeleteProjectResult>;
 }

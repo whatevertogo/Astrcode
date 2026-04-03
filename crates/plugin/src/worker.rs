@@ -19,8 +19,7 @@ use std::sync::Arc;
 use astrcode_core::Result;
 use astrcode_protocol::plugin::{InitializeMessage, PeerDescriptor};
 
-use crate::transport::StdioTransport;
-use crate::{CapabilityRouter, Peer};
+use crate::{CapabilityRouter, Peer, transport::StdioTransport};
 
 /// 进程内插件 Worker—— 通过 stdio 与宿主进程通信。
 ///

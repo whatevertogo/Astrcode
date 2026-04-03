@@ -26,15 +26,17 @@
 //! ## 关键设计
 //!
 //! - `StepRequestConfig` 结构体将 5 个相关参数打包为一个，避免函数签名膨胀
-//! - `PromptTokenSnapshot` 携带 context_tokens / threshold_tokens / effective_window 等字段，
-//!   供 `CompactionRuntime` 决策时使用
+//! - `PromptTokenSnapshot` 携带 context_tokens / threshold_tokens / effective_window 等字段， 供
+//!   `CompactionRuntime` 决策时使用
 //! - `truncated_tool_results` 返回被 microcompact 裁剪的工具结果数量，上报给前端指标
 
 use astrcode_core::{LlmMessage, ModelRequest, Result, ToolDefinition};
-use astrcode_runtime_prompt::{append_unique_tools, PromptPlan};
+use astrcode_runtime_prompt::{PromptPlan, append_unique_tools};
 
-use crate::context_pipeline::{ContextBundle, ConversationView};
-use crate::context_window::{build_prompt_snapshot, PromptTokenSnapshot, TokenUsageTracker};
+use crate::{
+    context_pipeline::{ContextBundle, ConversationView},
+    context_window::{PromptTokenSnapshot, TokenUsageTracker, build_prompt_snapshot},
+};
 
 pub(crate) struct RequestAssembler;
 
@@ -57,9 +59,10 @@ pub(crate) struct StepRequestConfig<'a> {
 impl RequestAssembler {
     /// 组装最终请求结构并立即运行请求级预处理。
     ///
-    /// 将这两个步骤保持在一起可以防止 `turn_runner` 拥有消息组合、工具联合、微压缩和提示快照生成的确切顺序
-    /// 这些都是紧密耦合的细节，未来可能会频繁调整。现在 request assembler 只负责最终编码
-    /// 和基于编码结果的快照，不再偷偷修改 conversation。
+    /// 将这两个步骤保持在一起可以防止 `turn_runner`
+    /// 拥有消息组合、工具联合、微压缩和提示快照生成的确切顺序 这些都是紧密耦合的细节，
+    /// 未来可能会频繁调整。现在 request assembler 只负责最终编码 和基于编码结果的快照，
+    /// 不再偷偷修改 conversation。
     pub(crate) fn build_step_request(
         &self,
         config: StepRequestConfig<'_>,

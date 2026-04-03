@@ -11,8 +11,8 @@
 //!
 //! ### 事件广播与缓存策略
 //!
-//! - `SESSION_BROADCAST_CAPACITY` (2048): broadcast channel 容量，慢速 SSE 客户端若未
-//!   在 2048 条事件内消费，旧事件会被丢弃。这是权衡值：足够覆盖一次完整 turn（通常 < 100 条事件），
+//! - `SESSION_BROADCAST_CAPACITY` (2048): broadcast channel 容量，慢速 SSE 客户端若未 在 2048
+//!   条事件内消费，旧事件会被丢弃。这是权衡值：足够覆盖一次完整 turn（通常 < 100 条事件），
 //!   同时限制内存占用。
 //! - `SESSION_RECENT_RECORD_LIMIT` (4096): 内存中保留的最近事件记录数。超过此限制时从头部
 //!   淘汰旧记录（truncated = true）。约覆盖 40-50 次典型 turn，足以满足大多数 SSE resume 场景
@@ -30,18 +30,17 @@
 //! writer 被 `spawn_blocking` 上下文和直接异步上下文交替调用，且临界区内只做纯文件 I/O，
 //! 没有任何 await 点。std::sync::Mutex 在此场景下更轻量，避免 tokio Mutex 的额外开销。
 
-use std::collections::VecDeque;
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex as StdMutex, atomic::AtomicBool},
+};
 
 use anyhow::Result;
 use astrcode_core::{
     AgentState, AgentStateProjector, CancelToken, EventLogWriter, EventTranslator, Phase,
-    SessionEventRecord, SessionTurnLease,
+    SessionEventRecord, SessionTurnLease, StorageEvent, StoredEvent,
 };
 use tokio::sync::broadcast;
-
-use astrcode_core::{StorageEvent, StoredEvent};
 
 use super::support::{lock_anyhow, spawn_blocking_anyhow};
 

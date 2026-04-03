@@ -3,19 +3,20 @@
 //! 将插件声明的 skill 校验、落盘和清理逻辑从 runtime surface 组装流程中拆出，
 //! 让 `runtime_surface_assembler` 只负责 orchestration，而不是同时关心文件系统细节。
 
-use std::collections::HashSet;
-use std::fs;
-use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
-
-use astrcode_core::{project::astrcode_dir, AstrError, ManagedRuntimeComponent, PluginManifest};
-use astrcode_protocol::plugin::SkillDescriptor;
-use async_trait::async_trait;
-
-use astrcode_runtime_skill_loader::{
-    collect_asset_files, is_valid_skill_name, merge_skill_layers, SkillSource, SkillSpec,
-    SKILL_FILE_NAME,
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Component, Path, PathBuf},
+    sync::Arc,
 };
+
+use astrcode_core::{AstrError, ManagedRuntimeComponent, PluginManifest, project::astrcode_dir};
+use astrcode_protocol::plugin::SkillDescriptor;
+use astrcode_runtime_skill_loader::{
+    SKILL_FILE_NAME, SkillSource, SkillSpec, collect_asset_files, is_valid_skill_name,
+    merge_skill_layers,
+};
+use async_trait::async_trait;
 
 pub(crate) struct MaterializedPluginSkills {
     pub(crate) skills: Vec<SkillSpec>,
@@ -41,16 +42,17 @@ pub(crate) fn materialize_plugin_skills(
             available_tool_names,
         ) {
             Ok(Some((skill, root, skill_warnings))) => {
-                // 插件内部同名 skill 也遵循统一覆盖规则，避免 surface assembler 额外维护一套去重语义。
+                // 插件内部同名 skill 也遵循统一覆盖规则，避免 surface assembler
+                // 额外维护一套去重语义。
                 skills = merge_skill_layers(skills, vec![skill]);
                 materialized_roots.push(root);
                 warnings.extend(skill_warnings);
-            }
-            Ok(None) => {}
+            },
+            Ok(None) => {},
             Err(warning) => {
                 log::warn!("plugin '{}' skill rejected: {}", manifest.name, warning);
                 warnings.push(warning);
-            }
+            },
         }
     }
 
@@ -269,7 +271,7 @@ impl ManagedRuntimeComponent for MaterializedSkillAssetsComponent {
 mod tests {
     use std::collections::HashSet;
 
-    use astrcode_core::{test_support::TestEnvGuard, PluginType};
+    use astrcode_core::{PluginType, test_support::TestEnvGuard};
     use serde_json::json;
 
     use super::*;
@@ -311,15 +313,19 @@ mod tests {
 
         assert_eq!(result.skills.len(), 1);
         assert_eq!(result.skills[0].allowed_tools, vec!["shell".to_string()]);
-        assert!(result
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("missing.tool")));
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("missing.tool"))
+        );
         assert!(result.skills[0].skill_root.is_some());
-        assert!(result.skills[0]
-            .asset_files
-            .iter()
-            .any(|path| path == "references/usage.md"));
+        assert!(
+            result.skills[0]
+                .asset_files
+                .iter()
+                .any(|path| path == "references/usage.md")
+        );
     }
 
     #[test]

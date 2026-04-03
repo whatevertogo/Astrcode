@@ -34,17 +34,21 @@
 //!     .await?;
 //! ```
 
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use anyhow::Result;
 
-use super::block::BlockSpec;
-use super::context::PromptContext;
-use super::contribution::{append_unique_tools, PromptContribution};
-use super::diagnostics::PromptDiagnostics;
-use super::plan::PromptPlan;
-use super::PromptContributor;
+use super::{
+    PromptContributor,
+    block::BlockSpec,
+    context::PromptContext,
+    contribution::{PromptContribution, append_unique_tools},
+    diagnostics::PromptDiagnostics,
+    plan::PromptPlan,
+};
 
 /// 分层 Prompt 构建器。
 ///
@@ -210,7 +214,8 @@ impl LayeredPromptBuilder {
         // 依赖解析等处理。完整的 block 渲染逻辑需要复用 PromptComposer 的 resolve_candidates
         // 流程，当前作为临时方案保持为空，后续需要实现。
         let plan = PromptPlan {
-            system_blocks: Vec::new(), // TODO: 需要完整的 block 渲染逻辑（模板渲染 + 条件过滤 + 依赖解析）
+            system_blocks: Vec::new(), /* TODO: 需要完整的 block 渲染逻辑（模板渲染 + 条件过滤 +
+                                        * 依赖解析） */
             prepend_messages: Vec::new(),
             append_messages: Vec::new(),
             extra_tools,

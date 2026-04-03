@@ -19,8 +19,9 @@
 //! 当 Turn 接近预算但未耗尽时，会生成一个自动继续提示（nudge），
 //! 告诉 LLM 已使用了多少预算，鼓励其继续工作。
 
-use regex::Regex;
 use std::sync::LazyLock;
+
+use regex::Regex;
 
 static SHORTHAND_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)(\+\s*\d+(?:\.\d+)?\s*[km]?)").expect("regex"));
@@ -97,7 +98,8 @@ pub fn build_auto_continue_nudge(turn_tokens_used: u64, budget: u64) -> String {
         ((turn_tokens_used as f64 / budget as f64) * 100.0).round() as u64
     };
     format!(
-        "Stopped at {pct}% of token target ({turn_tokens_used} / {budget}). Keep working -- do not summarize."
+        "Stopped at {pct}% of token target ({turn_tokens_used} / {budget}). Keep working -- do \
+         not summarize."
     )
 }
 

@@ -1,13 +1,17 @@
-use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{ErrorKind, Read, Write},
+    net::{Shutdown, SocketAddr, TcpListener, TcpStream},
+    path::Path,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread::JoinHandle,
+    time::{Duration, Instant},
+};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use fs2::FileExt;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -86,7 +90,7 @@ impl DesktopInstanceCoordinator {
             Err(error) if is_lock_busy(&error) => {
                 notify_existing_instance()?;
                 Ok(InstanceBootstrap::ActivatedExisting)
-            }
+            },
             Err(error) => Err(error).with_context(|| {
                 format!(
                     "failed to acquire desktop instance lock '{}'",
@@ -210,7 +214,8 @@ fn notify_existing_instance() -> Result<()> {
 
         if Instant::now() >= deadline {
             return Err(anyhow!(
-                "another AstrCode desktop instance holds the single-instance lock, but it did not accept activation within {:?}",
+                "another AstrCode desktop instance holds the single-instance lock, but it did not \
+                 accept activation within {:?}",
                 INSTANCE_RETRY_TIMEOUT
             ));
         }
@@ -281,14 +286,14 @@ fn run_instance_listener(
                 if accepted {
                     trigger_or_queue_focus(&app_handle, &main_window_ready, &pending_focus_request);
                 }
-            }
+            },
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
                 std::thread::sleep(INSTANCE_RETRY_INTERVAL);
-            }
+            },
             Err(error) => {
                 eprintln!("[astrcode-instance] desktop IPC listener failed: {error}");
                 std::thread::sleep(INSTANCE_RETRY_INTERVAL);
-            }
+            },
         }
     }
 }
@@ -359,7 +364,7 @@ fn trigger_or_queue_focus(
         Err(_) => {
             pending_focus_request.store(true, Ordering::SeqCst);
             return;
-        }
+        },
     };
     let Some(app_handle) = app_handle else {
         pending_focus_request.store(true, Ordering::SeqCst);

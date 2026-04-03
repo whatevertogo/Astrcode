@@ -13,8 +13,7 @@
 //! 进程启动后立即创建 `StdioTransport`，将子进程的 stdin/stdout
 //! 包装为异步传输层，供 `Peer` 使用。
 
-use std::process::Stdio;
-use std::sync::Arc;
+use std::{process::Stdio, sync::Arc};
 
 use astrcode_core::{AstrError, PluginManifest, Result};
 use tokio::process::{Child, Command};

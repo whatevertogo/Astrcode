@@ -4,10 +4,9 @@
 //! `ErrorPayload` 用于在 JSON-RPC 消息中传输结构化错误信息，
 //! `ProtocolError` 是本地 Rust 错误类型，用于内部错误处理。
 
-use thiserror::Error;
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use thiserror::Error;
 
 /// 结构化错误载荷，用于在 JSON-RPC 消息中传输错误信息。
 ///

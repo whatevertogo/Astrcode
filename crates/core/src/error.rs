@@ -213,7 +213,7 @@ impl AstrError {
         match self {
             AstrError::HttpRequest { source, .. } => {
                 source.is_timeout() || source.is_connect() || source.is_body()
-            }
+            },
             _ => false,
         }
     }

@@ -1,7 +1,9 @@
-use std::future::Future;
-use std::pin::pin;
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use std::{
+    future::Future,
+    pin::pin,
+    sync::{Arc, Mutex},
+    task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -138,7 +140,7 @@ fn tool_registration_reports_typed_decode_errors() {
             assert_eq!(capability, "tool.sample");
             assert_eq!(stage, ToolSerdeStage::DecodeInput);
             assert!(rust_type.contains("SampleInput"));
-        }
+        },
         other => panic!("expected serde decode error, got {other:?}"),
     }
     assert_eq!(payload.code, "invalid_input");

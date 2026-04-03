@@ -9,7 +9,11 @@
 //! - 默认最多返回 200 条结果
 //! - 返回结构化 JSON 数组，便于前端渲染
 
-use crate::tools::fs_common::{check_cancel, json_output, resolve_path};
+use std::{
+    path::{Component, Path, PathBuf},
+    time::Instant,
+};
+
 use astrcode_core::{
     AstrError, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
     ToolExecutionResult, ToolPromptMetadata,
@@ -18,8 +22,8 @@ use async_trait::async_trait;
 use glob::glob;
 use serde::Deserialize;
 use serde_json::json;
-use std::path::{Component, Path, PathBuf};
-use std::time::Instant;
+
+use crate::tools::fs_common::{check_cancel, json_output, resolve_path};
 
 /// FindFiles 工具实现。
 ///
@@ -66,11 +70,19 @@ impl Tool for FindFilesTool {
             .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Find candidate files by glob when you know the filename pattern but not the exact path.",
-                    "Use `findFiles` to narrow a workspace to a set of matching paths before calling `readFile` or `editFile`. It is better than shell globbing because it stays within the working directory and returns structured results.",
+                    "Find candidate files by glob when you know the filename pattern but not the \
+                     exact path.",
+                    "Use `findFiles` to narrow a workspace to a set of matching paths before \
+                     calling `readFile` or `editFile`. It is better than shell globbing because \
+                     it stays within the working directory and returns structured results.",
                 )
-                .caveat("Patterns must stay inside the workspace; use `**` explicitly when you need recursive matching.")
-                .example("Locate all `Cargo.toml`, `package.json`, or `*.tsx` files under the repo.")
+                .caveat(
+                    "Patterns must stay inside the workspace; use `**` explicitly when you need \
+                     recursive matching.",
+                )
+                .example(
+                    "Locate all `Cargo.toml`, `package.json`, or `*.tsx` files under the repo.",
+                )
                 .prompt_tag("search")
                 .always_include(true),
             )
@@ -161,8 +173,8 @@ fn validate_glob_pattern(pattern: &str) -> Result<()> {
                     "glob pattern '{}' must stay within the working directory",
                     pattern
                 )));
-            }
-            Component::CurDir | Component::Normal(_) => {}
+            },
+            Component::CurDir | Component::Normal(_) => {},
         }
     }
 
@@ -310,8 +322,10 @@ mod tests {
     #[test]
     fn validate_glob_pattern_rejects_windows_drive_relative_pattern() {
         let error = validate_glob_pattern("a:*.rs").expect_err("drive-relative path must fail");
-        assert!(error
-            .to_string()
-            .contains("must stay within the working directory"));
+        assert!(
+            error
+                .to_string()
+                .contains("must stay within the working directory")
+        );
     }
 }

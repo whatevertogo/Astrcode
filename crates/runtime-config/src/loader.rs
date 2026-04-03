@@ -14,14 +14,17 @@
 //! `load_config()` 是此 crate 中唯一会向 stdout 打印的函数，仅在配置文件不存在时
 //! 触发一次，用于引导用户填写 API key。
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
-use astrcode_core::project::project_dir;
-use astrcode_core::{AstrError, Result};
+use astrcode_core::{AstrError, Result, project::project_dir};
 
-use crate::types::{Config, ConfigOverlay};
-use crate::validation::normalize_config;
+use crate::{
+    types::{Config, ConfigOverlay},
+    validation::normalize_config,
+};
 
 /// 返回默认配置文件路径。
 ///
@@ -200,21 +203,27 @@ pub(crate) fn write_json_atomic(path: &Path, config: &Config) -> Result<()> {
 
                 if let Err(rename_err) = fs::rename(&tmp_path, path) {
                     match fs::rename(&backup_path, path) {
-                        Ok(()) => return Err(AstrError::Internal(format!(
-                            "failed to replace config {} with temp file {}: {}; original config restored from backup {} (temp file kept for recovery)",
-                            path.display(),
-                            tmp_path.display(),
-                            rename_err,
-                            backup_path.display()
-                        ))),
-                        Err(restore_err) => return Err(AstrError::Internal(format!(
-                            "failed to replace config {} with temp file {}: {}; also failed to restore backup {}: {} (temp file kept for recovery)",
-                            path.display(),
-                            tmp_path.display(),
-                            rename_err,
-                            backup_path.display(),
-                            restore_err
-                        ))),
+                        Ok(()) => {
+                            return Err(AstrError::Internal(format!(
+                                "failed to replace config {} with temp file {}: {}; original \
+                                 config restored from backup {} (temp file kept for recovery)",
+                                path.display(),
+                                tmp_path.display(),
+                                rename_err,
+                                backup_path.display()
+                            )));
+                        },
+                        Err(restore_err) => {
+                            return Err(AstrError::Internal(format!(
+                                "failed to replace config {} with temp file {}: {}; also failed \
+                                 to restore backup {}: {} (temp file kept for recovery)",
+                                path.display(),
+                                tmp_path.display(),
+                                rename_err,
+                                backup_path.display(),
+                                restore_err
+                            )));
+                        },
                     }
                 }
 

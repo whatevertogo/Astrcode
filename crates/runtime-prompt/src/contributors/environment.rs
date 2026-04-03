@@ -21,7 +21,8 @@ impl PromptContributor for EnvironmentContributor {
                 "environment",
                 BlockKind::Environment,
                 "Environment",
-                "Working directory: {{project.working_dir}}\nOS: {{env.os}}\nShell: {{env.shell}}\nDate: {{run.date}}\nAvailable tools: {{tools.names}}",
+                "Working directory: {{project.working_dir}}\nOS: {{env.os}}\nShell: \
+                 {{env.shell}}\nDate: {{run.date}}\nAvailable tools: {{tools.names}}",
             )],
             ..PromptContribution::default()
         }
@@ -59,9 +60,11 @@ mod tests {
             .expect("environment block should exist");
         assert_eq!(block.kind, BlockKind::Environment);
         assert!(block.content.contains("Working directory: /workspace/demo"));
-        assert!(block
-            .content
-            .contains(&format!("OS: {}", std::env::consts::OS)));
+        assert!(
+            block
+                .content
+                .contains(&format!("OS: {}", std::env::consts::OS))
+        );
         assert!(block.content.contains("Shell: "));
         assert!(block.content.contains("Date: "));
         assert!(block.content.contains("Available tools: shell, readFile"));

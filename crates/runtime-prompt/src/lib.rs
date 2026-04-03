@@ -37,7 +37,7 @@ pub use block::{
 };
 pub use composer::{PromptComposer, PromptComposerOptions, ValidationLevel};
 pub use context::PromptContext;
-pub use contribution::{append_unique_tools, PromptContribution};
+pub use contribution::{PromptContribution, append_unique_tools};
 pub use contributor::PromptContributor;
 pub use diagnostics::{DiagnosticLevel, PromptDiagnostics};
 pub use layered_builder::{LayeredBuilderOptions, LayeredPromptBuilder, PromptBuildOutput};

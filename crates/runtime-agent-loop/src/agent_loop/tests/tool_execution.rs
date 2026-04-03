@@ -9,18 +9,17 @@
 //! - 并行工具结果顺序保持
 //! - 长工具链完成
 
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 use astrcode_core::{CancelToken, StorageEvent, ToolCallRequest};
 use astrcode_runtime_llm::LlmOutput;
 use serde_json::json;
 
-use super::fixtures::*;
-use super::test_support::capabilities_from_tools;
-use crate::agent_loop::TurnOutcome;
-use crate::AgentLoop;
+use super::{fixtures::*, test_support::capabilities_from_tools};
+use crate::{AgentLoop, agent_loop::TurnOutcome};
 
 #[tokio::test]
 async fn tool_events_are_ordered_and_turn_finishes() {

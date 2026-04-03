@@ -3,8 +3,10 @@
 //! 从 `~/.astrcode/IDENTITY.md` 加载用户自定义身份定义，
 //! 若文件不存在则使用内置默认值。
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use async_trait::async_trait;
 use log::{info, warn};
@@ -18,15 +20,14 @@ use crate::{BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContr
 /// 优先读取 `~/.astrcode/IDENTITY.md`，不存在时使用默认描述。
 pub struct IdentityContributor;
 
-const DEFAULT_IDENTITY: &str = "\
-You are AstrCode, a local AI coding agent running on the user's machine. \
-You help with coding tasks, file editing, and terminal commands. \
-做任何事情之前请先确认用户的意图，必要时可以提出澄清问题.\
-做任何删除、强推、数据库变更等高风险操作前必须先确认.\
-请保证代码符合当前技术栈和当前代码库的最佳实践，包括但不限于代码架构和设计原则.\
-动手前一定要先读相关文件建立上下文.\
-改完要给出可运行的验证或测试命令形成闭环.\
-最后总结的时候可以给下一步建议.";
+const DEFAULT_IDENTITY: &str =
+    "\
+You are AstrCode, a local AI coding agent running on the user's machine. You help with coding \
+     tasks, file editing, and terminal commands. \
+     做任何事情之前请先确认用户的意图，必要时可以提出澄清问题.做任何删除、强推、\
+     数据库变更等高风险操作前必须先确认.请保证代码符合当前技术栈和当前代码库的最佳实践，\
+     包括但不限于代码架构和设计原则.动手前一定要先读相关文件建立上下文.\
+     改完要给出可运行的验证或测试命令形成闭环.最后总结的时候可以给下一步建议.";
 
 /// Returns the path to the user-wide IDENTITY.md file.
 pub fn user_identity_md_path() -> Option<PathBuf> {
@@ -81,11 +82,11 @@ pub fn load_identity_md(path: &Path) -> Option<String> {
             }
             info!("loaded custom identity from {}", path.display());
             Some(trimmed)
-        }
+        },
         Err(error) => {
             warn!("failed to read {}: {}", path.display(), error);
             None
-        }
+        },
     }
 }
 
@@ -129,9 +130,10 @@ impl PromptContributor for IdentityContributor {
 mod tests {
     use std::fs;
 
+    use astrcode_core::test_support::TestEnvGuard;
+
     use super::*;
     use crate::BlockContent;
-    use astrcode_core::test_support::TestEnvGuard;
 
     fn context() -> PromptContext {
         PromptContext {

@@ -3,9 +3,9 @@ use serde_json::json;
 use super::{
     CancelMessage, CapabilityDescriptor, CapabilityKind, DescriptorBuildError, ErrorPayload,
     EventMessage, EventPhase, FilterDescriptor, HandlerDescriptor, InitializeMessage,
-    InitializeResultData, InvocationContext, PeerDescriptor, PeerRole, PermissionHint,
-    PluginMessage, ProfileDescriptor, ResultMessage, SideEffectLevel, StabilityLevel,
-    TriggerDescriptor, WorkspaceRef, PROTOCOL_VERSION,
+    InitializeResultData, InvocationContext, PROTOCOL_VERSION, PeerDescriptor, PeerRole,
+    PermissionHint, PluginMessage, ProfileDescriptor, ResultMessage, SideEffectLevel,
+    StabilityLevel, TriggerDescriptor, WorkspaceRef,
 };
 
 fn sample_peer() -> PeerDescriptor {

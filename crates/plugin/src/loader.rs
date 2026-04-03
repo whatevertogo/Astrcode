@@ -98,7 +98,7 @@ impl PluginLoader {
                         error
                     );
                     continue;
-                }
+                },
             };
 
             for entry in entries {
@@ -111,7 +111,7 @@ impl PluginLoader {
                             error
                         );
                         continue;
-                    }
+                    },
                 };
                 let path = entry.path();
                 if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
@@ -126,7 +126,7 @@ impl PluginLoader {
                             error
                         );
                         continue;
-                    }
+                    },
                 };
                 let mut manifest = match PluginManifest::from_toml(&raw) {
                     Ok(manifest) => manifest,
@@ -137,7 +137,7 @@ impl PluginLoader {
                             error
                         );
                         continue;
-                    }
+                    },
                 };
                 resolve_relative_path(&mut manifest.working_dir, &path, search_path, false);
                 resolve_relative_path(&mut manifest.executable, &path, search_path, true);

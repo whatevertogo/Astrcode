@@ -15,12 +15,14 @@
 //! - `metadata` 是机器可读的契约；`output` 仅供展示
 //! - 结构化机器数据不应嵌入到 `output` 字符串中
 
-use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::{
+    fs,
+    path::{Component, Path, PathBuf},
+};
 
 use astrcode_core::{AstrError, CancelToken, Result, ToolContext};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// 检查取消标记，如果已取消则返回 `AstrError::Cancelled`。
 ///
@@ -184,8 +186,8 @@ struct UnifiedDiffReport {
 ///
 /// 1. **前后缀匹配**: 从文件开头和结尾分别找公共行（prefix_len / suffix_len），
 ///    中间的就是变更区域。这是最简单的 diff 策略——不处理交叉插入/删除。
-/// 2. **上下文行**: 变更区域前后各取最多 3 行作为上下文（context_start =
-///    prefix_len - 3），保证 diff 可读性。
+/// 2. **上下文行**: 变更区域前后各取最多 3 行作为上下文（context_start = prefix_len - 3），保证
+///    diff 可读性。
 /// 3. **Hunk header 计算**: `@@ -{start},{count} +{start},{count} @@`
 ///    - start 使用 1-based 行号：如果有删除行则 `context_start + 1`，否则 `context_start`
 ///      （纯新增文件时 start 从 0 开始无意义，+1 使其从第 1 行开始）
@@ -309,16 +311,16 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 
     for component in path.components() {
         match component {
-            Component::CurDir => {}
+            Component::CurDir => {},
             Component::ParentDir => {
                 let popped = normalized.pop();
                 if !popped {
                     normalized.push(component.as_os_str());
                 }
-            }
+            },
             Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
                 normalized.push(component.as_os_str());
-            }
+            },
         }
     }
 
@@ -402,9 +404,8 @@ fn is_path_within_root(path: &Path, root: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_support::{canonical_tool_path, test_tool_context_for};
-
     use super::*;
+    use crate::test_support::{canonical_tool_path, test_tool_context_for};
 
     #[test]
     fn check_cancel_returns_error_for_cancelled_token() {

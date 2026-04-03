@@ -17,7 +17,8 @@
 //! # 配置存储
 //!
 //! - 用户级配置：`~/.astrcode/config.json`
-//! - 项目级 overlay：`<project>/.astrcode/config.json`（仅覆盖 active_profile/active_model/profiles）
+//! - 项目级 overlay：`<project>/.astrcode/config.json`（仅覆盖
+//!   active_profile/active_model/profiles）
 //! - 运行时调优参数（如 max_tool_concurrency）仅存在于用户级配置，因为 `RuntimeService`
 //!   拥有单一共享的 `AgentLoop`，项目级隔离在当前架构下无法安全实现
 //!
@@ -51,11 +52,8 @@ mod validation;
 // Public re-exports
 pub use connection::test_connection;
 pub use constants::{
-    max_tool_concurrency, resolve_auto_compact_enabled, resolve_compact_keep_recent_turns,
-    resolve_compact_threshold_percent, resolve_continuation_min_delta_tokens,
-    resolve_default_token_budget, resolve_max_continuations, resolve_max_tool_concurrency,
-    resolve_tool_result_max_bytes, ALL_ASTRCODE_ENV_VARS, ANTHROPIC_API_KEY_ENV,
-    ANTHROPIC_MESSAGES_API_URL, ANTHROPIC_MODELS_API_URL, ANTHROPIC_VERSION, ASTRCODE_HOME_DIR_ENV,
+    ALL_ASTRCODE_ENV_VARS, ANTHROPIC_API_KEY_ENV, ANTHROPIC_MESSAGES_API_URL,
+    ANTHROPIC_MODELS_API_URL, ANTHROPIC_VERSION, ASTRCODE_HOME_DIR_ENV,
     ASTRCODE_MAX_TOOL_CONCURRENCY_ENV, ASTRCODE_PLUGIN_DIRS_ENV, ASTRCODE_TEST_HOME_ENV,
     BUILD_ENV_VARS, CURRENT_CONFIG_VERSION, DEEPSEEK_API_KEY_ENV, DEFAULT_AUTO_COMPACT_ENABLED,
     DEFAULT_COMPACT_KEEP_RECENT_TURNS, DEFAULT_COMPACT_THRESHOLD_PERCENT,
@@ -63,11 +61,14 @@ pub use constants::{
     DEFAULT_OPENAI_CONTEXT_LIMIT, DEFAULT_TOKEN_BUDGET, DEFAULT_TOOL_RESULT_MAX_BYTES,
     ENV_REFERENCE_PREFIX, HOME_ENV_VARS, LITERAL_VALUE_PREFIX, PLUGIN_ENV_VARS,
     PROVIDER_API_KEY_ENV_VARS, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI, RUNTIME_ENV_VARS,
-    TAURI_ENV_TARGET_TRIPLE_ENV,
+    TAURI_ENV_TARGET_TRIPLE_ENV, max_tool_concurrency, resolve_auto_compact_enabled,
+    resolve_compact_keep_recent_turns, resolve_compact_threshold_percent,
+    resolve_continuation_min_delta_tokens, resolve_default_token_budget, resolve_max_continuations,
+    resolve_max_tool_concurrency, resolve_tool_result_max_bytes,
 };
 pub use editor::open_config_in_editor;
 pub use env_resolver::{
-    env_reference, is_env_var_name, parse_env_value, resolve_env_value, ParsedEnvValue,
+    ParsedEnvValue, env_reference, is_env_var_name, parse_env_value, resolve_env_value,
 };
 pub use loader::{
     config_path, load_config, load_config_from_path, load_config_overlay_from_path,
@@ -75,23 +76,24 @@ pub use loader::{
 };
 pub use saver::{save_config, save_config_to_path};
 pub use selection::{
-    list_model_options, resolve_active_selection, resolve_current_model, resolve_model_for_profile,
-    resolve_selected_model_config, ActiveSelection, CurrentModelSelection, ModelOption,
-    ResolvedModelConfig,
+    ActiveSelection, CurrentModelSelection, ModelOption, ResolvedModelConfig, list_model_options,
+    resolve_active_selection, resolve_current_model, resolve_model_for_profile,
+    resolve_selected_model_config,
 };
 pub use types::{Config, ConfigOverlay, ModelConfig, Profile, RuntimeConfig, TestResult};
 pub use validation::validate_config;
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
-    use crate::saver::save_config_to_path;
-    use crate::validation::validate_config;
     use astrcode_core::test_support::TestEnvGuard;
 
     use super::*;
+    use crate::{saver::save_config_to_path, validation::validate_config};
 
     fn unique_env_name() -> String {
         let nanos = SystemTime::now()

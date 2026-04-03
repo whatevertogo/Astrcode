@@ -5,10 +5,14 @@
 //! - Prompt contributor 缓存复用
 //! - 事件 sink 失败中止 turn
 
-use std::collections::VecDeque;
-use std::fs;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::VecDeque,
+    fs,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use astrcode_core::{
     AstrError, CancelToken, LlmMessage, Phase, ToolCallRequest, UserMessageOrigin,
@@ -18,8 +22,10 @@ use astrcode_runtime_prompt::{PromptComposer, PromptComposerOptions};
 use serde_json::json;
 use tokio::time::Duration;
 
-use super::fixtures::*;
-use super::test_support::{capabilities_from_tools, empty_capabilities};
+use super::{
+    fixtures::*,
+    test_support::{capabilities_from_tools, empty_capabilities},
+};
 use crate::AgentLoop;
 
 #[tokio::test]
@@ -210,8 +216,10 @@ async fn event_sink_failures_abort_the_turn() {
         .await;
 
     assert!(result.is_err());
-    assert!(result
-        .expect_err("result should be error")
-        .to_string()
-        .contains("event sink failed"));
+    assert!(
+        result
+            .expect_err("result should be error")
+            .to_string()
+            .contains("event sink failed")
+    );
 }

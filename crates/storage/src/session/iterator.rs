@@ -10,9 +10,11 @@
 //! - **错误定位**：`line_number` 追踪物理行号（含空行），错误消息中的行号与
 //!   文本编辑器中显示的行号一致，方便调试。
 
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::{
+    fs::File,
+    io::{BufRead, BufReader},
+    path::{Path, PathBuf},
+};
 
 use astrcode_core::{StoredEvent, StoredEventLine};
 
@@ -63,7 +65,7 @@ impl Iterator for EventLogIterator {
                         "failed to read line from session file",
                         error,
                     )));
-                }
+                },
             };
             // line_number 在空行检查之前递增，因此它追踪的是文件物理行号
             // （含空行），而非逻辑事件索引。这样错误消息中的行号与文本编辑器
@@ -85,7 +87,7 @@ impl Iterator for EventLogIterator {
                         ),
                         error,
                     )));
-                }
+                },
             };
             return Some(Ok(event.into_stored(self.line_number)));
         }

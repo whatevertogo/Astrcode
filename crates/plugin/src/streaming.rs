@@ -10,9 +10,7 @@
 //! 当插件能力需要逐步输出结果（如代码生成的增量 patch、搜索工具的逐步结果）时，
 //! 通过 `EventEmitter::delta()` 发送事件，调用方通过 `StreamExecution::recv()` 接收。
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use astrcode_core::Result;
 use astrcode_protocol::plugin::EventMessage;

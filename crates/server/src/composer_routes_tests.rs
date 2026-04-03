@@ -1,11 +1,11 @@
 use astrcode_protocol::http::{ComposerOptionKindDto, ComposerOptionsResponseDto};
-use axum::body::{to_bytes, Body};
-use axum::http::{Request, StatusCode};
+use axum::{
+    body::{Body, to_bytes},
+    http::{Request, StatusCode},
+};
 use tower::ServiceExt;
 
-use crate::routes::build_api_router;
-use crate::test_support::test_state;
-use crate::AUTH_HEADER_NAME;
+use crate::{AUTH_HEADER_NAME, routes::build_api_router, test_support::test_state};
 
 async fn json_body<T: serde::de::DeserializeOwned>(response: axum::http::Response<Body>) -> T {
     let bytes = to_bytes(response.into_body(), usize::MAX)
@@ -69,10 +69,12 @@ async fn composer_options_expose_session_scoped_skill_entries() {
     assert_eq!(response.status(), StatusCode::OK);
     let payload: ComposerOptionsResponseDto = json_body(response).await;
     assert!(!payload.items.is_empty());
-    assert!(payload
-        .items
-        .iter()
-        .all(|item| item.kind == ComposerOptionKindDto::Skill));
+    assert!(
+        payload
+            .items
+            .iter()
+            .all(|item| item.kind == ComposerOptionKindDto::Skill)
+    );
     assert!(payload.items.iter().any(|item| item.id == "git-commit"));
 }
 

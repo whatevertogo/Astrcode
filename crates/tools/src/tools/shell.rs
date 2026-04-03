@@ -24,14 +24,14 @@
 //! 无法直接 await。使用 `thread::spawn` 将阻塞读取移到后台线程，
 //! 主线程轮询子进程退出状态，两者通过 `JoinHandle` 同步。
 
-use std::io::Read;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::Duration;
-use std::time::Instant;
+use std::{
+    io::Read,
+    path::PathBuf,
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
+};
 
-use crate::tools::fs_common::{check_cancel, resolve_path};
 use astrcode_core::{
     AstrError, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
     ToolExecutionResult, ToolOutputStream, ToolPromptMetadata,
@@ -39,6 +39,8 @@ use astrcode_core::{
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
+
+use crate::tools::fs_common::{check_cancel, resolve_path};
 
 /// Shell 工具实现。
 ///
@@ -209,14 +211,14 @@ fn spawn_stream_reader<R: Read + Send + 'static>(
                                     tool_name.clone(),
                                     visible,
                                 );
-                            }
+                            },
                             ToolOutputStream::Stderr => {
                                 let _ = ctx.emit_stderr(
                                     tool_call_id.clone(),
                                     tool_name.clone(),
                                     visible,
                                 );
-                            }
+                            },
                         }
                     }
                 }
@@ -238,10 +240,10 @@ fn spawn_stream_reader<R: Read + Send + 'static>(
                 match stream {
                     ToolOutputStream::Stdout => {
                         let _ = ctx.emit_stdout(tool_call_id.clone(), tool_name.clone(), visible);
-                    }
+                    },
                     ToolOutputStream::Stderr => {
                         let _ = ctx.emit_stderr(tool_call_id.clone(), tool_name.clone(), visible);
-                    }
+                    },
                 }
             }
 
@@ -257,10 +259,10 @@ fn spawn_stream_reader<R: Read + Send + 'static>(
                 match stream {
                     ToolOutputStream::Stdout => {
                         let _ = ctx.emit_stdout(tool_call_id.clone(), tool_name.clone(), visible);
-                    }
+                    },
                     ToolOutputStream::Stderr => {
                         let _ = ctx.emit_stderr(tool_call_id.clone(), tool_name.clone(), visible);
-                    }
+                    },
                 }
             }
         }
@@ -277,10 +279,9 @@ fn spawn_stream_reader<R: Read + Send + 'static>(
 /// 只读到了前 2 字节）。此函数：
 /// 1. 尝试将整个 `pending_bytes` 解码为 UTF-8
 /// 2. 如果成功，清空缓冲区并返回完整字符串
-/// 3. 如果失败但 `error_len` 为 None，说明剩余字节是不完整序列，
-///    保留到下次 read 再尝试（可能下一个 read 会补全）
-/// 4. 如果 `error_len` 有值，说明是无效字节序列，
-///    用 lossy 转换替换并继续
+/// 3. 如果失败但 `error_len` 为 None，说明剩余字节是不完整序列， 保留到下次 read 再尝试（可能下一个
+///    read 会补全）
+/// 4. 如果 `error_len` 有值，说明是无效字节序列， 用 lossy 转换替换并继续
 fn drain_decoded_utf8(pending_bytes: &mut Vec<u8>) -> String {
     let mut decoded = String::new();
 
@@ -290,7 +291,7 @@ fn drain_decoded_utf8(pending_bytes: &mut Vec<u8>) -> String {
                 decoded.push_str(valid);
                 pending_bytes.clear();
                 break;
-            }
+            },
             Err(error) => {
                 let valid_up_to = error.valid_up_to();
                 if valid_up_to > 0 {
@@ -309,7 +310,7 @@ fn drain_decoded_utf8(pending_bytes: &mut Vec<u8>) -> String {
 
                 decoded.push_str(&String::from_utf8_lossy(&pending_bytes[..invalid_len]));
                 pending_bytes.drain(..invalid_len);
-            }
+            },
         }
     }
 
@@ -338,7 +339,8 @@ impl Tool for ShellTool {
         ToolDefinition {
             name: "shell".to_string(),
             description: format!(
-                "Execute a non-interactive shell command once with the current default shell ({default_shell}) unless `shell` overrides it; return stdout/stderr/exitCode."
+                "Execute a non-interactive shell command once with the current default shell \
+                 ({default_shell}) unless `shell` overrides it; return stdout/stderr/exitCode."
             ),
             parameters: json!({
                 "type": "object",
@@ -362,13 +364,22 @@ impl Tool for ShellTool {
             .prompt(
                 ToolPromptMetadata::new(
                     format!(
-                        "Run a one-shot shell command with the current default shell (`{default_shell}`) when file tools or search tools are not precise enough."
+                        "Run a one-shot shell command with the current default shell \
+                         (`{default_shell}`) when file tools or search tools are not precise \
+                         enough."
                     ),
                     format!(
-                        "Use `shell` for non-interactive commands that are easier to express as a single command line than as a dedicated file tool. This session defaults to `{default_shell}` unless the `shell` argument explicitly overrides it. Keep commands scoped to the workspace, explain risky commands before running them, and prefer read-only inspection before mutation."
+                        "Use `shell` for non-interactive commands that are easier to express as a \
+                         single command line than as a dedicated file tool. This session defaults \
+                         to `{default_shell}` unless the `shell` argument explicitly overrides \
+                         it. Keep commands scoped to the workspace, explain risky commands before \
+                         running them, and prefer read-only inspection before mutation."
                     ),
                 )
-                .caveat("Shell commands can mutate the workspace or external system state, so keep them narrowly scoped.")
+                .caveat(
+                    "Shell commands can mutate the workspace or external system state, so keep \
+                     them narrowly scoped.",
+                )
                 .example("Inspect repository status or run a targeted build/test command.")
                 .prompt_tag("shell"),
             )
@@ -442,7 +453,7 @@ impl Tool for ShellTool {
 
             match child.try_wait() {
                 Ok(Some(status)) => break status,
-                Ok(None) => {}
+                Ok(None) => {},
                 Err(e) => return Err(AstrError::io("failed to wait shell command", e)),
             }
 
@@ -519,8 +530,8 @@ impl Tool for ShellTool {
 ///
 /// ## 平台差异
 ///
-/// - **Windows**: 优先使用 PowerShell (`pwsh` 或 `powershell`)，
-///   通过 `-NoProfile -Command` 执行，避免加载用户 profile 拖慢速度
+/// - **Windows**: 优先使用 PowerShell (`pwsh` 或 `powershell`)， 通过 `-NoProfile -Command`
+///   执行，避免加载用户 profile 拖慢速度
 /// - **Unix**: 使用 `/bin/sh -lc` 执行命令
 ///
 /// 用户可以通过 `shell` 参数覆盖默认 shell。
@@ -589,13 +600,13 @@ fn default_windows_shell() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
-    use std::io;
+    use std::{collections::VecDeque, io};
+
+    use astrcode_core::ToolOutputDelta;
+    use tokio::sync::mpsc;
 
     use super::*;
     use crate::test_support::test_tool_context_for;
-    use astrcode_core::ToolOutputDelta;
-    use tokio::sync::mpsc;
 
     struct ChunkedReader {
         chunks: VecDeque<Vec<u8>>,
@@ -697,9 +708,11 @@ mod tests {
         );
         assert_eq!(deltas[0].delta.len(), 4096);
         assert_eq!(deltas[1].delta.len(), 904);
-        assert!(deltas
-            .iter()
-            .all(|delta| delta.stream == ToolOutputStream::Stdout));
+        assert!(
+            deltas
+                .iter()
+                .all(|delta| delta.stream == ToolOutputStream::Stdout)
+        );
     }
 
     #[tokio::test]

@@ -14,8 +14,7 @@
 //! 通过 `into_capability_invokers()` 可以将工具注册表转换为通用能力调用器列表，
 //! 注册到 `CapabilityRouter` 中。
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use serde_json::Value;

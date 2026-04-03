@@ -4,9 +4,11 @@
 //!
 //! 提供路径解析和缓存标记生成等跨 contributor 复用的基础设施。
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 
 use astrcode_core::env::{ASTRCODE_HOME_DIR_ENV, ASTRCODE_TEST_HOME_ENV};
 use log::warn;
@@ -31,7 +33,7 @@ pub fn user_astrcode_file_path(filename: &str) -> Option<PathBuf> {
         None => {
             warn!("failed to resolve home dir for {filename}");
             None
-        }
+        },
     }
 }
 
@@ -49,7 +51,7 @@ pub fn cache_marker_for_path(path: &Path) -> String {
                 .unwrap_or_default();
 
             format!("present:{}:{modified}", metadata.len())
-        }
+        },
         Err(_) => "missing".to_string(),
     }
 }

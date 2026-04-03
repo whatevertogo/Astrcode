@@ -12,8 +12,7 @@
 //! - 支持去重（同一 block id 只渲染一次）
 //! - 支持诊断（渲染失败时可精确定位到具体 block）
 
-use std::borrow::Cow;
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap};
 
 use super::template::PromptTemplate;
 

@@ -19,11 +19,9 @@
 
 use std::path::PathBuf;
 
-use crate::Phase;
-
-use crate::event::StorageEvent;
 use crate::{
-    split_assistant_content, LlmMessage, ReasoningContent, ToolCallRequest, UserMessageOrigin,
+    LlmMessage, Phase, ReasoningContent, ToolCallRequest, UserMessageOrigin, event::StorageEvent,
+    split_assistant_content,
 };
 
 /// Agent 的当前状态快照。
@@ -99,7 +97,7 @@ impl AgentStateProjector {
             } => {
                 self.state.session_id = session_id.clone();
                 self.state.working_dir = PathBuf::from(working_dir);
-            }
+            },
 
             StorageEvent::UserMessage {
                 content, origin, ..
@@ -110,7 +108,7 @@ impl AgentStateProjector {
                     origin: *origin,
                 });
                 self.state.phase = Phase::Thinking;
-            }
+            },
 
             StorageEvent::AssistantFinal {
                 content,
@@ -125,7 +123,7 @@ impl AgentStateProjector {
                     content,
                     signature: reasoning_signature.clone(),
                 });
-            }
+            },
 
             StorageEvent::ToolCall {
                 tool_call_id,
@@ -138,7 +136,7 @@ impl AgentStateProjector {
                     name: tool_name.clone(),
                     args: args.clone(),
                 });
-            }
+            },
 
             StorageEvent::ToolResult {
                 tool_call_id,
@@ -165,7 +163,7 @@ impl AgentStateProjector {
                     tool_call_id: tool_call_id.clone(),
                     content: result.model_content(),
                 });
-            }
+            },
 
             StorageEvent::CompactApplied {
                 summary,
@@ -174,19 +172,19 @@ impl AgentStateProjector {
             } => {
                 self.flush_pending_assistant();
                 self.apply_compaction(summary, *preserved_recent_turns as usize);
-            }
+            },
 
             StorageEvent::TurnDone { .. } => {
                 self.flush_pending_assistant();
                 self.state.phase = Phase::Idle;
                 self.state.turn_count += 1;
-            }
+            },
 
             StorageEvent::AssistantDelta { .. }
             | StorageEvent::ToolCallDelta { .. }
             | StorageEvent::PromptMetrics { .. }
             | StorageEvent::ThinkingDelta { .. }
-            | StorageEvent::Error { .. } => {}
+            | StorageEvent::Error { .. } => {},
         }
     }
 
@@ -226,7 +224,8 @@ impl AgentStateProjector {
 
 pub fn format_compact_summary(summary: &str) -> String {
     format!(
-        "[Auto-compact summary]\n{}\n\nContinue from this summary without repeating it to the user.",
+        "[Auto-compact summary]\n{}\n\nContinue from this summary without repeating it to the \
+         user.",
         summary.trim()
     )
 }
@@ -437,7 +436,7 @@ mod tests {
                 assert_eq!(content, "");
                 assert_eq!(tool_calls.len(), 1);
                 assert_eq!(tool_calls[0].name, "listDir");
-            }
+            },
             other => panic!("expected Assistant, got {:?}", other),
         }
 
@@ -449,7 +448,7 @@ mod tests {
             } => {
                 assert_eq!(tool_call_id, "tc1");
                 assert!(content.contains("file1.txt"));
-            }
+            },
             other => panic!("expected Tool, got {:?}", other),
         }
     }
@@ -552,7 +551,7 @@ mod tests {
                 assert_eq!(content, "");
                 assert_eq!(tool_calls.len(), 1);
                 assert_eq!(tool_calls[0].id, "tc1");
-            }
+            },
             other => panic!("expected assistant before tool message, got {:?}", other),
         }
 

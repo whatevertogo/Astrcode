@@ -21,22 +21,22 @@
 
 use std::path::{Path as FsPath, PathBuf};
 
-use anyhow::{anyhow, Context, Result as AnyhowResult};
+use anyhow::{Context, Result as AnyhowResult, anyhow};
 use astrcode_core::LocalServerInfo;
-use axum::body::Body;
-use axum::extract::{Request, State};
-use axum::http::{HeaderName, HeaderValue, Method, StatusCode};
-use axum::response::IntoResponse;
-use axum::response::Response;
-use axum::routing::get;
-use axum::{Json, Router};
+use axum::{
+    Json, Router,
+    body::Body,
+    extract::{Request, State},
+    http::{HeaderName, HeaderValue, Method, StatusCode},
+    response::{IntoResponse, Response},
+    routing::get,
+};
 use rand::RngCore;
 use serde::Serialize;
 use tower::ServiceExt;
-use tower_http::cors::CorsLayer;
-use tower_http::services::ServeDir;
+use tower_http::{cors::CorsLayer, services::ServeDir};
 
-use crate::{ApiError, AppState, FrontendBuild, AUTH_HEADER_NAME, SESSION_CURSOR_HEADER_NAME};
+use crate::{AUTH_HEADER_NAME, ApiError, AppState, FrontendBuild, SESSION_CURSOR_HEADER_NAME};
 
 /// Bootstrap token 有效期（小时）。
 ///
@@ -362,9 +362,8 @@ fn run_info_path() -> AnyhowResult<PathBuf> {
 mod tests {
     use astrcode_core::LocalServerInfo;
 
-    use crate::test_support::ServerTestEnvGuard;
-
     use super::{bootstrap_token_expires_at_ms, clear_run_info, run_info_path, write_run_info};
+    use crate::test_support::ServerTestEnvGuard;
 
     #[test]
     fn write_run_info_persists_expiry_and_clear_run_info_removes_matching_pid() {

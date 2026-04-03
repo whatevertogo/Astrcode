@@ -8,8 +8,10 @@
 //! 模板变量解析遵循优先级顺序：block vars → contributor vars → context global vars → builtin vars。
 //! 这种分层设计允许 contributor 在局部覆盖全局变量，同时保留操作系统、日期等内建变量。
 
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::{
+    collections::HashMap,
+    hash::{Hash, Hasher},
+};
 
 use astrcode_core::CapabilityDescriptor;
 use astrcode_runtime_skill_loader::SkillSpec;

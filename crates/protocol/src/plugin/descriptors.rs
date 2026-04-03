@@ -16,9 +16,10 @@
 //!   以避免拼写错误导致的路由失败
 //! - Builder 在 `build()` 时执行完整校验，确保描述符的完整性
 
+use std::fmt;
+
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use std::fmt;
 
 /// 通信对等方的角色类型。
 ///
@@ -334,13 +335,13 @@ impl fmt::Display for DescriptorBuildError {
             Self::MissingField(field) => write!(f, "descriptor field '{field}' is required"),
             Self::InvalidSchema(field) => {
                 write!(f, "descriptor field '{field}' must be a JSON object schema")
-            }
+            },
             Self::DuplicateValue { field, value } => {
                 write!(
                     f,
                     "descriptor field '{field}' contains duplicate value '{value}'"
                 )
-            }
+            },
         }
     }
 }

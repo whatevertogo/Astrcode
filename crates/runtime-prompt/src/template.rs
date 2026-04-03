@@ -79,10 +79,10 @@ impl std::fmt::Display for TemplateRenderError {
             Self::EmptyPlaceholder => write!(f, "template contains an empty placeholder"),
             Self::MissingVariable(variable) => {
                 write!(f, "template variable '{variable}' is missing")
-            }
+            },
             Self::UnclosedPlaceholder => {
                 write!(f, "template contains an unclosed placeholder")
-            }
+            },
         }
     }
 }
