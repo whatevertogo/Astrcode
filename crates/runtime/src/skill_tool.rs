@@ -22,7 +22,9 @@ use astrcode_core::{
     ToolExecutionResult, ToolPromptMetadata,
 };
 
-use crate::prompt::{normalize_skill_name, SkillCatalog, SkillSpec, SKILL_TOOL_NAME};
+use astrcode_runtime_skill_loader::{
+    normalize_skill_name, SkillCatalog, SkillSpec, SKILL_TOOL_NAME,
+};
 
 /// Skill 工具的输入参数。
 ///
@@ -211,7 +213,7 @@ mod tests {
     use astrcode_core::{CancelToken, ToolContext};
 
     use super::*;
-    use crate::prompt::SkillSource;
+    use astrcode_runtime_skill_loader::SkillSource;
 
     fn tool_context() -> ToolContext {
         ToolContext::new(

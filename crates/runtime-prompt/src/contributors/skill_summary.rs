@@ -4,12 +4,10 @@
 //! 这是两阶段 skill 模型的第一阶段：仅暴露 skill 名称和描述，
 //! 完整指南通过 `Skill` tool 按需加载。
 
+use astrcode_runtime_skill_loader::{skill_roots_cache_marker, SKILL_TOOL_NAME};
 use async_trait::async_trait;
 
-use crate::skill_loader::skill_roots_cache_marker;
-use crate::{
-    BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor, SKILL_TOOL_NAME,
-};
+use crate::{BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor};
 
 pub struct SkillSummaryContributor;
 
@@ -72,9 +70,10 @@ impl PromptContributor for SkillSummaryContributor {
 #[cfg(test)]
 mod tests {
     use astrcode_core::test_support::TestEnvGuard;
+    use astrcode_runtime_skill_loader::{SkillSource, SkillSpec};
 
     use super::*;
-    use crate::{BlockContent, PromptContext, SkillSource, SkillSpec};
+    use crate::{BlockContent, PromptContext};
 
     #[tokio::test]
     async fn renders_skill_listing_when_skill_tool_is_available() {

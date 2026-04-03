@@ -18,8 +18,8 @@ use std::sync::Arc;
 
 use astrcode_core::{CapabilityInvoker, Result, ToolCapabilityInvoker};
 
-use crate::prompt::SkillCatalog;
 use crate::skill_tool::SkillTool;
+use astrcode_runtime_skill_loader::SkillCatalog;
 
 /// 构建所有内置能力的调用器列表。
 ///

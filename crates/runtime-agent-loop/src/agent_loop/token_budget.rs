@@ -30,14 +30,14 @@ static NUMERIC_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)(\d+(?:\.\d+)?)\s*([km]?)").expect("regex"));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TokenBudgetDecision {
+pub enum TokenBudgetDecision {
     Continue,
     Stop,
     DiminishingReturns,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ParsedTokenBudget {
+pub struct ParsedTokenBudget {
     pub cleaned_text: String,
     pub budget: Option<u64>,
 }
@@ -46,7 +46,7 @@ pub(crate) fn parse_token_budget(user_message: &str) -> Option<u64> {
     extract_budget_match(user_message).map(|(budget, _)| budget)
 }
 
-pub(crate) fn strip_token_budget_marker(user_message: &str) -> ParsedTokenBudget {
+pub fn strip_token_budget_marker(user_message: &str) -> ParsedTokenBudget {
     let Some((_, matched_span)) = extract_budget_match(user_message) else {
         return ParsedTokenBudget {
             cleaned_text: user_message.trim().to_string(),
@@ -68,7 +68,7 @@ pub(crate) fn strip_token_budget_marker(user_message: &str) -> ParsedTokenBudget
     }
 }
 
-pub(crate) fn check_token_budget(
+pub fn check_token_budget(
     turn_tokens_used: u64,
     budget: u64,
     continuation_count: u8,
@@ -90,7 +90,7 @@ pub(crate) fn check_token_budget(
     TokenBudgetDecision::Continue
 }
 
-pub(crate) fn build_auto_continue_nudge(turn_tokens_used: u64, budget: u64) -> String {
+pub fn build_auto_continue_nudge(turn_tokens_used: u64, budget: u64) -> String {
     let pct = if budget == 0 {
         0
     } else {

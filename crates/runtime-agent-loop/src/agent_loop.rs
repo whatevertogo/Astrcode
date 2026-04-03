@@ -19,7 +19,7 @@
 //! - Prompt 组装通过 `PromptComposer` 独立实现，保持关注点分离
 
 mod llm_cycle;
-pub(crate) mod token_budget;
+pub mod token_budget;
 mod tool_cycle;
 mod turn_runner;
 
@@ -27,18 +27,17 @@ use astrcode_core::{
     AllowAllPolicyEngine, AstrError, CancelToken, CapabilityDescriptor, CapabilityRouter,
     PolicyContext, PolicyEngine, Result, ToolContext,
 };
+use astrcode_runtime_llm::LlmProvider;
+use astrcode_runtime_prompt::{PromptComposer, PromptDeclaration};
+use astrcode_runtime_skill_loader::{load_builtin_skills, SkillCatalog};
 use chrono::Utc;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::approval_service::{ApprovalBroker, DefaultApprovalBroker};
-use crate::llm::LlmProvider;
-use crate::prompt::PromptComposer;
 use crate::provider_factory::DynProviderFactory;
 use astrcode_core::AgentState;
 use astrcode_core::StorageEvent;
-
-use crate::prompt::{load_builtin_skills, PromptDeclaration, SkillCatalog};
 
 use astrcode_runtime_config::{
     max_tool_concurrency, DEFAULT_AUTO_COMPACT_ENABLED, DEFAULT_COMPACT_KEEP_RECENT_TURNS,
@@ -245,7 +244,7 @@ impl AgentLoop {
     /// 执行 Turn 但不发送 TurnDone/TurnFailed 事件
     ///
     /// 用于内部场景（如自动压缩），调用方需要自行处理 Turn 的完成状态。
-    pub(crate) async fn run_turn_without_finish(
+    pub async fn run_turn_without_finish(
         &self,
         state: &AgentState,
         turn_id: &str,
@@ -281,30 +280,30 @@ impl AgentLoop {
         }
     }
 
-    pub(crate) fn max_tool_concurrency(&self) -> usize {
+    pub fn max_tool_concurrency(&self) -> usize {
         self.max_tool_concurrency
     }
 
-    pub(crate) async fn build_provider(
+    pub async fn build_provider(
         &self,
         working_dir: Option<PathBuf>,
     ) -> Result<Arc<dyn LlmProvider>> {
         llm_cycle::build_provider(self.factory.clone(), working_dir).await
     }
 
-    pub(crate) fn auto_compact_enabled(&self) -> bool {
+    pub fn auto_compact_enabled(&self) -> bool {
         self.auto_compact_enabled
     }
 
-    pub(crate) fn compact_threshold_percent(&self) -> u8 {
+    pub fn compact_threshold_percent(&self) -> u8 {
         self.compact_threshold_percent
     }
 
-    pub(crate) fn tool_result_max_bytes(&self) -> usize {
+    pub fn tool_result_max_bytes(&self) -> usize {
         self.tool_result_max_bytes
     }
 
-    pub(crate) fn compact_keep_recent_turns(&self) -> usize {
+    pub fn compact_keep_recent_turns(&self) -> usize {
         self.compact_keep_recent_turns
     }
 
@@ -312,12 +311,12 @@ impl AgentLoop {
     ///
     /// 输入候选接口需要复用和 prompt 一致的 capability surface，
     /// 这样前端看到的工具候选不会和模型真实可见的工具列表漂移。
-    pub(crate) fn capability_descriptors(&self) -> &[CapabilityDescriptor] {
+    pub fn capability_descriptors(&self) -> &[CapabilityDescriptor] {
         &self.prompt_capability_descriptors
     }
 
     /// 暴露统一 skill 目录。
-    pub(crate) fn skill_catalog(&self) -> Arc<SkillCatalog> {
+    pub fn skill_catalog(&self) -> Arc<SkillCatalog> {
         Arc::clone(&self.skill_catalog)
     }
 }

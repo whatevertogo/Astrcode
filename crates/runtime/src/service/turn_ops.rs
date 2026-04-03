@@ -42,18 +42,15 @@ use super::session_ops::normalize_session_id;
 use super::session_state::{SessionState, SessionTokenBudgetState};
 use super::support::{lock_anyhow, spawn_blocking_service};
 use super::{PromptAccepted, RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent};
-use crate::agent_loop::{
-    token_budget::{
-        build_auto_continue_nudge, check_token_budget, strip_token_budget_marker,
-        TokenBudgetDecision,
-    },
-    TurnOutcome,
-};
 use crate::config::{
     resolve_continuation_min_delta_tokens, resolve_default_token_budget, resolve_max_continuations,
 };
-use crate::context_window::{auto_compact, estimate_text_tokens, CompactConfig};
 use astrcode_core::EventTranslator;
+use astrcode_runtime_agent_loop::{auto_compact, estimate_text_tokens, CompactConfig};
+use astrcode_runtime_agent_loop::{
+    build_auto_continue_nudge, check_token_budget, strip_token_budget_marker, TokenBudgetDecision,
+    TurnOutcome,
+};
 
 /// Turn 提交的目标会话及其执行上下文。
 ///
@@ -366,7 +363,7 @@ impl RuntimeService {
 
 async fn execute_turn_chain(
     state: &SessionState,
-    loop_: &crate::agent_loop::AgentLoop,
+    loop_: &astrcode_runtime_agent_loop::AgentLoop,
     turn_id: &str,
     cancel: CancelToken,
     translator: &mut EventTranslator,
@@ -685,8 +682,8 @@ mod tests {
     use super::super::session_state::SessionWriter;
     use super::*;
     use crate::llm::{EventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
-    use crate::provider_factory::ProviderFactory;
     use crate::test_support::TestEnvGuard;
+    use astrcode_runtime_agent_loop::ProviderFactory;
 
     struct ScriptedProvider {
         responses: std::sync::Mutex<VecDeque<LlmOutput>>,
@@ -739,7 +736,6 @@ mod tests {
         let log =
             EventLog::create("test-session", temp_dir.path()).expect("event log should be created");
         let state = SessionState::new(
-            temp_dir.path().to_path_buf(),
             Phase::Idle,
             // 测试继续走真实 EventLog，确保 trait object 包装不改变持久化路径。
             Arc::new(SessionWriter::new(Box::new(log))),
@@ -927,7 +923,7 @@ mod tests {
                 },
             ])),
         });
-        let loop_ = crate::agent_loop::AgentLoop::from_capabilities(
+        let loop_ = astrcode_runtime_agent_loop::AgentLoop::from_capabilities(
             Arc::new(StaticProviderFactory { provider }),
             crate::test_support::empty_capabilities(),
         );

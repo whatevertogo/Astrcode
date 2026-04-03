@@ -24,14 +24,14 @@
 
 use astrcode_core::{LlmMessage, UserMessageOrigin};
 
-use crate::llm::{LlmUsage, ModelLimits};
+use astrcode_runtime_llm::{LlmUsage, ModelLimits};
 
 pub(crate) const SUMMARY_RESERVE_TOKENS: usize = 20_000;
 const MESSAGE_BASE_TOKENS: usize = 6;
 const TOOL_CALL_BASE_TOKENS: usize = 12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PromptTokenSnapshot {
+pub struct PromptTokenSnapshot {
     pub context_tokens: usize,
     pub budget_tokens: usize,
     pub context_window: usize,
@@ -40,7 +40,7 @@ pub(crate) struct PromptTokenSnapshot {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct TokenUsageTracker {
+pub struct TokenUsageTracker {
     anchored_budget_tokens: usize,
 }
 
@@ -65,7 +65,7 @@ impl TokenUsageTracker {
     }
 }
 
-pub(crate) fn build_prompt_snapshot(
+pub fn build_prompt_snapshot(
     tracker: &TokenUsageTracker,
     messages: &[LlmMessage],
     system_prompt: Option<&str>,
@@ -82,7 +82,7 @@ pub(crate) fn build_prompt_snapshot(
     }
 }
 
-pub(crate) fn effective_context_window(limits: ModelLimits) -> usize {
+pub fn effective_context_window(limits: ModelLimits) -> usize {
     limits
         .context_window
         .saturating_sub(SUMMARY_RESERVE_TOKENS.min(limits.context_window))
@@ -94,21 +94,18 @@ pub(crate) fn compact_threshold_tokens(limits: ModelLimits, threshold_percent: u
         .saturating_div(100)
 }
 
-pub(crate) fn should_compact(snapshot: PromptTokenSnapshot) -> bool {
+pub fn should_compact(snapshot: PromptTokenSnapshot) -> bool {
     snapshot.context_tokens >= snapshot.threshold_tokens
 }
 
-pub(crate) fn estimate_request_tokens(
-    messages: &[LlmMessage],
-    system_prompt: Option<&str>,
-) -> usize {
+pub fn estimate_request_tokens(messages: &[LlmMessage], system_prompt: Option<&str>) -> usize {
     // TODO(claude-auto-compact): replace this full-scan heuristic with a provider-native tokenizer
     // once the backends expose exact token accounting and context-window metadata.
     let system_tokens = system_prompt.map_or(0, estimate_text_tokens);
     system_tokens + messages.iter().map(estimate_message_tokens).sum::<usize>()
 }
 
-pub(crate) fn estimate_message_tokens(message: &LlmMessage) -> usize {
+pub fn estimate_message_tokens(message: &LlmMessage) -> usize {
     match message {
         LlmMessage::User { content, origin } => {
             MESSAGE_BASE_TOKENS
@@ -148,7 +145,7 @@ pub(crate) fn estimate_message_tokens(message: &LlmMessage) -> usize {
     }
 }
 
-pub(crate) fn estimate_text_tokens(text: &str) -> usize {
+pub fn estimate_text_tokens(text: &str) -> usize {
     let chars = text.chars().count();
     // 4 chars/token is a conservative cross-provider heuristic for ASCII-heavy code/chat text.
     chars.div_ceil(4).max(1)

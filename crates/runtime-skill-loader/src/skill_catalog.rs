@@ -171,10 +171,9 @@ mod tests {
             make_skill("git-commit", SkillSource::Plugin),
         ];
         let catalog = SkillCatalog::new(base);
-        // resolve 会叠加 user 和 project（测试环境下可能为空）
-        let resolved = catalog.resolve_for_working_dir("/tmp/test");
-        // 最终应该是 plugin 覆盖 mcp 和 builtin（因为 base 中 plugin 最后）
-        let git_skill = resolved.iter().find(|s| s.id == "git-commit");
+        // 这里只验证 base skill 的归一化顺序，避免测试受本机 user/project skill 目录污染。
+        let normalized = catalog.base_skills();
+        let git_skill = normalized.iter().find(|s| s.id == "git-commit");
         assert!(git_skill.is_some());
         assert_eq!(git_skill.unwrap().source, SkillSource::Plugin);
     }

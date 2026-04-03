@@ -80,7 +80,6 @@ impl RuntimeService {
 
         let phase = phase_of_storage_event(&stored_session_start.event);
         let state = Arc::new(SessionState::new(
-            working_dir.clone(),
             phase,
             Arc::new(SessionWriter::new(log)),
             AgentStateProjector::from_events(std::slice::from_ref(&stored_session_start.event)),
@@ -265,10 +264,9 @@ impl RuntimeService {
                 );
             }
         }
-        let (working_dir, phase, log, projector, recent_records) = load_result?;
+        let (_working_dir, phase, log, projector, recent_records) = load_result?;
 
         let state = Arc::new(SessionState::new(
-            working_dir,
             phase,
             Arc::new(SessionWriter::new(log)),
             projector,

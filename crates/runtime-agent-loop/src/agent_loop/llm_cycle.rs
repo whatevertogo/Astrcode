@@ -25,9 +25,9 @@ use std::sync::Arc;
 use astrcode_core::{CancelToken, ModelRequest, Result};
 use tokio::sync::mpsc;
 
-use crate::llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
 use crate::provider_factory::DynProviderFactory;
 use astrcode_core::StorageEvent;
+use astrcode_runtime_llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
 pub(crate) async fn build_provider(
     factory: DynProviderFactory,
     working_dir: Option<PathBuf>,

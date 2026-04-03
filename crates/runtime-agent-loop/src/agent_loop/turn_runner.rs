@@ -29,11 +29,13 @@
 use astrcode_core::{CancelToken, Result};
 use std::collections::HashMap;
 
-use crate::prompt::{append_unique_tools, DiagnosticLevel, PromptContext, PromptDiagnostics};
 use astrcode_core::AgentState;
 use astrcode_core::LlmMessage;
 use astrcode_core::ModelRequest;
 use astrcode_core::StorageEvent;
+use astrcode_runtime_prompt::{
+    append_unique_tools, DiagnosticLevel, PromptContext, PromptDiagnostics,
+};
 
 use crate::context_window::{
     apply_microcompact, auto_compact, build_prompt_snapshot, effective_context_window,

@@ -27,17 +27,17 @@ use async_trait::async_trait;
 use serde_json::json;
 use tokio::time::{sleep, Duration};
 
-use crate::llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
-use crate::prompt::{
-    BlockKind, BlockSpec, PromptComposer, PromptComposerOptions, PromptContext, PromptContribution,
-    PromptContributor,
-};
 use crate::provider_factory::ProviderFactory;
 use crate::test_support::{capabilities_from_tools, empty_capabilities, TestEnvGuard};
 use astrcode_core::AgentState;
 use astrcode_core::StorageEvent;
 use astrcode_core::ToolRegistry;
 use astrcode_core::{LlmMessage, ToolCallRequest, ToolDefinition, ToolExecutionResult};
+use astrcode_runtime_llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
+use astrcode_runtime_prompt::{
+    BlockKind, BlockSpec, PromptComposer, PromptComposerOptions, PromptContext, PromptContribution,
+    PromptContributor,
+};
 
 use super::{AgentLoop, TurnOutcome};
 
@@ -78,7 +78,7 @@ impl LlmProvider for ScriptedProvider {
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         if self.delay > Duration::from_millis(0) {
             tokio::select! {
-                _ = crate::llm::cancelled(request.cancel.clone()) => return Err(AstrError::LlmInterrupted),
+                _ = astrcode_runtime_llm::cancelled(request.cancel.clone()) => return Err(AstrError::LlmInterrupted),
                 _ = sleep(self.delay) => {}
             }
         }
@@ -330,7 +330,7 @@ impl LlmProvider for StreamingProvider {
             sink(LlmEvent::TextDelta(delta.to_string()));
 
             tokio::select! {
-                _ = crate::llm::cancelled(request.cancel.clone()) => return Err(AstrError::LlmInterrupted),
+                _ = astrcode_runtime_llm::cancelled(request.cancel.clone()) => return Err(AstrError::LlmInterrupted),
                 _ = sleep(self.per_delta_delay) => {}
             }
         }
@@ -392,7 +392,7 @@ impl Tool for SlowTool {
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult> {
         tokio::select! {
-            _ = crate::llm::cancelled(ctx.cancel().clone()) => Err(AstrError::Cancelled),
+            _ = astrcode_runtime_llm::cancelled(ctx.cancel().clone()) => Err(AstrError::Cancelled),
             _ = sleep(Duration::from_millis(250)) => Ok(ToolExecutionResult {
                 tool_call_id,
                 tool_name: "slowTool".to_string(),
@@ -548,7 +548,7 @@ impl Tool for ConcurrencyTrackingTool {
         update_max_active(&self.tracker.max_active, active_now);
 
         let run_result = tokio::select! {
-            _ = crate::llm::cancelled(ctx.cancel().clone()) => {
+            _ = astrcode_runtime_llm::cancelled(ctx.cancel().clone()) => {
                 self.tracker.cancelled.fetch_add(1, Ordering::SeqCst);
                 Err(AstrError::Cancelled)
             }

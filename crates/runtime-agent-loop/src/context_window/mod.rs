@@ -13,16 +13,17 @@
 //! - `microcompact`: 微压缩（移除单个工具结果的冗余部分）
 //! - `token_usage`: Token 估算和预算跟踪
 
-pub(crate) mod compaction;
-pub(crate) mod microcompact;
-pub(crate) mod token_usage;
+pub mod compaction;
+pub mod microcompact;
+pub mod token_usage;
 
 /// 自动压缩配置和入口函数。
-pub(crate) use compaction::{auto_compact, is_prompt_too_long, CompactConfig};
+pub use compaction::{auto_compact, is_prompt_too_long, CompactConfig, CompactResult};
 /// 微压缩应用函数。
 pub(crate) use microcompact::apply_microcompact;
 /// Token 估算、预算跟踪和压缩决策相关函数。
-pub(crate) use token_usage::{
+pub use token_usage::{
     build_prompt_snapshot, effective_context_window, estimate_message_tokens,
-    estimate_request_tokens, estimate_text_tokens, should_compact, TokenUsageTracker,
+    estimate_request_tokens, estimate_text_tokens, should_compact, PromptTokenSnapshot,
+    TokenUsageTracker,
 };

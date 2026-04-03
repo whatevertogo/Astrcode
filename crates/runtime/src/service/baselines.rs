@@ -23,10 +23,10 @@ use chrono::{Duration as ChronoDuration, Utc};
 use astrcode_core::{AstrError, Result, StorageEvent, StoredEvent, UserMessageOrigin};
 use astrcode_storage::session::EventLog;
 
-use crate::agent_loop::AgentLoop;
 use crate::llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
-use crate::provider_factory::ProviderFactory;
 use crate::test_support::{empty_capabilities, TestEnvGuard};
+use astrcode_runtime_agent_loop::AgentLoop;
+use astrcode_runtime_agent_loop::ProviderFactory;
 
 use super::{RuntimeService, SessionReplaySource};
 

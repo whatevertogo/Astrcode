@@ -24,16 +24,16 @@ use astrcode_core::{AstrError, CancelToken, LlmMessage, Result, UserMessageOrigi
 use chrono::{DateTime, Utc};
 
 use crate::context_window::estimate_request_tokens;
-use crate::llm::{LlmProvider, LlmRequest};
+use astrcode_runtime_llm::{LlmProvider, LlmRequest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CompactConfig {
+pub struct CompactConfig {
     pub keep_recent_turns: usize,
     pub trigger: astrcode_core::CompactTrigger,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct CompactResult {
+pub struct CompactResult {
     pub messages: Vec<LlmMessage>,
     pub summary: String,
     pub preserved_recent_turns: usize,
@@ -44,7 +44,7 @@ pub(crate) struct CompactResult {
     pub timestamp: DateTime<Utc>,
 }
 
-pub(crate) async fn auto_compact(
+pub async fn auto_compact(
     provider: &dyn LlmProvider,
     messages: &[LlmMessage],
     base_system_prompt: Option<&str>,
@@ -256,7 +256,7 @@ fn extract_summary(content: &str) -> Result<String> {
 ///
 /// 使用结构化错误分类 (P4.3)，替代原先的纯字符串匹配。
 /// 同时保持向后兼容：仍支持从 AstrError 中提取信息。
-pub(crate) fn is_prompt_too_long(error: &astrcode_core::AstrError) -> bool {
+pub fn is_prompt_too_long(error: &astrcode_core::AstrError) -> bool {
     match error {
         astrcode_core::AstrError::LlmRequestFailed { status, body } => {
             let body_lower = body.to_ascii_lowercase();

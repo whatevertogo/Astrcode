@@ -67,7 +67,7 @@ where
     I: PluginInitializer,
 {
     let plugin_registry = Arc::new(PluginRegistry::default());
-    let builtin_skills = crate::prompt::load_builtin_skills();
+    let builtin_skills = astrcode_runtime_skill_loader::load_builtin_skills();
     let assembled = assemble_runtime_surface(
         manifests,
         initializer,

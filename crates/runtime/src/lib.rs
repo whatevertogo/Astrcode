@@ -13,13 +13,10 @@
 //! `RuntimeService` 是门面，通过 `AgentLoop` 执行 Turn，
 //! 通过 `ApprovalBroker` 处理审批，通过 `CapabilityRouter` 调用工具。
 
-mod agent_loop;
-mod approval_service;
 mod bootstrap;
 #[cfg(test)]
 mod bootstrap_tests;
 mod builtin_capabilities;
-mod context_window;
 mod plugin_discovery;
 mod plugin_skill_materializer;
 mod provider_factory;
@@ -30,6 +27,7 @@ mod skill_tool;
 #[cfg(test)]
 mod test_support;
 
+pub use astrcode_runtime_agent_loop as agent_loop;
 pub use astrcode_runtime_config as config;
 pub use astrcode_runtime_config::{
     config_path, env_reference, is_env_var_name, list_model_options, load_config,
@@ -43,6 +41,7 @@ pub use astrcode_runtime_config::{
 };
 pub use astrcode_runtime_llm as llm;
 pub use astrcode_runtime_prompt as prompt;
+pub use astrcode_runtime_skill_loader as skills;
 pub use bootstrap::{bootstrap_runtime, RuntimeBootstrap};
 pub use runtime_governance::{RuntimeGovernance, RuntimeGovernanceSnapshot, RuntimeReloadResult};
 pub use service::{

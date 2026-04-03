@@ -13,7 +13,7 @@ use super::{
     session_ops::normalize_session_id, ComposerOption, ComposerOptionKind, ComposerOptionsRequest,
     RuntimeService, ServiceResult,
 };
-use crate::prompt::{SkillSource, SkillSpec};
+use astrcode_runtime_skill_loader::{SkillSource, SkillSpec};
 
 impl RuntimeService {
     /// 列出某个会话上下文下的输入候选项。
@@ -29,7 +29,11 @@ impl RuntimeService {
         let normalized_session_id = normalize_session_id(session_id);
         let session = self.ensure_session_loaded(&normalized_session_id).await?;
         let current_loop = self.current_loop().await;
-        let working_dir = session.working_dir.to_string_lossy().into_owned();
+        let working_dir = session
+            .snapshot_projected_state()?
+            .working_dir
+            .to_string_lossy()
+            .into_owned();
 
         let mut items = Vec::new();
         let include_all_kinds = request.kinds.is_empty();
@@ -188,9 +192,9 @@ mod tests {
         ToolRegistry,
     };
 
-    use crate::prompt::{SkillCatalog, SkillSource, SkillSpec};
     use crate::test_support::{capabilities_from_tools, TestEnvGuard};
     use crate::{ComposerOptionsRequest, RuntimeService};
+    use astrcode_runtime_skill_loader::{SkillCatalog, SkillSource, SkillSpec};
 
     use super::ComposerOptionKind;
 

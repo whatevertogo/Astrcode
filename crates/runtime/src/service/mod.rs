@@ -9,17 +9,18 @@ use dashmap::DashMap;
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use crate::agent_loop::AgentLoop;
-use crate::approval_service::{ApprovalBroker, DefaultApprovalBroker};
 use crate::config::{
     load_config, resolve_auto_compact_enabled, resolve_compact_keep_recent_turns,
     resolve_compact_threshold_percent, resolve_max_tool_concurrency, resolve_tool_result_max_bytes,
 };
-use crate::prompt::{PromptDeclaration, SkillCatalog};
 use crate::provider_factory::ConfigFileProviderFactory;
 use astrcode_core::{
     AllowAllPolicyEngine, AstrError, CapabilityRouter, PolicyEngine, RuntimeHandle, SessionManager,
 };
+use astrcode_runtime_agent_loop::AgentLoop;
+use astrcode_runtime_agent_loop::{ApprovalBroker, DefaultApprovalBroker};
+use astrcode_runtime_prompt::PromptDeclaration;
+use astrcode_runtime_skill_loader::SkillCatalog;
 use astrcode_storage::session::FileSystemSessionRepository;
 
 #[cfg(test)]
@@ -86,7 +87,9 @@ impl RuntimeService {
         Self::from_capabilities_with_prompt_inputs(
             capabilities,
             Vec::new(),
-            Arc::new(SkillCatalog::new(crate::prompt::load_builtin_skills())),
+            Arc::new(SkillCatalog::new(
+                astrcode_runtime_skill_loader::load_builtin_skills(),
+            )),
         )
     }
 

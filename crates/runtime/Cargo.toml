@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+astrcode-runtime-agent-loop = { path = "../runtime-agent-loop" }
 astrcode-core = { path = "../core" }
 astrcode-plugin = { path = "../plugin" }
 astrcode-protocol = { path = "../protocol" }
@@ -14,6 +15,7 @@ astrcode-storage = { path = "../storage" }
 astrcode-runtime-config = { path = "../runtime-config" }
 astrcode-runtime-llm = { path = "../runtime-llm" }
 astrcode-runtime-prompt = { path = "../runtime-prompt" }
+astrcode-runtime-skill-loader = { path = "../runtime-skill-loader" }
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true

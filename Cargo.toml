@@ -2,10 +2,12 @@
 members = [
     "crates/core",
     "crates/storage",
+    "crates/runtime-agent-loop",
     "crates/runtime",
     "crates/runtime-config",
     "crates/runtime-llm",
     "crates/runtime-prompt",
+    "crates/runtime-skill-loader",
     "crates/protocol",
     "crates/plugin",
     "crates/sdk",

@@ -12,7 +12,7 @@ use astrcode_core::{project::astrcode_dir, AstrError, ManagedRuntimeComponent, P
 use astrcode_protocol::plugin::SkillDescriptor;
 use async_trait::async_trait;
 
-use crate::prompt::{
+use astrcode_runtime_skill_loader::{
     collect_asset_files, is_valid_skill_name, merge_skill_layers, SkillSource, SkillSpec,
     SKILL_FILE_NAME,
 };

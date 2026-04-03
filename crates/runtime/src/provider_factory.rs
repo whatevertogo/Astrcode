@@ -19,25 +19,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use astrcode_core::{AstrError, Result};
+use astrcode_runtime_agent_loop::ProviderFactory;
+use astrcode_runtime_llm::LlmProvider;
 
 use crate::config::{load_resolved_config, Profile, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI};
 use crate::llm::anthropic::AnthropicProvider;
 use crate::llm::openai::OpenAiProvider;
-use crate::llm::LlmProvider;
-
-pub trait ProviderFactory: Send + Sync {
-    /// 返回 true 表示 factory 构建过程中会执行同步阻塞 I/O，
-    /// 调用方应将其切到 blocking 线程池，避免卡住 tokio worker。
-    ///
-    /// 默认值为 false：像测试里的静态 provider 或纯内存 factory 不需要额外调度，
-    /// 直接在当前 async 任务里构建可避免引入无意义的时序抖动。
-    fn build_requires_blocking_pool(&self) -> bool {
-        false
-    }
-    fn build_for_working_dir(&self, working_dir: Option<PathBuf>) -> Result<Arc<dyn LlmProvider>>;
-}
-
-pub type DynProviderFactory = Arc<dyn ProviderFactory>;
 
 pub struct ConfigFileProviderFactory;
 

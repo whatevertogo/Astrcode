@@ -12,8 +12,9 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use astrcode_core::CapabilityDescriptor;
+use astrcode_runtime_skill_loader::SkillSpec;
 
-use crate::{PromptDeclaration, SkillSpec};
+use crate::PromptDeclaration;
 
 /// Prompt 组装的运行时上下文。
 ///

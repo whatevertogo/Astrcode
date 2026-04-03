@@ -124,7 +124,7 @@ impl RuntimeGovernance {
             manifests,
             initializer,
             self.coordinator.plugin_registry(),
-            crate::prompt::load_builtin_skills(),
+            astrcode_runtime_skill_loader::load_builtin_skills(),
         )
         .await
         .map_err(ServiceError::Internal)?;

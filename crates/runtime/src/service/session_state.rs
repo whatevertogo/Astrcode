@@ -31,7 +31,6 @@
 //! 没有任何 await 点。std::sync::Mutex 在此场景下更轻量，避免 tokio Mutex 的额外开销。
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex as StdMutex};
 
@@ -176,9 +175,6 @@ pub(super) struct SessionTokenBudgetState {
 /// - `projector`: 状态投影器，将 StorageEvent 转换为 AgentState
 /// - `recent_records`: 内存中的最近事件缓存
 pub(super) struct SessionState {
-    // 保留以备将来 session 级工作目录切换时使用；当前所有工具通过 ToolContext.working_dir 获取路径
-    #[allow(dead_code)]
-    pub(super) working_dir: PathBuf,
     pub(super) phase: StdMutex<Phase>,
     pub(super) running: AtomicBool,
     pub(super) cancel: StdMutex<CancelToken>,
@@ -199,7 +195,6 @@ impl SessionState {
     ///
     /// 初始化 broadcast channel 和事件缓存，其他状态设为默认值。
     pub(super) fn new(
-        working_dir: PathBuf,
         phase: Phase,
         writer: Arc<SessionWriter>,
         projector: AgentStateProjector,
@@ -209,7 +204,6 @@ impl SessionState {
         let mut cached_records = RecentSessionEvents::default();
         cached_records.replace(recent_records);
         Self {
-            working_dir,
             phase: StdMutex::new(phase),
             running: AtomicBool::new(false),
             cancel: StdMutex::new(CancelToken::new()),

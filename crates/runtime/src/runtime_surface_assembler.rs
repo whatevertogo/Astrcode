@@ -37,9 +37,8 @@ use serde_json::Value;
 
 use crate::builtin_capabilities::built_in_capability_invokers;
 use crate::plugin_skill_materializer::materialize_plugin_skills;
-use crate::prompt::{
-    merge_skill_layers, PromptDeclaration, PromptDeclarationSource, SkillCatalog, SkillSpec,
-};
+use astrcode_runtime_prompt::{PromptDeclaration, PromptDeclarationSource};
+use astrcode_runtime_skill_loader::{merge_skill_layers, SkillCatalog, SkillSpec};
 
 /// 组装后的运行时能力面
 ///

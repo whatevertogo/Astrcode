@@ -28,12 +28,12 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use astrcode_core::home::resolve_home_dir;
 use log::warn;
 use serde::Deserialize;
 
-use crate::contributors::cache_marker_for_path;
 use crate::{is_valid_skill_name, SkillSource, SkillSpec};
 
 /// Skill 文件名（固定为 SKILL.md）。
@@ -220,8 +220,7 @@ pub fn load_project_skills(working_dir: &str) -> Vec<SkillSpec> {
 /// 生成 skill 根目录的缓存标记。
 ///
 /// 基于用户 skill 目录和项目 skill 目录的文件元数据生成指纹，
-/// 用于 [`SkillSummaryContributor`](crate::contributors::SkillSummaryContributor)
-/// 检测 skill 目录变化以决定缓存是否失效。
+/// 用于 prompt 层的 `SkillSummaryContributor` 检测 skill 目录变化以决定缓存是否失效。
 pub fn skill_roots_cache_marker(working_dir: &str) -> String {
     let mut markers = Vec::new();
 
@@ -281,6 +280,22 @@ fn resolve_user_home_dir() -> Option<PathBuf> {
             warn!("failed to resolve home directory for skills: {error}");
             None
         }
+    }
+}
+
+fn cache_marker_for_path(path: &Path) -> String {
+    match fs::metadata(path) {
+        Ok(metadata) => {
+            let modified = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default();
+
+            format!("present:{}:{modified}", metadata.len())
+        }
+        Err(_) => "missing".to_string(),
     }
 }
 
