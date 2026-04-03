@@ -75,6 +75,39 @@ pub struct PolicyContext {
     pub metadata: Value,
 }
 
+/// 上下文策略输入。
+///
+/// Loop 在构建完完整请求快照后，将上下文压力和局部建议封装为只读输入，
+/// 交给策略层做最终裁决。这样 compact 等局部策略不会绕过全局护栏。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextDecisionInput {
+    /// 当前请求预估 token 数。
+    pub estimated_tokens: usize,
+    /// 模型上下文窗口大小。
+    pub context_window: usize,
+    /// 扣除保留区后的有效窗口大小。
+    pub effective_window: usize,
+    /// 当前配置下触发策略的阈值 token 数。
+    pub threshold_tokens: usize,
+    /// 本轮 microcompact 截断的 tool result 数量。
+    pub truncated_tool_results: usize,
+    /// Loop 的局部建议策略。
+    pub suggested_strategy: ContextStrategy,
+}
+
+/// 上下文策略裁决。
+///
+/// 这是 loop 在“是否 compact / summarize / truncate / ignore”上的统一决策结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextStrategy {
+    Compact,
+    Summarize,
+    Truncate,
+    Ignore,
+}
+
 /// 审批默认值
 ///
 /// 用于 UI 展示默认选项。
@@ -230,6 +263,15 @@ pub trait PolicyEngine: Send + Sync {
         call: CapabilityCall,
         ctx: &PolicyContext,
     ) -> Result<PolicyVerdict<CapabilityCall>>;
+
+    /// 根据完整请求快照裁决上下文策略。
+    ///
+    /// 默认实现直接返回 loop 给出的局部建议，保持现有 AllowAll 行为不变。
+    async fn decide_context_strategy(
+        &self,
+        input: &ContextDecisionInput,
+        _ctx: &PolicyContext,
+    ) -> Result<ContextStrategy>;
 }
 
 /// 允许所有操作的策略引擎。
@@ -255,6 +297,17 @@ impl PolicyEngine for AllowAllPolicyEngine {
     ) -> Result<PolicyVerdict<CapabilityCall>> {
         Ok(PolicyVerdict::Allow(call))
     }
+
+    async fn decide_context_strategy(
+        &self,
+        input: &ContextDecisionInput,
+        _ctx: &PolicyContext,
+    ) -> Result<ContextStrategy> {
+        // AllowAll 必须显式选择循环的建议，以便上下文策略行为
+        // 始终在实现站点可见，而不是隐藏在特性级别的兼容性之后
+        // default.
+        Ok(input.suggested_strategy)
+    }
 }
 
 #[cfg(test)]
@@ -262,8 +315,8 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{
-        AllowAllPolicyEngine, ApprovalDefault, ApprovalRequest, PolicyContext, PolicyEngine,
-        PolicyVerdict,
+        AllowAllPolicyEngine, ApprovalDefault, ApprovalRequest, ContextDecisionInput,
+        ContextStrategy, PolicyContext, PolicyEngine, PolicyVerdict,
     };
     use crate::{
         CapabilityDescriptor, CapabilityKind, ModelRequest, SideEffectLevel, StabilityLevel,
@@ -327,6 +380,23 @@ mod tests {
                 .await
                 .expect("call should pass"),
             PolicyVerdict::Allow(call)
+        );
+        assert_eq!(
+            policy
+                .decide_context_strategy(
+                    &ContextDecisionInput {
+                        estimated_tokens: 90_000,
+                        context_window: 128_000,
+                        effective_window: 100_000,
+                        threshold_tokens: 90_000,
+                        truncated_tool_results: 1,
+                        suggested_strategy: ContextStrategy::Compact,
+                    },
+                    &policy_context(),
+                )
+                .await
+                .expect("context strategy should pass"),
+            ContextStrategy::Compact
         );
     }
 

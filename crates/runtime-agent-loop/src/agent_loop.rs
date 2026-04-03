@@ -25,7 +25,7 @@ mod turn_runner;
 
 use astrcode_core::{
     AllowAllPolicyEngine, AstrError, CancelToken, CapabilityDescriptor, CapabilityRouter,
-    PolicyContext, PolicyEngine, Result, ToolContext,
+    PolicyContext, PolicyEngine, Result, StorageEvent, ToolContext,
 };
 use astrcode_runtime_llm::LlmProvider;
 use astrcode_runtime_prompt::{PromptComposer, PromptDeclaration};
@@ -35,9 +35,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::approval_service::{ApprovalBroker, DefaultApprovalBroker};
+use crate::compaction_runtime::{
+    AutoCompactStrategy, CompactionReason, CompactionRuntime, CompactionTailSnapshot,
+    ConversationViewRebuilder, ThresholdCompactionPolicy,
+};
+use crate::context_pipeline::ContextRuntime;
+use crate::prompt_runtime::PromptRuntime;
 use crate::provider_factory::DynProviderFactory;
+use crate::request_assembler::RequestAssembler;
 use astrcode_core::AgentState;
-use astrcode_core::StorageEvent;
 
 use astrcode_runtime_config::{
     max_tool_concurrency, DEFAULT_AUTO_COMPACT_ENABLED, DEFAULT_COMPACT_KEEP_RECENT_TURNS,
@@ -87,27 +93,20 @@ pub struct AgentLoop {
     policy: Arc<dyn PolicyEngine>,
     /// 审批代理，处理需要用户确认的能力调用
     approval: Arc<dyn ApprovalBroker>,
-    /// Prompt 组装器，负责构建系统提示词和消息序列
-    prompt_composer: PromptComposer,
-    /// Prompt 构建时可见的能力描述符，用于注入到系统提示词中
-    prompt_capability_descriptors: Vec<astrcode_core::CapabilityDescriptor>,
-    /// 归一化后的扩展 prompt 声明，包含自定义 prompt 模板
-    prompt_declarations: Vec<PromptDeclaration>,
-    /// 当前运行时启用的统一 skill 目录。
-    ///
-    /// SkillCatalog 统一承载 builtin/plugin/mcp 的 base skills，并在运行时解析
-    /// user/project override；这样 AgentLoop、Skill tool 和 server 投影都能看到同一套 skill surface。
-    skill_catalog: Arc<SkillCatalog>,
+    /// Prompt 运行时，桥接 PromptComposer 与 loop 输入快照。
+    prompt: PromptRuntime,
+    /// Context 运行时，只负责构建模型可见的上下文包。
+    context: ContextRuntime,
+    /// Compaction 运行时，统一承载 trigger / strategy / rebuild 协作者。
+    compaction: CompactionRuntime,
+    /// 最终请求装配边界。
+    request_assembler: RequestAssembler,
     /// 单个 step 内允许并发执行的只读工具上限
     max_tool_concurrency: usize,
-    /// 是否允许在 model step 前自动执行上下文压缩
-    auto_compact_enabled: bool,
     /// 触发压缩的上下文窗口百分比阈值
     compact_threshold_percent: u8,
     /// 单个工具结果最多展示给模型的字节数
     tool_result_max_bytes: usize,
-    /// 压缩时保留的最近用户 Turn 数量（保持原文不被压缩）
-    compact_keep_recent_turns: usize,
 }
 
 impl AgentLoop {
@@ -134,23 +133,34 @@ impl AgentLoop {
         prompt_declarations: Vec<PromptDeclaration>,
         skill_catalog: Arc<SkillCatalog>,
     ) -> Self {
+        let tool_names = capabilities.tool_names().to_vec();
         let prompt_capability_descriptors = capabilities.descriptors();
         Self {
             factory,
             capabilities,
             policy: Arc::new(AllowAllPolicyEngine),
             approval: Arc::new(DefaultApprovalBroker),
-            prompt_composer: PromptComposer::with_defaults(),
-            prompt_capability_descriptors,
-            prompt_declarations,
-            skill_catalog,
+            prompt: PromptRuntime::new(
+                PromptComposer::with_defaults(),
+                tool_names,
+                prompt_capability_descriptors,
+                prompt_declarations,
+                skill_catalog,
+            ),
+            context: ContextRuntime::default(),
+            compaction: CompactionRuntime::new(
+                DEFAULT_AUTO_COMPACT_ENABLED,
+                DEFAULT_COMPACT_KEEP_RECENT_TURNS as usize,
+                Arc::new(ThresholdCompactionPolicy::new(DEFAULT_AUTO_COMPACT_ENABLED)),
+                Arc::new(AutoCompactStrategy),
+                Arc::new(ConversationViewRebuilder),
+            ),
+            request_assembler: RequestAssembler,
             // 默认并行度统一从 runtime-config 读取，这样环境变量覆盖和
             // 直接构造 AgentLoop 的默认行为保持同一套来源。
             max_tool_concurrency: max_tool_concurrency(),
-            auto_compact_enabled: DEFAULT_AUTO_COMPACT_ENABLED,
             compact_threshold_percent: DEFAULT_COMPACT_THRESHOLD_PERCENT,
             tool_result_max_bytes: DEFAULT_TOOL_RESULT_MAX_BYTES,
-            compact_keep_recent_turns: DEFAULT_COMPACT_KEEP_RECENT_TURNS as usize,
         }
     }
 
@@ -180,7 +190,13 @@ impl AgentLoop {
 
     /// 是否启用自动上下文压缩
     pub fn with_auto_compact_enabled(mut self, auto_compact_enabled: bool) -> Self {
-        self.auto_compact_enabled = auto_compact_enabled;
+        self.compaction = CompactionRuntime::new(
+            auto_compact_enabled,
+            self.compaction.keep_recent_turns(),
+            Arc::new(ThresholdCompactionPolicy::new(auto_compact_enabled)),
+            self.compaction.strategy.clone(),
+            self.compaction.rebuilder.clone(),
+        );
         self
     }
 
@@ -204,13 +220,21 @@ impl AgentLoop {
     ///
     /// 最小值会被钳制到 1，确保至少保留一个最近的 Turn 不被压缩。
     pub fn with_compact_keep_recent_turns(mut self, compact_keep_recent_turns: usize) -> Self {
-        self.compact_keep_recent_turns = compact_keep_recent_turns.max(1);
+        self.compaction = CompactionRuntime::new(
+            self.compaction.auto_compact_enabled(),
+            compact_keep_recent_turns.max(1),
+            Arc::new(ThresholdCompactionPolicy::new(
+                self.compaction.auto_compact_enabled(),
+            )),
+            self.compaction.strategy.clone(),
+            self.compaction.rebuilder.clone(),
+        );
         self
     }
 
     #[cfg(test)]
     pub(crate) fn with_prompt_composer(mut self, prompt_composer: PromptComposer) -> Self {
-        self.prompt_composer = prompt_composer;
+        self.prompt = self.prompt.with_composer(prompt_composer);
         self
     }
 
@@ -238,7 +262,17 @@ impl AgentLoop {
         on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
         cancel: CancelToken,
     ) -> Result<TurnOutcome> {
-        turn_runner::run_turn(self, state, turn_id, on_event, cancel, true).await
+        self.run_turn_with_compaction_tail(
+            state,
+            turn_id,
+            on_event,
+            cancel,
+            CompactionTailSnapshot::from_messages(
+                &state.messages,
+                self.compact_keep_recent_turns(),
+            ),
+        )
+        .await
     }
 
     /// 执行 Turn 但不发送 TurnDone/TurnFailed 事件
@@ -251,7 +285,59 @@ impl AgentLoop {
         on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
         cancel: CancelToken,
     ) -> Result<TurnOutcome> {
-        turn_runner::run_turn(self, state, turn_id, on_event, cancel, false).await
+        self.run_turn_without_finish_with_compaction_tail(
+            state,
+            turn_id,
+            on_event,
+            cancel,
+            CompactionTailSnapshot::from_messages(
+                &state.messages,
+                self.compact_keep_recent_turns(),
+            ),
+        )
+        .await
+    }
+
+    /// Execute a turn while carrying a real tail snapshot for compaction rebuilds.
+    pub async fn run_turn_with_compaction_tail(
+        &self,
+        state: &AgentState,
+        turn_id: &str,
+        on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
+        cancel: CancelToken,
+        compaction_tail: CompactionTailSnapshot,
+    ) -> Result<TurnOutcome> {
+        turn_runner::run_turn(
+            self,
+            state,
+            turn_id,
+            on_event,
+            cancel,
+            true,
+            compaction_tail,
+        )
+        .await
+    }
+
+    /// Internal turn execution variant used by runtime service when it has a live tail recorder.
+    pub async fn run_turn_without_finish_with_compaction_tail(
+        &self,
+        state: &AgentState,
+        turn_id: &str,
+        on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
+        cancel: CancelToken,
+        compaction_tail: CompactionTailSnapshot,
+    ) -> Result<TurnOutcome> {
+        turn_runner::run_turn(
+            self,
+            state,
+            turn_id,
+            on_event,
+            cancel,
+            false,
+            compaction_tail,
+        )
+        .await
     }
 
     /// 创建工具执行上下文
@@ -291,8 +377,59 @@ impl AgentLoop {
         llm_cycle::build_provider(self.factory.clone(), working_dir).await
     }
 
+    /// Run a user-initiated compaction over an idle projected session.
+    ///
+    /// The runtime service uses this instead of calling `auto_compact` directly so manual compact
+    /// shares the same compaction strategy surface as the live agent loop.
+    pub async fn manual_compact_event(
+        &self,
+        state: &AgentState,
+        compaction_tail: CompactionTailSnapshot,
+    ) -> Result<Option<StorageEvent>> {
+        let provider = self.build_provider(Some(state.working_dir.clone())).await?;
+        let artifact = self
+            .compaction
+            .compact(
+                provider.as_ref(),
+                &crate::context_pipeline::ConversationView::new(state.messages.clone()),
+                None,
+                CompactionReason::Manual,
+                CancelToken::new(),
+            )
+            .await?;
+
+        let Some(artifact) = artifact else {
+            return Ok(None);
+        };
+        let tail = {
+            let materialized = compaction_tail.materialize();
+            if materialized.is_empty() {
+                CompactionTailSnapshot::from_messages(
+                    &state.messages,
+                    artifact.preserved_recent_turns,
+                )
+                .materialize()
+            } else {
+                materialized
+            }
+        };
+        let _rebuilt_view = self.compaction.rebuild_conversation(&artifact, &tail)?;
+
+        Ok(Some(StorageEvent::CompactApplied {
+            turn_id: None,
+            trigger: artifact.trigger.as_trigger(),
+            summary: artifact.summary,
+            preserved_recent_turns: artifact.preserved_recent_turns.min(u32::MAX as usize) as u32,
+            pre_tokens: artifact.pre_tokens.min(u32::MAX as usize) as u32,
+            post_tokens_estimate: artifact.post_tokens_estimate.min(u32::MAX as usize) as u32,
+            messages_removed: artifact.messages_removed.min(u32::MAX as usize) as u32,
+            tokens_freed: artifact.tokens_freed.min(u32::MAX as usize) as u32,
+            timestamp: Utc::now(),
+        }))
+    }
+
     pub fn auto_compact_enabled(&self) -> bool {
-        self.auto_compact_enabled
+        self.compaction.auto_compact_enabled()
     }
 
     pub fn compact_threshold_percent(&self) -> u8 {
@@ -304,7 +441,7 @@ impl AgentLoop {
     }
 
     pub fn compact_keep_recent_turns(&self) -> usize {
-        self.compact_keep_recent_turns
+        self.compaction.keep_recent_turns()
     }
 
     /// 暴露当前 prompt 可见的 capability 描述符。
@@ -312,12 +449,12 @@ impl AgentLoop {
     /// 输入候选接口需要复用和 prompt 一致的 capability surface，
     /// 这样前端看到的工具候选不会和模型真实可见的工具列表漂移。
     pub fn capability_descriptors(&self) -> &[CapabilityDescriptor] {
-        &self.prompt_capability_descriptors
+        self.prompt.capability_descriptors()
     }
 
     /// 暴露统一 skill 目录。
     pub fn skill_catalog(&self) -> Arc<SkillCatalog> {
-        Arc::clone(&self.skill_catalog)
+        self.prompt.skill_catalog()
     }
 }
 

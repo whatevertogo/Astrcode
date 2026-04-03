@@ -103,8 +103,8 @@ pub async fn auto_compact(
     }))
 }
 
-// TODO: replace this hard-coded summarization contract once prompt configuration
-// can own compaction policies without coupling them to general system prompts.
+// TODO: 一旦提示配置能够独立拥有压缩策略而无需与通用系统提示耦合
+// 替换此硬编码的摘要合约为更结构化的输入（如 JSON）以支持更丰富的摘要内容和更可靠的解析。
 fn build_compact_system_prompt(base_system_prompt: Option<&str>) -> String {
     let mut prompt = String::from(
         "You are generating an internal compact summary for a coding-agent session. \

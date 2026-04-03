@@ -56,9 +56,10 @@ pub use local_server::{LocalServerInfo, LOCAL_SERVER_READY_PREFIX};
 pub use plugin::{PluginHealth, PluginManifest, PluginRegistry, PluginState, PluginType};
 pub use policy::{
     AllowAllPolicyEngine, ApprovalDefault, ApprovalPending, ApprovalRequest, ApprovalResolution,
-    CapabilityCall, ModelRequest, PolicyContext, PolicyEngine, PolicyVerdict,
+    CapabilityCall, ContextDecisionInput, ContextStrategy, ModelRequest, PolicyContext,
+    PolicyEngine, PolicyVerdict,
 };
-pub use projection::{project, AgentState, AgentStateProjector};
+pub use projection::{format_compact_summary, project, AgentState, AgentStateProjector};
 pub use registry::{
     CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, CapabilityRouter,
     CapabilityRouterBuilder,

@@ -27,7 +27,7 @@
 //! 直到预算耗尽或达到最大续跑次数。
 
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 
 use anyhow::Result;
@@ -46,10 +46,9 @@ use crate::config::{
     resolve_continuation_min_delta_tokens, resolve_default_token_budget, resolve_max_continuations,
 };
 use astrcode_core::EventTranslator;
-use astrcode_runtime_agent_loop::{auto_compact, estimate_text_tokens, CompactConfig};
 use astrcode_runtime_agent_loop::{
-    build_auto_continue_nudge, check_token_budget, strip_token_budget_marker, TokenBudgetDecision,
-    TurnOutcome,
+    build_auto_continue_nudge, check_token_budget, estimate_text_tokens, strip_token_budget_marker,
+    CompactionTailSnapshot, TokenBudgetDecision, TurnOutcome,
 };
 
 /// Turn 提交的目标会话及其执行上下文。
@@ -165,7 +164,6 @@ impl RuntimeService {
         let state = session.clone();
         let loop_ = self.current_loop().await;
         let text_for_task = text;
-
         let accepted_turn_id = turn_id.clone();
         let observability = self.observability.clone();
         let accepted_session_id = session_id.clone();
@@ -185,7 +183,7 @@ impl RuntimeService {
 
             let task_result = match append_and_broadcast(&state, &user_event, &mut translator).await
             {
-                Ok(()) => {
+                Ok(_) => {
                     execute_turn_chain(
                         &state,
                         &loop_,
@@ -302,24 +300,21 @@ impl RuntimeService {
         let projected = session
             .snapshot_projected_state()
             .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
-        let provider = loop_
-            .build_provider(Some(projected.working_dir.clone()))
+        // Manual compact must rebuild from durable session truth, not from the projected
+        // message list. Reusing the same stored-tail selection as live turns keeps manual/auto/
+        // reactive compaction aligned and avoids two subtly different rebuild paths.
+        let compaction_tail = CompactionTailSnapshot::from_seed(recent_turn_event_tail(
+            &session
+                .snapshot_recent_stored_events()
+                .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?,
+            loop_.compact_keep_recent_turns(),
+        ));
+        let compact_event = loop_
+            .manual_compact_event(&projected, compaction_tail)
             .await
             .map_err(ServiceError::from)?;
-        let compact_result = auto_compact(
-            provider.as_ref(),
-            &projected.messages,
-            None,
-            CompactConfig {
-                keep_recent_turns: loop_.compact_keep_recent_turns(),
-                trigger: astrcode_core::CompactTrigger::Manual,
-            },
-            CancelToken::new(),
-        )
-        .await
-        .map_err(ServiceError::from)?;
 
-        let Some(compact_result) = compact_result else {
+        let Some(compact_event) = compact_event else {
             if let Ok(mut failures) =
                 lock_anyhow(&session.compact_failure_count, "compact failures")
             {
@@ -332,25 +327,9 @@ impl RuntimeService {
             .map(|guard| *guard)
             .unwrap_or(Phase::Idle);
         let mut translator = EventTranslator::new(initial_phase);
-        append_and_broadcast(
-            &session,
-            &StorageEvent::CompactApplied {
-                turn_id: None,
-                trigger: astrcode_core::CompactTrigger::Manual,
-                summary: compact_result.summary,
-                preserved_recent_turns: compact_result.preserved_recent_turns.min(u32::MAX as usize)
-                    as u32,
-                pre_tokens: compact_result.pre_tokens.min(u32::MAX as usize) as u32,
-                post_tokens_estimate: compact_result.post_tokens_estimate.min(u32::MAX as usize)
-                    as u32,
-                messages_removed: compact_result.messages_removed.min(u32::MAX as usize) as u32,
-                tokens_freed: compact_result.tokens_freed.min(u32::MAX as usize) as u32,
-                timestamp: compact_result.timestamp,
-            },
-            &mut translator,
-        )
-        .await
-        .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
+        append_and_broadcast(&session, &compact_event, &mut translator)
+            .await
+            .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
         if let Ok(mut phase) = lock_anyhow(&session.phase, "session phase") {
             *phase = translator.phase();
         }
@@ -373,17 +352,32 @@ async fn execute_turn_chain(
         let projected = state
             .snapshot_projected_state()
             .map_err(|error| AstrError::Internal(error.to_string()))?;
+        let tail_seed = recent_turn_event_tail(
+            &state
+                .snapshot_recent_stored_events()
+                .map_err(|error| AstrError::Internal(error.to_string()))?,
+            loop_.compact_keep_recent_turns(),
+        );
+        let live_tail = Arc::new(StdMutex::new(Vec::new()));
         let mut stats = TurnExecutionStats::default();
         let outcome = loop_
-            .run_turn_without_finish(
+            .run_turn_without_finish_with_compaction_tail(
                 &projected,
                 turn_id,
                 &mut |event| {
                     observe_turn_event(&mut stats, &event);
-                    append_and_broadcast_from_turn_callback(state, &event, translator)
-                        .map_err(|error| AstrError::Internal(error.to_string()))
+                    let stored = append_and_broadcast_from_turn_callback(state, &event, translator)
+                        .map_err(|error| AstrError::Internal(error.to_string()))?;
+                    if should_record_compaction_tail_event(&event) {
+                        if let Ok(mut tail) = live_tail.lock() {
+                            tail.push(stored);
+                        }
+                    }
+                    Ok(())
                 },
                 cancel.clone(),
+                CompactionTailSnapshot::from_seed(tail_seed)
+                    .with_live_recorder(Arc::clone(&live_tail)),
             )
             .await?;
 
@@ -617,13 +611,13 @@ async fn append_and_broadcast(
     session: &SessionState,
     event: &StorageEvent,
     translator: &mut EventTranslator,
-) -> Result<()> {
+) -> Result<StoredEvent> {
     let stored = session.writer.clone().append(event.clone()).await?;
     let records = session.translate_store_and_cache(&stored, translator)?;
     for record in records {
         let _ = session.broadcaster.send(record);
     }
-    Ok(())
+    Ok(stored)
 }
 
 /// 同步版本：直接在当前线程执行文件 I/O。
@@ -633,20 +627,20 @@ fn append_and_broadcast_blocking(
     session: &SessionState,
     event: &StorageEvent,
     translator: &mut EventTranslator,
-) -> Result<()> {
+) -> Result<StoredEvent> {
     let stored = session.writer.append_blocking(event)?;
     let records = session.translate_store_and_cache(&stored, translator)?;
     for record in records {
         let _ = session.broadcaster.send(record);
     }
-    Ok(())
+    Ok(stored)
 }
 
 fn append_and_broadcast_from_turn_callback(
     session: &SessionState,
     event: &StorageEvent,
     translator: &mut EventTranslator,
-) -> Result<()> {
+) -> Result<StoredEvent> {
     match tokio::runtime::Handle::current().runtime_flavor() {
         tokio::runtime::RuntimeFlavor::CurrentThread => {
             append_and_broadcast_blocking(session, event, translator)
@@ -655,6 +649,45 @@ fn append_and_broadcast_from_turn_callback(
             append_and_broadcast_blocking(session, event, translator)
         }),
     }
+}
+
+fn recent_turn_event_tail(events: &[StoredEvent], keep_recent_turns: usize) -> Vec<StoredEvent> {
+    let tail_events = events
+        .iter()
+        .filter(|stored| should_record_compaction_tail_event(&stored.event))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let user_turn_indices = tail_events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, stored)| match &stored.event {
+            StorageEvent::UserMessage {
+                origin: UserMessageOrigin::User,
+                ..
+            } => Some(index),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    let Some(&keep_start) = user_turn_indices
+        .iter()
+        .rev()
+        .nth(keep_recent_turns.saturating_sub(1))
+    else {
+        return tail_events;
+    };
+
+    tail_events[keep_start..].to_vec()
+}
+
+fn should_record_compaction_tail_event(event: &StorageEvent) -> bool {
+    matches!(
+        event,
+        StorageEvent::UserMessage { .. }
+            | StorageEvent::AssistantFinal { .. }
+            | StorageEvent::ToolResult { .. }
+    )
 }
 
 fn ensure_branch_depth_within_limit(branch_depth: usize) -> ServiceResult<()> {
@@ -740,6 +773,7 @@ mod tests {
             // 测试继续走真实 EventLog，确保 trait object 包装不改变持久化路径。
             Arc::new(SessionWriter::new(Box::new(log))),
             Default::default(),
+            Vec::new(),
             Vec::new(),
         );
         (temp_dir, state, EventTranslator::new(Phase::Idle))
@@ -853,6 +887,87 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(stable_seq, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn recent_turn_event_tail_keeps_real_stored_tail_for_latest_turns() {
+        let timestamp = Utc::now();
+        let events = vec![
+            StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent::SessionStart {
+                    session_id: "session-1".to_string(),
+                    timestamp,
+                    working_dir: "D:/workspace".to_string(),
+                    parent_session_id: None,
+                    parent_storage_seq: None,
+                },
+            },
+            StoredEvent {
+                storage_seq: 2,
+                event: StorageEvent::UserMessage {
+                    turn_id: Some("turn-1".to_string()),
+                    content: "first".to_string(),
+                    origin: UserMessageOrigin::User,
+                    timestamp,
+                },
+            },
+            StoredEvent {
+                storage_seq: 3,
+                event: StorageEvent::AssistantFinal {
+                    turn_id: Some("turn-1".to_string()),
+                    content: "done".to_string(),
+                    reasoning_content: None,
+                    reasoning_signature: None,
+                    timestamp: Some(timestamp),
+                },
+            },
+            StoredEvent {
+                storage_seq: 4,
+                event: StorageEvent::UserMessage {
+                    turn_id: Some("turn-2".to_string()),
+                    content: "second".to_string(),
+                    origin: UserMessageOrigin::User,
+                    timestamp,
+                },
+            },
+            StoredEvent {
+                storage_seq: 5,
+                event: StorageEvent::ToolResult {
+                    turn_id: Some("turn-2".to_string()),
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: "echo".to_string(),
+                    output: "result".to_string(),
+                    success: true,
+                    error: None,
+                    metadata: None,
+                    duration_ms: 12,
+                },
+            },
+            StoredEvent {
+                storage_seq: 6,
+                event: StorageEvent::PromptMetrics {
+                    turn_id: Some("turn-2".to_string()),
+                    step_index: 0,
+                    estimated_tokens: 128,
+                    context_window: 4096,
+                    effective_window: 4096,
+                    threshold_tokens: 3584,
+                    truncated_tool_results: 0,
+                },
+            },
+        ];
+
+        // The compaction rebuilder needs durable tail truth, not projected metrics or synthetic
+        // messages. Keeping the original storage_seq values here protects the manual-compact path
+        // from regressing back to message-derived tails.
+        let tail = recent_turn_event_tail(&events, 1);
+        let tail_seq = tail
+            .into_iter()
+            .map(|stored| stored.storage_seq)
+            .collect::<Vec<_>>();
+
+        assert_eq!(tail_seq, vec![4, 5]);
     }
 
     #[test]

@@ -26,37 +26,32 @@
 //! 用户可以在消息中指定 Token 预算（如 `+50k`），Turn 会在接近预算时
 //! 自动停止或请求继续（auto-continue nudge）。
 
-use astrcode_core::{CancelToken, Result};
-use std::collections::HashMap;
+use astrcode_core::{CancelToken, ContextStrategy, Result};
 
 use astrcode_core::AgentState;
-use astrcode_core::LlmMessage;
-use astrcode_core::ModelRequest;
 use astrcode_core::StorageEvent;
-use astrcode_runtime_prompt::{
-    append_unique_tools, DiagnosticLevel, PromptContext, PromptDiagnostics,
-};
-
-use crate::context_window::{
-    apply_microcompact, auto_compact, build_prompt_snapshot, effective_context_window,
-    should_compact, CompactConfig, TokenUsageTracker,
-};
+use astrcode_runtime_prompt::{DiagnosticLevel, PromptDiagnostics};
 
 use super::{
     finish_interrupted, finish_turn, finish_with_error, internal_error, llm_cycle, tool_cycle,
     AgentLoop, TurnOutcome,
 };
+use crate::compaction_runtime::{CompactionArtifact, CompactionReason, CompactionTailSnapshot};
+use crate::context_pipeline::ConversationView;
+use crate::context_window::{is_prompt_too_long, TokenUsageTracker};
+use crate::request_assembler::{CompactionRebuildConfig, PreparedRequest, StepRequestConfig};
 
 // ---------------------------------------------------------------------------
 // Error recovery constants (P4)
 // ---------------------------------------------------------------------------
 
-/// 413 prompt too long 时 reactive compact 最大重试次数。
+/// prompt too long 时 reactive compact 最大重试次数。
 /// 每次重试会进一步压缩上下文，超过此次数则终止 turn。
 const MAX_REACTIVE_COMPACT_ATTEMPTS: usize = 3;
 
 /// max_tokens 截断时自动继续生成的最大次数。
 /// 超过此次数后即使模型仍被截断也终止 turn，避免无限循环。
+/// TODO: 更好的数字和可能的可配置化
 const MAX_OUTPUT_CONTINUATION_ATTEMPTS: usize = 3;
 
 /// 执行一个完整的 agent turn（从用户提示到最终响应）。
@@ -85,6 +80,7 @@ pub(crate) async fn run_turn(
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
     cancel: CancelToken,
     emit_turn_done: bool,
+    compaction_tail: CompactionTailSnapshot,
 ) -> Result<TurnOutcome> {
     let provider =
         llm_cycle::build_provider(agent_loop.factory.clone(), Some(state.working_dir.clone()))
@@ -100,7 +96,7 @@ pub(crate) async fn run_turn(
             )
         }
     };
-    let mut messages = state.messages.clone();
+    let mut conversation = ConversationView::new(state.messages.clone());
     let mut step_index = 0usize;
     let model_limits = provider.model_limits();
     let mut token_tracker = TokenUsageTracker::default();
@@ -113,28 +109,22 @@ pub(crate) async fn run_turn(
             return report_interrupted(turn_id, on_event, emit_turn_done);
         }
 
-        let mut vars = HashMap::new();
-        if let Some(latest_user_message) = latest_user_message(&messages) {
-            vars.insert(
-                "turn.user_message".to_string(),
-                latest_user_message.to_string(),
-            );
-        }
-        let ctx = PromptContext {
-            working_dir: state.working_dir.to_string_lossy().into_owned(),
-            tool_names: agent_loop.capabilities.tool_names().to_vec(),
-            capability_descriptors: agent_loop.prompt_capability_descriptors.clone(),
-            prompt_declarations: agent_loop.prompt_declarations.clone(),
-            // 每个 step 都按当前 working dir 解析 skill，确保 project/user override
-            // 与最新 runtime surface 一致，不会把过期 base skills 直接塞给 prompt。
-            skills: agent_loop
-                .skill_catalog
-                .resolve_for_working_dir(&state.working_dir.to_string_lossy()),
-            step_index,
-            turn_index: state.turn_count,
-            vars,
-        };
-        let build_output = match agent_loop.prompt_composer.build(&ctx).await {
+        let bundle =
+            match agent_loop
+                .context
+                .build_bundle(state, turn_id, step_index, Some(&conversation))
+            {
+                Ok(bundle) => bundle,
+                Err(error) => {
+                    return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
+                }
+            };
+
+        let build_output = match agent_loop
+            .prompt
+            .build_plan(state, &bundle.conversation, step_index)
+            .await
+        {
             Ok(output) => output,
             Err(error) => {
                 return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
@@ -142,28 +132,30 @@ pub(crate) async fn run_turn(
         };
         log_prompt_diagnostics(&build_output.diagnostics);
         let plan = build_output.plan;
-        let system_prompt = plan.render_system();
-        // 消息顺序契约：prepend_messages 包含行为引导（如"编辑前先检查文件"），
-        // append_messages 包含尾部指令或 few-shot 示例。用户历史消息夹在两者之间，
-        // 确保行为引导始终在对话开头，尾部指令在最后（最靠近模型注意力焦点）。
-        let mut request_messages = plan.prepend_messages.clone();
-        request_messages.extend(messages.iter().cloned());
-        request_messages.extend(plan.append_messages.clone());
-        let microcompact_result = apply_microcompact(
-            &request_messages,
-            &agent_loop.prompt_capability_descriptors,
-            agent_loop.tool_result_max_bytes(),
-            agent_loop.compact_keep_recent_turns(),
-            effective_context_window(model_limits),
-        );
-        request_messages = microcompact_result.messages;
-        let prompt_snapshot = build_prompt_snapshot(
+        let PreparedRequest {
+            request,
+            prompt_snapshot,
+            truncated_tool_results,
+        } = match agent_loop.request_assembler.build_step_request(
+            StepRequestConfig {
+                prompt: &plan,
+                context: bundle.clone(),
+                tools: agent_loop.capabilities.tool_definitions(),
+                microcompact: crate::request_assembler::MicrocompactConfig {
+                    capability_descriptors: agent_loop.prompt.capability_descriptors(),
+                    tool_result_max_bytes: agent_loop.tool_result_max_bytes(),
+                    keep_recent_turns: agent_loop.compact_keep_recent_turns(),
+                    model_context_window: model_limits.context_window,
+                    compact_threshold_percent: agent_loop.compact_threshold_percent(),
+                },
+            },
             &token_tracker,
-            &request_messages,
-            system_prompt.as_deref(),
-            model_limits,
-            agent_loop.compact_threshold_percent(),
-        );
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
+            }
+        };
         on_event(StorageEvent::PromptMetrics {
             turn_id: Some(turn_id.to_string()),
             step_index: step_index as u32,
@@ -171,24 +163,44 @@ pub(crate) async fn run_turn(
             context_window: prompt_snapshot.context_window.min(u32::MAX as usize) as u32,
             effective_window: prompt_snapshot.effective_window.min(u32::MAX as usize) as u32,
             threshold_tokens: prompt_snapshot.threshold_tokens.min(u32::MAX as usize) as u32,
-            truncated_tool_results: microcompact_result
-                .truncated_tool_results
-                .min(u32::MAX as usize) as u32,
+            truncated_tool_results: truncated_tool_results.min(u32::MAX as usize) as u32,
         })?;
-        if agent_loop.auto_compact_enabled() && should_compact(prompt_snapshot) {
-            let compact_result = match auto_compact(
-                provider.as_ref(),
-                &messages,
-                system_prompt.as_deref(),
-                CompactConfig {
-                    keep_recent_turns: agent_loop.compact_keep_recent_turns(),
-                    trigger: astrcode_core::CompactTrigger::Auto,
+        let decision_input = agent_loop
+            .compaction
+            .build_context_decision(&prompt_snapshot, truncated_tool_results);
+        let policy_ctx = agent_loop.policy_context(state, turn_id, step_index);
+        let context_strategy = match agent_loop
+            .policy
+            .decide_context_strategy(&decision_input, &policy_ctx)
+            .await
+        {
+            Ok(strategy) => strategy,
+            Err(error) => {
+                return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
+            }
+        };
+        if matches!(context_strategy, ContextStrategy::Compact) {
+            let system_prompt_for_compact = request.system_prompt.clone();
+            match maybe_compact_conversation(
+                agent_loop,
+                CompactContext {
+                    provider: &provider,
+                    conversation: &conversation,
+                    base_system_prompt: system_prompt_for_compact.as_deref(),
+                    reason: CompactionReason::Auto,
+                    turn_id,
+                    cancel: cancel.clone(),
+                    tail: compaction_tail.clone(),
                 },
-                cancel.clone(),
+                on_event,
             )
             .await
             {
-                Ok(result) => result,
+                Ok(Some(compacted_view)) => {
+                    conversation = compacted_view;
+                    continue;
+                }
+                Ok(None) => {}
                 Err(error) => {
                     return if cancel.is_cancelled() {
                         report_interrupted(turn_id, on_event, emit_turn_done)
@@ -196,39 +208,11 @@ pub(crate) async fn run_turn(
                         report_error(turn_id, error.to_string(), on_event, emit_turn_done)
                     };
                 }
-            };
-
-            if let Some(compact_result) = compact_result {
-                on_event(StorageEvent::CompactApplied {
-                    turn_id: Some(turn_id.to_string()),
-                    trigger: astrcode_core::CompactTrigger::Auto,
-                    summary: compact_result.summary,
-                    preserved_recent_turns: compact_result
-                        .preserved_recent_turns
-                        .min(u32::MAX as usize) as u32,
-                    pre_tokens: compact_result.pre_tokens.min(u32::MAX as usize) as u32,
-                    post_tokens_estimate: compact_result.post_tokens_estimate.min(u32::MAX as usize)
-                        as u32,
-                    messages_removed: compact_result.messages_removed.min(u32::MAX as usize) as u32,
-                    tokens_freed: compact_result.tokens_freed.min(u32::MAX as usize) as u32,
-                    timestamp: compact_result.timestamp,
-                })?;
-                messages = compact_result.messages;
-                continue;
             }
         }
-        let mut tool_definitions = agent_loop.capabilities.tool_definitions();
-        append_unique_tools(&mut tool_definitions, plan.extra_tools);
         let policy_ctx = agent_loop.policy_context(state, turn_id, step_index);
         // 保留 system_prompt 和 plan 的克隆，用于 reactive compact 重试 (P4.1)
-        let system_prompt_for_retry = system_prompt.clone();
-        let prepend_messages = plan.prepend_messages.clone();
-        let append_messages = plan.append_messages.clone();
-        let request = ModelRequest {
-            messages: request_messages,
-            tools: tool_definitions,
-            system_prompt,
-        };
+        let system_prompt_for_retry = request.system_prompt.clone();
         let mut request = match agent_loop
             .policy
             .check_model_request(request, &policy_ctx)
@@ -257,7 +241,7 @@ pub(crate) async fn run_turn(
                 Ok(output) => break output,
                 Err(error) => {
                     // 使用结构化错误分类判断是否为 prompt too long (P4.3)
-                    let is_too_long = crate::context_window::is_prompt_too_long(&error);
+                    let is_too_long = is_prompt_too_long(&error);
                     if is_too_long
                         && agent_loop.auto_compact_enabled()
                         && reactive_compact_attempts < MAX_REACTIVE_COMPACT_ATTEMPTS
@@ -270,55 +254,40 @@ pub(crate) async fn run_turn(
                             MAX_REACTIVE_COMPACT_ATTEMPTS
                         );
 
-                        // 触发 reactive compact：压缩当前消息历史
-                        let compact_result = auto_compact(
-                            provider.as_ref(),
-                            &messages,
-                            system_prompt_for_retry.as_deref(),
-                            CompactConfig {
-                                keep_recent_turns: agent_loop.compact_keep_recent_turns(),
-                                trigger: astrcode_core::CompactTrigger::Auto,
+                        match maybe_compact_conversation(
+                            agent_loop,
+                            CompactContext {
+                                provider: &provider,
+                                conversation: &conversation,
+                                base_system_prompt: system_prompt_for_retry.as_deref(),
+                                reason: CompactionReason::Reactive,
+                                turn_id,
+                                cancel: cancel.clone(),
+                                tail: compaction_tail.clone(),
                             },
-                            cancel.clone(),
+                            on_event,
                         )
-                        .await;
-
-                        match compact_result {
-                            Ok(Some(compact)) => {
-                                on_event(StorageEvent::CompactApplied {
-                                    turn_id: Some(turn_id.to_string()),
-                                    trigger: astrcode_core::CompactTrigger::Auto,
-                                    summary: compact.summary.clone(),
-                                    preserved_recent_turns: compact
-                                        .preserved_recent_turns
-                                        .min(u32::MAX as usize)
-                                        as u32,
-                                    pre_tokens: compact.pre_tokens.min(u32::MAX as usize) as u32,
-                                    post_tokens_estimate: compact
-                                        .post_tokens_estimate
-                                        .min(u32::MAX as usize)
-                                        as u32,
-                                    messages_removed: compact
-                                        .messages_removed
-                                        .min(u32::MAX as usize)
-                                        as u32,
-                                    tokens_freed: compact.tokens_freed.min(u32::MAX as usize)
-                                        as u32,
-                                    timestamp: compact.timestamp,
-                                })?;
-                                messages = compact.messages;
-                                // 重新构建请求消息并继续循环重试
-                                let mut retry_messages = prepend_messages.clone();
-                                retry_messages.extend(messages.iter().cloned());
-                                retry_messages.extend(append_messages.clone());
-                                let microcompact_result = apply_microcompact(
-                                    &retry_messages,
-                                    &agent_loop.prompt_capability_descriptors,
-                                    agent_loop.tool_result_max_bytes(),
-                                    agent_loop.compact_keep_recent_turns(),
-                                    effective_context_window(model_limits),
-                                );
-                                request.messages = microcompact_result.messages;
+                        .await
+                        {
+                            Ok(Some(compacted_view)) => {
+                                conversation = compacted_view;
+                                agent_loop
+                                    .request_assembler
+                                    .rebuild_request_after_compaction(
+                                        &mut request,
+                                        &plan,
+                                        &conversation,
+                                        CompactionRebuildConfig {
+                                            capability_descriptors: agent_loop
+                                                .prompt
+                                                .capability_descriptors(),
+                                            tool_result_max_bytes: agent_loop
+                                                .tool_result_max_bytes(),
+                                            keep_recent_turns: agent_loop
+                                                .compact_keep_recent_turns(),
+                                            model_context_window: model_limits.context_window,
+                                        },
+                                    );
                                 continue;
                             }
                             Ok(None) => {
@@ -373,11 +342,13 @@ pub(crate) async fn run_turn(
         }
 
         let tool_calls = output.tool_calls.clone();
-        messages.push(LlmMessage::Assistant {
-            content: output.content,
-            tool_calls: output.tool_calls,
-            reasoning: output.reasoning,
-        });
+        conversation
+            .messages
+            .push(astrcode_core::LlmMessage::Assistant {
+                content: output.content,
+                tool_calls: output.tool_calls,
+                reasoning: output.reasoning,
+            });
 
         // 检测 max_tokens 截断 → 注入 nudge 消息继续生成
         // 当模型因 max_tokens 限制截断输出时，自动注入一条继续提示，
@@ -393,7 +364,7 @@ pub(crate) async fn run_turn(
                 );
 
                 // 注入 nudge 消息，告诉模型继续生成
-                messages.push(LlmMessage::User {
+                conversation.messages.push(astrcode_core::LlmMessage::User {
                     content: "Continue from where you left off. Do not repeat or summarize."
                         .to_string(),
                     origin: astrcode_core::UserMessageOrigin::AutoContinueNudge,
@@ -424,7 +395,7 @@ pub(crate) async fn run_turn(
             turn_id,
             state,
             step_index,
-            &mut messages,
+            &mut conversation.messages,
             on_event,
             &cancel,
         )
@@ -501,13 +472,6 @@ fn report_interrupted(
     }
 }
 
-fn latest_user_message(messages: &[LlmMessage]) -> Option<&str> {
-    messages.iter().rev().find_map(|message| match message {
-        LlmMessage::User { content, .. } => Some(content.as_str()),
-        LlmMessage::Assistant { .. } | LlmMessage::Tool { .. } => None,
-    })
-}
-
 fn log_prompt_diagnostics(diagnostics: &PromptDiagnostics) {
     for diagnostic in &diagnostics.items {
         let block_id = diagnostic.block_id.as_deref().unwrap_or("-");
@@ -524,4 +488,79 @@ fn log_prompt_diagnostics(diagnostics: &PromptDiagnostics) {
             DiagnosticLevel::Error => log::error!("{message}"),
         }
     }
+}
+
+/// Parameters needed for a single compact-and-rebuild cycle.
+struct CompactContext<'a> {
+    provider: &'a std::sync::Arc<dyn astrcode_runtime_llm::LlmProvider>,
+    conversation: &'a ConversationView,
+    base_system_prompt: Option<&'a str>,
+    reason: CompactionReason,
+    turn_id: &'a str,
+    cancel: CancelToken,
+    tail: CompactionTailSnapshot,
+}
+
+async fn maybe_compact_conversation(
+    agent_loop: &AgentLoop,
+    ctx: CompactContext<'_>,
+    on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
+) -> Result<Option<ConversationView>> {
+    let compact_result = agent_loop
+        .compaction
+        .compact(
+            ctx.provider.as_ref(),
+            ctx.conversation,
+            ctx.base_system_prompt,
+            ctx.reason,
+            ctx.cancel,
+        )
+        .await?;
+
+    let Some(artifact) = compact_result else {
+        return Ok(None);
+    };
+    emit_compact_applied(ctx.turn_id, &artifact, on_event)?;
+    let tail = {
+        let materialized = ctx.tail.materialize();
+        if materialized.is_empty() {
+            CompactionTailSnapshot::from_messages(
+                &ctx.conversation.messages,
+                artifact.preserved_recent_turns,
+            )
+            .materialize()
+        } else {
+            materialized
+        }
+    };
+    agent_loop
+        .compaction
+        .rebuild_conversation(&artifact, &tail)
+        .map(Some)
+}
+
+fn emit_compact_applied(
+    turn_id: &str,
+    artifact: &CompactionArtifact,
+    on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
+) -> Result<()> {
+    log::debug!(
+        "compaction strategy={} source_range={}..{} tail_start={} seq={}",
+        artifact.strategy_id,
+        artifact.source_range.start,
+        artifact.source_range.end,
+        artifact.preserved_tail_start,
+        artifact.compacted_at_seq
+    );
+    on_event(StorageEvent::CompactApplied {
+        turn_id: Some(turn_id.to_string()),
+        trigger: artifact.trigger.as_trigger(),
+        summary: artifact.summary.clone(),
+        preserved_recent_turns: artifact.preserved_recent_turns.min(u32::MAX as usize) as u32,
+        pre_tokens: artifact.pre_tokens.min(u32::MAX as usize) as u32,
+        post_tokens_estimate: artifact.post_tokens_estimate.min(u32::MAX as usize) as u32,
+        messages_removed: artifact.messages_removed.min(u32::MAX as usize) as u32,
+        tokens_freed: artifact.tokens_freed.min(u32::MAX as usize) as u32,
+        timestamp: chrono::Utc::now(),
+    })
 }

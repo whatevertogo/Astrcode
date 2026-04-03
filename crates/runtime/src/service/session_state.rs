@@ -52,6 +52,11 @@ const SESSION_BROADCAST_CAPACITY: usize = 2048;
 /// 内存中保留的最近事件记录数。超过此限制时从头部淘汰旧记录（truncated = true）。
 /// 4096 约覆盖 40-50 次典型 turn，足以满足大多数 SSE resume 场景无需回磁盘。
 const SESSION_RECENT_RECORD_LIMIT: usize = 4096;
+/// 最近存储事件缓存上限。
+///
+/// Compaction rebuild 只需要真实的“尾部事件”来恢复保留的最近 turn，因此这里沿用和
+/// SSE 缓存相同的上限即可，避免为了 rebuild 再回磁盘 replay 全量历史。
+const SESSION_RECENT_STORED_LIMIT: usize = 4096;
 
 /// 最近会话事件缓存
 ///
@@ -62,6 +67,35 @@ const SESSION_RECENT_RECORD_LIMIT: usize = 4096;
 struct RecentSessionEvents {
     records: VecDeque<SessionEventRecord>,
     truncated: bool,
+}
+
+/// 最近存储事件缓存。
+///
+/// 这份缓存和前端用的 `RecentSessionEvents` 分开保存，因为 compaction rebuild 需要的是
+/// `StoredEvent` 真相，而不是已经翻译成 `SessionEventRecord` 的展示记录。
+#[derive(Default)]
+struct RecentStoredEvents {
+    events: VecDeque<StoredEvent>,
+}
+
+impl RecentStoredEvents {
+    fn replace(&mut self, events: Vec<StoredEvent>) {
+        self.events = VecDeque::from(events);
+        while self.events.len() > SESSION_RECENT_STORED_LIMIT {
+            self.events.pop_front();
+        }
+    }
+
+    fn push(&mut self, stored: StoredEvent) {
+        self.events.push_back(stored);
+        while self.events.len() > SESSION_RECENT_STORED_LIMIT {
+            self.events.pop_front();
+        }
+    }
+
+    fn snapshot(&self) -> Vec<StoredEvent> {
+        self.events.iter().cloned().collect()
+    }
 }
 
 impl RecentSessionEvents {
@@ -188,6 +222,7 @@ pub(super) struct SessionState {
     pub(super) writer: Arc<SessionWriter>,
     projector: StdMutex<AgentStateProjector>,
     recent_records: StdMutex<RecentSessionEvents>,
+    recent_stored: StdMutex<RecentStoredEvents>,
 }
 
 impl SessionState {
@@ -199,10 +234,13 @@ impl SessionState {
         writer: Arc<SessionWriter>,
         projector: AgentStateProjector,
         recent_records: Vec<SessionEventRecord>,
+        recent_stored: Vec<StoredEvent>,
     ) -> Self {
         let (broadcaster, _) = broadcast::channel(SESSION_BROADCAST_CAPACITY);
         let mut cached_records = RecentSessionEvents::default();
         cached_records.replace(recent_records);
+        let mut cached_stored = RecentStoredEvents::default();
+        cached_stored.replace(recent_stored);
         Self {
             phase: StdMutex::new(phase),
             running: AtomicBool::new(false),
@@ -214,6 +252,7 @@ impl SessionState {
             writer,
             projector: StdMutex::new(projector),
             recent_records: StdMutex::new(cached_records),
+            recent_stored: StdMutex::new(cached_stored),
         }
     }
 
@@ -240,6 +279,7 @@ impl SessionState {
         }
         let records = translator.translate(stored);
         lock_anyhow(&self.recent_records, "session recent records")?.push_batch(&records);
+        lock_anyhow(&self.recent_stored, "session recent stored events")?.push(stored.clone());
         Ok(records)
     }
 
@@ -252,6 +292,13 @@ impl SessionState {
     ) -> Result<Option<Vec<SessionEventRecord>>> {
         Ok(lock_anyhow(&self.recent_records, "session recent records")?
             .records_after(last_event_id))
+    }
+
+    /// 返回最近的真实存储事件尾部快照。
+    ///
+    /// Compaction rebuild 只需要保留的尾部事件，不需要为了这一点重放整份 JSONL。
+    pub(super) fn snapshot_recent_stored_events(&self) -> Result<Vec<StoredEvent>> {
+        Ok(lock_anyhow(&self.recent_stored, "session recent stored events")?.snapshot())
     }
 }
 

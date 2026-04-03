@@ -20,7 +20,7 @@ pub mod token_usage;
 /// 自动压缩配置和入口函数。
 pub use compaction::{auto_compact, is_prompt_too_long, CompactConfig, CompactResult};
 /// 微压缩应用函数。
-pub(crate) use microcompact::apply_microcompact;
+pub(crate) use microcompact::{apply_microcompact, MicrocompactResult};
 /// Token 估算、预算跟踪和压缩决策相关函数。
 pub use token_usage::{
     build_prompt_snapshot, effective_context_window, estimate_message_tokens,

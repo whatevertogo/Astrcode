@@ -84,6 +84,7 @@ impl RuntimeService {
             Arc::new(SessionWriter::new(log)),
             AgentStateProjector::from_events(std::slice::from_ref(&stored_session_start.event)),
             replay_records(std::slice::from_ref(&stored_session_start), None),
+            vec![stored_session_start.clone()],
         ));
         self.sessions.insert(session_id.clone(), state);
 
@@ -239,7 +240,7 @@ impl RuntimeService {
             // TODO:未来可考虑在 checkpoint 处快照投影状态以加速加载。
             let projector = AgentStateProjector::from_events(&events);
             let recent_records = replay_records(&stored, None);
-            Ok((working_dir, phase, log, projector, recent_records))
+            Ok((working_dir, phase, log, projector, recent_records, stored))
         })
         .await;
         let elapsed = started_at.elapsed();
@@ -264,13 +265,14 @@ impl RuntimeService {
                 );
             }
         }
-        let (_working_dir, phase, log, projector, recent_records) = load_result?;
+        let (_working_dir, phase, log, projector, recent_records, recent_stored) = load_result?;
 
         let state = Arc::new(SessionState::new(
             phase,
             Arc::new(SessionWriter::new(log)),
             projector,
             recent_records,
+            recent_stored,
         ));
         self.sessions.insert(session_id.to_string(), state.clone());
         Ok(state)

@@ -1,7 +1,7 @@
 # AgentLoop 连进路线图
 
 > 最后更新：2026-04-03
-> 范围：`crates/runtime/src/agent_loop` 及相关模块
+> 范围：`crates/runtime-agent-loop/src/agent_loop` 及相关模块
 
 本文档定义 5 个演进阶段 + 1 个远期占位，每个阶段独立可交付、有明确验收标准.
 
@@ -10,7 +10,7 @@
 将隐式终止改为显式 `TurnOutcome`，移除 `max_steps`.
 
 **实现位置**:
-- `crates/runtime/src/agent_loop.rs` — `TurnOutcome` 枚举 (Completed/Cancelled/Error)
+- `crates/runtime-agent-loop/src/agent_loop.rs` — `TurnOutcome` 枚举 (Completed/Cancelled/Error)
 - `StorageEvent::TurnDone.reason` 字段 (`"completed" | "cancelled" | "error"`)
 - `finish_turn` / `finish_with_error` / `finish_interrupted` 统一返回 `Result<TurnOutcome>`
 
@@ -21,7 +21,7 @@
 独立工具调用可并发执行，按 `concurrency_safe` 分组，通过 `buffer_unordered(concurrency_limit)` 控制.
 
 **实现位置**:
-- `crates/runtime/src/agent_loop/tool_cycle.rs` — `execute_tool_calls` 并行执行管线
+- `crates/runtime-agent-loop/src/agent_loop/tool_cycle.rs` — `execute_tool_calls` 并行执行管线
 - `AgentLoop.max_tool_concurrency` — 并发度上限 (默认从 `runtime-config` 读取)
 - 安全工具走 `buffer_unordered()`, 非安全工具串行执行
 
@@ -33,12 +33,12 @@
 
 | 子阶段 | 状态 | 实现位置 |
 |--------|------|---------|
-| P3.1 Token 估算 | ✅ | `crates/runtime/src/agent_loop/token_usage.rs` — `estimate_request_tokens()` |
+| P3.1 Token 估算 | ✅ | `crates/runtime-agent-loop/src/context_window/token_usage.rs` — `estimate_request_tokens()` |
 | P3.2 百分比阈值 + Config | ✅ | AgentLoop 已持有 `auto_compact_enabled`, `compact_threshold_percent(默认90)`, `compact_keep_recent_turns`, `tool_result_max_bytes(默认100KB)` |
 | P3.3 Tool Result Budget | ✅ | 工具结果截断已集成 (100KB 上限) |
-| P3.4 Auto-Compact | ✅ | `crates/runtime/src/agent_loop/compaction.rs` — `auto_compact()`, 含 compact prompt、`<summary>` XML block 解析、prefix 递归降级重试 |
-| P3.4b Micro-Compact | ✅ | `crates/runtime/src/agent_loop/microcompact.rs` — 微调/增量压缩 |
-| P3.6 Token Budget / Auto-Continue | ✅ | `crates/runtime/src/agent_loop/token_budget.rs` — 已完整实现 Token 预算解析 、续命决策（nudge 消息注入）、diminishing-returns 检测 |
+| P3.4 Auto-Compact | ✅ | `crates/runtime-agent-loop/src/context_window/compaction.rs` — `auto_compact()`, 含 compact prompt、`<summary>` XML block 解析、prefix 递归降级重试 |
+| P3.4b Micro-Compact | ✅ | `crates/runtime-agent-loop/src/context_window/microcompact.rs` — 微调/增量压缩 |
+| P3.6 Token Budget / Auto-Continue | ✅ | `crates/runtime-agent-loop/src/agent_loop/token_budget.rs` — 已完整实现 Token 预算解析 、续命决策（nudge 消息注入）、diminishing-returns 检测 |
 
 **Compaction 设计要点**:
 - 保留最近 K 轮完整对话不动 (`compact_keep_recent_turns`)
@@ -69,8 +69,8 @@
 
 | 子阶段 | 状态 | 实现位置 |
 |--------|------|---------|
-| P4.1 413 → Reactive Compact | ✅ | `crates/runtime/src/agent_loop/turn_runner.rs` — `run_turn()` 内 413 错误时触发 `auto_compact()` 并重试，最多 3 次 |
-| P4.2 Max Output Tokens → 重试 | ✅ | `crates/runtime/src/agent_loop/turn_runner.rs` — 检测 `finish_reason.is_max_tokens()` 注入 nudge 继续生成，最多 3 次 |
+| P4.1 413 → Reactive Compact | ✅ | `crates/runtime-agent-loop/src/agent_loop/turn_runner.rs` — `run_turn()` 内 413 错误时触发 `auto_compact()` 并重试，最多 3 次 |
+| P4.2 Max Output Tokens → 重试 | ✅ | `crates/runtime-agent-loop/src/agent_loop/turn_runner.rs` — 检测 `finish_reason.is_max_tokens()` 注入 nudge 继续生成，最多 3 次 |
 | P4.3 结构化 LlmError | ✅ | `crates/runtime-llm/src/lib.rs` — `LlmError` 枚举 + `FinishReason` 枚举；`classify_http_error()` 统一分类 |
 
 ### 验收标准
@@ -81,7 +81,7 @@
 
 ### 影响范围
 
-- `crates/runtime/src/agent_loop/turn_runner.rs` (错误恢复逻辑)
+- `crates/runtime-agent-loop/src/agent_loop/turn_runner.rs` (错误恢复逻辑)
 - `crates/runtime-llm/` (结构化错误类型)
 
 ---

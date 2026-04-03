@@ -15,4 +15,5 @@
 - [skills-architecture.md](./skills-architecture.md) — Claude 风格两阶段 skill 架构（目录格式、Skill tool、资源模型）
 - [refactor-roadmap.md](./refactor-roadmap.md) — 重构路线图与当前状态
 - [agent-loop-roadmap.md](./agent-loop-roadmap.md) — AgentLoop 演进计划（P1-P6 + 远期 TODO）
+- [agent-loop-content-architecture.md](./agent-loop-content-architecture.md) — AgentLoop 内容架构重构计划（Prompt/Context/Compact/Request 边界）
 - [frontend-architecture.md](./frontend-architecture.md) — React 前端 SPA 架构（状态管理、SSE、认证、组件树）

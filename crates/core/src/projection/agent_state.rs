@@ -224,7 +224,7 @@ impl AgentStateProjector {
     }
 }
 
-fn format_compact_summary(summary: &str) -> String {
+pub fn format_compact_summary(summary: &str) -> String {
     format!(
         "[Auto-compact summary]\n{}\n\nContinue from this summary without repeating it to the user.",
         summary.trim()
