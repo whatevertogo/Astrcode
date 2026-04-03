@@ -1,7 +1,7 @@
 import { memo, useEffect, useState } from 'react';
 import type { ToolCallMessage, ToolStatus } from '../../types';
 import { classifyToolDiffLine, extractToolDiffMetadata } from '../../lib/toolDiff';
-import { extractToolShellDisplay, formatToolShellPreview } from '../../lib/toolDisplay';
+import { extractToolShellDisplay } from '../../lib/toolDisplay';
 import styles from './ToolCallBlock.module.css';
 
 const STATUS_ICON: Record<ToolStatus, string> = {
@@ -36,30 +36,6 @@ function patchLineClassName(line: string): string {
     default:
       return styles.patchLineContext;
   }
-}
-
-function formatDiffPreview(message: ToolCallMessage): string {
-  const diff = extractToolDiffMetadata(message.metadata);
-  if (!diff) {
-    return message.error ?? message.output ?? (message.status === 'running' ? '执行中...' : '');
-  }
-
-  const detailParts = [
-    diff.changeType,
-    typeof diff.bytes === 'number' ? `${diff.bytes} bytes` : '',
-    `+${diff.addedLines ?? 0} -${diff.removedLines ?? 0}`,
-  ].filter(Boolean);
-  return [diff.path ?? message.toolName, detailParts.join(' · ')].filter(Boolean).join('  ');
-}
-
-function shellPreview(message: ToolCallMessage): string {
-  return formatToolShellPreview(
-    extractToolShellDisplay(message.metadata),
-    message.toolName,
-    message.output,
-    message.error,
-    message.status === 'running' ? '执行中...' : ''
-  );
 }
 
 function ToolCallBlock({ message }: ToolCallBlockProps) {
