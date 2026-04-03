@@ -265,8 +265,6 @@ pub trait PolicyEngine: Send + Sync {
     ) -> Result<PolicyVerdict<CapabilityCall>>;
 
     /// 根据完整请求快照裁决上下文策略。
-    ///
-    /// 默认实现直接返回 loop 给出的局部建议，保持现有 AllowAll 行为不变。
     async fn decide_context_strategy(
         &self,
         input: &ContextDecisionInput,

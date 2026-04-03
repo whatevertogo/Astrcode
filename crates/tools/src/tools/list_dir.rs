@@ -116,15 +116,22 @@ impl Tool for ListDirTool {
             }));
         }
 
+        // 空目录返回友好提示，避免空 JSON 触发 stop sequence
+        let output = if entries.is_empty() {
+            "Directory is empty.".to_string()
+        } else {
+            serde_json::to_string(&entries)
+                .map_err(|e| AstrError::parse("failed to serialize listDir output", e))?
+        };
+
         Ok(ToolExecutionResult {
             tool_call_id,
             tool_name: "listDir".to_string(),
             ok: true,
-            output: serde_json::to_string(&entries)
-                .map_err(|e| AstrError::parse("failed to serialize listDir output", e))?,
+            output,
             error: None,
             metadata: Some(json!({
-                "path": path,
+                "path": path.to_string_lossy(),
                 "count": entries.len(),
                 "truncated": truncated,
             })),

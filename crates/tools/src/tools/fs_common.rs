@@ -402,6 +402,110 @@ fn is_path_within_root(path: &Path, root: &Path) -> bool {
     normalized_path == normalized_root || normalized_path.starts_with(&normalized_root)
 }
 
+// ======== 溢出-存盘========
+// 参考 Claude Code `toolResultStorage.ts` 和 OpenCode `truncation.ts`。
+// 当工具输出超过 inline 阈值时，将完整内容存到磁盘，返回截断预览 + 路径引用，
+// 避免单次 turn 塞满 context window。
+
+/// 工具输出 inline 阈值：序列化结果超过此字节数时触发存盘。
+///
+/// 参考：Claude Code 单工具 20-50KB，OpenCode 50KB/2000 行。
+/// TODO: 未来可根据实际情况调整，或提供工具级别的配置选项。
+/// 选择 32KB 作为单工具结果上限，保证 context window 效率。
+pub const TOOL_RESULT_INLINE_LIMIT: usize = 32 * 1024;
+
+/// 工具结果存盘目录名（相对于 session 目录）。
+pub const TOOL_RESULTS_DIR: &str = "tool-results";
+
+/// 工具结果预览截断大小。
+///
+/// 超阈值被存盘时，返回此大小的预览供 LLM 快速了解内容。
+/// 参考 Claude Code 的 2KB 预览策略。
+pub const TOOL_RESULT_PREVIEW_LIMIT: usize = 2 * 1024;
+
+/// 将大型工具结果存到磁盘并返回截断预览，未超阈值则返回原始内容。
+///
+/// ## 返回值
+///
+/// - 内容 ≤ `TOOL_RESULT_INLINE_LIMIT` 或 `force_inline` 为 true → 返回 `content` 原样
+/// - 超阈值 → 存到 `session_dir/tool-results/<safe_id>.txt` → 返回 `<persisted-output>` 预览
+/// - 存盘失败 → fallback 到 `truncate_with_notice` 模式
+///
+/// `session_dir` 从 `ToolContext::session_dir()` 获取。
+/// `force_inline` 用于调试/测试模式，跳过存盘。
+pub fn maybe_persist_large_tool_result(
+    session_dir: &std::path::Path,
+    tool_call_id: &str,
+    content: &str,
+    force_inline: bool,
+) -> String {
+    let content_bytes = content.len();
+    if content_bytes <= TOOL_RESULT_INLINE_LIMIT || force_inline {
+        return content.to_string();
+    }
+
+    let results_dir = session_dir.join(TOOL_RESULTS_DIR);
+    if std::fs::create_dir_all(&results_dir).is_err() {
+        log::warn!(
+            "tool-result: failed to create dir '{}', falling back to truncation",
+            results_dir.display()
+        );
+        return truncate_with_notice(content);
+    }
+
+    let safe_id: String = tool_call_id
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .take(64)
+        .collect();
+    let path = results_dir.join(format!("{safe_id}.txt"));
+    if std::fs::write(&path, content).is_err() {
+        log::warn!(
+            "tool-result: failed to write '{}', falling back to truncation",
+            path.display()
+        );
+        return truncate_with_notice(content);
+    }
+
+    let relative_path = path
+        .strip_prefix(session_dir)
+        .unwrap_or(&path)
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    format_persisted_output(&relative_path, content_bytes, content)
+}
+
+/// 截断内容并附加友好通知。
+///
+/// 截断点位于 UTF-8 字符边界，不会破坏多字节字符。
+fn truncate_with_notice(content: &str) -> String {
+    let limit = TOOL_RESULT_PREVIEW_LIMIT.min(content.len());
+    let truncated_at = content.floor_char_boundary(limit);
+    let prefix = &content[..truncated_at];
+    format!(
+        "{prefix}\n\n... [output truncated after {} bytes; use offset/limit parameters or \
+         readFile with persisted path for full content]",
+        TOOL_RESULT_INLINE_LIMIT
+    )
+}
+
+/// 构建 `<persisted-output>` 格式的截断预览。
+///
+/// 包含文件大小、存盘路径、预览内容和操作提示，
+/// 让 LLM 能在同 turn 中用 `readFile` 读取完整内容。
+fn format_persisted_output(relative_path: &str, total_bytes: usize, content: &str) -> String {
+    let preview_limit = TOOL_RESULT_PREVIEW_LIMIT.min(content.len());
+    let truncated_at = content.floor_char_boundary(preview_limit);
+    let preview = &content[..truncated_at];
+
+    format!(
+        "<persisted-output>\nOutput too large ({total_bytes} bytes). Full output saved to: \
+         {relative_path}\n\nPreview (first {preview_limit} bytes):\n{preview}\n...\nUse \
+         `readFile` with the persisted path to view the full content.\n</persisted-output>"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

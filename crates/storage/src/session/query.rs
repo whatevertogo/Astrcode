@@ -343,14 +343,13 @@ impl EventLog {
                     parent_session_id: source_session_id,
                     parent_storage_seq: source_storage_seq,
                     ..
-                } => {
-                    if created_at.is_none() {
-                        created_at = Some(timestamp);
-                        working_dir = Some(session_working_dir);
-                        parent_session_id = source_session_id;
-                        parent_storage_seq = source_storage_seq;
-                    }
+                } if created_at.is_none() => {
+                    created_at = Some(timestamp);
+                    working_dir = Some(session_working_dir);
+                    parent_session_id = source_session_id;
+                    parent_storage_seq = source_storage_seq;
                 },
+                StorageEvent::SessionStart { .. } => {},
                 StorageEvent::UserMessage { content, .. } if title.is_none() => {
                     title = Some(title_from_user_message(&content));
                 },

@@ -250,6 +250,12 @@ impl AgentLoop {
         self
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_compaction_runtime(mut self, compaction: CompactionRuntime) -> Self {
+        self.compaction = compaction;
+        self
+    }
+
     /// 执行一个 Agent Turn
     ///
     /// ## 执行流程
@@ -410,7 +416,7 @@ impl AgentLoop {
             )
             .await?;
 
-        let Some(artifact) = artifact else {
+        let Some(mut artifact) = artifact else {
             return Ok(None);
         };
         let tail = {
@@ -425,6 +431,7 @@ impl AgentLoop {
                 materialized
             }
         };
+        artifact.record_tail_seq(&tail);
         let _rebuilt_view = self.compaction.rebuild_conversation(&artifact, &tail)?;
 
         Ok(Some(StorageEvent::CompactApplied {

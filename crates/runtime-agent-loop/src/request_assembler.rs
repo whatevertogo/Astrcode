@@ -50,7 +50,7 @@ pub(crate) struct PreparedRequest {
 /// Inputs needed to build and prepare a step request in one place.
 pub(crate) struct StepRequestConfig<'a> {
     pub prompt: &'a PromptPlan,
-    pub context: ContextBundle,
+    pub context: &'a ContextBundle,
     pub tools: Vec<ToolDefinition>,
     pub model_context_window: usize,
     pub compact_threshold_percent: u8,
@@ -82,7 +82,7 @@ impl RequestAssembler {
     pub(crate) fn assemble(
         &self,
         prompt: &PromptPlan,
-        context: ContextBundle,
+        context: &ContextBundle,
         mut tools: Vec<ToolDefinition>,
     ) -> Result<ModelRequest> {
         // These slots are intentionally carried through the bundle even before they affect request
@@ -170,7 +170,7 @@ mod tests {
         let request = RequestAssembler
             .assemble(
                 &plan(),
-                ContextBundle {
+                &ContextBundle {
                     conversation: ConversationView::new(vec![LlmMessage::User {
                         content: "body".to_string(),
                         origin: UserMessageOrigin::User,
@@ -211,7 +211,7 @@ mod tests {
             .build_step_request(
                 StepRequestConfig {
                     prompt: &plan(),
-                    context: ContextBundle {
+                    context: &ContextBundle {
                         conversation: ConversationView::new(vec![LlmMessage::User {
                             content: "body".to_string(),
                             origin: UserMessageOrigin::User,

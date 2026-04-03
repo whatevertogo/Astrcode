@@ -104,6 +104,20 @@ pub(crate) struct CompactionArtifact {
     pub tokens_freed: usize,
 }
 
+impl CompactionArtifact {
+    /// Stamp the artifact with the newest durable tail sequence that survived the compaction.
+    ///
+    /// The strategy itself only sees model-visible messages, so it cannot know which real
+    /// `storage_seq` the preserved tail corresponds to. We fill this in after the loop/materializer
+    /// has reconstructed the actual stored tail snapshot, which keeps rebuild/debug metadata tied
+    /// to session truth instead of synthetic message indexes.
+    pub(crate) fn record_tail_seq(&mut self, tail: &[StoredEvent]) {
+        if let Some(max_seq) = tail.iter().map(|stored| stored.storage_seq).max() {
+            self.compacted_at_seq = max_seq;
+        }
+    }
+}
+
 /// Real tail snapshot used when rebuilding a compacted conversation view.
 ///
 /// `seed` contains the already-persisted recent tail before the active step starts. `live` can be
@@ -403,8 +417,8 @@ impl CompactionStrategy for AutoCompactStrategy {
             strategy_id: "suffix_preserving_summary".to_string(),
             pre_tokens: result.pre_tokens,
             post_tokens_estimate: result.post_tokens_estimate,
-            compacted_at_seq: 0, /* TODO: wire real storage_seq from event log for session
-                                  * rebuild & debugging */
+            // Filled by the loop after it materializes the real stored tail snapshot.
+            compacted_at_seq: 0,
             trigger: input.reason,
             preserved_recent_turns: result.preserved_recent_turns,
             messages_removed: result.messages_removed,
@@ -545,5 +559,47 @@ mod tests {
         let decision = runtime.build_context_decision(&snapshot, 0);
 
         assert_eq!(decision.suggested_strategy, ContextStrategy::Ignore);
+    }
+
+    #[test]
+    fn artifact_records_real_tail_storage_seq() {
+        let mut artifact = CompactionArtifact {
+            summary: "summary".to_string(),
+            source_range: EventRange { start: 0, end: 1 },
+            preserved_tail_start: 1,
+            strategy_id: "test".to_string(),
+            pre_tokens: 100,
+            post_tokens_estimate: 40,
+            compacted_at_seq: 0,
+            trigger: CompactionReason::Auto,
+            preserved_recent_turns: 1,
+            messages_removed: 1,
+            tokens_freed: 60,
+        };
+        let tail = vec![
+            StoredEvent {
+                storage_seq: 7,
+                event: StorageEvent::UserMessage {
+                    turn_id: Some("turn-1".to_string()),
+                    content: "older".to_string(),
+                    origin: UserMessageOrigin::User,
+                    timestamp: Utc::now(),
+                },
+            },
+            StoredEvent {
+                storage_seq: 11,
+                event: StorageEvent::AssistantFinal {
+                    turn_id: Some("turn-1".to_string()),
+                    content: "latest".to_string(),
+                    reasoning_content: None,
+                    reasoning_signature: None,
+                    timestamp: Some(Utc::now()),
+                },
+            },
+        ];
+
+        artifact.record_tail_seq(&tail);
+
+        assert_eq!(artifact.compacted_at_seq, 11);
     }
 }

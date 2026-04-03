@@ -13,10 +13,95 @@ use std::{
 };
 
 use astrcode_core::{AstrError, CancelToken, LlmMessage, Phase, StorageEvent, UserMessageOrigin};
-use astrcode_runtime_llm::LlmOutput;
+use astrcode_runtime_llm::{EventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
+use async_trait::async_trait;
 
 use super::{fixtures::*, test_support::empty_capabilities};
-use crate::{AgentLoop, agent_loop::TurnOutcome, compaction_runtime::CompactionTailSnapshot};
+use crate::{
+    AgentLoop,
+    agent_loop::TurnOutcome,
+    compaction_runtime::{
+        CompactionArtifact, CompactionInput, CompactionReason, CompactionRuntime,
+        CompactionTailSnapshot, ThresholdCompactionPolicy,
+    },
+    context_pipeline::ConversationView,
+};
+
+struct RecordingFailingProvider {
+    results: Mutex<VecDeque<astrcode_core::Result<LlmOutput>>>,
+    requests: Arc<Mutex<Vec<LlmRequest>>>,
+}
+
+#[async_trait]
+impl LlmProvider for RecordingFailingProvider {
+    fn model_limits(&self) -> ModelLimits {
+        ModelLimits {
+            context_window: 200_000,
+            max_output_tokens: 4_096,
+        }
+    }
+
+    async fn generate(
+        &self,
+        request: LlmRequest,
+        sink: Option<EventSink>,
+    ) -> astrcode_core::Result<LlmOutput> {
+        self.requests
+            .lock()
+            .expect("request log lock")
+            .push(request.clone());
+        let result = self
+            .results
+            .lock()
+            .expect("provider results lock")
+            .pop_front()
+            .expect("scripted provider result");
+
+        if let (Ok(response), Some(sink)) = (&result, sink) {
+            for delta in response.content.chars() {
+                sink(astrcode_runtime_llm::LlmEvent::TextDelta(delta.to_string()));
+            }
+        }
+
+        result
+    }
+}
+
+struct StaticArtifactStrategy;
+
+#[async_trait]
+impl crate::compaction_runtime::CompactionStrategy for StaticArtifactStrategy {
+    async fn compact(
+        &self,
+        _input: CompactionInput<'_>,
+    ) -> astrcode_core::Result<Option<CompactionArtifact>> {
+        Ok(Some(CompactionArtifact {
+            summary: "summary".to_string(),
+            source_range: crate::compaction_runtime::EventRange { start: 0, end: 1 },
+            preserved_tail_start: 1,
+            strategy_id: "test".to_string(),
+            pre_tokens: 100,
+            post_tokens_estimate: 40,
+            compacted_at_seq: 0,
+            trigger: CompactionReason::Auto,
+            preserved_recent_turns: 1,
+            messages_removed: 1,
+            tokens_freed: 60,
+        }))
+    }
+}
+
+struct FailingRebuilder;
+
+impl crate::compaction_runtime::CompactionRebuilder for FailingRebuilder {
+    fn rebuild(
+        &self,
+        _artifact: &CompactionArtifact,
+        _tail: &[astrcode_core::StoredEvent],
+    ) -> astrcode_core::Result<ConversationView> {
+        Err(AstrError::Internal("rebuild failed".to_string()))
+    }
+}
 
 #[tokio::test]
 async fn auto_compact_emits_compact_applied_before_retrying_the_turn() {
@@ -261,6 +346,141 @@ async fn p4_1_reactive_compact_recovers_from_413_error() {
     );
 }
 
+#[tokio::test]
+async fn reactive_compact_uses_policy_rewritten_system_prompt() {
+    let _guard = super::test_support::TestEnvGuard::new();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(RecordingFailingProvider {
+        results: Mutex::new(VecDeque::from([
+            Err(make_prompt_too_long_error()),
+            Ok(LlmOutput {
+                content: "<analysis>trimmed</analysis><summary>condensed history</summary>"
+                    .to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            }),
+            Ok(LlmOutput {
+                content: "recovered".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            }),
+        ])),
+        requests: Arc::clone(&requests),
+    });
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::from_capabilities(factory, empty_capabilities())
+        .with_policy_engine(Arc::new(RewriteSystemPromptPolicy {
+            suffix: "policy suffix".to_string(),
+        }))
+        .with_auto_compact_enabled(true)
+        .with_compact_threshold_percent(95)
+        .with_compact_keep_recent_turns(1);
+    let state = astrcode_core::AgentState {
+        session_id: "test".into(),
+        working_dir: std::env::temp_dir(),
+        messages: vec![
+            LlmMessage::User {
+                content: "legacy ".repeat(1_500),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "ack".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+            LlmMessage::User {
+                content: "current ask".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ],
+        phase: Phase::Thinking,
+        turn_count: 0,
+    };
+    let (_events, mut on_event) = collect_events();
+
+    let outcome = loop_runner
+        .run_turn(
+            &state,
+            "turn-reactive-policy-prompt",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+
+    assert!(matches!(outcome, TurnOutcome::Completed));
+    let requests = requests.lock().expect("requests lock");
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests[1]
+            .system_prompt
+            .as_deref()
+            .is_some_and(|prompt| prompt.contains("policy suffix")),
+        "reactive compaction should reuse the policy-rewritten system prompt"
+    );
+}
+
+#[tokio::test]
+async fn compaction_event_is_not_emitted_when_rebuild_fails() {
+    let _guard = super::test_support::TestEnvGuard::new();
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::new()),
+        delay: std::time::Duration::from_millis(0),
+    });
+    let loop_runner = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory { provider }),
+        empty_capabilities(),
+    )
+    .with_compaction_runtime(CompactionRuntime::new(
+        true,
+        1,
+        1,
+        Arc::new(ThresholdCompactionPolicy::new(true)),
+        Arc::new(StaticArtifactStrategy),
+        Arc::new(FailingRebuilder),
+    ));
+    let state = astrcode_core::AgentState {
+        session_id: "test".into(),
+        working_dir: std::env::temp_dir(),
+        messages: vec![
+            LlmMessage::User {
+                content: "legacy".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::User {
+                content: "current ask".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ],
+        phase: Phase::Thinking,
+        turn_count: 0,
+    };
+    let (events, mut on_event) = collect_events();
+
+    let outcome = loop_runner
+        .run_turn(
+            &state,
+            "turn-rebuild-failure",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should return outcome");
+
+    assert!(matches!(outcome, TurnOutcome::Error { .. }));
+    let events = events.lock().expect("events lock");
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, StorageEvent::CompactApplied { .. })),
+        "compaction should not be emitted before the rebuilt conversation is proven valid"
+    );
+}
+
 /// P4.1: 413 错误但无可压缩内容时，正确终止 turn 并报告错误。
 #[tokio::test]
 async fn p4_1_reactive_compact_fails_when_no_compressible_history() {
@@ -304,6 +524,99 @@ async fn p4_1_reactive_compact_fails_when_no_compressible_history() {
         matches!(outcome, TurnOutcome::Error { .. }),
         "turn should end with Error outcome when no compressible history available, got: \
          {outcome:?}"
+    );
+}
+
+/// P4.1: 连续 prompt-too-long 时，reactive compact 重试次数必须受上限保护。
+#[tokio::test]
+async fn p4_1_reactive_compact_stops_after_max_attempts() {
+    let _guard = super::test_support::TestEnvGuard::new();
+
+    let provider = Arc::new(FailingProvider {
+        results: Mutex::new(VecDeque::from([
+            Err(make_prompt_too_long_error()),
+            Ok(LlmOutput {
+                content: "<analysis>trimmed</analysis><summary>summary 1</summary>".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            }),
+            Err(make_prompt_too_long_error()),
+            Ok(LlmOutput {
+                content: "<analysis>trimmed</analysis><summary>summary 2</summary>".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            }),
+            Err(make_prompt_too_long_error()),
+            Ok(LlmOutput {
+                content: "<analysis>trimmed</analysis><summary>summary 3</summary>".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            }),
+            Err(make_prompt_too_long_error()),
+        ])),
+        delay: std::time::Duration::from_millis(0),
+    });
+
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::from_capabilities(factory, empty_capabilities())
+        .with_auto_compact_enabled(true)
+        .with_compact_threshold_percent(95)
+        .with_compact_keep_recent_turns(1);
+
+    let state = astrcode_core::AgentState {
+        session_id: "test".into(),
+        working_dir: std::env::temp_dir(),
+        messages: vec![
+            LlmMessage::User {
+                content: "legacy ".repeat(1_500),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "ack".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+            LlmMessage::User {
+                content: "current ask".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ],
+        phase: Phase::Thinking,
+        turn_count: 0,
+    };
+
+    let (events, mut on_event) = collect_events();
+
+    let outcome = loop_runner
+        .run_turn(
+            &state,
+            "turn-413-max-attempts",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("run_turn should return a turn outcome");
+
+    assert!(
+        matches!(outcome, TurnOutcome::Error { .. }),
+        "reactive compact should stop with an error after exhausting retries, got: {outcome:?}"
+    );
+
+    let compact_count = events
+        .lock()
+        .expect("events lock")
+        .iter()
+        .filter(|event| matches!(event, StorageEvent::CompactApplied { .. }))
+        .count();
+    assert_eq!(
+        compact_count, 3,
+        "reactive compact should stop after exactly three retries"
     );
 }
 

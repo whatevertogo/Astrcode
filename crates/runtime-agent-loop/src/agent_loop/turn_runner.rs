@@ -98,6 +98,7 @@ pub(crate) async fn run_turn(
     let mut conversation = ConversationView::new(state.messages.clone());
     let mut step_index = 0usize;
     let mut output_continuation_count = 0u8;
+    let mut reactive_compact_attempts = 0usize;
     let model_limits = provider.model_limits();
     let mut token_tracker = TokenUsageTracker::default();
 
@@ -145,7 +146,7 @@ pub(crate) async fn run_turn(
         } = match agent_loop.request_assembler.build_step_request(
             StepRequestConfig {
                 prompt: &plan,
-                context: bundle.clone(),
+                context: &bundle,
                 tools: agent_loop.capabilities.tool_definitions(),
                 model_context_window: model_limits.context_window,
                 compact_threshold_percent: agent_loop.compact_threshold_percent(),
@@ -212,8 +213,6 @@ pub(crate) async fn run_turn(
             }
         }
         let policy_ctx = agent_loop.policy_context(state, turn_id, step_index);
-        // 保留 system_prompt 和 plan 的克隆，用于 reactive compact 重试 (P4.1)
-        let system_prompt_for_retry = request.system_prompt.clone();
         let request = match agent_loop
             .policy
             .check_model_request(request, &policy_ctx)
@@ -224,11 +223,14 @@ pub(crate) async fn run_turn(
                 return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
             },
         };
+        // Reactive compact must reuse the exact system prompt that reached the provider after
+        // policy rewrites. Otherwise the recovery compaction can summarize against stale
+        // instructions and drift from the request shape that actually overflowed.
+        let system_prompt_for_retry = request.system_prompt.clone();
 
         // 413 prompt too long → turn 级别 reactive compact
         // 当 LLM 调用返回 prompt too long 错误时，自动触发压缩并重试。
         // 与 compaction.rs 中的 compact 阶段重试不同，这是在 turn 执行层面的恢复。
-        let mut reactive_compact_attempts = 0usize;
         let output = match llm_cycle::generate_response(
             &provider,
             request.clone(),
@@ -309,6 +311,7 @@ pub(crate) async fn run_turn(
                 }
             },
         };
+        reactive_compact_attempts = 0;
         token_tracker.record_usage(output.usage);
 
         if !output.content.is_empty() || !output.tool_calls.is_empty() || output.reasoning.is_some()
@@ -502,10 +505,9 @@ async fn maybe_compact_conversation(
         )
         .await?;
 
-    let Some(artifact) = compact_result else {
+    let Some(mut artifact) = compact_result else {
         return Ok(None);
     };
-    emit_compact_applied(ctx.turn_id, &artifact, on_event)?;
     let tail = {
         let materialized = ctx.tail.materialize();
         if materialized.is_empty() {
@@ -518,10 +520,14 @@ async fn maybe_compact_conversation(
             materialized
         }
     };
-    agent_loop
+    artifact.record_tail_seq(&tail);
+    let compacted_view = agent_loop
         .compaction
-        .rebuild_conversation(&artifact, &tail)
-        .map(Some)
+        .rebuild_conversation(&artifact, &tail)?;
+    // Persist the compaction event only after we have proven the rebuilt view is usable. That
+    // avoids emitting durable history that the in-memory loop cannot continue from.
+    emit_compact_applied(ctx.turn_id, &artifact, on_event)?;
+    Ok(Some(compacted_view))
 }
 
 fn emit_compact_applied(
