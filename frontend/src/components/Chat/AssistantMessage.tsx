@@ -59,17 +59,10 @@ function extractThinkingBlocks(
   return { visibleText, thinkingBlocks };
 }
 
-interface CodeBlockProps extends React.ComponentPropsWithoutRef<'code'> {
-  inline?: boolean;
-}
-
-function CodeBlockComponent({ inline, className, children, ...props }: CodeBlockProps) {
+function CopyButton({ code }: { code: string }) {
   const [copied, setCopied] = useState(false);
-  const match = /language-(\w+)/.exec(className || '');
-  const language = match ? match[1] : '';
 
   const handleCopy = useCallback(() => {
-    const code = String(children).replace(/\n$/, '');
     void navigator.clipboard
       .writeText(code)
       .then(() => {
@@ -77,64 +70,86 @@ function CodeBlockComponent({ inline, className, children, ...props }: CodeBlock
         setTimeout(() => setCopied(false), 2000);
       })
       .catch(() => {});
-  }, [children]);
-
-  if (!inline && match) {
-    return (
-      <div className={styles.codeBlockWrapper}>
-        <div className={styles.codeHeader}>
-          <span className={styles.codeLanguage}>{language}</span>
-          <button className={styles.copyBtn} onClick={handleCopy} title="Copy Code">
-            {copied ? (
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <polyline points="20 6 9 17 4 12"></polyline>
-              </svg>
-            ) : (
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-              </svg>
-            )}
-          </button>
-        </div>
-        <pre className={styles.codeBlock}>
-          <code className={className} {...props}>
-            {children}
-          </code>
-        </pre>
-      </div>
-    );
-  }
+  }, [code]);
 
   return (
-    <code className={styles.inlineCode} {...props}>
-      {children}
-    </code>
+    <button className={styles.copyBtn} onClick={handleCopy} title="Copy Code">
+      {copied ? (
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+      ) : (
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+      )}
+    </button>
   );
 }
 
+interface CodeBlockRendererProps extends React.ComponentPropsWithoutRef<'code'> {
+  node?: { parent?: { tagName?: string } };
+  inline?: boolean;
+}
+
+function CodeBlockRenderer({ node, className, children, ...props }: CodeBlockRendererProps) {
+  const match = /language-(\w+)/.exec(className || '');
+  const language = match ? match[1] : '';
+
+  const isInline = !match && !String(children).includes('\n') && node?.parent?.tagName !== 'pre';
+
+  if (isInline) {
+    return (
+      <code className={styles.inlineCode} {...props}>
+        {children}
+      </code>
+    );
+  }
+
+  const codeText = String(children).replace(/\n$/, '');
+
+  return (
+    <div className={styles.codeBlockWrapper}>
+      <div className={styles.codeHeader}>
+        <span className={styles.codeLanguage}>{language || 'text'}</span>
+        <CopyButton code={codeText} />
+      </div>
+      <pre className={styles.codeBlock} {...props}>
+        <code className={className}>{children}</code>
+      </pre>
+    </div>
+  );
+}
+
+const markdownComponents: Partial<import('react-markdown').Components> = {
+  pre: ({ children }: React.PropsWithChildren) => <>{children}</>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+  code: CodeBlockRenderer as any,
+};
+
 function AssistantMessage({ message }: AssistantMessageProps) {
-  const { visibleText, thinkingBlocks } = extractThinkingBlocks(
-    message.text,
-    message.reasoningText
+  const { visibleText, thinkingBlocks } = React.useMemo(
+    () => extractThinkingBlocks(message.text, message.reasoningText),
+    [message.text, message.reasoningText]
   );
 
   return (
@@ -165,48 +180,29 @@ function AssistantMessage({ message }: AssistantMessageProps) {
           className={`${styles.content} ${message.streaming ? styles.contentStreaming : ''}`}
           data-streaming={message.streaming ? 'true' : 'false'}
         >
-          {message.streaming ? (
-            <>
-              {thinkingBlocks.map((block, index) => (
-                <details
-                  key={`${message.id}-thinking-${index}`}
-                  className={styles.thinkingBlock}
-                  open
-                >
-                  <summary className={styles.thinkingSummary}>Thinking</summary>
-                  <pre className={styles.thinkingContent}>{block}</pre>
-                </details>
-              ))}
-              <div className={styles.streamingText}>{visibleText}</div>
-            </>
-          ) : (
-            <>
-              {thinkingBlocks.map((block, index) => (
-                <details key={`${message.id}-thinking-${index}`} className={styles.thinkingBlock}>
-                  <summary className={styles.thinkingSummary}>Thinking</summary>
-                  <pre className={styles.thinkingContent}>{block}</pre>
-                </details>
-              ))}
-              {visibleText ? (
-                <MarkdownGuard fallback={visibleText}>
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    components={{
-                      code({ className, children, ...props }) {
-                        return (
-                          <CodeBlockComponent className={className} {...props}>
-                            {children}
-                          </CodeBlockComponent>
-                        );
-                      },
-                    }}
-                  >
-                    {visibleText}
+          {thinkingBlocks.map((block, index) => (
+            <details
+              key={`${message.id}-thinking-${index}`}
+              className={styles.thinkingBlock}
+              open={message.streaming}
+            >
+              <summary className={styles.thinkingSummary}>Thinking</summary>
+              <div className={styles.thinkingContent}>
+                <MarkdownGuard fallback={block}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                    {block}
                   </ReactMarkdown>
                 </MarkdownGuard>
-              ) : null}
-            </>
-          )}
+              </div>
+            </details>
+          ))}
+          {visibleText ? (
+            <MarkdownGuard fallback={visibleText}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                {visibleText}
+              </ReactMarkdown>
+            </MarkdownGuard>
+          ) : null}
           {message.streaming && <span className={styles.cursor}>▋</span>}
         </div>
       </div>
