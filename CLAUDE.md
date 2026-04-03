@@ -31,9 +31,3 @@ protocol (纯 DTO，无业务依赖)
 - `storage` 实现持久化（`EventLog`、`FileSystemSessionRepository`）；`core` 只定义接口
 - `runtime-prompt`/`runtime-llm`/`runtime-config` 保持编译隔离，`runtime` 作为门面组合，不重复实现
 - 环境变量常量源头在 `crates/core/src/env.rs`，`runtime-config/src/constants.rs` 聚合导出
-
-## Skill Architecture
-
-- 两阶段：system prompt 只暴露索引（`name` + `description`），正文通过 `Skill` tool 按需加载
-- `SKILL.md` frontmatter 只认 `name`/`description`，`name` 须与文件夹名一致（kebab-case）
-- builtin skill 资源由 `crates/runtime-prompt/build.rs` 打包，不手写 `include_str!`
