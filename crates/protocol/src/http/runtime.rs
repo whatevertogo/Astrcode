@@ -119,6 +119,12 @@ pub struct RuntimePluginDto {
     /// 最近一次失败的错误信息
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
+    /// 非致命 warning 列表。
+    ///
+    /// 这里显式保留 warning，是为了让前端能展示“插件已加载，但 skill 资源或
+    /// allowed_tools 校验有降级”的状态，而不必把它误判为插件彻底失败。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     /// 最近一次健康检查的时间戳（ISO 8601）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_checked_at: Option<String>,

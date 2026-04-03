@@ -123,7 +123,11 @@ pub(crate) async fn run_turn(
             tool_names: agent_loop.capabilities.tool_names().to_vec(),
             capability_descriptors: agent_loop.prompt_capability_descriptors.clone(),
             prompt_declarations: agent_loop.prompt_declarations.clone(),
-            skills: agent_loop.prompt_skills.clone(),
+            // 每个 step 都按当前 working dir 解析 skill，确保 project/user override
+            // 与最新 runtime surface 一致，不会把过期 base skills 直接塞给 prompt。
+            skills: agent_loop
+                .skill_catalog
+                .resolve_for_working_dir(&state.working_dir.to_string_lossy()),
             step_index,
             turn_index: state.turn_count,
             vars,

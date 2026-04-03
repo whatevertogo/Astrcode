@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use astrcode_core::{CapabilityInvoker, Result, ToolCapabilityInvoker};
 
-use crate::prompt::SkillSpec;
+use crate::prompt::SkillCatalog;
 use crate::skill_tool::SkillTool;
 
 /// 构建所有内置能力的调用器列表。
@@ -34,10 +34,10 @@ use crate::skill_tool::SkillTool;
 /// 3. 文件操作工具
 /// 4. 搜索工具
 pub(crate) fn built_in_capability_invokers(
-    builtin_skills: Vec<SkillSpec>,
+    skill_catalog: Arc<SkillCatalog>,
 ) -> Result<Vec<Arc<dyn CapabilityInvoker>>> {
     vec![
-        ToolCapabilityInvoker::boxed(Box::new(SkillTool::new(builtin_skills))),
+        ToolCapabilityInvoker::boxed(Box::new(SkillTool::new(skill_catalog))),
         ToolCapabilityInvoker::boxed(Box::new(astrcode_tools::tools::shell::ShellTool)),
         ToolCapabilityInvoker::boxed(Box::new(astrcode_tools::tools::list_dir::ListDirTool)),
         ToolCapabilityInvoker::boxed(Box::new(astrcode_tools::tools::read_file::ReadFileTool)),

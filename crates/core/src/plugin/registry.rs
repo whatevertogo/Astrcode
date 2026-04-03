@@ -58,6 +58,11 @@ pub struct PluginEntry {
     pub capabilities: Vec<CapabilityDescriptor>,
     /// 失败原因（仅在失败时设置）
     pub failure: Option<String>,
+    /// 非致命诊断信息（如 skill 物化失败、allowed_tools 被降级）。
+    ///
+    /// 这些 warning 不会改变插件主状态；它们用于把“插件已加载但部分能力
+    /// 或资源需要人工关注”的事实显式暴露给上层 UI，而不是静默吞掉。
+    pub warnings: Vec<String>,
     /// 最后一次健康检查时间
     pub last_checked_at: Option<String>,
 }
@@ -83,6 +88,7 @@ impl PluginRegistry {
             failure_count: 0,
             capabilities: Vec::new(),
             failure: None,
+            warnings: Vec::new(),
             last_checked_at: None,
         });
     }
@@ -94,6 +100,7 @@ impl PluginRegistry {
         &self,
         manifest: PluginManifest,
         capabilities: Vec<CapabilityDescriptor>,
+        warnings: Vec<String>,
     ) {
         self.upsert(PluginEntry {
             manifest,
@@ -102,6 +109,7 @@ impl PluginRegistry {
             failure_count: 0,
             capabilities,
             failure: None,
+            warnings,
             last_checked_at: None,
         });
     }
@@ -114,6 +122,7 @@ impl PluginRegistry {
         manifest: PluginManifest,
         failure: impl Into<String>,
         capabilities: Vec<CapabilityDescriptor>,
+        warnings: Vec<String>,
     ) {
         self.upsert(PluginEntry {
             manifest,
@@ -122,6 +131,7 @@ impl PluginRegistry {
             failure_count: 1,
             capabilities,
             failure: Some(failure.into()),
+            warnings,
             last_checked_at: None,
         });
     }
@@ -304,7 +314,11 @@ mod tests {
             PluginState::Discovered
         );
 
-        registry.record_initialized(manifest.clone(), vec![capability("tool.repo.inspect")]);
+        registry.record_initialized(
+            manifest.clone(),
+            vec![capability("tool.repo.inspect")],
+            vec!["skill warning".to_string()],
+        );
         let initialized = registry
             .get("repo-inspector")
             .expect("initialized entry should exist");
@@ -312,11 +326,13 @@ mod tests {
         assert_eq!(initialized.health, PluginHealth::Healthy);
         assert_eq!(initialized.capabilities.len(), 1);
         assert!(initialized.failure.is_none());
+        assert_eq!(initialized.warnings, vec!["skill warning".to_string()]);
 
         registry.record_failed(
             manifest,
             "capability conflict",
             vec![capability("tool.repo.inspect")],
+            vec!["materialize failed".to_string()],
         );
         let failed = registry
             .get("repo-inspector")
@@ -325,6 +341,7 @@ mod tests {
         assert_eq!(failed.health, PluginHealth::Unavailable);
         assert_eq!(failed.failure.as_deref(), Some("capability conflict"));
         assert_eq!(failed.capabilities.len(), 1);
+        assert_eq!(failed.warnings, vec!["materialize failed".to_string()]);
     }
 
     #[test]
@@ -354,6 +371,7 @@ mod tests {
             failure_count: 0,
             capabilities: vec![capability("tool.beta")],
             failure: None,
+            warnings: Vec::new(),
             last_checked_at: None,
         }]);
 
@@ -367,7 +385,11 @@ mod tests {
     #[test]
     fn runtime_health_transitions_degrade_then_recover() {
         let registry = PluginRegistry::default();
-        registry.record_initialized(manifest("alpha"), vec![capability("tool.alpha")]);
+        registry.record_initialized(
+            manifest("alpha"),
+            vec![capability("tool.alpha")],
+            Vec::new(),
+        );
 
         registry.record_runtime_failure("alpha", "transport closed", Utc::now().to_rfc3339());
         let degraded = registry.get("alpha").expect("alpha should exist");

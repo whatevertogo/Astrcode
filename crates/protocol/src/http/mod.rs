@@ -6,6 +6,7 @@
 //! ## 子模块划分
 //!
 //! - `auth`: 认证相关 DTO（bootstrap token 交换 session token）
+//! - `composer`: 输入框候选列表 DTO
 //! - `config`: 配置查看、保存、连接测试相关 DTO
 //! - `event`: Agent 事件流 DTO，用于 SSE 实时推送和会话回放
 //! - `model`: 模型信息 DTO
@@ -14,6 +15,7 @@
 //! - `session_event`: 会话目录事件 DTO（创建/删除/分支通知）
 
 mod auth;
+mod composer;
 mod config;
 mod event;
 mod model;
@@ -22,6 +24,7 @@ mod session;
 mod session_event;
 
 pub use auth::{AuthExchangeRequest, AuthExchangeResponse};
+pub use composer::{ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto};
 pub use config::{
     ConfigView, ProfileView, SaveActiveSelectionRequest, TestConnectionRequest, TestResultDto,
 };

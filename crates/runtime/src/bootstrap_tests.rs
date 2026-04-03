@@ -29,6 +29,7 @@ use crate::runtime_surface_assembler::{
     PluginInitializer,
 };
 use crate::test_support::TestEnvGuard;
+use crate::{ComposerOptionKind, ComposerOptionsRequest};
 
 struct FakeInitializer {
     responses: HashMap<String, FakePluginResponse>,
@@ -53,8 +54,12 @@ impl PluginInitializer for FakeInitializer {
             FakePluginResponse::Loaded(loaded) => Ok(LoadedPlugin {
                 component: loaded.component.clone(),
                 capabilities: loaded.capabilities.clone(),
-                invokers: loaded.invokers.clone(),
-                prompt_declarations: loaded.prompt_declarations.clone(),
+                declared_skills: loaded.declared_skills.clone(),
+                contribution: crate::runtime_surface_assembler::RuntimeSurfaceContribution {
+                    capability_invokers: loaded.contribution.capability_invokers.clone(),
+                    prompt_declarations: loaded.contribution.prompt_declarations.clone(),
+                    skills: loaded.contribution.skills.clone(),
+                },
             }),
             FakePluginResponse::Failed(message) => {
                 Err(astrcode_core::AstrError::Internal(message.clone()))
@@ -173,8 +178,23 @@ fn loaded_plugin(
             shutdowns,
         }),
         capabilities,
-        invokers,
-        prompt_declarations: Vec::new(),
+        declared_skills: Vec::new(),
+        contribution: crate::runtime_surface_assembler::RuntimeSurfaceContribution {
+            capability_invokers: invokers,
+            prompt_declarations: Vec::new(),
+            skills: Vec::new(),
+        },
+    }
+}
+
+fn declared_skill(name: &str) -> astrcode_protocol::plugin::SkillDescriptor {
+    astrcode_protocol::plugin::SkillDescriptor {
+        name: name.to_string(),
+        description: format!("Use {name}"),
+        guide: format!("# {name}\nUse it."),
+        allowed_tools: vec!["shell".to_string()],
+        assets: vec![],
+        metadata: json!({}),
     }
 }
 
@@ -298,6 +318,42 @@ fn bootstrap_rejects_duplicate_plugin_capabilities_deterministically() {
     );
 }
 
+#[tokio::test]
+async fn bootstrap_integrates_plugin_declared_skills_into_runtime_catalog() {
+    let _guard = TestEnvGuard::new();
+    let shutdowns = Arc::new(Mutex::new(Vec::new()));
+    let mut plugin = loaded_plugin("alpha", &["tool.alpha"], shutdowns);
+    plugin.declared_skills = vec![declared_skill("repo-search")];
+    let initializer = FakeInitializer {
+        responses: HashMap::from([("alpha".to_string(), FakePluginResponse::Loaded(plugin))]),
+    };
+
+    let bootstrap = bootstrap_runtime_from_manifests(vec![manifest("alpha")], &initializer)
+        .await
+        .expect("bootstrap should succeed");
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let session = bootstrap
+        .service
+        .create_session(temp_dir.path())
+        .await
+        .expect("session should be created");
+
+    let items = bootstrap
+        .service
+        .list_composer_options(
+            &session.session_id,
+            ComposerOptionsRequest {
+                query: Some("repo".to_string()),
+                kinds: vec![ComposerOptionKind::Skill],
+                limit: 10,
+            },
+        )
+        .await
+        .expect("composer options should load");
+
+    assert!(items.iter().any(|item| item.id == "repo-search"));
+}
+
 #[test]
 fn bootstrap_marks_plugin_failed_when_descriptor_is_invalid() {
     let shutdowns = Arc::new(Mutex::new(Vec::new()));
@@ -311,11 +367,15 @@ fn bootstrap_marks_plugin_failed_when_descriptor_is_invalid() {
                     name: "alpha".to_string(),
                     shutdowns: Arc::clone(&shutdowns),
                 }),
-                invokers: vec![Arc::new(FakeCapabilityInvoker {
-                    descriptor: invalid.clone(),
-                }) as Arc<dyn CapabilityInvoker>],
-                capabilities: vec![invalid],
-                prompt_declarations: Vec::new(),
+                capabilities: vec![invalid.clone()],
+                declared_skills: Vec::new(),
+                contribution: crate::runtime_surface_assembler::RuntimeSurfaceContribution {
+                    capability_invokers: vec![Arc::new(FakeCapabilityInvoker {
+                        descriptor: invalid.clone(),
+                    }) as Arc<dyn CapabilityInvoker>],
+                    prompt_declarations: Vec::new(),
+                    skills: Vec::new(),
+                },
             }),
         )]),
     };

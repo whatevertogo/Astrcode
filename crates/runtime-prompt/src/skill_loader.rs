@@ -1,6 +1,8 @@
-//! Skill 加载与解析。
+//! Skill 文件系统加载与解析。
 //!
-//! 本模块负责从文件系统加载 skill 定义，支持多来源（builtin/user/project）。
+//! 本模块只负责本地目录扫描、`SKILL.md` 解析和资产枚举。
+//! Skill 来源的合并、优先级覆盖和运行时解析由 [`SkillCatalog`](crate::SkillCatalog)
+//! 统一负责，避免把 orchestration 逻辑散落在 loader 调用点。
 //!
 //! # Skill 目录结构
 //!
@@ -20,11 +22,9 @@
 //! 1. **索引阶段**：解析 `SKILL.md` 的 frontmatter，获取 name + description
 //! 2. **按需加载**：当模型调用 `Skill` tool 时，加载完整 guide 和 asset_files
 //!
-//! # 覆盖优先级
-//!
-//! 同名 skill 按以下顺序覆盖：Builtin < User < Project
 //! 用户可以在 `~/.astrcode/skills/` 或 `~/.claude/skills/` 中放置自定义 skill，
-//! 在项目 `.astrcode/skills/` 中放置项目特定 skill。
+//! 在项目 `.astrcode/skills/` 中放置项目特定 skill；这些层级的最终覆盖顺序
+//! 由 `SkillCatalog` 决定。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -189,6 +189,8 @@ pub fn load_skills_from_dir(dir: &Path, source: SkillSource) -> Vec<SkillSpec> {
 /// - `~/.astrcode/skills/`（Astrcode 专属 skill）
 ///
 /// 同名 skill 以 `.astrcode` 版本为准（后者覆盖前者）。
+/// 这里只处理“用户层内部”的目录合并；更高层的 project/plugin/builtin 优先级
+/// 统一交给 `SkillCatalog`。
 pub fn load_user_skills() -> Vec<SkillSpec> {
     let Some(home_dir) = resolve_user_home_dir() else {
         return Vec::new();
@@ -201,27 +203,18 @@ pub fn load_user_skills() -> Vec<SkillSpec> {
         SkillSource::User,
     );
 
-    merge_skill_layers(claude_skills, astrcode_skills)
+    crate::skill_catalog::merge_skill_layers(claude_skills, astrcode_skills)
 }
 
 /// 加载项目级 skill。
 ///
 /// 从 `<working_dir>/.astrcode/skills/` 加载。
-/// 项目 skill 优先级高于用户 skill 和 builtin skill。
+/// 该函数只返回项目层本身的 skill，不在这里和其他来源做优先级合并。
 pub fn load_project_skills(working_dir: &str) -> Vec<SkillSpec> {
     load_skills_from_dir(
         &PathBuf::from(working_dir).join(".astrcode").join("skills"),
         SkillSource::Project,
     )
-}
-
-/// 解析 prompt 组装所需的完整 skill 列表。
-///
-/// 合并 builtin skills（来自参数）、user skills 和 project skills，
-/// 后者覆盖前者（同名 skill 取最后加载的版本）。
-pub fn resolve_prompt_skills(base_skills: &[SkillSpec], working_dir: &str) -> Vec<SkillSpec> {
-    let with_user_skills = merge_skill_layers(base_skills.to_vec(), load_user_skills());
-    merge_skill_layers(with_user_skills, load_project_skills(working_dir))
 }
 
 /// 生成 skill 根目录的缓存标记。
@@ -289,22 +282,6 @@ fn resolve_user_home_dir() -> Option<PathBuf> {
             None
         }
     }
-}
-
-/// 合并两层 skill 列表，后者覆盖前者。
-///
-/// 同名 skill（按 `id` 匹配）以 `overrides` 中的版本为准。
-/// 这是实现 skill 覆盖优先级的核心逻辑。
-fn merge_skill_layers(mut base: Vec<SkillSpec>, overrides: Vec<SkillSpec>) -> Vec<SkillSpec> {
-    for skill in overrides {
-        if let Some(existing) = base.iter_mut().find(|candidate| candidate.id == skill.id) {
-            *existing = skill;
-        } else {
-            base.push(skill);
-        }
-    }
-
-    base
 }
 
 fn cache_marker_for_skill_root(root: &Path) -> String {
@@ -394,8 +371,6 @@ fn collect_files_recursive(root: &Path, base_dir: &Path, files: &mut Vec<String>
 mod tests {
     use std::fs;
 
-    use astrcode_core::test_support::TestEnvGuard;
-
     use super::*;
 
     fn write_skill(root: &Path, name: &str, content: &str) {
@@ -445,46 +420,5 @@ mod tests {
             ids,
             vec!["git-commit".to_string(), "repo-search".to_string()]
         );
-    }
-
-    #[test]
-    fn resolve_prompt_skills_applies_expected_precedence() {
-        let guard = TestEnvGuard::new();
-        let project = tempfile::tempdir().expect("tempdir should be created");
-
-        write_skill(
-            &guard.home_dir().join(".claude").join("skills"),
-            "shared",
-            "---\nname: shared\ndescription: Claude skill.\n---\nClaude guide",
-        );
-        write_skill(
-            &guard.home_dir().join(".astrcode").join("skills"),
-            "shared",
-            "---\nname: shared\ndescription: Astrcode skill.\n---\nAstrcode guide",
-        );
-        write_skill(
-            &project.path().join(".astrcode").join("skills"),
-            "shared",
-            "---\nname: shared\ndescription: Project skill.\n---\nProject guide",
-        );
-
-        let resolved = resolve_prompt_skills(
-            &[SkillSpec {
-                id: "shared".to_string(),
-                name: "shared".to_string(),
-                description: "builtin".to_string(),
-                guide: "Builtin guide".to_string(),
-                skill_root: None,
-                asset_files: Vec::new(),
-                allowed_tools: Vec::new(),
-                source: SkillSource::Builtin,
-            }],
-            &project.path().to_string_lossy(),
-        );
-
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].name, "shared");
-        assert_eq!(resolved[0].guide, "Project guide");
-        assert_eq!(resolved[0].source, SkillSource::Project);
     }
 }

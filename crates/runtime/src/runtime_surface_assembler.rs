@@ -30,23 +30,37 @@ use astrcode_core::{
     PluginRegistry,
 };
 use astrcode_plugin::{PluginLoader, Supervisor, SupervisorHealth};
-use astrcode_protocol::plugin::{PeerDescriptor, PeerRole};
+use astrcode_protocol::plugin::{PeerDescriptor, PeerRole, SkillDescriptor};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::Value;
 
 use crate::builtin_capabilities::built_in_capability_invokers;
-use crate::prompt::{PromptDeclaration, PromptDeclarationSource, SkillSpec};
+use crate::plugin_skill_materializer::materialize_plugin_skills;
+use crate::prompt::{
+    merge_skill_layers, PromptDeclaration, PromptDeclarationSource, SkillCatalog, SkillSpec,
+};
 
 /// 组装后的运行时能力面
 ///
-/// 包含所有成功注册的能力路由、prompt 声明、插件条目和需要管理的组件。
+/// 包含所有成功注册的能力路由、prompt 声明、插件条目、需要管理的组件和 base skills。
 pub(crate) struct AssembledRuntimeSurface {
     pub(crate) router: CapabilityRouter,
+    pub(crate) skill_catalog: Arc<SkillCatalog>,
     pub(crate) prompt_declarations: Vec<PromptDeclaration>,
     pub(crate) plugin_entries: Vec<PluginEntry>,
     pub(crate) managed_components: Vec<Arc<dyn ManagedRuntimeComponent>>,
     pub(crate) active_plugins: Vec<ActivePluginRuntime>,
+}
+
+/// 统一的 runtime surface 贡献模型。
+///
+/// capability、skill 和 prompt declaration 共享同一条装配管线，
+/// 但运行时仍保留它们不同的语义边界，不把 skill 伪装成普通 capability。
+pub(crate) struct RuntimeSurfaceContribution {
+    pub(crate) capability_invokers: Vec<Arc<dyn CapabilityInvoker>>,
+    pub(crate) prompt_declarations: Vec<PromptDeclaration>,
+    pub(crate) skills: Vec<SkillSpec>,
 }
 
 /// 活跃插件运行时
@@ -60,12 +74,12 @@ pub(crate) struct ActivePluginRuntime {
 
 /// 加载完成的插件
 ///
-/// 包含插件组件、能力描述符、调用器和 prompt 声明。
+/// 包含插件组件、能力描述符、调用器、prompt 声明和 skill 声明。
 pub(crate) struct LoadedPlugin {
     pub(crate) component: Arc<dyn ManagedPluginComponent>,
     pub(crate) capabilities: Vec<CapabilityDescriptor>,
-    pub(crate) invokers: Vec<Arc<dyn CapabilityInvoker>>,
-    pub(crate) prompt_declarations: Vec<PromptDeclaration>,
+    pub(crate) declared_skills: Vec<SkillDescriptor>,
+    pub(crate) contribution: RuntimeSurfaceContribution,
 }
 
 /// 插件健康状态报告
@@ -226,11 +240,15 @@ impl PluginInitializer for SupervisorPluginInitializer {
         Ok(LoadedPlugin {
             component: supervisor.clone(),
             capabilities: supervisor.core_capabilities(),
-            invokers: supervisor.capability_invokers(),
-            prompt_declarations: normalize_prompt_declarations(
-                &manifest.name,
-                &supervisor.remote_initialize().metadata,
-            ),
+            declared_skills: supervisor.declared_skills(),
+            contribution: RuntimeSurfaceContribution {
+                capability_invokers: supervisor.capability_invokers(),
+                prompt_declarations: normalize_prompt_declarations(
+                    &manifest.name,
+                    &supervisor.remote_initialize().metadata,
+                ),
+                skills: Vec::new(),
+            },
         })
     }
 }
@@ -264,7 +282,8 @@ pub(crate) async fn assemble_runtime_surface<I>(
 where
     I: PluginInitializer,
 {
-    let built_in_invokers = built_in_capability_invokers(builtin_skills)?;
+    let skill_catalog = Arc::new(SkillCatalog::new(builtin_skills.clone()));
+    let built_in_invokers = built_in_capability_invokers(Arc::clone(&skill_catalog))?;
     let mut registered_capability_names: HashSet<String> = built_in_invokers
         .iter()
         .map(|invoker| invoker.descriptor().name)
@@ -273,10 +292,12 @@ where
     for invoker in built_in_invokers {
         builder = builder.register_invoker(invoker);
     }
+    let mut base_skills = builtin_skills;
     let mut plugin_entries = BTreeMap::new();
     let mut prompt_declarations = Vec::new();
     let mut managed_components = Vec::new();
     let mut active_plugins = Vec::new();
+    let surface_materialization_id = Utc::now().timestamp_millis().to_string();
 
     let mut manifests = manifests;
     manifests.sort_by(|left, right| {
@@ -295,7 +316,7 @@ where
                 log::error!("failed to initialize plugin '{}': {}", manifest.name, error);
                 plugin_entries.insert(
                     manifest.name.clone(),
-                    make_failed_entry(manifest, Vec::new(), error.to_string()),
+                    make_failed_entry(manifest, Vec::new(), error.to_string(), Vec::new()),
                 );
                 continue;
             }
@@ -309,6 +330,7 @@ where
                     manifest.clone(),
                     loaded_plugin.capabilities.clone(),
                     failure,
+                    Vec::new(),
                 ),
             );
             if let Err(error) = loaded_plugin.component.shutdown_component().await {
@@ -335,6 +357,7 @@ where
                     manifest.clone(),
                     loaded_plugin.capabilities.clone(),
                     failure,
+                    Vec::new(),
                 ),
             );
             if let Err(error) = loaded_plugin.component.shutdown_component().await {
@@ -347,32 +370,61 @@ where
             continue;
         }
 
+        let available_tool_names = registered_capability_names
+            .iter()
+            .cloned()
+            .chain(
+                loaded_plugin
+                    .capabilities
+                    .iter()
+                    .map(|capability| capability.name.clone()),
+            )
+            .collect::<HashSet<_>>();
+        let materialized_skills = materialize_plugin_skills(
+            &manifest,
+            &surface_materialization_id,
+            &loaded_plugin.declared_skills,
+            &available_tool_names,
+        );
+        let plugin_warnings = materialized_skills.warnings.clone();
+        let mut loaded_plugin = loaded_plugin;
+        loaded_plugin.contribution.skills = materialized_skills.skills.clone();
+        base_skills = merge_skill_layers(base_skills, loaded_plugin.contribution.skills.clone());
+
         for capability in &loaded_plugin.capabilities {
             registered_capability_names.insert(capability.name.clone());
         }
-        for invoker in loaded_plugin.invokers {
+        for invoker in loaded_plugin.contribution.capability_invokers {
             builder = builder.register_invoker(Arc::new(GovernedPluginInvoker {
                 plugin_name: manifest.name.clone(),
                 inner: invoker,
                 plugin_registry: Arc::clone(&plugin_registry),
             }));
         }
-        prompt_declarations.extend(loaded_plugin.prompt_declarations.clone());
+        prompt_declarations.extend(loaded_plugin.contribution.prompt_declarations.clone());
         plugin_entries.insert(
             manifest.name.clone(),
-            make_initialized_entry(&manifest, loaded_plugin.capabilities.clone()),
+            make_initialized_entry(
+                &manifest,
+                loaded_plugin.capabilities.clone(),
+                plugin_warnings,
+            ),
         );
         log::info!("loaded plugin '{}'", manifest.name);
         managed_components
             .push(loaded_plugin.component.clone() as Arc<dyn ManagedRuntimeComponent>);
+        managed_components.extend(materialized_skills.managed_components);
         active_plugins.push(ActivePluginRuntime {
             name: manifest.name,
             component: loaded_plugin.component,
         });
     }
 
+    skill_catalog.replace_base_skills(base_skills.clone());
+
     Ok(AssembledRuntimeSurface {
         router: builder.build()?,
+        skill_catalog,
         prompt_declarations,
         plugin_entries: plugin_entries.into_values().collect(),
         managed_components,
@@ -410,6 +462,7 @@ fn make_discovered_entry(manifest: &PluginManifest) -> PluginEntry {
         failure_count: 0,
         capabilities: Vec::new(),
         failure: None,
+        warnings: Vec::new(),
         last_checked_at: None,
     }
 }
@@ -421,6 +474,7 @@ fn make_failed_entry(
     manifest: PluginManifest,
     capabilities: Vec<CapabilityDescriptor>,
     failure: String,
+    warnings: Vec<String>,
 ) -> PluginEntry {
     PluginEntry {
         manifest,
@@ -429,6 +483,7 @@ fn make_failed_entry(
         failure_count: 1,
         capabilities,
         failure: Some(failure),
+        warnings,
         last_checked_at: None,
     }
 }
@@ -439,6 +494,7 @@ fn make_failed_entry(
 fn make_initialized_entry(
     manifest: &PluginManifest,
     capabilities: Vec<CapabilityDescriptor>,
+    warnings: Vec<String>,
 ) -> PluginEntry {
     PluginEntry {
         manifest: manifest.clone(),
@@ -447,6 +503,7 @@ fn make_initialized_entry(
         failure_count: 0,
         capabilities,
         failure: None,
+        warnings,
         last_checked_at: None,
     }
 }

@@ -111,6 +111,7 @@ fn plugin_messages_roundtrip_as_v4_json() {
             capabilities: vec![sample_capability()],
             handlers: vec![],
             profiles: vec![],
+            skills: vec![],
             metadata: json!({}),
         })
         .expect("serialize initialize result"),
@@ -151,6 +152,7 @@ fn initialize_result_uses_result_kind_payload() {
             capabilities: vec![sample_capability()],
             handlers: vec![],
             profiles: vec![],
+            skills: vec![],
             metadata: json!({ "mode": "stdio" }),
         })
         .expect("serialize initialize result"),

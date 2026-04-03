@@ -24,8 +24,8 @@ mod tool_cycle;
 mod turn_runner;
 
 use astrcode_core::{
-    AllowAllPolicyEngine, AstrError, CancelToken, CapabilityRouter, PolicyContext, PolicyEngine,
-    Result, ToolContext,
+    AllowAllPolicyEngine, AstrError, CancelToken, CapabilityDescriptor, CapabilityRouter,
+    PolicyContext, PolicyEngine, Result, ToolContext,
 };
 use chrono::Utc;
 use std::path::PathBuf;
@@ -38,7 +38,7 @@ use crate::provider_factory::DynProviderFactory;
 use astrcode_core::AgentState;
 use astrcode_core::StorageEvent;
 
-use crate::prompt::{load_builtin_skills, PromptDeclaration, SkillSpec};
+use crate::prompt::{load_builtin_skills, PromptDeclaration, SkillCatalog};
 
 use astrcode_runtime_config::{
     max_tool_concurrency, DEFAULT_AUTO_COMPACT_ENABLED, DEFAULT_COMPACT_KEEP_RECENT_TURNS,
@@ -94,8 +94,11 @@ pub struct AgentLoop {
     prompt_capability_descriptors: Vec<astrcode_core::CapabilityDescriptor>,
     /// 归一化后的扩展 prompt 声明，包含自定义 prompt 模板
     prompt_declarations: Vec<PromptDeclaration>,
-    /// 当前运行时启用的高层 skill 指南
-    prompt_skills: Vec<SkillSpec>,
+    /// 当前运行时启用的统一 skill 目录。
+    ///
+    /// SkillCatalog 统一承载 builtin/plugin/mcp 的 base skills，并在运行时解析
+    /// user/project override；这样 AgentLoop、Skill tool 和 server 投影都能看到同一套 skill surface。
+    skill_catalog: Arc<SkillCatalog>,
     /// 单个 step 内允许并发执行的只读工具上限
     max_tool_concurrency: usize,
     /// 是否允许在 model step 前自动执行上下文压缩
@@ -118,7 +121,7 @@ impl AgentLoop {
             factory,
             capabilities,
             Vec::new(),
-            load_builtin_skills(),
+            Arc::new(SkillCatalog::new(load_builtin_skills())),
         )
     }
 
@@ -130,7 +133,7 @@ impl AgentLoop {
         factory: DynProviderFactory,
         capabilities: CapabilityRouter,
         prompt_declarations: Vec<PromptDeclaration>,
-        prompt_skills: Vec<SkillSpec>,
+        skill_catalog: Arc<SkillCatalog>,
     ) -> Self {
         let prompt_capability_descriptors = capabilities.descriptors();
         Self {
@@ -141,7 +144,7 @@ impl AgentLoop {
             prompt_composer: PromptComposer::with_defaults(),
             prompt_capability_descriptors,
             prompt_declarations,
-            prompt_skills,
+            skill_catalog,
             // 默认并行度统一从 runtime-config 读取，这样环境变量覆盖和
             // 直接构造 AgentLoop 的默认行为保持同一套来源。
             max_tool_concurrency: max_tool_concurrency(),
@@ -303,6 +306,19 @@ impl AgentLoop {
 
     pub(crate) fn compact_keep_recent_turns(&self) -> usize {
         self.compact_keep_recent_turns
+    }
+
+    /// 暴露当前 prompt 可见的 capability 描述符。
+    ///
+    /// 输入候选接口需要复用和 prompt 一致的 capability surface，
+    /// 这样前端看到的工具候选不会和模型真实可见的工具列表漂移。
+    pub(crate) fn capability_descriptors(&self) -> &[CapabilityDescriptor] {
+        &self.prompt_capability_descriptors
+    }
+
+    /// 暴露统一 skill 目录。
+    pub(crate) fn skill_catalog(&self) -> Arc<SkillCatalog> {
+        Arc::clone(&self.skill_catalog)
     }
 }
 

@@ -6,9 +6,9 @@
 
 use async_trait::async_trait;
 
+use crate::skill_loader::skill_roots_cache_marker;
 use crate::{
-    resolve_prompt_skills, skill_roots_cache_marker, BlockKind, BlockSpec, PromptContext,
-    PromptContribution, PromptContributor, SKILL_TOOL_NAME,
+    BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor, SKILL_TOOL_NAME,
 };
 
 pub struct SkillSummaryContributor;
@@ -40,7 +40,9 @@ impl PromptContributor for SkillSummaryContributor {
             return PromptContribution::default();
         }
 
-        let mut skills = resolve_prompt_skills(&ctx.skills, &ctx.working_dir);
+        // ctx.skills 已由 turn_runner 通过 SkillCatalog.resolve_for_working_dir 解析完毕，
+        // 此处直接使用，避免重复解析。
+        let mut skills = ctx.skills.clone();
         skills.sort_by(|left, right| left.id.cmp(&right.id));
         if skills.is_empty() {
             return PromptContribution::default();

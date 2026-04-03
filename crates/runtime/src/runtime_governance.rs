@@ -120,12 +120,11 @@ impl RuntimeGovernance {
             )));
         }
 
-        let builtin_skills = crate::prompt::load_builtin_skills();
         let assembled = assemble_runtime_surface(
             manifests,
             initializer,
             self.coordinator.plugin_registry(),
-            builtin_skills.clone(),
+            crate::prompt::load_builtin_skills(),
         )
         .await
         .map_err(ServiceError::Internal)?;
@@ -134,7 +133,7 @@ impl RuntimeGovernance {
             .replace_capabilities_with_prompt_inputs(
                 assembled.router,
                 assembled.prompt_declarations,
-                builtin_skills,
+                assembled.skill_catalog,
             )
             .await?;
         let previous_active_plugins = {

@@ -3,6 +3,7 @@
 //! 本模块定义所有 HTTP/SSE API 路由，按业务领域拆分为子模块：
 //!
 //! - **sessions**：会话 CRUD、提示提交、事件流（SSE）
+//! - **composer**：输入框候选列表
 //! - **config**：配置查看和活跃选择保存
 //! - **model**：模型列表、当前模型、连接测试
 //! - **runtime**：运行时状态、插件重载
@@ -13,6 +14,7 @@
 //! - Bootstrap 相关端点（`/__astrcode__/run-info`）在路由构建时直接挂载
 //! - 认证交换端点 `/api/auth/exchange` 在此模块定义，不走子模块
 
+pub(crate) mod composer;
 pub(crate) mod config;
 pub(crate) mod model;
 pub(crate) mod runtime;
@@ -44,6 +46,7 @@ use crate::{ApiError, AppState};
 /// - `GET /api/sessions` — 列出所有会话
 /// - `GET /api/session-events` — 订阅会话目录事件（SSE）
 /// - `GET /api/sessions/:id/messages` — 获取会话消息快照
+/// - `GET /api/sessions/:id/composer/options` — 获取输入框候选列表
 /// - `POST /api/sessions/:id/prompts` — 提交用户提示
 /// - `POST /api/sessions/:id/compact` — 压缩会话上下文
 /// - `POST /api/sessions/:id/interrupt` — 中断会话执行
@@ -75,6 +78,10 @@ pub(crate) fn build_api_router() -> Router<AppState> {
         .route(
             "/api/sessions/:id/messages",
             get(sessions::session_messages),
+        )
+        .route(
+            "/api/sessions/:id/composer/options",
+            get(composer::session_composer_options),
         )
         .route("/api/sessions/:id/prompts", post(sessions::submit_prompt))
         .route("/api/sessions/:id/compact", post(sessions::compact_session))

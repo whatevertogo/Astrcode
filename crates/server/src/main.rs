@@ -23,6 +23,8 @@ mod auth;
 mod auth_routes_tests;
 mod bootstrap;
 #[cfg(test)]
+mod composer_routes_tests;
+#[cfg(test)]
 mod e2e_tests;
 mod mapper;
 mod routes;

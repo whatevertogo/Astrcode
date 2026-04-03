@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 /// Skill 的来源。
 ///
 /// 用于追踪 skill 是从哪里加载的，影响覆盖优先级和诊断标签。
-/// 优先级顺序：Builtin < User < Project < Plugin < Mcp（后者覆盖前者）。
+/// 优先级顺序：Builtin < Mcp < Plugin < User < Project（后者覆盖前者）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillSource {

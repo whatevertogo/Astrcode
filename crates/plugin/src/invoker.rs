@@ -151,6 +151,14 @@ impl Supervisor {
     pub fn core_capabilities(&self) -> Vec<CapabilityDescriptor> {
         self.remote_initialize().capabilities.clone()
     }
+
+    /// 获取此插件声明的 skill 列表。
+    ///
+    /// 返回插件在握手阶段通过 `InitializeResultData.skills` 声明的 skill。
+    /// 调用方负责将这些声明转换为内部的 `SkillSpec`。
+    pub fn declared_skills(&self) -> Vec<astrcode_protocol::plugin::SkillDescriptor> {
+        self.remote_initialize().skills.clone()
+    }
 }
 
 /// 完成流式调用并收集结果。

@@ -23,7 +23,8 @@ use astrcode_core::{
     PluginState, SessionEventRecord, SessionMeta,
 };
 use astrcode_protocol::http::{
-    AgentEventEnvelope, AgentEventPayload, ConfigView, CurrentModelInfoDto, ModelOptionDto,
+    AgentEventEnvelope, AgentEventPayload, ComposerOptionDto, ComposerOptionKindDto,
+    ComposerOptionsResponseDto, ConfigView, CurrentModelInfoDto, ModelOptionDto,
     OperationMetricsDto, PhaseDto, PluginHealthDto, PluginRuntimeStateDto, ProfileView,
     ReplayMetricsDto, RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto,
     SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem, SessionMessageDto,
@@ -32,8 +33,9 @@ use astrcode_protocol::http::{
 use astrcode_runtime::RuntimeGovernanceSnapshot;
 use astrcode_runtime::{
     is_env_var_name, list_model_options as resolve_model_options, resolve_active_selection,
-    resolve_current_model as resolve_runtime_current_model, Config, OperationMetricsSnapshot,
-    ReplayMetricsSnapshot, RuntimeObservabilitySnapshot, SessionCatalogEvent, SessionMessage,
+    resolve_current_model as resolve_runtime_current_model, ComposerOption, ComposerOptionKind,
+    Config, OperationMetricsSnapshot, ReplayMetricsSnapshot, RuntimeObservabilitySnapshot,
+    SessionCatalogEvent, SessionMessage,
 };
 use axum::http::StatusCode;
 use axum::response::sse::Event;
@@ -265,6 +267,7 @@ fn to_runtime_plugin_dto(entry: PluginEntry) -> RuntimePluginDto {
         },
         failure_count: entry.failure_count,
         failure: entry.failure,
+        warnings: entry.warnings,
         last_checked_at: entry.last_checked_at,
         capabilities: entry
             .capabilities
@@ -500,6 +503,32 @@ pub(crate) fn list_model_options(config: &Config) -> Vec<ModelOptionDto> {
             provider_kind: option.provider_kind,
         })
         .collect()
+}
+
+/// 将 runtime 输入候选项映射为协议 DTO。
+///
+/// 保持 server 作为协议投影层，避免前端直接依赖 runtime crate 的内部枚举。
+pub(crate) fn to_composer_options_response(
+    items: Vec<ComposerOption>,
+) -> ComposerOptionsResponseDto {
+    ComposerOptionsResponseDto {
+        items: items.into_iter().map(to_composer_option_dto).collect(),
+    }
+}
+
+fn to_composer_option_dto(item: ComposerOption) -> ComposerOptionDto {
+    ComposerOptionDto {
+        kind: match item.kind {
+            ComposerOptionKind::Skill => ComposerOptionKindDto::Skill,
+            ComposerOptionKind::Capability => ComposerOptionKindDto::Capability,
+        },
+        id: item.id,
+        title: item.title,
+        description: item.description,
+        insert_text: item.insert_text,
+        badges: item.badges,
+        keywords: item.keywords,
+    }
 }
 
 fn config_selection_error(error: AstrError) -> ApiError {

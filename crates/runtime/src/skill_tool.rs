@@ -15,13 +15,14 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 use astrcode_core::{
     Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
     ToolExecutionResult, ToolPromptMetadata,
 };
 
-use crate::prompt::{normalize_skill_name, resolve_prompt_skills, SkillSpec, SKILL_TOOL_NAME};
+use crate::prompt::{normalize_skill_name, SkillCatalog, SkillSpec, SKILL_TOOL_NAME};
 
 /// Skill 工具的输入参数。
 ///
@@ -40,14 +41,17 @@ struct SkillToolInput {
 /// 允许 LLM 按需加载 Skill 的完整指令和资源路径，
 /// 避免将所有 Skill 内容都注入到每次 LLM 调用中。
 pub(crate) struct SkillTool {
-    /// 编译时打包的内置 Skill 列表
-    base_skills: Vec<SkillSpec>,
+    /// 统一 skill 目录。
+    ///
+    /// Skill tool 不自己缓存解析结果，而是每次基于当前 working dir 查询 catalog，
+    /// 这样 runtime surface 替换后不会残留旧 skill。
+    skill_catalog: Arc<SkillCatalog>,
 }
 
 impl SkillTool {
     /// 从给定的 Skill 列表创建 Skill 工具实例。
-    pub(crate) fn new(base_skills: Vec<SkillSpec>) -> Self {
-        Self { base_skills }
+    pub(crate) fn new(skill_catalog: Arc<SkillCatalog>) -> Self {
+        Self { skill_catalog }
     }
 }
 
@@ -101,7 +105,7 @@ impl Tool for SkillTool {
         };
 
         let working_dir = ctx.working_dir().to_string_lossy().into_owned();
-        let resolved_skills = resolve_prompt_skills(&self.base_skills, &working_dir);
+        let resolved_skills = self.skill_catalog.resolve_for_working_dir(&working_dir);
         let Some(skill) = resolved_skills
             .iter()
             .find(|skill| skill.matches_requested_name(&parsed_input.skill))
@@ -203,6 +207,7 @@ fn normalize_skill_path(path: &str) -> String {
 mod tests {
     use serde_json::json;
 
+    use astrcode_core::test_support::TestEnvGuard;
     use astrcode_core::{CancelToken, ToolContext};
 
     use super::*;
@@ -231,7 +236,8 @@ mod tests {
 
     #[tokio::test]
     async fn loads_and_expands_skill_content() {
-        let tool = SkillTool::new(vec![sample_skill()]);
+        let _guard = TestEnvGuard::new();
+        let tool = SkillTool::new(Arc::new(SkillCatalog::new(vec![sample_skill()])));
         let result = tool
             .execute(
                 "call-1".to_string(),
@@ -251,7 +257,8 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_unknown_skills() {
-        let tool = SkillTool::new(vec![sample_skill()]);
+        let _guard = TestEnvGuard::new();
+        let tool = SkillTool::new(Arc::new(SkillCatalog::new(vec![sample_skill()])));
         let result = tool
             .execute(
                 "call-1".to_string(),
@@ -266,5 +273,34 @@ mod tests {
             .error
             .as_deref()
             .is_some_and(|message| message.contains("unknown skill")));
+    }
+
+    #[tokio::test]
+    async fn reads_latest_skill_catalog_without_stale_cache() {
+        let _guard = TestEnvGuard::new();
+        let catalog = Arc::new(SkillCatalog::new(vec![sample_skill()]));
+        let tool = SkillTool::new(Arc::clone(&catalog));
+        catalog.replace_base_skills(vec![SkillSpec {
+            id: "repo-search".to_string(),
+            name: "repo-search".to_string(),
+            description: "Search the repo.".to_string(),
+            guide: "Use ripgrep.".to_string(),
+            skill_root: None,
+            asset_files: Vec::new(),
+            allowed_tools: Vec::new(),
+            source: SkillSource::Plugin,
+        }]);
+
+        let result = tool
+            .execute(
+                "call-2".to_string(),
+                json!({ "skill": "repo-search" }),
+                &tool_context(),
+            )
+            .await
+            .expect("skill tool should execute");
+
+        assert!(result.ok);
+        assert!(result.output.contains("Loaded skill: repo-search"));
     }
 }

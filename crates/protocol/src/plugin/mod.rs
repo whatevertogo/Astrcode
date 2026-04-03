@@ -19,6 +19,7 @@ mod descriptors;
 mod error;
 mod handshake;
 mod messages;
+mod skill_descriptor;
 #[cfg(test)]
 mod tests;
 
@@ -33,3 +34,4 @@ pub use handshake::{InitializeMessage, InitializeResultData, PROTOCOL_VERSION};
 pub use messages::{
     CancelMessage, EventMessage, EventPhase, InvokeMessage, PluginMessage, ResultMessage,
 };
+pub use skill_descriptor::{SkillAssetDescriptor, SkillDescriptor};

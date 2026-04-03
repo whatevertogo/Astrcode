@@ -159,3 +159,49 @@ impl From<StoreError> for ServiceError {
 }
 
 pub type ServiceResult<T> = std::result::Result<T, ServiceError>;
+
+/// 输入候选的语义类型。
+///
+/// 这里保持为 runtime 内部类型，server 再投影到 HTTP DTO，
+/// 这样 service 层不需要直接依赖 HTTP 传输细节。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ComposerOptionKind {
+    Skill,
+    Capability,
+}
+
+/// 输入候选查询参数。
+///
+/// `query` 和 `kinds` 都是可选的：前端可以先取默认推荐列表，
+/// 再在本地继续交互式缩小范围。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposerOptionsRequest {
+    pub query: Option<String>,
+    pub kinds: Vec<ComposerOptionKind>,
+    pub limit: usize,
+}
+
+impl Default for ComposerOptionsRequest {
+    fn default() -> Self {
+        Self {
+            query: None,
+            kinds: Vec::new(),
+            limit: 50,
+        }
+    }
+}
+
+/// 单个输入候选项。
+///
+/// `insert_text` 明确写入 service 结果里，是为了把“候选展示”和“选中后回填”
+/// 这两个动作绑定到同一份后端语义，而不是让前端自己猜。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposerOption {
+    pub kind: ComposerOptionKind,
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub insert_text: String,
+    pub badges: Vec<String>,
+    pub keywords: Vec<String>,
+}

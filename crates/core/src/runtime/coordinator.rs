@@ -365,6 +365,7 @@ mod tests {
                 failure_count: 0,
                 capabilities: vec![capability("tool.beta")],
                 failure: None,
+                warnings: Vec::new(),
                 last_checked_at: None,
             }],
             vec![capability("tool.beta")],

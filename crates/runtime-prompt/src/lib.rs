@@ -17,7 +17,7 @@
 //! - **Block**：prompt 的最小组成单元，带有语义分类（[`BlockKind`]）、优先级、条件、依赖等元数据
 //! - **Contributor**：独立的 prompt 内容提供者，如身份、环境、规则、工具指南等
 //! - **Composer**：管线编排器，负责收集、去重、拓扑排序、渲染和验证
-//! - **Skill**：可插拔的专业能力模块，通过 `SKILL.md` 定义，支持 builtin/user/project/plugin 多来源
+//! - **Skill**：可插拔的专业能力模块，通过 `SKILL.md` 定义，具体来源由 `SkillCatalog` 统一解析
 //!
 //! # 设计原则
 //!
@@ -36,6 +36,7 @@ pub mod contributors;
 pub mod diagnostics;
 pub mod plan;
 pub mod prompt_declaration;
+pub mod skill_catalog;
 pub mod skill_loader;
 pub mod skill_spec;
 pub mod template;
@@ -54,10 +55,10 @@ pub use prompt_declaration::{
     PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
     PromptDeclarationSource,
 };
+pub use skill_catalog::{merge_skill_layers, SkillCatalog};
 pub use skill_loader::{
     collect_asset_files, load_project_skills, load_user_skills, parse_skill_md,
-    resolve_prompt_skills, skill_roots_cache_marker, SkillFrontmatter, SKILL_FILE_NAME,
-    SKILL_TOOL_NAME,
+    skill_roots_cache_marker, SkillFrontmatter, SKILL_FILE_NAME, SKILL_TOOL_NAME,
 };
 pub use skill_spec::{is_valid_skill_name, normalize_skill_name, SkillSource, SkillSpec};
 pub use template::TemplateRenderError;

@@ -13,7 +13,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{CapabilityDescriptor, HandlerDescriptor, PeerDescriptor, ProfileDescriptor};
+use super::{
+    CapabilityDescriptor, HandlerDescriptor, PeerDescriptor, ProfileDescriptor, SkillDescriptor,
+};
 
 /// 插件协议版本号。
 ///
@@ -55,6 +57,12 @@ pub struct InitializeMessage {
 ///
 /// 结构与 `InitializeMessage` 类似，但不包含 `id` 和 `supported_protocol_versions`，
 /// 因为插件不需要发起新的握手流程。
+///
+/// ## Skill 声明
+///
+/// 插件可以通过 `skills` 字段声明自己提供的 skill。Host 将这些声明解析为
+/// `SkillSpec`（来源标记为 `Plugin`），并统一纳入 `SkillCatalog` 管理。
+/// Skill 资产文件会在初始化时被物化到 runtime 缓存目录。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeResultData {
@@ -71,6 +79,12 @@ pub struct InitializeResultData {
     /// 插件支持的 profile 列表
     #[serde(default)]
     pub profiles: Vec<ProfileDescriptor>,
+    /// 插件声明的 skill 列表。
+    ///
+    /// 这些 skill 会被 host 解析为 `SkillSpec`，来源标记为 `Plugin`。
+    /// Skill 资产文件会被物化到 runtime 缓存目录供运行时访问。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<SkillDescriptor>,
     /// 扩展元数据
     #[serde(default)]
     pub metadata: Value,

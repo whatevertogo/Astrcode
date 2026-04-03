@@ -15,7 +15,7 @@ use crate::config::{
     load_config, resolve_auto_compact_enabled, resolve_compact_keep_recent_turns,
     resolve_compact_threshold_percent, resolve_max_tool_concurrency, resolve_tool_result_max_bytes,
 };
-use crate::prompt::{PromptDeclaration, SkillSpec};
+use crate::prompt::{PromptDeclaration, SkillCatalog};
 use crate::provider_factory::ConfigFileProviderFactory;
 use astrcode_core::{
     AllowAllPolicyEngine, AstrError, CapabilityRouter, PolicyEngine, RuntimeHandle, SessionManager,
@@ -24,6 +24,7 @@ use astrcode_storage::session::FileSystemSessionRepository;
 
 #[cfg(test)]
 mod baselines;
+mod composer_ops;
 mod config_ops;
 mod observability;
 mod replay;
@@ -35,8 +36,9 @@ mod types;
 
 use self::session_state::SessionState;
 pub use self::types::{
-    PromptAccepted, ServiceError, ServiceResult, SessionCatalogEvent, SessionEventRecord,
-    SessionMessage, SessionReplay, SessionReplaySource,
+    ComposerOption, ComposerOptionKind, ComposerOptionsRequest, PromptAccepted, ServiceError,
+    ServiceResult, SessionCatalogEvent, SessionEventRecord, SessionMessage, SessionReplay,
+    SessionReplaySource,
 };
 use observability::RuntimeObservability;
 pub use observability::{
@@ -84,19 +86,19 @@ impl RuntimeService {
         Self::from_capabilities_with_prompt_inputs(
             capabilities,
             Vec::new(),
-            crate::prompt::load_builtin_skills(),
+            Arc::new(SkillCatalog::new(crate::prompt::load_builtin_skills())),
         )
     }
 
     pub fn from_capabilities_with_prompt_inputs(
         capabilities: CapabilityRouter,
         prompt_declarations: Vec<PromptDeclaration>,
-        prompt_skills: Vec<SkillSpec>,
+        skill_catalog: Arc<SkillCatalog>,
     ) -> ServiceResult<Self> {
         Self::from_runtime_services(
             capabilities,
             prompt_declarations,
-            prompt_skills,
+            skill_catalog,
             Arc::new(AllowAllPolicyEngine),
             Arc::new(DefaultApprovalBroker),
             Arc::new(FileSystemSessionRepository),
@@ -106,7 +108,7 @@ impl RuntimeService {
     pub fn from_runtime_services(
         capabilities: CapabilityRouter,
         prompt_declarations: Vec<PromptDeclaration>,
-        prompt_skills: Vec<SkillSpec>,
+        skill_catalog: Arc<SkillCatalog>,
         policy: Arc<dyn PolicyEngine>,
         approval: Arc<dyn ApprovalBroker>,
         session_manager: Arc<dyn SessionManager>,
@@ -117,7 +119,7 @@ impl RuntimeService {
             Arc::new(ConfigFileProviderFactory),
             capabilities,
             prompt_declarations,
-            prompt_skills,
+            skill_catalog,
         )
         .with_max_tool_concurrency(max_tool_concurrency)
         .with_auto_compact_enabled(resolve_auto_compact_enabled(&config.runtime))
@@ -149,7 +151,7 @@ impl RuntimeService {
         &self,
         capabilities: CapabilityRouter,
         prompt_declarations: Vec<PromptDeclaration>,
-        prompt_skills: Vec<SkillSpec>,
+        skill_catalog: Arc<SkillCatalog>,
     ) -> ServiceResult<()> {
         let runtime_config = {
             let config = self.config.lock().await;
@@ -161,7 +163,7 @@ impl RuntimeService {
                 Arc::new(ConfigFileProviderFactory),
                 capabilities,
                 prompt_declarations,
-                prompt_skills,
+                skill_catalog,
             )
             .with_max_tool_concurrency(max_tool_concurrency)
             .with_auto_compact_enabled(resolve_auto_compact_enabled(&runtime_config))

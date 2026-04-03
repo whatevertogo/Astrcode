@@ -81,7 +81,7 @@ where
         RuntimeService::from_capabilities_with_prompt_inputs(
             assembled.router,
             assembled.prompt_declarations,
-            builtin_skills,
+            assembled.skill_catalog,
         )
         .map_err(service_error_to_astr)?,
     );

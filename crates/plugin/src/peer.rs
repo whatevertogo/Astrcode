@@ -512,6 +512,7 @@ impl PeerInner {
                 capabilities,
                 handlers,
                 profiles,
+                skills: vec![],
                 metadata,
             };
             *self.remote_initialize.lock().await = Some(negotiated.clone());
@@ -778,6 +779,7 @@ impl PeerInner {
             capabilities: self.local_initialize.capabilities.clone(),
             handlers: self.local_initialize.handlers.clone(),
             profiles: self.local_initialize.profiles.clone(),
+            skills: vec![],
             metadata: self.local_initialize.metadata.clone(),
         }
     }

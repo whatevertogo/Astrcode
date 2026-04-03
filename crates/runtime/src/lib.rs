@@ -21,6 +21,7 @@ mod bootstrap_tests;
 mod builtin_capabilities;
 mod context_window;
 mod plugin_discovery;
+mod plugin_skill_materializer;
 mod provider_factory;
 mod runtime_governance;
 mod runtime_surface_assembler;
@@ -45,7 +46,8 @@ pub use astrcode_runtime_prompt as prompt;
 pub use bootstrap::{bootstrap_runtime, RuntimeBootstrap};
 pub use runtime_governance::{RuntimeGovernance, RuntimeGovernanceSnapshot, RuntimeReloadResult};
 pub use service::{
-    OperationMetricsSnapshot, PromptAccepted, ReplayMetricsSnapshot, ReplayPath,
-    RuntimeObservabilitySnapshot, RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent,
-    SessionEventRecord, SessionMessage, SessionReplay, SessionReplaySource,
+    ComposerOption, ComposerOptionKind, ComposerOptionsRequest, OperationMetricsSnapshot,
+    PromptAccepted, ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot,
+    RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent, SessionEventRecord,
+    SessionMessage, SessionReplay, SessionReplaySource,
 };
