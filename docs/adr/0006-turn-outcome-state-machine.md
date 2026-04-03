@@ -88,9 +88,9 @@ AgentLoop（单次 turn 执行器）
 
 截至 2026-04-03，已全部落地：
 
-- `TurnOutcome` 枚举: `crates/runtime/src/agent_loop.rs` (line 36-44)
-- `run_turn()` 返回 `Result<TurnOutcome>`: `crates/runtime/src/agent_loop.rs` (line 191-199)
-- `max_steps` 已完全移除: 无 `max_steps` 字段、无 `with_max_steps()` 方法、无 `reached_max_steps()` 函数
+- `TurnOutcome` 枚举: `crates/runtime-agent-loop/src/agent_loop.rs`
+- `run_turn()` 返回 `Result<TurnOutcome>`: `crates/runtime-agent-loop/src/agent_loop.rs`
+- `max_steps` 已完全移除
 - `TurnDone.reason` 字段: `crates/core/src/event/types.rs` — `reason: Option<String>` 带 `#[serde(default)]` 向后兼容
-- `finish_turn` / `finish_with_error` / `finish_interrupted`: `crates/runtime/src/agent_loop.rs` (line 262-301)
+- `finish_turn` / `finish_with_error` / `finish_interrupted`: `crates/runtime-agent-loop/src/agent_loop.rs`
 - ADR-0006 实施提交: d690778

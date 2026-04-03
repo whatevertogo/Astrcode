@@ -65,7 +65,7 @@ tools (内置工具)    runtime-config (配置)    runtime-llm (LLM)    runtime-
 | `runtime-agent-loop` | `crates/runtime-agent-loop/src/lib.rs` | `AgentLoop`, `TurnOutcome`, prompt/context/compaction/assembler 四层运行时 |
 | `runtime-config` | `crates/runtime-config/src/` | 配置模型与加载/校验/env 解析 |
 | `runtime-llm` | `crates/runtime-llm/src/` | LLM 提供者抽象，OpenAI-compatible/Anthropic 适配 |
-| `runtime-prompt` | `crates/runtime-prompt/src/` | Prompt Contributor 模式、`PromptComposer`、`LayeredPromptBuilder` |
+| `runtime-prompt` | `crates/runtime-prompt/src/` | Prompt Contributor 模式、`PromptComposer` |
 | `runtime-skill-loader` | `crates/runtime-skill-loader/src/` | Skill 资源发现、解析、目录扫描、`SkillCatalog` |
 | `storage` | `crates/storage/src/session/` | JSONL 会话持久化（`FileSystemSessionRepository`） |
 | `tools` | `crates/tools/src/tools/` | 内置工具(7个)：`readFile`, `writeFile`, `editFile`, `listDir`, `findFiles`, `grep`, `shell` |
@@ -92,6 +92,7 @@ tools (内置工具)    runtime-config (配置)    runtime-llm (LLM)    runtime-
 - `baselines.rs` — Session 基线快照
 - `support.rs` — 辅助/诊断工具
 - `observability.rs` — 运行时指标快照
+- `types.rs` — 服务类型定义 (`ServiceError`, `PromptAccepted`, `SessionReplay`, `SessionCatalogEvent`, `ComposerOption`)
 
 **AgentLoop 内部子模块** (`crates/runtime-agent-loop/src/`):
 
@@ -128,11 +129,11 @@ tools (内置工具)    runtime-config (配置)    runtime-llm (LLM)    runtime-
 **Server 路由** (`crates/server/src/routes/`):
 | 路由模块 | 端点 | 职责 |
 |---------|------|------|
-| `sessions.rs` | `POST /api/sessions`, `GET /api/sessions`, `DELETE /api/sessions/:id`, `POST /api/sessions/:id/prompts`, `GET /api/sessions/:id/messages`, `GET /api/sessions/:id/events`, `POST /api/sessions/:id/interrupt`, `POST /api/sessions/:id/compact`, `DELETE /api/projects` | 会话 CRUD、turn 执行、SSE 事件流 |
+| `sessions.rs` | `POST /api/sessions`, `GET /api/sessions`, `DELETE /api/sessions/:id`, `POST /api/sessions/:id/prompts`, `GET /api/sessions/:id/messages`, `GET /api/sessions/:id/events`, `POST /api/sessions/:id/interrupt`, `POST /api/sessions/:id/compact`, `DELETE /api/projects`, `GET /api/session-events` | 会话 CRUD、turn 执行、SSE 事件流 |
 | `config.rs` | `GET /api/config`, `POST /api/config/active-selection` | 配置查询/更新 |
 | `model.rs` | `GET /api/models`, `GET /api/models/current`, `POST /api/models/test` | 模型列表/连接测试/当前模型 |
 | `runtime.rs` | `GET /api/runtime/plugins`, `POST /api/runtime/plugins/reload` | 运行时插件状态/重载 |
-| (catalog) | `GET /api/session-events` | 全局会话目录 SSE（创建/删除/分支） |
+| `composer.rs` | `GET /api/composer/options` | Prompt composer 选项查询 |
 
 **Server 认证** (`crates/server/src/auth.rs` + `bootstrap.rs`):
 - `BootstrapAuth` — 短期 bootstrap token (24h TTL), 常量时间比较

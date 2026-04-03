@@ -1,7 +1,7 @@
 # AgentLoop 连进路线图
 
 > 最后更新：2026-04-03
-> 范围：`crates/runtime-agent-loop/src/agent_loop` 及相关模块
+> 范围：`crates/runtime-agent-loop/` 及相关模块
 
 本文档定义 5 个演进阶段 + 1 个远期占位，每个阶段独立可交付、有明确验收标准.
 
@@ -11,6 +11,7 @@
 
 **实现位置**:
 - `crates/runtime-agent-loop/src/agent_loop.rs` — `TurnOutcome` 枚举 (Completed/Cancelled/Error)
+- `crates/runtime-agent-loop/src/agent_loop.rs` — `run_turn()` 返回 `Result<TurnOutcome>`
 - `StorageEvent::TurnDone.reason` 字段 (`"completed" | "cancelled" | "error"`)
 - `finish_turn` / `finish_with_error` / `finish_interrupted` 统一返回 `Result<TurnOutcome>`
 

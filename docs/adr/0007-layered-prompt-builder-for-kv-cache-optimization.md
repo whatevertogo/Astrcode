@@ -1,3 +1,22 @@
+# ADR-0007: 分层 Prompt 构建器（设计决策）
+
+**状态**: 设计完成，代码已实现 (`crates/runtime-prompt/src/layered_builder.rs`)，**未投入生产使用**
+
+## 当前状态
+
+`LayeredPromptBuilder` 已在 `runtime-prompt` crate 中实现，但**未被 `agent_loop` 或 `PromptComposer` 调用**。  
+当前生产代码使用 `PromptComposer` 完成 prompt 组装（贡献者级缓存）。
+
+`LayeredPromptBuilder` 的 `build()` 方法存在 TODO：`system_blocks` 为空（全量 block 渲染、模板、条件分支、依赖解析尚未完成），目前仅收集 `extra_tools`。
+
+## 建议
+
+- **保留设计文档**：KV cache 优化思路值得参考
+- **标记实现状态**：代码中标注 `#[allow(dead_code)]` 或添加 `TODO` 注释
+- **后续激活**：如果需要此优化，需要在 `prompt_runtime` 中接入 `LayeredPromptBuilder` 替换 `PromptComposer`
+
+---
+
 # 分层 Prompt 构建器使用指南
 
 ## 问题背景
@@ -116,11 +135,12 @@ let builder = LayeredPromptBuilder::with_options(options);
 | 特性 | PromptComposer | LayeredPromptBuilder |
 |------|----------------|----------------------|
 | 缓存粒度 | Contributor 级别 | 层级别 |
-| KV 缓存友好性 | 一般（全量重建） | 优秀（前缀稳定） |
-| 适用场景 | 简单场景、测试 | 生产环境、高频调用 |
+| KV 缓存友好性 | 一般（全量重建） | 理论优秀（前缀稳定） |
+| 适用场景 | 生产环境 | 设计阶段（未接入） |
 | 复杂度 | 低 | 中 |
+| 实现状态 | ✅ 生产使用 | ⚠️ 未接入 |
 
-未来可以将 `PromptComposer` 的内部逻辑迁移到 `LayeredPromptBuilder`，统一为分层架构。
+> **注意**：当前运行时使用 `PromptComposer`，`LayeredPromptBuilder` 未启用。
 
 ## 下一步优化建议
 

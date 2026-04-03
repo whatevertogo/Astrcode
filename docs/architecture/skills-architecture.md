@@ -8,8 +8,8 @@ AstrCode 的 skill 系统采用 Claude 风格的两阶段模型：
 2. 当模型命中某个 skill 时，再调用内置 `Skill` tool 按需加载正文
 
 三个职责彻底拆开：
-- `runtime-prompt` 负责发现和列出 skills
-- `runtime` 负责执行 `Skill` tool、展开正文、注入运行时变量
+- `runtime-skill-loader` 负责发现、解析和列出 skills
+- `runtime` 负责执行 `Skill` tool、注入运行时变量
 - `SKILL.md` 只负责描述"什么时候用"和"具体怎么做"
 
 ---
@@ -74,15 +74,12 @@ description: Use this skill when the user asks...   # 触发入口
 
 Built-in skill 由 build script 自动扫描目录，不再手写常量清单：
 
-- **扫描脚本**: `crates/runtime/build.rs` — 编译期扫描 `crates/runtime/src/builtin_skills/*/`
+- **扫描脚本**: `crates/runtime-skill-loader/build.rs` — 编译期扫描 `crates/runtime-skill-loader/src/builtin_skills/*/`
 - **产物**: `OUT_DIR/bundled_skills.generated.rs`（由 `include_str!` 打包所有资产）
-- **运行时落盘**: `~/.astrcode/runtime/builtin-skills/<skill-name>/`（`materialize_builtin_skill_assets` 在首次启动时释放到磁盘）
-- **scripts/** 目录真正落盘为文件，shell 可直接执行
+- **运行时落盘**: `~/.astrcode/runtime/builtin-skills/<skill-name>/`
 
 当前内置 skill:
-- `git-commit` (`crates/runtime/src/builtin_skills/git-commit/`, 含 `SKILL.md` + `scripts/`)
-
-**`git-commit` skill 允许的工具**: `shell`, `readFile`, `grep`, `findFiles`, `listDir`（定义于 `bundled_skill_allowed_tools`）。
+- `git-commit` (`crates/runtime-skill-loader/src/builtin_skills/git-commit/`, 含 `SKILL.md`)
 
 ---
 
@@ -90,14 +87,11 @@ Built-in skill 由 build script 自动扫描目录，不再手写常量清单：
 
 ```
 bootstrap_runtime()
-  → builtin_skills() [crates/runtime/src/builtin_skills/mod.rs]
+  → builtin_skills() [crates/runtime-skill-loader/src/builtin_skills/]
     → 读取编译期打包的 BUNDLED_SKILLS
     → parse_skill_md() → SkillSpec
-    → bundled_skill_allowed_tools() → 注入 allowed_tools
-    → materialize_builtin_skill_assets() → ~/.astrcode/runtime/builtin-skills/<id>/
-  → resolve_prompt_skills(base, working_dir)
-    → base (builtin) + user (~/.claude/skills + ~/.astrcode/skills) + project (<wd>/.astrcode/skills)
-  → SkillTool 注册到 CapabilityRouter
+    → SkillTool 注册到 CapabilityRouter
+```
 ```
 
 **Skill 优先级**（`resolve_prompt_skills`）：project > user > builtin（同名覆盖）。
@@ -118,8 +112,8 @@ bootstrap_runtime()
 |------------|------|
 | `SkillSummaryContributor` | 产出 skill 索引（name + description），仅当工具列表含 `Skill` 时激活 |
 | `WorkflowExamplesContributor` | few-shot 行为约束（首步示例） |
-| `IdentityContributor` | 助手身份声明（加载 `~/.astrcode/IDENTITY.md`） |
-| `AgentsMdContributor` | `AGENTS.md` 加载（根目录 + 子目录逐层查找） |
+| `IdentityContributor` | 助手身份声明 |
+| `AgentsMdContributor` | `AGENTS.md` 加载 |
 | `EnvironmentContributor` | 环境上下文（OS、shell、cwd） |
 | `CapabilityPromptContributor` | 工具描述注入（从 `CapabilityDescriptor` 提取） |
 
@@ -171,11 +165,11 @@ pub struct SkillSpec {
 
 | 文件 | 职责 |
 |------|------|
-| `crates/runtime-prompt/src/skill_loader.rs` | 目录扫描、`parse_skill_md`、`collect_asset_files`、`load_user_skills`、`load_project_skills`、`resolve_prompt_skills` |
-| `crates/runtime-prompt/src/skill_spec.rs` | `SkillSpec`, `SkillSource`, `is_valid_skill_name`, `normalize_skill_name` |
+| `crates/runtime-skill-loader/src/skill_loader.rs` | 目录扫描、`parse_skill_md`、`collect_asset_files` |
+| `crates/runtime-skill-loader/src/skill_spec.rs` | `SkillSpec`, `SkillSource` |
+| `crates/runtime-skill-loader/src/skill_catalog.rs` | `SkillCatalog` |
 | `crates/runtime-prompt/src/contributors/skill_summary.rs` | Skill 索引 contributor |
 | `crates/runtime/src/skill_tool.rs` | `Skill` tool 实现（`Tool` trait） |
 | `crates/runtime/src/builtin_capabilities.rs` | Capability 装配 (含 Skill) |
-| `crates/runtime/src/builtin_skills/` | Builtin skill 目录 (`git-commit/`) |
-| `crates/runtime/build.rs` | 编译期自动扫描 builtin skills, 生成 `bundled_skills.generated.rs` |
-| `crates/runtime/src/builtin_skills/mod.rs` | 运行时加载 builtin skills（`include!` 生成文件 + 资源落盘） |
+| `crates/runtime-skill-loader/src/builtin_skills/` | Builtin skill 目录 (`git-commit/`) |
+| `crates/runtime-skill-loader/build.rs` | 编译期自动扫描 builtin skills, 生成 `bundled_skills.generated.rs` |
