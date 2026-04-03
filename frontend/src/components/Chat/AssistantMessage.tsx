@@ -6,6 +6,7 @@ import styles from './AssistantMessage.module.css';
 
 interface AssistantMessageProps {
   message: AssistantMessageType;
+  hideAvatar?: boolean;
 }
 
 interface MarkdownGuardProps {
@@ -152,7 +153,7 @@ const markdownComponents: Partial<import('react-markdown').Components> = {
   code: CodeBlockRenderer as any,
 };
 
-function AssistantMessage({ message }: AssistantMessageProps) {
+function AssistantMessage({ message, hideAvatar }: AssistantMessageProps) {
   const { visibleText, thinkingBlocks } = React.useMemo(
     () => extractThinkingBlocks(message.text, message.reasoningText),
     [message.text, message.reasoningText]
@@ -160,7 +161,11 @@ function AssistantMessage({ message }: AssistantMessageProps) {
 
   return (
     <div className={styles.wrapper}>
-      <div className={styles.avatar} aria-hidden="true">
+      <div
+        className={styles.avatar}
+        aria-hidden="true"
+        style={{ opacity: hideAvatar ? 0 : 1, visibility: hideAvatar ? 'hidden' : 'visible' }}
+      >
         <svg viewBox="0 0 20 20">
           <rect
             x="3.25"

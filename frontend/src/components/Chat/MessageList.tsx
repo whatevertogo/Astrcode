@@ -99,7 +99,14 @@ export default function MessageList({ messages }: MessageListProps) {
   return (
     <div ref={listRef} className={styles.list} onScroll={updateStickiness}>
       {messages.length === 0 && <div className={styles.empty}>向 AstrCode 提问，开始对话...</div>}
-      {messages.map((msg) => {
+      {messages.map((msg, index) => {
+        const isContinuation =
+          index > 0 &&
+          (msg.kind === 'assistant' || msg.kind === 'toolCall') &&
+          (messages[index - 1].kind === 'assistant' || messages[index - 1].kind === 'toolCall');
+
+        const rowClass = `${styles.messageRow} ${isContinuation ? styles.messageRowContinuation : ''}`;
+
         if (msg.kind === 'user') {
           return (
             <div key={msg.id} className={styles.messageRow}>
@@ -111,16 +118,16 @@ export default function MessageList({ messages }: MessageListProps) {
         }
         if (msg.kind === 'assistant') {
           return (
-            <div key={msg.id} className={styles.messageRow}>
+            <div key={msg.id} className={rowClass}>
               <MessageBoundary message={msg}>
-                <AssistantMessage message={msg} />
+                <AssistantMessage message={msg} hideAvatar={isContinuation} />
               </MessageBoundary>
             </div>
           );
         }
         if (msg.kind === 'toolCall') {
           return (
-            <div key={msg.id} className={styles.messageRow}>
+            <div key={msg.id} className={rowClass}>
               <MessageBoundary message={msg}>
                 <ToolCallBlock message={msg} />
               </MessageBoundary>

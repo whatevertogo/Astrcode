@@ -81,9 +81,23 @@
 
 .callId,
 .duration,
-.toggleLabel,
-.chevron {
+.toggleLabel {
   display: none;
+}
+
+.chevron {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  transition: transform 150ms ease;
+  opacity: 0.6;
+}
+
+.chevronExpanded {
+  transform: rotate(90deg);
 }
 
 .body {

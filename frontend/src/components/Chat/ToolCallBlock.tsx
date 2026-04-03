@@ -114,7 +114,20 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
           <span className={styles.headerMeta}>
             {duration && <span className={styles.duration}>{duration}</span>}
             <span className={styles.toggleLabel}>{expanded ? '收起详情' : '展开详情'}</span>
-            <span className={styles.chevron}>{expanded ? '⌃' : '⌄'}</span>
+            <span className={`${styles.chevron} ${expanded ? styles.chevronExpanded : ''}`}>
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <polyline points="9 18 15 12 9 6"></polyline>
+              </svg>
+            </span>
           </span>
         </button>
 
