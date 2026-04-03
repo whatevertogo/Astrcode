@@ -14,6 +14,8 @@ interface ChatProps {
   project: Project | null;
   session: Session | null;
   phase: Phase;
+  isSidebarOpen: boolean;
+  toggleSidebar: () => void;
   onNewSession: () => void;
   onSubmitPrompt: (text: string) => void | Promise<void>;
   onInterrupt: () => void | Promise<void>;
@@ -32,6 +34,8 @@ export default function Chat({
   project,
   session,
   phase,
+  isSidebarOpen,
+  toggleSidebar,
   onNewSession,
   onSubmitPrompt,
   onInterrupt,
@@ -46,6 +50,8 @@ export default function Chat({
       <TopBar
         projectName={project?.name ?? null}
         sessionTitle={session?.title ?? null}
+        isSidebarOpen={isSidebarOpen}
+        toggleSidebar={toggleSidebar}
         onNewSession={onNewSession}
         modelRefreshKey={modelRefreshKey}
         getCurrentModel={getCurrentModel}

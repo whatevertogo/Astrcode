@@ -1,5 +1,32 @@
-import React, { useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { ComposerOption, Phase } from '../../types';
+import SkillSelector from './SkillSelector';
+
+/**
+ * 检测当前光标位置是否处于 '/' 触发上下文。
+ * 返回 '/' 之后的查询字符串；如果不在 '/' 触发状态则返回 undefined。
+ */
+function getSlashQuery(value: string, cursorPos: number): string | undefined {
+  // 查找光标之前最近的 '/'
+  // '/' 必须是行首或者前面是空格/换行才触发（避免在 URL 中间误触发）
+  for (let i = cursorPos - 1; i >= 0; i--) {
+    const ch = value[i];
+    if (ch === ' ' || ch === '\n' || i === 0) {
+      // 检查下一个字符是否为 '/'
+      const slashIndex = ch === '/' ? i : i + 1;
+      if (slashIndex < cursorPos && value[slashIndex] === '/') {
+        // 提取 '/' 之后到光标位置的文本作为 query
+        const query = value.slice(slashIndex + 1, cursorPos);
+        // 如果 query 中包含空格或换行，则不在 '/' 命令上下文中
+        if (/[\s\n]/.test(query)) return undefined;
+        return query;
+      }
+      return undefined; // 前面没有找到 '/'
+    }
+    if (ch === '\n') break;
+  }
+  return undefined;
+}
 
 interface InputBarProps {
   workingDir: string;

@@ -30,6 +30,8 @@ export default function App() {
   const {
     sidebarWidth,
     isResizingSidebar,
+    isSidebarOpen,
+    toggleSidebar,
     minSidebarWidth,
     maxSidebarWidth,
     handleSidebarResizeStart,
@@ -361,60 +363,68 @@ export default function App() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--app-bg)] text-[var(--text-primary)]">
-      <div className="flex-none min-w-0" style={{ width: `${sidebarWidth}px` }}>
-        <Sidebar
-          projects={state.projects}
-          activeSessionId={state.activeSessionId}
+      {isSidebarOpen && (
+        <>
+          <div className="flex-none min-w-0" style={{ width: `${sidebarWidth}px` }}>
+            <Sidebar
+              projects={state.projects}
+              activeSessionId={state.activeSessionId}
+              phase={state.phase}
+              canSelectDirectory={hostBridge.canSelectDirectory}
+              defaultWorkingDir={activeProject?.workingDir}
+              onSelectDirectory={selectDirectory}
+              onSetActive={(projectId, sessionId) => {
+                void handleSetActive(projectId, sessionId);
+              }}
+              onToggleExpand={handleToggleExpand}
+              onNewProject={(workingDir) => {
+                void handleNewProject(workingDir);
+              }}
+              onDeleteProject={(projectId) => {
+                void handleDeleteProject(projectId);
+              }}
+              onDeleteSession={(projectId, sessionId) => {
+                void handleDeleteSession(projectId, sessionId);
+              }}
+              onOpenSettings={() => setShowSettings(true)}
+            />
+          </div>
+          <div
+            className={cn(
+              'relative w-[10px] flex-none cursor-col-resize bg-transparent outline-none before:absolute before:inset-y-0 before:left-1/2 before:w-[1px] before:-translate-x-1/2 before:bg-[var(--border)] hover:before:w-[2px] hover:before:bg-[var(--border-strong)] focus-visible:before:w-[2px] focus-visible:before:bg-[var(--border-strong)] before:transition-all before:duration-150 before:ease-out',
+              isResizingSidebar && 'before:w-[2px] before:bg-[var(--border-strong)]'
+            )}
+            role="separator"
+            aria-label="调整侧边栏宽度"
+            aria-orientation="vertical"
+            aria-valuemin={minSidebarWidth}
+            aria-valuemax={maxSidebarWidth}
+            aria-valuenow={sidebarWidth}
+            tabIndex={0}
+            onPointerDown={handleSidebarResizeStart}
+            onKeyDown={handleSidebarResizeKeyDown}
+          />
+        </>
+      )}
+      <div className="flex-1 min-w-0 relative flex flex-col">
+        <Chat
+          project={activeProject}
+          session={activeSession}
+          isSidebarOpen={isSidebarOpen}
+          toggleSidebar={toggleSidebar}
           phase={state.phase}
-          canSelectDirectory={hostBridge.canSelectDirectory}
-          defaultWorkingDir={activeProject?.workingDir}
-          onSelectDirectory={selectDirectory}
-          onSetActive={(projectId, sessionId) => {
-            void handleSetActive(projectId, sessionId);
+          onNewSession={() => {
+            void handleNewSession();
           }}
-          onToggleExpand={handleToggleExpand}
-          onNewProject={(workingDir) => {
-            void handleNewProject(workingDir);
-          }}
-          onDeleteProject={(projectId) => {
-            void handleDeleteProject(projectId);
-          }}
-          onDeleteSession={(projectId, sessionId) => {
-            void handleDeleteSession(projectId, sessionId);
-          }}
-          onOpenSettings={() => setShowSettings(true)}
+          onSubmitPrompt={handleSubmit}
+          onInterrupt={handleInterrupt}
+          listComposerOptions={listComposerOptions}
+          modelRefreshKey={modelRefreshKey}
+          getCurrentModel={getCurrentModel}
+          listAvailableModels={listAvailableModels}
+          setModel={setModel}
         />
       </div>
-      <div
-        className={cn(
-          'relative w-[10px] flex-none cursor-col-resize bg-transparent outline-none before:absolute before:inset-y-0 before:left-1/2 before:w-[1px] before:-translate-x-1/2 before:bg-[var(--border)] hover:before:w-[2px] hover:before:bg-[var(--border-strong)] focus-visible:before:w-[2px] focus-visible:before:bg-[var(--border-strong)] before:transition-all before:duration-150 before:ease-out',
-          isResizingSidebar && 'before:w-[2px] before:bg-[var(--border-strong)]'
-        )}
-        role="separator"
-        aria-label="调整侧边栏宽度"
-        aria-orientation="vertical"
-        aria-valuemin={minSidebarWidth}
-        aria-valuemax={maxSidebarWidth}
-        aria-valuenow={sidebarWidth}
-        tabIndex={0}
-        onPointerDown={handleSidebarResizeStart}
-        onKeyDown={handleSidebarResizeKeyDown}
-      />
-      <Chat
-        project={activeProject}
-        session={activeSession}
-        phase={state.phase}
-        onNewSession={() => {
-          void handleNewSession();
-        }}
-        onSubmitPrompt={handleSubmit}
-        onInterrupt={handleInterrupt}
-        listComposerOptions={listComposerOptions}
-        modelRefreshKey={modelRefreshKey}
-        getCurrentModel={getCurrentModel}
-        listAvailableModels={listAvailableModels}
-        setModel={setModel}
-      />
       {showSettings && (
         <SettingsModal
           onClose={() => setShowSettings(false)}

@@ -11,6 +11,7 @@ const DEFAULT_SIDEBAR_WIDTH = 260;
 const MIN_SIDEBAR_WIDTH = 220;
 const MAX_SIDEBAR_WIDTH = 420;
 const SIDEBAR_WIDTH_STORAGE_KEY = 'astrcode.sidebarWidth';
+const SIDEBAR_OPEN_STORAGE_KEY = 'astrcode.sidebarOpen';
 const SIDEBAR_KEYBOARD_STEP = 16;
 
 type SidebarDragState = {
@@ -40,7 +41,18 @@ export function useSidebarResize() {
     return Number.isFinite(savedWidth) ? clampSidebarWidth(savedWidth) : DEFAULT_SIDEBAR_WIDTH;
   });
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(() => {
+    if (typeof window === 'undefined') {
+      return true;
+    }
+    const savedState = window.localStorage.getItem(SIDEBAR_OPEN_STORAGE_KEY);
+    return savedState !== 'false';
+  });
   const sidebarDragRef = useRef<SidebarDragState | null>(null);
+
+  const toggleSidebar = useCallback(() => {
+    setIsSidebarOpen((prev) => !prev);
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -50,6 +62,12 @@ export function useSidebarResize() {
     // Persisting width avoids a jarring layout jump every time the desktop app reopens.
     window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth));
   }, [sidebarWidth]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(SIDEBAR_OPEN_STORAGE_KEY, String(isSidebarOpen));
+    }
+  }, [isSidebarOpen]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -130,6 +148,8 @@ export function useSidebarResize() {
   return {
     sidebarWidth,
     isResizingSidebar,
+    isSidebarOpen,
+    toggleSidebar,
     minSidebarWidth: MIN_SIDEBAR_WIDTH,
     maxSidebarWidth: getMaxSidebarWidth(),
     handleSidebarResizeStart,
