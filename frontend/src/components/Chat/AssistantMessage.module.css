@@ -171,6 +171,88 @@
   color: #201b16;
 }
 
+.content em {
+  font-style: italic;
+}
+
+/* ---------- 表格 ---------- */
+.content table {
+  margin: 16px 0;
+  border-collapse: collapse;
+  border-spacing: 0;
+  width: 100%;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.content thead {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.content th {
+  text-align: left;
+  padding: 8px 12px;
+  font-weight: 600;
+  color: #201b16;
+}
+
+.content td {
+  padding: 8px 12px;
+  border-top: 1px solid rgba(0, 0, 0, 0.04);
+  color: var(--text-secondary);
+}
+
+.content tbody tr:nth-child(even) {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+/* ---------- 引用块 ---------- */
+.content blockquote {
+  margin: 16px 0;
+  padding: 8px 16px;
+  border-left: 3px solid rgba(0, 0, 0, 0.12);
+  color: var(--text-secondary);
+}
+
+.content blockquote p {
+  margin: 0;
+}
+
+.content blockquote > blockquote {
+  margin-top: 0;
+}
+
+/* ---------- 水平线 ---------- */
+.content hr {
+  margin: 20px 0;
+  border: none;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+/* ---------- 链接 ---------- */
+.content a {
+  color: #3b82f6;
+  text-decoration: none;
+}
+
+.content a:hover {
+  text-decoration: underline;
+}
+
+/* ---------- 图片 ---------- */
+.content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  margin: 12px 0;
+}
+
+/* ---------- 删除线 ---------- */
+.content del {
+  text-decoration: line-through;
+  color: var(--text-secondary);
+}
+
 .codeBlockWrapper {
   margin: 16px 0;
   border-radius: 8px;
