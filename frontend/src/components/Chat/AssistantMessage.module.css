@@ -59,27 +59,72 @@
 
 .thinkingBlock {
   margin: 0 0 14px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.7);
-  overflow: hidden;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  overflow: visible;
 }
 
 .thinkingSummary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  min-height: 24px;
   cursor: pointer;
-  padding: 10px 14px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 600;
   user-select: none;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--text-secondary);
+  transition: opacity 150ms ease;
+  font-size: 14px;
+  font-weight: 500;
+  list-style: none; /* Hide default triangle in many browsers */
+}
+
+/* Hide default triangle for WebKit */
+.thinkingSummary::-webkit-details-marker {
+  display: none;
+}
+
+.thinkingSummary:hover {
+  opacity: 0.8;
+}
+
+.thinkingIcon {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.thinkingChevron {
+  width: 16px;
+  height: 16px;
+  color: var(--text-secondary);
+  transition: transform 150ms ease;
+  opacity: 0.6;
+}
+
+/* Optional: rotate the chevron when details is open */
+.thinkingBlock[open] .thinkingChevron {
+  transform: rotate(90deg);
 }
 
 .thinkingContent {
-  margin: 0;
-  padding: 0 14px 14px;
+  margin-top: 8px;
+  margin-bottom: 8px;
+  margin-left: 8px;
+  padding-left: 16px;
+  border-left: 2px solid rgba(0, 0, 0, 0.1);
   overflow-wrap: anywhere;
   font-size: 14.5px;
-  color: #695f53;
+  color: var(--text-secondary);
   line-height: 1.6;
 }
 
