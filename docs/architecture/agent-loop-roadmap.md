@@ -130,7 +130,7 @@
 P1 (状态机化) ✅
   ├── P2 (并行工具执行) ✅
   └── P3 (上下文压缩 + Token Budget) ✅
-      ├── P4 (错误恢复，依赖 P3 的 compaction) ✗
+  ├── P4 (错误恢复，依赖 P3 的 compaction) ✅
       └── P5 (API 韧性，可与 P4 并行) ✗
 
 P6 (子 Agent，独立于 P2-P5，远期占位) ✗

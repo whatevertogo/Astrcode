@@ -98,6 +98,7 @@ pub(crate) async fn run_turn(
     };
     let mut conversation = ConversationView::new(state.messages.clone());
     let mut step_index = 0usize;
+    let mut output_continuation_count = 0u8;
     let model_limits = provider.model_limits();
     let mut token_tracker = TokenUsageTracker::default();
 
@@ -336,12 +337,12 @@ pub(crate) async fn run_turn(
         // 当模型因 max_tokens 限制截断输出时，自动注入一条继续提示，
         // 鼓励模型从截断处继续生成。最多重试 MAX_OUTPUT_CONTINUATION_ATTEMPTS 次。
         if output.finish_reason.is_max_tokens() {
-            let continuation_count = 0u8; // 当前 turn 内的续命计数
-            if continuation_count < MAX_OUTPUT_CONTINUATION_ATTEMPTS as u8 {
+            if output_continuation_count < MAX_OUTPUT_CONTINUATION_ATTEMPTS as u8 {
+                output_continuation_count += 1;
                 log::warn!(
                     "[turn {}] output truncated by max_tokens, injecting continue nudge ({}/{})",
                     turn_id,
-                    continuation_count + 1,
+                    output_continuation_count,
                     MAX_OUTPUT_CONTINUATION_ATTEMPTS
                 );
 

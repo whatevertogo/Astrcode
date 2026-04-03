@@ -96,3 +96,75 @@ async fn p4_2_max_tokens_triggers_auto_continue() {
         "second response should be the continued content"
     );
 }
+
+/// P4.2: 连续 max_tokens 截断超过上限时，应停止续调而不是无限循环。
+#[tokio::test]
+async fn p4_2_max_tokens_stops_after_continuation_limit() {
+    let _guard = super::test_support::TestEnvGuard::new();
+
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([
+            LlmOutput {
+                content: "chunk-1".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: FinishReason::MaxTokens,
+            },
+            LlmOutput {
+                content: "chunk-2".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: FinishReason::MaxTokens,
+            },
+            LlmOutput {
+                content: "chunk-3".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: FinishReason::MaxTokens,
+            },
+            // 第 4 次仍然是 max_tokens：达到上限后应直接结束 turn。
+            LlmOutput {
+                content: "chunk-4".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: FinishReason::MaxTokens,
+            },
+        ])),
+        delay: std::time::Duration::from_millis(0),
+    });
+
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::from_capabilities(factory, empty_capabilities());
+    let state = make_state("write something that keeps truncating");
+    let (events, mut on_event) = collect_events();
+
+    let outcome = loop_runner
+        .run_turn(
+            &state,
+            "turn-max-tokens-limit",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should stop at continuation limit");
+
+    assert!(
+        matches!(outcome, TurnOutcome::Completed),
+        "turn should complete once continuation limit is reached"
+    );
+
+    let events = events.lock().expect("events lock");
+    let assistant_finals = events
+        .iter()
+        .filter(|event| matches!(event, StorageEvent::AssistantFinal { .. }))
+        .count();
+
+    assert_eq!(
+        assistant_finals, 4,
+        "should stop after consuming exactly 4 truncated outputs (3 retries + final stop)"
+    );
+}
