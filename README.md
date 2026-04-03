@@ -115,7 +115,18 @@ cd frontend && npm run build
       "providerKind": "openai-compatible",
       "baseUrl": "https://api.deepseek.com",
       "apiKey": "env:DEEPSEEK_API_KEY",
-      "models": ["deepseek-chat", "deepseek-reasoner"]
+      "models": [
+        {
+          "id": "deepseek-chat",
+          "maxTokens": 8096,
+          "contextLimit": 128000
+        },
+        {
+          "id": "deepseek-reasoner",
+          "maxTokens": 8096,
+          "contextLimit": 128000
+        }
+      ]
     }
   ]
 }
@@ -140,6 +151,16 @@ cd frontend && npm run build
 3. **字面量前缀**：`literal:MY_VALUE`，用于强制把看起来像环境变量名的字符串按普通文本处理
 
 推荐优先使用 `env:...`，这样配置文件的含义最明确，不会让用户误以为 AstrCode 会自动把任意裸字符串当成环境变量读取。
+
+### 模型 limits 配置
+
+`models` 现在是对象列表，而不再是纯字符串数组：
+
+- OpenAI-compatible profile 必须为每个模型手动设置 `maxTokens` 和 `contextLimit`
+- Anthropic profile 会在运行时通过 `GET /v1/models/{model_id}` 自动获取 `max_input_tokens` 和 `max_tokens`
+- 如果 Anthropic 远端探测失败，但本地模型对象里同时写了 `maxTokens` 和 `contextLimit`，运行时会回退到本地值
+
+这让上下文窗口和最大输出 token 的来源保持单一且清晰，不再由 provider 内部各自硬编码。
 
 ### 内建环境变量
 
@@ -168,13 +189,30 @@ cd frontend && npm run build
       "name": "deepseek",
       "baseUrl": "https://api.deepseek.com",
       "apiKey": "env:DEEPSEEK_API_KEY",
-      "models": ["deepseek-chat"]
+      "models": [
+        {
+          "id": "deepseek-chat",
+          "maxTokens": 8096,
+          "contextLimit": 128000
+        }
+      ]
     },
     {
       "name": "openai",
       "baseUrl": "https://api.openai.com",
       "apiKey": "env:OPENAI_API_KEY",
-      "models": ["gpt-4o", "gpt-4o-mini"]
+      "models": [
+        {
+          "id": "gpt-4o",
+          "maxTokens": 16384,
+          "contextLimit": 200000
+        },
+        {
+          "id": "gpt-4o-mini",
+          "maxTokens": 16384,
+          "contextLimit": 128000
+        }
+      ]
     }
   ]
 }
