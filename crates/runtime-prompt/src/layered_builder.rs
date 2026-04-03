@@ -397,7 +397,7 @@ mod tests {
     fn test_cache_ttl_zero_means_never_expire() {
         let entry = LayerCacheEntry {
             fingerprint: "test".to_string(),
-            cached_at: Instant::now() - Duration::from_secs(1000),
+            cached_at: Instant::now(),
             contribution: PromptContribution::default(),
         };
         let options = LayeredBuilderOptions {
