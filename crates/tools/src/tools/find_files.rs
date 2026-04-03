@@ -4,9 +4,10 @@
 //!
 //! ## 设计要点
 //!
-//! - 使用 `glob` crate 进行模式匹配，支持 `**` 递归
+//! - 使用 `ignore` crate（ripgrep 同源）进行 .gitignore 感知的文件遍历
+//! - 支持 glob 模式匹配，包括 `**` 递归
 //! - 路径沙箱检查：glob 模式不能逃逸工作目录
-//! - 默认最多返回 200 条结果
+//! - 默认最多返回 200 条结果，按修改时间排序（最新优先）
 //! - 返回结构化 JSON 数组，便于前端渲染
 
 use std::{
@@ -15,11 +16,10 @@ use std::{
 };
 
 use astrcode_core::{
-    AstrError, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult, ToolPromptMetadata,
+    AstrError, CancelToken, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext,
+    ToolDefinition, ToolExecutionResult, ToolPromptMetadata,
 };
 use async_trait::async_trait;
-use glob::glob;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -39,6 +39,16 @@ struct FindFilesArgs {
     root: Option<PathBuf>,
     #[serde(default)]
     max_results: Option<usize>,
+    /// 是否尊重 .gitignore/.ignore 文件（默认 true）
+    #[serde(default = "default_true")]
+    respect_gitignore: bool,
+    /// 是否包含隐藏文件（默认 true，agent 需要看到 .env.example 等）
+    #[serde(default = "default_true")]
+    include_hidden: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[async_trait]
@@ -46,14 +56,33 @@ impl Tool for FindFilesTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "findFiles".to_string(),
-            description: "Find files matching a glob pattern. Use ** for recursive search."
+            description: "Find files matching a glob pattern. Respects .gitignore by default. Use \
+                          ** for recursive search."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "pattern": { "type": "string" },
-                    "root": { "type": "string" },
-                    "maxResults": { "type": "integer", "minimum": 1 }
+                    "pattern": {
+                        "type": "string",
+                        "description": "Glob pattern to match files, e.g. '*.rs', '**/*.ts', '*.{json,toml}'"
+                    },
+                    "root": {
+                        "type": "string",
+                        "description": "Root directory to search from (default: working directory)"
+                    },
+                    "maxResults": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Maximum number of results to return (default 200)"
+                    },
+                    "respectGitignore": {
+                        "type": "boolean",
+                        "description": "Respect .gitignore/.ignore files (default true)"
+                    },
+                    "includeHidden": {
+                        "type": "boolean",
+                        "description": "Include hidden files like .env.example (default true)"
+                    }
                 },
                 "required": ["pattern"],
                 "additionalProperties": false
@@ -105,32 +134,34 @@ impl Tool for FindFilesTool {
             None => resolve_path(ctx, Path::new("."))?,
         };
         let max_results = args.max_results.unwrap_or(200);
-        let full_pattern = root
-            .join(&args.pattern)
-            .to_string_lossy()
-            .replace('\\', "/");
-        let entries = glob(&full_pattern).map_err(|e| AstrError::ToolError {
-            name: "findFiles".to_string(),
-            reason: format!("failed to parse glob pattern '{}': {}", full_pattern, e),
-        })?;
+
+        // 构建 globset 匹配器
+        let glob_matcher = build_glob_matcher(&args.pattern)?;
+
+        // 使用 ignore crate 进行 .gitignore 感知的文件遍历
+        let mut entries = collect_files_with_ignore(
+            &root,
+            &glob_matcher,
+            args.respect_gitignore,
+            args.include_hidden,
+            ctx.cancel(),
+        )?;
+
+        // 按修改时间降序排序（最新文件优先）
+        entries.sort_by(|a, b| b.modified.cmp(&a.modified));
 
         let mut paths = Vec::new();
-        let mut truncated = false;
-        for entry in entries {
-            check_cancel(ctx.cancel())?;
-            let path = entry.map_err(|e| AstrError::ToolError {
-                name: "findFiles".to_string(),
-                reason: format!("failed matching '{}': {}", full_pattern, e),
-            })?;
-            if path.is_file() {
-                let resolved = resolve_path(ctx, &path)?;
-                paths.push(resolved.to_string_lossy().to_string());
-                if paths.len() >= max_results {
-                    truncated = true;
-                    break;
-                }
+        let truncated = if entries.len() > max_results {
+            for entry in entries.into_iter().take(max_results) {
+                paths.push(entry.path.to_string_lossy().to_string());
             }
-        }
+            true
+        } else {
+            for entry in entries {
+                paths.push(entry.path.to_string_lossy().to_string());
+            }
+            false
+        };
 
         Ok(ToolExecutionResult {
             tool_call_id,
@@ -143,11 +174,98 @@ impl Tool for FindFilesTool {
                 "root": root.to_string_lossy(),
                 "count": paths.len(),
                 "truncated": truncated,
+                "respectGitignore": args.respect_gitignore,
             })),
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated,
         })
     }
+}
+
+/// 文件条目，包含路径和修改时间。
+struct FileEntry {
+    path: PathBuf,
+    modified: std::time::SystemTime,
+}
+
+/// 构建 globset 匹配器。
+///
+/// 支持常见 glob 模式：
+/// - `*.rs` - 当前目录下的 Rust 文件
+/// - `**/*.ts` - 递归所有 TypeScript 文件
+/// - `*.{json,toml}` - 多种扩展名
+fn build_glob_matcher(pattern: &str) -> Result<globset::GlobSet> {
+    let glob = globset::GlobBuilder::new(pattern)
+        .literal_separator(false)
+        .build()
+        .map_err(|e| AstrError::Validation(format!("invalid glob pattern '{}': {}", pattern, e)))?;
+
+    let mut builder = globset::GlobSetBuilder::new();
+    builder.add(glob);
+    builder.build().map_err(|e| {
+        AstrError::Validation(format!("failed to build glob matcher '{}': {}", pattern, e))
+    })
+}
+
+/// 使用 ignore crate 收集匹配的文件。
+///
+/// ## 为什么用 ignore crate
+///
+/// `ignore` 是 ripgrep 的底层遍历库，原生支持：
+/// - `.gitignore` / `.ignore` / `.git/info/exclude`
+/// - 全局 gitignore 配置
+/// - 高效的并行遍历
+fn collect_files_with_ignore(
+    root: &Path,
+    glob_matcher: &globset::GlobSet,
+    respect_gitignore: bool,
+    include_hidden: bool,
+    cancel: &CancelToken,
+) -> Result<Vec<FileEntry>> {
+    let mut files = Vec::new();
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder
+        .hidden(!include_hidden)      // 隐藏文件控制
+        .git_ignore(respect_gitignore) // .gitignore
+        .git_global(respect_gitignore) // 全局 gitignore
+        .git_exclude(respect_gitignore) // .git/info/exclude
+        .ignore(respect_gitignore); // .ignore
+
+    for result in builder.build() {
+        check_cancel(cancel)?;
+        let entry = result.map_err(|e| {
+            AstrError::io(
+                format!("failed walking '{}'", root.display()),
+                std::io::Error::other(e.to_string()),
+            )
+        })?;
+
+        if !entry.file_type().map_or(false, |ft| ft.is_file()) {
+            continue;
+        }
+
+        let path = entry.path();
+        // 匹配 glob 模式：先匹配完整路径，再匹配文件名
+        if glob_matcher.is_match(path)
+            || glob_matcher.is_match(path.file_name().unwrap_or_default())
+        {
+            let metadata = std::fs::metadata(path).map_err(|e| {
+                AstrError::io(
+                    format!("failed reading metadata for '{}'", path.display()),
+                    e,
+                )
+            })?;
+            let modified = metadata
+                .modified()
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            files.push(FileEntry {
+                path: path.to_path_buf(),
+                modified,
+            });
+        }
+    }
+
+    Ok(files)
 }
 
 fn validate_glob_pattern(pattern: &str) -> Result<()> {
@@ -327,5 +445,114 @@ mod tests {
                 .to_string()
                 .contains("must stay within the working directory")
         );
+    }
+
+    #[tokio::test]
+    async fn find_files_respects_gitignore() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        // 创建 .gitignore 排除 *.log
+        tokio::fs::write(temp.path().join(".gitignore"), "*.log\n")
+            .await
+            .expect("write gitignore");
+        // 创建 .git 目录使 ignore crate 认为这是 git 仓库
+        tokio::fs::create_dir(temp.path().join(".git"))
+            .await
+            .expect("create .git dir");
+        let log_file = temp.path().join("app.log");
+        let rs_file = temp.path().join("main.rs");
+        tokio::fs::write(&log_file, "log content")
+            .await
+            .expect("write log");
+        tokio::fs::write(&rs_file, "fn main() {}")
+            .await
+            .expect("write rs");
+
+        let tool = FindFilesTool;
+        let result = tool
+            .execute(
+                "tc-find-gitignore".to_string(),
+                json!({
+                    "pattern": "*",
+                    "root": temp.path().to_string_lossy(),
+                    "respectGitignore": true
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("findFiles should succeed");
+
+        assert!(result.ok);
+        let paths: Vec<String> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        // .log 文件应被 .gitignore 排除
+        assert!(paths.iter().any(|p| p.ends_with("main.rs")));
+        assert!(!paths.iter().any(|p| p.ends_with("app.log")));
+    }
+
+    #[tokio::test]
+    async fn find_files_can_disable_gitignore() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        tokio::fs::write(temp.path().join(".gitignore"), "*.log\n")
+            .await
+            .expect("write gitignore");
+        tokio::fs::create_dir(temp.path().join(".git"))
+            .await
+            .expect("create .git dir");
+        let log_file = temp.path().join("app.log");
+        tokio::fs::write(&log_file, "log content")
+            .await
+            .expect("write log");
+
+        let tool = FindFilesTool;
+        let result = tool
+            .execute(
+                "tc-find-no-gitignore".to_string(),
+                json!({
+                    "pattern": "*.log",
+                    "root": temp.path().to_string_lossy(),
+                    "respectGitignore": false
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("findFiles should succeed");
+
+        assert!(result.ok);
+        let paths: Vec<String> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        // 禁用 gitignore 后应能找到 .log 文件
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].ends_with("app.log"));
+    }
+
+    #[tokio::test]
+    async fn find_files_sorts_by_modified_time() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file1 = temp.path().join("old.txt");
+        let file2 = temp.path().join("new.txt");
+
+        tokio::fs::write(&file1, "old").await.expect("write old");
+        // 确保有微小的时间差
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        tokio::fs::write(&file2, "new").await.expect("write new");
+
+        let tool = FindFilesTool;
+        let result = tool
+            .execute(
+                "tc-find-sort".to_string(),
+                json!({
+                    "pattern": "*.txt",
+                    "root": temp.path().to_string_lossy()
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("findFiles should succeed");
+
+        let paths: Vec<String> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        // 新文件应排在前面
+        assert!(paths[0].ends_with("new.txt"));
+        assert!(paths[1].ends_with("old.txt"));
     }
 }

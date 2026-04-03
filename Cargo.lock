@@ -310,6 +310,7 @@ version = "0.1.0"
 dependencies = [
  "astrcode-core",
  "async-trait",
+ "base64 0.22.1",
  "glob",
  "globset",
  "ignore",

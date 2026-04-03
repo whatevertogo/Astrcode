@@ -59,8 +59,12 @@ struct ShellArgs {
     command: String,
     #[serde(default)]
     cwd: Option<PathBuf>,
+    /// 覆盖默认 shell。
     #[serde(default)]
     shell: Option<String>,
+    /// 超时参数（秒），默认 120，上限 600。
+    #[serde(default)]
+    timeout: Option<u64>,
 }
 
 /// 平台相关的 shell 命令规范。
@@ -347,7 +351,13 @@ impl Tool for ShellTool {
                 "properties": {
                     "command": { "type": "string" },
                     "cwd": { "type": "string" },
-                    "shell": { "type": "string" }
+                    "shell": { "type": "string" },
+                    "timeout": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 600,
+                        "description": "Timeout in seconds (default 120, max 600)"
+                    }
                 },
                 "required": ["command"],
                 "additionalProperties": false
@@ -404,6 +414,9 @@ impl Tool for ShellTool {
         let started_at = Instant::now();
         let command_text = args.command.clone();
         let shell_program = spec.program.clone();
+        // 超时上限 600 秒，默认 120 秒
+        let timeout_secs = args.timeout.unwrap_or(120).min(600);
+        let deadline = started_at + Duration::from_secs(timeout_secs);
         let cwd = match args.cwd {
             Some(cwd) => resolve_path(ctx, &cwd)?,
             None => ctx.working_dir().to_path_buf(),
@@ -449,6 +462,52 @@ impl Tool for ShellTool {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(AstrError::Cancelled);
+            }
+
+            // 超时检测：超过 deadline 自动 kill 子进程
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+
+                // 收集已捕获的输出
+                let stdout_capture = stdout_task
+                    .join()
+                    .ok()
+                    .and_then(|r| r.ok())
+                    .map(|c| c.text)
+                    .unwrap_or_default();
+                let stderr_capture = stderr_task
+                    .join()
+                    .ok()
+                    .and_then(|r| r.ok())
+                    .map(|c| c.text)
+                    .unwrap_or_default();
+                let output = render_shell_output(&stdout_capture, &stderr_capture);
+
+                return Ok(ToolExecutionResult {
+                    tool_call_id,
+                    tool_name: "shell".to_string(),
+                    ok: false,
+                    output,
+                    error: Some(format!("shell command timed out after {timeout_secs}s")),
+                    metadata: Some(json!({
+                        "command": command_text,
+                        "cwd": cwd_text.clone(),
+                        "shell": shell_program,
+                        "exitCode": -1,
+                        "streamed": true,
+                        "timedOut": true,
+                        "display": {
+                            "kind": "terminal",
+                            "command": args.command,
+                            "cwd": cwd_text,
+                            "shell": spec.program,
+                            "exitCode": -1,
+                        },
+                    })),
+                    duration_ms: started_at.elapsed().as_millis() as u64,
+                    truncated: false,
+                });
             }
 
             match child.try_wait() {
