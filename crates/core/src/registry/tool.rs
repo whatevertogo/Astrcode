@@ -161,8 +161,11 @@ impl ToolCapabilityInvoker {
     ///
     /// 验证工具描述符的有效性。
     pub fn new(tool: Arc<dyn Tool>) -> Result<Self> {
-        let fallback_name = tool.definition().name;
+        // 先获取 descriptor，再从中提取名称用于错误信息
+        // 避免重复调用 tool.definition()（capability_descriptor 内部也会调用）
         let descriptor = tool.capability_descriptor().map_err(|error| {
+            // 构建 descriptor 失败时，才回退调用 definition() 获取名称
+            let fallback_name = tool.definition().name;
             AstrError::Validation(format!(
                 "invalid tool descriptor '{}': {}",
                 display_tool_label(&fallback_name),

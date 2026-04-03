@@ -70,6 +70,7 @@ impl DesktopInstanceCoordinator {
 
         let lock_file = OpenOptions::new()
             .create(true)
+            .truncate(true) // 覆盖已有文件，确保锁文件内容干净
             .read(true)
             .write(true)
             .open(&lock_path)

@@ -305,10 +305,23 @@ impl Peer {
     /// 3. 取消所有入站请求的取消令牌
     /// 4. 设置关闭原因，通知所有等待方
     pub async fn abort(&self) {
-        if let Some(handle) = self.inner.read_loop_handle.lock().unwrap().take() {
+        // 使用 into_inner() 处理可能的 poison，避免在清理路径中 panic
+        if let Some(handle) = self
+            .inner
+            .read_loop_handle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
             handle.abort();
         }
-        let handles = std::mem::take(&mut *self.inner.invoke_handles.lock().unwrap());
+        let handles = std::mem::take(
+            &mut *self
+                .inner
+                .invoke_handles
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
         for (_, handle) in handles {
             handle.abort();
         }
@@ -570,7 +583,10 @@ impl PeerInner {
                 };
 
                 this.inbound_cancellations.lock().await.remove(&request_id);
-                this.invoke_handles.lock().unwrap().remove(&request_id);
+                this.invoke_handles
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&request_id);
                 if let Err(error) = result {
                     this.close(format!("failed to process inbound invoke: {error}"))
                         .await;
@@ -579,7 +595,10 @@ impl PeerInner {
         });
 
         // Track the handle so shutdown cannot miss an in-flight invoke.
-        self.invoke_handles.lock().unwrap().insert(track_id, handle);
+        self.invoke_handles
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(track_id, handle);
     }
 
     /// 处理一元（非流式）入站调用。

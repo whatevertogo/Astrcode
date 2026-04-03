@@ -29,7 +29,7 @@ use serde_json::Value;
 use tokio::select;
 
 use crate::{
-    build_http_client, emit_event, is_retryable_status, wait_retry_delay, EventSink,
+    build_http_client, emit_event, is_retryable_status, wait_retry_delay, EventSink, FinishReason,
     LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest, LlmUsage, ModelLimits,
     MAX_RETRIES,
 };
@@ -176,8 +176,10 @@ impl OpenAiProvider {
             }
         }
 
-        Err(AstrError::Network(
-            "openai-compatible request failed after retries".to_string(),
+        // 所有路径都会通过 return 退出循环；若到达此处说明逻辑有误，
+        // 返回 Internal 而非 panic 以保证运行时安全
+        Err(AstrError::Internal(
+            "retry loop should have returned on all paths".into(),
         ))
     }
 }
@@ -214,13 +216,19 @@ impl LlmProvider for OpenAiProvider {
                         "openai-compatible response did not include choices".to_string(),
                     )
                 })?;
-                Ok(message_to_output(first_choice.message, usage))
+                Ok(message_to_output(
+                    first_choice.message,
+                    usage,
+                    first_choice.finish_reason,
+                ))
             }
             Some(sink) => {
                 // 流式路径：逐块读取 SSE 响应
                 let mut body_stream = response.bytes_stream();
                 let mut sse_buffer = String::new();
                 let mut accumulator = LlmAccumulator::default();
+                // 流式路径下从最后一个 chunk 的 finish_reason 提取 (P4.2)
+                let mut stream_finish_reason: Option<String> = None;
 
                 loop {
                     let next_item = select! {
@@ -242,15 +250,34 @@ impl LlmProvider for OpenAiProvider {
                             .context("openai-compatible response stream was not valid utf-8")
                     })?;
 
-                    if consume_sse_text_chunk(chunk_text, &mut sse_buffer, &mut accumulator, &sink)?
-                    {
-                        return Ok(accumulator.finish());
+                    if consume_sse_text_chunk(
+                        chunk_text,
+                        &mut sse_buffer,
+                        &mut accumulator,
+                        &sink,
+                        &mut stream_finish_reason,
+                    )? {
+                        let mut output = accumulator.finish();
+                        // 优先使用 API 返回的 finish_reason，否则使用推断值
+                        if let Some(reason) = stream_finish_reason.as_deref() {
+                            output.finish_reason = FinishReason::from_api_value(reason);
+                        }
+                        return Ok(output);
                     }
                 }
 
                 // 流结束后处理缓冲区中剩余的不完整行
-                flush_sse_buffer(&mut sse_buffer, &mut accumulator, &sink)?;
-                Ok(accumulator.finish())
+                flush_sse_buffer(
+                    &mut sse_buffer,
+                    &mut accumulator,
+                    &sink,
+                    &mut stream_finish_reason,
+                )?;
+                let mut output = accumulator.finish();
+                if let Some(reason) = stream_finish_reason.as_deref() {
+                    output.finish_reason = FinishReason::from_api_value(reason);
+                }
+                Ok(output)
             }
         }
     }
@@ -279,9 +306,14 @@ impl LlmProvider for OpenAiProvider {
 /// - 工具调用参数可能不是合法 JSON，解析失败时回退为原始字符串
 /// - 推理内容为空字符串时不保留（避免无意义的空 reasoning 对象）
 /// - `usage` 参数在非流式路径下由调用方传入，流式路径下为 `None`
-fn message_to_output(message: OpenAiResponseMessage, usage: Option<LlmUsage>) -> LlmOutput {
+/// - `finish_reason` 从响应 choice 中提取，用于检测 max_tokens 截断 (P4.2)
+fn message_to_output(
+    message: OpenAiResponseMessage,
+    usage: Option<LlmUsage>,
+    finish_reason: Option<String>,
+) -> LlmOutput {
     let content = message.content.unwrap_or_default();
-    let tool_calls = message
+    let tool_calls: Vec<ToolCallRequest> = message
         .tool_calls
         .unwrap_or_default()
         .into_iter()
@@ -293,6 +325,18 @@ fn message_to_output(message: OpenAiResponseMessage, usage: Option<LlmUsage>) ->
                 .unwrap_or(Value::String(call.function.arguments)),
         })
         .collect();
+
+    let finish_reason = finish_reason
+        .as_deref()
+        .map(FinishReason::from_api_value)
+        .unwrap_or_else(|| {
+            // 无 finish_reason 时根据内容推断
+            if !tool_calls.is_empty() {
+                FinishReason::ToolCalls
+            } else {
+                FinishReason::Stop
+            }
+        });
 
     LlmOutput {
         content,
@@ -306,6 +350,7 @@ fn message_to_output(message: OpenAiResponseMessage, usage: Option<LlmUsage>) ->
                 signature: None,
             }),
         usage,
+        finish_reason,
     }
 }
 
@@ -357,14 +402,18 @@ fn parse_sse_line(line: &str) -> Result<ParsedSseLine> {
 ///
 /// ## 设计要点
 ///
-/// - `finish_reason` 字段当前未使用，流结束由 `[DONE]` 标记判断
 /// - 空字符串的文本和推理内容会被过滤，避免发射无意义的空增量
 /// - 工具调用参数缺失时回退为空字符串，由累加器负责拼接
-fn apply_stream_chunk(chunk: OpenAiStreamChunk) -> Vec<LlmEvent> {
+/// - 返回最后一个非 None 的 finish_reason（P4.2）
+fn apply_stream_chunk(chunk: OpenAiStreamChunk) -> (Vec<LlmEvent>, Option<String>) {
     let mut events = Vec::new();
+    let mut last_finish_reason: Option<String> = None;
 
     for choice in chunk.choices {
-        // NOTE: finish_reason 当前未使用，流结束由 `[DONE]` 标记判断
+        // 提取 finish_reason，最后一个非 None 值有效
+        if let Some(reason) = choice.finish_reason {
+            last_finish_reason = Some(reason);
+        }
 
         if let Some(content) = choice.delta.content {
             if !content.is_empty() {
@@ -395,25 +444,26 @@ fn apply_stream_chunk(chunk: OpenAiStreamChunk) -> Vec<LlmEvent> {
         }
     }
 
-    events
+    (events, last_finish_reason)
 }
 
-/// 处理单行 SSE 文本，返回 `true` 表示流已结束（遇到 `[DONE]`）。
+/// 处理单行 SSE 文本，返回 `(is_done, finish_reason)`。
 ///
 /// 这是 SSE 处理链路的中间层：解析行 → 转换 chunk → 发射事件。
 fn process_sse_line(
     line: &str,
     accumulator: &mut LlmAccumulator,
     sink: &EventSink,
-) -> Result<bool> {
+) -> Result<(bool, Option<String>)> {
     match parse_sse_line(line)? {
-        ParsedSseLine::Ignore => Ok(false),
-        ParsedSseLine::Done => Ok(true),
+        ParsedSseLine::Ignore => Ok((false, None)),
+        ParsedSseLine::Done => Ok((true, None)),
         ParsedSseLine::Chunk(chunk) => {
-            for event in apply_stream_chunk(chunk) {
+            let (events, finish_reason) = apply_stream_chunk(chunk);
+            for event in events {
                 emit_event(event, accumulator, sink);
             }
-            Ok(false)
+            Ok((false, finish_reason))
         }
     }
 }
@@ -422,7 +472,7 @@ fn process_sse_line(
 ///
 /// 由于 TCP 流可能将一行 SSE 分割到多个 chunk 中，
 /// 本函数使用 `sse_buffer` 累积未完成的行，等待后续 chunk 补齐。
-/// 返回 `true` 表示遇到 `[DONE]`，流应停止读取。
+/// 返回 `(is_done, finish_reason)`，is_done 为 true 表示遇到 `[DONE]`，流应停止读取。
 ///
 /// ## TCP 分片处理
 ///
@@ -433,6 +483,7 @@ fn consume_sse_text_chunk(
     sse_buffer: &mut String,
     accumulator: &mut LlmAccumulator,
     sink: &EventSink,
+    finish_reason_out: &mut Option<String>,
 ) -> Result<bool> {
     sse_buffer.push_str(chunk_text);
 
@@ -442,7 +493,11 @@ fn consume_sse_text_chunk(
             .trim_end_matches('\n')
             .trim_end_matches('\r');
 
-        if process_sse_line(line, accumulator, sink)? {
+        let (done, reason) = process_sse_line(line, accumulator, sink)?;
+        if let Some(r) = reason {
+            *finish_reason_out = Some(r);
+        }
+        if done {
             return Ok(true);
         }
     }
@@ -458,15 +513,19 @@ fn flush_sse_buffer(
     sse_buffer: &mut String,
     accumulator: &mut LlmAccumulator,
     sink: &EventSink,
-) -> Result<bool> {
-    if sse_buffer.is_empty() {
-        return Ok(false);
+    finish_reason_out: &mut Option<String>,
+) -> Result<()> {
+    let remaining = std::mem::take(sse_buffer);
+    let remaining = remaining.trim();
+    if !remaining.is_empty() {
+        let (done, reason) = process_sse_line(remaining, accumulator, sink)?;
+        if let Some(r) = reason {
+            *finish_reason_out = Some(r);
+        }
+        // 如果 flush 时遇到 [DONE]，忽略（正常流结束）
+        let _ = done;
     }
-
-    let line = sse_buffer.trim_end_matches('\r');
-    let done = process_sse_line(line, accumulator, sink)?;
-    sse_buffer.clear();
-    Ok(done)
+    Ok(())
 }
 
 /// 将 `ToolDefinition` 转换为 OpenAI 工具定义格式。
@@ -688,6 +747,8 @@ struct OpenAiChatResponse {
 #[derive(Debug, Deserialize)]
 struct OpenAiChoice {
     message: OpenAiResponseMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 /// OpenAI 响应消息（从 choice 中提取）。

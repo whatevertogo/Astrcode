@@ -59,6 +59,13 @@ struct ScriptedProvider {
     delay: Duration,
 }
 
+/// 支持返回错误的脚本 Provider，用于测试错误恢复逻辑 (P4)。
+/// `results` 中的每个元素可以是 `Ok(LlmOutput)` 或 `Err(AstrError)`。
+struct FailingProvider {
+    results: Mutex<VecDeque<Result<LlmOutput>>>,
+    delay: Duration,
+}
+
 #[async_trait]
 impl LlmProvider for ScriptedProvider {
     fn model_limits(&self) -> ModelLimits {
@@ -89,6 +96,36 @@ impl LlmProvider for ScriptedProvider {
         }
 
         Ok(response)
+    }
+}
+
+#[async_trait]
+impl LlmProvider for FailingProvider {
+    fn model_limits(&self) -> ModelLimits {
+        ModelLimits {
+            context_window: 200_000,
+            max_output_tokens: 4_096,
+        }
+    }
+
+    async fn generate(&self, _request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
+        if self.delay > Duration::from_millis(0) {
+            sleep(self.delay).await;
+        }
+        let result = self
+            .results
+            .lock()
+            .expect("lock should work")
+            .pop_front()
+            .ok_or_else(|| AstrError::Internal("no scripted result".to_string()))?;
+
+        if let (Ok(response), Some(sink)) = (&result, sink) {
+            for delta in response.content.chars() {
+                sink(LlmEvent::TextDelta(delta.to_string()));
+            }
+        }
+
+        result
     }
 }
 
@@ -557,12 +594,14 @@ async fn tool_events_are_ordered_and_turn_finishes() {
                 }],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
         ])),
         delay: Duration::from_millis(0),
@@ -623,12 +662,14 @@ async fn streaming_tool_emits_deltas_before_tool_result() {
                 }],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
         ])),
         delay: Duration::from_millis(0),
@@ -700,6 +741,7 @@ async fn interrupt_emits_error_and_turn_done() {
             }],
             reasoning: None,
             usage: None,
+            finish_reason: Default::default(),
         }])),
         delay: Duration::from_millis(0),
     });
@@ -767,12 +809,14 @@ async fn concurrency_safe_tools_run_in_parallel() {
                 ],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
         ])),
         delay: Duration::from_millis(0),
@@ -827,12 +871,14 @@ async fn unsafe_tools_remain_sequential() {
                 ],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
         ])),
         delay: Duration::from_millis(0),
@@ -888,12 +934,14 @@ async fn max_tool_concurrency_limits_safe_parallelism() {
                 ],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
         ])),
         delay: Duration::from_millis(0),
@@ -950,12 +998,14 @@ async fn parallel_safe_tool_results_preserve_original_request_order() {
                 ],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
         ])),
         requests: Arc::clone(&requests),
@@ -1021,6 +1071,7 @@ async fn cancellation_propagates_to_parallel_safe_tools() {
             ],
             reasoning: None,
             usage: None,
+            finish_reason: Default::default(),
         }])),
         delay: Duration::from_millis(0),
     });
@@ -1071,6 +1122,7 @@ async fn deltas_emit_before_stream_completion() {
             tool_calls: vec![],
             reasoning: None,
             usage: None,
+            finish_reason: Default::default(),
         },
         per_delta_delay: Duration::from_millis(20),
     });
@@ -1135,6 +1187,7 @@ async fn long_tool_chains_complete_without_a_step_cap() {
             }],
             reasoning: None,
             usage: None,
+            finish_reason: Default::default(),
         })
         .collect::<Vec<_>>();
     scripted.push(LlmOutput {
@@ -1142,6 +1195,7 @@ async fn long_tool_chains_complete_without_a_step_cap() {
         tool_calls: vec![],
         reasoning: None,
         usage: None,
+        finish_reason: Default::default(),
     });
 
     let provider = Arc::new(ScriptedProvider {
@@ -1212,12 +1266,14 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
                 }],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
         ])),
         requests: requests.clone(),
@@ -1316,12 +1372,14 @@ async fn reuses_prompt_contributor_cache_across_llm_steps() {
                 }],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
         ])),
         delay: Duration::from_millis(0),
@@ -1355,6 +1413,7 @@ async fn event_sink_failures_abort_the_turn() {
             tool_calls: vec![],
             reasoning: None,
             usage: None,
+            finish_reason: Default::default(),
         }])),
         delay: Duration::from_millis(0),
     });
@@ -1387,6 +1446,7 @@ async fn policy_can_rewrite_model_request_before_provider_execution() {
             tool_calls: vec![],
             reasoning: None,
             usage: None,
+            finish_reason: Default::default(),
         }])),
         requests: Arc::clone(&requests),
     });
@@ -1428,12 +1488,14 @@ async fn denied_tool_calls_emit_failure_without_executing_tool() {
                 }],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
         ])),
         delay: Duration::from_millis(0),
@@ -1497,12 +1559,14 @@ async fn ask_policy_uses_approval_broker_before_tool_execution() {
                 }],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
         ])),
         delay: Duration::from_millis(0),
@@ -1557,12 +1621,14 @@ async fn denied_approval_returns_failed_tool_result_without_execution() {
                 }],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
         ])),
         delay: Duration::from_millis(0),
@@ -1659,12 +1725,14 @@ async fn unified_capability_router_executes_builtin_and_plugin_tools() {
                 ],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
             LlmOutput {
                 content: "done".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
         ])),
         delay: Duration::from_millis(0),
@@ -1794,12 +1862,14 @@ async fn auto_compact_emits_compact_applied_before_retrying_the_turn() {
                 tool_calls: vec![],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
             LlmOutput {
                 content: "final answer".to_string(),
                 tool_calls: vec![],
                 reasoning: None,
                 usage: None,
+                finish_reason: Default::default(),
             },
         ])),
         delay: Duration::from_millis(0),
@@ -1865,4 +1935,350 @@ async fn auto_compact_emits_compact_applied_before_retrying_the_turn() {
             StorageEvent::AssistantFinal { content, .. } if content == "final answer"
         )
     }));
+}
+
+// ---------------------------------------------------------------------------
+// P4: Error recovery tests
+// ---------------------------------------------------------------------------
+
+/// 构造一个 413 prompt too long 错误。
+fn make_prompt_too_long_error() -> AstrError {
+    AstrError::LlmRequestFailed {
+        status: 413,
+        body: "prompt too long for this model".to_string(),
+    }
+}
+
+/// 验证 is_prompt_too_long 能正确识别我们构造的错误。
+#[test]
+fn p4_verify_is_prompt_too_long_matches_test_error() {
+    let error = make_prompt_too_long_error();
+    assert!(
+        crate::context_window::is_prompt_too_long(&error),
+        "is_prompt_too_long should detect our test error"
+    );
+}
+
+/// 构造一个不可恢复的客户端错误。
+fn make_client_error() -> AstrError {
+    AstrError::LlmRequestFailed {
+        status: 401,
+        body: "invalid api key".to_string(),
+    }
+}
+
+/// P4.1: 413 错误时 turn 级别触发 reactive compact 并恢复。
+///
+/// 场景：
+/// 1. 首次 LLM 调用返回 413 错误
+/// 2. auto_compact 触发，调用 provider 生成 compact summary（需要成功）
+/// 3. 重试 LLM 调用成功
+#[tokio::test]
+async fn p4_1_reactive_compact_recovers_from_413_error() {
+    let _guard = TestEnvGuard::new();
+
+    let provider = Arc::new(FailingProvider {
+        results: Mutex::new(VecDeque::from([
+            // 1. 首次 LLM 调用返回 413 错误
+            Err(make_prompt_too_long_error()),
+            // 2. auto_compact 调用 provider 生成 compact summary（需要成功）
+            Ok(LlmOutput {
+                content: "<analysis>trimmed</analysis><summary>condensed history</summary>"
+                    .to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            }),
+            // 3. compact 后重试 LLM 调用，返回最终答案
+            Ok(LlmOutput {
+                content: "recovered answer".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            }),
+        ])),
+        delay: Duration::from_millis(0),
+    });
+
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::from_capabilities(factory, empty_capabilities())
+        .with_auto_compact_enabled(true)
+        .with_compact_threshold_percent(95) // 高阈值，避免在 LLM 调用前触发 compact
+        .with_compact_keep_recent_turns(1);
+
+    // 构造足够长的历史消息，使 compact 有内容可压缩
+    let state = AgentState {
+        session_id: "test".into(),
+        working_dir: std::env::temp_dir(),
+        messages: vec![
+            LlmMessage::User {
+                content: "legacy ".repeat(1_500),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "ack".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+            LlmMessage::User {
+                content: "current ask".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ],
+        phase: Phase::Thinking,
+        turn_count: 0,
+    };
+
+    let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = Arc::clone(&events);
+    let mut on_event = move |event: StorageEvent| {
+        events_clone.lock().expect("events lock").push(event);
+        Ok(())
+    };
+
+    let outcome = loop_runner
+        .run_turn(
+            &state,
+            "turn-413-recovery",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete after reactive compact");
+
+    assert!(
+        matches!(outcome, TurnOutcome::Completed),
+        "turn should complete after recovering from 413"
+    );
+
+    let events = events.lock().expect("events lock");
+    // 应该看到 compact 事件（reactive compact 触发）
+    assert!(
+        events
+            .iter()
+            .any(|event| { matches!(event, StorageEvent::CompactApplied { .. }) }),
+        "should have emitted CompactApplied event during reactive compact"
+    );
+    // 应该看到最终回答
+    assert!(
+        events.iter().any(|event| {
+            matches!(
+                event,
+                StorageEvent::AssistantFinal { content, .. } if content == "recovered answer"
+            )
+        }),
+        "should have emitted AssistantFinal with recovered answer"
+    );
+}
+
+/// P4.1: 413 错误但无可压缩内容时，正确终止 turn 并报告错误。
+#[tokio::test]
+async fn p4_1_reactive_compact_fails_when_no_compressible_history() {
+    let _guard = TestEnvGuard::new();
+
+    let provider = Arc::new(FailingProvider {
+        results: Mutex::new(VecDeque::from([
+            // 始终返回 413 错误
+            Err(make_prompt_too_long_error()),
+        ])),
+        delay: Duration::from_millis(0),
+    });
+
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::from_capabilities(factory, empty_capabilities())
+        .with_auto_compact_enabled(true)
+        .with_compact_threshold_percent(95) // 高阈值，避免在 LLM 调用前触发 compact
+        .with_compact_keep_recent_turns(1);
+
+    // 只有少量消息，无可压缩内容
+    let state = AgentState {
+        session_id: "test".into(),
+        working_dir: std::env::temp_dir(),
+        messages: vec![LlmMessage::User {
+            content: "short message".to_string(),
+            origin: UserMessageOrigin::User,
+        }],
+        phase: Phase::Thinking,
+        turn_count: 0,
+    };
+
+    let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = Arc::clone(&events);
+    let mut on_event = move |event: StorageEvent| {
+        events_clone.lock().expect("events lock").push(event);
+        Ok(())
+    };
+
+    let outcome = loop_runner
+        .run_turn(
+            &state,
+            "turn-413-no-history",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("run_turn should return Ok(TurnOutcome) even on error");
+
+    // 无可压缩内容时，turn 应该以 Error 状态终止
+    assert!(
+        matches!(outcome, TurnOutcome::Error { .. }),
+        "turn should end with Error outcome when no compressible history available, got: {outcome:?}"
+    );
+}
+
+/// P4.1: 不可恢复的错误（如 401）不应触发 reactive compact，直接终止 turn。
+#[tokio::test]
+async fn p4_1_non_recoverable_error_does_not_trigger_compact() {
+    let _guard = TestEnvGuard::new();
+
+    let provider = Arc::new(FailingProvider {
+        results: Mutex::new(VecDeque::from([Err(make_client_error())])),
+        delay: Duration::from_millis(0),
+    });
+
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::from_capabilities(factory, empty_capabilities())
+        .with_auto_compact_enabled(true)
+        .with_compact_threshold_percent(95) // 高阈值，避免在 LLM 调用前触发 compact
+        .with_compact_keep_recent_turns(1);
+
+    let state = AgentState {
+        session_id: "test".into(),
+        working_dir: std::env::temp_dir(),
+        messages: vec![
+            LlmMessage::User {
+                content: "legacy ".repeat(1_500),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::User {
+                content: "current ask".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ],
+        phase: Phase::Thinking,
+        turn_count: 0,
+    };
+
+    let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = Arc::clone(&events);
+    let mut on_event = move |event: StorageEvent| {
+        events_clone.lock().expect("events lock").push(event);
+        Ok(())
+    };
+
+    let outcome = loop_runner
+        .run_turn(
+            &state,
+            "turn-client-error",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("run_turn should return Ok(TurnOutcome) even on error");
+
+    // 不可恢复错误应导致 turn 以 Error 状态终止
+    assert!(
+        matches!(outcome, TurnOutcome::Error { .. }),
+        "turn should end with Error outcome on non-recoverable client error, got: {outcome:?}"
+    );
+
+    let events = events.lock().expect("events lock");
+    // 不应触发 compact
+    assert!(
+        !events
+            .iter()
+            .any(|event| { matches!(event, StorageEvent::CompactApplied { .. }) }),
+        "should NOT have emitted CompactApplied for non-recoverable error"
+    );
+}
+
+/// P4.2: max_tokens 截断时自动注入 nudge 继续生成。
+///
+/// 场景：
+/// 1. 首次 LLM 调用返回 finish_reason = max_tokens
+/// 2. 自动注入 nudge 消息，再次调用 LLM
+/// 3. 第二次调用正常返回 finish_reason = stop
+#[tokio::test]
+async fn p4_2_max_tokens_triggers_auto_continue() {
+    let _guard = TestEnvGuard::new();
+
+    use astrcode_runtime_llm::FinishReason;
+
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([
+            // 第一次调用被 max_tokens 截断
+            LlmOutput {
+                content: "this is a partial response that got cut off".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: FinishReason::MaxTokens,
+            },
+            // nudge 后继续生成完成
+            LlmOutput {
+                content: " and this is the rest of the response.".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: FinishReason::Stop,
+            },
+        ])),
+        delay: Duration::from_millis(0),
+    });
+
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::from_capabilities(factory, empty_capabilities());
+
+    let state = make_state("write something long");
+
+    let events: Arc<Mutex<Vec<StorageEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = Arc::clone(&events);
+    let mut on_event = move |event: StorageEvent| {
+        events_clone.lock().expect("events lock").push(event);
+        Ok(())
+    };
+
+    let outcome = loop_runner
+        .run_turn(
+            &state,
+            "turn-max-tokens-continue",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete after auto-continue");
+
+    assert!(
+        matches!(outcome, TurnOutcome::Completed),
+        "turn should complete after max_tokens auto-continue"
+    );
+
+    let events = events.lock().expect("events lock");
+    // 应该有两次 AssistantFinal（第一次截断 + 第二次继续）
+    let assistant_finals: Vec<_> = events
+        .iter()
+        .filter_map(|event| {
+            if let StorageEvent::AssistantFinal { content, .. } = event {
+                Some(content.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(
+        assistant_finals.len(),
+        2,
+        "should have two AssistantFinal events (truncated + continued)"
+    );
+    assert!(
+        assistant_finals[0].contains("partial response"),
+        "first response should be the truncated content"
+    );
+    assert!(
+        assistant_finals[1].contains("rest of the response"),
+        "second response should be the continued content"
+    );
 }

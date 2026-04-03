@@ -31,9 +31,9 @@ use serde_json::Value;
 use tokio::select;
 
 use crate::{
-    build_http_client, emit_event, is_retryable_status, wait_retry_delay, EventSink,
-    LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest, LlmUsage, ModelLimits,
-    MAX_RETRIES,
+    build_http_client, classify_http_error, emit_event, is_retryable_status, wait_retry_delay,
+    EventSink, FinishReason, LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest,
+    LlmUsage, ModelLimits, MAX_RETRIES,
 };
 use astrcode_core::{LlmMessage, ToolCallRequest, ToolDefinition};
 
@@ -153,15 +153,8 @@ impl AnthropicProvider {
                         continue;
                     }
 
-                    let error_kind = if is_retryable_status(status) {
-                        "retryable"
-                    } else {
-                        "non-retryable"
-                    };
-                    return Err(AstrError::LlmRequestFailed {
-                        status: status.as_u16(),
-                        body: format!("Anthropic 请求失败 ({}): {}", error_kind, body),
-                    });
+                    // 使用结构化错误分类 (P4.3)
+                    return Err(classify_http_error(status.as_u16(), &body).into());
                 }
                 Err(error) => {
                     if error.is_retryable() && attempt < MAX_RETRIES {
@@ -173,8 +166,10 @@ impl AnthropicProvider {
             }
         }
 
-        Err(AstrError::LlmStreamError(
-            "Anthropic 请求在重试后仍然失败".to_string(),
+        // 所有路径都会通过 return 退出循环；若到达此处说明逻辑有误，
+        // 返回 Internal 而非 panic 以保证运行时安全
+        Err(AstrError::Internal(
+            "retry loop should have returned on all paths".into(),
         ))
     }
 }
@@ -203,6 +198,8 @@ impl LlmProvider for AnthropicProvider {
                 let mut stream = response.bytes_stream();
                 let mut sse_buffer = String::new();
                 let mut accumulator = LlmAccumulator::default();
+                // 流式路径下从 message_delta 的 stop_reason 提取 (P4.2)
+                let mut stream_stop_reason: Option<String> = None;
 
                 loop {
                     let next_item = select! {
@@ -224,14 +221,33 @@ impl LlmProvider for AnthropicProvider {
                         source: e,
                     })?;
 
-                    if consume_sse_text_chunk(chunk_text, &mut sse_buffer, &mut accumulator, &sink)?
-                    {
-                        return Ok(accumulator.finish());
+                    if consume_sse_text_chunk(
+                        chunk_text,
+                        &mut sse_buffer,
+                        &mut accumulator,
+                        &sink,
+                        &mut stream_stop_reason,
+                    )? {
+                        let mut output = accumulator.finish();
+                        // 优先使用 API 返回的 stop_reason，否则使用推断值
+                        if let Some(reason) = stream_stop_reason.as_deref() {
+                            output.finish_reason = FinishReason::from_api_value(reason);
+                        }
+                        return Ok(output);
                     }
                 }
 
-                flush_sse_buffer(&mut sse_buffer, &mut accumulator, &sink)?;
-                Ok(accumulator.finish())
+                flush_sse_buffer(
+                    &mut sse_buffer,
+                    &mut accumulator,
+                    &sink,
+                    &mut stream_stop_reason,
+                )?;
+                let mut output = accumulator.finish();
+                if let Some(reason) = stream_stop_reason.as_deref() {
+                    output.finish_reason = FinishReason::from_api_value(reason);
+                }
+                Ok(output)
             }
         }
     }
@@ -351,6 +367,13 @@ fn to_anthropic_tools(tools: &[ToolDefinition]) -> Vec<AnthropicTool> {
 /// - `tool_use`: 提取 id、name、input 构造工具调用请求
 /// - `thinking`: 提取推理内容和签名
 /// - 未知类型：记录警告并跳过
+///
+/// TODO:更好的办法？
+/// `stop_reason` 映射到统一的 `FinishReason` (P4.2):
+/// - `end_turn` → Stop
+/// - `max_tokens` → MaxTokens
+/// - `tool_use` → ToolCalls
+/// - `stop_sequence` → Stop
 fn response_to_output(response: AnthropicResponse) -> LlmOutput {
     let usage = response.usage.map(|usage| LlmUsage {
         input_tokens: usage.input_tokens.unwrap_or_default() as usize,
@@ -406,11 +429,30 @@ fn response_to_output(response: AnthropicResponse) -> LlmOutput {
         }
     }
 
+    // Anthropic stop_reason 映射到统一 FinishReason
+    let finish_reason = response
+        .stop_reason
+        .as_deref()
+        .map(|reason| match reason {
+            "end_turn" | "stop_sequence" => FinishReason::Stop,
+            "max_tokens" => FinishReason::MaxTokens,
+            "tool_use" => FinishReason::ToolCalls,
+            other => FinishReason::Other(other.to_string()),
+        })
+        .unwrap_or_else(|| {
+            if !tool_calls.is_empty() {
+                FinishReason::ToolCalls
+            } else {
+                FinishReason::Stop
+            }
+        });
+
     LlmOutput {
         content,
         tool_calls,
         reasoning,
         usage,
+        finish_reason,
     }
 }
 
@@ -482,20 +524,21 @@ fn extract_delta_block(payload: &Value) -> &Value {
     payload.get("delta").unwrap_or(payload)
 }
 
-/// 处理单个 Anthropic SSE 块，返回 `true` 表示流已结束。
+/// 处理单个 Anthropic SSE 块，返回 `(is_done, stop_reason)`。
 ///
 /// Anthropic SSE 事件类型分派：
 /// - `content_block_start`: 新内容块开始（可能是文本或工具调用）
 /// - `content_block_delta`: 增量内容（文本/思考/签名/工具参数）
-/// - `message_stop`: 流结束信号，返回 true 通知上层停止读取
-/// - `message_start/delta/content_block_stop/ping`: 元数据事件，静默忽略
+/// - `message_stop`: 流结束信号，返回 is_done=true
+/// - `message_delta`: 包含 `stop_reason`，用于检测 max_tokens 截断 (P4.2)
+/// - `message_start/content_block_stop/ping`: 元数据事件，静默忽略
 fn process_sse_block(
     block: &str,
     accumulator: &mut LlmAccumulator,
     sink: &EventSink,
-) -> Result<bool> {
+) -> Result<(bool, Option<String>)> {
     let Some((event_type, payload)) = parse_sse_block(block)? else {
-        return Ok(false);
+        return Ok((false, None));
     };
 
     match event_type.as_str() {
@@ -522,7 +565,7 @@ fn process_sse_block(
                     sink,
                 );
             }
-            Ok(false)
+            Ok((false, None))
         }
         "content_block_delta" => {
             let index = payload
@@ -571,14 +614,22 @@ fn process_sse_block(
                 }
                 _ => {}
             }
-            Ok(false)
+            Ok((false, None))
         }
-        "message_stop" => Ok(true),
-        // 元数据事件：静默忽略
-        "message_start" | "message_delta" | "content_block_stop" | "ping" => Ok(false),
+        "message_stop" => Ok((true, None)),
+        // message_delta 可能包含 stop_reason (P4.2)
+        "message_delta" => {
+            let stop_reason = payload
+                .get("delta")
+                .and_then(|d| d.get("stop_reason"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            Ok((false, stop_reason))
+        }
+        "message_start" | "content_block_stop" | "ping" => Ok((false, None)),
         other => {
             warn!("anthropic: unknown sse event: {}", other);
-            Ok(false)
+            Ok((false, None))
         }
     }
 }
@@ -628,6 +679,7 @@ fn consume_sse_text_chunk(
     sse_buffer: &mut String,
     accumulator: &mut LlmAccumulator,
     sink: &EventSink,
+    stop_reason_out: &mut Option<String>,
 ) -> Result<bool> {
     sse_buffer.push_str(chunk_text);
 
@@ -635,7 +687,11 @@ fn consume_sse_text_chunk(
         let block: String = sse_buffer.drain(..block_end + delimiter_len).collect();
         let block = &block[..block_end];
 
-        if process_sse_block(block, accumulator, sink)? {
+        let (done, reason) = process_sse_block(block, accumulator, sink)?;
+        if let Some(r) = reason {
+            *stop_reason_out = Some(r);
+        }
+        if done {
             return Ok(true);
         }
     }
@@ -647,15 +703,20 @@ fn flush_sse_buffer(
     sse_buffer: &mut String,
     accumulator: &mut LlmAccumulator,
     sink: &EventSink,
-) -> Result<bool> {
+    stop_reason_out: &mut Option<String>,
+) -> Result<()> {
     if sse_buffer.trim().is_empty() {
         sse_buffer.clear();
-        return Ok(false);
+        return Ok(());
     }
 
-    let done = process_sse_block(sse_buffer, accumulator, sink)?;
+    let (done, reason) = process_sse_block(sse_buffer, accumulator, sink)?;
+    if let Some(r) = reason {
+        *stop_reason_out = Some(r);
+    }
+    let _ = done;
     sse_buffer.clear();
-    Ok(done)
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -883,8 +944,15 @@ mod tests {
             "data: {\"type\":\"message_stop\"}\n\n"
         );
 
-        let done = consume_sse_text_chunk(chunk, &mut sse_buffer, &mut accumulator, &sink)
-            .expect("stream chunk should parse");
+        let mut stop_reason_out: Option<String> = None;
+        let done = consume_sse_text_chunk(
+            chunk,
+            &mut sse_buffer,
+            &mut accumulator,
+            &sink,
+            &mut stop_reason_out,
+        )
+        .expect("stream chunk should parse");
 
         assert!(done);
         let output = accumulator.finish();

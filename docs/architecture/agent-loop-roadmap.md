@@ -61,31 +61,23 @@
 
 ---
 
-## P4：错误恢复 ✗ 未开始
+## P4：错误恢复 ✅ 已完成
 
 对可恢复的 API 错误进行自动重试，而非直接终止 turn.
 
-### 需求
+### 实现状态
 
-#### P4.1 413 Prompt Too Long → Reactive Compact
-
-已在 `compaction.rs` 的 `auto_compact()` 内部处理 (compact 阶段 panic 时自动降级前缀重试).
-待接入: turn_runner 级别 413 响应式 compact (在 LLM 调用返回 413 时触发).
-
-#### P4.2 Max Output Tokens → 重试
-
-待实现: 检测 `finish_reason: "max_tokens"` → nudge 继续生成 (最多 3 次).
-
-#### P4.3 错误类型分类
-
-当前错误检测通过 `is_prompt_too_long()` (字符串匹配: `prompt too long`, `context length`, `maximum context`, `too many tokens`).
-待升级: `crates/runtime-llm` 引入结构化 `LlmError` 枚举.
+| 子阶段 | 状态 | 实现位置 |
+|--------|------|---------|
+| P4.1 413 → Reactive Compact | ✅ | `crates/runtime/src/agent_loop/turn_runner.rs` — `run_turn()` 内 413 错误时触发 `auto_compact()` 并重试，最多 3 次 |
+| P4.2 Max Output Tokens → 重试 | ✅ | `crates/runtime/src/agent_loop/turn_runner.rs` — 检测 `finish_reason.is_max_tokens()` 注入 nudge 继续生成，最多 3 次 |
+| P4.3 结构化 LlmError | ✅ | `crates/runtime-llm/src/lib.rs` — `LlmError` 枚举 + `FinishReason` 枚举；`classify_http_error()` 统一分类 |
 
 ### 验收标准
 
-- [ ] 模拟 413 错误时 turn 级别触发 reactive compact 并恢复
-- [ ] 模拟 max_output_tokens 截断时自动继续生成
-- [ ] 恢复失败时正确终止 turn
+- [x] 模拟 413 错误时 turn 级别触发 reactive compact 并恢复
+- [x] 模拟 max_output_tokens 截断时自动继续生成
+- [x] 恢复失败时正确终止 turn
 
 ### 影响范围
 
@@ -94,7 +86,7 @@
 
 ---
 
-## P5：API 韧性层 ✗ 未开始
+<!-- ## P5：API 韧性层 ✗ 未开始(暂时不做)
 
 降低 API 调用成本 (prompt caching) 和提升可用性 (模型降级、速率限制处理).
 
@@ -119,7 +111,7 @@
 - [ ] 切换模型后 thinking signatures 被正确剥离
 - [ ] 429 响应按 retry_after 时长分级处理
 
----
+--- -->
 
 ## P6：子 Agent (远期占位) ✗ 未开始
 

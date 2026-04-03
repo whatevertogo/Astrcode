@@ -47,6 +47,7 @@ use std::time::Duration;
 
 use astrcode_core::{AstrError, CancelToken, ModelRequest, ReasoningContent, Result};
 use async_trait::async_trait;
+use log::warn;
 use serde_json::Value;
 use tokio::{select, time::sleep};
 
@@ -54,6 +55,149 @@ use astrcode_core::{LlmMessage, ToolCallRequest, ToolDefinition};
 
 pub mod anthropic;
 pub mod openai;
+
+// ---------------------------------------------------------------------------
+// Structured LLM error types (P4.3)
+// ---------------------------------------------------------------------------
+
+/// 结构化的 LLM 错误分类，用于 turn 级别的错误恢复决策。
+///
+/// 替代原先基于字符串匹配的 `is_prompt_too_long()`，让上层能够
+/// 通过类型匹配精确判断错误性质并采取对应恢复策略。
+#[derive(Debug, Clone)]
+pub enum LlmError {
+    /// Prompt 超出模型上下文窗口 (HTTP 400/413)
+    PromptTooLong { status: u16, body: String },
+    /// 其他不可重试的客户端错误 (4xx, 非 413)
+    ClientError { status: u16, body: String },
+    /// 服务端错误 (5xx)
+    ServerError { status: u16, body: String },
+    /// 传输层错误 (DNS 失败、连接断开等)
+    Transport(String),
+    /// 请求被取消
+    Interrupted,
+    /// 流解析错误 (SSE 协议解析失败、JSON 无效等)
+    StreamParse(String),
+}
+
+impl LlmError {
+    /// 判断是否为 prompt too long 错误。
+    pub fn is_prompt_too_long(&self) -> bool {
+        matches!(self, LlmError::PromptTooLong { .. })
+    }
+
+    /// 判断是否为可恢复的错误 (prompt too long 可触发 compact).
+    pub fn is_recoverable(&self) -> bool {
+        self.is_prompt_too_long()
+    }
+}
+
+impl std::fmt::Display for LlmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LlmError::PromptTooLong { status, body } => {
+                write!(f, "prompt too long (HTTP {status}): {body}")
+            }
+            LlmError::ClientError { status, body } => {
+                write!(f, "client error (HTTP {status}): {body}")
+            }
+            LlmError::ServerError { status, body } => {
+                write!(f, "server error (HTTP {status}): {body}")
+            }
+            LlmError::Transport(msg) => write!(f, "transport error: {msg}"),
+            LlmError::Interrupted => write!(f, "LLM request interrupted"),
+            LlmError::StreamParse(msg) => write!(f, "stream parse error: {msg}"),
+        }
+    }
+}
+
+impl From<LlmError> for AstrError {
+    fn from(err: LlmError) -> Self {
+        match err {
+            LlmError::PromptTooLong { status, body } => {
+                AstrError::LlmRequestFailed { status, body }
+            }
+            LlmError::ClientError { status, body } => AstrError::LlmRequestFailed { status, body },
+            LlmError::ServerError { status, body } => AstrError::LlmRequestFailed { status, body },
+            LlmError::Transport(msg) => AstrError::Network(msg),
+            LlmError::Interrupted => AstrError::LlmInterrupted,
+            LlmError::StreamParse(msg) => AstrError::LlmStreamError(msg),
+        }
+    }
+}
+
+/// 从 HTTP 响应状态和 body 中分类 LLM 错误。
+///
+/// 优先匹配 prompt too long 特征，其次按状态码范围分类。
+pub fn classify_http_error(status: u16, body: &str) -> LlmError {
+    let body_lower = body.to_ascii_lowercase();
+    let is_context_exceeded = body_lower.contains("prompt too long")
+        || body_lower.contains("context length")
+        || body_lower.contains("maximum context")
+        || body_lower.contains("too many tokens");
+
+    if is_context_exceeded && matches!(status, 400 | 413) {
+        return LlmError::PromptTooLong {
+            status,
+            body: body.to_string(),
+        };
+    }
+
+    if status < 500 {
+        LlmError::ClientError {
+            status,
+            body: body.to_string(),
+        }
+    } else {
+        LlmError::ServerError {
+            status,
+            body: body.to_string(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Finish reason (P4.2)
+// ---------------------------------------------------------------------------
+
+/// LLM 响应结束原因，用于判断是否需要自动继续生成。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum FinishReason {
+    /// 模型自然结束输出
+    #[default]
+    Stop,
+    /// 输出被 max_tokens 限制截断，需要继续生成
+    MaxTokens,
+    /// 模型调用了工具
+    ToolCalls,
+    /// 其他未知原因
+    Other(String),
+}
+
+impl FinishReason {
+    /// 判断是否因 max_tokens 截断。
+    pub fn is_max_tokens(&self) -> bool {
+        matches!(self, FinishReason::MaxTokens)
+    }
+
+    /// 从 OpenAI/Anthropic API 返回的 finish_reason/stop_reason 字符串解析。
+    ///
+    /// 支持两种 API 的值：
+    /// - OpenAI: `stop`, `max_tokens`, `length`, `tool_calls`, `content_filter`
+    /// - Anthropic: `end_turn`, `max_tokens`, `tool_use`, `stop_sequence`
+    pub fn from_api_value(value: &str) -> Self {
+        match value {
+            // OpenAI 值
+            "stop" => FinishReason::Stop,
+            "max_tokens" | "length" => FinishReason::MaxTokens,
+            "tool_calls" => FinishReason::ToolCalls,
+            // Anthropic 值
+            "end_turn" | "stop_sequence" => FinishReason::Stop,
+            "tool_use" => FinishReason::ToolCalls,
+            other => FinishReason::Other(other.to_string()),
+        }
+    }
+}
 
 /// 模型能力限制，用于请求预算决策。
 ///
@@ -111,12 +255,18 @@ const MAX_RETRIES: u32 = 2;
 const RETRY_BASE_DELAY_MS: u64 = 250;
 
 /// 构建共享超时策略的 HTTP 客户端
+///
+/// # Panics
+///
+/// 仅在 reqwest 内部配置极端异常时 panic（几乎不可能发生）。
+/// 库 crate 通常应避免 panic，但 HTTP 客户端构建失败意味着
+/// 整个 LLM 子系统无法工作，此时 panic 比静默失败更合适。
 pub fn build_http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)
         .build()
-        .expect("http client should build")
+        .expect("http client should build with valid timeout config")
 }
 
 /// 判断 HTTP 状态码是否可重试
@@ -228,12 +378,16 @@ pub enum LlmEvent {
 /// 由 [`LlmAccumulator::finish`] 组装而成，包含所有文本内容、工具调用请求和推理内容。
 /// 非流式路径下，`usage` 字段会被填充；流式路径下 `usage` 为 `None`（Anthropic 流式
 /// 响应不返回用量，OpenAI 流式响应的用量在最后一个 chunk 中但当前未提取）。
+///
+/// `finish_reason` 字段用于判断输出是否被 max_tokens 截断 (P4.2)。
 #[derive(Clone, Debug, Default)]
 pub struct LlmOutput {
     pub content: String,
     pub tool_calls: Vec<ToolCallRequest>,
     pub reasoning: Option<ReasoningContent>,
     pub usage: Option<LlmUsage>,
+    /// 输出结束原因，用于检测 max_tokens 截断。
+    pub finish_reason: FinishReason,
 }
 
 /// 事件回调类型别名。
@@ -320,15 +474,35 @@ impl LlmAccumulator {
         let mut entries: Vec<_> = self.tool_calls.into_iter().collect();
         entries.sort_by_key(|(index, _)| *index);
 
-        let tool_calls = entries
+        let tool_calls: Vec<ToolCallRequest> = entries
             .into_iter()
-            .map(|(_, call)| ToolCallRequest {
-                id: call.id,
-                name: call.name,
-                args: serde_json::from_str(&call.arguments)
-                    .unwrap_or(Value::String(call.arguments)),
+            .map(|(_, call)| {
+                let args = match serde_json::from_str(&call.arguments) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        // JSON 解析失败时降级为原始字符串，并记录警告日志
+                        // 这通常意味着 LLM 返回了格式错误的工具参数
+                        warn!(
+                            "failed to parse tool call '{}' arguments as JSON: {}, falling back to raw string",
+                            call.name, error
+                        );
+                        Value::String(call.arguments)
+                    }
+                };
+                ToolCallRequest {
+                    id: call.id,
+                    name: call.name,
+                    args,
+                }
             })
             .collect();
+
+        // 根据是否有工具调用推断 finish_reason（流式路径下 API 不显式返回）
+        let finish_reason = if !tool_calls.is_empty() {
+            FinishReason::ToolCalls
+        } else {
+            FinishReason::Stop
+        };
 
         LlmOutput {
             content: self.content,
@@ -342,6 +516,7 @@ impl LlmAccumulator {
                 })
             },
             usage: None,
+            finish_reason,
         }
     }
 }
@@ -391,5 +566,133 @@ mod tests {
         assert_eq!(output.tool_calls[0].args, json!({ "a": 1 }));
         assert_eq!(output.tool_calls[1].id, "call_1");
         assert_eq!(output.tool_calls[1].args, json!({ "q": "hello" }));
+    }
+
+    // -----------------------------------------------------------------------
+    // P4.3: LlmError classification tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn llm_error_detects_prompt_too_long_413() {
+        let error = classify_http_error(413, "prompt too long for this model");
+        assert!(error.is_prompt_too_long());
+        assert!(error.is_recoverable());
+    }
+
+    #[test]
+    fn llm_error_detects_prompt_too_long_400() {
+        let error = classify_http_error(400, "context length exceeded");
+        assert!(error.is_prompt_too_long());
+        assert!(error.is_recoverable());
+    }
+
+    #[test]
+    fn llm_error_detects_maximum_context() {
+        let error = classify_http_error(413, "maximum context length reached");
+        assert!(error.is_prompt_too_long());
+    }
+
+    #[test]
+    fn llm_error_detects_too_many_tokens() {
+        let error = classify_http_error(400, "too many tokens in request");
+        assert!(error.is_prompt_too_long());
+    }
+
+    #[test]
+    fn llm_error_classifies_client_errors() {
+        let error = classify_http_error(401, "invalid api key");
+        assert!(!error.is_prompt_too_long());
+        assert!(!error.is_recoverable());
+        matches!(error, LlmError::ClientError { status: 401, .. });
+    }
+
+    #[test]
+    fn llm_error_classifies_server_errors() {
+        let error = classify_http_error(500, "internal server error");
+        assert!(!error.is_prompt_too_long());
+        assert!(!error.is_recoverable());
+        matches!(error, LlmError::ServerError { status: 500, .. });
+    }
+
+    #[test]
+    fn llm_error_display_formats_correctly() {
+        let error = LlmError::PromptTooLong {
+            status: 413,
+            body: "prompt too long".to_string(),
+        };
+        let display = format!("{error}");
+        assert!(display.contains("413"));
+        assert!(display.contains("prompt too long"));
+    }
+
+    #[test]
+    fn llm_error_converts_to_astr_error() {
+        let llm_error = LlmError::PromptTooLong {
+            status: 413,
+            body: "context length exceeded".to_string(),
+        };
+        let astr_error: AstrError = llm_error.into();
+        matches!(astr_error, AstrError::LlmRequestFailed { status: 413, .. });
+    }
+
+    // -----------------------------------------------------------------------
+    // P4.2: FinishReason tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn finish_reason_parses_openai_values() {
+        assert_eq!(FinishReason::from_api_value("stop"), FinishReason::Stop);
+        assert_eq!(
+            FinishReason::from_api_value("max_tokens"),
+            FinishReason::MaxTokens
+        );
+        assert_eq!(
+            FinishReason::from_api_value("tool_calls"),
+            FinishReason::ToolCalls
+        );
+        assert_eq!(
+            FinishReason::from_api_value("length"),
+            FinishReason::MaxTokens
+        );
+        assert_eq!(
+            FinishReason::from_api_value("content_filter"),
+            FinishReason::Other("content_filter".to_string())
+        );
+    }
+
+    #[test]
+    fn finish_reason_parses_anthropic_values() {
+        assert_eq!(FinishReason::from_api_value("end_turn"), FinishReason::Stop);
+        assert_eq!(
+            FinishReason::from_api_value("max_tokens"),
+            FinishReason::MaxTokens
+        );
+        assert_eq!(
+            FinishReason::from_api_value("tool_use"),
+            FinishReason::ToolCalls
+        );
+        assert_eq!(
+            FinishReason::from_api_value("stop_sequence"),
+            FinishReason::Stop
+        );
+    }
+
+    #[test]
+    fn finish_reason_is_max_tokens_detects_correctly() {
+        assert!(FinishReason::MaxTokens.is_max_tokens());
+        assert!(!FinishReason::Stop.is_max_tokens());
+        assert!(!FinishReason::ToolCalls.is_max_tokens());
+    }
+
+    #[test]
+    fn finish_reason_defaults_to_stop() {
+        let reason = FinishReason::default();
+        assert_eq!(reason, FinishReason::Stop);
+    }
+
+    #[test]
+    fn llm_output_finish_reason_defaults_to_stop() {
+        let output = LlmOutput::default();
+        assert_eq!(output.finish_reason, FinishReason::Stop);
     }
 }

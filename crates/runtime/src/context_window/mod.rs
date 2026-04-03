@@ -18,7 +18,7 @@ pub(crate) mod microcompact;
 pub(crate) mod token_usage;
 
 /// 自动压缩配置和入口函数。
-pub(crate) use compaction::{auto_compact, CompactConfig};
+pub(crate) use compaction::{auto_compact, is_prompt_too_long, CompactConfig};
 /// 微压缩应用函数。
 pub(crate) use microcompact::apply_microcompact;
 /// Token 估算、预算跟踪和压缩决策相关函数。

@@ -56,17 +56,19 @@ pub struct CapabilityContext {
 
 impl CapabilityContext {
     pub fn from_tool_context(ctx: &ToolContext, request_id: impl Into<Option<String>>) -> Self {
-        let working_dir = ctx.working_dir().to_string_lossy().into_owned();
+        // 只分配一次：先获取 PathBuf，再从中提取字符串用于 profile_context
+        let working_dir = ctx.working_dir().to_path_buf();
+        let working_dir_str = working_dir.to_string_lossy().into_owned();
         Self {
             request_id: request_id.into(),
             trace_id: None,
             session_id: ctx.session_id().to_string(),
-            working_dir: ctx.working_dir().to_path_buf(),
+            working_dir,
             cancel: ctx.cancel().clone(),
             profile: "coding".to_string(),
             profile_context: json!({
-                "workingDir": working_dir,
-                "repoRoot": working_dir,
+                "workingDir": working_dir_str,
+                "repoRoot": working_dir_str,
                 "approvalMode": "inherit"
             }),
             metadata: Value::Null,

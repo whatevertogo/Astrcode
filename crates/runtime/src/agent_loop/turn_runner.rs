@@ -45,6 +45,18 @@ use super::{
     AgentLoop, TurnOutcome,
 };
 
+// ---------------------------------------------------------------------------
+// Error recovery constants (P4)
+// ---------------------------------------------------------------------------
+
+/// 413 prompt too long 时 reactive compact 最大重试次数。
+/// 每次重试会进一步压缩上下文，超过此次数则终止 turn。
+const MAX_REACTIVE_COMPACT_ATTEMPTS: usize = 3;
+
+/// max_tokens 截断时自动继续生成的最大次数。
+/// 超过此次数后即使模型仍被截断也终止 turn，避免无限循环。
+const MAX_OUTPUT_CONTINUATION_ATTEMPTS: usize = 3;
+
 /// 执行一个完整的 agent turn（从用户提示到最终响应）。
 ///
 /// ## Turn 内部的 step 循环
@@ -128,9 +140,9 @@ pub(crate) async fn run_turn(
         // 消息顺序契约：prepend_messages 包含行为引导（如"编辑前先检查文件"），
         // append_messages 包含尾部指令或 few-shot 示例。用户历史消息夹在两者之间，
         // 确保行为引导始终在对话开头，尾部指令在最后（最靠近模型注意力焦点）。
-        let mut request_messages = plan.prepend_messages;
+        let mut request_messages = plan.prepend_messages.clone();
         request_messages.extend(messages.iter().cloned());
-        request_messages.extend(plan.append_messages);
+        request_messages.extend(plan.append_messages.clone());
         let microcompact_result = apply_microcompact(
             &request_messages,
             &agent_loop.prompt_capability_descriptors,
@@ -202,12 +214,16 @@ pub(crate) async fn run_turn(
         let mut tool_definitions = agent_loop.capabilities.tool_definitions();
         append_unique_tools(&mut tool_definitions, plan.extra_tools);
         let policy_ctx = agent_loop.policy_context(state, turn_id, step_index);
+        // 保留 system_prompt 和 plan 的克隆，用于 reactive compact 重试 (P4.1)
+        let system_prompt_for_retry = system_prompt.clone();
+        let prepend_messages = plan.prepend_messages.clone();
+        let append_messages = plan.append_messages.clone();
         let request = ModelRequest {
             messages: request_messages,
             tools: tool_definitions,
             system_prompt,
         };
-        let request = match agent_loop
+        let mut request = match agent_loop
             .policy
             .check_model_request(request, &policy_ctx)
             .await
@@ -218,22 +234,120 @@ pub(crate) async fn run_turn(
             }
         };
 
-        let output = match llm_cycle::generate_response(
-            &provider,
-            request,
-            turn_id,
-            cancel.clone(),
-            on_event,
-        )
-        .await
-        {
-            Ok(output) => output,
-            Err(error) => {
-                return if cancel.is_cancelled() {
-                    report_interrupted(turn_id, on_event, emit_turn_done)
-                } else {
-                    report_error(turn_id, error.to_string(), on_event, emit_turn_done)
-                };
+        // 413 prompt too long → turn 级别 reactive compact
+        // 当 LLM 调用返回 prompt too long 错误时，自动触发压缩并重试。
+        // 与 compaction.rs 中的 compact 阶段重试不同，这是在 turn 执行层面的恢复。
+        let mut reactive_compact_attempts = 0usize;
+        let output = loop {
+            match llm_cycle::generate_response(
+                &provider,
+                request.clone(),
+                turn_id,
+                cancel.clone(),
+                on_event,
+            )
+            .await
+            {
+                Ok(output) => break output,
+                Err(error) => {
+                    // 使用结构化错误分类判断是否为 prompt too long (P4.3)
+                    let is_too_long = crate::context_window::is_prompt_too_long(&error);
+                    if is_too_long
+                        && agent_loop.auto_compact_enabled()
+                        && reactive_compact_attempts < MAX_REACTIVE_COMPACT_ATTEMPTS
+                    {
+                        reactive_compact_attempts += 1;
+                        log::warn!(
+                            "[turn {}] LLM returned prompt too long, attempting reactive compact ({}/{})",
+                            turn_id,
+                            reactive_compact_attempts,
+                            MAX_REACTIVE_COMPACT_ATTEMPTS
+                        );
+
+                        // 触发 reactive compact：压缩当前消息历史
+                        let compact_result = auto_compact(
+                            provider.as_ref(),
+                            &messages,
+                            system_prompt_for_retry.as_deref(),
+                            CompactConfig {
+                                keep_recent_turns: agent_loop.compact_keep_recent_turns(),
+                                trigger: astrcode_core::CompactTrigger::Auto,
+                            },
+                            cancel.clone(),
+                        )
+                        .await;
+
+                        match compact_result {
+                            Ok(Some(compact)) => {
+                                on_event(StorageEvent::CompactApplied {
+                                    turn_id: Some(turn_id.to_string()),
+                                    trigger: astrcode_core::CompactTrigger::Auto,
+                                    summary: compact.summary.clone(),
+                                    preserved_recent_turns: compact
+                                        .preserved_recent_turns
+                                        .min(u32::MAX as usize)
+                                        as u32,
+                                    pre_tokens: compact.pre_tokens.min(u32::MAX as usize) as u32,
+                                    post_tokens_estimate: compact
+                                        .post_tokens_estimate
+                                        .min(u32::MAX as usize)
+                                        as u32,
+                                    messages_removed: compact
+                                        .messages_removed
+                                        .min(u32::MAX as usize)
+                                        as u32,
+                                    tokens_freed: compact.tokens_freed.min(u32::MAX as usize)
+                                        as u32,
+                                    timestamp: compact.timestamp,
+                                })?;
+                                messages = compact.messages;
+                                // 重新构建请求消息并继续循环重试
+                                let mut retry_messages = prepend_messages.clone();
+                                retry_messages.extend(messages.iter().cloned());
+                                retry_messages.extend(append_messages.clone());
+                                let microcompact_result = apply_microcompact(
+                                    &retry_messages,
+                                    &agent_loop.prompt_capability_descriptors,
+                                    agent_loop.tool_result_max_bytes(),
+                                    agent_loop.compact_keep_recent_turns(),
+                                    effective_context_window(model_limits),
+                                );
+                                request.messages = microcompact_result.messages;
+                                continue;
+                            }
+                            Ok(None) => {
+                                // compact 返回 None 表示无可压缩内容，无法恢复
+                                return report_error(
+                                    turn_id,
+                                    format!(
+                                        "prompt too long but no compressible history available after {} attempts",
+                                        reactive_compact_attempts
+                                    ),
+                                    on_event,
+                                    emit_turn_done,
+                                );
+                            }
+                            Err(compact_error) => {
+                                if cancel.is_cancelled() {
+                                    return report_interrupted(turn_id, on_event, emit_turn_done);
+                                }
+                                return report_error(
+                                    turn_id,
+                                    format!(
+                                        "reactive compact failed after {} attempts: {}",
+                                        reactive_compact_attempts, compact_error
+                                    ),
+                                    on_event,
+                                    emit_turn_done,
+                                );
+                            }
+                        }
+                    } else if cancel.is_cancelled() {
+                        return report_interrupted(turn_id, on_event, emit_turn_done);
+                    } else {
+                        return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
+                    }
+                }
             }
         };
         token_tracker.record_usage(output.usage);
@@ -258,6 +372,40 @@ pub(crate) async fn run_turn(
             tool_calls: output.tool_calls,
             reasoning: output.reasoning,
         });
+
+        // 检测 max_tokens 截断 → 注入 nudge 消息继续生成
+        // 当模型因 max_tokens 限制截断输出时，自动注入一条继续提示，
+        // 鼓励模型从截断处继续生成。最多重试 MAX_OUTPUT_CONTINUATION_ATTEMPTS 次。
+        if output.finish_reason.is_max_tokens() {
+            let continuation_count = 0u8; // 当前 turn 内的续命计数
+            if continuation_count < MAX_OUTPUT_CONTINUATION_ATTEMPTS as u8 {
+                log::warn!(
+                    "[turn {}] output truncated by max_tokens, injecting continue nudge ({}/{})",
+                    turn_id,
+                    continuation_count + 1,
+                    MAX_OUTPUT_CONTINUATION_ATTEMPTS
+                );
+
+                // 注入 nudge 消息，告诉模型继续生成
+                messages.push(LlmMessage::User {
+                    content: "Continue from where you left off. Do not repeat or summarize."
+                        .to_string(),
+                    origin: astrcode_core::UserMessageOrigin::AutoContinueNudge,
+                });
+
+                // 不终止 turn，继续下一轮 step 循环
+                step_index += 1;
+                continue;
+            } else {
+                log::warn!(
+                    "[turn {}] max_tokens continuation limit reached ({}), ending turn",
+                    turn_id,
+                    MAX_OUTPUT_CONTINUATION_ATTEMPTS
+                );
+                // 超过最大续命次数，正常结束 turn
+                return complete_turn(turn_id, TurnOutcome::Completed, on_event, emit_turn_done);
+            }
+        }
 
         if tool_calls.is_empty() {
             return complete_turn(turn_id, TurnOutcome::Completed, on_event, emit_turn_done);

@@ -252,16 +252,19 @@ fn extract_summary(content: &str) -> Result<String> {
     Ok(summary)
 }
 
-fn is_prompt_too_long(error: &AstrError) -> bool {
+/// 判断错误是否为 prompt too long。
+///
+/// 使用结构化错误分类 (P4.3)，替代原先的纯字符串匹配。
+/// 同时保持向后兼容：仍支持从 AstrError 中提取信息。
+pub(crate) fn is_prompt_too_long(error: &astrcode_core::AstrError) -> bool {
     match error {
-        AstrError::LlmRequestFailed { status, body } => {
-            matches!(*status, 400 | 413) && {
-                let body = body.to_ascii_lowercase();
-                body.contains("prompt too long")
-                    || body.contains("context length")
-                    || body.contains("maximum context")
-                    || body.contains("too many tokens")
-            }
+        astrcode_core::AstrError::LlmRequestFailed { status, body } => {
+            let body_lower = body.to_ascii_lowercase();
+            matches!(*status, 400 | 413)
+                && (body_lower.contains("prompt too long")
+                    || body_lower.contains("context length")
+                    || body_lower.contains("maximum context")
+                    || body_lower.contains("too many tokens"))
         }
         _ => false,
     }

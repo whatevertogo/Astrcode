@@ -34,6 +34,22 @@ pub fn user_identity_md_path() -> Option<PathBuf> {
 /// from bloating the system prompt.
 const MAX_IDENTITY_SIZE: usize = 4096;
 
+/// 按字符边界截断字符串，避免截断多字节 UTF-8 字符。
+///
+/// 如果 `max_bytes` 恰好落在多字节字符中间，
+/// 会向前找到最后一个完整的字符边界。
+fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    // 从 max_bytes 向前找，直到找到有效的 UTF-8 字符边界
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 pub fn load_identity_md(path: &Path) -> Option<String> {
     if !path.exists() {
         return None;
@@ -41,21 +57,25 @@ pub fn load_identity_md(path: &Path) -> Option<String> {
 
     match fs::read_to_string(path) {
         Ok(content) => {
-            if content.len() > MAX_IDENTITY_SIZE {
-                warn!(
-                    "identity file {} exceeds {} bytes ({} bytes), using as-is",
-                    path.display(),
-                    MAX_IDENTITY_SIZE,
-                    content.len()
-                );
-            }
             let trimmed = content.trim().to_string();
             if trimmed.is_empty() {
-                None
-            } else {
-                info!("loaded custom identity from {}", path.display());
-                Some(trimmed)
+                return None;
             }
+            // 超过限制时截断到 MAX_IDENTITY_SIZE 字节，并记录警告
+            if trimmed.len() > MAX_IDENTITY_SIZE {
+                warn!(
+                    "identity file {} exceeds {} bytes ({} bytes), truncating to limit",
+                    path.display(),
+                    MAX_IDENTITY_SIZE,
+                    trimmed.len()
+                );
+                // 按字符边界截断，避免截断多字节字符
+                let truncated = truncate_to_char_boundary(&trimmed, MAX_IDENTITY_SIZE);
+                info!("loaded custom identity from {} (truncated)", path.display());
+                return Some(truncated.to_string());
+            }
+            info!("loaded custom identity from {}", path.display());
+            Some(trimmed)
         }
         Err(error) => {
             warn!("failed to read {}: {}", path.display(), error);
