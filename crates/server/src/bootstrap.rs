@@ -5,7 +5,7 @@
 //! ## 职责范围
 //!
 //! - **前端静态文件服务**：加载 `frontend/dist/` 构建产物并注入 bootstrap token
-//! - **运行信息管理**：写入/清理 `~/.astrcode/run.json`，供 Tauri 发现 server 端口
+//! - **运行信息管理**：写入/清理 `~/.astrcode/run.json`，供浏览器桥接和诊断读取
 //! - **浏览器引导 token 注入**：将 `window.__ASTRCODE_BOOTSTRAP__` 嵌入 HTML
 //! - **CORS 配置**：开发模式下允许 Vite dev server (5173) 跨域访问
 //! - **Token 生成**：32 字节随机 hex token，bootstrap token 有效期 24 小时
@@ -16,14 +16,13 @@
 //! 1. 生成 bootstrap token → 2. 写 `run.json` → 3. 配置 CORS →
 //! 4. 加载前端构建产物 → 5. 注入 token 到 HTML → 6. 挂载路由
 //!
-//! ## 多实例支持
-//!
-//! 桌面端新打开的 exe 会优先读取 `run.json` 指向的现有 server，
-//! 只有没有可用实例时才再起 sidecar。多个桌面实例共享同一会话事件流。
+//! `run.json` 不再承担桌面端单实例发现职责；桌面端进程间协调改走宿主 IPC。
+//! 它保留的原因是浏览器开发模式仍需要一个稳定的本地文件来读取 bootstrap token。
 
 use std::path::{Path as FsPath, PathBuf};
 
 use anyhow::{anyhow, Context, Result as AnyhowResult};
+use astrcode_core::LocalServerInfo;
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode};
@@ -32,7 +31,7 @@ use axum::response::Response;
 use axum::routing::get;
 use axum::{Json, Router};
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tower::ServiceExt;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
@@ -49,20 +48,6 @@ pub(crate) const BOOTSTRAP_TOKEN_TTL_HOURS: i64 = 24;
 /// 仅在测试编译时可用，用于将 `dirs::home_dir()` 重定向到临时目录。
 #[cfg(test)]
 pub(crate) use astrcode_core::home::ASTRCODE_HOME_DIR_ENV as APP_HOME_OVERRIDE_ENV;
-
-/// 运行信息结构体。
-///
-/// 写入 `~/.astrcode/run.json`，包含 server 端口、bootstrap token、
-/// 进程 ID、启动时间和过期时间。Tauri 通过读取此文件发现已运行的 server 实例。
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RunInfo {
-    port: u16,
-    token: String,
-    pid: u32,
-    started_at: String,
-    expires_at_ms: i64,
-}
 
 /// 浏览器 bootstrap 桥接端点返回的载荷（仅包含 token）
 #[derive(Debug, Serialize)]
@@ -98,7 +83,7 @@ pub(crate) async fn serve_run_info(
         message: e.to_string(),
     })?;
 
-    let run_info: RunInfo = serde_json::from_str(&raw).map_err(|e| ApiError {
+    let run_info: LocalServerInfo = serde_json::from_str(&raw).map_err(|e| ApiError {
         status: StatusCode::INTERNAL_SERVER_ERROR,
         message: e.to_string(),
     })?;
@@ -325,11 +310,10 @@ pub(crate) fn bootstrap_token_expires_at_ms(started_at: chrono::DateTime<chrono:
 /// 写入运行信息到 `~/.astrcode/run.json`。
 ///
 /// 包含端口、token、进程 ID、启动时间和过期时间。
-/// Tauri 桌面端通过读取此文件发现已运行的 server 实例，
-/// 避免重复启动 sidecar 进程。
+/// 浏览器开发桥接和人工排障都依赖它，但桌面端单实例不再靠它做主发现。
 ///
 /// 如果目录不存在会自动创建。写入失败会携带路径上下文信息。
-pub(crate) fn write_run_info(port: u16, token: &str, expires_at_ms: i64) -> AnyhowResult<()> {
+pub(crate) fn write_run_info(run_info: &LocalServerInfo) -> AnyhowResult<()> {
     let path = run_info_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
@@ -337,15 +321,7 @@ pub(crate) fn write_run_info(port: u16, token: &str, expires_at_ms: i64) -> Anyh
         })?;
     }
 
-    let started_at = chrono::Utc::now();
-    let payload = RunInfo {
-        port,
-        token: token.to_string(),
-        pid: std::process::id(),
-        started_at: started_at.to_rfc3339(),
-        expires_at_ms,
-    };
-    let json = serde_json::to_string_pretty(&payload).context("failed to serialize run info")?;
+    let json = serde_json::to_string_pretty(run_info).context("failed to serialize run info")?;
     std::fs::write(&path, json)
         .with_context(|| format!("failed to write run info '{}'", path.display()))?;
     Ok(())
@@ -364,7 +340,7 @@ pub(crate) fn clear_run_info(expected_pid: u32) -> AnyhowResult<()> {
 
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read run info '{}'", path.display()))?;
-    let run_info: RunInfo = serde_json::from_str(&raw)
+    let run_info: LocalServerInfo = serde_json::from_str(&raw)
         .with_context(|| format!("failed to parse run info '{}'", path.display()))?;
     if run_info.pid != expected_pid {
         return Ok(());
@@ -384,6 +360,8 @@ fn run_info_path() -> AnyhowResult<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use astrcode_core::LocalServerInfo;
+
     use crate::test_support::ServerTestEnvGuard;
 
     use super::{bootstrap_token_expires_at_ms, clear_run_info, run_info_path, write_run_info};
@@ -392,8 +370,14 @@ mod tests {
     fn write_run_info_persists_expiry_and_clear_run_info_removes_matching_pid() {
         let _guard = ServerTestEnvGuard::new();
         let expires_at_ms = bootstrap_token_expires_at_ms(chrono::Utc::now());
-        write_run_info(62000, "bootstrap-token", expires_at_ms)
-            .expect("run info should be written");
+        write_run_info(&LocalServerInfo {
+            port: 62000,
+            token: "bootstrap-token".to_string(),
+            pid: std::process::id(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+            expires_at_ms,
+        })
+        .expect("run info should be written");
 
         let path = run_info_path().expect("run info path should resolve");
         let payload = std::fs::read_to_string(&path).expect("run info should be readable");

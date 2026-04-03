@@ -36,7 +36,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result as AnyhowResult};
-use astrcode_core::{AstrError, RuntimeCoordinator};
+use astrcode_core::{AstrError, LocalServerInfo, RuntimeCoordinator};
 use astrcode_runtime::{bootstrap_runtime, RuntimeGovernance, RuntimeService, ServiceError};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -163,9 +163,10 @@ impl From<ServiceError> for ApiError {
 /// 1. Bootstrap 运行时（加载插件、初始化 LLM）
 /// 2. 绑定随机端口（127.0.0.1:0）
 /// 3. 生成 bootstrap token
-/// 4. 加载前端构建产物
-/// 5. 写入 run.json（供前端读取）
-/// 6. 启动 HTTP 服务器
+/// 4. 构造共享的本地 server 信息 DTO
+/// 5. 写入 run.json（供浏览器桥接/诊断读取）
+/// 6. 通过 stdout 发出结构化 ready 事件（供桌面端等待）
+/// 7. 启动 HTTP 服务器
 #[tokio::main]
 async fn main() -> AnyhowResult<()> {
     let runtime = bootstrap_runtime()
@@ -179,16 +180,26 @@ async fn main() -> AnyhowResult<()> {
     let address: SocketAddr = listener
         .local_addr()
         .map_err(|e| AstrError::io("failed to resolve server listener address", e))?;
+    let started_at = chrono::Utc::now();
     let token = random_hex_token();
-    let bootstrap_expires_at_ms = bootstrap_token_expires_at_ms(chrono::Utc::now());
+    let bootstrap_expires_at_ms = bootstrap_token_expires_at_ms(started_at);
     let bootstrap_auth = BootstrapAuth::new(token.clone(), bootstrap_expires_at_ms);
     let server_origin = format!("http://127.0.0.1:{}", address.port());
     let frontend_build = load_frontend_build(&server_origin, bootstrap_auth.token())?;
-    write_run_info(
-        address.port(),
-        bootstrap_auth.token(),
-        bootstrap_auth.expires_at_ms(),
-    )?;
+    let local_server_info = LocalServerInfo {
+        port: address.port(),
+        token: bootstrap_auth.token().to_string(),
+        pid: std::process::id(),
+        started_at: started_at.to_rfc3339(),
+        expires_at_ms: bootstrap_auth.expires_at_ms(),
+    };
+    write_run_info(&local_server_info)?;
+    println!(
+        "{}",
+        local_server_info
+            .to_ready_line()
+            .map_err(|error| anyhow!("failed to encode sidecar ready payload: {error}"))?
+    );
     println!(
         "Ready: http://localhost:{}/ (API routes live under /api)",
         address.port()

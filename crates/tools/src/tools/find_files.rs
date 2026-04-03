@@ -168,9 +168,15 @@ fn validate_glob_pattern(pattern: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
 fn looks_like_windows_drive_relative_path(pattern: &str) -> bool {
     let bytes = pattern.as_bytes();
     bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+#[cfg(not(windows))]
+fn looks_like_windows_drive_relative_path(_pattern: &str) -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -291,5 +297,20 @@ mod tests {
         let paths: Vec<String> =
             serde_json::from_str(&result.output).expect("output should be valid json");
         assert_eq!(paths.len(), 1);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn validate_glob_pattern_allows_unix_glob_with_colon_after_drive_like_prefix() {
+        validate_glob_pattern("a:*.rs").expect("unix glob should remain valid");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn validate_glob_pattern_rejects_windows_drive_relative_pattern() {
+        let error = validate_glob_pattern("a:*.rs").expect_err("drive-relative path must fail");
+        assert!(error
+            .to_string()
+            .contains("must stay within the working directory"));
     }
 }

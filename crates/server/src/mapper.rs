@@ -531,16 +531,42 @@ pub(crate) fn api_key_preview(api_key: Option<&str>) -> String {
         }
         Some(value) if value.starts_with("literal:") => {
             let key = value.trim_start_matches("literal:").trim();
-            if key.chars().count() > 4 {
-                format!("****{}", &key[key.len() - 4..])
-            } else {
-                "****".to_string()
-            }
+            masked_key_preview(key)
         }
         Some(value) if is_env_var_name(value) && std::env::var_os(value).is_some() => {
             format!("环境变量: {}", value)
         }
-        Some(value) if value.len() > 4 => format!("****{}", &value[value.len() - 4..]),
-        Some(_) => "****".to_string(),
+        Some(value) => masked_key_preview(value),
+    }
+}
+
+fn masked_key_preview(value: &str) -> String {
+    let char_starts: Vec<usize> = value.char_indices().map(|(index, _)| index).collect();
+
+    if char_starts.len() <= 4 {
+        "****".to_string()
+    } else {
+        // 预览语义是“最后 4 个字符”而不是“最后 4 个字节”，
+        // 用字符起始位置切片可以避免多字节 UTF-8 密钥在预览时 panic。
+        let suffix_start = char_starts[char_starts.len() - 4];
+        format!("****{}", &value[suffix_start..])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::api_key_preview;
+
+    #[test]
+    fn api_key_preview_masks_utf8_literal_without_panicking() {
+        assert_eq!(
+            api_key_preview(Some("literal:令牌甲乙丙丁")),
+            "****甲乙丙丁"
+        );
+    }
+
+    #[test]
+    fn api_key_preview_masks_utf8_plain_value_without_panicking() {
+        assert_eq!(api_key_preview(Some("令牌甲乙丙丁戊")), "****乙丙丁戊");
     }
 }

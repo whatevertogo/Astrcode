@@ -22,6 +22,7 @@ pub mod env;
 mod error;
 pub mod event;
 pub mod home;
+pub mod local_server;
 pub mod plugin;
 pub mod policy;
 pub mod project;
@@ -51,6 +52,7 @@ pub use event::{
     generate_session_id, phase_of_storage_event, replay_records, AgentEvent, CompactTrigger,
     EventTranslator, Phase, StorageEvent, StoredEvent, StoredEventLine,
 };
+pub use local_server::{LocalServerInfo, LOCAL_SERVER_READY_PREFIX};
 pub use plugin::{PluginHealth, PluginManifest, PluginRegistry, PluginState, PluginType};
 pub use policy::{
     AllowAllPolicyEngine, ApprovalDefault, ApprovalPending, ApprovalRequest, ApprovalResolution,

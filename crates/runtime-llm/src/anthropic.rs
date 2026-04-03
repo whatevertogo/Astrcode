@@ -433,9 +433,9 @@ fn parse_sse_block(block: &str) -> Result<Option<(String, Value)>> {
     let mut data_lines = Vec::new();
 
     for line in trimmed.lines() {
-        if let Some(value) = line.strip_prefix("event: ") {
+        if let Some(value) = sse_field_value(line, "event") {
             event_type = Some(value.trim().to_string());
-        } else if let Some(value) = line.strip_prefix("data: ") {
+        } else if let Some(value) = sse_field_value(line, "data") {
             data_lines.push(value);
         }
     }
@@ -457,6 +457,14 @@ fn parse_sse_block(block: &str) -> Result<Option<(String, Value)>> {
         .unwrap_or_default();
 
     Ok(Some((event_type, payload)))
+}
+
+fn sse_field_value<'a>(line: &'a str, field: &str) -> Option<&'a str> {
+    let value = line.strip_prefix(field)?.strip_prefix(':')?;
+
+    // SSE 规范只忽略冒号后的一个可选空格；这里兼容 `data:...` 和 `data: ...`，
+    // 同时保留业务数据中其余前导空白，避免悄悄改写 payload。
+    Some(value.strip_prefix(' ').unwrap_or(value))
 }
 
 /// 从 `content_block_start` 事件 payload 中提取内容块。
@@ -898,6 +906,21 @@ mod tests {
         assert_eq!(output.content, "hello");
         assert_eq!(output.tool_calls.len(), 1);
         assert_eq!(output.tool_calls[0].args, json!({ "q": "rust" }));
+    }
+
+    #[test]
+    fn parse_sse_block_accepts_data_lines_without_space_after_colon() {
+        let block = concat!(
+            "event:content_block_delta\n",
+            "data:{\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n"
+        );
+
+        let parsed = parse_sse_block(block)
+            .expect("block should parse")
+            .expect("block should contain payload");
+
+        assert_eq!(parsed.0, "content_block_delta");
+        assert_eq!(parsed.1["delta"]["text"], json!("hello"));
     }
 
     #[test]

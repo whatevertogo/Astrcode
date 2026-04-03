@@ -8,7 +8,8 @@
 //! - 截断点必须在 UTF-8 字符边界上，避免多字节字符被截断成无效字符串
 //! - 返回 metadata 包含原始字节数和是否截断标记
 
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -85,18 +86,23 @@ impl Tool for ReadFileTool {
         let started_at = Instant::now();
         let max_bytes = args.max_bytes.unwrap_or(64 * 1024);
         let path = resolve_path(ctx, &args.path)?;
-
-        let bytes = fs::read(&path)
-            .map_err(|e| AstrError::io(format!("failed reading file '{}'", path.display()), e))?;
-        let content = String::from_utf8_lossy(&bytes).to_string();
-        let truncated = content.len() > max_bytes;
+        let total_bytes = fs::metadata(&path)
+            .map_err(|e| {
+                AstrError::io(
+                    format!("failed reading metadata for '{}'", path.display()),
+                    e,
+                )
+            })?
+            .len();
+        let truncated = total_bytes > max_bytes as u64;
+        let bytes = read_file_prefix(&path, max_bytes, truncated)?;
         let content = if truncated {
-            // `maxBytes` 仍按字节预算工作，但截断点必须落在 UTF-8 字符边界上，
-            // 否则中文/emoji 等多字节字符会在切片时被截断成无效字符串。
-            let truncate_at = content.floor_char_boundary(max_bytes);
-            content[..truncate_at].to_string()
+            // `maxBytes` 仍按字节预算工作，但如果预算恰好截在 UTF-8 多字节序列中间，
+            // 必须回退到最后一个完整字符边界，避免返回伪造的替换字符。
+            let truncate_at = utf8_safe_prefix_len(&bytes);
+            String::from_utf8_lossy(&bytes[..truncate_at]).to_string()
         } else {
-            content
+            String::from_utf8_lossy(&bytes).to_string()
         };
 
         Ok(ToolExecutionResult {
@@ -107,13 +113,37 @@ impl Tool for ReadFileTool {
             error: None,
             metadata: Some(json!({
                 "path": path,
-                "bytes": bytes.len(),
+                "bytes": total_bytes,
                 "truncated": truncated,
             })),
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated,
         })
     }
+}
+
+fn read_file_prefix(path: &PathBuf, max_bytes: usize, truncated: bool) -> Result<Vec<u8>> {
+    let mut file = File::open(path)
+        .map_err(|e| AstrError::io(format!("failed reading file '{}'", path.display()), e))?;
+
+    if truncated {
+        let mut buffer = Vec::with_capacity(max_bytes);
+        file.take(max_bytes as u64)
+            .read_to_end(&mut buffer)
+            .map_err(|e| AstrError::io(format!("failed reading file '{}'", path.display()), e))?;
+        Ok(buffer)
+    } else {
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)
+            .map_err(|e| AstrError::io(format!("failed reading file '{}'", path.display()), e))?;
+        Ok(buffer)
+    }
+}
+
+fn utf8_safe_prefix_len(bytes: &[u8]) -> usize {
+    std::str::from_utf8(bytes)
+        .map(|_| bytes.len())
+        .unwrap_or_else(|error| error.valid_up_to())
 }
 
 #[cfg(test)]
