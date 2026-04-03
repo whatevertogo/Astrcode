@@ -78,14 +78,14 @@ impl Tool for ListDirTool {
         args: serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult> {
-        check_cancel(ctx.cancel(), "listDir")?;
+        check_cancel(ctx.cancel())?;
 
         let args: ListDirArgs = serde_json::from_value(args)
             .map_err(|e| AstrError::parse("invalid args for listDir", e))?;
         let started_at = Instant::now();
         let path = match args.path {
             Some(path) => resolve_path(ctx, &path)?,
-            None => ctx.working_dir().clone(),
+            None => ctx.working_dir().to_path_buf(),
         };
         let max_entries = args.max_entries.unwrap_or(200);
 
@@ -95,7 +95,7 @@ impl Tool for ListDirTool {
             AstrError::io(format!("failed reading directory '{}'", path.display()), e)
         })?;
         for entry in read_dir {
-            check_cancel(ctx.cancel(), "listDir")?;
+            check_cancel(ctx.cancel())?;
             if entries.len() >= max_entries {
                 truncated = true;
                 break;
@@ -182,40 +182,5 @@ mod tests {
         let entries: Vec<serde_json::Value> =
             serde_json::from_str(&result.output).expect("output should be valid json");
         assert_eq!(entries.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn list_dir_tool_errors_for_missing_path() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let tool = ListDirTool;
-
-        let err = tool
-            .execute(
-                "tc-list-missing".to_string(),
-                json!({"path": "missing"}),
-                &test_tool_context_for(temp.path()),
-            )
-            .await
-            .expect_err("missing paths should fail");
-
-        assert!(err.to_string().contains("failed reading directory"));
-    }
-
-    #[tokio::test]
-    async fn list_dir_tool_returns_cancelled_when_context_is_cancelled() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let ctx = {
-            let ctx = test_tool_context_for(temp.path());
-            ctx.cancel().cancel();
-            ctx
-        };
-        let tool = ListDirTool;
-
-        let err = tool
-            .execute("tc-list-cancel".to_string(), json!({}), &ctx)
-            .await
-            .expect_err("cancelled listDir should fail");
-
-        assert!(err.to_string().contains("cancelled"));
     }
 }

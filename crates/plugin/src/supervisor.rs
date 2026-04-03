@@ -278,18 +278,7 @@ pub fn default_initialize_message(
 
 /// 构建默认的 profiles 列表。
 ///
-/// 当前只支持 `coding` profile，包含编码工作流的上下文 schema：
-/// - `workingDir` — 工作目录
-/// - `repoRoot` — 仓库根目录
-/// - `openFiles` — 已打开的文件列表
-/// - `activeFile` — 当前活跃文件
-/// - `selection` — 选区信息
-/// - `approvalMode` — 审批模式
-///
-/// # 扩展
-///
-/// 未来可以添加更多 profile（如 `review`、`debug` 等），
-/// 每个 profile 定义自己的上下文 schema。
+/// 当前只支持 `coding` profile，包含编码工作流的上下文 schema。
 pub fn default_profiles() -> Vec<ProfileDescriptor> {
     vec![ProfileDescriptor {
         name: "coding".to_string(),

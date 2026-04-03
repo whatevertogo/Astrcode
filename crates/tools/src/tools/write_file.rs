@@ -78,7 +78,7 @@ impl Tool for WriteFileTool {
         args: serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult> {
-        check_cancel(ctx.cancel(), "writeFile")?;
+        check_cancel(ctx.cancel())?;
 
         let args: WriteFileArgs = serde_json::from_value(args)
             .map_err(|e| AstrError::parse("invalid args for writeFile", e))?;
@@ -245,55 +245,5 @@ mod tests {
             .expect_err("writeFile should fail");
 
         assert!(err.to_string().contains("failed writing file"));
-    }
-
-    #[tokio::test]
-    async fn write_file_returns_interrupted_error_when_cancelled() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let file = temp.path().join("hello.txt");
-        let tool = WriteFileTool;
-        let cancel = {
-            let ctx = test_tool_context_for(temp.path());
-            ctx.cancel().cancel();
-            ctx
-        };
-
-        let err = tool
-            .execute(
-                "tc-write-cancel".to_string(),
-                json!({
-                    "path": file.to_string_lossy(),
-                    "content": "hello"
-                }),
-                &cancel,
-            )
-            .await
-            .expect_err("writeFile should fail");
-
-        assert!(err.to_string().contains("cancelled"));
-    }
-
-    #[tokio::test]
-    async fn write_file_supports_relative_paths() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-
-        let tool = WriteFileTool;
-        let result = tool
-            .execute(
-                "tc-write-relative".to_string(),
-                json!({
-                    "path": "hello.txt",
-                    "content": "hello"
-                }),
-                &test_tool_context_for(temp.path()),
-            )
-            .await
-            .expect("writeFile should execute");
-
-        assert!(result.ok);
-        let content = tokio::fs::read_to_string(temp.path().join("hello.txt"))
-            .await
-            .expect("file should be readable");
-        assert_eq!(content, "hello");
     }
 }

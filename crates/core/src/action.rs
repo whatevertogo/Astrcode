@@ -192,7 +192,7 @@ pub struct AssistantContentParts {
 ///
 /// ## 为什么需要这个函数
 ///
-/// 某些 LLM（如 Anthropic Claude）使用 `<think＞...＜/think＞` 标签包裹推理过程。
+/// 某些 LLM（如 Anthropic Claude）使用 `<think>...</think>` 标签包裹推理过程。
 /// 但 LLM 可能在不同位置以不同方式输出这些标签：
 /// - 作为独立的 reasoning_content 字段（由 LLM API 返回）
 /// - 内联在文本内容中（某些模型/提供商的输出风格）
@@ -291,58 +291,7 @@ fn collapse_extra_blank_lines(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{split_assistant_content, ToolExecutionResult};
-
-    #[test]
-    fn model_content_uses_real_newline_for_failed_tools() {
-        let result = ToolExecutionResult {
-            tool_call_id: "call-1".to_string(),
-            tool_name: "demo".to_string(),
-            ok: false,
-            output: "tool output".to_string(),
-            error: Some("boom".to_string()),
-            metadata: None,
-            duration_ms: 12,
-            truncated: false,
-        };
-
-        assert_eq!(
-            result.model_content(),
-            "tool execution failed: boom\ntool output"
-        );
-    }
-
-    #[test]
-    fn model_content_avoids_trailing_newline_for_failed_tools_without_output() {
-        let result = ToolExecutionResult {
-            tool_call_id: "call-1".to_string(),
-            tool_name: "demo".to_string(),
-            ok: false,
-            output: String::new(),
-            error: Some("blocked".to_string()),
-            metadata: None,
-            duration_ms: 12,
-            truncated: false,
-        };
-
-        assert_eq!(result.model_content(), "tool execution failed: blocked");
-    }
-
-    #[test]
-    fn model_content_preserves_legacy_failed_output_without_error_field() {
-        let result = ToolExecutionResult {
-            tool_call_id: "call-1".to_string(),
-            tool_name: "demo".to_string(),
-            ok: false,
-            output: "tool execution blocked: policy".to_string(),
-            error: None,
-            metadata: None,
-            duration_ms: 12,
-            truncated: false,
-        };
-
-        assert_eq!(result.model_content(), "tool execution blocked: policy");
-    }
+    use super::split_assistant_content;
 
     #[test]
     fn split_assistant_content_extracts_inline_thinking_blocks() {

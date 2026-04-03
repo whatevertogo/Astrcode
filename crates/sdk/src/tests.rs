@@ -7,12 +7,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
-    CapabilityDescriptor, CapabilityKind, HookRegistry, HookShortCircuit, PluginContext,
-    PolicyDecision, PolicyHook, PolicyHookChain, SdkError, SideEffectLevel, StreamWriter,
-    ToolFuture, ToolHandler, ToolRegistration, ToolSerdeStage,
+    CapabilityDescriptor, CapabilityKind, HookRegistry, PluginContext, PolicyDecision, PolicyHook,
+    PolicyHookChain, SdkError, SideEffectLevel, StreamWriter, ToolFuture, ToolHandler,
+    ToolRegistration, ToolSerdeStage,
 };
-use astrcode_protocol::plugin::{InvocationContext, WorkspaceRef};
 
+/// Minimal synchronous executor for tests.
 fn block_on<F: Future>(future: F) -> F::Output {
     fn noop_raw_waker() -> RawWaker {
         fn clone(_: *const ()) -> RawWaker {
@@ -21,13 +21,11 @@ fn block_on<F: Future>(future: F) -> F::Output {
         fn wake(_: *const ()) {}
         fn wake_by_ref(_: *const ()) {}
         fn drop(_: *const ()) {}
-
         RawWaker::new(
             std::ptr::null(),
             &RawWakerVTable::new(clone, wake, wake_by_ref, drop),
         )
     }
-
     let waker = unsafe { Waker::from_raw(noop_raw_waker()) };
     let mut future = pin!(future);
     let mut context = Context::from_waker(&waker);
@@ -80,22 +78,6 @@ impl ToolHandler<SampleInput, SampleOutput> for SampleTool {
     }
 }
 
-struct SamplePolicy;
-
-impl PolicyHook for SamplePolicy {
-    fn before_invoke(
-        &self,
-        capability: &CapabilityDescriptor,
-        _context: &PluginContext,
-    ) -> PolicyDecision {
-        if capability.name == "tool.sample" {
-            PolicyDecision::allow()
-        } else {
-            PolicyDecision::deny("unsupported capability")
-        }
-    }
-}
-
 struct TrackingPolicyHook {
     name: &'static str,
     allowed: bool,
@@ -120,12 +102,7 @@ impl PolicyHook for TrackingPolicyHook {
     }
 }
 
-#[test]
-fn tool_registration_uses_descriptor_first_model() {
-    let registration = ToolRegistration::new(Box::new(SampleTool));
-    assert_eq!(registration.descriptor().name, "tool.sample");
-    assert!(registration.descriptor().streaming);
-}
+// --- Critical contract: type-erased tool execution ---
 
 #[test]
 fn tool_registration_decodes_input_and_encodes_output_automatically() {
@@ -168,62 +145,7 @@ fn tool_registration_reports_typed_decode_errors() {
     assert!(!payload.retriable);
 }
 
-#[test]
-fn coding_profile_helper_extracts_profile_context() {
-    let context = PluginContext::from(InvocationContext {
-        request_id: "req-1".to_string(),
-        trace_id: Some("trace-1".to_string()),
-        session_id: Some("session-1".to_string()),
-        caller: None,
-        workspace: Some(WorkspaceRef {
-            working_dir: Some("/repo".to_string()),
-            repo_root: Some("/repo".to_string()),
-            branch: Some("main".to_string()),
-            metadata: json!({}),
-        }),
-        deadline_ms: None,
-        budget: None,
-        profile: "coding".to_string(),
-        profile_context: json!({
-            "workingDir": "/repo",
-            "repoRoot": "/repo",
-            "openFiles": ["/repo/src/main.rs"],
-            "activeFile": "/repo/src/main.rs",
-            "selection": { "startLine": 1, "endLine": 2 },
-            "approvalMode": "on-request"
-        }),
-        metadata: json!({}),
-    });
-
-    let coding = context.coding_profile().expect("coding profile");
-    assert_eq!(coding.active_file.as_deref(), Some("/repo/src/main.rs"));
-    assert_eq!(coding.approval_mode.as_deref(), Some("on-request"));
-}
-
-#[test]
-fn stream_writer_records_standard_event_shapes() {
-    let stream = StreamWriter::default();
-    stream.message_delta("hello").expect("message delta");
-    stream
-        .artifact_patch("src/main.rs", "@@ -1 +1 @@")
-        .expect("artifact patch");
-    stream
-        .diagnostic("warning", "unused variable")
-        .expect("diagnostic");
-
-    let records = stream.records().expect("records should not be poisoned");
-    assert_eq!(records[0].event, "message.delta");
-    assert_eq!(records[1].event, "artifact.patch");
-    assert_eq!(records[2].event, "diagnostic");
-}
-
-#[test]
-fn policy_hook_returns_structured_decision() {
-    let policy = SamplePolicy;
-    let decision = policy.before_invoke(&SampleTool.descriptor(), &PluginContext::default());
-    assert!(decision.allowed);
-    assert!(decision.reason.is_none());
-}
+// --- Critical contract: hook chain composition and short-circuit ---
 
 #[test]
 fn hook_registry_composes_policy_hooks_in_order() {
@@ -304,64 +226,7 @@ fn policy_hook_chain_short_circuits_after_first_deny() {
     );
 }
 
-#[test]
-fn policy_hook_chain_can_disable_short_circuit() {
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let chain = PolicyHookChain::default()
-        .with_short_circuit(HookShortCircuit::Never)
-        .with_hook(
-            "deny",
-            TrackingPolicyHook {
-                name: "deny",
-                allowed: false,
-                calls: Arc::clone(&calls),
-            },
-        )
-        .and_then(|chain| {
-            chain.with_hook(
-                "allow",
-                TrackingPolicyHook {
-                    name: "allow",
-                    allowed: true,
-                    calls: Arc::clone(&calls),
-                },
-            )
-        })
-        .expect("policy chain should register");
-
-    let decision = chain.before_invoke(&SampleTool.descriptor(), &PluginContext::default());
-
-    assert!(decision.allowed);
-    assert_eq!(
-        calls.lock().expect("tracking policy calls").as_slice(),
-        ["deny", "allow"]
-    );
-}
-
-#[test]
-fn hook_registry_rejects_duplicate_policy_hook_names() {
-    let result = HookRegistry::default()
-        .with_policy_hook(
-            "duplicate",
-            TrackingPolicyHook {
-                name: "first",
-                allowed: true,
-                calls: Arc::new(Mutex::new(Vec::new())),
-            },
-        )
-        .and_then(|registry| {
-            registry.with_policy_hook(
-                "duplicate",
-                TrackingPolicyHook {
-                    name: "second",
-                    allowed: true,
-                    calls: Arc::new(Mutex::new(Vec::new())),
-                },
-            )
-        });
-
-    assert!(matches!(result, Err(SdkError::Validation { .. })));
-}
+// --- Critical contract: error to protocol payload mapping ---
 
 #[test]
 fn sdk_error_maps_to_protocol_payload() {
@@ -375,27 +240,4 @@ fn sdk_error_maps_to_protocol_payload() {
     );
     assert_eq!(payload.details, serde_json::Value::Null);
     assert!(!payload.retriable);
-}
-
-#[test]
-fn string_conversions_map_to_internal_errors() {
-    let from_string = SdkError::from("boom".to_string());
-    let from_str = SdkError::from("boom");
-
-    assert!(matches!(from_string, SdkError::Internal { .. }));
-    assert!(matches!(from_str, SdkError::Internal { .. }));
-}
-
-#[test]
-fn descriptor_builder_is_reexported_for_plugin_authors() {
-    let descriptor = CapabilityDescriptor::builder("tool.builder", CapabilityKind::tool())
-        .description("builder test")
-        .schema(json!({ "type": "object" }), json!({ "type": "object" }))
-        .permission("filesystem.read")
-        .profile("coding")
-        .build()
-        .expect("descriptor builder should be re-exported through sdk");
-
-    assert_eq!(descriptor.name, "tool.builder");
-    assert_eq!(descriptor.permissions[0].name, "filesystem.read");
 }

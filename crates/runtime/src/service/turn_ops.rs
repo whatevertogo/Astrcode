@@ -84,31 +84,19 @@ struct BudgetSettings {
 }
 
 /// Turn 执行过程中的统计信息。
-///
-/// 用于跟踪 Token 消耗，支持预算检查和自动续跑决策。
 #[derive(Debug, Default, Clone, Copy)]
 struct TurnExecutionStats {
-    /// 累计估算的 Token 使用量（含 prompt + assistant output）
     estimated_tokens_used: u64,
-    /// 最近一次助手输出的 Token 数
     last_assistant_output_tokens: usize,
-    /// 待计入的 prompt Token 数（仅在模型真正响应后才计费）
     pending_prompt_tokens: Option<u64>,
 }
 
 impl TurnExecutionStats {
-    /// 记录 prompt 的 Token 指标，但暂不计入总消耗。
-    ///
-    /// 这样设计是为了避免纯压缩（compaction-only）快照消耗续跑预算——
-    /// 只有当模型实际产生响应后，才通过 `flush_pending_prompt_tokens` 计费。
     fn record_prompt_metrics(&mut self, estimated_tokens: u32) {
         self.pending_prompt_tokens = Some(estimated_tokens as u64);
     }
 
-    /// 记录助手输出内容的 Token 数，并在此时刷入待计的 prompt Token。
     fn record_assistant_output(&mut self, content: &str, reasoning_content: Option<&str>) {
-        // Only charge the prompt snapshot once the model actually produced a response, so
-        // compaction-only snapshots do not consume the session's continuation budget.
         self.flush_pending_prompt_tokens();
         let output_tokens = estimate_text_tokens(content)
             + reasoning_content
@@ -120,7 +108,6 @@ impl TurnExecutionStats {
         self.last_assistant_output_tokens = output_tokens;
     }
 
-    /// 将待计的 prompt Token 刷入总消耗。
     fn flush_pending_prompt_tokens(&mut self) {
         if let Some(prompt_tokens) = self.pending_prompt_tokens.take() {
             self.estimated_tokens_used = self.estimated_tokens_used.saturating_add(prompt_tokens);
@@ -668,11 +655,7 @@ fn append_and_broadcast_from_turn_callback(
             append_and_broadcast_blocking(session, event, translator)
         }
         _ => tokio::task::block_in_place(|| {
-            // 只有 current-thread runtime 明确不支持 block_in_place。其余 flavor
-            // 默认按“可让出 worker”的路径处理，避免未来 Tokio 扩展 flavor 时
-            // 静默退回到直接阻塞事件循环。
-            tokio::runtime::Handle::current()
-                .block_on(append_and_broadcast(session, event, translator))
+            append_and_broadcast_blocking(session, event, translator)
         }),
     }
 }

@@ -130,11 +130,6 @@ impl CapabilityKind {
     pub fn is_tool(&self) -> bool {
         self.as_str() == "tool"
     }
-
-    /// 判断是否为 prompt 类型。
-    pub fn is_prompt(&self) -> bool {
-        self.as_str() == "prompt"
-    }
 }
 
 impl Default for CapabilityKind {

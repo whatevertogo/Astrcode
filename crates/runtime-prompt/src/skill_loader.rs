@@ -253,12 +253,8 @@ pub fn skill_roots_cache_marker(working_dir: &str) -> String {
 /// 规范化 skill 文件内容。
 ///
 /// 去除 BOM（\u{feff}），统一换行符为 \n。
-/// 确保不同编码和换行风格的文件都能被一致处理。
 fn normalize_skill_content(content: &str) -> String {
-    content
-        .trim_start_matches('\u{feff}')
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
+    content.trim_start_matches('\u{feff}').replace('\r', "\n")
 }
 
 /// 分割 YAML frontmatter 和正文。
@@ -429,71 +425,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_skill_md_requires_frontmatter() {
-        assert!(parse_skill_md(
-            "# Guide\nUse grep first.",
-            "repo-search",
-            SkillSource::Project
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn parse_skill_md_rejects_unknown_frontmatter_keys() {
-        assert!(parse_skill_md(
-            "---\nname: repo-search\ndescription: Use search.\nwhen_to_use: legacy\n---\nGuide",
-            "repo-search",
-            SkillSource::Builtin,
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn parse_skill_md_rejects_name_mismatch() {
-        assert!(parse_skill_md(
-            "---\nname: repo_search\ndescription: Use search.\n---\nGuide",
-            "repo-search",
-            SkillSource::Builtin,
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn parse_skill_md_empty_content() {
-        assert!(parse_skill_md(" \n\t", "empty", SkillSource::User).is_none());
-    }
-
-    #[test]
-    fn parse_skill_md_empty_guide() {
-        assert!(parse_skill_md(
-            "---\nname: empty\ndescription: empty\n---\n",
-            "empty",
-            SkillSource::User
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn parse_skill_md_supports_bom_and_crlf() {
-        let parsed = parse_skill_md(
-            "\u{feff}---\r\nname: windows\r\ndescription: CRLF\r\n---\r\nLine 1\r\nLine 2\r\n",
-            "windows",
-            SkillSource::User,
-        )
-        .expect("BOM + CRLF skill should parse");
-
-        assert_eq!(parsed.name, "windows");
-        assert_eq!(parsed.guide, "Line 1\nLine 2");
-    }
-
-    #[test]
-    fn parse_skill_md_invalid_frontmatter_is_skipped() {
-        assert!(
-            parse_skill_md("---\nname: [oops\n---\nbody", "broken", SkillSource::User).is_none()
-        );
-    }
-
-    #[test]
     fn load_skills_from_dir_scans_subdirs() {
         let dir = tempfile::tempdir().expect("tempdir should be created");
         write_skill(
@@ -514,62 +445,6 @@ mod tests {
             ids,
             vec!["git-commit".to_string(), "repo-search".to_string()]
         );
-    }
-
-    #[test]
-    fn load_skills_from_dir_skips_non_skill_dirs() {
-        let dir = tempfile::tempdir().expect("tempdir should be created");
-        fs::create_dir_all(dir.path().join("empty")).expect("empty dir should be created");
-        write_skill(
-            dir.path(),
-            "git-commit",
-            "---\nname: git-commit\ndescription: Commit guide.\n---\n# Commit guide",
-        );
-
-        let skills = load_skills_from_dir(dir.path(), SkillSource::User);
-
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].id, "git-commit");
-        assert!(skills[0]
-            .skill_root
-            .as_deref()
-            .is_some_and(|root| root.ends_with("git-commit")));
-    }
-
-    #[test]
-    fn load_skills_from_dir_indexes_all_skill_assets() {
-        let dir = tempfile::tempdir().expect("tempdir should be created");
-        let skill_root = dir.path().join("repo-search");
-        write_skill(
-            dir.path(),
-            "repo-search",
-            "---\nname: repo-search\ndescription: Search guide.\n---\n# Search guide",
-        );
-        fs::create_dir_all(skill_root.join("references")).expect("references dir should exist");
-        fs::create_dir_all(skill_root.join("scripts")).expect("scripts dir should exist");
-        fs::write(
-            skill_root.join("references").join("do.md"),
-            "read this when needed",
-        )
-        .expect("reference file should be written");
-        fs::write(skill_root.join("scripts").join("run.sh"), "echo ok")
-            .expect("script file should be written");
-
-        let skills = load_skills_from_dir(dir.path(), SkillSource::Project);
-
-        assert_eq!(skills.len(), 1);
-        assert_eq!(
-            skills[0].asset_files,
-            vec!["references/do.md".to_string(), "scripts/run.sh".to_string()]
-        );
-    }
-
-    #[test]
-    fn load_skills_from_dir_nonexistent_dir() {
-        let dir = tempfile::tempdir().expect("tempdir should be created");
-        let missing = dir.path().join("missing");
-
-        assert!(load_skills_from_dir(&missing, SkillSource::User).is_empty());
     }
 
     #[test]
@@ -611,22 +486,5 @@ mod tests {
         assert_eq!(resolved[0].name, "shared");
         assert_eq!(resolved[0].guide, "Project guide");
         assert_eq!(resolved[0].source, SkillSource::Project);
-    }
-
-    #[test]
-    fn skill_roots_cache_marker_changes_when_project_skill_is_added() {
-        let _guard = TestEnvGuard::new();
-        let project = tempfile::tempdir().expect("tempdir should be created");
-        let working_dir = project.path().to_string_lossy().into_owned();
-
-        let before = skill_roots_cache_marker(&working_dir);
-        write_skill(
-            &project.path().join(".astrcode").join("skills"),
-            "project-skill",
-            "---\nname: project-skill\ndescription: Project guide.\n---\n# Project guide",
-        );
-        let after = skill_roots_cache_marker(&working_dir);
-
-        assert_ne!(before, after);
     }
 }

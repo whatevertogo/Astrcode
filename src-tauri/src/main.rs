@@ -6,7 +6,7 @@
 mod commands;
 mod paths;
 use std::io::{ErrorKind, Read, Write};
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -30,9 +30,6 @@ struct ServerState {
     spawned_sidecar_path: SpawnedSidecarPath,
 }
 
-#[derive(Clone)]
-struct BootstrapScript(String);
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RunInfo {
@@ -49,17 +46,14 @@ fn main() {
         .setup(|app| {
             let (server_state, bootstrap_script) = initialize_server(app.handle())?;
             app.manage(server_state);
-            app.manage(bootstrap_script.clone());
-            let window = create_main_window(app.handle())?;
-            window
-                .eval(&bootstrap_script.0)
-                .map_err(|error| anyhow!(error.to_string()))?;
+            let app_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                if let Err(error) = create_main_window(&app_handle, &bootstrap_script) {
+                    eprintln!("[astrcode-window] failed to create main window: {error:#}");
+                    app_handle.exit(1);
+                }
+            });
             Ok(())
-        })
-        .on_page_load(|window, _payload| {
-            if let Some(bootstrap) = window.app_handle().try_state::<BootstrapScript>() {
-                let _ = window.eval(&bootstrap.0);
-            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::minimize_window,
@@ -85,7 +79,7 @@ fn main() {
         });
 }
 
-fn initialize_server(app_handle: &tauri::AppHandle) -> Result<(ServerState, BootstrapScript)> {
+fn initialize_server(app_handle: &tauri::AppHandle) -> Result<(ServerState, String)> {
     if let Some(run_info) = try_connect_existing_server()? {
         return Ok((
             ServerState {
@@ -104,31 +98,36 @@ fn initialize_server(app_handle: &tauri::AppHandle) -> Result<(ServerState, Boot
         shutting_down.clone(),
         spawned_sidecar_path.clone(),
     )?;
-    let run_info = match wait_for_run_info(pid) {
-        Ok(run_info) => run_info,
-        Err(error) => {
-            let _ = child.kill();
-            cleanup_spawned_sidecar(&spawned_sidecar_path);
-            return Err(error);
+
+    // 使用 Option 包装 child，以便在错误路径中 take 出来进行清理
+    let mut child = Some(child);
+    let mut cleanup_failed_spawn = || {
+        if let Some(c) = child.take() {
+            let _ = c.kill();
         }
+        cleanup_spawned_sidecar(&spawned_sidecar_path);
     };
+
+    let run_info = wait_for_run_info(pid).inspect_err(|_| {
+        cleanup_failed_spawn();
+    })?;
+
     let started_at = run_info
         .started_at
         .as_deref()
         .unwrap_or("unknown-start-time");
-    if let Err(error) = wait_for_server_http_ready(run_info.port).with_context(|| {
-        format!(
-            "server pid {} (startedAt={started_at}) did not become ready on port {}",
-            run_info.pid, run_info.port
+    wait_for_server_http_ready(run_info.port).map_err(|error| {
+        cleanup_failed_spawn();
+        anyhow!(
+            "server pid {} (startedAt={started_at}) did not become ready on port {}: {error}",
+            run_info.pid,
+            run_info.port
         )
-    }) {
-        let _ = child.kill();
-        cleanup_spawned_sidecar(&spawned_sidecar_path);
-        return Err(error);
-    }
+    })?;
+
     Ok((
         ServerState {
-            child: Mutex::new(Some(child)),
+            child: Mutex::new(child),
             shutting_down,
             spawned_sidecar_path,
         },
@@ -136,7 +135,10 @@ fn initialize_server(app_handle: &tauri::AppHandle) -> Result<(ServerState, Boot
     ))
 }
 
-fn create_main_window(app_handle: &tauri::AppHandle) -> Result<tauri::WebviewWindow> {
+fn create_main_window(
+    app_handle: &tauri::AppHandle,
+    bootstrap_script: &str,
+) -> Result<tauri::WebviewWindow> {
     if let Some(window) = app_handle.get_webview_window("main") {
         return Ok(window);
     }
@@ -151,22 +153,25 @@ fn create_main_window(app_handle: &tauri::AppHandle) -> Result<tauri::WebviewWin
         .ok_or_else(|| anyhow!("main window config is missing"))?;
     window_config.url = resolve_main_window_url(app_handle)?;
 
+    // Windows 上同步创建 WebView 和同步 `eval` 都踩过 WebView2 死锁面。
+    // 这里保留初始化脚本注入，并配合 setup 里的独立线程创建窗口，避开阻塞主 UI 线程。
     WebviewWindowBuilder::from_config(app_handle, &window_config)
         .context("failed to build main window from config")?
+        .initialization_script(bootstrap_script)
         .build()
         .context("failed to create main window")
 }
 
-fn build_bootstrap_script(run_info: &RunInfo) -> Result<BootstrapScript> {
+fn build_bootstrap_script(run_info: &RunInfo) -> Result<String> {
     let bootstrap = serde_json::json!({
         "token": run_info.token,
         "isDesktopHost": true,
         "serverOrigin": format!("http://127.0.0.1:{}", run_info.port),
     });
-    Ok(BootstrapScript(format!(
+    Ok(format!(
         "window.__ASTRCODE_BOOTSTRAP__ = {};",
         serde_json::to_string(&bootstrap)?
-    )))
+    ))
 }
 
 fn try_connect_existing_server() -> Result<Option<RunInfo>> {
@@ -195,10 +200,6 @@ fn resolve_main_window_url(app_handle: &tauri::AppHandle) -> Result<WebviewUrl> 
     let Some(dev_url) = app_handle.config().build.dev_url.as_ref() else {
         return Ok(WebviewUrl::App("index.html".into()));
     };
-
-    if !cfg!(dev) {
-        return Ok(WebviewUrl::App("index.html".into()));
-    }
 
     // 开发环境优先直连 Vite，这样 `cargo tauri dev` 仍保留 HMR。
     if dev_server_is_reachable(dev_url) {
@@ -301,32 +302,18 @@ fn spawn_server_process(
 }
 
 fn dev_server_is_reachable(dev_url: &Url) -> bool {
-    let host = match dev_url.host_str() {
-        Some(host) => host,
-        None => return false,
+    let Some(host) = dev_url.host_str() else {
+        return false;
     };
-    let port = match dev_url.port_or_known_default() {
-        Some(port) => port,
-        None => return false,
+    let Some(port) = dev_url.port_or_known_default() else {
+        return false;
     };
 
-    let mut stream = match TcpStream::connect((host, port)) {
-        Ok(stream) => stream,
-        Err(_) => return false,
+    let Ok(mut stream) = connect_host_with_timeout(host, port, Duration::from_millis(100)) else {
+        return false;
     };
-
-    if stream
-        .set_read_timeout(Some(Duration::from_millis(100)))
-        .is_err()
-    {
-        return false;
-    }
-    if stream
-        .set_write_timeout(Some(Duration::from_millis(100)))
-        .is_err()
-    {
-        return false;
-    }
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
 
     stream
         .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
@@ -390,16 +377,11 @@ fn packaged_sidecar_file_name() -> &'static str {
 }
 
 fn runtime_sidecar_file_name(timestamp_ms: i64) -> String {
+    let pid = std::process::id();
     if cfg!(windows) {
-        format!(
-            "astrcode-server-runtime-{}-{timestamp_ms}.exe",
-            std::process::id()
-        )
+        format!("astrcode-server-runtime-{pid}-{timestamp_ms}.exe")
     } else {
-        format!(
-            "astrcode-server-runtime-{}-{timestamp_ms}",
-            std::process::id()
-        )
+        format!("astrcode-server-runtime-{pid}-{timestamp_ms}")
     }
 }
 
@@ -435,7 +417,7 @@ fn cleanup_stale_sidecar_copies(sidecar_dir: &Path) -> Result<()> {
 
 fn cleanup_spawned_sidecar(spawned_sidecar_path: &SpawnedSidecarPath) {
     let path = match spawned_sidecar_path.lock() {
-        Ok(slot) => slot.clone(),
+        Ok(mut slot) => slot.take(),
         Err(_) => {
             eprintln!("[astrcode-server cleanup] spawned sidecar path mutex poisoned");
             return;
@@ -445,24 +427,13 @@ fn cleanup_spawned_sidecar(spawned_sidecar_path: &SpawnedSidecarPath) {
         return;
     };
 
-    match std::fs::remove_file(&path) {
-        Ok(()) => clear_spawned_sidecar_path(spawned_sidecar_path),
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            clear_spawned_sidecar_path(spawned_sidecar_path);
-        }
-        Err(error) => {
+    if let Err(error) = std::fs::remove_file(&path) {
+        if error.kind() != ErrorKind::NotFound {
             eprintln!(
                 "[astrcode-server cleanup] failed to remove detached sidecar '{}': {error}",
                 path.display()
             );
         }
-    }
-}
-
-fn clear_spawned_sidecar_path(spawned_sidecar_path: &SpawnedSidecarPath) {
-    match spawned_sidecar_path.lock() {
-        Ok(mut slot) => *slot = None,
-        Err(_) => eprintln!("[astrcode-server cleanup] spawned sidecar path mutex poisoned"),
     }
 }
 
@@ -503,24 +474,15 @@ fn wait_for_server_http_ready(port: u16) -> Result<()> {
 }
 
 fn probe_server_http_ready(port: u16) -> Result<bool> {
-    let mut stream = match TcpStream::connect(("127.0.0.1", port)) {
+    let mut stream = match TcpStream::connect_timeout(
+        &SocketAddr::from(([127, 0, 0, 1], port)),
+        Duration::from_millis(100),
+    ) {
         Ok(stream) => stream,
-        Err(error)
-            if matches!(
-                error.kind(),
-                ErrorKind::ConnectionAborted
-                    | ErrorKind::ConnectionRefused
-                    | ErrorKind::ConnectionReset
-                    | ErrorKind::NotConnected
-                    | ErrorKind::TimedOut
-                    | ErrorKind::WouldBlock
-            ) =>
-        {
-            return Ok(false);
-        }
+        Err(error) if is_connection_refused(&error) => return Ok(false),
         Err(error) => {
             return Err(error)
-                .with_context(|| format!("failed to connect to astrcode-server on port {}", port));
+                .with_context(|| format!("failed to connect to astrcode-server on port {port}"));
         }
     };
 
@@ -542,16 +504,44 @@ fn probe_server_http_ready(port: u16) -> Result<bool> {
             Ok(response_head.starts_with("HTTP/1.1 200")
                 || response_head.starts_with("HTTP/1.0 200"))
         }
-        Err(error)
-            if matches!(
-                error.kind(),
-                ErrorKind::ConnectionReset | ErrorKind::TimedOut | ErrorKind::WouldBlock
-            ) =>
-        {
-            Ok(false)
-        }
+        Err(error) if is_connection_refused(&error) => Ok(false),
         Err(error) => Err(error).context("failed to read server readiness probe"),
     }
+}
+
+// 本地探活必须显式限制 connect 超时；Windows 上 stale `run.json` 对应的旧端口
+// 不一定会立即拒绝连接，阻塞式 connect 会把桌面端启动线程一起拖住。
+fn connect_host_with_timeout(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+) -> std::io::Result<TcpStream> {
+    let mut last_error = None;
+    for address in (host, port).to_socket_addrs()? {
+        match TcpStream::connect_timeout(&address, timeout) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        std::io::Error::new(
+            ErrorKind::AddrNotAvailable,
+            format!("no socket address resolved for {host}:{port}"),
+        )
+    }))
+}
+
+fn is_connection_refused(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        ErrorKind::ConnectionAborted
+            | ErrorKind::ConnectionRefused
+            | ErrorKind::ConnectionReset
+            | ErrorKind::NotConnected
+            | ErrorKind::TimedOut
+            | ErrorKind::WouldBlock
+    )
 }
 
 fn run_info_is_fresh(run_info: &RunInfo) -> Result<bool> {

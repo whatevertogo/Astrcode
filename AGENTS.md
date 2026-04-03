@@ -72,6 +72,7 @@ protocol (纯 DTO，无业务依赖)
 - **Sidecar**: 文件名需带 `-${TAURI_ENV_TARGET_TRIPLE}` 后缀，通过 `scripts/tauri-frontend.js` 构建
 - **桌面端多实例**: 新打开的 exe 会优先复用 `~/.astrcode/run.json` 指向的现有 server；只有没有可用实例时才会再起 sidecar，这样多个桌面实例才能共享同一会话事件流
 - **Bootstrap 时序**: Vite 先启动，sidecar 后启动；首个 API 请求须等 `window.__ASTRCODE_BOOTSTRAP__` 注入
+- **Windows WebView bootstrap**: 不要在 `setup()` 里对刚创建的窗口同步 `eval` 注入 bootstrap；优先用 `WebviewWindowBuilder::initialization_script(...)`，避免 `cargo tauri dev` 下 WebView2 偶发卡死
 - **HTTP 桥接**: 鉴权用 bootstrap token，调 origin/CSP 时同步更新 CORS 白名单
 - **Windows 命令**: 不用 `npm.ps1`，用 `node` 脚本或 `npm.cmd` 启动前端
 

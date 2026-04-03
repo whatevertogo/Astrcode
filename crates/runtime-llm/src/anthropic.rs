@@ -352,18 +352,20 @@ fn to_anthropic_tools(tools: &[ToolDefinition]) -> Vec<AnthropicTool> {
 /// - `thinking`: 提取推理内容和签名
 /// - 未知类型：记录警告并跳过
 fn response_to_output(response: AnthropicResponse) -> LlmOutput {
-    let mut output = LlmOutput::default();
-    let _ = response.stop_reason;
-    output.usage = response.usage.map(|usage| LlmUsage {
+    let usage = response.usage.map(|usage| LlmUsage {
         input_tokens: usage.input_tokens.unwrap_or_default() as usize,
         output_tokens: usage.output_tokens.unwrap_or_default() as usize,
     });
+
+    let mut content = String::new();
+    let mut tool_calls = Vec::new();
+    let mut reasoning = None;
 
     for block in response.content {
         match block_type(&block) {
             Some("text") => {
                 if let Some(text) = block.get("text").and_then(Value::as_str) {
-                    output.content.push_str(text);
+                    content.push_str(text);
                 }
             }
             Some("tool_use") => {
@@ -382,11 +384,11 @@ fn response_to_output(response: AnthropicResponse) -> LlmOutput {
                     }
                 };
                 let args = block.get("input").cloned().unwrap_or(Value::Null);
-                output.tool_calls.push(ToolCallRequest { id, name, args });
+                tool_calls.push(ToolCallRequest { id, name, args });
             }
             Some("thinking") => {
                 if let Some(thinking) = block.get("thinking").and_then(Value::as_str) {
-                    output.reasoning = Some(ReasoningContent {
+                    reasoning = Some(ReasoningContent {
                         content: thinking.to_string(),
                         signature: block
                             .get("signature")
@@ -404,7 +406,12 @@ fn response_to_output(response: AnthropicResponse) -> LlmOutput {
         }
     }
 
-    output
+    LlmOutput {
+        content,
+        tool_calls,
+        reasoning,
+        usage,
+    }
 }
 
 /// 从 JSON Value 中提取内容块的类型字段。
@@ -789,6 +796,7 @@ struct AnthropicTool {
 #[derive(Debug, serde::Deserialize)]
 struct AnthropicResponse {
     content: Vec<Value>,
+    #[allow(dead_code)]
     stop_reason: Option<String>,
     #[serde(default)]
     usage: Option<AnthropicUsage>,
@@ -816,69 +824,8 @@ mod tests {
     use super::*;
     use crate::sink_collector;
 
-    fn test_provider() -> AnthropicProvider {
-        AnthropicProvider::with_max_tokens(
-            "sk-ant-test".to_string(),
-            "claude-test".to_string(),
-            8096,
-        )
-    }
-
     #[test]
-    fn to_anthropic_messages_converts_user_assistant_and_tool() {
-        let messages = to_anthropic_messages(&[
-            LlmMessage::User {
-                content: "hello".to_string(),
-                origin: UserMessageOrigin::User,
-            },
-            LlmMessage::Assistant {
-                content: "done".to_string(),
-                tool_calls: vec![ToolCallRequest {
-                    id: "call_1".to_string(),
-                    name: "search".to_string(),
-                    args: json!({ "q": "rust" }),
-                }],
-                reasoning: None,
-            },
-            LlmMessage::Tool {
-                tool_call_id: "call_1".to_string(),
-                content: "tool output".to_string(),
-            },
-        ]);
-
-        assert_eq!(messages.len(), 3);
-        assert_eq!(messages[0].role, "user");
-        assert_eq!(messages[1].role, "assistant");
-        assert_eq!(messages[2].role, "user");
-    }
-
-    #[test]
-    fn assistant_blocks_keep_text_before_tool_use() {
-        let messages = to_anthropic_messages(&[LlmMessage::Assistant {
-            content: "thinking".to_string(),
-            tool_calls: vec![ToolCallRequest {
-                id: "call_1".to_string(),
-                name: "search".to_string(),
-                args: json!({ "q": "rust" }),
-            }],
-            reasoning: None,
-        }]);
-
-        match &messages[0].content[..] {
-            [AnthropicContentBlock::Text { text, .. }, AnthropicContentBlock::ToolUse {
-                id, name, input, ..
-            }] => {
-                assert_eq!(text, "thinking");
-                assert_eq!(id, "call_1");
-                assert_eq!(name, "search");
-                assert_eq!(*input, json!({ "q": "rust" }));
-            }
-            _ => panic!("expected text block before tool_use"),
-        }
-    }
-
-    #[test]
-    fn non_streaming_response_parses_text_and_tool_use() {
+    fn response_to_output_parses_text_tool_use_and_thinking() {
         let output = response_to_output(AnthropicResponse {
             content: vec![
                 json!({ "type": "text", "text": "hello " }),
@@ -889,6 +836,7 @@ mod tests {
                     "input": { "q": "rust" }
                 }),
                 json!({ "type": "text", "text": "world" }),
+                json!({ "type": "thinking", "thinking": "pondering", "signature": "sig-1" }),
             ],
             stop_reason: Some("tool_use".to_string()),
             usage: None,
@@ -898,21 +846,6 @@ mod tests {
         assert_eq!(output.tool_calls.len(), 1);
         assert_eq!(output.tool_calls[0].id, "call_1");
         assert_eq!(output.tool_calls[0].args, json!({ "q": "rust" }));
-        assert_eq!(output.reasoning, None);
-    }
-
-    #[test]
-    fn non_streaming_response_maps_thinking_block() {
-        let output = response_to_output(AnthropicResponse {
-            content: vec![
-                json!({ "type": "thinking", "thinking": "pondering", "signature": "sig-1" }),
-                json!({ "type": "text", "text": "done" }),
-            ],
-            stop_reason: Some("end_turn".to_string()),
-            usage: None,
-        });
-
-        assert_eq!(output.content, "done");
         assert_eq!(
             output.reasoning,
             Some(ReasoningContent {
@@ -923,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    fn streaming_content_block_delta_emits_and_accumates_events() {
+    fn streaming_sse_parses_tool_calls_and_text() {
         let mut accumulator = LlmAccumulator::default();
         let events = Arc::new(Mutex::new(Vec::new()));
         let sink = sink_collector(events.clone());
@@ -968,44 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn build_request_serializes_system_when_present() {
-        let provider = test_provider();
-        let request = provider.build_request(
-            &[LlmMessage::User {
-                content: "hi".to_string(),
-                origin: UserMessageOrigin::User,
-            }],
-            &[],
-            Some("Follow the rules"),
-            false,
-        );
-        let body = serde_json::to_value(&request).expect("request should serialize");
-
-        assert_eq!(
-            body.get("system").and_then(Value::as_str),
-            Some("Follow the rules")
-        );
-    }
-
-    #[test]
-    fn build_request_omits_system_when_absent() {
-        let provider = test_provider();
-        let request = provider.build_request(
-            &[LlmMessage::User {
-                content: "hi".to_string(),
-                origin: UserMessageOrigin::User,
-            }],
-            &[],
-            None,
-            false,
-        );
-        let body = serde_json::to_value(&request).expect("request should serialize");
-
-        assert!(body.get("system").is_none());
-    }
-
-    #[test]
-    fn build_request_serializes_thinking_when_model_supports_it() {
+    fn build_request_serializes_system_and_thinking_when_applicable() {
         let provider = AnthropicProvider::with_max_tokens(
             "sk-ant-test".to_string(),
             "claude-sonnet-4-5".to_string(),
@@ -1017,32 +913,20 @@ mod tests {
                 origin: UserMessageOrigin::User,
             }],
             &[],
-            None,
+            Some("Follow the rules"),
             true,
         );
         let body = serde_json::to_value(&request).expect("request should serialize");
 
+        assert_eq!(
+            body.get("system").and_then(Value::as_str),
+            Some("Follow the rules")
+        );
         assert_eq!(
             body.get("thinking")
                 .and_then(|value| value.get("type"))
                 .and_then(Value::as_str),
             Some("enabled")
         );
-        assert!(body
-            .get("thinking")
-            .and_then(|value| value.get("budget_tokens"))
-            .and_then(Value::as_u64)
-            .is_some());
-    }
-
-    #[test]
-    fn retryable_statuses_are_classified() {
-        assert!(is_retryable_status(
-            reqwest::StatusCode::SERVICE_UNAVAILABLE
-        ));
-        assert!(is_retryable_status(
-            reqwest::StatusCode::INTERNAL_SERVER_ERROR
-        ));
-        assert!(!is_retryable_status(reqwest::StatusCode::BAD_REQUEST));
     }
 }

@@ -31,24 +31,23 @@ use astrcode_core::store::{StoreError, StoreResult};
 /// 存储层内部使用的 Result 别名，统一错误类型为 [`StoreError`]。
 pub(crate) type Result<T> = StoreResult<T>;
 
-pub(crate) struct AstrError;
-
-impl AstrError {
-    pub(crate) fn io(context: impl Into<String>, source: std::io::Error) -> StoreError {
-        StoreError::Io {
-            context: context.into(),
-            source,
-        }
-    }
-
-    pub(crate) fn parse(context: impl Into<String>, source: serde_json::Error) -> StoreError {
-        StoreError::Parse {
-            context: context.into(),
-            source,
-        }
+/// 构造 IO 错误，附带上下文说明。
+pub(crate) fn io_error(context: impl Into<String>, source: std::io::Error) -> StoreError {
+    StoreError::Io {
+        context: context.into(),
+        source,
     }
 }
 
+/// 构造 JSON 解析错误，附带上下文说明。
+pub(crate) fn parse_error(context: impl Into<String>, source: serde_json::Error) -> StoreError {
+    StoreError::Parse {
+        context: context.into(),
+        source,
+    }
+}
+
+/// 构造内部不变量违反的 IO 错误。
 pub(crate) fn internal_io_error(context: impl Into<String>) -> StoreError {
     StoreError::Io {
         context: context.into(),

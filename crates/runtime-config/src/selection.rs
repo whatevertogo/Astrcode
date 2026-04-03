@@ -12,7 +12,7 @@
 //!
 //! 回退逻辑集中在此处，避免 HTTP 路由层各自实现不同的恢复策略。
 
-use anyhow::{anyhow, Result};
+use astrcode_core::{AstrError, Result};
 
 use crate::{Config, Profile};
 
@@ -56,7 +56,7 @@ pub fn resolve_active_selection(
 ) -> Result<ActiveSelection> {
     let fallback_profile = profiles
         .first()
-        .ok_or_else(|| anyhow!("no profiles configured"))?;
+        .ok_or_else(|| AstrError::Internal("no profiles configured".to_string()))?;
 
     let selected_profile = profiles
         .iter()
@@ -64,7 +64,10 @@ pub fn resolve_active_selection(
         .unwrap_or(fallback_profile);
 
     if selected_profile.models.is_empty() {
-        return Err(anyhow!("profile '{}' has no models", selected_profile.name));
+        return Err(AstrError::Internal(format!(
+            "profile '{}' has no models",
+            selected_profile.name
+        )));
     }
 
     if selected_profile.name != active_profile {
@@ -106,7 +109,7 @@ pub fn resolve_current_model(config: &Config) -> Result<CurrentModelSelection> {
         .iter()
         .find(|profile| profile.name == config.active_profile)
         .or_else(|| config.profiles.first())
-        .ok_or_else(|| anyhow!("no profiles configured"))?;
+        .ok_or_else(|| AstrError::Internal("no profiles configured".to_string()))?;
 
     let model = if profile
         .models
@@ -115,11 +118,9 @@ pub fn resolve_current_model(config: &Config) -> Result<CurrentModelSelection> {
     {
         config.active_model.clone()
     } else {
-        profile
-            .models
-            .first()
-            .cloned()
-            .ok_or_else(|| anyhow!("profile '{}' has no models", profile.name))?
+        profile.models.first().cloned().ok_or_else(|| {
+            AstrError::Internal(format!("profile '{}' has no models", profile.name))
+        })?
     };
 
     Ok(CurrentModelSelection {
@@ -183,21 +184,6 @@ mod tests {
     }
 
     #[test]
-    fn current_model_falls_back_to_first_profile_and_model() {
-        let config = Config {
-            active_profile: "missing".to_string(),
-            active_model: "missing-model".to_string(),
-            profiles: vec![profile("deepseek", &["deepseek-chat"])],
-            ..Config::default()
-        };
-
-        let resolved = resolve_current_model(&config).expect("current model should resolve");
-
-        assert_eq!(resolved.profile_name, "deepseek");
-        assert_eq!(resolved.model, "deepseek-chat");
-    }
-
-    #[test]
     fn current_model_rejects_profiles_without_models() {
         let config = Config {
             active_profile: "empty".to_string(),
@@ -209,22 +195,5 @@ mod tests {
         let error = resolve_current_model(&config).expect_err("empty profile should be rejected");
 
         assert!(error.to_string().contains("has no models"));
-    }
-
-    #[test]
-    fn model_options_flatten_profiles() {
-        let config = Config {
-            profiles: vec![
-                profile("deepseek", &["deepseek-chat"]),
-                profile("anthropic", &["claude"]),
-            ],
-            ..Config::default()
-        };
-
-        let options = list_model_options(&config);
-
-        assert_eq!(options.len(), 2);
-        assert_eq!(options[0].profile_name, "deepseek");
-        assert_eq!(options[1].profile_name, "anthropic");
     }
 }

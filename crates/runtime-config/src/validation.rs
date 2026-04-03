@@ -40,22 +40,19 @@ fn migrate_config(config: &mut Config) -> Result<()> {
         config.version = CURRENT_CONFIG_VERSION.to_string();
     }
 
-    match config.version.as_str() {
-        CURRENT_CONFIG_VERSION => {}
-        other => {
-            return Err(AstrError::Validation(format!(
-                "unsupported config version: {}",
-                other
-            )))
-        }
+    if config.version != CURRENT_CONFIG_VERSION {
+        return Err(AstrError::Validation(format!(
+            "unsupported config version: {}",
+            config.version
+        )));
     }
 
     if config.active_profile.trim().is_empty() {
-        config.active_profile = Config::default().active_profile;
+        config.active_profile = "deepseek".to_string();
     }
 
     if config.active_model.trim().is_empty() {
-        config.active_model = Config::default().active_model;
+        config.active_model = "deepseek-chat".to_string();
     }
 
     Ok(())

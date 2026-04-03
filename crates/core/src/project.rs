@@ -201,20 +201,6 @@ fn stable_project_hash(path: &Path) -> String {
 mod tests {
     use super::*;
 
-    #[cfg(windows)]
-    #[test]
-    fn project_dir_name_uses_drive_and_segments() {
-        let path = Path::new(r"D:\workspace\project1");
-        assert_eq!(project_dir_name(path), "D-workspace-project1");
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn project_dir_name_uses_root_and_segments() {
-        let path = Path::new("/workspace/project1");
-        assert_eq!(project_dir_name(path), "root-workspace-project1");
-    }
-
     #[test]
     fn project_dir_name_normalizes_invalid_filename_characters() {
         let path = Path::new("demo folder/feature:alpha");

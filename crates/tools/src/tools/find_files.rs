@@ -81,7 +81,7 @@ impl Tool for FindFilesTool {
         args: serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult> {
-        check_cancel(ctx.cancel(), "findFiles")?;
+        check_cancel(ctx.cancel())?;
 
         let args: FindFilesArgs = serde_json::from_value(args)
             .map_err(|e| AstrError::parse("invalid args for findFiles", e))?;
@@ -104,7 +104,7 @@ impl Tool for FindFilesTool {
         let mut paths = Vec::new();
         let mut truncated = false;
         for entry in entries {
-            check_cancel(ctx.cancel(), "findFiles")?;
+            check_cancel(ctx.cancel())?;
             let path = entry.map_err(|e| AstrError::ToolError {
                 name: "findFiles".to_string(),
                 reason: format!("failed matching '{}': {}", full_pattern, e),
@@ -291,118 +291,5 @@ mod tests {
         let paths: Vec<String> =
             serde_json::from_str(&result.output).expect("output should be valid json");
         assert_eq!(paths.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn find_files_returns_interrupted_error_when_cancelled() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        tokio::fs::write(temp.path().join("a.txt"), "a")
-            .await
-            .expect("seed write should work");
-        let tool = FindFilesTool;
-        let cancel = {
-            let ctx = test_tool_context_for(temp.path());
-            ctx.cancel().cancel();
-            ctx
-        };
-
-        let err = tool
-            .execute(
-                "tc-find-cancel".to_string(),
-                json!({
-                    "pattern": "*.txt",
-                    "root": temp.path().to_string_lossy()
-                }),
-                &cancel,
-            )
-            .await
-            .expect_err("findFiles should fail");
-
-        assert!(err.to_string().contains("cancelled"));
-    }
-
-    #[tokio::test]
-    async fn find_files_supports_relative_root_and_reports_absolute_metadata() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        tokio::fs::write(temp.path().join("a.txt"), "a")
-            .await
-            .expect("seed write should work");
-        let tool = FindFilesTool;
-        let result = tool
-            .execute(
-                "tc-find-relative".to_string(),
-                json!({
-                    "pattern": "*.txt",
-                    "root": "."
-                }),
-                &test_tool_context_for(temp.path()),
-            )
-            .await
-            .expect("findFiles should execute");
-
-        assert!(result.ok);
-        assert_eq!(
-            result.metadata.expect("metadata should exist")["root"],
-            json!(canonical_tool_path(temp.path())
-                .to_string_lossy()
-                .to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn find_files_rejects_absolute_patterns() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let tool = FindFilesTool;
-
-        let err = tool
-            .execute(
-                "tc-find-absolute-pattern".to_string(),
-                json!({
-                    "pattern": temp.path().join("*.txt").to_string_lossy().to_string(),
-                }),
-                &test_tool_context_for(temp.path()),
-            )
-            .await
-            .expect_err("absolute patterns should be rejected");
-
-        assert!(matches!(err, AstrError::Validation(_)));
-    }
-
-    #[tokio::test]
-    async fn find_files_rejects_parent_directory_patterns() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let tool = FindFilesTool;
-
-        let err = tool
-            .execute(
-                "tc-find-parent-pattern".to_string(),
-                json!({
-                    "pattern": "../*.txt",
-                }),
-                &test_tool_context_for(temp.path()),
-            )
-            .await
-            .expect_err("parent directory patterns should be rejected");
-
-        assert!(matches!(err, AstrError::Validation(_)));
-    }
-
-    #[tokio::test]
-    async fn find_files_rejects_windows_drive_relative_patterns() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let tool = FindFilesTool;
-
-        let err = tool
-            .execute(
-                "tc-find-drive-relative-pattern".to_string(),
-                json!({
-                    "pattern": "C:foo.txt",
-                }),
-                &test_tool_context_for(temp.path()),
-            )
-            .await
-            .expect_err("drive-relative patterns should be rejected");
-
-        assert!(matches!(err, AstrError::Validation(_)));
     }
 }

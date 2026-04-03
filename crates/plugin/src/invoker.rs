@@ -103,31 +103,24 @@ impl CapabilityInvoker for PluginCapabilityInvoker {
                     stream: false,
                 })
                 .await?;
-            if result.success {
-                Ok(CapabilityExecutionResult {
-                    capability_name: self.descriptor.name.clone(),
-                    success: true,
-                    output: result.output,
-                    error: None,
-                    metadata: Some(result.metadata),
-                    duration_ms: started_at.elapsed().as_millis() as u64,
-                    truncated: false,
-                })
+            let (success, error) = if result.success {
+                (true, None)
             } else {
                 let error = result
                     .error
                     .map(|value| value.message)
                     .unwrap_or_else(|| "plugin invocation failed".to_string());
-                Ok(CapabilityExecutionResult {
-                    capability_name: self.descriptor.name.clone(),
-                    success: false,
-                    output: result.output,
-                    error: Some(error),
-                    metadata: Some(result.metadata),
-                    duration_ms: started_at.elapsed().as_millis() as u64,
-                    truncated: false,
-                })
-            }
+                (false, Some(error))
+            };
+            Ok(CapabilityExecutionResult {
+                capability_name: self.descriptor.name.clone(),
+                success,
+                output: result.output,
+                error,
+                metadata: Some(result.metadata),
+                duration_ms: started_at.elapsed().as_millis() as u64,
+                truncated: false,
+            })
         }
     }
 }
@@ -198,16 +191,15 @@ async fn finish_stream_invocation(
                 });
             }
             EventPhase::Failed => {
+                let error = event
+                    .error
+                    .map(|value| value.message)
+                    .unwrap_or_else(|| "stream invocation failed".to_string());
                 return Ok(CapabilityExecutionResult {
                     capability_name,
                     success: false,
                     output: Value::Null,
-                    error: Some(
-                        event
-                            .error
-                            .map(|value| value.message)
-                            .unwrap_or_else(|| "stream invocation failed".to_string()),
-                    ),
+                    error: Some(error),
                     metadata: Some(json!({ "streamEvents": deltas })),
                     duration_ms: started_at.elapsed().as_millis() as u64,
                     truncated: false,
@@ -221,17 +213,6 @@ async fn finish_stream_invocation(
     ))
 }
 
-/// 将 `core::CapabilityContext` 转换为插件协议的 `InvocationContext`。
-///
-/// 主要映射字段：
-/// - `request_id`：如果为空则生成 UUID
-/// - `working_dir`：同时填充 `working_dir` 和 `repo_root`
-/// - `session_id`、`trace_id`、`profile` 等直接映射
-///
-/// # 注意
-///
-/// 某些字段（如 `caller`、`deadline_ms`、`budget`、`branch`）
-/// 当前未映射，保留为 `None`。这些是未来扩展点。
 fn to_invocation_context(ctx: &CapabilityContext) -> InvocationContext {
     let working_dir = ctx.working_dir.to_string_lossy().into_owned();
     InvocationContext {

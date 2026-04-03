@@ -353,103 +353,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn text_delta_accumulates_content() {
+    fn accumulator_handles_text_thinking_and_tool_calls() {
         let mut acc = LlmAccumulator::default();
 
         acc.apply(&LlmEvent::TextDelta("Hel".to_string()));
         acc.apply(&LlmEvent::TextDelta("lo".to_string()));
-
-        assert_eq!(acc.content, "Hello");
-    }
-
-    #[test]
-    fn thinking_delta_accumulates_reasoning_content() {
-        let mut acc = LlmAccumulator::default();
-
-        acc.apply(&LlmEvent::ThinkingDelta("Hel".to_string()));
-        acc.apply(&LlmEvent::ThinkingDelta("lo".to_string()));
+        acc.apply(&LlmEvent::ThinkingDelta("reasoning".to_string()));
         acc.apply(&LlmEvent::ThinkingSignature("sig".to_string()));
-
-        let output = acc.finish();
-        assert_eq!(
-            output
-                .reasoning
-                .as_ref()
-                .map(|value| value.content.as_str()),
-            Some("Hello")
-        );
-        assert_eq!(
-            output
-                .reasoning
-                .as_ref()
-                .and_then(|value| value.signature.as_deref()),
-            Some("sig")
-        );
-    }
-
-    #[test]
-    fn tool_call_delta_appends_arguments_across_events() {
-        let mut acc = LlmAccumulator::default();
-
         acc.apply(&LlmEvent::ToolCallDelta {
             index: 1,
             id: Some("call_1".to_string()),
             name: Some("search".to_string()),
-            arguments_delta: "{\"q\":\"hel".to_string(),
-        });
-        acc.apply(&LlmEvent::ToolCallDelta {
-            index: 1,
-            id: None,
-            name: None,
-            arguments_delta: "lo\"}".to_string(),
-        });
-
-        let output = acc.finish();
-        assert_eq!(output.tool_calls.len(), 1);
-        assert_eq!(output.tool_calls[0].id, "call_1");
-        assert_eq!(output.tool_calls[0].name, "search");
-        assert_eq!(output.tool_calls[0].args, json!({ "q": "hello" }));
-    }
-
-    #[test]
-    fn empty_arguments_delta_does_not_change_result() {
-        let mut acc = LlmAccumulator::default();
-
-        acc.apply(&LlmEvent::ToolCallDelta {
-            index: 0,
-            id: Some("call_1".to_string()),
-            name: Some("search".to_string()),
-            arguments_delta: String::new(),
-        });
-
-        let output = acc.finish();
-        assert_eq!(output.tool_calls.len(), 1);
-        assert_eq!(output.tool_calls[0].args, Value::String(String::new()));
-        assert_eq!(output.reasoning, None);
-    }
-
-    #[test]
-    fn finish_sorts_by_index_and_parses_json_arguments() {
-        let mut acc = LlmAccumulator::default();
-
-        acc.apply(&LlmEvent::ToolCallDelta {
-            index: 2,
-            id: Some("call_2".to_string()),
-            name: Some("second".to_string()),
-            arguments_delta: "{\"b\":2}".to_string(),
+            arguments_delta: "{\"q\":\"hello\"}".to_string(),
         });
         acc.apply(&LlmEvent::ToolCallDelta {
             index: 0,
             id: Some("call_0".to_string()),
-            name: Some("first".to_string()),
+            name: Some("other".to_string()),
             arguments_delta: "{\"a\":1}".to_string(),
         });
 
         let output = acc.finish();
+        assert_eq!(output.content, "Hello");
+        assert_eq!(
+            output.reasoning.as_ref().map(|r| r.content.as_str()),
+            Some("reasoning")
+        );
+        assert_eq!(
+            output
+                .reasoning
+                .as_ref()
+                .and_then(|r| r.signature.as_deref()),
+            Some("sig")
+        );
         assert_eq!(output.tool_calls.len(), 2);
         assert_eq!(output.tool_calls[0].id, "call_0");
         assert_eq!(output.tool_calls[0].args, json!({ "a": 1 }));
-        assert_eq!(output.tool_calls[1].id, "call_2");
-        assert_eq!(output.tool_calls[1].args, json!({ "b": 2 }));
+        assert_eq!(output.tool_calls[1].id, "call_1");
+        assert_eq!(output.tool_calls[1].args, json!({ "q": "hello" }));
     }
 }

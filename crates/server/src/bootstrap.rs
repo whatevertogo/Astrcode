@@ -93,19 +93,15 @@ pub(crate) async fn serve_run_info(
         });
     }
 
-    let raw = std::fs::read_to_string(&run_info_path)
-        .with_context(|| format!("failed to read run info '{}'", run_info_path.display()))
-        .map_err(|e| ApiError {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: e.to_string(),
-        })?;
+    let raw = std::fs::read_to_string(&run_info_path).map_err(|e| ApiError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: e.to_string(),
+    })?;
 
-    let run_info: RunInfo = serde_json::from_str(&raw)
-        .with_context(|| format!("failed to parse run info '{}'", run_info_path.display()))
-        .map_err(|e| ApiError {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: e.to_string(),
-        })?;
+    let run_info: RunInfo = serde_json::from_str(&raw).map_err(|e| ApiError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: e.to_string(),
+    })?;
 
     // 检查 token 是否过期
     if chrono::Utc::now().timestamp_millis() > run_info.expires_at_ms {

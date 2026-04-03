@@ -71,7 +71,7 @@ impl EventLog {
     pub fn create_at_path(path: PathBuf) -> Result<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| {
-                crate::AstrError::io(
+                crate::io_error(
                     format!("failed to create directory: {}", parent.display()),
                     e,
                 )
@@ -82,7 +82,7 @@ impl EventLog {
             .append(true)
             .open(&path)
             .map_err(|e| {
-                crate::AstrError::io(
+                crate::io_error(
                     format!("failed to create session file: {}", path.display()),
                     e,
                 )
@@ -109,7 +109,7 @@ impl EventLog {
         if let Some(parent) = path.parent() {
             // 每个 session 单独目录，后续才能安全地给该 session 增加附件或索引文件。
             fs::create_dir_all(parent).map_err(|e| {
-                crate::AstrError::io(
+                crate::io_error(
                     format!("failed to create sessions directory: {}", parent.display()),
                     e,
                 )
@@ -120,7 +120,7 @@ impl EventLog {
             .append(true)
             .open(&path)
             .map_err(|e| {
-                crate::AstrError::io(
+                crate::io_error(
                     format!("failed to create session file: {}", path.display()),
                     e,
                 )
@@ -140,7 +140,7 @@ impl EventLog {
         let path = resolve_existing_session_path(session_id)?;
         let next_storage_seq = Self::last_storage_seq_from_path(&path)?.saturating_add(1);
         let file = OpenOptions::new().append(true).open(&path).map_err(|e| {
-            crate::AstrError::io(
+            crate::io_error(
                 format!("failed to open session file: {}", path.display()),
                 e,
             )
@@ -169,15 +169,15 @@ impl EventLog {
         };
 
         serde_json::to_writer(&mut self.writer, &stored)
-            .map_err(|e| crate::AstrError::parse("failed to serialize StoredEvent", e))?;
-        writeln!(self.writer).map_err(|e| crate::AstrError::io("failed to write newline", e))?;
+            .map_err(|e| crate::parse_error("failed to serialize StoredEvent", e))?;
+        writeln!(self.writer).map_err(|e| crate::io_error("failed to write newline", e))?;
         self.writer
             .flush()
-            .map_err(|e| crate::AstrError::io("failed to flush event log", e))?;
+            .map_err(|e| crate::io_error("failed to flush event log", e))?;
         self.writer
             .get_ref()
             .sync_all()
-            .map_err(|e| crate::AstrError::io("failed to sync event log", e))?;
+            .map_err(|e| crate::io_error("failed to sync event log", e))?;
         self.next_storage_seq = self.next_storage_seq.saturating_add(1);
         Ok(stored)
     }
@@ -205,7 +205,7 @@ impl EventLog {
     /// 此方法用于 `open()` 时确定下一个 `storage_seq`，保证续写时序列号连续。
     pub fn last_storage_seq_from_path(path: &Path) -> Result<u64> {
         let file_size = std::fs::metadata(path)
-            .map_err(|e| crate::AstrError::io("failed to read file metadata", e))?
+            .map_err(|e| crate::io_error("failed to read file metadata", e))?
             .len();
 
         if file_size == 0 {
@@ -219,7 +219,7 @@ impl EventLog {
 
         let offset = file_size - TAIL_THRESHOLD;
         let mut file = File::open(path).map_err(|e| {
-            crate::AstrError::io(
+            crate::io_error(
                 format!("failed to open session file: {}", path.display()),
                 e,
             )
@@ -228,18 +228,18 @@ impl EventLog {
             false
         } else {
             file.seek(std::io::SeekFrom::Start(offset - 1))
-                .map_err(|e| crate::AstrError::io("failed to seek in session file", e))?;
+                .map_err(|e| crate::io_error("failed to seek in session file", e))?;
             let mut previous = [0u8; 1];
             file.read_exact(&mut previous)
-                .map_err(|e| crate::AstrError::io("failed to inspect session file tail", e))?;
+                .map_err(|e| crate::io_error("failed to inspect session file tail", e))?;
             previous[0] != b'\n'
         };
         file.seek(std::io::SeekFrom::Start(offset))
-            .map_err(|e| crate::AstrError::io("failed to seek in session file", e))?;
+            .map_err(|e| crate::io_error("failed to seek in session file", e))?;
 
         let mut content = String::new();
         file.read_to_string(&mut content)
-            .map_err(|e| crate::AstrError::io("failed to read session file tail", e))?;
+            .map_err(|e| crate::io_error("failed to read session file tail", e))?;
 
         if started_mid_line {
             let Some((_, remaining)) = content.split_once('\n') else {

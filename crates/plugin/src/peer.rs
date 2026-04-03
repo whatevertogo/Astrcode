@@ -553,48 +553,33 @@ impl PeerInner {
     /// 继续运行可能导致更严重的不一致。
     async fn handle_invoke(self: Arc<Self>, message: InvokeMessage) {
         let request_id = message.id.clone();
-        let run_self = Arc::clone(&self);
-        let cleanup_self = Arc::clone(&self);
-        let cleanup_request_id = request_id.clone();
-        let handle = tokio::spawn(async move {
-            let request_id = message.id.clone();
-            let cancel = CancelToken::new();
-            run_self
-                .inbound_cancellations
-                .lock()
-                .await
-                .insert(request_id.clone(), cancel.clone());
-
-            let result = if message.stream {
-                run_self
-                    .handle_streaming_invoke(message, cancel.clone())
+        let track_id = request_id.clone();
+        let handle = tokio::spawn({
+            let this = Arc::clone(&self);
+            async move {
+                let cancel = CancelToken::new();
+                this.inbound_cancellations
+                    .lock()
                     .await
-            } else {
-                run_self.handle_unary_invoke(message, cancel.clone()).await
-            };
+                    .insert(request_id.clone(), cancel.clone());
 
-            run_self
-                .inbound_cancellations
-                .lock()
-                .await
-                .remove(&request_id);
-            cleanup_self
-                .invoke_handles
-                .lock()
-                .unwrap()
-                .remove(&cleanup_request_id);
-            if let Err(error) = result {
-                run_self
-                    .close(format!("failed to process inbound invoke: {error}"))
-                    .await;
+                let result = if message.stream {
+                    this.handle_streaming_invoke(message, cancel).await
+                } else {
+                    this.handle_unary_invoke(message, cancel).await
+                };
+
+                this.inbound_cancellations.lock().await.remove(&request_id);
+                this.invoke_handles.lock().unwrap().remove(&request_id);
+                if let Err(error) = result {
+                    this.close(format!("failed to process inbound invoke: {error}"))
+                        .await;
+                }
             }
         });
 
-        // Track the handle before returning so shutdown cannot miss an invoke that was just spawned.
-        self.invoke_handles
-            .lock()
-            .unwrap()
-            .insert(request_id, handle);
+        // Track the handle so shutdown cannot miss an in-flight invoke.
+        self.invoke_handles.lock().unwrap().insert(track_id, handle);
     }
 
     /// 处理一元（非流式）入站调用。
@@ -736,12 +721,13 @@ impl PeerInner {
     /// 避免后续消息丢失时 channel 泄漏。
     async fn handle_event(&self, message: EventMessage) -> Result<()> {
         let is_terminal = matches!(message.phase, EventPhase::Completed | EventPhase::Failed);
+        let request_id = message.id.clone();
         let mut streams = self.pending_streams.lock().await;
-        if let Some(sender) = streams.get(&message.id) {
-            let _ = sender.send(message.clone());
+        if let Some(sender) = streams.get(&request_id) {
+            let _ = sender.send(message);
         }
         if is_terminal {
-            streams.remove(&message.id);
+            streams.remove(&request_id);
         }
         Ok(())
     }

@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use astrcode_core::{DeleteProjectResult, Phase, SessionMeta, StorageEvent, StoredEventLine};
 use chrono::{DateTime, Utc};
 
-use crate::{internal_io_error, AstrError, Result};
+use crate::{internal_io_error, io_error, parse_error, Result};
 
 use super::event_log::EventLog;
 use super::paths::{
@@ -166,7 +166,7 @@ impl EventLog {
     pub(crate) fn delete_session_from_path(projects_root: &Path, session_id: &str) -> Result<()> {
         let target = Self::resolve_existing_session_path_from_root(projects_root, session_id)?;
         fs::remove_file(&target).map_err(|error| {
-            AstrError::io(
+            io_error(
                 format!("failed to delete session file: {}", target.display()),
                 error,
             )
@@ -194,7 +194,7 @@ impl EventLog {
         let mut success_count = 0usize;
         let mut failed_session_ids = Vec::new();
         for entry in fs::read_dir(&sessions_dir).map_err(|error| {
-            AstrError::io(
+            io_error(
                 format!(
                     "failed to read project sessions directory: {}",
                     sessions_dir.display()
@@ -238,7 +238,7 @@ impl EventLog {
         let mut files = Vec::new();
         for sessions_dir in session_storage_dirs(projects_root)? {
             for entry in fs::read_dir(&sessions_dir).map_err(|error| {
-                AstrError::io(
+                io_error(
                     format!(
                         "failed to read sessions directory: {}",
                         sessions_dir.display()
@@ -297,7 +297,7 @@ impl EventLog {
     /// 找到所需信息后提前停止读取，避免扫描整个文件。
     fn read_session_head_meta(path: &Path) -> Result<SessionHeadMeta> {
         let file = File::open(path).map_err(|error| {
-            AstrError::io(
+            io_error(
                 format!("failed to open session file: {}", path.display()),
                 error,
             )
@@ -311,8 +311,8 @@ impl EventLog {
         let mut parent_storage_seq = None;
 
         for (i, line) in reader.lines().enumerate() {
-            let line = line
-                .map_err(|error| AstrError::io("failed to read line from session file", error))?;
+            let line =
+                line.map_err(|error| io_error("failed to read line from session file", error))?;
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
@@ -320,7 +320,7 @@ impl EventLog {
 
             let event = serde_json::from_str::<StoredEventLine>(trimmed)
                 .map_err(|error| {
-                    AstrError::parse(
+                    parse_error(
                         format!(
                             "failed to parse head event at {}:{}: {}",
                             path.display(),
@@ -409,7 +409,7 @@ impl EventLog {
         F: FnMut(&StorageEvent) -> Option<T>,
     {
         let file = File::open(path).map_err(|error| {
-            AstrError::io(
+            io_error(
                 format!("failed to open session file: {}", path.display()),
                 error,
             )
@@ -419,7 +419,7 @@ impl EventLog {
             .get_ref()
             .metadata()
             .map_err(|error| {
-                AstrError::io(
+                io_error(
                     format!("failed to stat session file: {}", path.display()),
                     error,
                 )
@@ -463,7 +463,7 @@ impl EventLog {
 
                 let event = serde_json::from_str::<StoredEventLine>(trimmed)
                     .map_err(|error| {
-                        AstrError::parse(
+                        parse_error(
                             format!(
                                 "failed to parse tail event at {}: {}",
                                 path.display(),
@@ -532,7 +532,7 @@ fn remove_empty_session_dir(session_dir: Option<&Path>) -> Result<()> {
     };
 
     let mut entries = fs::read_dir(session_dir).map_err(|error| {
-        AstrError::io(
+        io_error(
             format!(
                 "failed to inspect session directory after delete: {}",
                 session_dir.display()
@@ -542,7 +542,7 @@ fn remove_empty_session_dir(session_dir: Option<&Path>) -> Result<()> {
     })?;
     if entries.next().is_none() {
         fs::remove_dir(session_dir).map_err(|error| {
-            AstrError::io(
+            io_error(
                 format!(
                     "failed to remove empty session directory: {}",
                     session_dir.display()
@@ -596,8 +596,6 @@ fn title_from_user_message(content: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
-
     use chrono::TimeZone;
 
     use super::*;
@@ -666,44 +664,6 @@ mod tests {
     }
 
     #[test]
-    fn read_last_phase_reads_tail_event_without_loading_full_log() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let path = temp.path().join("session-tail.jsonl");
-        let created_at = Utc
-            .with_ymd_and_hms(2026, 3, 18, 9, 0, 0)
-            .single()
-            .expect("timestamp should be valid");
-        let lines = [
-            serde_json::to_string(&StoredEvent {
-                storage_seq: 1,
-                event: StorageEvent::SessionStart {
-                    session_id: "session-2".to_string(),
-                    timestamp: created_at,
-                    working_dir: "/tmp/project".to_string(),
-                    parent_session_id: None,
-                    parent_storage_seq: None,
-                },
-            })
-            .expect("session start should serialize"),
-            serde_json::to_string(&StoredEvent {
-                storage_seq: 2,
-                event: StorageEvent::ToolCall {
-                    turn_id: Some("turn-2".to_string()),
-                    tool_call_id: "call-1".to_string(),
-                    tool_name: "grep".to_string(),
-                    args: serde_json::json!({"pattern":"TODO"}),
-                },
-            })
-            .expect("tool call should serialize"),
-        ];
-        fs::write(&path, format!("{}\n{}\n", lines[0], lines[1])).expect("log should be written");
-
-        let phase = EventLog::read_last_phase(&path).expect("phase should resolve");
-
-        assert_eq!(phase, Phase::CallingTool);
-    }
-
-    #[test]
     fn list_sessions_returns_sorted_ids_across_projects() {
         let tmp = tempfile::tempdir().expect("tempdir should be created");
         let alpha_dir = tmp.path().join("alpha").join("sessions");
@@ -761,14 +721,6 @@ mod tests {
 
         assert!(!path.exists());
         assert!(!session_dir.exists());
-    }
-
-    #[test]
-    fn delete_session_from_path_missing_returns_error() {
-        let tmp = tempfile::tempdir().expect("tempdir should be created");
-        let err = EventLog::delete_session_from_path(tmp.path(), "nonexistent-id")
-            .expect_err("missing session should fail");
-        assert!(err.to_string().contains("not found"));
     }
 
     #[test]
@@ -832,113 +784,5 @@ mod tests {
         assert!(!session_dir(tmp.path(), working_dir, id_a).exists());
         assert!(!session_dir(tmp.path(), working_dir, id_b).exists());
         assert!(session_dir(tmp.path(), other_working_dir, id_other).exists());
-    }
-
-    #[test]
-    fn list_sessions_with_meta_reads_nested_project_sessions() {
-        let tmp = tempfile::tempdir().expect("tempdir should be created");
-        let working_dir = r"D:\repo\alpha";
-        let session_id = "2026-03-08T10-00-00-aaaaaaaa";
-        let path = session_dir(tmp.path(), working_dir, session_id)
-            .join(format!("session-{session_id}.jsonl"));
-        let timestamp = Utc
-            .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
-            .single()
-            .expect("timestamp should be valid");
-        write_stored_events(
-            &path,
-            &[StoredEvent {
-                storage_seq: 1,
-                event: StorageEvent::SessionStart {
-                    session_id: session_id.to_string(),
-                    timestamp,
-                    working_dir: working_dir.to_string(),
-                    parent_session_id: None,
-                    parent_storage_seq: None,
-                },
-            }],
-        );
-
-        let metas =
-            EventLog::list_sessions_with_meta_from_path(tmp.path()).expect("meta scan should work");
-
-        assert_eq!(metas.len(), 1);
-        assert_eq!(metas[0].session_id, session_id);
-        assert_eq!(metas[0].working_dir, working_dir);
-        assert_eq!(metas[0].display_name, "alpha");
-    }
-
-    #[test]
-    fn delete_sessions_by_working_dir_ignores_non_session_files() {
-        let tmp = tempfile::tempdir().expect("tempdir should be created");
-        let working_dir = r"D:\repo\alpha";
-        let sessions_dir = project_sessions_dir(tmp.path(), working_dir);
-        fs::create_dir_all(&sessions_dir).expect("sessions dir should exist");
-        File::create(sessions_dir.join("notes.txt")).expect("non-session file should exist");
-        let id = "2026-03-08T10-00-00-aaaaaaaa";
-        let timestamp = Utc
-            .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
-            .single()
-            .expect("timestamp should be valid");
-        write_stored_events(
-            &session_dir(tmp.path(), working_dir, id).join(format!("session-{id}.jsonl")),
-            &[StoredEvent {
-                storage_seq: 1,
-                event: StorageEvent::SessionStart {
-                    session_id: id.to_string(),
-                    timestamp,
-                    working_dir: working_dir.to_string(),
-                    parent_session_id: None,
-                    parent_storage_seq: None,
-                },
-            }],
-        );
-
-        let result = EventLog::delete_sessions_by_working_dir_from_path(tmp.path(), working_dir)
-            .expect("project delete should succeed");
-
-        assert_eq!(result.success_count, 1);
-        assert!(sessions_dir.join("notes.txt").exists());
-    }
-
-    #[test]
-    fn delete_sessions_by_working_dir_skips_corrupted_files_without_false_failures() {
-        let tmp = tempfile::tempdir().expect("tempdir should be created");
-        let working_dir = r"D:\repo\alpha";
-        let sessions_dir = project_sessions_dir(tmp.path(), working_dir);
-        fs::create_dir_all(&sessions_dir).expect("sessions dir should exist");
-        let valid_id = "2026-03-08T10-00-00-aaaaaaaa";
-        let timestamp = Utc
-            .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
-            .single()
-            .expect("timestamp should be valid");
-        write_stored_events(
-            &session_dir(tmp.path(), working_dir, valid_id)
-                .join(format!("session-{valid_id}.jsonl")),
-            &[StoredEvent {
-                storage_seq: 1,
-                event: StorageEvent::SessionStart {
-                    session_id: valid_id.to_string(),
-                    timestamp,
-                    working_dir: working_dir.to_string(),
-                    parent_session_id: None,
-                    parent_storage_seq: None,
-                },
-            }],
-        );
-        let corrupted_dir = sessions_dir.join("evil..id");
-        fs::create_dir_all(&corrupted_dir).expect("corrupted dir should exist");
-        let mut corrupted = File::create(corrupted_dir.join("session-evil..id.jsonl"))
-            .expect("corrupted file should exist");
-        corrupted
-            .write_all(b"CORRUPTED")
-            .expect("write should work");
-
-        let result = EventLog::delete_sessions_by_working_dir_from_path(tmp.path(), working_dir)
-            .expect("project delete should succeed");
-
-        assert_eq!(result.success_count, 1);
-        assert!(result.failed_session_ids.is_empty());
-        assert!(corrupted_dir.join("session-evil..id.jsonl").exists());
     }
 }

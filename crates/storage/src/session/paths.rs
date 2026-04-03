@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use astrcode_core::project::{project_dir, project_dir_name, projects_dir};
 use astrcode_core::store::StoreError;
 
-use crate::{internal_io_error, AstrError, Result};
+use crate::{internal_io_error, io_error, Result};
 
 /// 会话目录下的 sessions 子目录名称。
 const SESSIONS_DIR_NAME: &str = "sessions";
@@ -151,7 +151,7 @@ pub(crate) fn session_storage_dirs(projects_root: &Path) -> Result<Vec<PathBuf>>
     let mut dirs = Vec::new();
     if projects_root.exists() {
         for entry in fs::read_dir(projects_root).map_err(|error| {
-            AstrError::io(
+            io_error(
                 format!(
                     "failed to read projects directory: {}",
                     projects_root.display()

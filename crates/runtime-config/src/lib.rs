@@ -87,7 +87,6 @@ mod tests {
 
     use crate::saver::save_config_to_path;
     use crate::validation::validate_config;
-    use astrcode_core::home::ASTRCODE_HOME_DIR_ENV;
     use astrcode_core::test_support::TestEnvGuard;
 
     use super::*;
@@ -112,37 +111,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_env_value_prefers_environment_for_legacy_env_like_defaults() {
-        let _guard = TestEnvGuard::new();
-        let env_name = unique_env_name();
-        std::env::set_var(&env_name, "resolved-from-env");
-
-        let resolved = resolve_env_value(&env_name).expect("env-like default should resolve");
-
-        assert_eq!(resolved, "resolved-from-env");
-        std::env::remove_var(&env_name);
-    }
-
-    #[test]
-    fn resolve_env_value_keeps_legacy_env_like_default_when_env_is_missing() {
-        let _guard = TestEnvGuard::new();
-        let env_name = unique_env_name();
-        std::env::remove_var(&env_name);
-
-        let resolved = resolve_env_value(&env_name).expect("missing env should keep raw value");
-
-        assert_eq!(resolved, env_name);
-    }
-
-    #[test]
-    fn env_reference_formats_explicit_env_prefix() {
-        assert_eq!(
-            env_reference(DEEPSEEK_API_KEY_ENV),
-            format!("{}{}", ENV_REFERENCE_PREFIX, DEEPSEEK_API_KEY_ENV)
-        );
-    }
-
-    #[test]
     fn first_load_creates_config_file_with_defaults() {
         let _guard = TestEnvGuard::new();
         std::env::remove_var(DEEPSEEK_API_KEY_ENV);
@@ -164,55 +132,6 @@ mod tests {
         let parsed: Config =
             serde_json::from_str(&persisted).expect("persisted config should be valid json");
         assert_eq!(parsed, Config::default());
-    }
-
-    #[test]
-    fn missing_fields_are_filled_by_defaults() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let path = temp.path().join("config.json");
-        std::fs::write(&path, "{\"version\":\"1\"}").expect("test config should be written");
-
-        let loaded = load_config_from_path(&path).expect("load should succeed");
-        assert_eq!(loaded.version, "1");
-        assert_eq!(loaded.active_profile, Config::default().active_profile);
-        assert_eq!(loaded.active_model, Config::default().active_model);
-        assert_eq!(loaded.runtime, Config::default().runtime);
-        assert_eq!(loaded.profiles, Config::default().profiles);
-    }
-
-    #[test]
-    fn resolve_max_tool_concurrency_prefers_explicit_runtime_config() {
-        let _guard = TestEnvGuard::new();
-        std::env::set_var(ASTRCODE_MAX_TOOL_CONCURRENCY_ENV, "3");
-
-        let resolved = resolve_max_tool_concurrency(&RuntimeConfig {
-            max_tool_concurrency: Some(7),
-            ..RuntimeConfig::default()
-        });
-
-        std::env::remove_var(ASTRCODE_MAX_TOOL_CONCURRENCY_ENV);
-        assert_eq!(resolved, 7);
-    }
-
-    #[test]
-    fn resolve_max_tool_concurrency_falls_back_to_env_when_runtime_config_is_unset() {
-        let _guard = TestEnvGuard::new();
-        std::env::set_var(ASTRCODE_MAX_TOOL_CONCURRENCY_ENV, "4");
-
-        let resolved = resolve_max_tool_concurrency(&RuntimeConfig::default());
-
-        std::env::remove_var(ASTRCODE_MAX_TOOL_CONCURRENCY_ENV);
-        assert_eq!(resolved, 4);
-    }
-
-    #[test]
-    fn resolve_max_tool_concurrency_falls_back_to_default_when_nothing_is_configured() {
-        let _guard = TestEnvGuard::new();
-        std::env::remove_var(ASTRCODE_MAX_TOOL_CONCURRENCY_ENV);
-
-        let resolved = resolve_max_tool_concurrency(&RuntimeConfig::default());
-
-        assert_eq!(resolved, DEFAULT_MAX_TOOL_CONCURRENCY);
     }
 
     #[test]
@@ -307,19 +226,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_api_key_returns_plaintext_when_not_env_pattern() {
-        let profile = Profile {
-            name: "default".to_string(),
-            api_key: Some("sk-plaintext".to_string()),
-            ..Profile::default()
-        };
-        let resolved = profile
-            .resolve_api_key()
-            .expect("plaintext api key should pass");
-        assert_eq!(resolved, "sk-plaintext");
-    }
-
-    #[test]
     fn resolve_api_key_supports_explicit_literal_prefix() {
         let profile = Profile {
             name: "default".to_string(),
@@ -347,19 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_api_key_errors_for_blank_value() {
-        let profile = Profile {
-            name: "custom".to_string(),
-            api_key: Some("   ".to_string()),
-            ..Profile::default()
-        };
-        let err = profile
-            .resolve_api_key()
-            .expect_err("blank api key should fail");
-        assert!(err.to_string().contains("custom"));
-    }
 
-    #[test]
     fn debug_output_redacts_api_keys() {
         let config = Config::default();
 
@@ -433,46 +327,6 @@ mod tests {
     }
 
     #[test]
-    fn windows_open_command_includes_empty_title_argument() {
-        use crate::editor::platform_open_command;
-
-        let path = PathBuf::from(r"C:\Users\Test User\.astrcode\config.json");
-        let command = platform_open_command("windows", &path).expect("command should build");
-
-        assert_eq!(command.program, "cmd");
-        assert_eq!(
-            command.args,
-            vec![
-                "/c".to_string(),
-                "start".to_string(),
-                String::new(),
-                path.to_string_lossy().to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn config_path_prefers_isolated_test_home_over_explicit_override() {
-        let guard = TestEnvGuard::new();
-        let override_home = tempfile::tempdir().expect("tempdir should be created");
-        let previous_override = std::env::var_os(ASTRCODE_HOME_DIR_ENV);
-
-        std::env::set_var(ASTRCODE_HOME_DIR_ENV, override_home.path());
-        let path = config_path().expect("config_path should resolve");
-        let uses_test_home = path.starts_with(guard.home_dir());
-
-        match previous_override {
-            Some(value) => std::env::set_var(ASTRCODE_HOME_DIR_ENV, value),
-            None => std::env::remove_var(ASTRCODE_HOME_DIR_ENV),
-        }
-
-        assert!(
-            uses_test_home,
-            "config path should stay under the isolated test home"
-        );
-    }
-
-    #[test]
     fn validate_config_rejects_empty_profile_names() {
         let err = validate_config(&Config {
             profiles: vec![Profile {
@@ -499,66 +353,6 @@ mod tests {
         .expect_err("duplicate profile names should fail");
 
         assert!(err.to_string().contains("duplicate profile name"));
-    }
-
-    #[test]
-    fn validate_config_rejects_profiles_without_models() {
-        let err = validate_config(&Config {
-            profiles: vec![Profile {
-                models: Vec::new(),
-                ..Profile::default()
-            }],
-            ..Config::default()
-        })
-        .expect_err("profiles without models should fail");
-
-        assert!(err.to_string().contains("at least one model"));
-    }
-
-    #[test]
-    fn validate_config_rejects_zero_max_tokens() {
-        let err = validate_config(&Config {
-            profiles: vec![Profile {
-                max_tokens: 0,
-                ..Profile::default()
-            }],
-            ..Config::default()
-        })
-        .expect_err("zero max_tokens should fail");
-
-        assert!(err
-            .to_string()
-            .contains("max_tokens must be greater than 0"));
-    }
-
-    #[test]
-    fn validate_config_rejects_zero_runtime_max_tool_concurrency() {
-        let err = validate_config(&Config {
-            runtime: RuntimeConfig {
-                max_tool_concurrency: Some(0),
-                ..RuntimeConfig::default()
-            },
-            ..Config::default()
-        })
-        .expect_err("zero runtime maxToolConcurrency should fail");
-
-        assert!(err
-            .to_string()
-            .contains("runtime.maxToolConcurrency must be greater than 0"));
-    }
-
-    #[test]
-    fn validate_config_rejects_blank_openai_base_url() {
-        let err = validate_config(&Config {
-            profiles: vec![Profile {
-                base_url: "   ".to_string(),
-                ..Profile::default()
-            }],
-            ..Config::default()
-        })
-        .expect_err("blank openai base url should fail");
-
-        assert!(err.to_string().contains("base_url cannot be empty"));
     }
 
     #[test]

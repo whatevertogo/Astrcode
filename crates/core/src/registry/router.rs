@@ -61,7 +61,7 @@ impl CapabilityContext {
             request_id: request_id.into(),
             trace_id: None,
             session_id: ctx.session_id().to_string(),
-            working_dir: ctx.working_dir().clone(),
+            working_dir: ctx.working_dir().to_path_buf(),
             cancel: ctx.cancel().clone(),
             profile: "coding".to_string(),
             profile_context: json!({

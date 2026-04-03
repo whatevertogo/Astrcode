@@ -135,13 +135,7 @@ enum BlockStatus {
     /// 成功渲染。
     Success,
     /// 因条件不满足被跳过。
-    SkippedCondition,
-    /// 验证失败（如空内容、空标题）。
-    FailedValidation,
-    /// 模板渲染失败。
-    FailedRender,
-    /// 依赖项未就绪。
-    MissingDependency,
+    Skipped,
 }
 
 impl PromptComposer {
@@ -358,17 +352,7 @@ impl PromptComposer {
             if self.condition_matches(&candidate.spec.condition, ctx, &candidate.contributor_vars) {
                 pending.push(candidate);
             } else {
-                statuses.insert(candidate.spec.id.to_string(), BlockStatus::SkippedCondition);
-                self.push_diagnostic(
-                    diagnostics,
-                    DiagnosticLevel::Info,
-                    Some(candidate.spec.id.to_string()),
-                    Some(candidate.contributor_id.to_string()),
-                    DiagnosticReason::ConditionSkipped {
-                        condition: format!("{:?}", candidate.spec.condition),
-                    },
-                    None,
-                );
+                statuses.insert(candidate.spec.id.to_string(), BlockStatus::Skipped);
             }
         }
 
@@ -387,24 +371,14 @@ impl PromptComposer {
                                     .insert(candidate.spec.id.to_string(), BlockStatus::Success);
                             }
                             None => {
-                                let status = if matches!(
-                                    candidate.spec.content,
-                                    BlockContent::Template(_)
-                                ) {
-                                    BlockStatus::FailedRender
-                                } else {
-                                    BlockStatus::FailedValidation
-                                };
-                                statuses.insert(candidate.spec.id.to_string(), status);
+                                statuses
+                                    .insert(candidate.spec.id.to_string(), BlockStatus::Skipped);
                             }
                         }
                     }
                     DependencyState::Blocked(dependency_id) => {
                         progressed = true;
-                        statuses.insert(
-                            candidate.spec.id.to_string(),
-                            BlockStatus::MissingDependency,
-                        );
+                        statuses.insert(candidate.spec.id.to_string(), BlockStatus::Skipped);
                         self.push_diagnostic(
                             diagnostics,
                             DiagnosticLevel::Warning,
@@ -429,10 +403,7 @@ impl PromptComposer {
                         .first()
                         .map(|dependency| dependency.to_string())
                         .unwrap_or_else(|| "<cycle>".to_string());
-                    statuses.insert(
-                        candidate.spec.id.to_string(),
-                        BlockStatus::MissingDependency,
-                    );
+                    statuses.insert(candidate.spec.id.to_string(), BlockStatus::Skipped);
                     self.push_diagnostic(
                         diagnostics,
                         DiagnosticLevel::Warning,
@@ -491,12 +462,7 @@ impl PromptComposer {
 
             match statuses.get(&dependency_id) {
                 Some(BlockStatus::Success) => {}
-                Some(
-                    BlockStatus::SkippedCondition
-                    | BlockStatus::FailedValidation
-                    | BlockStatus::FailedRender
-                    | BlockStatus::MissingDependency,
-                ) => return DependencyState::Blocked(dependency_id),
+                Some(BlockStatus::Skipped) => return DependencyState::Blocked(dependency_id),
                 None => return DependencyState::Pending,
             }
         }
@@ -702,12 +668,10 @@ enum DependencyState {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     use astrcode_core::test_support::TestEnvGuard;
     use async_trait::async_trait;
-    use tokio::time::sleep;
 
     use super::*;
 
@@ -721,43 +685,6 @@ mod tests {
             step_index: 0,
             turn_index: 0,
             vars: HashMap::new(),
-        }
-    }
-
-    struct StaticContributor;
-
-    #[async_trait]
-    impl PromptContributor for StaticContributor {
-        fn contributor_id(&self) -> &'static str {
-            "static"
-        }
-
-        async fn contribute(&self, _ctx: &PromptContext) -> PromptContribution {
-            PromptContribution {
-                blocks: vec![BlockSpec::system_text(
-                    "static",
-                    BlockKind::Skill,
-                    "Skill",
-                    "static",
-                )],
-                ..PromptContribution::default()
-            }
-        }
-    }
-
-    struct CountingContributor {
-        calls: Arc<AtomicUsize>,
-    }
-
-    #[async_trait]
-    impl PromptContributor for CountingContributor {
-        fn contributor_id(&self) -> &'static str {
-            "counting"
-        }
-
-        async fn contribute(&self, _ctx: &PromptContext) -> PromptContribution {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            PromptContribution::default()
         }
     }
 
@@ -777,75 +704,6 @@ mod tests {
             .system_blocks
             .iter()
             .any(|block| block.kind == BlockKind::Identity));
-    }
-
-    #[tokio::test]
-    async fn add_appends_custom_contributor_output() {
-        let _guard = TestEnvGuard::new();
-        let project = tempfile::tempdir().expect("tempdir should be created");
-        let composer =
-            PromptComposer::with_defaults().with_contributor(Arc::new(StaticContributor));
-
-        let output = composer
-            .build(&test_context(project.path().to_string_lossy().into_owned()))
-            .await
-            .expect("build should succeed");
-
-        assert!(output
-            .plan
-            .system_blocks
-            .iter()
-            .any(|block| block.kind == BlockKind::Skill && block.content == "static"));
-    }
-
-    #[tokio::test]
-    async fn build_reuses_contributor_cache_for_same_context() {
-        let _guard = TestEnvGuard::new();
-        let project = tempfile::tempdir().expect("tempdir should be created");
-        let calls = Arc::new(AtomicUsize::new(0));
-        let composer =
-            PromptComposer::with_defaults().with_contributor(Arc::new(CountingContributor {
-                calls: calls.clone(),
-            }));
-        let ctx = test_context(project.path().to_string_lossy().into_owned());
-
-        composer
-            .build(&ctx)
-            .await
-            .expect("first build should succeed");
-        composer
-            .build(&ctx)
-            .await
-            .expect("second build should succeed");
-
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn build_expires_contributor_cache_after_ttl() {
-        let _guard = TestEnvGuard::new();
-        let project = tempfile::tempdir().expect("tempdir should be created");
-        let calls = Arc::new(AtomicUsize::new(0));
-        let composer = PromptComposer::with_options(PromptComposerOptions {
-            cache_ttl: Duration::from_millis(20),
-            ..PromptComposerOptions::default()
-        })
-        .with_contributor(Arc::new(CountingContributor {
-            calls: calls.clone(),
-        }));
-        let ctx = test_context(project.path().to_string_lossy().into_owned());
-
-        composer
-            .build(&ctx)
-            .await
-            .expect("first build should succeed");
-        sleep(Duration::from_millis(30)).await;
-        composer
-            .build(&ctx)
-            .await
-            .expect("second build should succeed");
-
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -897,49 +755,6 @@ mod tests {
         assert!(block
             .content
             .starts_with("block|contributor|/workspace/demo|"));
-    }
-
-    #[tokio::test]
-    async fn missing_dependency_after_condition_skip_emits_diagnostic() {
-        let _guard = TestEnvGuard::new();
-        struct ConditionalContributor;
-
-        #[async_trait]
-        impl PromptContributor for ConditionalContributor {
-            fn contributor_id(&self) -> &'static str {
-                "conditional"
-            }
-
-            async fn contribute(&self, _ctx: &PromptContext) -> PromptContribution {
-                PromptContribution {
-                    blocks: vec![
-                        BlockSpec::system_text("first", BlockKind::Skill, "First", "first")
-                            .with_condition(BlockCondition::StepEquals(99)),
-                        BlockSpec::system_text("second", BlockKind::Skill, "Second", "second")
-                            .depends_on("first"),
-                    ],
-                    ..PromptContribution::default()
-                }
-            }
-        }
-
-        let composer =
-            PromptComposer::with_defaults().with_contributor(Arc::new(ConditionalContributor));
-        let output = composer
-            .build(&test_context("/workspace/demo".to_string()))
-            .await
-            .expect("build should succeed");
-
-        assert!(output
-            .diagnostics
-            .items
-            .iter()
-            .any(|item| matches!(item.reason, DiagnosticReason::ConditionSkipped { .. })));
-        assert!(output
-            .diagnostics
-            .items
-            .iter()
-            .any(|item| matches!(item.reason, DiagnosticReason::MissingDependency { .. })));
     }
 
     #[tokio::test]

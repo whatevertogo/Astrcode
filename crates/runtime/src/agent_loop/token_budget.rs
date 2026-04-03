@@ -20,6 +20,14 @@
 //! 告诉 LLM 已使用了多少预算，鼓励其继续工作。
 
 use regex::Regex;
+use std::sync::LazyLock;
+
+static SHORTHAND_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(\+\s*\d+(?:\.\d+)?\s*[km]?)").expect("regex"));
+static PHRASE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(use\s+\d+(?:\.\d+)?\s*[km]?\s+tokens?)").expect("regex"));
+static NUMERIC_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(\d+(?:\.\d+)?)\s*([km]?)").expect("regex"));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TokenBudgetDecision {
@@ -94,23 +102,20 @@ pub(crate) fn build_auto_continue_nudge(turn_tokens_used: u64, budget: u64) -> S
 }
 
 fn extract_budget_match(user_message: &str) -> Option<(u64, std::ops::Range<usize>)> {
-    let shorthand = Regex::new(r"(?i)(\+\s*\d+(?:\.\d+)?\s*[km]?)").expect("regex");
-    if let Some(matched) = shorthand
+    if let Some(matched) = SHORTHAND_RE
         .find_iter(user_message)
         .find(|matched| has_budget_marker_boundaries(user_message, matched.start(), matched.end()))
     {
         return parse_budget_value(matched.as_str()).map(|budget| (budget, matched.range()));
     }
 
-    let phrase = Regex::new(r"(?i)(use\s+\d+(?:\.\d+)?\s*[km]?\s+tokens?)").expect("regex");
-    phrase.find(user_message).and_then(|matched| {
+    PHRASE_RE.find(user_message).and_then(|matched| {
         parse_budget_value(matched.as_str()).map(|budget| (budget, matched.range()))
     })
 }
 
 fn parse_budget_value(value: &str) -> Option<u64> {
-    let numeric = Regex::new(r"(?i)(\d+(?:\.\d+)?)\s*([km]?)").expect("regex");
-    let captures = numeric.captures(value)?;
+    let captures = NUMERIC_RE.captures(value)?;
     let amount = captures.get(1)?.as_str().parse::<f64>().ok()?;
     let multiplier = match captures
         .get(2)

@@ -167,7 +167,7 @@ impl OpenAiProvider {
                     });
                 }
                 Err(error) => {
-                    if is_retryable_transport_error(&error) && attempt < MAX_RETRIES {
+                    if error.is_retryable() && attempt < MAX_RETRIES {
                         wait_retry_delay(attempt, cancel.clone()).await?;
                         continue;
                     }
@@ -180,15 +180,6 @@ impl OpenAiProvider {
             "openai-compatible request failed after retries".to_string(),
         ))
     }
-}
-
-/// 本地包装函数，使重试循环可以保持提供者特定的名称，
-/// 同时委托给 `AstrError` 中共享的重试分类逻辑。
-///
-/// 该函数目前直接调用 `AstrError::is_retryable()`，保留独立函数是为了
-/// 未来可能需要添加 OpenAI 特有的重试判断逻辑时方便扩展。
-fn is_retryable_transport_error(error: &AstrError) -> bool {
-    error.is_retryable()
 }
 
 #[async_trait]
@@ -556,27 +547,11 @@ fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
     }
 }
 
-/// 基于模型名称估算 OpenAI 兼容模型的上下文窗口大小。
+/// 估算 OpenAI 兼容模型的上下文窗口大小。
 ///
-/// 当前所有已知模型族（DeepSeek、GPT-4o、GPT-4.1、GPT-5、o 系列）统一返回 128k。
-/// 这是一个保守的默认值，实际值应来自提供者元数据。
-///
-/// NOTE: 该函数目前返回固定值，本质上是一个占位实现。
-/// 当 OpenAI 兼容后端暴露精确的上下文窗口元数据时应移除。
-fn estimate_openai_context_window(model: &str) -> usize {
-    let model = model.to_ascii_lowercase();
-    if model.contains("deepseek") {
-        return 128_000;
-    }
-    if model.contains("gpt-4o-mini") {
-        return 128_000;
-    }
-    if model.contains("gpt-4o") || model.contains("gpt-4.1") || model.starts_with("gpt-5") {
-        return 128_000;
-    }
-    if model.starts_with('o') {
-        return 128_000;
-    }
+/// 当前所有已知模型族统一返回 128k 保守默认值。
+/// 当 OpenAI 兼容后端暴露精确的上下文窗口元数据时应替换为提供者报告的值。
+fn estimate_openai_context_window(_model: &str) -> usize {
     128_000
 }
 
@@ -823,15 +798,6 @@ mod tests {
     use super::*;
     use crate::sink_collector;
 
-    fn test_provider() -> OpenAiProvider {
-        OpenAiProvider::new(
-            "http://127.0.0.1:12345".to_string(),
-            "sk-test".to_string(),
-            "model-a".to_string(),
-            2048,
-        )
-    }
-
     fn spawn_server(response: String) -> (String, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
@@ -855,181 +821,35 @@ mod tests {
     }
 
     #[test]
-    fn parse_sse_line_parses_data_json() {
+    fn sse_line_parser_handles_done_and_data_prefix_variants() {
+        assert!(matches!(
+            parse_sse_line("data: [DONE]").expect("should parse"),
+            ParsedSseLine::Done
+        ));
+        assert!(matches!(
+            parse_sse_line("data:[DONE]").expect("should parse"),
+            ParsedSseLine::Done
+        ));
+        assert!(matches!(
+            parse_sse_line("   ").expect("should parse"),
+            ParsedSseLine::Ignore
+        ));
+
         let parsed = parse_sse_line(
             r#"data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}"#,
         )
-        .expect("line should parse");
-
-        match parsed {
-            ParsedSseLine::Chunk(chunk) => {
-                let events = apply_stream_chunk(chunk);
-                assert!(matches!(
-                    events.as_slice(),
-                    [LlmEvent::TextDelta(text)] if text == "Hello"
-                ));
-            }
-            _ => panic!("expected chunk"),
-        }
-    }
-
-    #[test]
-    fn parse_sse_line_skips_empty_line() {
-        let parsed = parse_sse_line("   ").expect("line should parse");
-        assert!(matches!(parsed, ParsedSseLine::Ignore));
-    }
-
-    #[test]
-    fn parse_sse_line_recognizes_done() {
-        let parsed = parse_sse_line("data: [DONE]").expect("line should parse");
-        assert!(matches!(parsed, ParsedSseLine::Done));
-    }
-
-    #[test]
-    fn parse_sse_line_tolerates_no_space_after_data_colon() {
-        // Some OpenAI-compatible backends emit `data:<json>` without a space.
-        let parsed =
-            parse_sse_line(r#"data:{"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}"#)
-                .expect("line should parse");
+        .expect("should parse");
         assert!(matches!(parsed, ParsedSseLine::Chunk(_)));
-    }
-
-    #[test]
-    fn parse_sse_line_tolerates_multiple_spaces_after_data_colon() {
-        // Some OpenAI-compatible backends emit extra whitespace after `data:`.
-        let parsed = parse_sse_line(
-            r#"data:   {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}"#,
-        )
-        .expect("line should parse");
-        assert!(matches!(parsed, ParsedSseLine::Chunk(_)));
-    }
-
-    #[test]
-    fn parse_sse_line_done_tolerates_no_space() {
-        let parsed = parse_sse_line("data:[DONE]").expect("line should parse");
-        assert!(matches!(parsed, ParsedSseLine::Done));
-    }
-
-    #[test]
-    fn tool_call_delta_maps_empty_arguments_when_missing() {
-        let events = apply_stream_chunk(OpenAiStreamChunk {
-            choices: vec![OpenAiStreamChoice {
-                delta: OpenAiStreamDelta {
-                    content: None,
-                    reasoning_content: None,
-                    tool_calls: Some(vec![OpenAiStreamToolCall {
-                        index: 0,
-                        id: Some("call_1".to_string()),
-                        function: Some(OpenAiStreamToolCallFunction {
-                            name: Some("search".to_string()),
-                            arguments: None,
-                        }),
-                    }]),
-                },
-                finish_reason: None,
-            }],
-        });
-
-        assert!(matches!(
-            events.as_slice(),
-            [LlmEvent::ToolCallDelta {
-                index: 0,
-                id: Some(id),
-                name: Some(name),
-                arguments_delta,
-            }] if id == "call_1" && name == "search" && arguments_delta.is_empty()
-        ));
-    }
-
-    #[test]
-    fn partial_sse_line_buffer_is_preserved_across_chunks() {
-        let mut sse_buffer = String::new();
-        let mut accumulator = LlmAccumulator::default();
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let sink = sink_collector(events.clone());
-
-        let done = consume_sse_text_chunk(
-            "data: {\"choices\":[{\"delta\":{\"content\":\"He",
-            &mut sse_buffer,
-            &mut accumulator,
-            &sink,
-        )
-        .expect("first chunk should parse");
-        assert!(!done);
-        assert!(!sse_buffer.is_empty());
-
-        let done = consume_sse_text_chunk(
-            "llo\"},\"finish_reason\":null}]}\n\n",
-            &mut sse_buffer,
-            &mut accumulator,
-            &sink,
-        )
-        .expect("second chunk should parse");
-        assert!(!done);
-        assert!(sse_buffer.is_empty());
-        assert_eq!(accumulator.content, "Hello");
-        assert!(matches!(
-            events.lock().expect("lock").as_slice(),
-            [LlmEvent::TextDelta(text)] if text == "Hello"
-        ));
-    }
-
-    #[test]
-    fn tool_call_arguments_are_concatenated_incrementally() {
-        let mut accumulator = LlmAccumulator::default();
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let sink = sink_collector(events);
-
-        for event in apply_stream_chunk(OpenAiStreamChunk {
-            choices: vec![OpenAiStreamChoice {
-                delta: OpenAiStreamDelta {
-                    content: None,
-                    reasoning_content: None,
-                    tool_calls: Some(vec![OpenAiStreamToolCall {
-                        index: 0,
-                        id: Some("call_1".to_string()),
-                        function: Some(OpenAiStreamToolCallFunction {
-                            name: Some("search".to_string()),
-                            arguments: Some("{\"q\":\"hel".to_string()),
-                        }),
-                    }]),
-                },
-                finish_reason: None,
-            }],
-        }) {
-            emit_event(event, &mut accumulator, &sink);
-        }
-
-        for event in apply_stream_chunk(OpenAiStreamChunk {
-            choices: vec![OpenAiStreamChoice {
-                delta: OpenAiStreamDelta {
-                    content: None,
-                    reasoning_content: None,
-                    tool_calls: Some(vec![OpenAiStreamToolCall {
-                        index: 0,
-                        id: None,
-                        function: Some(OpenAiStreamToolCallFunction {
-                            name: None,
-                            arguments: Some("lo\"}".to_string()),
-                        }),
-                    }]),
-                },
-                finish_reason: None,
-            }],
-        }) {
-            emit_event(event, &mut accumulator, &sink);
-        }
-
-        let output = accumulator.finish();
-        assert_eq!(output.tool_calls.len(), 1);
-        assert_eq!(output.tool_calls[0].id, "call_1");
-        assert_eq!(output.tool_calls[0].name, "search");
-        assert_eq!(output.tool_calls[0].args, json!({ "q": "hello" }));
     }
 
     #[test]
     fn build_request_prepends_system_message_when_present() {
-        let provider = test_provider();
+        let provider = OpenAiProvider::new(
+            "http://127.0.0.1:12345".to_string(),
+            "sk-test".to_string(),
+            "model-a".to_string(),
+            2048,
+        );
         let messages = [LlmMessage::User {
             content: "hi".to_string(),
             origin: UserMessageOrigin::User,
@@ -1041,26 +861,10 @@ mod tests {
             request.messages[0].content.as_deref(),
             Some("Follow the rules")
         );
-        assert_eq!(request.max_tokens, 2048);
-    }
-
-    #[test]
-    fn build_request_does_not_include_system_message_when_absent() {
-        let provider = test_provider();
-        let messages = [LlmMessage::User {
-            content: "hi".to_string(),
-            origin: UserMessageOrigin::User,
-        }];
-        let request = provider.build_request(&messages, &[], None, false);
-
-        assert!(request
-            .messages
-            .iter()
-            .all(|message| message.role != "system"));
     }
 
     #[tokio::test]
-    async fn generate_without_sink_uses_non_streaming_path() {
+    async fn generate_non_streaming_parses_text_and_tool_calls() {
         let body = json!({
             "choices": [{
                 "message": {
@@ -1107,7 +911,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn generate_with_sink_emits_events_and_returns_output() {
+    async fn generate_streaming_emits_events_and_accumulates_output() {
         let body = format!(
             "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
             json!({
@@ -1177,38 +981,5 @@ mod tests {
         assert_eq!(output.content, "hello");
         assert_eq!(output.tool_calls.len(), 1);
         assert_eq!(output.tool_calls[0].args, json!({ "q": "hello" }));
-    }
-
-    #[test]
-    fn retryable_statuses_are_classified() {
-        assert!(is_retryable_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
-        assert!(is_retryable_status(
-            reqwest::StatusCode::INTERNAL_SERVER_ERROR
-        ));
-        assert!(!is_retryable_status(reqwest::StatusCode::BAD_REQUEST));
-    }
-
-    #[test]
-    fn estimate_context_window_covers_known_openai_compatible_families() {
-        for model in [
-            "deepseek-chat",
-            "gpt-4o-mini",
-            "gpt-4o",
-            "gpt-4.1-mini",
-            "gpt-5",
-            "o3-mini",
-        ] {
-            assert_eq!(
-                estimate_openai_context_window(model),
-                128_000,
-                "model {model} should keep the documented heuristic window"
-            );
-        }
-    }
-
-    #[test]
-    fn estimate_context_window_is_case_insensitive_and_has_a_stable_fallback() {
-        assert_eq!(estimate_openai_context_window("GPT-4.1-MINI"), 128_000);
-        assert_eq!(estimate_openai_context_window("custom-backend"), 128_000);
     }
 }

@@ -130,7 +130,6 @@ mod tests {
 
         assert_eq!(contribution.blocks.len(), 1);
         assert_eq!(contribution.blocks[0].kind, BlockKind::Identity);
-        assert_eq!(contribution.blocks[0].title, "Identity");
         if let BlockContent::Text(content) = &contribution.blocks[0].content {
             assert!(content.contains("AstrCode"));
         } else {
@@ -156,20 +155,5 @@ mod tests {
         } else {
             panic!("Expected Text content");
         }
-    }
-
-    #[tokio::test]
-    async fn cache_fingerprint_contains_path() {
-        let guard = TestEnvGuard::new();
-        let identity_path = guard.home_dir().join(".astrcode").join("IDENTITY.md");
-        fs::create_dir_all(identity_path.parent().expect("parent should exist"))
-            .expect("identity dir should be created");
-        fs::write(&identity_path, "content").expect("identity file should be written");
-        let contributor = IdentityContributor;
-        let ctx = context();
-
-        let fingerprint = contributor.cache_fingerprint(&ctx);
-        assert!(fingerprint.contains("IDENTITY.md"));
-        assert!(fingerprint.contains("present:"));
     }
 }

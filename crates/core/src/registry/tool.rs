@@ -196,20 +196,14 @@ impl CapabilityInvoker for ToolCapabilityInvoker {
         payload: Value,
         ctx: &CapabilityContext,
     ) -> Result<CapabilityExecutionResult> {
-        let tool_ctx = if let Some(sender) = ctx.tool_output_sender.clone() {
-            ToolContext::new(
-                ctx.session_id.clone(),
-                ctx.working_dir.clone(),
-                ctx.cancel.clone(),
-            )
-            .with_tool_output_sender(sender)
-        } else {
-            ToolContext::new(
-                ctx.session_id.clone(),
-                ctx.working_dir.clone(),
-                ctx.cancel.clone(),
-            )
-        };
+        let mut tool_ctx = ToolContext::new(
+            ctx.session_id.clone(),
+            ctx.working_dir.clone(),
+            ctx.cancel.clone(),
+        );
+        if let Some(sender) = ctx.tool_output_sender.clone() {
+            tool_ctx = tool_ctx.with_tool_output_sender(sender);
+        }
         let result = self
             .tool
             .execute(

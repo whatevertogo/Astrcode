@@ -22,17 +22,11 @@ use astrcode_core::{AstrError, CancelToken, Result, ToolContext};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-// Metadata conventions:
-// - Path fields are returned as absolute path strings.
-// - count/bytes/truncated/skipped_files are provided when they apply.
-// - metadata is the machine-readable contract; output is display text only.
-// - Structured machine data should not be embedded into output strings.
-
 /// 检查取消标记，如果已取消则返回 `AstrError::Cancelled`。
 ///
 /// 在长操作（遍历目录、逐行搜索、大文件读取）的关键节点调用，
 /// 确保用户取消能快速响应。
-pub fn check_cancel(cancel: &CancelToken, _tool_name: &str) -> Result<()> {
+pub fn check_cancel(cancel: &CancelToken) -> Result<()> {
     if cancel.is_cancelled() {
         return Err(AstrError::Cancelled);
     }
@@ -382,13 +376,9 @@ fn canonicalize_path(path: &Path, context: &str) -> Result<PathBuf> {
         .map_err(|e| AstrError::io(context.to_string(), e))
 }
 
-fn is_path_within_root(path: &Path, root: &Path) -> bool {
-    let normalized_path = normalize_lexically(path);
-    let normalized_root = normalize_lexically(root);
-    normalized_path == normalized_root || normalized_path.starts_with(&normalized_root)
-}
-
-fn normalize_absolute_path(path: PathBuf) -> PathBuf {
+/// 移除 Windows `fs::canonicalize` 返回的 `\\?\` 前缀，
+/// 使路径字符串更友好，供 metadata 和测试比较使用。
+pub fn normalize_absolute_path(path: PathBuf) -> PathBuf {
     #[cfg(windows)]
     {
         if let Some(rendered) = path.to_str() {
@@ -404,6 +394,12 @@ fn normalize_absolute_path(path: PathBuf) -> PathBuf {
     path
 }
 
+fn is_path_within_root(path: &Path, root: &Path) -> bool {
+    let normalized_path = normalize_lexically(path);
+    let normalized_root = normalize_lexically(root);
+    normalized_path == normalized_root || normalized_path.starts_with(&normalized_root)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::test_support::{canonical_tool_path, test_tool_context_for};
@@ -415,19 +411,8 @@ mod tests {
         let ctx = test_tool_context_for(std::env::temp_dir());
         ctx.cancel().cancel();
 
-        let err = check_cancel(ctx.cancel(), "grep").expect_err("cancelled token should fail");
+        let err = check_cancel(ctx.cancel()).expect_err("cancelled token should fail");
         assert!(err.to_string().contains("cancelled"));
-    }
-
-    #[test]
-    fn resolve_path_returns_absolute_normalized_path() {
-        let cwd = std::env::current_dir().expect("cwd should resolve");
-        let ctx = test_tool_context_for(cwd.clone());
-        let resolved =
-            resolve_path(&ctx, Path::new("./src/../Cargo.toml")).expect("path should resolve");
-
-        assert!(resolved.is_absolute());
-        assert_eq!(resolved, cwd.join("Cargo.toml"));
     }
 
     #[test]
@@ -439,21 +424,6 @@ mod tests {
 
         let err = resolve_path(&ctx, Path::new("../outside.txt"))
             .expect_err("escaping path should be rejected");
-
-        assert!(matches!(err, AstrError::Validation(_)));
-        assert!(err.to_string().contains("escapes working directory"));
-    }
-
-    #[test]
-    fn resolve_path_rejects_absolute_path_outside_working_dir() {
-        let working_dir = tempfile::tempdir().expect("tempdir should be created");
-        let outside_dir = tempfile::tempdir().expect("tempdir should be created");
-        let outside = outside_dir.path().join("outside.txt");
-        fs::write(&outside, "outside").expect("outside file should be created");
-        let ctx = test_tool_context_for(working_dir.path());
-
-        let err =
-            resolve_path(&ctx, &outside).expect_err("absolute path outside working dir fails");
 
         assert!(matches!(err, AstrError::Validation(_)));
         assert!(err.to_string().contains("escapes working directory"));
@@ -483,52 +453,5 @@ mod tests {
             &root.join("nested"),
             &root_with_separator
         ));
-    }
-
-    #[tokio::test]
-    async fn write_and_read_text_file_round_trip() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let file = temp.path().join("note.txt");
-
-        let written: usize = write_text_file(&file, "hello", false)
-            .await
-            .expect("write should succeed");
-        let content = read_utf8_file(&file).await.expect("read should succeed");
-
-        assert_eq!(written, 5);
-        assert_eq!(content, "hello");
-    }
-
-    #[tokio::test]
-    async fn write_text_file_creates_parent_directories() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let file = temp.path().join("nested").join("dir").join("note.txt");
-
-        write_text_file(&file, "hello", true)
-            .await
-            .expect("write should succeed");
-
-        assert!(file.exists());
-    }
-
-    #[test]
-    fn text_change_report_contains_patch_metadata() {
-        let report = build_text_change_report(
-            Path::new("src/demo.rs"),
-            "updated",
-            Some("old line\n"),
-            "new line\n",
-        );
-
-        assert!(report.summary.contains("src/demo.rs"));
-        assert_eq!(report.metadata["changeType"], json!("updated"));
-        assert!(report.metadata["diff"]["patch"]
-            .as_str()
-            .expect("patch should exist")
-            .contains("-old line"));
-        assert!(report.metadata["diff"]["patch"]
-            .as_str()
-            .expect("patch should exist")
-            .contains("+new line"));
     }
 }

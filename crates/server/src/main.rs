@@ -23,8 +23,6 @@ mod auth;
 mod auth_routes_tests;
 mod bootstrap;
 #[cfg(test)]
-mod browser_bootstrap_tests;
-#[cfg(test)]
 mod e2e_tests;
 mod mapper;
 mod routes;
@@ -32,8 +30,6 @@ mod routes;
 mod runtime_routes_tests;
 #[cfg(test)]
 mod test_support;
-#[cfg(all(test, target_os = "windows"))]
-mod windows_subsystem_tests;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

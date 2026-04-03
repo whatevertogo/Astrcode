@@ -18,14 +18,9 @@
 //! - **配置相关**：`Config` → `ConfigView`、模型选项解析
 //! - **SSE 工具**：事件 ID 解析/格式化（`{storage_seq}.{subindex}` 格式）
 
-// 本文件只负责把内部类型投影成 HTTP DTO。
-//
-// 配置选择和 fallback 规则已经下沉到 runtime-config，这里只做协议层映射，
-// 这样服务端入口不会悄悄长出另一套配置业务逻辑。
-
 use astrcode_core::{
-    plugin::PluginEntry, AgentEvent, CapabilityDescriptor, Phase, PluginHealth, PluginState,
-    SessionEventRecord, SessionMeta,
+    plugin::PluginEntry, AgentEvent, AstrError, CapabilityDescriptor, Phase, PluginHealth,
+    PluginState, SessionEventRecord, SessionMeta,
 };
 use astrcode_protocol::http::{
     AgentEventEnvelope, AgentEventPayload, ConfigView, CurrentModelInfoDto, ModelOptionDto,
@@ -507,7 +502,7 @@ pub(crate) fn list_model_options(config: &Config) -> Vec<ModelOptionDto> {
         .collect()
 }
 
-fn config_selection_error(error: anyhow::Error) -> ApiError {
+fn config_selection_error(error: AstrError) -> ApiError {
     ApiError {
         status: StatusCode::BAD_REQUEST,
         message: error.to_string(),
@@ -519,17 +514,13 @@ fn config_selection_error(error: anyhow::Error) -> ApiError {
 /// 规则：
 /// - `None` 或空字符串 → "未配置"
 /// - `env:VAR_NAME` 前缀 → "环境变量: VAR_NAME"（不读取实际值）
-/// - `literal:KEY` 前缀 → 递归处理去掉前缀后的内容
+/// - `literal:KEY` 前缀 → 显示 **** + 最后 4 个字符
 /// - 纯大写+下划线且是有效环境变量名 → "环境变量: NAME"
 /// - 长度 > 4 → 显示 "****" + 最后 4 个字符
 /// - 其他 → "****"
-///
-/// 这样前端可以展示 key 的来源类型（环境变量/字面量）和部分标识，
-/// 同时不会泄露完整的密钥内容。
 pub(crate) fn api_key_preview(api_key: Option<&str>) -> String {
     match api_key.map(str::trim) {
-        None => "未配置".to_string(),
-        Some("") => "未配置".to_string(),
+        None | Some("") => "未配置".to_string(),
         Some(value) if value.starts_with("env:") => {
             let env_name = value.trim_start_matches("env:").trim();
             if env_name.is_empty() {
@@ -539,22 +530,17 @@ pub(crate) fn api_key_preview(api_key: Option<&str>) -> String {
             }
         }
         Some(value) if value.starts_with("literal:") => {
-            api_key_preview(Some(value.trim_start_matches("literal:").trim()))
+            let key = value.trim_start_matches("literal:").trim();
+            if key.chars().count() > 4 {
+                format!("****{}", &key[key.len() - 4..])
+            } else {
+                "****".to_string()
+            }
         }
         Some(value) if is_env_var_name(value) && std::env::var_os(value).is_some() => {
             format!("环境变量: {}", value)
         }
-        Some(value) if value.chars().count() > 4 => {
-            let suffix = value
-                .chars()
-                .rev()
-                .take(4)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<String>();
-            format!("****{}", suffix)
-        }
+        Some(value) if value.len() > 4 => format!("****{}", &value[value.len() - 4..]),
         Some(_) => "****".to_string(),
     }
 }

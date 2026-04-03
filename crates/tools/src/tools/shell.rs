@@ -374,7 +374,7 @@ impl Tool for ShellTool {
         args: serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult> {
-        check_cancel(ctx.cancel(), "shell")?;
+        check_cancel(ctx.cancel())?;
         let args: ShellArgs = serde_json::from_value(args)
             .map_err(|e| AstrError::parse("invalid args for shell tool", e))?;
         if args.command.trim().is_empty() {
@@ -389,7 +389,7 @@ impl Tool for ShellTool {
         let shell_program = spec.program.clone();
         let cwd = match args.cwd {
             Some(cwd) => resolve_path(ctx, &cwd)?,
-            None => ctx.working_dir().clone(),
+            None => ctx.working_dir().to_path_buf(),
         };
         let cwd_text = cwd.to_string_lossy().to_string();
 

@@ -127,9 +127,7 @@ pub enum AgentEventPayload {
     /// 工具调用开始事件。
     ///
     /// 标记一个工具调用的开始，携带工具名称和完整输入参数。
-    ///
-    /// 注意：`input` 字段序列化为 `args` 是为了与前端已有的事件格式保持兼容，
-    /// 新代码应使用 `input` 作为字段名。
+    /// 输入参数序列化为 `args` 以匹配前端事件格式约定。
     ToolCallStart {
         turn_id: String,
         tool_call_id: String,
@@ -178,4 +176,14 @@ pub struct AgentEventEnvelope {
     /// 事件载荷，序列化后其 tag/content 字段会扁平化到信封层级
     #[serde(flatten)]
     pub event: AgentEventPayload,
+}
+
+impl AgentEventEnvelope {
+    /// 创建新的事件信封，自动设置协议版本。
+    pub fn new(event: AgentEventPayload) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            event,
+        }
+    }
 }

@@ -32,7 +32,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use astrcode_core::store::{SessionTurnAcquireResult, SessionTurnBusy, SessionTurnLease};
@@ -40,7 +40,7 @@ use chrono::Utc;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-use crate::{AstrError, Result};
+use crate::{io_error, parse_error, Result};
 
 use super::paths::{session_turn_lock_path, session_turn_metadata_path};
 
@@ -81,7 +81,7 @@ pub(super) fn try_acquire_session_turn(
         .write(true)
         .open(&path)
         .map_err(|error| {
-            AstrError::io(
+            io_error(
                 format!("failed to open session turn lock: {}", path.display()),
                 error,
             )
@@ -92,7 +92,7 @@ pub(super) fn try_acquire_session_turn(
         Err(error) if is_lock_contended(&error) => {
             read_busy_payload_or_retry(file, path, metadata_path, turn_id)
         }
-        Err(error) => Err(AstrError::io(
+        Err(error) => Err(io_error(
             format!("failed to acquire session turn lock: {}", path.display()),
             error,
         )),
@@ -134,7 +134,6 @@ fn read_busy_payload_or_retry(
     metadata_path: PathBuf,
     requested_turn_id: &str,
 ) -> Result<SessionTurnAcquireResult> {
-    let file = file;
     let mut last_retryable_error = None;
 
     for attempt in 0..LOCK_PAYLOAD_RETRY_ATTEMPTS {
@@ -149,7 +148,7 @@ fn read_busy_payload_or_retry(
                     return Ok(SessionTurnAcquireResult::Busy(session_turn_busy(payload)));
                 }
                 Err(lock_error) => {
-                    return Err(AstrError::io(
+                    return Err(io_error(
                         format!(
                             "failed to confirm busy session turn lock state: {}",
                             path.display()
@@ -170,7 +169,7 @@ fn read_busy_payload_or_retry(
                     }
                     Err(lock_error) if is_lock_contended(&lock_error) => {}
                     Err(lock_error) => {
-                        return Err(AstrError::io(
+                        return Err(io_error(
                             format!(
                                 "failed to retry session turn lock acquisition: {}",
                                 path.display()
@@ -189,7 +188,7 @@ fn read_busy_payload_or_retry(
     }
 
     Err(last_retryable_error.unwrap_or_else(|| {
-        AstrError::io(
+        io_error(
             format!(
                 "busy session turn metadata never became readable: {}",
                 metadata_path.display()
@@ -231,22 +230,22 @@ fn should_retry_busy_payload_error(error: &astrcode_core::StoreError) -> bool {
     }
 }
 
-fn write_lock_payload(path: &PathBuf, payload: &ActiveTurnLockPayload) -> Result<()> {
+fn write_lock_payload(path: &Path, payload: &ActiveTurnLockPayload) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(payload)
-        .map_err(|error| AstrError::parse("failed to serialize active turn lock payload", error))?;
+        .map_err(|error| parse_error("failed to serialize active turn lock payload", error))?;
     let mut file = OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
         .open(path)
         .map_err(|error| {
-            AstrError::io(
+            io_error(
                 format!("failed to open session turn metadata: {}", path.display()),
                 error,
             )
         })?;
     file.set_len(0).map_err(|error| {
-        AstrError::io(
+        io_error(
             format!(
                 "failed to truncate session turn metadata: {}",
                 path.display()
@@ -255,25 +254,25 @@ fn write_lock_payload(path: &PathBuf, payload: &ActiveTurnLockPayload) -> Result
         )
     })?;
     file.seek(SeekFrom::Start(0)).map_err(|error| {
-        AstrError::io(
+        io_error(
             format!("failed to seek session turn metadata: {}", path.display()),
             error,
         )
     })?;
     file.write_all(&bytes).map_err(|error| {
-        AstrError::io(
+        io_error(
             format!("failed to write session turn metadata: {}", path.display()),
             error,
         )
     })?;
     file.flush().map_err(|error| {
-        AstrError::io(
+        io_error(
             format!("failed to flush session turn metadata: {}", path.display()),
             error,
         )
     })?;
     file.sync_all().map_err(|error| {
-        AstrError::io(
+        io_error(
             format!("failed to sync session turn metadata: {}", path.display()),
             error,
         )
@@ -281,9 +280,9 @@ fn write_lock_payload(path: &PathBuf, payload: &ActiveTurnLockPayload) -> Result
     Ok(())
 }
 
-fn read_lock_payload(path: &PathBuf) -> Result<ActiveTurnLockPayload> {
+fn read_lock_payload(path: &Path) -> Result<ActiveTurnLockPayload> {
     let mut file = OpenOptions::new().read(true).open(path).map_err(|error| {
-        AstrError::io(
+        io_error(
             format!(
                 "failed to open busy session turn metadata: {}",
                 path.display()
@@ -293,7 +292,7 @@ fn read_lock_payload(path: &PathBuf) -> Result<ActiveTurnLockPayload> {
     })?;
     let mut raw = String::new();
     file.read_to_string(&mut raw).map_err(|error| {
-        AstrError::io(
+        io_error(
             format!(
                 "failed to read busy session turn metadata: {}",
                 path.display()
@@ -302,7 +301,7 @@ fn read_lock_payload(path: &PathBuf) -> Result<ActiveTurnLockPayload> {
         )
     })?;
     serde_json::from_str(&raw).map_err(|error| {
-        AstrError::parse(
+        parse_error(
             format!(
                 "failed to parse busy session turn lock payload '{}'",
                 path.display()

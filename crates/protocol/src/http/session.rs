@@ -98,19 +98,21 @@ pub enum SessionMessageDto {
     /// 工具调用消息。
     ///
     /// 包含工具名称、参数、输出、执行状态等完整信息。
-    /// 部分字段为 `Option` 是因为历史消息可能来自不同版本的协议。
     ToolCall {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
         tool_call_id: String,
         tool_name: String,
         args: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         output: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         ok: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
     },
 }

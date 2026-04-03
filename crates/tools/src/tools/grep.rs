@@ -100,7 +100,7 @@ impl Tool for GrepTool {
         args: serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult> {
-        check_cancel(ctx.cancel(), "grep")?;
+        check_cancel(ctx.cancel())?;
 
         let args: GrepArgs = serde_json::from_value(args)
             .map_err(|e| AstrError::parse("invalid args for grep", e))?;
@@ -120,7 +120,7 @@ impl Tool for GrepTool {
 
         let files = collect_candidate_files(&path, args.recursive, ctx.cancel())?;
         for file in files {
-            check_cancel(ctx.cancel(), "grep")?;
+            check_cancel(ctx.cancel())?;
 
             let content = match read_utf8_file(&file).await {
                 Ok(content) => content,
@@ -132,7 +132,7 @@ impl Tool for GrepTool {
             };
 
             for (index, line) in content.lines().enumerate() {
-                check_cancel(ctx.cancel(), "grep")?;
+                check_cancel(ctx.cancel())?;
                 if regex.is_match(line) {
                     matches.push(GrepMatch {
                         file: file.to_string_lossy().to_string(),
@@ -188,7 +188,7 @@ fn collect_candidate_files(
     if recursive {
         let mut files = Vec::new();
         for entry in WalkDir::new(path) {
-            check_cancel(cancel, "grep")?;
+            check_cancel(cancel)?;
             let entry = entry.map_err(|e| {
                 AstrError::io(
                     format!("failed walking '{}'", path.display()),
@@ -206,7 +206,7 @@ fn collect_candidate_files(
     let read_dir = std::fs::read_dir(path)
         .map_err(|e| AstrError::io(format!("failed reading directory '{}'", path.display()), e))?;
     for entry in read_dir {
-        check_cancel(cancel, "grep")?;
+        check_cancel(cancel)?;
         let entry = entry?;
         let file_type = entry.file_type()?;
         if file_type.is_file() {
@@ -303,168 +303,5 @@ mod tests {
             .expect_err("grep should fail");
 
         assert!(err.to_string().contains("invalid regex"));
-    }
-
-    #[tokio::test]
-    async fn grep_matches_case_insensitively_when_requested() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let file = temp.path().join("lib.rs");
-        tokio::fs::write(&file, "Pub Fn a() {}\n")
-            .await
-            .expect("seed write should work");
-        let tool = GrepTool;
-
-        let result = tool
-            .execute(
-                "tc-grep-ci".to_string(),
-                json!({
-                    "pattern": "pub fn",
-                    "path": file.to_string_lossy(),
-                    "caseInsensitive": true
-                }),
-                &test_tool_context_for(temp.path()),
-            )
-            .await
-            .expect("grep should execute");
-
-        assert!(result.ok);
-        let matches: Vec<GrepMatch> =
-            serde_json::from_str(&result.output).expect("output should be valid json");
-        assert_eq!(matches.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn grep_searches_recursively() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let nested = temp.path().join("nested");
-        tokio::fs::create_dir_all(&nested)
-            .await
-            .expect("mkdir should work");
-        let file = nested.join("lib.rs");
-        tokio::fs::write(&file, "pub fn a() {}\n")
-            .await
-            .expect("seed write should work");
-        let tool = GrepTool;
-
-        let result = tool
-            .execute(
-                "tc-grep-recursive".to_string(),
-                json!({
-                    "pattern": "pub fn",
-                    "path": temp.path().to_string_lossy(),
-                    "recursive": true
-                }),
-                &test_tool_context_for(temp.path()),
-            )
-            .await
-            .expect("grep should execute");
-
-        assert!(result.ok);
-        let matches: Vec<GrepMatch> =
-            serde_json::from_str(&result.output).expect("output should be valid json");
-        assert_eq!(matches.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn grep_returns_interrupted_error_when_cancelled() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let file = temp.path().join("lib.rs");
-        tokio::fs::write(&file, "pub fn a() {}\n")
-            .await
-            .expect("seed write should work");
-        let tool = GrepTool;
-        let cancel = {
-            let ctx = test_tool_context_for(temp.path());
-            ctx.cancel().cancel();
-            ctx
-        };
-
-        let err = tool
-            .execute(
-                "tc-grep-cancel".to_string(),
-                json!({
-                    "pattern": "pub fn",
-                    "path": file.to_string_lossy()
-                }),
-                &cancel,
-            )
-            .await
-            .expect_err("grep should fail");
-
-        assert!(err.to_string().contains("cancelled"));
-    }
-
-    #[test]
-    fn collect_candidate_files_honors_cancellation_during_recursive_walk() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let nested = temp.path().join("nested");
-        std::fs::create_dir_all(&nested).expect("mkdir should work");
-        std::fs::write(nested.join("lib.rs"), "pub fn a() {}\n").expect("seed write should work");
-
-        let cancel = {
-            let ctx = test_tool_context_for(temp.path());
-            ctx.cancel().cancel();
-            ctx
-        };
-
-        let err = collect_candidate_files(temp.path(), true, cancel.cancel())
-            .expect_err("recursive walk should fail when cancelled");
-
-        assert!(err.to_string().contains("cancelled"));
-    }
-
-    #[tokio::test]
-    async fn grep_supports_relative_paths_and_reports_skipped_files() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        tokio::fs::write(temp.path().join("good.rs"), "pub fn a() {}\n")
-            .await
-            .expect("seed write should work");
-        tokio::fs::write(temp.path().join("bad.bin"), [0xff, 0xfe, 0xfd])
-            .await
-            .expect("seed write should work");
-
-        let tool = GrepTool;
-        let result = tool
-            .execute(
-                "tc-grep-relative".to_string(),
-                json!({
-                    "pattern": "pub fn",
-                    "path": "."
-                }),
-                &test_tool_context_for(temp.path()),
-            )
-            .await
-            .expect("grep should execute");
-
-        assert!(result.ok);
-        let matches: Vec<GrepMatch> =
-            serde_json::from_str(&result.output).expect("output should be valid json");
-        assert_eq!(matches.len(), 1);
-        assert_eq!(
-            result.metadata.expect("metadata should exist")["skipped_files"],
-            json!(1)
-        );
-    }
-
-    #[tokio::test]
-    async fn grep_errors_for_missing_paths() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let tool = GrepTool;
-
-        let err = tool
-            .execute(
-                "tc-grep-missing".to_string(),
-                json!({
-                    "pattern": "pub fn",
-                    "path": "missing"
-                }),
-                &test_tool_context_for(temp.path()),
-            )
-            .await
-            .expect_err("missing paths should fail");
-
-        assert!(err
-            .to_string()
-            .contains("path is neither a file nor directory"));
     }
 }

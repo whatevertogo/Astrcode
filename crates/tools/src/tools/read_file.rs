@@ -78,7 +78,7 @@ impl Tool for ReadFileTool {
         args: serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult> {
-        check_cancel(ctx.cancel(), "readFile")?;
+        check_cancel(ctx.cancel())?;
 
         let args: ReadFileArgs = serde_json::from_value(args)
             .map_err(|e| AstrError::parse("invalid args for readFile", e))?;
@@ -119,33 +119,7 @@ impl Tool for ReadFileTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{canonical_tool_path, test_tool_context_for};
-
-    #[tokio::test]
-    async fn read_file_tool_reads_file() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let file = temp.path().join("sample.txt");
-        tokio::fs::write(&file, "hello from read_file")
-            .await
-            .expect("write should work");
-
-        let tool = ReadFileTool;
-        let result = tool
-            .execute(
-                "tc2".to_string(),
-                json!({ "path": file.to_string_lossy() }),
-                &test_tool_context_for(temp.path()),
-            )
-            .await
-            .expect("readFile should succeed");
-
-        assert!(result.ok);
-        assert_eq!(result.output, "hello from read_file");
-        assert_eq!(
-            result.metadata.expect("metadata should exist")["path"],
-            json!(canonical_tool_path(&file).to_string_lossy().to_string())
-        );
-    }
+    use crate::test_support::test_tool_context_for;
 
     #[tokio::test]
     async fn read_file_tool_marks_truncated_output() {

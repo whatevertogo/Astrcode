@@ -57,9 +57,6 @@ fn discover_bundled_skills(root: &Path) -> Vec<BundledSkillFolder> {
 
         let mut assets = Vec::new();
         collect_files_recursive(&path, &path, &mut assets);
-        if !assets.iter().any(|asset| asset == "SKILL.md") {
-            continue;
-        }
 
         folders.push(BundledSkillFolder { id, assets });
     }

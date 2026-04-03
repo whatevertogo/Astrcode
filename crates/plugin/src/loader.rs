@@ -34,6 +34,30 @@ pub struct PluginLoader {
     pub search_paths: Vec<PathBuf>,
 }
 
+/// Resolve a relative path field in place.
+///
+/// If `require_components_gt_1` is true, only resolve paths that contain
+/// directory separators (e.g. `./bin/plugin`), avoiding bare executable names.
+fn resolve_relative_path(
+    path_field: &mut Option<String>,
+    manifest_path: &std::path::Path,
+    search_path: &std::path::Path,
+    require_components_gt_1: bool,
+) {
+    let Some(value) = path_field.clone() else {
+        return;
+    };
+    let path = PathBuf::from(&value);
+    if !path.is_relative() {
+        return;
+    }
+    if require_components_gt_1 && path.components().count() <= 1 {
+        return;
+    }
+    let resolved = manifest_path.parent().unwrap_or(search_path).join(path);
+    *path_field = Some(resolved.to_string_lossy().into_owned());
+}
+
 impl PluginLoader {
     /// 在所有搜索路径中发现插件清单。
     ///
@@ -115,20 +139,8 @@ impl PluginLoader {
                         continue;
                     }
                 };
-                if let Some(working_dir) = manifest.working_dir.clone() {
-                    let working_dir_path = PathBuf::from(&working_dir);
-                    if working_dir_path.is_relative() {
-                        let resolved = path.parent().unwrap_or(search_path).join(working_dir_path);
-                        manifest.working_dir = Some(resolved.to_string_lossy().into_owned());
-                    }
-                }
-                if let Some(executable) = manifest.executable.clone() {
-                    let executable_path = PathBuf::from(&executable);
-                    if executable_path.is_relative() && executable_path.components().count() > 1 {
-                        let resolved = path.parent().unwrap_or(search_path).join(executable_path);
-                        manifest.executable = Some(resolved.to_string_lossy().into_owned());
-                    }
-                }
+                resolve_relative_path(&mut manifest.working_dir, &path, search_path, false);
+                resolve_relative_path(&mut manifest.executable, &path, search_path, true);
                 manifests.push(manifest);
             }
         }

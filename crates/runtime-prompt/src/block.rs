@@ -32,10 +32,6 @@ pub enum BlockKind {
     ///
     /// 作为 system prompt 的第一部分，建立模型的基本行为准则和角色定位。
     Identity,
-    // 预留给未来的系统 prompt 块——当 PromptComposer 需要将多个 identity/rule 片段
-    // 合并为一个统一的 system prompt 时，此变体将作为合成结果的 BlockKind。
-    #[allow(dead_code)]
-    SystemPrompt,
     /// 工作环境信息（工作目录、操作系统、日期、工具列表）。优先级 300。
     ///
     /// 让模型了解当前运行环境，以便生成正确的路径、命令等。
@@ -54,7 +50,7 @@ pub enum BlockKind {
     SkillGuide,
     /// 插件或 MCP 注入的 prompt 指令。优先级 580。
     ExtensionInstruction,
-    /// 遗留的 skill 摘要块（仅工具名列表）。优先级 600。
+    /// Skill 摘要块（仅工具名列表）。优先级 600。
     Skill,
     /// Few-shot 示例消息对。优先级 700。
     ///
@@ -66,7 +62,6 @@ impl BlockKind {
     pub fn default_priority(self) -> i32 {
         match self {
             Self::Identity => 100,
-            Self::SystemPrompt => 200,
             Self::Environment => 300,
             Self::UserRules => 400,
             Self::ProjectRules => 500,
@@ -202,8 +197,17 @@ impl BlockSpec {
         template: impl Into<Cow<'static, str>>,
     ) -> Self {
         Self {
+            id: id.into(),
+            kind,
+            title: title.into(),
             content: BlockContent::Template(PromptTemplate::new(template)),
-            ..Self::system_text(id, kind, title, String::new())
+            priority: None,
+            condition: BlockCondition::Always,
+            dependencies: Vec::new(),
+            validation_policy: ValidationPolicy::Inherit,
+            render_target: RenderTarget::System,
+            metadata: BlockMetadata::default(),
+            vars: HashMap::new(),
         }
     }
 
@@ -215,8 +219,17 @@ impl BlockSpec {
         render_target: RenderTarget,
     ) -> Self {
         Self {
+            id: id.into(),
+            kind,
+            title: title.into(),
+            content: BlockContent::Text(content.into()),
+            priority: None,
+            condition: BlockCondition::Always,
+            dependencies: Vec::new(),
+            validation_policy: ValidationPolicy::Inherit,
             render_target,
-            ..Self::system_text(id, kind, title, content)
+            metadata: BlockMetadata::default(),
+            vars: HashMap::new(),
         }
     }
 
@@ -250,8 +263,6 @@ impl BlockSpec {
         self
     }
 
-    // 仅在测试中使用；生产代码通过 contributor 设置 vars
-    #[allow(dead_code)]
     pub fn with_var(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.vars.insert(key.into(), value.into());
         self

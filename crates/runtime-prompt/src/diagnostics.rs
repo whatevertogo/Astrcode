@@ -22,8 +22,6 @@ pub enum DiagnosticLevel {
 /// 每种原因对应 prompt 组装管线中的一个特定事件或失败点。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiagnosticReason {
-    /// Block 因条件不满足被跳过。
-    ConditionSkipped { condition: String },
     /// Block 的依赖项未就绪（被跳过或失败）。
     MissingDependency { dependency_id: String },
     /// 模板中的变量无法解析。

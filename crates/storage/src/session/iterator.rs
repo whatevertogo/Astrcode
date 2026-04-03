@@ -38,7 +38,7 @@ impl EventLogIterator {
     /// 文件必须存在且可读，否则返回 IO 错误。
     pub fn from_path(path: &Path) -> Result<Self> {
         let file = File::open(path).map_err(|e| {
-            crate::AstrError::io(
+            crate::io_error(
                 format!("failed to open session file: {}", path.display()),
                 e,
             )
@@ -59,7 +59,7 @@ impl Iterator for EventLogIterator {
             let line = match self.lines.next()? {
                 Ok(line) => line,
                 Err(error) => {
-                    return Some(Err(crate::AstrError::io(
+                    return Some(Err(crate::io_error(
                         "failed to read line from session file",
                         error,
                     )));
@@ -76,7 +76,7 @@ impl Iterator for EventLogIterator {
             let event = match serde_json::from_str::<StoredEventLine>(trimmed) {
                 Ok(event) => event,
                 Err(error) => {
-                    return Some(Err(crate::AstrError::parse(
+                    return Some(Err(crate::parse_error(
                         format!(
                             "failed to parse event at {}:{}: {}",
                             self.path.display(),

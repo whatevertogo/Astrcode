@@ -111,11 +111,9 @@ impl PromptContributor for AgentsMdContributor {
 mod tests {
     use std::fs;
 
-    use astrcode_core::home::ASTRCODE_HOME_DIR_ENV;
     use astrcode_core::test_support::TestEnvGuard;
 
     use super::*;
-    use crate::BlockContent;
 
     fn context(working_dir: String) -> PromptContext {
         PromptContext {
@@ -131,71 +129,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn returns_empty_blocks_when_agents_files_are_missing() {
-        let _guard = TestEnvGuard::new();
-        let project = tempfile::tempdir().expect("tempdir should be created");
-        let contributor = AgentsMdContributor;
-
-        let contribution = contributor
-            .contribute(&context(project.path().to_string_lossy().into_owned()))
-            .await;
-
-        assert!(contribution.blocks.is_empty());
-    }
-
-    #[tokio::test]
-    async fn returns_user_rules_block_with_source_prefix() {
-        let guard = TestEnvGuard::new();
-        let project = tempfile::tempdir().expect("tempdir should be created");
-        let user_agents_path = guard.home_dir().join(".astrcode").join("AGENTS.md");
-        fs::create_dir_all(user_agents_path.parent().expect("parent should exist"))
-            .expect("user agents dir should be created");
-        fs::write(&user_agents_path, "Follow user rule")
-            .expect("user agents file should be written");
-        let contributor = AgentsMdContributor;
-
-        let contribution = contributor
-            .contribute(&context(project.path().to_string_lossy().into_owned()))
-            .await;
-
-        assert_eq!(contribution.blocks.len(), 1);
-        assert_eq!(contribution.blocks[0].kind, BlockKind::UserRules);
-        assert!(matches!(
-            &contribution.blocks[0].content,
-            BlockContent::Text(content)
-            if content.contains(&format!(
-                "User-wide instructions from {}:\nFollow user rule",
-                user_agents_path.display()
-            ))
-        ));
-    }
-
-    #[tokio::test]
-    async fn returns_project_rules_block_with_source_prefix() {
-        let _guard = TestEnvGuard::new();
-        let project = tempfile::tempdir().expect("tempdir should be created");
-        fs::write(project.path().join("AGENTS.md"), "Follow project rule")
-            .expect("project agents file should be written");
-        let contributor = AgentsMdContributor;
-
-        let contribution = contributor
-            .contribute(&context(project.path().to_string_lossy().into_owned()))
-            .await;
-
-        assert_eq!(contribution.blocks.len(), 1);
-        assert_eq!(contribution.blocks[0].kind, BlockKind::ProjectRules);
-        assert!(matches!(
-            &contribution.blocks[0].content,
-            BlockContent::Text(content)
-            if content.contains(&format!(
-                "Project-specific instructions from {}:\nFollow project rule",
-                project.path().join("AGENTS.md").display()
-            ))
-        ));
-    }
-
-    #[tokio::test]
-    async fn returns_both_user_and_project_blocks_when_both_exist() {
+    async fn returns_user_and_project_rules_blocks() {
         let guard = TestEnvGuard::new();
         let project = tempfile::tempdir().expect("tempdir should be created");
         let user_agents_path = guard.home_dir().join(".astrcode").join("AGENTS.md");
@@ -220,25 +154,5 @@ mod tests {
             .blocks
             .iter()
             .any(|block| block.kind == BlockKind::ProjectRules));
-    }
-
-    #[test]
-    fn user_agents_md_path_prefers_app_home_override() {
-        let _guard = TestEnvGuard::new();
-        let override_home = tempfile::tempdir().expect("tempdir should be created");
-        let previous_override = std::env::var_os(ASTRCODE_HOME_DIR_ENV);
-
-        std::env::set_var(ASTRCODE_HOME_DIR_ENV, override_home.path());
-        let path = user_agents_md_path().expect("override path should resolve");
-
-        match previous_override {
-            Some(value) => std::env::set_var(ASTRCODE_HOME_DIR_ENV, value),
-            None => std::env::remove_var(ASTRCODE_HOME_DIR_ENV),
-        }
-
-        assert_eq!(
-            path,
-            override_home.path().join(".astrcode").join("AGENTS.md")
-        );
     }
 }

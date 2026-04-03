@@ -88,7 +88,7 @@ impl ToolContext {
     }
 
     /// Returns the working directory path.
-    pub fn working_dir(&self) -> &PathBuf {
+    pub fn working_dir(&self) -> &std::path::Path {
         &self.working_dir
     }
 

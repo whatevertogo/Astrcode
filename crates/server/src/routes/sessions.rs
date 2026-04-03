@@ -164,12 +164,10 @@ pub(crate) async fn session_messages(
     if let Some(cursor) = cursor {
         response.headers_mut().insert(
             SESSION_CURSOR_HEADER_NAME,
-            cursor
-                .parse::<axum::http::HeaderValue>()
-                .map_err(|error| ApiError {
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: error.to_string(),
-                })?,
+            axum::http::HeaderValue::from_str(&cursor).map_err(|error| ApiError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: error.to_string(),
+            })?,
         );
     }
     Ok(response)

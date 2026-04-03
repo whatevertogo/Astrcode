@@ -108,6 +108,8 @@ pub(crate) async fn generate_response(
         }
     };
 
+    // Drain any residual events buffered between generate() completing and the select! loop exiting.
+    // These are events the provider pushed right before returning, after the last select! iteration.
     while let Ok(event) = event_rx.try_recv() {
         match event {
             LlmEvent::TextDelta(text) => {
@@ -122,7 +124,6 @@ pub(crate) async fn generate_response(
                     token: text,
                 })?;
             }
-            // 同上：drain 阶段也丢弃这两种无需转发的事件类型
             LlmEvent::ThinkingSignature(_) | LlmEvent::ToolCallDelta { .. } => {}
         }
     }
