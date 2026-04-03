@@ -10,7 +10,7 @@
 //!
 //! - **调用时机**：每个 step 中，`build_plan()` 和 `decide_context_strategy()` 之后
 //! - **输入**：`StepRequestConfig`（prompt plan + context bundle + 工具列表 + 模型窗口）
-//!              + `TokenUsageTracker`（当前 token 使用统计）
+//!   + `TokenUsageTracker`（当前 token 使用统计）
 //! - **输出**：`PreparedRequest`（`ModelRequest` + `PromptTokenSnapshot` + 截断计数）
 //!
 //! ## 依赖和协作
@@ -21,7 +21,7 @@
 //! - **使用** `PromptPlan` 获取系统提示词和可选规划结果
 //! - **被调用方**：`turn_runner` 在 LLM 调用前调用 `build_step_request()`
 //! - **输出给**：`llm_cycle::generate_response()` 消费 `ModelRequest`
-//!                 `on_event(StorageEvent::PromptMetrics {...})` 消费 `PromptTokenSnapshot`
+//!   `on_event(StorageEvent::PromptMetrics {...})` 消费 `PromptTokenSnapshot`
 //!
 //! ## 关键设计
 //!
