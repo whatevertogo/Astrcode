@@ -220,9 +220,9 @@ impl ContextStage for CompactionViewStage {
 
 /// Trim tool noise directly on the model-visible conversation view.
 ///
-/// Microcompact now lives in the pipeline so request assembly stays a pure encoding step. That
-/// keeps tool-result pruning in the same place as the rest of context material selection instead
-/// of letting `RequestAssembler` mutate the conversation after the fact.
+/// We run microcompact here so request assembly becomes a pure serialization step. That keeps
+/// prompt/context selection separate from request encoding and removes the last request-level
+/// mutation path from `RequestAssembler`.
 struct ToolNoiseTrimStage;
 
 impl ContextStage for ToolNoiseTrimStage {
