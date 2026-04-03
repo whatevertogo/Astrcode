@@ -104,25 +104,75 @@
   color: #201b16;
 }
 
-.codeBlock {
-  background: var(--surface);
+.codeBlockWrapper {
+  margin: 16px 0;
   border: 1px solid var(--border);
-  border-radius: 8px; /* Flatter */
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.02);
+}
+
+.codeHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-bg);
+}
+
+.codeLanguage {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family:
+    SFMono-Regular,
+    Consolas,
+    Liberation Mono,
+    Menlo,
+    monospace;
+}
+
+.copyBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.copyBtn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text-primary);
+}
+
+.codeBlock {
+  margin: 0;
   padding: 12px 16px;
   overflow-x: auto;
-  margin: 10px 0;
-  font-size: 13.5px; /* Claude font size */
-  line-height: 1.5;
-  /* Removed box-shadow */
+  font-size: 13.5px;
+  line-height: 1.6;
 }
 
 .inlineCode {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 2px 4px;
-  font-size: 13.5px;
-  color: var(--text-primary);
+  background: #fbeceb !important;
+  color: #8f4038 !important;
+  border: 1px solid rgba(242, 209, 206, 0.8) !important;
+  border-radius: 6px !important;
+  padding: 2px 6px !important;
+  font-size: 13.5px !important;
+  font-family:
+    SFMono-Regular,
+    Consolas,
+    Liberation Mono,
+    Menlo,
+    monospace !important;
 }
 
 .cursor {

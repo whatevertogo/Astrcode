@@ -27,20 +27,20 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 8px;
+  padding: 4px 0;
   min-height: 24px;
   cursor: pointer;
   user-select: none;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
   color: var(--text-secondary);
-  transition: background-color 150ms ease;
+  transition: opacity 150ms ease;
   margin-left: 44px; /* match the indentation of the avatar */
 }
 
 .header:hover {
-  background: rgba(0, 0, 0, 0.03);
+  opacity: 0.8;
 }
 
 .headerMain,
@@ -56,13 +56,15 @@
 }
 
 .statusIcon {
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: 13px;
+  color: var(--text-secondary) !important;
+  background: transparent !important;
 }
 
 .spinning {
@@ -70,12 +72,10 @@
 }
 
 .toolName {
-  font-size: 13.5px;
-  color: var(--text-primary);
-  font-weight: 600;
-  font-family:
-    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
-    monospace;
+  font-size: 14px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  font-family: inherit;
   min-width: 0;
 }
 
@@ -95,15 +95,26 @@
   margin-left: 44px;
 }
 
+.body.expanded {
+  border-left: 2px solid rgba(0, 0, 0, 0.1);
+  border-radius: 0;
+  border-top: none;
+  border-right: none;
+  border-bottom: none;
+  background: transparent;
+  padding-left: 16px;
+  margin-bottom: 8px;
+}
+
 .summary {
-  padding: 14px 18px 0;
+  padding: 0 0 12px 0;
   font-size: 13px;
   color: var(--text-secondary);
   line-height: 1.6;
 }
 
 .diffMeta {
-  padding: 14px 18px 0;
+  padding: 0 0 12px 0;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -135,20 +146,22 @@
 
 .output {
   margin: 0;
-  padding: 14px 18px 18px;
+  padding: 12px 16px;
   font-family: 'Cascadia Code', 'Fira Code', monospace;
   font-size: 13px;
-  color: #6d5a45;
+  color: var(--text-primary);
   max-height: 320px;
   overflow-y: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  line-height: 1.65;
-  background: linear-gradient(180deg, #fffdf9 0%, #fffbf4 100%);
+  line-height: 1.6;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
 }
 
 .shellMeta {
-  padding: 14px 18px 0;
+  padding: 0 0 12px 0;
 }
 
 .shellCommand {
@@ -167,37 +180,28 @@
   gap: 8px;
 }
 
-.terminal {
-  margin: 14px 18px 0;
-  border: 1px solid #2c3138;
-  border-radius: 16px;
+.terminal,
+.patch {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
   overflow: auto;
   max-height: 360px;
-  background:
-    radial-gradient(circle at top, rgba(109, 142, 167, 0.18), transparent 45%),
-    linear-gradient(180deg, #12161b 0%, #181d23 100%);
+  background: var(--surface);
 }
 
 .terminalSegment {
-  padding: 0 16px;
+  padding: 8px 16px;
   font-family: 'Cascadia Code', 'Fira Code', monospace;
-  font-size: 12px;
-  line-height: 1.7;
+  font-size: 13px;
+  line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: #e8edf4;
+  color: var(--text-primary);
 }
 
 .terminalSegmentError {
   color: #ffb8b0;
-}
-
-.patch {
-  margin: 14px 18px 0;
-  border: 1px solid #e5d8c8;
-  border-radius: 14px;
-  overflow: auto;
-  background: #f9f5ee;
 }
 
 .patchLine {

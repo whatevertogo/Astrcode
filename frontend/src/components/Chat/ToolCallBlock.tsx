@@ -6,7 +6,7 @@ import styles from './ToolCallBlock.module.css';
 
 const STATUS_ICON: Record<ToolStatus, string> = {
   running: '⟳',
-  ok: '✓',
+  ok: '>_',
   fail: '✕',
 };
 
@@ -119,7 +119,7 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
         </button>
 
         {expanded && (
-          <div className={styles.body}>
+          <div className={`${styles.body} ${styles.expanded}`}>
             {shell && (
               <div className={styles.shellMeta}>
                 {shell.command && <div className={styles.shellCommand}>$ {shell.command}</div>}
