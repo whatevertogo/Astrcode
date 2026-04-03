@@ -27,6 +27,7 @@ pub mod contribution;
 pub mod contributor;
 pub mod contributors;
 pub mod diagnostics;
+pub mod layered_builder;
 pub mod plan;
 pub mod prompt_declaration;
 pub mod template;
@@ -39,6 +40,7 @@ pub use context::PromptContext;
 pub use contribution::{append_unique_tools, PromptContribution};
 pub use contributor::PromptContributor;
 pub use diagnostics::{DiagnosticLevel, PromptDiagnostics};
+pub use layered_builder::{LayeredBuilderOptions, LayeredPromptBuilder, PromptBuildOutput};
 pub use plan::PromptPlan;
 pub use prompt_declaration::{
     PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,

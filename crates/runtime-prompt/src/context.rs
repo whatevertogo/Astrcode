@@ -100,6 +100,14 @@ impl PromptContext {
 
         format!("{:x}", hasher.finish())
     }
+
+    /// 获取配置版本号（用于分层缓存的指纹计算）。
+    ///
+    /// 当前返回 `None`，未来可从配置文件或运行时状态中读取版本号。
+    /// 当配置（如 AGENTS.md、全局规则）变化时，此版本号应递增。
+    pub fn config_version(&self) -> Option<&str> {
+        self.vars.get("config.version").map(String::as_str)
+    }
 }
 
 #[cfg(test)]
