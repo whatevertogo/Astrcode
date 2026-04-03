@@ -13,9 +13,8 @@
   justify-content: center;
   background: linear-gradient(180deg, #f3eadf 0%, #ebdfd1 100%);
   color: #8a7458;
-  border-radius: 10px;
+  border-radius: 4px; /* Flatter */
   flex-shrink: 0;
-  box-shadow: 0 10px 20px rgba(117, 90, 52, 0.08);
 }
 
 .avatar svg {
@@ -31,15 +30,9 @@
 
 .content {
   position: relative;
-  padding: 16px 18px 18px;
-  border: 1px solid rgba(230, 220, 205, 0.9);
-  border-radius: 22px;
-  background:
-    radial-gradient(circle at top right, rgba(236, 248, 241, 0.92), transparent 34%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(251, 247, 241, 0.98) 100%);
-  box-shadow:
-    0 18px 34px rgba(117, 90, 52, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+  padding: 8px 0;
+  border: none;
+  background: transparent;
   font-size: 15px;
   line-height: 1.8;
   color: var(--text-primary);
@@ -47,16 +40,7 @@
 }
 
 .contentStreaming {
-  animation: streamGlow 2.8s ease-in-out infinite;
-}
-
-.contentStreaming::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  border: 1px solid rgba(57, 201, 143, 0.16);
-  pointer-events: none;
+  /* removed animation entirely or rely on something else. */
 }
 
 .streamingText {
@@ -123,21 +107,22 @@
 .codeBlock {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 14px 16px;
+  border-radius: 8px; /* Flatter */
+  padding: 12px 16px;
   overflow-x: auto;
   margin: 10px 0;
-  font-size: 13px;
+  font-size: 13.5px; /* Claude font size */
   line-height: 1.5;
-  box-shadow: 0 6px 18px rgba(112, 86, 50, 0.04);
+  /* Removed box-shadow */
 }
 
 .inlineCode {
-  background: #f3ebe0;
-  border-radius: 6px;
-  padding: 2px 6px;
-  font-size: 13px;
-  color: #8b5e31;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 4px;
+  font-size: 13.5px;
+  color: var(--text-primary);
 }
 
 .cursor {
