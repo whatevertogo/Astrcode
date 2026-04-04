@@ -154,6 +154,9 @@ where
         )
         .map_err(service_error_to_astr)?,
     );
+    // 配置热重载需要尽早挂载 watcher，确保用户在应用启动后直接编辑 config.json
+    // 时，后续新 turn 就能看到最新的 runtime 参数和默认模型选择。
+    service.start_config_auto_reload();
 
     // 创建后台加载句柄
     let plugin_load_handle = PluginLoadHandle::new();

@@ -65,7 +65,8 @@ pub use constants::{
     resolve_anthropic_models_api_url, resolve_auto_compact_enabled,
     resolve_compact_keep_recent_turns, resolve_compact_threshold_percent,
     resolve_continuation_min_delta_tokens, resolve_default_token_budget, resolve_max_continuations,
-    resolve_max_tool_concurrency, resolve_tool_result_max_bytes,
+    resolve_max_tool_concurrency, resolve_openai_chat_completions_api_url,
+    resolve_tool_result_max_bytes,
 };
 pub use editor::open_config_in_editor;
 pub use env_resolver::{
@@ -329,7 +330,7 @@ mod tests {
             .expect("test_connection should not return Err on auth setup failure");
 
         assert!(!result.success);
-        assert_eq!(result.provider, "https://example.com");
+        assert_eq!(result.provider, "https://example.com/v1/chat/completions");
         assert_eq!(result.model, "gpt-4o-mini");
         assert!(result.error.is_some());
     }

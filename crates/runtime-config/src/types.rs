@@ -147,8 +147,12 @@ pub struct Profile {
     pub name: String,
     #[serde(default = "default_profile_provider_kind")]
     pub provider_kind: String,
-    /// OpenAI-compatible 使用 API 根地址；
-    /// Anthropic 允许留空回退官方地址，也允许填写自定义兼容网关地址。
+    /// Provider 地址支持“根地址”或“完整集合地址”两种写法：
+    /// - OpenAI-compatible：`https://api.example.com` 或 `.../v1/chat/completions`
+    /// - Anthropic：`https://gateway.example.com/anthropic` 或 `.../v1/messages`
+    ///
+    /// 运行时会在真正发请求前做一次标准化，避免用户已经写了完整 endpoint
+    /// 时又被重复追加后缀。
     #[serde(default = "default_profile_base_url")]
     pub base_url: String,
     #[serde(default = "default_profile_api_key")]

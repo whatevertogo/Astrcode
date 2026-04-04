@@ -481,7 +481,9 @@ fn cleanup_spawned_sidecar(spawned_sidecar_path: &SpawnedSidecarPath) {
     };
 
     if let Err(error) = std::fs::remove_file(&path) {
-        if error.kind() != ErrorKind::NotFound {
+        // 正在运行或刚终止的 sidecar 在 Windows 上会返回 PermissionDenied；
+        // 保留它比误删活进程更安全，下次启动时 cleanup_stale_sidecar_copies 会清理。
+        if error.kind() != ErrorKind::NotFound && error.kind() != ErrorKind::PermissionDenied {
             eprintln!(
                 "[astrcode-server cleanup] failed to remove detached sidecar '{}': {error}",
                 path.display()

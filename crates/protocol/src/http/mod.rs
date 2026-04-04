@@ -26,7 +26,8 @@ mod session_event;
 pub use auth::{AuthExchangeRequest, AuthExchangeResponse};
 pub use composer::{ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto};
 pub use config::{
-    ConfigView, ProfileView, SaveActiveSelectionRequest, TestConnectionRequest, TestResultDto,
+    ConfigReloadResponse, ConfigView, ProfileView, SaveActiveSelectionRequest,
+    TestConnectionRequest, TestResultDto,
 };
 pub use event::{
     AgentEventEnvelope, AgentEventPayload, PROTOCOL_VERSION, PhaseDto, ToolCallResultDto,

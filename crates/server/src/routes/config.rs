@@ -4,12 +4,13 @@
 //! - `GET /api/config` — 获取配置视图（含 profile 列表和当前选择）
 //! - `POST /api/config/active-selection` — 保存活跃的 profile/model 选择
 
-use astrcode_protocol::http::{ConfigView, SaveActiveSelectionRequest};
+use astrcode_protocol::http::{ConfigReloadResponse, ConfigView, SaveActiveSelectionRequest};
 use axum::{
     Json,
     extract::State,
     http::{HeaderMap, StatusCode},
 };
+use chrono::Utc;
 
 use crate::{ApiError, AppState, auth::require_auth, mapper::build_config_view};
 
@@ -50,4 +51,36 @@ pub(crate) async fn save_active_selection(
         .await
         .map_err(ApiError::from)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// 从磁盘重新加载配置。
+///
+/// 成功后会更新 runtime service 的内存配置快照，并重建后续 turn 使用的 AgentLoop。
+/// 成功时返回 202 Accepted 和重载后的配置视图。
+pub(crate) async fn reload_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<(StatusCode, Json<ConfigReloadResponse>), ApiError> {
+    require_auth(&state, &headers, None)?;
+    let config = state
+        .service
+        .reload_config_from_disk()
+        .await
+        .map_err(ApiError::from)?;
+    let config_path = state
+        .service
+        .current_config_path()
+        .await
+        .map_err(ApiError::from)?
+        .to_string_lossy()
+        .to_string();
+    let config_view = build_config_view(&config, config_path)?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(ConfigReloadResponse {
+            reloaded_at: Utc::now().to_rfc3339(),
+            config: config_view,
+        }),
+    ))
 }

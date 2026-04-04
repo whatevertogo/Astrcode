@@ -41,6 +41,16 @@ pub struct ConfigView {
     pub warning: Option<String>,
 }
 
+/// `POST /api/config/reload` 响应体——重新加载后的配置视图。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigReloadResponse {
+    /// 重载完成时间（ISO 8601）
+    pub reloaded_at: String,
+    /// 重载后的配置快照
+    pub config: ConfigView,
+}
+
 /// `PUT /api/config/selection` 请求体——保存用户的活跃 profile 和模型选择。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

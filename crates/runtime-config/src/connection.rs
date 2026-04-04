@@ -25,7 +25,7 @@ use serde_json::json;
 use crate::{
     constants::{
         ANTHROPIC_VERSION, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI,
-        resolve_anthropic_messages_api_url,
+        resolve_anthropic_messages_api_url, resolve_openai_chat_completions_api_url,
     },
     types::{Profile, TestResult},
 };
@@ -44,7 +44,7 @@ pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResul
     let provider = if profile.provider_kind == PROVIDER_KIND_ANTHROPIC {
         resolve_anthropic_messages_api_url(&profile.base_url)
     } else {
-        profile.base_url.trim().trim_end_matches('/').to_string()
+        resolve_openai_chat_completions_api_url(&profile.base_url)
     };
     let api_key = match profile.resolve_api_key() {
         Ok(api_key) => api_key,
@@ -60,9 +60,8 @@ pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResul
 
     match profile.provider_kind.as_str() {
         PROVIDER_KIND_OPENAI => {
-            let endpoint = format!("{}/chat/completions", provider);
             let response = reqwest::Client::new()
-                .post(endpoint)
+                .post(&provider)
                 .bearer_auth(api_key)
                 .timeout(Duration::from_secs(10))
                 .json(&json!({

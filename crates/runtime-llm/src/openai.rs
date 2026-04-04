@@ -41,8 +41,11 @@ use crate::{
 pub struct OpenAiProvider {
     /// 共享的 HTTP 客户端（含统一超时策略）
     client: reqwest::Client,
-    /// API 基础 URL（如 `https://api.openai.com/v1` 或本地代理地址）
-    base_url: String,
+    /// 已解析好的 Chat Completions endpoint。
+    ///
+    /// provider_factory 会先把用户配置标准化到最终请求地址，这里不再二次拼接，
+    /// 避免 `baseUrl` 已经包含 `/chat/completions` 时又被重复追加一次。
+    chat_completions_api_url: String,
     /// API 密钥（Bearer token 认证）
     api_key: String,
     /// 模型名称（如 `gpt-4o`、`deepseek-chat`）
@@ -57,7 +60,7 @@ impl fmt::Debug for OpenAiProvider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OpenAiProvider")
             .field("client", &self.client)
-            .field("base_url", &self.base_url)
+            .field("chat_completions_api_url", &self.chat_completions_api_url)
             .field("api_key", &"<redacted>")
             .field("model", &self.model)
             .field("limits", &self.limits)
@@ -67,10 +70,15 @@ impl fmt::Debug for OpenAiProvider {
 
 impl OpenAiProvider {
     /// 创建新的 OpenAI 兼容提供者实例。
-    pub fn new(base_url: String, api_key: String, model: String, limits: ModelLimits) -> Self {
+    pub fn new(
+        chat_completions_api_url: String,
+        api_key: String,
+        model: String,
+        limits: ModelLimits,
+    ) -> Self {
         Self {
             client: build_http_client(),
-            base_url,
+            chat_completions_api_url,
             api_key,
             model,
             limits,
@@ -132,12 +140,10 @@ impl OpenAiProvider {
         req: &OpenAiChatRequest<'_>,
         cancel: CancelToken,
     ) -> Result<reqwest::Response> {
-        let endpoint = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-
         for attempt in 0..=MAX_RETRIES {
             let send_future = self
                 .client
-                .post(&endpoint)
+                .post(&self.chat_completions_api_url)
                 .bearer_auth(&self.api_key)
                 .json(req)
                 .send();

@@ -19,7 +19,7 @@ use crate::{
     config::{
         ANTHROPIC_VERSION, ModelConfig, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI, Profile,
         load_resolved_config, resolve_anthropic_messages_api_url, resolve_anthropic_models_api_url,
-        resolve_model_for_profile,
+        resolve_model_for_profile, resolve_openai_chat_completions_api_url,
     },
     llm::{anthropic::AnthropicProvider, openai::OpenAiProvider},
 };
@@ -74,7 +74,7 @@ fn build_provider(profile: &Profile, model: &ModelConfig) -> Result<BuiltProvide
             }
 
             Ok(BuiltProvider::OpenAi(OpenAiProvider::new(
-                profile.base_url.clone(),
+                resolve_openai_chat_completions_api_url(&profile.base_url),
                 api_key,
                 model.id.clone(),
                 limits,
@@ -146,9 +146,8 @@ fn fetch_anthropic_model_metadata(
     api_key: &str,
     model_id: &str,
 ) -> Result<AnthropicModelMetadata> {
-    let models_api_url = models_api_url.to_string();
+    let metadata_url = build_model_metadata_url(models_api_url, model_id)?.to_string();
     let api_key = api_key.to_string();
-    let model_id = model_id.to_string();
 
     // provider 构造是同步接口。这里显式起一个独立线程来跑一次短生命周期的 Tokio runtime，
     // 避免在已有 async runtime 上错误地嵌套 `block_on`。
@@ -162,11 +161,7 @@ fn fetch_anthropic_model_metadata(
 
         runtime.block_on(async move {
             let response = reqwest::Client::new()
-                .get(format!(
-                    "{}/{}",
-                    models_api_url.trim_end_matches('/'),
-                    model_id
-                ))
+                .get(metadata_url)
                 .header("x-api-key", api_key)
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .timeout(std::time::Duration::from_secs(10))
@@ -198,6 +193,29 @@ fn fetch_anthropic_model_metadata(
     })
     .join()
     .map_err(|_| AstrError::Internal("anthropic metadata thread panicked".to_string()))?
+}
+
+fn build_model_metadata_url(models_api_url: &str, model_id: &str) -> Result<reqwest::Url> {
+    let mut url = reqwest::Url::parse(models_api_url).map_err(|error| {
+        AstrError::Validation(format!(
+            "invalid anthropic models api url '{}': {error}",
+            models_api_url
+        ))
+    })?;
+
+    // 使用 URL path_segments 追加模型 id，避免查询参数和尾斜杠把路径拼坏。
+    {
+        let mut segments = url.path_segments_mut().map_err(|_| {
+            AstrError::Validation(format!(
+                "anthropic models api url '{}' cannot accept path segments",
+                models_api_url
+            ))
+        })?;
+        segments.pop_if_empty();
+        segments.push(model_id);
+    }
+
+    Ok(url)
 }
 
 #[derive(Debug, Deserialize)]
@@ -447,5 +465,19 @@ mod tests {
         };
         let err = save_config(&config).expect_err("empty model list should fail");
         assert!(err.to_string().contains("at least one model"));
+    }
+
+    #[test]
+    fn build_model_metadata_url_preserves_query_parameters() {
+        let url = build_model_metadata_url(
+            "https://gateway.example.com/anthropic/v1/models?foo=bar",
+            "claude-sonnet-4-5",
+        )
+        .expect("metadata url should build");
+
+        assert_eq!(
+            url.as_str(),
+            "https://gateway.example.com/anthropic/v1/models/claude-sonnet-4-5?foo=bar"
+        );
     }
 }

@@ -57,6 +57,7 @@ use crate::{ApiError, AppState, bootstrap::serve_run_info};
 ///
 /// ### 配置
 /// - `GET /api/config` — 获取当前配置视图
+/// - `POST /api/config/reload` — 从磁盘重新加载配置并热替换 runtime loop
 /// - `POST /api/config/active-selection` — 保存活跃的 profile/model 选择
 ///
 /// ### 模型
@@ -94,6 +95,7 @@ pub(crate) fn build_api_router() -> Router<AppState> {
         .route("/api/sessions/:id", delete(sessions::delete_session))
         .route("/api/projects", delete(sessions::delete_project))
         .route("/api/config", get(config::get_config))
+        .route("/api/config/reload", post(config::reload_config))
         .route(
             "/api/config/active-selection",
             post(config::save_active_selection),

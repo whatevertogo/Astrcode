@@ -23,6 +23,7 @@ dashmap.workspace = true
 dirs.workspace = true
 futures-util.workspace = true
 log.workspace = true
+notify.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 serde.workspace = true

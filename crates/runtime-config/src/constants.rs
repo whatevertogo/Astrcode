@@ -111,19 +111,34 @@ pub const ANTHROPIC_MODELS_API_URL: &str = "https://api.anthropic.com/v1/models"
 /// Anthropic API version.
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+fn split_url_query(url: &str) -> (&str, Option<&str>) {
+    match url.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (url, None),
+    }
+}
+
+fn join_url_query(path: String, query: Option<&str>) -> String {
+    match query {
+        Some(query) if !query.is_empty() => format!("{path}?{query}"),
+        _ => path,
+    }
+}
+
 fn resolve_anthropic_api_collection_url(
     base_url: &str,
     collection: &'static str,
     default_url: &'static str,
 ) -> String {
-    let trimmed = base_url.trim().trim_end_matches('/');
+    let (path, query) = split_url_query(base_url.trim());
+    let trimmed = path.trim_end_matches('/');
     if trimmed.is_empty() {
         return default_url.to_string();
     }
 
     let this_collection_suffix = format!("/{collection}");
     if trimmed.ends_with(&this_collection_suffix) {
-        return trimmed.to_string();
+        return join_url_query(trimmed.to_string(), query);
     }
 
     let sibling_collection = if collection == "messages" {
@@ -133,18 +148,28 @@ fn resolve_anthropic_api_collection_url(
     };
     let sibling_suffix = format!("/{sibling_collection}");
     if trimmed.ends_with(&sibling_suffix) {
-        return format!(
-            "{}/{}",
-            trimmed.trim_end_matches(&sibling_suffix),
-            collection
+        return join_url_query(
+            format!(
+                "{}/{}",
+                trimmed.trim_end_matches(&sibling_suffix),
+                collection
+            ),
+            query,
         );
     }
 
     if trimmed.ends_with("/v1") {
-        return format!("{trimmed}/{collection}");
+        return join_url_query(format!("{trimmed}/{collection}"), query);
     }
 
-    format!("{trimmed}/v1/{collection}")
+    if let Some((prefix, _tail)) = trimmed.rsplit_once("/v1/") {
+        // 兼容用户直接填写完整 endpoint 或误写尾段的情况：
+        // 只要已经落在 `/v1/<something>` 形态，就把尾集合标准化成目标集合，
+        // 避免继续在后面重复追加 `/v1/messages` / `/v1/models`。
+        return join_url_query(format!("{prefix}/v1/{collection}"), query);
+    }
+
+    join_url_query(format!("{trimmed}/v1/{collection}"), query)
 }
 
 /// 解析 Anthropic Messages API 地址。
@@ -163,6 +188,39 @@ pub fn resolve_anthropic_messages_api_url(base_url: &str) -> String {
 /// metadata 时落在同一条自定义网关链路上。
 pub fn resolve_anthropic_models_api_url(base_url: &str) -> String {
     resolve_anthropic_api_collection_url(base_url, "models", ANTHROPIC_MODELS_API_URL)
+}
+
+/// 解析 OpenAI Chat Completions API 地址。
+///
+/// 兼容三种写法：
+/// - API 根地址：如 `https://api.deepseek.com`
+/// - 版本根地址：如 `https://api.openai.com/v1`
+/// - 完整集合地址：如 `https://api.openai.com/v1/chat/completions`
+///
+/// 如果用户已经写到 `/v1/<something>`，这里会把尾段标准化成
+/// `/v1/chat/completions`，避免再次拼接出重复后缀。
+pub fn resolve_openai_chat_completions_api_url(base_url: &str) -> String {
+    let (path, query) = split_url_query(base_url.trim());
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let normalized = if trimmed.ends_with("/chat/completions") {
+        trimmed.to_string()
+    } else if trimmed.ends_with("/chat") {
+        format!("{trimmed}/completions")
+    } else if trimmed.ends_with("/v1") {
+        format!("{trimmed}/chat/completions")
+    } else if let Some((prefix, _tail)) = trimmed.rsplit_once("/v1/") {
+        // OpenAI-compatible 网关通常要求标准的 `/v1/chat/completions`。
+        // 当用户已提供 `/v1/...` 但尾段不规范时，直接标准化而不是继续叠加后缀。
+        format!("{prefix}/v1/chat/completions")
+    } else {
+        format!("{trimmed}/v1/chat/completions")
+    };
+
+    join_url_query(normalized, query)
 }
 
 /// OpenAI-compatible 模型的保守默认上下文窗口。
@@ -288,7 +346,7 @@ pub fn resolve_max_continuations(runtime: &RuntimeConfig) -> u8 {
 mod tests {
     use super::{
         ANTHROPIC_MESSAGES_API_URL, ANTHROPIC_MODELS_API_URL, resolve_anthropic_messages_api_url,
-        resolve_anthropic_models_api_url,
+        resolve_anthropic_models_api_url, resolve_openai_chat_completions_api_url,
     };
 
     #[test]
@@ -329,5 +387,79 @@ mod tests {
         assert_eq!(resolve_anthropic_models_api_url(messages_url), models_url);
         assert_eq!(resolve_anthropic_models_api_url(models_url), models_url);
         assert_eq!(resolve_anthropic_messages_api_url(models_url), messages_url);
+    }
+
+    #[test]
+    fn anthropic_url_helpers_trim_whitespace_and_trailing_slashes() {
+        let base_url = "  https://gateway.example.com/anthropic/v1/  ";
+
+        assert_eq!(
+            resolve_anthropic_messages_api_url(base_url),
+            "https://gateway.example.com/anthropic/v1/messages"
+        );
+        assert_eq!(
+            resolve_anthropic_models_api_url(base_url),
+            "https://gateway.example.com/anthropic/v1/models"
+        );
+    }
+
+    #[test]
+    fn anthropic_url_helpers_expand_v1_base_without_collection() {
+        let base_url = "https://gateway.example.com/anthropic/v1";
+
+        assert_eq!(
+            resolve_anthropic_messages_api_url(base_url),
+            "https://gateway.example.com/anthropic/v1/messages"
+        );
+        assert_eq!(
+            resolve_anthropic_models_api_url(base_url),
+            "https://gateway.example.com/anthropic/v1/models"
+        );
+    }
+
+    #[test]
+    fn anthropic_url_helpers_replace_nonstandard_v1_tail_instead_of_appending_again() {
+        let base_url = "https://gateway.example.com/anthropic/v1/messeges?foo=bar";
+
+        assert_eq!(
+            resolve_anthropic_messages_api_url(base_url),
+            "https://gateway.example.com/anthropic/v1/messages?foo=bar"
+        );
+        assert_eq!(
+            resolve_anthropic_models_api_url(base_url),
+            "https://gateway.example.com/anthropic/v1/models?foo=bar"
+        );
+    }
+
+    #[test]
+    fn openai_url_helper_expands_root_style_base_url() {
+        assert_eq!(
+            resolve_openai_chat_completions_api_url("https://api.deepseek.com"),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+        assert_eq!(
+            resolve_openai_chat_completions_api_url("https://api.openai.com/v1"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn openai_url_helper_preserves_full_endpoint_and_query() {
+        assert_eq!(
+            resolve_openai_chat_completions_api_url(
+                "https://gateway.example.com/openai/v1/chat/completions?foo=bar"
+            ),
+            "https://gateway.example.com/openai/v1/chat/completions?foo=bar"
+        );
+    }
+
+    #[test]
+    fn openai_url_helper_replaces_nonstandard_v1_tail_instead_of_duplicating_suffix() {
+        assert_eq!(
+            resolve_openai_chat_completions_api_url(
+                "https://gateway.example.com/openai/v1/chat/completion"
+            ),
+            "https://gateway.example.com/openai/v1/chat/completions"
+        );
     }
 }

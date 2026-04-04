@@ -2,7 +2,8 @@ use astrcode_core::{
     CapabilityDescriptor, CapabilityKind, PluginHealth, PluginState, SideEffectLevel,
     StabilityLevel, plugin::PluginEntry,
 };
-use astrcode_protocol::http::RuntimeStatusDto;
+use astrcode_protocol::http::{ConfigReloadResponse, RuntimeStatusDto};
+use astrcode_runtime::{Config, ModelConfig, Profile, RuntimeConfig, config, save_config};
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
@@ -138,4 +139,57 @@ async fn runtime_reload_endpoint_returns_accepted() {
         .expect("response should be returned");
 
     assert_eq!(response.status(), StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn config_reload_endpoint_refreshes_runtime_config_from_disk() {
+    let (state, _guard) = test_state(None);
+    save_config(&Config {
+        active_profile: "local-openai".to_string(),
+        active_model: "gpt-4.1-mini".to_string(),
+        runtime: RuntimeConfig {
+            max_tool_concurrency: Some(9),
+            ..RuntimeConfig::default()
+        },
+        profiles: vec![Profile {
+            name: "local-openai".to_string(),
+            provider_kind: config::PROVIDER_KIND_OPENAI.to_string(),
+            base_url: "https://example.com/v1".to_string(),
+            api_key: Some("literal:sk-test".to_string()),
+            models: vec![ModelConfig {
+                id: "gpt-4.1-mini".to_string(),
+                max_tokens: Some(8096),
+                context_limit: Some(128_000),
+            }],
+        }],
+        ..Config::default()
+    })
+    .expect("config should save");
+    let app = build_api_router().with_state(state.clone());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/config/reload")
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body should be readable");
+    let payload: ConfigReloadResponse =
+        serde_json::from_slice(&bytes).expect("reload response should deserialize");
+    assert_eq!(payload.config.active_profile, "local-openai");
+    assert_eq!(payload.config.active_model, "gpt-4.1-mini");
+    assert_eq!(
+        state.service.get_config().await.active_model,
+        "gpt-4.1-mini"
+    );
+    assert_eq!(state.service.current_loop().await.max_tool_concurrency(), 9);
 }

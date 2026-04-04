@@ -12,7 +12,9 @@
 //! 涉及磁盘 I/O 的操作（如解析配置路径、打开编辑器）通过 `spawn_blocking_service`
 //! 桥接到阻塞线程池，避免阻塞异步运行时。
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc, time::Duration};
+
+use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
 
 use super::{RuntimeService, ServiceError, ServiceResult, support::spawn_blocking_service};
 use crate::config::{config_path, open_config_in_editor, save_config, test_connection};
@@ -23,6 +25,30 @@ impl RuntimeService {
     /// 返回配置的克隆副本，调用方可以安全地读取而不持有锁。
     pub async fn get_config(&self) -> crate::config::Config {
         self.config.lock().await.clone()
+    }
+
+    /// 从磁盘重新加载用户级配置，并原子替换当前运行时的配置快照与 loop。
+    ///
+    /// 这条路径只更新运行时“配置维度”的行为参数，例如默认 profile/model、
+    /// max tool concurrency、自动压缩阈值等；当前 capability surface 保持不变。
+    pub async fn reload_config_from_disk(&self) -> ServiceResult<crate::config::Config> {
+        let next_config = spawn_blocking_service("reload config from disk", || {
+            crate::config::load_config().map_err(ServiceError::from)
+        })
+        .await?;
+
+        let _guard = self.rebuild_lock.lock().await;
+        let surface = self.surface.read().await.clone();
+        let next_loop = super::build_agent_loop(
+            &surface,
+            &next_config.runtime,
+            Arc::clone(&self.policy),
+            Arc::clone(&self.approval),
+        );
+
+        *self.config.lock().await = next_config.clone();
+        *self.loop_.write().await = next_loop;
+        Ok(next_config)
     }
 
     /// 保存活跃的配置选择（profile 和 model）。
@@ -102,6 +128,110 @@ impl RuntimeService {
     }
 }
 
+pub(super) async fn run_config_watch_loop(service: Arc<RuntimeService>) -> ServiceResult<()> {
+    let watched_config_path = spawn_blocking_service("resolve config watch path", || {
+        config_path().map_err(ServiceError::from)
+    })
+    .await?;
+    let watch_dir = watched_config_path
+        .parent()
+        .ok_or_else(|| {
+            ServiceError::Internal(astrcode_core::AstrError::Internal(format!(
+                "config path '{}' has no parent directory",
+                watched_config_path.display()
+            )))
+        })?
+        .to_path_buf();
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut watcher = RecommendedWatcher::new(
+        move |result| {
+            let _ = tx.send(result);
+        },
+        NotifyConfig::default(),
+    )
+    .map_err(|error| {
+        ServiceError::Internal(astrcode_core::AstrError::Internal(format!(
+            "failed to create config watcher: {error}"
+        )))
+    })?;
+
+    watcher
+        .watch(&watch_dir, RecursiveMode::NonRecursive)
+        .map_err(|error| {
+            ServiceError::Internal(astrcode_core::AstrError::Internal(format!(
+                "failed to watch config directory '{}': {error}",
+                watch_dir.display()
+            )))
+        })?;
+
+    loop {
+        tokio::select! {
+            _ = service.shutdown_token.cancelled() => return Ok(()),
+            maybe_event = rx.recv() => {
+                let Some(result) = maybe_event else {
+                    return Ok(());
+                };
+
+                match result {
+                    Ok(event) => {
+                        if !event_targets_config(&event, &watched_config_path) {
+                            continue;
+                        }
+                    }
+                    Err(error) => {
+                        log::warn!("config watcher delivered an error: {}", error);
+                        continue;
+                    }
+                }
+
+                let debounce = tokio::time::sleep(Duration::from_millis(300));
+                tokio::pin!(debounce);
+                loop {
+                    tokio::select! {
+                        _ = service.shutdown_token.cancelled() => return Ok(()),
+                        _ = &mut debounce => break,
+                        maybe_next = rx.recv() => {
+                            let Some(next) = maybe_next else {
+                                return Ok(());
+                            };
+                            if let Err(error) = next {
+                                log::warn!("config watcher delivered an error: {}", error);
+                            }
+                        }
+                    }
+                }
+
+                match service.reload_config_from_disk().await {
+                    Ok(config) => {
+                        log::info!(
+                            "reloaded config from disk: active_profile='{}', active_model='{}'",
+                            config.active_profile,
+                            config.active_model
+                        );
+                    }
+                    Err(error) => {
+                        log::warn!("failed to hot-reload config from disk: {}", error);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn event_targets_config(event: &Event, config_path: &std::path::Path) -> bool {
+    let Some(config_file_name) = config_path.file_name() else {
+        return false;
+    };
+
+    event.paths.iter().any(|path| {
+        path == config_path
+            || path
+                .file_name()
+                .is_some_and(|file_name| file_name == config_file_name)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,5 +305,41 @@ mod tests {
         let loop_ = service.current_loop().await;
 
         assert_eq!(loop_.max_tool_concurrency(), 6);
+    }
+
+    #[tokio::test]
+    async fn reload_config_from_disk_rebuilds_loop_with_new_runtime_settings() {
+        let _guard = TestEnvGuard::new();
+        save_config(&Config {
+            runtime: RuntimeConfig {
+                max_tool_concurrency: Some(2),
+                ..RuntimeConfig::default()
+            },
+            ..Config::default()
+        })
+        .expect("initial config should save");
+
+        let service = RuntimeService::from_capabilities(empty_capabilities()).expect("service");
+        assert_eq!(service.current_loop().await.max_tool_concurrency(), 2);
+
+        save_config(&Config {
+            active_profile: "deepseek".to_string(),
+            active_model: "deepseek-reasoner".to_string(),
+            runtime: RuntimeConfig {
+                max_tool_concurrency: Some(7),
+                ..RuntimeConfig::default()
+            },
+            ..Config::default()
+        })
+        .expect("updated config should save");
+
+        let reloaded = service
+            .reload_config_from_disk()
+            .await
+            .expect("reload should succeed");
+
+        assert_eq!(reloaded.active_model, "deepseek-reasoner");
+        assert_eq!(service.get_config().await.active_model, "deepseek-reasoner");
+        assert_eq!(service.current_loop().await.max_tool_concurrency(), 7);
     }
 }

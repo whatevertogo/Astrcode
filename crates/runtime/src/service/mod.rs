@@ -2,7 +2,10 @@
 //!
 //! RuntimeService 是 Astrcode 的核心服务，负责管理会话和执行 Agent 循环。
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use astrcode_core::{
     AllowAllPolicyEngine, AstrError, CapabilityRouter, PolicyEngine, RuntimeHandle, SessionManager,
@@ -51,6 +54,37 @@ pub use self::types::{
 
 const SESSION_CATALOG_BROADCAST_CAPACITY: usize = 256;
 
+#[derive(Clone)]
+struct RuntimeSurfaceState {
+    capabilities: CapabilityRouter,
+    prompt_declarations: Vec<PromptDeclaration>,
+    skill_catalog: Arc<SkillCatalog>,
+}
+
+fn build_agent_loop(
+    surface: &RuntimeSurfaceState,
+    runtime_config: &crate::config::RuntimeConfig,
+    policy: Arc<dyn PolicyEngine>,
+    approval: Arc<dyn ApprovalBroker>,
+) -> Arc<AgentLoop> {
+    let max_tool_concurrency = resolve_max_tool_concurrency(runtime_config);
+    Arc::new(
+        AgentLoop::from_capabilities_with_prompt_inputs(
+            Arc::new(ConfigFileProviderFactory),
+            surface.capabilities.clone(),
+            surface.prompt_declarations.clone(),
+            Arc::clone(&surface.skill_catalog),
+        )
+        .with_max_tool_concurrency(max_tool_concurrency)
+        .with_auto_compact_enabled(resolve_auto_compact_enabled(runtime_config))
+        .with_compact_threshold_percent(resolve_compact_threshold_percent(runtime_config))
+        .with_tool_result_max_bytes(resolve_tool_result_max_bytes(runtime_config))
+        .with_compact_keep_recent_turns(resolve_compact_keep_recent_turns(runtime_config) as usize)
+        .with_policy_engine(policy)
+        .with_approval_broker(approval),
+    )
+}
+
 /// 运行时服务
 ///
 /// 负责管理所有会话的状态和执行。主要职责：
@@ -63,6 +97,11 @@ pub struct RuntimeService {
     sessions: DashMap<String, Arc<SessionState>>,
     /// Agent Loop 实例（可热替换，用于支持运行时重载能力）
     loop_: RwLock<Arc<AgentLoop>>,
+    /// 当前 runtime surface 的缓存副本。
+    ///
+    /// 配置热重载只应更新 loop 的配置参数，而不能丢掉插件组装后的 capability
+    /// surface，因此这里保留一份可复用的输入快照。
+    surface: RwLock<RuntimeSurfaceState>,
     /// 策略引擎（控制能力调用是否需要审批）
     policy: Arc<dyn PolicyEngine>,
     /// 审批代理（处理用户确认流程）
@@ -83,6 +122,10 @@ pub struct RuntimeService {
     session_catalog_events: broadcast::Sender<SessionCatalogEvent>,
     /// 关闭令牌（用于通知所有处理器停止）
     shutdown_token: CancellationToken,
+    /// 序列化 capability reload 与 config reload，避免交错替换 loop。
+    rebuild_lock: Mutex<()>,
+    /// 防止重复启动配置 watcher。
+    config_watch_started: AtomicBool,
 }
 
 impl RuntimeService {
@@ -120,24 +163,22 @@ impl RuntimeService {
         session_manager: Arc<dyn SessionManager>,
     ) -> ServiceResult<Self> {
         let config = load_config().map_err(ServiceError::from)?;
-        let max_tool_concurrency = resolve_max_tool_concurrency(&config.runtime);
-        let loop_ = AgentLoop::from_capabilities_with_prompt_inputs(
-            Arc::new(ConfigFileProviderFactory),
+        let surface = RuntimeSurfaceState {
             capabilities,
             prompt_declarations,
             skill_catalog,
-        )
-        .with_max_tool_concurrency(max_tool_concurrency)
-        .with_auto_compact_enabled(resolve_auto_compact_enabled(&config.runtime))
-        .with_compact_threshold_percent(resolve_compact_threshold_percent(&config.runtime))
-        .with_tool_result_max_bytes(resolve_tool_result_max_bytes(&config.runtime))
-        .with_compact_keep_recent_turns(resolve_compact_keep_recent_turns(&config.runtime) as usize)
-        .with_policy_engine(Arc::clone(&policy))
-        .with_approval_broker(Arc::clone(&approval));
+        };
+        let loop_ = build_agent_loop(
+            &surface,
+            &config.runtime,
+            Arc::clone(&policy),
+            Arc::clone(&approval),
+        );
         let (session_catalog_events, _) = broadcast::channel(SESSION_CATALOG_BROADCAST_CAPACITY);
         Ok(Self {
             sessions: DashMap::new(),
-            loop_: RwLock::new(Arc::new(loop_)),
+            loop_: RwLock::new(loop_),
+            surface: RwLock::new(surface),
             policy,
             approval,
             config: Mutex::new(config),
@@ -146,6 +187,8 @@ impl RuntimeService {
             observability: Arc::new(RuntimeObservability::default()),
             session_catalog_events,
             shutdown_token: CancellationToken::new(),
+            rebuild_lock: Mutex::new(()),
+            config_watch_started: AtomicBool::new(false),
         })
     }
 
@@ -159,33 +202,45 @@ impl RuntimeService {
         prompt_declarations: Vec<PromptDeclaration>,
         skill_catalog: Arc<SkillCatalog>,
     ) -> ServiceResult<()> {
+        let _guard = self.rebuild_lock.lock().await;
         let runtime_config = {
             let config = self.config.lock().await;
             config.runtime.clone()
         };
-        let max_tool_concurrency = resolve_max_tool_concurrency(&runtime_config);
-        let next_loop = Arc::new(
-            AgentLoop::from_capabilities_with_prompt_inputs(
-                Arc::new(ConfigFileProviderFactory),
-                capabilities,
-                prompt_declarations,
-                skill_catalog,
-            )
-            .with_max_tool_concurrency(max_tool_concurrency)
-            .with_auto_compact_enabled(resolve_auto_compact_enabled(&runtime_config))
-            .with_compact_threshold_percent(resolve_compact_threshold_percent(&runtime_config))
-            .with_tool_result_max_bytes(resolve_tool_result_max_bytes(&runtime_config))
-            .with_compact_keep_recent_turns(
-                resolve_compact_keep_recent_turns(&runtime_config) as usize
-            )
-            .with_policy_engine(Arc::clone(&self.policy))
-            .with_approval_broker(Arc::clone(&self.approval)),
+        let next_surface = RuntimeSurfaceState {
+            capabilities,
+            prompt_declarations,
+            skill_catalog,
+        };
+        let next_loop = build_agent_loop(
+            &next_surface,
+            &runtime_config,
+            Arc::clone(&self.policy),
+            Arc::clone(&self.approval),
         );
         // 写锁会阻塞直到所有活跃 reader（即正在运行的 turn 通过 current_loop()
         // 持有的读锁）释放。已运行的 turn 继续使用旧的 AgentLoop（通过 Arc 引用），
         // 新 turn 则获取新的 loop。这是一种优雅的滚动替换模式——无需暂停服务。
         *self.loop_.write().await = next_loop;
+        *self.surface.write().await = next_surface;
         Ok(())
+    }
+
+    pub fn start_config_auto_reload(self: &Arc<Self>) {
+        if self
+            .config_watch_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+
+        let service = Arc::clone(self);
+        tokio::spawn(async move {
+            if let Err(error) = config_ops::run_config_watch_loop(service).await {
+                log::warn!("config hot reload watcher stopped: {}", error);
+            }
+        });
     }
 
     pub fn loaded_session_count(&self) -> usize {

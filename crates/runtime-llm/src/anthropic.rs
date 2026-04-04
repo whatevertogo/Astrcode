@@ -28,7 +28,7 @@ use astrcode_core::{
 };
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use log::warn;
+use log::{debug, warn};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::select;
@@ -134,6 +134,21 @@ impl AnthropicProvider {
         request: &AnthropicRequest,
         cancel: CancelToken,
     ) -> Result<reqwest::Response> {
+        // 调试日志：打印请求信息（不暴露完整 API Key）
+        let api_key_preview = if self.api_key.len() > 8 {
+            format!(
+                "{}...{}",
+                &self.api_key[..4],
+                &self.api_key[self.api_key.len() - 4..]
+            )
+        } else {
+            "****".to_string()
+        };
+        debug!(
+            "Anthropic request: url={}, api_key_preview={}, model={}",
+            self.messages_api_url, api_key_preview, self.model
+        );
+
         for attempt in 0..=MAX_RETRIES {
             let send_future = self
                 .client
@@ -155,6 +170,22 @@ impl AnthropicProvider {
                 Ok(response) => {
                     let status = response.status();
                     if status == reqwest::StatusCode::UNAUTHORIZED {
+                        // 读取响应体以便调试
+                        let body = response.text().await.unwrap_or_default();
+                        warn!(
+                            "Anthropic 401 Unauthorized: url={}, api_key_preview={}, response={}",
+                            self.messages_api_url,
+                            if self.api_key.len() > 8 {
+                                format!(
+                                    "{}...{}",
+                                    &self.api_key[..4],
+                                    &self.api_key[self.api_key.len() - 4..]
+                                )
+                            } else {
+                                "****".to_string()
+                            },
+                            body
+                        );
                         return Err(AstrError::InvalidApiKey("Anthropic".to_string()));
                     }
                     if status.is_success() {
