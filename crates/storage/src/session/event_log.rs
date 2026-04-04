@@ -311,12 +311,6 @@ impl EventLog {
                 "session file '{}' not found. The session may have been deleted.",
                 path.display()
             ),
-            #[cfg(windows)]
-            ErrorKind::SharingViolation => format!(
-                "session file '{}' is locked by another process. Close any other applications \
-                 using this session and try again.",
-                path.display()
-            ),
             _ => format!("failed to open session file '{}'", path.display()),
         };
         crate::io_error(hint, e)

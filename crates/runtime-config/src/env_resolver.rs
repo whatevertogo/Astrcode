@@ -81,8 +81,14 @@ pub fn parse_env_value(raw: &str) -> Result<ParsedEnvValue<'_>> {
 pub fn resolve_env_value(raw: &str) -> Result<String> {
     match parse_env_value(raw)? {
         ParsedEnvValue::Literal(value) => Ok(value.to_string()),
-        ParsedEnvValue::ExplicitEnv(env_name) => std::env::var(env_name)
-            .map_err(|_| AstrError::EnvVarNotFound(format!("环境变量 {} 未设置", env_name))),
+        ParsedEnvValue::ExplicitEnv(env_name) => std::env::var(env_name).map_err(|_| {
+            AstrError::EnvVarNotFound(format!(
+                "环境变量 {} 未设置。\n解决方案：\n1. 在 Windows \
+                 系统属性中设置用户环境变量（需重启应用）\n2. 或在配置文件中使用 \
+                 literal:YOUR_API_KEY 直接指定",
+                env_name
+            ))
+        }),
         ParsedEnvValue::OptionalEnv(env_name) => {
             Ok(std::env::var(env_name).unwrap_or_else(|_| env_name.to_string()))
         },
