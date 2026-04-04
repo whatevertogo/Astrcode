@@ -207,7 +207,7 @@ impl EventLog {
     /// 此方法用于 `open()` 时确定下一个 `storage_seq`，保证续写时序列号连续。
     pub fn last_storage_seq_from_path(path: &Path) -> Result<u64> {
         let file_size = std::fs::metadata(path)
-            .map_err(|e| crate::io_error("failed to read file metadata", e))?
+            .map_err(|e| Self::enhance_metadata_error(path, e))?
             .len();
 
         if file_size == 0 {
@@ -220,12 +220,7 @@ impl EventLog {
         }
 
         let offset = file_size - TAIL_THRESHOLD;
-        let mut file = File::open(path).map_err(|e| {
-            crate::io_error(
-                format!("failed to open session file: {}", path.display()),
-                e,
-            )
-        })?;
+        let mut file = File::open(path).map_err(|e| Self::enhance_open_error(path, e))?;
         let started_mid_line = if offset == 0 {
             false
         } else {
@@ -241,7 +236,7 @@ impl EventLog {
 
         let mut content = String::new();
         file.read_to_string(&mut content)
-            .map_err(|e| crate::io_error("failed to read session file tail", e))?;
+            .map_err(|e| Self::enhance_read_error(path, e))?;
 
         if started_mid_line {
             let Some((_, remaining)) = content.split_once('\n') else {
@@ -274,6 +269,87 @@ impl EventLog {
             last_seq = Some(event.storage_seq);
         }
         Ok(last_seq.unwrap_or(0))
+    }
+
+    /// 增强 metadata 读取错误的提示信息。
+    ///
+    /// 根据错误类型提供更具体的诊断信息，帮助用户定位问题。
+    fn enhance_metadata_error(path: &Path, e: std::io::Error) -> crate::StoreError {
+        use std::io::ErrorKind;
+
+        let hint = match e.kind() {
+            ErrorKind::PermissionDenied => format!(
+                "permission denied: cannot access session file '{}'. Check if the file is owned \
+                 by another user or has restrictive permissions.",
+                path.display()
+            ),
+            ErrorKind::NotFound => format!(
+                "session file '{}' not found. The session may have been deleted or moved.",
+                path.display()
+            ),
+            _ => format!(
+                "failed to read metadata for session file '{}'",
+                path.display()
+            ),
+        };
+        crate::io_error(hint, e)
+    }
+
+    /// 增强文件打开错误的提示信息。
+    ///
+    /// 针对常见的打开失败原因（权限、锁定等）提供具体诊断。
+    fn enhance_open_error(path: &Path, e: std::io::Error) -> crate::StoreError {
+        use std::io::ErrorKind;
+
+        let hint = match e.kind() {
+            ErrorKind::PermissionDenied => format!(
+                "permission denied: cannot open session file '{}'. Check file permissions or if \
+                 another process has locked it.",
+                path.display()
+            ),
+            ErrorKind::NotFound => format!(
+                "session file '{}' not found. The session may have been deleted.",
+                path.display()
+            ),
+            #[cfg(windows)]
+            ErrorKind::SharingViolation => format!(
+                "session file '{}' is locked by another process. Close any other applications \
+                 using this session and try again.",
+                path.display()
+            ),
+            _ => format!("failed to open session file '{}'", path.display()),
+        };
+        crate::io_error(hint, e)
+    }
+
+    /// 增强文件读取错误的提示信息。
+    ///
+    /// 特别处理非 UTF-8 数据的情况，这是会话文件损坏的常见原因。
+    fn enhance_read_error(path: &Path, e: std::io::Error) -> crate::StoreError {
+        use std::io::ErrorKind;
+
+        let hint = match e.kind() {
+            ErrorKind::InvalidData => format!(
+                "session file '{}' contains invalid UTF-8 data. The file may be corrupted or \
+                 truncated. Consider deleting this session to recover.",
+                path.display()
+            ),
+            ErrorKind::PermissionDenied => format!(
+                "permission denied while reading session file '{}'.",
+                path.display()
+            ),
+            ErrorKind::UnexpectedEof => format!(
+                "unexpected end of session file '{}'. The file may be truncated or still being \
+                 written.",
+                path.display()
+            ),
+            _ => format!(
+                "failed to read session file '{}' (I/O error: {})",
+                path.display(),
+                e
+            ),
+        };
+        crate::io_error(hint, e)
     }
 }
 
