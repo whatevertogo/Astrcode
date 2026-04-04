@@ -242,6 +242,103 @@ async fn manual_compact_event_uses_manual_trigger_via_compaction_runtime() {
     ));
 }
 
+#[tokio::test]
+async fn manual_compact_event_caps_keep_recent_turns_so_manual_requests_do_real_work() {
+    let _guard = super::test_support::TestEnvGuard::new();
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([LlmOutput {
+            content: "<analysis>trimmed</analysis><summary>manual summary</summary>".to_string(),
+            tool_calls: vec![],
+            reasoning: None,
+            usage: None,
+            finish_reason: Default::default(),
+        }])),
+        delay: std::time::Duration::from_millis(0),
+    });
+    let loop_runner = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory { provider }),
+        empty_capabilities(),
+    )
+    .with_compact_keep_recent_turns(4);
+    let state = astrcode_core::AgentState {
+        session_id: "test".into(),
+        working_dir: std::env::temp_dir(),
+        messages: vec![
+            LlmMessage::User {
+                content: "first ask".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "first answer".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+            LlmMessage::User {
+                content: "second ask".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "second answer".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+            LlmMessage::User {
+                content: "third ask".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ],
+        phase: Phase::Idle,
+        turn_count: 3,
+    };
+
+    let event = loop_runner
+        .manual_compact_event(&state, CompactionTailSnapshot::default())
+        .await
+        .expect("manual compact should succeed even when auto keep_recent_turns is larger")
+        .expect("manual compact should still emit an event");
+
+    assert!(matches!(
+        event,
+        StorageEvent::CompactApplied {
+            trigger: astrcode_core::CompactTrigger::Manual,
+            ref summary,
+            ..
+        } if summary == "manual summary"
+    ));
+}
+
+#[tokio::test]
+async fn manual_compact_event_rejects_single_turn_sessions() {
+    let _guard = super::test_support::TestEnvGuard::new();
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::new()),
+        delay: std::time::Duration::from_millis(0),
+    });
+    let loop_runner = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory { provider }),
+        empty_capabilities(),
+    )
+    .with_compact_keep_recent_turns(4);
+    let state = astrcode_core::AgentState {
+        session_id: "test".into(),
+        working_dir: std::env::temp_dir(),
+        messages: vec![LlmMessage::User {
+            content: "only ask".to_string(),
+            origin: UserMessageOrigin::User,
+        }],
+        phase: Phase::Idle,
+        turn_count: 1,
+    };
+
+    let error = loop_runner
+        .manual_compact_event(&state, CompactionTailSnapshot::default())
+        .await
+        .expect_err("single-turn sessions should reject manual compact");
+
+    assert!(matches!(error, AstrError::Validation(_)));
+    assert!(error.to_string().contains("at least 2 real user turns"));
+}
+
 /// 构造一个 413 prompt too long 错误。
 fn make_prompt_too_long_error() -> AstrError {
     AstrError::LlmRequestFailed {

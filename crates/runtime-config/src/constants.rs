@@ -125,6 +125,33 @@ fn join_url_query(path: String, query: Option<&str>) -> String {
     }
 }
 
+/// 判断路径段是否像显式 API 版本号。
+///
+/// OpenAI 兼容网关并不都使用 `/v1`，一些第三方会暴露 `/v4`、`/v1beta` 等版本根。
+/// 这里采用业界常见的宽松识别：只要段名以 `v` 开头且紧跟数字，就认为它是
+/// 一个显式版本段，后续标准集合路径应挂在该版本段之下，而不是强行回退到 `/v1`。
+fn looks_like_api_version_segment(segment: &str) -> bool {
+    let mut chars = segment.chars();
+    matches!(chars.next(), Some('v' | 'V'))
+        && matches!(chars.next(), Some(ch) if ch.is_ascii_digit())
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+}
+
+/// 将已包含显式版本段的 OpenAI 兼容地址标准化到目标集合路径。
+///
+/// 例如：
+/// - `https://api.z.ai/api/coding/paas/v4` → `.../v4/chat/completions`
+/// - `https://gateway.example.com/openai/v1/chat/completion` → `.../v1/chat/completions`
+fn normalize_openai_versioned_base_url(trimmed: &str, collection_suffix: &str) -> Option<String> {
+    let segments = trimmed.split('/').collect::<Vec<_>>();
+    let version_index = segments
+        .iter()
+        .rposition(|segment| looks_like_api_version_segment(segment))?;
+
+    let prefix = segments[..=version_index].join("/");
+    Some(format!("{prefix}/{collection_suffix}"))
+}
+
 fn resolve_anthropic_api_collection_url(
     base_url: &str,
     collection: &'static str,
@@ -196,9 +223,11 @@ pub fn resolve_anthropic_models_api_url(base_url: &str) -> String {
 /// - API 根地址：如 `https://api.deepseek.com`
 /// - 版本根地址：如 `https://api.openai.com/v1`
 /// - 完整集合地址：如 `https://api.openai.com/v1/chat/completions`
+/// - 第三方版本根地址：如 `https://api.z.ai/api/coding/paas/v4`
 ///
-/// 如果用户已经写到 `/v1/<something>`，这里会把尾段标准化成
-/// `/v1/chat/completions`，避免再次拼接出重复后缀。
+/// 如果用户已经写到 `/vN/<something>`，这里会把尾段标准化成
+/// `/vN/chat/completions`，避免再次拼接出重复后缀，也避免把第三方显式版本
+/// 根错误改写成 `/v1/...`。
 pub fn resolve_openai_chat_completions_api_url(base_url: &str) -> String {
     let (path, query) = split_url_query(base_url.trim());
     let trimmed = path.trim_end_matches('/');
@@ -210,12 +239,10 @@ pub fn resolve_openai_chat_completions_api_url(base_url: &str) -> String {
         trimmed.to_string()
     } else if trimmed.ends_with("/chat") {
         format!("{trimmed}/completions")
-    } else if trimmed.ends_with("/v1") {
-        format!("{trimmed}/chat/completions")
-    } else if let Some((prefix, _tail)) = trimmed.rsplit_once("/v1/") {
-        // OpenAI-compatible 网关通常要求标准的 `/v1/chat/completions`。
-        // 当用户已提供 `/v1/...` 但尾段不规范时，直接标准化而不是继续叠加后缀。
-        format!("{prefix}/v1/chat/completions")
+    } else if let Some(versioned_url) =
+        normalize_openai_versioned_base_url(trimmed, "chat/completions")
+    {
+        versioned_url
     } else {
         format!("{trimmed}/v1/chat/completions")
     };
@@ -267,6 +294,131 @@ pub const DEFAULT_CONTINUATION_MIN_DELTA_TOKENS: usize = 500;
 ///
 /// 限制初始回合后的续调次数，防止模型陷入无限循环。
 pub const DEFAULT_MAX_CONTINUATIONS: u8 = 3;
+
+// ============================================================================
+// LLM 客户端配置
+// ============================================================================
+
+/// 默认 LLM 连接超时（秒）。
+///
+/// 建立 TCP 连接的最大等待时间，超时后返回错误。
+/// 网络不稳定时可适当调大此值。
+pub const DEFAULT_LLM_CONNECT_TIMEOUT_SECS: u64 = 10;
+
+/// 默认 LLM 读取超时（秒）。
+///
+/// 等待响应流的最大时间，需要足够长以支持慢速流式响应，
+/// 但也要能检测到卡死的连接。
+pub const DEFAULT_LLM_READ_TIMEOUT_SECS: u64 = 90;
+
+/// 默认 LLM 请求最大重试次数。
+///
+/// 针对瞬态故障（408、429、5xx）的自动重试上限。
+pub const DEFAULT_LLM_MAX_RETRIES: u32 = 2;
+
+/// 默认 LLM 重试基础延迟（毫秒）。
+///
+/// 首次重试前的等待时间，后续重试采用指数退避。
+pub const DEFAULT_LLM_RETRY_BASE_DELAY_MS: u64 = 250;
+
+// ============================================================================
+// Agent 循环配置
+// ============================================================================
+
+/// 默认响应式压缩最大重试次数。
+///
+/// 当 LLM 返回 413 prompt-too-long 时触发的压缩重试上限。
+/// 超过此次数仍失败则向用户报告错误。
+pub const DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS: u8 = 3;
+
+/// 默认输出续调最大尝试次数。
+///
+/// 当模型输出被 max_tokens 截断时，自动续调的最大次数。
+pub const DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS: u8 = 3;
+
+/// 默认摘要保留 token 数。
+///
+/// 压缩时为摘要生成预留的 token 预算，避免摘要过长挤占上下文。
+pub const DEFAULT_SUMMARY_RESERVE_TOKENS: usize = 20_000;
+
+/// 默认最大跟踪文件数。
+///
+/// FileAccessTracker 跟踪的最近访问文件数上限，用于压缩后恢复上下文。
+pub const DEFAULT_MAX_TRACKED_FILES: usize = 10;
+
+/// 默认压缩恢复最大文件数。
+///
+/// Post-compact 文件恢复时最多读取的文件数。
+pub const DEFAULT_MAX_RECOVERED_FILES: usize = 5;
+
+/// 默认恢复 token 预算。
+///
+/// Post-compact 文件恢复的总 token 预算，避免恢复过多内容。
+pub const DEFAULT_RECOVERY_TOKEN_BUDGET: usize = 50_000;
+
+// ============================================================================
+// 工具限制配置
+// ============================================================================
+
+/// 默认工具结果内联阈值（字节）。
+///
+/// 工具输出超过此大小时存盘，仅在消息中保留预览。
+pub const DEFAULT_TOOL_RESULT_INLINE_LIMIT: usize = 32 * 1024;
+
+/// 默认工具结果预览限制（字节）。
+///
+/// 存盘时返回的预览内容大小，供 LLM 快速了解输出性质。
+pub const DEFAULT_TOOL_RESULT_PREVIEW_LIMIT: usize = 2 * 1024;
+
+/// 默认最大图片文件大小（字节）。
+///
+/// readFile 读取图片时的最大允许大小，超过则拒绝读取。
+pub const DEFAULT_MAX_IMAGE_SIZE: usize = 20 * 1024 * 1024;
+
+/// 默认 grep 最大显示行数。
+///
+/// grep 工具单次返回的最大行数，避免超大输出。
+pub const DEFAULT_MAX_GREP_LINES: usize = 500;
+
+// ============================================================================
+// 会话配置
+// ============================================================================
+
+/// 默认会话广播容量。
+///
+/// broadcast channel 容量，慢速 SSE 客户端若未在此数量内消费，
+/// 旧事件会被丢弃。2048 足够覆盖一次完整 turn。
+pub const DEFAULT_SESSION_BROADCAST_CAPACITY: usize = 2048;
+
+/// 默认会话最近记录限制。
+///
+/// 内存中保留的最近事件记录数，超过时从头部淘汰。
+/// 4096 约覆盖 40-50 次典型 turn。
+pub const DEFAULT_SESSION_RECENT_RECORD_LIMIT: usize = 4096;
+
+/// 默认最大并发分支深度。
+///
+/// 当向正在运行的会话提交新 Prompt 时，自动创建分支的最大深度。
+/// 超过此深度拒绝提交，防止分支树膨胀。
+pub const DEFAULT_MAX_CONCURRENT_BRANCH_DEPTH: usize = 3;
+
+// ============================================================================
+// 服务器认证配置
+// ============================================================================
+
+/// 默认 API 会话有效期（小时）。
+///
+/// 通过 /api/auth/exchange 获得的 token 有效期。
+pub const DEFAULT_API_SESSION_TTL_HOURS: i64 = 8;
+
+// ============================================================================
+// 多智能体配置 (TODO: 未来实现)
+// ============================================================================
+
+// TODO(multi-agent): 以下常量预留给未来的多智能体并行执行功能：
+// - DEFAULT_MAX_AGENT_CONCURRENCY: 并行 agent 数量上限
+// - DEFAULT_AGENT_MESSAGE_QUEUE_CAPACITY: agent 间消息队列容量
+// - DEFAULT_AGENT_COORDINATION_TIMEOUT_SECS: agent 协调超时
 
 /// 从进程环境变量/默认值获取最大安全工具并发数。
 ///
@@ -339,6 +491,156 @@ pub fn resolve_max_continuations(runtime: &RuntimeConfig) -> u8 {
     runtime
         .max_continuations
         .unwrap_or(DEFAULT_MAX_CONTINUATIONS)
+        .max(1)
+}
+
+// ============================================================================
+// LLM 客户端配置解析
+// ============================================================================
+
+/// 解析 LLM 连接超时（秒）。
+pub fn resolve_llm_connect_timeout_secs(runtime: &RuntimeConfig) -> u64 {
+    runtime
+        .llm_connect_timeout_secs
+        .unwrap_or(DEFAULT_LLM_CONNECT_TIMEOUT_SECS)
+        .max(1)
+}
+
+/// 解析 LLM 读取超时（秒）。
+pub fn resolve_llm_read_timeout_secs(runtime: &RuntimeConfig) -> u64 {
+    runtime
+        .llm_read_timeout_secs
+        .unwrap_or(DEFAULT_LLM_READ_TIMEOUT_SECS)
+        .max(1)
+}
+
+/// 解析 LLM 最大重试次数。
+pub fn resolve_llm_max_retries(runtime: &RuntimeConfig) -> u32 {
+    runtime.llm_max_retries.unwrap_or(DEFAULT_LLM_MAX_RETRIES)
+}
+
+// ============================================================================
+// Agent 循环配置解析
+// ============================================================================
+
+/// 解析响应式压缩最大重试次数。
+pub fn resolve_max_reactive_compact_attempts(runtime: &RuntimeConfig) -> u8 {
+    runtime
+        .max_reactive_compact_attempts
+        .unwrap_or(DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS)
+        .max(1)
+}
+
+/// 解析输出续调最大尝试次数。
+pub fn resolve_max_output_continuation_attempts(runtime: &RuntimeConfig) -> u8 {
+    runtime
+        .max_output_continuation_attempts
+        .unwrap_or(DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS)
+        .max(1)
+}
+
+/// 解析摘要保留 token 数。
+pub fn resolve_summary_reserve_tokens(runtime: &RuntimeConfig) -> usize {
+    runtime
+        .summary_reserve_tokens
+        .unwrap_or(DEFAULT_SUMMARY_RESERVE_TOKENS)
+}
+
+/// 解析最大跟踪文件数。
+pub fn resolve_max_tracked_files(runtime: &RuntimeConfig) -> usize {
+    runtime
+        .max_tracked_files
+        .unwrap_or(DEFAULT_MAX_TRACKED_FILES)
+        .max(1)
+}
+
+/// 解析压缩恢复最大文件数。
+pub fn resolve_max_recovered_files(runtime: &RuntimeConfig) -> usize {
+    runtime
+        .max_recovered_files
+        .unwrap_or(DEFAULT_MAX_RECOVERED_FILES)
+}
+
+/// 解析恢复 token 预算。
+pub fn resolve_recovery_token_budget(runtime: &RuntimeConfig) -> usize {
+    runtime
+        .recovery_token_budget
+        .unwrap_or(DEFAULT_RECOVERY_TOKEN_BUDGET)
+}
+
+// ============================================================================
+// 工具限制配置解析
+// ============================================================================
+
+/// 解析工具结果内联阈值（字节）。
+pub fn resolve_tool_result_inline_limit(runtime: &RuntimeConfig) -> usize {
+    runtime
+        .tool_result_inline_limit
+        .unwrap_or(DEFAULT_TOOL_RESULT_INLINE_LIMIT)
+        .max(1024) // 至少 1KB
+}
+
+/// 解析工具结果预览限制（字节）。
+pub fn resolve_tool_result_preview_limit(runtime: &RuntimeConfig) -> usize {
+    runtime
+        .tool_result_preview_limit
+        .unwrap_or(DEFAULT_TOOL_RESULT_PREVIEW_LIMIT)
+        .max(256) // 至少 256 字节
+}
+
+/// 解析最大图片文件大小（字节）。
+pub fn resolve_max_image_size(runtime: &RuntimeConfig) -> usize {
+    runtime
+        .max_image_size
+        .unwrap_or(DEFAULT_MAX_IMAGE_SIZE)
+        .max(1024 * 1024) // 至少 1MB
+}
+
+/// 解析 grep 最大显示行数。
+pub fn resolve_max_grep_lines(runtime: &RuntimeConfig) -> usize {
+    runtime
+        .max_grep_lines
+        .unwrap_or(DEFAULT_MAX_GREP_LINES)
+        .max(10)
+}
+
+// ============================================================================
+// 会话配置解析
+// ============================================================================
+
+/// 解析会话广播容量。
+pub fn resolve_session_broadcast_capacity(runtime: &RuntimeConfig) -> usize {
+    runtime
+        .session_broadcast_capacity
+        .unwrap_or(DEFAULT_SESSION_BROADCAST_CAPACITY)
+        .max(64)
+}
+
+/// 解析会话最近记录限制。
+pub fn resolve_session_recent_record_limit(runtime: &RuntimeConfig) -> usize {
+    runtime
+        .session_recent_record_limit
+        .unwrap_or(DEFAULT_SESSION_RECENT_RECORD_LIMIT)
+        .max(128)
+}
+
+/// 解析最大并发分支深度。
+pub fn resolve_max_concurrent_branch_depth(runtime: &RuntimeConfig) -> usize {
+    runtime
+        .max_concurrent_branch_depth
+        .unwrap_or(DEFAULT_MAX_CONCURRENT_BRANCH_DEPTH)
+        .max(1)
+}
+
+// ============================================================================
+// 服务器认证配置解析
+// ============================================================================
+
+/// 解析 API 会话有效期（小时）。
+pub fn resolve_api_session_ttl_hours(runtime: &RuntimeConfig) -> i64 {
+    runtime
+        .api_session_ttl_hours
+        .unwrap_or(DEFAULT_API_SESSION_TTL_HOURS)
         .max(1)
 }
 
@@ -440,6 +742,24 @@ mod tests {
         assert_eq!(
             resolve_openai_chat_completions_api_url("https://api.openai.com/v1"),
             "https://api.openai.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn openai_url_helper_preserves_non_v1_version_root_for_third_party_gateways() {
+        assert_eq!(
+            resolve_openai_chat_completions_api_url("https://api.z.ai/api/coding/paas/v4"),
+            "https://api.z.ai/api/coding/paas/v4/chat/completions"
+        );
+    }
+
+    #[test]
+    fn openai_url_helper_normalizes_non_v1_versioned_endpoint_tails() {
+        assert_eq!(
+            resolve_openai_chat_completions_api_url(
+                "https://api.z.ai/api/coding/paas/v4/chat/completion?foo=bar"
+            ),
+            "https://api.z.ai/api/coding/paas/v4/chat/completions?foo=bar"
         );
     }
 

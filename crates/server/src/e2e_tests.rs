@@ -936,3 +936,74 @@ async fn e2e_manual_compact_endpoint_rejects_busy_sessions() {
     wait_for_total_message_count(app.clone(), &created.session_id, 2).await;
     server_handle.await.expect("server should finish");
 }
+
+#[tokio::test]
+async fn e2e_manual_compact_endpoint_rejects_single_turn_sessions() {
+    let (base_url, server_handle) =
+        spawn_openai_chat_server("single-turn answer", Duration::from_millis(10), 1);
+    let (state, _guard) = configured_state_with_openai_server(&base_url);
+    let app = build_api_router().with_state(state);
+
+    let working_dir = std::env::temp_dir();
+    let working_dir = working_dir.canonicalize().unwrap_or(working_dir);
+    let working_dir_str = working_dir.to_string_lossy().to_string();
+    let create_req = auth_request("POST", "/api/sessions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&CreateSessionRequest {
+                working_dir: working_dir_str,
+            })
+            .expect("request should serialize"),
+        ))
+        .expect("request should build");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("response should return");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let created: SessionListItem = json_body(create_resp).await;
+
+    let prompt_req = auth_request(
+        "POST",
+        &format!("/api/sessions/{}/prompts", created.session_id),
+    )
+    .header("content-type", "application/json")
+    .body(Body::from(
+        serde_json::to_vec(&PromptRequest {
+            text: "only prompt".to_string(),
+        })
+        .expect("request should serialize"),
+    ))
+    .expect("request should build");
+    let prompt_resp = app
+        .clone()
+        .oneshot(prompt_req)
+        .await
+        .expect("response should return");
+    assert_eq!(prompt_resp.status(), StatusCode::ACCEPTED);
+    wait_for_total_message_count(app.clone(), &created.session_id, 2).await;
+
+    let compact_req = auth_request(
+        "POST",
+        &format!("/api/sessions/{}/compact", created.session_id),
+    )
+    .body(Body::empty())
+    .expect("request should build");
+    let compact_resp = app
+        .clone()
+        .oneshot(compact_req)
+        .await
+        .expect("response should return");
+    assert_eq!(compact_resp.status(), StatusCode::BAD_REQUEST);
+
+    let payload: serde_json::Value = json_body(compact_resp).await;
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("at least 2 real user turns")),
+        "single-turn rejection should explain why /compact is unavailable"
+    );
+
+    server_handle.await.expect("server should finish");
+}

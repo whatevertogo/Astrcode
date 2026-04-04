@@ -322,7 +322,11 @@ impl RuntimeService {
             {
                 *failures = 0;
             }
-            return Ok(());
+            return Err(ServiceError::InvalidInput(
+                "manual compact found no compressible history; the session needs at least 2 user \
+                 turns before it can be compacted"
+                    .to_string(),
+            ));
         };
 
         let initial_phase = lock_anyhow(&session.phase, "session phase")

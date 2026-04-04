@@ -58,7 +58,8 @@ use std::{path::PathBuf, sync::Arc};
 
 use astrcode_core::{
     AgentState, AllowAllPolicyEngine, AstrError, CancelToken, CapabilityDescriptor,
-    CapabilityRouter, PolicyContext, PolicyEngine, Result, StorageEvent, ToolContext,
+    CapabilityRouter, LlmMessage, PolicyContext, PolicyEngine, Result, StorageEvent, ToolContext,
+    UserMessageOrigin,
 };
 use astrcode_runtime_config::{
     DEFAULT_AUTO_COMPACT_ENABLED, DEFAULT_COMPACT_KEEP_RECENT_TURNS,
@@ -72,8 +73,8 @@ use chrono::Utc;
 use crate::{
     approval_service::{ApprovalBroker, DefaultApprovalBroker},
     compaction_runtime::{
-        AutoCompactStrategy, CompactionReason, CompactionRuntime, CompactionTailSnapshot,
-        ConversationViewRebuilder, FsFileContentProvider, ThresholdCompactionPolicy,
+        AutoCompactStrategy, CompactionRuntime, CompactionTailSnapshot, ConversationViewRebuilder,
+        FsFileContentProvider, ThresholdCompactionPolicy,
     },
     context_pipeline::ContextRuntime,
     prompt_runtime::PromptRuntime,
@@ -407,14 +408,28 @@ impl AgentLoop {
         state: &AgentState,
         compaction_tail: CompactionTailSnapshot,
     ) -> Result<Option<StorageEvent>> {
+        let user_turns = count_real_user_turns(&state.messages);
+        if user_turns < 2 {
+            return Err(AstrError::Validation(
+                "manual compact requires at least 2 real user turns".to_string(),
+            ));
+        }
+
+        // 手动 compact 应该“尽量立刻压缩”，因此最多只保留到还能留下至少一个旧 turn
+        // 可被折叠，而不是盲目复用自动 compact 的保守保留值。
+        let manual_keep_recent_turns = self
+            .compaction
+            .keep_recent_turns()
+            .min(user_turns.saturating_sub(1))
+            .max(1);
         let provider = self.build_provider(Some(state.working_dir.clone())).await?;
         let artifact = self
             .compaction
-            .compact(
+            .compact_manual_with_keep_recent_turns(
                 provider.as_ref(),
                 &crate::context_pipeline::ConversationView::new(state.messages.clone()),
                 None,
-                CompactionReason::Manual,
+                manual_keep_recent_turns,
                 CancelToken::new(),
             )
             .await?;
@@ -504,6 +519,21 @@ impl AgentLoop {
     pub fn skill_catalog(&self) -> Arc<SkillCatalog> {
         self.prompt.skill_catalog()
     }
+}
+
+fn count_real_user_turns(messages: &[LlmMessage]) -> usize {
+    messages
+        .iter()
+        .filter(|message| {
+            matches!(
+                message,
+                LlmMessage::User {
+                    origin: UserMessageOrigin::User,
+                    ..
+                }
+            )
+        })
+        .count()
 }
 
 /// 完成 Turn（发出 TurnDone 事件）

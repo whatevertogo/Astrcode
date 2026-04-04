@@ -409,6 +409,37 @@ impl CompactionRuntime {
         result
     }
 
+    /// 手动压缩使用显式保留轮数。
+    ///
+    /// 手动 `/compact` 的语义是“现在就尽量压缩”，不应因为自动压缩配置里的
+    /// `keep_recent_turns` 过大而直接退化成 no-op。
+    pub(crate) async fn compact_manual_with_keep_recent_turns(
+        &self,
+        provider: &dyn LlmProvider,
+        conversation: &ConversationView,
+        base_system_prompt: Option<&str>,
+        keep_recent_turns: usize,
+        cancel: CancelToken,
+    ) -> Result<Option<CompactionArtifact>> {
+        let result = self
+            .strategy
+            .compact(CompactionInput {
+                provider,
+                conversation,
+                base_system_prompt,
+                cancel,
+                keep_recent_turns: keep_recent_turns.max(1),
+                reason: CompactionReason::Manual,
+            })
+            .await;
+
+        if result.as_ref().is_err() {
+            // 手动 compact 不参与自动压缩熔断器统计，因此这里不记录失败次数。
+        }
+
+        result
+    }
+
     pub(crate) fn rebuild_conversation(
         &self,
         artifact: &CompactionArtifact,
