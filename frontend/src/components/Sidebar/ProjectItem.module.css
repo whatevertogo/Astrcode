@@ -9,35 +9,19 @@
   min-height: 34px;
   padding: 6px 8px;
   cursor: pointer;
-  transition: color 150ms ease;
+  transition:
+    color 150ms ease,
+    background-color 150ms ease;
   user-select: none;
+  border-radius: 8px;
 }
 
 .projectRow:hover {
+  background-color: rgba(0, 0, 0, 0.05);
   color: var(--text-primary);
 }
 
-.arrow {
-  width: 12px;
-  height: 12px;
-  color: var(--text-muted);
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: transform 150ms ease;
-}
-
-.arrow svg {
-  width: 12px;
-  height: 12px;
-}
-
-.arrowOpen {
-  transform: rotate(90deg);
-}
-
-.icon {
+.iconContainer {
   width: 16px;
   height: 16px;
   color: var(--text-secondary);
@@ -45,11 +29,36 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  position: relative;
 }
 
-.icon svg {
+.folderIcon {
   width: 16px;
   height: 16px;
+  position: absolute;
+  transition: opacity 150ms ease;
+}
+
+.arrowIcon {
+  width: 16px;
+  height: 16px;
+  position: absolute;
+  opacity: 0;
+  transition:
+    opacity 150ms ease,
+    transform 150ms ease;
+}
+
+.projectRow:hover .folderIcon {
+  opacity: 0;
+}
+
+.projectRow:hover .arrowIcon {
+  opacity: 1;
+}
+
+.arrowOpen {
+  transform: rotate(90deg);
 }
 
 .projectName {

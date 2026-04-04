@@ -5,7 +5,6 @@ interface TopBarProps {
   sessionTitle: string | null;
   isSidebarOpen: boolean;
   toggleSidebar: () => void;
-  onNewSession: () => void;
 }
 
 export default function TopBar({
@@ -13,7 +12,6 @@ export default function TopBar({
   sessionTitle,
   isSidebarOpen,
   toggleSidebar,
-  onNewSession,
 }: TopBarProps) {
   return (
     <div className={styles.topBar}>
@@ -51,12 +49,6 @@ export default function TopBar({
         ) : (
           <span className={styles.empty}>未选择会话</span>
         )}
-      </div>
-      <div className={styles.actions}>
-        <button className={styles.newSessionBtn} onClick={onNewSession} disabled={!projectName}>
-          <span className={styles.newSessionPlus}>+</span>
-          <span>新会话</span>
-        </button>
       </div>
     </div>
   );

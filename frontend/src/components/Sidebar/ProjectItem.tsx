@@ -67,20 +67,8 @@ export default function ProjectItem({
         onContextMenu={handleContextMenu}
         onClick={() => onToggleExpand(project.id)}
       >
-        <span className={`${styles.arrow} ${project.isExpanded ? styles.arrowOpen : ''}`}>
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path
-              d="M5.5 3.5L10 8l-4.5 4.5"
-              fill="none"
-              stroke="currentColor"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth="1.6"
-            />
-          </svg>
-        </span>
-        <span className={styles.icon} aria-hidden="true">
-          <svg viewBox="0 0 20 20">
+        <span className={styles.iconContainer} aria-hidden="true">
+          <svg className={styles.folderIcon} viewBox="0 0 20 20">
             <path
               d="M2.5 5.75A1.75 1.75 0 0 1 4.25 4h4.03c.46 0 .9.18 1.23.5l1.02 1c.32.3.74.47 1.18.47h4.04A1.75 1.75 0 0 1 17.5 7.72v6.53A1.75 1.75 0 0 1 15.75 16H4.25A1.75 1.75 0 0 1 2.5 14.25V5.75Z"
               fill="none"
@@ -88,6 +76,17 @@ export default function ProjectItem({
               strokeLinejoin="round"
               strokeWidth="1.4"
             />
+          </svg>
+          <svg
+            className={`${styles.arrowIcon} ${project.isExpanded ? styles.arrowOpen : ''}`}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <polyline points="9 18 15 12 9 6"></polyline>
           </svg>
         </span>
         <span className={styles.projectName}>{project.name}</span>

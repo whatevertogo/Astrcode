@@ -16,7 +16,6 @@ interface ChatProps {
   phase: Phase;
   isSidebarOpen: boolean;
   toggleSidebar: () => void;
-  onNewSession: () => void;
   onSubmitPrompt: (text: string) => void | Promise<void>;
   onInterrupt: () => void | Promise<void>;
   listComposerOptions: (
@@ -36,7 +35,6 @@ export default function Chat({
   phase,
   isSidebarOpen,
   toggleSidebar,
-  onNewSession,
   onSubmitPrompt,
   onInterrupt,
   listComposerOptions,
@@ -52,7 +50,6 @@ export default function Chat({
         sessionTitle={session?.title ?? null}
         isSidebarOpen={isSidebarOpen}
         toggleSidebar={toggleSidebar}
-        onNewSession={onNewSession}
       />
       <MessageList messages={session?.messages ?? []} />
       <InputBar

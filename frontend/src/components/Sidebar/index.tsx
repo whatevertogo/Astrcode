@@ -26,6 +26,7 @@ interface SidebarProps {
   onDeleteProject: (projectId: string) => void;
   onDeleteSession: (projectId: string, sessionId: string) => void;
   onOpenSettings: () => void;
+  onNewSession: () => void;
 }
 
 export default function Sidebar({
@@ -41,6 +42,7 @@ export default function Sidebar({
   onDeleteProject,
   onDeleteSession,
   onOpenSettings,
+  onNewSession,
 }: SidebarProps) {
   const [showModal, setShowModal] = useState(false);
 
@@ -55,7 +57,56 @@ export default function Sidebar({
         <span className={styles.title}>AstrCode</span>
       </div>
 
+      <div className="mt-4 px-1 flex-shrink-0">
+        <button
+          type="button"
+          onClick={onNewSession}
+          style={{ padding: '6px 8px', gap: '8px' }}
+          className={styles.newSessionBtn}
+        >
+          <div
+            style={{
+              width: '16px',
+              height: '16px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+              color: 'var(--text-secondary)',
+            }}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{ width: '16px', height: '16px' }}
+            >
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+            </svg>
+          </div>
+          <span className="truncate" style={{ fontSize: '13px', fontWeight: 500 }}>
+            新会话
+          </span>
+        </button>
+      </div>
+
       <div className={styles.projectList}>
+        <div
+          style={{
+            padding: '0 8px',
+            marginBottom: '8px',
+            fontSize: '11px',
+            fontWeight: 600,
+            color: 'var(--text-muted)',
+            letterSpacing: '0.05em',
+          }}
+        >
+          文件夹
+        </div>
         {projects.map((project) => (
           <ProjectItem
             key={project.id}

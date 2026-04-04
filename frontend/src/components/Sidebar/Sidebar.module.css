@@ -17,6 +17,50 @@
   flex-shrink: 0;
 }
 
+.newSessionBtn {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 34px;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+  color: var(--text-primary);
+}
+
+.newSessionBtn:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+.newSessionIconBtn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.newSessionIconBtn:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--text-primary);
+}
+
+.newSessionIconBtn svg {
+  width: 16px;
+  height: 16px;
+}
+
 .title {
   font-weight: 600;
   font-size: 13px;

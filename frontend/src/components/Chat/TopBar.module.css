@@ -140,16 +140,18 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--app-bg);
-  border: 1px solid var(--border);
+  background: transparent;
+  border: none;
   color: var(--text-secondary);
   border-radius: 6px;
-  padding: 4px 6px;
-  transition: all 0.2s;
+  padding: 4px;
+  margin-left: -4px;
+  transition: all 0.2s ease;
   cursor: pointer;
   outline: none;
 }
+
 .toggleSidebarBtn:hover {
-  background: var(--item-hover);
+  background: rgba(0, 0, 0, 0.05);
   color: var(--text-primary);
 }

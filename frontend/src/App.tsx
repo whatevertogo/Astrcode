@@ -387,6 +387,9 @@ export default function App() {
                 void handleDeleteSession(projectId, sessionId);
               }}
               onOpenSettings={() => setShowSettings(true)}
+              onNewSession={() => {
+                void handleNewSession();
+              }}
             />
           </div>
           <div
@@ -413,9 +416,6 @@ export default function App() {
           isSidebarOpen={isSidebarOpen}
           toggleSidebar={toggleSidebar}
           phase={state.phase}
-          onNewSession={() => {
-            void handleNewSession();
-          }}
           onSubmitPrompt={handleSubmit}
           onInterrupt={handleInterrupt}
           listComposerOptions={listComposerOptions}
