@@ -1,7 +1,7 @@
 /**
  * Skill 选择器弹出面板组件
  *
- * 当用户在输入框中输入 '/' 时触发，展示当前会话可用的技能列表。
+ * 当用户在输入框中输入 '/' 时触发，展示当前会话可用的 slash command / 技能列表。
  * 支持键盘 ↑↓ 导航、Enter 确认选中、Escape 关闭。
  * 样式适配 AstrCode 暖色/米色主题风格。
  *
@@ -140,7 +140,13 @@ export default function CommandSelector({
           const previousOption = index > 0 ? filteredOptions[index - 1] : null;
           const showHeader = !previousOption || previousOption.kind !== option.kind;
           const headerText =
-            option.kind === 'skill' ? '技能' : option.kind === 'capability' ? '系统能力' : '命令';
+            option.kind === 'command'
+              ? '命令'
+              : option.kind === 'skill'
+                ? '技能'
+                : option.kind === 'capability'
+                  ? '系统能力'
+                  : '命令';
 
           return (
             <React.Fragment key={option.id}>
@@ -234,6 +240,8 @@ function CommandIcon({ kind, isSelected }: { kind: ComposerOption['kind']; isSel
           stroke="none"
           className={isSelected ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'}
         />
+      ) : kind === 'command' ? (
+        <path d="M8 8 4 12l4 4M16 8l4 4-4 4M13 5l-2 14" />
       ) : (
         <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
       )}

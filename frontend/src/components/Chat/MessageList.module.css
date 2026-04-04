@@ -7,7 +7,6 @@
   flex-direction: column;
   gap: 22px;
   background: var(--panel-bg);
-  scroll-behavior: smooth;
 }
 
 .empty {
@@ -25,8 +24,8 @@
 .messageRow {
   width: min(100%, 860px);
   margin: 0 auto;
-  content-visibility: auto;
-  contain-intrinsic-size: 124px;
+  /* WebView2 在 overflow 容器内对 content-visibility 的支持不稳定，
+     会导致消息列表滚动高度计算错误（浏览器正常、桌面应用不能继续下滑）。 */
   transition: margin-top 0.2s ease;
 }
 

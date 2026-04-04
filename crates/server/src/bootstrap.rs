@@ -360,7 +360,7 @@ fn run_info_path() -> AnyhowResult<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::LocalServerInfo;
+    use astrcode_core::{LocalServerInfo, format_local_rfc3339};
 
     use super::{bootstrap_token_expires_at_ms, clear_run_info, run_info_path, write_run_info};
     use crate::test_support::ServerTestEnvGuard;
@@ -373,7 +373,7 @@ mod tests {
             port: 62000,
             token: "bootstrap-token".to_string(),
             pid: std::process::id(),
-            started_at: chrono::Utc::now().to_rfc3339(),
+            started_at: format_local_rfc3339(chrono::Utc::now()),
             expires_at_ms,
         })
         .expect("run info should be written");

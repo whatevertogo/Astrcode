@@ -15,7 +15,7 @@ function toEpochMs(value: string): number {
 
 export function convertSessionMessage(message: HookSessionMessage): Message {
   const timestamp =
-    message.kind === 'user' || message.kind === 'assistant'
+    message.kind === 'user' || message.kind === 'assistant' || message.kind === 'compact'
       ? toEpochMs(message.timestamp)
       : Date.now();
   const base = { id: uuid(), timestamp };
@@ -45,6 +45,15 @@ export function convertSessionMessage(message: HookSessionMessage): Message {
         error: message.error,
         metadata: message.metadata,
         durationMs: message.durationMs,
+      };
+    case 'compact':
+      return {
+        ...base,
+        kind: 'compact' as const,
+        turnId: message.turnId,
+        trigger: message.trigger,
+        summary: message.summary,
+        preservedRecentTurns: message.preservedRecentTurns,
       };
   }
 }

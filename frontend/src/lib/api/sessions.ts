@@ -3,7 +3,7 @@
 //! Session and project CRUD operations.
 
 import type { DeleteProjectResult, SessionMeta } from '../../types';
-import { request, requestJson } from './client';
+import { getErrorMessage, request, requestJson, requestRaw } from './client';
 // 共享工具函数，消除与 lib/shared/index.ts 的重复定义
 import {
   asRecord,
@@ -61,6 +61,19 @@ export async function interruptSession(sessionId: string): Promise<void> {
   });
 }
 
+export async function compactSession(sessionId: string): Promise<void> {
+  const response = await requestRaw(`/api/sessions/${encodeURIComponent(sessionId)}/compact`, {
+    method: 'POST',
+  });
+  if (response.status === 409) {
+    // 这里把后端的冲突语义提升成稳定用户文案，避免把内部错误串直接暴露到 UI。
+    throw new Error('当前会话正在运行，暂不允许手动 compact。');
+  }
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response));
+  }
+}
+
 export async function deleteSession(sessionId: string): Promise<void> {
   await request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
     method: 'DELETE',
@@ -114,6 +127,18 @@ function normalizeSessionMessage(raw: unknown): SessionMessage {
       metadata: message.metadata,
       ok: pickBoolean(message, 'ok'),
       durationMs: pickNumber(message, 'durationMs', 'duration_ms'),
+      timestamp: pickString(message, 'timestamp') ?? new Date().toISOString(),
+    };
+  }
+
+  if (kind === 'compact') {
+    return {
+      kind: 'compact',
+      turnId: pickOptionalString(message, 'turnId', 'turn_id') ?? null,
+      trigger: (pickString(message, 'trigger') as 'auto' | 'manual' | undefined) ?? 'manual',
+      summary: pickString(message, 'summary') ?? '',
+      preservedRecentTurns:
+        pickNumber(message, 'preservedRecentTurns', 'preserved_recent_turns') ?? 0,
       timestamp: pickString(message, 'timestamp') ?? new Date().toISOString(),
     };
   }

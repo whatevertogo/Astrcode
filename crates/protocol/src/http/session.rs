@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::PhaseDto;
+use super::{CompactTriggerDto, PhaseDto};
 
 /// `POST /api/sessions` 请求体——创建新会话。
 ///
@@ -114,6 +114,15 @@ pub enum SessionMessageDto {
         ok: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
+    },
+    /// 上下文压缩消息。
+    Compact {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        trigger: CompactTriggerDto,
+        summary: String,
+        preserved_recent_turns: u32,
+        timestamp: String,
     },
 }
 

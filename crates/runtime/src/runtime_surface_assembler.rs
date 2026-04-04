@@ -29,7 +29,7 @@ use std::{
 use astrcode_core::{
     AstrError, CapabilityDescriptor, CapabilityExecutionResult, CapabilityInvoker,
     CapabilityRouter, ManagedRuntimeComponent, PluginHealth, PluginManifest, PluginRegistry,
-    plugin::PluginEntry,
+    format_local_rfc3339, plugin::PluginEntry,
 };
 use astrcode_plugin::{PluginLoader, Supervisor, SupervisorHealth};
 use astrcode_protocol::plugin::{PeerDescriptor, PeerRole, SkillDescriptor};
@@ -161,7 +161,8 @@ impl CapabilityInvoker for GovernedPluginInvoker {
         // 执行调用并记录耗时和结果
         let started_at = Instant::now();
         let invocation = self.inner.invoke(payload, ctx).await;
-        let checked_at = Utc::now().to_rfc3339();
+        // 运行时面板和故障信息会直接消费这个字段，使用本地时区避免用户看到“时间错了”。
+        let checked_at = format_local_rfc3339(Utc::now());
         match &invocation {
             Ok(result) if result.success => {
                 self.plugin_registry

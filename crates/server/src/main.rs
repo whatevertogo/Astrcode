@@ -36,7 +36,7 @@ mod test_support;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::{Result as AnyhowResult, anyhow};
-use astrcode_core::{AstrError, LocalServerInfo, RuntimeCoordinator};
+use astrcode_core::{AstrError, LocalServerInfo, RuntimeCoordinator, format_local_rfc3339};
 use astrcode_runtime::{RuntimeGovernance, RuntimeService, ServiceError, bootstrap_runtime};
 use axum::{
     Json, Router,
@@ -194,7 +194,7 @@ async fn main() -> AnyhowResult<()> {
         port: address.port(),
         token: bootstrap_auth.token().to_string(),
         pid: std::process::id(),
-        started_at: started_at.to_rfc3339(),
+        started_at: format_local_rfc3339(started_at),
         expires_at_ms: bootstrap_auth.expires_at_ms(),
     };
     write_run_info(&local_server_info)?;

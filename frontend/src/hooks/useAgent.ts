@@ -17,6 +17,7 @@ import { ensureServerSession } from '../lib/serverAuth';
 import { request } from '../lib/api/client';
 import { listComposerOptions } from '../lib/api/composer';
 import {
+  compactSession,
   createSession,
   deleteProject,
   deleteSession,
@@ -28,6 +29,7 @@ import {
 import { getConfig, saveActiveSelection } from '../lib/api/config';
 import { getCurrentModel, listAvailableModels, testConnection } from '../lib/api/models';
 import type {
+  CompactTrigger,
   ComposerOption,
   ConfigView,
   CurrentModelInfo,
@@ -68,7 +70,20 @@ export interface SessionToolCallMessage {
   timestamp?: string;
 }
 
-export type SessionMessage = SessionUserMessage | SessionAssistantMessage | SessionToolCallMessage;
+export interface SessionCompactMessage {
+  kind: 'compact';
+  turnId?: string | null;
+  trigger: CompactTrigger;
+  summary: string;
+  preservedRecentTurns: number;
+  timestamp: string;
+}
+
+export type SessionMessage =
+  | SessionUserMessage
+  | SessionAssistantMessage
+  | SessionToolCallMessage
+  | SessionCompactMessage;
 
 export interface SessionSnapshot {
   messages: SessionMessage[];
@@ -173,6 +188,12 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
           reconnectTimerRef.current = null;
           // Check generation again before reconnecting
           if (streamGenerationRef.current === generation) {
+            console.warn('session event stream reconnecting', {
+              sessionId,
+              attempt,
+              delayMs,
+              cursor: lastEventIdRef.current,
+            });
             void startStream(lastEventIdRef.current);
           }
         }, delayMs);
@@ -234,8 +255,19 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
             controller.signal
           );
           if (closeReason === 'ended') {
-            // 服务端主动结束一个 SSE 响应通常代表会话已被替换或连接已终止。
-            // 这里盲目重连会把正常 EOF 放大成无限重连循环，因此只在异常路径下重试。
+            // 会话事件流按设计应长期保持连接；如果无错误地 EOF，通常也是传输链路抖动。
+            // 桌面端 WebView 偶发会触发这种“静默断流”，必须自动重连，否则 UI 会停在旧状态。
+            if (
+              !controller.signal.aborted &&
+              connectedSessionIdRef.current === sessionId &&
+              streamGenerationRef.current === generation
+            ) {
+              console.warn('session event stream ended unexpectedly, scheduling reconnect', {
+                sessionId,
+                cursor: lastEventIdRef.current,
+              });
+              scheduleReconnect();
+            }
             return;
           }
         } catch (error) {
@@ -299,6 +331,10 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
 
   const handleInterrupt = useCallback(async (sessionId: string): Promise<void> => {
     await interruptSession(sessionId);
+  }, []);
+
+  const handleCompactSession = useCallback(async (sessionId: string): Promise<void> => {
+    await compactSession(sessionId);
   }, []);
 
   const handleDeleteSession = useCallback(async (sessionId: string): Promise<void> => {
@@ -369,6 +405,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     disconnectSession,
     submitPrompt: handleSubmitPrompt,
     interrupt: handleInterrupt,
+    compactSession: handleCompactSession,
     deleteSession: handleDeleteSession,
     deleteProject: handleDeleteProject,
     listComposerOptions: handleListComposerOptions,

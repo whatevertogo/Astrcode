@@ -15,6 +15,7 @@ import { useAgentEventHandler } from './hooks/useAgentEventHandler';
 import { useSessionCatalogEvents } from './hooks/useSessionCatalogEvents';
 import { useSidebarResize } from './hooks/useSidebarResize';
 import { cn } from './lib/utils';
+import { parseRuntimeSlashCommand } from './lib/slashCommands';
 import type { SessionCatalogEventPayload } from './types';
 
 const reducer = appReducer;
@@ -28,6 +29,8 @@ export default function App() {
     title: string;
     message: string;
     danger?: boolean;
+    confirmLabel?: string;
+    cancelLabel?: string;
     onConfirm: () => void | Promise<void>;
   } | null>(null);
   const activeSessionIdRef = useRef<string | null>(state.activeSessionId);
@@ -77,6 +80,7 @@ export default function App() {
     disconnectSession,
     submitPrompt,
     interrupt,
+    compactSession,
     deleteSession,
     deleteProject,
     listComposerOptions,
@@ -302,10 +306,58 @@ export default function App() {
         return;
       }
 
+      const slashCommand = parseRuntimeSlashCommand(trimmed);
       const sessionId = activeSessionIdRef.current;
       if (!sessionId) {
+        if (slashCommand) {
+          setConfirmDialog({
+            title: '无法执行命令',
+            message: '当前没有激活会话，无法执行 `/compact`。',
+            confirmLabel: '知道了',
+            cancelLabel: '关闭',
+            onConfirm: () => {
+              setConfirmDialog(null);
+            },
+          });
+        }
         return;
       }
+
+      const appendLocalError = (message: string) => {
+        dispatch({
+          type: 'ADD_MESSAGE',
+          sessionId,
+          message: {
+            id: uuid(),
+            kind: 'assistant',
+            text: `错误：${message}`,
+            reasoningText: '',
+            streaming: false,
+            timestamp: Date.now(),
+          },
+        });
+      };
+
+      if (slashCommand) {
+        if (phaseRef.current !== 'idle') {
+          // TODO: 后续可在这里接入命令排队，而不是直接拒绝。
+          appendLocalError('当前会话正在运行，暂不允许手动 compact。');
+          return;
+        }
+
+        if (slashCommand.kind === 'compactInvalidArgs') {
+          appendLocalError('`/compact` 当前不接受参数，请直接输入 `/compact`。');
+          return;
+        }
+
+        try {
+          await compactSession(sessionId);
+        } catch (error) {
+          appendLocalError(error instanceof Error ? error.message : String(error));
+        }
+        return;
+      }
+
       if (phaseRef.current !== 'idle') {
         return;
       }
@@ -356,7 +408,7 @@ export default function App() {
         dispatch({ type: 'SET_PHASE', phase: 'idle' });
       }
     },
-    [refreshSessions, releasePendingSubmitSession, submitPrompt]
+    [compactSession, refreshSessions, releasePendingSubmitSession, submitPrompt]
   );
 
   const handleInterrupt = useCallback(async () => {
@@ -444,6 +496,8 @@ export default function App() {
           title={confirmDialog.title}
           message={confirmDialog.message}
           danger={confirmDialog.danger}
+          confirmLabel={confirmDialog.confirmLabel}
+          cancelLabel={confirmDialog.cancelLabel}
           onConfirm={confirmDialog.onConfirm}
           onCancel={() => setConfirmDialog(null)}
         />

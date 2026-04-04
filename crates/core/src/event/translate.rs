@@ -153,7 +153,20 @@ impl EventTranslator {
                 self.phase_tracker
                     .force_to(Phase::Thinking, turn_id.clone());
             },
-            StorageEvent::PromptMetrics { .. } | StorageEvent::CompactApplied { .. } => {},
+            StorageEvent::PromptMetrics { .. } => {},
+            StorageEvent::CompactApplied {
+                trigger,
+                summary,
+                preserved_recent_turns,
+                ..
+            } => {
+                push(AgentEvent::CompactApplied {
+                    turn_id: turn_id.clone(),
+                    trigger: *trigger,
+                    summary: summary.clone(),
+                    preserved_recent_turns: *preserved_recent_turns,
+                });
+            },
             StorageEvent::AssistantDelta { token, .. } => {
                 if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::ModelDelta {
@@ -460,5 +473,38 @@ mod tests {
         ));
         assert_eq!(records[0].event_id, "1.0");
         assert_eq!(records[1].event_id, "1.1");
+    }
+
+    #[test]
+    fn compact_applied_replays_as_dedicated_agent_event() {
+        let records = replay_records(
+            &[StoredEvent {
+                storage_seq: 7,
+                event: StorageEvent::CompactApplied {
+                    turn_id: None,
+                    trigger: crate::CompactTrigger::Manual,
+                    summary: "保留最近上下文".to_string(),
+                    preserved_recent_turns: 2,
+                    pre_tokens: 200,
+                    post_tokens_estimate: 80,
+                    messages_removed: 5,
+                    tokens_freed: 120,
+                    timestamp: chrono::Utc::now(),
+                },
+            }],
+            None,
+        );
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].event_id, "7.0");
+        assert!(matches!(
+            &records[0].event,
+            AgentEvent::CompactApplied {
+                turn_id: None,
+                trigger: crate::CompactTrigger::Manual,
+                summary,
+                preserved_recent_turns,
+            } if summary == "保留最近上下文" && *preserved_recent_turns == 2
+        ));
     }
 }

@@ -65,25 +65,27 @@ impl Tool for ListDirTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "listDir".to_string(),
-            description: "List directory entries with metadata (name, type, size, modified time, \
-                          extension)."
-                .to_string(),
+            description: concat!(
+                "List immediate directory entries with metadata ",
+                "(name, type, size, modified time, extension)."
+            )
+            .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Directory path to list (default: working directory)"
+                        "description": "Absolute or relative directory path. Defaults to working directory if omitted."
                     },
                     "maxEntries": {
                         "type": "integer",
                         "minimum": 1,
-                        "description": "Maximum entries to return (default 200)"
+                        "description": "Maximum entries to return (default 200)."
                     },
                     "sortBy": {
                         "type": "string",
                         "enum": ["name", "modified"],
-                        "description": "Sort order: 'name' (default) or 'modified' (newest first)"
+                        "description": "Sort order: 'name' (alphabetical, default) or 'modified' (newest first)."
                     }
                 },
                 "additionalProperties": false
@@ -107,12 +109,10 @@ impl Tool for ListDirTool {
                      shell directory listings because it returns structured metadata.",
                 )
                 .caveat(
-                    "It only returns a shallow directory listing; use `findFiles` for recursive \
-                     discovery.",
+                    "Only returns one level of entries. Large directories are truncated to \
+                     maxEntries.",
                 )
-                .example(
-                    "Check which packages or source folders exist under the current workspace.",
-                )
+                .example("List root: `listDir({})`. List src/: `listDir({ path: 'src' })`.")
                 .prompt_tag("filesystem"),
             )
     }

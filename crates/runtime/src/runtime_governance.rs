@@ -24,7 +24,8 @@
 use std::{path::PathBuf, sync::Arc};
 
 use astrcode_core::{
-    CapabilityDescriptor, PluginHealth, PluginManifest, RuntimeCoordinator, plugin::PluginEntry,
+    CapabilityDescriptor, PluginHealth, PluginManifest, RuntimeCoordinator, format_local_rfc3339,
+    plugin::PluginEntry,
 };
 use chrono::{DateTime, Utc};
 use tokio::sync::{Mutex, RwLock};
@@ -194,7 +195,8 @@ impl RuntimeGovernance {
     async fn refresh_plugin_health(&self) {
         let active_plugins = self.active_plugins.read().await.clone();
         for active_plugin in active_plugins {
-            let checked_at = Utc::now().to_rfc3339();
+            // 检查时间会直接展示在运行时状态里，统一输出为本地时区更符合用户排障直觉。
+            let checked_at = format_local_rfc3339(Utc::now());
             match active_plugin.component.health_report().await {
                 Ok(report) => match report.health {
                     PluginHealth::Healthy => {

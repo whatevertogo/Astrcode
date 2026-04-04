@@ -4,13 +4,13 @@
 //! - `GET /api/config` — 获取配置视图（含 profile 列表和当前选择）
 //! - `POST /api/config/active-selection` — 保存活跃的 profile/model 选择
 
+use astrcode_core::format_local_rfc3339;
 use astrcode_protocol::http::{ConfigReloadResponse, ConfigView, SaveActiveSelectionRequest};
 use axum::{
     Json,
     extract::State,
     http::{HeaderMap, StatusCode},
 };
-use chrono::Utc;
 
 use crate::{ApiError, AppState, auth::require_auth, mapper::build_config_view};
 
@@ -79,7 +79,7 @@ pub(crate) async fn reload_config(
     Ok((
         StatusCode::ACCEPTED,
         Json(ConfigReloadResponse {
-            reloaded_at: Utc::now().to_rfc3339(),
+            reloaded_at: format_local_rfc3339(chrono::Utc::now()),
             config: config_view,
         }),
     ))

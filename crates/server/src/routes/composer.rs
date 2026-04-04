@@ -63,6 +63,7 @@ fn parse_composer_option_kinds(raw: Option<&str>) -> Result<Vec<ComposerOptionKi
         .filter(|token| !token.is_empty())
     {
         let kind = match token {
+            "command" => ComposerOptionKind::Command,
             "skill" => ComposerOptionKind::Skill,
             "capability" => ComposerOptionKind::Capability,
             _ => {

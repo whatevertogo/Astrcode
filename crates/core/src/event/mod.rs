@@ -20,7 +20,7 @@ mod phase;
 mod translate;
 mod types;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -37,7 +37,9 @@ pub use self::{
 /// 因为冒号在 Windows 文件名中非法，而 session ID 直接用于 `.jsonl` 文件名。
 /// 末尾 8 位 hex 取自 UUID v4，保证同一秒内生成的 ID 也不重复。
 pub fn generate_session_id() -> String {
-    let dt = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S");
+    // session_id 直接出现在用户可见的目录名里，用本地时间更符合排障直觉；
+    // 内部排序仍然依赖 storage_seq，而不是文件名中的时间前缀。
+    let dt = Local::now().format("%Y-%m-%dT%H-%M-%S");
     let uuid = Uuid::new_v4().simple().to_string();
     let short = &uuid[..8];
     format!("{dt}-{short}")
@@ -58,8 +60,10 @@ pub struct SessionMeta {
     /// 会话标题（从最新消息推导）
     pub title: String,
     /// 会话创建时间
+    #[serde(with = "crate::local_rfc3339")]
     pub created_at: DateTime<Utc>,
     /// 会话最后更新时间
+    #[serde(with = "crate::local_rfc3339")]
     pub updated_at: DateTime<Utc>,
     /// 分叉来源 session。根会话为 None。
     pub parent_session_id: Option<String>,

@@ -4,10 +4,10 @@ import CommandSelector from './CommandSelector';
 import ModelSelector from './ModelSelector';
 
 /**
- * 输入框组件，支持 '/' 触发技能选择器
+ * 输入框组件，支持 '/' 触发 slash 候选选择器
  *
- * 当用户在输入框中输入 '/' 时（行首或空格后），会弹出技能选择面板。
- * 面板展示当前会话可用的 skill/capability 列表，支持：
+ * 当用户在输入框中输入 '/' 时（行首或空格后），会弹出候选面板。
+ * 面板展示当前会话可用的 command / skill 列表，支持：
  * - 键盘 ↑↓ 导航、Enter 确认选中、Escape 关闭
  * - 模糊搜索匹配（title / description / keywords）
  * - 选中后将 insertText 替换 '/' 前缀并写回输入框
@@ -48,7 +48,7 @@ export default function InputBar({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isBusy = phase !== 'idle';
 
-  // Skill Selector 状态
+  // Slash 候选面板状态
   const [slashTriggerVisible, setSlashTriggerVisible] = useState(false);
   const [slashQuery, setSlashQuery] = useState('');
   const [slashOptions, setSlashOptions] = useState<ComposerOption[]>([]);
@@ -150,9 +150,9 @@ export default function InputBar({
   }, [slashQuery, slashTriggerVisible, sessionId, listComposerOptions]);
 
   /**
-   * 选中某个技能后，将 insertText 替换掉 '/' 前缀并写回输入框
+   * 选中某个 slash 候选后，将 insertText 替换掉 '/' 前缀并写回输入框
    */
-  const handleSkillSelect = useCallback(
+  const handleComposerOptionSelect = useCallback(
     (option: ComposerOption) => {
       const before = value.slice(0, slashTriggerStartRef.current);
       const after = value.slice(slashTriggerEndRef.current);
@@ -337,7 +337,7 @@ export default function InputBar({
             options={slashOptions}
             loading={slashLoading}
             query={slashQuery}
-            onSelect={handleSkillSelect}
+            onSelect={handleComposerOptionSelect}
             onClose={closeSlashTrigger}
           />
         )}

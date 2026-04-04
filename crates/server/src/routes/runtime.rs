@@ -4,6 +4,7 @@
 //! - `GET /api/runtime/plugins` — 获取运行时插件状态快照
 //! - `POST /api/runtime/plugins/reload` — 触发热重载所有运行时插件
 
+use astrcode_core::format_local_rfc3339;
 use astrcode_protocol::http::{RuntimeReloadResponseDto, RuntimeStatusDto};
 use axum::{
     Json,
@@ -44,7 +45,7 @@ pub(crate) async fn reload_runtime_plugins(
     Ok((
         StatusCode::ACCEPTED,
         Json(RuntimeReloadResponseDto {
-            reloaded_at: reloaded.reloaded_at.to_rfc3339(),
+            reloaded_at: format_local_rfc3339(reloaded.reloaded_at),
             status: to_runtime_status_dto(reloaded.snapshot),
         }),
     ))

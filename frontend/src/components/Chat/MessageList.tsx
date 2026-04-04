@@ -3,6 +3,7 @@ import type { Message } from '../../types';
 import UserMessage from './UserMessage';
 import AssistantMessage from './AssistantMessage';
 import ToolCallBlock from './ToolCallBlock';
+import CompactMessage from './CompactMessage';
 import styles from './MessageList.module.css';
 
 interface MessageListProps {
@@ -54,6 +55,8 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
                 2
               )}
             </pre>
+          ) : message.kind === 'compact' ? (
+            <pre className={styles.renderErrorBody}>{message.summary}</pre>
           ) : (
             <pre className={styles.renderErrorBody}>{message.text}</pre>
           )}
@@ -82,6 +85,15 @@ export default function MessageList({ messages }: MessageListProps) {
     shouldStickToBottomRef.current = distanceFromBottom <= 48;
   }, []);
 
+  const stickToBottom = useCallback(() => {
+    const container = listRef.current;
+    if (!container) {
+      return;
+    }
+    // 使用 scrollTop 直接贴底，避免 WebView2 对 scrollIntoView + smooth 的不稳定行为。
+    container.scrollTop = container.scrollHeight;
+  }, []);
+
   useEffect(() => {
     updateStickiness();
   }, [updateStickiness]);
@@ -90,11 +102,19 @@ export default function MessageList({ messages }: MessageListProps) {
     const shouldAutoScroll =
       previousMessageCountRef.current === 0 || shouldStickToBottomRef.current;
     previousMessageCountRef.current = messages.length;
-    if (shouldAutoScroll) {
-      bottomRef.current?.scrollIntoView();
-      updateStickiness();
+    if (!shouldAutoScroll) {
+      return;
     }
-  }, [messages, updateStickiness]);
+    const rafId = window.requestAnimationFrame(() => {
+      if (bottomRef.current && listRef.current) {
+        stickToBottom();
+      } else {
+        bottomRef.current?.scrollIntoView();
+      }
+      updateStickiness();
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [messages, stickToBottom, updateStickiness]);
 
   return (
     <div ref={listRef} className={styles.list} onScroll={updateStickiness}>
@@ -130,6 +150,15 @@ export default function MessageList({ messages }: MessageListProps) {
             <div key={msg.id} className={rowClass}>
               <MessageBoundary message={msg}>
                 <ToolCallBlock message={msg} />
+              </MessageBoundary>
+            </div>
+          );
+        }
+        if (msg.kind === 'compact') {
+          return (
+            <div key={msg.id} className={styles.messageRow}>
+              <MessageBoundary message={msg}>
+                <CompactMessage message={msg} />
               </MessageBoundary>
             </div>
           );

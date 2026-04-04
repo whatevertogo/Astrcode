@@ -79,6 +79,39 @@ async fn composer_options_expose_session_scoped_skill_entries() {
 }
 
 #[tokio::test]
+async fn composer_options_expose_runtime_command_entries() {
+    let (state, _guard) = test_state(None);
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let session = state
+        .service
+        .create_session(temp_dir.path())
+        .await
+        .expect("session should be created");
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/sessions/{}/composer/options?kinds=command&q=comp",
+                    session.session_id
+                ))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: ComposerOptionsResponseDto = json_body(response).await;
+    assert_eq!(payload.items.len(), 1);
+    assert_eq!(payload.items[0].kind, ComposerOptionKindDto::Command);
+    assert_eq!(payload.items[0].id, "compact");
+    assert_eq!(payload.items[0].insert_text, "/compact");
+}
+
+#[tokio::test]
 async fn composer_options_reject_unknown_kind_filters() {
     let (state, _guard) = test_state(None);
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");

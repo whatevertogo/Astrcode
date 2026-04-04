@@ -10,7 +10,7 @@
 
 pub use event::{DeleteProjectResult, SessionMeta};
 
-use crate::{AgentEvent, event};
+use crate::{AgentEvent, CompactTrigger, event};
 
 /// 会话消息
 ///
@@ -42,6 +42,16 @@ pub enum SessionMessage {
         metadata: Option<serde_json::Value>,
         ok: Option<bool>,
         duration_ms: Option<u64>,
+    },
+    /// 上下文压缩消息。
+    ///
+    /// 保留为独立行而不是伪装成 assistant，避免历史快照丢失 compact 语义。
+    Compact {
+        turn_id: Option<String>,
+        trigger: CompactTrigger,
+        summary: String,
+        preserved_recent_turns: u32,
+        timestamp: String,
     },
 }
 

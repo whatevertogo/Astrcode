@@ -15,7 +15,9 @@ export async function listComposerOptions(
   signal?: AbortSignal
 ): Promise<ComposerOption[]> {
   const params = new URLSearchParams();
-  params.set('kinds', 'skill');
+  // slash 面板只取会直接以 `/...` 形式插入的 surface；
+  // capability 不属于 slash command，因此这里显式限定为 skill + command。
+  params.set('kinds', 'skill,command');
   if (query.trim()) {
     params.set('q', query.trim());
   }

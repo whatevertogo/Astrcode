@@ -158,6 +158,7 @@ function AssistantMessage({ message, hideAvatar }: AssistantMessageProps) {
     () => extractThinkingBlocks(message.text, message.reasoningText),
     [message.text, message.reasoningText]
   );
+  const streaming = message.streaming;
 
   return (
     <div className={styles.wrapper}>
@@ -237,20 +238,29 @@ function AssistantMessage({ message, hideAvatar }: AssistantMessageProps) {
                 </span>
               </summary>
               <div className={styles.thinkingContent}>
-                <MarkdownGuard fallback={block}>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                    {block}
-                  </ReactMarkdown>
-                </MarkdownGuard>
+                {streaming ? (
+                  <pre className={styles.streamingText}>{block}</pre>
+                ) : (
+                  <MarkdownGuard fallback={block}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                      {block}
+                    </ReactMarkdown>
+                  </MarkdownGuard>
+                )}
               </div>
             </details>
           ))}
           {visibleText ? (
-            <MarkdownGuard fallback={visibleText}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                {visibleText}
-              </ReactMarkdown>
-            </MarkdownGuard>
+            streaming ? (
+              // 流式阶段先用纯文本渲染，避免每个 delta 触发整段 Markdown 重新解析导致卡顿和“块状刷新”。
+              <div className={styles.streamingText}>{visibleText}</div>
+            ) : (
+              <MarkdownGuard fallback={visibleText}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                  {visibleText}
+                </ReactMarkdown>
+              </MarkdownGuard>
+            )
           ) : null}
           {message.streaming && <span className={styles.cursor}>▋</span>}
         </div>

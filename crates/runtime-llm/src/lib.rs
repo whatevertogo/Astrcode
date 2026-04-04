@@ -324,52 +324,135 @@ impl Utf8StreamDecoder {
 
     /// 在流结束时刷新尾部缓冲。
     ///
-    /// 如果尾部仍然是不完整 UTF-8，说明上游响应确实损坏，此时保留原始错误。
+    /// 流结束时也做容错恢复：如果尾部是损坏/不完整 UTF-8，替换为 U+FFFD 并继续。
+    /// 这样可以避免单个网关脏字节导致整轮会话失败。
     pub fn finish(&mut self, context: &str) -> Result<Option<String>> {
         if self.pending.is_empty() {
             return Ok(None);
         }
 
-        let decoded = std::str::from_utf8(&self.pending)
-            .map_err(|source| AstrError::Utf8 {
-                context: context.to_string(),
-                source,
-            })?
-            .to_string();
-        self.pending.clear();
+        let mut decoded = String::new();
+
+        loop {
+            match std::str::from_utf8(&self.pending) {
+                Ok(text) => {
+                    decoded.push_str(text);
+                    self.pending.clear();
+                    break;
+                },
+                Err(error) => {
+                    let valid_up_to = error.valid_up_to();
+                    if valid_up_to > 0 {
+                        let valid_prefix = std::str::from_utf8(&self.pending[..valid_up_to])
+                            .expect("valid_up_to should always point to a valid utf-8 prefix");
+                        decoded.push_str(valid_prefix);
+                    }
+
+                    if let Some(invalid_len) = error.error_len() {
+                        warn!(
+                            "stream decoder recovered invalid utf-8 sequence at stream end in {}: \
+                             valid_up_to={}, invalid_len={}, bytes={}",
+                            context,
+                            valid_up_to,
+                            invalid_len,
+                            debug_utf8_bytes(&self.pending, valid_up_to, Some(invalid_len))
+                        );
+                        decoded.push(char::REPLACEMENT_CHARACTER);
+                        self.pending.drain(..valid_up_to + invalid_len);
+                        if self.pending.is_empty() {
+                            break;
+                        }
+                    } else {
+                        // `error_len == None` 表示尾部是"可能缺失字节"的不完整序列。
+                        // 流已经结束，不会再有后续字节，因此直接用替换符收尾并清空缓存。
+                        warn!(
+                            "stream decoder recovered incomplete utf-8 tail at stream end in {}: \
+                             valid_up_to={}, bytes={}",
+                            context,
+                            valid_up_to,
+                            debug_utf8_bytes(&self.pending, valid_up_to, None)
+                        );
+                        decoded.push(char::REPLACEMENT_CHARACTER);
+                        self.pending.clear();
+                        break;
+                    }
+                },
+            }
+        }
+
         Ok((!decoded.is_empty()).then_some(decoded))
     }
 
     fn decode_available(&mut self, context: &str) -> Result<Option<String>> {
-        match std::str::from_utf8(&self.pending) {
-            Ok(text) => {
-                let decoded = text.to_string();
-                self.pending.clear();
-                Ok((!decoded.is_empty()).then_some(decoded))
-            },
-            Err(error) => {
-                if error.error_len().is_some() {
-                    return Err(AstrError::Utf8 {
-                        context: context.to_string(),
-                        source: error,
-                    });
-                }
+        let mut decoded = String::new();
 
-                let valid_up_to = error.valid_up_to();
-                if valid_up_to == 0 {
-                    return Ok(None);
-                }
+        loop {
+            match std::str::from_utf8(&self.pending) {
+                Ok(text) => {
+                    decoded.push_str(text);
+                    self.pending.clear();
+                    return Ok((!decoded.is_empty()).then_some(decoded));
+                },
+                Err(error) => {
+                    let valid_up_to = error.valid_up_to();
+                    if valid_up_to > 0 {
+                        let valid_prefix = std::str::from_utf8(&self.pending[..valid_up_to])
+                            .expect("valid_up_to should always point to a valid utf-8 prefix");
+                        decoded.push_str(valid_prefix);
+                    }
 
-                // 只消费已经确认完整的前缀，把尾部不完整字符留给下一个 chunk。
-                let tail = self.pending.split_off(valid_up_to);
-                let decoded = std::str::from_utf8(&self.pending)
-                    .expect("valid_up_to should always point to a valid utf-8 prefix")
-                    .to_string();
-                self.pending = tail;
-                Ok((!decoded.is_empty()).then_some(decoded))
-            },
+                    let Some(invalid_len) = error.error_len() else {
+                        if decoded.is_empty() {
+                            return Ok(None);
+                        }
+
+                        // 只消费已经确认完整的前缀，把尾部不完整字符留给下一个 chunk。
+                        let tail = self.pending.split_off(valid_up_to);
+                        self.pending = tail;
+                        return Ok(Some(decoded));
+                    };
+
+                    warn!(
+                        "stream decoder recovered invalid utf-8 sequence in {}: valid_up_to={}, \
+                         invalid_len={}, bytes={}",
+                        context,
+                        valid_up_to,
+                        invalid_len,
+                        debug_utf8_bytes(&self.pending, valid_up_to, Some(invalid_len))
+                    );
+
+                    // 某些第三方网关会在 SSE 文本中混入坏字节。这里把坏字节替换为 U+FFFD，
+                    // 继续保住整轮输出，而不是因为单个脏字节直接终止会话。
+                    decoded.push(char::REPLACEMENT_CHARACTER);
+                    self.pending.drain(..valid_up_to + invalid_len);
+                    if self.pending.is_empty() {
+                        return Ok(Some(decoded));
+                    }
+                },
+            }
         }
     }
+}
+
+fn debug_utf8_bytes(bytes: &[u8], valid_up_to: usize, invalid_len: Option<usize>) -> String {
+    let start = valid_up_to.saturating_sub(8);
+    let end = invalid_len
+        .map(|len| (valid_up_to + len + 8).min(bytes.len()))
+        .unwrap_or(bytes.len().min(valid_up_to + 8));
+
+    bytes[start..end]
+        .iter()
+        .enumerate()
+        .map(|(index, byte)| {
+            let absolute_index = start + index;
+            if absolute_index == valid_up_to {
+                format!("[{byte:02X}]")
+            } else {
+                format!("{byte:02X}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 // ---------------------------------------------------------------------------
@@ -790,10 +873,41 @@ mod tests {
     #[test]
     fn utf8_stream_decoder_rejects_invalid_utf8_sequences() {
         let mut decoder = Utf8StreamDecoder::default();
-        let error = decoder
+        let decoded = decoder
             .push(&[0xFF], "test utf-8 stream")
-            .expect_err("invalid utf-8 should fail");
+            .expect("invalid utf-8 should be recovered");
 
-        assert!(matches!(error, AstrError::Utf8 { .. }));
+        assert_eq!(decoded.as_deref(), Some("\u{FFFD}"));
+    }
+
+    #[test]
+    fn utf8_stream_decoder_keeps_valid_suffix_after_invalid_bytes() {
+        let mut decoder = Utf8StreamDecoder::default();
+        let decoded = decoder
+            .push(&[b'a', 0xFF, b'b'], "test utf-8 stream")
+            .expect("invalid utf-8 should be recovered");
+
+        assert_eq!(decoded.as_deref(), Some("a\u{FFFD}b"));
+    }
+
+    #[test]
+    fn utf8_stream_decoder_finish_recovers_incomplete_trailing_sequence() {
+        let mut decoder = Utf8StreamDecoder::default();
+        let first = decoder
+            .push(&[b'a', 0xE4, 0xBD], "test utf-8 stream")
+            .expect("partial utf-8 should be buffered");
+        assert_eq!(first.as_deref(), Some("a"));
+
+        let tail = decoder
+            .finish("test utf-8 stream")
+            .expect("finish should recover incomplete trailing utf-8");
+
+        assert_eq!(tail.as_deref(), Some("\u{FFFD}"));
+    }
+
+    #[test]
+    fn debug_utf8_bytes_marks_failure_boundary() {
+        let snippet = debug_utf8_bytes(&[0x61, 0x62, 0xFF, 0x63], 2, Some(1));
+        assert_eq!(snippet, "61 62 [FF] 63");
     }
 }

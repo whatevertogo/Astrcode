@@ -45,8 +45,11 @@
 }
 
 .streamingText {
+  margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  font: inherit;
+  color: inherit;
 }
 
 .fallbackText {

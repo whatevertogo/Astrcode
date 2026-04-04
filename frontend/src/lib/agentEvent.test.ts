@@ -138,4 +138,27 @@ describe('normalizeAgentEvent protocol gate', () => {
       },
     });
   });
+
+  it('accepts compactApplied payloads', () => {
+    const normalized = normalizeAgentEvent({
+      protocolVersion: 1,
+      event: 'compactApplied',
+      data: {
+        turn_id: null,
+        trigger: 'manual',
+        summary: '保留最近两轮上下文',
+        preserved_recent_turns: 2,
+      },
+    });
+
+    expect(normalized).toEqual({
+      event: 'compactApplied',
+      data: {
+        turnId: null,
+        trigger: 'manual',
+        summary: '保留最近两轮上下文',
+        preservedRecentTurns: 2,
+      },
+    });
+  });
 });

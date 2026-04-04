@@ -2,7 +2,7 @@
 //!
 //! 将 SSE 接收的原始事件规范化为前端可用的格式。
 
-import type { AgentEventPayload, Phase, ToolOutputStream } from '../types';
+import type { AgentEventPayload, CompactTrigger, Phase, ToolOutputStream } from '../types';
 import {
   asRecord,
   pickString,
@@ -46,6 +46,13 @@ function toToolOutputStream(value: unknown): ToolOutputStream | null {
     return value as ToolOutputStream;
   }
 
+  return null;
+}
+
+function toCompactTrigger(value: unknown): CompactTrigger | null {
+  if (value === 'auto' || value === 'manual') {
+    return value;
+  }
   return null;
 }
 
@@ -219,6 +226,24 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
           metadata: result.metadata,
           durationMs,
         },
+      },
+    };
+  }
+
+  if (event === 'compactApplied') {
+    const trigger = toCompactTrigger(data.trigger);
+    const summary = pickStringAllowEmpty(data, 'summary');
+    const preservedRecentTurns = pickNumber(data, 'preservedRecentTurns', 'preserved_recent_turns');
+    if (!trigger || summary === undefined || preservedRecentTurns === null) {
+      return invalidEvent('compactApplied requires trigger, summary and preservedRecentTurns', raw);
+    }
+    return {
+      event: 'compactApplied',
+      data: {
+        turnId: pickOptionalString(data, 'turnId', 'turn_id') ?? null,
+        trigger,
+        summary,
+        preservedRecentTurns,
       },
     };
   }

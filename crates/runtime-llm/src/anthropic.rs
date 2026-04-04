@@ -562,7 +562,7 @@ fn parse_sse_block(block: &str) -> Result<Option<(String, Value)>> {
         )));
     }
 
-    let payload = serde_json::from_str::<Value>(&data)
+    let payload = serde_json::from_str::<Value>(data)
         .map_err(|error| AstrError::parse("failed to parse anthropic sse payload", error))?;
     let event_type = event_type
         .or_else(|| {

@@ -166,6 +166,7 @@ pub type ServiceResult<T> = std::result::Result<T, ServiceError>;
 /// 这样 service 层不需要直接依赖 HTTP 传输细节。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ComposerOptionKind {
+    Command,
     Skill,
     Capability,
 }

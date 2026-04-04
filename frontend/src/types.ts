@@ -4,6 +4,7 @@
 
 export type Phase = 'idle' | 'thinking' | 'callingTool' | 'streaming' | 'interrupted' | 'done';
 export type ToolOutputStream = 'stdout' | 'stderr';
+export type CompactTrigger = 'auto' | 'manual';
 
 export interface ToolCallResultEnvelope {
   toolCallId: string;
@@ -47,6 +48,15 @@ export type AgentEventPayload =
   | {
       event: 'toolCallResult';
       data: { turnId: string; result: ToolCallResultEnvelope };
+    }
+  | {
+      event: 'compactApplied';
+      data: {
+        turnId?: string | null;
+        trigger: CompactTrigger;
+        summary: string;
+        preservedRecentTurns: number;
+      };
     }
   | { event: 'turnDone'; data: { turnId: string } }
   | {
@@ -102,7 +112,17 @@ export interface ToolCallMessage {
   timestamp: number;
 }
 
-export type Message = UserMessage | AssistantMessage | ToolCallMessage;
+export interface CompactMessage {
+  id: string;
+  kind: 'compact';
+  turnId?: string | null;
+  trigger: CompactTrigger;
+  summary: string;
+  preservedRecentTurns: number;
+  timestamp: number;
+}
+
+export type Message = UserMessage | AssistantMessage | ToolCallMessage | CompactMessage;
 
 export interface Session {
   id: string;
@@ -164,7 +184,7 @@ export interface ModelOption {
   providerKind: string;
 }
 
-export type ComposerOptionKind = 'skill' | 'capability';
+export type ComposerOptionKind = 'command' | 'skill' | 'capability';
 
 export interface ComposerOption {
   kind: ComposerOptionKind;

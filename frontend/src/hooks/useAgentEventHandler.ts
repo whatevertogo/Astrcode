@@ -167,6 +167,29 @@ export function useAgentEventHandler({
           break;
         }
 
+        case 'compactApplied': {
+          const sessionId = event.data.turnId
+            ? resolveSessionId(event.data.turnId)
+            : activeSessionIdRef.current;
+          if (!sessionId) {
+            break;
+          }
+          dispatch({
+            type: 'ADD_MESSAGE',
+            sessionId,
+            message: {
+              id: uuid(),
+              kind: 'compact',
+              turnId: event.data.turnId ?? null,
+              trigger: event.data.trigger,
+              summary: event.data.summary,
+              preservedRecentTurns: event.data.preservedRecentTurns,
+              timestamp: Date.now(),
+            },
+          });
+          break;
+        }
+
         case 'turnDone': {
           const sessionId = resolveSessionId(event.data.turnId);
           if (sessionId) {

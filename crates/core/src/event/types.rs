@@ -41,6 +41,7 @@ pub enum StorageEvent {
     /// 包含 `parent_session_id` 和 `parent_storage_seq` 用于支持 session 分叉。
     SessionStart {
         session_id: String,
+        #[serde(with = "crate::local_rfc3339")]
         timestamp: DateTime<Utc>,
         working_dir: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -53,6 +54,7 @@ pub enum StorageEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
         content: String,
+        #[serde(with = "crate::local_rfc3339")]
         timestamp: DateTime<Utc>,
         #[serde(default, skip_serializing_if = "is_default_user_message_origin")]
         origin: UserMessageOrigin,
@@ -78,7 +80,11 @@ pub enum StorageEvent {
         reasoning_content: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning_signature: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "crate::local_rfc3339_option"
+        )]
         timestamp: Option<DateTime<Utc>>,
     },
     /// 工具调用开始。
@@ -136,12 +142,14 @@ pub enum StorageEvent {
         post_tokens_estimate: u32,
         messages_removed: u32,
         tokens_freed: u32,
+        #[serde(with = "crate::local_rfc3339")]
         timestamp: DateTime<Utc>,
     },
     /// Turn 完成（一轮 Agent 循环结束）。
     TurnDone {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
+        #[serde(with = "crate::local_rfc3339")]
         timestamp: DateTime<Utc>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
@@ -151,7 +159,11 @@ pub enum StorageEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
         message: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "crate::local_rfc3339_option"
+        )]
         timestamp: Option<DateTime<Utc>>,
     },
 }
@@ -233,6 +245,7 @@ mod tests {
     use serde_json::Value;
 
     use super::{CompactTrigger, StorageEvent};
+    use crate::format_local_rfc3339;
 
     #[test]
     fn tool_result_deserializes_legacy_lines_without_error_or_metadata() {
@@ -376,8 +389,29 @@ mod tests {
                 "post_tokens_estimate": 600,
                 "messages_removed": 5,
                 "tokens_freed": 1400,
-                "timestamp": "2026-01-02T03:04:05Z",
+                "timestamp": format_local_rfc3339(timestamp),
             })
+        );
+    }
+
+    #[test]
+    fn session_start_serializes_timestamp_in_local_timezone_format() {
+        let timestamp = Utc
+            .with_ymd_and_hms(2026, 1, 2, 3, 4, 5)
+            .single()
+            .expect("timestamp should build");
+        let encoded = serde_json::to_value(StorageEvent::SessionStart {
+            session_id: "session-1".to_string(),
+            timestamp,
+            working_dir: "/tmp/project".to_string(),
+            parent_session_id: None,
+            parent_storage_seq: None,
+        })
+        .expect("event should serialize");
+
+        assert_eq!(
+            encoded["timestamp"],
+            Value::String(format_local_rfc3339(timestamp))
         );
     }
 }

@@ -1,6 +1,7 @@
 //! 输入候选（composer options）查询。
 //!
-//! 这里显式保留 `skill` 与 `capability` 两种候选来源：
+//! 这里显式保留 `command`、`skill` 与 `capability` 三种候选来源：
+//! - `command` 是运行时显式控制动作（如 `/compact`），不进入 LLM prompt 解释链路
 //! - `Skill` capability 只是“按需加载 skill 正文”的工具边界
 //! - 具体有哪些 skill，则属于 prompt 资源发现层的数据
 //!
@@ -39,6 +40,10 @@ impl RuntimeService {
         let include_all_kinds = request.kinds.is_empty();
         let includes = |kind| include_all_kinds || request.kinds.contains(&kind);
 
+        if includes(ComposerOptionKind::Command) {
+            items.extend(command_options());
+        }
+
         if includes(ComposerOptionKind::Skill) {
             let mut skills = current_loop
                 .skill_catalog()
@@ -74,9 +79,29 @@ impl RuntimeService {
 
 fn composer_option_kind_rank(kind: ComposerOptionKind) -> u8 {
     match kind {
-        ComposerOptionKind::Skill => 0,
-        ComposerOptionKind::Capability => 1,
+        // slash 面板优先展示真正会立刻执行的命令，避免被大量 skill 淹没。
+        ComposerOptionKind::Command => 0,
+        ComposerOptionKind::Skill => 1,
+        ComposerOptionKind::Capability => 2,
     }
+}
+
+fn command_options() -> Vec<ComposerOption> {
+    vec![ComposerOption {
+        kind: ComposerOptionKind::Command,
+        id: "compact".to_string(),
+        title: "compact".to_string(),
+        description: "主动压缩当前会话上下文，并把压缩摘要作为专用事件展示出来。".to_string(),
+        insert_text: "/compact".to_string(),
+        badges: vec!["command".to_string(), "runtime".to_string()],
+        keywords: vec![
+            "compact".to_string(),
+            "compress".to_string(),
+            "summary".to_string(),
+            "context".to_string(),
+            "manual".to_string(),
+        ],
+    }]
 }
 
 fn normalize_query(query: Option<&str>) -> Option<String> {
@@ -278,6 +303,11 @@ mod tests {
                 item.kind == ComposerOptionKind::Skill && item.id == "clarify-first"
             })
         );
+        assert!(
+            items
+                .iter()
+                .any(|item| item.kind == ComposerOptionKind::Command && item.id == "compact")
+        );
         assert!(items.iter().any(|item| {
             item.kind == ComposerOptionKind::Capability && item.id == "demo.search"
         }));
@@ -315,5 +345,40 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].kind, ComposerOptionKind::Skill);
         assert_eq!(items[0].insert_text, "/clarify-first");
+    }
+
+    #[tokio::test]
+    async fn list_composer_options_exposes_compact_command_for_command_filter() {
+        let _guard = TestEnvGuard::new();
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let tools = ToolRegistry::builder().register(Box::new(DemoTool)).build();
+
+        let service = RuntimeService::from_capabilities_with_prompt_inputs(
+            capabilities_from_tools(tools),
+            Vec::new(),
+            Arc::new(SkillCatalog::new(vec![demo_skill()])),
+        )
+        .expect("service should initialize");
+        let session = service
+            .create_session(temp_dir.path())
+            .await
+            .expect("session should be created");
+
+        let items = service
+            .list_composer_options(
+                &session.session_id,
+                ComposerOptionsRequest {
+                    query: Some("comp".to_string()),
+                    kinds: vec![ComposerOptionKind::Command],
+                    limit: 10,
+                },
+            )
+            .await
+            .expect("command options should load");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, ComposerOptionKind::Command);
+        assert_eq!(items[0].id, "compact");
+        assert_eq!(items[0].insert_text, "/compact");
     }
 }

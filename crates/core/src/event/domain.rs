@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{ToolExecutionResult, ToolOutputStream};
+use crate::{CompactTrigger, ToolExecutionResult, ToolOutputStream};
 
 /// 会话阶段
 ///
@@ -83,6 +83,16 @@ pub enum AgentEvent {
     ToolCallResult {
         turn_id: String,
         result: ToolExecutionResult,
+    },
+    /// 上下文压缩已应用。
+    ///
+    /// 这是运行时显式事件，而不是普通 assistant 回复，
+    /// 这样前端才能把 compact 结果渲染成专用块并给后续能力复用。
+    CompactApplied {
+        turn_id: Option<String>,
+        trigger: CompactTrigger,
+        summary: String,
+        preserved_recent_turns: u32,
     },
     /// Turn 完成
     TurnDone { turn_id: String },

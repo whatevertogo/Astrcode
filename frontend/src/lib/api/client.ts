@@ -17,11 +17,7 @@ function buildAuthHeaders(headers?: HeadersInit): Headers {
   return merged;
 }
 
-async function ensureOk(response: Response): Promise<void> {
-  if (response.ok) {
-    return;
-  }
-
+export async function getErrorMessage(response: Response): Promise<string> {
   let message = `${response.status} ${response.statusText}`;
   try {
     const payload = (await response.json()) as { error?: unknown };
@@ -32,6 +28,15 @@ async function ensureOk(response: Response): Promise<void> {
     // ignore
   }
 
+  return message;
+}
+
+export async function ensureOk(response: Response): Promise<void> {
+  if (response.ok) {
+    return;
+  }
+
+  const message = await getErrorMessage(response);
   throw new Error(message);
 }
 
@@ -52,7 +57,7 @@ export function normalizeFetchError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-async function requestResponse(path: string, init?: RequestInit): Promise<Response> {
+export async function requestRaw(path: string, init?: RequestInit): Promise<Response> {
   await ensureServerSession();
   try {
     return await fetch(`${getServerOrigin()}${path}`, {
@@ -65,13 +70,13 @@ async function requestResponse(path: string, init?: RequestInit): Promise<Respon
 }
 
 export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await requestResponse(path, init);
+  const response = await requestRaw(path, init);
   await ensureOk(response);
   return (await response.json()) as T;
 }
 
 export async function request(path: string, init?: RequestInit): Promise<Response> {
-  const response = await requestResponse(path, init);
+  const response = await requestRaw(path, init);
   await ensureOk(response);
   return response;
 }

@@ -43,13 +43,23 @@ impl Tool for WriteFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "writeFile".to_string(),
-            description: "Write UTF-8 text to a file, creating or overwriting it.".to_string(),
+            description: "Create or overwrite a file with the given UTF-8 text content."
+                .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string" },
-                    "content": { "type": "string" },
-                    "createDirs": { "type": "boolean" }
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute or relative path to the file. Creates the parent directory chain if createDirs is true."
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Full UTF-8 text content to write. Will entirely replace any existing content."
+                    },
+                    "createDirs": {
+                        "type": "boolean",
+                        "description": "Create missing intermediate directories (default false). Set true when path contains directories that may not exist yet."
+                    }
                 },
                 "required": ["path", "content"],
                 "additionalProperties": false
@@ -70,12 +80,12 @@ impl Tool for WriteFileTool {
                      keeps the change narrower and easier to validate.",
                 )
                 .caveat(
-                    "It overwrites existing file contents, so only use it when a full replacement \
-                     is intentional.",
+                    "This tool overwrites the entire file content. To append or modify a portion, \
+                     use `editFile` or `applyPatch` instead.",
                 )
                 .example(
-                    "Create a new config file or rewrite a small generated artifact with known \
-                     final content.",
+                    "Create a new Rust source file: `writeFile({ path: 'src/utils/format.rs', \
+                     content: 'pub fn ...', createDirs: true })`.",
                 )
                 .prompt_tag("filesystem")
                 .always_include(true),

@@ -21,15 +21,15 @@
 
 use astrcode_core::{
     AgentEvent, AstrError, CapabilityDescriptor, Phase, PluginHealth, PluginState,
-    SessionEventRecord, SessionMeta, plugin::PluginEntry,
+    SessionEventRecord, SessionMeta, format_local_rfc3339, plugin::PluginEntry,
 };
 use astrcode_protocol::http::{
-    AgentEventEnvelope, AgentEventPayload, ComposerOptionDto, ComposerOptionKindDto,
-    ComposerOptionsResponseDto, ConfigView, CurrentModelInfoDto, ModelOptionDto,
-    OperationMetricsDto, PROTOCOL_VERSION, PhaseDto, PluginHealthDto, PluginRuntimeStateDto,
-    ProfileView, ReplayMetricsDto, RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto,
-    RuntimeStatusDto, SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem,
-    SessionMessageDto, ToolCallResultDto, ToolOutputStreamDto,
+    AgentEventEnvelope, AgentEventPayload, CompactTriggerDto, ComposerOptionDto,
+    ComposerOptionKindDto, ComposerOptionsResponseDto, ConfigView, CurrentModelInfoDto,
+    ModelOptionDto, OperationMetricsDto, PROTOCOL_VERSION, PhaseDto, PluginHealthDto,
+    PluginRuntimeStateDto, ProfileView, ReplayMetricsDto, RuntimeCapabilityDto, RuntimeMetricsDto,
+    RuntimePluginDto, RuntimeStatusDto, SessionCatalogEventEnvelope, SessionCatalogEventPayload,
+    SessionListItem, SessionMessageDto, ToolCallResultDto, ToolOutputStreamDto,
 };
 use astrcode_runtime::{
     ComposerOption, ComposerOptionKind, Config, OperationMetricsSnapshot, ReplayMetricsSnapshot,
@@ -51,8 +51,8 @@ pub(crate) fn to_session_list_item(meta: SessionMeta) -> SessionListItem {
         working_dir: meta.working_dir,
         display_name: meta.display_name,
         title: meta.title,
-        created_at: meta.created_at.to_rfc3339(),
-        updated_at: meta.updated_at.to_rfc3339(),
+        created_at: format_local_rfc3339(meta.created_at),
+        updated_at: format_local_rfc3339(meta.updated_at),
         parent_session_id: meta.parent_session_id,
         parent_storage_seq: meta.parent_storage_seq,
         phase: to_phase_dto(meta.phase),
@@ -105,6 +105,19 @@ pub(crate) fn to_session_message_dto(message: SessionMessage) -> SessionMessageD
             metadata,
             ok,
             duration_ms,
+        },
+        SessionMessage::Compact {
+            turn_id,
+            trigger,
+            summary,
+            preserved_recent_turns,
+            timestamp,
+        } => SessionMessageDto::Compact {
+            turn_id,
+            trigger: to_compact_trigger_dto(trigger),
+            summary,
+            preserved_recent_turns,
+            timestamp,
         },
     }
 }
@@ -224,6 +237,13 @@ fn to_tool_output_stream_dto(stream: astrcode_core::ToolOutputStream) -> ToolOut
     match stream {
         astrcode_core::ToolOutputStream::Stdout => ToolOutputStreamDto::Stdout,
         astrcode_core::ToolOutputStream::Stderr => ToolOutputStreamDto::Stderr,
+    }
+}
+
+fn to_compact_trigger_dto(trigger: astrcode_core::CompactTrigger) -> CompactTriggerDto {
+    match trigger {
+        astrcode_core::CompactTrigger::Auto => CompactTriggerDto::Auto,
+        astrcode_core::CompactTrigger::Manual => CompactTriggerDto::Manual,
     }
 }
 
@@ -385,6 +405,17 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
                 truncated: result.truncated,
             },
         },
+        AgentEvent::CompactApplied {
+            turn_id,
+            trigger,
+            summary,
+            preserved_recent_turns,
+        } => AgentEventPayload::CompactApplied {
+            turn_id,
+            trigger: to_compact_trigger_dto(trigger),
+            summary,
+            preserved_recent_turns,
+        },
         AgentEvent::TurnDone { turn_id } => AgentEventPayload::TurnDone { turn_id },
         AgentEvent::Error {
             turn_id,
@@ -522,6 +553,7 @@ pub(crate) fn to_composer_options_response(
 fn to_composer_option_dto(item: ComposerOption) -> ComposerOptionDto {
     ComposerOptionDto {
         kind: match item.kind {
+            ComposerOptionKind::Command => ComposerOptionKindDto::Command,
             ComposerOptionKind::Skill => ComposerOptionKindDto::Skill,
             ComposerOptionKind::Capability => ComposerOptionKindDto::Capability,
         },

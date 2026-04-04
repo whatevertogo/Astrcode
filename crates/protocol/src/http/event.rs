@@ -51,6 +51,16 @@ pub enum ToolOutputStreamDto {
     Stderr,
 }
 
+/// 上下文压缩触发方式。
+///
+/// 保持协议层独立枚举，避免前端直接依赖 core crate。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactTriggerDto {
+    Auto,
+    Manual,
+}
+
 /// 工具调用的最终结果。
 ///
 /// 包含工具执行的完整输出、耗时、是否被截断等信息。
@@ -150,6 +160,14 @@ pub enum AgentEventPayload {
     ToolCallResult {
         turn_id: String,
         result: ToolCallResultDto,
+    },
+    /// 上下文压缩已应用。
+    CompactApplied {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        trigger: CompactTriggerDto,
+        summary: String,
+        preserved_recent_turns: u32,
     },
     /// 当前 turn 完成事件。
     TurnDone { turn_id: String },

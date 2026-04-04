@@ -20,10 +20,9 @@ use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use astrcode_core::{
     AstrError, StorageEvent, StoredEvent, ToolOutputDelta, ToolOutputStream, UserMessageOrigin,
-    replay_records, split_assistant_content,
+    format_local_rfc3339, format_local_rfc3339_opt, replay_records, split_assistant_content,
 };
 use async_trait::async_trait;
-use chrono::Utc;
 use serde_json::{Map, Value, json};
 
 use super::{
@@ -114,7 +113,7 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
                 messages.push(SessionMessage::User {
                     turn_id: turn_id.clone(),
                     content: content.clone(),
-                    timestamp: timestamp.to_rfc3339(),
+                    timestamp: format_local_rfc3339(*timestamp),
                 });
             },
             StorageEvent::AssistantFinal {
@@ -128,10 +127,8 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
                 if parts.visible_content.is_empty() && parts.reasoning_content.is_none() {
                     continue;
                 }
-                let timestamp = timestamp
-                    .as_ref()
-                    .map(|value| value.to_rfc3339())
-                    .unwrap_or_else(|| Utc::now().to_rfc3339());
+                let timestamp = format_local_rfc3339_opt(timestamp.as_ref())
+                    .unwrap_or_else(|| format_local_rfc3339(chrono::Utc::now()));
                 if parts.visible_content.is_empty() {
                     if let Some(turn_id) = turn_id.clone() {
                         // Tool-planning assistant steps are an internal bridge state; keep only
@@ -247,7 +244,23 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
                     });
                 }
             },
-            StorageEvent::PromptMetrics { .. } | StorageEvent::CompactApplied { .. } => {},
+            StorageEvent::CompactApplied {
+                turn_id,
+                trigger,
+                summary,
+                preserved_recent_turns,
+                timestamp,
+                ..
+            } => {
+                messages.push(SessionMessage::Compact {
+                    turn_id: turn_id.clone(),
+                    trigger: *trigger,
+                    summary: summary.clone(),
+                    preserved_recent_turns: *preserved_recent_turns,
+                    timestamp: format_local_rfc3339(*timestamp),
+                });
+            },
+            StorageEvent::PromptMetrics { .. } => {},
             StorageEvent::TurnDone { turn_id, .. } | StorageEvent::Error { turn_id, .. } => {
                 if let Some(turn_id) = turn_id {
                     pending_reasoning_only_assistants.remove(turn_id);
@@ -400,7 +413,7 @@ fn build_shell_display_metadata(
 #[cfg(test)]
 mod tests {
     use astrcode_core::UserMessageOrigin;
-    use chrono::TimeZone;
+    use chrono::{TimeZone, Utc};
     use serde_json::json;
 
     use super::*;
@@ -598,5 +611,37 @@ mod tests {
         assert_eq!(shell["display"]["exitCode"], json!(0));
         assert_eq!(shell["display"]["segments"][0]["stream"], json!("stdout"));
         assert_eq!(shell["display"]["segments"][1]["stream"], json!("stderr"));
+    }
+
+    #[test]
+    fn snapshot_keeps_compact_messages_as_dedicated_rows() {
+        let events = vec![stored(
+            1,
+            StorageEvent::CompactApplied {
+                turn_id: None,
+                trigger: astrcode_core::CompactTrigger::Manual,
+                summary: "保留最近两轮上下文".to_string(),
+                preserved_recent_turns: 2,
+                pre_tokens: 120,
+                post_tokens_estimate: 60,
+                messages_removed: 4,
+                tokens_freed: 60,
+                timestamp: Utc.with_ymd_and_hms(2026, 4, 5, 1, 2, 3).unwrap(),
+            },
+        )];
+
+        let messages = convert_events_to_messages(&events);
+
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(
+            &messages[0],
+            SessionMessage::Compact {
+                turn_id: None,
+                trigger: astrcode_core::CompactTrigger::Manual,
+                summary,
+                preserved_recent_turns,
+                ..
+            } if summary == "保留最近两轮上下文" && *preserved_recent_turns == 2
+        ));
     }
 }

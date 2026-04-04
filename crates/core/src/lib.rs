@@ -31,6 +31,7 @@ pub mod registry;
 pub mod runtime;
 pub mod session;
 pub mod store;
+mod time;
 // test_support 是 pub mod（而非 #[cfg(test)]），因为其他 crate（runtime, runtime-config,
 // runtime-prompt）的测试代码通过 `astrcode_core::test_support::TestEnvGuard` 导入它。
 // Rust 不支持跨 crate 的 #[cfg(test)] 导出，所以只能保持 pub。tempfile 依赖也因此
@@ -70,6 +71,9 @@ pub use session::{DeleteProjectResult, SessionEventRecord, SessionMessage, Sessi
 pub use store::{
     EventLogWriter, SessionManager, SessionTurnAcquireResult, SessionTurnBusy, SessionTurnLease,
     StoreError, StoreResult,
+};
+pub use time::{
+    format_local_rfc3339, format_local_rfc3339_opt, local_rfc3339, local_rfc3339_option,
 };
 pub use tool::{
     DEFAULT_MAX_OUTPUT_SIZE, SessionId, Tool, ToolCapabilityMetadata, ToolContext,
