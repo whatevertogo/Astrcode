@@ -73,7 +73,7 @@ use crate::{
     approval_service::{ApprovalBroker, DefaultApprovalBroker},
     compaction_runtime::{
         AutoCompactStrategy, CompactionReason, CompactionRuntime, CompactionTailSnapshot,
-        ConversationViewRebuilder, ThresholdCompactionPolicy,
+        ConversationViewRebuilder, FsFileContentProvider, ThresholdCompactionPolicy,
     },
     context_pipeline::ContextRuntime,
     prompt_runtime::PromptRuntime,
@@ -182,6 +182,7 @@ impl AgentLoop {
                 Arc::new(ThresholdCompactionPolicy::new(DEFAULT_AUTO_COMPACT_ENABLED)),
                 Arc::new(AutoCompactStrategy),
                 Arc::new(ConversationViewRebuilder),
+                Arc::new(FsFileContentProvider),
             ),
             request_assembler: RequestAssembler,
             // 默认并行度统一从 runtime-config 读取，这样环境变量覆盖和
@@ -223,6 +224,7 @@ impl AgentLoop {
             Arc::new(ThresholdCompactionPolicy::new(auto_compact_enabled)),
             self.compaction.strategy.clone(),
             self.compaction.rebuilder.clone(),
+            self.compaction.file_provider.clone(),
         );
         self
     }
@@ -240,6 +242,7 @@ impl AgentLoop {
             )),
             self.compaction.strategy.clone(),
             self.compaction.rebuilder.clone(),
+            self.compaction.file_provider.clone(),
         );
         self
     }
@@ -480,6 +483,7 @@ impl AgentLoop {
             self.compaction.policy.clone(),
             self.compaction.strategy.clone(),
             self.compaction.rebuilder.clone(),
+            self.compaction.file_provider.clone(),
         );
         self
     }

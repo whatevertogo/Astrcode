@@ -1,0 +1,224 @@
+//! # File Access Tracker (文件访问跟踪器)
+//!
+//! 跟踪会话中通过工具调用访问的文件路径，用于 post-compact 附件恢复。
+//! 从 `StorageEvent::ToolResult` 的 `metadata` 字段中提取文件路径。
+//!
+//! NOTE: 本模块的公共 API 暂时仅被测试代码引用，一旦 Phase 2 集成完成
+//! （FileAccessTracker 注入到 turn_runner 的 compact 流程），这些 dead_code 标记将被移除。
+
+#![allow(dead_code)]
+
+use std::path::PathBuf;
+
+use astrcode_core::StorageEvent;
+
+/// File-access tracking tools whose `metadata` contains a `"path"` field.
+const FILE_TOOLS: &[&str] = &["readFile", "editFile", "writeFile"];
+
+/// Maximum number of recent files to retain for post-compact recovery.
+const DEFAULT_MAX_TRACKED_FILES: usize = 10;
+
+/// A tracked file access with the source tool name.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // 后续 Phase 2 集成时间按工具名决定恢复优先级
+pub(crate) struct FileAccessEntry {
+    pub path: PathBuf,
+    #[allow(dead_code)]
+    pub tool_name: String,
+}
+/// Tracks file paths accessed during a session via tool calls.
+///
+/// The tracker inspects `StorageEvent::ToolResult` events and extracts
+/// the `"path"` field from `metadata` for file-related tools (`readFile`,
+/// `editFile`, `writeFile`).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FileAccessTracker {
+    entries: Vec<FileAccessEntry>,
+    max_entries: usize,
+}
+impl FileAccessTracker {
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            max_entries: DEFAULT_MAX_TRACKED_FILES,
+        }
+    }
+    /// Record a storage event if it is a file-access tool result.
+    pub(crate) fn record_event(&mut self, event: &StorageEvent) {
+        let StorageEvent::ToolResult {
+            tool_name,
+            metadata,
+            ..
+        } = event
+        else {
+            return;
+        };
+        if !FILE_TOOLS.contains(&tool_name.as_str()) {
+            return;
+        }
+        let Some(metadata) = metadata else {
+            return;
+        };
+
+        if let Some(path_str) = metadata.get("path").and_then(|v| v.as_str()) {
+            let path = PathBuf::from(path_str);
+            // 去重： 如果路径已被跟踪，移到末尾（最近访问）
+            self.entries.retain(|entry| entry.path != path);
+            self.entries.push(FileAccessEntry {
+                path,
+                tool_name: tool_name.clone(),
+            });
+            // 裁剪到最大条目数
+            while self.entries.len() > self.max_entries {
+                self.entries.remove(0);
+            }
+        }
+    }
+
+    /// Return the N most recently accessed distinct file paths.
+    pub(crate) fn recent_files(&self, n: usize) -> Vec<PathBuf> {
+        self.entries
+            .iter()
+            .rev()
+            .take(n)
+            .map(|entry| entry.path.clone())
+            .collect()
+    }
+
+    /// Clear all tracked entries.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn tool_result(tool_name: &str, path: &str) -> StorageEvent {
+        StorageEvent::ToolResult {
+            turn_id: Some("turn-1".to_string()),
+            tool_call_id: "call-1".to_string(),
+            tool_name: tool_name.to_string(),
+            output: "file content".to_string(),
+            success: true,
+            error: None,
+            metadata: Some(json!({"path": path})),
+            duration_ms: 10,
+        }
+    }
+
+    fn tool_result_no_metadata(tool_name: &str) -> StorageEvent {
+        StorageEvent::ToolResult {
+            turn_id: Some("turn-1".to_string()),
+            tool_call_id: "call-1".to_string(),
+            tool_name: tool_name.to_string(),
+            output: "file content".to_string(),
+            success: true,
+            error: None,
+            metadata: None,
+            duration_ms: 10,
+        }
+    }
+    #[test]
+    fn records_read_file_path_from_metadata() {
+        let mut tracker = FileAccessTracker::new();
+        tracker.record_event(&tool_result("readFile", "/src/main.rs"));
+        let recent = tracker.recent_files(5);
+        assert_eq!(recent, vec![PathBuf::from("/src/main.rs")]);
+    }
+
+    #[test]
+    fn records_edit_and_write_file_paths() {
+        let mut tracker = FileAccessTracker::new();
+        tracker.record_event(&tool_result("readFile", "/src/lib.rs"));
+        tracker.record_event(&tool_result("editFile", "/src/main.rs"));
+        tracker.record_event(&tool_result("writeFile", "/src/new.rs"));
+
+        let recent = tracker.recent_files(3);
+        assert_eq!(
+            recent,
+            vec![
+                PathBuf::from("/src/new.rs"),
+                PathBuf::from("/src/main.rs"),
+                PathBuf::from("/src/lib.rs"),
+            ]
+        );
+    }
+
+    #[test]
+    fn ignores_non_file_tools() {
+        let mut tracker = FileAccessTracker::new();
+        tracker.record_event(&tool_result("grep", "/src/main.rs"));
+
+        assert!(tracker.recent_files(5).is_empty());
+    }
+
+    #[test]
+    fn ignores_events_without_metadata() {
+        let mut tracker = FileAccessTracker::new();
+        tracker.record_event(&tool_result_no_metadata("readFile"));
+
+        assert!(tracker.recent_files(5).is_empty());
+    }
+
+    #[test]
+    fn ignores_non_tool_events() {
+        let mut tracker = FileAccessTracker::new();
+        tracker.record_event(&StorageEvent::UserMessage {
+            turn_id: Some("turn-1".to_string()),
+            content: "hello".to_string(),
+            timestamp: chrono::Utc::now(),
+            origin: astrcode_core::UserMessageOrigin::User,
+        });
+
+        assert!(tracker.recent_files(5).is_empty());
+    }
+
+    #[test]
+    fn deduplicates_paths_and_keeps_most_recent() {
+        let mut tracker = FileAccessTracker::new();
+        tracker.record_event(&tool_result("readFile", "/src/lib.rs"));
+        tracker.record_event(&tool_result("readFile", "/src/main.rs"));
+        tracker.record_event(&tool_result("readFile", "/src/lib.rs")); // re-read
+
+        let recent = tracker.recent_files(5);
+        assert_eq!(
+            recent,
+            vec![
+                PathBuf::from("/src/lib.rs"), // most recent
+                PathBuf::from("/src/main.rs"),
+            ]
+        );
+    }
+
+    #[test]
+    fn trims_to_max_entries() {
+        let mut tracker = FileAccessTracker::new();
+        for i in 0..15 {
+            tracker.record_event(&tool_result("readFile", &format!("/src/file{i}.rs")));
+        }
+
+        assert_eq!(tracker.entries.len(), DEFAULT_MAX_TRACKED_FILES);
+        // Most recent should be last
+        assert_eq!(
+            tracker.entries.last().unwrap().path,
+            PathBuf::from("/src/file14.rs")
+        );
+    }
+
+    #[test]
+    fn recent_files_returns_n_most_recent() {
+        let mut tracker = FileAccessTracker::new();
+        tracker.record_event(&tool_result("readFile", "/a.rs"));
+        tracker.record_event(&tool_result("readFile", "/b.rs"));
+        tracker.record_event(&tool_result("readFile", "/c.rs"));
+
+        let recent = tracker.recent_files(2);
+        assert_eq!(recent, vec![PathBuf::from("/c.rs"), PathBuf::from("/b.rs")]);
+    }
+}

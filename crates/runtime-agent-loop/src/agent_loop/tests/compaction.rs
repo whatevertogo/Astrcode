@@ -22,7 +22,7 @@ use crate::{
     agent_loop::TurnOutcome,
     compaction_runtime::{
         CompactionArtifact, CompactionInput, CompactionReason, CompactionRuntime,
-        CompactionTailSnapshot, ThresholdCompactionPolicy,
+        CompactionTailSnapshot, FsFileContentProvider, ThresholdCompactionPolicy,
     },
     context_pipeline::ConversationView,
 };
@@ -87,6 +87,7 @@ impl crate::compaction_runtime::CompactionStrategy for StaticArtifactStrategy {
             preserved_recent_turns: 1,
             messages_removed: 1,
             tokens_freed: 60,
+            recovered_files: Vec::new(),
         }))
     }
 }
@@ -98,6 +99,7 @@ impl crate::compaction_runtime::CompactionRebuilder for FailingRebuilder {
         &self,
         _artifact: &CompactionArtifact,
         _tail: &[astrcode_core::StoredEvent],
+        _file_contents: &[(std::path::PathBuf, String)],
     ) -> astrcode_core::Result<ConversationView> {
         Err(AstrError::Internal("rebuild failed".to_string()))
     }
@@ -442,6 +444,7 @@ async fn compaction_event_is_not_emitted_when_rebuild_fails() {
         Arc::new(ThresholdCompactionPolicy::new(true)),
         Arc::new(StaticArtifactStrategy),
         Arc::new(FailingRebuilder),
+        Arc::new(FsFileContentProvider),
     ));
     let state = astrcode_core::AgentState {
         session_id: "test".into(),

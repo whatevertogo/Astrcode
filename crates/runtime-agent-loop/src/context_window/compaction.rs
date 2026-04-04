@@ -89,7 +89,8 @@ pub async fn auto_compact(
     };
 
     let messages_removed = keep_start;
-    let compacted_messages = compacted_messages(&summary, suffix);
+    let auto_continue = matches!(config.trigger, astrcode_core::CompactTrigger::Auto);
+    let compacted_messages = compacted_messages(&summary, suffix, auto_continue);
     let post_tokens_estimate = estimate_request_tokens(&compacted_messages, base_system_prompt);
     Ok(Some(CompactResult {
         messages: compacted_messages,
@@ -126,6 +127,10 @@ fn build_compact_system_prompt(base_system_prompt: Option<&str>) -> String {
 }
 
 fn compact_input_messages(messages: &[LlmMessage]) -> Vec<LlmMessage> {
+    // TODO(claude-auto-compact): 一旦 LlmMessage::User.content 从 String 扩展为
+    // Vec<ContentPart>（支持多模态），在此处将 Image/Document 类型的 ContentPart 替换为
+    // 文本占位符（"[image]" / "[document: filename]"），避免压缩请求因包含二进制数据而
+    // 超出上下文窗口或被 Provider 拒绝。当前 content 是纯 String，暂无需过滤。
     messages
         .iter()
         .filter_map(|message| match message {
@@ -211,7 +216,11 @@ fn drop_oldest_turn_group(prefix: &mut Vec<LlmMessage>) -> bool {
     !prefix.is_empty()
 }
 
-fn compacted_messages(summary: &str, suffix: Vec<LlmMessage>) -> Vec<LlmMessage> {
+fn compacted_messages(
+    summary: &str,
+    suffix: Vec<LlmMessage>,
+    auto_continue: bool,
+) -> Vec<LlmMessage> {
     let mut messages = vec![LlmMessage::User {
         content: format!(
             "[Auto-compact summary]\n{}\n\nContinue from this summary without repeating it to the \
@@ -220,6 +229,13 @@ fn compacted_messages(summary: &str, suffix: Vec<LlmMessage>) -> Vec<LlmMessage>
         ),
         origin: UserMessageOrigin::CompactSummary,
     }];
+    if auto_continue {
+        messages.push(LlmMessage::User {
+            content: "The conversation was compacted. Continue from where you left off."
+                .to_string(),
+            origin: UserMessageOrigin::AutoContinueNudge,
+        });
+    }
     messages.extend(suffix);
     messages
 }
@@ -330,7 +346,7 @@ mod tests {
 
     #[test]
     fn compacted_messages_inserts_summary_as_compact_user_message() {
-        let compacted = compacted_messages("Older history", Vec::new());
+        let compacted = compacted_messages("Older history", Vec::new(), false);
 
         assert!(matches!(
             &compacted[0],
@@ -339,5 +355,45 @@ mod tests {
                 ..
             }
         ));
+        assert_eq!(
+            compacted.len(),
+            1,
+            "no auto-continue nudge when auto_continue=false"
+        );
+    }
+
+    #[test]
+    fn compacted_messages_appends_auto_continue_nudge_when_auto() {
+        let compacted = compacted_messages("Older history", Vec::new(), true);
+
+        assert_eq!(compacted.len(), 2);
+        assert!(matches!(
+            &compacted[0],
+            LlmMessage::User {
+                origin: UserMessageOrigin::CompactSummary,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &compacted[1],
+            LlmMessage::User {
+                content,
+                origin: UserMessageOrigin::AutoContinueNudge,
+            } if content.contains("compacted")
+        ));
+    }
+
+    #[test]
+    fn compacted_messages_omits_nudge_when_not_auto() {
+        let compacted = compacted_messages("Older history", Vec::new(), false);
+
+        assert_eq!(compacted.len(), 1);
+        assert!(!compacted.iter().any(|m| matches!(
+            m,
+            LlmMessage::User {
+                origin: UserMessageOrigin::AutoContinueNudge,
+                ..
+            }
+        )));
     }
 }

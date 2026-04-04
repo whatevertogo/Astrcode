@@ -14,6 +14,7 @@
 //! - `token_usage`: Token 估算和预算跟踪
 
 pub mod compaction;
+pub(crate) mod file_access;
 pub mod microcompact;
 pub mod token_usage;
 

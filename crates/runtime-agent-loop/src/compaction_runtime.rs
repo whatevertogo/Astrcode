@@ -41,7 +41,13 @@
 //! - `CompactionTailSnapshot` 携带最近 N 个 turn 的消息快照，用于压缩后保留尾部上下文
 //! - `rebuild_conversation()` 将 artifact 转换为 `ConversationView`，供 pipeline 注入
 
-use std::sync::{Arc, Mutex as StdMutex};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use astrcode_core::{
     CancelToken, CompactTrigger, ContextDecisionInput, ContextStrategy, LlmMessage, Result,
@@ -102,6 +108,8 @@ pub(crate) struct CompactionArtifact {
     pub preserved_recent_turns: usize,
     pub messages_removed: usize,
     pub tokens_freed: usize,
+    /// 压缩后需要恢复的文件路径列表（由 FileAccessTracker 跟踪）。
+    pub recovered_files: Vec<PathBuf>,
 }
 
 impl CompactionArtifact {
@@ -255,6 +263,12 @@ pub(crate) struct CompactionInput<'a> {
 
 pub(crate) trait CompactionPolicy: Send + Sync {
     fn should_compact(&self, snapshot: &PromptTokenSnapshot) -> Option<CompactionReason>;
+
+    /// Called after a successful compaction. Resets the circuit breaker if applicable.
+    fn record_success(&self) {}
+
+    /// Called after a failed compaction. Increments the circuit breaker if applicable.
+    fn record_failure(&self) {}
 }
 
 #[async_trait]
@@ -267,7 +281,24 @@ pub(crate) trait CompactionRebuilder: Send + Sync {
         &self,
         artifact: &CompactionArtifact,
         tail: &[StoredEvent],
+        file_contents: &[(PathBuf, String)],
     ) -> Result<ConversationView>;
+}
+
+/// 文件内容读取抽象，用于 post-compact 文件恢复。
+///
+/// 将文件读取与 `std::fs` 解耦，便于测试时注入 mock。
+pub(crate) trait FileContentProvider: Send + Sync {
+    fn read_to_string(&self, path: &std::path::Path) -> std::io::Result<String>;
+}
+
+/// 生产环境使用 `std::fs::read_to_string` 读取文件。
+pub(crate) struct FsFileContentProvider;
+
+impl FileContentProvider for FsFileContentProvider {
+    fn read_to_string(&self, path: &std::path::Path) -> std::io::Result<String> {
+        std::fs::read_to_string(path)
+    }
 }
 
 pub(crate) struct CompactionRuntime {
@@ -277,7 +308,13 @@ pub(crate) struct CompactionRuntime {
     pub(crate) policy: Arc<dyn CompactionPolicy>,
     pub(crate) strategy: Arc<dyn CompactionStrategy>,
     pub(crate) rebuilder: Arc<dyn CompactionRebuilder>,
+    pub(crate) file_provider: Arc<dyn FileContentProvider>,
 }
+
+/// Post-compact 文件恢复的最大文件数。
+const MAX_RECOVERED_FILES: usize = 5;
+/// 文件恢复的总 token 预算（估算值）。
+const RECOVERY_TOKEN_BUDGET: usize = 50_000;
 
 impl CompactionRuntime {
     pub(crate) fn new(
@@ -287,6 +324,7 @@ impl CompactionRuntime {
         policy: Arc<dyn CompactionPolicy>,
         strategy: Arc<dyn CompactionStrategy>,
         rebuilder: Arc<dyn CompactionRebuilder>,
+        file_provider: Arc<dyn FileContentProvider>,
     ) -> Self {
         Self {
             enabled,
@@ -295,6 +333,7 @@ impl CompactionRuntime {
             policy,
             strategy,
             rebuilder,
+            file_provider,
         }
     }
 
@@ -343,7 +382,8 @@ impl CompactionRuntime {
         reason: CompactionReason,
         cancel: CancelToken,
     ) -> Result<Option<CompactionArtifact>> {
-        self.strategy
+        let result = self
+            .strategy
             .compact(CompactionInput {
                 provider,
                 conversation,
@@ -352,7 +392,21 @@ impl CompactionRuntime {
                 keep_recent_turns: self.keep_recent_turns,
                 reason,
             })
-            .await
+            .await;
+
+        match &result {
+            Ok(Some(_)) => self.policy.record_success(),
+            Ok(None) => {},
+            Err(_) => {
+                // Only record failures for automatic triggers; manual compaction
+                // should not affect the circuit breaker.
+                if !matches!(reason, CompactionReason::Manual) {
+                    self.policy.record_failure();
+                }
+            },
+        }
+
+        result
     }
 
     pub(crate) fn rebuild_conversation(
@@ -360,7 +414,44 @@ impl CompactionRuntime {
         artifact: &CompactionArtifact,
         tail: &[StoredEvent],
     ) -> Result<ConversationView> {
-        self.rebuilder.rebuild(artifact, tail)
+        // 从 FileAccessTracker 跟踪的文件路径中恢复文件内容
+        let file_contents = self.recover_file_contents(&artifact.recovered_files);
+        self.rebuilder.rebuild(artifact, tail, &file_contents)
+    }
+
+    /// 读取恢复文件的最近内容，受 MAX_RECOVERED_FILES 和 token 预算限制。
+    ///
+    /// TODO(Phase-2): 将 FileAccessTracker 注入到 turn_runner 的 compact 流程，
+    /// 在压缩后调用 `artifact.recovered_files = tracker.recent_files(5)` 填充文件路径。
+    /// 当前 `recovered_files` 始终为空（由策略层初始化），一旦 Phase 2 完成集成，
+    /// 此方法将自动生效。
+    fn recover_file_contents(&self, paths: &[PathBuf]) -> Vec<(PathBuf, String)> {
+        let mut results = Vec::new();
+        let mut used_tokens = 0usize;
+        for path in paths.iter().take(MAX_RECOVERED_FILES) {
+            match self.file_provider.read_to_string(path) {
+                Ok(content) => {
+                    let tokens = crate::context_window::estimate_text_tokens(&content);
+                    if used_tokens + tokens > RECOVERY_TOKEN_BUDGET {
+                        log::warn!(
+                            "post-compact file recovery: token budget exhausted at {} tokens, \
+                             skipping remaining files",
+                            used_tokens
+                        );
+                        break;
+                    }
+                    used_tokens += tokens;
+                    results.push((path.clone(), content));
+                },
+                Err(e) => {
+                    log::warn!(
+                        "post-compact file recovery: failed to read {}: {e}",
+                        path.display()
+                    );
+                },
+            }
+        }
+        results
     }
 }
 
@@ -369,23 +460,50 @@ impl CompactionRuntime {
 /// This policy only provides a local hint. Even when it returns `None`, the loop still asks the
 /// global `PolicyEngine` with `ContextStrategy::Ignore` as the suggested strategy so there is only
 /// one final decision source for context handling.
+///
+/// Includes a circuit breaker: after `MAX_CONSECUTIVE_FAILURES` consecutive failures,
+/// `should_compact()` returns `None` to prevent wasting API calls. Manual compaction bypasses
+/// this check entirely.
+pub(crate) const MAX_CONSECUTIVE_FAILURES: usize = 3;
+
 pub(crate) struct ThresholdCompactionPolicy {
     enabled: bool,
+    consecutive_failures: AtomicUsize,
 }
 
 impl ThresholdCompactionPolicy {
     pub(crate) fn new(enabled: bool) -> Self {
-        Self { enabled }
+        Self {
+            enabled,
+            consecutive_failures: AtomicUsize::new(0),
+        }
     }
 }
 
 impl CompactionPolicy for ThresholdCompactionPolicy {
     fn should_compact(&self, snapshot: &PromptTokenSnapshot) -> Option<CompactionReason> {
-        if self.enabled && should_compact(*snapshot) {
-            Some(CompactionReason::Auto)
-        } else {
-            None
+        if !self.enabled || !should_compact(*snapshot) {
+            return None;
         }
+        if self.consecutive_failures.load(Ordering::Relaxed) >= MAX_CONSECUTIVE_FAILURES {
+            log::warn!(
+                "circuit breaker open: skipping auto-compaction after {} consecutive failures \
+                 (consecutive_failures={})",
+                MAX_CONSECUTIVE_FAILURES,
+                self.consecutive_failures.load(Ordering::Relaxed),
+            );
+            return None;
+        }
+        Some(CompactionReason::Auto)
+    }
+
+    fn record_success(&self) {
+        self.consecutive_failures.store(0, Ordering::Relaxed);
+    }
+
+    fn record_failure(&self) {
+        let prev = self.consecutive_failures.fetch_add(1, Ordering::Relaxed);
+        log::warn!("auto-compaction failed (consecutive_failures={})", prev + 1);
     }
 }
 
@@ -423,6 +541,8 @@ impl CompactionStrategy for AutoCompactStrategy {
             preserved_recent_turns: result.preserved_recent_turns,
             messages_removed: result.messages_removed,
             tokens_freed: result.tokens_freed,
+            // 文件恢复路径由调用方在压缩后注入，策略层不持有 FileAccessTracker
+            recovered_files: Vec::new(),
         }))
     }
 }
@@ -435,6 +555,7 @@ impl CompactionRebuilder for ConversationViewRebuilder {
         &self,
         artifact: &CompactionArtifact,
         tail: &[StoredEvent],
+        file_contents: &[(PathBuf, String)],
     ) -> Result<ConversationView> {
         let projected_tail = project(
             &tail
@@ -446,6 +567,26 @@ impl CompactionRebuilder for ConversationViewRebuilder {
             content: format_compact_summary(&artifact.summary),
             origin: UserMessageOrigin::CompactSummary,
         }];
+
+        // 注入恢复的文件内容，作为压缩摘要和尾部消息之间的上下文补充
+        for (path, content) in file_contents {
+            // 截断过长的文件内容，保留前 30K 字节
+            // 使用 char 边界安全截断，避免在多字节 UTF-8 字符中间切割导致 panic
+            let mut truncate_at = content.len().min(30_000);
+            while !content.is_char_boundary(truncate_at) && truncate_at > 0 {
+                truncate_at -= 1;
+            }
+            let truncated = &content[..truncate_at];
+            messages.push(LlmMessage::User {
+                content: format!(
+                    "[Post-compact file recovery: {}]\n```\n{}\n```",
+                    path.display(),
+                    truncated
+                ),
+                origin: UserMessageOrigin::CompactSummary,
+            });
+        }
+
         messages.extend(projected_tail.messages);
         Ok(ConversationView::new(messages))
     }
@@ -454,8 +595,71 @@ impl CompactionRebuilder for ConversationViewRebuilder {
 #[cfg(test)]
 mod tests {
     use astrcode_core::{LlmMessage, StorageEvent, UserMessageOrigin};
+    use astrcode_runtime_llm::{EventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
 
     use super::*;
+
+    /// 测试用：总是返回一个静态 artifact 的压缩策略
+    struct StaticArtifactStrategy;
+
+    #[async_trait]
+    impl CompactionStrategy for StaticArtifactStrategy {
+        async fn compact(&self, _input: CompactionInput<'_>) -> Result<Option<CompactionArtifact>> {
+            Ok(Some(CompactionArtifact {
+                summary: "static summary".to_string(),
+                source_range: EventRange { start: 0, end: 1 },
+                preserved_tail_start: 1,
+                strategy_id: "test".to_string(),
+                pre_tokens: 100,
+                post_tokens_estimate: 40,
+                compacted_at_seq: 0,
+                trigger: CompactionReason::Auto,
+                preserved_recent_turns: 1,
+                messages_removed: 1,
+                tokens_freed: 60,
+                recovered_files: Vec::new(),
+            }))
+        }
+    }
+
+    /// 测试用：总是失败的压缩策略
+    struct FailingStrategy;
+
+    #[async_trait]
+    impl CompactionStrategy for FailingStrategy {
+        async fn compact(&self, _input: CompactionInput<'_>) -> Result<Option<CompactionArtifact>> {
+            Err(astrcode_core::AstrError::LlmStreamError(
+                "test failure".to_string(),
+            ))
+        }
+    }
+
+    /// 测试用：空操作 LLM Provider
+    struct NoopProvider;
+
+    #[async_trait]
+    impl LlmProvider for NoopProvider {
+        fn model_limits(&self) -> ModelLimits {
+            ModelLimits {
+                context_window: 100_000,
+                max_output_tokens: 4_096,
+            }
+        }
+
+        async fn generate(
+            &self,
+            _request: LlmRequest,
+            _sink: Option<EventSink>,
+        ) -> std::result::Result<LlmOutput, astrcode_core::AstrError> {
+            Ok(LlmOutput {
+                content: "noop".to_string(),
+                tool_calls: Vec::new(),
+                usage: None,
+                reasoning: None,
+                finish_reason: astrcode_runtime_llm::FinishReason::Stop,
+            })
+        }
+    }
 
     #[test]
     fn threshold_policy_returns_auto_only_when_snapshot_exceeds_threshold() {
@@ -488,6 +692,7 @@ mod tests {
             preserved_recent_turns: 1,
             messages_removed: 1,
             tokens_freed: 60,
+            recovered_files: Vec::new(),
         };
         let tail = vec![StoredEvent {
             storage_seq: 1,
@@ -500,7 +705,7 @@ mod tests {
         }];
 
         let rebuilt = ConversationViewRebuilder
-            .rebuild(&artifact, &tail)
+            .rebuild(&artifact, &tail, &[])
             .expect("rebuild should succeed");
 
         assert_eq!(rebuilt.messages.len(), 2);
@@ -523,6 +728,7 @@ mod tests {
             Arc::new(ThresholdCompactionPolicy::new(true)),
             Arc::new(AutoCompactStrategy),
             Arc::new(ConversationViewRebuilder),
+            Arc::new(FsFileContentProvider),
         );
         let snapshot = PromptTokenSnapshot {
             context_tokens: 10,
@@ -547,6 +753,7 @@ mod tests {
             Arc::new(ThresholdCompactionPolicy::new(false)),
             Arc::new(AutoCompactStrategy),
             Arc::new(ConversationViewRebuilder),
+            Arc::new(FsFileContentProvider),
         );
         let snapshot = PromptTokenSnapshot {
             context_tokens: 95,
@@ -575,6 +782,7 @@ mod tests {
             preserved_recent_turns: 1,
             messages_removed: 1,
             tokens_freed: 60,
+            recovered_files: Vec::new(),
         };
         let tail = vec![
             StoredEvent {
@@ -601,5 +809,157 @@ mod tests {
         artifact.record_tail_seq(&tail);
 
         assert_eq!(artifact.compacted_at_seq, 11);
+    }
+
+    #[test]
+    fn circuit_breaker_blocks_auto_compact_after_consecutive_failures() {
+        let policy = ThresholdCompactionPolicy::new(true);
+        let snapshot = PromptTokenSnapshot {
+            context_tokens: 91,
+            budget_tokens: 91,
+            context_window: 100,
+            effective_window: 90,
+            threshold_tokens: 90,
+        };
+
+        // Initially should compact
+        assert_eq!(
+            policy.should_compact(&snapshot),
+            Some(CompactionReason::Auto)
+        );
+
+        // After MAX failures, should not compact
+        for _ in 0..MAX_CONSECUTIVE_FAILURES {
+            policy.record_failure();
+        }
+        assert_eq!(policy.should_compact(&snapshot), None);
+
+        // After success, should compact again
+        policy.record_success();
+        assert_eq!(
+            policy.should_compact(&snapshot),
+            Some(CompactionReason::Auto)
+        );
+    }
+
+    #[test]
+    fn circuit_breaker_does_not_fire_on_partial_failures() {
+        let policy = ThresholdCompactionPolicy::new(true);
+        let snapshot = PromptTokenSnapshot {
+            context_tokens: 91,
+            budget_tokens: 91,
+            context_window: 100,
+            effective_window: 90,
+            threshold_tokens: 90,
+        };
+
+        // Two failures is still below the threshold
+        policy.record_failure();
+        policy.record_failure();
+        assert_eq!(
+            policy.should_compact(&snapshot),
+            Some(CompactionReason::Auto)
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_records_success_and_resets_circuit_breaker() {
+        let policy = Arc::new(ThresholdCompactionPolicy::new(true));
+        // Pre-fail to 2
+        policy.record_failure();
+        policy.record_failure();
+
+        let runtime = CompactionRuntime::new(
+            true,
+            1,
+            80,
+            policy.clone(),
+            Arc::new(StaticArtifactStrategy),
+            Arc::new(ConversationViewRebuilder),
+            Arc::new(FsFileContentProvider),
+        );
+
+        let view = ConversationView::new(vec![]);
+        let result = runtime
+            .compact(
+                &NoopProvider,
+                &view,
+                None,
+                CompactionReason::Auto,
+                astrcode_core::CancelToken::new(),
+            )
+            .await
+            .expect("compact should succeed");
+
+        assert!(result.is_some());
+        // After success, circuit breaker should be reset
+        let snapshot = PromptTokenSnapshot {
+            context_tokens: 95,
+            budget_tokens: 95,
+            context_window: 100,
+            effective_window: 90,
+            threshold_tokens: 90,
+        };
+        assert_eq!(
+            policy.should_compact(&snapshot),
+            Some(CompactionReason::Auto)
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_records_failure_for_auto_but_not_manual() {
+        let policy = Arc::new(ThresholdCompactionPolicy::new(true));
+        let runtime = CompactionRuntime::new(
+            true,
+            1,
+            80,
+            policy.clone(),
+            Arc::new(FailingStrategy),
+            Arc::new(ConversationViewRebuilder),
+            Arc::new(FsFileContentProvider),
+        );
+
+        let view = ConversationView::new(vec![]);
+        // Manual failure should NOT affect circuit breaker
+        let _ = runtime
+            .compact(
+                &NoopProvider,
+                &view,
+                None,
+                CompactionReason::Manual,
+                astrcode_core::CancelToken::new(),
+            )
+            .await;
+
+        let snapshot = PromptTokenSnapshot {
+            context_tokens: 95,
+            budget_tokens: 95,
+            context_window: 100,
+            effective_window: 90,
+            threshold_tokens: 90,
+        };
+        assert_eq!(
+            policy.should_compact(&snapshot),
+            Some(CompactionReason::Auto),
+            "manual failure should not affect circuit breaker"
+        );
+
+        // Auto failure SHOULD affect circuit breaker
+        for _ in 0..MAX_CONSECUTIVE_FAILURES {
+            let _ = runtime
+                .compact(
+                    &NoopProvider,
+                    &view,
+                    None,
+                    CompactionReason::Auto,
+                    astrcode_core::CancelToken::new(),
+                )
+                .await;
+        }
+        assert_eq!(
+            policy.should_compact(&snapshot),
+            None,
+            "auto failures should trip circuit breaker"
+        );
     }
 }
