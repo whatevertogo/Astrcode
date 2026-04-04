@@ -65,7 +65,6 @@ enum HunkLine {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 struct FileChange {
     change_type: String,
     path: String,
@@ -532,7 +531,15 @@ async fn apply_file_patch(file_patch: &FilePatch, ctx: &ToolContext) -> FileChan
         };
     }
 
-    let new_content = result_lines.join("\n");
+    // 保留原始文件的尾部换行符（如果有且结果非空）
+    let trailing_newline = original_content
+        .as_deref()
+        .is_some_and(|s| s.ends_with('\n'));
+    let new_content = if trailing_newline && !result_lines.is_empty() {
+        format!("{}\n", result_lines.join("\n"))
+    } else {
+        result_lines.join("\n")
+    };
     let report = build_text_change_report(
         &target_path,
         change_type,
@@ -716,6 +723,7 @@ fn build_apply_patch_metadata(
                 "path": r.path,
                 "changeType": r.change_type,
                 "applied": r.applied,
+                "summary": r.summary,
             });
             if let Some(err) = &r.error {
                 obj.as_object_mut()
@@ -895,5 +903,37 @@ mod tests {
             .expect("should return result");
 
         assert!(!result.ok);
+    }
+
+    #[tokio::test]
+    async fn apply_patch_preserves_trailing_newline() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file = temp.path().join("test.rs");
+        // 文件以换行符结尾
+        tokio::fs::write(&file, "fn foo() {\n    old();\n}\n")
+            .await
+            .expect("seed write");
+
+        let tool = ApplyPatchTool;
+        let patch = "--- a/test.rs\n+++ b/test.rs\n@@ -1,3 +1,3 @@\nfn foo() {\n-    old();\n+    \
+                     new();\n}\n";
+
+        let result = tool
+            .execute(
+                "tc-patch-trailing".into(),
+                json!({ "patch": patch }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("should execute");
+
+        assert!(result.ok, "should succeed: {}", result.output);
+        let content = tokio::fs::read_to_string(&file).await.expect("readable");
+        // 验证尾部换行符被保留
+        assert!(
+            content.ends_with('\n'),
+            "trailing newline should be preserved"
+        );
+        assert!(content.contains("new()"));
     }
 }
