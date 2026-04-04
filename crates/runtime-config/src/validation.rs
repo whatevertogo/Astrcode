@@ -72,6 +72,7 @@ fn migrate_config(config: &mut Config) -> Result<()> {
 /// - `provider_kind` 必须是支持的类型（`openai-compatible` 或 `anthropic`）
 /// - OpenAI 兼容 Provider 的 `base_url` 不能为空
 /// - OpenAI-compatible 模型必须显式配置 `maxTokens` 与 `contextLimit`
+/// - Anthropic Provider 允许省略 `base_url`（回退官方地址），也允许自定义网关地址
 /// - `active_profile` 必须存在于 `profiles` 列表中
 /// - `active_model` 必须存在于 `active_profile` 的 `models` 列表中
 pub fn validate_config(config: &Config) -> Result<()> {

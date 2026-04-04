@@ -36,7 +36,8 @@ pub const PROVIDER_KIND_OPENAI: &str = "openai-compatible";
 /// Anthropic Provider 标识符。
 ///
 /// 用于 `Profile.provider_kind` 字段，表示该 Provider 使用 Anthropic Messages API 格式。
-/// 与 OpenAI 兼容协议不同，Anthropic 使用固定的 API 端点和专用的请求头。
+/// 与 OpenAI 兼容协议不同，Anthropic 使用专用请求头；同时允许通过 `baseUrl`
+/// 覆盖默认官方地址，接入自定义 Anthropic 兼容网关。
 pub const PROVIDER_KIND_ANTHROPIC: &str = "anthropic";
 
 /// 环境变量引用前缀。
@@ -109,6 +110,60 @@ pub const ANTHROPIC_MODELS_API_URL: &str = "https://api.anthropic.com/v1/models"
 
 /// Anthropic API version.
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+fn resolve_anthropic_api_collection_url(
+    base_url: &str,
+    collection: &'static str,
+    default_url: &'static str,
+) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return default_url.to_string();
+    }
+
+    let this_collection_suffix = format!("/{collection}");
+    if trimmed.ends_with(&this_collection_suffix) {
+        return trimmed.to_string();
+    }
+
+    let sibling_collection = if collection == "messages" {
+        "models"
+    } else {
+        "messages"
+    };
+    let sibling_suffix = format!("/{sibling_collection}");
+    if trimmed.ends_with(&sibling_suffix) {
+        return format!(
+            "{}/{}",
+            trimmed.trim_end_matches(&sibling_suffix),
+            collection
+        );
+    }
+
+    if trimmed.ends_with("/v1") {
+        return format!("{trimmed}/{collection}");
+    }
+
+    format!("{trimmed}/v1/{collection}")
+}
+
+/// 解析 Anthropic Messages API 地址。
+///
+/// 兼容三种写法：
+/// - 空字符串：回退到官方默认地址
+/// - API 根地址：如 `https://gateway.example.com/anthropic`
+/// - 完整集合地址：如 `https://gateway.example.com/anthropic/v1/messages`
+pub fn resolve_anthropic_messages_api_url(base_url: &str) -> String {
+    resolve_anthropic_api_collection_url(base_url, "messages", ANTHROPIC_MESSAGES_API_URL)
+}
+
+/// 解析 Anthropic Models API 地址。
+///
+/// 与 [`resolve_anthropic_messages_api_url`] 使用同一规则，确保运行时请求消息和探测模型
+/// metadata 时落在同一条自定义网关链路上。
+pub fn resolve_anthropic_models_api_url(base_url: &str) -> String {
+    resolve_anthropic_api_collection_url(base_url, "models", ANTHROPIC_MODELS_API_URL)
+}
 
 /// OpenAI-compatible 模型的保守默认上下文窗口。
 ///
@@ -227,4 +282,52 @@ pub fn resolve_max_continuations(runtime: &RuntimeConfig) -> u8 {
         .max_continuations
         .unwrap_or(DEFAULT_MAX_CONTINUATIONS)
         .max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ANTHROPIC_MESSAGES_API_URL, ANTHROPIC_MODELS_API_URL, resolve_anthropic_messages_api_url,
+        resolve_anthropic_models_api_url,
+    };
+
+    #[test]
+    fn anthropic_url_helpers_fall_back_to_official_defaults() {
+        assert_eq!(
+            resolve_anthropic_messages_api_url(""),
+            ANTHROPIC_MESSAGES_API_URL
+        );
+        assert_eq!(
+            resolve_anthropic_models_api_url(""),
+            ANTHROPIC_MODELS_API_URL
+        );
+    }
+
+    #[test]
+    fn anthropic_url_helpers_expand_root_style_base_url() {
+        let base_url = "https://gateway.example.com/anthropic";
+
+        assert_eq!(
+            resolve_anthropic_messages_api_url(base_url),
+            "https://gateway.example.com/anthropic/v1/messages"
+        );
+        assert_eq!(
+            resolve_anthropic_models_api_url(base_url),
+            "https://gateway.example.com/anthropic/v1/models"
+        );
+    }
+
+    #[test]
+    fn anthropic_url_helpers_accept_full_collection_urls() {
+        let messages_url = "https://gateway.example.com/anthropic/v1/messages";
+        let models_url = "https://gateway.example.com/anthropic/v1/models";
+
+        assert_eq!(
+            resolve_anthropic_messages_api_url(messages_url),
+            messages_url
+        );
+        assert_eq!(resolve_anthropic_models_api_url(messages_url), models_url);
+        assert_eq!(resolve_anthropic_models_api_url(models_url), models_url);
+        assert_eq!(resolve_anthropic_messages_api_url(models_url), messages_url);
+    }
 }

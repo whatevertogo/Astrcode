@@ -38,8 +38,6 @@ use crate::{
     LlmUsage, MAX_RETRIES, ModelLimits, build_http_client, classify_http_error, emit_event,
     is_retryable_status, wait_retry_delay,
 };
-
-const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// Anthropic Claude API 提供者实现。
@@ -54,6 +52,7 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 #[derive(Clone)]
 pub struct AnthropicProvider {
     client: reqwest::Client,
+    messages_api_url: String,
     api_key: String,
     model: String,
     /// 运行时已解析好的模型 limits。
@@ -66,6 +65,7 @@ impl fmt::Debug for AnthropicProvider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AnthropicProvider")
             .field("client", &self.client)
+            .field("messages_api_url", &self.messages_api_url)
             .field("api_key", &"<redacted>")
             .field("model", &self.model)
             .field("limits", &self.limits)
@@ -79,9 +79,15 @@ impl AnthropicProvider {
     /// `limits.max_output_tokens` 同时用于：
     /// 1. 请求体中的 `max_tokens` 字段（输出上限）
     /// 2. Extended thinking 预算计算（75% 的 max_tokens）
-    pub fn new(api_key: String, model: String, limits: ModelLimits) -> Self {
+    pub fn new(
+        messages_api_url: String,
+        api_key: String,
+        model: String,
+        limits: ModelLimits,
+    ) -> Self {
         Self {
             client: build_http_client(),
+            messages_api_url,
             api_key,
             model,
             limits,
@@ -131,7 +137,7 @@ impl AnthropicProvider {
         for attempt in 0..=MAX_RETRIES {
             let send_future = self
                 .client
-                .post(ANTHROPIC_API_URL)
+                .post(&self.messages_api_url)
                 .header("x-api-key", &self.api_key)
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -1001,6 +1007,7 @@ mod tests {
     #[test]
     fn build_request_serializes_system_and_thinking_when_applicable() {
         let provider = AnthropicProvider::new(
+            "https://api.anthropic.com/v1/messages".to_string(),
             "sk-ant-test".to_string(),
             "claude-sonnet-4-5".to_string(),
             ModelLimits {
@@ -1028,6 +1035,24 @@ mod tests {
                 .and_then(|value| value.get("type"))
                 .and_then(Value::as_str),
             Some("enabled")
+        );
+    }
+
+    #[test]
+    fn provider_keeps_custom_messages_api_url() {
+        let provider = AnthropicProvider::new(
+            "https://gateway.example.com/anthropic/v1/messages".to_string(),
+            "sk-ant-test".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            ModelLimits {
+                context_window: 200_000,
+                max_output_tokens: 8096,
+            },
+        );
+
+        assert_eq!(
+            provider.messages_api_url,
+            "https://gateway.example.com/anthropic/v1/messages"
         );
     }
 }

@@ -17,8 +17,9 @@ use serde::Deserialize;
 
 use crate::{
     config::{
-        ANTHROPIC_MODELS_API_URL, ANTHROPIC_VERSION, ModelConfig, PROVIDER_KIND_ANTHROPIC,
-        PROVIDER_KIND_OPENAI, Profile, load_resolved_config, resolve_model_for_profile,
+        ANTHROPIC_VERSION, ModelConfig, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI, Profile,
+        load_resolved_config, resolve_anthropic_messages_api_url, resolve_anthropic_models_api_url,
+        resolve_model_for_profile,
     },
     llm::{anthropic::AnthropicProvider, openai::OpenAiProvider},
 };
@@ -80,6 +81,7 @@ fn build_provider(profile: &Profile, model: &ModelConfig) -> Result<BuiltProvide
             )))
         },
         PROVIDER_KIND_ANTHROPIC => Ok(BuiltProvider::Anthropic(AnthropicProvider::new(
+            resolve_anthropic_messages_api_url(&profile.base_url),
             api_key,
             model.id.clone(),
             limits,
@@ -95,7 +97,7 @@ fn resolve_model_limits(
 ) -> Result<ModelLimits> {
     match profile.provider_kind.as_str() {
         PROVIDER_KIND_OPENAI => resolve_openai_model_limits(profile, model),
-        PROVIDER_KIND_ANTHROPIC => resolve_anthropic_model_limits(model, api_key),
+        PROVIDER_KIND_ANTHROPIC => resolve_anthropic_model_limits(profile, model, api_key),
         other => Err(AstrError::UnsupportedProvider(other.to_string())),
     }
 }
@@ -109,10 +111,15 @@ fn resolve_openai_model_limits(profile: &Profile, model: &ModelConfig) -> Result
     })
 }
 
-fn resolve_anthropic_model_limits(model: &ModelConfig, api_key: &str) -> Result<ModelLimits> {
+fn resolve_anthropic_model_limits(
+    profile: &Profile,
+    model: &ModelConfig,
+    api_key: &str,
+) -> Result<ModelLimits> {
     let local_limits = model_limits_from_local_override(model);
+    let models_api_url = resolve_anthropic_models_api_url(&profile.base_url);
 
-    match fetch_anthropic_model_metadata(api_key, &model.id) {
+    match fetch_anthropic_model_metadata(&models_api_url, api_key, &model.id) {
         Ok(metadata) => metadata
             .into_model_limits(&model.id)
             .or_else(|error| local_limits.ok_or(error)),
@@ -134,7 +141,12 @@ fn model_limits_from_local_override(model: &ModelConfig) -> Option<ModelLimits> 
     }
 }
 
-fn fetch_anthropic_model_metadata(api_key: &str, model_id: &str) -> Result<AnthropicModelMetadata> {
+fn fetch_anthropic_model_metadata(
+    models_api_url: &str,
+    api_key: &str,
+    model_id: &str,
+) -> Result<AnthropicModelMetadata> {
+    let models_api_url = models_api_url.to_string();
     let api_key = api_key.to_string();
     let model_id = model_id.to_string();
 
@@ -150,7 +162,11 @@ fn fetch_anthropic_model_metadata(api_key: &str, model_id: &str) -> Result<Anthr
 
         runtime.block_on(async move {
             let response = reqwest::Client::new()
-                .get(format!("{}/{}", ANTHROPIC_MODELS_API_URL, model_id))
+                .get(format!(
+                    "{}/{}",
+                    models_api_url.trim_end_matches('/'),
+                    model_id
+                ))
                 .header("x-api-key", api_key)
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .timeout(std::time::Duration::from_secs(10))
@@ -258,7 +274,15 @@ mod tests {
             context_limit: Some(200_000),
         };
 
-        let limits = resolve_anthropic_model_limits(&model, "sk-test")
+        let profile = Profile {
+            name: "anthropic".to_string(),
+            provider_kind: PROVIDER_KIND_ANTHROPIC.to_string(),
+            base_url: "https://gateway.example.com/anthropic".to_string(),
+            api_key: Some("sk-ant".to_string()),
+            models: vec![model.clone()],
+        };
+
+        let limits = resolve_anthropic_model_limits(&profile, &model, "sk-test")
             .expect("local fallback should be accepted when remote call fails");
 
         assert_eq!(

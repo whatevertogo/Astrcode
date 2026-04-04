@@ -24,8 +24,8 @@ use serde_json::json;
 
 use crate::{
     constants::{
-        ANTHROPIC_MESSAGES_API_URL, ANTHROPIC_VERSION, PROVIDER_KIND_ANTHROPIC,
-        PROVIDER_KIND_OPENAI,
+        ANTHROPIC_VERSION, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI,
+        resolve_anthropic_messages_api_url,
     },
     types::{Profile, TestResult},
 };
@@ -40,11 +40,11 @@ use crate::{
 /// 始终返回 `Ok(TestResult)`，连接失败信息封装在 `TestResult.error` 中。
 /// 仅在不支持的 `provider_kind` 时返回 `Err`。
 pub async fn test_connection(profile: &Profile, model: &str) -> Result<TestResult> {
-    // provider_kind 标识提供者类型而非 URL，Anthropic 使用固定 API 端点
+    // 统一在这里解析最终请求地址，避免连接测试与运行时使用不同的 URL 规则。
     let provider = if profile.provider_kind == PROVIDER_KIND_ANTHROPIC {
-        ANTHROPIC_MESSAGES_API_URL.to_string()
+        resolve_anthropic_messages_api_url(&profile.base_url)
     } else {
-        profile.base_url.trim_end_matches('/').to_string()
+        profile.base_url.trim().trim_end_matches('/').to_string()
     };
     let api_key = match profile.resolve_api_key() {
         Ok(api_key) => api_key,

@@ -147,6 +147,8 @@ pub struct Profile {
     pub name: String,
     #[serde(default = "default_profile_provider_kind")]
     pub provider_kind: String,
+    /// OpenAI-compatible 使用 API 根地址；
+    /// Anthropic 允许留空回退官方地址，也允许填写自定义兼容网关地址。
     #[serde(default = "default_profile_base_url")]
     pub base_url: String,
     #[serde(default = "default_profile_api_key")]
