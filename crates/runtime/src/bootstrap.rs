@@ -68,6 +68,8 @@ pub struct PluginLoadState {
 #[derive(Clone)]
 pub struct PluginLoadHandle {
     state: Arc<RwLock<PluginLoadState>>,
+    /// 用于通知等待者加载已完成
+    completed_notify: Arc<tokio::sync::Notify>,
 }
 
 impl PluginLoadHandle {
@@ -75,6 +77,7 @@ impl PluginLoadHandle {
     fn new() -> Self {
         Self {
             state: Arc::new(RwLock::new(PluginLoadState::default())),
+            completed_notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -84,6 +87,8 @@ impl PluginLoadHandle {
     }
 
     /// 等待插件加载完成。
+    ///
+    /// 使用条件变量而非轮询，避免 CPU 空转。
     pub async fn wait_completed(&self) {
         loop {
             {
@@ -92,8 +97,14 @@ impl PluginLoadHandle {
                     return;
                 }
             }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            // 等待完成通知，避免轮询
+            self.completed_notify.notified().await;
         }
+    }
+
+    /// 标记加载完成并通知等待者。
+    fn mark_completed(&self) {
+        self.completed_notify.notify_waiters();
     }
 }
 
@@ -170,6 +181,7 @@ where
             let mut state = plugin_load_handle.state.write().await;
             state.completed = true;
         }
+        plugin_load_handle.mark_completed();
 
         return Ok(RuntimeBootstrap {
             service,
@@ -183,11 +195,13 @@ where
     let plugin_registry_for_bg = Arc::clone(&plugin_registry);
     let initializer_for_bg = initializer.clone();
     let state_for_bg = Arc::clone(&plugin_load_handle.state);
+    let completed_notify_for_bg = Arc::clone(&plugin_load_handle.completed_notify);
     let builtin_names_for_bg = builtin_names;
     let service_for_bg = Arc::clone(&service);
     let governance_for_bg = Arc::clone(&governance);
     let coordinator_for_bg = Arc::clone(&coordinator);
     let builtin_skills_for_bg = builtin_skills;
+    let total_plugin_count = manifests.len();
 
     tokio::spawn(async move {
         let result = assemble_plugins_only(
@@ -215,6 +229,8 @@ where
                         state.failed_count =
                             assembled.stats.failed_count + assembled.stats.loaded_count;
                         state.completed = true;
+                        drop(state); // 先释放锁再通知
+                        completed_notify_for_bg.notify_waiters();
                         return;
                     },
                 };
@@ -234,6 +250,8 @@ where
                     state.failed_count =
                         assembled.stats.failed_count + assembled.stats.loaded_count;
                     state.completed = true;
+                    drop(state); // 先释放锁再通知
+                    completed_notify_for_bg.notify_waiters();
                     return;
                 }
 
@@ -261,17 +279,23 @@ where
                 state.loaded_count = assembled.stats.loaded_count;
                 state.failed_count = assembled.stats.failed_count;
                 state.completed = true;
+                drop(state); // 先释放锁再通知
+                completed_notify_for_bg.notify_waiters();
 
                 log::info!(
                     "background plugin loading completed: {} loaded, {} failed",
-                    state.loaded_count,
-                    state.failed_count
+                    assembled.stats.loaded_count,
+                    assembled.stats.failed_count
                 );
             },
             Err(error) => {
                 log::error!("failed to assemble plugins: {}", error);
                 let mut state = state_for_bg.write().await;
+                // 整个装配过程失败，所有插件都视为加载失败
+                state.failed_count = total_plugin_count;
                 state.completed = true;
+                drop(state); // 先释放锁再通知
+                completed_notify_for_bg.notify_waiters();
             },
         }
     });

@@ -441,7 +441,6 @@ where
 /// 插件加载结果（不含路由器）。
 ///
 /// 用于后台加载场景，插件能力会动态注册到已有的路由器中。
-#[allow(dead_code)]
 pub(crate) struct AssembledPlugins {
     /// 加载成功的插件能力调用器
     pub(crate) invokers: Vec<Arc<dyn CapabilityInvoker>>,
