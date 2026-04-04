@@ -1,7 +1,7 @@
 # Compact 功能优化 TODO
 
 > 对比项目：Claude Code、Codex、OpenCode、Kimi CLI、pi-mono
-> 基准文档：`docs/architecture/compact-upgrade-plan.md`
+> 计划文档：`docs/plan/compact-optimization-plan.md`
 
 ---
 
@@ -11,7 +11,7 @@
 
 | 模块 | 文件 | 职责 |
 |------|------|------|
-| `compaction.rs` | `runtime-agent-loop/src/context_window/compaction.rs` | 完整压缩：前缀/后缀分割 -> LLM 摘要 -> 替换 |
+| `compaction.rs` | `runtime-agent-loop/src/context_window/compaction.rs` | 完整压缩：前缀/后缀分割 → LLM 摘要 → 替换 |
 | `microcompact.rs` | `runtime-agent-loop/src/context_window/microcompact.rs` | 微压缩：截断大工具结果 + 清除可清除工具结果 |
 | `token_usage.rs` | `runtime-agent-loop/src/context_window/token_usage.rs` | Token 估算：启发式 4 chars/token |
 | `compaction_runtime.rs` | `runtime-agent-loop/src/compaction_runtime.rs` | 运行时：Policy/Strategy/Rebuilder 三层 trait |
