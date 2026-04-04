@@ -3,7 +3,7 @@
 //! 注册所有内置工具的调用器（Invoker），包括：
 //! - `Skill` - Skill 加载工具
 //! - `shell` - 命令执行
-//! - `listDir` / `readFile` / `writeFile` / `editFile` - 文件操作
+//! - `listDir` / `readFile` / `writeFile` / `editFile` / `apply_patch` - 文件操作
 //! - `findFiles` / `grep` - 文件搜索
 //!
 //! ## 注册顺序
@@ -52,6 +52,9 @@ pub(crate) fn built_in_capability_invokers(
         )),
         ToolCapabilityInvoker::boxed(Box::new(
             astrcode_runtime_tool_loader::builtin_tools::edit_file::EditFileTool,
+        )),
+        ToolCapabilityInvoker::boxed(Box::new(
+            astrcode_runtime_tool_loader::builtin_tools::apply_patch::ApplyPatchTool,
         )),
         ToolCapabilityInvoker::boxed(Box::new(
             astrcode_runtime_tool_loader::builtin_tools::find_files::FindFilesTool,

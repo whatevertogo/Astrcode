@@ -7,6 +7,8 @@
 //! - `capability_metadata()`: 权限、副作用级别、Prompt 元数据
 //! - `execute()`: 实际执行逻辑
 
+/// 统一 diff 补丁应用工具：多文件 patch
+pub mod apply_patch;
 /// 文件编辑工具：唯一字符串替换
 pub mod edit_file;
 /// 文件查找工具：glob 模式匹配
