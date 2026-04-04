@@ -11,19 +11,8 @@ export interface ToolDiffMetadata {
 
 export type ToolDiffLineKind = 'meta' | 'header' | 'add' | 'remove' | 'note' | 'context';
 
-type UnknownRecord = Record<string, unknown>;
-
-function asRecord(value: unknown): UnknownRecord | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return null;
-  }
-  return value as UnknownRecord;
-}
-
-function pickNumber(record: UnknownRecord, key: string): number | undefined {
-  const value = record[key];
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
+// 工具函数已迁移到 lib/shared/index.ts，此处统一引用
+import { asRecord, pickNumberOrUndefined as pickNumber } from './shared';
 
 export function extractToolDiffMetadata(metadata: unknown): ToolDiffMetadata | null {
   const container = asRecord(metadata);

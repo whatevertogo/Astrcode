@@ -1,12 +1,8 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React from 'react';
 import type { Project } from '../../types';
 import SessionItem from './SessionItem';
+import { useContextMenu } from '../../hooks/useContextMenu';
 import styles from './ProjectItem.module.css';
-
-interface ContextMenuState {
-  x: number;
-  y: number;
-}
 
 interface ProjectItemProps {
   project: Project;
@@ -25,46 +21,13 @@ export default function ProjectItem({
   onDelete,
   onDeleteSession,
 }: ProjectItemProps) {
-  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  // Close context menu on outside click
-  useEffect(() => {
-    if (!contextMenu) return;
-    const handler = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setContextMenu(null);
-      }
-    };
-    window.addEventListener('mousedown', handler);
-    return () => window.removeEventListener('mousedown', handler);
-  }, [contextMenu]);
-
-  useEffect(() => {
-    if (!contextMenu || !menuRef.current) {
-      return;
-    }
-
-    const margin = 8;
-    const maxX = Math.max(margin, window.innerWidth - menuRef.current.offsetWidth - margin);
-    const maxY = Math.max(margin, window.innerHeight - menuRef.current.offsetHeight - margin);
-    const nextX = Math.min(contextMenu.x, maxX);
-    const nextY = Math.min(contextMenu.y, maxY);
-    if (nextX !== contextMenu.x || nextY !== contextMenu.y) {
-      setContextMenu({ x: nextX, y: nextY });
-    }
-  }, [contextMenu]);
-
-  const handleContextMenu = (e: React.MouseEvent) => {
-    e.preventDefault();
-    setContextMenu({ x: e.clientX, y: e.clientY });
-  };
+  const { contextMenu, menuRef, openMenu, closeMenu } = useContextMenu();
 
   return (
     <div className={styles.wrapper}>
       <div
         className={styles.projectRow}
-        onContextMenu={handleContextMenu}
+        onContextMenu={openMenu}
         onClick={() => onToggleExpand(project.id)}
       >
         <span className={styles.iconContainer} aria-hidden="true">
@@ -117,7 +80,7 @@ export default function ProjectItem({
             type="button"
             onClick={() => {
               onDelete(project.id);
-              setContextMenu(null);
+              closeMenu();
             }}
           >
             删除项目

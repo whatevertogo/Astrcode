@@ -14,24 +14,13 @@ export interface ToolShellDisplayMetadata {
   segments: ToolShellDisplaySegment[];
 }
 
-type UnknownRecord = Record<string, unknown>;
-
-function asRecord(value: unknown): UnknownRecord | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return null;
-  }
-  return value as UnknownRecord;
-}
-
-function pickString(record: UnknownRecord, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === 'string' ? value : undefined;
-}
-
-function pickNumber(record: UnknownRecord, key: string): number | undefined {
-  const value = record[key];
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
+// 工具函数已迁移到 lib/shared/index.ts，此处统一引用
+import {
+  asRecord,
+  pickStringOrUndefined as pickString,
+  pickNumberOrUndefined as pickNumber,
+  UnknownRecord,
+} from './shared';
 
 function extractShellSegments(value: unknown): ToolShellDisplaySegment[] {
   if (!Array.isArray(value)) {

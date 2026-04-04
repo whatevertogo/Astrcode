@@ -1,0 +1,88 @@
+/* 确认对话框样式 — 替代 window.confirm() */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(55, 42, 26, 0.18);
+  backdrop-filter: blur(8px);
+}
+
+.modal {
+  width: 380px;
+  max-width: 100%;
+  padding: 24px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 24px 60px rgba(83, 61, 31, 0.16);
+}
+
+.title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.message {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  margin-bottom: 20px;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.cancelBtn {
+  padding: 9px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  color: var(--text-secondary);
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease;
+}
+
+.cancelBtn:hover {
+  background: #fff;
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.confirmBtn {
+  padding: 9px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 12px;
+  border: none;
+  background: var(--accent-strong);
+  color: #fff;
+  transition:
+    background-color 150ms ease,
+    opacity 150ms ease;
+}
+
+.confirmBtn:hover:not(:disabled) {
+  background: #1f1b17;
+}
+
+.dangerBtn {
+  background: var(--danger);
+}
+
+.dangerBtn:hover:not(:disabled) {
+  background: #b54a4a;
+}

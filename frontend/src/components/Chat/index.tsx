@@ -9,6 +9,7 @@ import type {
 import TopBar from './TopBar';
 import MessageList from './MessageList';
 import InputBar from './InputBar';
+import styles from './Chat.module.css';
 
 interface ChatProps {
   project: Project | null;
@@ -44,7 +45,7 @@ export default function Chat({
   setModel,
 }: ChatProps) {
   return (
-    <div className="chat">
+    <div className={styles.chat}>
       <TopBar
         projectName={project?.name ?? null}
         sessionTitle={session?.title ?? null}

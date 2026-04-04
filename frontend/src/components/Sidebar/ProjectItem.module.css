@@ -73,10 +73,10 @@
 
 .renameInput {
   flex: 1;
-  background: #252525;
-  border: 1px solid #555;
+  background: var(--rename-input-bg);
+  border: 1px solid var(--rename-input-border);
   border-radius: 3px;
-  color: #d4d4d4;
+  color: var(--rename-input-color);
   font-size: 13px;
   padding: 1px 4px;
   outline: none;

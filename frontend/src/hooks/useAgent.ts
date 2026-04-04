@@ -65,6 +65,7 @@ export interface SessionToolCallMessage {
   metadata?: unknown;
   ok?: boolean;
   durationMs?: number;
+  timestamp?: string;
 }
 
 export type SessionMessage = SessionUserMessage | SessionAssistantMessage | SessionToolCallMessage;
@@ -285,7 +286,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
 
   const handleLoadSession = useCallback(async (sessionId: string): Promise<SessionSnapshot> => {
     const { messages, cursor } = await loadSession(sessionId);
-    return { messages: messages as SessionMessage[], cursor };
+    return { messages: messages, cursor };
   }, []);
 
   const handleSubmitPrompt = useCallback(

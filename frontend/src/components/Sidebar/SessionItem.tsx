@@ -1,5 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 import type { Session } from '../../types';
+import { useContextMenu } from '../../hooks/useContextMenu';
 import styles from './SessionItem.module.css';
 
 interface SessionItemProps {
@@ -9,38 +10,15 @@ interface SessionItemProps {
   onDelete: () => void;
 }
 
-interface ContextMenuState {
-  x: number;
-  y: number;
-}
-
 export default function SessionItem({ session, isActive, onSelect, onDelete }: SessionItemProps) {
-  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
+  const { contextMenu, menuRef, openMenu, closeMenu } = useContextMenu();
   const rowRef = useRef<HTMLDivElement>(null);
-
-  // Close context menu on outside click
-  useEffect(() => {
-    if (!contextMenu) return;
-    const handler = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setContextMenu(null);
-      }
-    };
-    window.addEventListener('mousedown', handler);
-    return () => window.removeEventListener('mousedown', handler);
-  }, [contextMenu]);
 
   useEffect(() => {
     if (isActive) {
       rowRef.current?.focus();
     }
   }, [isActive]);
-
-  const handleContextMenu = (e: React.MouseEvent) => {
-    e.preventDefault();
-    setContextMenu({ x: e.clientX, y: e.clientY });
-  };
 
   return (
     <div className={styles.wrapper} style={{ position: 'relative' }}>
@@ -51,7 +29,7 @@ export default function SessionItem({ session, isActive, onSelect, onDelete }: S
           onSelect();
           e.currentTarget.focus();
         }}
-        onContextMenu={handleContextMenu}
+        onContextMenu={openMenu}
         tabIndex={0}
       >
         <span className={styles.title} title={session.title}>
@@ -70,7 +48,7 @@ export default function SessionItem({ session, isActive, onSelect, onDelete }: S
             type="button"
             onClick={() => {
               onDelete();
-              setContextMenu(null);
+              closeMenu();
             }}
           >
             删除会话

@@ -174,7 +174,7 @@
 }
 
 .terminalSegmentError {
-  color: #ffb8b0;
+  color: var(--terminal-error);
 }
 
 .patchLine {

@@ -8,7 +8,7 @@
 //! Keeping them here eliminates drift and ensures consistent behavior across
 //! the frontend codebase.
 
-type UnknownRecord = Record<string, unknown>;
+export type UnknownRecord = Record<string, unknown>;
 
 export function asRecord(value: unknown): UnknownRecord | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {

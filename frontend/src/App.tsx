@@ -9,6 +9,7 @@ import {
 import Sidebar from './components/Sidebar/index';
 import Chat from './components/Chat/index';
 import SettingsModal from './components/Settings/SettingsModal';
+import ConfirmDialog from './components/ConfirmDialog';
 import { useAgent } from './hooks/useAgent';
 import { useAgentEventHandler } from './hooks/useAgentEventHandler';
 import { useSessionCatalogEvents } from './hooks/useSessionCatalogEvents';
@@ -22,6 +23,13 @@ export default function App() {
   const [state, dispatch] = useReducer(reducer, undefined, makeInitialState);
   const [showSettings, setShowSettings] = useState(false);
   const [modelRefreshKey, setModelRefreshKey] = useState(0);
+  // 确认对话框状态（替代 window.confirm）
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string;
+    message: string;
+    danger?: boolean;
+    onConfirm: () => void | Promise<void>;
+  } | null>(null);
   const activeSessionIdRef = useRef<string | null>(state.activeSessionId);
   const phaseRef = useRef(state.phase);
   const turnSessionMapRef = useRef<Record<string, string>>({});
@@ -245,40 +253,46 @@ export default function App() {
     dispatch({ type: 'TOGGLE_EXPAND', projectId });
   };
 
-  const handleDeleteProject = async (projectId: string) => {
+  const handleDeleteProject = (projectId: string) => {
     const project = state.projects.find((item) => item.id === projectId);
     if (!project) {
       return;
     }
 
-    const confirmed = window.confirm(`删除项目“${project.name}”会移除该目录下所有会话，是否继续？`);
-    if (!confirmed) {
-      return;
-    }
-
-    try {
-      const result = await deleteProject(project.workingDir);
-      if (result.failedSessionIds.length > 0) {
-        console.error('部分会话删除失败:', result.failedSessionIds);
-      }
-      await refreshSessions();
-    } catch (error) {
-      console.error('Failed to delete project:', error);
-    }
+    setConfirmDialog({
+      title: '删除项目',
+      message: `删除项目"${project.name}"会移除该目录下所有会话，是否继续？`,
+      danger: true,
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        try {
+          const result = await deleteProject(project.workingDir);
+          if (result.failedSessionIds.length > 0) {
+            console.error('部分会话删除失败:', result.failedSessionIds);
+          }
+          await refreshSessions();
+        } catch (error) {
+          console.error('Failed to delete project:', error);
+        }
+      },
+    });
   };
 
-  const handleDeleteSession = async (_projectId: string, sessionId: string) => {
-    const confirmed = window.confirm('确认删除该会话？该操作不可恢复。');
-    if (!confirmed) {
-      return;
-    }
-
-    try {
-      await deleteSession(sessionId);
-      await refreshSessions();
-    } catch (error) {
-      console.error('Failed to delete session:', error);
-    }
+  const handleDeleteSession = (_projectId: string, sessionId: string) => {
+    setConfirmDialog({
+      title: '删除会话',
+      message: '确认删除该会话？该操作不可恢复。',
+      danger: true,
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        try {
+          await deleteSession(sessionId);
+          await refreshSessions();
+        } catch (error) {
+          console.error('Failed to delete session:', error);
+        }
+      },
+    });
   };
 
   const handleSubmit = useCallback(
@@ -315,7 +329,7 @@ export default function App() {
           effectiveSessionId !== sessionId
         ) {
           // 分叉成功后旧 session 的 turnDone 可能已经在切换期间到达并被忽略；
-          // 先本地兜底回 idle，避免 UI 把“正在思考”状态卡死到下一次刷新。
+          // 先本地兜底回 idle，避免 UI 把"正在思考"状态卡死到下一次刷新。
           phaseRef.current = 'idle';
           dispatch({ type: 'SET_PHASE', phase: 'idle' });
           await refreshSessions(effectiveSessionId);
@@ -423,6 +437,15 @@ export default function App() {
           saveActiveSelection={saveActiveSelection}
           testConnection={testConnection}
           openConfigInEditor={openConfigInEditor}
+        />
+      )}
+      {confirmDialog && (
+        <ConfirmDialog
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          danger={confirmDialog.danger}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
         />
       )}
     </div>

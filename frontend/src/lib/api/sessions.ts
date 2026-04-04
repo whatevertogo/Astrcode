@@ -4,22 +4,15 @@
 
 import type { DeleteProjectResult, SessionMeta } from '../../types';
 import { request, requestJson } from './client';
-
-export interface SessionSnapshot {
-  kind: 'user' | 'assistant' | 'toolCall';
-  turnId?: string | null;
-  content?: string;
-  timestamp: string;
-  reasoningContent?: string;
-  toolCallId?: string;
-  toolName?: string;
-  args?: unknown;
-  output?: string;
-  error?: string;
-  metadata?: unknown;
-  ok?: boolean;
-  durationMs?: number;
-}
+// 共享工具函数，消除与 lib/shared/index.ts 的重复定义
+import {
+  asRecord,
+  pickStringOrUndefined as pickString,
+  pickOptionalString,
+  pickBoolean,
+  pickNumberOrUndefined as pickNumber,
+} from '../shared';
+import type { SessionMessage } from '../../hooks/useAgent';
 
 export interface PromptSubmission {
   turnId: string;
@@ -40,7 +33,7 @@ export async function listSessionsWithMeta(): Promise<SessionMeta[]> {
 }
 
 export async function loadSession(sessionId: string): Promise<{
-  messages: SessionSnapshot[];
+  messages: SessionMessage[];
   cursor: string | null;
 }> {
   const response = await request(`/api/sessions/${encodeURIComponent(sessionId)}/messages`);
@@ -83,63 +76,7 @@ export async function deleteProject(workingDir: string): Promise<DeleteProjectRe
   );
 }
 
-type UnknownRecord = Record<string, unknown>;
-
-function asRecord(value: unknown): UnknownRecord | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return null;
-  }
-  return value as UnknownRecord;
-}
-
-function pickString(record: UnknownRecord, ...keys: string[]): string | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === 'string') {
-      return value;
-    }
-  }
-  return undefined;
-}
-
-function pickOptionalString(record: UnknownRecord, ...keys: string[]): string | null | undefined {
-  for (const key of keys) {
-    if (!(key in record)) {
-      continue;
-    }
-    const value = record[key];
-    if (value === null || value === undefined) {
-      return null;
-    }
-    if (typeof value === 'string') {
-      return value;
-    }
-    return undefined;
-  }
-  return undefined;
-}
-
-function pickBoolean(record: UnknownRecord, ...keys: string[]): boolean | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === 'boolean') {
-      return value;
-    }
-  }
-  return undefined;
-}
-
-function pickNumber(record: UnknownRecord, ...keys: string[]): number | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      return value;
-    }
-  }
-  return undefined;
-}
-
-function normalizeSessionMessage(raw: unknown): SessionSnapshot {
+function normalizeSessionMessage(raw: unknown): SessionMessage {
   const message = asRecord(raw);
   if (!message) {
     throw new Error(`invalid session message: ${String(raw)}`);

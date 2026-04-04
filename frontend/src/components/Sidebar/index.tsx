@@ -4,13 +4,14 @@ import ProjectItem from './ProjectItem';
 import NewProjectModal from '../NewProjectModal';
 import styles from './Sidebar.module.css';
 
-const PHASE_COLOR: Record<Phase, string> = {
-  idle: '#4ec9b0',
-  thinking: '#dcdcaa',
-  callingTool: '#9cdcfe',
-  streaming: '#c586c0',
-  interrupted: '#f44747',
-  done: '#4ec9b0',
+// Phase 指示灯颜色映射到 CSS 变量
+const PHASE_COLOR_VAR: Record<Phase, string> = {
+  idle: 'var(--phase-idle)',
+  thinking: 'var(--phase-thinking)',
+  callingTool: 'var(--phase-calling-tool)',
+  streaming: 'var(--phase-streaming)',
+  interrupted: 'var(--phase-interrupted)',
+  done: 'var(--phase-done)',
 };
 
 interface SidebarProps {
@@ -51,7 +52,7 @@ export default function Sidebar({
       <div className={styles.header}>
         <span
           className={styles.phaseIndicator}
-          style={{ backgroundColor: PHASE_COLOR[phase] }}
+          style={{ backgroundColor: PHASE_COLOR_VAR[phase] }}
           title={phase}
         />
         <span className={styles.title}>AstrCode</span>
