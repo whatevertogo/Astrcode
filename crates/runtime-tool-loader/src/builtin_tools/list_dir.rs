@@ -17,6 +17,7 @@ use astrcode_core::{
     ToolExecutionResult, ToolPromptMetadata,
 };
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -46,26 +47,6 @@ enum SortBy {
     #[default]
     Name,
     Modified,
-}
-
-/// 将 Unix 时间戳转换为 ISO 8601 格式字符串。
-///
-/// 不依赖 chrono，使用简单的时间计算。
-fn time_at(unix_secs: u64) -> String {
-    // 简化实现：返回 Unix 时间戳 ISO 8601 近似格式
-    // 由于没有 chrono，我们使用一个简单的格式
-    let days = unix_secs / 86400;
-    let years = 1970 + days / 365;
-    let remaining_days = days % 365;
-    let months = remaining_days / 30 + 1;
-    let day = remaining_days % 30 + 1;
-    let hours = (unix_secs % 86400) / 3600;
-    let minutes = (unix_secs % 3600) / 60;
-    let seconds = unix_secs % 60;
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        years, months, day, hours, minutes, seconds
-    )
 }
 
 /// 目录条目信息。
@@ -220,23 +201,19 @@ impl Tool for ListDirTool {
                     "isFile": e.is_file,
                     "size": e.size,
                     "modified": e.modified.map(|t| {
-                        // 简单的 ISO 8601 格式，不依赖 chrono
-                        let duration = t.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap_or_default();
-                        let secs = duration.as_secs();
-                        time_at(secs)
+                        // 这里返回真实 RFC3339 UTC 时间，便于排序和跨端展示保持一致。
+                        DateTime::<Utc>::from(t).to_rfc3339()
                     }),
                     "extension": e.extension,
                 })
             })
             .collect();
 
-        // 空目录返回友好提示，避免空 JSON 触发 stop sequence
-        let output = if json_entries.is_empty() {
-            "Directory is empty.".to_string()
-        } else {
-            serde_json::to_string(&json_entries)
-                .map_err(|e| AstrError::parse("failed to serialize listDir output", e))?
-        };
+        let output = serde_json::to_string(&json_entries)
+            .map_err(|e| AstrError::parse("failed to serialize listDir output", e))?;
+        let empty_message = json_entries
+            .is_empty()
+            .then_some("Directory is empty.".to_string());
 
         Ok(ToolExecutionResult {
             tool_call_id,
@@ -248,6 +225,7 @@ impl Tool for ListDirTool {
                 "path": path.to_string_lossy(),
                 "count": json_entries.len(),
                 "truncated": truncated,
+                "message": empty_message,
                 "sortBy": match sort_by {
                     SortBy::Name => "name",
                     SortBy::Modified => "modified",
@@ -261,6 +239,8 @@ impl Tool for ListDirTool {
 
 #[cfg(test)]
 mod tests {
+    use chrono::DateTime;
+
     use super::*;
     use crate::test_support::test_tool_context_for;
 
@@ -289,7 +269,13 @@ mod tests {
         assert_eq!(entries[0]["isFile"], true);
         assert_eq!(entries[0]["size"], 11); // "hello world" 的字节数
         assert_eq!(entries[0]["extension"], "txt");
-        assert!(entries[0]["modified"].is_string());
+        let modified = entries[0]["modified"]
+            .as_str()
+            .expect("modified timestamp should exist");
+        assert!(
+            DateTime::parse_from_rfc3339(modified).is_ok(),
+            "modified should be RFC3339"
+        );
     }
 
     #[tokio::test]
@@ -378,5 +364,26 @@ mod tests {
         assert_eq!(entries[0]["name"], "zdir");
         assert_eq!(entries[0]["isDir"], true);
         assert_eq!(entries[1]["name"], "afile.txt");
+    }
+
+    #[tokio::test]
+    async fn list_dir_tool_returns_json_for_empty_directory() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let tool = ListDirTool;
+
+        let result = tool
+            .execute(
+                "tc-list-empty".to_string(),
+                json!({"path": temp.path().to_string_lossy()}),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("listDir should succeed");
+
+        let entries: Vec<serde_json::Value> =
+            serde_json::from_str(&result.output).expect("output should remain valid json");
+        assert!(entries.is_empty());
+        let metadata = result.metadata.expect("metadata should exist");
+        assert_eq!(metadata["message"], json!("Directory is empty."));
     }
 }

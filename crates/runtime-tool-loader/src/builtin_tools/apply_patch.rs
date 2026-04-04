@@ -73,10 +73,26 @@ struct FileChange {
     error: Option<String>,
 }
 
-struct HunkResolution {
-    content_start: usize,
-    line_is_removal: Vec<bool>,
-    add_lines: Vec<String>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineEnding {
+    Lf,
+    Crlf,
+}
+
+impl LineEnding {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Lf => "\n",
+            Self::Crlf => "\r\n",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TextDocument {
+    lines: Vec<String>,
+    line_ending: LineEnding,
+    has_trailing_newline: bool,
 }
 
 // ── Patch 解析 ──
@@ -273,11 +289,38 @@ fn parse_range(s: &str, kind: &str) -> Result<(usize, usize)> {
 
 // ── Hunk 应用 ──
 
-fn text_lines(text: &str) -> Vec<String> {
-    if text.is_empty() {
-        return Vec::new();
+fn parse_text_document(text: &str) -> TextDocument {
+    let line_ending = if text.contains("\r\n") {
+        LineEnding::Crlf
+    } else {
+        LineEnding::Lf
+    };
+
+    TextDocument {
+        lines: if text.is_empty() {
+            Vec::new()
+        } else {
+            text.lines().map(String::from).collect()
+        },
+        line_ending,
+        has_trailing_newline: text.ends_with('\n'),
     }
-    text.lines().map(String::from).collect()
+}
+
+fn render_text_document(
+    lines: &[String],
+    line_ending: LineEnding,
+    has_trailing_newline: bool,
+) -> String {
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let mut content = lines.join(line_ending.as_str());
+    if has_trailing_newline {
+        content.push_str(line_ending.as_str());
+    }
+    content
 }
 
 fn apply_hunks(
@@ -285,77 +328,95 @@ fn apply_hunks(
     hunks: &[Hunk],
 ) -> std::result::Result<Vec<String>, String> {
     let mut result = content_lines.to_vec();
+    let mut line_delta = 0isize;
 
-    let mut resolved_hunks: Vec<HunkResolution> = Vec::new();
     for (idx, hunk) in hunks.iter().enumerate() {
-        let pos = find_context_match(&result, hunk).ok_or_else(|| {
+        let anchor = expected_anchor(hunk, line_delta, result.len());
+        let pos = find_context_match(&result, hunk, anchor).ok_or_else(|| {
             format!(
                 "hunk #{} (line ~{}) failed to apply: context mismatch",
                 idx + 1,
                 hunk.old_start
             )
         })?;
-        resolved_hunks.push(resolve_hunk(hunk, pos));
-    }
-
-    // 从后向前应用，避免行偏移影响后续 hunk
-    resolved_hunks.sort_by_key(|r| r.content_start);
-    resolved_hunks.reverse();
-
-    for resolution in &resolved_hunks {
-        let mut to_remove: Vec<usize> = resolution
-            .line_is_removal
-            .iter()
-            .enumerate()
-            .filter(|&(_, &is_del)| is_del)
-            .map(|(i, _)| resolution.content_start + i)
-            .collect();
-        to_remove.reverse();
-
-        for idx in &to_remove {
-            if *idx < result.len() {
-                result.remove(*idx);
-            }
-        }
-
-        let insert_pos = {
-            let first_del_offset = resolution
-                .line_is_removal
-                .iter()
-                .position(|&b| b)
-                .unwrap_or(resolution.line_is_removal.len());
-            resolution.content_start + first_del_offset
-        };
-
-        for (add_idx, line) in resolution.add_lines.iter().enumerate() {
-            let pos = insert_pos.min(result.len());
-            result.insert(pos + add_idx, line.clone());
-        }
+        apply_hunk_in_place(&mut result, hunk, pos).map_err(|e| {
+            format!(
+                "hunk #{} (line ~{}) failed to apply: {e}",
+                idx + 1,
+                hunk.old_start
+            )
+        })?;
+        line_delta += hunk_line_delta(hunk);
     }
 
     Ok(result)
 }
 
-fn resolve_hunk(hunk: &Hunk, content_start: usize) -> HunkResolution {
-    let mut line_is_removal: Vec<bool> = Vec::new();
-    let mut add_lines: Vec<String> = Vec::new();
+fn apply_hunk_in_place(
+    content_lines: &mut Vec<String>,
+    hunk: &Hunk,
+    content_start: usize,
+) -> std::result::Result<(), String> {
+    let mut source_idx = content_start;
+    let mut replacement: Vec<String> = Vec::new();
 
     for hunk_line in &hunk.lines {
         match hunk_line {
-            HunkLine::Context(_) => line_is_removal.push(false),
-            HunkLine::Delete(_) => line_is_removal.push(true),
-            HunkLine::Add(line) => add_lines.push(line.clone()),
+            // 逐行消费旧内容并同步构建新内容，才能保留插入行在 hunk 中的真实顺序。
+            HunkLine::Context(expected) => {
+                let actual = content_lines.get(source_idx).ok_or_else(|| {
+                    format!("expected context line '{expected}' but reached end of file")
+                })?;
+                if actual != expected {
+                    return Err(format!(
+                        "expected context line '{expected}', got '{actual}'"
+                    ));
+                }
+                replacement.push(actual.clone());
+                source_idx += 1;
+            },
+            HunkLine::Delete(expected) => {
+                let actual = content_lines.get(source_idx).ok_or_else(|| {
+                    format!("expected delete line '{expected}' but reached end of file")
+                })?;
+                if actual != expected {
+                    return Err(format!("expected delete line '{expected}', got '{actual}'"));
+                }
+                source_idx += 1;
+            },
+            HunkLine::Add(line) => replacement.push(line.clone()),
         }
     }
 
-    HunkResolution {
-        content_start,
-        line_is_removal,
-        add_lines,
-    }
+    content_lines.splice(content_start..source_idx, replacement);
+    Ok(())
 }
 
-fn find_context_match(content_lines: &[String], hunk: &Hunk) -> Option<usize> {
+fn expected_anchor(hunk: &Hunk, line_delta: isize, content_len: usize) -> usize {
+    let base = if hunk.old_start == 0 {
+        0
+    } else {
+        hunk.old_start.saturating_sub(1)
+    };
+    let shifted = base as isize + line_delta;
+    shifted.clamp(0, content_len as isize) as usize
+}
+
+fn hunk_line_delta(hunk: &Hunk) -> isize {
+    let adds = hunk
+        .lines
+        .iter()
+        .filter(|line| matches!(line, HunkLine::Add(_)))
+        .count() as isize;
+    let deletes = hunk
+        .lines
+        .iter()
+        .filter(|line| matches!(line, HunkLine::Delete(_)))
+        .count() as isize;
+    adds - deletes
+}
+
+fn find_context_match(content_lines: &[String], hunk: &Hunk, anchor: usize) -> Option<usize> {
     let pattern: Vec<&str> = hunk
         .lines
         .iter()
@@ -366,14 +427,8 @@ fn find_context_match(content_lines: &[String], hunk: &Hunk) -> Option<usize> {
         .collect();
 
     if pattern.is_empty() {
-        return Some(content_lines.len());
+        return Some(anchor.min(content_lines.len()));
     }
-
-    let anchor = if hunk.old_start == 0 {
-        0
-    } else {
-        hunk.old_start.saturating_sub(1)
-    };
 
     if try_match_at(content_lines, &pattern, anchor) {
         return Some(anchor);
@@ -484,7 +539,45 @@ async fn apply_file_patch(file_patch: &FilePatch, ctx: &ToolContext) -> FileChan
         };
     };
 
+    let original_doc = original_content
+        .as_deref()
+        .map(parse_text_document)
+        .unwrap_or(TextDocument {
+            lines: Vec::new(),
+            line_ending: LineEnding::Lf,
+            has_trailing_newline: false,
+        });
+
     if is_delete {
+        let result_lines = match apply_hunks(&original_doc.lines, &file_patch.hunks) {
+            Ok(lines) => lines,
+            Err(e) => {
+                return FileChange {
+                    change_type: "deleted".into(),
+                    path: target_path_str.clone(),
+                    applied: false,
+                    summary: format!(
+                        "failed to validate delete patch for {}: {e}",
+                        target_path.display()
+                    ),
+                    error: Some(format!("failed to validate delete hunk: {e}")),
+                };
+            },
+        };
+        if !result_lines.is_empty() {
+            return FileChange {
+                change_type: "deleted".into(),
+                path: target_path_str.clone(),
+                applied: false,
+                summary: format!(
+                    "delete patch for {} does not remove the full file",
+                    target_path.display()
+                ),
+                error: Some(
+                    "delete patch must match the current file content and remove all lines".into(),
+                ),
+            };
+        }
         if let Err(e) = std::fs::remove_file(&target_path) {
             return FileChange {
                 change_type: "deleted".into(),
@@ -503,12 +596,7 @@ async fn apply_file_patch(file_patch: &FilePatch, ctx: &ToolContext) -> FileChan
         };
     }
 
-    let content_lines = original_content
-        .as_deref()
-        .map(text_lines)
-        .unwrap_or_default();
-
-    let result_lines = match apply_hunks(&content_lines, &file_patch.hunks) {
+    let result_lines = match apply_hunks(&original_doc.lines, &file_patch.hunks) {
         Ok(lines) => lines,
         Err(e) => {
             return FileChange {
@@ -531,15 +619,12 @@ async fn apply_file_patch(file_patch: &FilePatch, ctx: &ToolContext) -> FileChan
         };
     }
 
-    // 保留原始文件的尾部换行符（如果有且结果非空）
-    let trailing_newline = original_content
-        .as_deref()
-        .is_some_and(|s| s.ends_with('\n'));
-    let new_content = if trailing_newline && !result_lines.is_empty() {
-        format!("{}\n", result_lines.join("\n"))
-    } else {
-        result_lines.join("\n")
-    };
+    // 复用原文件换行风格，避免单行修改把整个 CRLF 文件改写成 LF。
+    let new_content = render_text_document(
+        &result_lines,
+        original_doc.line_ending,
+        original_doc.has_trailing_newline,
+    );
     let report = build_text_change_report(
         &target_path,
         change_type,
@@ -547,7 +632,7 @@ async fn apply_file_patch(file_patch: &FilePatch, ctx: &ToolContext) -> FileChan
         &new_content,
     );
 
-    if let Err(e) = write_text_file(&target_path, &new_content, false).await {
+    if let Err(e) = write_text_file(&target_path, &new_content, is_new_file).await {
         return FileChange {
             change_type: change_type.into(),
             path: target_path_str.clone(),
@@ -823,6 +908,40 @@ mod tests {
         assert_eq!(result[1], "    new();");
     }
 
+    #[test]
+    fn apply_hunk_preserves_insert_position_between_context_lines() {
+        let content = vec!["A".to_string(), "B".to_string()];
+        let hunk = Hunk {
+            old_start: 1,
+            _old_count: 2,
+            _new_start: 1,
+            _new_count: 3,
+            lines: vec![
+                HunkLine::Context("A".into()),
+                HunkLine::Add("X".into()),
+                HunkLine::Context("B".into()),
+            ],
+        };
+
+        let result = apply_hunks(&content, &[hunk]).expect("should apply");
+        assert_eq!(result, vec!["A", "X", "B"]);
+    }
+
+    #[test]
+    fn apply_hunk_insert_only_uses_header_anchor() {
+        let content = vec!["tail".to_string()];
+        let hunk = Hunk {
+            old_start: 1,
+            _old_count: 0,
+            _new_start: 1,
+            _new_count: 1,
+            lines: vec![HunkLine::Add("head".into())],
+        };
+
+        let result = apply_hunks(&content, &[hunk]).expect("should apply");
+        assert_eq!(result, vec!["head", "tail"]);
+    }
+
     #[tokio::test]
     async fn apply_patch_creates_new_file() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -935,5 +1054,58 @@ mod tests {
             "trailing newline should be preserved"
         );
         assert!(content.contains("new()"));
+    }
+
+    #[tokio::test]
+    async fn apply_patch_preserves_crlf_line_endings() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file = temp.path().join("windows.rs");
+        tokio::fs::write(&file, "fn foo() {\r\n    old();\r\n}\r\n")
+            .await
+            .expect("seed write");
+
+        let tool = ApplyPatchTool;
+        let patch = "--- a/windows.rs\n+++ b/windows.rs\n@@ -1,3 +1,3 @@\nfn foo() {\n-    \
+                     old();\n+    new();\n}\n";
+
+        let result = tool
+            .execute(
+                "tc-patch-crlf".into(),
+                json!({ "patch": patch }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("should execute");
+
+        assert!(result.ok, "should succeed: {}", result.output);
+        let content = tokio::fs::read_to_string(&file).await.expect("readable");
+        assert_eq!(content, "fn foo() {\r\n    new();\r\n}\r\n");
+    }
+
+    #[tokio::test]
+    async fn apply_patch_delete_validates_existing_content() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file = temp.path().join("old_file.txt");
+        tokio::fs::write(&file, "line one\nline changed\n")
+            .await
+            .expect("seed write");
+
+        let tool = ApplyPatchTool;
+        let patch = "--- a/old_file.txt\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-line one\n-line two\n";
+
+        let result = tool
+            .execute(
+                "tc-patch-delete-validate".into(),
+                json!({ "patch": patch }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("should return result");
+
+        assert!(!result.ok, "delete should be rejected on content mismatch");
+        assert!(
+            file.exists(),
+            "file should remain when delete validation fails"
+        );
     }
 }

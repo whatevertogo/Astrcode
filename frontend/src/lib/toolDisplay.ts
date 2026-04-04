@@ -14,9 +14,20 @@ export interface ToolShellDisplayMetadata {
   segments: ToolShellDisplaySegment[];
 }
 
+export interface ToolMetadataSummary {
+  message?: string;
+  pills: string[];
+}
+
+export interface StructuredJsonOutput {
+  value: UnknownRecord | unknown[];
+  summary: string;
+}
+
 // 工具函数已迁移到 lib/shared/index.ts，此处统一引用
 import {
   asRecord,
+  pickBoolean,
   pickStringOrUndefined as pickString,
   pickNumberOrUndefined as pickNumber,
   UnknownRecord,
@@ -160,4 +171,95 @@ export function mergeToolMetadata(previousMetadata: unknown, nextMetadata: unkno
     segments: previousDisplay.segments,
   });
   return merged;
+}
+
+function pushNumberPill(
+  pills: string[],
+  metadata: UnknownRecord,
+  keys: string[],
+  format: (value: number) => string
+): void {
+  const value = pickNumber(metadata, ...keys);
+  if (value !== undefined) {
+    pills.push(format(value));
+  }
+}
+
+export function extractToolMetadataSummary(metadata: unknown): ToolMetadataSummary | null {
+  const container = asRecord(metadata);
+  if (!container) {
+    return null;
+  }
+
+  const pills: string[] = [];
+  const message = pickString(container, 'message');
+
+  pushNumberPill(pills, container, ['count'], (value) => `${value} items`);
+  pushNumberPill(pills, container, ['returned'], (value) => `${value} returned`);
+  pushNumberPill(pills, container, ['total_files', 'totalFiles'], (value) => `${value} files`);
+  pushNumberPill(pills, container, ['filesApplied'], (value) => `${value} applied`);
+  pushNumberPill(pills, container, ['filesFailed'], (value) => `${value} failed`);
+  pushNumberPill(pills, container, ['bytes'], (value) => `${value} bytes`);
+
+  const outputMode = pickString(container, 'output_mode', 'outputMode');
+  if (outputMode) {
+    pills.push(`mode ${outputMode}`);
+  }
+
+  if (pickBoolean(container, 'has_more', 'hasMore') === true) {
+    pills.push('has more');
+  }
+  if (pickBoolean(container, 'truncated') === true) {
+    pills.push('truncated');
+  }
+
+  if (!message && pills.length === 0) {
+    return null;
+  }
+
+  return { message: message ?? undefined, pills };
+}
+
+function summarizeJsonContainer(value: UnknownRecord | unknown[]): string {
+  if (Array.isArray(value)) {
+    return `Array (${value.length} items)`;
+  }
+  return `Object (${Object.keys(value).length} keys)`;
+}
+
+export function extractStructuredJsonOutput(
+  output: string | undefined
+): StructuredJsonOutput | null {
+  if (typeof output !== 'string') {
+    return null;
+  }
+
+  const trimmed = output.trim();
+  // 先做首字符判断，避免对明显非 JSON 文本执行无意义的 JSON.parse。
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+    return null;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== 'object') {
+      return null;
+    }
+    if (!Array.isArray(parsed)) {
+      const record = asRecord(parsed);
+      if (!record) {
+        return null;
+      }
+      return {
+        value: record,
+        summary: summarizeJsonContainer(record),
+      };
+    }
+    return {
+      value: parsed,
+      summary: summarizeJsonContainer(parsed),
+    };
+  } catch {
+    return null;
+  }
 }

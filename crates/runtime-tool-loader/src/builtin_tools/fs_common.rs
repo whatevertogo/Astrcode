@@ -20,7 +20,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use astrcode_core::{AstrError, CancelToken, Result, ToolContext};
+use astrcode_core::{AstrError, CancelToken, Result, ToolContext, project::project_dir};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -42,29 +42,34 @@ pub fn check_cancel(cancel: &CancelToken) -> Result<()> {
 /// 尚不存在的文件。resolve_for_boundary_check 从路径尾部向上找到第一个
 /// 存在的祖先进行 canonicalize，再拼回缺失部分。
 pub fn resolve_path(ctx: &ToolContext, path: &Path) -> Result<PathBuf> {
-    let working_dir = canonicalize_path(
+    resolve_path_with_root(
         ctx.working_dir(),
-        &format!(
-            "failed to canonicalize working directory '{}'",
-            ctx.working_dir().display()
-        ),
-    )?;
-    let base = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        working_dir.join(path)
-    };
+        path,
+        "working directory",
+        "failed to canonicalize working directory",
+    )
+}
 
-    let resolved = resolve_for_boundary_check(&normalize_lexically(&base))?;
-    if is_path_within_root(&resolved, &working_dir) {
-        return Ok(resolved);
+/// 读取工具额外允许访问当前会话下的持久化结果目录。
+///
+/// `grep` 等工具可能将超大输出写入 `~/.astrcode/projects/<project>/sessions/<id>/tool-results`
+/// 供后续 `readFile` 读取。这里仅对 `tool-results/**` 相对路径开放额外根目录，
+/// 避免把工作区外的任意文件都暴露给只读工具。
+pub fn resolve_read_path(ctx: &ToolContext, path: &Path) -> Result<PathBuf> {
+    if should_use_session_tool_results_root(path) {
+        let session_root = session_dir_for_tool_results(ctx)?;
+        let session_candidate = session_root.join(path);
+        if session_candidate.exists() {
+            return resolve_path_with_root(
+                &session_root,
+                path,
+                "session tool-results directory",
+                "failed to canonicalize session tool-results directory",
+            );
+        }
     }
 
-    Err(AstrError::Validation(format!(
-        "path '{}' escapes working directory '{}'",
-        path.display(),
-        working_dir.display()
-    )))
+    resolve_path(ctx, path)
 }
 
 /// 读取文件内容为 UTF-8 字符串。
@@ -99,6 +104,17 @@ pub async fn write_text_file(path: &Path, content: &str, create_dirs: bool) -> R
 /// 将值序列化为 JSON 字符串，用于工具的结构化输出。
 pub fn json_output<T: Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).map_err(|e| AstrError::parse("failed to serialize output", e))
+}
+
+/// 返回当前会话持久化目录，供大型工具结果落盘使用。
+pub fn session_dir_for_tool_results(ctx: &ToolContext) -> Result<PathBuf> {
+    let project_dir = project_dir(ctx.working_dir()).map_err(|e| {
+        AstrError::Internal(format!(
+            "failed to resolve project directory for '{}': {e}",
+            ctx.working_dir().display()
+        ))
+    })?;
+    Ok(project_dir.join("sessions").join(ctx.session_id()))
 }
 
 /// 文本变更报告，由 `build_text_change_report` 生成。
@@ -291,6 +307,35 @@ fn normalize_lexically(path: &Path) -> PathBuf {
     normalized
 }
 
+fn resolve_path_with_root(
+    root: &Path,
+    path: &Path,
+    root_label: &str,
+    canonicalize_context: &str,
+) -> Result<PathBuf> {
+    let canonical_root = canonicalize_path(
+        root,
+        &format!("{canonicalize_context} '{}'", root.display()),
+    )?;
+    let base = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        canonical_root.join(path)
+    };
+
+    let resolved = resolve_for_boundary_check(&normalize_lexically(&base))?;
+    if is_path_within_root(&resolved, &canonical_root) {
+        return Ok(resolved);
+    }
+
+    Err(AstrError::Validation(format!(
+        "path '{}' escapes {} '{}'",
+        path.display(),
+        root_label,
+        canonical_root.display()
+    )))
+}
+
 /// 解析路径到绝对形式，用于沙箱边界检查。
 ///
 /// 当路径尾部组件尚不存在时（如 writeFile 创建新文件），
@@ -363,6 +408,19 @@ fn is_path_within_root(path: &Path, root: &Path) -> bool {
     let normalized_path = normalize_lexically(path);
     let normalized_root = normalize_lexically(root);
     normalized_path == normalized_root || normalized_path.starts_with(&normalized_root)
+}
+
+fn should_use_session_tool_results_root(path: &Path) -> bool {
+    if path.is_absolute() {
+        return false;
+    }
+
+    path.components()
+        .next()
+        .is_some_and(|component| match component {
+            Component::Normal(part) => part == std::ffi::OsStr::new(TOOL_RESULTS_DIR),
+            _ => false,
+        })
 }
 
 /// 工具输出 inline 阈值：序列化结果超过此字节数时触发存盘。
@@ -503,5 +561,45 @@ mod tests {
             &root.join("nested"),
             &root_with_separator
         ));
+    }
+
+    #[test]
+    fn resolve_read_path_allows_session_tool_results_relative_path() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let ctx = test_tool_context_for(temp.path());
+        let session_dir =
+            session_dir_for_tool_results(&ctx).expect("session tool-results dir should resolve");
+        let persisted = session_dir.join(TOOL_RESULTS_DIR).join("sample.txt");
+        fs::create_dir_all(
+            persisted
+                .parent()
+                .expect("tool-results file should have a parent"),
+        )
+        .expect("tool-results dir should be created");
+        fs::write(&persisted, "persisted").expect("persisted output should be written");
+
+        let resolved = resolve_read_path(&ctx, Path::new("tool-results/sample.txt"))
+            .expect("read path should resolve to session tool-results");
+
+        assert_eq!(resolved, canonical_tool_path(&persisted));
+    }
+
+    #[test]
+    fn resolve_read_path_falls_back_to_workspace_tool_results_when_session_copy_missing() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let ctx = test_tool_context_for(temp.path());
+        let workspace_file = temp.path().join(TOOL_RESULTS_DIR).join("sample.txt");
+        fs::create_dir_all(
+            workspace_file
+                .parent()
+                .expect("workspace tool-results file should have a parent"),
+        )
+        .expect("workspace tool-results dir should be created");
+        fs::write(&workspace_file, "workspace").expect("workspace output should be written");
+
+        let resolved = resolve_read_path(&ctx, Path::new("tool-results/sample.txt"))
+            .expect("workspace tool-results path should still resolve");
+
+        assert_eq!(resolved, canonical_tool_path(&workspace_file));
     }
 }

@@ -1,7 +1,12 @@
 import { memo, useEffect, useState } from 'react';
 import type { ToolCallMessage } from '../../types';
 import { classifyToolDiffLine, extractToolDiffMetadata } from '../../lib/toolDiff';
-import { extractToolShellDisplay } from '../../lib/toolDisplay';
+import {
+  extractStructuredJsonOutput,
+  extractToolMetadataSummary,
+  extractToolShellDisplay,
+} from '../../lib/toolDisplay';
+import ToolJsonView from './ToolJsonView';
 import styles from './ToolCallBlock.module.css';
 
 interface ToolCallBlockProps {
@@ -29,6 +34,8 @@ function patchLineClassName(line: string): string {
 function ToolCallBlock({ message }: ToolCallBlockProps) {
   const diff = extractToolDiffMetadata(message.metadata);
   const shell = extractToolShellDisplay(message.metadata);
+  const metadataSummary = extractToolMetadataSummary(message.metadata);
+  const structuredJsonOutput = extractStructuredJsonOutput(message.output);
   const [userInteracted, setUserInteracted] = useState(false);
 
   const toolCallId = message.toolCallId ?? 'unknown';
@@ -119,6 +126,15 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
             )}
           </div>
         )}
+        {!diff && metadataSummary?.pills.length ? (
+          <div className={styles.diffMeta}>
+            {metadataSummary.pills.map((pill, index) => (
+              <span key={`${toolCallId}-${index}-${pill}`} className={styles.shellPill}>
+                {pill}
+              </span>
+            ))}
+          </div>
+        ) : null}
         {diff && (
           <div className={styles.patch}>
             {diff.patch.split('\n').map((line, index) => (
@@ -153,8 +169,16 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
             )}
           </div>
         )}
-        {message.output && !diff && !shell && <pre className={styles.output}>{message.output}</pre>}
+        {message.output && !diff && !shell && structuredJsonOutput ? (
+          <ToolJsonView value={structuredJsonOutput.value} summary={structuredJsonOutput.summary} />
+        ) : null}
+        {message.output && !diff && !shell && !structuredJsonOutput && (
+          <pre className={styles.output}>{message.output}</pre>
+        )}
         {message.error && <div className={styles.error}>{message.error}</div>}
+        {!message.error && metadataSummary?.message && (
+          <div className={styles.note}>{metadataSummary.message}</div>
+        )}
         {diff?.truncated && (
           <div className={styles.note}>diff 已截断，完整变更请直接查看文件。</div>
         )}

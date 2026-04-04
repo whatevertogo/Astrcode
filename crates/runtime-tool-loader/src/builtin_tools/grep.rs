@@ -31,6 +31,7 @@ use serde_json::json;
 
 use crate::builtin_tools::fs_common::{
     check_cancel, maybe_persist_large_tool_result, read_utf8_file, resolve_path,
+    session_dir_for_tool_results,
 };
 
 /// 匹配行最大显示字符数。
@@ -270,24 +271,11 @@ impl Tool for GrepTool {
             GrepOutputMode::FilesWithMatches => {
                 let result =
                     search_files_mode(&files, &regex, max_matches, offset, ctx.cancel()).await?;
-                let output = if result.matched_files.is_empty() {
-                    if offset > 0 {
-                        "No more matches found (all remaining results after offset have been \
-                         exhausted)."
-                            .to_string()
-                    } else {
-                        "No matches found for the given pattern.".to_string()
-                    }
-                } else {
-                    serde_json::to_string(&result.matched_files)
-                        .map_err(|e| AstrError::parse("failed to serialize grep results", e))?
-                };
-                let final_output = maybe_persist_large_tool_result(
-                    ctx.working_dir(),
-                    &tool_call_id,
-                    &output,
-                    true,
-                );
+                let output = serde_json::to_string(&result.matched_files)
+                    .map_err(|e| AstrError::parse("failed to serialize grep results", e))?;
+                let session_dir = session_dir_for_tool_results(ctx)?;
+                let final_output =
+                    maybe_persist_large_tool_result(&session_dir, &tool_call_id, &output, false);
                 let is_persisted = final_output.starts_with("<persisted-output>");
                 Ok(ToolExecutionResult {
                     tool_call_id,
@@ -301,22 +289,20 @@ impl Tool for GrepTool {
                         "has_more": result.has_more,
                         "truncated": result.has_more || is_persisted,
                         "skipped_files": result.skipped_files,
+                        "message": grep_empty_message(offset, result.matched_files.is_empty()),
                         "output_mode": "files_with_matches",
                     })),
                     duration_ms: started_at.elapsed().as_millis() as u64,
-                    truncated: result.has_more,
+                    truncated: result.has_more || is_persisted,
                 })
             },
             GrepOutputMode::Count => {
                 let result = search_count_mode(&files, &regex, ctx.cancel()).await?;
                 let output = serde_json::to_string(&result.counts)
                     .map_err(|e| AstrError::parse("failed to serialize count results", e))?;
-                let final_output = maybe_persist_large_tool_result(
-                    ctx.working_dir(),
-                    &tool_call_id,
-                    &output,
-                    true,
-                );
+                let session_dir = session_dir_for_tool_results(ctx)?;
+                let final_output =
+                    maybe_persist_large_tool_result(&session_dir, &tool_call_id, &output, false);
                 let is_persisted = final_output.starts_with("<persisted-output>");
                 Ok(ToolExecutionResult {
                     tool_call_id,
@@ -329,10 +315,11 @@ impl Tool for GrepTool {
                         "total_files": result.counts.len(),
                         "truncated": is_persisted,
                         "skipped_files": result.skipped_files,
+                        "message": grep_empty_message(0, result.counts.is_empty()),
                         "output_mode": "count",
                     })),
                     duration_ms: started_at.elapsed().as_millis() as u64,
-                    truncated: false,
+                    truncated: is_persisted,
                 })
             },
         }
@@ -519,6 +506,7 @@ async fn search_files_mode(
 
         let mut file_has_match = false;
         for line in content.lines() {
+            check_cancel(cancel)?;
             if regex.is_match(line) {
                 file_has_match = true;
                 break;
@@ -576,6 +564,7 @@ async fn search_count_mode(
 
         let mut file_count = 0usize;
         for line in content.lines() {
+            check_cancel(cancel)?;
             if regex.is_match(line) {
                 file_count += 1;
             }
@@ -611,23 +600,12 @@ fn build_content_result(
 ) -> Result<ToolExecutionResult> {
     let offset = args.offset.unwrap_or(0);
 
-    // 空结果返回友好提示文本，避免空输出触发 stop sequence
-    let output = if matches.is_empty() {
-        if offset > 0 {
-            "No more matches found (all remaining results after offset have been exhausted)."
-                .to_string()
-        } else {
-            "No matches found for the given pattern.".to_string()
-        }
-    } else {
-        serde_json::to_string(&matches)
-            .map_err(|e| AstrError::parse("failed to serialize grep matches", e))?
-    };
+    let output = serde_json::to_string(&matches)
+        .map_err(|e| AstrError::parse("failed to serialize grep matches", e))?;
 
     // 溢出存盘检查
-    // TODO: session_dir() 尚未注入 ToolContext，暂时使用 force_inline 跳过存盘。
-    let final_output =
-        maybe_persist_large_tool_result(ctx.working_dir(), &tool_call_id, &output, true);
+    let session_dir = session_dir_for_tool_results(ctx)?;
+    let final_output = maybe_persist_large_tool_result(&session_dir, &tool_call_id, &output, false);
     let is_persisted = final_output.starts_with("<persisted-output>");
 
     Ok(ToolExecutionResult {
@@ -643,10 +621,23 @@ fn build_content_result(
             "truncated": has_more || is_persisted,
             "skipped_files": skipped_files,
             "offset_applied": offset,
+            "message": grep_empty_message(offset, matches.is_empty()),
         })),
         duration_ms: started_at.elapsed().as_millis() as u64,
-        truncated: has_more,
+        truncated: has_more || is_persisted,
     })
+}
+
+fn grep_empty_message(offset: usize, is_empty: bool) -> Option<&'static str> {
+    if !is_empty {
+        return None;
+    }
+
+    if offset > 0 {
+        Some("No more matches found (all remaining results after offset have been exhausted).")
+    } else {
+        Some("No matches found for the given pattern.")
+    }
 }
 
 /// 收集候选文件列表。
@@ -819,7 +810,10 @@ fn extract_match_text(re: &regex::Regex, line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{canonical_tool_path, test_tool_context_for};
+    use crate::{
+        builtin_tools::read_file::ReadFileTool,
+        test_support::{canonical_tool_path, test_tool_context_for},
+    };
 
     #[tokio::test]
     async fn grep_finds_matches_with_line_numbers() {
@@ -878,7 +872,14 @@ mod tests {
             .expect("grep should execute");
 
         assert!(result.ok);
-        assert_eq!(result.output, "No matches found for the given pattern.");
+        let matches: Vec<GrepMatch> =
+            serde_json::from_str(&result.output).expect("output should remain valid json");
+        assert!(matches.is_empty());
+        let meta = result.metadata.expect("metadata should exist");
+        assert_eq!(
+            meta["message"],
+            json!("No matches found for the given pattern.")
+        );
     }
 
     #[tokio::test]
@@ -984,9 +985,15 @@ mod tests {
             .await
             .expect("grep should succeed");
 
+        let matches: Vec<GrepMatch> =
+            serde_json::from_str(&result.output).expect("output should remain valid json");
+        assert!(matches.is_empty());
+        let meta = result.metadata.expect("metadata should exist");
         assert_eq!(
-            result.output,
-            "No more matches found (all remaining results after offset have been exhausted)."
+            meta["message"],
+            json!(
+                "No more matches found (all remaining results after offset have been exhausted)."
+            )
         );
     }
 
@@ -1220,6 +1227,60 @@ mod tests {
         // .log 文件应被 .gitignore 排除
         assert_eq!(matches.len(), 1);
         assert!(matches[0].file.ends_with("main.rs"));
+    }
+
+    #[tokio::test]
+    async fn grep_persists_large_results_and_read_file_can_open_them() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file = temp.path().join("huge.rs");
+        let mut content = String::new();
+        for i in 0..700 {
+            content.push_str(&format!("pub fn target_{i}() {{}}\n"));
+        }
+        tokio::fs::write(&file, content)
+            .await
+            .expect("seed write should work");
+
+        let ctx = test_tool_context_for(temp.path());
+        let grep_tool = GrepTool;
+        let result = grep_tool
+            .execute(
+                "tc-grep-persist".to_string(),
+                json!({
+                    "pattern": "target_",
+                    "path": file.to_string_lossy(),
+                    "maxMatches": 700
+                }),
+                &ctx,
+            )
+            .await
+            .expect("grep should succeed");
+
+        assert!(result.output.starts_with("<persisted-output>"));
+        let persisted_relative = result
+            .output
+            .lines()
+            .find_map(|line| line.split("Full output saved to: ").nth(1))
+            .expect("persisted output path should be present")
+            .trim();
+
+        let read_tool = ReadFileTool;
+        let read_result = read_tool
+            .execute(
+                "tc-read-persisted".to_string(),
+                json!({
+                    "path": persisted_relative,
+                    "maxChars": 200000,
+                    "lineNumbers": false
+                }),
+                &ctx,
+            )
+            .await
+            .expect("readFile should open persisted grep result");
+
+        assert!(read_result.ok);
+        assert!(read_result.output.starts_with('['));
+        assert!(read_result.output.contains("target_0"));
     }
 
     #[test]

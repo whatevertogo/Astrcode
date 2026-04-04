@@ -26,7 +26,7 @@
 
 use std::{
     io::Read,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -71,9 +71,17 @@ struct ShellArgs {
 ///
 /// 将用户输入的 command 字符串转换为具体的可执行程序 + 参数列表，
 /// 屏蔽 Windows (PowerShell) 和 Unix (sh) 的差异。
+#[derive(Debug)]
 struct CommandSpec {
     program: String,
     args: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+enum ShellFamily {
+    PowerShell,
+    Cmd,
+    Posix,
 }
 
 /// 流输出捕获器，负责增量收集、截断控制和截断通知。
@@ -344,14 +352,18 @@ impl Tool for ShellTool {
             name: "shell".to_string(),
             description: format!(
                 "Execute a non-interactive shell command once with the current default shell \
-                 ({default_shell}) unless `shell` overrides it; return stdout/stderr/exitCode."
+                 ({default_shell}). `shell` may override it for supported shell families; return \
+                 stdout/stderr/exitCode."
             ),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "command": { "type": "string" },
                     "cwd": { "type": "string" },
-                    "shell": { "type": "string" },
+                    "shell": {
+                        "type": "string",
+                        "description": "Optional shell override. Supported families: pwsh/powershell, cmd, sh/bash/zsh."
+                    },
                     "timeout": {
                         "type": "integer",
                         "minimum": 1,
@@ -381,9 +393,11 @@ impl Tool for ShellTool {
                     format!(
                         "Use `shell` for non-interactive commands that are easier to express as a \
                          single command line than as a dedicated file tool. This session defaults \
-                         to `{default_shell}` unless the `shell` argument explicitly overrides \
-                         it. Keep commands scoped to the workspace, explain risky commands before \
-                         running them, and prefer read-only inspection before mutation."
+                         to `{default_shell}`. The optional `shell` override only supports known \
+                         shell families (PowerShell, cmd, sh/bash/zsh) so runtime can pass the \
+                         command with the correct flags. Keep commands scoped to the workspace, \
+                         explain risky commands before running them, and prefer read-only \
+                         inspection before mutation."
                     ),
                 )
                 .caveat(
@@ -410,7 +424,7 @@ impl Tool for ShellTool {
             ));
         }
 
-        let spec = command_spec(args.shell.as_deref(), &args.command);
+        let spec = command_spec(args.shell.as_deref(), &args.command)?;
         let started_at = Instant::now();
         let command_text = args.command.clone();
         let shell_program = spec.program.clone();
@@ -594,31 +608,68 @@ impl Tool for ShellTool {
 /// - **Unix**: 使用 `/bin/sh -lc` 执行命令
 ///
 /// 用户可以通过 `shell` 参数覆盖默认 shell。
-fn command_spec(shell: Option<&str>, command: &str) -> CommandSpec {
+fn command_spec(shell: Option<&str>, command: &str) -> Result<CommandSpec> {
     #[cfg(windows)]
     {
-        let program = match shell {
-            Some(shell) => shell.to_string(),
-            None => default_windows_shell().to_string(),
-        };
-        CommandSpec {
-            program,
-            args: vec![
-                "-NoProfile".to_string(),
-                "-Command".to_string(),
-                command.to_string(),
-            ],
-        }
+        let program = shell.unwrap_or(default_windows_shell()).to_string();
+        let family = shell
+            .map(detect_shell_family)
+            .unwrap_or(Some(ShellFamily::PowerShell))
+            .ok_or_else(|| unsupported_shell_error(&program))?;
+        Ok(command_spec_for_family(program, family, command))
     }
 
     #[cfg(not(windows))]
     {
         let program = shell.unwrap_or("/bin/sh").to_string();
-        CommandSpec {
-            program,
-            args: vec!["-lc".to_string(), command.to_string()],
-        }
+        let family = shell
+            .map(detect_shell_family)
+            .unwrap_or(Some(ShellFamily::Posix))
+            .ok_or_else(|| unsupported_shell_error(&program))?;
+        Ok(command_spec_for_family(program, family, command))
     }
+}
+
+fn command_spec_for_family(program: String, family: ShellFamily, command: &str) -> CommandSpec {
+    let args = match family {
+        ShellFamily::PowerShell => vec![
+            "-NoProfile".to_string(),
+            "-Command".to_string(),
+            command.to_string(),
+        ],
+        // `/d /s /c` 让 cmd 的单次执行语义和终端直觉更一致，也避免加载 AutoRun。
+        ShellFamily::Cmd => vec![
+            "/d".to_string(),
+            "/s".to_string(),
+            "/c".to_string(),
+            command.to_string(),
+        ],
+        ShellFamily::Posix => vec!["-lc".to_string(), command.to_string()],
+    };
+    CommandSpec { program, args }
+}
+
+fn detect_shell_family(shell: &str) -> Option<ShellFamily> {
+    let file_name = Path::new(shell)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(shell);
+    let normalized = file_name.trim_end_matches(".exe").to_ascii_lowercase();
+
+    match normalized.as_str() {
+        "pwsh" | "powershell" => Some(ShellFamily::PowerShell),
+        "cmd" => Some(ShellFamily::Cmd),
+        "sh" | "bash" | "zsh" => Some(ShellFamily::Posix),
+        _ => None,
+    }
+}
+
+fn unsupported_shell_error(shell: &str) -> AstrError {
+    AstrError::Validation(format!(
+        "unsupported shell override '{}'; supported families are pwsh/powershell, cmd, and \
+         sh/bash/zsh",
+        shell
+    ))
 }
 
 fn default_shell_for_prompt() -> &'static str {
@@ -852,5 +903,28 @@ mod tests {
         assert!(definition.description.contains(default_shell_for_prompt()));
         assert!(prompt.summary.contains(default_shell_for_prompt()));
         assert!(prompt.guide.contains(default_shell_for_prompt()));
+    }
+
+    #[test]
+    fn detect_shell_family_supports_common_shell_names() {
+        assert!(matches!(
+            detect_shell_family("pwsh"),
+            Some(ShellFamily::PowerShell)
+        ));
+        assert!(matches!(
+            detect_shell_family("powershell.exe"),
+            Some(ShellFamily::PowerShell)
+        ));
+        assert!(matches!(detect_shell_family("cmd"), Some(ShellFamily::Cmd)));
+        assert!(matches!(
+            detect_shell_family("/bin/bash"),
+            Some(ShellFamily::Posix)
+        ));
+    }
+
+    #[test]
+    fn command_spec_rejects_unknown_shell_override() {
+        let err = command_spec(Some("fish"), "echo ok").expect_err("unsupported shell should fail");
+        assert!(matches!(err, AstrError::Validation(_)));
     }
 }

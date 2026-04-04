@@ -27,7 +27,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::builtin_tools::fs_common::{check_cancel, resolve_path};
+use crate::builtin_tools::fs_common::{check_cancel, resolve_read_path};
 
 /// 二进制检测采样大小（前 N 字节）。
 const BINARY_DETECT_SAMPLE_SIZE: usize = 8192;
@@ -237,7 +237,7 @@ impl Tool for ReadFileTool {
         let args: ReadFileArgs = serde_json::from_value(args)
             .map_err(|e| AstrError::parse("invalid args for readFile", e))?;
         let started_at = Instant::now();
-        let path = resolve_path(ctx, &args.path)?;
+        let path = resolve_read_path(ctx, &args.path)?;
 
         // 图片文件处理：返回 base64 编码
         if is_image_file(&path) {
@@ -319,9 +319,9 @@ impl Tool for ReadFileTool {
         // line-number formatting rules settle. The current implementation is simple and stable,
         // but it doubles I/O for very large text files.
         // 需要先知道总行数来计算行号宽度
-        let total_line_count = count_total_lines(&path)?;
+        let total_line_count = count_total_lines(&path, ctx.cancel())?;
 
-        let (text, total_lines, truncated) = if args.offset.is_some() || args.limit.is_some() {
+        let (text, _returned_lines, truncated) = if args.offset.is_some() || args.limit.is_some() {
             read_lines_range(
                 reader,
                 args.offset.unwrap_or(0),
@@ -329,16 +329,23 @@ impl Tool for ReadFileTool {
                 max_chars,
                 args.line_numbers,
                 total_line_count,
+                ctx.cancel(),
             )
         } else {
-            read_file_full(reader, max_chars, args.line_numbers, total_line_count)
+            read_file_full(
+                reader,
+                max_chars,
+                args.line_numbers,
+                total_line_count,
+                ctx.cancel(),
+            )
         }?;
 
         let meta = if args.offset.is_some() || args.limit.is_some() {
             json!({
                 "path": path.to_string_lossy(),
                 "bytes": total_bytes,
-                "total_lines": total_lines,
+                "total_lines": total_line_count,
                 "offset": args.offset.unwrap_or(0),
                 "limit": args.limit,
                 "truncated": truncated,
@@ -365,12 +372,13 @@ impl Tool for ReadFileTool {
 }
 
 /// 统计文件总行数（用于计算行号显示宽度)。
-fn count_total_lines(path: &std::path::Path) -> Result<usize> {
+fn count_total_lines(path: &std::path::Path, cancel: &astrcode_core::CancelToken) -> Result<usize> {
     let file = fs::File::open(path)
         .map_err(|e| AstrError::io(format!("failed opening file '{}'", path.display()), e))?;
     let reader = BufReader::new(file);
     let mut count = 0usize;
     for line_result in reader.lines() {
+        check_cancel(cancel)?;
         let _ = line_result.map_err(|e| AstrError::io("failed counting lines", e))?;
         count += 1;
     }
@@ -400,6 +408,7 @@ fn read_file_full(
     max_chars: usize,
     line_numbers: bool,
     total_lines: usize,
+    cancel: &astrcode_core::CancelToken,
 ) -> Result<(String, usize, bool)> {
     let num_width = if line_numbers {
         line_number_width(total_lines)
@@ -410,6 +419,7 @@ fn read_file_full(
     let mut line_no = 0usize;
 
     for line_result in reader.lines() {
+        check_cancel(cancel)?;
         let line = line_result.map_err(|e| AstrError::io("failed reading file line", e))?;
         line_no += 1;
 
@@ -464,6 +474,7 @@ fn read_lines_range(
     max_chars: usize,
     line_numbers: bool,
     total_lines: usize,
+    cancel: &astrcode_core::CancelToken,
 ) -> Result<(String, usize, bool)> {
     let num_width = if line_numbers {
         line_number_width(total_lines)
@@ -476,6 +487,7 @@ fn read_lines_range(
     let max_lines = limit.unwrap_or(usize::MAX);
 
     for line_result in reader.lines() {
+        check_cancel(cancel)?;
         let line = line_result.map_err(|e| AstrError::io("failed reading file line", e))?;
         line_count += 1;
 
@@ -597,6 +609,35 @@ mod tests {
         // 验证输出包含行号 3 和 4
         assert!(result.output.contains("3\tline2"));
         assert!(result.output.contains("4\tline3"));
+    }
+
+    #[tokio::test]
+    async fn read_file_offset_metadata_keeps_real_total_lines_when_truncated() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file = temp.path().join("sample.txt");
+        tokio::fs::write(&file, "line0\nline1\nline2\nline3\nline4\n")
+            .await
+            .expect("write should work");
+        let tool = ReadFileTool;
+
+        let result = tool
+            .execute(
+                "tc-offset-truncated".to_string(),
+                json!({
+                    "path": file.to_string_lossy(),
+                    "offset": 1,
+                    "limit": 10,
+                    "maxChars": 6,
+                    "lineNumbers": false
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("readFile should succeed");
+
+        assert!(result.truncated);
+        let meta = result.metadata.expect("metadata should exist");
+        assert_eq!(meta["total_lines"], json!(5));
     }
 
     #[tokio::test]

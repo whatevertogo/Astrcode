@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   appendToolDeltaMetadata,
+  extractStructuredJsonOutput,
+  extractToolMetadataSummary,
   extractToolShellDisplay,
   formatToolShellPreview,
   mergeToolMetadata,
@@ -96,5 +98,35 @@ describe('toolDisplay shell metadata helpers', () => {
     );
 
     expect(preview).toBe('[pwsh] $ cargo test  ok');
+  });
+
+  it('extracts generic tool metadata message and stats pills', () => {
+    const summary = extractToolMetadataSummary({
+      message: 'No matches found for the given pattern.',
+      returned: 0,
+      output_mode: 'content',
+      truncated: true,
+      has_more: true,
+    });
+
+    expect(summary).toEqual({
+      message: 'No matches found for the given pattern.',
+      pills: ['0 returned', 'mode content', 'has more', 'truncated'],
+    });
+  });
+
+  it('returns null when metadata has no user-facing summary fields', () => {
+    expect(extractToolMetadataSummary({ path: '/repo/file.ts' })).toBeNull();
+  });
+
+  it('extracts structured JSON output when top-level is object or array', () => {
+    expect(extractStructuredJsonOutput('{"a":1,"b":true}')?.summary).toBe('Object (2 keys)');
+    expect(extractStructuredJsonOutput('[{"a":1},{"b":2}]')?.summary).toBe('Array (2 items)');
+  });
+
+  it('ignores non-structured or invalid JSON output', () => {
+    expect(extractStructuredJsonOutput('"plain string"')).toBeNull();
+    expect(extractStructuredJsonOutput('not json')).toBeNull();
+    expect(extractStructuredJsonOutput(undefined)).toBeNull();
   });
 });
