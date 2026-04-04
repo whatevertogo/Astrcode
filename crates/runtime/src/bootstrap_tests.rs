@@ -35,10 +35,12 @@ use crate::{
     test_support::TestEnvGuard,
 };
 
+#[derive(Clone)]
 struct FakeInitializer {
     responses: HashMap<String, FakePluginResponse>,
 }
 
+#[derive(Clone)]
 enum FakePluginResponse {
     Loaded(LoadedPlugin),
     Failed(String),
@@ -211,6 +213,9 @@ fn bootstrap_from(
     let bootstrap = runtime
         .block_on(async { bootstrap_runtime_from_manifests(manifests, &initializer).await })
         .expect("runtime bootstrap should succeed");
+    runtime.block_on(async {
+        bootstrap.plugin_load_handle.wait_completed().await;
+    });
     (bootstrap, guard)
 }
 
@@ -343,6 +348,7 @@ async fn bootstrap_integrates_plugin_declared_skills_into_runtime_catalog() {
     let bootstrap = bootstrap_runtime_from_manifests(vec![manifest("alpha")], &initializer)
         .await
         .expect("bootstrap should succeed");
+    bootstrap.plugin_load_handle.wait_completed().await;
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let session = bootstrap
         .service
@@ -364,6 +370,37 @@ async fn bootstrap_integrates_plugin_declared_skills_into_runtime_catalog() {
         .expect("composer options should load");
 
     assert!(items.iter().any(|item| item.id == "repo-search"));
+}
+
+#[tokio::test]
+async fn bootstrap_background_load_syncs_governance_health_snapshot() {
+    let _guard = TestEnvGuard::new();
+    let shutdowns = Arc::new(Mutex::new(Vec::new()));
+    let initializer = FakeInitializer {
+        responses: HashMap::from([(
+            "alpha".to_string(),
+            FakePluginResponse::Loaded(loaded_plugin(
+                "alpha",
+                &["tool.alpha"],
+                Arc::clone(&shutdowns),
+            )),
+        )]),
+    };
+
+    let bootstrap = bootstrap_runtime_from_manifests(vec![manifest("alpha")], &initializer)
+        .await
+        .expect("bootstrap should succeed");
+    bootstrap.plugin_load_handle.wait_completed().await;
+
+    let snapshot = bootstrap.governance.snapshot().await;
+    let alpha = snapshot
+        .plugins
+        .into_iter()
+        .find(|entry| entry.manifest.name == "alpha")
+        .expect("alpha entry should exist");
+
+    assert_eq!(alpha.health, PluginHealth::Healthy);
+    assert!(alpha.last_checked_at.is_some());
 }
 
 #[test]
@@ -430,6 +467,7 @@ async fn governance_reload_swaps_runtime_surface_and_shutdowns_retired_plugins()
     let bootstrap = bootstrap_runtime_from_manifests(vec![manifest("alpha")], &initial)
         .await
         .expect("initial bootstrap should succeed");
+    bootstrap.plugin_load_handle.wait_completed().await;
 
     let replacement = FakeInitializer {
         responses: HashMap::from([(

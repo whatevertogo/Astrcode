@@ -60,6 +60,7 @@ pub(crate) struct AssembledRuntimeSurface {
 ///
 /// capability、skill 和 prompt declaration 共享同一条装配管线，
 /// 但运行时仍保留它们不同的语义边界，不把 skill 伪装成普通 capability。
+#[derive(Clone)]
 pub(crate) struct RuntimeSurfaceContribution {
     pub(crate) capability_invokers: Vec<Arc<dyn CapabilityInvoker>>,
     pub(crate) prompt_declarations: Vec<PromptDeclaration>,
@@ -78,6 +79,7 @@ pub(crate) struct ActivePluginRuntime {
 /// 加载完成的插件
 ///
 /// 包含插件组件、能力描述符、调用器、prompt 声明和 skill 声明。
+#[derive(Clone)]
 pub(crate) struct LoadedPlugin {
     pub(crate) component: Arc<dyn ManagedPluginComponent>,
     pub(crate) capabilities: Vec<CapabilityDescriptor>,
@@ -213,6 +215,7 @@ pub(crate) trait PluginInitializer: Send + Sync {
 /// 基于 Supervisor 的插件初始化器
 ///
 /// 使用 `PluginLoader` 启动插件进程并完成 MCP 握手。
+#[derive(Clone)]
 pub(crate) struct SupervisorPluginInitializer {
     loader: PluginLoader,
 }
@@ -432,6 +435,199 @@ where
         plugin_entries: plugin_entries.into_values().collect(),
         managed_components,
         active_plugins,
+    })
+}
+
+/// 插件加载结果（不含路由器）。
+///
+/// 用于后台加载场景，插件能力会动态注册到已有的路由器中。
+#[allow(dead_code)]
+pub(crate) struct AssembledPlugins {
+    /// 加载成功的插件能力调用器
+    pub(crate) invokers: Vec<Arc<dyn CapabilityInvoker>>,
+    /// Prompt 声明
+    pub(crate) prompt_declarations: Vec<PromptDeclaration>,
+    /// 物化后的 skills
+    pub(crate) skills: Vec<SkillSpec>,
+    /// 插件条目列表
+    pub(crate) plugin_entries: Vec<PluginEntry>,
+    /// 需要管理的组件
+    pub(crate) managed_components: Vec<Arc<dyn ManagedRuntimeComponent>>,
+    /// 活跃插件运行时
+    pub(crate) active_plugins: Vec<ActivePluginRuntime>,
+    /// 加载统计
+    pub(crate) stats: PluginLoadStats,
+}
+
+/// 插件加载统计。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PluginLoadStats {
+    pub(crate) loaded_count: usize,
+    pub(crate) failed_count: usize,
+}
+
+/// 仅加载插件（不包含内置能力），用于后台加载场景。
+///
+/// 与 `assemble_runtime_surface` 不同，此函数：
+/// - 不创建新的路由器
+/// - 不注册内置能力
+/// - 返回能力调用器列表，由调用方决定如何注册
+///
+/// 用于启动时先创建内置能力的服务，然后在后台加载插件。
+pub(crate) async fn assemble_plugins_only<I>(
+    manifests: Vec<PluginManifest>,
+    initializer: &I,
+    plugin_registry: Arc<PluginRegistry>,
+    existing_capability_names: HashSet<String>,
+) -> std::result::Result<AssembledPlugins, AstrError>
+where
+    I: PluginInitializer,
+{
+    let mut registered_capability_names = existing_capability_names;
+    let mut plugin_entries = BTreeMap::new();
+    let mut prompt_declarations = Vec::new();
+    let mut managed_components = Vec::new();
+    let mut active_plugins = Vec::new();
+    let mut invokers: Vec<Arc<dyn CapabilityInvoker>> = Vec::new();
+    let mut all_skills: Vec<SkillSpec> = Vec::new();
+    let mut loaded_count = 0usize;
+    let mut failed_count = 0usize;
+    let surface_materialization_id = Utc::now().timestamp_millis().to_string();
+
+    let mut manifests = manifests;
+    manifests.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.version.cmp(&right.version))
+            .then_with(|| left.executable.cmp(&right.executable))
+    });
+
+    for manifest in manifests {
+        plugin_entries.insert(manifest.name.clone(), make_discovered_entry(&manifest));
+
+        let loaded_plugin = match initializer.initialize(&manifest).await {
+            Ok(loaded_plugin) => loaded_plugin,
+            Err(error) => {
+                log::error!("failed to initialize plugin '{}': {}", manifest.name, error);
+                plugin_entries.insert(
+                    manifest.name.clone(),
+                    make_failed_entry(manifest, Vec::new(), error.to_string(), Vec::new()),
+                );
+                failed_count += 1;
+                continue;
+            },
+        };
+
+        if let Some(failure) = invalid_capability_reason(&loaded_plugin.capabilities) {
+            log::error!("failed to register plugin '{}': {}", manifest.name, failure);
+            plugin_entries.insert(
+                manifest.name.clone(),
+                make_failed_entry(
+                    manifest.clone(),
+                    loaded_plugin.capabilities.clone(),
+                    failure,
+                    Vec::new(),
+                ),
+            );
+            if let Err(error) = loaded_plugin.component.shutdown_component().await {
+                log::warn!(
+                    "failed to shut down rejected plugin component '{}': {}",
+                    loaded_plugin.component.component_name(),
+                    error
+                );
+            }
+            failed_count += 1;
+            continue;
+        }
+
+        if let Some(conflict) =
+            conflicting_capability_name(&registered_capability_names, &loaded_plugin.capabilities)
+        {
+            let failure = format!(
+                "capability '{}' conflicts with an already registered capability",
+                conflict
+            );
+            log::error!("failed to register plugin '{}': {}", manifest.name, failure);
+            plugin_entries.insert(
+                manifest.name.clone(),
+                make_failed_entry(
+                    manifest.clone(),
+                    loaded_plugin.capabilities.clone(),
+                    failure,
+                    Vec::new(),
+                ),
+            );
+            if let Err(error) = loaded_plugin.component.shutdown_component().await {
+                log::warn!(
+                    "failed to shut down rejected plugin component '{}': {}",
+                    loaded_plugin.component.component_name(),
+                    error
+                );
+            }
+            failed_count += 1;
+            continue;
+        }
+
+        // 更新已注册能力名称集合
+        for capability in &loaded_plugin.capabilities {
+            registered_capability_names.insert(capability.name.clone());
+        }
+
+        // 构建可用工具名称集合（用于 skill 物化时的 allowed_tools 验证）
+        let available_tool_names = registered_capability_names.clone();
+
+        // 物化插件声明的 skills
+        let materialized_skills = materialize_plugin_skills(
+            &manifest,
+            &surface_materialization_id,
+            &loaded_plugin.declared_skills,
+            &available_tool_names,
+        );
+        let plugin_warnings = materialized_skills.warnings.clone();
+
+        // 合并 skills
+        all_skills = merge_skill_layers(all_skills, materialized_skills.skills.clone());
+
+        // 收集调用器
+        for invoker in loaded_plugin.contribution.capability_invokers {
+            invokers.push(Arc::new(GovernedPluginInvoker {
+                plugin_name: manifest.name.clone(),
+                inner: invoker,
+                plugin_registry: Arc::clone(&plugin_registry),
+            }));
+        }
+
+        prompt_declarations.extend(loaded_plugin.contribution.prompt_declarations.clone());
+        plugin_entries.insert(
+            manifest.name.clone(),
+            make_initialized_entry(
+                &manifest,
+                loaded_plugin.capabilities.clone(),
+                plugin_warnings,
+            ),
+        );
+        log::info!("loaded plugin '{}'", manifest.name);
+        managed_components
+            .push(loaded_plugin.component.clone() as Arc<dyn ManagedRuntimeComponent>);
+        managed_components.extend(materialized_skills.managed_components);
+        active_plugins.push(ActivePluginRuntime {
+            name: manifest.name,
+            component: loaded_plugin.component,
+        });
+        loaded_count += 1;
+    }
+
+    Ok(AssembledPlugins {
+        invokers,
+        prompt_declarations,
+        skills: all_skills,
+        plugin_entries: plugin_entries.into_values().collect(),
+        managed_components,
+        active_plugins,
+        stats: PluginLoadStats {
+            loaded_count,
+            failed_count,
+        },
     })
 }
 

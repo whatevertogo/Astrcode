@@ -90,6 +90,15 @@ impl RuntimeGovernance {
         }
     }
 
+    /// 更新活跃插件列表（用于后台加载完成后同步状态）。
+    ///
+    /// 此方法仅更新内部活跃插件列表，不触发生命周期管理。
+    /// 用于启动时后台加载插件完成后，将插件信息同步到 governance。
+    pub(crate) async fn update_active_plugins(&self, active_plugins: Vec<ActivePluginRuntime>) {
+        let mut guard = self.active_plugins.write().await;
+        *guard = active_plugins;
+    }
+
     pub async fn snapshot(&self) -> RuntimeGovernanceSnapshot {
         self.refresh_plugin_health().await;
         self.snapshot_with_paths(configured_plugin_paths()).await

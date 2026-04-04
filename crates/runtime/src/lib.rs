@@ -42,7 +42,7 @@ pub use astrcode_runtime_config::{
 pub use astrcode_runtime_llm as llm;
 pub use astrcode_runtime_prompt as prompt;
 pub use astrcode_runtime_skill_loader as skills;
-pub use bootstrap::{RuntimeBootstrap, bootstrap_runtime};
+pub use bootstrap::{PluginLoadHandle, PluginLoadState, RuntimeBootstrap, bootstrap_runtime};
 pub use runtime_governance::{RuntimeGovernance, RuntimeGovernanceSnapshot, RuntimeReloadResult};
 pub use service::{
     ComposerOption, ComposerOptionKind, ComposerOptionsRequest, OperationMetricsSnapshot,

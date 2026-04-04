@@ -8,13 +8,23 @@
 //! - **CapabilityRouter**: 根据能力名称路由到对应的 invoker
 //! - **CapabilityContext**: 调用上下文（会话、工作目录、取消令牌等）
 //!
+//! ## 动态注册
+//!
+//! `CapabilityRouter` 支持运行时动态注册能力，用于插件后台加载场景。
+//! 使用 `register_invoker` 方法可以在运行时添加新的能力，无需重启服务。
+//! 内部使用 `std::sync::RwLock` 保证线程安全，支持同步和异步上下文调用。
+//!
 //! ## 工具调用适配
 //!
 //! `CapabilityRouter` 同时提供 `execute_tool` 方法，将通用的能力调用
 //! 适配为 LLM 工具调用格式（`ToolExecutionResult`）。这是一种 adapter view，
 //! 不是核心能力契约本身。
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, RwLock},
+};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -242,21 +252,36 @@ impl CapabilityRouterBuilder {
         }
 
         Ok(CapabilityRouter {
-            invokers_by_name,
-            order,
-            tool_order,
+            inner: Arc::new(RwLock::new(CapabilityRouterInner {
+                invokers_by_name,
+                order,
+                tool_order,
+            })),
         })
     }
+}
+
+/// 能力路由器内部状态。
+///
+/// 被 `RwLock` 保护，支持运行时动态修改。
+struct CapabilityRouterInner {
+    invokers_by_name: HashMap<String, Arc<dyn CapabilityInvoker>>,
+    order: Vec<String>,
+    tool_order: Vec<String>,
 }
 
 /// 能力路由器。
 ///
 /// 根据能力名称将调用分派到对应的执行器，
 /// 同时维护工具可调用能力的有序列表供 LLM 使用。
+///
+/// ## 动态注册
+///
+/// 使用 `register_invoker` 方法可以在运行时动态添加能力，
+/// 用于插件后台加载场景。
+#[derive(Clone)]
 pub struct CapabilityRouter {
-    invokers_by_name: HashMap<String, Arc<dyn CapabilityInvoker>>,
-    order: Vec<String>,
-    tool_order: Vec<String>,
+    inner: Arc<RwLock<CapabilityRouterInner>>,
 }
 
 impl CapabilityRouter {
@@ -265,26 +290,105 @@ impl CapabilityRouter {
         CapabilityRouterBuilder::new()
     }
 
+    /// 创建空的路由器。
+    ///
+    /// 用于需要后续动态注册能力的场景。
+    pub fn empty() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(CapabilityRouterInner {
+                invokers_by_name: HashMap::new(),
+                order: Vec::new(),
+                tool_order: Vec::new(),
+            })),
+        }
+    }
+
+    /// 动态注册一个能力执行器。
+    ///
+    /// 用于插件后台加载场景，可以在运行时添加新能力。
+    /// 如果能力名称已存在，返回错误。
+    pub fn register_invoker(&self, invoker: Arc<dyn CapabilityInvoker>) -> Result<()> {
+        let descriptor = invoker.descriptor();
+        descriptor.validate().map_err(|error| {
+            AstrError::Validation(format!(
+                "invalid capability descriptor '{}': {}",
+                descriptor.name, error
+            ))
+        })?;
+
+        let mut inner = self.inner.write().unwrap();
+        if inner.invokers_by_name.contains_key(&descriptor.name) {
+            return Err(AstrError::Validation(format!(
+                "duplicate capability '{}' registered",
+                descriptor.name
+            )));
+        }
+
+        if descriptor.kind.is_tool() {
+            inner.tool_order.push(descriptor.name.clone());
+        }
+        inner.order.push(descriptor.name.clone());
+        inner.invokers_by_name.insert(descriptor.name, invoker);
+        Ok(())
+    }
+
+    /// 批量动态注册能力执行器。
+    ///
+    /// 用于插件批量加载场景，减少锁竞争。
+    /// 如果任一能力名称已存在，全部回滚并返回错误。
+    pub fn register_invokers(&self, invokers: Vec<Arc<dyn CapabilityInvoker>>) -> Result<()> {
+        let mut inner = self.inner.write().unwrap();
+
+        // 先验证所有描述符
+        for invoker in &invokers {
+            let descriptor = invoker.descriptor();
+            descriptor.validate().map_err(|error| {
+                AstrError::Validation(format!(
+                    "invalid capability descriptor '{}': {}",
+                    descriptor.name, error
+                ))
+            })?;
+            if inner.invokers_by_name.contains_key(&descriptor.name) {
+                return Err(AstrError::Validation(format!(
+                    "duplicate capability '{}' registered",
+                    descriptor.name
+                )));
+            }
+        }
+
+        // 批量注册
+        for invoker in invokers {
+            let descriptor = invoker.descriptor();
+            if descriptor.kind.is_tool() {
+                inner.tool_order.push(descriptor.name.clone());
+            }
+            inner.order.push(descriptor.name.clone());
+            inner.invokers_by_name.insert(descriptor.name, invoker);
+        }
+        Ok(())
+    }
+
     /// 获取所有已注册能力的描述符列表。
     pub fn descriptors(&self) -> Vec<CapabilityDescriptor> {
-        self.order
+        let inner = self.inner.read().unwrap();
+        inner
+            .order
             .iter()
-            .filter_map(|name| self.invokers_by_name.get(name))
+            .filter_map(|name| inner.invokers_by_name.get(name))
             .map(|invoker| invoker.descriptor())
             .collect()
     }
 
     /// 按名称查询单个能力的描述符。
     pub fn descriptor(&self, name: &str) -> Option<CapabilityDescriptor> {
-        self.invokers_by_name
+        let inner = self.inner.read().unwrap();
+        inner
+            .invokers_by_name
             .get(name)
             .map(|invoker| invoker.descriptor())
     }
 
-    /// Projects tool-callable capabilities into the LLM-facing tool definition surface.
-    ///
-    /// This is an adapter view over the generic capability registry, not the core capability
-    /// contract itself.
+    /// 获取工具定义列表（LLM 工具调用视图）。
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
         self.descriptors()
             .into_iter()
@@ -298,8 +402,9 @@ impl CapabilityRouter {
     }
 
     /// 获取所有工具可调用能力的名称列表。
-    pub fn tool_names(&self) -> &[String] {
-        &self.tool_order
+    pub fn tool_names(&self) -> Vec<String> {
+        let inner = self.inner.read().unwrap();
+        inner.tool_order.clone()
     }
 
     /// 执行工具调用。
@@ -311,10 +416,12 @@ impl CapabilityRouter {
         call: &ToolCallRequest,
         ctx: &ToolContext,
     ) -> ToolExecutionResult {
-        // Tool execution is a projection of the generic capability surface. Keeping the
-        // kind-check here confines tool-call semantics to the adapter path instead of requiring
-        // the broader capability invoke contract to branch on every kind.
-        let Some(invoker) = self.invokers_by_name.get(&call.name) else {
+        let invoker = {
+            let inner = self.inner.read().unwrap();
+            inner.invokers_by_name.get(&call.name).cloned()
+        };
+
+        let Some(invoker) = invoker else {
             return ToolExecutionResult {
                 tool_call_id: call.id.clone(),
                 tool_name: call.name.clone(),
@@ -360,6 +467,18 @@ impl CapabilityRouter {
                 truncated: false,
             },
         }
+    }
+
+    /// 检查能力是否存在。
+    pub fn has_capability(&self, name: &str) -> bool {
+        let inner = self.inner.read().unwrap();
+        inner.invokers_by_name.contains_key(name)
+    }
+
+    /// 获取已注册能力数量。
+    pub fn capability_count(&self) -> usize {
+        let inner = self.inner.read().unwrap();
+        inner.invokers_by_name.len()
     }
 }
 
@@ -484,5 +603,29 @@ mod tests {
             Err(error) => error,
         };
         assert!(matches!(error, crate::AstrError::Validation(_)));
+    }
+
+    #[test]
+    fn dynamic_registration_adds_capability() {
+        let router = CapabilityRouter::empty();
+        assert_eq!(router.capability_count(), 0);
+
+        router
+            .register_invoker(Arc::new(EchoCapability))
+            .expect("registration should succeed");
+
+        assert_eq!(router.capability_count(), 1);
+        assert!(router.has_capability("plugin.echo"));
+    }
+
+    #[test]
+    fn dynamic_registration_rejects_duplicate() {
+        let router = CapabilityRouter::empty();
+        router
+            .register_invoker(Arc::new(EchoCapability))
+            .expect("first registration should succeed");
+
+        let result = router.register_invoker(Arc::new(EchoCapability));
+        assert!(result.is_err());
     }
 }

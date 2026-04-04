@@ -10,23 +10,26 @@
 //! ## 引导时序
 //!
 //! ```text
-//! 插件发现 → 能力面组装 → RuntimeService → RuntimeCoordinator → RuntimeGovernance
+//! 内置能力初始化 → RuntimeService → 后台插件加载
 //! ```
 //!
-//! 每个步骤失败都会导致引导终止，返回 `AstrError`。
-//! 引导完成后，调用方获得 `RuntimeBootstrap` 结构体，
-//! 包含 service、coordinator 和 governance 三个核心组件。
+//! 插件加载在后台异步进行，不阻塞应用启动。
+//! 内置能力立即可用，插件能力在加载完成后动态注册。
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
-use astrcode_core::{AstrError, PluginManifest, PluginRegistry, RuntimeCoordinator, RuntimeHandle};
+use astrcode_core::{
+    AstrError, CapabilityRouter, PluginManifest, PluginRegistry, RuntimeCoordinator, RuntimeHandle,
+};
+use astrcode_runtime_skill_loader::{SkillCatalog, merge_skill_layers};
+use tokio::sync::RwLock;
 
 use crate::{
     RuntimeService, ServiceError,
     plugin_discovery::{configured_plugin_paths, discover_plugin_manifests_in},
     runtime_governance::RuntimeGovernance,
     runtime_surface_assembler::{
-        PluginInitializer, SupervisorPluginInitializer, assemble_runtime_surface,
+        PluginInitializer, SupervisorPluginInitializer, assemble_plugins_only,
     },
 };
 
@@ -36,6 +39,7 @@ use crate::{
 /// - `service`: `RuntimeService` 门面，处理所有会话和 Turn 操作
 /// - `coordinator`: `RuntimeCoordinator`，管理插件生命周期和托管组件
 /// - `governance`: `RuntimeGovernance`，提供治理和可观测性能力（如热重载）
+/// - `plugin_load_handle`: 后台插件加载任务句柄，可用于等待插件加载完成
 pub struct RuntimeBootstrap {
     /// 运行时服务门面，所有会话/工具/Turn 操作的入口
     pub service: Arc<RuntimeService>,
@@ -43,17 +47,64 @@ pub struct RuntimeBootstrap {
     pub coordinator: Arc<RuntimeCoordinator>,
     /// 运行时治理层，支持快照、热重载等治理能力
     pub governance: Arc<RuntimeGovernance>,
+    /// 后台插件加载任务句柄
+    pub plugin_load_handle: PluginLoadHandle,
+}
+
+/// 插件加载状态。
+#[derive(Debug, Clone, Default)]
+pub struct PluginLoadState {
+    /// 已加载的插件数量
+    pub loaded_count: usize,
+    /// 加载失败的插件数量
+    pub failed_count: usize,
+    /// 是否已完成所有插件加载
+    pub completed: bool,
+}
+
+/// 后台插件加载任务句柄。
+///
+/// 用于查询插件加载状态或等待加载完成。
+#[derive(Clone)]
+pub struct PluginLoadHandle {
+    state: Arc<RwLock<PluginLoadState>>,
+}
+
+impl PluginLoadHandle {
+    /// 创建新的句柄。
+    fn new() -> Self {
+        Self {
+            state: Arc::new(RwLock::new(PluginLoadState::default())),
+        }
+    }
+
+    /// 获取当前加载状态。
+    pub async fn state(&self) -> PluginLoadState {
+        self.state.read().await.clone()
+    }
+
+    /// 等待插件加载完成。
+    pub async fn wait_completed(&self) {
+        loop {
+            {
+                let state = self.state.read().await;
+                if state.completed {
+                    return;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
 }
 
 /// 引导运行时系统。
 ///
 /// 按以下顺序初始化：
-/// 1. 从环境变量发现插件搜索路径
-/// 2. 扫描并加载插件清单
-/// 3. 组装运行时能力面（内置工具 + 插件）
-/// 4. 创建 `RuntimeService`、`RuntimeCoordinator`、`RuntimeGovernance`
+/// 1. 创建内置能力路由器
+/// 2. 创建 `RuntimeService`（立即可用）
+/// 3. 在后台异步加载插件
 ///
-/// 任何步骤失败都会终止引导并返回 `AstrError`。
+/// 插件加载失败不会导致引导失败，只会记录警告日志。
 pub async fn bootstrap_runtime() -> std::result::Result<RuntimeBootstrap, AstrError> {
     let search_paths = configured_plugin_paths();
     let manifests = discover_plugin_manifests_in(&search_paths)?;
@@ -66,43 +117,197 @@ pub(crate) async fn bootstrap_runtime_from_manifests<I>(
     initializer: &I,
 ) -> std::result::Result<RuntimeBootstrap, AstrError>
 where
-    I: PluginInitializer,
+    I: PluginInitializer + Clone + Send + Sync + 'static,
 {
     let plugin_registry = Arc::new(PluginRegistry::default());
     let builtin_skills = astrcode_runtime_skill_loader::load_builtin_skills();
-    let assembled = assemble_runtime_surface(
-        manifests,
-        initializer,
-        Arc::clone(&plugin_registry),
-        builtin_skills.clone(),
-    )
-    .await?;
-    let capability_surface = assembled.router.descriptors();
-    plugin_registry.replace_snapshot(assembled.plugin_entries);
+
+    // 为当前 surface 创建独立的 skill 目录和 router。
+    // 后台加载完成后会整体替换为新 surface，避免把半更新状态暴露给新 turn。
+    let builtin_skill_catalog = Arc::new(SkillCatalog::new(builtin_skills.clone()));
+    let router = create_builtin_router(Arc::clone(&builtin_skill_catalog))?;
+
+    // 获取内置能力名称集合（用于冲突检测）
+    let builtin_names: HashSet<String> = router
+        .descriptors()
+        .iter()
+        .map(|d| d.name.clone())
+        .collect();
+
+    // 创建 RuntimeService（立即可用）
     let service = Arc::new(
         RuntimeService::from_capabilities_with_prompt_inputs(
-            assembled.router,
-            assembled.prompt_declarations,
-            assembled.skill_catalog,
+            router.clone(),
+            Vec::new(), // prompt declarations 将在插件加载后动态添加
+            builtin_skill_catalog,
         )
         .map_err(service_error_to_astr)?,
     );
+
+    // 创建后台加载句柄
+    let plugin_load_handle = PluginLoadHandle::new();
+
+    // 获取内置能力描述符
+    let builtin_capabilities = router.descriptors();
+
+    // 先创建 coordinator 和 governance，以便后台任务可以更新它们
     let runtime: Arc<dyn RuntimeHandle> = service.clone();
-    let coordinator = Arc::new(
-        RuntimeCoordinator::new(runtime, plugin_registry, capability_surface)
-            .with_managed_components(assembled.managed_components),
-    );
+    let coordinator = Arc::new(RuntimeCoordinator::new(
+        runtime,
+        Arc::clone(&plugin_registry),
+        builtin_capabilities.clone(),
+    ));
     let governance = Arc::new(RuntimeGovernance::with_active_plugins(
         Arc::clone(&service),
         Arc::clone(&coordinator),
-        assembled.active_plugins,
+        Vec::new(),
     ));
+
+    // 如果没有插件，直接返回
+    if manifests.is_empty() {
+        // 标记加载完成
+        {
+            let mut state = plugin_load_handle.state.write().await;
+            state.completed = true;
+        }
+
+        return Ok(RuntimeBootstrap {
+            service,
+            coordinator,
+            governance,
+            plugin_load_handle,
+        });
+    }
+
+    // 准备后台任务所需的变量
+    let plugin_registry_for_bg = Arc::clone(&plugin_registry);
+    let initializer_for_bg = initializer.clone();
+    let state_for_bg = Arc::clone(&plugin_load_handle.state);
+    let builtin_names_for_bg = builtin_names;
+    let service_for_bg = Arc::clone(&service);
+    let governance_for_bg = Arc::clone(&governance);
+    let coordinator_for_bg = Arc::clone(&coordinator);
+    let builtin_skills_for_bg = builtin_skills;
+
+    tokio::spawn(async move {
+        let result = assemble_plugins_only(
+            manifests,
+            &initializer_for_bg,
+            Arc::clone(&plugin_registry_for_bg),
+            builtin_names_for_bg,
+        )
+        .await;
+
+        match result {
+            Ok(assembled) => {
+                let updated_skill_catalog = Arc::new(SkillCatalog::new(merge_skill_layers(
+                    builtin_skills_for_bg,
+                    assembled.skills,
+                )));
+                let updated_router = match build_runtime_router(
+                    Arc::clone(&updated_skill_catalog),
+                    assembled.invokers,
+                ) {
+                    Ok(router) => router,
+                    Err(error) => {
+                        log::error!("failed to build background runtime router: {}", error);
+                        let mut state = state_for_bg.write().await;
+                        state.failed_count =
+                            assembled.stats.failed_count + assembled.stats.loaded_count;
+                        state.completed = true;
+                        return;
+                    },
+                };
+                let updated_capabilities = updated_router.descriptors();
+
+                // 先切换 service，让新 turn 能看到完整的新 surface；若失败则不推进后续状态。
+                if let Err(error) = service_for_bg
+                    .replace_capabilities_with_prompt_inputs(
+                        updated_router,
+                        assembled.prompt_declarations,
+                        updated_skill_catalog,
+                    )
+                    .await
+                {
+                    log::error!("failed to replace runtime capabilities: {}", error);
+                    let mut state = state_for_bg.write().await;
+                    state.failed_count =
+                        assembled.stats.failed_count + assembled.stats.loaded_count;
+                    state.completed = true;
+                    return;
+                }
+
+                // 更新 coordinator 的能力列表和托管组件
+                let old_components = coordinator_for_bg.replace_runtime_surface(
+                    assembled.plugin_entries,
+                    updated_capabilities,
+                    assembled.managed_components,
+                );
+
+                // 关闭旧的托管组件（这里应该没有，因为是第一次更新）
+                for component in old_components {
+                    if let Err(error) = component.shutdown_component().await {
+                        log::warn!("failed to shut down old component: {}", error);
+                    }
+                }
+
+                // 更新 governance 的活跃插件列表（用于健康检查）
+                governance_for_bg
+                    .update_active_plugins(assembled.active_plugins)
+                    .await;
+
+                // 更新状态
+                let mut state = state_for_bg.write().await;
+                state.loaded_count = assembled.stats.loaded_count;
+                state.failed_count = assembled.stats.failed_count;
+                state.completed = true;
+
+                log::info!(
+                    "background plugin loading completed: {} loaded, {} failed",
+                    state.loaded_count,
+                    state.failed_count
+                );
+            },
+            Err(error) => {
+                log::error!("failed to assemble plugins: {}", error);
+                let mut state = state_for_bg.write().await;
+                state.completed = true;
+            },
+        }
+    });
 
     Ok(RuntimeBootstrap {
         service,
         coordinator,
         governance,
+        plugin_load_handle,
     })
+}
+
+/// 创建只包含内置能力的路由器。
+fn create_builtin_router(
+    skill_catalog: Arc<SkillCatalog>,
+) -> std::result::Result<CapabilityRouter, AstrError> {
+    let invokers = crate::builtin_capabilities::built_in_capability_invokers(skill_catalog)?;
+
+    let mut builder = CapabilityRouter::builder();
+    for invoker in invokers {
+        builder = builder.register_invoker(invoker);
+    }
+    builder.build()
+}
+
+/// 构建完整 runtime router。
+///
+/// 先挂载共享同一份 skill 目录的内置能力，再批量注册插件能力，
+/// 确保 `Skill` 工具与 prompt surface 看到的是同一份目录。
+fn build_runtime_router(
+    skill_catalog: Arc<SkillCatalog>,
+    plugin_invokers: Vec<Arc<dyn astrcode_core::CapabilityInvoker>>,
+) -> std::result::Result<CapabilityRouter, AstrError> {
+    let router = create_builtin_router(skill_catalog)?;
+    router.register_invokers(plugin_invokers)?;
+    Ok(router)
 }
 
 fn service_error_to_astr(error: ServiceError) -> AstrError {
