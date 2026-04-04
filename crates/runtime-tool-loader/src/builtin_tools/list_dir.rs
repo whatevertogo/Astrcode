@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::tools::fs_common::{check_cancel, resolve_path};
+use crate::builtin_tools::fs_common::{check_cancel, resolve_path};
 
 /// ListDir 工具实现。
 ///
@@ -223,8 +223,7 @@ impl Tool for ListDirTool {
                         // 简单的 ISO 8601 格式，不依赖 chrono
                         let duration = t.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap_or_default();
                         let secs = duration.as_secs();
-                        let datetime = time_at(secs);
-                        datetime
+                        time_at(secs)
                     }),
                     "extension": e.extension,
                 })

@@ -27,12 +27,12 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::tools::fs_common::{check_cancel, resolve_path};
+use crate::builtin_tools::fs_common::{check_cancel, resolve_path};
 
-/// 二进制检测采样大小（前 N 字节）。
+/// 二进制检测采样大小。
 const BINARY_DETECT_SAMPLE_SIZE: usize = 8192;
 
-/// 图片文件最大大小（20MB），超过此大小的图片拒绝读取。
+/// 图片文件最大大小（20MB）。
 const MAX_IMAGE_SIZE: usize = 20 * 1024 * 1024;
 
 /// 支持的图片扩展名及其 MIME 类型。
@@ -52,8 +52,6 @@ const IMAGE_TYPES: &[(&str, &str)] = &[
 ];
 
 /// ReadFile 工具实现。
-///
-/// 读取 UTF-8 文本文件，支持按行偏移和字符预算。
 #[derive(Default)]
 pub struct ReadFileTool;
 
@@ -61,16 +59,12 @@ pub struct ReadFileTool;
 #[serde(rename_all = "camelCase")]
 struct ReadFileArgs {
     path: PathBuf,
-    /// 最大返回字符数，默认 20,000。
     #[serde(default)]
     max_chars: Option<usize>,
-    /// 起始行号（0-based），用于跳过文件头部。
     #[serde(default)]
     offset: Option<usize>,
-    /// 最多返回的行数，与 offset 配合使用。
     #[serde(default)]
     limit: Option<usize>,
-    /// 是否在每行前显示行号（默认 true），对 LLM 定位代码效率更高。
     #[serde(default = "default_true")]
     line_numbers: bool,
 }
@@ -133,10 +127,9 @@ fn default_true() -> bool {
     true
 }
 
-/// 检测文件是否为二进制文件。
+/// 检测文件是否为二进制。
 ///
-/// 读取文件前 `BINARY_DETECT_SAMPLE_SIZE` 字节，检测是否包含 NUL 字节。
-/// NUL 字节是文本文件几乎不可能出现的可靠二进制指标。
+/// **为什么检测 NUL 字节**：NUL 在文本文件中几乎不可能出现，是判断二进制最可靠的指标。
 fn is_binary_file(path: &std::path::Path) -> Result<bool> {
     let metadata = std::fs::metadata(path).map_err(|e| {
         AstrError::io(
@@ -239,7 +232,6 @@ impl Tool for ReadFileTool {
         let started_at = Instant::now();
         let path = resolve_path(ctx, &args.path)?;
 
-        // 图片文件处理：返回 base64 编码
         if is_image_file(&path) {
             return match read_image_file(&path, ctx.max_output_size()) {
                 Ok((base64_data, mime_type, file_size)) => Ok(ToolExecutionResult {
@@ -278,7 +270,6 @@ impl Tool for ReadFileTool {
 
         let max_chars = args.max_chars.unwrap_or(20_000);
 
-        // 二进制文件检测：避免将二进制文件内容作为乱码返回，浪费 context window
         if is_binary_file(&path)? {
             let metadata = std::fs::metadata(&path).ok();
             let file_size = metadata.map(|m| m.len() as usize).unwrap_or(0);
@@ -314,11 +305,6 @@ impl Tool for ReadFileTool {
             })?
             .len() as usize;
         let reader = BufReader::new(file);
-
-        // TODO: Replace this second full-file pass with a lazy/streaming width strategy once
-        // line-number formatting rules settle. The current implementation is simple and stable,
-        // but it doubles I/O for very large text files.
-        // 需要先知道总行数来计算行号宽度
         let total_line_count = count_total_lines(&path)?;
 
         let (text, total_lines, truncated) = if args.offset.is_some() || args.limit.is_some() {
@@ -377,15 +363,13 @@ fn count_total_lines(path: &std::path::Path) -> Result<usize> {
     Ok(count)
 }
 
-/// 讣算行号的显示宽度（字符数)。
-///
-/// 例如 999 行需要 3 位宽度， 1000 行需要 4 位宽度。
+/// 计算行号显示宽度。
 fn line_number_width(total_lines: usize) -> usize {
     if total_lines == 0 {
         return 1;
     }
     let digits = format!("{}", total_lines).len();
-    // 至少 4 位,保持对齐美观
+    // 至少保留3位宽度，保持对齐一致
     digits.max(4)
 }
 
@@ -420,7 +404,6 @@ fn read_file_full(
         };
 
         let remaining = max_chars.saturating_sub(output.chars().count());
-        // 已超出字符预算，后续内容全部截断
         if remaining == 0 {
             return Ok((output, line_no, true));
         }
@@ -433,7 +416,6 @@ fn read_file_full(
         if formatted_chars <= remaining {
             output.push_str(&formatted);
         } else {
-            // 当前行需要截断：按字符数计算安全的字节边界
             let boundary = char_count_to_byte_offset(&formatted, remaining);
             output.push_str(&formatted[..boundary]);
             return Ok((output, line_no, true));
@@ -443,10 +425,9 @@ fn read_file_full(
     Ok((output, line_no, false))
 }
 
-/// 将字符数量转换为字节偏移量。
+/// 将字符数转换为字节偏移量。
 ///
-/// `floor_char_boundary(n)` 的参数是字节位置而非字符数量，
-/// 因此不能直接用于"取前 N 个字符"的场景。
+/// `floor_char_boundary` 按字节位置截断，需手动计算字符边界。
 fn char_count_to_byte_offset(s: &str, char_count: usize) -> usize {
     s.char_indices()
         .nth(char_count)
@@ -483,12 +464,10 @@ fn read_lines_range(
             continue;
         }
 
-        // 已读够 limit 行，跳过但继续计数以获取准确总行数
         if lines_read >= max_lines {
             continue;
         }
 
-        // line_count 是 1-based 行号（用于显示）
         let formatted = if line_numbers {
             format_line(line_count, &line, num_width)
         } else {
@@ -505,18 +484,15 @@ fn read_lines_range(
 
         let take = remaining.min(formatted.chars().count());
         if take == 0 && line_numbers {
-            // 行号本身就超出预算
             return Ok((output, line_count, true));
         }
         output.push_str(&formatted[..char_count_to_byte_offset(&formatted, take)]);
         lines_read += 1;
-        // 单行超出字符预算
         if take < formatted.chars().count() {
             return Ok((output, line_count, true));
         }
     }
 
-    // 自然 EOF：只有字符预算耗尽才算截断
     let truncated = output.chars().count() >= max_chars && line_count > offset;
     Ok((output, line_count, truncated))
 }

@@ -11,7 +11,7 @@ members = [
     "crates/protocol",
     "crates/plugin",
     "crates/sdk",
-    "crates/tools",
+    "crates/runtime-tool-loader",
     "crates/server",
     "examples/example-plugin",
     "src-tauri",

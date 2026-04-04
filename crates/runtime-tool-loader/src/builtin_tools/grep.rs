@@ -29,7 +29,7 @@ use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::tools::fs_common::{
+use crate::builtin_tools::fs_common::{
     check_cancel, maybe_persist_large_tool_result, read_utf8_file, resolve_path,
 };
 
@@ -75,21 +75,16 @@ struct GrepArgs {
 }
 
 /// Grep 输出模式。
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum GrepOutputMode {
     /// 返回匹配行内容（默认）。
+    #[default]
     Content,
     /// 仅返回包含匹配的文件路径列表。
     FilesWithMatches,
     /// 返回每个文件的匹配计数。
     Count,
-}
-
-impl Default for GrepOutputMode {
-    fn default() -> Self {
-        Self::Content
-    }
 }
 
 /// 单次正则匹配的结果。
@@ -714,7 +709,7 @@ fn collect_candidate_files(
                 std::io::Error::other(e.to_string()),
             )
         })?;
-        if entry.file_type().map_or(false, |ft| ft.is_file()) {
+        if entry.file_type().is_some_and(|ft| ft.is_file()) {
             let p = entry.path().to_path_buf();
             if passes_filters(&p, glob_matcher, type_extensions) {
                 files.push(p);

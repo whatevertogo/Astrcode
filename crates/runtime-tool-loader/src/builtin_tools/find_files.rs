@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::tools::fs_common::{check_cancel, json_output, resolve_path};
+use crate::builtin_tools::fs_common::{check_cancel, json_output, resolve_path};
 
 /// FindFiles 工具实现。
 ///
@@ -148,7 +148,7 @@ impl Tool for FindFilesTool {
         )?;
 
         // 按修改时间降序排序（最新文件优先）
-        entries.sort_by(|a, b| b.modified.cmp(&a.modified));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.modified));
 
         let mut paths = Vec::new();
         let truncated = if entries.len() > max_results {
@@ -240,7 +240,7 @@ fn collect_files_with_ignore(
             )
         })?;
 
-        if !entry.file_type().map_or(false, |ft| ft.is_file()) {
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
         }
 

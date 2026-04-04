@@ -38,13 +38,27 @@ pub(crate) fn built_in_capability_invokers(
 ) -> Result<Vec<Arc<dyn CapabilityInvoker>>> {
     vec![
         ToolCapabilityInvoker::boxed(Box::new(SkillTool::new(skill_catalog))),
-        ToolCapabilityInvoker::boxed(Box::new(astrcode_tools::tools::shell::ShellTool)),
-        ToolCapabilityInvoker::boxed(Box::new(astrcode_tools::tools::list_dir::ListDirTool)),
-        ToolCapabilityInvoker::boxed(Box::new(astrcode_tools::tools::read_file::ReadFileTool)),
-        ToolCapabilityInvoker::boxed(Box::new(astrcode_tools::tools::write_file::WriteFileTool)),
-        ToolCapabilityInvoker::boxed(Box::new(astrcode_tools::tools::edit_file::EditFileTool)),
-        ToolCapabilityInvoker::boxed(Box::new(astrcode_tools::tools::find_files::FindFilesTool)),
-        ToolCapabilityInvoker::boxed(Box::new(astrcode_tools::tools::grep::GrepTool)),
+        ToolCapabilityInvoker::boxed(Box::new(
+            astrcode_runtime_tool_loader::builtin_tools::shell::ShellTool,
+        )),
+        ToolCapabilityInvoker::boxed(Box::new(
+            astrcode_runtime_tool_loader::builtin_tools::list_dir::ListDirTool,
+        )),
+        ToolCapabilityInvoker::boxed(Box::new(
+            astrcode_runtime_tool_loader::builtin_tools::read_file::ReadFileTool,
+        )),
+        ToolCapabilityInvoker::boxed(Box::new(
+            astrcode_runtime_tool_loader::builtin_tools::write_file::WriteFileTool,
+        )),
+        ToolCapabilityInvoker::boxed(Box::new(
+            astrcode_runtime_tool_loader::builtin_tools::edit_file::EditFileTool,
+        )),
+        ToolCapabilityInvoker::boxed(Box::new(
+            astrcode_runtime_tool_loader::builtin_tools::find_files::FindFilesTool,
+        )),
+        ToolCapabilityInvoker::boxed(Box::new(
+            astrcode_runtime_tool_loader::builtin_tools::grep::GrepTool,
+        )),
     ]
     .into_iter()
     .collect()

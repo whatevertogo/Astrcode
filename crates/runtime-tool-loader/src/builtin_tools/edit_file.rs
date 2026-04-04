@@ -31,7 +31,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::tools::fs_common::{
+use crate::builtin_tools::fs_common::{
     build_text_change_report, check_cancel, read_utf8_file, resolve_path, write_text_file,
 };
 

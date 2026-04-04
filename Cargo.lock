@@ -157,8 +157,8 @@ dependencies = [
  "astrcode-runtime-llm",
  "astrcode-runtime-prompt",
  "astrcode-runtime-skill-loader",
+ "astrcode-runtime-tool-loader",
  "astrcode-storage",
- "astrcode-tools",
  "async-trait",
  "chrono",
  "dashmap",
@@ -255,6 +255,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrcode-runtime-tool-loader"
+version = "0.1.0"
+dependencies = [
+ "astrcode-core",
+ "async-trait",
+ "base64 0.22.1",
+ "glob",
+ "globset",
+ "ignore",
+ "log",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "astrcode-sdk"
 version = "0.1.0"
 dependencies = [
@@ -302,25 +321,6 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "uuid",
-]
-
-[[package]]
-name = "astrcode-tools"
-version = "0.1.0"
-dependencies = [
- "astrcode-core",
- "async-trait",
- "base64 0.22.1",
- "glob",
- "globset",
- "ignore",
- "log",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
 ]
 
 [[package]]

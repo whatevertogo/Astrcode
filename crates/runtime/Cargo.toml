@@ -10,7 +10,7 @@ astrcode-runtime-agent-loop = { path = "../runtime-agent-loop" }
 astrcode-core = { path = "../core" }
 astrcode-plugin = { path = "../plugin" }
 astrcode-protocol = { path = "../protocol" }
-astrcode-tools = { path = "../tools" }
+astrcode-runtime-tool-loader = { path = "../runtime-tool-loader" }
 astrcode-storage = { path = "../storage" }
 astrcode-runtime-config = { path = "../runtime-config" }
 astrcode-runtime-llm = { path = "../runtime-llm" }

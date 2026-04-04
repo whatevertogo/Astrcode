@@ -35,20 +35,12 @@ pub fn check_cancel(cancel: &CancelToken) -> Result<()> {
     Ok(())
 }
 
-/// 将路径解析为工作目录内的绝对路径。
+/// 将路径解析为工作目录内的绝对路径，拒绝逃逸路径。
 ///
-/// ## 沙箱检查流程
-///
-/// 1. 获取并 canonicalize 工作目录作为根路径
-/// 2. 相对路径基于工作目录拼接，绝对路径直接使用
-/// 3. 对拼接后的路径进行词法归一化 + 边界解析
-/// 4. 检查解析后的路径是否在工作目录内，拒绝逃逸路径
-///
-/// ## 为什么需要 `resolve_for_boundary_check`
-///
-/// `fs::canonicalize` 要求路径在磁盘上存在，但 writeFile/editFile
-/// 经常操作尚不存在的文件。`resolve_for_boundary_check` 从路径尾部
-/// 向上找到第一个存在的祖先进行 canonicalize，再拼回缺失部分。
+/// **为什么使用 `resolve_for_boundary_check` 而非 `fs::canonicalize`**:
+/// canonicalize 要求路径在磁盘上存在，但 writeFile/editFile 经常操作
+/// 尚不存在的文件。resolve_for_boundary_check 从路径尾部向上找到第一个
+/// 存在的祖先进行 canonicalize，再拼回缺失部分。
 pub fn resolve_path(ctx: &ToolContext, path: &Path) -> Result<PathBuf> {
     let working_dir = canonicalize_path(
         ctx.working_dir(),
@@ -77,8 +69,7 @@ pub fn resolve_path(ctx: &ToolContext, path: &Path) -> Result<PathBuf> {
 
 /// 读取文件内容为 UTF-8 字符串。
 ///
-/// 如果文件包含无效 UTF-8 字节，读取将失败。调用方应决定如何处理
-/// （如 writeFile 在生成 diff 时遇到非 UTF-8 会跳过 diff 但不影响写入）。
+/// 文件包含无效 UTF-8 时返回错误。
 pub async fn read_utf8_file(path: &Path) -> Result<String> {
     fs::read_to_string(path)
         .map_err(|e| AstrError::io(format!("failed reading file '{}'", path.display()), e))
@@ -86,8 +77,7 @@ pub async fn read_utf8_file(path: &Path) -> Result<String> {
 
 /// 将文本内容写入文件。
 ///
-/// 当 `create_dirs` 为 true 时，自动创建所有缺失的父目录。
-/// 返回写入的字节数（即 content 的 UTF-8 字节长度）。
+/// `create_dirs` 为 true 时自动创建缺失的父目录。
 pub async fn write_text_file(path: &Path, content: &str, create_dirs: bool) -> Result<usize> {
     if create_dirs {
         if let Some(parent) = path.parent() {
@@ -111,28 +101,13 @@ pub fn json_output<T: Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).map_err(|e| AstrError::parse("failed to serialize output", e))
 }
 
-/// 文本变更报告，包含人类可读的摘要和机器可读的 metadata。
-///
-/// 由 `build_text_change_report` 生成，用于 writeFile 和 editFile
-/// 的执行结果，向用户和前端展示变更的 diff 信息。
+/// 文本变更报告，由 `build_text_change_report` 生成。
 pub struct TextChangeReport {
     pub summary: String,
     pub metadata: Value,
 }
 
 /// 构建文本变更报告，包含 unified diff 和变更统计。
-///
-/// ## 参数
-///
-/// - `path`: 文件路径，用于 diff 标签和报告路径
-/// - `change_type`: 变更类型（如 `"created"` / `"updated"`）
-/// - `before`: 变更前的内容，`None` 表示新文件
-/// - `after`: 变更后的内容
-///
-/// ## 输出
-///
-/// `summary` 是简短的人类可读描述（如 `updated path/to/file.rs (+5 -2)`），
-/// `metadata` 包含完整的 diff patch、增减行数和截断标记。
 pub fn build_text_change_report(
     path: &Path,
     change_type: &'static str,
@@ -175,24 +150,11 @@ struct UnifiedDiffReport {
     truncated: bool,
 }
 
-/// 手工实现的 unified diff 生成器。
+/// 简化的 unified diff 生成器（单 hunk）。
 ///
-/// ## 为什么不用外部 diff 库
-///
-/// 工具系统需要生成 unified diff 格式的输出给前端渲染，但只需要单 hunk（所有变更
-/// 集中在一个区域），不需要标准 diff 的多 hunk 分割。因此使用简化算法：
-///
-/// ## 算法
-///
-/// 1. **前后缀匹配**: 从文件开头和结尾分别找公共行（prefix_len / suffix_len），
-///    中间的就是变更区域。这是最简单的 diff 策略——不处理交叉插入/删除。
-/// 2. **上下文行**: 变更区域前后各取最多 3 行作为上下文（context_start = prefix_len - 3），保证
-///    diff 可读性。
-/// 3. **Hunk header 计算**: `@@ -{start},{count} +{start},{count} @@`
-///    - start 使用 1-based 行号：如果有删除行则 `context_start + 1`，否则 `context_start`
-///      （纯新增文件时 start 从 0 开始无意义，+1 使其从第 1 行开始）
-///    - count = hunk_end - context_start（包含上下文行和变更行）
-/// 4. **截断**: 超过 240 行的 diff 截断，避免前端渲染性能问题。
+/// **为什么不使用外部 diff 库**：前端渲染只需要单 hunk 集中展示变更，
+/// 不需要标准 diff 的多 hunk 分割。此算法通过前后缀匹配找到变更区域，
+/// 加上最多 3 行上下文保证可读性。
 fn build_unified_diff(path: &Path, before: &str, after: &str, created: bool) -> UnifiedDiffReport {
     let before_lines = text_lines(before);
     let after_lines = text_lines(after);
@@ -240,9 +202,11 @@ fn build_unified_diff(path: &Path, before: &str, after: &str, created: bool) -> 
         };
     }
 
+    // 变更区域前后各取最多3行上下文，保证diff可读性
     let context_start = prefix_len.saturating_sub(3);
     let before_hunk_end = (before_change_end + 3).min(before_lines.len());
     let after_hunk_end = (after_change_end + 3).min(after_lines.len());
+    // hunk header起始行使用1-based：有修改行时加1使上下文区域对齐
     let before_hunk_start = if removed_lines == 0 {
         context_start
     } else {
@@ -329,11 +293,8 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 
 /// 解析路径到绝对形式，用于沙箱边界检查。
 ///
-/// **为什么不能用 `fs::canonicalize` 直接处理**: `canonicalize` 要求路径在磁盘上存在，
-/// 但 `writeFile` 和 `editFile` 经常操作尚不存在的文件/目录。此函数从路径的尾部向上
-/// 找到第一个存在的祖先，对其 `canonicalize` 获取真实绝对路径，再拼回缺失的部分。
-/// 例如 `/home/user/project/new_dir/new_file.txt` 中 `new_dir/` 不存在时，
-/// 先 canonicalize `/home/user/project/`，再追加 `new_dir/new_file.txt`。
+/// 当路径尾部组件尚不存在时（如 writeFile 创建新文件），
+/// 向上找到第一个存在的祖先 canonicalize 后拼回缺失部分。
 fn resolve_for_boundary_check(path: &Path) -> Result<PathBuf> {
     if path.exists() {
         return canonicalize_path(
@@ -378,9 +339,11 @@ fn canonicalize_path(path: &Path, context: &str) -> Result<PathBuf> {
         .map_err(|e| AstrError::io(context.to_string(), e))
 }
 
-/// 移除 Windows `fs::canonicalize` 返回的 `\\?\` 前缀，
-/// 使路径字符串更友好，供 metadata 和测试比较使用。
-pub fn normalize_absolute_path(path: PathBuf) -> PathBuf {
+/// 移除 Windows `fs::canonicalize` 返回的 `\\?\` 前缀。
+///
+/// Windows canonicalize 返回 `\\?\` 开头的路径，移除后更友好。
+/// 注意不要在此函数后使用 `starts_with` 做沙箱检查（已改用词法归一化）。
+fn normalize_absolute_path(path: PathBuf) -> PathBuf {
     #[cfg(windows)]
     {
         if let Some(rendered) = path.to_str() {
@@ -402,16 +365,7 @@ fn is_path_within_root(path: &Path, root: &Path) -> bool {
     normalized_path == normalized_root || normalized_path.starts_with(&normalized_root)
 }
 
-// ======== 溢出-存盘========
-// 参考 Claude Code `toolResultStorage.ts` 和 OpenCode `truncation.ts`。
-// 当工具输出超过 inline 阈值时，将完整内容存到磁盘，返回截断预览 + 路径引用，
-// 避免单次 turn 塞满 context window。
-
 /// 工具输出 inline 阈值：序列化结果超过此字节数时触发存盘。
-///
-/// 参考：Claude Code 单工具 20-50KB，OpenCode 50KB/2000 行。
-/// TODO: 未来可根据实际情况调整，或提供工具级别的配置选项。
-/// 选择 32KB 作为单工具结果上限，保证 context window 效率。
 pub const TOOL_RESULT_INLINE_LIMIT: usize = 32 * 1024;
 
 /// 工具结果存盘目录名（相对于 session 目录）。
@@ -420,19 +374,13 @@ pub const TOOL_RESULTS_DIR: &str = "tool-results";
 /// 工具结果预览截断大小。
 ///
 /// 超阈值被存盘时，返回此大小的预览供 LLM 快速了解内容。
-/// 参考 Claude Code 的 2KB 预览策略。
 pub const TOOL_RESULT_PREVIEW_LIMIT: usize = 2 * 1024;
 
-/// 将大型工具结果存到磁盘并返回截断预览，未超阈值则返回原始内容。
+/// 将大型工具结果存到磁盘并返回截断预览。
 ///
-/// ## 返回值
-///
-/// - 内容 ≤ `TOOL_RESULT_INLINE_LIMIT` 或 `force_inline` 为 true → 返回 `content` 原样
-/// - 超阈值 → 存到 `session_dir/tool-results/<safe_id>.txt` → 返回 `<persisted-output>` 预览
-/// - 存盘失败 → fallback 到 `truncate_with_notice` 模式
-///
-/// `session_dir` 从 `ToolContext::session_dir()` 获取。
-/// `force_inline` 用于调试/测试模式，跳过存盘。
+/// 超阈值时存到 `session_dir/tool-results/<id>.txt`，返回预览供 LLM 了解内容。
+/// 存盘失败时降级为 `truncate_with_notice`。
+/// `force_inline` 用于调试/测试模式跳过存盘。
 pub fn maybe_persist_large_tool_result(
     session_dir: &std::path::Path,
     tool_call_id: &str,
@@ -476,9 +424,7 @@ pub fn maybe_persist_large_tool_result(
     format_persisted_output(&relative_path, content_bytes, content)
 }
 
-/// 截断内容并附加友好通知。
-///
-/// 截断点位于 UTF-8 字符边界，不会破坏多字节字符。
+/// 截断内容并附加通知。
 fn truncate_with_notice(content: &str) -> String {
     let limit = TOOL_RESULT_PREVIEW_LIMIT.min(content.len());
     let truncated_at = content.floor_char_boundary(limit);
@@ -492,7 +438,6 @@ fn truncate_with_notice(content: &str) -> String {
 
 /// 构建 `<persisted-output>` 格式的截断预览。
 ///
-/// 包含文件大小、存盘路径、预览内容和操作提示，
 /// 让 LLM 能在同 turn 中用 `readFile` 读取完整内容。
 fn format_persisted_output(relative_path: &str, total_bytes: usize, content: &str) -> String {
     let preview_limit = TOOL_RESULT_PREVIEW_LIMIT.min(content.len());

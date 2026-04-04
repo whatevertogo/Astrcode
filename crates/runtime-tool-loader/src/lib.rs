@@ -27,7 +27,7 @@
 //! 2. 拒绝任何逃逸出工作目录的路径（如 `../outside.txt`）
 //! 3. 支持尚不存在的路径（用于 writeFile 创建新文件）
 
-pub mod tools;
+pub mod builtin_tools;
 
 #[cfg(test)]
 pub(crate) mod test_support;

@@ -40,7 +40,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::tools::fs_common::{check_cancel, resolve_path};
+use crate::builtin_tools::fs_common::{check_cancel, resolve_path};
 
 /// Shell 工具实现。
 ///
