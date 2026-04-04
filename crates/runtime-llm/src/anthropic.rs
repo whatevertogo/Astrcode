@@ -30,7 +30,7 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use log::{debug, warn};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::select;
 
 use crate::{
@@ -548,6 +548,20 @@ fn parse_sse_block(block: &str) -> Result<Option<(String, Value)>> {
     }
 
     let data = data_lines.join("\n");
+    let data = data.trim();
+    if data.is_empty() {
+        return Ok(None);
+    }
+
+    // 兼容部分 Anthropic 网关沿用 OpenAI 风格的流结束哨兵。
+    // 如果这里严格要求 JSON，会在流尾直接误报 parse error。
+    if data == "[DONE]" {
+        return Ok(Some((
+            "message_stop".to_string(),
+            json!({ "type": "message_stop" }),
+        )));
+    }
+
     let payload = serde_json::from_str::<Value>(&data)
         .map_err(|error| AstrError::parse("failed to parse anthropic sse payload", error))?;
     let event_type = event_type
@@ -1054,6 +1068,22 @@ mod tests {
 
         assert_eq!(parsed.0, "content_block_delta");
         assert_eq!(parsed.1["delta"]["text"], json!("hello"));
+    }
+
+    #[test]
+    fn parse_sse_block_treats_done_sentinel_as_message_stop() {
+        let parsed = parse_sse_block("data: [DONE]\n")
+            .expect("done sentinel should parse")
+            .expect("done sentinel should produce payload");
+
+        assert_eq!(parsed.0, "message_stop");
+        assert_eq!(parsed.1["type"], json!("message_stop"));
+    }
+
+    #[test]
+    fn parse_sse_block_ignores_empty_data_payload() {
+        let parsed = parse_sse_block("event: ping\ndata:\n");
+        assert!(matches!(parsed, Ok(None)));
     }
 
     #[test]
