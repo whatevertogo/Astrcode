@@ -32,3 +32,7 @@ protocol (纯 DTO，无业务依赖)
 - CI 完整检查：`cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --workspace --exclude astrcode && cd frontend && npm run typecheck && npm run lint && npm run format:check`
 - 依赖边界改动（`Cargo.lock`/`deny.toml`）：补跑 `cargo deny check bans`
 - CI 配置 4 个工作流（`rust-check` / `frontend-check` / `tauri-build` / `dependency-audit`），推 `master` 或开 PR 自动触发
+
+## 注意
+
+- 用中文注释，且注释尽量表明为什么和做了什么
