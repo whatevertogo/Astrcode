@@ -104,15 +104,14 @@ impl Tool for ListDirTool {
                 ToolPromptMetadata::new(
                     "List the immediate contents of a directory before drilling into specific \
                      files.",
-                    "Use `listDir` to understand repository structure, confirm filenames, and \
-                     narrow the search space before calling read or edit tools. Prefer it over \
-                     shell directory listings because it returns structured metadata.",
+                    "List directory entries as structured metadata (name/isDir/size/modified). \
+                     Returns one level only — use `path` to drill deeper.",
                 )
                 .caveat(
-                    "Only returns one level of entries. Large directories are truncated to \
-                     maxEntries.",
+                    "Truncated at maxEntries (default 200). When truncated, use a more specific \
+                     path or `findFiles`.",
                 )
-                .example("List root: `listDir({})`. List src/: `listDir({ path: 'src' })`.")
+                .example("List root: { }. List src/: { path: \"src\", sortBy: \"modified\" }")
                 .prompt_tag("filesystem"),
             )
     }

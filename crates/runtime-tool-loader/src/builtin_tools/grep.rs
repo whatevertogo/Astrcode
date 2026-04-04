@@ -196,14 +196,13 @@ impl Tool for GrepTool {
                      where something is defined or referenced before opening specific files.",
                 )
                 .caveat(
-                    "Regex patterns can over-match; narrow the path or cap `maxMatches` before \
-                     drawing conclusions from broad searches. When `truncated` is true and \
-                     `has_more` is true, use `offset` to fetch the next page. Use `glob` and \
-                     `fileType` to narrow results.",
+                    "Pattern uses Rust regex syntax. Narrow scope with `glob`/`fileType`. If \
+                     `truncated`, use `offset` to paginate. If too slow on large repos, try \
+                     `findFiles` first.",
                 )
                 .example(
-                    "Find all references to a symbol, config key, or error string inside a module \
-                     or repository subtree.",
+                    "Find usages in Rust files: { pattern: \"fn foo\\\\(\", path: \"src\", glob: \
+                     \"**/*.rs\", outputMode: \"files_with_matches\" }",
                 )
                 .prompt_tag("search")
                 .always_include(true),

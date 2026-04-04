@@ -80,12 +80,12 @@ impl Tool for WriteFileTool {
                      keeps the change narrower and easier to validate.",
                 )
                 .caveat(
-                    "This tool overwrites the entire file content. To append or modify a portion, \
-                     use `editFile` or `applyPatch` instead.",
+                    "Overwrites the entire file. Set `createDirs: true` to auto-create parent \
+                     directories.",
                 )
                 .example(
-                    "Create a new Rust source file: `writeFile({ path: 'src/utils/format.rs', \
-                     content: 'pub fn ...', createDirs: true })`.",
+                    "Create a new file: { path: \"src/utils.rs\", content: \"pub fn foo() {}\", \
+                     createDirs: true }",
                 )
                 .prompt_tag("filesystem")
                 .always_include(true),

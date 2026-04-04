@@ -688,13 +688,14 @@ impl Tool for ApplyPatchTool {
                      diff format (like `git diff` output).",
                 )
                 .caveat(
-                    "Hunks must apply cleanly. If the patch doesn't apply, fall back to \
-                     `editFile` with explicit oldStr/newStr.",
+                    "Hunk context must match the current file exactly. If a hunk fails, use \
+                     `readFile` to see actual content around the target lines, then adjust the \
+                     hunk.",
                 )
                 .caveat("Use '--- /dev/null' to create new files, '+++ /dev/null' to delete.")
                 .example(
-                    "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,3 @@\n fn hello() {\n-    \
-                     println!(\"old\");\n+    println!(\"new\");\n }",
+                    "Replace in one file: { patch: \"--- a/src/lib.rs\\n+++ b/src/lib.rs\\n@@ \
+                     -1,3 +1,3 @@\\n fn x()\\n-    old()\\n+    new()\\n\" }",
                 )
                 .prompt_tag("filesystem")
                 .always_include(true),

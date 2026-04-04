@@ -208,19 +208,17 @@ impl Tool for ReadFileTool {
             .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Read the exact contents of a text file when you need authoritative code or \
-                     config context.",
-                    "Use `readFile` after you have identified the right path with `findFiles` or \
-                     `grep`. Use `offset` and `limit` to read specific sections of large files.",
+                    "Read file contents — supports text, images (base64), targeted line-range \
+                     reads.",
+                    "Use after `grep`/`findFiles` gives you a path. Set `offset` (0-based line) + \
+                     `limit` to read a specific range. Set `lineNumbers: false` to skip \
+                     line-number prefixes.",
                 )
                 .caveat(
-                    "Large files are truncated by `maxChars`. Use `offset` to read further into a \
-                     file.",
+                    "Output is capped at `maxChars` (default 20000). If truncated, use `offset` + \
+                     `limit` to read the next chunk.",
                 )
-                .example(
-                    "After grep shows a symbol at line 420, use offset=400 and limit=50 to read \
-                     that section.",
-                )
+                .example("Read lines 50–100: { path: \"src/main.rs\", offset: 50, limit: 50 }")
                 .prompt_tag("filesystem")
                 .always_include(true),
             )

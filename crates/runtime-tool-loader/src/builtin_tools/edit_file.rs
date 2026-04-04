@@ -105,28 +105,31 @@ impl Tool for EditFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "editFile".to_string(),
-            description: "Replace strings in a file with new content. Supports single edit or \
-                          batch edits. Each oldStr must appear exactly once (unless replaceAll is \
-                          true) - if it appears zero or multiple times the edit is rejected."
+            description: "Edit an existing file by replacing exact text. Each oldStr must appear \
+                          exactly once (unless replaceAll=true). Prefer this over rewriting the \
+                          whole file for small changes."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the file to edit"
+                        "description": "File path to edit (relative to workspace or absolute)."
                     },
                     "oldStr": {
                         "type": "string",
-                        "description": "Text to replace (for single edit)"
+                        "description": "Exact text to replace — must match exactly once in the file, \
+                                        including whitespace and newlines. If not found or duplicated, \
+                                        the edit is rejected."
                     },
                     "newStr": {
                         "type": "string",
-                        "description": "Replacement text (for single edit)"
+                        "description": "Replacement text. Use empty string to delete oldStr."
                     },
                     "replaceAll": {
                         "type": "boolean",
-                        "description": "Replace all occurrences instead of requiring a unique match (default false)"
+                        "description": "If true, replaces all occurrences. If false (default), \
+                                        requires an exact single match."
                     },
                     "edits": {
                         "type": "array",
@@ -160,12 +163,12 @@ impl Tool for EditFileTool {
                      whole file for small edits.",
                 )
                 .caveat(
-                    "`oldStr` must match exactly once; if the text is missing or duplicated, the \
-                     edit is rejected.",
+                    "`oldStr` must match exactly once in the file — including whitespace and \
+                     newlines. If rejected, use `readFile` first to see the exact current content.",
                 )
                 .example(
-                    "Rename a flag or replace one function body fragment without regenerating the \
-                     whole file.",
+                    "Change one function body: { path: \"src/lib.rs\", oldStr: \"fn a() { old \
+                     }\", newStr: \"fn a() { new }\" }",
                 )
                 .prompt_tag("filesystem")
                 .always_include(true),

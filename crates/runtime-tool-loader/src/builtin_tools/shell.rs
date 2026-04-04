@@ -401,10 +401,10 @@ impl Tool for ShellTool {
                     ),
                 )
                 .caveat(
-                    "Shell commands can mutate the workspace or external system state, so keep \
-                     them narrowly scoped.",
+                    "Non-interactive single shot. Use `cwd` instead of `cd &&`. If quoting \
+                     issues, set `shell` explicitly to pwsh/cmd/sh.",
                 )
-                .example("Inspect repository status or run a targeted build/test command.")
+                .example("Run cargo test: { command: \"cargo test --lib\", timeout: 300 }")
                 .prompt_tag("shell"),
             )
     }

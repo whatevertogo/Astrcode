@@ -101,16 +101,16 @@ impl Tool for FindFilesTool {
                 ToolPromptMetadata::new(
                     "Find candidate files by glob when you know the filename pattern but not the \
                      exact path.",
-                    "Use `findFiles` to narrow a workspace to a set of matching paths before \
-                     calling `readFile` or `editFile`. It is better than shell globbing because \
-                     it stays within the working directory and returns structured results.",
+                    "Find files by glob pattern inside the workspace. Use glob syntax: `**/*.rs` \
+                     (recursive), `*.toml` (current dir). Results sorted by modification time.",
                 )
                 .caveat(
-                    "Patterns must stay inside the workspace; use `**` explicitly when you need \
-                     recursive matching.",
+                    "Pattern must stay inside the workspace. Truncated at 200 results — narrow \
+                     with `root` or a more specific glob.",
                 )
                 .example(
-                    "Locate all `Cargo.toml`, `package.json`, or `*.tsx` files under the repo.",
+                    "Find all Cargo.toml: { pattern: \"**/Cargo.toml\" }. Limit to ./crates/: { \
+                     pattern: \"**/*.rs\", root: \"crates\" }",
                 )
                 .prompt_tag("search")
                 .always_include(true),
