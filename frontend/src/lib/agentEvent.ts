@@ -138,9 +138,9 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
     const content = pickStringAllowEmpty(data, 'content');
     const reasoningContent =
       pickOptionalString(data, 'reasoningContent', 'reasoning_content') ?? undefined;
-    // assistantMessage 可能只携带 reasoning；这时 content 允许为空字符串，
-    // 否则前端会把合法的中间态消息误报为协议错误。
-    if (!turnId || content === undefined || (content.length === 0 && !reasoningContent?.length)) {
+    // Anthropic 工具回合经常会发送空 content 的 assistantMessage 作为阶段分隔；
+    // 这属于协议内合法状态，不能再误报 invalid_agent_event。
+    if (!turnId || content === undefined) {
       return invalidEvent('assistantMessage requires turnId and content', raw);
     }
     return {

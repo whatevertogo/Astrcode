@@ -1,4 +1,4 @@
-import { startTransition, useCallback, type Dispatch, type MutableRefObject } from 'react';
+import { useCallback, type Dispatch, type MutableRefObject } from 'react';
 import type { AgentEventPayload, Action, Phase } from '../types';
 import { uuid } from '../utils/uuid';
 import { releaseTurnMapping, resolveSessionForTurn } from '../lib/turnRouting';
@@ -61,13 +61,13 @@ export function useAgentEventHandler({
           if (!sessionId) {
             break;
           }
-          startTransition(() => {
-            dispatch({
-              type: 'APPEND_DELTA',
-              sessionId,
-              turnId: event.data.turnId,
-              delta: event.data.delta,
-            });
+          // 流式文本更新需要高优先级，不能使用 startTransition
+          // 否则会被 React 批量处理导致"一坨一坨"输出
+          dispatch({
+            type: 'APPEND_DELTA',
+            sessionId,
+            turnId: event.data.turnId,
+            delta: event.data.delta,
           });
           break;
         }
@@ -77,13 +77,12 @@ export function useAgentEventHandler({
           if (!sessionId) {
             break;
           }
-          startTransition(() => {
-            dispatch({
-              type: 'APPEND_REASONING_DELTA',
-              sessionId,
-              turnId: event.data.turnId,
-              delta: event.data.delta,
-            });
+          // 流式 thinking 更新同样需要高优先级
+          dispatch({
+            type: 'APPEND_REASONING_DELTA',
+            sessionId,
+            turnId: event.data.turnId,
+            delta: event.data.delta,
           });
           break;
         }
@@ -91,6 +90,11 @@ export function useAgentEventHandler({
         case 'assistantMessage': {
           const sessionId = resolveSessionId(event.data.turnId);
           if (!sessionId) {
+            break;
+          }
+          // Anthropic 工具回合会产出空 assistantMessage 作为中间状态，
+          // 这里直接忽略，避免在 UI 中生成空白气泡。
+          if (!event.data.content && !event.data.reasoningContent) {
             break;
           }
           dispatch({
@@ -130,16 +134,15 @@ export function useAgentEventHandler({
           if (!sessionId) {
             break;
           }
-          startTransition(() => {
-            dispatch({
-              type: 'APPEND_TOOL_CALL_DELTA',
-              sessionId,
-              turnId: event.data.turnId,
-              toolCallId: event.data.toolCallId,
-              toolName: event.data.toolName,
-              stream: event.data.stream,
-              delta: event.data.delta,
-            });
+          // 工具调用流式输出也需要高优先级
+          dispatch({
+            type: 'APPEND_TOOL_CALL_DELTA',
+            sessionId,
+            turnId: event.data.turnId,
+            toolCallId: event.data.toolCallId,
+            toolName: event.data.toolName,
+            stream: event.data.stream,
+            delta: event.data.delta,
           });
           break;
         }

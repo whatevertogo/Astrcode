@@ -35,8 +35,8 @@ use tokio::select;
 
 use crate::{
     EventSink, FinishReason, LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest,
-    LlmUsage, MAX_RETRIES, ModelLimits, build_http_client, classify_http_error, emit_event,
-    is_retryable_status, wait_retry_delay,
+    LlmUsage, MAX_RETRIES, ModelLimits, Utf8StreamDecoder, build_http_client, classify_http_error,
+    emit_event, is_retryable_status, wait_retry_delay,
 };
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -242,6 +242,7 @@ impl LlmProvider for AnthropicProvider {
             Some(sink) => {
                 let mut stream = response.bytes_stream();
                 let mut sse_buffer = String::new();
+                let mut utf8_decoder = Utf8StreamDecoder::default();
                 let mut accumulator = LlmAccumulator::default();
                 // 流式路径下从 message_delta 的 stop_reason 提取 (P4.2)
                 let mut stream_stop_reason: Option<String> = None;
@@ -261,13 +262,14 @@ impl LlmProvider for AnthropicProvider {
                     let bytes = item.map_err(|e| {
                         AstrError::http("failed to read anthropic response stream", e)
                     })?;
-                    let chunk_text = std::str::from_utf8(&bytes).map_err(|e| AstrError::Utf8 {
-                        context: "anthropic response stream was not valid utf-8".to_string(),
-                        source: e,
-                    })?;
+                    let Some(chunk_text) = utf8_decoder
+                        .push(&bytes, "anthropic response stream was not valid utf-8")?
+                    else {
+                        continue;
+                    };
 
                     if consume_sse_text_chunk(
-                        chunk_text,
+                        &chunk_text,
                         &mut sse_buffer,
                         &mut accumulator,
                         &sink,
@@ -275,6 +277,25 @@ impl LlmProvider for AnthropicProvider {
                     )? {
                         let mut output = accumulator.finish();
                         // 优先使用 API 返回的 stop_reason，否则使用推断值
+                        if let Some(reason) = stream_stop_reason.as_deref() {
+                            output.finish_reason = FinishReason::from_api_value(reason);
+                        }
+                        return Ok(output);
+                    }
+                }
+
+                if let Some(tail_text) =
+                    utf8_decoder.finish("anthropic response stream was not valid utf-8")?
+                {
+                    let done = consume_sse_text_chunk(
+                        &tail_text,
+                        &mut sse_buffer,
+                        &mut accumulator,
+                        &sink,
+                        &mut stream_stop_reason,
+                    )?;
+                    if done {
+                        let mut output = accumulator.finish();
                         if let Some(reason) = stream_stop_reason.as_deref() {
                             output.finish_reason = FinishReason::from_api_value(reason);
                         }
@@ -1085,5 +1106,81 @@ mod tests {
             provider.messages_api_url,
             "https://gateway.example.com/anthropic/v1/messages"
         );
+    }
+
+    #[test]
+    fn streaming_sse_handles_multibyte_text_split_across_chunks() {
+        let mut accumulator = LlmAccumulator::default();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = sink_collector(events.clone());
+        let mut sse_buffer = String::new();
+        let mut decoder = Utf8StreamDecoder::default();
+        let mut stop_reason_out = None;
+        let chunk = concat!(
+            "event: content_block_delta\n",
+            "data: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"你",
+            "好\"}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
+        );
+        let bytes = chunk.as_bytes();
+        let split_index = chunk
+            .find("好")
+            .expect("chunk should contain multibyte char")
+            + 1;
+
+        let first_text = decoder
+            .push(
+                &bytes[..split_index],
+                "anthropic response stream was not valid utf-8",
+            )
+            .expect("first split should decode");
+        let second_text = decoder
+            .push(
+                &bytes[split_index..],
+                "anthropic response stream was not valid utf-8",
+            )
+            .expect("second split should decode");
+
+        let first_done = first_text
+            .as_deref()
+            .map(|text| {
+                consume_sse_text_chunk(
+                    text,
+                    &mut sse_buffer,
+                    &mut accumulator,
+                    &sink,
+                    &mut stop_reason_out,
+                )
+            })
+            .transpose()
+            .expect("first chunk should parse")
+            .unwrap_or(false);
+        let second_done = second_text
+            .as_deref()
+            .map(|text| {
+                consume_sse_text_chunk(
+                    text,
+                    &mut sse_buffer,
+                    &mut accumulator,
+                    &sink,
+                    &mut stop_reason_out,
+                )
+            })
+            .transpose()
+            .expect("second chunk should parse")
+            .unwrap_or(false);
+
+        assert!(!first_done);
+        assert!(second_done);
+        let output = accumulator.finish();
+        let events = events.lock().expect("lock").clone();
+
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "你好"))
+        );
+        assert_eq!(output.content, "你好");
     }
 }

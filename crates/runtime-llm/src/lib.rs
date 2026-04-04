@@ -301,6 +301,77 @@ pub fn emit_event(event: LlmEvent, accumulator: &mut LlmAccumulator, sink: &Even
     accumulator.apply(&event);
 }
 
+/// 增量 UTF-8 流式解码器。
+///
+/// HTTP/SSE 是按字节块返回的，TCP 分片可能把一个多字节字符拆到两个 chunk 里。
+/// 如果直接对每个 chunk 调 `from_utf8`，遇到中文等非 ASCII 内容就会误报 UTF-8 错误。
+/// 这里保留尾部不完整字节，等下一个 chunk 到达后再继续解码。
+#[derive(Debug, Default)]
+pub struct Utf8StreamDecoder {
+    pending: Vec<u8>,
+}
+
+impl Utf8StreamDecoder {
+    /// 追加一个新的字节块，并返回当前已经确认完整的 UTF-8 文本。
+    pub fn push(&mut self, chunk: &[u8], context: &str) -> Result<Option<String>> {
+        if chunk.is_empty() {
+            return Ok(None);
+        }
+
+        self.pending.extend_from_slice(chunk);
+        self.decode_available(context)
+    }
+
+    /// 在流结束时刷新尾部缓冲。
+    ///
+    /// 如果尾部仍然是不完整 UTF-8，说明上游响应确实损坏，此时保留原始错误。
+    pub fn finish(&mut self, context: &str) -> Result<Option<String>> {
+        if self.pending.is_empty() {
+            return Ok(None);
+        }
+
+        let decoded = std::str::from_utf8(&self.pending)
+            .map_err(|source| AstrError::Utf8 {
+                context: context.to_string(),
+                source,
+            })?
+            .to_string();
+        self.pending.clear();
+        Ok((!decoded.is_empty()).then_some(decoded))
+    }
+
+    fn decode_available(&mut self, context: &str) -> Result<Option<String>> {
+        match std::str::from_utf8(&self.pending) {
+            Ok(text) => {
+                let decoded = text.to_string();
+                self.pending.clear();
+                Ok((!decoded.is_empty()).then_some(decoded))
+            },
+            Err(error) => {
+                if error.error_len().is_some() {
+                    return Err(AstrError::Utf8 {
+                        context: context.to_string(),
+                        source: error,
+                    });
+                }
+
+                let valid_up_to = error.valid_up_to();
+                if valid_up_to == 0 {
+                    return Ok(None);
+                }
+
+                // 只消费已经确认完整的前缀，把尾部不完整字符留给下一个 chunk。
+                let tail = self.pending.split_off(valid_up_to);
+                let decoded = std::str::from_utf8(&self.pending)
+                    .expect("valid_up_to should always point to a valid utf-8 prefix")
+                    .to_string();
+                self.pending = tail;
+                Ok((!decoded.is_empty()).then_some(decoded))
+            },
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Test helpers (shared across provider test modules)
 // ---------------------------------------------------------------------------
@@ -694,5 +765,35 @@ mod tests {
     fn llm_output_finish_reason_defaults_to_stop() {
         let output = LlmOutput::default();
         assert_eq!(output.finish_reason, FinishReason::Stop);
+    }
+
+    #[test]
+    fn utf8_stream_decoder_handles_multibyte_char_split_across_chunks() {
+        let mut decoder = Utf8StreamDecoder::default();
+        let bytes = "你好".as_bytes();
+
+        let first = decoder
+            .push(&bytes[..4], "test utf-8 stream")
+            .expect("first chunk should parse");
+        let second = decoder
+            .push(&bytes[4..], "test utf-8 stream")
+            .expect("second chunk should parse");
+        let tail = decoder
+            .finish("test utf-8 stream")
+            .expect("finish should parse");
+
+        assert_eq!(first.as_deref(), Some("你"));
+        assert_eq!(second.as_deref(), Some("好"));
+        assert_eq!(tail, None);
+    }
+
+    #[test]
+    fn utf8_stream_decoder_rejects_invalid_utf8_sequences() {
+        let mut decoder = Utf8StreamDecoder::default();
+        let error = decoder
+            .push(&[0xFF], "test utf-8 stream")
+            .expect_err("invalid utf-8 should fail");
+
+        assert!(matches!(error, AstrError::Utf8 { .. }));
     }
 }

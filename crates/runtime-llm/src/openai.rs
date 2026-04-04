@@ -30,8 +30,8 @@ use tokio::select;
 
 use crate::{
     EventSink, FinishReason, LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest,
-    LlmUsage, MAX_RETRIES, ModelLimits, build_http_client, emit_event, is_retryable_status,
-    wait_retry_delay,
+    LlmUsage, MAX_RETRIES, ModelLimits, Utf8StreamDecoder, build_http_client, emit_event,
+    is_retryable_status, wait_retry_delay,
 };
 
 /// OpenAI 兼容 API 的 LLM 提供者实现。
@@ -234,6 +234,7 @@ impl LlmProvider for OpenAiProvider {
                 // 流式路径：逐块读取 SSE 响应
                 let mut body_stream = response.bytes_stream();
                 let mut sse_buffer = String::new();
+                let mut utf8_decoder = Utf8StreamDecoder::default();
                 let mut accumulator = LlmAccumulator::default();
                 // 流式路径下从最后一个 chunk 的 finish_reason 提取 (P4.2)
                 let mut stream_finish_reason: Option<String> = None;
@@ -253,13 +254,16 @@ impl LlmProvider for OpenAiProvider {
                     let bytes = item.map_err(|error| {
                         AstrError::http("failed to read openai-compatible response stream", error)
                     })?;
-                    let chunk_text = std::str::from_utf8(&bytes).map_err(|error| {
-                        AstrError::from(error)
-                            .context("openai-compatible response stream was not valid utf-8")
-                    })?;
+                    let Some(chunk_text) = utf8_decoder.push(
+                        &bytes,
+                        "openai-compatible response stream was not valid utf-8",
+                    )?
+                    else {
+                        continue;
+                    };
 
                     if consume_sse_text_chunk(
-                        chunk_text,
+                        &chunk_text,
                         &mut sse_buffer,
                         &mut accumulator,
                         &sink,
@@ -267,6 +271,25 @@ impl LlmProvider for OpenAiProvider {
                     )? {
                         let mut output = accumulator.finish();
                         // 优先使用 API 返回的 finish_reason，否则使用推断值
+                        if let Some(reason) = stream_finish_reason.as_deref() {
+                            output.finish_reason = FinishReason::from_api_value(reason);
+                        }
+                        return Ok(output);
+                    }
+                }
+
+                if let Some(tail_text) =
+                    utf8_decoder.finish("openai-compatible response stream was not valid utf-8")?
+                {
+                    let done = consume_sse_text_chunk(
+                        &tail_text,
+                        &mut sse_buffer,
+                        &mut accumulator,
+                        &sink,
+                        &mut stream_finish_reason,
+                    )?;
+                    if done {
+                        let mut output = accumulator.finish();
                         if let Some(reason) = stream_finish_reason.as_deref() {
                             output.finish_reason = FinishReason::from_api_value(reason);
                         }
@@ -1062,5 +1085,80 @@ mod tests {
         assert_eq!(output.content, "hello");
         assert_eq!(output.tool_calls.len(), 1);
         assert_eq!(output.tool_calls[0].args, json!({ "q": "hello" }));
+    }
+
+    #[test]
+    fn sse_stream_handles_multibyte_text_split_across_chunks() {
+        let mut accumulator = LlmAccumulator::default();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = sink_collector(events.clone());
+        let mut sse_buffer = String::new();
+        let mut decoder = Utf8StreamDecoder::default();
+        let mut finish_reason_out = None;
+        let line = r#"data: {"choices":[{"delta":{"content":"你好"},"finish_reason":null}]}"#;
+        let bytes = line.as_bytes();
+        let split_index = line.find("好").expect("line should contain multibyte char") + 1;
+
+        let first_text = decoder
+            .push(
+                &bytes[..split_index],
+                "openai-compatible response stream was not valid utf-8",
+            )
+            .expect("first split should decode");
+        let second_text = decoder
+            .push(
+                &bytes[split_index..],
+                "openai-compatible response stream was not valid utf-8",
+            )
+            .expect("second split should decode");
+
+        let first_done = first_text
+            .as_deref()
+            .map(|text| {
+                consume_sse_text_chunk(
+                    text,
+                    &mut sse_buffer,
+                    &mut accumulator,
+                    &sink,
+                    &mut finish_reason_out,
+                )
+            })
+            .transpose()
+            .expect("first chunk should parse")
+            .unwrap_or(false);
+        let second_done = second_text
+            .as_deref()
+            .map(|text| {
+                consume_sse_text_chunk(
+                    text,
+                    &mut sse_buffer,
+                    &mut accumulator,
+                    &sink,
+                    &mut finish_reason_out,
+                )
+            })
+            .transpose()
+            .expect("second chunk should parse")
+            .unwrap_or(false);
+
+        assert!(!first_done);
+        assert!(!second_done);
+
+        flush_sse_buffer(
+            &mut sse_buffer,
+            &mut accumulator,
+            &sink,
+            &mut finish_reason_out,
+        )
+        .expect("flush should parse");
+
+        let output = accumulator.finish();
+        let events = events.lock().expect("lock").clone();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "你好"))
+        );
+        assert_eq!(output.content, "你好");
     }
 }

@@ -76,6 +76,25 @@ describe('normalizeAgentEvent protocol gate', () => {
     });
   });
 
+  it('accepts assistantMessage when both content and reasoning are empty', () => {
+    const normalized = normalizeAgentEvent({
+      protocolVersion: 1,
+      event: 'assistantMessage',
+      data: {
+        turn_id: 'turn-3',
+        content: '',
+      },
+    });
+
+    expect(normalized).toEqual({
+      event: 'assistantMessage',
+      data: {
+        turnId: 'turn-3',
+        content: '',
+      },
+    });
+  });
+
   it('accepts empty string deltas for streaming events', () => {
     const normalized = normalizeAgentEvent({
       protocolVersion: 1,
