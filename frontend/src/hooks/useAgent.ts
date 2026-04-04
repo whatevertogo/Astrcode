@@ -114,7 +114,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
   const reconnectAttemptRef = useRef(0);
   const connectedSessionIdRef = useRef<string | null>(null);
   const lastEventIdRef = useRef<string | null>(null);
-  const hostBridgeRef = useRef(getHostBridge());
+
   // Generation counter to prevent race conditions when switching sessions
   const streamGenerationRef = useRef(0);
 
@@ -353,11 +353,12 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
   );
 
   const openConfigInEditor = useCallback(async (path?: string): Promise<void> => {
-    await hostBridgeRef.current.openConfigInEditor(path);
+    // 每次调用时即时获取最新桥接，避免组件初始化时 Tauri 环境未就绪导致拿到错误的 browserBridge
+    await getHostBridge().openConfigInEditor(path);
   }, []);
 
   const selectDirectory = useCallback(async (): Promise<string | null> => {
-    return hostBridgeRef.current.selectDirectory();
+    return getHostBridge().selectDirectory();
   }, []);
 
   return {
@@ -379,6 +380,6 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     testConnection: handleTestConnection,
     openConfigInEditor,
     selectDirectory,
-    hostBridge: hostBridgeRef.current,
+    hostBridge: getHostBridge(),
   };
 }
