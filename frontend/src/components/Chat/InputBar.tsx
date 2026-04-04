@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { ComposerOption, Phase } from '../../types';
+import type { ComposerOption, Phase, CurrentModelInfo, ModelOption } from '../../types';
 import CommandSelector from './CommandSelector';
+import ModelSelector from './ModelSelector';
 
 /**
  * 输入框组件，支持 '/' 触发技能选择器
@@ -24,6 +25,10 @@ interface InputBarProps {
     query: string,
     signal?: AbortSignal
   ) => Promise<ComposerOption[]>;
+  modelRefreshKey: number;
+  getCurrentModel: () => Promise<CurrentModelInfo>;
+  listAvailableModels: () => Promise<ModelOption[]>;
+  setModel: (profileName: string, model: string) => Promise<void>;
 }
 
 export default function InputBar({
@@ -33,6 +38,10 @@ export default function InputBar({
   onSubmit,
   onInterrupt,
   listComposerOptions,
+  modelRefreshKey,
+  getCurrentModel,
+  listAvailableModels,
+  setModel,
 }: InputBarProps) {
   const [value, setValue] = useState('');
   const [isComposing, setIsComposing] = useState(false);
@@ -218,10 +227,10 @@ export default function InputBar({
   return (
     <div className="px-8 pt-4 pb-[18px] bg-[var(--panel-bg)] flex-shrink-0">
       <div className="relative w-full max-w-[860px] mx-auto">
-        <div className="bg-[linear-gradient(180deg,rgba(255,255,255,0.96)_0%,rgba(253,248,241,0.98)_100%)] border border-[rgba(230,220,205,0.95)] rounded-[24px] shadow-[0_24px_42px_rgba(117,90,52,0.1),inset_0_1px_0_rgba(255,255,255,0.82)] overflow-hidden transition-[border-color,box-shadow,transform] duration-[180ms] ease-out focus-within:border-[rgba(122,185,153,0.56)] focus-within:shadow-[0_0_0_4px_rgba(57,201,143,0.12),0_28px_48px_rgba(117,90,52,0.13)] focus-within:-translate-y-px">
+        <div className="bg-[linear-gradient(180deg,rgba(255,255,255,0.96)_0%,rgba(253,248,241,0.98)_100%)] border border-[rgba(230,220,205,0.95)] rounded-[24px] shadow-[0_24px_42px_rgba(117,90,52,0.1),inset_0_1px_0_rgba(255,255,255,0.82)] transition-[border-color,box-shadow,transform] duration-[180ms] ease-out focus-within:border-[rgba(122,185,153,0.56)] focus-within:shadow-[0_0_0_4px_rgba(57,201,143,0.12),0_28px_48px_rgba(117,90,52,0.13)] focus-within:-translate-y-px">
           {workingDir && (
             <div
-              className="flex items-center gap-2 px-4 py-2.5 border-b border-[var(--border)] text-[var(--text-secondary)] bg-white/40"
+              className="flex items-center gap-2 px-4 py-2.5 border-b border-[var(--border)] text-[var(--text-secondary)] bg-white/40 rounded-t-[23px]"
               title={workingDir}
             >
               <span
@@ -244,10 +253,10 @@ export default function InputBar({
             </div>
           )}
           <div className="relative">
-            <div className="flex items-end gap-3 px-4 py-3.5">
+            <div className="flex flex-col px-4 py-3">
               <textarea
                 ref={textareaRef}
-                className="flex-1 min-h-[70px] max-h-[240px] text-[var(--text-primary)] text-[15px] leading-[1.75] overflow-y-auto placeholder:text-[var(--text-muted)] disabled:opacity-60 disabled:cursor-not-allowed border-0 bg-transparent focus:outline-none resize-none p-0"
+                className="w-full min-h-[50px] max-h-[240px] text-[var(--text-primary)] text-[15px] leading-[1.75] overflow-y-auto placeholder:text-[var(--text-muted)] disabled:opacity-60 disabled:cursor-not-allowed border-0 bg-transparent focus:outline-none resize-none p-0 mb-3"
                 placeholder="向 AstrCode 提问..."
                 value={value}
                 disabled={isBusy}
@@ -257,31 +266,67 @@ export default function InputBar({
                 onCompositionStart={() => setIsComposing(true)}
                 onCompositionEnd={() => setIsComposing(false)}
               />
-              {isBusy ? (
-                <button
-                  className="h-9.5 px-3.5 bg-[var(--danger-soft)] text-[var(--danger)] border border-[#f2d2cc] rounded-xl text-[13px] font-semibold flex-shrink-0 transition-colors duration-150 ease-out hover:bg-[#ffe7e2]"
-                  type="button"
-                  onClick={() => void onInterrupt()}
-                >
-                  中断
-                </button>
-              ) : (
-                <button
-                  className="w-10.5 h-10.5 inline-flex items-center justify-center bg-gradient-to-b from-[#35302b] to-[#26211d] text-white rounded-xl flex-shrink-0 transition-[transform,background-color,opacity,box-shadow] duration-150 ease-out shadow-[0_14px_26px_rgba(47,43,39,0.16)] hover:from-[#2f2b27] hover:to-[#1f1b17] hover:-translate-y-px hover:scale-105 hover:shadow-[0_18px_32px_rgba(47,43,39,0.2)] focus-visible:outline-none focus-visible:shadow-[0_0_0_4px_rgba(57,201,143,0.16),0_18px_32px_rgba(47,43,39,0.2)] disabled:opacity-35 disabled:cursor-not-allowed [&_svg]:w-[18px] [&_svg]:h-[18px]"
-                  type="button"
-                  onClick={submit}
-                  disabled={!value.trim()}
-                  aria-label="发送消息"
-                  title="发送消息"
-                >
-                  <svg viewBox="0 0 20 20" aria-hidden="true">
-                    <path
-                      d="M4 10.5 15.3 4.8c.47-.24 1 .17.89.68l-1.73 8.24a.72.72 0 0 1-1.07.47L10 12.1 7.54 14.6a.72.72 0 0 1-1.23-.48V11.4L4.22 11a.53.53 0 0 1-.22-1Z"
-                      fill="currentColor"
-                    />
-                  </svg>
-                </button>
-              )}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <button
+                    type="button"
+                    className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors"
+                  >
+                    <svg
+                      width="18"
+                      height="18"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <line x1="12" y1="5" x2="12" y2="19"></line>
+                      <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                  </button>
+                  <ModelSelector
+                    refreshKey={modelRefreshKey}
+                    getCurrentModel={getCurrentModel}
+                    listAvailableModels={listAvailableModels}
+                    setModel={setModel}
+                  />
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {isBusy ? (
+                    <button
+                      className="h-9 px-3.5 bg-[var(--danger-soft)] text-[var(--danger)] border border-[#f2d2cc] rounded-xl text-[13px] font-semibold flex-shrink-0 transition-colors duration-150 ease-out hover:bg-[#ffe7e2]"
+                      type="button"
+                      onClick={() => void onInterrupt()}
+                    >
+                      中断
+                    </button>
+                  ) : (
+                    <button
+                      className="w-9 h-9 inline-flex items-center justify-center bg-gradient-to-b from-[#35302b] to-[#26211d] text-white rounded-full flex-shrink-0 transition-[transform,background-color,opacity,box-shadow] duration-150 ease-out shadow-[0_14px_26px_rgba(47,43,39,0.16)] hover:from-[#2f2b27] hover:to-[#1f1b17] hover:-translate-y-px hover:scale-105 hover:shadow-[0_18px_32px_rgba(47,43,39,0.2)] focus-visible:outline-none focus-visible:shadow-[0_0_0_4px_rgba(57,201,143,0.16),0_18px_32px_rgba(47,43,39,0.2)] disabled:opacity-35 disabled:cursor-not-allowed [&_svg]:w-[16px] [&_svg]:h-[16px]"
+                      type="button"
+                      onClick={submit}
+                      disabled={!value.trim()}
+                      aria-label="发送消息"
+                      title="发送消息"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <line x1="12" y1="19" x2="12" y2="5"></line>
+                        <polyline points="5 12 12 5 19 12"></polyline>
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </div>

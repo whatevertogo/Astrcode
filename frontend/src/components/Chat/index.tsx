@@ -53,10 +53,6 @@ export default function Chat({
         isSidebarOpen={isSidebarOpen}
         toggleSidebar={toggleSidebar}
         onNewSession={onNewSession}
-        modelRefreshKey={modelRefreshKey}
-        getCurrentModel={getCurrentModel}
-        listAvailableModels={listAvailableModels}
-        setModel={setModel}
       />
       <MessageList messages={session?.messages ?? []} />
       <InputBar
@@ -66,6 +62,10 @@ export default function Chat({
         onSubmit={onSubmitPrompt}
         onInterrupt={onInterrupt}
         listComposerOptions={listComposerOptions}
+        modelRefreshKey={modelRefreshKey}
+        getCurrentModel={getCurrentModel}
+        listAvailableModels={listAvailableModels}
+        setModel={setModel}
       />
     </div>
   );

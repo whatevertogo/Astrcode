@@ -1,6 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { CurrentModelInfo, ModelOption } from '../../types';
-import styles from './ModelSelector.module.css';
 
 interface ModelSelectorProps {
   refreshKey: number;
@@ -9,10 +8,6 @@ interface ModelSelectorProps {
   setModel: (profileName: string, model: string) => Promise<void>;
 }
 
-/**
- * Creates a stable key for an option using its index in the flattened options array.
- * This avoids issues with special characters in profile/model names.
- */
 function optionKey(index: number): string {
   return String(index);
 }
@@ -25,13 +20,16 @@ export default function ModelSelector({
 }: ModelSelectorProps) {
   const listboxId = useId();
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [currentModel, setCurrentModel] = useState<CurrentModelInfo | null>(null);
   const [options, setOptions] = useState<ModelOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
   const errorTimerRef = useRef<number | null>(null);
+  const [hoverIndex, setHoverIndex] = useState<number>(-1);
 
   useEffect(() => {
     return () => {
@@ -88,6 +86,7 @@ export default function ModelSelector({
 
   useEffect(() => {
     if (!open) {
+      setSearchQuery('');
       return;
     }
 
@@ -109,6 +108,11 @@ export default function ModelSelector({
     document.addEventListener('pointerdown', handlePointerDown);
     window.addEventListener('keydown', handleKeyDown);
 
+    // 聚焦搜索框
+    requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+    });
+
     return () => {
       document.removeEventListener('pointerdown', handlePointerDown);
       window.removeEventListener('keydown', handleKeyDown);
@@ -127,15 +131,26 @@ export default function ModelSelector({
     return result;
   }, [options]);
 
+  const filteredOptions = useMemo(() => {
+    if (!searchQuery) return flattenedOptions;
+    const q = searchQuery.toLowerCase();
+    return flattenedOptions.filter(
+      (item) =>
+        item.option.model.toLowerCase().includes(q) ||
+        item.profileName.toLowerCase().includes(q) ||
+        item.option.providerKind.toLowerCase().includes(q)
+    );
+  }, [flattenedOptions, searchQuery]);
+
   const groupedOptions = useMemo(() => {
     const groups = new Map<string, Array<{ option: ModelOption; index: number }>>();
-    for (const { option, index, profileName } of flattenedOptions) {
+    for (const { option, index, profileName } of filteredOptions) {
       const group = groups.get(profileName) ?? [];
       group.push({ option, index });
       groups.set(profileName, group);
     }
     return Array.from(groups.entries());
-  }, [flattenedOptions]);
+  }, [filteredOptions]);
 
   const selectedIndex = useMemo(() => {
     if (currentModel === null) {
@@ -175,10 +190,10 @@ export default function ModelSelector({
   };
 
   return (
-    <div ref={wrapperRef} className={`${styles.wrapper} ${open ? styles.wrapperOpen : ''}`}>
+    <div ref={wrapperRef} className="relative">
       <button
         type="button"
-        className={styles.trigger}
+        className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg hover:bg-[rgba(0,0,0,0.05)] text-[13px] text-[var(--text-secondary)] transition-all duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(57,201,143,0.3)] disabled:opacity-60 disabled:cursor-not-allowed"
         onClick={() => {
           if (!triggerDisabled) {
             setOpen((value) => !value);
@@ -190,77 +205,115 @@ export default function ModelSelector({
         aria-expanded={open}
         aria-controls={listboxId}
       >
-        <span className={styles.leadingIcon} aria-hidden="true">
-          <svg viewBox="0 0 20 20">
-            <path
-              d="M8.75 2.5h2.5l.39 1.94c.38.11.74.26 1.08.45l1.84-.73 1.26 2.18-1.45 1.24c.03.19.05.37.05.56 0 .19-.02.37-.05.56l1.45 1.24-1.26 2.18-1.84-.73c-.34.19-.7.34-1.08.45l-.39 1.94h-2.5l-.39-1.94a4.96 4.96 0 0 1-1.08-.45l-1.84.73-1.26-2.18 1.45-1.24a3.7 3.7 0 0 1-.05-.56c0-.19.02-.37.05-.56L3.31 6.34l1.26-2.18 1.84.73c.34-.19.7-.34 1.08-.45l.39-1.94ZM10 7.3A2.7 2.7 0 1 0 10 12.7 2.7 2.7 0 0 0 10 7.3Z"
-              fill="currentColor"
-            />
-          </svg>
+        <span className="truncate max-w-[200px] text-[var(--text-primary)] font-medium">
+          {selectedOption?.model ?? (loading ? '加载中...' : '未选择模型')}
         </span>
-        <span className={styles.triggerContent}>
-          <span className={styles.triggerLabel}>
-            {selectedOption?.model ?? (loading ? '读取模型中...' : '未选择模型')}
-          </span>
-          <span className={styles.triggerMeta}>
-            {selectedOption
-              ? `${selectedOption.profileName} · ${selectedOption.providerKind}`
-              : loading
-                ? '同步当前配置...'
-                : '未检测到可用模型'}
-          </span>
-        </span>
-        <span className={styles.triggerBadge}>
-          {saving ? '切换中' : (selectedOption?.providerKind ?? 'model')}
-        </span>
-        <span className={styles.chevron} aria-hidden="true">
-          <svg viewBox="0 0 12 12">
-            <path
-              d="M2.5 4.5 6 8l3.5-3.5"
-              fill="none"
-              stroke="currentColor"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth="1.4"
-            />
-          </svg>
-        </span>
+        <svg
+          className={`w-4 h-4 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <polyline points="6 9 12 15 18 9"></polyline>
+        </svg>
       </button>
 
-      {open && groupedOptions.length > 0 && (
-        <div id={listboxId} className={styles.dropdown} role="listbox" aria-label="模型列表">
-          {groupedOptions.map(([profileName, profileOptions]) => (
-            <div key={profileName} className={styles.group}>
-              <div className={styles.groupLabel}>{profileName}</div>
-              <div className={styles.groupOptions}>
-                {profileOptions.map(({ option, index }) => {
-                  const isSelected = optionKey(index) === selectedValue;
-                  return (
-                    <button
-                      key={optionKey(index)}
-                      type="button"
-                      className={`${styles.optionButton} ${isSelected ? styles.optionButtonSelected : ''}`}
-                      onClick={() => void handleSelect(index)}
-                      role="option"
-                      aria-selected={isSelected}
-                    >
-                      <span className={styles.optionMain}>
-                        <span className={styles.optionTitle}>{option.model}</span>
-                        <span className={styles.optionMeta}>{option.providerKind}</span>
-                      </span>
-                      <span className={styles.optionCheck} aria-hidden="true">
-                        {isSelected ? '当前' : '切换'}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
+      {open && (
+        <div
+          id={listboxId}
+          className="absolute bottom-[calc(100%+8px)] left-0 w-[240px] bg-[var(--surface)] border border-[rgba(230,220,205,0.95)] rounded-2xl shadow-[0_12px_32px_rgba(117,90,52,0.1)] z-[9999] flex flex-col origin-bottom-left animate-in fade-in zoom-in-95 duration-100"
+        >
+          <div className="p-1.5 border-b border-[var(--border)]">
+            <div className="relative flex items-center">
+              <svg
+                className="absolute left-2.5 w-3.5 h-3.5 text-[var(--text-muted)]"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <circle cx="11" cy="11" r="8"></circle>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+              </svg>
+              <input
+                ref={searchInputRef}
+                type="text"
+                placeholder="搜索模型..."
+                className="w-full bg-transparent border-none py-1.5 pl-7 pr-2.5 text-[13px] text-[var(--text-primary)] focus:outline-none placeholder:text-[var(--text-muted)]"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
             </div>
-          ))}
+          </div>
+
+          <div
+            className="overflow-y-auto p-1.5 flex-1 max-h-[240px] [&::-webkit-scrollbar]:hidden"
+            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+          >
+            {groupedOptions.length === 0 ? (
+              <div className="px-3 py-6 text-center text-[12px] text-[var(--text-muted)]">
+                无结果
+              </div>
+            ) : (
+              groupedOptions.map(([profileName, profileOptions], groupIdx) => (
+                <div key={profileName} className={groupIdx > 0 ? 'mt-1.5' : ''}>
+                  <div className="px-4 py-1.5 text-[11px] font-semibold text-[var(--text-muted)] tracking-wider uppercase select-none">
+                    {profileName}
+                  </div>
+                  <div className="flex flex-col gap-0.5 px-1.5">
+                    {profileOptions.map(({ option, index }) => {
+                      const isSelected = optionKey(index) === selectedValue;
+                      return (
+                        <button
+                          key={optionKey(index)}
+                          type="button"
+                          onMouseEnter={() => setHoverIndex(index)}
+                          onMouseLeave={() => setHoverIndex(-1)}
+                          className="w-full flex items-center justify-between px-3 h-[34px] text-left rounded-lg transition-colors duration-100 text-[var(--text-primary)]"
+                          style={{
+                            backgroundColor:
+                              index === hoverIndex ? 'rgba(0, 0, 0, 0.05)' : 'transparent',
+                          }}
+                          onClick={() => void handleSelect(index)}
+                          role="option"
+                          aria-selected={isSelected}
+                        >
+                          <span className="text-[13px] font-medium truncate leading-normal">
+                            {option.model}
+                          </span>
+                          {isSelected && (
+                            <svg
+                              className="w-4 h-4 text-[var(--text-primary)] flex-shrink-0"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2.5"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            >
+                              <polyline points="20 6 9 17 4 12"></polyline>
+                            </svg>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+          {error && (
+            <div className="mx-1.5 mb-1.5 p-2 bg-[#fff8f7] text-[#b34e4e] rounded-lg text-[12px] text-center border border-[#f0d5d2]">
+              {error}
+            </div>
+          )}
         </div>
       )}
-
-      {error && <span className={styles.error}>{error}</span>}
     </div>
   );
 }

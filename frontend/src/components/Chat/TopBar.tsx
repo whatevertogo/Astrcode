@@ -1,5 +1,3 @@
-import type { CurrentModelInfo, ModelOption } from '../../types';
-import ModelSelector from './ModelSelector';
 import styles from './TopBar.module.css';
 
 interface TopBarProps {
@@ -8,10 +6,6 @@ interface TopBarProps {
   isSidebarOpen: boolean;
   toggleSidebar: () => void;
   onNewSession: () => void;
-  modelRefreshKey: number;
-  getCurrentModel: () => Promise<CurrentModelInfo>;
-  listAvailableModels: () => Promise<ModelOption[]>;
-  setModel: (profileName: string, model: string) => Promise<void>;
 }
 
 export default function TopBar({
@@ -20,10 +14,6 @@ export default function TopBar({
   isSidebarOpen,
   toggleSidebar,
   onNewSession,
-  modelRefreshKey,
-  getCurrentModel,
-  listAvailableModels,
-  setModel,
 }: TopBarProps) {
   return (
     <div className={styles.topBar}>
@@ -63,12 +53,6 @@ export default function TopBar({
         )}
       </div>
       <div className={styles.actions}>
-        <ModelSelector
-          refreshKey={modelRefreshKey}
-          getCurrentModel={getCurrentModel}
-          listAvailableModels={listAvailableModels}
-          setModel={setModel}
-        />
         <button className={styles.newSessionBtn} onClick={onNewSession} disabled={!projectName}>
           <span className={styles.newSessionPlus}>+</span>
           <span>新会话</span>
