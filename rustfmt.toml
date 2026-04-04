@@ -7,6 +7,7 @@ style_edition = "2024"
 max_width = 100
 hard_tabs = false
 tab_spaces = 4
+# 统一使用 Unix 风格换行符（LF）；由 .gitattributes 强制跨平台一致
 newline_style = "Unix"
 
 # 导入语句排序与分组
