@@ -44,6 +44,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
+use tokio::io::AsyncReadExt;
 
 use crate::{
     auth::{AuthSessionManager, BootstrapAuth},
@@ -240,11 +241,26 @@ async fn main() -> AnyhowResult<()> {
 
 /// 等待关闭信号
 ///
-/// 支持 Ctrl+C（所有平台）和 SIGTERM（Unix）。
+/// 支持 Ctrl+C（所有平台）、SIGTERM（Unix）以及桌面宿主关闭 stdin（Tauri sidecar）。
 async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(error) = tokio::signal::ctrl_c().await {
             log::error!("failed to install Ctrl+C shutdown handler: {}", error);
+        }
+    };
+    let stdin_closed = async {
+        let mut stdin = tokio::io::stdin();
+        let mut buffer = [0_u8; 64];
+        loop {
+            match stdin.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(_) => {},
+                Err(error) => {
+                    // stdin 读取失败时宁可尽快结束，也不要把桌面端退出卡成僵尸 sidecar。
+                    log::warn!("failed to read stdin shutdown pipe: {}", error);
+                    break;
+                },
+            }
         }
     };
 
@@ -261,5 +277,6 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {}
         _ = terminate => {}
+        _ = stdin_closed => {}
     }
 }

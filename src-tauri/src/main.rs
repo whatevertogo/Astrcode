@@ -21,6 +21,7 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use astrcode_core::LocalServerInfo;
 use instance::{DesktopInstanceCoordinator, InstanceBootstrap};
+use serde::Deserialize;
 use tauri::{Manager, Url, WebviewUrl, WebviewWindowBuilder, async_runtime};
 use tauri_plugin_shell::{
     ShellExt,
@@ -30,11 +31,17 @@ use tauri_plugin_shell::{
 use crate::paths::{resolve_home_dir, runtime_sidecar_dir};
 
 type SpawnedSidecarPath = Arc<Mutex<Option<PathBuf>>>;
+const DESKTOP_TARGET_TRIPLE: &str = env!("ASTRCODE_DESKTOP_TARGET_TRIPLE");
 
 struct ServerState {
     child: Mutex<Option<CommandChild>>,
     shutting_down: Arc<AtomicBool>,
     spawned_sidecar_path: SpawnedSidecarPath,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExistingServerRunInfoResponse {
+    token: String,
 }
 
 fn main() {
@@ -86,7 +93,9 @@ fn run_desktop_shell() -> Result<()> {
                     state.shutting_down.store(true, Ordering::SeqCst);
                     if let Ok(mut child) = state.child.lock() {
                         if let Some(child) = child.take() {
-                            let _ = child.kill();
+                            // 不直接 kill sidecar；关闭宿主持有的 stdin/进程句柄后，
+                            // server 会通过 stdin EOF 感知到桌面端退出，并走自己的优雅关闭流程。
+                            drop(child);
                         }
                     }
                     cleanup_spawned_sidecar(&state.spawned_sidecar_path);
@@ -204,16 +213,80 @@ fn try_connect_existing_server() -> Result<Option<LocalServerInfo>> {
         return Ok(None);
     }
 
-    if wait_for_server_http_ready(run_info.port).is_err() {
+    if !existing_server_matches_run_info(&run_info)? {
         return Ok(None);
     }
 
     Ok(Some(run_info))
 }
 
+fn existing_server_matches_run_info(run_info: &LocalServerInfo) -> Result<bool> {
+    let Some(token) = fetch_existing_server_bootstrap_token(run_info.port)? else {
+        return Ok(false);
+    };
+
+    Ok(token == run_info.token)
+}
+
+fn fetch_existing_server_bootstrap_token(port: u16) -> Result<Option<String>> {
+    let mut stream = match TcpStream::connect_timeout(
+        &SocketAddr::from(([127, 0, 0, 1], port)),
+        Duration::from_millis(200),
+    ) {
+        Ok(stream) => stream,
+        Err(error) if is_connection_refused(&error) => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to connect to existing astrcode-server on port {port}")
+            });
+        },
+    };
+
+    stream
+        .set_read_timeout(Some(Duration::from_millis(300)))
+        .context("failed to configure existing server probe read timeout")?;
+    stream
+        .set_write_timeout(Some(Duration::from_millis(300)))
+        .context("failed to configure existing server probe write timeout")?;
+    stream
+        .write_all(
+            b"GET /__astrcode__/run-info HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+        )
+        .context("failed to write existing server probe request")?;
+
+    let mut response = Vec::new();
+    match stream.read_to_end(&mut response) {
+        Ok(0) => return Ok(None),
+        Ok(_) => {},
+        Err(error) if is_connection_refused(&error) => return Ok(None),
+        Err(error) => {
+            return Err(error).context("failed to read existing server probe response");
+        },
+    }
+
+    let response = String::from_utf8_lossy(&response);
+    if !(response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")) {
+        return Ok(None);
+    }
+
+    let Some((_, body)) = response.split_once("\r\n\r\n") else {
+        return Ok(None);
+    };
+    let payload: ExistingServerRunInfoResponse =
+        serde_json::from_str(body).context("failed to parse existing server bootstrap response")?;
+    Ok(Some(payload.token))
+}
+
 fn resolve_main_window_url(app_handle: &tauri::AppHandle) -> Result<WebviewUrl> {
+    let window_config = app_handle
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|config| config.label == "main")
+        .ok_or_else(|| anyhow!("main window config is missing"))?;
     let Some(dev_url) = app_handle.config().build.dev_url.as_ref() else {
-        return Ok(WebviewUrl::App("index.html".into()));
+        return explicit_embedded_frontend_url(window_config.use_https_scheme);
     };
 
     // 开发环境优先直连 Vite，这样 `cargo tauri dev` 仍保留 HMR。
@@ -221,9 +294,25 @@ fn resolve_main_window_url(app_handle: &tauri::AppHandle) -> Result<WebviewUrl> 
         return Ok(WebviewUrl::External(dev_url.clone()));
     }
 
-    // 当开发服务器未启动时，调试 exe 退回到内置前端资源，避免直接双击
-    // `target/debug/astrcode.exe` 只看到 “localhost refused to connect”。
-    Ok(WebviewUrl::App("index.html".into()))
+    // 不使用 `WebviewUrl::App("index.html")` 做 fallback。
+    // 在 Tauri 的 dev 编译形态下，`App(...)` 的基址仍会被解释成 `devUrl`，
+    // 于是即便我们逻辑上想退回内置资源，WebView 仍可能导航到 localhost。
+    explicit_embedded_frontend_url(window_config.use_https_scheme)
+}
+
+fn explicit_embedded_frontend_url(use_https_scheme: bool) -> Result<WebviewUrl> {
+    let scheme = if cfg!(windows) || cfg!(target_os = "android") {
+        if use_https_scheme {
+            "https://tauri.localhost"
+        } else {
+            "http://tauri.localhost"
+        }
+    } else {
+        "tauri://localhost"
+    };
+    let url = Url::parse(&format!("{scheme}/index.html"))
+        .with_context(|| format!("failed to build embedded frontend url from '{scheme}'"))?;
+    Ok(WebviewUrl::External(url))
 }
 
 fn spawn_server_process(
@@ -368,9 +457,22 @@ fn dev_server_is_reachable(dev_url: &Url) -> bool {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
 
-    stream
+    if stream
         .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .is_ok()
+        .is_err()
+    {
+        return false;
+    }
+
+    let mut buffer = [0_u8; 64];
+    match stream.read(&mut buffer) {
+        Ok(0) => false,
+        Ok(read) => {
+            let response_head = String::from_utf8_lossy(&buffer[..read]);
+            response_head.starts_with("HTTP/1.1 ") || response_head.starts_with("HTTP/1.0 ")
+        },
+        Err(_) => false,
+    }
 }
 
 fn prepare_detached_sidecar_copy() -> Result<PathBuf> {
@@ -410,15 +512,40 @@ fn resolve_packaged_sidecar_path() -> Result<PathBuf> {
         exe_dir
     };
 
-    let sidecar_path = base_dir.join(packaged_sidecar_file_name());
-    if !sidecar_path.is_file() {
-        return Err(anyhow!(
-            "desktop sidecar '{}' does not exist",
-            sidecar_path.display()
-        ));
+    let packaged_path = base_dir.join(packaged_sidecar_file_name());
+    if packaged_path.is_file() {
+        return Ok(packaged_path);
     }
 
-    Ok(sidecar_path)
+    if let Some(dev_path) = resolve_development_sidecar_path(base_dir) {
+        if dev_path.is_file() {
+            return Ok(dev_path);
+        }
+    }
+
+    Err(anyhow!(
+        "desktop sidecar was not found next to '{}' or under the development target triple '{}'",
+        current_exe.display(),
+        DESKTOP_TARGET_TRIPLE
+    ))
+}
+
+fn resolve_development_sidecar_path(base_dir: &Path) -> Option<PathBuf> {
+    let profile = base_dir.file_name()?.to_str()?;
+    if profile != "debug" && profile != "release" {
+        return None;
+    }
+
+    // `cargo tauri build/dev` 会把 sidecar 编译到 `target/<triple>/<profile>/`，
+    // 但主程序本身仍落在 `target/<profile>/`。这里补一个开发态回退，避免直接跑
+    // 原始 `astrcode.exe` 时因为 sidecar 不在同目录而失败。
+    Some(
+        base_dir
+            .parent()?
+            .join(DESKTOP_TARGET_TRIPLE)
+            .join(profile)
+            .join(packaged_sidecar_file_name()),
+    )
 }
 
 fn packaged_sidecar_file_name() -> &'static str {
@@ -629,4 +756,51 @@ fn current_time_ms() -> Result<i64> {
 
 fn run_info_path() -> Result<PathBuf> {
     Ok(resolve_home_dir()?.join(".astrcode").join("run.json"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use tauri::WebviewUrl;
+
+    use super::{
+        DESKTOP_TARGET_TRIPLE, explicit_embedded_frontend_url, packaged_sidecar_file_name,
+        resolve_development_sidecar_path,
+    };
+
+    #[test]
+    fn development_sidecar_path_matches_tauri_target_layout() {
+        let base_dir = Path::new(r"D:\repo\target\release");
+        let expected = PathBuf::from(r"D:\repo\target")
+            .join(DESKTOP_TARGET_TRIPLE)
+            .join("release")
+            .join(packaged_sidecar_file_name());
+
+        assert_eq!(resolve_development_sidecar_path(base_dir), Some(expected));
+    }
+
+    #[test]
+    fn development_sidecar_path_ignores_non_profile_dirs() {
+        let base_dir = Path::new(r"D:\repo\bundle");
+
+        assert_eq!(resolve_development_sidecar_path(base_dir), None);
+    }
+
+    #[test]
+    fn embedded_frontend_url_uses_tauri_protocol_instead_of_dev_server() {
+        let url =
+            explicit_embedded_frontend_url(false).expect("embedded frontend url should build");
+
+        match url {
+            WebviewUrl::External(url) => {
+                if cfg!(windows) || cfg!(target_os = "android") {
+                    assert_eq!(url.as_str(), "http://tauri.localhost/index.html");
+                } else {
+                    assert_eq!(url.as_str(), "tauri://localhost/index.html");
+                }
+            },
+            other => panic!("expected explicit external embedded url, got {other:?}"),
+        }
+    }
 }

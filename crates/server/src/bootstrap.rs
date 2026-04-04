@@ -49,10 +49,14 @@ pub(crate) const BOOTSTRAP_TOKEN_TTL_HOURS: i64 = 24;
 #[cfg(test)]
 pub(crate) use astrcode_core::home::ASTRCODE_HOME_DIR_ENV as APP_HOME_OVERRIDE_ENV;
 
-/// 浏览器 bootstrap 桥接端点返回的载荷（仅包含 token）
+/// 浏览器 bootstrap 桥接端点返回的载荷。
+///
+/// 始终返回真实的 server origin 和 token，避免前端再根据当前页面 origin 做推断。
 #[derive(Debug, Serialize)]
 pub(crate) struct BrowserBootstrapResponse {
     token: String,
+    #[serde(rename = "serverOrigin")]
+    server_origin: String,
 }
 
 async fn server_root() -> &'static str {
@@ -98,6 +102,7 @@ pub(crate) async fn serve_run_info(
 
     Ok(Json(BrowserBootstrapResponse {
         token: run_info.token,
+        server_origin: format!("http://127.0.0.1:{}", run_info.port),
     }))
 }
 

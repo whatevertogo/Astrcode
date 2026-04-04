@@ -57,7 +57,8 @@ impl Tool for FindFilesTool {
         ToolDefinition {
             name: "findFiles".to_string(),
             description: "Find files matching a glob pattern. Respects .gitignore by default. Use \
-                          ** for recursive search."
+                          ** for recursive search. Prefer this over `grep` when you only know \
+                          file names or globs."
                 .to_string(),
             parameters: json!({
                 "type": "object",
@@ -101,8 +102,9 @@ impl Tool for FindFilesTool {
                 ToolPromptMetadata::new(
                     "Find candidate files by glob when you know the filename pattern but not the \
                      exact path.",
-                    "Find files by glob pattern inside the workspace. Use glob syntax: `**/*.rs` \
-                     (recursive), `*.toml` (current dir). Results sorted by modification time.",
+                    "Find files by glob pattern inside the workspace. Use this before `grep` when \
+                     you only know a filename, extension, or glob. Use glob syntax: `**/*.rs` \
+                     (recursive), `*.toml` (current dir). Results are sorted by modification time.",
                 )
                 .caveat(
                     "Pattern must stay inside the workspace. Truncated at 200 results — narrow \
@@ -111,6 +113,10 @@ impl Tool for FindFilesTool {
                 .example(
                     "Find all Cargo.toml: { pattern: \"**/Cargo.toml\" }. Limit to ./crates/: { \
                      pattern: \"**/*.rs\", root: \"crates\" }",
+                )
+                .example(
+                    "If the next step is content search, first `findFiles { pattern: \"**/*.rs\", \
+                     root: \"crates\" }`, then call `grep` with both `pattern` and `path`.",
                 )
                 .prompt_tag("search")
                 .always_include(true),
@@ -554,5 +560,21 @@ mod tests {
         // 新文件应排在前面
         assert!(paths[0].ends_with("new.txt"));
         assert!(paths[1].ends_with("old.txt"));
+    }
+
+    #[test]
+    fn find_files_prompt_metadata_mentions_grep_hand_off() {
+        let prompt = FindFilesTool::default()
+            .capability_metadata()
+            .prompt
+            .expect("findFiles should expose prompt metadata");
+
+        assert!(prompt.guide.contains("before `grep`"));
+        assert!(
+            prompt
+                .examples
+                .iter()
+                .any(|example| example.contains("then call `grep`"))
+        );
     }
 }

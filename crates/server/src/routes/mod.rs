@@ -37,7 +37,7 @@ use crate::{ApiError, AppState, bootstrap::serve_run_info};
 /// ## 路由清单
 ///
 /// ### Bootstrap
-/// - `GET /__astrcode__/run-info` — 返回 bootstrap token（浏览器开发用）
+/// - `GET /__astrcode__/run-info` — 返回 bootstrap token 和 server origin（浏览器开发用）
 ///
 /// ### 认证
 /// - `POST /api/auth/exchange` — 用 bootstrap token 交换 API 会话 token

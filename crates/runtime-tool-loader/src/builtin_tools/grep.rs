@@ -122,19 +122,20 @@ impl Tool for GrepTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "grep".to_string(),
-            description: "Search for a regex pattern in a file or directory. Returns matching \
-                          lines with file path and line number."
+            description: "Search for a regex pattern in a file or directory. Requires both \
+                          `pattern` and `path`, then returns matching lines with file path and \
+                          line number."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "pattern": {
                         "type": "string",
-                        "description": "Rust regex pattern to search for"
+                        "description": "Rust regex pattern to search for inside file contents"
                     },
                     "path": {
                         "type": "string",
-                        "description": "File or directory to search in"
+                        "description": "File or directory to search in. Required even when using glob/fileType filters"
                     },
                     "recursive": {
                         "type": "boolean",
@@ -153,11 +154,11 @@ impl Tool for GrepTool {
                     },
                     "glob": {
                         "type": "string",
-                        "description": "Glob filter for file paths, e.g. '*.rs', '*.{ts,tsx}'"
+                        "description": "Optional file path filter inside `path`, e.g. '*.rs', '*.{ts,tsx}'. This does not replace `path`"
                     },
                     "fileType": {
                         "type": "string",
-                        "description": "File type filter, e.g. 'rust', 'typescript', 'python'"
+                        "description": "Optional file type filter inside `path`, e.g. 'rust', 'typescript', 'python'"
                     },
                     "beforeContext": {
                         "type": "integer",
@@ -190,19 +191,31 @@ impl Tool for GrepTool {
             .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Search file contents by regex when you need to locate code, config keys, or \
-                     repeated text patterns.",
-                    "Use `grep` after scoping the search path. It is the fastest way to answer \
-                     where something is defined or referenced before opening specific files.",
+                    "Search file contents by regex when you already know the search root. `grep` \
+                     always requires both `pattern` and `path`.",
+                    "Use `grep` only for content search inside a known file or directory. Always \
+                     provide both `pattern` and `path`. `glob` and `fileType` only narrow which \
+                     files are searched inside that path; they never replace `path`. If you only \
+                     know a filename pattern or need to discover candidate paths first, use \
+                     `findFiles`.",
+                )
+                .caveat(
+                    "Never call `grep` with only `glob` or only `fileType`; that argument shape \
+                     is invalid because both `pattern` and `path` are required.",
                 )
                 .caveat(
                     "Pattern uses Rust regex syntax. Narrow scope with `glob`/`fileType`. If \
-                     `truncated`, use `offset` to paginate. If too slow on large repos, try \
-                     `findFiles` first.",
+                     `truncated`, use `offset` to paginate. For quick file discovery, prefer \
+                     `outputMode: \"files_with_matches\"` or use `findFiles` first.",
                 )
                 .example(
                     "Find usages in Rust files: { pattern: \"fn foo\\\\(\", path: \"src\", glob: \
                      \"**/*.rs\", outputMode: \"files_with_matches\" }",
+                )
+                .example(
+                    "If you only know the glob first, do not call `grep` yet: first `findFiles { \
+                     pattern: \"**/*.rs\", root: \"crates\" }`, then `grep { pattern: \
+                     \"AgentLoop\", path: \"crates\", glob: \"**/*.rs\" }`.",
                 )
                 .prompt_tag("search")
                 .always_include(true),
@@ -218,7 +231,7 @@ impl Tool for GrepTool {
         check_cancel(ctx.cancel())?;
 
         let args: GrepArgs = serde_json::from_value(args)
-            .map_err(|e| AstrError::parse("invalid args for grep", e))?;
+            .map_err(|e| AstrError::parse(explain_grep_args_error(&e), e))?;
         let path = resolve_path(ctx, &args.path)?;
         let started_at = Instant::now();
         let regex = RegexBuilder::new(&args.pattern)
@@ -750,6 +763,30 @@ fn build_glob_matcher(glob: Option<&str>) -> Result<Option<globset::GlobSet>> {
     Ok(Some(globset))
 }
 
+/// 将常见参数错误改写为可执行的恢复提示。
+///
+/// 纯粹返回“invalid args”对 agent 没帮助；这里直接指出缺了什么，
+/// 并告诉模型什么时候应该改用 `findFiles`。
+fn explain_grep_args_error(error: &serde_json::Error) -> String {
+    let detail = error.to_string();
+
+    if detail.contains("missing field `pattern`") {
+        return "invalid args for grep: missing required field `pattern`. `grep` always needs \
+                both `pattern` and `path`; `glob` only filters files inside `path`. If you only \
+                know a filename or glob, use `findFiles` first."
+            .to_string();
+    }
+
+    if detail.contains("missing field `path`") {
+        return "invalid args for grep: missing required field `path`. `glob` and `fileType` only \
+                narrow files inside `path`; they cannot replace it. If you only know candidate \
+                file patterns, use `findFiles` first."
+            .to_string();
+    }
+
+    format!("invalid args for grep: {detail}")
+}
+
 /// 将文件类型字符串映射到扩展名列表。
 ///
 /// 仅包含常见语言/格式，无需外部依赖。
@@ -963,6 +1000,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn grep_missing_required_fields_returns_recovery_hint() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let tool = GrepTool;
+
+        let err = tool
+            .execute(
+                "tc-grep-missing-pattern".to_string(),
+                json!({
+                    "glob": "**/*.rs"
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect_err("grep should fail when required fields are missing");
+
+        let message = err.to_string();
+        assert!(message.contains("missing required field `pattern`"));
+        assert!(message.contains("use `findFiles` first"));
+    }
+
+    #[tokio::test]
     async fn grep_offset_exhausted_returns_friendly_text() {
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let file = temp.path().join("lib.rs");
@@ -1088,6 +1146,22 @@ mod tests {
             serde_json::from_str(&result.output).expect("output should be valid json");
         assert_eq!(matches.len(), 1);
         assert!(matches[0].file.ends_with("code.rs"));
+    }
+
+    #[test]
+    fn grep_prompt_metadata_explicitly_describes_required_shape() {
+        let prompt = GrepTool::default()
+            .capability_metadata()
+            .prompt
+            .expect("grep should expose prompt metadata");
+
+        assert!(
+            prompt
+                .summary
+                .contains("requires both `pattern` and `path`")
+        );
+        assert!(prompt.guide.contains("glob"));
+        assert!(prompt.guide.contains("findFiles"));
     }
 
     #[tokio::test]

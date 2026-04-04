@@ -4,7 +4,9 @@
   background: var(--sidebar-bg);
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  /* 跟随父级撑满即可；避免嵌套 100vh 让桌面端出现额外不可见高度。 */
+  height: 100%;
+  min-height: 0;
   overflow: hidden;
   padding: 18px 12px 16px;
 }

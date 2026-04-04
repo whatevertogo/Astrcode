@@ -93,6 +93,9 @@ make build
 # 或直接命令
 cargo tauri build
 
+# Windows: 最终可分发产物在 target/release/bundle/ 下；
+# target/release/astrcode.exe 更适合本地调试，安装包 / bundle 才是完整桌面应用形态。
+
 # 浏览器端构建
 cd frontend && npm run build
 # 然后启动 cargo run -p astrcode-server，并打开它输出的 http://localhost:<port>/

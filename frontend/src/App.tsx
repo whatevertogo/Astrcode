@@ -419,10 +419,10 @@ export default function App() {
   }, [interrupt]);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[var(--app-bg)] text-[var(--text-primary)]">
+    <div className="flex h-dvh min-h-0 overflow-hidden bg-[var(--app-bg)] text-[var(--text-primary)]">
       {isSidebarOpen && (
         <>
-          <div className="flex-none min-w-0" style={{ width: `${sidebarWidth}px` }}>
+          <div className="flex-none min-w-0 min-h-0" style={{ width: `${sidebarWidth}px` }}>
             <Sidebar
               projects={state.projects}
               activeSessionId={state.activeSessionId}
@@ -466,7 +466,7 @@ export default function App() {
           />
         </>
       )}
-      <div className="flex-1 min-w-0 relative flex flex-col">
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
         <Chat
           project={activeProject}
           session={activeSession}

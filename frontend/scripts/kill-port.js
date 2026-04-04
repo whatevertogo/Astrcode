@@ -63,7 +63,7 @@ async function killWindowsPort(port) {
     const stdout = await runCommand('netstat', ['-ano']);
     const pids = collectWindowsPids(stdout, port);
     if (pids.length === 0) {
-      console.log(`Port ${port} is available`);
+      console.log(`打开在http://localhost:${port}/`);
       return;
     }
 
@@ -74,7 +74,7 @@ async function killWindowsPort(port) {
     await new Promise((resolve) => setTimeout(resolve, 500));
   } catch (error) {
     if (!error.stdout) {
-      console.log(`Port ${port} is available`);
+      console.log(`打开在http://localhost:${port}/`);
       return;
     }
 
@@ -87,7 +87,7 @@ async function killUnixPort(port) {
     const stdout = await runCommand('lsof', ['-t', '-i', `:${port}`]);
     const pids = collectUnixPids(stdout);
     if (pids.length === 0) {
-      console.log(`Port ${port} is available`);
+      console.log(`打开在http://localhost:${port}/`);
       return;
     }
 
@@ -96,7 +96,7 @@ async function killUnixPort(port) {
     await new Promise((resolve) => setTimeout(resolve, 500));
   } catch (error) {
     if (!error.stdout) {
-      console.log(`Port ${port} is available`);
+      console.log(`打开在http://localhost:${port}/`);
       return;
     }
 

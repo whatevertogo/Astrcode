@@ -25,7 +25,9 @@ impl PromptContributor for WorkflowExamplesContributor {
                     "few-shot-user",
                     BlockKind::FewShotExamples,
                     "Few Shot User",
-                    "Before changing code, inspect the relevant files and gather context first.",
+                    "Before changing code, inspect the relevant files and gather context first. \
+                     If you only know a filename pattern or glob, use `findFiles`. Use `grep` \
+                     only when you have both a content pattern and a search path.",
                     RenderTarget::PrependUser,
                 )
                 .with_condition(BlockCondition::FirstStepOnly)
@@ -34,7 +36,10 @@ impl PromptContributor for WorkflowExamplesContributor {
                     "few-shot-assistant",
                     BlockKind::FewShotExamples,
                     "Few Shot Assistant",
-                    "I will inspect the relevant files and gather context before making changes.",
+                    "I will inspect the relevant files and gather context before making changes. \
+                     I will use `findFiles` to discover candidate paths, then use `grep` with \
+                     both `pattern` and `path` when I need content search inside those files or \
+                     directories.",
                     RenderTarget::PrependAssistant,
                 )
                 .with_condition(BlockCondition::FirstStepOnly)
@@ -48,7 +53,7 @@ impl PromptContributor for WorkflowExamplesContributor {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::test_support::TestEnvGuard;
+    use astrcode_core::{LlmMessage, test_support::TestEnvGuard};
 
     use super::*;
     use crate::{PromptComposer, PromptComposerOptions, ValidationLevel};
@@ -75,5 +80,13 @@ mod tests {
         let output = composer.build(&ctx).await.expect("build should succeed");
 
         assert_eq!(output.plan.prepend_messages.len(), 2);
+        match &output.plan.prepend_messages[0] {
+            LlmMessage::User { content, .. } => assert!(content.contains("findFiles")),
+            other => panic!("expected prepended user message, got {other:?}"),
+        }
+        match &output.plan.prepend_messages[1] {
+            LlmMessage::Assistant { content, .. } => assert!(content.contains("pattern")),
+            other => panic!("expected prepended assistant message, got {other:?}"),
+        }
     }
 }
