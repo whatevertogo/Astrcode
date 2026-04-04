@@ -322,17 +322,8 @@ export default function App() {
           return;
         }
 
-        dispatch({
-          type: 'ADD_MESSAGE',
-          sessionId: effectiveSessionId,
-          message: {
-            id: uuid(),
-            kind: 'user',
-            turnId: submitted.turnId,
-            text: trimmed,
-            timestamp: Date.now(),
-          },
-        });
+        // 用户消息由 SSE 的 userMessage 事件通过 UPSERT_USER_MESSAGE 处理
+        // 移除乐观写入以避免 StrictMode 双重渲染导致的重复消息问题
       } catch (error) {
         releasePendingSubmitSession(sessionId);
         dispatch({
