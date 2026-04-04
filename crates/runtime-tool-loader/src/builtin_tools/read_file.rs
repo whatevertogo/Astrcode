@@ -27,7 +27,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::builtin_tools::fs_common::{check_cancel, resolve_read_path};
+use crate::builtin_tools::fs_common::{check_cancel, remember_file_observation, resolve_read_path};
 
 /// 二进制检测采样大小（前 N 字节）。
 const BINARY_DETECT_SAMPLE_SIZE: usize = 8192;
@@ -356,13 +356,26 @@ impl Tool for ReadFileTool {
             })
         };
 
+        // 即便只读取了局部范围，也要记录这次观察到的文件版本。
+        // editFile 后续会据此判断文件是否被外部修改，从而要求先 reread。
+        let observation = remember_file_observation(ctx, &path)?;
+        let mut meta_object = meta.as_object().cloned().unwrap_or_default();
+        meta_object.insert(
+            "contentFingerprint".to_string(),
+            json!(observation.content_fingerprint),
+        );
+        meta_object.insert(
+            "modifiedUnixNanos".to_string(),
+            json!(observation.modified_unix_nanos),
+        );
+
         Ok(ToolExecutionResult {
             tool_call_id,
             tool_name: "readFile".to_string(),
             ok: true,
             output: text,
             error: None,
-            metadata: Some(meta),
+            metadata: Some(serde_json::Value::Object(meta_object)),
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated,
         })

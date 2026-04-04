@@ -16,12 +16,16 @@
 //! - 结构化机器数据不应嵌入到 `output` 字符串中
 
 use std::{
+    collections::BTreeMap,
     fs,
+    hash::Hasher,
+    io::Read as _,
     path::{Component, Path, PathBuf},
+    time::SystemTime,
 };
 
 use astrcode_core::{AstrError, CancelToken, Result, ToolContext, project::project_dir};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 /// 检查取消标记，如果已取消则返回 `AstrError::Cancelled`。
@@ -115,6 +119,135 @@ pub fn session_dir_for_tool_results(ctx: &ToolContext) -> Result<PathBuf> {
         ))
     })?;
     Ok(project_dir.join("sessions").join(ctx.session_id()))
+}
+
+/// 文件观察快照。
+///
+/// `readFile` 成功后记录当前版本，`editFile` 写入前用它检测文件是否已被外部修改。
+/// 这是比“仅靠 oldStr 唯一匹配”更稳的一层乐观并发保护。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileObservation {
+    pub path: String,
+    pub bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified_unix_nanos: Option<u64>,
+    pub content_fingerprint: String,
+}
+
+const TOOL_STATE_DIR: &str = "tool-state";
+const FILE_OBSERVATIONS_FILE: &str = "file-observations.json";
+const FILE_OBSERVATION_HASH_BUFFER_BYTES: usize = 16 * 1024;
+
+/// 读取并计算文件观察快照。
+///
+/// 为什么除了 `mtime + size` 还要做内容指纹：
+/// 某些编辑器/脚本可能保留时间戳或在极短时间内多次写入，单靠 metadata 容易漏检。
+/// 这里追加流式内容哈希，确保“文件被外部改过”能可靠触发 reread 提示。
+pub fn capture_file_observation(path: &Path) -> Result<FileObservation> {
+    let metadata = fs::metadata(path).map_err(|e| {
+        AstrError::io(
+            format!("failed reading metadata for '{}'", path.display()),
+            e,
+        )
+    })?;
+    let modified_unix_nanos = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64);
+
+    let mut file = fs::File::open(path)
+        .map_err(|e| AstrError::io(format!("failed opening file '{}'", path.display()), e))?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut buffer = [0u8; FILE_OBSERVATION_HASH_BUFFER_BYTES];
+    loop {
+        let bytes_read = file
+            .read(&mut buffer)
+            .map_err(|e| AstrError::io(format!("failed hashing file '{}'", path.display()), e))?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.write(&buffer[..bytes_read]);
+    }
+
+    Ok(FileObservation {
+        path: path.to_string_lossy().to_string(),
+        bytes: metadata.len(),
+        modified_unix_nanos,
+        content_fingerprint: format!("{:016x}", hasher.finish()),
+    })
+}
+
+/// 比较观察快照是否仍代表同一个文件版本。
+pub fn file_observation_matches(previous: &FileObservation, current: &FileObservation) -> bool {
+    previous.path == current.path
+        && previous.bytes == current.bytes
+        && previous.modified_unix_nanos == current.modified_unix_nanos
+        && previous.content_fingerprint == current.content_fingerprint
+}
+
+/// 将文件观察快照持久化到当前会话目录。
+pub fn remember_file_observation(ctx: &ToolContext, path: &Path) -> Result<FileObservation> {
+    let observation = capture_file_observation(path)?;
+    let observations_path = file_observations_path(ctx)?;
+    let mut observations = load_file_observation_map(&observations_path)?;
+    observations.insert(observation.path.clone(), observation.clone());
+
+    if let Some(parent) = observations_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            AstrError::io(
+                format!(
+                    "failed creating file observation directory '{}'",
+                    parent.display()
+                ),
+                e,
+            )
+        })?;
+    }
+
+    let encoded = serde_json::to_vec(&observations)
+        .map_err(|e| AstrError::parse("failed to serialize file observations", e))?;
+    fs::write(&observations_path, encoded).map_err(|e| {
+        AstrError::io(
+            format!(
+                "failed writing file observations '{}'",
+                observations_path.display()
+            ),
+            e,
+        )
+    })?;
+
+    Ok(observation)
+}
+
+/// 读取当前会话中某个文件最后一次被 `readFile`/`editFile` 观察到的版本。
+pub fn load_file_observation(ctx: &ToolContext, path: &Path) -> Result<Option<FileObservation>> {
+    let observations_path = file_observations_path(ctx)?;
+    let observations = load_file_observation_map(&observations_path)?;
+    Ok(observations
+        .get(&path.to_string_lossy().to_string())
+        .cloned())
+}
+
+fn file_observations_path(ctx: &ToolContext) -> Result<PathBuf> {
+    Ok(session_dir_for_tool_results(ctx)?
+        .join(TOOL_STATE_DIR)
+        .join(FILE_OBSERVATIONS_FILE))
+}
+
+fn load_file_observation_map(path: &Path) -> Result<BTreeMap<String, FileObservation>> {
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+
+    let raw = fs::read(path).map_err(|e| {
+        AstrError::io(
+            format!("failed reading file observations '{}'", path.display()),
+            e,
+        )
+    })?;
+    serde_json::from_slice(&raw)
+        .map_err(|e| AstrError::parse("failed to parse file observations", e))
 }
 
 /// 文本变更报告，由 `build_text_change_report` 生成。

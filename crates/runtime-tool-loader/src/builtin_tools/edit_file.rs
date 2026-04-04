@@ -32,7 +32,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::builtin_tools::fs_common::{
-    build_text_change_report, check_cancel, read_utf8_file, resolve_path, write_text_file,
+    build_text_change_report, capture_file_observation, check_cancel, file_observation_matches,
+    load_file_observation, read_utf8_file, remember_file_observation, resolve_path,
+    write_text_file,
 };
 
 /// EditFile 工具实现。
@@ -160,11 +162,17 @@ impl Tool for EditFileTool {
                     "Apply a narrow, safety-checked string replacement inside an existing file.",
                     "Use `editFile` when you know the exact old text and want a minimal change. \
                      It rejects ambiguous replacements, which makes it safer than rewriting a \
-                     whole file for small edits.",
+                     whole file for small edits. If the file was changed after the last \
+                     `readFile`, `editFile` will stop and ask for a fresh reread first.",
                 )
                 .caveat(
                     "`oldStr` must match exactly once in the file — including whitespace and \
                      newlines. If rejected, use `readFile` first to see the exact current content.",
+                )
+                .caveat(
+                    "When this session has already observed the file, `editFile` also checks that \
+                     the file has not changed on disk since that observation. If it did, call \
+                     `readFile` again before editing.",
                 )
                 .example(
                     "Change one function body: { path: \"src/lib.rs\", oldStr: \"fn a() { old \
@@ -228,6 +236,10 @@ impl Tool for EditFileTool {
 
         let started_at = Instant::now();
         let path = resolve_path(ctx, &args.path)?;
+        if let Some(stale_result) = stale_file_guard_result(ctx, &path, &tool_call_id, started_at)?
+        {
+            return Ok(stale_result);
+        }
         let original_content = read_utf8_file(&path).await?;
         check_cancel(ctx.cancel())?;
 
@@ -290,16 +302,31 @@ impl Tool for EditFileTool {
         let report = build_text_change_report(&path, "updated", Some(&original_content), &content);
         check_cancel(ctx.cancel())?;
         write_text_file(&path, &content, false).await?;
+        // 编辑成功后刷新观察快照，允许同一 session 在未发生外部改动时继续连续 edit。
+        let observation = remember_file_observation(ctx, &path)?;
 
         let metadata = if edits.len() > 1 {
             json!({
                 "path": path.to_string_lossy(),
                 "editsApplied": edits.len(),
                 "totalReplacements": total_edits,
+                "contentFingerprint": observation.content_fingerprint,
+                "modifiedUnixNanos": observation.modified_unix_nanos,
                 "diff": report.metadata.get("diff").cloned().unwrap_or(json!(null)),
             })
         } else {
-            report.metadata
+            let mut metadata = report.metadata;
+            if let Some(object) = metadata.as_object_mut() {
+                object.insert(
+                    "contentFingerprint".to_string(),
+                    json!(observation.content_fingerprint),
+                );
+                object.insert(
+                    "modifiedUnixNanos".to_string(),
+                    json!(observation.modified_unix_nanos),
+                );
+            }
+            metadata
         };
 
         Ok(ToolExecutionResult {
@@ -317,6 +344,38 @@ impl Tool for EditFileTool {
             truncated: false,
         })
     }
+}
+
+/// 在已有观察快照的前提下，拒绝对已被外部修改的文件直接编辑。
+///
+/// 这里不强制“所有 edit 都必须先 read”，因为首轮编辑可能已经拿到精确 oldStr。
+/// 但一旦当前 session 之前观察过该文件，就要求磁盘版本仍然一致，避免 LLM
+/// 基于过时内容继续写入。
+fn stale_file_guard_result(
+    ctx: &ToolContext,
+    path: &Path,
+    tool_call_id: &str,
+    started_at: Instant,
+) -> std::result::Result<Option<ToolExecutionResult>, AstrError> {
+    let Some(previous_observation) = load_file_observation(ctx, path)? else {
+        return Ok(None);
+    };
+    let current_observation = capture_file_observation(path)?;
+    if file_observation_matches(&previous_observation, &current_observation) {
+        return Ok(None);
+    }
+
+    make_edit_error_result(
+        tool_call_id,
+        &format!(
+            "file changed on disk after the last read in this session. Call readFile on '{}' \
+             first, then retry editFile.",
+            path.display()
+        ),
+        path,
+        started_at,
+    )
+    .map(Some)
 }
 
 /// 构建 editFile 失败时的统一响应。
@@ -343,7 +402,10 @@ fn make_edit_error_result(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{canonical_tool_path, test_tool_context_for};
+    use crate::{
+        builtin_tools::read_file::ReadFileTool,
+        test_support::{canonical_tool_path, test_tool_context_for},
+    };
 
     #[tokio::test]
     async fn edit_file_replaces_unique_occurrence() {
@@ -541,6 +603,156 @@ mod tests {
 
         assert!(!result.ok);
         assert!(result.error.unwrap_or_default().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_rejects_when_file_changed_after_read_file() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file = temp.path().join("hello.txt");
+        tokio::fs::write(&file, "hello world")
+            .await
+            .expect("seed write should work");
+        let ctx = test_tool_context_for(temp.path());
+        let read_tool = ReadFileTool;
+        let edit_tool = EditFileTool;
+
+        let read_result = read_tool
+            .execute(
+                "tc-read-before-edit".to_string(),
+                json!({
+                    "path": file.to_string_lossy(),
+                }),
+                &ctx,
+            )
+            .await
+            .expect("readFile should execute");
+        assert!(read_result.ok);
+
+        // 模拟编辑器或其他进程在 LLM 之外改动了文件。
+        tokio::fs::write(&file, "hello from editor")
+            .await
+            .expect("external write should work");
+
+        let result = edit_tool
+            .execute(
+                "tc-edit-stale-after-read".to_string(),
+                json!({
+                    "path": file.to_string_lossy(),
+                    "oldStr": "hello",
+                    "newStr": "world"
+                }),
+                &ctx,
+            )
+            .await
+            .expect("editFile should return a tool result");
+
+        assert!(!result.ok);
+        assert!(
+            result
+                .error
+                .unwrap_or_default()
+                .contains("Call readFile on")
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_file_allows_observed_file_when_unchanged() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file = temp.path().join("hello.txt");
+        tokio::fs::write(&file, "hello world")
+            .await
+            .expect("seed write should work");
+        let ctx = test_tool_context_for(temp.path());
+        let read_tool = ReadFileTool;
+        let edit_tool = EditFileTool;
+
+        let read_result = read_tool
+            .execute(
+                "tc-read-fresh".to_string(),
+                json!({
+                    "path": file.to_string_lossy(),
+                }),
+                &ctx,
+            )
+            .await
+            .expect("readFile should execute");
+        assert!(read_result.ok);
+
+        let result = edit_tool
+            .execute(
+                "tc-edit-after-fresh-read".to_string(),
+                json!({
+                    "path": file.to_string_lossy(),
+                    "oldStr": "hello",
+                    "newStr": "world"
+                }),
+                &ctx,
+            )
+            .await
+            .expect("editFile should execute");
+
+        assert!(result.ok);
+        let content = tokio::fs::read_to_string(&file)
+            .await
+            .expect("file should be readable");
+        assert_eq!(content, "world world");
+    }
+
+    #[tokio::test]
+    async fn edit_file_refreshes_observation_after_successful_edit() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file = temp.path().join("hello.txt");
+        tokio::fs::write(&file, "alpha beta gamma")
+            .await
+            .expect("seed write should work");
+        let ctx = test_tool_context_for(temp.path());
+        let read_tool = ReadFileTool;
+        let edit_tool = EditFileTool;
+
+        let read_result = read_tool
+            .execute(
+                "tc-read-before-chain-edit".to_string(),
+                json!({
+                    "path": file.to_string_lossy(),
+                }),
+                &ctx,
+            )
+            .await
+            .expect("readFile should execute");
+        assert!(read_result.ok);
+
+        let first_edit = edit_tool
+            .execute(
+                "tc-first-edit".to_string(),
+                json!({
+                    "path": file.to_string_lossy(),
+                    "oldStr": "alpha",
+                    "newStr": "delta"
+                }),
+                &ctx,
+            )
+            .await
+            .expect("first edit should execute");
+        assert!(first_edit.ok);
+
+        let second_edit = edit_tool
+            .execute(
+                "tc-second-edit".to_string(),
+                json!({
+                    "path": file.to_string_lossy(),
+                    "oldStr": "gamma",
+                    "newStr": "omega"
+                }),
+                &ctx,
+            )
+            .await
+            .expect("second edit should execute");
+        assert!(second_edit.ok);
+
+        let content = tokio::fs::read_to_string(&file)
+            .await
+            .expect("file should be readable");
+        assert_eq!(content, "delta beta omega");
     }
 
     #[tokio::test]
