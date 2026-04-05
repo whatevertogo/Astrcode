@@ -10,9 +10,10 @@ use std::{
 
 use astrcode_core::{
     AgentState, ApprovalDefault, ApprovalRequest, ApprovalResolution, AstrError, CancelToken,
-    CapabilityCall, LlmMessage, ModelRequest, Phase, PolicyContext, PolicyEngine, PolicyVerdict,
-    Result, StorageEvent, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult, UserMessageOrigin,
+    CapabilityCall, CompactionHookResultContext, HookEvent, HookHandler, HookInput, HookOutcome,
+    LlmMessage, ModelRequest, Phase, PolicyContext, PolicyEngine, PolicyVerdict, Result,
+    StorageEvent, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
+    ToolHookContext, ToolHookResultContext, UserMessageOrigin,
 };
 use astrcode_runtime_llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
 use astrcode_runtime_prompt::{
@@ -364,6 +365,68 @@ impl Tool for CountingTool {
     }
 }
 
+pub struct EchoArgsTool;
+
+#[async_trait::async_trait]
+impl Tool for EchoArgsTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "echoArgsTool".to_string(),
+            description: "echoes JSON args".to_string(),
+            parameters: json!({"type":"object"}),
+        }
+    }
+
+    async fn execute(
+        &self,
+        tool_call_id: String,
+        args: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<ToolExecutionResult> {
+        Ok(ToolExecutionResult {
+            tool_call_id,
+            tool_name: "echoArgsTool".to_string(),
+            ok: true,
+            output: args.to_string(),
+            error: None,
+            metadata: None,
+            duration_ms: 1,
+            truncated: false,
+        })
+    }
+}
+
+pub struct FailingExecutionTool;
+
+#[async_trait::async_trait]
+impl Tool for FailingExecutionTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "failingExecutionTool".to_string(),
+            description: "returns a structured tool failure".to_string(),
+            parameters: json!({"type":"object"}),
+        }
+    }
+
+    async fn execute(
+        &self,
+        tool_call_id: String,
+        _args: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<ToolExecutionResult> {
+        Ok(ToolExecutionResult {
+            tool_call_id,
+            tool_name: "failingExecutionTool".to_string(),
+            ok: false,
+            output: String::new(),
+            error: Some("tool failed".to_string()),
+            metadata: None,
+            duration_ms: 1,
+            truncated: false,
+        })
+    }
+}
+
 pub struct ConcurrencyTrackingTool {
     pub name: &'static str,
     pub concurrency_safe: bool,
@@ -581,6 +644,129 @@ impl PolicyEngine for AskCapabilityPolicy {
 pub struct RecordingApprovalBroker {
     pub requests: Arc<Mutex<Vec<ApprovalRequest>>>,
     pub resolutions: Mutex<VecDeque<ApprovalResolution>>,
+}
+
+pub struct ReplaceArgsHook {
+    pub tool_name: &'static str,
+    pub replacement: serde_json::Value,
+}
+
+#[async_trait::async_trait]
+impl HookHandler for ReplaceArgsHook {
+    fn name(&self) -> &str {
+        "replace-args-hook"
+    }
+
+    fn event(&self) -> HookEvent {
+        HookEvent::PreToolUse
+    }
+
+    fn matches(&self, input: &HookInput) -> bool {
+        matches!(
+            input,
+            HookInput::PreToolUse(ToolHookContext { tool_name, .. }) if tool_name == self.tool_name
+        )
+    }
+
+    async fn run(&self, _input: &HookInput) -> Result<HookOutcome> {
+        Ok(HookOutcome::ReplaceToolArgs {
+            args: self.replacement.clone(),
+        })
+    }
+}
+
+pub struct BlockingToolHook {
+    pub tool_name: &'static str,
+    pub reason: &'static str,
+}
+
+#[async_trait::async_trait]
+impl HookHandler for BlockingToolHook {
+    fn name(&self) -> &str {
+        "blocking-tool-hook"
+    }
+
+    fn event(&self) -> HookEvent {
+        HookEvent::PreToolUse
+    }
+
+    fn matches(&self, input: &HookInput) -> bool {
+        matches!(
+            input,
+            HookInput::PreToolUse(ToolHookContext { tool_name, .. }) if tool_name == self.tool_name
+        )
+    }
+
+    async fn run(&self, _input: &HookInput) -> Result<HookOutcome> {
+        Ok(HookOutcome::Block {
+            reason: self.reason.to_string(),
+        })
+    }
+}
+
+pub struct RecordingToolHook {
+    pub event: HookEvent,
+    pub hits: Arc<Mutex<Vec<ToolHookResultContext>>>,
+}
+
+#[async_trait::async_trait]
+impl HookHandler for RecordingToolHook {
+    fn name(&self) -> &str {
+        "recording-tool-hook"
+    }
+
+    fn event(&self) -> HookEvent {
+        self.event
+    }
+
+    async fn run(&self, input: &HookInput) -> Result<HookOutcome> {
+        match input {
+            HookInput::PostToolUse(context) | HookInput::PostToolUseFailure(context) => {
+                self.hits
+                    .lock()
+                    .expect("tool hook hits lock")
+                    .push(context.clone());
+            },
+            _ => {},
+        }
+        Ok(HookOutcome::Continue)
+    }
+}
+
+pub struct RecordingCompactHook {
+    pub event: HookEvent,
+    pub pre_hits: Arc<Mutex<Vec<astrcode_core::CompactionHookContext>>>,
+    pub post_hits: Arc<Mutex<Vec<CompactionHookResultContext>>>,
+}
+
+#[async_trait::async_trait]
+impl HookHandler for RecordingCompactHook {
+    fn name(&self) -> &str {
+        "recording-compact-hook"
+    }
+
+    fn event(&self) -> HookEvent {
+        self.event
+    }
+
+    async fn run(&self, input: &HookInput) -> Result<HookOutcome> {
+        match input {
+            HookInput::PreCompact(context) => {
+                self.pre_hits
+                    .lock()
+                    .expect("pre compact hits lock")
+                    .push(context.clone());
+            },
+            HookInput::PostCompact(context) => {
+                self.post_hits
+                    .lock()
+                    .expect("post compact hits lock")
+                    .push(context.clone());
+            },
+            _ => {},
+        }
+        Ok(HookOutcome::Continue)
+    }
 }
 
 #[async_trait::async_trait]

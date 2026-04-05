@@ -22,6 +22,7 @@ pub mod env;
 mod error;
 pub mod event;
 pub mod home;
+pub mod hook;
 pub mod local_server;
 pub mod plugin;
 pub mod policy;
@@ -53,6 +54,10 @@ pub use error::{AstrError, Result, ResultExt};
 pub use event::{
     AgentEvent, CompactTrigger, EventTranslator, Phase, StorageEvent, StoredEvent, StoredEventLine,
     generate_session_id, phase_of_storage_event, replay_records,
+};
+pub use hook::{
+    CompactionHookContext, CompactionHookResultContext, HookCompactionReason, HookEvent,
+    HookHandler, HookInput, HookOutcome, ToolHookContext, ToolHookResultContext,
 };
 pub use local_server::{LOCAL_SERVER_READY_PREFIX, LocalServerInfo};
 pub use plugin::{PluginHealth, PluginManifest, PluginRegistry, PluginState, PluginType};

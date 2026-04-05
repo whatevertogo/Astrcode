@@ -42,6 +42,12 @@ pub struct ToolContext {
     cancel: CancelToken,
     /// Maximum output size in bytes. Defaults to 1MB.
     max_output_size: usize,
+    /// Optional override for session-scoped persisted tool artifacts.
+    ///
+    /// Production runtime usually leaves this unset so storage falls back to the
+    /// project bucket under `~/.astrcode/projects/...`. Tests can point it at a
+    /// temp dir to avoid leaking files into the real home directory.
+    session_storage_root: Option<PathBuf>,
     /// Optional streaming channel for long-running tools.
     ///
     /// Tools emit best-effort deltas through this sender so runtime can persist and fan them out
@@ -59,6 +65,7 @@ impl ToolContext {
             working_dir,
             cancel,
             max_output_size: DEFAULT_MAX_OUTPUT_SIZE,
+            session_storage_root: None,
             tool_output_sender: None,
         }
     }
@@ -66,6 +73,12 @@ impl ToolContext {
     /// Sets the maximum output size in bytes.
     pub fn with_max_output_size(mut self, max_output_size: usize) -> Self {
         self.max_output_size = max_output_size;
+        self
+    }
+
+    /// Overrides the root directory used for session-scoped persisted tool artifacts.
+    pub fn with_session_storage_root(mut self, session_storage_root: PathBuf) -> Self {
+        self.session_storage_root = Some(session_storage_root);
         self
     }
 
@@ -99,6 +112,10 @@ impl ToolContext {
     /// Returns the maximum output size in bytes.
     pub fn max_output_size(&self) -> usize {
         self.max_output_size
+    }
+
+    pub fn session_storage_root(&self) -> Option<&std::path::Path> {
+        self.session_storage_root.as_deref()
     }
 
     pub fn tool_output_sender(&self) -> Option<UnboundedSender<ToolOutputDelta>> {
@@ -151,6 +168,7 @@ impl Clone for ToolContext {
             working_dir: self.working_dir.clone(),
             cancel: self.cancel.clone(),
             max_output_size: self.max_output_size,
+            session_storage_root: self.session_storage_root.clone(),
             tool_output_sender: self.tool_output_sender.clone(),
         }
     }
@@ -163,6 +181,7 @@ impl fmt::Debug for ToolContext {
             .field("working_dir", &self.working_dir)
             .field("cancel", &self.cancel)
             .field("max_output_size", &self.max_output_size)
+            .field("session_storage_root", &self.session_storage_root)
             .field(
                 "tool_output_sender",
                 &self.tool_output_sender.as_ref().map(|_| "<attached>"),

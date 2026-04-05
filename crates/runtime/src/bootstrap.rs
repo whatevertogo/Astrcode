@@ -241,10 +241,11 @@ where
 
                 // 先切换 service，让新 turn 能看到完整的新 surface；若失败则不推进后续状态。
                 if let Err(error) = service_for_bg
-                    .replace_capabilities_with_prompt_inputs(
+                    .replace_capabilities_with_prompt_inputs_and_hooks(
                         updated_router,
                         assembled.prompt_declarations,
                         updated_skill_catalog,
+                        assembled.hook_handlers,
                     )
                     .await
                 {

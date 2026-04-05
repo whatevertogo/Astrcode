@@ -142,10 +142,11 @@ impl RuntimeGovernance {
         .map_err(ServiceError::Internal)?;
         let capability_surface = assembled.router.descriptors();
         self.service
-            .replace_capabilities_with_prompt_inputs(
+            .replace_capabilities_with_prompt_inputs_and_hooks(
                 assembled.router,
                 assembled.prompt_declarations,
                 assembled.skill_catalog,
+                assembled.hook_handlers,
             )
             .await?;
         let previous_active_plugins = {

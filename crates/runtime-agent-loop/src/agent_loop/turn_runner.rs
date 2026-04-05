@@ -186,6 +186,7 @@ pub(crate) async fn run_turn(
             match maybe_compact_conversation(
                 agent_loop,
                 CompactContext {
+                    state,
                     provider: &provider,
                     conversation: &conversation,
                     base_system_prompt: system_prompt_for_compact.as_deref(),
@@ -260,6 +261,7 @@ pub(crate) async fn run_turn(
                     match maybe_compact_conversation(
                         agent_loop,
                         CompactContext {
+                            state,
                             provider: &provider,
                             conversation: &conversation,
                             base_system_prompt: system_prompt_for_retry.as_deref(),
@@ -480,6 +482,7 @@ fn log_prompt_diagnostics(diagnostics: &PromptDiagnostics) {
 
 /// Parameters needed for a single compact-and-rebuild cycle.
 struct CompactContext<'a> {
+    state: &'a AgentState,
     provider: &'a std::sync::Arc<dyn astrcode_runtime_llm::LlmProvider>,
     conversation: &'a ConversationView,
     base_system_prompt: Option<&'a str>,
@@ -494,6 +497,22 @@ async fn maybe_compact_conversation(
     ctx: CompactContext<'_>,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
 ) -> Result<Option<ConversationView>> {
+    match agent_loop
+        .hooks
+        .run_pre_compact(agent_loop.compaction_hook_context(
+            ctx.state,
+            ctx.conversation,
+            ctx.reason,
+            agent_loop.compact_keep_recent_turns(),
+        ))
+        .await?
+    {
+        crate::hook_runtime::PreCompactDecision::Continue => {},
+        crate::hook_runtime::PreCompactDecision::Blocked { reason } => {
+            return Err(astrcode_core::AstrError::Validation(reason));
+        },
+    }
+
     let compact_result = agent_loop
         .compaction
         .compact(
@@ -524,6 +543,24 @@ async fn maybe_compact_conversation(
     let compacted_view = agent_loop
         .compaction
         .rebuild_conversation(&artifact, &tail)?;
+    agent_loop
+        .hooks
+        .run_post_compact_best_effort(astrcode_core::CompactionHookResultContext {
+            compaction: agent_loop.compaction_hook_context(
+                ctx.state,
+                ctx.conversation,
+                ctx.reason,
+                artifact.preserved_recent_turns,
+            ),
+            summary: artifact.summary.clone(),
+            strategy_id: artifact.strategy_id.clone(),
+            preserved_recent_turns: artifact.preserved_recent_turns,
+            pre_tokens: artifact.pre_tokens,
+            post_tokens_estimate: artifact.post_tokens_estimate,
+            messages_removed: artifact.messages_removed,
+            tokens_freed: artifact.tokens_freed,
+        })
+        .await;
     // Persist the compaction event only after we have proven the rebuilt view is usable. That
     // avoids emitting durable history that the in-memory loop cannot continue from.
     emit_compact_applied(ctx.turn_id, &artifact, on_event)?;

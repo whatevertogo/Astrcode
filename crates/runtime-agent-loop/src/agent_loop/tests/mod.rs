@@ -6,6 +6,7 @@ mod cancellation;
 mod compaction;
 mod error_recovery;
 mod fixtures;
+mod hook;
 mod plugin;
 mod policy;
 mod prompt;

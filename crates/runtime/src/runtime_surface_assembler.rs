@@ -28,8 +28,8 @@ use std::{
 
 use astrcode_core::{
     AstrError, CapabilityDescriptor, CapabilityExecutionResult, CapabilityInvoker,
-    CapabilityRouter, ManagedRuntimeComponent, PluginHealth, PluginManifest, PluginRegistry,
-    format_local_rfc3339, plugin::PluginEntry,
+    CapabilityRouter, HookHandler, ManagedRuntimeComponent, PluginHealth, PluginManifest,
+    PluginRegistry, format_local_rfc3339, plugin::PluginEntry,
 };
 use astrcode_plugin::{PluginLoader, Supervisor, SupervisorHealth};
 use astrcode_protocol::plugin::{PeerDescriptor, PeerRole, SkillDescriptor};
@@ -41,6 +41,7 @@ use serde_json::Value;
 
 use crate::{
     builtin_capabilities::built_in_capability_invokers,
+    plugin_hook_adapter::build_plugin_hook_handlers,
     plugin_skill_materializer::materialize_plugin_skills,
 };
 
@@ -51,6 +52,7 @@ pub(crate) struct AssembledRuntimeSurface {
     pub(crate) router: CapabilityRouter,
     pub(crate) skill_catalog: Arc<SkillCatalog>,
     pub(crate) prompt_declarations: Vec<PromptDeclaration>,
+    pub(crate) hook_handlers: Vec<Arc<dyn HookHandler>>,
     pub(crate) plugin_entries: Vec<PluginEntry>,
     pub(crate) managed_components: Vec<Arc<dyn ManagedRuntimeComponent>>,
     pub(crate) active_plugins: Vec<ActivePluginRuntime>,
@@ -60,11 +62,16 @@ pub(crate) struct AssembledRuntimeSurface {
 ///
 /// capability、skill 和 prompt declaration 共享同一条装配管线，
 /// 但运行时仍保留它们不同的语义边界，不把 skill 伪装成普通 capability。
+///
+/// TODO(runtime-surface): hook 目前已经进入统一装配模型，但 surface 仍由多个并列
+/// Vec 字段拼接而成。后续如果 hook / prompt / tool 再继续增长，建议把它们收口成
+/// 一个更明确的 `RuntimeSurface` 聚合对象，减少 bootstrap / reload 时的平行传参。
 #[derive(Clone)]
 pub(crate) struct RuntimeSurfaceContribution {
     pub(crate) capability_invokers: Vec<Arc<dyn CapabilityInvoker>>,
     pub(crate) prompt_declarations: Vec<PromptDeclaration>,
     pub(crate) skills: Vec<SkillSpec>,
+    pub(crate) hook_handlers: Vec<Arc<dyn HookHandler>>,
 }
 
 /// 活跃插件运行时
@@ -255,6 +262,11 @@ impl PluginInitializer for SupervisorPluginInitializer {
                     &supervisor.remote_initialize().metadata,
                 ),
                 skills: Vec::new(),
+                hook_handlers: build_plugin_hook_handlers(
+                    &manifest.name,
+                    &supervisor.remote_initialize().handlers,
+                    supervisor.clone(),
+                ),
             },
         })
     }
@@ -302,6 +314,7 @@ where
     let mut base_skills = builtin_skills;
     let mut plugin_entries = BTreeMap::new();
     let mut prompt_declarations = Vec::new();
+    let mut hook_handlers = Vec::new();
     let mut managed_components = Vec::new();
     let mut active_plugins = Vec::new();
     let surface_materialization_id = Utc::now().timestamp_millis().to_string();
@@ -409,6 +422,7 @@ where
             }));
         }
         prompt_declarations.extend(loaded_plugin.contribution.prompt_declarations.clone());
+        hook_handlers.extend(loaded_plugin.contribution.hook_handlers.clone());
         plugin_entries.insert(
             manifest.name.clone(),
             make_initialized_entry(
@@ -433,6 +447,7 @@ where
         router: builder.build()?,
         skill_catalog,
         prompt_declarations,
+        hook_handlers,
         plugin_entries: plugin_entries.into_values().collect(),
         managed_components,
         active_plugins,
@@ -447,6 +462,7 @@ pub(crate) struct AssembledPlugins {
     pub(crate) invokers: Vec<Arc<dyn CapabilityInvoker>>,
     /// Prompt 声明
     pub(crate) prompt_declarations: Vec<PromptDeclaration>,
+    pub(crate) hook_handlers: Vec<Arc<dyn HookHandler>>,
     /// 物化后的 skills
     pub(crate) skills: Vec<SkillSpec>,
     /// 插件条目列表
@@ -489,6 +505,7 @@ where
     let mut managed_components = Vec::new();
     let mut active_plugins = Vec::new();
     let mut invokers: Vec<Arc<dyn CapabilityInvoker>> = Vec::new();
+    let mut hook_handlers: Vec<Arc<dyn HookHandler>> = Vec::new();
     let mut all_skills: Vec<SkillSpec> = Vec::new();
     let mut loaded_count = 0usize;
     let mut failed_count = 0usize;
@@ -598,6 +615,7 @@ where
         }
 
         prompt_declarations.extend(loaded_plugin.contribution.prompt_declarations.clone());
+        hook_handlers.extend(loaded_plugin.contribution.hook_handlers.clone());
         plugin_entries.insert(
             manifest.name.clone(),
             make_initialized_entry(
@@ -620,6 +638,7 @@ where
     Ok(AssembledPlugins {
         invokers,
         prompt_declarations,
+        hook_handlers,
         skills: all_skills,
         plugin_entries: plugin_entries.into_values().collect(),
         managed_components,

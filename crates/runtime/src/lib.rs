@@ -18,6 +18,7 @@ mod bootstrap;
 mod bootstrap_tests;
 mod builtin_capabilities;
 mod plugin_discovery;
+mod plugin_hook_adapter;
 mod plugin_skill_materializer;
 mod provider_factory;
 mod runtime_governance;

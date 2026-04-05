@@ -4,7 +4,11 @@ use astrcode_core::{CancelToken, ToolContext};
 
 pub fn test_tool_context_for(path: impl Into<PathBuf>) -> ToolContext {
     let cwd = path.into();
+    // 工具测试里凡是会把中间结果持久化到 session 目录的实现，都应留在当前 tempdir
+    // 内部，避免污染开发者真实的 `~/.astrcode/projects/...`。
+    let session_storage_root = cwd.join(".astrcode-test-state");
     ToolContext::new("session-test".to_string(), cwd, CancelToken::new())
+        .with_session_storage_root(session_storage_root)
 }
 
 pub fn canonical_tool_path(path: impl AsRef<Path>) -> PathBuf {

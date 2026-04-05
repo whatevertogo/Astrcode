@@ -112,6 +112,10 @@ pub fn json_output<T: Serialize>(value: &T) -> Result<String> {
 
 /// 返回当前会话持久化目录，供大型工具结果落盘使用。
 pub fn session_dir_for_tool_results(ctx: &ToolContext) -> Result<PathBuf> {
+    if let Some(session_storage_root) = ctx.session_storage_root() {
+        return Ok(session_storage_root.join("sessions").join(ctx.session_id()));
+    }
+
     let project_dir = project_dir(ctx.working_dir()).map_err(|e| {
         AstrError::Internal(format!(
             "failed to resolve project directory for '{}': {e}",
@@ -734,5 +738,22 @@ mod tests {
             .expect("workspace tool-results path should still resolve");
 
         assert_eq!(resolved, canonical_tool_path(&workspace_file));
+    }
+
+    #[test]
+    fn session_dir_for_tool_results_prefers_context_override_root() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let ctx = test_tool_context_for(temp.path());
+
+        let session_dir =
+            session_dir_for_tool_results(&ctx).expect("session tool-results dir should resolve");
+
+        assert_eq!(
+            session_dir,
+            temp.path()
+                .join(".astrcode-test-state")
+                .join("sessions")
+                .join("session-test")
+        );
     }
 }

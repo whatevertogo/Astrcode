@@ -23,11 +23,13 @@ use std::time::Instant;
 use astrcode_core::{
     AgentState, ApprovalPending, ApprovalResolution, CancelToken, CapabilityCall, CapabilityRouter,
     LlmMessage, PolicyVerdict, Result, StorageEvent, ToolCallRequest, ToolExecutionResult,
+    ToolHookResultContext,
 };
 use futures_util::stream::{self, StreamExt};
 use tokio::sync::mpsc;
 
 use super::AgentLoop;
+use crate::hook_runtime::PreToolUseDecision;
 
 /// 工具执行周期的最终结果。
 pub(crate) enum ToolCycleOutcome {
@@ -169,8 +171,16 @@ pub(crate) async fn execute_tool_calls(
         }
 
         let ctx = agent_loop.tool_context(state, cancel.clone());
-        let result =
-            execute_raw_tool_call(capabilities, pending.tool_call, turn_id, &ctx, on_event).await?;
+        let result = execute_raw_tool_call(
+            agent_loop,
+            capabilities,
+            state,
+            pending.tool_call,
+            turn_id,
+            &ctx,
+            on_event,
+        )
+        .await?;
         outcomes[pending.index] = Some(CallOutcome {
             result,
             buffered_events: None,
@@ -221,9 +231,15 @@ async fn execute_safe_tool_calls(
     let results = stream::iter(safe_calls)
         .map(|pending| async move {
             let ctx = agent_loop.tool_context(state, cancel.clone());
-            let recorded =
-                execute_raw_tool_call_recorded(capabilities, pending.tool_call, turn_id, &ctx)
-                    .await?;
+            let recorded = execute_raw_tool_call_recorded(
+                agent_loop,
+                capabilities,
+                state,
+                pending.tool_call,
+                turn_id,
+                &ctx,
+            )
+            .await?;
             Ok((pending.index, recorded))
         })
         .buffer_unordered(concurrency_limit)
@@ -234,16 +250,26 @@ async fn execute_safe_tool_calls(
 }
 
 async fn execute_raw_tool_call_recorded(
+    agent_loop: &AgentLoop,
     capabilities: &CapabilityRouter,
+    state: &AgentState,
     tool_call: ToolCallRequest,
     turn_id: &str,
     ctx: &astrcode_core::ToolContext,
 ) -> Result<RecordedExecution> {
     let mut events = Vec::new();
-    let result = execute_raw_tool_call(capabilities, tool_call, turn_id, ctx, &mut |event| {
-        events.push(event);
-        Ok(())
-    })
+    let result = execute_raw_tool_call(
+        agent_loop,
+        capabilities,
+        state,
+        tool_call,
+        turn_id,
+        ctx,
+        &mut |event| {
+            events.push(event);
+            Ok(())
+        },
+    )
     .await?;
 
     Ok(RecordedExecution { result, events })
@@ -281,12 +307,35 @@ fn push_tool_messages(messages: &mut Vec<LlmMessage>, outcomes: Vec<Option<CallO
 }
 
 async fn execute_raw_tool_call(
+    agent_loop: &AgentLoop,
     capabilities: &CapabilityRouter,
+    state: &AgentState,
     tool_call: ToolCallRequest,
     turn_id: &str,
     ctx: &astrcode_core::ToolContext,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
 ) -> Result<ToolExecutionResult> {
+    let tool_call = match agent_loop
+        .hooks
+        .run_pre_tool_use(agent_loop.tool_hook_context(state, turn_id, &tool_call))
+        .await?
+    {
+        PreToolUseDecision::Continue(tool) => ToolCallRequest {
+            id: tool.tool_call_id,
+            name: tool.tool_name,
+            args: tool.args,
+        },
+        PreToolUseDecision::Blocked { reason, tool } => {
+            let blocked_call = ToolCallRequest {
+                id: tool.tool_call_id.clone(),
+                name: tool.tool_name.clone(),
+                args: tool.args.clone(),
+            };
+            denied_tool_result(&blocked_call, turn_id, &reason, on_event)?;
+            return Ok(denial_result(&blocked_call, reason));
+        },
+    };
+
     on_event(StorageEvent::ToolCall {
         turn_id: Some(turn_id.to_string()),
         tool_call_id: tool_call.id.clone(),
@@ -371,6 +420,21 @@ async fn execute_raw_tool_call(
 
     let mut result = execution_result.expect("tool execution future should resolve");
     result.duration_ms = start.elapsed().as_millis() as u64;
+    let hook_result = ToolHookResultContext {
+        tool: agent_loop.tool_hook_context(state, turn_id, &tool_call),
+        result: result.clone(),
+    };
+    if result.ok {
+        agent_loop
+            .hooks
+            .run_post_tool_use_best_effort(hook_result)
+            .await;
+    } else {
+        agent_loop
+            .hooks
+            .run_post_tool_failure_best_effort(hook_result)
+            .await;
+    }
     on_event(StorageEvent::ToolResult {
         turn_id: Some(turn_id.to_string()),
         tool_call_id: tool_call.id.clone(),

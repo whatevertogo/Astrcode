@@ -58,7 +58,8 @@ use std::{path::PathBuf, sync::Arc};
 
 use astrcode_core::{
     AgentState, AllowAllPolicyEngine, AstrError, CancelToken, CapabilityDescriptor,
-    CapabilityRouter, LlmMessage, PolicyContext, PolicyEngine, Result, StorageEvent, ToolContext,
+    CapabilityRouter, CompactionHookContext, HookCompactionReason, HookHandler, LlmMessage,
+    PolicyContext, PolicyEngine, Result, StorageEvent, ToolContext, ToolHookContext,
     UserMessageOrigin,
 };
 use astrcode_runtime_config::{
@@ -77,6 +78,7 @@ use crate::{
         FsFileContentProvider, ThresholdCompactionPolicy,
     },
     context_pipeline::ContextRuntime,
+    hook_runtime::HookRuntime,
     prompt_runtime::PromptRuntime,
     provider_factory::DynProviderFactory,
     request_assembler::RequestAssembler,
@@ -131,6 +133,8 @@ pub struct AgentLoop {
     context: ContextRuntime,
     /// Compaction 运行时，统一承载 trigger / strategy / rebuild 协作者。
     compaction: CompactionRuntime,
+    /// 生命周期 hook 运行时。
+    hooks: HookRuntime,
     /// 最终请求装配边界。
     request_assembler: RequestAssembler,
     /// 单个 step 内允许并发执行的只读工具上限
@@ -185,6 +189,7 @@ impl AgentLoop {
                 Arc::new(ConversationViewRebuilder),
                 Arc::new(FsFileContentProvider),
             ),
+            hooks: HookRuntime::default(),
             request_assembler: RequestAssembler,
             // 默认并行度统一从 runtime-config 读取，这样环境变量覆盖和
             // 直接构造 AgentLoop 的默认行为保持同一套来源。
@@ -213,6 +218,23 @@ impl AgentLoop {
     /// 最小值会被钳制到 1，避免配置错误把安全组完全禁用成不可执行状态。
     pub fn with_max_tool_concurrency(mut self, max_tool_concurrency: usize) -> Self {
         self.max_tool_concurrency = max_tool_concurrency.max(1);
+        self
+    }
+
+    /// 注册单个生命周期 hook。
+    ///
+    /// 将 hook 直接挂到真实执行路径上，而不是额外引入一套事件总线。
+    pub fn with_hook_handler(mut self, handler: Arc<dyn HookHandler>) -> Self {
+        self.hooks.register(handler);
+        self
+    }
+
+    /// 批量注册生命周期 hook。
+    pub fn with_hook_handlers<I>(mut self, handlers: I) -> Self
+    where
+        I: IntoIterator<Item = Arc<dyn HookHandler>>,
+    {
+        self.hooks.register_all(handlers);
         self
     }
 
@@ -369,6 +391,44 @@ impl AgentLoop {
         ToolContext::new(state.session_id.clone(), state.working_dir.clone(), cancel)
     }
 
+    pub(crate) fn tool_hook_context(
+        &self,
+        state: &AgentState,
+        turn_id: &str,
+        tool_call: &astrcode_core::ToolCallRequest,
+    ) -> ToolHookContext {
+        ToolHookContext {
+            session_id: state.session_id.clone(),
+            turn_id: turn_id.to_string(),
+            working_dir: state.working_dir.clone(),
+            tool_call_id: tool_call.id.clone(),
+            tool_name: tool_call.name.clone(),
+            args: tool_call.args.clone(),
+        }
+    }
+
+    pub(crate) fn compaction_hook_context(
+        &self,
+        state: &AgentState,
+        conversation: &crate::context_pipeline::ConversationView,
+        reason: crate::compaction_runtime::CompactionReason,
+        keep_recent_turns: usize,
+    ) -> CompactionHookContext {
+        CompactionHookContext {
+            session_id: state.session_id.clone(),
+            working_dir: state.working_dir.clone(),
+            reason: match reason {
+                crate::compaction_runtime::CompactionReason::Auto => HookCompactionReason::Auto,
+                crate::compaction_runtime::CompactionReason::Reactive => {
+                    HookCompactionReason::Reactive
+                },
+                crate::compaction_runtime::CompactionReason::Manual => HookCompactionReason::Manual,
+            },
+            keep_recent_turns,
+            message_count: conversation.messages.len(),
+        }
+    }
+
     /// 创建策略上下文
     ///
     /// 包含会话 ID、Turn ID、Step 索引和工作目录，供策略引擎评估能力调用。
@@ -422,6 +482,21 @@ impl AgentLoop {
             .keep_recent_turns()
             .min(user_turns.saturating_sub(1))
             .max(1);
+        match self
+            .hooks
+            .run_pre_compact(self.compaction_hook_context(
+                state,
+                &crate::context_pipeline::ConversationView::new(state.messages.clone()),
+                crate::compaction_runtime::CompactionReason::Manual,
+                manual_keep_recent_turns,
+            ))
+            .await?
+        {
+            crate::hook_runtime::PreCompactDecision::Continue => {},
+            crate::hook_runtime::PreCompactDecision::Blocked { reason } => {
+                return Err(AstrError::Validation(reason));
+            },
+        }
         let provider = self.build_provider(Some(state.working_dir.clone())).await?;
         let artifact = self
             .compaction
@@ -451,6 +526,23 @@ impl AgentLoop {
         };
         artifact.record_tail_seq(&tail);
         let _rebuilt_view = self.compaction.rebuild_conversation(&artifact, &tail)?;
+        self.hooks
+            .run_post_compact_best_effort(astrcode_core::CompactionHookResultContext {
+                compaction: self.compaction_hook_context(
+                    state,
+                    &crate::context_pipeline::ConversationView::new(state.messages.clone()),
+                    crate::compaction_runtime::CompactionReason::Manual,
+                    artifact.preserved_recent_turns,
+                ),
+                summary: artifact.summary.clone(),
+                strategy_id: artifact.strategy_id.clone(),
+                preserved_recent_turns: artifact.preserved_recent_turns,
+                pre_tokens: artifact.pre_tokens,
+                post_tokens_estimate: artifact.post_tokens_estimate,
+                messages_removed: artifact.messages_removed,
+                tokens_freed: artifact.tokens_freed,
+            })
+            .await;
 
         Ok(Some(StorageEvent::CompactApplied {
             turn_id: None,

@@ -5,6 +5,7 @@ pub mod approval_service;
 mod compaction_runtime;
 mod context_pipeline;
 pub mod context_window;
+mod hook_runtime;
 mod prompt_runtime;
 pub mod provider_factory;
 mod request_assembler;

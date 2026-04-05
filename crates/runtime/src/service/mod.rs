@@ -8,7 +8,8 @@ use std::sync::{
 };
 
 use astrcode_core::{
-    AllowAllPolicyEngine, AstrError, CapabilityRouter, PolicyEngine, RuntimeHandle, SessionManager,
+    AllowAllPolicyEngine, AstrError, CapabilityRouter, HookHandler, PolicyEngine, RuntimeHandle,
+    SessionManager,
 };
 use astrcode_runtime_agent_loop::{AgentLoop, ApprovalBroker, DefaultApprovalBroker};
 use astrcode_runtime_prompt::PromptDeclaration;
@@ -59,6 +60,7 @@ struct RuntimeSurfaceState {
     capabilities: CapabilityRouter,
     prompt_declarations: Vec<PromptDeclaration>,
     skill_catalog: Arc<SkillCatalog>,
+    hook_handlers: Vec<Arc<dyn HookHandler>>,
 }
 
 fn build_agent_loop(
@@ -75,6 +77,7 @@ fn build_agent_loop(
             surface.prompt_declarations.clone(),
             Arc::clone(&surface.skill_catalog),
         )
+        .with_hook_handlers(surface.hook_handlers.clone())
         .with_max_tool_concurrency(max_tool_concurrency)
         .with_auto_compact_enabled(resolve_auto_compact_enabled(runtime_config))
         .with_compact_threshold_percent(resolve_compact_threshold_percent(runtime_config))
@@ -167,6 +170,7 @@ impl RuntimeService {
             capabilities,
             prompt_declarations,
             skill_catalog,
+            hook_handlers: Vec::new(),
         };
         let loop_ = build_agent_loop(
             &surface,
@@ -202,6 +206,9 @@ impl RuntimeService {
         prompt_declarations: Vec<PromptDeclaration>,
         skill_catalog: Arc<SkillCatalog>,
     ) -> ServiceResult<()> {
+        // TODO(runtime-surface-hooks): 这个兼容入口目前会把 hook surface 重置为空，
+        // 只适合旧调用方。等所有装配路径都迁到 `replace_*_and_hooks` 后，可以删掉
+        // 这个方法，避免后续有人无意中把插件 hook 在热替换时丢掉。
         let _guard = self.rebuild_lock.lock().await;
         let runtime_config = {
             let config = self.config.lock().await;
@@ -211,6 +218,7 @@ impl RuntimeService {
             capabilities,
             prompt_declarations,
             skill_catalog,
+            hook_handlers: Vec::new(),
         };
         let next_loop = build_agent_loop(
             &next_surface,
@@ -221,6 +229,35 @@ impl RuntimeService {
         // 写锁会阻塞直到所有活跃 reader（即正在运行的 turn 通过 current_loop()
         // 持有的读锁）释放。已运行的 turn 继续使用旧的 AgentLoop（通过 Arc 引用），
         // 新 turn 则获取新的 loop。这是一种优雅的滚动替换模式——无需暂停服务。
+        *self.loop_.write().await = next_loop;
+        *self.surface.write().await = next_surface;
+        Ok(())
+    }
+
+    pub async fn replace_capabilities_with_prompt_inputs_and_hooks(
+        &self,
+        capabilities: CapabilityRouter,
+        prompt_declarations: Vec<PromptDeclaration>,
+        skill_catalog: Arc<SkillCatalog>,
+        hook_handlers: Vec<Arc<dyn HookHandler>>,
+    ) -> ServiceResult<()> {
+        let _guard = self.rebuild_lock.lock().await;
+        let runtime_config = {
+            let config = self.config.lock().await;
+            config.runtime.clone()
+        };
+        let next_surface = RuntimeSurfaceState {
+            capabilities,
+            prompt_declarations,
+            skill_catalog,
+            hook_handlers,
+        };
+        let next_loop = build_agent_loop(
+            &next_surface,
+            &runtime_config,
+            Arc::clone(&self.policy),
+            Arc::clone(&self.approval),
+        );
         *self.loop_.write().await = next_loop;
         *self.surface.write().await = next_surface;
         Ok(())

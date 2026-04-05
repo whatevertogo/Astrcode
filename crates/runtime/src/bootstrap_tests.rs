@@ -19,8 +19,8 @@ use std::{
 
 use astrcode_core::{
     CapabilityContext, CapabilityDescriptor, CapabilityExecutionResult, CapabilityInvoker,
-    CapabilityKind, ManagedRuntimeComponent, PluginHealth, PluginState, PluginType, Result,
-    SideEffectLevel, StabilityLevel,
+    CapabilityKind, HookEvent, HookHandler, HookInput, HookOutcome, ManagedRuntimeComponent,
+    PluginHealth, PluginState, PluginType, Result, SideEffectLevel, StabilityLevel,
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -65,6 +65,7 @@ impl PluginInitializer for FakeInitializer {
                     capability_invokers: loaded.contribution.capability_invokers.clone(),
                     prompt_declarations: loaded.contribution.prompt_declarations.clone(),
                     skills: loaded.contribution.skills.clone(),
+                    hook_handlers: loaded.contribution.hook_handlers.clone(),
                 },
             }),
             FakePluginResponse::Failed(message) => {
@@ -189,7 +190,31 @@ fn loaded_plugin(
             capability_invokers: invokers,
             prompt_declarations: Vec::new(),
             skills: Vec::new(),
+            hook_handlers: Vec::new(),
         },
+    }
+}
+
+struct BlockingPreCompactHook;
+
+#[async_trait]
+impl HookHandler for BlockingPreCompactHook {
+    fn name(&self) -> &str {
+        "bootstrap-blocking-pre-compact-hook"
+    }
+
+    fn event(&self) -> HookEvent {
+        HookEvent::PreCompact
+    }
+
+    fn matches(&self, _input: &HookInput) -> bool {
+        true
+    }
+
+    async fn run(&self, _input: &HookInput) -> Result<HookOutcome> {
+        Ok(HookOutcome::Block {
+            reason: "blocked by plugin hook".to_string(),
+        })
     }
 }
 
@@ -424,6 +449,7 @@ fn bootstrap_marks_plugin_failed_when_descriptor_is_invalid() {
                     }) as Arc<dyn CapabilityInvoker>],
                     prompt_declarations: Vec::new(),
                     skills: Vec::new(),
+                    hook_handlers: Vec::new(),
                 },
             }),
         )]),
@@ -533,4 +559,53 @@ fn conflicting_capability_name_detects_existing_and_local_duplicates() {
         ),
         Some("tool.local".to_string())
     );
+}
+
+#[tokio::test]
+async fn bootstrap_background_load_propagates_plugin_hook_handlers_into_agent_loop() {
+    let _guard = TestEnvGuard::new();
+    let shutdowns = Arc::new(Mutex::new(Vec::new()));
+    let mut plugin = loaded_plugin("alpha", &["tool.alpha"], shutdowns);
+    plugin.contribution.hook_handlers = vec![Arc::new(BlockingPreCompactHook)];
+    let initializer = FakeInitializer {
+        responses: HashMap::from([("alpha".to_string(), FakePluginResponse::Loaded(plugin))]),
+    };
+
+    let bootstrap = bootstrap_runtime_from_manifests(vec![manifest("alpha")], &initializer)
+        .await
+        .expect("bootstrap should succeed");
+    bootstrap.plugin_load_handle.wait_completed().await;
+
+    let loop_ = bootstrap.service.current_loop().await;
+    let state = astrcode_core::AgentState {
+        session_id: "hook-session".to_string(),
+        working_dir: std::env::temp_dir(),
+        messages: vec![
+            astrcode_core::LlmMessage::User {
+                content: "turn-1".to_string(),
+                origin: astrcode_core::UserMessageOrigin::User,
+            },
+            astrcode_core::LlmMessage::Assistant {
+                content: "reply-1".to_string(),
+                tool_calls: Vec::new(),
+                reasoning: None,
+            },
+            astrcode_core::LlmMessage::User {
+                content: "turn-2".to_string(),
+                origin: astrcode_core::UserMessageOrigin::User,
+            },
+        ],
+        phase: astrcode_core::Phase::Thinking,
+        turn_count: 2,
+    };
+
+    let error = loop_
+        .manual_compact_event(
+            &state,
+            astrcode_runtime_agent_loop::CompactionTailSnapshot::from_messages(&state.messages, 1),
+        )
+        .await
+        .expect_err("plugin hook should block manual compact");
+
+    assert!(error.to_string().contains("blocked by plugin hook"));
 }
