@@ -10,26 +10,28 @@
 
 ### 0.1 递归深度与并发限制
 
-**现状**：`AgentControl` 没有递归深度上限和并发 Agent 数量限制，存在无限递归和资源耗尽风险。
+**现状**：已实现。
 
-**参考**：Codex 的 `agent_max_depth` + CAS 无锁并发控制
+**当前实现**：
+- `AgentControl` 已增加 `max_depth`（默认 3）和 `max_concurrent`（默认 5）
+- `spawn()` 会根据父节点链自动计算 1-based depth，不再要求 `agent_execution.rs` 额外传递当前深度
+- 并发限制基于控制面中的 `active_count`，统计所有未终态 Agent；终态一产生就立即释放槽位
+- 超限时返回 `AgentControlError::MaxDepthExceeded` / `MaxConcurrentExceeded`
+- `SubAgentHandle` 新增 `depth` 字段，便于调试和 UI 观察
 
-**TODO**：
-- [ ] 在 `AgentControl` 中增加 `max_depth: usize`（默认 3）
-- [ ] 在 `AgentControl` 中增加 `max_concurrent: usize`（默认 5）+ `running_count: AtomicUsize`
-- [ ] `spawn()` 时检查深度和并发，超限返回 `AgentControlError`
-- [ ] 在 `agent_execution.rs` 的 `execute_subagent` 中传递当前深度
+**为什么没有采用 `AtomicUsize running_count`**：
+- 当前所有 spawn / 状态迁移本来就通过 `RwLock<AgentRegistryState>` 串行化
+- 再叠一个独立原子计数只会增加一致性维护成本，收益很低
+- 这里直接把 `active_count` 放在控制面状态里，更符合当前实现边界
 
 **涉及文件**：
-- `crates/runtime-agent-loop/src/agent_control.rs`（或未来的 `runtime-agent-control`）
+- `crates/runtime-agent-control/src/lib.rs`
 - `crates/runtime/src/service/agent_execution.rs`
 
 ```rust
-// 预期签名变更
 pub struct AgentControl {
     max_depth: usize,
     max_concurrent: usize,
-    running_count: Arc<AtomicUsize>,
     // ... 现有字段
 }
 

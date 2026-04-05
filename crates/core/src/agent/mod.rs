@@ -86,6 +86,10 @@ pub struct SubAgentHandle {
     pub agent_id: String,
     /// 子 Agent 所属 session。
     pub session_id: String,
+    /// 当前子 Agent 在父子树中的深度。
+    ///
+    /// 这里使用 1-based 深度，首层子 Agent 为 1，便于直接和配置里的 max depth 对齐。
+    pub depth: usize,
     /// 触发该子 Agent 的父 turn。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_turn_id: Option<String>,

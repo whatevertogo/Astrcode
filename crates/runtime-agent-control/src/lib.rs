@@ -25,6 +25,7 @@ use tokio::sync::{RwLock, watch};
 #[derive(Default)]
 struct AgentRegistryState {
     entries: HashMap<String, AgentEntry>,
+    active_count: usize,
 }
 
 struct AgentEntry {
@@ -40,6 +41,10 @@ struct AgentEntry {
 pub enum AgentControlError {
     #[error("parent agent '{agent_id}' does not exist")]
     ParentAgentNotFound { agent_id: String },
+    #[error("agent depth {current} exceeds max depth {max}")]
+    MaxDepthExceeded { current: usize, max: usize },
+    #[error("active agent count {current} exceeds max concurrent {max}")]
+    MaxConcurrentExceeded { current: usize, max: usize },
 }
 
 /// Agent 控制平面主句柄。
@@ -47,10 +52,14 @@ pub enum AgentControlError {
 pub struct AgentControl {
     next_id: Arc<AtomicU64>,
     next_finalized_seq: Arc<AtomicU64>,
+    max_depth: usize,
+    max_concurrent: usize,
     finalized_retain_limit: usize,
     state: Arc<RwLock<AgentRegistryState>>,
 }
 
+const DEFAULT_MAX_AGENT_DEPTH: usize = 3;
+const DEFAULT_MAX_CONCURRENT_AGENTS: usize = 5;
 const DEFAULT_FINALIZED_AGENT_RETAIN_LIMIT: usize = 256;
 
 impl Default for AgentControl {
@@ -58,6 +67,8 @@ impl Default for AgentControl {
         Self {
             next_id: Arc::new(AtomicU64::new(0)),
             next_finalized_seq: Arc::new(AtomicU64::new(0)),
+            max_depth: DEFAULT_MAX_AGENT_DEPTH,
+            max_concurrent: DEFAULT_MAX_CONCURRENT_AGENTS,
             finalized_retain_limit: DEFAULT_FINALIZED_AGENT_RETAIN_LIMIT,
             state: Arc::new(RwLock::new(AgentRegistryState::default())),
         }
@@ -70,8 +81,10 @@ impl AgentControl {
     }
 
     #[cfg(test)]
-    fn with_finalized_retain_limit(finalized_retain_limit: usize) -> Self {
+    fn with_limits(max_depth: usize, max_concurrent: usize, finalized_retain_limit: usize) -> Self {
         Self {
+            max_depth,
+            max_concurrent,
             finalized_retain_limit,
             ..Self::default()
         }
@@ -88,12 +101,28 @@ impl AgentControl {
         parent_agent_id: Option<String>,
     ) -> Result<SubAgentHandle, AgentControlError> {
         let mut state = self.state.write().await;
-        if let Some(parent_agent_id) = parent_agent_id.as_ref() {
-            if !state.entries.contains_key(parent_agent_id) {
-                return Err(AgentControlError::ParentAgentNotFound {
-                    agent_id: parent_agent_id.clone(),
-                });
-            }
+        let depth = match parent_agent_id.as_ref() {
+            Some(parent_agent_id) => {
+                let Some(parent) = state.entries.get(parent_agent_id) else {
+                    return Err(AgentControlError::ParentAgentNotFound {
+                        agent_id: parent_agent_id.clone(),
+                    });
+                };
+                parent.handle.depth + 1
+            },
+            None => 1,
+        };
+        if depth > self.max_depth {
+            return Err(AgentControlError::MaxDepthExceeded {
+                current: depth,
+                max: self.max_depth,
+            });
+        }
+        if state.active_count >= self.max_concurrent {
+            return Err(AgentControlError::MaxConcurrentExceeded {
+                current: state.active_count,
+                max: self.max_concurrent,
+            });
         }
         // 只有在父节点校验通过后才分配新 ID，避免失败的 spawn 留下无意义的编号空洞。
         let agent_id = format!("agent-{}", self.next_id.fetch_add(1, Ordering::SeqCst) + 1);
@@ -101,6 +130,7 @@ impl AgentControl {
         let handle = SubAgentHandle {
             agent_id: agent_id.clone(),
             session_id,
+            depth,
             parent_turn_id,
             agent_profile: profile.id.clone(),
             status: AgentStatus::Pending,
@@ -118,6 +148,7 @@ impl AgentControl {
                 finalized_seq: None,
             },
         );
+        state.active_count += 1;
         if let Some(parent_agent_id) = parent_agent_id {
             if let Some(parent) = state.entries.get_mut(&parent_agent_id) {
                 parent.children.insert(agent_id);
@@ -261,9 +292,15 @@ fn update_status_locked(
     if entry.handle.status.is_final() {
         return Some(entry.handle.clone());
     }
+    let was_active = !entry.handle.status.is_final();
     entry.handle.status = next_status;
     if next_status.is_final() {
         entry.finalized_seq = Some(next_finalized_seq.fetch_add(1, Ordering::SeqCst));
+        // 这里在终态瞬间释放并发槽位，确保新的子 Agent 能及时获取资源；
+        // 同时保留终态 handle 供 UI / replay 查询，不把“是否仍可见”与“是否占并发”混为一谈。
+        if was_active {
+            state.active_count = state.active_count.saturating_sub(1);
+        }
     }
     entry.status_tx.send_replace(next_status);
     if matches!(next_status, AgentStatus::Cancelled) {
@@ -612,7 +649,11 @@ mod tests {
 
     #[tokio::test]
     async fn gc_prunes_old_finalized_leaf_agents_but_keeps_recent_and_live_nodes() {
-        let control = AgentControl::with_finalized_retain_limit(1);
+        let control = AgentControl::with_limits(
+            super::DEFAULT_MAX_AGENT_DEPTH,
+            super::DEFAULT_MAX_CONCURRENT_AGENTS,
+            1,
+        );
 
         let first = control
             .spawn(
@@ -665,6 +706,102 @@ mod tests {
                 .get(&live.agent_id)
                 .await
                 .expect("live agent should remain")
+                .status,
+            AgentStatus::Pending
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_rejects_agents_that_exceed_max_depth() {
+        let control = AgentControl::with_limits(2, 8, usize::MAX);
+        let root = control
+            .spawn(
+                &explore_profile(),
+                "session-root",
+                Some("turn-root".to_string()),
+                None,
+            )
+            .await
+            .expect("root should fit within depth 1");
+        let child = control
+            .spawn(
+                &explore_profile(),
+                "session-child",
+                Some("turn-root".to_string()),
+                Some(root.agent_id.clone()),
+            )
+            .await
+            .expect("child should fit within depth 2");
+        assert_eq!(root.depth, 1);
+        assert_eq!(child.depth, 2);
+
+        let error = control
+            .spawn(
+                &explore_profile(),
+                "session-grandchild",
+                Some("turn-root".to_string()),
+                Some(child.agent_id.clone()),
+            )
+            .await
+            .expect_err("grandchild should exceed max depth");
+        assert_eq!(
+            error,
+            AgentControlError::MaxDepthExceeded { current: 3, max: 2 }
+        );
+    }
+
+    #[tokio::test]
+    async fn finalized_agents_release_concurrency_slots() {
+        let control = AgentControl::with_limits(8, 2, usize::MAX);
+        let first = control
+            .spawn(
+                &explore_profile(),
+                "session-1",
+                Some("turn-1".to_string()),
+                None,
+            )
+            .await
+            .expect("first spawn should succeed");
+        let second = control
+            .spawn(
+                &explore_profile(),
+                "session-2",
+                Some("turn-2".to_string()),
+                None,
+            )
+            .await
+            .expect("second spawn should succeed");
+
+        let error = control
+            .spawn(
+                &explore_profile(),
+                "session-3",
+                Some("turn-3".to_string()),
+                None,
+            )
+            .await
+            .expect_err("third active agent should exceed concurrent limit");
+        assert_eq!(
+            error,
+            AgentControlError::MaxConcurrentExceeded { current: 2, max: 2 }
+        );
+
+        let _ = control.mark_completed(&first.agent_id).await;
+        let third = control
+            .spawn(
+                &explore_profile(),
+                "session-3",
+                Some("turn-3".to_string()),
+                None,
+            )
+            .await
+            .expect("finalizing one agent should release a slot");
+        assert_eq!(third.depth, 1);
+        assert_eq!(
+            control
+                .get(&second.agent_id)
+                .await
+                .expect("second should still exist")
                 .status,
             AgentStatus::Pending
         );
