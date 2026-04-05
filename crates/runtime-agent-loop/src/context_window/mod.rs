@@ -18,6 +18,7 @@ pub(crate) mod file_access;
 pub mod microcompact;
 pub mod token_usage;
 
+pub(crate) use compaction::merge_compact_prompt_context;
 /// 自动压缩配置和入口函数。
 pub use compaction::{CompactConfig, CompactResult, auto_compact, is_prompt_too_long};
 /// 微压缩应用函数。

@@ -2,15 +2,10 @@
 //!
 //! 跟踪会话中通过工具调用访问的文件路径，用于 post-compact 附件恢复。
 //! 从 `StorageEvent::ToolResult` 的 `metadata` 字段中提取文件路径。
-//!
-//! NOTE: 本模块的公共 API 暂时仅被测试代码引用，一旦 Phase 2 集成完成
-//! （FileAccessTracker 注入到 turn_runner 的 compact 流程），这些 dead_code 标记将被移除。
-
-#![allow(dead_code)]
 
 use std::path::PathBuf;
 
-use astrcode_core::StorageEvent;
+use astrcode_core::{StorageEvent, StoredEvent};
 
 /// File-access tracking tools whose `metadata` contains a `"path"` field.
 const FILE_TOOLS: &[&str] = &["readFile", "editFile", "writeFile"];
@@ -20,7 +15,7 @@ const DEFAULT_MAX_TRACKED_FILES: usize = 10;
 
 /// A tracked file access with the source tool name.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // 后续 Phase 2 集成时间按工具名决定恢复优先级
+#[allow(dead_code)] // 后续可按工具名区分 read/edit/write 的恢复优先级
 pub(crate) struct FileAccessEntry {
     pub path: PathBuf,
     #[allow(dead_code)]
@@ -43,6 +38,17 @@ impl FileAccessTracker {
             max_entries: DEFAULT_MAX_TRACKED_FILES,
         }
     }
+
+    /// 从 durable stored events 构造 tracker。
+    ///
+    /// compact 重建需要同时看“当前 turn 内刚发生的工具结果”和“最近保留 tail 里
+    /// 已经持久化的工具结果”，因此这里允许直接用 stored event 种子化 tracker。
+    pub(crate) fn from_stored_events(events: &[StoredEvent]) -> Self {
+        let mut tracker = Self::new();
+        tracker.record_stored_events(events);
+        tracker
+    }
+
     /// Record a storage event if it is a file-access tool result.
     pub(crate) fn record_event(&mut self, event: &StorageEvent) {
         let StorageEvent::ToolResult {
@@ -72,6 +78,15 @@ impl FileAccessTracker {
             while self.entries.len() > self.max_entries {
                 self.entries.remove(0);
             }
+        }
+    }
+
+    /// 将一批持久化事件回放到 tracker。
+    ///
+    /// 这里复用 `record_event`，确保 live 事件和 durable 事件使用同一套提取规则。
+    pub(crate) fn record_stored_events(&mut self, events: &[StoredEvent]) {
+        for stored in events {
+            self.record_event(&stored.event);
         }
     }
 
@@ -220,5 +235,26 @@ mod tests {
 
         let recent = tracker.recent_files(2);
         assert_eq!(recent, vec![PathBuf::from("/c.rs"), PathBuf::from("/b.rs")]);
+    }
+
+    #[test]
+    fn from_stored_events_replays_durable_tool_results() {
+        let stored = vec![
+            StoredEvent {
+                storage_seq: 1,
+                event: tool_result("readFile", "/src/lib.rs"),
+            },
+            StoredEvent {
+                storage_seq: 2,
+                event: tool_result("editFile", "/src/main.rs"),
+            },
+        ];
+
+        let tracker = FileAccessTracker::from_stored_events(&stored);
+
+        assert_eq!(
+            tracker.recent_files(5),
+            vec![PathBuf::from("/src/main.rs"), PathBuf::from("/src/lib.rs")]
+        );
     }
 }

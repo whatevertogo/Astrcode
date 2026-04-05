@@ -9,7 +9,7 @@
 //! `run_pre_compact` 支持三种返回：
 //! - `Continue`: 正常执行压缩
 //! - `Blocked`: 阻止压缩
-//! - `Modified`: 携带修改参数（system_prompt / keep_recent_turns / custom_summary）
+//! - `Modified`: 携带修改参数（additional_system_prompt / keep_recent_turns / custom_summary）
 //!
 //! 多个 hook 的修改会链式合并，后执行的 hook 可以覆盖前面 hook 的修改。
 
@@ -45,8 +45,8 @@ pub(crate) struct PreCompactDecision {
     pub allowed: bool,
     /// 阻止原因（如果 `allowed` 为 false）。
     pub block_reason: Option<String>,
-    /// 覆盖的 system prompt（如果提供）。
-    pub override_system_prompt: Option<String>,
+    /// 追加到默认 compact prompt 末尾的 system prompt 片段（如果提供）。
+    pub additional_system_prompt: Option<String>,
     /// 覆盖的保留最近 turn 数量（如果提供）。
     pub override_keep_recent_turns: Option<usize>,
     /// 自定义摘要内容（如果提供，跳过 LLM 调用）。
@@ -74,8 +74,8 @@ impl PreCompactDecision {
     /// 合并另一个决策的修改到当前决策。
     /// 后执行的 hook 可以覆盖前面 hook 的修改。
     pub(crate) fn merge(&mut self, other: PreCompactModification) {
-        if let Some(prompt) = other.override_system_prompt {
-            self.override_system_prompt = Some(prompt);
+        if let Some(prompt) = other.additional_system_prompt {
+            self.additional_system_prompt = Some(prompt);
         }
         if let Some(turns) = other.override_keep_recent_turns {
             self.override_keep_recent_turns = Some(turns);
@@ -89,7 +89,7 @@ impl PreCompactDecision {
 /// 从 hook 返回的压缩修改参数。
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PreCompactModification {
-    pub override_system_prompt: Option<String>,
+    pub additional_system_prompt: Option<String>,
     pub override_keep_recent_turns: Option<usize>,
     pub custom_summary: Option<String>,
 }
@@ -185,19 +185,19 @@ impl HookRuntime {
                     )));
                 },
                 HookOutcome::ModifyCompactContext {
-                    override_system_prompt,
+                    additional_system_prompt,
                     override_keep_recent_turns,
                     custom_summary,
                 } => {
                     log::debug!(
                         "hook '{}' modified compact context: prompt={}, turns={}, summary={}",
                         handler.name(),
-                        override_system_prompt.is_some(),
+                        additional_system_prompt.is_some(),
                         override_keep_recent_turns.is_some(),
                         custom_summary.is_some()
                     );
                     decision.merge(PreCompactModification {
-                        override_system_prompt,
+                        additional_system_prompt,
                         override_keep_recent_turns,
                         custom_summary,
                     });

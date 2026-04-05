@@ -75,9 +75,10 @@ use crate::{
     approval_service::{ApprovalBroker, DefaultApprovalBroker},
     compaction_runtime::{
         AutoCompactStrategy, CompactionRuntime, CompactionTailSnapshot, ConversationViewRebuilder,
-        FsFileContentProvider, ThresholdCompactionPolicy,
+        FsFileContentProvider, MAX_RECOVERED_FILES, ThresholdCompactionPolicy,
     },
     context_pipeline::ContextRuntime,
+    context_window::{file_access::FileAccessTracker, merge_compact_prompt_context},
     hook_runtime::HookRuntime,
     prompt_runtime::PromptRuntime,
     provider_factory::DynProviderFactory,
@@ -407,7 +408,7 @@ impl AgentLoop {
         }
     }
 
-    /// 构建压缩 hook 上下文（简化版本，不包含 messages/tools/system_prompt）。
+    /// 构建压缩 hook 上下文（简化版本，不包含 messages/tools/runtime_system_prompt）。
     ///
     /// 用于 post-compact hook 和不需要完整上下文的场景。
     pub(crate) fn compaction_hook_context(
@@ -435,7 +436,7 @@ impl AgentLoop {
         }
     }
 
-    /// 构建压缩 hook 上下文（完整版本，包含 messages/tools/system_prompt）。
+    /// 构建压缩 hook 上下文（完整版本，包含 messages/tools/runtime_system_prompt）。
     ///
     /// 用于 pre-compact hook，允许插件检查完整上下文并做出修改决策。
     pub(crate) fn compaction_hook_context_full(
@@ -445,7 +446,7 @@ impl AgentLoop {
         reason: crate::compaction_runtime::CompactionReason,
         keep_recent_turns: usize,
         tools: &[astrcode_core::ToolDefinition],
-        system_prompt: Option<&str>,
+        runtime_system_prompt: Option<&str>,
     ) -> CompactionHookContext {
         CompactionHookContext {
             session_id: state.session_id.clone(),
@@ -461,7 +462,9 @@ impl AgentLoop {
             message_count: conversation.messages.len(),
             messages: conversation.messages.clone(),
             tools: tools.to_vec(),
-            system_prompt: system_prompt.map(ToOwned::to_owned),
+            // Hook 对外仍暴露 `system_prompt` 字段，避免插件协议再引入一层
+            // “runtime vs compact” 命名迁移；内部实现统一使用 runtime_system_prompt。
+            system_prompt: runtime_system_prompt.map(ToOwned::to_owned),
         }
     }
 
@@ -564,14 +567,15 @@ impl AgentLoop {
                 crate::compaction_runtime::CompactionReason::Manual,
             )
         } else {
-            // 应用 hook 修改的 system prompt
-            let system_prompt = decision.override_system_prompt.as_deref();
+            // hook 只能追加 compact 指令，保留默认压缩 prompt 的约束骨架。
+            let compact_prompt_context =
+                merge_compact_prompt_context(None, decision.additional_system_prompt.as_deref());
 
             self.compaction
                 .compact_manual_with_keep_recent_turns(
                     provider.as_ref(),
                     &conversation,
-                    system_prompt,
+                    compact_prompt_context.as_deref(),
                     effective_keep_turns,
                     CancelToken::new(),
                 )
@@ -581,16 +585,18 @@ impl AgentLoop {
         let Some(mut artifact) = artifact else {
             return Ok(None);
         };
+        let materialized_tail = compaction_tail.materialize();
+        let file_access = FileAccessTracker::from_stored_events(&materialized_tail);
+        artifact.recovered_files = file_access.recent_files(MAX_RECOVERED_FILES);
         let tail = {
-            let materialized = compaction_tail.materialize();
-            if materialized.is_empty() {
+            if materialized_tail.is_empty() {
                 CompactionTailSnapshot::from_messages(
                     &state.messages,
                     artifact.preserved_recent_turns,
                 )
                 .materialize()
             } else {
-                materialized
+                materialized_tail
             }
         };
         artifact.record_tail_seq(&tail);

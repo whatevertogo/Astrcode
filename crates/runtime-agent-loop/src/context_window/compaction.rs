@@ -47,7 +47,7 @@ pub struct CompactResult {
 pub async fn auto_compact(
     provider: &dyn LlmProvider,
     messages: &[LlmMessage],
-    base_system_prompt: Option<&str>,
+    compact_prompt_context: Option<&str>,
     config: CompactConfig,
     cancel: CancelToken,
 ) -> Result<Option<CompactResult>> {
@@ -59,14 +59,17 @@ pub async fn auto_compact(
     // after compaction here instead of scattering attachment recovery across prompt contributors.
     // TODO(claude-auto-compact): upgrade this entry point to incremental recompact by folding the
     // latest `CompactApplied` summary forward instead of always re-summarizing the full prefix.
+    // `compact_prompt_context` 是正常请求所见的运行时 system prompt 参考材料。
+    // compact 流程不会直接把它当成最终 system prompt，而是嵌入专用 compact 模板中，
+    // 让摘要模型知道当前会话原本运行在什么约束之下。
     let preserved_recent_turns = config.keep_recent_turns.max(1);
     let (mut prefix, suffix, keep_start) = split_for_compaction(messages, preserved_recent_turns);
     if prefix.is_empty() {
         return Ok(None);
     }
 
-    let pre_tokens = estimate_request_tokens(messages, base_system_prompt);
-    let summary_prompt = build_compact_system_prompt(base_system_prompt);
+    let pre_tokens = estimate_request_tokens(messages, compact_prompt_context);
+    let summary_prompt = render_compact_system_prompt(compact_prompt_context);
     let mut attempts = 0usize;
     let summary = loop {
         let request_messages = compact_input_messages(&prefix);
@@ -91,7 +94,7 @@ pub async fn auto_compact(
     let messages_removed = keep_start;
     let auto_continue = matches!(config.trigger, astrcode_core::CompactTrigger::Auto);
     let compacted_messages = compacted_messages(&summary, suffix, auto_continue);
-    let post_tokens_estimate = estimate_request_tokens(&compacted_messages, base_system_prompt);
+    let post_tokens_estimate = estimate_request_tokens(&compacted_messages, compact_prompt_context);
     Ok(Some(CompactResult {
         messages: compacted_messages,
         summary,
@@ -104,38 +107,81 @@ pub async fn auto_compact(
     }))
 }
 
-// TODO: 一旦提示配置能够独立拥有压缩策略而无需与通用系统提示耦合
+// TODO: 一旦提示配置能够独立拥有压缩策略而无需与通用系统提示耦合，
 // 替换此硬编码的摘要合约为更结构化的输入（如 JSON）以支持更丰富的摘要内容和更可靠的解析。
-// TODO: 未来考虑通过一个独立的压缩agent来生成摘要，允许更复杂的压缩逻辑和多轮压缩对话，
+// TODO: 未来考虑通过一个独立的压缩 agent 来生成摘要，允许更复杂的压缩逻辑和多轮压缩对话，
 // 而不仅仅是单轮系统提示调用。
-fn build_compact_system_prompt(base_system_prompt: Option<&str>) -> String {
+fn render_compact_system_prompt(compact_prompt_context: Option<&str>) -> String {
+    // 整合 kimi-cli、pi-mono、opencode 等 CLI 工具的最佳实践：
+    // - pi-mono: 结构化进度跟踪（Done/In Progress/Blocked）、迭代式更新、分支摘要
+    // - kimi-cli: 压缩优先级规则（MUST KEEP/MERGE/REMOVE/CONDENSE）、代码长度阈值
+    // - opencode: 发现跟踪（Discoveries）、目标与指令分离
     let mut prompt = String::from(
-        "You are generating an internal compact summary for a coding-agent session.\nThe summary \
-         will replace earlier conversation history so the agent can continue seamlessly.\n\n## \
-         CRITICAL RULE\n**DO NOT CALL ANY TOOLS.** This conversation is for summary generation \
-         only.\n\n## Content Priority (most → least important)\nInclude content in this order. \
-         Higher-priority items MUST appear:\n1. Current active task AND immediate next steps — \
-         MUST\n2. All user messages verbatim, in original order — MUST\n3. Critical errors AND \
-         how they were resolved — MUST\n4. Code changes and architectural decisions — MUST\n5. \
-         Key decisions and their rationale (the \"why\", not just the \"what\")\n6. System \
-         configuration, environment setup (only if relevant)\n\n## Output Format\nReturn exactly \
-         two XML blocks:\n\n<analysis>\n- Self-check before writing the summary:\n- Have you \
-         covered ALL user messages?\n- Is the current task state captured accurately?\n- Are \
-         there critical errors or decisions you missed?\n</analysis>\n\n<summary>\n### Primary \
-         Request and Intent\n### All User Messages (Verbatim)\n### Key Technical Decisions\n### \
-         Files and Code Sections\n### Errors and Fixes\n### Problem Solving Process\n### Pending \
-         Tasks\n### Current Work\n### Next Step\n</summary>\n\n## Rules\n- Output **only** the \
-         <analysis> and <summary> blocks — no preamble, no closing remarks.\n- Be concise. Prefer \
-         bullet points and short paragraphs.\n- Ignore synthetic auto-continue nudges.\n- Write \
-         in third-person, factual tone. Do not address the end user.\n- Include exact file paths \
-         for all mentioned code.",
+        "You are a context summarization assistant for a coding-agent session.\nYour summary will \
+         replace earlier conversation history so another agent can continue seamlessly.\n\n## \
+         CRITICAL RULES\n**DO NOT CALL ANY TOOLS.** This is for summary generation only.\n NOT \
+         continue the conversation.** Only output the structured summary.\n\n## Compression \
+         Priorities (highest → lowest)\n1. **Current Task State** — What's being worked on, exact \
+         status, immediate next steps\n2. **Errors & Solutions** — Stack traces, error messages, \
+         and how they were resolved\n3. **User Requests** — All user messages verbatim in \
+         order\n4. **Code Changes** — Final working versions; for code < 15 lines keep all, \
+         otherwise signatures + key logic only\n5. **Key Decisions** — The \"why\" behind \
+         choices, not just \"what\"\n6. **Discoveries** — Important learnings about the codebase, \
+         APIs, or constraints\n7. **Environment** — Config/setup only if relevant to continuing \
+         work\n\n## Compression Rules\n**MUST KEEP:** Error messages, stack traces, working \
+         solutions, current task, exact file paths, function names\n**MERGE:** Similar \
+         discussions into single summary points\n**REMOVE:** Redundant explanations, failed \
+         attempts (keep only lessons learned), boilerplate code\n**CONDENSE:** Long code blocks → \
+         signatures + key logic; long explanations → bullet points\n\n## Output Format\nReturn \
+         exactly two XML blocks:\n\n<analysis>\n[Self-check before writing]\n- Did I cover ALL \
+         user messages?\n- Is the current task state accurate?\n- Are all errors and their \
+         solutions captured?\n- Are file paths and function names \
+         exact?\n</analysis>\n\n<summary>\n\n## Goal\n[What the user is trying to accomplish — \
+         can be multiple items]\n\n## Constraints & Preferences\n- [User-specified constraints, \
+         preferences, requirements]\n- [Or \"(none)\" if not mentioned]\n\n## Progress\n### \
+         Done\n- [x] [Completed tasks with brief outcome]\n\n### In Progress\n- [ ] [Current work \
+         with status]\n\n### Blocked\n- [Issues preventing progress, or \"(none)\"]\n\n## Key \
+         Decisions\n- **[Decision]**: [Rationale — why this choice was made]\n\n## Discoveries\n- \
+         [Important learnings about codebase/APIs/constraints that future agent should \
+         know]\n\n## Files\n### Read\n- `path/to/file` — [Why read, key findings]\n\n### \
+         Modified/Created\n- `path/to/file` — [What changed, why]\n\n## Errors & Fixes\n- \
+         **Error**: [Exact error message/stack trace]\n  - **Cause**: [Root cause]\n  - **Fix**: \
+         [How it was resolved]\n\n## Next Steps\n1. [Ordered list of what should happen \
+         next]\n\n## Critical Context\n[Any essential information not covered above, or \
+         \"(none)\"]\n\n</summary>\n\n## Rules\n- Output **only** the <analysis> and <summary> \
+         blocks — no preamble, no closing remarks.\n- Be concise. Prefer bullet points over \
+         paragraphs.\n- Ignore synthetic auto-continue nudges.\n- Write in third-person, factual \
+         tone. Do not address the end user.\n- Preserve exact file paths, function names, error \
+         messages — never paraphrase these.\n- If a section has no content, write \"(none)\" \
+         rather than omitting it.",
     );
 
-    if let Some(base_system_prompt) = base_system_prompt.filter(|value| !value.trim().is_empty()) {
+    if let Some(compact_prompt_context) =
+        compact_prompt_context.filter(|value| !value.trim().is_empty())
+    {
         prompt.push_str("\nCurrent runtime system prompt for context:\n");
-        prompt.push_str(base_system_prompt);
+        prompt.push_str(compact_prompt_context);
     }
     prompt
+}
+
+/// 合并 compact 使用的 prompt 上下文。
+///
+/// compact 模板本身由 `render_compact_system_prompt()` 统一负责，这里只做两件事：
+/// 1. 保留当前运行时已有的 system prompt 上下文
+/// 2. 把 hook 提供的附加约束追加到末尾
+///
+/// 这样 loop 层不再自己“构造最终 compact prompt”，只传递一段待嵌入的上下文。
+pub(crate) fn merge_compact_prompt_context(
+    runtime_system_prompt: Option<&str>,
+    additional_system_prompt: Option<&str>,
+) -> Option<String> {
+    match (runtime_system_prompt, additional_system_prompt) {
+        (None, None) => None,
+        (Some(base), None) => Some(base.to_string()),
+        (None, Some(additional)) => Some(additional.to_string()),
+        (Some(base), Some(additional)) => Some(format!("{base}\n\n{additional}")),
+    }
 }
 
 fn compact_input_messages(messages: &[LlmMessage]) -> Vec<LlmMessage> {
@@ -293,6 +339,22 @@ pub fn is_prompt_too_long(error: &astrcode_core::AstrError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merge_compact_prompt_context_appends_hook_suffix_after_runtime_prompt() {
+        let merged = merge_compact_prompt_context(Some("base"), Some("hook"))
+            .expect("merged compact prompt context should exist");
+
+        assert_eq!(merged, "base\n\nhook");
+    }
+
+    #[test]
+    fn merge_compact_prompt_context_keeps_existing_runtime_prompt_when_hook_is_empty() {
+        let merged = merge_compact_prompt_context(Some("base"), None)
+            .expect("runtime prompt context should be preserved");
+
+        assert_eq!(merged, "base");
+    }
 
     #[test]
     fn extract_summary_prefers_summary_block() {

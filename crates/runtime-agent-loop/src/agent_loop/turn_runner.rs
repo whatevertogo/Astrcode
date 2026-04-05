@@ -34,9 +34,14 @@ use super::{
     llm_cycle, tool_cycle,
 };
 use crate::{
-    compaction_runtime::{CompactionArtifact, CompactionReason, CompactionTailSnapshot},
+    compaction_runtime::{
+        CompactionArtifact, CompactionReason, CompactionTailSnapshot, MAX_RECOVERED_FILES,
+    },
     context_pipeline::{ContextBundleInput, ConversationView},
-    context_window::{TokenUsageTracker, is_prompt_too_long},
+    context_window::{
+        TokenUsageTracker, file_access::FileAccessTracker, is_prompt_too_long,
+        merge_compact_prompt_context,
+    },
     request_assembler::{PreparedRequest, StepRequestConfig},
 };
 
@@ -101,6 +106,7 @@ pub(crate) async fn run_turn(
     let mut reactive_compact_attempts = 0usize;
     let model_limits = provider.model_limits();
     let mut token_tracker = TokenUsageTracker::default();
+    let mut file_access = FileAccessTracker::from_stored_events(&compaction_tail.materialize());
 
     'step: loop {
         // 取消是协作式的，在 step 边界检查。若 LLM 正在执行慢速推理，
@@ -158,15 +164,19 @@ pub(crate) async fn run_turn(
                 return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
             },
         };
-        on_event(StorageEvent::PromptMetrics {
-            turn_id: Some(turn_id.to_string()),
-            step_index: step_index as u32,
-            estimated_tokens: prompt_snapshot.context_tokens.min(u32::MAX as usize) as u32,
-            context_window: prompt_snapshot.context_window.min(u32::MAX as usize) as u32,
-            effective_window: prompt_snapshot.effective_window.min(u32::MAX as usize) as u32,
-            threshold_tokens: prompt_snapshot.threshold_tokens.min(u32::MAX as usize) as u32,
-            truncated_tool_results: truncated_tool_results.min(u32::MAX as usize) as u32,
-        })?;
+        emit_event_with_file_tracking(
+            &mut file_access,
+            on_event,
+            StorageEvent::PromptMetrics {
+                turn_id: Some(turn_id.to_string()),
+                step_index: step_index as u32,
+                estimated_tokens: prompt_snapshot.context_tokens.min(u32::MAX as usize) as u32,
+                context_window: prompt_snapshot.context_window.min(u32::MAX as usize) as u32,
+                effective_window: prompt_snapshot.effective_window.min(u32::MAX as usize) as u32,
+                threshold_tokens: prompt_snapshot.threshold_tokens.min(u32::MAX as usize) as u32,
+                truncated_tool_results: truncated_tool_results.min(u32::MAX as usize) as u32,
+            },
+        )?;
         let decision_input = agent_loop
             .compaction
             .build_context_decision(&prompt_snapshot, truncated_tool_results);
@@ -182,7 +192,7 @@ pub(crate) async fn run_turn(
             },
         };
         if matches!(context_strategy, ContextStrategy::Compact) {
-            let system_prompt_for_compact = request.system_prompt.clone();
+            let runtime_system_prompt_for_auto_compact = request.system_prompt.clone();
             let tools = agent_loop.capabilities.tool_definitions();
             match maybe_compact_conversation(
                 agent_loop,
@@ -190,12 +200,13 @@ pub(crate) async fn run_turn(
                     state,
                     provider: &provider,
                     conversation: &conversation,
-                    base_system_prompt: system_prompt_for_compact.as_deref(),
+                    runtime_system_prompt: runtime_system_prompt_for_auto_compact.as_deref(),
                     reason: CompactionReason::Auto,
                     turn_id,
                     cancel: cancel.clone(),
                     tail: compaction_tail.clone(),
                     tools,
+                    file_access: &file_access,
                 },
                 on_event,
             )
@@ -229,7 +240,7 @@ pub(crate) async fn run_turn(
         // Reactive compact must reuse the exact system prompt that reached the provider after
         // policy rewrites. Otherwise the recovery compaction can summarize against stale
         // instructions and drift from the request shape that actually overflowed.
-        let system_prompt_for_retry = request.system_prompt.clone();
+        let runtime_system_prompt_for_reactive_compact = request.system_prompt.clone();
 
         // 413 prompt too long → turn 级别 reactive compact
         // 当 LLM 调用返回 prompt too long 错误时，自动触发压缩并重试。
@@ -266,12 +277,14 @@ pub(crate) async fn run_turn(
                             state,
                             provider: &provider,
                             conversation: &conversation,
-                            base_system_prompt: system_prompt_for_retry.as_deref(),
+                            runtime_system_prompt: runtime_system_prompt_for_reactive_compact
+                                .as_deref(),
                             reason: CompactionReason::Reactive,
                             turn_id,
                             cancel: cancel.clone(),
                             tail: compaction_tail.clone(),
                             tools: agent_loop.capabilities.tool_definitions(),
+                            file_access: &file_access,
                         },
                         on_event,
                     )
@@ -321,16 +334,20 @@ pub(crate) async fn run_turn(
 
         if !output.content.is_empty() || !output.tool_calls.is_empty() || output.reasoning.is_some()
         {
-            on_event(StorageEvent::AssistantFinal {
-                turn_id: Some(turn_id.to_string()),
-                content: output.content.clone(),
-                reasoning_content: output.reasoning.as_ref().map(|value| value.content.clone()),
-                reasoning_signature: output
-                    .reasoning
-                    .as_ref()
-                    .and_then(|value| value.signature.clone()),
-                timestamp: Some(chrono::Utc::now()),
-            })?;
+            emit_event_with_file_tracking(
+                &mut file_access,
+                on_event,
+                StorageEvent::AssistantFinal {
+                    turn_id: Some(turn_id.to_string()),
+                    content: output.content.clone(),
+                    reasoning_content: output.reasoning.as_ref().map(|value| value.content.clone()),
+                    reasoning_signature: output
+                        .reasoning
+                        .as_ref()
+                        .and_then(|value| value.signature.clone()),
+                    timestamp: Some(chrono::Utc::now()),
+                },
+            )?;
         }
 
         let tool_calls = output.tool_calls.clone();
@@ -388,7 +405,7 @@ pub(crate) async fn run_turn(
             state,
             step_index,
             &mut conversation.messages,
-            on_event,
+            &mut |event| emit_event_with_file_tracking(&mut file_access, on_event, event),
             &cancel,
         )
         .await
@@ -488,13 +505,16 @@ struct CompactContext<'a> {
     state: &'a AgentState,
     provider: &'a std::sync::Arc<dyn astrcode_runtime_llm::LlmProvider>,
     conversation: &'a ConversationView,
-    base_system_prompt: Option<&'a str>,
+    /// 当前正常对话请求的 system prompt，上下文压缩时只把它作为参考材料嵌入模板。
+    runtime_system_prompt: Option<&'a str>,
     reason: CompactionReason,
     turn_id: &'a str,
     cancel: CancelToken,
     tail: CompactionTailSnapshot,
     /// 工具定义列表，用于 pre-compact hook 上下文。
     tools: Vec<astrcode_core::ToolDefinition>,
+    /// 当前 turn 已知的最近文件访问，用于在 compact 后恢复关键代码上下文。
+    file_access: &'a FileAccessTracker,
 }
 
 async fn maybe_compact_conversation(
@@ -510,7 +530,7 @@ async fn maybe_compact_conversation(
             ctx.reason,
             agent_loop.compact_keep_recent_turns(),
             &ctx.tools,
-            ctx.base_system_prompt,
+            ctx.runtime_system_prompt,
         ))
         .await?;
 
@@ -544,17 +564,17 @@ async fn maybe_compact_conversation(
         let keep_turns = decision
             .override_keep_recent_turns
             .unwrap_or(agent_loop.compact_keep_recent_turns());
-        let system_prompt = decision
-            .override_system_prompt
-            .as_deref()
-            .or(ctx.base_system_prompt);
+        let compact_prompt_context = merge_compact_prompt_context(
+            ctx.runtime_system_prompt,
+            decision.additional_system_prompt.as_deref(),
+        );
 
         agent_loop
             .compaction
             .compact_with_keep_recent_turns(
                 ctx.provider.as_ref(),
                 ctx.conversation,
-                system_prompt,
+                compact_prompt_context.as_deref(),
                 keep_turns,
                 ctx.reason,
                 ctx.cancel,
@@ -565,6 +585,7 @@ async fn maybe_compact_conversation(
     let Some(mut artifact) = compact_result else {
         return Ok(None);
     };
+    artifact.recovered_files = ctx.file_access.recent_files(MAX_RECOVERED_FILES);
     let tail = {
         let materialized = ctx.tail.materialize();
         if materialized.is_empty() {
@@ -629,4 +650,15 @@ fn emit_compact_applied(
         tokens_freed: artifact.tokens_freed.min(u32::MAX as usize) as u32,
         timestamp: chrono::Utc::now(),
     })
+}
+
+fn emit_event_with_file_tracking(
+    file_access: &mut FileAccessTracker,
+    on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
+    event: StorageEvent,
+) -> Result<()> {
+    // 文件恢复依赖 tool result metadata，因此需要在事件离开 turn_runner 之前同步记账，
+    // 这样同一个 turn 内的后续 compact 才能恢复刚刚读过/改过的文件内容。
+    file_access.record_event(&event);
+    on_event(event)
 }

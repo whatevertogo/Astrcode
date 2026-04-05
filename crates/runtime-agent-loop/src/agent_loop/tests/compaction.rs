@@ -9,14 +9,22 @@
 
 use std::{
     collections::VecDeque,
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
-use astrcode_core::{AstrError, CancelToken, LlmMessage, Phase, StorageEvent, UserMessageOrigin};
+use astrcode_core::{
+    AstrError, CancelToken, LlmMessage, Phase, StorageEvent, Tool, ToolDefinition,
+    ToolExecutionResult, ToolRegistry, UserMessageOrigin,
+};
 use astrcode_runtime_llm::{EventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
 use async_trait::async_trait;
+use serde_json::json;
 
-use super::{fixtures::*, test_support::empty_capabilities};
+use super::{
+    fixtures::*,
+    test_support::{capabilities_from_tools, empty_capabilities},
+};
 use crate::{
     AgentLoop,
     agent_loop::TurnOutcome,
@@ -64,6 +72,40 @@ impl LlmProvider for RecordingFailingProvider {
         }
 
         result
+    }
+}
+
+struct ReadFileMetadataTool {
+    path: PathBuf,
+    output: String,
+}
+
+#[async_trait]
+impl Tool for ReadFileMetadataTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "readFile".to_string(),
+            description: "returns file content with metadata.path for recovery tests".to_string(),
+            parameters: json!({"type":"object"}),
+        }
+    }
+
+    async fn execute(
+        &self,
+        tool_call_id: String,
+        _input: serde_json::Value,
+        _ctx: &astrcode_core::ToolContext,
+    ) -> astrcode_core::Result<ToolExecutionResult> {
+        Ok(ToolExecutionResult {
+            tool_call_id,
+            tool_name: "readFile".to_string(),
+            ok: true,
+            output: self.output.clone(),
+            error: None,
+            metadata: Some(json!({ "path": self.path.display().to_string() })),
+            duration_ms: 1,
+            truncated: false,
+        })
     }
 }
 
@@ -184,6 +226,123 @@ async fn auto_compact_emits_compact_applied_before_retrying_the_turn() {
             StorageEvent::AssistantFinal { content, .. } if content == "final answer"
         )
     }));
+}
+
+#[tokio::test]
+async fn reactive_compact_restores_recent_file_context_after_current_turn_file_access() {
+    let _guard = super::test_support::TestEnvGuard::new();
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let file_path = temp_dir.path().join("recent.rs");
+    // auto compact 必须既“超阈值”又“确实有旧 turn 可折叠”才会触发，所以这里保留一段
+    // 轻量旧历史，再让 readFile 结果把第二轮请求推过阈值，专门覆盖“当前 turn 文件访问 →
+    // compact → recovered_files → rebuild”这条链路。
+    let file_contents = "fn recovered_context() { println!(\"hello\"); }\n".repeat(400);
+    std::fs::write(&file_path, &file_contents).expect("fixture file should be writable");
+
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(RecordingFailingProvider {
+        results: Mutex::new(VecDeque::from([
+            Ok(LlmOutput {
+                content: String::new(),
+                tool_calls: vec![astrcode_core::ToolCallRequest {
+                    id: "call-read".to_string(),
+                    name: "readFile".to_string(),
+                    args: json!({ "path": file_path.display().to_string() }),
+                }],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            }),
+            Err(make_prompt_too_long_error()),
+            Ok(LlmOutput {
+                content: "<analysis>trimmed</analysis><summary>summary after read</summary>"
+                    .to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            }),
+            Ok(LlmOutput {
+                content: "final answer".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            }),
+        ])),
+        requests: Arc::clone(&requests),
+    });
+    let tools = ToolRegistry::builder()
+        .register(Box::new(ReadFileMetadataTool {
+            path: file_path.clone(),
+            output: file_contents.clone(),
+        }))
+        .build();
+    let loop_runner = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory { provider }),
+        capabilities_from_tools(tools),
+    )
+    .with_auto_compact_enabled(true)
+    .with_compact_threshold_percent(95)
+    .with_compact_keep_recent_turns(1);
+    let state = astrcode_core::AgentState {
+        session_id: "test".into(),
+        working_dir: temp_dir.path().to_path_buf(),
+        messages: vec![
+            LlmMessage::User {
+                content: "legacy context that should become compressible later".repeat(12),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "legacy ack".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+            LlmMessage::User {
+                content: "please inspect this file and continue".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ],
+        phase: Phase::Thinking,
+        turn_count: 0,
+    };
+    let (_events, mut on_event) = collect_events();
+
+    let outcome = loop_runner
+        .run_turn(
+            &state,
+            "turn-reactive-file-recovery",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+
+    assert!(matches!(outcome, TurnOutcome::Completed));
+    let requests = requests.lock().expect("request log lock");
+    assert!(
+        requests.len() >= 4,
+        "reactive compact path should issue tool, failing prompt, compact, and final requests"
+    );
+    let final_request_dump = format!(
+        "{:?}",
+        requests
+            .last()
+            .expect("final request should exist")
+            .messages
+    );
+    assert!(
+        final_request_dump.contains("Post-compact file recovery"),
+        "rebuilt request should include a post-compact file recovery message"
+    );
+    assert!(
+        final_request_dump.contains("recent.rs"),
+        "recovery message should name the recently accessed file"
+    );
+    assert!(
+        final_request_dump.contains("recovered_context"),
+        "recovery message should embed the file contents so the model keeps local code context"
+    );
 }
 
 #[tokio::test]

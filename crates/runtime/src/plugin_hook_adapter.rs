@@ -113,9 +113,9 @@ struct PluginHookResponse {
     reason: Option<String>,
     #[serde(default)]
     args: Option<Value>,
-    /// PreCompact 专用：覆盖压缩时的 system prompt
+    /// PreCompact 专用：追加到默认 compact prompt 后的 system prompt 片段
     #[serde(default)]
-    override_system_prompt: Option<String>,
+    additional_system_prompt: Option<String>,
     /// PreCompact 专用：覆盖保留的最近 turn 数量
     #[serde(default)]
     override_keep_recent_turns: Option<usize>,
@@ -328,7 +328,7 @@ fn parse_plugin_hook_outcome(output: Value) -> Result<HookOutcome> {
             args: response.args.unwrap_or(Value::Null),
         }),
         "modifyCompactContext" => Ok(HookOutcome::ModifyCompactContext {
-            override_system_prompt: response.override_system_prompt,
+            additional_system_prompt: response.additional_system_prompt,
             override_keep_recent_turns: response.override_keep_recent_turns,
             custom_summary: response.custom_summary,
         }),
@@ -424,7 +424,7 @@ mod tests {
         // 完整的 modifyCompactContext 响应
         let outcome = parse_plugin_hook_outcome(json!({
             "action": "modifyCompactContext",
-            "overrideSystemPrompt": "Custom prompt",
+            "additionalSystemPrompt": "Custom prompt",
             "overrideKeepRecentTurns": 5,
             "customSummary": "Custom summary content"
         }))
@@ -432,11 +432,11 @@ mod tests {
 
         match outcome {
             HookOutcome::ModifyCompactContext {
-                override_system_prompt,
+                additional_system_prompt,
                 override_keep_recent_turns,
                 custom_summary,
             } => {
-                assert_eq!(override_system_prompt, Some("Custom prompt".to_string()));
+                assert_eq!(additional_system_prompt, Some("Custom prompt".to_string()));
                 assert_eq!(override_keep_recent_turns, Some(5));
                 assert_eq!(custom_summary, Some("Custom summary content".to_string()));
             },
@@ -452,11 +452,11 @@ mod tests {
 
         match outcome {
             HookOutcome::ModifyCompactContext {
-                override_system_prompt,
+                additional_system_prompt,
                 override_keep_recent_turns,
                 custom_summary,
             } => {
-                assert_eq!(override_system_prompt, None);
+                assert_eq!(additional_system_prompt, None);
                 assert_eq!(override_keep_recent_turns, Some(3));
                 assert_eq!(custom_summary, None);
             },

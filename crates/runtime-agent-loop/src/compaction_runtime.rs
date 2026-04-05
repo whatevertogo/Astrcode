@@ -255,7 +255,8 @@ fn recent_turn_start_index(
 pub(crate) struct CompactionInput<'a> {
     pub provider: &'a dyn LlmProvider,
     pub conversation: &'a ConversationView,
-    pub base_system_prompt: Option<&'a str>,
+    /// 仅作为压缩模板的“上下文参考”嵌入，不是最终发送给 compact LLM 的完整模板。
+    pub compact_prompt_context: Option<&'a str>,
     pub cancel: CancelToken,
     pub keep_recent_turns: usize,
     pub reason: CompactionReason,
@@ -312,7 +313,7 @@ pub(crate) struct CompactionRuntime {
 }
 
 /// Post-compact 文件恢复的最大文件数。
-const MAX_RECOVERED_FILES: usize = 5;
+pub(crate) const MAX_RECOVERED_FILES: usize = 5;
 /// 文件恢复的总 token 预算（估算值）。
 const RECOVERY_TOKEN_BUDGET: usize = 50_000;
 
@@ -382,14 +383,14 @@ impl CompactionRuntime {
         &self,
         provider: &dyn LlmProvider,
         conversation: &ConversationView,
-        base_system_prompt: Option<&str>,
+        compact_prompt_context: Option<&str>,
         reason: CompactionReason,
         cancel: CancelToken,
     ) -> Result<Option<CompactionArtifact>> {
         self.compact_with_keep_recent_turns(
             provider,
             conversation,
-            base_system_prompt,
+            compact_prompt_context,
             self.keep_recent_turns,
             reason,
             cancel,
@@ -405,7 +406,7 @@ impl CompactionRuntime {
         &self,
         provider: &dyn LlmProvider,
         conversation: &ConversationView,
-        base_system_prompt: Option<&str>,
+        compact_prompt_context: Option<&str>,
         keep_recent_turns: usize,
         reason: CompactionReason,
         cancel: CancelToken,
@@ -415,7 +416,7 @@ impl CompactionRuntime {
             .compact(CompactionInput {
                 provider,
                 conversation,
-                base_system_prompt,
+                compact_prompt_context,
                 cancel,
                 keep_recent_turns: keep_recent_turns.max(1),
                 reason,
@@ -445,7 +446,7 @@ impl CompactionRuntime {
         &self,
         provider: &dyn LlmProvider,
         conversation: &ConversationView,
-        base_system_prompt: Option<&str>,
+        compact_prompt_context: Option<&str>,
         keep_recent_turns: usize,
         cancel: CancelToken,
     ) -> Result<Option<CompactionArtifact>> {
@@ -454,7 +455,7 @@ impl CompactionRuntime {
             .compact(CompactionInput {
                 provider,
                 conversation,
-                base_system_prompt,
+                compact_prompt_context,
                 cancel,
                 keep_recent_turns: keep_recent_turns.max(1),
                 reason: CompactionReason::Manual,
@@ -480,10 +481,9 @@ impl CompactionRuntime {
 
     /// 读取恢复文件的最近内容，受 MAX_RECOVERED_FILES 和 token 预算限制。
     ///
-    /// TODO(Phase-2): 将 FileAccessTracker 注入到 turn_runner 的 compact 流程，
-    /// 在压缩后调用 `artifact.recovered_files = tracker.recent_files(5)` 填充文件路径。
-    /// 当前 `recovered_files` 始终为空（由策略层初始化），一旦 Phase 2 完成集成，
-    /// 此方法将自动生效。
+    /// 调用方负责在 compact 完成后填充 `artifact.recovered_files`。
+    /// 这样策略层仍保持只关心“如何压缩”，而 turn/服务层负责把最近的文件访问
+    /// 事实接回重建阶段，避免压缩后丢失刚读过的重要代码上下文。
     fn recover_file_contents(&self, paths: &[PathBuf]) -> Vec<(PathBuf, String)> {
         let mut results = Vec::new();
         let mut used_tokens = 0usize;
@@ -575,7 +575,7 @@ impl CompactionStrategy for AutoCompactStrategy {
         let compact_result = auto_compact(
             input.provider,
             &input.conversation.messages,
-            input.base_system_prompt,
+            input.compact_prompt_context,
             CompactConfig {
                 keep_recent_turns: input.keep_recent_turns,
                 trigger: input.reason.as_trigger(),

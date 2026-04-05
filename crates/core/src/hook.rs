@@ -9,7 +9,7 @@
 //! - `Continue`: 允许压缩继续，不做任何修改
 //! - `Block`: 阻止本次压缩
 //! - `ModifyCompactContext`: 修改压缩参数，包括：
-//!   - `override_system_prompt`: 覆盖压缩时使用的 system prompt
+//!   - `additional_system_prompt`: 在默认 compact prompt 后追加指令
 //!   - `override_keep_recent_turns`: 覆盖保留的最近 turn 数量
 //!   - `custom_summary`: 直接提供摘要内容，跳过 LLM 调用
 //!
@@ -86,7 +86,11 @@ pub struct CompactionHookContext {
     /// 当前可用的工具定义。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolDefinition>,
-    /// 当前的 system prompt。
+    /// 当前正常对话请求使用的 runtime system prompt。
+    ///
+    /// 注意：这里暴露的是“运行时请求上下文”，不是最终发送给 compact LLM 的完整
+    /// system prompt 模板。compact 流程会把这段内容嵌入专用摘要模板中，hook 应把
+    /// 它理解为当前会话约束的参考材料，而不是可直接覆盖的最终提示词。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
 }
@@ -141,14 +145,14 @@ pub enum HookOutcome {
     /// 仅允许 `PreCompact` 修改压缩上下文。
     ///
     /// 通过此变体，hook 可以：
-    /// - 覆盖压缩时使用的 system prompt（注入自定义指令）
+    /// - 在默认 compact prompt 后追加自定义指令
     /// - 覆盖保留的最近 turn 数量（动态调整保留策略）
     /// - 提供自定义摘要（跳过 LLM 调用，完全接管压缩逻辑）
     ModifyCompactContext {
-        /// 覆盖压缩时使用的 system prompt。
-        /// 如果提供，将替换默认的压缩 prompt。
+        /// 在默认 compact prompt 后追加的系统指令。
+        /// 如果提供，将以附加段的方式拼接，避免插件直接替换整套默认压缩约束。
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        override_system_prompt: Option<String>,
+        additional_system_prompt: Option<String>,
         /// 覆盖保留的最近 turn 数量。
         /// 如果提供，将替换 `keep_recent_turns` 配置。
         #[serde(default, skip_serializing_if = "Option::is_none")]

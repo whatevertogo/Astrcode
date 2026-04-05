@@ -68,9 +68,9 @@ pub struct CompactHookEvent<'a> {
 }
 
 pub struct CompactHookResult {
-    pub override_system_prompt: Option<String>,
-    pub override_messages: Option<Vec<LlmMessage>>,
-    pub override_tools: Option<Vec<ToolDefinition>>,
+    pub additional_system_prompt: Option<String>,
+    pub override_keep_recent_turns: Option<usize>,
+    pub custom_summary: Option<String>,
     pub cancel: bool,  // PreCompact 可取消
 }
 
@@ -89,6 +89,8 @@ pub trait CompactHook: Send + Sync {
 **实现要点**：
 - 复用 `crates/plugin/` 的 JSON-RPC 通信通道
 - PreCompact hook 支持取消（`cancel: true`）
+- Hook 语义保持收敛：仅支持 `block` / `additional_system_prompt` /
+  `override_keep_recent_turns` / `custom_summary`
 - PostCompact hook 可请求读取文件恢复附件
 
 **涉及文件**：
