@@ -285,6 +285,13 @@ fn resolve_main_window_url(app_handle: &tauri::AppHandle) -> Result<WebviewUrl> 
         .iter()
         .find(|config| config.label == "main")
         .ok_or_else(|| anyhow!("main window config is missing"))?;
+    if !cfg!(dev) {
+        // 生产构建必须回到 Tauri 的资源型 URL。这里让框架自己解析内嵌资源，
+        // 避免我们把资源地址硬编码成 http(s)://tauri.localhost/index.html 后，
+        // 再次绕开官方的 app asset 解析路径，导致桌面端报 asset not found。
+        return Ok(WebviewUrl::App("index.html".into()));
+    }
+
     let Some(dev_url) = app_handle.config().build.dev_url.as_ref() else {
         return explicit_embedded_frontend_url(window_config.use_https_scheme);
     };
@@ -788,7 +795,7 @@ mod tests {
     }
 
     #[test]
-    fn embedded_frontend_url_uses_tauri_protocol_instead_of_dev_server() {
+    fn explicit_embedded_frontend_url_builds_expected_dev_fallback_url() {
         let url =
             explicit_embedded_frontend_url(false).expect("embedded frontend url should build");
 
@@ -801,6 +808,16 @@ mod tests {
                 }
             },
             other => panic!("expected explicit external embedded url, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn production_embedded_frontend_should_use_app_url() {
+        let url = WebviewUrl::App("index.html".into());
+
+        match url {
+            WebviewUrl::App(path) => assert_eq!(path.to_string_lossy(), "index.html"),
+            other => panic!("expected resource app url, got {other:?}"),
         }
     }
 }

@@ -374,7 +374,7 @@ impl CompactionRuntime {
         }
     }
 
-    /// 使用配置中的默认保留轮数执行压缩。
+    /// 使用配置中的默认保留轮数执行压缩
     ///
     /// 仅用于测试。生产代码使用 `compact_with_keep_recent_turns` 以便 hook 修改保留轮数。
     #[cfg(test)]

@@ -110,15 +110,25 @@ pub async fn auto_compact(
 // 而不仅仅是单轮系统提示调用。
 fn build_compact_system_prompt(base_system_prompt: Option<&str>) -> String {
     let mut prompt = String::from(
-        "You are generating an internal compact summary for a coding-agent session. Summarize the \
-         provided conversation prefix so the agent can continue work without losing technical \
-         context.\n\nRules:\n- Never call tools.\n- Keep the summary factual and \
-         implementation-oriented.\n- Ignore synthetic auto-continue nudges.\n- Do not address the \
-         end user.\n- Return exactly two XML blocks: <analysis>...</analysis> and \
-         <summary>...</summary>.\n- The <summary> block must contain these sections in order:\n1. \
-         Primary Request and Intent\n2. Key Technical Concepts\n3. Files and Code Sections\n4. \
-         Errors and fixes\n5. Problem Solving\n6. All user messages\n7. Pending Tasks\n8. Current \
-         Work\n9. Optional Next Step\n",
+        "You are generating an internal compact summary for a coding-agent session.\nThe summary \
+         will replace earlier conversation history so the agent can continue seamlessly.\n\n## \
+         CRITICAL RULE\n**DO NOT CALL ANY TOOLS.** This conversation is for summary generation \
+         only.\n\n## Content Priority (most → least important)\nInclude content in this order. \
+         Higher-priority items MUST appear:\n1. Current active task AND immediate next steps — \
+         MUST\n2. All user messages verbatim, in original order — MUST\n3. Critical errors AND \
+         how they were resolved — MUST\n4. Code changes and architectural decisions — MUST\n5. \
+         Key decisions and their rationale (the \"why\", not just the \"what\")\n6. System \
+         configuration, environment setup (only if relevant)\n\n## Output Format\nReturn exactly \
+         two XML blocks:\n\n<analysis>\n- Self-check before writing the summary:\n- Have you \
+         covered ALL user messages?\n- Is the current task state captured accurately?\n- Are \
+         there critical errors or decisions you missed?\n</analysis>\n\n<summary>\n### Primary \
+         Request and Intent\n### All User Messages (Verbatim)\n### Key Technical Decisions\n### \
+         Files and Code Sections\n### Errors and Fixes\n### Problem Solving Process\n### Pending \
+         Tasks\n### Current Work\n### Next Step\n</summary>\n\n## Rules\n- Output **only** the \
+         <analysis> and <summary> blocks — no preamble, no closing remarks.\n- Be concise. Prefer \
+         bullet points and short paragraphs.\n- Ignore synthetic auto-continue nudges.\n- Write \
+         in third-person, factual tone. Do not address the end user.\n- Include exact file paths \
+         for all mentioned code.",
     );
 
     if let Some(base_system_prompt) = base_system_prompt.filter(|value| !value.trim().is_empty()) {
