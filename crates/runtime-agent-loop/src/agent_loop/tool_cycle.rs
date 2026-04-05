@@ -55,19 +55,39 @@ struct CallOutcome {
     buffered_events: Option<Vec<StorageEvent>>,
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn execute_tool_calls(
-    agent_loop: &AgentLoop,
-    capabilities: &CapabilityRouter,
+pub(crate) struct ToolCycleContext<'a, F>
+where
+    F: FnMut(StorageEvent) -> Result<()>,
+{
+    pub(crate) agent_loop: &'a AgentLoop,
+    pub(crate) capabilities: &'a CapabilityRouter,
+    pub(crate) turn_id: &'a str,
+    pub(crate) state: &'a AgentState,
+    pub(crate) step_index: usize,
+    pub(crate) agent: &'a AgentEventContext,
+    pub(crate) messages: &'a mut Vec<LlmMessage>,
+    pub(crate) on_event: &'a mut F,
+    pub(crate) cancel: &'a CancelToken,
+}
+
+pub(crate) async fn execute_tool_calls<F>(
     tool_calls: Vec<ToolCallRequest>,
-    turn_id: &str,
-    state: &AgentState,
-    step_index: usize,
-    agent: &AgentEventContext,
-    messages: &mut Vec<LlmMessage>,
-    on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
-    cancel: &CancelToken,
-) -> Result<ToolCycleOutcome> {
+    ctx: ToolCycleContext<'_, F>,
+) -> Result<ToolCycleOutcome>
+where
+    F: FnMut(StorageEvent) -> Result<()>,
+{
+    let ToolCycleContext {
+        agent_loop,
+        capabilities,
+        turn_id,
+        state,
+        step_index,
+        agent,
+        messages,
+        on_event,
+        cancel,
+    } = ctx;
     let mut safe_calls = Vec::new();
     let mut unsafe_calls = Vec::new();
     let mut outcomes = (0..tool_calls.len()).map(|_| None).collect::<Vec<_>>();
@@ -180,14 +200,16 @@ pub(crate) async fn execute_tool_calls(
 
         let ctx = agent_loop.tool_context(state, cancel.clone());
         let result = execute_raw_tool_call(
-            agent_loop,
-            capabilities,
-            state,
             pending.tool_call,
-            turn_id,
-            agent,
-            &ctx,
-            on_event,
+            RawToolExecutionContext {
+                agent_loop,
+                capabilities,
+                state,
+                turn_id,
+                agent,
+                tool_ctx: &ctx,
+                on_event,
+            },
         )
         .await?;
         outcomes[pending.index] = Some(CallOutcome {
@@ -271,16 +293,18 @@ async fn execute_raw_tool_call_recorded(
 ) -> Result<RecordedExecution> {
     let mut events = Vec::new();
     let result = execute_raw_tool_call(
-        agent_loop,
-        capabilities,
-        state,
         tool_call,
-        turn_id,
-        agent,
-        ctx,
-        &mut |event| {
-            events.push(event);
-            Ok(())
+        RawToolExecutionContext {
+            agent_loop,
+            capabilities,
+            state,
+            turn_id,
+            agent,
+            tool_ctx: ctx,
+            on_event: &mut |event| {
+                events.push(event);
+                Ok(())
+            },
         },
     )
     .await?;
@@ -319,17 +343,35 @@ fn push_tool_messages(messages: &mut Vec<LlmMessage>, outcomes: Vec<Option<CallO
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn execute_raw_tool_call(
-    agent_loop: &AgentLoop,
-    capabilities: &CapabilityRouter,
-    state: &AgentState,
+struct RawToolExecutionContext<'a, F>
+where
+    F: FnMut(StorageEvent) -> Result<()>,
+{
+    agent_loop: &'a AgentLoop,
+    capabilities: &'a CapabilityRouter,
+    state: &'a AgentState,
+    turn_id: &'a str,
+    agent: &'a AgentEventContext,
+    tool_ctx: &'a astrcode_core::ToolContext,
+    on_event: &'a mut F,
+}
+
+async fn execute_raw_tool_call<F>(
     tool_call: ToolCallRequest,
-    turn_id: &str,
-    agent: &AgentEventContext,
-    ctx: &astrcode_core::ToolContext,
-    on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
-) -> Result<ToolExecutionResult> {
+    ctx: RawToolExecutionContext<'_, F>,
+) -> Result<ToolExecutionResult>
+where
+    F: FnMut(StorageEvent) -> Result<()>,
+{
+    let RawToolExecutionContext {
+        agent_loop,
+        capabilities,
+        state,
+        turn_id,
+        agent,
+        tool_ctx,
+        on_event,
+    } = ctx;
     let tool_call = match agent_loop
         .hooks
         .run_pre_tool_use(agent_loop.tool_hook_context(state, turn_id, &tool_call))
@@ -362,7 +404,7 @@ async fn execute_raw_tool_call(
     let start = Instant::now();
     let (tool_output_tx, mut tool_output_rx) = mpsc::unbounded_channel();
     let tool_call_for_execution = tool_call.clone();
-    let tool_ctx_for_execution = ctx.clone().with_tool_output_sender(tool_output_tx);
+    let tool_ctx_for_execution = tool_ctx.clone().with_tool_output_sender(tool_output_tx);
 
     // Yield before local IO-heavy tools so other tasks can make progress between tool calls.
     tokio::task::yield_now().await;
@@ -403,7 +445,7 @@ async fn execute_raw_tool_call(
                                 stream: delta.stream,
                                 delta: delta.delta,
                             }) {
-                                ctx.cancel().cancel();
+                                tool_ctx.cancel().cancel();
                                 return Err(error);
                             }
                         }
@@ -426,7 +468,7 @@ async fn execute_raw_tool_call(
                     stream: delta.stream,
                     delta: delta.delta,
                 }) {
-                    ctx.cancel().cancel();
+                    tool_ctx.cancel().cancel();
                     return Err(error);
                 }
             },

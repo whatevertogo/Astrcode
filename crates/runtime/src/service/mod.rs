@@ -11,13 +11,13 @@ use astrcode_core::{
     AllowAllPolicyEngine, AstrError, CapabilityRouter, HookHandler, PolicyEngine, RuntimeHandle,
     SessionManager,
 };
+use astrcode_runtime_agent_loader::{AgentProfileLoader, AgentProfileRegistry};
 use astrcode_runtime_agent_loop::{AgentControl, AgentLoop, ApprovalBroker, DefaultApprovalBroker};
 use astrcode_runtime_prompt::PromptDeclaration;
 use astrcode_runtime_skill_loader::SkillCatalog;
 use astrcode_storage::session::FileSystemSessionRepository;
 use async_trait::async_trait;
 use dashmap::DashMap;
-use runtime_agent_loader::{AgentProfileLoader, AgentProfileRegistry};
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 
@@ -64,7 +64,7 @@ struct RuntimeSurfaceState {
     hook_handlers: Vec<Arc<dyn HookHandler>>,
 }
 
-struct RuntimeServiceDeps {
+pub(crate) struct RuntimeServiceDeps {
     agent_loader: Arc<AgentProfileLoader>,
     agent_profiles: Arc<StdRwLock<Arc<AgentProfileRegistry>>>,
     policy: Arc<dyn PolicyEngine>,
@@ -205,7 +205,7 @@ impl RuntimeService {
         )
     }
 
-    pub fn from_runtime_services(
+    pub(crate) fn from_runtime_services(
         capabilities: CapabilityRouter,
         prompt_declarations: Vec<PromptDeclaration>,
         skill_catalog: Arc<SkillCatalog>,

@@ -14,8 +14,8 @@
 
 use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
+use astrcode_runtime_agent_loader::AgentWatchPath;
 use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
-use runtime_agent_loader::AgentWatchPath;
 
 use super::{RuntimeService, ServiceError, ServiceResult, support::spawn_blocking_service};
 use crate::config::{config_path, open_config_in_editor, save_config, test_connection};

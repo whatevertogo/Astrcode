@@ -79,17 +79,34 @@ const MAX_OUTPUT_CONTINUATION_ATTEMPTS: usize = 3;
 /// - LLM 返回纯文本（无工具调用）
 /// - 取消信号触发
 /// - 任何步骤返回错误
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_turn(
-    agent_loop: &AgentLoop,
-    state: &AgentState,
-    turn_id: &str,
-    on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
-    cancel: CancelToken,
-    emit_turn_done: bool,
-    agent: AgentEventContext,
-    compaction_tail: CompactionTailSnapshot,
-) -> Result<TurnOutcome> {
+pub(crate) struct TurnRunContext<'a, F>
+where
+    F: FnMut(StorageEvent) -> Result<()>,
+{
+    pub(crate) agent_loop: &'a AgentLoop,
+    pub(crate) state: &'a AgentState,
+    pub(crate) turn_id: &'a str,
+    pub(crate) on_event: &'a mut F,
+    pub(crate) cancel: CancelToken,
+    pub(crate) emit_turn_done: bool,
+    pub(crate) agent: AgentEventContext,
+    pub(crate) compaction_tail: CompactionTailSnapshot,
+}
+
+pub(crate) async fn run_turn<F>(ctx: TurnRunContext<'_, F>) -> Result<TurnOutcome>
+where
+    F: FnMut(StorageEvent) -> Result<()>,
+{
+    let TurnRunContext {
+        agent_loop,
+        state,
+        turn_id,
+        on_event,
+        cancel,
+        emit_turn_done,
+        agent,
+        compaction_tail,
+    } = ctx;
     let provider =
         llm_cycle::build_provider(agent_loop.factory.clone(), Some(state.working_dir.clone()))
             .await;
@@ -433,16 +450,20 @@ pub(crate) async fn run_turn(
         }
 
         let tool_cycle_outcome = match tool_cycle::execute_tool_calls(
-            agent_loop,
-            &agent_loop.capabilities,
             tool_calls,
-            turn_id,
-            state,
-            step_index,
-            &agent,
-            &mut conversation.messages,
-            &mut |event| emit_event_with_file_tracking(&mut file_access, on_event, event),
-            &cancel,
+            tool_cycle::ToolCycleContext {
+                agent_loop,
+                capabilities: &agent_loop.capabilities,
+                turn_id,
+                state,
+                step_index,
+                agent: &agent,
+                messages: &mut conversation.messages,
+                on_event: &mut |event| {
+                    emit_event_with_file_tracking(&mut file_access, on_event, event)
+                },
+                cancel: &cancel,
+            },
         )
         .await
         {

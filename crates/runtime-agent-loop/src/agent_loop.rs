@@ -395,16 +395,16 @@ impl AgentLoop {
         agent: AgentEventContext,
         compaction_tail: CompactionTailSnapshot,
     ) -> Result<TurnOutcome> {
-        turn_runner::run_turn(
-            self,
+        turn_runner::run_turn(turn_runner::TurnRunContext {
+            agent_loop: self,
             state,
             turn_id,
             on_event,
             cancel,
-            true,
+            emit_turn_done: true,
             agent,
             compaction_tail,
-        )
+        })
         .await
     }
 
@@ -418,16 +418,16 @@ impl AgentLoop {
         agent: AgentEventContext,
         compaction_tail: CompactionTailSnapshot,
     ) -> Result<TurnOutcome> {
-        turn_runner::run_turn(
-            self,
+        turn_runner::run_turn(turn_runner::TurnRunContext {
+            agent_loop: self,
             state,
             turn_id,
             on_event,
             cancel,
-            false,
+            emit_turn_done: false,
             agent,
             compaction_tail,
-        )
+        })
         .await
     }
 

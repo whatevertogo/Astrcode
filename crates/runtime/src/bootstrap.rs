@@ -24,8 +24,8 @@ use std::{
 use astrcode_core::{
     AstrError, CapabilityRouter, PluginManifest, PluginRegistry, RuntimeCoordinator, RuntimeHandle,
 };
+use astrcode_runtime_agent_loader::{AgentLoaderError, AgentProfileLoader, AgentProfileRegistry};
 use astrcode_runtime_skill_loader::{SkillCatalog, merge_skill_layers};
-use runtime_agent_loader::{AgentLoaderError, AgentProfileLoader, AgentProfileRegistry};
 use tokio::sync::RwLock;
 
 use crate::{

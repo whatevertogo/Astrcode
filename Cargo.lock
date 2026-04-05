@@ -152,6 +152,7 @@ dependencies = [
  "astrcode-core",
  "astrcode-plugin",
  "astrcode-protocol",
+ "astrcode-runtime-agent-loader",
  "astrcode-runtime-agent-loop",
  "astrcode-runtime-config",
  "astrcode-runtime-llm",
@@ -168,7 +169,6 @@ dependencies = [
  "notify",
  "regex",
  "reqwest",
- "runtime-agent-loader",
  "serde",
  "serde_json",
  "tempfile",
@@ -176,6 +176,17 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uuid",
+]
+
+[[package]]
+name = "astrcode-runtime-agent-loader"
+version = "0.1.0"
+dependencies = [
+ "astrcode-core",
+ "serde",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3913,17 +3924,6 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "runtime-agent-loader"
-version = "0.1.0"
-dependencies = [
- "astrcode-core",
- "serde",
- "serde_yaml",
- "tempfile",
- "thiserror 2.0.18",
 ]
 
 [[package]]
