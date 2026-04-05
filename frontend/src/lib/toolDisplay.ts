@@ -263,3 +263,111 @@ export function extractStructuredJsonOutput(
     return null;
   }
 }
+
+function summarizePrimitiveArg(value: unknown): string {
+  if (typeof value === 'string') {
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (value === null) {
+    return 'null';
+  }
+  if (Array.isArray(value)) {
+    return `[${value.length} items]`;
+  }
+  if (typeof value === 'object') {
+    return '{...}';
+  }
+  return String(value);
+}
+
+function prioritizeArgEntries(record: UnknownRecord): Array<[string, unknown]> {
+  const preferredOrder = [
+    'path',
+    'pattern',
+    'command',
+    'glob',
+    'query',
+    'fileType',
+    'oldStr',
+    'newStr',
+    'offset',
+    'limit',
+    'maxChars',
+    'maxMatches',
+    'replaceAll',
+    'recursive',
+    'cwd',
+    'shell',
+  ];
+  const preferred = preferredOrder
+    .filter((key) => key in record)
+    .map((key) => [key, record[key]] as [string, unknown]);
+  const seen = new Set(preferred.map(([key]) => key));
+  const rest = Object.keys(record)
+    .filter((key) => !seen.has(key))
+    .sort((left, right) => left.localeCompare(right))
+    .map((key) => [key, record[key]] as [string, unknown]);
+
+  return [...preferred, ...rest];
+}
+
+function truncateSingleLine(text: string, maxChars: number): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
+export function formatToolCallSummary(
+  toolName: string,
+  args: unknown,
+  status: 'running' | 'ok' | 'fail',
+  metadata?: unknown
+): string {
+  const prefix = status === 'running' ? '运行中' : '已运行';
+  const shellDisplay = extractToolShellDisplay(metadata);
+  if (shellDisplay?.command) {
+    return truncateSingleLine(`${prefix} ${toolName} (${shellDisplay.command})`, 180);
+  }
+
+  const record = asRecord(args);
+  if (!record) {
+    if (Array.isArray(args)) {
+      return truncateSingleLine(`${prefix} ${toolName} (${args.length} args)`, 180);
+    }
+    return `${prefix} ${toolName}`;
+  }
+
+  const pairs = prioritizeArgEntries(record)
+    .slice(0, 4)
+    .map(([key, value]) => `${key}=${summarizePrimitiveArg(value)}`);
+  const hiddenCount = Math.max(0, Object.keys(record).length - pairs.length);
+  const suffix = hiddenCount > 0 ? `, +${hiddenCount}` : '';
+
+  return truncateSingleLine(`${prefix} ${toolName} (${pairs.join(', ')}${suffix})`, 180);
+}
+
+export function extractStructuredArgs(args: unknown): StructuredJsonOutput | null {
+  if (!args || typeof args !== 'object') {
+    return null;
+  }
+  if (Array.isArray(args)) {
+    return {
+      value: args,
+      summary: summarizeJsonContainer(args),
+    };
+  }
+
+  const record = asRecord(args);
+  if (!record) {
+    return null;
+  }
+
+  return {
+    value: record,
+    summary: summarizeJsonContainer(record),
+  };
+}

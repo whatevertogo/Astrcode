@@ -105,7 +105,8 @@ impl Tool for ListDirTool {
                     "List the immediate contents of a directory before drilling into specific \
                      files.",
                     "List directory entries as structured metadata (name/isDir/size/modified). \
-                     Returns one level only — use `path` to drill deeper.",
+                     Returns one level only — use `path` to drill deeper. Directory `size` is \
+                     always 0 on Windows; only file sizes are meaningful.",
                 )
                 .caveat(
                     "Truncated at maxEntries (default 200). When truncated, use a more specific \

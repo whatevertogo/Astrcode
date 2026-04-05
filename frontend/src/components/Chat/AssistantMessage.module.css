@@ -131,66 +131,66 @@
   line-height: 1.6;
 }
 
-.content h1,
-.content h2,
-.content h3,
-.content h4,
-.content h5,
-.content h6 {
+:is(.content, .thinkingContent) h1,
+:is(.content, .thinkingContent) h2,
+:is(.content, .thinkingContent) h3,
+:is(.content, .thinkingContent) h4,
+:is(.content, .thinkingContent) h5,
+:is(.content, .thinkingContent) h6 {
   margin: 24px 0 12px;
   font-weight: 600;
   color: #201b16;
 }
 
-.content h1 {
+:is(.content, .thinkingContent) h1 {
   font-size: 1.5em;
 }
-.content h2 {
+:is(.content, .thinkingContent) h2 {
   font-size: 1.25em;
 }
-.content h3 {
+:is(.content, .thinkingContent) h3 {
   font-size: 1.1em;
 }
 
-.content p {
+:is(.content, .thinkingContent) p {
   margin: 0 0 14px;
 }
 
-.content p:last-child {
+:is(.content, .thinkingContent) p:last-child {
   margin-bottom: 0;
 }
 
-.content ul,
-.content ol {
+:is(.content, .thinkingContent) ul,
+:is(.content, .thinkingContent) ol {
   margin: 8px 0 16px;
   padding-left: 24px;
 }
 
 /* Restore list bullets (often hidden by global resets) */
-.content ul {
+:is(.content, .thinkingContent) ul {
   list-style-type: disc;
   list-style-position: outside;
 }
 
-.content ol {
+:is(.content, .thinkingContent) ol {
   list-style-type: decimal;
   list-style-position: outside;
 }
 
-.content li {
+:is(.content, .thinkingContent) li {
   margin-bottom: 6px;
 }
 
-.content strong {
+:is(.content, .thinkingContent) strong {
   color: #201b16;
 }
 
-.content em {
+:is(.content, .thinkingContent) em {
   font-style: italic;
 }
 
 /* ---------- 表格 ---------- */
-.content table {
+:is(.content, .thinkingContent) table {
   margin: 16px 0;
   border-collapse: collapse;
   border-spacing: 0;
@@ -199,62 +199,62 @@
   line-height: 1.6;
 }
 
-.content thead {
+:is(.content, .thinkingContent) thead {
   border-bottom: 1px solid rgba(0, 0, 0, 0.08);
 }
 
-.content th {
+:is(.content, .thinkingContent) th {
   text-align: left;
   padding: 8px 12px;
   font-weight: 600;
   color: #201b16;
 }
 
-.content td {
+:is(.content, .thinkingContent) td {
   padding: 8px 12px;
   border-top: 1px solid rgba(0, 0, 0, 0.04);
   color: var(--text-secondary);
 }
 
-.content tbody tr:nth-child(even) {
+:is(.content, .thinkingContent) tbody tr:nth-child(even) {
   background: rgba(0, 0, 0, 0.02);
 }
 
 /* ---------- 引用块 ---------- */
-.content blockquote {
+:is(.content, .thinkingContent) blockquote {
   margin: 16px 0;
   padding: 8px 16px;
   border-left: 3px solid rgba(0, 0, 0, 0.12);
   color: var(--text-secondary);
 }
 
-.content blockquote p {
+:is(.content, .thinkingContent) blockquote p {
   margin: 0;
 }
 
-.content blockquote > blockquote {
+:is(.content, .thinkingContent) blockquote > blockquote {
   margin-top: 0;
 }
 
 /* ---------- 水平线 ---------- */
-.content hr {
+:is(.content, .thinkingContent) hr {
   margin: 20px 0;
   border: none;
   border-top: 1px solid rgba(0, 0, 0, 0.08);
 }
 
 /* ---------- 链接 ---------- */
-.content a {
+:is(.content, .thinkingContent) a {
   color: #3b82f6;
   text-decoration: none;
 }
 
-.content a:hover {
+:is(.content, .thinkingContent) a:hover {
   text-decoration: underline;
 }
 
 /* ---------- 图片 ---------- */
-.content img {
+:is(.content, .thinkingContent) img {
   max-width: 100%;
   height: auto;
   border-radius: 8px;
@@ -262,7 +262,7 @@
 }
 
 /* ---------- 删除线 ---------- */
-.content del {
+:is(.content, .thinkingContent) del {
   text-decoration: line-through;
   color: var(--text-secondary);
 }

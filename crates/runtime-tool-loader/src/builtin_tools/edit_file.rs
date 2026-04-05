@@ -166,8 +166,9 @@ impl Tool for EditFileTool {
                      `readFile`, `editFile` will stop and ask for a fresh reread first.",
                 )
                 .caveat(
-                    "`oldStr` must match exactly once in the file — including whitespace and \
-                     newlines. If rejected, use `readFile` first to see the exact current content.",
+                    "`oldStr` must match exactly once — including whitespace, newlines, trailing \
+                     spaces, tabs, and line endings (`\\r\\n` vs `\\n`). If rejected, `readFile` \
+                     the region first.",
                 )
                 .caveat(
                     "When this session has already observed the file, `editFile` also checks that \

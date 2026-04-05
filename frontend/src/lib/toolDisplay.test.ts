@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   appendToolDeltaMetadata,
+  extractStructuredArgs,
   extractStructuredJsonOutput,
   extractToolMetadataSummary,
   extractToolShellDisplay,
+  formatToolCallSummary,
   formatToolShellPreview,
   mergeToolMetadata,
 } from './toolDisplay';
@@ -117,6 +119,34 @@ describe('toolDisplay shell metadata helpers', () => {
 
   it('returns null when metadata has no user-facing summary fields', () => {
     expect(extractToolMetadataSummary({ path: '/repo/file.ts' })).toBeNull();
+  });
+
+  it('formats tool summaries with prioritized args instead of only one field', () => {
+    const summary = formatToolCallSummary(
+      'grep',
+      {
+        glob: '**/*.rs',
+        maxMatches: 20,
+        path: 'crates',
+        pattern: 'AgentLoop',
+      },
+      'ok'
+    );
+
+    expect(summary).toContain('已运行 grep');
+    expect(summary).toContain('path="crates"');
+    expect(summary).toContain('pattern="AgentLoop"');
+    expect(summary).toContain('glob="**/*.rs"');
+    expect(summary).toContain('maxMatches=20');
+  });
+
+  it('extracts structured args for expanded tool call inspection', () => {
+    expect(extractStructuredArgs({ path: 'crates', pattern: 'AgentLoop' })).toEqual({
+      value: { path: 'crates', pattern: 'AgentLoop' },
+      summary: 'Object (2 keys)',
+    });
+    expect(extractStructuredArgs(['a', 'b'])?.summary).toBe('Array (2 items)');
+    expect(extractStructuredArgs('grep')).toBeNull();
   });
 
   it('extracts structured JSON output when top-level is object or array', () => {

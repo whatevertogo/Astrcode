@@ -153,6 +153,28 @@ const markdownComponents: Partial<import('react-markdown').Components> = {
   code: CodeBlockRenderer as any,
 };
 
+interface MarkdownContentProps {
+  text: string;
+  defer?: boolean;
+}
+
+const MarkdownContent = memo(function MarkdownContent({
+  text,
+  defer = false,
+}: MarkdownContentProps) {
+  // 流式阶段保留 Markdown 渲染，但把重解析下放到低优先级，避免每个 delta 都阻塞输入和滚动。
+  const deferredText = React.useDeferredValue(text);
+  const renderedText = defer ? deferredText : text;
+
+  return (
+    <MarkdownGuard fallback={renderedText}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+        {renderedText}
+      </ReactMarkdown>
+    </MarkdownGuard>
+  );
+});
+
 function AssistantMessage({ message, hideAvatar }: AssistantMessageProps) {
   const { visibleText, thinkingBlocks } = React.useMemo(
     () => extractThinkingBlocks(message.text, message.reasoningText),
@@ -238,30 +260,11 @@ function AssistantMessage({ message, hideAvatar }: AssistantMessageProps) {
                 </span>
               </summary>
               <div className={styles.thinkingContent}>
-                {streaming ? (
-                  <pre className={styles.streamingText}>{block}</pre>
-                ) : (
-                  <MarkdownGuard fallback={block}>
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                      {block}
-                    </ReactMarkdown>
-                  </MarkdownGuard>
-                )}
+                <MarkdownContent text={block} defer={streaming} />
               </div>
             </details>
           ))}
-          {visibleText ? (
-            streaming ? (
-              // 流式阶段先用纯文本渲染，避免每个 delta 触发整段 Markdown 重新解析导致卡顿和“块状刷新”。
-              <div className={styles.streamingText}>{visibleText}</div>
-            ) : (
-              <MarkdownGuard fallback={visibleText}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                  {visibleText}
-                </ReactMarkdown>
-              </MarkdownGuard>
-            )
-          ) : null}
+          {visibleText ? <MarkdownContent text={visibleText} defer={streaming} /> : null}
           {message.streaming && <span className={styles.cursor}>▋</span>}
         </div>
       </div>

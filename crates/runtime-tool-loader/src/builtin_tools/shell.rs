@@ -362,7 +362,7 @@ impl Tool for ShellTool {
                     "cwd": { "type": "string" },
                     "shell": {
                         "type": "string",
-                        "description": "Optional shell override. Supported families: pwsh/powershell, cmd, sh/bash/zsh."
+                        "description": "Optional shell override. Supported families: pwsh/powershell, cmd, sh/bash/zsh. On Windows, sh/bash/zsh require Git Bash or WSL."
                     },
                     "timeout": {
                         "type": "integer",
@@ -401,8 +401,9 @@ impl Tool for ShellTool {
                     ),
                 )
                 .caveat(
-                    "Non-interactive single shot. Use `cwd` instead of `cd &&`. If quoting \
-                     issues, set `shell` explicitly to pwsh/cmd/sh.",
+                    "Non-interactive single shot. Use `cwd` to set the working directory instead \
+                     of `cd &&`. If quoting issues, set `shell` explicitly to pwsh/cmd/sh. On \
+                     Windows, `sh/bash/zsh` require Git Bash or WSL.",
                 )
                 .example("Run cargo test: { command: \"cargo test --lib\", timeout: 300 }")
                 .prompt_tag("shell"),

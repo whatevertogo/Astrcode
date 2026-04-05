@@ -83,6 +83,10 @@ impl Tool for WriteFileTool {
                     "Overwrites the entire file. Set `createDirs: true` to auto-create parent \
                      directories.",
                 )
+                .caveat(
+                    "For small edits to existing files, prefer `editFile` or `apply_patch` to \
+                     avoid accidentally dropping unrelated content.",
+                )
                 .example(
                     "Create a new file: { path: \"src/utils.rs\", content: \"pub fn foo() {}\", \
                      createDirs: true }",

@@ -99,7 +99,9 @@ struct GrepMatch {
     line_no: usize,
     /// 完整行内容（超长行已截断）。
     line: String,
-    /// 精确匹配到的子串，帮助 LLM 快速定位关键片段。
+    /// 精确匹配到的子串。
+    /// 优先返回第一个捕获组内容；无捕获组时返回整个匹配到的子串（即正则第一个匹配片段）。
+    /// 帮助 LLM 快速定位长行中的关键片段。
     #[serde(skip_serializing_if = "Option::is_none")]
     match_text: Option<String>,
     /// 匹配行前的上下文行。
@@ -200,13 +202,18 @@ impl Tool for GrepTool {
                      `findFiles`.",
                 )
                 .caveat(
-                    "Never call `grep` with only `glob` or only `fileType`; that argument shape \
-                     is invalid because both `pattern` and `path` are required.",
+                    "Never call `grep` with only `glob` or only `fileType`; both `pattern` and \
+                     `path` are required.",
                 )
                 .caveat(
                     "Pattern uses Rust regex syntax. Narrow scope with `glob`/`fileType`. If \
                      `truncated`, use `offset` to paginate. For quick file discovery, prefer \
                      `outputMode: \"files_with_matches\"` or use `findFiles` first.",
+                )
+                .caveat(
+                    "Each result's `match_text` is the first regex match fragment on that line \
+                     (or first capture group if the pattern contains groups). The full line is in \
+                     the `line` field.",
                 )
                 .example(
                     "Find usages in Rust files: { pattern: \"fn foo\\\\(\", path: \"src\", glob: \
@@ -830,9 +837,12 @@ fn truncate_line(line: &str) -> String {
 
 /// 从匹配行中提取精确匹配到的子串。
 ///
-/// 当正则包含捕获组时返回第一个捕获组的内容，
-/// 否则返回整个匹配到的子串。
-/// 这帮助 LLM 快速定位长行中的关键片段。
+/// 提取策略：
+/// - 正则包含捕获组 → 返回第一个捕获组 (`caps[1]`) 的内容
+/// - 正则无捕获组 → 返回整个匹配 (`caps[0]`)，即行内第一个匹配片段
+///
+/// 注意：这里只取行的第一个匹配位置（`captures` 只找第一个），
+/// 同一行的后续匹配不在此字段体现。
 fn extract_match_text(re: &regex::Regex, line: &str) -> Option<String> {
     re.captures(line).and_then(|caps| {
         if caps.len() > 1 {
@@ -1150,7 +1160,7 @@ mod tests {
 
     #[test]
     fn grep_prompt_metadata_explicitly_describes_required_shape() {
-        let prompt = GrepTool::default()
+        let prompt = GrepTool
             .capability_metadata()
             .prompt
             .expect("grep should expose prompt metadata");

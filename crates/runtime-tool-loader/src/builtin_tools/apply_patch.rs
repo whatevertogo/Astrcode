@@ -688,9 +688,9 @@ impl Tool for ApplyPatchTool {
                      diff format (like `git diff` output).",
                 )
                 .caveat(
-                    "Hunk context must match the current file exactly. If a hunk fails, use \
-                     `readFile` to see actual content around the target lines, then adjust the \
-                     hunk.",
+                    "Hunk context lines must match the current file exactly — provide at least 3 \
+                     unchanged context lines around each change for reliable matching. If a hunk \
+                     fails, `readFile` the target region and adjust.",
                 )
                 .caveat("Use '--- /dev/null' to create new files, '+++ /dev/null' to delete.")
                 .example(

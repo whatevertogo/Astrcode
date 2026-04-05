@@ -40,6 +40,8 @@
   font-family: 'Cascadia Code', 'Fira Code', monospace;
   list-style: none;
   flex-wrap: nowrap;
+  width: 100%;
+  min-width: 0;
 }
 
 .summary::-webkit-details-marker {
@@ -51,6 +53,8 @@
 }
 
 .summaryText {
+  display: block;
+  flex: 1 1 auto;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -77,6 +81,17 @@
 .body {
   margin-top: 4px;
   margin-bottom: 8px;
+}
+
+.argsSection {
+  padding: 0 0 12px 0;
+}
+
+.sectionLabel {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
 }
 
 .diffMeta {

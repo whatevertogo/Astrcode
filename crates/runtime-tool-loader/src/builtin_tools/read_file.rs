@@ -215,8 +215,9 @@ impl Tool for ReadFileTool {
                      line-number prefixes.",
                 )
                 .caveat(
-                    "Output is capped at `maxChars` (default 20000). If truncated, use `offset` + \
-                     `limit` to read the next chunk.",
+                    "Output is capped at `maxChars` (default 20000, counting from the first \
+                     character of output including line-number prefixes). Truncation may occur \
+                     mid-line. If truncated, use `offset` + `limit` to read the next chunk.",
                 )
                 .example("Read lines 50–100: { path: \"src/main.rs\", offset: 50, limit: 50 }")
                 .prompt_tag("filesystem")

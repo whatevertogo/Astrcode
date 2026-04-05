@@ -104,7 +104,9 @@ impl Tool for FindFilesTool {
                      exact path.",
                     "Find files by glob pattern inside the workspace. Use this before `grep` when \
                      you only know a filename, extension, or glob. Use glob syntax: `**/*.rs` \
-                     (recursive), `*.toml` (current dir). Results are sorted by modification time.",
+                     (recursive), `*.toml` (current dir). When using `root`, the glob pattern is \
+                     relative to that root, not the workspace root. Results sorted by \
+                     modification time.",
                 )
                 .caveat(
                     "Pattern must stay inside the workspace. Truncated at 200 results — narrow \
@@ -564,7 +566,7 @@ mod tests {
 
     #[test]
     fn find_files_prompt_metadata_mentions_grep_hand_off() {
-        let prompt = FindFilesTool::default()
+        let prompt = FindFilesTool
             .capability_metadata()
             .prompt
             .expect("findFiles should expose prompt metadata");

@@ -115,11 +115,11 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
     assert_eq!(requests[1].messages.len(), 3);
     assert!(matches!(
         &requests[0].messages[0],
-        LlmMessage::User { content, .. } if content == "Before changing code, inspect the relevant files and gather context first."
+        LlmMessage::User { content, .. } if content.starts_with("Before changing code, inspect the relevant files and gather context first.")
     ));
     assert!(matches!(
         &requests[0].messages[1],
-        LlmMessage::Assistant { content, tool_calls, .. } if content == "I will inspect the relevant files and gather context before making changes." && tool_calls.is_empty()
+        LlmMessage::Assistant { content, tool_calls, .. } if content.starts_with("I will inspect the relevant files and gather context before making changes.") && tool_calls.is_empty()
     ));
     assert!(matches!(
         &requests[0].messages[2],

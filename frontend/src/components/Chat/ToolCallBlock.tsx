@@ -2,7 +2,9 @@ import { memo, useEffect, useState } from 'react';
 import type { ToolCallMessage } from '../../types';
 import { classifyToolDiffLine, extractToolDiffMetadata } from '../../lib/toolDiff';
 import {
+  extractStructuredArgs,
   extractStructuredJsonOutput,
+  formatToolCallSummary,
   extractToolMetadataSummary,
   extractToolShellDisplay,
 } from '../../lib/toolDisplay';
@@ -35,6 +37,7 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
   const diff = extractToolDiffMetadata(message.metadata);
   const shell = extractToolShellDisplay(message.metadata);
   const metadataSummary = extractToolMetadataSummary(message.metadata);
+  const structuredArgs = extractStructuredArgs(message.args);
   const structuredJsonOutput = extractStructuredJsonOutput(message.output);
   const [userInteracted, setUserInteracted] = useState(false);
 
@@ -54,23 +57,12 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
     }
   }, [diff, message.error, message.output, message.status, userInteracted, toolCallId]);
 
-  // 构造类似 Codex 的摘要文本
-  const summaryText = (() => {
-    const prefix = message.status === 'running' ? '运行中' : '已运行';
-    if (shell?.command) {
-      const cmd = shell.command.split('\n')[0].trim();
-      return `${prefix} ${toolName} | ${cmd.length > 50 ? `${cmd.slice(0, 50)}...` : cmd}`;
-    }
-    // 提取 args 中的关键参数
-    if (message.args && typeof message.args === 'object' && !Array.isArray(message.args)) {
-      const args = message.args as Record<string, unknown>;
-      if (args.path) return `${prefix} ${toolName} (${args.path as string})`;
-      const firstKey = Object.keys(args)[0];
-      if (firstKey)
-        return `${prefix} ${toolName} (${String(firstKey)}=${String(args[firstKey]).slice(0, 20)})`;
-    }
-    return `${prefix} ${toolName}`;
-  })();
+  const summaryText = formatToolCallSummary(
+    toolName,
+    message.args,
+    message.status,
+    message.metadata
+  );
 
   return (
     <details
@@ -85,7 +77,7 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
         !!(message.output || message.error || diff)
       }
     >
-      <summary className={styles.summary}>
+      <summary className={styles.summary} title={summaryText}>
         <span className={styles.summaryText}>{summaryText}</span>
         <span className={styles.summaryChevron}>
           <svg
@@ -103,6 +95,12 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
         </span>
       </summary>
       <div className={styles.body}>
+        {structuredArgs && (
+          <div className={styles.argsSection}>
+            <div className={styles.sectionLabel}>调用参数</div>
+            <ToolJsonView value={structuredArgs.value} summary={structuredArgs.summary} />
+          </div>
+        )}
         {shell && (
           <div className={styles.shellMeta}>
             {shell.command && <div className={styles.shellCommand}>$ {shell.command}</div>}
