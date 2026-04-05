@@ -260,6 +260,14 @@ impl SessionState {
         Ok(lock_anyhow(&self.projector, "session projector")?.snapshot())
     }
 
+    /// 读取当前运行时 phase。
+    ///
+    /// 历史事件回放只能重建“最后一个已持久化 phase 事件”，但活跃会话在内存中的
+    /// phase 才是前端初始化时应该信任的当前真相，因此这里暴露一个轻量读取接口。
+    pub(super) fn current_phase(&self) -> Result<Phase> {
+        Ok(*lock_anyhow(&self.phase, "session phase")?)
+    }
+
     /// 三步原子操作：应用投影 → 翻译事件 → 推入内存缓存。
     ///
     /// 执行顺序（projector → translate → cache）是有意设计的：

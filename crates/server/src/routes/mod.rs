@@ -46,7 +46,8 @@ use crate::{ApiError, AppState, bootstrap::serve_run_info};
 /// - `POST /api/sessions` — 创建新会话
 /// - `GET /api/sessions` — 列出所有会话
 /// - `GET /api/session-events` — 订阅会话目录事件（SSE）
-/// - `GET /api/sessions/:id/messages` — 获取会话消息快照
+/// - `GET /api/sessions/:id/messages` — 获取会话消息快照（兼容旧前端）
+/// - `GET /api/sessions/:id/history` — 获取会话历史事件快照
 /// - `GET /api/sessions/:id/composer/options` — 获取输入框候选列表
 /// - `POST /api/sessions/:id/prompts` — 提交用户提示
 /// - `POST /api/sessions/:id/compact` — 压缩会话上下文
@@ -78,21 +79,25 @@ pub(crate) fn build_api_router() -> Router<AppState> {
         )
         .route("/api/session-events", get(sessions::session_catalog_events))
         .route(
-            "/api/sessions/:id/messages",
+            "/api/sessions/{id}/messages",
             get(sessions::session_messages),
         )
+        .route("/api/sessions/{id}/history", get(sessions::session_history))
         .route(
-            "/api/sessions/:id/composer/options",
+            "/api/sessions/{id}/composer/options",
             get(composer::session_composer_options),
         )
-        .route("/api/sessions/:id/prompts", post(sessions::submit_prompt))
-        .route("/api/sessions/:id/compact", post(sessions::compact_session))
+        .route("/api/sessions/{id}/prompts", post(sessions::submit_prompt))
         .route(
-            "/api/sessions/:id/interrupt",
+            "/api/sessions/{id}/compact",
+            post(sessions::compact_session),
+        )
+        .route(
+            "/api/sessions/{id}/interrupt",
             post(sessions::interrupt_session),
         )
-        .route("/api/sessions/:id/events", get(sessions::session_events))
-        .route("/api/sessions/:id", delete(sessions::delete_session))
+        .route("/api/sessions/{id}/events", get(sessions::session_events))
+        .route("/api/sessions/{id}", delete(sessions::delete_session))
         .route("/api/projects", delete(sessions::delete_project))
         .route("/api/config", get(config::get_config))
         .route("/api/config/reload", post(config::reload_config))

@@ -129,7 +129,7 @@ tools (内置工具)    runtime-config (配置)    runtime-llm (LLM)    runtime-
 **Server 路由** (`crates/server/src/routes/`):
 | 路由模块 | 端点 | 职责 |
 |---------|------|------|
-| `sessions.rs` | `POST /api/sessions`, `GET /api/sessions`, `DELETE /api/sessions/:id`, `POST /api/sessions/:id/prompts`, `GET /api/sessions/:id/messages`, `GET /api/sessions/:id/events`, `POST /api/sessions/:id/interrupt`, `POST /api/sessions/:id/compact`, `DELETE /api/projects`, `GET /api/session-events` | 会话 CRUD、turn 执行、SSE 事件流 |
+| `sessions.rs` | `POST /api/sessions`, `GET /api/sessions`, `DELETE /api/sessions/{id}`, `POST /api/sessions/{id}/prompts`, `GET /api/sessions/{id}/messages`, `GET /api/sessions/{id}/events`, `POST /api/sessions/{id}/interrupt`, `POST /api/sessions/{id}/compact`, `DELETE /api/projects`, `GET /api/session-events` | 会话 CRUD、turn 执行、SSE 事件流 |
 | `config.rs` | `GET /api/config`, `POST /api/config/active-selection` | 配置查询/更新 |
 | `model.rs` | `GET /api/models`, `GET /api/models/current`, `POST /api/models/test` | 模型列表/连接测试/当前模型 |
 | `runtime.rs` | `GET /api/runtime/plugins`, `POST /api/runtime/plugins/reload` | 运行时插件状态/重载 |
@@ -148,7 +148,7 @@ tools (内置工具)    runtime-config (配置)    runtime-llm (LLM)    runtime-
 **前端** (`frontend/src/`):
 - React 18 + TypeScript + Vite 单页应用
 - 状态管理：`useReducer` + `store/reducer.ts`
-- SSE 双通道：Agent events (`/api/sessions/:id/events`) + Session catalog events (`/api/session-events`)
+- SSE 双通道：Agent events (`/api/sessions/{id}/events`) + Session catalog events (`/api/session-events`)
 - 详见 [frontend-architecture.md](./frontend-architecture.md)
 
 ---
@@ -263,7 +263,7 @@ SSE 事件 id 格式: `{storage_seq}.{subindex}`，客户端通过 `?afterEventI
 - **会话存储**: `~/.astrcode/projects/<project>/sessions/<session-id>/session-*.jsonl`
 - **JSONL 格式**: append-only `StoredEvent { storage_seq, event: StorageEvent }`
 - **会话 turn 锁**: 跨进程文件锁（`fs2`），`SessionTurnBusy` 返回占用者 PID
-- **SSE 断线重连**: `GET /api/sessions/:id/events?afterEventId=` — 先通过 `SessionReplaySource` 回放历史，再实时订阅广播
+- **SSE 断线重连**: `GET /api/sessions/{id}/events?afterEventId=` — 先通过 `SessionReplaySource` 回放历史，再实时订阅广播
 - **Bootstrap 发现**: `~/.astrcode/run.json` (port, token, pid, expires_at_ms)
 
 ## Bootstrap 时序

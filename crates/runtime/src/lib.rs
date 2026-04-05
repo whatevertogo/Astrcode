@@ -50,5 +50,5 @@ pub use service::{
     ComposerOption, ComposerOptionKind, ComposerOptionsRequest, OperationMetricsSnapshot,
     PromptAccepted, ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot,
     RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent, SessionEventRecord,
-    SessionMessage, SessionReplay, SessionReplaySource,
+    SessionHistorySnapshot, SessionMessage, SessionReplay, SessionReplaySource,
 };

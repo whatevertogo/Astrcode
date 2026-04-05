@@ -32,22 +32,22 @@ serde_json = "1"
 serde_yaml = "0.9"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "sync", "fs", "time", "signal"] }
 tokio-util = { version = "0.7", features = ["rt"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "stream", "rustls"] }
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
-axum = { version = "0.7", features = ["macros"] }
-axum-extra = { version = "0.9", features = ["cookie"] }
+axum = { version = "0.8.8", features = ["macros"] }
+axum-extra = { version = "0.12.5", features = ["cookie"] }
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6"
-dirs = "5"
+dirs = "6.0.0"
 futures-util = "0.3"
 fs2 = "0.4"
 glob = "0.3"
 log = "0.4"
-notify = "6"
-rand = "0.8"
+notify = "8.2.0"
+rand = "0.10.0"
 regex = "1"
 tempfile = "3"
-thiserror = "1"
+thiserror = "2.0.18"
 tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 walkdir = "2"
 ignore = "0.4"

@@ -158,23 +158,31 @@ pub(crate) fn to_runtime_status_dto(snapshot: RuntimeGovernanceSnapshot) -> Runt
 /// 确保 SSE 连接不会因单条事件序列化失败而断开。
 pub(crate) fn to_sse_event(record: SessionEventRecord) -> Event {
     // Keep protocol mapping centralized so protocol stays independent from core/runtime types.
-    let payload = serde_json::to_string(&AgentEventEnvelope {
-        protocol_version: PROTOCOL_VERSION,
-        event: to_agent_event_dto(record.event),
-    })
-    .unwrap_or_else(|error| {
-        serde_json::json!({
-            "protocolVersion": PROTOCOL_VERSION,
-            "event": "error",
-            "data": {
-                "turnId": null,
-                "code": "serialization_error",
-                "message": error.to_string()
-            }
-        })
-        .to_string()
-    });
+    let payload =
+        serde_json::to_string(&to_agent_event_envelope(record.event)).unwrap_or_else(|error| {
+            serde_json::json!({
+                "protocolVersion": PROTOCOL_VERSION,
+                "event": "error",
+                "data": {
+                    "turnId": null,
+                    "code": "serialization_error",
+                    "message": error.to_string()
+                }
+            })
+            .to_string()
+        });
     Event::default().id(record.event_id).data(payload)
+}
+
+/// 将内部事件投影为 HTTP 事件信封。
+///
+/// 历史快照和 SSE 增量都应复用同一份 envelope 映射，避免服务端在
+/// “初始化加载”和“实时事件”之间再维护两种事件载荷格式。
+pub(crate) fn to_agent_event_envelope(event: AgentEvent) -> AgentEventEnvelope {
+    AgentEventEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        event: to_agent_event_dto(event),
+    }
 }
 
 /// 将会话目录事件转换为 SSE 事件。

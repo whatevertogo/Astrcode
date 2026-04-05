@@ -9,7 +9,6 @@
 //! modules in isolation.
 
 import { useCallback, useEffect, useRef } from 'react';
-import type { AgentEventPayload } from '../types';
 import { normalizeAgentEvent } from '../lib/agentEvent';
 import { getHostBridge } from '../lib/hostBridge';
 import { consumeSseStream } from '../lib/sse/consumer';
@@ -29,65 +28,21 @@ import {
 import { getConfig, saveActiveSelection } from '../lib/api/config';
 import { getCurrentModel, listAvailableModels, testConnection } from '../lib/api/models';
 import type {
-  CompactTrigger,
+  AgentEventPayload,
   ComposerOption,
   ConfigView,
   CurrentModelInfo,
   DeleteProjectResult,
   ModelOption,
+  Phase,
   SessionMeta,
   TestResult,
 } from '../types';
 
-// Re-export SessionMessage type that App.tsx depends on.
-// These union types provide proper narrowing so App.tsx knows `toolCallId` is required for toolCall kinds.
-export interface SessionUserMessage {
-  kind: 'user';
-  turnId?: string | null;
-  content: string;
-  timestamp: string;
-}
-
-export interface SessionAssistantMessage {
-  kind: 'assistant';
-  turnId?: string | null;
-  content: string;
-  timestamp: string;
-  reasoningContent?: string;
-}
-
-export interface SessionToolCallMessage {
-  kind: 'toolCall';
-  turnId?: string | null;
-  toolCallId: string;
-  toolName: string;
-  args: unknown;
-  output?: string;
-  error?: string;
-  metadata?: unknown;
-  ok?: boolean;
-  durationMs?: number;
-  timestamp?: string;
-}
-
-export interface SessionCompactMessage {
-  kind: 'compact';
-  turnId?: string | null;
-  trigger: CompactTrigger;
-  summary: string;
-  preservedRecentTurns: number;
-  timestamp: string;
-}
-
-export type SessionMessage =
-  | SessionUserMessage
-  | SessionAssistantMessage
-  | SessionToolCallMessage
-  | SessionCompactMessage;
-
 export interface SessionSnapshot {
-  messages: SessionMessage[];
+  events: AgentEventPayload[];
   cursor: string | null;
+  phase: Phase;
 }
 
 export interface PromptSubmission {
@@ -317,8 +272,8 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
   }, []);
 
   const handleLoadSession = useCallback(async (sessionId: string): Promise<SessionSnapshot> => {
-    const { messages, cursor } = await loadSession(sessionId);
-    return { messages: messages, cursor };
+    const { events, cursor, phase } = await loadSession(sessionId);
+    return { events, cursor, phase };
   }, []);
 
   const handleSubmitPrompt = useCallback(

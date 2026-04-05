@@ -31,7 +31,8 @@ use astrcode_core::{
 use chrono::Utc;
 
 use super::{
-    RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent, SessionMessage,
+    RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent, SessionHistorySnapshot,
+    SessionMessage, SessionReplaySource,
     replay::convert_events_to_messages,
     session_state::{SessionState, SessionWriter},
     support::spawn_blocking_service,
@@ -120,6 +121,24 @@ impl RuntimeService {
             .last()
             .map(|record| record.event_id.clone());
         Ok((convert_events_to_messages(&events), cursor))
+    }
+
+    pub async fn load_session_history(
+        &self,
+        session_id: &str,
+    ) -> ServiceResult<SessionHistorySnapshot> {
+        let session_id = normalize_session_id(session_id);
+        let state = self.ensure_session_loaded(&session_id).await?;
+        let phase = state
+            .current_phase()
+            .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
+        let history = self.replay(&session_id, None).await?.history;
+        let cursor = history.last().map(|record| record.event_id.clone());
+        Ok(SessionHistorySnapshot {
+            history,
+            cursor,
+            phase,
+        })
     }
 
     pub async fn delete_session(&self, session_id: &str) -> ServiceResult<()> {

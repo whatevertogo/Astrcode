@@ -49,8 +49,8 @@ pub use observability::{
 use self::session_state::SessionState;
 pub use self::types::{
     ComposerOption, ComposerOptionKind, ComposerOptionsRequest, PromptAccepted, ServiceError,
-    ServiceResult, SessionCatalogEvent, SessionEventRecord, SessionMessage, SessionReplay,
-    SessionReplaySource,
+    ServiceResult, SessionCatalogEvent, SessionEventRecord, SessionHistorySnapshot, SessionMessage,
+    SessionReplay, SessionReplaySource,
 };
 
 const SESSION_CATALOG_BROADCAST_CAPACITY: usize = 256;

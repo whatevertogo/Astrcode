@@ -2,7 +2,7 @@ use astrcode_core::{
     CapabilityDescriptor, CapabilityKind, PluginHealth, PluginState, SideEffectLevel,
     StabilityLevel, plugin::PluginEntry,
 };
-use astrcode_protocol::http::{ConfigReloadResponse, RuntimeStatusDto};
+use astrcode_protocol::http::{ConfigReloadResponse, RuntimeStatusDto, SessionHistoryResponseDto};
 use astrcode_runtime::{Config, ModelConfig, Profile, RuntimeConfig, config, save_config};
 use axum::{
     body::{Body, to_bytes},
@@ -192,4 +192,42 @@ async fn config_reload_endpoint_refreshes_runtime_config_from_disk() {
         "gpt-4.1-mini"
     );
     assert_eq!(state.service.current_loop().await.max_tool_concurrency(), 9);
+}
+
+#[tokio::test]
+async fn session_history_endpoint_returns_agent_event_snapshot_and_phase() {
+    let (state, _guard) = test_state(None);
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let created = state
+        .service
+        .create_session(temp_dir.path())
+        .await
+        .expect("session should be created");
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/sessions/{}/history", created.session_id))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body should be readable");
+    let payload: SessionHistoryResponseDto =
+        serde_json::from_slice(&bytes).expect("history response should deserialize");
+
+    assert_eq!(payload.phase, astrcode_protocol::http::PhaseDto::Idle);
+    assert_eq!(payload.events.len(), 1);
+    assert_eq!(payload.cursor.as_deref(), Some("1.0"));
+    assert!(matches!(
+        payload.events[0].event,
+        astrcode_protocol::http::AgentEventPayload::SessionStarted { .. }
+    ));
 }

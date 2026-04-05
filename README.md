@@ -304,11 +304,11 @@ Tauri 仅作为"薄壳"，负责：
 |------|------|------|
 | `/api/auth/exchange` | POST | Token 认证交换 |
 | `/api/sessions` | GET/POST | 会话列表/创建 |
-| `/api/sessions/:id/messages` | GET | 获取会话消息 |
-| `/api/sessions/:id/prompts` | POST | 提交 prompt |
-| `/api/sessions/:id/interrupt` | POST | 中断会话 |
-| `/api/sessions/:id/events` | GET (SSE) | 实时事件流 |
-| `/api/sessions/:id` | DELETE | 删除会话 |
+| `/api/sessions/{id}/messages` | GET | 获取会话消息 |
+| `/api/sessions/{id}/prompts` | POST | 提交 prompt |
+| `/api/sessions/{id}/interrupt` | POST | 中断会话 |
+| `/api/sessions/{id}/events` | GET (SSE) | 实时事件流 |
+| `/api/sessions/{id}` | DELETE | 删除会话 |
 | `/api/projects` | DELETE | 删除项目（所有会话） |
 | `/api/config` | GET | 获取配置 |
 | `/api/config/active-selection` | POST | 保存当前选择 |

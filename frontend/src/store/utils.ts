@@ -4,58 +4,10 @@
 //! These were previously at the top of App.tsx and made the file harder to navigate.
 
 import type { Message, Project, SessionMeta } from '../types';
-import { uuid } from '../utils/uuid';
-import { snapshotToolStatus } from '../lib/sessionMessages';
-import type { SessionMessage as HookSessionMessage } from '../hooks/useAgent';
 
 function toEpochMs(value: string): number {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : Date.now();
-}
-
-export function convertSessionMessage(message: HookSessionMessage): Message {
-  const timestamp =
-    message.kind === 'user' || message.kind === 'assistant' || message.kind === 'compact'
-      ? toEpochMs(message.timestamp)
-      : Date.now();
-  const base = { id: uuid(), timestamp };
-
-  switch (message.kind) {
-    case 'user':
-      return { ...base, kind: 'user' as const, turnId: message.turnId, text: message.content };
-    case 'assistant':
-      return {
-        ...base,
-        kind: 'assistant' as const,
-        turnId: message.turnId,
-        text: message.content,
-        reasoningText: message.reasoningContent,
-        streaming: false,
-      };
-    case 'toolCall':
-      return {
-        ...base,
-        kind: 'toolCall' as const,
-        turnId: message.turnId,
-        toolCallId: message.toolCallId,
-        toolName: message.toolName,
-        status: snapshotToolStatus(message.ok),
-        args: message.args,
-        output: message.output,
-        error: message.error,
-        metadata: message.metadata,
-        durationMs: message.durationMs,
-      };
-    case 'compact':
-      return {
-        ...base,
-        kind: 'compact' as const,
-        turnId: message.turnId,
-        trigger: message.trigger,
-        summary: message.summary,
-        preservedRecentTurns: message.preservedRecentTurns,
-      };
-  }
 }
 
 function getDirectoryName(path: string): string {

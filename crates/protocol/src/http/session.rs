@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{CompactTriggerDto, PhaseDto};
+use super::{AgentEventEnvelope, CompactTriggerDto, PhaseDto};
 
 /// `POST /api/sessions` 请求体——创建新会话。
 ///
@@ -124,6 +124,20 @@ pub enum SessionMessageDto {
         preserved_recent_turns: u32,
         timestamp: String,
     },
+}
+
+/// `GET /api/sessions/:id/history` 响应体。
+///
+/// 初始 hydration 返回历史 `AgentEvent` 序列和当前 phase/cursor，
+/// 让前端用和 SSE 增量相同的事件协议重建消息状态，避免再维护
+/// 一套专用 `SessionMessage` 快照协议。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionHistoryResponseDto {
+    pub events: Vec<AgentEventEnvelope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    pub phase: PhaseDto,
 }
 
 /// `DELETE /api/projects/:working_dir` 响应体——项目删除结果。

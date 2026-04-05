@@ -13,7 +13,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use fs2::FileExt;
-use rand::RngCore;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
@@ -345,7 +345,7 @@ fn remove_instance_info(path: &Path, expected_pid: u32) -> Result<()> {
 
 fn random_hex_token() -> String {
     let mut bytes = [0_u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill(&mut bytes);
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 

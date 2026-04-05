@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { uuid } from './utils/uuid';
 import { reducer as appReducer, makeInitialState } from './store/reducer';
-import {
-  convertSessionMessage,
-  groupSessionsByProject,
-  replaceSessionMessages,
-} from './store/utils';
+import { groupSessionsByProject, replaceSessionMessages } from './store/utils';
 import Sidebar from './components/Sidebar/index';
 import Chat from './components/Chat/index';
 import SettingsModal from './components/Settings/SettingsModal';
@@ -14,6 +10,7 @@ import { useAgent } from './hooks/useAgent';
 import { useAgentEventHandler } from './hooks/useAgentEventHandler';
 import { useSessionCatalogEvents } from './hooks/useSessionCatalogEvents';
 import { useSidebarResize } from './hooks/useSidebarResize';
+import { replaySessionHistory } from './lib/sessionHistory';
 import { cn } from './lib/utils';
 import { parseRuntimeSlashCommand } from './lib/slashCommands';
 import type { SessionCatalogEventPayload } from './types';
@@ -103,14 +100,17 @@ export default function App() {
       if (activationGeneration !== sessionActivationGenerationRef.current) {
         return;
       }
+      const replayed = replaySessionHistory(sessionId, snapshot.events, snapshot.phase);
       dispatch({
         type: 'REPLACE_SESSION_MESSAGES',
         sessionId,
-        messages: snapshot.messages.map(convertSessionMessage),
+        messages: replayed.messages,
       });
       // 先写入快照，再切换 active，避免会话切换瞬间渲染空白列表。
       activeSessionIdRef.current = sessionId;
       dispatch({ type: 'SET_ACTIVE', projectId, sessionId });
+      phaseRef.current = replayed.phase;
+      dispatch({ type: 'SET_PHASE', phase: replayed.phase });
       await connectSession(sessionId, snapshot.cursor);
       if (activationGeneration !== sessionActivationGenerationRef.current) {
         return;
@@ -142,18 +142,21 @@ export default function App() {
         if (activationGeneration !== sessionActivationGenerationRef.current) {
           return;
         }
+        const replayed = replaySessionHistory(nextSessionId, snapshot.events, snapshot.phase);
         const hydratedProjects = replaceSessionMessages(
           projects,
           nextSessionId,
-          snapshot.messages.map(convertSessionMessage)
+          replayed.messages
         );
         activeSessionIdRef.current = nextSessionId;
+        phaseRef.current = replayed.phase;
         dispatch({
           type: 'INITIALIZE',
           projects: hydratedProjects,
           activeProjectId: nextProjectId,
           activeSessionId: nextSessionId,
         });
+        dispatch({ type: 'SET_PHASE', phase: replayed.phase });
         await connectSession(nextSessionId, snapshot.cursor);
         if (activationGeneration !== sessionActivationGenerationRef.current) {
           return;
@@ -163,12 +166,14 @@ export default function App() {
       }
 
       activeSessionIdRef.current = null;
+      phaseRef.current = 'idle';
       dispatch({
         type: 'INITIALIZE',
         projects,
         activeProjectId: nextProjectId,
         activeSessionId: nextSessionId,
       });
+      dispatch({ type: 'SET_PHASE', phase: 'idle' });
       disconnectSession();
     },
     [connectSession, disconnectSession, listSessionsWithMeta, loadSession]

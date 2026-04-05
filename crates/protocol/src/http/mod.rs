@@ -41,6 +41,6 @@ pub use runtime::{
 };
 pub use session::{
     CreateSessionRequest, DeleteProjectResultDto, PromptAcceptedResponse, PromptRequest,
-    SessionListItem, SessionMessageDto,
+    SessionHistoryResponseDto, SessionListItem, SessionMessageDto,
 };
 pub use session_event::{SessionCatalogEventEnvelope, SessionCatalogEventPayload};

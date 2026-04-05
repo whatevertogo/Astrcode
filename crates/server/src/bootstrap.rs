@@ -31,7 +31,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use rand::RngCore;
+use rand::RngExt;
 use serde::Serialize;
 use tower::ServiceExt;
 use tower_http::{cors::CorsLayer, services::ServeDir};
@@ -300,7 +300,7 @@ pub(crate) fn build_cors_layer() -> CorsLayer {
 /// 64 字符 hex 字符串提供 256 位熵，防止暴力破解。
 pub(crate) fn random_hex_token() -> String {
     let mut bytes = [0_u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill(&mut bytes);
     bytes.iter().map(|byte| format!("{:02x}", byte)).collect()
 }
 

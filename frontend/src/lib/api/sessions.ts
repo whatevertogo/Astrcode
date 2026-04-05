@@ -9,10 +9,9 @@ import {
   asRecord,
   pickStringOrUndefined as pickString,
   pickOptionalString,
-  pickBoolean,
-  pickNumberOrUndefined as pickNumber,
 } from '../shared';
-import type { SessionMessage } from '../../hooks/useAgent';
+import { normalizeAgentEvent } from '../agentEvent';
+import type { AgentEventPayload, Phase } from '../../types';
 
 export interface PromptSubmission {
   turnId: string;
@@ -33,14 +32,34 @@ export async function listSessionsWithMeta(): Promise<SessionMeta[]> {
 }
 
 export async function loadSession(sessionId: string): Promise<{
-  messages: SessionMessage[];
+  events: AgentEventPayload[];
   cursor: string | null;
+  phase: Phase;
 }> {
-  const response = await request(`/api/sessions/${encodeURIComponent(sessionId)}/messages`);
-  const payload = (await response.json()) as unknown[];
-  const messages = payload.map(normalizeSessionMessage);
-  const cursor = response.headers.get('x-session-cursor');
-  return { messages, cursor };
+  const response = await request(`/api/sessions/${encodeURIComponent(sessionId)}/history`);
+  const payload = asRecord((await response.json()) as unknown);
+  if (!payload) {
+    throw new Error('invalid session history response');
+  }
+
+  const eventsRaw = Array.isArray(payload.events) ? payload.events : [];
+  const phase = pickString(payload, 'phase');
+  if (
+    phase !== 'idle' &&
+    phase !== 'thinking' &&
+    phase !== 'callingTool' &&
+    phase !== 'streaming' &&
+    phase !== 'interrupted' &&
+    phase !== 'done'
+  ) {
+    throw new Error(`invalid session phase: ${String(phase)}`);
+  }
+
+  return {
+    events: eventsRaw.map((event) => normalizeAgentEvent(event)),
+    cursor: pickOptionalString(payload, 'cursor') ?? null,
+    phase,
+  };
 }
 
 export async function submitPrompt(sessionId: string, text: string): Promise<PromptSubmission> {
@@ -87,61 +106,4 @@ export async function deleteProject(workingDir: string): Promise<DeleteProjectRe
       method: 'DELETE',
     }
   );
-}
-
-function normalizeSessionMessage(raw: unknown): SessionMessage {
-  const message = asRecord(raw);
-  if (!message) {
-    throw new Error(`invalid session message: ${String(raw)}`);
-  }
-
-  const kind = pickString(message, 'kind');
-  if (kind === 'user') {
-    return {
-      kind: 'user',
-      turnId: pickOptionalString(message, 'turnId', 'turn_id') ?? null,
-      content: pickString(message, 'content') ?? '',
-      timestamp: pickString(message, 'timestamp') ?? new Date().toISOString(),
-    };
-  }
-
-  if (kind === 'assistant') {
-    return {
-      kind: 'assistant',
-      turnId: pickOptionalString(message, 'turnId', 'turn_id') ?? null,
-      content: pickString(message, 'content') ?? '',
-      timestamp: pickString(message, 'timestamp') ?? new Date().toISOString(),
-      reasoningContent: pickString(message, 'reasoningContent', 'reasoning_content'),
-    };
-  }
-
-  if (kind === 'toolCall') {
-    return {
-      kind: 'toolCall',
-      turnId: pickOptionalString(message, 'turnId', 'turn_id') ?? null,
-      toolCallId: pickString(message, 'toolCallId', 'tool_call_id') ?? 'unknown',
-      toolName: pickString(message, 'toolName', 'tool_name') ?? '(unknown tool)',
-      args: message.args ?? null,
-      output: pickString(message, 'output'),
-      error: pickString(message, 'error'),
-      metadata: message.metadata,
-      ok: pickBoolean(message, 'ok'),
-      durationMs: pickNumber(message, 'durationMs', 'duration_ms'),
-      timestamp: pickString(message, 'timestamp') ?? new Date().toISOString(),
-    };
-  }
-
-  if (kind === 'compact') {
-    return {
-      kind: 'compact',
-      turnId: pickOptionalString(message, 'turnId', 'turn_id') ?? null,
-      trigger: (pickString(message, 'trigger') as 'auto' | 'manual' | undefined) ?? 'manual',
-      summary: pickString(message, 'summary') ?? '',
-      preservedRecentTurns:
-        pickNumber(message, 'preservedRecentTurns', 'preserved_recent_turns') ?? 0,
-      timestamp: pickString(message, 'timestamp') ?? new Date().toISOString(),
-    };
-  }
-
-  throw new Error(`unsupported session message kind: ${String(kind)}`);
 }

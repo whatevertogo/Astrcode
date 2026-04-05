@@ -8,6 +8,7 @@
 //! - `GET /api/sessions` — 列出所有会话
 //! - `GET /api/session-events` — 订阅会话目录事件（SSE）
 //! - `GET /api/sessions/:id/messages` — 获取会话消息快照
+//! - `GET /api/sessions/:id/history` — 获取会话历史事件快照
 //! - `POST /api/sessions/:id/prompts` — 提交用户提示
 //! - `POST /api/sessions/:id/compact` — 压缩会话上下文
 //! - `POST /api/sessions/:id/interrupt` — 中断会话执行
@@ -30,7 +31,7 @@ use std::{convert::Infallible, time::Duration};
 
 use astrcode_protocol::http::{
     CreateSessionRequest, DeleteProjectResultDto, PromptAcceptedResponse, PromptRequest,
-    SessionListItem, SessionMessageDto,
+    SessionHistoryResponseDto, SessionListItem, SessionMessageDto,
 };
 use astrcode_runtime::{PromptAccepted, SessionReplaySource};
 use async_stream::stream;
@@ -49,8 +50,8 @@ use crate::{
     ApiError, AppState, SESSION_CURSOR_HEADER_NAME,
     auth::require_auth,
     mapper::{
-        format_event_id, parse_event_id, to_session_catalog_sse_event, to_session_list_item,
-        to_session_message_dto, to_sse_event,
+        format_event_id, parse_event_id, to_agent_event_envelope, to_phase_dto,
+        to_session_catalog_sse_event, to_session_list_item, to_session_message_dto, to_sse_event,
     },
 };
 
@@ -176,6 +177,33 @@ pub(crate) async fn session_messages(
         );
     }
     Ok(response)
+}
+
+/// 获取会话历史事件快照。
+///
+/// 返回完整的历史 `AgentEvent` 序列以及当前 phase/cursor。
+/// 这样前端初始 hydration 与后续 SSE 增量消费使用同一套事件协议，
+/// 不再需要单独解析 `SessionMessage` 专用快照。
+pub(crate) async fn session_history(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<SessionHistoryResponseDto>, ApiError> {
+    require_auth(&state, &headers, None)?;
+    let snapshot = state
+        .service
+        .load_session_history(&session_id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(SessionHistoryResponseDto {
+        events: snapshot
+            .history
+            .into_iter()
+            .map(|record| to_agent_event_envelope(record.event))
+            .collect(),
+        cursor: snapshot.cursor,
+        phase: to_phase_dto(snapshot.phase),
+    }))
 }
 
 /// 提交用户提示到会话。
