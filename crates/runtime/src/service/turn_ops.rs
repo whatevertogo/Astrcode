@@ -302,17 +302,18 @@ impl RuntimeService {
         let projected = session
             .snapshot_projected_state()
             .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
+        let recent_stored_events = session
+            .snapshot_recent_stored_events()
+            .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
         // Manual compact must rebuild from durable session truth, not from the projected
         // message list. Reusing the same stored-tail selection as live turns keeps manual/auto/
         // reactive compaction aligned and avoids two subtly different rebuild paths.
         let compaction_tail = CompactionTailSnapshot::from_seed(recent_turn_event_tail(
-            &session
-                .snapshot_recent_stored_events()
-                .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?,
+            &recent_stored_events,
             loop_.compact_keep_recent_turns(),
         ));
         let compact_event = loop_
-            .manual_compact_event(&projected, compaction_tail)
+            .manual_compact_event(&projected, compaction_tail, Some(&recent_stored_events))
             .await
             .map_err(ServiceError::from)?;
 

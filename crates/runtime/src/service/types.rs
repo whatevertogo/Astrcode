@@ -19,7 +19,7 @@
 
 use std::fmt::{Display, Formatter};
 
-use astrcode_core::{AstrError, StoreError};
+use astrcode_core::{AstrError, Phase, StoreError};
 pub use astrcode_core::{SessionEventRecord, SessionMessage};
 use async_trait::async_trait;
 use tokio::sync::broadcast;
@@ -47,6 +47,18 @@ pub struct SessionReplay {
     pub history: Vec<SessionEventRecord>,
     /// 实时事件订阅者，用于接收后续新事件
     pub receiver: broadcast::Receiver<SessionEventRecord>,
+}
+
+/// 会话历史快照。
+///
+/// 为前端初始化会话提供单一协议面：历史 `AgentEvent`、最新游标和当前 phase。
+/// 这样初始 hydration 和后续 SSE 增量都基于同一事件模型，不再维护第二套
+/// `SessionMessage` 专用传输协议。
+#[derive(Debug, Clone)]
+pub struct SessionHistorySnapshot {
+    pub history: Vec<SessionEventRecord>,
+    pub cursor: Option<String>,
+    pub phase: Phase,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
