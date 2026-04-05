@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{CompactTrigger, ToolExecutionResult, ToolOutputStream};
+use crate::{AgentEventContext, CompactTrigger, ToolExecutionResult, ToolOutputStream};
 
 /// 会话阶段
 ///
@@ -40,6 +40,8 @@ pub enum AgentEvent {
     UserMessage {
         /// 所属 Turn ID
         turn_id: String,
+        /// Agent 父子关系元数据
+        agent: AgentEventContext,
         /// 用户输入内容
         content: String,
     },
@@ -47,16 +49,27 @@ pub enum AgentEvent {
     PhaseChanged {
         /// 所属 Turn ID（可能为空，如会话刚启动）
         turn_id: Option<String>,
+        /// Agent 父子关系元数据
+        agent: AgentEventContext,
         /// 新阶段
         phase: Phase,
     },
     /// LLM 输出增量（流式响应）
-    ModelDelta { turn_id: String, delta: String },
+    ModelDelta {
+        turn_id: String,
+        agent: AgentEventContext,
+        delta: String,
+    },
     /// 思考内容增量（Claude thinking）
-    ThinkingDelta { turn_id: String, delta: String },
+    ThinkingDelta {
+        turn_id: String,
+        agent: AgentEventContext,
+        delta: String,
+    },
     /// 助手消息（完整内容）
     AssistantMessage {
         turn_id: String,
+        agent: AgentEventContext,
         content: String,
         /// 推理内容（Claude extended thinking）
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -65,6 +78,7 @@ pub enum AgentEvent {
     /// 工具调用开始
     ToolCallStart {
         turn_id: String,
+        agent: AgentEventContext,
         tool_call_id: String,
         tool_name: String,
         /// 工具参数
@@ -74,6 +88,7 @@ pub enum AgentEvent {
     /// 工具输出增量
     ToolCallDelta {
         turn_id: String,
+        agent: AgentEventContext,
         tool_call_id: String,
         tool_name: String,
         stream: ToolOutputStream,
@@ -82,6 +97,7 @@ pub enum AgentEvent {
     /// 工具调用结果
     ToolCallResult {
         turn_id: String,
+        agent: AgentEventContext,
         result: ToolExecutionResult,
     },
     /// 上下文压缩已应用。
@@ -90,16 +106,22 @@ pub enum AgentEvent {
     /// 这样前端才能把 compact 结果渲染成专用块并给后续能力复用。
     CompactApplied {
         turn_id: Option<String>,
+        agent: AgentEventContext,
         trigger: CompactTrigger,
         summary: String,
         preserved_recent_turns: u32,
     },
     /// Turn 完成
-    TurnDone { turn_id: String },
+    TurnDone {
+        turn_id: String,
+        agent: AgentEventContext,
+    },
     /// 错误事件
     Error {
         /// 发生错误的 Turn ID（可能为空，如会话级别错误）
         turn_id: Option<String>,
+        /// Agent 父子关系元数据
+        agent: AgentEventContext,
         /// 错误码（如 "interrupted"、"agent_error"）
         code: String,
         /// 错误信息

@@ -231,3 +231,22 @@ async fn session_history_endpoint_returns_agent_event_snapshot_and_phase() {
         astrcode_protocol::http::AgentEventPayload::SessionStarted { .. }
     ));
 }
+
+#[tokio::test]
+async fn session_history_endpoint_returns_404_for_unknown_session() {
+    let (state, _guard) = test_state(None);
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/sessions/nonexistent-session-id/history")
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}

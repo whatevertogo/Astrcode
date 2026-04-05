@@ -16,6 +16,7 @@
 //! - `action`: LLM 消息与工具调用相关的数据结构
 
 mod action;
+pub mod agent;
 mod cancel;
 pub mod capability;
 pub mod env;
@@ -45,6 +46,7 @@ pub use action::{
     ToolExecutionResult, ToolOutputDelta, ToolOutputStream, UserMessageOrigin,
     split_assistant_content,
 };
+pub use agent::{AgentEventContext, AgentMode, AgentProfile, AgentStatus, SubAgentHandle};
 pub use cancel::CancelToken;
 pub use capability::{
     CapabilityDescriptor, CapabilityDescriptorBuilder, CapabilityKind, DescriptorBuildError,

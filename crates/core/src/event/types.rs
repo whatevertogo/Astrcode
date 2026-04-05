@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{ToolOutputStream, UserMessageOrigin};
+use crate::{AgentEventContext, ToolOutputStream, UserMessageOrigin};
 
 /// 上下文压缩的触发方式。
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +53,8 @@ pub enum StorageEvent {
     UserMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
+        agent: AgentEventContext,
         content: String,
         #[serde(with = "crate::local_rfc3339")]
         timestamp: DateTime<Utc>,
@@ -63,18 +65,24 @@ pub enum StorageEvent {
     AssistantDelta {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
+        agent: AgentEventContext,
         token: String,
     },
     /// LLM 推理/思考内容增量。
     ThinkingDelta {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
+        agent: AgentEventContext,
         token: String,
     },
     /// LLM 助手最终回复（完整内容）。
     AssistantFinal {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
+        agent: AgentEventContext,
         content: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning_content: Option<String>,
@@ -91,6 +99,8 @@ pub enum StorageEvent {
     ToolCall {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
+        agent: AgentEventContext,
         tool_call_id: String,
         tool_name: String,
         args: Value,
@@ -99,6 +109,8 @@ pub enum StorageEvent {
     ToolCallDelta {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
+        agent: AgentEventContext,
         tool_call_id: String,
         #[serde(default)]
         tool_name: String,
@@ -109,6 +121,8 @@ pub enum StorageEvent {
     ToolResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
+        agent: AgentEventContext,
         tool_call_id: String,
         #[serde(default)]
         tool_name: String,
@@ -124,6 +138,8 @@ pub enum StorageEvent {
     PromptMetrics {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
+        agent: AgentEventContext,
         step_index: u32,
         estimated_tokens: u32,
         context_window: u32,
@@ -135,6 +151,8 @@ pub enum StorageEvent {
     CompactApplied {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
+        agent: AgentEventContext,
         trigger: CompactTrigger,
         summary: String,
         preserved_recent_turns: u32,
@@ -149,6 +167,8 @@ pub enum StorageEvent {
     TurnDone {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
+        agent: AgentEventContext,
         #[serde(with = "crate::local_rfc3339")]
         timestamp: DateTime<Utc>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -158,6 +178,8 @@ pub enum StorageEvent {
     Error {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
+        agent: AgentEventContext,
         message: String,
         #[serde(
             default,
@@ -185,6 +207,24 @@ impl StorageEvent {
             | Self::CompactApplied { turn_id, .. }
             | Self::TurnDone { turn_id, .. }
             | Self::Error { turn_id, .. } => turn_id.as_deref(),
+            Self::SessionStart { .. } => None,
+        }
+    }
+
+    /// 提取 turn 事件附带的 Agent 元数据。
+    pub fn agent_context(&self) -> Option<&AgentEventContext> {
+        match self {
+            Self::UserMessage { agent, .. }
+            | Self::AssistantDelta { agent, .. }
+            | Self::ThinkingDelta { agent, .. }
+            | Self::AssistantFinal { agent, .. }
+            | Self::ToolCall { agent, .. }
+            | Self::ToolCallDelta { agent, .. }
+            | Self::ToolResult { agent, .. }
+            | Self::PromptMetrics { agent, .. }
+            | Self::CompactApplied { agent, .. }
+            | Self::TurnDone { agent, .. }
+            | Self::Error { agent, .. } => Some(agent),
             Self::SessionStart { .. } => None,
         }
     }
@@ -245,7 +285,7 @@ mod tests {
     use serde_json::Value;
 
     use super::{CompactTrigger, StorageEvent};
-    use crate::format_local_rfc3339;
+    use crate::{AgentEventContext, format_local_rfc3339};
 
     #[test]
     fn tool_result_deserializes_legacy_lines_without_error_or_metadata() {
@@ -284,6 +324,7 @@ mod tests {
     fn prompt_metrics_round_trip_preserves_all_fields() {
         let event = StorageEvent::PromptMetrics {
             turn_id: Some("turn-1".to_string()),
+            agent: AgentEventContext::default(),
             step_index: 2,
             estimated_tokens: 1_234,
             context_window: 128_000,
@@ -299,6 +340,7 @@ mod tests {
         match decoded {
             StorageEvent::PromptMetrics {
                 turn_id,
+                agent: _,
                 step_index,
                 estimated_tokens,
                 context_window,
@@ -338,6 +380,7 @@ mod tests {
             .expect("timestamp should build");
         let event = StorageEvent::CompactApplied {
             turn_id: Some("turn-2".to_string()),
+            agent: AgentEventContext::default(),
             trigger: CompactTrigger::Manual,
             summary: "condensed work".to_string(),
             preserved_recent_turns: 2,
@@ -355,6 +398,7 @@ mod tests {
         match decoded {
             StorageEvent::CompactApplied {
                 turn_id,
+                agent: _,
                 trigger,
                 summary,
                 preserved_recent_turns,

@@ -57,10 +57,10 @@ mod turn_runner;
 use std::{path::PathBuf, sync::Arc};
 
 use astrcode_core::{
-    AgentState, AllowAllPolicyEngine, AstrError, CancelToken, CapabilityDescriptor,
-    CapabilityRouter, CompactionHookContext, HookCompactionReason, HookHandler, LlmMessage,
-    PolicyContext, PolicyEngine, Result, StorageEvent, StoredEvent, ToolContext, ToolHookContext,
-    UserMessageOrigin,
+    AgentEventContext, AgentState, AllowAllPolicyEngine, AstrError, CancelToken,
+    CapabilityDescriptor, CapabilityRouter, CompactionHookContext, HookCompactionReason,
+    HookHandler, LlmMessage, PolicyContext, PolicyEngine, Result, StorageEvent, StoredEvent,
+    ToolContext, ToolHookContext, UserMessageOrigin,
 };
 use astrcode_runtime_config::{
     DEFAULT_AUTO_COMPACT_ENABLED, DEFAULT_COMPACT_KEEP_RECENT_TURNS,
@@ -307,11 +307,33 @@ impl AgentLoop {
         on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
         cancel: CancelToken,
     ) -> Result<TurnOutcome> {
+        self.run_turn_with_agent_context(
+            state,
+            turn_id,
+            on_event,
+            cancel,
+            AgentEventContext::default(),
+        )
+        .await
+    }
+
+    /// 执行带 Agent 事件上下文的 Turn。
+    ///
+    /// 为后续子 Agent 执行提供统一入口，避免在每个事件构造点手写父子元数据。
+    pub async fn run_turn_with_agent_context(
+        &self,
+        state: &AgentState,
+        turn_id: &str,
+        on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
+        cancel: CancelToken,
+        agent: AgentEventContext,
+    ) -> Result<TurnOutcome> {
         self.run_turn_with_compaction_tail(
             state,
             turn_id,
             on_event,
             cancel,
+            agent,
             CompactionTailSnapshot::from_messages(
                 &state.messages,
                 self.compact_keep_recent_turns(),
@@ -330,11 +352,31 @@ impl AgentLoop {
         on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
         cancel: CancelToken,
     ) -> Result<TurnOutcome> {
+        self.run_turn_without_finish_with_agent_context(
+            state,
+            turn_id,
+            on_event,
+            cancel,
+            AgentEventContext::default(),
+        )
+        .await
+    }
+
+    /// 执行 Turn，但由调用方自行负责补 finish 事件。
+    pub async fn run_turn_without_finish_with_agent_context(
+        &self,
+        state: &AgentState,
+        turn_id: &str,
+        on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
+        cancel: CancelToken,
+        agent: AgentEventContext,
+    ) -> Result<TurnOutcome> {
         self.run_turn_without_finish_with_compaction_tail(
             state,
             turn_id,
             on_event,
             cancel,
+            agent,
             CompactionTailSnapshot::from_messages(
                 &state.messages,
                 self.compact_keep_recent_turns(),
@@ -350,6 +392,7 @@ impl AgentLoop {
         turn_id: &str,
         on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
         cancel: CancelToken,
+        agent: AgentEventContext,
         compaction_tail: CompactionTailSnapshot,
     ) -> Result<TurnOutcome> {
         turn_runner::run_turn(
@@ -359,6 +402,7 @@ impl AgentLoop {
             on_event,
             cancel,
             true,
+            agent,
             compaction_tail,
         )
         .await
@@ -371,6 +415,7 @@ impl AgentLoop {
         turn_id: &str,
         on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
         cancel: CancelToken,
+        agent: AgentEventContext,
         compaction_tail: CompactionTailSnapshot,
     ) -> Result<TurnOutcome> {
         turn_runner::run_turn(
@@ -380,6 +425,7 @@ impl AgentLoop {
             on_event,
             cancel,
             false,
+            agent,
             compaction_tail,
         )
         .await
@@ -627,6 +673,7 @@ impl AgentLoop {
 
         Ok(Some(StorageEvent::CompactApplied {
             turn_id: None,
+            agent: AgentEventContext::default(),
             trigger: artifact.trigger.as_trigger(),
             summary: artifact.summary,
             preserved_recent_turns: artifact.preserved_recent_turns.min(u32::MAX as usize) as u32,
@@ -713,10 +760,12 @@ fn count_real_user_turns(messages: &[LlmMessage]) -> usize {
 pub(crate) fn finish_turn(
     turn_id: &str,
     outcome: TurnOutcome,
+    agent: AgentEventContext,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
 ) -> Result<TurnOutcome> {
     on_event(StorageEvent::TurnDone {
         turn_id: Some(turn_id.to_string()),
+        agent,
         timestamp: Utc::now(),
         reason: Some(outcome.reason().to_string()),
     })?;
@@ -727,28 +776,32 @@ pub(crate) fn finish_turn(
 pub(crate) fn finish_with_error(
     turn_id: &str,
     message: impl Into<String>,
+    agent: AgentEventContext,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
 ) -> Result<TurnOutcome> {
     let message = message.into();
     on_event(StorageEvent::Error {
         turn_id: Some(turn_id.to_string()),
+        agent: agent.clone(),
         message: message.clone(),
         timestamp: Some(Utc::now()),
     })?;
-    finish_turn(turn_id, TurnOutcome::Error { message }, on_event)
+    finish_turn(turn_id, TurnOutcome::Error { message }, agent, on_event)
 }
 
 /// 完成并发出中断事件
 pub(crate) fn finish_interrupted(
     turn_id: &str,
+    agent: AgentEventContext,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
 ) -> Result<TurnOutcome> {
     on_event(StorageEvent::Error {
         turn_id: Some(turn_id.to_string()),
+        agent: agent.clone(),
         message: "interrupted".to_string(),
         timestamp: Some(Utc::now()),
     })?;
-    finish_turn(turn_id, TurnOutcome::Cancelled, on_event)
+    finish_turn(turn_id, TurnOutcome::Cancelled, agent, on_event)
 }
 
 /// 创建内部错误

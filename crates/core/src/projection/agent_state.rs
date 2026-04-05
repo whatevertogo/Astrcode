@@ -267,10 +267,14 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::event::StorageEvent;
+    use crate::{AgentEventContext, event::StorageEvent};
 
     fn ts() -> chrono::DateTime<chrono::Utc> {
         chrono::Utc::now()
+    }
+
+    fn root_agent() -> AgentEventContext {
+        AgentEventContext::default()
     }
 
     #[test]
@@ -294,6 +298,7 @@ mod tests {
             },
             StorageEvent::UserMessage {
                 turn_id: None,
+                agent: root_agent(),
                 content: "hello".into(),
                 origin: UserMessageOrigin::User,
                 timestamp: ts(),
@@ -321,12 +326,14 @@ mod tests {
             },
             StorageEvent::UserMessage {
                 turn_id: None,
+                agent: root_agent(),
                 content: "hi".into(),
                 origin: UserMessageOrigin::User,
                 timestamp: ts(),
             },
             StorageEvent::AssistantFinal {
                 turn_id: None,
+                agent: root_agent(),
                 content: "hello!".into(),
                 reasoning_content: None,
                 reasoning_signature: None,
@@ -334,6 +341,7 @@ mod tests {
             },
             StorageEvent::TurnDone {
                 turn_id: None,
+                agent: root_agent(),
                 timestamp: ts(),
                 reason: Some("completed".into()),
             },
@@ -357,12 +365,14 @@ mod tests {
             // Turn 1: user → assistant with tool call → tool result → final answer
             StorageEvent::UserMessage {
                 turn_id: None,
+                agent: root_agent(),
                 content: "list files".into(),
                 origin: UserMessageOrigin::User,
                 timestamp: ts(),
             },
             StorageEvent::AssistantFinal {
                 turn_id: None,
+                agent: root_agent(),
                 content: "".into(),
                 reasoning_content: None,
                 reasoning_signature: None,
@@ -370,12 +380,14 @@ mod tests {
             },
             StorageEvent::ToolCall {
                 turn_id: None,
+                agent: root_agent(),
                 tool_call_id: "tc1".into(),
                 tool_name: "listDir".into(),
                 args: json!({"path": "."}),
             },
             StorageEvent::ToolResult {
                 turn_id: None,
+                agent: root_agent(),
                 tool_call_id: "tc1".into(),
                 tool_name: "listDir".into(),
                 output: "file1.txt\nfile2.txt".into(),
@@ -386,6 +398,7 @@ mod tests {
             },
             StorageEvent::AssistantFinal {
                 turn_id: None,
+                agent: root_agent(),
                 content: "Here are the files".into(),
                 reasoning_content: None,
                 reasoning_signature: None,
@@ -393,18 +406,21 @@ mod tests {
             },
             StorageEvent::TurnDone {
                 turn_id: None,
+                agent: root_agent(),
                 timestamp: ts(),
                 reason: Some("completed".into()),
             },
             // Turn 2: simple user → assistant
             StorageEvent::UserMessage {
                 turn_id: None,
+                agent: root_agent(),
                 content: "thanks".into(),
                 origin: UserMessageOrigin::User,
                 timestamp: ts(),
             },
             StorageEvent::AssistantFinal {
                 turn_id: None,
+                agent: root_agent(),
                 content: "You're welcome!".into(),
                 reasoning_content: None,
                 reasoning_signature: None,
@@ -412,6 +428,7 @@ mod tests {
             },
             StorageEvent::TurnDone {
                 turn_id: None,
+                agent: root_agent(),
                 timestamp: ts(),
                 reason: Some("completed".into()),
             },
@@ -465,20 +482,24 @@ mod tests {
             },
             StorageEvent::UserMessage {
                 turn_id: None,
+                agent: root_agent(),
                 content: "hi".into(),
                 origin: UserMessageOrigin::User,
                 timestamp: ts(),
             },
             StorageEvent::AssistantDelta {
                 turn_id: None,
+                agent: root_agent(),
                 token: "hel".into(),
             },
             StorageEvent::AssistantDelta {
                 turn_id: None,
+                agent: root_agent(),
                 token: "lo".into(),
             },
             StorageEvent::AssistantFinal {
                 turn_id: None,
+                agent: root_agent(),
                 content: "hello".into(),
                 reasoning_content: None,
                 reasoning_signature: None,
@@ -486,11 +507,13 @@ mod tests {
             },
             StorageEvent::Error {
                 turn_id: None,
+                agent: root_agent(),
                 message: "some error".into(),
                 timestamp: Some(ts()),
             },
             StorageEvent::TurnDone {
                 turn_id: None,
+                agent: root_agent(),
                 timestamp: ts(),
                 reason: Some("completed".into()),
             },
@@ -512,18 +535,21 @@ mod tests {
             },
             StorageEvent::UserMessage {
                 turn_id: None,
+                agent: root_agent(),
                 content: "run tool".into(),
                 origin: UserMessageOrigin::User,
                 timestamp: ts(),
             },
             StorageEvent::ToolCall {
                 turn_id: None,
+                agent: root_agent(),
                 tool_call_id: "tc1".into(),
                 tool_name: "listDir".into(),
                 args: json!({"path": "."}),
             },
             StorageEvent::ToolResult {
                 turn_id: None,
+                agent: root_agent(),
                 tool_call_id: "tc1".into(),
                 tool_name: "listDir".into(),
                 output: "[]".into(),
@@ -534,6 +560,7 @@ mod tests {
             },
             StorageEvent::TurnDone {
                 turn_id: None,
+                agent: root_agent(),
                 timestamp: ts(),
                 reason: Some("completed".into()),
             },
@@ -572,12 +599,14 @@ mod tests {
             },
             StorageEvent::UserMessage {
                 turn_id: None,
+                agent: root_agent(),
                 content: "hello".into(),
                 origin: UserMessageOrigin::User,
                 timestamp: ts(),
             },
             StorageEvent::AssistantFinal {
                 turn_id: None,
+                agent: root_agent(),
                 content: "hi".into(),
                 reasoning_content: Some("thinking".into()),
                 reasoning_signature: Some("sig".into()),
@@ -585,6 +614,7 @@ mod tests {
             },
             StorageEvent::TurnDone {
                 turn_id: None,
+                agent: root_agent(),
                 timestamp: ts(),
                 reason: Some("completed".into()),
             },
@@ -616,12 +646,14 @@ mod tests {
             },
             StorageEvent::UserMessage {
                 turn_id: Some("turn-1".into()),
+                agent: root_agent(),
                 content: "first".into(),
                 origin: UserMessageOrigin::User,
                 timestamp: ts(),
             },
             StorageEvent::AssistantFinal {
                 turn_id: Some("turn-1".into()),
+                agent: root_agent(),
                 content: "first-answer".into(),
                 reasoning_content: None,
                 reasoning_signature: None,
@@ -629,17 +661,20 @@ mod tests {
             },
             StorageEvent::TurnDone {
                 turn_id: Some("turn-1".into()),
+                agent: root_agent(),
                 timestamp: ts(),
                 reason: Some("completed".into()),
             },
             StorageEvent::UserMessage {
                 turn_id: Some("turn-2".into()),
+                agent: root_agent(),
                 content: "second".into(),
                 origin: UserMessageOrigin::User,
                 timestamp: ts(),
             },
             StorageEvent::AssistantFinal {
                 turn_id: Some("turn-2".into()),
+                agent: root_agent(),
                 content: "second-answer".into(),
                 reasoning_content: None,
                 reasoning_signature: None,
@@ -647,11 +682,13 @@ mod tests {
             },
             StorageEvent::TurnDone {
                 turn_id: Some("turn-2".into()),
+                agent: root_agent(),
                 timestamp: ts(),
                 reason: Some("completed".into()),
             },
             StorageEvent::CompactApplied {
                 turn_id: None,
+                agent: root_agent(),
                 trigger: crate::event::CompactTrigger::Manual,
                 summary: "condensed work".into(),
                 preserved_recent_turns: 1,

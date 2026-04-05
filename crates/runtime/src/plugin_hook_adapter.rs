@@ -493,4 +493,30 @@ mod tests {
             _ => panic!("expected ModifyCompactContext"),
         }
     }
+
+    /// additionalSystemPrompt 优先于 overrideSystemPrompt——当两者同时存在时，
+    /// overrideSystemPrompt 应被忽略，避免旧字段静默覆盖新字段的值。
+    #[test]
+    fn plugin_hook_response_prefers_additional_over_override_system_prompt() {
+        let outcome = parse_plugin_hook_outcome(json!({
+            "action": "modifyCompactContext",
+            "additionalSystemPrompt": "New prompt",
+            "overrideSystemPrompt": "Legacy prompt"
+        }))
+        .expect("both fields present");
+
+        match outcome {
+            HookOutcome::ModifyCompactContext {
+                additional_system_prompt,
+                ..
+            } => {
+                assert_eq!(
+                    additional_system_prompt,
+                    Some("New prompt".to_string()),
+                    "additionalSystemPrompt should take priority over overrideSystemPrompt"
+                );
+            },
+            _ => panic!("expected ModifyCompactContext"),
+        }
+    }
 }

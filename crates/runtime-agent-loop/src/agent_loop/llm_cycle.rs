@@ -21,7 +21,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use astrcode_core::{CancelToken, ModelRequest, Result, StorageEvent};
+use astrcode_core::{AgentEventContext, CancelToken, ModelRequest, Result, StorageEvent};
 use astrcode_runtime_llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
 use tokio::sync::mpsc;
 
@@ -59,6 +59,7 @@ pub(crate) async fn generate_response(
     provider: &Arc<dyn LlmProvider>,
     request: ModelRequest,
     turn_id: &str,
+    agent: AgentEventContext,
     cancel: CancelToken,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
 ) -> Result<LlmOutput> {
@@ -85,12 +86,14 @@ pub(crate) async fn generate_response(
                         log::debug!("[delta] {}", text);
                         on_event(StorageEvent::AssistantDelta {
                             turn_id: Some(turn_id.to_string()),
+                            agent: agent.clone(),
                             token: text,
                         })?;
                     }
                     Some(LlmEvent::ThinkingDelta(text)) => {
                         on_event(StorageEvent::ThinkingDelta {
                             turn_id: Some(turn_id.to_string()),
+                            agent: agent.clone(),
                             token: text,
                         })?;
                     }
@@ -114,12 +117,14 @@ pub(crate) async fn generate_response(
             LlmEvent::TextDelta(text) => {
                 on_event(StorageEvent::AssistantDelta {
                     turn_id: Some(turn_id.to_string()),
+                    agent: agent.clone(),
                     token: text,
                 })?;
             },
             LlmEvent::ThinkingDelta(text) => {
                 on_event(StorageEvent::ThinkingDelta {
                     turn_id: Some(turn_id.to_string()),
+                    agent: agent.clone(),
                     token: text,
                 })?;
             },

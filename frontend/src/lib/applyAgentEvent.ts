@@ -162,6 +162,7 @@ export function applyAgentEvent(
         error: event.data.result.error,
         metadata: event.data.result.metadata,
         durationMs: event.data.result.durationMs,
+        truncated: event.data.result.truncated,
       });
       break;
     }

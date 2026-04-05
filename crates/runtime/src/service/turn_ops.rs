@@ -33,8 +33,8 @@ use std::{
 
 use anyhow::Result;
 use astrcode_core::{
-    AstrError, CancelToken, EventTranslator, Phase, SessionTurnAcquireResult, SessionTurnLease,
-    StorageEvent, StoredEvent, UserMessageOrigin, generate_session_id,
+    AgentEventContext, AstrError, CancelToken, EventTranslator, Phase, SessionTurnAcquireResult,
+    SessionTurnLease, StorageEvent, StoredEvent, UserMessageOrigin, generate_session_id,
 };
 use astrcode_runtime_agent_loop::{
     CompactionTailSnapshot, TokenBudgetDecision, TurnOutcome, build_auto_continue_nudge,
@@ -145,6 +145,8 @@ impl RuntimeService {
         let cancel = CancelToken::new();
         {
             let mut cancel_guard = lock_anyhow(&session.cancel, "session cancel")?;
+            let mut active_turn_guard =
+                lock_anyhow(&session.active_turn_id, "session active turn")?;
             let mut lease_guard = lock_anyhow(&session.turn_lease, "session turn lease")?;
             if session.running.swap(true, Ordering::SeqCst) {
                 return Err(ServiceError::Conflict(format!(
@@ -153,6 +155,7 @@ impl RuntimeService {
                 )));
             }
             *cancel_guard = cancel.clone();
+            *active_turn_guard = Some(turn_id.clone());
             *lease_guard = Some(turn_lease);
         }
         if let Ok(mut budget_guard) = lock_anyhow(&session.token_budget, "session token budget") {
@@ -168,6 +171,7 @@ impl RuntimeService {
         let text_for_task = text;
         let accepted_turn_id = turn_id.clone();
         let observability = self.observability.clone();
+        let agent_control = self.agent_control.clone();
         let accepted_session_id = session_id.clone();
         tokio::spawn(async move {
             let turn_started_at = Instant::now();
@@ -178,6 +182,7 @@ impl RuntimeService {
 
             let user_event = StorageEvent::UserMessage {
                 turn_id: Some(turn_id.clone()),
+                agent: AgentEventContext::default(),
                 content: text_for_task,
                 timestamp: Utc::now(),
                 origin: UserMessageOrigin::User,
@@ -211,12 +216,14 @@ impl RuntimeService {
                 // 无活跃订阅者时 send 返回 Err，这是良性情况。
                 let error_event = StorageEvent::Error {
                     turn_id: Some(turn_id.clone()),
+                    agent: AgentEventContext::default(),
                     message: error.to_string(),
                     timestamp: Some(Utc::now()),
                 };
                 let _ = append_and_broadcast(&state, &error_event, &mut translator).await;
                 let turn_done = StorageEvent::TurnDone {
                     turn_id: Some(turn_id.clone()),
+                    agent: AgentEventContext::default(),
                     timestamp: Utc::now(),
                     reason: Some("error".to_string()),
                 };
@@ -226,17 +233,22 @@ impl RuntimeService {
             if let Ok(mut phase) = lock_anyhow(&state.phase, "session phase") {
                 *phase = translator.phase();
             }
-            // 重置 CancelToken：前一个 token 已被消费（正常完成或被取消），
-            // 必须替换为新的空 token 以"重新武装"会话，否则下一次 interrupt()
-            // 调用会触发一个已过期的 token，无法取消新的 turn。
-            if let Ok(mut guard) = lock_anyhow(&state.cancel, "session cancel") {
-                *guard = CancelToken::new();
+            if let Ok(mut active_turn_guard) =
+                lock_anyhow(&state.active_turn_id, "session active turn")
+            {
+                *active_turn_guard = None;
             }
+            let _ = agent_control.cancel_for_parent_turn(&turn_id).await;
             if let Ok(mut lease) = lock_anyhow(&state.turn_lease, "session turn lease") {
                 *lease = None;
             }
             if let Ok(mut budget_guard) = lock_anyhow(&state.token_budget, "session token budget") {
                 *budget_guard = None;
+            }
+            // 先清掉 active turn，再换 fresh token，避免晚到的 interrupt() 把“下一轮用的空 token”
+            // 误当成当前 turn 的取消目标。
+            if let Ok(mut guard) = lock_anyhow(&state.cancel, "session cancel") {
+                *guard = CancelToken::new();
             }
             state.running.store(false, Ordering::SeqCst);
 
@@ -281,9 +293,21 @@ impl RuntimeService {
     pub async fn interrupt(&self, session_id: &str) -> ServiceResult<()> {
         let session_id = normalize_session_id(session_id);
         if let Some(session) = self.sessions.get(&session_id) {
+            if !session.running.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            let Some(active_turn_id) =
+                lock_anyhow(&session.active_turn_id, "session active turn").map(|g| g.clone())?
+            else {
+                return Ok(());
+            };
             if let Ok(cancel) = lock_anyhow(&session.cancel, "session cancel") {
                 cancel.cancel();
             }
+            let _ = self
+                .agent_control
+                .cancel_for_parent_turn(&active_turn_id)
+                .await;
         }
         Ok(())
     }
@@ -383,6 +407,7 @@ async fn execute_turn_chain(
                     Ok(())
                 },
                 cancel.clone(),
+                AgentEventContext::default(),
                 CompactionTailSnapshot::from_seed(tail_seed)
                     .with_live_recorder(Arc::clone(&live_tail)),
             )
@@ -400,6 +425,7 @@ async fn execute_turn_chain(
             state,
             &StorageEvent::TurnDone {
                 turn_id: Some(turn_id.to_string()),
+                agent: AgentEventContext::default(),
                 timestamp: Utc::now(),
                 reason: Some(turn_done_reason(&outcome).to_string()),
             },
@@ -455,6 +481,7 @@ async fn maybe_continue_after_turn(
         state,
         &StorageEvent::UserMessage {
             turn_id: Some(turn_id.to_string()),
+            agent: AgentEventContext::default(),
             content: build_auto_continue_nudge(used_tokens, total_budget),
             timestamp: Utc::now(),
             origin: UserMessageOrigin::AutoContinueNudge,
@@ -711,8 +738,8 @@ fn ensure_branch_depth_within_limit(branch_depth: usize) -> ServiceResult<()> {
 mod tests {
     use std::{collections::VecDeque, sync::Arc};
 
-    use astrcode_core::AgentEvent;
-    use astrcode_runtime_agent_loop::ProviderFactory;
+    use astrcode_core::{AgentEvent, AgentEventContext};
+    use astrcode_runtime_agent_loop::{AgentLoop, ProviderFactory};
     use astrcode_storage::session::EventLog;
     use async_trait::async_trait;
     use chrono::Utc;
@@ -726,6 +753,10 @@ mod tests {
 
     struct ScriptedProvider {
         responses: std::sync::Mutex<VecDeque<LlmOutput>>,
+    }
+
+    struct DelayedProvider {
+        delay: std::time::Duration,
     }
 
     struct StaticProviderFactory {
@@ -767,6 +798,32 @@ mod tests {
                 }
             }
             Ok(output)
+        }
+    }
+
+    #[async_trait]
+    impl LlmProvider for DelayedProvider {
+        fn model_limits(&self) -> ModelLimits {
+            ModelLimits {
+                context_window: 200_000,
+                max_output_tokens: 4_096,
+            }
+        }
+
+        async fn generate(
+            &self,
+            request: LlmRequest,
+            _sink: Option<EventSink>,
+        ) -> astrcode_core::Result<LlmOutput> {
+            tokio::select! {
+                _ = crate::llm::cancelled(request.cancel.clone()) => {
+                    Err(astrcode_core::AstrError::LlmInterrupted)
+                }
+                _ = tokio::time::sleep(self.delay) => Ok(LlmOutput {
+                    content: "done".to_string(),
+                    ..LlmOutput::default()
+                })
+            }
         }
     }
 
@@ -853,6 +910,7 @@ mod tests {
                 storage_seq: 2,
                 event: StorageEvent::UserMessage {
                     turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
                     content: "first".to_string(),
                     origin: UserMessageOrigin::User,
                     timestamp,
@@ -862,6 +920,7 @@ mod tests {
                 storage_seq: 3,
                 event: StorageEvent::TurnDone {
                     turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
                     timestamp,
                     reason: Some("completed".to_string()),
                 },
@@ -870,6 +929,7 @@ mod tests {
                 storage_seq: 4,
                 event: StorageEvent::UserMessage {
                     turn_id: Some("turn-2".to_string()),
+                    agent: AgentEventContext::default(),
                     content: "second".to_string(),
                     origin: UserMessageOrigin::User,
                     timestamp,
@@ -879,6 +939,7 @@ mod tests {
                 storage_seq: 5,
                 event: StorageEvent::ToolCall {
                     turn_id: None,
+                    agent: AgentEventContext::default(),
                     tool_call_id: "call-1".to_string(),
                     tool_name: "echo".to_string(),
                     args: json!({"message": "legacy event without turn id"}),
@@ -913,6 +974,7 @@ mod tests {
                 storage_seq: 2,
                 event: StorageEvent::UserMessage {
                     turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
                     content: "first".to_string(),
                     origin: UserMessageOrigin::User,
                     timestamp,
@@ -922,6 +984,7 @@ mod tests {
                 storage_seq: 3,
                 event: StorageEvent::AssistantFinal {
                     turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
                     content: "done".to_string(),
                     reasoning_content: None,
                     reasoning_signature: None,
@@ -932,6 +995,7 @@ mod tests {
                 storage_seq: 4,
                 event: StorageEvent::UserMessage {
                     turn_id: Some("turn-2".to_string()),
+                    agent: AgentEventContext::default(),
                     content: "second".to_string(),
                     origin: UserMessageOrigin::User,
                     timestamp,
@@ -941,6 +1005,7 @@ mod tests {
                 storage_seq: 5,
                 event: StorageEvent::ToolResult {
                     turn_id: Some("turn-2".to_string()),
+                    agent: AgentEventContext::default(),
                     tool_call_id: "call-1".to_string(),
                     tool_name: "echo".to_string(),
                     output: "result".to_string(),
@@ -954,6 +1019,7 @@ mod tests {
                 storage_seq: 6,
                 event: StorageEvent::PromptMetrics {
                     turn_id: Some("turn-2".to_string()),
+                    agent: AgentEventContext::default(),
                     step_index: 0,
                     estimated_tokens: 128,
                     context_window: 4096,
@@ -998,6 +1064,7 @@ mod tests {
             &mut stats,
             &StorageEvent::PromptMetrics {
                 turn_id: Some("turn-1".to_string()),
+                agent: AgentEventContext::default(),
                 step_index: 0,
                 estimated_tokens: 800,
                 context_window: 100_000,
@@ -1015,6 +1082,7 @@ mod tests {
             &mut stats,
             &StorageEvent::AssistantFinal {
                 turn_id: Some("turn-1".to_string()),
+                agent: AgentEventContext::default(),
                 content: "done".to_string(),
                 reasoning_content: None,
                 reasoning_signature: None,
@@ -1066,6 +1134,7 @@ mod tests {
             &state,
             &StorageEvent::UserMessage {
                 turn_id: Some("turn-auto".to_string()),
+                agent: AgentEventContext::default(),
                 content: "work ".repeat(200),
                 origin: UserMessageOrigin::User,
                 timestamp: Utc::now(),
@@ -1129,6 +1198,133 @@ mod tests {
                 .expect("budget lock")
                 .is_none(),
             "the budget state should be cleared once the chain stops continuing"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interrupt_cascades_to_registered_child_agents() {
+        let _guard = TestEnvGuard::new();
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let service = Arc::new(
+            RuntimeService::from_capabilities(crate::test_support::empty_capabilities())
+                .expect("service should build"),
+        );
+        let loop_ = AgentLoop::from_capabilities(
+            Arc::new(StaticProviderFactory {
+                provider: Arc::new(DelayedProvider {
+                    delay: std::time::Duration::from_secs(30),
+                }),
+            }),
+            crate::test_support::empty_capabilities(),
+        );
+        *service.loop_.write().await = Arc::new(loop_);
+
+        let session = service
+            .create_session(temp_dir.path())
+            .await
+            .expect("session should be created");
+        let accepted = service
+            .submit_prompt(&session.session_id, "hello".to_string())
+            .await
+            .expect("prompt should be accepted");
+
+        let control = service.agent_control();
+        let child = control
+            .spawn(
+                &astrcode_core::AgentProfile {
+                    id: "review".to_string(),
+                    name: "Review".to_string(),
+                    description: "review".to_string(),
+                    mode: astrcode_core::AgentMode::SubAgent,
+                    system_prompt: None,
+                    allowed_tools: vec!["readFile".to_string()],
+                    disallowed_tools: Vec::new(),
+                    max_steps: Some(3),
+                    token_budget: Some(1_000),
+                    model_preference: None,
+                },
+                &session.session_id,
+                Some(accepted.turn_id.clone()),
+                None,
+            )
+            .await
+            .expect("child spawn should succeed");
+        let _ = control.mark_running(&child.agent_id).await;
+
+        service
+            .interrupt(&session.session_id)
+            .await
+            .expect("interrupt should succeed");
+
+        let child_handle = control
+            .wait(&child.agent_id)
+            .await
+            .expect("child should still exist");
+        assert_eq!(child_handle.status, astrcode_core::AgentStatus::Cancelled);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn compact_session_rejects_busy_sessions() {
+        let _guard = TestEnvGuard::new();
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let service = RuntimeService::from_capabilities(crate::test_support::empty_capabilities())
+            .expect("service should build");
+        let session = service
+            .create_session(temp_dir.path())
+            .await
+            .expect("session should be created");
+
+        let state = service
+            .sessions
+            .get(&session.session_id)
+            .expect("session state should be loaded");
+        state.running.store(true, Ordering::SeqCst);
+
+        let error = service
+            .compact_session(&session.session_id)
+            .await
+            .expect_err("busy session should reject manual compact");
+
+        assert!(matches!(error, ServiceError::Conflict(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("manual compact is only allowed while idle")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn compact_session_rejects_sessions_without_compressible_history() {
+        let _guard = TestEnvGuard::new();
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let service = RuntimeService::from_capabilities(crate::test_support::empty_capabilities())
+            .expect("service should build");
+        let session = service
+            .create_session(temp_dir.path())
+            .await
+            .expect("session should be created");
+
+        let error = service
+            .compact_session(&session.session_id)
+            .await
+            .expect_err("empty session should not have compressible history");
+
+        assert!(matches!(error, ServiceError::InvalidInput(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("manual compact requires at least 2 real user turns")
+        );
+
+        let state = service
+            .sessions
+            .get(&session.session_id)
+            .expect("session state should be loaded");
+        let failure_count = *lock_anyhow(&state.compact_failure_count, "compact failures")
+            .expect("failure counter lock");
+        assert_eq!(
+            failure_count, 0,
+            "no-op compact should reset failure counter"
         );
     }
 }

@@ -110,6 +110,7 @@ impl FileAccessTracker {
 
 #[cfg(test)]
 mod tests {
+    use astrcode_core::AgentEventContext;
     use serde_json::json;
 
     use super::*;
@@ -117,6 +118,7 @@ mod tests {
     fn tool_result(tool_name: &str, path: &str) -> StorageEvent {
         StorageEvent::ToolResult {
             turn_id: Some("turn-1".to_string()),
+            agent: AgentEventContext::default(),
             tool_call_id: "call-1".to_string(),
             tool_name: tool_name.to_string(),
             output: "file content".to_string(),
@@ -130,6 +132,7 @@ mod tests {
     fn tool_result_no_metadata(tool_name: &str) -> StorageEvent {
         StorageEvent::ToolResult {
             turn_id: Some("turn-1".to_string()),
+            agent: AgentEventContext::default(),
             tool_call_id: "call-1".to_string(),
             tool_name: tool_name.to_string(),
             output: "file content".to_string(),
@@ -186,6 +189,7 @@ mod tests {
         let mut tracker = FileAccessTracker::new();
         tracker.record_event(&StorageEvent::UserMessage {
             turn_id: Some("turn-1".to_string()),
+            agent: AgentEventContext::default(),
             content: "hello".to_string(),
             timestamp: chrono::Utc::now(),
             origin: astrcode_core::UserMessageOrigin::User,

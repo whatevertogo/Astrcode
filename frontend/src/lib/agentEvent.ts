@@ -67,6 +67,17 @@ function invalidEvent(reason: string, raw: unknown): AgentEventPayload {
   };
 }
 
+function pickAgentContext(data: Record<string, unknown>) {
+  const agentId = pickOptionalString(data, 'agentId', 'agent_id') ?? undefined;
+  const parentTurnId = pickOptionalString(data, 'parentTurnId', 'parent_turn_id') ?? undefined;
+  const agentProfile = pickOptionalString(data, 'agentProfile', 'agent_profile') ?? undefined;
+  return {
+    ...(agentId ? { agentId } : {}),
+    ...(parentTurnId ? { parentTurnId } : {}),
+    ...(agentProfile ? { agentProfile } : {}),
+  };
+}
+
 export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
   const payload = asRecord(raw);
   if (!payload) {
@@ -105,7 +116,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
     if (!turnId || content === undefined) {
       return invalidEvent('userMessage requires turnId and content', raw);
     }
-    return { event: 'userMessage', data: { turnId, content } };
+    return { event: 'userMessage', data: { turnId, content, ...pickAgentContext(data) } };
   }
 
   if (event === 'phaseChanged') {
@@ -118,6 +129,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
       data: {
         phase,
         turnId: pickOptionalString(data, 'turnId', 'turn_id') ?? null,
+        ...pickAgentContext(data),
       },
     };
   }
@@ -128,7 +140,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
     if (!turnId || delta === undefined) {
       return invalidEvent('modelDelta requires turnId and delta', raw);
     }
-    return { event: 'modelDelta', data: { turnId, delta } };
+    return { event: 'modelDelta', data: { turnId, delta, ...pickAgentContext(data) } };
   }
 
   if (event === 'thinkingDelta') {
@@ -137,7 +149,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
     if (!turnId || delta === undefined) {
       return invalidEvent('thinkingDelta requires turnId and delta', raw);
     }
-    return { event: 'thinkingDelta', data: { turnId, delta } };
+    return { event: 'thinkingDelta', data: { turnId, delta, ...pickAgentContext(data) } };
   }
 
   if (event === 'assistantMessage') {
@@ -156,6 +168,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
         turnId,
         content,
         reasoningContent,
+        ...pickAgentContext(data),
       },
     };
   }
@@ -174,6 +187,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
         toolCallId,
         toolName,
         args: data.args ?? null,
+        ...pickAgentContext(data),
       },
     };
   }
@@ -195,6 +209,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
         toolName,
         stream,
         delta,
+        ...pickAgentContext(data),
       },
     };
   }
@@ -212,11 +227,13 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
     const durationMs = pickNumber(result, 'durationMs', 'duration_ms') ?? 0;
     const ok = result.ok === true;
     const error = pickOptionalString(result, 'error');
+    const truncated = result.truncated === true;
 
     return {
       event: 'toolCallResult',
       data: {
         turnId,
+        ...pickAgentContext(data),
         result: {
           toolCallId,
           toolName,
@@ -225,6 +242,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
           error: error ?? undefined,
           metadata: result.metadata,
           durationMs,
+          truncated,
         },
       },
     };
@@ -244,6 +262,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
         trigger,
         summary,
         preservedRecentTurns,
+        ...pickAgentContext(data),
       },
     };
   }
@@ -253,7 +272,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
     if (!turnId) {
       return invalidEvent('turnDone requires turnId', raw);
     }
-    return { event: 'turnDone', data: { turnId } };
+    return { event: 'turnDone', data: { turnId, ...pickAgentContext(data) } };
   }
 
   if (event === 'error') {
@@ -265,6 +284,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
         code,
         message,
         turnId: pickOptionalString(data, 'turnId', 'turn_id') ?? null,
+        ...pickAgentContext(data),
       },
     };
   }

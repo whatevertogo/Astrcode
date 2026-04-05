@@ -19,8 +19,8 @@ use std::collections::HashMap;
 
 use super::phase::PhaseTracker;
 use crate::{
-    AgentEvent, Phase, StorageEvent, StoredEvent, ToolExecutionResult, UserMessageOrigin,
-    session::SessionEventRecord, split_assistant_content,
+    AgentEvent, AgentEventContext, Phase, StorageEvent, StoredEvent, ToolExecutionResult,
+    UserMessageOrigin, session::SessionEventRecord, split_assistant_content,
 };
 
 /// 回放存储事件为会话事件记录
@@ -98,6 +98,7 @@ impl EventTranslator {
         let mut subindex = 0u32;
         let mut records = Vec::new();
         let turn_id = self.turn_id_for(&stored.event);
+        let agent = stored.event.agent_context().cloned().unwrap_or_default();
 
         let mut push = |event: AgentEvent| {
             records.push(SessionEventRecord {
@@ -107,11 +108,14 @@ impl EventTranslator {
             subindex = subindex.saturating_add(1);
         };
 
-        if let Some(phase_event) = self.phase_tracker.on_event(&stored.event, turn_id.clone()) {
+        if let Some(phase_event) =
+            self.phase_tracker
+                .on_event(&stored.event, turn_id.clone(), agent.clone())
+        {
             push(phase_event);
         }
 
-        self.convert_event(stored, turn_id, &mut push);
+        self.convert_event(stored, turn_id, agent, &mut push);
 
         records
     }
@@ -120,6 +124,7 @@ impl EventTranslator {
         &mut self,
         stored: &StoredEvent,
         turn_id: Option<String>,
+        agent: AgentEventContext,
         push: &mut impl FnMut(AgentEvent),
     ) {
         let turn_id_ref = turn_id.as_ref();
@@ -129,7 +134,8 @@ impl EventTranslator {
                 push(AgentEvent::SessionStarted {
                     session_id: session_id.clone(),
                 });
-                self.phase_tracker.force_to(Phase::Idle, None);
+                self.phase_tracker
+                    .force_to(Phase::Idle, None, AgentEventContext::default());
             },
             StorageEvent::UserMessage {
                 content, origin, ..
@@ -138,6 +144,7 @@ impl EventTranslator {
                     if let Some(turn_id) = turn_id_ref {
                         push(AgentEvent::UserMessage {
                             turn_id: turn_id.clone(),
+                            agent: agent.clone(),
                             content: content.clone(),
                         });
                     } else if !content.is_empty() {
@@ -147,11 +154,12 @@ impl EventTranslator {
                 if self.phase_tracker.current() != Phase::Thinking {
                     push(AgentEvent::PhaseChanged {
                         turn_id: turn_id.clone(),
+                        agent: agent.clone(),
                         phase: Phase::Thinking,
                     });
                 }
                 self.phase_tracker
-                    .force_to(Phase::Thinking, turn_id.clone());
+                    .force_to(Phase::Thinking, turn_id.clone(), agent.clone());
             },
             StorageEvent::PromptMetrics { .. } => {},
             StorageEvent::CompactApplied {
@@ -162,6 +170,7 @@ impl EventTranslator {
             } => {
                 push(AgentEvent::CompactApplied {
                     turn_id: turn_id.clone(),
+                    agent: agent.clone(),
                     trigger: *trigger,
                     summary: summary.clone(),
                     preserved_recent_turns: *preserved_recent_turns,
@@ -171,6 +180,7 @@ impl EventTranslator {
                 if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::ModelDelta {
                         turn_id: turn_id.clone(),
+                        agent: agent.clone(),
                         delta: token.clone(),
                     });
                 } else if !token.is_empty() {
@@ -181,6 +191,7 @@ impl EventTranslator {
                 if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::ThinkingDelta {
                         turn_id: turn_id.clone(),
+                        agent: agent.clone(),
                         delta: token.clone(),
                     });
                 } else if !token.is_empty() {
@@ -199,6 +210,7 @@ impl EventTranslator {
                     if has_content {
                         push(AgentEvent::AssistantMessage {
                             turn_id: turn_id.clone(),
+                            agent: agent.clone(),
                             content: parts.visible_content,
                             reasoning_content: parts.reasoning_content,
                         });
@@ -218,6 +230,7 @@ impl EventTranslator {
                         .insert(tool_call_id.clone(), tool_name.clone());
                     push(AgentEvent::ToolCallStart {
                         turn_id: turn_id.clone(),
+                        agent: agent.clone(),
                         tool_call_id: tool_call_id.clone(),
                         tool_name: tool_name.clone(),
                         input: args.clone(),
@@ -244,6 +257,7 @@ impl EventTranslator {
                     };
                     push(AgentEvent::ToolCallDelta {
                         turn_id: turn_id.clone(),
+                        agent: agent.clone(),
                         tool_call_id: tool_call_id.clone(),
                         tool_name: name,
                         stream: *stream,
@@ -272,6 +286,7 @@ impl EventTranslator {
                     };
                     push(AgentEvent::ToolCallResult {
                         turn_id: turn_id.clone(),
+                        agent: agent.clone(),
                         result: ToolExecutionResult {
                             tool_call_id: tool_call_id.clone(),
                             tool_name: name,
@@ -291,16 +306,19 @@ impl EventTranslator {
                 if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::TurnDone {
                         turn_id: turn_id.clone(),
+                        agent: agent.clone(),
                     });
                 } else {
                     warn_missing_turn_id(stored.storage_seq, "turnDone");
                 }
-                self.phase_tracker.force_to(Phase::Idle, None);
+                self.phase_tracker
+                    .force_to(Phase::Idle, None, AgentEventContext::default());
                 self.current_turn_id = None;
             },
             StorageEvent::Error { message, .. } => {
                 push(AgentEvent::Error {
                     turn_id: turn_id.clone(),
+                    agent: agent.clone(),
                     code: if message == "interrupted" {
                         "interrupted".to_string()
                     } else {
@@ -309,7 +327,8 @@ impl EventTranslator {
                     message: message.clone(),
                 });
                 if message == "interrupted" {
-                    self.phase_tracker.force_to(Phase::Interrupted, turn_id);
+                    self.phase_tracker
+                        .force_to(Phase::Interrupted, turn_id, agent);
                 }
             },
         }
@@ -341,7 +360,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        AgentEvent, StoredEvent, ToolOutputStream, UserMessageOrigin, phase_of_storage_event,
+        AgentEvent, AgentEventContext, StoredEvent, ToolOutputStream, UserMessageOrigin,
+        phase_of_storage_event,
     };
 
     #[test]
@@ -351,6 +371,7 @@ mod tests {
                 storage_seq: 1,
                 event: StorageEvent::UserMessage {
                     turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
                     content: "hello".to_string(),
                     origin: UserMessageOrigin::User,
                     timestamp: chrono::Utc::now(),
@@ -372,6 +393,7 @@ mod tests {
             AgentEvent::UserMessage {
                 ref turn_id,
                 ref content,
+                ..
             } if turn_id == "turn-1" && content == "hello"
         ));
         assert_eq!(records[0].event_id, "1.0");
@@ -385,6 +407,7 @@ mod tests {
             storage_seq: 1,
             event: StorageEvent::ToolCall {
                 turn_id: Some("turn-1".to_string()),
+                agent: AgentEventContext::default(),
                 tool_call_id: "call-1".to_string(),
                 tool_name: "shell".to_string(),
                 args: json!({"command": "echo ok"}),
@@ -394,6 +417,7 @@ mod tests {
             storage_seq: 2,
             event: StorageEvent::ToolCallDelta {
                 turn_id: Some("turn-1".to_string()),
+                agent: AgentEventContext::default(),
                 tool_call_id: "call-1".to_string(),
                 tool_name: String::new(),
                 stream: ToolOutputStream::Stdout,
@@ -404,6 +428,7 @@ mod tests {
             storage_seq: 3,
             event: StorageEvent::ToolResult {
                 turn_id: Some("turn-1".to_string()),
+                agent: AgentEventContext::default(),
                 tool_call_id: "call-1".to_string(),
                 tool_name: String::new(),
                 output: "ok\n".to_string(),
@@ -438,6 +463,7 @@ mod tests {
     fn phase_of_tool_call_delta_is_calling_tool() {
         let phase = phase_of_storage_event(&StorageEvent::ToolCallDelta {
             turn_id: Some("turn-1".to_string()),
+            agent: AgentEventContext::default(),
             tool_call_id: "call-1".to_string(),
             tool_name: "shell".to_string(),
             stream: ToolOutputStream::Stdout,
@@ -454,6 +480,7 @@ mod tests {
                 storage_seq: 1,
                 event: StorageEvent::ToolCallDelta {
                     turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
                     tool_call_id: "call-1".to_string(),
                     tool_name: "shell".to_string(),
                     stream: ToolOutputStream::Stderr,
@@ -482,6 +509,7 @@ mod tests {
                 storage_seq: 7,
                 event: StorageEvent::CompactApplied {
                     turn_id: None,
+                    agent: AgentEventContext::default(),
                     trigger: crate::CompactTrigger::Manual,
                     summary: "保留最近上下文".to_string(),
                     preserved_recent_turns: 2,
@@ -504,6 +532,7 @@ mod tests {
                 trigger: crate::CompactTrigger::Manual,
                 summary,
                 preserved_recent_turns,
+                ..
             } if summary == "保留最近上下文" && *preserved_recent_turns == 2
         ));
     }

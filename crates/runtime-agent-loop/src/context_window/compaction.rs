@@ -385,6 +385,16 @@ mod tests {
     }
 
     #[test]
+    fn render_compact_system_prompt_skips_whitespace_only_context() {
+        let prompt_none = render_compact_system_prompt(None);
+        let prompt_ws = render_compact_system_prompt(Some("   \n\t  "));
+
+        // 纯空白上下文不应追加任何额外指令
+        assert_eq!(prompt_ws, prompt_none);
+        assert!(!prompt_ws.contains("Additional Compact Instructions"));
+    }
+
+    #[test]
     fn extract_summary_prefers_summary_block() {
         let summary = extract_summary("<analysis>draft</analysis><summary>\nSection\n</summary>")
             .expect("summary should parse");

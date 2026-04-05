@@ -50,8 +50,9 @@ use std::{
 };
 
 use astrcode_core::{
-    CancelToken, CompactTrigger, ContextDecisionInput, ContextStrategy, LlmMessage, Result,
-    StorageEvent, StoredEvent, UserMessageOrigin, format_compact_summary, project,
+    AgentEventContext, CancelToken, CompactTrigger, ContextDecisionInput, ContextStrategy,
+    LlmMessage, Result, StorageEvent, StoredEvent, UserMessageOrigin, format_compact_summary,
+    project,
 };
 use astrcode_runtime_llm::LlmProvider;
 use async_trait::async_trait;
@@ -188,6 +189,7 @@ fn tail_snapshot_from_messages(
             let event = match message {
                 LlmMessage::User { content, origin } => StorageEvent::UserMessage {
                     turn_id,
+                    agent: AgentEventContext::default(),
                     content: content.clone(),
                     origin: *origin,
                     timestamp,
@@ -196,6 +198,7 @@ fn tail_snapshot_from_messages(
                     content, reasoning, ..
                 } => StorageEvent::AssistantFinal {
                     turn_id,
+                    agent: AgentEventContext::default(),
                     content: content.clone(),
                     reasoning_content: reasoning.as_ref().map(|value| value.content.clone()),
                     reasoning_signature: reasoning
@@ -208,6 +211,7 @@ fn tail_snapshot_from_messages(
                     content,
                 } => StorageEvent::ToolResult {
                     turn_id,
+                    agent: AgentEventContext::default(),
                     tool_call_id: tool_call_id.clone(),
                     tool_name: "tail.rebuild".to_string(),
                     success: true,
@@ -721,7 +725,7 @@ pub(crate) fn build_artifact_from_custom_summary(
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{LlmMessage, StorageEvent, UserMessageOrigin};
+    use astrcode_core::{AgentEventContext, LlmMessage, StorageEvent, UserMessageOrigin};
     use astrcode_runtime_llm::{EventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
 
     use super::*;
@@ -825,6 +829,7 @@ mod tests {
             storage_seq: 1,
             event: StorageEvent::UserMessage {
                 turn_id: Some("turn-1".to_string()),
+                agent: AgentEventContext::default(),
                 content: "current ask".to_string(),
                 origin: UserMessageOrigin::User,
                 timestamp: Utc::now(),
@@ -916,6 +921,7 @@ mod tests {
                 storage_seq: 7,
                 event: StorageEvent::UserMessage {
                     turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
                     content: "older".to_string(),
                     origin: UserMessageOrigin::User,
                     timestamp: Utc::now(),
@@ -925,6 +931,7 @@ mod tests {
                 storage_seq: 11,
                 event: StorageEvent::AssistantFinal {
                     turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
                     content: "latest".to_string(),
                     reasoning_content: None,
                     reasoning_signature: None,

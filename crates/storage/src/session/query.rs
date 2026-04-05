@@ -652,6 +652,7 @@ mod tests {
                 storage_seq: 2,
                 event: StorageEvent::Error {
                     turn_id: Some("turn-1".to_string()),
+                    agent: astrcode_core::AgentEventContext::default(),
                     message: "boom".to_string(),
                     timestamp: Some(failed_at),
                 },

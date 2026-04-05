@@ -30,8 +30,8 @@ pub use config::{
     TestConnectionRequest, TestResultDto,
 };
 pub use event::{
-    AgentEventEnvelope, AgentEventPayload, CompactTriggerDto, PROTOCOL_VERSION, PhaseDto,
-    ToolCallResultDto, ToolOutputStreamDto,
+    AgentContextDto, AgentEventEnvelope, AgentEventPayload, CompactTriggerDto, PROTOCOL_VERSION,
+    PhaseDto, ToolCallResultDto, ToolOutputStreamDto,
 };
 pub use model::{CurrentModelInfoDto, ModelOptionDto};
 pub use runtime::{

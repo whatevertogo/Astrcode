@@ -26,7 +26,9 @@
 //! 用户可以在消息中指定 Token 预算（如 `+50k`），Turn 会在接近预算时
 //! 自动停止或请求继续（auto-continue nudge）。
 
-use astrcode_core::{AgentState, CancelToken, ContextStrategy, Result, StorageEvent};
+use astrcode_core::{
+    AgentEventContext, AgentState, CancelToken, ContextStrategy, Result, StorageEvent,
+};
 use astrcode_runtime_prompt::{DiagnosticLevel, PromptDiagnostics};
 
 use super::{
@@ -77,6 +79,7 @@ const MAX_OUTPUT_CONTINUATION_ATTEMPTS: usize = 3;
 /// - LLM 返回纯文本（无工具调用）
 /// - 取消信号触发
 /// - 任何步骤返回错误
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_turn(
     agent_loop: &AgentLoop,
     state: &AgentState,
@@ -84,6 +87,7 @@ pub(crate) async fn run_turn(
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
     cancel: CancelToken,
     emit_turn_done: bool,
+    agent: AgentEventContext,
     compaction_tail: CompactionTailSnapshot,
 ) -> Result<TurnOutcome> {
     let provider =
@@ -95,6 +99,7 @@ pub(crate) async fn run_turn(
             return report_error(
                 turn_id,
                 internal_error(error).to_string(),
+                &agent,
                 on_event,
                 emit_turn_done,
             );
@@ -113,7 +118,7 @@ pub(crate) async fn run_turn(
         // 此处不会立即响应取消——实际的中断由 generate_response 内部的
         // CancelToken 机制处理（取消时 provider 的 HTTP 连接会被 abort）。
         if cancel.is_cancelled() {
-            return report_interrupted(turn_id, on_event, emit_turn_done);
+            return report_interrupted(turn_id, &agent, on_event, emit_turn_done);
         }
 
         let bundle = match agent_loop.context.build_bundle(
@@ -129,7 +134,7 @@ pub(crate) async fn run_turn(
         ) {
             Ok(bundle) => bundle,
             Err(error) => {
-                return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
+                return report_error(turn_id, error.to_string(), &agent, on_event, emit_turn_done);
             },
         };
 
@@ -140,7 +145,7 @@ pub(crate) async fn run_turn(
         {
             Ok(output) => output,
             Err(error) => {
-                return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
+                return report_error(turn_id, error.to_string(), &agent, on_event, emit_turn_done);
             },
         };
         log_prompt_diagnostics(&build_output.diagnostics);
@@ -161,7 +166,7 @@ pub(crate) async fn run_turn(
         ) {
             Ok(prepared) => prepared,
             Err(error) => {
-                return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
+                return report_error(turn_id, error.to_string(), &agent, on_event, emit_turn_done);
             },
         };
         emit_event_with_file_tracking(
@@ -169,6 +174,7 @@ pub(crate) async fn run_turn(
             on_event,
             StorageEvent::PromptMetrics {
                 turn_id: Some(turn_id.to_string()),
+                agent: agent.clone(),
                 step_index: step_index as u32,
                 estimated_tokens: prompt_snapshot.context_tokens.min(u32::MAX as usize) as u32,
                 context_window: prompt_snapshot.context_window.min(u32::MAX as usize) as u32,
@@ -188,7 +194,7 @@ pub(crate) async fn run_turn(
         {
             Ok(strategy) => strategy,
             Err(error) => {
-                return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
+                return report_error(turn_id, error.to_string(), &agent, on_event, emit_turn_done);
             },
         };
         if matches!(context_strategy, ContextStrategy::Compact) {
@@ -203,6 +209,7 @@ pub(crate) async fn run_turn(
                     runtime_system_prompt: runtime_system_prompt_for_auto_compact.as_deref(),
                     reason: CompactionReason::Auto,
                     turn_id,
+                    agent: &agent,
                     cancel: cancel.clone(),
                     tail: compaction_tail.clone(),
                     tools,
@@ -219,9 +226,9 @@ pub(crate) async fn run_turn(
                 Ok(None) => {},
                 Err(error) => {
                     return if cancel.is_cancelled() {
-                        report_interrupted(turn_id, on_event, emit_turn_done)
+                        report_interrupted(turn_id, &agent, on_event, emit_turn_done)
                     } else {
-                        report_error(turn_id, error.to_string(), on_event, emit_turn_done)
+                        report_error(turn_id, error.to_string(), &agent, on_event, emit_turn_done)
                     };
                 },
             }
@@ -234,7 +241,7 @@ pub(crate) async fn run_turn(
         {
             Ok(request) => request,
             Err(error) => {
-                return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
+                return report_error(turn_id, error.to_string(), &agent, on_event, emit_turn_done);
             },
         };
         // Reactive compact must reuse the exact system prompt that reached the provider after
@@ -249,6 +256,7 @@ pub(crate) async fn run_turn(
             &provider,
             request.clone(),
             turn_id,
+            agent.clone(),
             cancel.clone(),
             on_event,
         )
@@ -281,6 +289,7 @@ pub(crate) async fn run_turn(
                                 .as_deref(),
                             reason: CompactionReason::Reactive,
                             turn_id,
+                            agent: &agent,
                             cancel: cancel.clone(),
                             tail: compaction_tail.clone(),
                             tools: agent_loop.capabilities.tool_definitions(),
@@ -303,13 +312,19 @@ pub(crate) async fn run_turn(
                                      {} attempts",
                                     reactive_compact_attempts
                                 ),
+                                &agent,
                                 on_event,
                                 emit_turn_done,
                             );
                         },
                         Err(compact_error) => {
                             if cancel.is_cancelled() {
-                                return report_interrupted(turn_id, on_event, emit_turn_done);
+                                return report_interrupted(
+                                    turn_id,
+                                    &agent,
+                                    on_event,
+                                    emit_turn_done,
+                                );
                             }
                             return report_error(
                                 turn_id,
@@ -317,15 +332,22 @@ pub(crate) async fn run_turn(
                                     "reactive compact failed after {} attempts: {}",
                                     reactive_compact_attempts, compact_error
                                 ),
+                                &agent,
                                 on_event,
                                 emit_turn_done,
                             );
                         },
                     }
                 } else if cancel.is_cancelled() {
-                    return report_interrupted(turn_id, on_event, emit_turn_done);
+                    return report_interrupted(turn_id, &agent, on_event, emit_turn_done);
                 } else {
-                    return report_error(turn_id, error.to_string(), on_event, emit_turn_done);
+                    return report_error(
+                        turn_id,
+                        error.to_string(),
+                        &agent,
+                        on_event,
+                        emit_turn_done,
+                    );
                 }
             },
         };
@@ -339,6 +361,7 @@ pub(crate) async fn run_turn(
                 on_event,
                 StorageEvent::AssistantFinal {
                     turn_id: Some(turn_id.to_string()),
+                    agent: agent.clone(),
                     content: output.content.clone(),
                     reasoning_content: output.reasoning.as_ref().map(|value| value.content.clone()),
                     reasoning_signature: output
@@ -389,12 +412,24 @@ pub(crate) async fn run_turn(
                     MAX_OUTPUT_CONTINUATION_ATTEMPTS
                 );
                 // 超过最大续命次数，正常结束 turn
-                return complete_turn(turn_id, TurnOutcome::Completed, on_event, emit_turn_done);
+                return complete_turn(
+                    turn_id,
+                    TurnOutcome::Completed,
+                    &agent,
+                    on_event,
+                    emit_turn_done,
+                );
             }
         }
 
         if tool_calls.is_empty() {
-            return complete_turn(turn_id, TurnOutcome::Completed, on_event, emit_turn_done);
+            return complete_turn(
+                turn_id,
+                TurnOutcome::Completed,
+                &agent,
+                on_event,
+                emit_turn_done,
+            );
         }
 
         let tool_cycle_outcome = match tool_cycle::execute_tool_calls(
@@ -404,6 +439,7 @@ pub(crate) async fn run_turn(
             turn_id,
             state,
             step_index,
+            &agent,
             &mut conversation.messages,
             &mut |event| emit_event_with_file_tracking(&mut file_access, on_event, event),
             &cancel,
@@ -415,6 +451,7 @@ pub(crate) async fn run_turn(
                 return report_error(
                     turn_id,
                     internal_error(error).to_string(),
+                    &agent,
                     on_event,
                     emit_turn_done,
                 );
@@ -425,7 +462,7 @@ pub(crate) async fn run_turn(
             tool_cycle_outcome,
             tool_cycle::ToolCycleOutcome::Interrupted
         ) {
-            return report_interrupted(turn_id, on_event, emit_turn_done);
+            return report_interrupted(turn_id, &agent, on_event, emit_turn_done);
         }
 
         step_index += 1;
@@ -435,11 +472,12 @@ pub(crate) async fn run_turn(
 fn complete_turn(
     turn_id: &str,
     outcome: TurnOutcome,
+    agent: &AgentEventContext,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
     emit_turn_done: bool,
 ) -> Result<TurnOutcome> {
     if emit_turn_done {
-        finish_turn(turn_id, outcome, on_event)
+        finish_turn(turn_id, outcome, agent.clone(), on_event)
     } else {
         Ok(outcome)
     }
@@ -448,15 +486,17 @@ fn complete_turn(
 fn report_error(
     turn_id: &str,
     message: impl Into<String>,
+    agent: &AgentEventContext,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
     emit_turn_done: bool,
 ) -> Result<TurnOutcome> {
     let message = message.into();
     if emit_turn_done {
-        finish_with_error(turn_id, message, on_event)
+        finish_with_error(turn_id, message, agent.clone(), on_event)
     } else {
         on_event(StorageEvent::Error {
             turn_id: Some(turn_id.to_string()),
+            agent: agent.clone(),
             message: message.clone(),
             timestamp: Some(chrono::Utc::now()),
         })?;
@@ -466,14 +506,16 @@ fn report_error(
 
 fn report_interrupted(
     turn_id: &str,
+    agent: &AgentEventContext,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
     emit_turn_done: bool,
 ) -> Result<TurnOutcome> {
     if emit_turn_done {
-        finish_interrupted(turn_id, on_event)
+        finish_interrupted(turn_id, agent.clone(), on_event)
     } else {
         on_event(StorageEvent::Error {
             turn_id: Some(turn_id.to_string()),
+            agent: agent.clone(),
             message: "interrupted".to_string(),
             timestamp: Some(chrono::Utc::now()),
         })?;
@@ -509,6 +551,7 @@ struct CompactContext<'a> {
     runtime_system_prompt: Option<&'a str>,
     reason: CompactionReason,
     turn_id: &'a str,
+    agent: &'a AgentEventContext,
     cancel: CancelToken,
     tail: CompactionTailSnapshot,
     /// 工具定义列表，用于 pre-compact hook 上下文。
@@ -622,12 +665,13 @@ async fn maybe_compact_conversation(
         .await;
     // Persist the compaction event only after we have proven the rebuilt view is usable. That
     // avoids emitting durable history that the in-memory loop cannot continue from.
-    emit_compact_applied(ctx.turn_id, &artifact, on_event)?;
+    emit_compact_applied(ctx.turn_id, ctx.agent, &artifact, on_event)?;
     Ok(Some(compacted_view))
 }
 
 fn emit_compact_applied(
     turn_id: &str,
+    agent: &AgentEventContext,
     artifact: &CompactionArtifact,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
 ) -> Result<()> {
@@ -641,6 +685,7 @@ fn emit_compact_applied(
     );
     on_event(StorageEvent::CompactApplied {
         turn_id: Some(turn_id.to_string()),
+        agent: agent.clone(),
         trigger: artifact.trigger.as_trigger(),
         summary: artifact.summary.clone(),
         preserved_recent_turns: artifact.preserved_recent_turns.min(u32::MAX as usize) as u32,

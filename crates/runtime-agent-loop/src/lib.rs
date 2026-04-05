@@ -1,5 +1,6 @@
 //! Agent loop execution engine and shared context-window algorithms.
 
+pub mod agent_control;
 pub mod agent_loop;
 pub mod approval_service;
 mod compaction_runtime;
@@ -10,6 +11,7 @@ mod prompt_runtime;
 pub mod provider_factory;
 mod request_assembler;
 
+pub use agent_control::{AgentControl, AgentControlError};
 pub use agent_loop::{
     AgentLoop, TurnOutcome,
     token_budget::{

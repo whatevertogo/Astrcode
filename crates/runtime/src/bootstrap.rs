@@ -16,12 +16,16 @@
 //! 插件加载在后台异步进行，不阻塞应用启动。
 //! 内置能力立即可用，插件能力在加载完成后动态注册。
 
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    sync::{Arc, RwLock as StdRwLock},
+};
 
 use astrcode_core::{
     AstrError, CapabilityRouter, PluginManifest, PluginRegistry, RuntimeCoordinator, RuntimeHandle,
 };
 use astrcode_runtime_skill_loader::{SkillCatalog, merge_skill_layers};
+use runtime_agent_loader::{AgentLoaderError, AgentProfileLoader, AgentProfileRegistry};
 use tokio::sync::RwLock;
 
 use crate::{
@@ -43,6 +47,12 @@ use crate::{
 pub struct RuntimeBootstrap {
     /// 运行时服务门面，所有会话/工具/Turn 操作的入口
     pub service: Arc<RuntimeService>,
+    /// Agent 定义加载器。
+    pub agent_loader: Arc<AgentProfileLoader>,
+    /// Agent Profile 注册表快照。
+    ///
+    /// bootstrap 在启动时完成 profile 合并，避免后续调用方各自读取文件导致语义漂移。
+    pub agent_profiles: Arc<StdRwLock<Arc<AgentProfileRegistry>>>,
     /// 运行时协调器，管理插件注册和托管组件
     pub coordinator: Arc<RuntimeCoordinator>,
     /// 运行时治理层，支持快照、热重载等治理能力
@@ -132,6 +142,10 @@ where
 {
     let plugin_registry = Arc::new(PluginRegistry::default());
     let builtin_skills = astrcode_runtime_skill_loader::load_builtin_skills();
+    let agent_loader = Arc::new(AgentProfileLoader::new()?);
+    let agent_profiles = Arc::new(StdRwLock::new(Arc::new(
+        agent_loader.load().map_err(agent_loader_error_to_astr)?,
+    )));
 
     // 为当前 surface 创建独立的 skill 目录和 router。
     // 后台加载完成后会整体替换为新 surface，避免把半更新状态暴露给新 turn。
@@ -147,16 +161,21 @@ where
 
     // 创建 RuntimeService（立即可用）
     let service = Arc::new(
-        RuntimeService::from_capabilities_with_prompt_inputs(
+        RuntimeService::from_capabilities_with_prompt_inputs_and_agents(
             router.clone(),
             Vec::new(), // prompt declarations 将在插件加载后动态添加
-            builtin_skill_catalog,
+            Arc::clone(&builtin_skill_catalog),
+            Arc::clone(&agent_loader),
+            Arc::clone(&agent_profiles),
         )
         .map_err(service_error_to_astr)?,
     );
     // 配置热重载需要尽早挂载 watcher，确保用户在应用启动后直接编辑 config.json
     // 时，后续新 turn 就能看到最新的 runtime 参数和默认模型选择。
     service.start_config_auto_reload();
+    // Agent 定义属于独立的文件系统输入面，需要单独 watch，避免用户编辑 agents
+    // 后必须重启 runtime 才能生效。
+    service.start_agent_auto_reload();
 
     // 创建后台加载句柄
     let plugin_load_handle = PluginLoadHandle::new();
@@ -188,6 +207,8 @@ where
 
         return Ok(RuntimeBootstrap {
             service,
+            agent_loader,
+            agent_profiles,
             coordinator,
             governance,
             plugin_load_handle,
@@ -306,6 +327,8 @@ where
 
     Ok(RuntimeBootstrap {
         service,
+        agent_loader,
+        agent_profiles,
         coordinator,
         governance,
         plugin_load_handle,
@@ -344,5 +367,27 @@ fn service_error_to_astr(error: ServiceError) -> AstrError {
         | ServiceError::Conflict(message)
         | ServiceError::InvalidInput(message) => AstrError::Validation(message),
         ServiceError::Internal(error) => AstrError::Internal(error.to_string()),
+    }
+}
+
+fn agent_loader_error_to_astr(error: AgentLoaderError) -> AstrError {
+    match error {
+        AgentLoaderError::ResolvePath(source) => source,
+        AgentLoaderError::ReadDir { path, source }
+        | AgentLoaderError::ReadFile { path, source } => AstrError::io(
+            format!("failed to load agent definitions from {}", path),
+            source,
+        ),
+        AgentLoaderError::MissingFrontmatter { path } => {
+            AstrError::Validation(format!("agent file '{}' is missing YAML frontmatter", path))
+        },
+        AgentLoaderError::ParseFrontmatter { path, source } => AstrError::Validation(format!(
+            "failed to parse agent frontmatter for '{}': {}",
+            path, source
+        )),
+        AgentLoaderError::InvalidFrontmatter { path, message } => AstrError::Validation(format!(
+            "invalid agent frontmatter for '{}': {}",
+            path, message
+        )),
     }
 }

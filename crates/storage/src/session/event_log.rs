@@ -355,7 +355,7 @@ impl EventLogWriter for EventLog {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::StorageEvent;
+    use astrcode_core::{AgentEventContext, StorageEvent};
     use chrono::Utc;
 
     use super::*;
@@ -369,6 +369,7 @@ mod tests {
         for index in 0..3 {
             log.append_stored(&StorageEvent::AssistantFinal {
                 turn_id: Some(format!("turn-{index}")),
+                agent: AgentEventContext::default(),
                 content: "x".repeat(40_000),
                 reasoning_content: None,
                 reasoning_signature: None,

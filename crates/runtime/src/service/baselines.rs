@@ -18,7 +18,9 @@ use std::{
     time::Duration,
 };
 
-use astrcode_core::{AstrError, Result, StorageEvent, StoredEvent, UserMessageOrigin};
+use astrcode_core::{
+    AgentEventContext, AstrError, Result, StorageEvent, StoredEvent, UserMessageOrigin,
+};
 use astrcode_runtime_agent_loop::{AgentLoop, ProviderFactory};
 use astrcode_storage::session::EventLog;
 use async_trait::async_trait;
@@ -129,6 +131,7 @@ fn seed_session_log(session_id: &str, working_dir: &Path, turns: usize) {
             &mut storage_seq,
             StorageEvent::UserMessage {
                 turn_id: Some(turn_id.clone()),
+                agent: AgentEventContext::default(),
                 content: format!("prompt {turn_index}"),
                 origin: UserMessageOrigin::User,
                 timestamp,
@@ -139,6 +142,7 @@ fn seed_session_log(session_id: &str, working_dir: &Path, turns: usize) {
             &mut storage_seq,
             StorageEvent::AssistantFinal {
                 turn_id: Some(turn_id.clone()),
+                agent: AgentEventContext::default(),
                 content: format!("response {turn_index}"),
                 reasoning_content: None,
                 reasoning_signature: None,
@@ -150,6 +154,7 @@ fn seed_session_log(session_id: &str, working_dir: &Path, turns: usize) {
             &mut storage_seq,
             StorageEvent::TurnDone {
                 turn_id: Some(turn_id),
+                agent: AgentEventContext::default(),
                 timestamp,
                 reason: Some("completed".to_string()),
             },

@@ -106,6 +106,7 @@ pub(super) fn convert_events_to_messages(events: &[StoredEvent]) -> Vec<SessionM
                 content,
                 timestamp,
                 origin,
+                ..
             } => {
                 if !matches!(origin, UserMessageOrigin::User) {
                     continue;
@@ -412,7 +413,7 @@ fn build_shell_display_metadata(
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::UserMessageOrigin;
+    use astrcode_core::{AgentEventContext, UserMessageOrigin};
     use chrono::{TimeZone, Utc};
     use serde_json::json;
 
@@ -429,6 +430,7 @@ mod tests {
                 1,
                 StorageEvent::UserMessage {
                     turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
                     content: "调用一下工具给我看看".to_string(),
                     origin: UserMessageOrigin::User,
                     timestamp: Utc.with_ymd_and_hms(2026, 3, 31, 15, 0, 0).unwrap(),
@@ -438,6 +440,7 @@ mod tests {
                 2,
                 StorageEvent::AssistantFinal {
                     turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
                     content: String::new(),
                     reasoning_content: Some("tool planning".to_string()),
                     reasoning_signature: None,
@@ -448,6 +451,7 @@ mod tests {
                 3,
                 StorageEvent::ToolCall {
                     turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
                     tool_call_id: "tc-1".to_string(),
                     tool_name: "listDir".to_string(),
                     args: json!({"path": "."}),
@@ -457,6 +461,7 @@ mod tests {
                 4,
                 StorageEvent::ToolResult {
                     turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
                     tool_call_id: "tc-1".to_string(),
                     tool_name: "listDir".to_string(),
                     output: "[]".to_string(),
@@ -470,6 +475,7 @@ mod tests {
                 5,
                 StorageEvent::AssistantFinal {
                     turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
                     content: "目录里有 0 项。".to_string(),
                     reasoning_content: Some("final reasoning".to_string()),
                     reasoning_signature: None,
@@ -495,6 +501,7 @@ mod tests {
                 1,
                 StorageEvent::AssistantFinal {
                     turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
                     content: String::new(),
                     reasoning_content: Some("tool planning".to_string()),
                     reasoning_signature: None,
@@ -505,6 +512,7 @@ mod tests {
                 2,
                 StorageEvent::ToolCall {
                     turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
                     tool_call_id: "tc-1".to_string(),
                     tool_name: "listDir".to_string(),
                     args: json!({"path": "."}),
@@ -514,6 +522,7 @@ mod tests {
                 3,
                 StorageEvent::ToolResult {
                     turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
                     tool_call_id: "tc-1".to_string(),
                     tool_name: "listDir".to_string(),
                     output: "[]".to_string(),
@@ -527,6 +536,7 @@ mod tests {
                 4,
                 StorageEvent::TurnDone {
                     turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
                     timestamp: Utc.with_ymd_and_hms(2026, 3, 31, 15, 0, 2).unwrap(),
                     reason: Some("completed".to_string()),
                 },
@@ -546,6 +556,7 @@ mod tests {
                 1,
                 StorageEvent::ToolCall {
                     turn_id: Some("turn-shell".to_string()),
+                    agent: AgentEventContext::default(),
                     tool_call_id: "tc-shell".to_string(),
                     tool_name: "shell".to_string(),
                     args: json!({"command": "echo ok", "cwd": "/repo"}),
@@ -555,6 +566,7 @@ mod tests {
                 2,
                 StorageEvent::ToolCallDelta {
                     turn_id: Some("turn-shell".to_string()),
+                    agent: AgentEventContext::default(),
                     tool_call_id: "tc-shell".to_string(),
                     tool_name: "shell".to_string(),
                     stream: ToolOutputStream::Stdout,
@@ -565,6 +577,7 @@ mod tests {
                 3,
                 StorageEvent::ToolCallDelta {
                     turn_id: Some("turn-shell".to_string()),
+                    agent: AgentEventContext::default(),
                     tool_call_id: "tc-shell".to_string(),
                     tool_name: "shell".to_string(),
                     stream: ToolOutputStream::Stderr,
@@ -575,6 +588,7 @@ mod tests {
                 4,
                 StorageEvent::ToolResult {
                     turn_id: Some("turn-shell".to_string()),
+                    agent: AgentEventContext::default(),
                     tool_call_id: "tc-shell".to_string(),
                     tool_name: "shell".to_string(),
                     output: "[stdout]\nok\n\n[stderr]\nwarn\n".to_string(),
@@ -619,6 +633,7 @@ mod tests {
             1,
             StorageEvent::CompactApplied {
                 turn_id: None,
+                agent: AgentEventContext::default(),
                 trigger: astrcode_core::CompactTrigger::Manual,
                 summary: "保留最近两轮上下文".to_string(),
                 preserved_recent_turns: 2,

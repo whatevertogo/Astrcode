@@ -14,8 +14,8 @@ use std::{
 };
 
 use astrcode_core::{
-    AstrError, CancelToken, LlmMessage, Phase, StorageEvent, Tool, ToolDefinition,
-    ToolExecutionResult, ToolRegistry, UserMessageOrigin,
+    AgentEventContext, AstrError, CancelToken, LlmMessage, Phase, StorageEvent, Tool,
+    ToolDefinition, ToolExecutionResult, ToolRegistry, UserMessageOrigin,
 };
 use astrcode_runtime_llm::{EventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
 use async_trait::async_trait;
@@ -569,6 +569,7 @@ async fn manual_compact_event_recovers_files_from_recent_stored_events_not_only_
         storage_seq: 10,
         event: StorageEvent::ToolResult {
             turn_id: Some("turn-2".to_string()),
+            agent: AgentEventContext::default(),
             tool_call_id: "call-read".to_string(),
             tool_name: "readFile".to_string(),
             output: file_contents.clone(),

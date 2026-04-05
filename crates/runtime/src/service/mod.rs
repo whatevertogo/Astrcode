@@ -3,7 +3,7 @@
 //! RuntimeService 是 Astrcode 的核心服务，负责管理会话和执行 Agent 循环。
 
 use std::sync::{
-    Arc,
+    Arc, RwLock as StdRwLock,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -11,12 +11,13 @@ use astrcode_core::{
     AllowAllPolicyEngine, AstrError, CapabilityRouter, HookHandler, PolicyEngine, RuntimeHandle,
     SessionManager,
 };
-use astrcode_runtime_agent_loop::{AgentLoop, ApprovalBroker, DefaultApprovalBroker};
+use astrcode_runtime_agent_loop::{AgentControl, AgentLoop, ApprovalBroker, DefaultApprovalBroker};
 use astrcode_runtime_prompt::PromptDeclaration;
 use astrcode_runtime_skill_loader::SkillCatalog;
 use astrcode_storage::session::FileSystemSessionRepository;
 use async_trait::async_trait;
 use dashmap::DashMap;
+use runtime_agent_loader::{AgentProfileLoader, AgentProfileRegistry};
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 
@@ -61,6 +62,14 @@ struct RuntimeSurfaceState {
     prompt_declarations: Vec<PromptDeclaration>,
     skill_catalog: Arc<SkillCatalog>,
     hook_handlers: Vec<Arc<dyn HookHandler>>,
+}
+
+struct RuntimeServiceDeps {
+    agent_loader: Arc<AgentProfileLoader>,
+    agent_profiles: Arc<StdRwLock<Arc<AgentProfileRegistry>>>,
+    policy: Arc<dyn PolicyEngine>,
+    approval: Arc<dyn ApprovalBroker>,
+    session_manager: Arc<dyn SessionManager>,
 }
 
 fn build_agent_loop(
@@ -120,6 +129,20 @@ pub struct RuntimeService {
     session_load_lock: Mutex<()>,
     /// 可观测性（指标收集）
     observability: Arc<RuntimeObservability>,
+    /// 子 Agent 控制平面。
+    ///
+    /// runtime 必须持有这份状态，才能把 parent turn 的取消/结束传播到
+    /// 真正的子 Agent 树，而不是停留在独立库测试里。
+    agent_control: AgentControl,
+    /// Agent 定义加载器。
+    ///
+    /// loader 负责把 builtin / user / project 三层来源收敛成运行时可见的 profile 快照。
+    agent_loader: Arc<AgentProfileLoader>,
+    /// Agent Profile 注册表。
+    ///
+    /// profile 属于 runtime bootstrap 装配结果，不应该由调用方临时拼接；
+    /// service 持有同一份只读快照，确保后续子 Agent/工具看到一致配置。
+    agent_profiles: Arc<StdRwLock<Arc<AgentProfileRegistry>>>,
     /// 跨窗口共享的会话目录广播。
     /// 新建/删除/分叉会话后会发事件，驱动所有前端窗口刷新 sidebar 或跟随新分支。
     session_catalog_events: broadcast::Sender<SessionCatalogEvent>,
@@ -129,6 +152,8 @@ pub struct RuntimeService {
     rebuild_lock: Mutex<()>,
     /// 防止重复启动配置 watcher。
     config_watch_started: AtomicBool,
+    /// 防止重复启动 agent watcher。
+    agent_watch_started: AtomicBool,
 }
 
 impl RuntimeService {
@@ -147,13 +172,36 @@ impl RuntimeService {
         prompt_declarations: Vec<PromptDeclaration>,
         skill_catalog: Arc<SkillCatalog>,
     ) -> ServiceResult<Self> {
+        let agent_loader = Arc::new(AgentProfileLoader::new().map_err(ServiceError::from)?);
+        Self::from_capabilities_with_prompt_inputs_and_agents(
+            capabilities,
+            prompt_declarations,
+            skill_catalog,
+            agent_loader,
+            Arc::new(StdRwLock::new(Arc::new(
+                AgentProfileRegistry::with_builtin_defaults(),
+            ))),
+        )
+    }
+
+    pub fn from_capabilities_with_prompt_inputs_and_agents(
+        capabilities: CapabilityRouter,
+        prompt_declarations: Vec<PromptDeclaration>,
+        skill_catalog: Arc<SkillCatalog>,
+        agent_loader: Arc<AgentProfileLoader>,
+        agent_profiles: Arc<StdRwLock<Arc<AgentProfileRegistry>>>,
+    ) -> ServiceResult<Self> {
         Self::from_runtime_services(
             capabilities,
             prompt_declarations,
             skill_catalog,
-            Arc::new(AllowAllPolicyEngine),
-            Arc::new(DefaultApprovalBroker),
-            Arc::new(FileSystemSessionRepository),
+            RuntimeServiceDeps {
+                agent_loader,
+                agent_profiles,
+                policy: Arc::new(AllowAllPolicyEngine),
+                approval: Arc::new(DefaultApprovalBroker),
+                session_manager: Arc::new(FileSystemSessionRepository),
+            },
         )
     }
 
@@ -161,10 +209,15 @@ impl RuntimeService {
         capabilities: CapabilityRouter,
         prompt_declarations: Vec<PromptDeclaration>,
         skill_catalog: Arc<SkillCatalog>,
-        policy: Arc<dyn PolicyEngine>,
-        approval: Arc<dyn ApprovalBroker>,
-        session_manager: Arc<dyn SessionManager>,
+        deps: RuntimeServiceDeps,
     ) -> ServiceResult<Self> {
+        let RuntimeServiceDeps {
+            agent_loader,
+            agent_profiles,
+            policy,
+            approval,
+            session_manager,
+        } = deps;
         let config = load_config().map_err(ServiceError::from)?;
         let surface = RuntimeSurfaceState {
             capabilities,
@@ -189,10 +242,14 @@ impl RuntimeService {
             session_manager,
             session_load_lock: Mutex::new(()),
             observability: Arc::new(RuntimeObservability::default()),
+            agent_control: AgentControl::new(),
+            agent_loader,
+            agent_profiles,
             session_catalog_events,
             shutdown_token: CancellationToken::new(),
             rebuild_lock: Mutex::new(()),
             config_watch_started: AtomicBool::new(false),
+            agent_watch_started: AtomicBool::new(false),
         })
     }
 
@@ -200,38 +257,23 @@ impl RuntimeService {
         self.loop_.read().await.clone()
     }
 
+    #[deprecated(
+        note = "会清空 hook_handlers，导致插件 hook 在热替换时静默丢失。请使用 \
+                `replace_capabilities_with_prompt_inputs_and_hooks`。"
+    )]
     pub async fn replace_capabilities_with_prompt_inputs(
         &self,
         capabilities: CapabilityRouter,
         prompt_declarations: Vec<PromptDeclaration>,
         skill_catalog: Arc<SkillCatalog>,
     ) -> ServiceResult<()> {
-        // TODO(runtime-surface-hooks): 这个兼容入口目前会把 hook surface 重置为空，
-        // 只适合旧调用方。等所有装配路径都迁到 `replace_*_and_hooks` 后，可以删掉
-        // 这个方法，避免后续有人无意中把插件 hook 在热替换时丢掉。
-        let _guard = self.rebuild_lock.lock().await;
-        let runtime_config = {
-            let config = self.config.lock().await;
-            config.runtime.clone()
-        };
-        let next_surface = RuntimeSurfaceState {
+        self.replace_capabilities_with_prompt_inputs_and_hooks(
             capabilities,
             prompt_declarations,
             skill_catalog,
-            hook_handlers: Vec::new(),
-        };
-        let next_loop = build_agent_loop(
-            &next_surface,
-            &runtime_config,
-            Arc::clone(&self.policy),
-            Arc::clone(&self.approval),
-        );
-        // 写锁会阻塞直到所有活跃 reader（即正在运行的 turn 通过 current_loop()
-        // 持有的读锁）释放。已运行的 turn 继续使用旧的 AgentLoop（通过 Arc 引用），
-        // 新 turn 则获取新的 loop。这是一种优雅的滚动替换模式——无需暂停服务。
-        *self.loop_.write().await = next_loop;
-        *self.surface.write().await = next_surface;
-        Ok(())
+            Vec::new(),
+        )
+        .await
     }
 
     pub async fn replace_capabilities_with_prompt_inputs_and_hooks(
@@ -280,6 +322,23 @@ impl RuntimeService {
         });
     }
 
+    pub fn start_agent_auto_reload(self: &Arc<Self>) {
+        if self
+            .agent_watch_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+
+        let service = Arc::clone(self);
+        tokio::spawn(async move {
+            if let Err(error) = config_ops::run_agent_watch_loop(service).await {
+                log::warn!("agent hot reload watcher stopped: {}", error);
+            }
+        });
+    }
+
     pub fn loaded_session_count(&self) -> usize {
         self.sessions.len()
     }
@@ -302,6 +361,21 @@ impl RuntimeService {
 
     pub fn observability_snapshot(&self) -> RuntimeObservabilitySnapshot {
         self.observability.snapshot()
+    }
+
+    pub fn agent_control(&self) -> AgentControl {
+        self.agent_control.clone()
+    }
+
+    pub fn agent_loader(&self) -> Arc<AgentProfileLoader> {
+        Arc::clone(&self.agent_loader)
+    }
+
+    pub fn agent_profiles(&self) -> Arc<AgentProfileRegistry> {
+        self.agent_profiles
+            .read()
+            .expect("agent profile registry lock should not be poisoned")
+            .clone()
     }
 
     pub fn subscribe_session_catalog_events(&self) -> broadcast::Receiver<SessionCatalogEvent> {
@@ -328,6 +402,17 @@ impl RuntimeService {
             if session.running.load(std::sync::atomic::Ordering::SeqCst) {
                 if let Ok(cancel) = session.cancel.lock().map(|g| g.clone()) {
                     cancel.cancel();
+                }
+                let active_turn_id = session
+                    .active_turn_id
+                    .lock()
+                    .ok()
+                    .and_then(|guard| guard.clone());
+                if let Some(active_turn_id) = active_turn_id {
+                    let _ = self
+                        .agent_control
+                        .cancel_for_parent_turn(&active_turn_id)
+                        .await;
                 }
             }
         }

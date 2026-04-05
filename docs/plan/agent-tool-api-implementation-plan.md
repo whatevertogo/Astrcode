@@ -5,7 +5,7 @@
 本计划分为多个阶段, 每个阶段有独立的交付物和验证标准。总预计工作量基于现有 Astrcode 架构的最小侵入性改造。
 
 ```
-Phase 0 (设计完成) → Phase 1 (Agent Profiles) → Phase 2 (Agent as Tool)
+Phase 0 (设计完成) → Phase 1 (Agent Loader) → Phase 2 (Agent as Tool)
     → Phase 3 (扩展 API) → Phase 4 (WebSocket) → Phase 5 (前端适配)
 ```
 
@@ -24,8 +24,8 @@ Phase 0 (设计完成) → Phase 1 (Agent Profiles) → Phase 2 (Agent as Tool)
 ```bash
 cd crates
 
-# Agent Profile 定义 (预置 Agent 配置)
-cargo init --lib runtime-agent-profiles
+# Agent 定义加载器 (预置 Agent 配置)
+cargo init --lib runtime-agent-loader
 
 # Agent as Tool 实现
 cargo init --lib runtime-agent-tool
@@ -36,10 +36,10 @@ cargo init --lib runtime-agent-api
 
 #### 0.2 配置 Cargo.toml 依赖
 
-**crates/runtime-agent-profiles/Cargo.toml**:
+**crates/runtime-agent-loader/Cargo.toml**:
 ```toml
 [package]
-name = "runtime-agent-profiles"
+name = "runtime-agent-loader"
 version = "0.1.0"
 edition = "2021"
 
@@ -59,7 +59,7 @@ edition = "2021"
 
 [dependencies]
 runtime-agent-loop = { path = "../runtime-agent-loop" }
-runtime-agent-profiles = { path = "../runtime-agent-profiles" }
+runtime-agent-loader = { path = "../runtime-agent-loader" }
 core = { path = "../core" }
 protocol = { path = "../protocol" }
 tokio = { workspace = true }
@@ -79,7 +79,7 @@ edition = "2021"
 server = { path = "../server" }
 runtime = { path = "../runtime" }
 runtime-agent-tool = { path = "../runtime-agent-tool" }
-runtime-agent-profiles = { path = "../runtime-agent-profiles" }
+runtime-agent-loader = { path = "../runtime-agent-loader" }
 core = { path = "../core" }
 protocol = { path = "../protocol" }
 axum = { version = "0.7", features = ["ws", "json"] }
@@ -100,7 +100,7 @@ utoipa-swagger-ui = { version = "7", features = ["axum"] }
 [workspace]
 members = [
     # ... existing members
-    "crates/runtime-agent-profiles",
+    "crates/runtime-agent-loader",
     "crates/runtime-agent-tool",
     "crates/runtime-agent-api",
 ]
@@ -116,9 +116,9 @@ cargo check --workspace
 
 ---
 
-## Phase 1: Agent Profile 系统
+## Phase 1: Agent Loader 系统
 
-**目标**: 实现 Agent Profile 定义、加载和注册表
+**目标**: 实现 Agent 定义加载、合并和注册表
 
 **预估时间**: 1 天
 
@@ -126,12 +126,12 @@ cargo check --workspace
 
 #### 1.1 定义 Agent Profile 数据模型
 
-**文件**: `crates/runtime-agent-profiles/src/lib.rs`
+**文件**: `crates/runtime-agent-loader/src/lib.rs`
 
 ```rust
-//! Agent Profile 定义和注册表
+//! Agent Loader 定义和注册表
 //!
-//! Agent Profile 定义了子 Agent 的行为特征:
+//! Agent Loader 把子 Agent 定义收敛成统一注册表:
 //! - 可用工具集
 //! - 系统提示
 //! - 最大步数和 Token 预算
@@ -284,66 +284,31 @@ impl Default for AgentProfileRegistry {
 }
 ```
 
-#### 1.2 从配置文件加载 Profile
+#### 1.2 从 Markdown 目录加载 Agent
 
-**文件**: `crates/runtime-agent-profiles/src/config.rs`
+**文件**: `crates/runtime-agent-loader/src/lib.rs`
 
 ```rust
-//! 从 TOML 配置文件加载 Agent Profile
+//! 从 Markdown frontmatter 目录加载 Agent
 
-use std::collections::HashMap;
 use std::path::Path;
 
-use serde::Deserialize;
+use crate::AgentProfileRegistry;
 
-use crate::{AgentProfile, AgentProfileId, AgentProfileRegistry};
-
-/// TOML 配置文件结构
-#[derive(Debug, Deserialize)]
-pub struct AgentConfigFile {
-    #[serde(flatten)]
-    pub agents: HashMap<String, AgentProfileToml>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AgentProfileToml {
-    pub name: String,
-    pub description: String,
-    pub system_prompt: Option<String>,
-    pub allowed_tools: Option<Vec<String>>,
-    pub max_steps: usize,
-    pub token_budget: Option<usize>,
-    pub model_preference: Option<String>,
-    pub can_request_approval: Option<bool>,
-}
-
-/// 从 TOML 文件加载到注册表
-pub fn load_from_file(path: &Path, registry: &mut AgentProfileRegistry) -> std::io::Result<()> {
-    let content = std::fs::read_to_string(path)?;
-    let config: AgentConfigFile = toml::from_str(&content)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    
-    for (id, profile_toml) in config.agents {
-        let profile = AgentProfile {
-            name: profile_toml.name,
-            description: profile_toml.description,
-            system_prompt: profile_toml.system_prompt,
-            allowed_tools: profile_toml.allowed_tools,
-            max_steps: profile_toml.max_steps,
-            token_budget: profile_toml.token_budget,
-            model_preference: profile_toml.model_preference,
-            can_request_approval: profile_toml.can_request_approval.unwrap_or(false),
-        };
-        registry.register(id, profile);
+/// 先加载内置 agent，再按目录优先级逐层合并用户级和项目级定义。
+pub fn load_from_dirs(paths: &[&Path], registry: &mut AgentProfileRegistry) -> std::io::Result<()> {
+    for path in paths {
+        // 保持默认能力存在，同时允许本地目录覆盖同名定义。
+        load_from_dir(path, registry)?;
     }
-    
+
     Ok(())
 }
 ```
 
 #### 1.3 单元测试
 
-**文件**: `crates/runtime-agent-profiles/src/lib.rs` (底部)
+**文件**: `crates/runtime-agent-loader/src/lib.rs` (底部)
 
 ```rust
 #[cfg(test)]
@@ -392,10 +357,10 @@ mod tests {
 
 **修改**: `crates/runtime/src/bootstrap.rs`
 
-在 `RuntimeBootstrap` 中添加 profile registry:
+在 `RuntimeBootstrap` 中同时保留 loader 和 registry:
 
 ```rust
-use runtime_agent_profiles::AgentProfileRegistry;
+use runtime_agent_loader::{AgentProfileLoader, AgentProfileRegistry};
 
 pub struct RuntimeBootstrap {
     pub service: Arc<RuntimeService>,
@@ -403,12 +368,13 @@ pub struct RuntimeBootstrap {
     pub governance: Arc<RuntimeGovernance>,
     pub plugin_load_handle: PluginLoadHandle,
     // 新增
+    pub agent_loader: Arc<AgentProfileLoader>,
     pub agent_profiles: Arc<AgentProfileRegistry>,
 }
 ```
 
 **验收标准**: 
-- `cargo test --package runtime-agent-profiles` 全部通过
+- `cargo test --package runtime-agent-loader` 全部通过
 - `cargo check --workspace` 无错误
 
 ---
@@ -1371,8 +1337,8 @@ if (event.type === 'SubAgentTurnStart' || event.type === 'SubAgentTurnEnd') {
 ### 6.1 单元测试
 
 ```bash
-# Agent Profile 测试
-cargo test --package runtime-agent-profiles
+# Agent Loader 测试
+cargo test --package runtime-agent-loader
 
 # Agent Tool 测试
 cargo test --package runtime-agent-tool
@@ -1465,7 +1431,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --exclude astrcode
 
 # 单个 package
-cargo test --package runtime-agent-profiles
+cargo test --package runtime-agent-loader
 cargo test --package runtime-agent-tool
 
 # 运行 API 服务

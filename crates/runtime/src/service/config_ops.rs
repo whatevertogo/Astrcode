@@ -12,9 +12,10 @@
 //! 涉及磁盘 I/O 的操作（如解析配置路径、打开编辑器）通过 `spawn_blocking_service`
 //! 桥接到阻塞线程池，避免阻塞异步运行时。
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
+use runtime_agent_loader::AgentWatchPath;
 
 use super::{RuntimeService, ServiceError, ServiceResult, support::spawn_blocking_service};
 use crate::config::{config_path, open_config_in_editor, save_config, test_connection};
@@ -49,6 +50,31 @@ impl RuntimeService {
         *self.config.lock().await = next_config.clone();
         *self.loop_.write().await = next_loop;
         Ok(next_config)
+    }
+
+    /// 从磁盘重新加载 agent 定义，并原子替换当前 profile 快照。
+    ///
+    /// 这条路径不重建 agent loop，因为 agent 定义当前只影响子 Agent 的选择与约束，
+    /// 不影响主 loop 的 capability surface。
+    pub async fn reload_agent_profiles_from_disk(
+        &self,
+    ) -> ServiceResult<Arc<crate::AgentProfileRegistry>> {
+        let loader = self.agent_loader();
+        let next_registry = spawn_blocking_service("reload agent profiles from disk", move || {
+            loader.load().map_err(|error| {
+                ServiceError::Internal(astrcode_core::AstrError::Validation(error.to_string()))
+            })
+        })
+        .await?;
+        let next_registry = Arc::new(next_registry);
+
+        let _guard = self.rebuild_lock.lock().await;
+        *self.agent_profiles.write().map_err(|_| {
+            ServiceError::Internal(astrcode_core::AstrError::LockPoisoned(
+                "agent profile registry".to_string(),
+            ))
+        })? = Arc::clone(&next_registry);
+        Ok(next_registry)
     }
 
     /// 保存活跃的配置选择（profile 和 model）。
@@ -185,22 +211,7 @@ pub(super) async fn run_config_watch_loop(service: Arc<RuntimeService>) -> Servi
                     }
                 }
 
-                let debounce = tokio::time::sleep(Duration::from_millis(300));
-                tokio::pin!(debounce);
-                loop {
-                    tokio::select! {
-                        _ = service.shutdown_token.cancelled() => return Ok(()),
-                        _ = &mut debounce => break,
-                        maybe_next = rx.recv() => {
-                            let Some(next) = maybe_next else {
-                                return Ok(());
-                            };
-                            if let Err(error) = next {
-                                log::warn!("config watcher delivered an error: {}", error);
-                            }
-                        }
-                    }
-                }
+                drain_watch_events_with_debounce(&service, &mut rx, "config").await?;
 
                 match service.reload_config_from_disk().await {
                     Ok(config) => {
@@ -212,6 +223,70 @@ pub(super) async fn run_config_watch_loop(service: Arc<RuntimeService>) -> Servi
                     }
                     Err(error) => {
                         log::warn!("failed to hot-reload config from disk: {}", error);
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub(super) async fn run_agent_watch_loop(service: Arc<RuntimeService>) -> ServiceResult<()> {
+    let working_dir = std::env::current_dir().ok();
+    let mut watch_targets = service.agent_loader().watch_paths(working_dir.as_deref());
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut watcher = RecommendedWatcher::new(
+        move |result| {
+            let _ = tx.send(result);
+        },
+        NotifyConfig::default(),
+    )
+    .map_err(|error| {
+        ServiceError::Internal(astrcode_core::AstrError::Internal(format!(
+            "failed to create agent watcher: {error}"
+        )))
+    })?;
+
+    apply_agent_watch_targets(&mut watcher, &HashMap::new(), &watch_targets)?;
+
+    loop {
+        tokio::select! {
+            _ = service.shutdown_token.cancelled() => return Ok(()),
+            maybe_event = rx.recv() => {
+                let Some(result) = maybe_event else {
+                    return Ok(());
+                };
+
+                match result {
+                    Ok(event) => {
+                        if !event_targets_agent_dirs(&event, &watch_targets) {
+                            continue;
+                        }
+                    }
+                    Err(error) => {
+                        log::warn!("agent watcher delivered an error: {}", error);
+                        continue;
+                    }
+                }
+
+                drain_watch_events_with_debounce(&service, &mut rx, "agent").await?;
+
+                let next_watch_targets = service.agent_loader().watch_paths(working_dir.as_deref());
+                if next_watch_targets != watch_targets {
+                    let current = watch_targets
+                        .iter()
+                        .map(|target| (target.path.clone(), target.recursive))
+                        .collect::<HashMap<_, _>>();
+                    apply_agent_watch_targets(&mut watcher, &current, &next_watch_targets)?;
+                    watch_targets = next_watch_targets;
+                }
+
+                match service.reload_agent_profiles_from_disk().await {
+                    Ok(registry) => {
+                        log::info!("reloaded agent profiles from disk: {} agents", registry.list().len());
+                    }
+                    Err(error) => {
+                        log::warn!("failed to hot-reload agent profiles from disk: {}", error);
                     }
                 }
             }
@@ -232,8 +307,88 @@ fn event_targets_config(event: &Event, config_path: &std::path::Path) -> bool {
     })
 }
 
+fn event_targets_agent_dirs(event: &Event, watch_targets: &[AgentWatchPath]) -> bool {
+    event.paths.iter().any(|path| {
+        watch_targets
+            .iter()
+            .any(|watch_target| path == &watch_target.path || path.starts_with(&watch_target.path))
+    })
+}
+
+async fn drain_watch_events_with_debounce(
+    service: &RuntimeService,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<notify::Result<Event>>,
+    watcher_name: &str,
+) -> ServiceResult<()> {
+    let debounce = tokio::time::sleep(Duration::from_millis(300));
+    tokio::pin!(debounce);
+    loop {
+        tokio::select! {
+            _ = service.shutdown_token.cancelled() => return Ok(()),
+            _ = &mut debounce => return Ok(()),
+            maybe_next = rx.recv() => {
+                let Some(next) = maybe_next else {
+                    return Ok(());
+                };
+                if let Err(error) = next {
+                    log::warn!("{watcher_name} watcher delivered an error: {error}");
+                }
+            }
+        }
+    }
+}
+
+fn apply_agent_watch_targets(
+    watcher: &mut RecommendedWatcher,
+    current: &HashMap<PathBuf, bool>,
+    next: &[AgentWatchPath],
+) -> ServiceResult<()> {
+    let next_map = next
+        .iter()
+        .map(|target| (target.path.clone(), target.recursive))
+        .collect::<HashMap<_, _>>();
+
+    for (path, recursive) in current {
+        if next_map.get(path) == Some(recursive) {
+            continue;
+        }
+        watcher.unwatch(path).map_err(|error| {
+            ServiceError::Internal(astrcode_core::AstrError::Internal(format!(
+                "failed to stop watching agent path '{}': {error}",
+                path.display()
+            )))
+        })?;
+    }
+
+    for target in next {
+        if current.get(&target.path) == Some(&target.recursive) {
+            continue;
+        }
+        watcher
+            .watch(
+                &target.path,
+                if target.recursive {
+                    RecursiveMode::Recursive
+                } else {
+                    RecursiveMode::NonRecursive
+                },
+            )
+            .map_err(|error| {
+                ServiceError::Internal(astrcode_core::AstrError::Internal(format!(
+                    "failed to watch agent path '{}'{}: {error}",
+                    target.path.display(),
+                    if target.recursive { " recursively" } else { "" }
+                )))
+            })?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    use notify::{Event, EventKind};
+
     use super::*;
     use crate::{
         config::{Config, ModelConfig, Profile, RuntimeConfig, save_config},
@@ -341,5 +496,98 @@ mod tests {
         assert_eq!(reloaded.active_model, "deepseek-reasoner");
         assert_eq!(service.get_config().await.active_model, "deepseek-reasoner");
         assert_eq!(service.current_loop().await.max_tool_concurrency(), 7);
+    }
+
+    #[tokio::test]
+    async fn reload_agent_profiles_from_disk_replaces_registry_snapshot() {
+        let guard = TestEnvGuard::new();
+        let agents_dir = guard.home_dir().join(".astrcode").join("agents");
+        std::fs::create_dir_all(&agents_dir).expect("agents dir should be created");
+        std::fs::write(
+            agents_dir.join("review.md"),
+            r#"---
+name: review
+description: 初始审查员
+tools: [readFile]
+---
+先看现状。
+"#,
+        )
+        .expect("initial agent should be written");
+
+        let service = RuntimeService::from_capabilities(empty_capabilities()).expect("service");
+        let initial = service
+            .reload_agent_profiles_from_disk()
+            .await
+            .expect("initial reload should succeed");
+        assert_eq!(
+            initial
+                .get("review")
+                .expect("review profile should exist")
+                .description,
+            "初始审查员"
+        );
+
+        std::fs::write(
+            agents_dir.join("review.md"),
+            r#"---
+name: review
+description: 更新后的审查员
+tools: [readFile, grep]
+---
+更新后的提示。
+"#,
+        )
+        .expect("updated agent should be written");
+
+        let reloaded = service
+            .reload_agent_profiles_from_disk()
+            .await
+            .expect("reload should succeed");
+        let review = reloaded.get("review").expect("review profile should exist");
+        assert_eq!(review.description, "更新后的审查员");
+        assert_eq!(
+            service
+                .agent_profiles()
+                .get("review")
+                .expect("service snapshot should be updated")
+                .allowed_tools,
+            vec!["readFile".to_string(), "grep".to_string()]
+        );
+    }
+
+    #[test]
+    fn event_targets_config_matches_exact_path_and_same_filename() {
+        let config_path = PathBuf::from("C:/Users/test/.astrcode/config.json");
+        let exact = Event::new(EventKind::Any).add_path(config_path.clone());
+        let sibling = Event::new(EventKind::Any).add_path(PathBuf::from("D:/shadow/config.json"));
+        let other = Event::new(EventKind::Any).add_path(PathBuf::from("D:/shadow/other.json"));
+
+        assert!(event_targets_config(&exact, &config_path));
+        assert!(event_targets_config(&sibling, &config_path));
+        assert!(!event_targets_config(&other, &config_path));
+    }
+
+    #[test]
+    fn event_targets_agent_dirs_matches_watched_roots_and_descendants() {
+        let watch_targets = vec![
+            AgentWatchPath {
+                path: PathBuf::from("C:/Users/test/.claude/agents"),
+                recursive: true,
+            },
+            AgentWatchPath {
+                path: PathBuf::from("C:/Users/test/project/.astrcode"),
+                recursive: false,
+            },
+        ];
+        let direct =
+            Event::new(EventKind::Any).add_path(PathBuf::from("C:/Users/test/.claude/agents"));
+        let descendant = Event::new(EventKind::Any)
+            .add_path(PathBuf::from("C:/Users/test/.claude/agents/review.md"));
+        let unrelated = Event::new(EventKind::Any).add_path(PathBuf::from("D:/tmp/review.md"));
+
+        assert!(event_targets_agent_dirs(&direct, &watch_targets));
+        assert!(event_targets_agent_dirs(&descendant, &watch_targets));
+        assert!(!event_targets_agent_dirs(&unrelated, &watch_targets));
     }
 }

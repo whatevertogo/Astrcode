@@ -20,11 +20,11 @@
 //! - **SSE 工具**：事件 ID 解析/格式化（`{storage_seq}.{subindex}` 格式）
 
 use astrcode_core::{
-    AgentEvent, AstrError, CapabilityDescriptor, Phase, PluginHealth, PluginState,
-    SessionEventRecord, SessionMeta, format_local_rfc3339, plugin::PluginEntry,
+    AgentEvent, AgentEventContext, AstrError, CapabilityDescriptor, Phase, PluginHealth,
+    PluginState, SessionEventRecord, SessionMeta, format_local_rfc3339, plugin::PluginEntry,
 };
 use astrcode_protocol::http::{
-    AgentEventEnvelope, AgentEventPayload, CompactTriggerDto, ComposerOptionDto,
+    AgentContextDto, AgentEventEnvelope, AgentEventPayload, CompactTriggerDto, ComposerOptionDto,
     ComposerOptionKindDto, ComposerOptionsResponseDto, ConfigView, CurrentModelInfoDto,
     ModelOptionDto, OperationMetricsDto, PROTOCOL_VERSION, PhaseDto, PluginHealthDto,
     PluginRuntimeStateDto, ProfileView, ReplayMetricsDto, RuntimeCapabilityDto, RuntimeMetricsDto,
@@ -255,6 +255,14 @@ fn to_compact_trigger_dto(trigger: astrcode_core::CompactTrigger) -> CompactTrig
     }
 }
 
+fn to_agent_context_dto(agent: AgentEventContext) -> AgentContextDto {
+    AgentContextDto {
+        agent_id: agent.agent_id,
+        parent_turn_id: agent.parent_turn_id,
+        agent_profile: agent.agent_profile,
+    }
+}
+
 /// 将能力描述符映射为 DTO。
 ///
 /// `kind` 字段通过 serde_json 序列化后取字符串表示，
@@ -354,54 +362,88 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
         AgentEvent::SessionStarted { session_id } => {
             AgentEventPayload::SessionStarted { session_id }
         },
-        AgentEvent::UserMessage { turn_id, content } => {
-            AgentEventPayload::UserMessage { turn_id, content }
-        },
-        AgentEvent::PhaseChanged { turn_id, phase } => AgentEventPayload::PhaseChanged {
+        AgentEvent::UserMessage {
             turn_id,
+            agent,
+            content,
+        } => AgentEventPayload::UserMessage {
+            turn_id,
+            agent: to_agent_context_dto(agent),
+            content,
+        },
+        AgentEvent::PhaseChanged {
+            turn_id,
+            agent,
+            phase,
+        } => AgentEventPayload::PhaseChanged {
+            turn_id,
+            agent: to_agent_context_dto(agent),
             phase: to_phase_dto(phase),
         },
-        AgentEvent::ModelDelta { turn_id, delta } => {
-            AgentEventPayload::ModelDelta { turn_id, delta }
+        AgentEvent::ModelDelta {
+            turn_id,
+            agent,
+            delta,
+        } => AgentEventPayload::ModelDelta {
+            turn_id,
+            agent: to_agent_context_dto(agent),
+            delta,
         },
-        AgentEvent::ThinkingDelta { turn_id, delta } => {
-            AgentEventPayload::ThinkingDelta { turn_id, delta }
+        AgentEvent::ThinkingDelta {
+            turn_id,
+            agent,
+            delta,
+        } => AgentEventPayload::ThinkingDelta {
+            turn_id,
+            agent: to_agent_context_dto(agent),
+            delta,
         },
         AgentEvent::AssistantMessage {
             turn_id,
+            agent,
             content,
             reasoning_content,
         } => AgentEventPayload::AssistantMessage {
             turn_id,
+            agent: to_agent_context_dto(agent),
             content,
             reasoning_content,
         },
         AgentEvent::ToolCallStart {
             turn_id,
+            agent,
             tool_call_id,
             tool_name,
             input,
         } => AgentEventPayload::ToolCallStart {
             turn_id,
+            agent: to_agent_context_dto(agent),
             tool_call_id,
             tool_name,
             input,
         },
         AgentEvent::ToolCallDelta {
             turn_id,
+            agent,
             tool_call_id,
             tool_name,
             stream,
             delta,
         } => AgentEventPayload::ToolCallDelta {
             turn_id,
+            agent: to_agent_context_dto(agent),
             tool_call_id,
             tool_name,
             stream: to_tool_output_stream_dto(stream),
             delta,
         },
-        AgentEvent::ToolCallResult { turn_id, result } => AgentEventPayload::ToolCallResult {
+        AgentEvent::ToolCallResult {
             turn_id,
+            agent,
+            result,
+        } => AgentEventPayload::ToolCallResult {
+            turn_id,
+            agent: to_agent_context_dto(agent),
             result: ToolCallResultDto {
                 tool_call_id: result.tool_call_id,
                 tool_name: result.tool_name,
@@ -415,22 +457,29 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
         },
         AgentEvent::CompactApplied {
             turn_id,
+            agent,
             trigger,
             summary,
             preserved_recent_turns,
         } => AgentEventPayload::CompactApplied {
             turn_id,
+            agent: to_agent_context_dto(agent),
             trigger: to_compact_trigger_dto(trigger),
             summary,
             preserved_recent_turns,
         },
-        AgentEvent::TurnDone { turn_id } => AgentEventPayload::TurnDone { turn_id },
+        AgentEvent::TurnDone { turn_id, agent } => AgentEventPayload::TurnDone {
+            turn_id,
+            agent: to_agent_context_dto(agent),
+        },
         AgentEvent::Error {
             turn_id,
+            agent,
             code,
             message,
         } => AgentEventPayload::Error {
             turn_id,
+            agent: to_agent_context_dto(agent),
             code,
             message,
         },

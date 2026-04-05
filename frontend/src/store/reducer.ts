@@ -460,6 +460,7 @@ export function reducer(state: AppState, action: Action): AppState {
                 error: action.error,
                 metadata: action.metadata,
                 durationMs: action.durationMs,
+                truncated: action.truncated,
                 timestamp: Date.now(),
               },
             ],
@@ -483,6 +484,7 @@ export function reducer(state: AppState, action: Action): AppState {
               error: action.error,
               metadata: mergeToolMetadata(message.metadata, action.metadata),
               durationMs: action.durationMs,
+              truncated: action.truncated,
             };
           }),
         };

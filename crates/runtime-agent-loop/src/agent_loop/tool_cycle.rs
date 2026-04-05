@@ -21,9 +21,9 @@
 use std::time::Instant;
 
 use astrcode_core::{
-    AgentState, ApprovalPending, ApprovalResolution, CancelToken, CapabilityCall, CapabilityRouter,
-    LlmMessage, PolicyVerdict, Result, StorageEvent, ToolCallRequest, ToolExecutionResult,
-    ToolHookResultContext,
+    AgentEventContext, AgentState, ApprovalPending, ApprovalResolution, CancelToken,
+    CapabilityCall, CapabilityRouter, LlmMessage, PolicyVerdict, Result, StorageEvent,
+    ToolCallRequest, ToolExecutionResult, ToolHookResultContext,
 };
 use futures_util::stream::{self, StreamExt};
 use tokio::sync::mpsc;
@@ -63,6 +63,7 @@ pub(crate) async fn execute_tool_calls(
     turn_id: &str,
     state: &AgentState,
     step_index: usize,
+    agent: &AgentEventContext,
     messages: &mut Vec<LlmMessage>,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
     cancel: &CancelToken,
@@ -103,7 +104,7 @@ pub(crate) async fn execute_tool_calls(
                     );
                 },
                 PolicyVerdict::Deny { reason } => {
-                    denied_tool_result(&call, turn_id, &reason, on_event)?;
+                    denied_tool_result(&call, turn_id, agent, &reason, on_event)?;
                     outcomes[index] = Some(CallOutcome {
                         result: denial_result(&call, reason),
                         buffered_events: None,
@@ -124,7 +125,7 @@ pub(crate) async fn execute_tool_calls(
                         );
                     } else {
                         let reason = approval_denial_reason(&resolution);
-                        denied_tool_result(&call, turn_id, &reason, on_event)?;
+                        denied_tool_result(&call, turn_id, agent, &reason, on_event)?;
                         outcomes[index] = Some(CallOutcome {
                             result: denial_result(&call, reason),
                             buffered_events: None,
@@ -146,9 +147,16 @@ pub(crate) async fn execute_tool_calls(
             return Ok(ToolCycleOutcome::Interrupted);
         }
 
-        for (index, recorded) in
-            execute_safe_tool_calls(agent_loop, capabilities, safe_calls, turn_id, state, cancel)
-                .await?
+        for (index, recorded) in execute_safe_tool_calls(
+            agent_loop,
+            capabilities,
+            safe_calls,
+            turn_id,
+            state,
+            agent,
+            cancel,
+        )
+        .await?
         {
             outcomes[index] = Some(CallOutcome {
                 result: recorded.result,
@@ -177,6 +185,7 @@ pub(crate) async fn execute_tool_calls(
             state,
             pending.tool_call,
             turn_id,
+            agent,
             &ctx,
             on_event,
         )
@@ -223,6 +232,7 @@ async fn execute_safe_tool_calls(
     safe_calls: Vec<PendingToolCall>,
     turn_id: &str,
     state: &AgentState,
+    agent: &AgentEventContext,
     cancel: &CancelToken,
 ) -> Result<Vec<(usize, RecordedExecution)>> {
     let concurrency_limit = agent_loop
@@ -237,6 +247,7 @@ async fn execute_safe_tool_calls(
                 state,
                 pending.tool_call,
                 turn_id,
+                agent,
                 &ctx,
             )
             .await?;
@@ -255,6 +266,7 @@ async fn execute_raw_tool_call_recorded(
     state: &AgentState,
     tool_call: ToolCallRequest,
     turn_id: &str,
+    agent: &AgentEventContext,
     ctx: &astrcode_core::ToolContext,
 ) -> Result<RecordedExecution> {
     let mut events = Vec::new();
@@ -264,6 +276,7 @@ async fn execute_raw_tool_call_recorded(
         state,
         tool_call,
         turn_id,
+        agent,
         ctx,
         &mut |event| {
             events.push(event);
@@ -306,12 +319,14 @@ fn push_tool_messages(messages: &mut Vec<LlmMessage>, outcomes: Vec<Option<CallO
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_raw_tool_call(
     agent_loop: &AgentLoop,
     capabilities: &CapabilityRouter,
     state: &AgentState,
     tool_call: ToolCallRequest,
     turn_id: &str,
+    agent: &AgentEventContext,
     ctx: &astrcode_core::ToolContext,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
 ) -> Result<ToolExecutionResult> {
@@ -331,13 +346,14 @@ async fn execute_raw_tool_call(
                 name: tool.tool_name.clone(),
                 args: tool.args.clone(),
             };
-            denied_tool_result(&blocked_call, turn_id, &reason, on_event)?;
+            denied_tool_result(&blocked_call, turn_id, agent, &reason, on_event)?;
             return Ok(denial_result(&blocked_call, reason));
         },
     };
 
     on_event(StorageEvent::ToolCall {
         turn_id: Some(turn_id.to_string()),
+        agent: agent.clone(),
         tool_call_id: tool_call.id.clone(),
         tool_name: tool_call.name.clone(),
         args: tool_call.args.clone(),
@@ -381,6 +397,7 @@ async fn execute_raw_tool_call(
                         Some(delta) => {
                             if let Err(error) = on_event(StorageEvent::ToolCallDelta {
                                 turn_id: Some(turn_id.to_string()),
+                                agent: agent.clone(),
                                 tool_call_id: delta.tool_call_id,
                                 tool_name: delta.tool_name,
                                 stream: delta.stream,
@@ -403,6 +420,7 @@ async fn execute_raw_tool_call(
             Some(delta) => {
                 if let Err(error) = on_event(StorageEvent::ToolCallDelta {
                     turn_id: Some(turn_id.to_string()),
+                    agent: agent.clone(),
                     tool_call_id: delta.tool_call_id,
                     tool_name: delta.tool_name,
                     stream: delta.stream,
@@ -437,6 +455,7 @@ async fn execute_raw_tool_call(
     }
     on_event(StorageEvent::ToolResult {
         turn_id: Some(turn_id.to_string()),
+        agent: agent.clone(),
         tool_call_id: tool_call.id.clone(),
         tool_name: tool_call.name.clone(),
         output: result.output.clone(),
@@ -452,17 +471,20 @@ async fn execute_raw_tool_call(
 fn denied_tool_result(
     call: &ToolCallRequest,
     turn_id: &str,
+    agent: &AgentEventContext,
     reason: &str,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
 ) -> Result<()> {
     on_event(StorageEvent::ToolCall {
         turn_id: Some(turn_id.to_string()),
+        agent: agent.clone(),
         tool_call_id: call.id.clone(),
         tool_name: call.name.clone(),
         args: call.args.clone(),
     })?;
     on_event(StorageEvent::ToolResult {
         turn_id: Some(turn_id.to_string()),
+        agent: agent.clone(),
         tool_call_id: call.id.clone(),
         tool_name: call.name.clone(),
         output: String::new(),

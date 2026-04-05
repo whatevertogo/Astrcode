@@ -16,6 +16,7 @@ astrcode-runtime-config = { path = "../runtime-config" }
 astrcode-runtime-llm = { path = "../runtime-llm" }
 astrcode-runtime-prompt = { path = "../runtime-prompt" }
 astrcode-runtime-skill-loader = { path = "../runtime-skill-loader" }
+runtime-agent-loader = { path = "../runtime-agent-loader" }
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true

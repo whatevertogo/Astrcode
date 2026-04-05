@@ -4,7 +4,7 @@
 //! phase actually changes. Extracted from `EventTranslator` so the core phase
 //! transition logic can be tested in isolation.
 
-use crate::{AgentEvent, Phase, StorageEvent};
+use crate::{AgentEvent, AgentEventContext, Phase, StorageEvent};
 
 /// Determines the target phase for a storage event.
 pub fn target_phase(event: &StorageEvent) -> Phase {
@@ -44,6 +44,7 @@ impl PhaseTracker {
         &mut self,
         event: &StorageEvent,
         turn_id: Option<String>,
+        agent: AgentEventContext,
     ) -> Option<AgentEvent> {
         if matches!(
             event,
@@ -56,6 +57,7 @@ impl PhaseTracker {
             self.current = new_phase;
             Some(AgentEvent::PhaseChanged {
                 turn_id,
+                agent,
                 phase: new_phase,
             })
         } else {
@@ -72,8 +74,17 @@ impl PhaseTracker {
 
     /// Force a phase transition. Used by SessionStart and TurnDone where the
     /// phase must change regardless of the event type alone.
-    pub fn force_to(&mut self, phase: Phase, turn_id: Option<String>) -> AgentEvent {
+    pub fn force_to(
+        &mut self,
+        phase: Phase,
+        turn_id: Option<String>,
+        agent: AgentEventContext,
+    ) -> AgentEvent {
         self.current = phase;
-        AgentEvent::PhaseChanged { turn_id, phase }
+        AgentEvent::PhaseChanged {
+            turn_id,
+            agent,
+            phase,
+        }
     }
 }

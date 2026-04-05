@@ -272,6 +272,89 @@ fn bootstrap_without_plugins_keeps_builtin_capabilities() {
             .snapshot()
             .is_empty()
     );
+    assert!(
+        bootstrap
+            .agent_profiles
+            .read()
+            .expect("agent profile registry lock")
+            .get("explore")
+            .is_some()
+    );
+}
+
+#[test]
+fn bootstrap_loads_agent_profiles_from_user_level_agents_dir() {
+    let guard = TestEnvGuard::new();
+    let agents_dir = guard.home_dir().join(".astrcode").join("agents");
+    std::fs::create_dir_all(&agents_dir).expect("agents dir should be created");
+    std::fs::write(
+        agents_dir.join("explore.md"),
+        r#"---
+name: explore
+description: 用户级代码探索器
+tools: ["readFile"]
+---
+优先阅读目录结构，再读取关键文件。
+"#,
+    )
+    .expect("agent definition should be written");
+
+    let initializer = FakeInitializer {
+        responses: Default::default(),
+    };
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime should build");
+    let bootstrap = runtime
+        .block_on(async { bootstrap_runtime_from_manifests(Vec::new(), &initializer).await })
+        .expect("runtime bootstrap should succeed");
+
+    let agent_profiles = bootstrap
+        .agent_profiles
+        .read()
+        .expect("agent profile registry lock");
+    let explore = agent_profiles
+        .get("explore")
+        .expect("explore profile should exist");
+    assert_eq!(explore.description, "用户级代码探索器");
+    assert_eq!(explore.allowed_tools, vec!["readFile".to_string()]);
+
+    let service_explore = bootstrap
+        .service
+        .agent_profiles()
+        .get("explore")
+        .expect("service should expose same profile registry")
+        .description
+        .clone();
+    assert_eq!(service_explore, "用户级代码探索器");
+}
+
+#[tokio::test]
+async fn bootstrap_fails_fast_for_invalid_agent_markdown() {
+    let guard = TestEnvGuard::new();
+    let agents_dir = guard.home_dir().join(".astrcode").join("agents");
+    std::fs::create_dir_all(&agents_dir).expect("agents dir should be created");
+    std::fs::write(
+        agents_dir.join("broken.md"),
+        r#"---
+name: broken
+description: ""
+---
+Broken agent.
+"#,
+    )
+    .expect("invalid agent definition should be written");
+
+    let initializer = FakeInitializer {
+        responses: Default::default(),
+    };
+    let error = match bootstrap_runtime_from_manifests(Vec::new(), &initializer).await {
+        Ok(_) => panic!("invalid agent definition should fail bootstrap"),
+        Err(error) => error,
+    };
+
+    assert!(
+        error.to_string().contains("invalid agent frontmatter"),
+        "unexpected bootstrap error: {error}"
+    );
 }
 
 #[test]

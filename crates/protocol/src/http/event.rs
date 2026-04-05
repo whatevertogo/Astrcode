@@ -61,6 +61,24 @@ pub enum CompactTriggerDto {
     Manual,
 }
 
+/// Agent 父子关系元数据。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentContextDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_profile: Option<String>,
+}
+
+impl AgentContextDto {
+    pub fn is_empty(&self) -> bool {
+        self.agent_id.is_none() && self.parent_turn_id.is_none() && self.agent_profile.is_none()
+    }
+}
+
 /// 工具调用的最终结果。
 ///
 /// 包含工具执行的完整输出、耗时、是否被截断等信息。
@@ -109,27 +127,46 @@ pub enum AgentEventPayload {
     /// 会话开始事件，携带新会话的 ID。
     SessionStarted { session_id: String },
     /// 用户发送消息事件，携带 turn ID 和用户输入内容。
-    UserMessage { turn_id: String, content: String },
+    UserMessage {
+        turn_id: String,
+        #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
+        agent: AgentContextDto,
+        content: String,
+    },
     /// Agent 执行阶段变更事件。
     ///
     /// `turn_id` 在会话初始阶段可能为 None（如全局阶段切换）。
     PhaseChanged {
         turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
+        agent: AgentContextDto,
         phase: PhaseDto,
     },
     /// 模型正常输出的增量文本片段。
     ///
     /// 前端需将多个 `ModelDelta` 的 `delta` 拼接成完整回复。
-    ModelDelta { turn_id: String, delta: String },
+    ModelDelta {
+        turn_id: String,
+        #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
+        agent: AgentContextDto,
+        delta: String,
+    },
     /// 模型推理过程（thinking/reasoning）的增量输出。
     ///
     /// 此内容通常不直接展示给用户，但可用于调试或特殊 UI。
-    ThinkingDelta { turn_id: String, delta: String },
+    ThinkingDelta {
+        turn_id: String,
+        #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
+        agent: AgentContextDto,
+        delta: String,
+    },
     /// 助手完整消息事件，在模型输出完成后发送。
     ///
     /// 包含完整的回复内容和可选的 reasoning content。
     AssistantMessage {
         turn_id: String,
+        #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
+        agent: AgentContextDto,
         content: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning_content: Option<String>,
@@ -140,6 +177,8 @@ pub enum AgentEventPayload {
     /// 输入参数序列化为 `args` 以匹配前端事件格式约定。
     ToolCallStart {
         turn_id: String,
+        #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
+        agent: AgentContextDto,
         tool_call_id: String,
         tool_name: String,
         #[serde(rename = "args")]
@@ -151,6 +190,8 @@ pub enum AgentEventPayload {
     /// `stream` 字段区分 stdout/stderr，`delta` 为本次增量内容。
     ToolCallDelta {
         turn_id: String,
+        #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
+        agent: AgentContextDto,
         tool_call_id: String,
         tool_name: String,
         stream: ToolOutputStreamDto,
@@ -159,23 +200,33 @@ pub enum AgentEventPayload {
     /// 工具调用完成事件，携带完整的执行结果。
     ToolCallResult {
         turn_id: String,
+        #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
+        agent: AgentContextDto,
         result: ToolCallResultDto,
     },
     /// 上下文压缩已应用。
     CompactApplied {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
+        agent: AgentContextDto,
         trigger: CompactTriggerDto,
         summary: String,
         preserved_recent_turns: u32,
     },
     /// 当前 turn 完成事件。
-    TurnDone { turn_id: String },
+    TurnDone {
+        turn_id: String,
+        #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
+        agent: AgentContextDto,
+    },
     /// 错误事件。
     ///
     /// `turn_id` 为 None 时表示会话级错误（如连接断开）。
     Error {
         turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
+        agent: AgentContextDto,
         code: String,
         message: String,
     },

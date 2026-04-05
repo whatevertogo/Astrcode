@@ -6,6 +6,14 @@ export type Phase = 'idle' | 'thinking' | 'callingTool' | 'streaming' | 'interru
 export type ToolOutputStream = 'stdout' | 'stderr';
 export type CompactTrigger = 'auto' | 'manual';
 
+export interface AgentContext {
+  agentId?: string;
+  parentTurnId?: string;
+  agentProfile?: string;
+}
+
+type AgentScoped<T> = T & AgentContext;
+
 export interface ToolCallResultEnvelope {
   toolCallId: string;
   toolName: string;
@@ -14,54 +22,55 @@ export interface ToolCallResultEnvelope {
   error?: string;
   metadata?: unknown;
   durationMs: number;
+  truncated?: boolean;
 }
 
 export type AgentEventPayload =
   | { event: 'sessionStarted'; data: { sessionId: string } }
-  | { event: 'userMessage'; data: { turnId: string; content: string } }
-  | { event: 'phaseChanged'; data: { phase: Phase; turnId?: string | null } }
-  | { event: 'modelDelta'; data: { turnId: string; delta: string } }
-  | { event: 'thinkingDelta'; data: { turnId: string; delta: string } }
+  | { event: 'userMessage'; data: AgentScoped<{ turnId: string; content: string }> }
+  | { event: 'phaseChanged'; data: AgentScoped<{ phase: Phase; turnId?: string | null }> }
+  | { event: 'modelDelta'; data: AgentScoped<{ turnId: string; delta: string }> }
+  | { event: 'thinkingDelta'; data: AgentScoped<{ turnId: string; delta: string }> }
   | {
       event: 'assistantMessage';
-      data: { turnId: string; content: string; reasoningContent?: string };
+      data: AgentScoped<{ turnId: string; content: string; reasoningContent?: string }>;
     }
   | {
       event: 'toolCallStart';
-      data: {
+      data: AgentScoped<{
         turnId: string;
         toolCallId: string;
         toolName: string;
         args: unknown;
-      };
+      }>;
     }
   | {
       event: 'toolCallDelta';
-      data: {
+      data: AgentScoped<{
         turnId: string;
         toolCallId: string;
         toolName: string;
         stream: ToolOutputStream;
         delta: string;
-      };
+      }>;
     }
   | {
       event: 'toolCallResult';
-      data: { turnId: string; result: ToolCallResultEnvelope };
+      data: AgentScoped<{ turnId: string; result: ToolCallResultEnvelope }>;
     }
   | {
       event: 'compactApplied';
-      data: {
+      data: AgentScoped<{
         turnId?: string | null;
         trigger: CompactTrigger;
         summary: string;
         preservedRecentTurns: number;
-      };
+      }>;
     }
-  | { event: 'turnDone'; data: { turnId: string } }
+  | { event: 'turnDone'; data: AgentScoped<{ turnId: string }> }
   | {
       event: 'error';
-      data: { turnId?: string | null; code: string; message: string };
+      data: AgentScoped<{ turnId?: string | null; code: string; message: string }>;
     };
 
 export type AgentEvent = AgentEventPayload & {
@@ -109,6 +118,7 @@ export interface ToolCallMessage {
   error?: string;
   metadata?: unknown;
   durationMs?: number;
+  truncated?: boolean;
   timestamp: number;
 }
 
@@ -256,6 +266,7 @@ export type Action =
       error?: string;
       metadata?: unknown;
       durationMs: number;
+      truncated?: boolean;
     }
   | { type: 'SET_WORKING_DIR'; projectId: string; workingDir: string }
   | {

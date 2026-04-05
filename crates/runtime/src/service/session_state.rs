@@ -211,6 +211,7 @@ pub(super) struct SessionState {
     pub(super) phase: StdMutex<Phase>,
     pub(super) running: AtomicBool,
     pub(super) cancel: StdMutex<CancelToken>,
+    pub(super) active_turn_id: StdMutex<Option<String>>,
     pub(super) turn_lease: StdMutex<Option<Box<dyn SessionTurnLease>>>,
     /// Session-scoped token budget bookkeeping for auto-continue.
     pub(super) token_budget: StdMutex<Option<SessionTokenBudgetState>>,
@@ -244,6 +245,7 @@ impl SessionState {
             phase: StdMutex::new(phase),
             running: AtomicBool::new(false),
             cancel: StdMutex::new(CancelToken::new()),
+            active_turn_id: StdMutex::new(None),
             turn_lease: StdMutex::new(None),
             token_budget: StdMutex::new(None),
             compact_failure_count: StdMutex::new(0),
