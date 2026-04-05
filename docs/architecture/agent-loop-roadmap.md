@@ -4,7 +4,9 @@
 > 范围：`crates/runtime-agent-loop/`、`crates/core/`、`server/` 及后续 Agent / Session 扩展
 
 本文档基于以下输入整理：
-- 现有实现：`crates/runtime-agent-loop/src/agent_loop.rs`、`turn_runner.rs`、`tool_cycle.rs`
+- 现有实现：`crates/runtime-agent-loop/src/agent_loop.rs`、`crates/runtime-agent-loop/src/agent_loop/turn_runner.rs`、`crates/runtime-agent-loop/src/agent_loop/tool_cycle.rs`
+- Agent 控制平面：`crates/runtime-agent-control/src/lib.rs`
+- Agent 执行接线：`crates/runtime/src/service/agent_execution.rs`
 - 对比分析：`docs/compare/agent-loopcompare.md`
 - 现有设计稿：`docs/design/agent-tool-and-api-design.md`
 - 参考仓库：Codex、Kimi-CLI、OpenCode、Pi-Mono、claude-code-sourcemap
@@ -13,23 +15,32 @@
 
 ---
 
+## 0. 已完成借鉴（已落地）
+
+以下借鉴点已在项目内落地，后文不再作为“可借鉴项”重复讨论：
+
+- 来自 Codex：控制平面与执行引擎分离（`runtime-agent-control` 独立承载 `AgentControl`）。
+- 来自 Claude Code：按副作用/并发安全进行工具并发执行（P2 已完成）。
+- 来自 OpenCode/Kimi：主 Agent 通过 `runAgent` 调起子 Agent，并返回结构化结果。
+- 来自 OpenCode：Agent Profile 进入配置/加载体系（builtin + loader + hot reload）。
+- 来自 Pi-Mono：子 Agent 事件带 parent-child 元数据并可回灌主会话。
+
+---
+
 ## 1. 当前基线
 
-Astrcode 当前已经完成的部分，不应该在升级时被重新打散：
+已完成能力（仅保留核心设计与作用）：
 
 | 阶段 | 状态 | 当前价值 |
 |------|------|----------|
-| P1 状态机化 | ✅ | `TurnOutcome` 已明确，turn 结束语义清晰 |
-| P2 并行工具执行 | ✅ | `tool_cycle.rs` 已支持按 `concurrency_safe` 并发 |
-| P3 压缩 + Token Budget | ✅ | `context/prompt/compaction/request_assembler` 边界已经分开 |
-| P4 错误恢复 | ✅ | 413 reactive compact、输出截断 continuation 已落地 |
+| P1 状态机化 | ✅ | 明确 turn 终态，统一收敛执行结果 |
+| P2 并行工具执行 | ✅ | 按副作用分组并发，提升工具吞吐 |
+| P3 压缩 + Token Budget | ✅ | 上下文构建分层，预算控制可插拔 |
+| P4 错误恢复 | ✅ | 超长上下文与续跑异常可恢复 |
+| P5 Agent Control Plane | 🟡 | 控制平面与执行引擎解耦，支持父子取消传播 |
+| P6 runAgent MVP | 🟡 | 子 Agent 可调用、可裁剪、可回灌结果 |
 
-这四步意味着 Astrcode 的内核已经比很多竞品更“干净”：
-- `AgentLoop` 已经不是巨型 God object，而是 `prompt/context/compaction/policy/approval/request_assembler` 的协调器。
-- `turn_runner.rs` 已经是清晰的 step loop。
-- `tool_cycle.rs` 已经有策略检查、审批、并发分组和 hook 接口。
-
-升级的关键不是“再造一个 loop”，而是把这套内核向外扩成控制平面。
+当前内核已经完成“执行层分层 + 控制层外置”的基础形态，后续重点是把这些能力稳定暴露给 session/API/UI。
 
 ---
 
@@ -37,51 +48,48 @@ Astrcode 当前已经完成的部分，不应该在升级时被重新打散：
 
 ### 2.1 Codex
 
-值得借鉴：
-- `ToolOrchestrator` 把“审批、沙箱、重试、网络策略”从具体工具里抽出来，形成统一执行入口。
-- `AgentControl` 把子 Agent 变成线程树，而不是一次性递归函数调用。
-- fork 时只保留可迁移 rollout 项，避免把完整中间态硬塞给子 Agent。
+仍可借鉴：
+- `ToolOrchestrator` 统一承接审批、重试、网络策略，避免策略分散在 `tool_cycle.rs`。
+- 子 Agent fork 时做最小上下文迁移，减少状态复制和污染。
 
 不要直接照搬：
 - Codex 的 Guardian + 平台沙箱很重，Astrcode 现在还没有稳定的 agent/session control plane，先做它会把复杂度放错地方。
 
 ### 2.2 Kimi-CLI
 
-值得借鉴：
-- `KimiSoul._agent_loop()` 结构非常直接，审批通过 wire 回到根 UI，子 agent 不自己弹审批。
-- `Context` 的 JSONL + checkpoint/revert 让“时间旅行”和“恢复”有真实锚点。
-- `Task` 工具是“新上下文 + 子魂 + 结果摘要”，这比共享主上下文更容易控风险。
+仍可借鉴：
+- 根交互面统一审批，子 Agent 保持无交互执行，避免审批链路分叉。
+- checkpoint/revert 与持久化上下文配套，给恢复/时间旅行提供真实锚点。
+- 子任务结果继续强化为“摘要 + 工件”，避免主上下文污染。
 
 不要直接照搬：
 - `D-Mail` 是高级能力，前提是 checkpoint/revert、上下文持久化和 UI 语义都稳定。Astrcode 现在不应该把它排到最前。
 
 ### 2.3 OpenCode
 
-值得借鉴：
-- 子任务不是裸递归，而是映射成 child session。
-- `task.ts` 通过 session 创建、权限收窄、结果封装，把 subagent 变成一等对象。
-- `session` 路由完整支持 `message`、`prompt_async`、`abort`、`fork`、`summarize`、`revert`。
-- agent profile 和 permission 是配置系统的一部分，不是散落在 prompt 里。
+仍可借鉴：
+- 把当前 child turn 升级为独立 child session，建立完整生命周期与可观察性。
+- 补齐 session 操作面：`prompt_async`、`abort`、`fork`、`revert`、`summarize`。
+- 让 Profile 权限与 API 执行面完全同构，避免 prompt 层和运行时策略漂移。
 
 不要直接照搬：
 - OpenCode 的 API 面很宽，但它的状态和权限模型是围绕 session 数据库建的。Astrcode 应先补 session/turn 生命周期，再扩路由。
 
 ### 2.4 Pi-Mono
 
-值得借鉴：
-- `agent-loop.ts` 的事件流非常纯：`agent_start -> turn_start -> message/tool events -> turn_end -> agent_end`。
-- `transformContext`、`beforeToolCall`、`afterToolCall`、`getSteeringMessages`、`getFollowUpMessages` 这些 hook 点非常适合做集成层。
-- RPC 模式不是另一个内核，只是事件协议包装。
+仍可借鉴：
+- 事件协议继续标准化为稳定序列，降低 UI/IDE 集成成本。
+- `before/after` hook 与 steer/follow-up 中途注入能力。
+- 将 RPC 作为协议投影层，而不是新建第二套执行内核。
 
 不要直接照搬：
 - Pi 的抽象很轻，但也意味着很多约束留给上层。Astrcode 现阶段更适合保留强约束的 Rust core，再对外投影。
 
 ### 2.5 Claude Code / sourcemap
 
-值得借鉴：
-- 工具调用按 concurrency-safe 分批执行，和 Astrcode P2 思路一致，说明方向正确。
-- bridge/session runner 把权限请求、活动状态、远程会话接到控制面，而不是塞进 loop 本体。
-- session memory compact 强调“外部记忆”和“保留窗口”分离，这比单纯摘要更容易做长期对话。
+仍可借鉴：
+- bridge/session runner 式控制面，把权限请求和会话活动状态统一外置。
+- session memory 的“外部记忆 + 保留窗口”分离策略，支持长期对话质量稳定。
 
 不要直接照搬：
 - Claude 这套实现高度依赖其现有 bridge、remote session 和 UI 体系，Astrcode 先做本地单实例闭环更务实。
@@ -100,12 +108,12 @@ Astrcode 当前已经完成的部分，不应该在升级时被重新打散：
 
 | 缺口 | 现状 | 影响 |
 |------|------|------|
-| Agent 控制平面 | 没有 `AgentControl`/`SubAgentHandle` | 子 Agent 只能停留在概念层 |
-| 子 Agent 生命周期 | 没有 parent-child turn/session 关联 | 事件、取消、恢复都难以落地 |
-| Agent Profile 真正接线 | 设计稿有 profile 思路，但主仓库仍未形成可运行链路 | 难以让模型安全地调用子 Agent |
-| Session 操作面 | 现有路线图未把 `abort/fork/revert/async` 做成正式阶段 | 对外集成能力不足 |
+| Agent 控制平面 | 已有 `runtime-agent-control::AgentControl` 与 `SubAgentHandle` | 仍缺 child session 的完整操作面 |
+| 子 Agent 生命周期 | 已有 parent-child 元数据与父取消传播 | 仍缺独立 child session 生命周期 |
+| Agent Profile 真正接线 | loader + 内置 profile + 热重载已可运行 | 仍缺 profile 与 API 执行面的统一约束 |
+| Session 操作面 | 已有异步提交、`interrupt`、`compact`、忙时自动分支 | 仍缺显式 `prompt_async`/`fork`/`revert`/turn status API |
 | 中途控制 | 缺少 steer/follow-up 之类的 mid-turn 注入 | UI/IDE 难以实时干预执行 |
-| 安全执行统一层 | 当前审批、策略、并发都在 `tool_cycle.rs`，但还不是独立 orchestrator | 后续接沙箱/网络策略时会变脆 |
+| 安全执行统一层 | 当前审批、策略、并发仍以 `tool_cycle.rs` 为主；子 Agent 侧已有 `SubAgentPolicyEngine` 收窄 | 后续接沙箱/网络策略时会变脆 |
 
 ### 3.3 一个重要判断
 
@@ -139,7 +147,7 @@ Astrcode 下一步最该做的不是：
 ### 4.2 子 Agent 先做成“受控 child session”，不要先做成“无限递归 loop”
 
 更推荐的落地方向是：
-- 主 Agent 发起 `run_agent` 工具调用
+- 主 Agent 发起 `runAgent` 工具调用
 - runtime 创建 child session / child turn
 - child session 运行自己的 `AgentLoop`
 - 主 Agent 收到摘要化结果
@@ -163,32 +171,36 @@ Astrcode 下一步最该做的不是：
 
 ## 5. 升级路线
 
-### P5：Agent Control Plane（建议优先）
+### P5：Agent Control Plane（基础能力已落地，建议收口）
 
 #### 目标
 
 把 Astrcode 从“单 Agent turn runner”升级成“能管理多个 agent 实例的 runtime”。
 
-#### 交付物
+#### 当前进展（2026-04-05）
 
-1. 引入 `AgentProfile`
-   - 定义 agent id、描述、mode、steps/token budget、allowed tools、model preference
-   - 配置来源先支持内置 + 本地配置，先不要急着做远程下发
-2. 引入 `AgentControl`
-   - 负责 spawn / list / cancel / wait
-   - 维护 parent-child 关系和运行状态
-3. 引入 `SubAgentHandle`
-   - 至少包含 `agent_id`、`parent_turn_id`、`session_id`、`status`
-4. 补 parent-child 元数据
-   - `StorageEvent` 补 `parent_turn_id` / `agent_id` / `agent_profile`
-   - turn 级别事件可被 UI 正确投影为嵌套结构
+1. `core` 已提供 `AgentProfile` / `AgentStatus` / `SubAgentHandle`
+2. `runtime-agent-control` 已提供 spawn/list/cancel/wait 与父取消传播
+3. `StorageEvent` 已通过 `AgentEventContext` 承载父子关系元数据
+4. `runtime` 已接线控制平面（turn 结束/中断触发子树取消）
+
+#### 剩余工作
+
+1. 把 child 从“关联 turn”升级为“独立 child session 生命周期”
+   - 支持独立创建、查询、取消、等待与回收
+2. 增加控制平面可观测性
+   - 活跃/终态分布、取消来源、失败类型等指标
+3. 补齐最小查询面
+   - 提供 agent/turn 状态查询接口，避免 UI 仅靠事件推断
+4. 继续收紧边界
+   - 保持 `runtime-agent-control` 不耦合 server/transport 细节
 
 #### 推荐落点
 
 - `crates/runtime-agent-loop/src/agent_loop.rs`
   - 保持执行器角色，不直接持有 registry
-- `crates/runtime-agent-loop/src/agent_control.rs`
-  - 新增控制平面
+- `crates/runtime-agent-control/src/lib.rs`
+   - 作为独立 crate 承载 `AgentControl` 控制平面
 - `crates/core/`
   - 补 agent/profile/session tree 的核心 DTO 和 trait
 - `crates/core/src/registry/`
@@ -196,14 +208,14 @@ Astrcode 下一步最该做的不是：
 
 #### 验收标准
 
-- 可以创建一个 child agent 并跟踪其状态
+- child session 生命周期可独立查询、取消、等待
 - 父 turn 取消时，child agent 同步取消
 - 事件流里能看出父子关系
 - 不引入 server 依赖到 `runtime-agent-loop`
 
 ---
 
-### P6：`run_agent` / `task` 工具 MVP
+### P6：`runAgent` / `task` 工具 MVP（已可用，建议补齐隔离语义）
 
 #### 目标
 
@@ -218,7 +230,7 @@ Astrcode 下一步最该做的不是：
 
 #### 交付物
 
-1. `run_agent` 工具
+1. `runAgent` 工具
    - 参数：`agent/profile`、`task`、`context`、`max_steps?`
 2. child session 启动器
    - 复用现有 `AgentLoop`
@@ -238,9 +250,22 @@ Astrcode 下一步最该做的不是：
 | `review` | 审查和风险识别 | 只读 |
 | `execute` | 定向修改 | 受限写权限 |
 
+#### 当前进展（2026-04-05）
+
+- 已支持 `runAgent` 调用子 Agent
+- 结果已结构化返回（completed/failed/aborted/token_exceeded）
+- 工具权限已按 profile 裁剪（allow/deny）
+- 子事件已回灌主会话并带父子元数据
+
+#### 剩余工作
+
+- 当前实现仍以“同 session 的 child turn”为主，尚未升级为“独立 child session”
+- 尚未实现递归深度上限（例如 2 或 3）与循环调用防护
+- 需要把 child 结果的 `summary + artifacts + task_id` 契约进一步稳定化
+
 #### 验收标准
 
-- 主 Agent 能调用 `run_agent(explore, ...)`
+- 主 Agent 能调用 `runAgent(explore, ...)`
 - 子 Agent 输出不会污染主对话历史
 - 子 Agent 失败/取消会以结构化 tool result 返回
 - 禁止无限递归调用，默认深度上限 2 或 3
@@ -253,24 +278,30 @@ Astrcode 下一步最该做的不是：
 
 补齐 OpenCode 已验证有效的 session control 面，而不是只保留“prompt 一次，SSE 看结果”。
 
-#### 必做能力
+#### 当前进展（2026-04-05）
 
-1. `prompt_async`
-   - fire-and-forget 异步 turn
+- `submit_prompt` 已提供 202 异步执行语义
+- 已提供会话级 `interrupt` 与 `compact`
+- 已支持忙时自动分支（非显式 `fork` API）
+
+#### 必做能力（剩余）
+
+1. 标准化 `prompt_async` API
+   - 统一 fire-and-forget 语义与返回体
 2. `abort`
-   - session 级 / turn 级取消
+   - 补齐 turn 级取消与状态可见性
 3. `fork`
    - 从指定 message/turn 派生新 session
 4. `revert`
    - 回滚到指定 turn 或 message
-5. `summarize/compact`
-   - 显式触发压缩
+5. turn status 查询
+   - 明确 Pending/Running/Completed/Cancelled/Failed 对外读取接口
 
 #### 为什么排在 P7
 
-因为这一步依赖 P5/P6：
-- 没有 child session 和 turn status，`async` 只是半成品
-- 没有 parent-child metadata，`fork/revert` 难以和 subagent 共存
+因为这一步依赖 P5/P6 收口：
+- 目前 parent-child metadata 已有，但 child session 生命周期尚未独立
+- 没有标准 turn status API，`async` 仍是半成品
 
 #### 验收标准
 
@@ -384,12 +415,11 @@ Astrcode 下一步最该做的不是：
 ## 6. 推荐实现顺序
 
 ```text
-P5 Agent Control Plane
-  -> P6 run_agent/task MVP
-     -> P7 session/turn control API
-        -> P8 steering + hook + event protocol
-           -> P9 checkpoint/session memory
-              -> P10 sandbox/orchestrator hardening
+P5/P6 收口（控制平面 + runAgent）
+  -> P7 session/turn control API
+     -> P8 steering + hook + event protocol
+        -> P9 checkpoint/session memory
+           -> P10 sandbox/orchestrator hardening
 ```
 
 原因：
@@ -429,11 +459,11 @@ P5 Agent Control Plane
 
 如果按最小可落地补丁推进，建议第一批只做这些：
 
-1. 在 `core` 定义 `AgentProfile`、`AgentHandle`、`AgentStatus`
-2. 在 `runtime-agent-loop` 增加 `AgentControl`
-3. 给 `StorageEvent` 增加 parent-child 元数据
-4. 落一个最小 `run_agent` 工具，只支持 `explore`
-5. 给 server 增加 `abort` 和 turn status 查询，不先铺满全部 REST 面
+1. 把 `runAgent` 从“同 session child turn”升级为“独立 child session”
+2. 增加 sub-agent 递归深度上限与循环调用防护
+3. 给 server 增加 turn status 查询与 turn 级 `abort`
+4. 增加显式 `fork/revert` API，并与 compaction 语义对齐
+5. 把 `/api/v1/agents/{id}/execute` 与 `/api/v1/tools/{id}/execute` 从骨架升级为可执行路径
 
 这样可以最快形成第一个真实闭环：
 - 主 Agent
@@ -454,8 +484,8 @@ P5 Agent Control Plane
 - 安全策略
 
 升级路线应该改成分层推进：
-- 先把 AgentControl 和 child session 做实
-- 再把 `run_agent` 工具接上
+- 先收口已落地的 AgentControl 和 `runAgent`
+- 再把 child session 做实
 - 再扩 session API
 - 最后补高级记忆与安全隔离
 

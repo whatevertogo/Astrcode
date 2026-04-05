@@ -13,8 +13,8 @@
 |--------|------|------|
 | `<analysis>` + `<summary>` XML 块 | ✅ 已有 | `render_compact_system_prompt()` 要求 LLM 返回两个 XML 块 |
 | `extract_summary()` 解析 | ✅ 已有 | 正确提取 `<summary>` 块内容，回退到原文 |
-| Hook 系统 PreCompact / PostCompact | ✅ 已有 | `hook.rs` + `hook_runtime.rs` 完整支持 Block / ModifyCompactContext / Continue |
-| 插件适配层 | ✅ 已有 | `plugin_hook_adapter.rs` 将插件 handler 映射为 HookHandler |
+| **Hook 系统 PreCompact / PostCompact** | ✅ 已上线 | `hook.rs` + `hook_runtime.rs`，支持 Block / ModifyCompactContext / Continue |
+| **插件适配层** | ✅ 已上线 | `plugin_hook_adapter.rs` 将插件 handler 映射为 HookHandler |
 | 重试 + 熔断 | ✅ 已有 | `ThresholdCompactionPolicy` 3 次连续失败后断路，manual 不计入 |
 | 文件恢复 | ✅ 已有 | `CompactionRuntime.recover_file_contents()` 带 token 预算限制 |
 | 手动压缩 | ✅ 已有 | `compact_manual_with_keep_recent_turns()` 独立入口 |
@@ -56,65 +56,6 @@
 4. **模板约束减少格式漂移**：当 LLM 知道预期的输出结构时，不会擅自增加或遗漏段落。
 
 ---
-
-## 三、建议的改进版 prompt
-
-### 3.1 改进后的 `render_compact_system_prompt()`
-
-```rust
-fn render_compact_system_prompt(compact_prompt_context: Option<&str>) -> String {
-    let mut prompt = String::from(
-        "You are generating an internal compact summary for a coding-agent session.\n\
-         The summary will replace earlier conversation history so the agent can \
-         continue seamlessly.\n\n\
-
-         ## CRITICAL RULE\n\
-         **DO NOT CALL ANY TOOLS.** This conversation is for summary generation only.\n\n\
-
-         ## Content Priority (most → least important)\n\
-         Include content in this order. Higher-priority items MUST appear:\n\
-         1. Current active task AND immediate next steps — MUST\n\
-         2. All user messages verbatim, in original order — MUST\n\
-         3. Critical errors AND how they were resolved — MUST\n\
-         4. Code changes and architectural decisions — MUST\n\
-         5. Key decisions and their rationale (the \"why\", not just the \"what\")\n\
-         6. System configuration, environment setup (only if relevant)\n\n\
-
-         ## Output Format\n\
-         Return exactly two XML blocks:\n\n\
-         <analysis>\n\
-         - Self-check before writing the summary:\n\
-         - Have you covered ALL user messages?\n\
-         - Is the current task state captured accurately?\n\
-         - Are there critical errors or decisions you missed?\n\
-         </analysis>\n\n\
-         <summary>\n\
-         ### Primary Request and Intent\n\
-         ### All User Messages (Verbatim)\n\
-         ### Key Technical Decisions\n\
-         ### Files and Code Sections\n\
-         ### Errors and Fixes\n\
-         ### Problem Solving Process\n\
-         ### Pending Tasks\n\
-         ### Current Work\n\
-         ### Next Step\n\
-         </summary>\n\n\
-
-         ## Rules\n\
-         - Output **only** the <analysis> and <summary> blocks — no preamble, no closing remarks.\n\
-         - Be concise. Prefer bullet points and short paragraphs.\n\
-         - Ignore synthetic auto-continue nudges.\n\
-         - Write in third-person, factual tone. Do not address the end user.\n\
-         - Include exact file paths for all mentioned code."
-    );
-
-    if let Some(bsp) = compact_prompt_context.filter(|s| !s.trim().is_empty()) {
-        prompt.push_str("\n\nCurrent runtime system prompt for context:\n");
-        prompt.push_str(bsp);
-    }
-    prompt
-}
-```
 
 ### 3.2 增量重压缩 prompt 变体
 

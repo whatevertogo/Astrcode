@@ -54,6 +54,7 @@ export interface PromptSubmission {
 // SSE 重连配置
 const SSE_RECONNECT_BASE_DELAY_MS = 500;
 const SSE_RECONNECT_MAX_DELAY_MS = 5_000;
+const SSE_RECONNECT_FATAL_ATTEMPTS = 3;
 
 /// 分发流错误事件
 function dispatchStreamError(
@@ -99,6 +100,22 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     }
   }, []);
 
+  const failActiveConnection = useCallback(
+    (message: string, turnId: string | null = null) => {
+      // 这里显式结束本地流状态，而不是无限重试。
+      // 原因是：当用户手动关闭 server 后，继续保持 busy 只会把 UI 卡死在“可中断但无法中断”的假状态。
+      clearReconnectTimer();
+      streamAbortRef.current?.abort();
+      streamAbortRef.current = null;
+      connectedSessionIdRef.current = null;
+      lastEventIdRef.current = null;
+      reconnectAttemptRef.current = 0;
+      streamGenerationRef.current += 1;
+      dispatchStreamError(onEventRef.current, message, turnId);
+    },
+    [clearReconnectTimer]
+  );
+
   useEffect(() => {
     return () => {
       streamAbortRef.current?.abort();
@@ -124,7 +141,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
       lastEventIdRef.current = afterEventId ?? null;
       reconnectAttemptRef.current = 0;
 
-      const scheduleReconnect = () => {
+      const scheduleReconnect = (failureMessage: string) => {
         // Check if this connection is still active
         if (streamGenerationRef.current !== generation) {
           return;
@@ -135,6 +152,12 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
         clearReconnectTimer();
         const attempt = reconnectAttemptRef.current + 1;
         reconnectAttemptRef.current = attempt;
+        if (attempt >= SSE_RECONNECT_FATAL_ATTEMPTS) {
+          failActiveConnection(
+            `${failureMessage} 已停止本地等待并解锁输入；请重启服务后重新进入当前会话。`
+          );
+          return;
+        }
         const delayMs = Math.min(
           SSE_RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1),
           SSE_RECONNECT_MAX_DELAY_MS
@@ -221,7 +244,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
                 sessionId,
                 cursor: lastEventIdRef.current,
               });
-              scheduleReconnect();
+              scheduleReconnect('与服务端的事件流连接已中断。');
             }
             return;
           }
@@ -232,7 +255,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
           }
           if (!controller.signal.aborted && connectedSessionIdRef.current === sessionId) {
             if (shouldRetryEventStream(error)) {
-              scheduleReconnect();
+              scheduleReconnect(error instanceof Error ? error.message : '无法连接后端事件流。');
             } else {
               dispatchStreamError(
                 onEventRef.current,
@@ -249,7 +272,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
 
       void startStream(lastEventIdRef.current);
     },
-    [clearReconnectTimer, dispatchIncomingEvent]
+    [clearReconnectTimer, dispatchIncomingEvent, failActiveConnection]
   );
 
   const disconnectSession = useCallback(() => {
@@ -284,9 +307,17 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     []
   );
 
-  const handleInterrupt = useCallback(async (sessionId: string): Promise<void> => {
-    await interruptSession(sessionId);
-  }, []);
+  const handleInterrupt = useCallback(
+    async (sessionId: string): Promise<void> => {
+      try {
+        await interruptSession(sessionId);
+      } catch (error) {
+        console.error('failed to interrupt session:', error);
+        failActiveConnection(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [failActiveConnection]
+  );
 
   const handleCompactSession = useCallback(async (sessionId: string): Promise<void> => {
     await compactSession(sessionId);

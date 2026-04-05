@@ -1,740 +1,106 @@
 # Agent as Tool + 开放 API 实施计划
 
-## 总览
+> **最后更新**：2026-04-05
+> **当前状态**：Phase 0-2 已实现，Phase 3 骨架已预埋
 
-本计划分为多个阶段, 每个阶段有独立的交付物和验证标准。总预计工作量基于现有 Astrcode 架构的最小侵入性改造。
-
+```text
+Phase 0 (设计完成) → Phase 1 (Agent Loader) → Phase 2 (Agent as Tool) ✅
+    → Phase 3 (扩展 API) 🟡 骨架已预埋 → Phase 4 (WebSocket) → Phase 5 (前端适配 ✅ 已完成)
 ```
-Phase 0 (设计完成) → Phase 1 (Agent Loader) → Phase 2 (Agent as Tool)
-    → Phase 3 (扩展 API) → Phase 4 (WebSocket) → Phase 5 (前端适配)
-```
-
-#### 1.2 从 Markdown 目录加载 Agent
-
-**文件**: `crates/runtime-agent-loader/src/lib.rs`
-
-#### 1.3 单元测试
-
-
-#### 1.4 集成到 Runtime Bootstrap
-
-
-## Phase 2: Agent as Tool 实现
-
-**目标**: 实现 `RunAgentTool`, 将 Agent Loop 作为 Tool 暴露给 LLM
-
-**预估时间**: 2 天
-
-### 步骤
-
-#### 2.1 扩展 StorageEvent (新增子 Agent 事件)
-
-**文件**: `crates/core/src/event/mod.rs` (或 `storage_event.rs`)
-
-在现有 `StorageEvent` enum 中添加:
-
-```rust
-/// 子 Agent Turn 开始
-SubAgentTurnStart {
-    storage_seq: u64,
-    turn_id: String,                  // 父 turn_id
-    sub_turn_id: String,              // 子 turn_id
-    agent_profile: String,            // Profile ID
-    task: String,                     // 任务描述
-    max_steps: usize,
-    token_budget: Option<usize>,
-    model: Option<String>,
-    timestamp: DateTime<Utc>,
-},
-
-/// 子 Agent Turn 完成
-SubAgentTurnEnd {
-    storage_seq: u64,
-    turn_id: String,
-    sub_turn_id: String,
-    agent_profile: String,
-    outcome: String,                  // "completed" / "failed" / "aborted" / "token_exceeded"
-    summary: String,                  // LLM可读摘要
-    token_usage: Option<TokenUsage>,
-    timestamp: DateTime<Utc>,
-},
-```
-
-#### 2.2 定义 RunAgent Tool 参数
-
-**文件**: `crates/runtime-agent-tool/src/lib.rs`
-
-```rust
-use serde::{Deserialize, Serialize};
-
-/// runAgent 工具调用参数
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RunAgentParams {
-    /// Agent Profile 名称 (如 "explore", "plan")
-    pub name: String,
-    /// 任务描述 (会作为子 Agent 的用户消息)
-    pub task: String,
-    /// 额外上下文 (可选)
-    pub context: Option<String>,
-    /// 覆盖最大步数 (可选)
-    pub max_steps: Option<usize>,
-}
-```
-
-#### 2.3 实现 SubAgentLoop (子 Agent 执行引擎)
-
-**文件**: `crates/runtime-agent-tool/src/sub_agent_loop.rs`
-
-```rust
-//! 子 Agent 执行引擎
-//!
-//! 子 Agent Loop 是主 Agent Loop 的受限版本:
-//! - 使用独立的 Prompt (仅包含任务描述)
-//! - 受限的工具集 (根据 Profile)
-//! - 共享父的 CancelToken (父取消 → 子也取消)
-//! - 事件写入同一个 EventLog (标记 parent_turn_id)
-
-use std::sync::Arc;
-
-use runtime_agent_loop::AgentLoop;
-use runtime_agent_profiles::{AgentProfile, AgentProfileRegistry};
-use core::event::EventLogWriter;
-use core::policy::{PolicyEngine, PolicyContext, PolicyVerdict};
-use core::cancel::CancelToken;
-use protocol::http::PromptRequest;
-use crate::RunAgentParams;
-use tokio::sync::mpsc;
-use tracing;
-
-/// 子 Agent 执行结果
-#[derive(Debug)]
-pub struct SubAgentResult {
-    /// 执行结果状态
-    pub outcome: SubAgentOutcome,
-    /// LLM 可读的摘要
-    pub summary: String,
-    /// 产生的 artifacts (文件修改等)
-    pub artifacts: Vec<ArtifactRef>,
-    /// Token 使用量
-    pub token_usage: Option<TokenUsage>,
-}
-
-#[derive(Debug)]
-pub enum SubAgentOutcome {
-    Completed,
-    Failed { error: String },
-    Aborted,
-    TokenExceeded,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ArtifactRef {
-    pub kind: String,  // "file", "tool_call", etc.
-    pub reference: String,
-}
-
-/// 自定义政策引擎: 限制子 Agent 的工具访问
-pub struct SubAgentPolicyEngine {
-    parent: Arc<dyn PolicyEngine>,
-    allowed_tools: Vec<String>,
-    can_request_approval: bool,
-}
-
-impl SubAgentPolicyEngine {
-    pub fn new(
-        parent: Arc<dyn PolicyEngine>,
-        profile: &AgentProfile,
-    ) -> Self {
-        Self {
-            parent,
-            allowed_tools: profile.allowed_tools.clone().unwrap_or_default(),
-            can_request_approval: profile.can_request_approval,
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl PolicyEngine for SubAgentPolicyEngine {
-    async fn check(&self, call: &CapabilityCall, ctx: &PolicyContext) -> PolicyVerdict {
-        // 检查工具是否在 allowed_tools 中
-        if !self.allowed_tools.is_empty() && !self.allowed_tools.contains(&call.tool_name) {
-            return PolicyVerdict::deny(format!(
-                "工具 '{}' 不在 Agent 允许列表中 (允许: {:?})",
-                call.tool_name, self.allowed_tools
-            ));
-        }
-        
-        // 子 Agent 不能请求用户审批
-        if !self.can_request_approval {
-            // ... 检查是否需要审批，如果是则拒绝
-        }
-        
-        // 继承父策略的判断
-        self.parent.check(call, ctx).await
-    }
-}
-
-/// 子 Agent 执行器
-pub struct SubAgentExecutor {
-    profiles: Arc<AgentProfileRegistry>,
-    parent_turn_id: String,
-    event_writer: Arc<dyn EventLogWriter>,
-}
-
-impl SubAgentExecutor {
-    pub fn new(
-        profiles: Arc<AgentProfileRegistry>,
-        parent_turn_id: String,
-        event_writer: Arc<dyn EventLogWriter>,
-    ) -> Self {
-        Self {
-            profiles,
-            parent_turn_id,
-            event_writer,
-        }
-    }
-
-    /// 执行子 Agent
-    pub async fn execute(
-        &self,
-        params: RunAgentParams,
-        cancel_token: CancelToken,
-        // ... 其他必要参数 (factory, capabilities 等从 RuntimeService 获取)
-    ) -> Result<SubAgentResult, Box<dyn std::error::Error + Send + Sync>> {
-        let profile = self.profiles
-            .get(&runtime_agent_profiles::AgentProfileId(params.name.clone()))
-            .ok_or_else(|| format!("Agent Profile '{}' 不存在", params.name))?;
-        
-        // 1. 生成子 turn_id
-        let sub_turn_id = generate_sub_turn_id(&self.parent_turn_id);
-        
-        // 2. 记录 SubAgentTurnStart
-        self.event_writer.append(StorageEvent::SubAgentTurnStart {
-            storage_seq: 0,  // 会由 writer 自动填充
-            turn_id: self.parent_turn_id.clone(),
-            sub_turn_id: sub_turn_id.clone(),
-            agent_profile: params.name.clone(),
-            task: params.task.clone(),
-            max_steps: params.max_steps.unwrap_or(profile.max_steps),
-            token_budget: params.context.as_ref().map(|_| profile.token_budget.unwrap_or(0)),
-            model: profile.model_preference.clone(),
-            timestamp: Utc::now(),
-        }).await?;
-        
-        let start = Instant::now();
-        
-        // 3. 构建子 Agent 的 Prompt (仅包含任务描述)
-        let system_prompt = profile.system_prompt
-            .clone()
-            .unwrap_or_default();
-        let user_message = if let Some(context) = &params.context {
-            format!("# 任务\n\n{}\n\n# 额外上下文\n\n{}", params.task, context)
-        } else {
-            params.task.clone()
-        };
-        
-        // 4. 构建子 Agent Loop
-        //    - 使用受限的 policy engine
-        //    - 使用受限的工具集 (根据 Profile)
-        //    - 共享 cancel_token
-        let sub_policy = Arc::new(SubAgentPolicyEngine::new(
-            /* parent policy from runtime */,
-            profile,
-        ));
-        
-        // 5. 执行
-        let result = match self.run_sub_loop(
-            &sub_turn_id,
-            system_prompt,
-            user_message,
-            sub_policy,
-            cancel_token.clone(),
-            // ... 
-        ).await {
-            Ok(output) => SubAgentResult {
-                outcome: SubAgentOutcome::Completed,
-                summary: Self::summarize_output(&output, profile.max_steps),
-                artifacts: vec![],  // 可以从 output 中提取
-                token_usage: output.token_usage,
-            },
-            Err(e) if cancel_token.is_cancelled() => SubAgentResult {
-                outcome: SubAgentOutcome::Aborted,
-                summary: "Agent 执行被中止".into(),
-                artifacts: vec![],
-                token_usage: None,
-            },
-            Err(e) => SubAgentResult {
-                outcome: SubAgentOutcome::Failed { error: e.to_string() },
-                summary: format!("Agent 执行失败: {}", e),
-                artifacts: vec![],
-                token_usage: None,
-            },
-        };
-        
-        // 6. 记录 SubAgentTurnEnd
-        self.event_writer.append(StorageEvent::SubAgentTurnEnd {
-            storage_seq: 0,
-            turn_id: self.parent_turn_id.clone(),
-            sub_turn_id,
-            agent_profile: params.name.clone(),
-            outcome: match result.outcome {
-                SubAgentOutcome::Completed => "completed".into(),
-                SubAgentOutcome::Failed { .. } => "failed".into(),
-                SubAgentOutcome::Aborted => "aborted".into(),
-                SubAgentOutcome::TokenExceeded => "token_exceeded".into(),
-            },
-            summary: result.summary.clone(),
-            token_usage: result.token_usage.clone(),
-            timestamp: Utc::now(),
-        }).await?;
-        
-        tracing::info!(
-            "SubAgent '{}' completed in {:?}, outcome: {:?}",
-            params.name,
-            start.elapsed(),
-            result.outcome
-        );
-        
-        Ok(result)
-    }
-    
-    /// 结果摘要: 截断过长的输出, 使其适合 LLM 消费
-    fn summarize_output(output: &str, max_summary_chars: usize) -> String {
-        if output.len() <= max_summary_chars {
-            output.to_string()
-        } else {
-            let truncated = &output[..max_summary_chars];
-            format!("{}\n\n[输出已截断, 完整内容可通过事件查询]", truncated)
-        }
-    }
-}
-
-fn generate_sub_turn_id(parent_turn_id: &str) -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
-    format!("{}-sub-{}", parent_turn_id, ts)
-}
-```
-
-#### 2.4 实现 RunAgentTool (Tool Trait)
-
-**文件**: `crates/runtime-agent-tool/src/tool.rs`
-
-```rust
-//! RunAgent Tool 实现
-
-use std::sync::Arc;
-use async_trait::async_trait;
-use core::tool::{Tool, ToolContext, ToolExecutionResult};
-use runtime_agent_profiles::AgentProfileRegistry;
-use crate::sub_agent_loop::SubAgentExecutor;
-use crate::RunAgentParams;
-
-pub struct RunAgentTool {
-    profiles: Arc<AgentProfileRegistry>,
-    // 从 RuntimeService 获取的执行器所需组件
-    executor_factory: Arc<dyn SubAgentExecutorFactory>,
-}
-
-impl RunAgentTool {
-    pub fn new(
-        profiles: Arc<AgentProfileRegistry>,
-        executor_factory: Arc<dyn SubAgentExecutorFactory>,
-    ) -> Self {
-        Self { profiles, executor_factory }
-    }
-
-    /// 生成对 LLM 友好的描述
-    pub fn description_for_llm(registry: &AgentProfileRegistry) -> String {
-        let profiles = registry.list();
-        let profile_list: String = profiles
-            .iter()
-            .map(|(id, p)| format!(
-                "- `{}`: {}",
-                id.0, p.description
-            ))
-            .collect::<Vec<_>>()
-            .join("\n");
-        
-        format!(
-            r##"调用子 Agent 执行特定任务。
-
-可用的 Agent Profile:
-{}
-
-每个 Profile 都有不同的工具权限和专精领域。选择合适的 Profile 可以提高效率和准确性。
-
-子 Agent 会独立运行, 完成后返回结果摘要。
-
-参数:
-- name: Agent Profile 名称 (必须是上述列表中的一个)
-- task: 任务描述, 应详细说明子 Agent 需要做什么
-- context: (可选) 额外上下文信息
-- max_steps: (可选) 覆盖最大步数"##,
-            profile_list
-        )
-    }
-
-    /// 生成 JSON Schema 供 LLM 理解
-    pub fn parameters_json_schema() -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Agent Profile 名称",
-                    "enum": ["explore", "plan", "execute", "review"]
-                },
-                "task": {
-                    "type": "string",
-                    "description": "任务详细描述"
-                },
-                "context": {
-                    "type": "string",
-                    "description": "可选的额外上下文"
-                },
-                "max_steps": {
-                    "type": "integer",
-                    "description": "可选的最大步数覆盖"
-                }
-            },
-            "required": ["name", "task"]
-        })
-    }
-}
-
-#[async_trait]
-impl Tool for RunAgentTool {
-    async fn invoke(
-        &self,
-        args: serde_json::Value,
-        ctx: &ToolContext,
-    ) -> Result<ToolExecutionResult, Box<dyn std::error::Error + Send + Sync>> {
-        // 1. 解析参数
-        let params: RunAgentParams = serde_json::from_value(args)
-            .map_err(|e| format!("参数解析失败: {}", e))?;
-        
-        // 2. 验证 Profile 存在
-        if self.profiles.get(&runtime_agent_profiles::AgentProfileId(params.name.clone())).is_none() {
-            return Ok(ToolExecutionResult::error(
-                format!("未知的 Agent Profile: '{}'. 可用: {:?}", 
-                    params.name, self.profiles.list_ids())
-            ));
-        }
-        
-        // 3. 创建子执行器
-        let executor = self.executor_factory.create(
-            self.profiles.clone(),
-            ctx.turn_id.clone(),
-            ctx.event_writer.clone(),
-        );
-        
-        // 4. 执行
-        tracing::info!(
-            "RunAgent: name='{}', task='{}', turn_id={}",
-            params.name, params.task, ctx.turn_id
-        );
-        
-        match executor.execute(params, ctx.cancel_token.clone()).await {
-            Ok(result) => {
-                // 5. 返回摘要 (对 LLM 友好)
-                Ok(ToolExecutionResult::ok(&result.summary))
-            }
-            Err(e) => {
-                Ok(ToolExecutionResult::error(&format!("子 Agent 执行失败: {}", e)))
-            }
-        }
-    }
-
-    fn name(&self) -> &str {
-        "runAgent"
-    }
-}
-
-/// 子执行器工厂 trait (用于解耦)
-#[async_trait]
-pub trait SubAgentExecutorFactory: Send + Sync {
-    fn create(
-        &self,
-        profiles: Arc<AgentProfileRegistry>,
-        parent_turn_id: String,
-        event_writer: Arc<dyn EventLogWriter>,
-    ) -> SubAgentExecutor;
-}
-```
-
-#### 2.5 注册 RunAgentTool 到 Capability Router
-
-**修改**: `crates/runtime/src/bootstrap.rs` (或 tool-loader 相关文件)
-
-在内置工具注册处添加:
-
-```rust
-use runtime_agent_tool::RunAgentTool;
-
-// 在 create_builtin_router 或类似函数中
-let run_agent_tool = RunAgentTool::new(
-    bootstrap.agent_profiles.clone(),
-    executor_factory,
-);
-router.register_tool("runAgent", Arc::new(run_agent_tool));
-```
-
-#### 2.6 前端事件投影适配
-
-**修改**: `frontend/` 中的事件消费逻辑
-
-子 Agent 事件需要渲染为嵌套结构:
-
-```typescript
-// 伪代码
-if (event.type === 'SubAgentTurnStart') {
-  // 显示一个折叠区域
-  renderCollapsibleBlock({
-    icon: '📦',
-    title: `调用 Agent: ${event.agent_profile}`,
-    loading: true,
-  });
-}
-
-if (event.type === 'SubAgentTurnEnd') {
-  // 更新折叠区域
-  updateCollapsibleBlock({
-    title: `✅ Agent ${event.agent_profile} (${event.outcome})`,
-    content: event.summary,
-    loading: false,
-  });
-}
-```
-
-**验收标准**:
-- `cargo test --package runtime-agent-tool` 全部通过
-- LLM 可以成功调用 `runAgent` 工具
-- 子 Agent 的执行结果出现在 EventLog 中
-- 前端可正确渲染嵌套 Agent 事件
 
 ---
 
-## Phase 3: 扩展 REST API
+## Phase 0 — Phase 1 总结
 
-**目标**: 添加完整的 REST API 端点, 支持 Agent 直接调用
+### Phase 0: 设计 ✅ 已完成  
+### Phase 1: Agent Loader ✅ 已完成  
 
-**预估时间**: 2 天
+- 已实现 Markdown 目录加载 Agent 定义
+- builtin profile: explore / plan / review / execute
+- 集成到 Runtime Bootstrap
+- 支持热重载（`start_agent_auto_reload`）
 
-### 步骤
 
-#### 3.1 设置 Axum Router
+## Phase 2: Agent as Tool 实现 ✅ 已完成
 
-**文件**: `crates/runtime-agent-api/src/lib.rs`
+**实际实现**：
 
-```rust
-use axum::{Router, routing::{get, post}};
-use tokio::net::TcpListener;
-use std::sync::Arc;
-use runtime::RuntimeService;
-use runtime_agent_profiles::AgentProfileRegistry;
+### 2.1 工具定义与参数（`crates/runtime-agent-tool/src/lib.rs`）
+- `RunAgentTool` 通过 `SubAgentExecutor` trait 委托执行，不直接耦合 runtime
+- `RunAgentParams` 序列化字段为 camelCase: `name`, `task`, `context`, `maxSteps`
+- 参数验证失败时返回 `ok=false` 的 `ToolExecutionResult`，error 描述原因
 
-pub struct AgentApiConfig {
-    pub host: String,
-    pub port: u16,
-    pub api_key: Option<String>,
-    pub cors_origins: Vec<String>,
-}
+### 2.2 子 Agent 执行服务（`crates/runtime/src/service/agent_execution.rs`）
+- `AgentExecutionServiceHandle` 持有 `RuntimeService` 引用
+- `DeferredSubAgentExecutor` 在 bootstrap 阶段占位，service 创建后 bind
+- `execute_subagent` 执行路径：
+  - 校验 `turn_id` 和 `event_sink`（来自 ToolContext）
+  - 查找 profile → 校验 `AgentMode::SubAgent` → `resolve_profile_tool_names()` 按 allow/deny 裁剪可见工具
+  - `runtime.agent_control.spawn()` 注册子 Agent，`mark_running()` → 获取 CancelToken
+  - 构建 `SubAgentPolicyEngine`（禁止 Ask，只允许白名单工具）
+  - `ChildExecutionTracker` 跟踪 step/token 预算，超限时 cancel
+  - `event_sink.emit()` 写入子 Agent 的 `UserMessage` 和后续事件，带 `AgentEventContext`
+  - 结果折叠为 `SubAgentResult(outcome, summary, metadata)` 回主 turn
 
-pub async fn start_server(
-    config: AgentApiConfig,
-    runtime: Arc<RuntimeService>,
-    profiles: Arc<AgentProfileRegistry>,
-) -> anyhow::Result<()> {
-    let app = create_router(runtime, profiles, &config);
-    
-    let addr = format!("{}:{}", config.host, config.port);
-    tracing::info!("Agent API server starting on {}", addr);
-    
-    let listener = TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
-    
-    Ok(())
-}
+### 2.3 策略与预算（`crates/runtime-agent-loop/src/subagent.rs`）
+- `SubAgentPolicyEngine`: 包装父 PolicyEngine，白名单过滤 + 将 Ask 转为 Deny
+- `ChildExecutionTracker`: 通过 `observe()` 监听事件流，步数/预算超限即 cancel
+- 注意：`step_index >= max_steps` 是"软限制"（允许第 N+1 步部分执行后即取消）
 
-fn create_router(
-    runtime: Arc<RuntimeService>,
-    profiles: Arc<AgentProfileRegistry>,
-    config: &AgentApiConfig,
-) -> Router {
-    let state = Arc::new(ApiState {
-        runtime,
-        profiles,
-        api_key: config.api_key.clone(),
-    });
+### 2.4 路由注册（`crates/runtime/src/builtin_capabilities.rs`）
+- 在 `built_in_capability_invokers()` 中注册 `RunAgentTool`，通过 `ToolCapabilityInvoker` 包装
+- 所有内置工具统一走同一套 capability dispatch
 
-    Router::new()
-        // 健康检查
-        .route("/health", get(health_check))
-        // 会话 API
-        .route("/sessions", get(list_sessions).post(create_session))
-        .route("/sessions/{id}", get(get_session).delete(delete_session))
-        // 消息 API
-        .route("/sessions/{id}/message", post(send_message_streaming))
-        .route("/sessions/{id}/message/async", post(send_message_async))
-        .route("/sessions/{id}/messages", get(get_messages))
-        // Agent API
-        .route("/agents", get(list_agents))
-        .route("/agents/{id}/execute", post(execute_agent))
-        // 工具 API
-        .route("/tools", get(list_tools))
-        // Swagger / OpenAPI
-        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
-        // Middleware
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            auth_middleware,
-        ))
-        .layer(
-            tower_http::cors::CorsLayer::new()
-                .allow_origin(
-                    config.cors_origins.iter()
-                        .map(|o| o.parse().unwrap())
-                        .collect::<Vec<_>>()
-                )
-                .allow_methods([http::Method::GET, http::Method::POST, http::Method::DELETE])
-                .allow_headers([http::header::CONTENT_TYPE, http::header::AUTHORIZATION])
-        )
-        .layer(
-            tower_http::limit::RequestBodyLimitLayer::new(10 * 1024 * 1024)  // 10MB
-        )
-        .with_state(state)
-}
+### 2.5 事件投影（前端）
+- `StorageEvent` 已通过 `AgentEventContext` 承载 `agent_id` / `parent_turn_id` / `agent_profile`
+- 前端 `MessageList.tsx` 实现 `agentGroup` 嵌套 UI
+- `applyAgentEvent.ts` 提取 agent 字段注入消息 action
 
-#[derive(Clone)]
-struct ApiState {
-    runtime: Arc<RuntimeService>,
-    profiles: Arc<AgentProfileRegistry>,
-    api_key: Option<String>,
-}
-```
+### 2.6 API 端点（`crates/server/src/routes/`）
+- `/api/v1/agents` — 列出 Agent Profiles（GET）
+- `/api/v1/agents/{id}/execute` — 返回 501 Not Implemented（骨架）
+- `/api/v1/tools` — 列出当前工具列表（GET）
+- `/api/v1/tools/{id}/execute` — 返回 501 Not Implemented（骨架）
 
-#### 3.2 实现核心端点
+**验收标准**：
+- ✅ `runAgent` 工具可被 LLM 调用
+- ✅ 子 Agent 事件带父子元数据写入 JSONL
+- ✅ 子 Agent 失败/取消返回结构化 tool result
+- ✅ 前端可渲染子 Agent 消息分组
 
-**文件**: `crates/runtime-agent-api/src/routes/sessions.rs`
+---
 
-```rust
-pub async fn send_message_streaming(
-    State(state): State<Arc<ApiState>>,
-    Path(session_id): Path<String>,
-    Json(req): Json<MessageRequest>,
-) -> Result<impl IntoResponse> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
-    
-    // 启动异步 prompt 执行
-    let rt = state.runtime.clone();
-    let sid = session_id.clone();
-    tokio::spawn(async move {
-        match rt.prompt(&sid, req.into(), tx).await {
-            Ok(_) => {},
-            Err(e) => {
-                tx.send(AgentEvent::Error { message: e.to_string() }).ok();
-            }
-        }
-    });
-    
-    // 返回 SSE 流
-    let stream = event_source(rx);
-    Ok(Sse::new(stream))
-}
-```
+## Phase 3: 扩展 API 🟡 骨架已预埋
 
-**文件**: `crates/runtime-agent-api/src/routes/agents.rs`
+**目标**: 基于现有 server crate 扩展 API 端点，不引入独立 API crate
 
-```rust
-/// GET /agents - 列出可用 Agent Profile
-pub async fn list_agents(
-    State(state): State<Arc<ApiState>>,
-) -> Result<Json<Vec<AgentInfoResponse>>> {
-    let agents = state.profiles.list().iter().map(|(id, p)| {
-        AgentInfoResponse {
-            id: id.0.clone(),
-            name: p.name.clone(),
-            description: p.description.clone(),
-            allowed_tools: p.allowed_tools.clone().unwrap_or_default(),
-            max_steps: p.max_steps,
-        }
-    }).collect();
-    
-    Ok(Json(agents))
-}
+### 已实现（骨架）
 
-/// POST /agents/{id}/execute - 直接执行 Agent
-pub async fn execute_agent(
-    State(state): State<Arc<ApiState>>,
-    Path(agent_id): Path<String>,
-    Json(req): Json<AgentExecuteRequest>,
-) -> Result<impl IntoResponse> {
-    let profile = state.profiles.get(&AgentProfileId(agent_id))
-        .ok_or_else(|| not_found("Agent Profile not found"))?;
-    
-    // 创建独立 session 或使用现有 session
-    let session_id = state.runtime.create_session(&req.working_dir).await?;
-    
-    // 执行
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
-    let rt = state.runtime.clone();
-    let sid = session_id.clone();
-    
-    // 构建仅包含任务的消息
-    let prompt = PromptRequest {
-        message: req.task,
-        ..Default::default()
-    };
-    
-    tokio::spawn(async move {
-        rt.prompt(&sid, prompt, tx).await.ok();
-    });
-    
-    let stream = event_source(rx);
-    Ok(Sse::new(stream))
-}
-```
+**文件**: `crates/server/src/routes/`
 
-#### 3.3 OpenAPI 文档
+- `GET /api/v1/agents` → `routes/agents.rs`: 列出 Agent Profiles
+  - 使用 `AgentExecutionServiceHandle::list_profiles()` → `AgentProfileDto`
+- `POST /api/v1/agents/{id}/execute` → 返回 `501 Not Implemented`
+  - 提示当前应使用 `runAgent` 工具调用
+- `GET /api/v1/tools` → `routes/tools.rs`: 列出当前运行时工具列表
+  - 使用 `ToolExecutionServiceHandle::list_tools()` → `ToolDescriptorDto`
+- `POST /api/v1/tools/{id}/execute` → 返回 `501 Not Implemented`
+  - 提示当前应使用 session turn 或 `runAgent`
 
-**文件**: `crates/runtime-agent-api/src/openapi.rs`
+**DTO 定义**: `crates/protocol/src/http/agent.rs` + `crates/protocol/src/http/tool.rs`
+- `AgentProfileDto`, `AgentExecuteRequestDto`, `AgentExecuteResponseDto`
+- `ToolDescriptorDto`, `ToolExecuteRequestDto`, `ToolExecuteResponseDto`
 
-```rust
-use utoipa::OpenApi;
-use utoipa_swagger_ui::SwaggerUi;
+**Router 注册**: `crates/server/src/routes/mod.rs` → `build_api_router()`
 
-#[derive(OpenApi)]
-#[openapi(
-    paths(
-        sessions::list_sessions,
-        sessions::create_session,
-        sessions::send_message_streaming,
-        sessions::send_message_async,
-        agents::list_agents,
-        agents::execute_agent,
-    ),
-    components(schemas(
-        MessageRequest,
-        MessagePart,
-        AgentInfoResponse,
-        AgentExecuteRequest,
-        SessionResponse,
-    )),
-    tags(
-        (name = "sessions", description = "会话管理"),
-        (name = "agents", description = "Agent 执行"),
-    )
-)]
-pub struct ApiDoc;
-```
+### 待完成
 
-**验收标准**:
-- `cargo run --package runtime-agent-api` 启动服务
-- `GET /health` → 200 OK
-- `GET /swagger-ui` → 打开 Swagger
-- `POST /sessions/{id}/message` → SSE 流式响应
-- `POST /agents/{id}/execute` → SSE 流式响应
+- `GET /api/v1/{id}/agents/{agent_id}/status` — 查询子 Agent 状态
+- `POST /api/v1/sessions/{id}/abort` — turn 级取消
+- `POST /api/v1/sessions/{id}/fork` — 从指定 turn 派生新 session
+- `POST /api/v1/sessions/{id}/revert` — 回滚到指定 turn
+- `/api/v1/agents/{id}/execute` 从骨架升级为真实执行端点
+- `/api/v1/tools/{id}/execute` 从骨架升级为真实执行端点
 
 ---
 
@@ -744,259 +110,59 @@ pub struct ApiDoc;
 
 **预估时间**: 1 天
 
-### 步骤
+### 备注
 
-#### 4.1 WebSocket Handler
+当前已通过 SSE 事件流（`/api/sessions/:id/events`）+ 断点续传机制实现实时事件推送。
+WebSocket 是备选方案，目前优先级较低。如后续需要真正的双向通信（如客户端主动下发 steer/follow-up），再评估引入。
 
-**文件**: `crates/runtime-agent-api/src/ws/handler.rs`
-
-```rust
-use axum::{
-    extract::{State, WebSocketUpgrade},
-    response::IntoResponse,
-};
-use axum::extract::ws::{Message, WebSocket};
-use futures::{SinkExt, StreamExt};
-
-pub async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<Arc<ApiState>>,
-) -> impl IntoResponse {
-    ws.on_upgrade(|socket| handle_socket(socket, state))
-}
-
-async fn handle_socket(socket: WebSocket, state: Arc<ApiState>) {
-    let (mut sender, mut receiver) = socket.split();
-    
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<WsServerEvent>();
-    
-    // 客户端消息处理 (receive loop)
-    let send_tx = tx.clone();
-    tokio::spawn(async move {
-        while let Some(Ok(msg)) = receiver.next().await {
-            if let Message::Text(text) = msg {
-                let client_msg: Result<ClientMessage, _> = serde_json::from_str(&text);
-                match client_msg {
-                    Ok(msg) => handle_client_message(msg, &state, &send_tx).await,
-                    Err(e) => {
-                        send_tx.send(WsServerEvent::Error { 
-                            message: format!("JSON parse error: {}", e) 
-                        }).ok();
-                    }
-                }
-            }
-        }
-    });
-    
-    // 服务端消息发送 (send loop)
-    tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            let json = serde_json::to_string(&event).unwrap();
-            if sender.send(Message::Text(json)).await.is_err() {
-                break;  // 连接已关闭
-            }
-        }
-    });
-}
-
-async fn handle_client_message(
-    msg: ClientMessage,
-    state: &Arc<ApiState>,
-    tx: &tokio::sync::mpsc::UnboundedSender<WsServerEvent>,
-) {
-    match msg {
-        ClientMessage::Subscribe { session_id } => {
-            // 订阅会话的事件流
-            let events = state.runtime.get_events(&session_id);
-            for evt in events {
-                tx.send(WsServerEvent::Event(evt)).ok();
-            }
-        }
-        ClientMessage::SendMessage { session_id, content } => {
-            // 发送消息
-            let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-            
-            let rt = state.runtime.clone();
-            let sid = session_id.clone();
-            tokio::spawn(async move {
-                let prompt = PromptRequest { message: content, ..Default::default() };
-                rt.prompt(&sid, prompt, event_tx).await.ok();
-            });
-            
-            while let Some(evt) = event_rx.recv().await {
-                if tx.send(WsServerEvent::Event(evt)).is_err() {
-                    break;
-                }
-            }
-            tx.send(WsServerEvent::TurnComplete { session_id }).ok();
-        }
-        ClientMessage::Abort { session_id } => {
-            state.runtime.abort(&session_id);
-            tx.send(WsServerEvent::Aborted { session_id }).ok();
-        }
-    }
-}
-```
-
-#### 4.2 WS 消息协议
-
-**文件**: `crates/runtime-agent-api/src/ws/protocol.rs`
-
-```rust
-use serde::{Deserialize, Serialize};
-
-/// 客户端发送到服务端的消息
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ClientMessage {
-    /// 订阅会话事件
-    Subscribe { session_id: String },
-    /// 发送消息
-    SendMessage { session_id: String, content: String },
-    /// 中止执行
-    Abort { session_id: String },
-}
-
-/// 服务端发送到客户端的消息
-#[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum WsServerEvent {
-    /// 事件流 (StorageEvent 的投影)
-    Event(StorageEvent),
-    /// Turn 完成
-    TurnComplete { session_id: String },
-    /// 执行被中止
-    Aborted { session_id: String },
-    /// 错误
-    Error { message: String },
-}
-```
-
-#### 4.3 路由集成
-
-**修改**: `crates/runtime-agent-api/src/lib.rs`
-
-```rust
-use crate::ws::handler::ws_handler;
-
-Router::new()
-    // ... existing routes
-    .route("/ws", get(ws_handler))
-```
-
-**验收标准**:
-- 可使用 `wscat -c ws://localhost:6543/ws` 连接
-- 发送 `{"type": "subscribe", "session_id": "xxx"}` 接收事件
-- 发送 `{"type": "send_message", ...}` 触发 Agent 执行
-- 发送 `{"type": "abort", ...}` 中止执行
+（原有设计方案保留，但暂不实施）
 
 ---
 
-## Phase 5: 前端集成 (可选)
+## Phase 5: 前端适配 ✅ 已完成
 
-**目标**: 前端适配新的 Agent as Tool 功能
+### 已实现
 
-**预估时间**: 1 天
+**事件层**（`frontend/src/lib/applyAgentEvent.ts`）:
+- 从 SSE 事件提取 `agentId` / `parentTurnId` / `agentProfile` 字段
+- 通过 spread `...agentFields` 注入到所有消息 action（UserMessage, AssistantMessage, ToolCall, Compact）
 
-### 步骤
+**状态层**（`frontend/src/store/reducer.ts`）:
+- 所有消息类型新增 `agentId`, `parentTurnId`, `agentProfile` 字段
+- 所有 action 类型扩展对应字段声明
 
-#### 5.1 事件类型扩展
+**类型层**（`frontend/src/types.ts`）:
+- `UserMessage`, `AssistantMessage`, `ToolCallMessage`, `CompactMessage` 均新增可选 agent 字段
+- Action 类型扩展对应属性
 
-修改 `frontend/src/types.ts`:
+**渲染层**（`frontend/src/components/Chat/MessageList.tsx`）:
+- `isNestedAgentMessage()` 检测带 `agentId + parentTurnId` 的消息
+- 连续子 Agent 消息渲染为 `agentGroup`（header 显示 "子 Agent" + profile ID）
+- 使用 `groupMessageRow` 类名区分嵌套消息样式
+- CSS: `MessageList.module.css` 定义 `agentGroup` / `agentGroupHeader` / `agentGroupLabel` / `agentGroupTitle` / `agentGroupBody`
 
-```typescript
-export interface SubAgentTurnStartEvent {
-  type: 'SubAgentTurnStart';
-  sub_turn_id: string;
-  parent_turn_id: string;
-  agent_profile: string;
-  task: string;
-  max_steps: number;
-}
-
-export interface SubAgentTurnEndEvent {
-  type: 'SubAgentTurnEnd';
-  sub_turn_id: string;
-  parent_turn_id: string;
-  agent_profile: string;
-  outcome: 'completed' | 'failed' | 'aborted' | 'token_exceeded';
-  summary: string;
-  token_usage?: TokenUsage;
-}
-```
-
-#### 5.2 渲染组件
-
-创建新的 `SubAgentBlock.tsx` 组件用于渲染嵌套 Agent 执行:
-
-```tsx
-// 伪代码
-export function SubAgentBlock({ event }: SubAgentBlockProps) {
-  const [isExpanded, setIsExpanded] = useState(false);
-  const isLoading = event.type === 'SubAgentTurnStart';
-  
-  return (
-    <div className="sub-agent-block">
-      <button onClick={() => setIsExpanded(!isExpanded)}>
-        {isLoading ? '⏳' : event.outcome === 'completed' ? '✅' : '❌'}
-        调用 Agent: {event.agent_profile}
-      </button>
-      {isExpanded && (
-        <pre>{event.summary}</pre>
-      )}
-    </div>
-  );
-}
-```
-
-#### 5.3 事件处理器
-
-修改 `frontend/src/hooks/useAgent.ts`:
-
-```typescript
-// 在事件分发逻辑中
-if (event.type === 'SubAgentTurnStart' || event.type === 'SubAgentTurnEnd') {
-  // 添加到消息列表, 按 parent_turn_id 分组
-  dispatch({ type: 'ADD_SUB_AGENT_EVENT', event });
-}
-```
-
-**验收标准**:
-- 前端可以正确渲染嵌套 Agent 事件
-- 折叠/展开子 Agent 执行详情
-- 显示进度指示器 (loading state)
+**验收标准**：
+- ✅ 前端正确消费带 agent 元数据的 SSE 事件
+- ✅ 状态机正确写入 agent 字段
+- ✅ UI 将子 Agent 消息渲染为嵌套分组
 
 ---
 
 ## Phase 6: 测试与验证
 
-**目标**: 完整测试所有功能
+### 已实现
 
-**预估时间**: 1 天
+- **Agent Loader 测试**: `crates/runtime-agent-loader/src/lib.rs` 内建多项测试（profile 加载、merge、Markdown/YAML 解析）
+- **Agent Tool 测试**: `crates/runtime-agent-tool/src/lib.rs` 覆盖 params 解析 + 无效参数报错
+- **RunAgent 集成**: `crates/runtime/src/service/agent_execution.rs` 中 `run_agent_tool_emits_child_events_with_agent_context` 端到端测试
+- **API 路由测试**: `crates/server/src/runtime_routes_tests.rs` 覆盖 `/api/v1/agents`、`/api/v1/tools`、execute 端点 501
+- **Agent Control 测试**: `crates/runtime-agent-control/src/lib.rs` 覆盖 spawn/list/cancel/wait/级联取消/GC
 
-### 6.1 单元测试
+### 待补充
 
-```bash
-# Agent Loader 测试
-cargo test --package astrcode-runtime-agent-loader
-
-# Agent Tool 测试
-cargo test --package runtime-agent-tool
-
-# API 端点测试 (集成)
-cargo test --package runtime-agent-api
-```
-
-### 6.2 集成测试
-
-```bash
-# 完整 E2E 测试
-# 1. 创建 session
-# 2. 发送消息触发 Agent 执行
-# 3. Agent 调用 runAgent 子 Agent
-# 4. 子 Agent 执行完毕
-# 5. 验证事件序列正确
-# 6. 验证摘要截断正确
+- [ ] `SubAgentPolicyEngine::check_capability_call` 三个分支测试（allow/deny/ask→deny）
+- [ ] `CapabilityRouter::subset_for_tools` 测试
+- [ ] 递归深度上限测试（当前未实现上限，需要先实现功能）
 ```
 
 ### 6.3 API 测试
