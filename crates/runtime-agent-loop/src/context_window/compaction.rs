@@ -119,8 +119,8 @@ fn render_compact_system_prompt(compact_prompt_context: Option<&str>) -> String 
     let mut prompt = String::from(
         "You are a context summarization assistant for a coding-agent session.\nYour summary will \
          replace earlier conversation history so another agent can continue seamlessly.\n\n## \
-         CRITICAL RULES\n**DO NOT CALL ANY TOOLS.** This is for summary generation only.\n NOT \
-         continue the conversation.** Only output the structured summary.\n\n## Compression \
+         CRITICAL RULES\n**DO NOT CALL ANY TOOLS.** This is for summary generation only.\n**Do \
+         NOT continue the conversation.** Only output the structured summary.\n\n## Compression \
          Priorities (highest → lowest)\n1. **Current Task State** — What's being worked on, exact \
          status, immediate next steps\n2. **Errors & Solutions** — Stack traces, error messages, \
          and how they were resolved\n3. **User Requests** — All user messages verbatim in \
@@ -171,11 +171,15 @@ fn render_compact_system_prompt(compact_prompt_context: Option<&str>) -> String 
 /// 1. 保留当前运行时已有的 system prompt 上下文
 /// 2. 把 hook 提供的附加约束追加到末尾
 ///
-/// 这样 loop 层不再自己“构造最终 compact prompt”，只传递一段待嵌入的上下文。
+/// 同时在 merge 边界折叠空字符串，避免把 `Some("")` 继续向下游传播。
 pub(crate) fn merge_compact_prompt_context(
     runtime_system_prompt: Option<&str>,
     additional_system_prompt: Option<&str>,
 ) -> Option<String> {
+    let runtime_system_prompt = runtime_system_prompt.filter(|value| !value.trim().is_empty());
+    let additional_system_prompt =
+        additional_system_prompt.filter(|value| !value.trim().is_empty());
+
     match (runtime_system_prompt, additional_system_prompt) {
         (None, None) => None,
         (Some(base), None) => Some(base.to_string()),
@@ -341,6 +345,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn render_compact_system_prompt_keeps_do_not_continue_instruction_intact() {
+        let prompt = render_compact_system_prompt(None);
+
+        assert!(
+            prompt.contains("**Do NOT continue the conversation.**"),
+            "compact prompt must explicitly instruct the summarizer not to continue the session"
+        );
+    }
+
+    #[test]
     fn merge_compact_prompt_context_appends_hook_suffix_after_runtime_prompt() {
         let merged = merge_compact_prompt_context(Some("base"), Some("hook"))
             .expect("merged compact prompt context should exist");
@@ -354,6 +368,20 @@ mod tests {
             .expect("runtime prompt context should be preserved");
 
         assert_eq!(merged, "base");
+    }
+
+    #[test]
+    fn merge_compact_prompt_context_returns_none_when_both_empty() {
+        assert!(merge_compact_prompt_context(None, None).is_none());
+        assert!(merge_compact_prompt_context(Some("   "), Some(" \n\t ")).is_none());
+    }
+
+    #[test]
+    fn merge_compact_prompt_context_keeps_additional_when_runtime_is_empty() {
+        let merged = merge_compact_prompt_context(None, Some("hook"))
+            .expect("hook prompt context should be preserved");
+
+        assert_eq!(merged, "hook");
     }
 
     #[test]

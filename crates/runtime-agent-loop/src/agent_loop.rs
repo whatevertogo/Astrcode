@@ -59,7 +59,7 @@ use std::{path::PathBuf, sync::Arc};
 use astrcode_core::{
     AgentState, AllowAllPolicyEngine, AstrError, CancelToken, CapabilityDescriptor,
     CapabilityRouter, CompactionHookContext, HookCompactionReason, HookHandler, LlmMessage,
-    PolicyContext, PolicyEngine, Result, StorageEvent, ToolContext, ToolHookContext,
+    PolicyContext, PolicyEngine, Result, StorageEvent, StoredEvent, ToolContext, ToolHookContext,
     UserMessageOrigin,
 };
 use astrcode_runtime_config::{
@@ -506,6 +506,7 @@ impl AgentLoop {
         &self,
         state: &AgentState,
         compaction_tail: CompactionTailSnapshot,
+        recent_stored_events: Option<&[StoredEvent]>,
     ) -> Result<Option<StorageEvent>> {
         let user_turns = count_real_user_turns(&state.messages);
         if user_turns < 2 {
@@ -586,7 +587,12 @@ impl AgentLoop {
             return Ok(None);
         };
         let materialized_tail = compaction_tail.materialize();
-        let file_access = FileAccessTracker::from_stored_events(&materialized_tail);
+        // manual compact 的 rebuild tail 只负责“保留最近 turn 的真实事件”，
+        // 但文件恢复应尽量看完整的最近持久化事件窗口，避免 hook/策略调整了
+        // preserved turns 后，把刚刚读过的文件错误地遗漏掉。
+        let file_access = recent_stored_events
+            .map(FileAccessTracker::from_stored_events)
+            .unwrap_or_else(|| FileAccessTracker::from_stored_events(&materialized_tail));
         artifact.recovered_files = file_access.recent_files(MAX_RECOVERED_FILES);
         let tail = {
             if materialized_tail.is_empty() {

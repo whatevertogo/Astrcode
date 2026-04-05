@@ -147,6 +147,22 @@ impl crate::compaction_runtime::CompactionRebuilder for FailingRebuilder {
     }
 }
 
+struct RecordingRebuilder {
+    recovered_files: Arc<Mutex<Vec<(PathBuf, String)>>>,
+}
+
+impl crate::compaction_runtime::CompactionRebuilder for RecordingRebuilder {
+    fn rebuild(
+        &self,
+        _artifact: &CompactionArtifact,
+        _tail: &[astrcode_core::StoredEvent],
+        file_contents: &[(std::path::PathBuf, String)],
+    ) -> astrcode_core::Result<ConversationView> {
+        *self.recovered_files.lock().expect("recovered files lock") = file_contents.to_vec();
+        Ok(ConversationView::new(Vec::new()))
+    }
+}
+
 #[tokio::test]
 async fn auto_compact_emits_compact_applied_before_retrying_the_turn() {
     let _guard = super::test_support::TestEnvGuard::new();
@@ -324,23 +340,26 @@ async fn reactive_compact_restores_recent_file_context_after_current_turn_file_a
         requests.len() >= 4,
         "reactive compact path should issue tool, failing prompt, compact, and final requests"
     );
-    let final_request_dump = format!(
-        "{:?}",
-        requests
-            .last()
-            .expect("final request should exist")
-            .messages
-    );
+    let final_request_messages = &requests
+        .last()
+        .expect("final request should exist")
+        .messages;
+    let recovery_message = final_request_messages
+        .iter()
+        .find_map(|message| match message {
+            LlmMessage::User {
+                content,
+                origin: UserMessageOrigin::CompactSummary,
+            } if content.contains("[Post-compact file recovery:") => Some(content.as_str()),
+            _ => None,
+        })
+        .expect("rebuilt request should include a post-compact file recovery message");
     assert!(
-        final_request_dump.contains("Post-compact file recovery"),
-        "rebuilt request should include a post-compact file recovery message"
-    );
-    assert!(
-        final_request_dump.contains("recent.rs"),
+        recovery_message.contains("recent.rs"),
         "recovery message should name the recently accessed file"
     );
     assert!(
-        final_request_dump.contains("recovered_context"),
+        recovery_message.contains("recovered_context"),
         "recovery message should embed the file contents so the model keeps local code context"
     );
 }
@@ -386,7 +405,7 @@ async fn manual_compact_event_uses_manual_trigger_via_compaction_runtime() {
     };
 
     let event = loop_runner
-        .manual_compact_event(&state, CompactionTailSnapshot::default())
+        .manual_compact_event(&state, CompactionTailSnapshot::default(), None)
         .await
         .expect("manual compact should succeed")
         .expect("manual compact should emit an event");
@@ -451,7 +470,7 @@ async fn manual_compact_event_caps_keep_recent_turns_so_manual_requests_do_real_
     };
 
     let event = loop_runner
-        .manual_compact_event(&state, CompactionTailSnapshot::default())
+        .manual_compact_event(&state, CompactionTailSnapshot::default(), None)
         .await
         .expect("manual compact should succeed even when auto keep_recent_turns is larger")
         .expect("manual compact should still emit an event");
@@ -490,12 +509,95 @@ async fn manual_compact_event_rejects_single_turn_sessions() {
     };
 
     let error = loop_runner
-        .manual_compact_event(&state, CompactionTailSnapshot::default())
+        .manual_compact_event(&state, CompactionTailSnapshot::default(), None)
         .await
         .expect_err("single-turn sessions should reject manual compact");
 
     assert!(matches!(error, AstrError::Validation(_)));
     assert!(error.to_string().contains("at least 2 real user turns"));
+}
+
+#[tokio::test]
+async fn manual_compact_event_recovers_files_from_recent_stored_events_not_only_tail() {
+    let _guard = super::test_support::TestEnvGuard::new();
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let file_path = temp_dir.path().join("manual-recovery.rs");
+    let file_contents = "fn manual_compact_recovery() {}\n".repeat(32);
+    std::fs::write(&file_path, &file_contents).expect("fixture file should be writable");
+    let recovered_files = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::new()),
+        delay: std::time::Duration::from_millis(0),
+    });
+    let loop_runner = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory { provider }),
+        empty_capabilities(),
+    )
+    .with_compaction_runtime(CompactionRuntime::new(
+        true,
+        1,
+        80,
+        Arc::new(ThresholdCompactionPolicy::new(true)),
+        Arc::new(StaticArtifactStrategy),
+        Arc::new(RecordingRebuilder {
+            recovered_files: Arc::clone(&recovered_files),
+        }),
+        Arc::new(FsFileContentProvider),
+    ));
+    let state = astrcode_core::AgentState {
+        session_id: "test".into(),
+        working_dir: temp_dir.path().to_path_buf(),
+        messages: vec![
+            LlmMessage::User {
+                content: "first ask".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "first answer".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+            LlmMessage::User {
+                content: "second ask".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ],
+        phase: Phase::Idle,
+        turn_count: 2,
+    };
+    let recent_stored_events = vec![astrcode_core::StoredEvent {
+        storage_seq: 10,
+        event: StorageEvent::ToolResult {
+            turn_id: Some("turn-2".to_string()),
+            tool_call_id: "call-read".to_string(),
+            tool_name: "readFile".to_string(),
+            output: file_contents.clone(),
+            success: true,
+            error: None,
+            metadata: Some(json!({ "path": file_path.display().to_string() })),
+            duration_ms: 1,
+        },
+    }];
+
+    let event = loop_runner
+        .manual_compact_event(
+            &state,
+            CompactionTailSnapshot::default(),
+            Some(&recent_stored_events),
+        )
+        .await
+        .expect("manual compact should succeed")
+        .expect("manual compact should emit an event");
+
+    assert!(matches!(event, StorageEvent::CompactApplied { .. }));
+    let recovered_files = recovered_files.lock().expect("recovered files lock");
+    assert_eq!(recovered_files.len(), 1);
+    assert_eq!(recovered_files[0].0, file_path);
+    assert!(
+        recovered_files[0].1.contains("manual_compact_recovery"),
+        "manual compact should recover file contents from the recent durable window even when the \
+         rebuild tail is empty"
+    );
 }
 
 /// 构造一个 413 prompt too long 错误。

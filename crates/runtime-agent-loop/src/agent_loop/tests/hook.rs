@@ -300,6 +300,7 @@ async fn manual_compact_runs_pre_and_post_compact_hooks() {
         .manual_compact_event(
             &state,
             crate::CompactionTailSnapshot::from_messages(&state.messages, 1),
+            None,
         )
         .await
         .expect("manual compact should succeed");

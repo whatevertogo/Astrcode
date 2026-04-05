@@ -603,6 +603,7 @@ async fn bootstrap_background_load_propagates_plugin_hook_handlers_into_agent_lo
         .manual_compact_event(
             &state,
             astrcode_runtime_agent_loop::CompactionTailSnapshot::from_messages(&state.messages, 1),
+            None,
         )
         .await
         .expect_err("plugin hook should block manual compact");
