@@ -17,6 +17,7 @@
 use std::sync::Arc;
 
 use astrcode_core::{CapabilityInvoker, Result, ToolCapabilityInvoker};
+use astrcode_runtime_agent_tool::{RunAgentTool, SubAgentExecutor};
 use astrcode_runtime_skill_loader::SkillCatalog;
 
 use crate::skill_tool::SkillTool;
@@ -35,9 +36,11 @@ use crate::skill_tool::SkillTool;
 /// 4. 搜索工具
 pub(crate) fn built_in_capability_invokers(
     skill_catalog: Arc<SkillCatalog>,
+    subagent_executor: Arc<dyn SubAgentExecutor>,
 ) -> Result<Vec<Arc<dyn CapabilityInvoker>>> {
     vec![
         ToolCapabilityInvoker::boxed(Box::new(SkillTool::new(skill_catalog))),
+        ToolCapabilityInvoker::boxed(Box::new(RunAgentTool::new(subagent_executor))),
         ToolCapabilityInvoker::boxed(Box::new(
             astrcode_runtime_tool_loader::builtin_tools::shell::ShellTool,
         )),

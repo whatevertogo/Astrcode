@@ -11,8 +11,9 @@ use astrcode_core::{
     AllowAllPolicyEngine, AstrError, CapabilityRouter, HookHandler, PolicyEngine, RuntimeHandle,
     SessionManager,
 };
+use astrcode_runtime_agent_control::AgentControl;
 use astrcode_runtime_agent_loader::{AgentProfileLoader, AgentProfileRegistry};
-use astrcode_runtime_agent_loop::{AgentControl, AgentLoop, ApprovalBroker, DefaultApprovalBroker};
+use astrcode_runtime_agent_loop::{AgentLoop, ApprovalBroker, DefaultApprovalBroker};
 use astrcode_runtime_prompt::PromptDeclaration;
 use astrcode_runtime_skill_loader::SkillCatalog;
 use astrcode_storage::session::FileSystemSessionRepository;
@@ -30,6 +31,7 @@ use crate::{
     provider_factory::ConfigFileProviderFactory,
 };
 
+mod agent_execution;
 #[cfg(test)]
 mod baselines;
 mod composer_ops;
@@ -42,6 +44,10 @@ mod support;
 mod turn_ops;
 mod types;
 
+pub(crate) use agent_execution::DeferredSubAgentExecutor;
+pub use agent_execution::{
+    AgentExecutionServiceHandle, AgentProfileSummary, ToolExecutionServiceHandle, ToolSummary,
+};
 use observability::RuntimeObservability;
 pub use observability::{
     OperationMetricsSnapshot, ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot,
@@ -78,15 +84,35 @@ fn build_agent_loop(
     policy: Arc<dyn PolicyEngine>,
     approval: Arc<dyn ApprovalBroker>,
 ) -> Arc<AgentLoop> {
+    build_agent_loop_from_parts(
+        surface.capabilities.clone(),
+        surface.prompt_declarations.clone(),
+        Arc::clone(&surface.skill_catalog),
+        surface.hook_handlers.clone(),
+        runtime_config,
+        policy,
+        approval,
+    )
+}
+
+pub(super) fn build_agent_loop_from_parts(
+    capabilities: CapabilityRouter,
+    prompt_declarations: Vec<PromptDeclaration>,
+    skill_catalog: Arc<SkillCatalog>,
+    hook_handlers: Vec<Arc<dyn HookHandler>>,
+    runtime_config: &crate::config::RuntimeConfig,
+    policy: Arc<dyn PolicyEngine>,
+    approval: Arc<dyn ApprovalBroker>,
+) -> Arc<AgentLoop> {
     let max_tool_concurrency = resolve_max_tool_concurrency(runtime_config);
     Arc::new(
         AgentLoop::from_capabilities_with_prompt_inputs(
             Arc::new(ConfigFileProviderFactory),
-            surface.capabilities.clone(),
-            surface.prompt_declarations.clone(),
-            Arc::clone(&surface.skill_catalog),
+            capabilities,
+            prompt_declarations,
+            skill_catalog,
         )
-        .with_hook_handlers(surface.hook_handlers.clone())
+        .with_hook_handlers(hook_handlers)
         .with_max_tool_concurrency(max_tool_concurrency)
         .with_auto_compact_enabled(resolve_auto_compact_enabled(runtime_config))
         .with_compact_threshold_percent(resolve_compact_threshold_percent(runtime_config))

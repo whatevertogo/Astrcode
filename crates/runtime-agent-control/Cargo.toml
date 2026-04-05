@@ -1,0 +1,11 @@
+[package]
+name = "astrcode-runtime-agent-control"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+astrcode-core = { path = "../core" }
+thiserror.workspace = true
+tokio.workspace = true

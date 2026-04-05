@@ -1,6 +1,5 @@
 //! Agent loop execution engine and shared context-window algorithms.
 
-pub mod agent_control;
 pub mod agent_loop;
 pub mod approval_service;
 mod compaction_runtime;
@@ -10,8 +9,8 @@ mod hook_runtime;
 mod prompt_runtime;
 pub mod provider_factory;
 mod request_assembler;
+mod subagent;
 
-pub use agent_control::{AgentControl, AgentControlError};
 pub use agent_loop::{
     AgentLoop, TurnOutcome,
     token_budget::{
@@ -27,3 +26,4 @@ pub use context_window::{
     estimate_request_tokens, estimate_text_tokens, is_prompt_too_long, should_compact,
 };
 pub use provider_factory::{DynProviderFactory, ProviderFactory};
+pub use subagent::{ChildExecutionTracker, SubAgentPolicyEngine};

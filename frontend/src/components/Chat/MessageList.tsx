@@ -68,6 +68,14 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
   }
 }
 
+function isAssistantLike(message: Message): boolean {
+  return message.kind === 'assistant' || message.kind === 'toolCall';
+}
+
+function isNestedAgentMessage(message: Message): boolean {
+  return Boolean(message.agentId && message.parentTurnId);
+}
+
 export default function MessageList({ messages }: MessageListProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -116,55 +124,100 @@ export default function MessageList({ messages }: MessageListProps) {
     return () => window.cancelAnimationFrame(rafId);
   }, [messages, stickToBottom, updateStickiness]);
 
+  const renderMessageContent = useCallback((msg: Message, hideAvatar: boolean) => {
+    if (msg.kind === 'user') {
+      return <UserMessage message={msg} />;
+    }
+    if (msg.kind === 'assistant') {
+      return <AssistantMessage message={msg} hideAvatar={hideAvatar} />;
+    }
+    if (msg.kind === 'toolCall') {
+      return <ToolCallBlock message={msg} />;
+    }
+    if (msg.kind === 'compact') {
+      return <CompactMessage message={msg} />;
+    }
+    return null;
+  }, []);
+
+  const renderMessageRow = useCallback(
+    (
+      msg: Message,
+      previousMessage: Message | null,
+      options?: {
+        key?: string;
+        nested?: boolean;
+      }
+    ) => {
+      const isContinuation =
+        previousMessage !== null && isAssistantLike(msg) && isAssistantLike(previousMessage);
+      const rowClass = [
+        options?.nested ? styles.groupMessageRow : styles.messageRow,
+        isContinuation ? styles.messageRowContinuation : '',
+      ]
+        .filter(Boolean)
+        .join(' ');
+
+      return (
+        <div key={options?.key ?? msg.id} className={rowClass}>
+          <MessageBoundary message={msg}>
+            {renderMessageContent(msg, isContinuation)}
+          </MessageBoundary>
+        </div>
+      );
+    },
+    [renderMessageContent]
+  );
+
+  const renderedRows: React.ReactNode[] = [];
+  for (let index = 0; index < messages.length; ) {
+    const message = messages[index];
+    if (!isNestedAgentMessage(message)) {
+      renderedRows.push(renderMessageRow(message, index > 0 ? messages[index - 1] : null));
+      index += 1;
+      continue;
+    }
+
+    const group = [message];
+    let nextIndex = index + 1;
+    while (nextIndex < messages.length) {
+      const nextMessage = messages[nextIndex];
+      if (
+        nextMessage.agentId !== message.agentId ||
+        nextMessage.parentTurnId !== message.parentTurnId
+      ) {
+        break;
+      }
+      group.push(nextMessage);
+      nextIndex += 1;
+    }
+
+    renderedRows.push(
+      <div
+        key={`agent-group-${message.agentId ?? 'unknown'}-${index}`}
+        className={styles.agentGroup}
+      >
+        <div className={styles.agentGroupHeader}>
+          <span className={styles.agentGroupLabel}>子 Agent</span>
+          <span className={styles.agentGroupTitle}>{message.agentProfile ?? message.agentId}</span>
+        </div>
+        <div className={styles.agentGroupBody}>
+          {group.map((groupMessage, groupIndex) =>
+            renderMessageRow(groupMessage, groupIndex > 0 ? group[groupIndex - 1] : null, {
+              key: groupMessage.id,
+              nested: true,
+            })
+          )}
+        </div>
+      </div>
+    );
+    index = nextIndex;
+  }
+
   return (
     <div ref={listRef} className={styles.list} onScroll={updateStickiness}>
       {messages.length === 0 && <div className={styles.empty}>向 AstrCode 提问，开始对话...</div>}
-      {messages.map((msg, index) => {
-        const isContinuation =
-          index > 0 &&
-          (msg.kind === 'assistant' || msg.kind === 'toolCall') &&
-          (messages[index - 1].kind === 'assistant' || messages[index - 1].kind === 'toolCall');
-
-        const rowClass = `${styles.messageRow} ${isContinuation ? styles.messageRowContinuation : ''}`;
-
-        if (msg.kind === 'user') {
-          return (
-            <div key={msg.id} className={styles.messageRow}>
-              <MessageBoundary message={msg}>
-                <UserMessage message={msg} />
-              </MessageBoundary>
-            </div>
-          );
-        }
-        if (msg.kind === 'assistant') {
-          return (
-            <div key={msg.id} className={rowClass}>
-              <MessageBoundary message={msg}>
-                <AssistantMessage message={msg} hideAvatar={isContinuation} />
-              </MessageBoundary>
-            </div>
-          );
-        }
-        if (msg.kind === 'toolCall') {
-          return (
-            <div key={msg.id} className={rowClass}>
-              <MessageBoundary message={msg}>
-                <ToolCallBlock message={msg} />
-              </MessageBoundary>
-            </div>
-          );
-        }
-        if (msg.kind === 'compact') {
-          return (
-            <div key={msg.id} className={styles.messageRow}>
-              <MessageBoundary message={msg}>
-                <CompactMessage message={msg} />
-              </MessageBoundary>
-            </div>
-          );
-        }
-        return null;
-      })}
+      {renderedRows}
       <div ref={bottomRef} />
     </div>
   );

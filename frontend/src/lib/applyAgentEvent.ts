@@ -33,6 +33,18 @@ export function applyAgentEvent(
       context.activeSessionIdRef.current
     );
   };
+  const agentFields =
+    'agentId' in event.data || 'parentTurnId' in event.data || 'agentProfile' in event.data
+      ? {
+          agentId: 'agentId' in event.data ? event.data.agentId : undefined,
+          parentTurnId: 'parentTurnId' in event.data ? event.data.parentTurnId : undefined,
+          agentProfile: 'agentProfile' in event.data ? event.data.agentProfile : undefined,
+        }
+      : {
+          agentId: undefined,
+          parentTurnId: undefined,
+          agentProfile: undefined,
+        };
 
   switch (event.event) {
     case 'sessionStarted':
@@ -48,6 +60,7 @@ export function applyAgentEvent(
         sessionId,
         turnId: event.data.turnId,
         content: event.data.content,
+        ...agentFields,
       });
       break;
     }
@@ -71,6 +84,7 @@ export function applyAgentEvent(
         sessionId,
         turnId: event.data.turnId,
         delta: event.data.delta,
+        ...agentFields,
       });
       break;
     }
@@ -85,6 +99,7 @@ export function applyAgentEvent(
         sessionId,
         turnId: event.data.turnId,
         delta: event.data.delta,
+        ...agentFields,
       });
       break;
     }
@@ -103,6 +118,7 @@ export function applyAgentEvent(
         turnId: event.data.turnId,
         content: event.data.content,
         reasoningText: event.data.reasoningContent,
+        ...agentFields,
       });
       break;
     }
@@ -119,6 +135,7 @@ export function applyAgentEvent(
           id: uuid(),
           kind: 'toolCall',
           turnId: event.data.turnId,
+          ...agentFields,
           toolCallId: event.data.toolCallId,
           toolName: event.data.toolName,
           status: 'running',
@@ -142,6 +159,7 @@ export function applyAgentEvent(
         toolName: event.data.toolName,
         stream: event.data.stream,
         delta: event.data.delta,
+        ...agentFields,
       });
       break;
     }
@@ -163,6 +181,7 @@ export function applyAgentEvent(
         metadata: event.data.result.metadata,
         durationMs: event.data.result.durationMs,
         truncated: event.data.result.truncated,
+        ...agentFields,
       });
       break;
     }
@@ -181,6 +200,7 @@ export function applyAgentEvent(
           id: uuid(),
           kind: 'compact',
           turnId: event.data.turnId ?? null,
+          ...agentFields,
           trigger: event.data.trigger,
           summary: event.data.summary,
           preservedRecentTurns: event.data.preservedRecentTurns,
@@ -214,6 +234,7 @@ export function applyAgentEvent(
           message: {
             id: uuid(),
             kind: 'assistant',
+            ...agentFields,
             text: `错误：${event.data.message}`,
             reasoningText: '',
             streaming: false,

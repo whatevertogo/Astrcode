@@ -14,11 +14,13 @@
 //! - Bootstrap 相关端点（`/__astrcode__/run-info`）在路由构建时直接挂载
 //! - 认证交换端点 `/api/auth/exchange` 在此模块定义，不走子模块
 
+pub(crate) mod agents;
 pub(crate) mod composer;
 pub(crate) mod config;
 pub(crate) mod model;
 pub(crate) mod runtime;
 pub(crate) mod sessions;
+pub(crate) mod tools;
 
 use astrcode_protocol::http::{AuthExchangeRequest, AuthExchangeResponse};
 use axum::{
@@ -69,6 +71,12 @@ use crate::{ApiError, AppState, bootstrap::serve_run_info};
 /// ### 运行时
 /// - `GET /api/runtime/plugins` — 获取运行时插件状态
 /// - `POST /api/runtime/plugins/reload` — 重载运行时插件
+///
+/// ### 未来 API 骨架
+/// - `GET /api/v1/agents` — 列出可用 Agent Profiles
+/// - `POST /api/v1/agents/{id}/execute` — 预留的直接 Agent 执行入口
+/// - `GET /api/v1/tools` — 列出当前 runtime 可调用工具
+/// - `POST /api/v1/tools/{id}/execute` — 预留的直接工具执行入口
 pub(crate) fn build_api_router() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/__astrcode__/run-info", get(serve_run_info))
@@ -113,6 +121,10 @@ pub(crate) fn build_api_router() -> Router<AppState> {
             "/api/runtime/plugins/reload",
             post(runtime::reload_runtime_plugins),
         )
+        .route("/api/v1/agents", get(agents::list_agents))
+        .route("/api/v1/agents/{id}/execute", post(agents::execute_agent))
+        .route("/api/v1/tools", get(tools::list_tools))
+        .route("/api/v1/tools/{id}/execute", post(tools::execute_tool))
 }
 
 async fn exchange_auth(

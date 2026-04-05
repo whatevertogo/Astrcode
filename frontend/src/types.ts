@@ -90,6 +90,9 @@ export interface UserMessage {
   id: string;
   kind: 'user';
   turnId?: string | null;
+  agentId?: string;
+  parentTurnId?: string;
+  agentProfile?: string;
   text: string;
   timestamp: number;
 }
@@ -98,6 +101,9 @@ export interface AssistantMessage {
   id: string;
   kind: 'assistant';
   turnId?: string | null;
+  agentId?: string;
+  parentTurnId?: string;
+  agentProfile?: string;
   text: string;
   reasoningText?: string;
   streaming: boolean;
@@ -110,6 +116,9 @@ export interface ToolCallMessage {
   id: string;
   kind: 'toolCall';
   turnId?: string | null;
+  agentId?: string;
+  parentTurnId?: string;
+  agentProfile?: string;
   toolCallId: string;
   toolName: string;
   status: ToolStatus;
@@ -126,6 +135,9 @@ export interface CompactMessage {
   id: string;
   kind: 'compact';
   turnId?: string | null;
+  agentId?: string;
+  parentTurnId?: string;
+  agentProfile?: string;
   trigger: CompactTrigger;
   summary: string;
   preservedRecentTurns: number;
@@ -235,15 +247,42 @@ export type Action =
   | { type: 'RENAME_SESSION'; projectId: string; sessionId: string; title: string }
   | { type: 'DELETE_SESSION'; projectId: string; sessionId: string }
   | { type: 'ADD_MESSAGE'; sessionId: string; message: Message }
-  | { type: 'UPSERT_USER_MESSAGE'; sessionId: string; turnId: string; content: string }
-  | { type: 'APPEND_DELTA'; sessionId: string; turnId: string; delta: string }
-  | { type: 'APPEND_REASONING_DELTA'; sessionId: string; turnId: string; delta: string }
+  | {
+      type: 'UPSERT_USER_MESSAGE';
+      sessionId: string;
+      turnId: string;
+      content: string;
+      agentId?: string;
+      parentTurnId?: string;
+      agentProfile?: string;
+    }
+  | {
+      type: 'APPEND_DELTA';
+      sessionId: string;
+      turnId: string;
+      delta: string;
+      agentId?: string;
+      parentTurnId?: string;
+      agentProfile?: string;
+    }
+  | {
+      type: 'APPEND_REASONING_DELTA';
+      sessionId: string;
+      turnId: string;
+      delta: string;
+      agentId?: string;
+      parentTurnId?: string;
+      agentProfile?: string;
+    }
   | {
       type: 'FINALIZE_ASSISTANT';
       sessionId: string;
       turnId: string;
       content: string;
       reasoningText?: string;
+      agentId?: string;
+      parentTurnId?: string;
+      agentProfile?: string;
     }
   | { type: 'END_STREAMING'; sessionId: string; turnId: string }
   | {
@@ -254,6 +293,9 @@ export type Action =
       toolName: string;
       stream: ToolOutputStream;
       delta: string;
+      agentId?: string;
+      parentTurnId?: string;
+      agentProfile?: string;
     }
   | {
       type: 'UPDATE_TOOL_CALL';
@@ -267,6 +309,9 @@ export type Action =
       metadata?: unknown;
       durationMs: number;
       truncated?: boolean;
+      agentId?: string;
+      parentTurnId?: string;
+      agentProfile?: string;
     }
   | { type: 'SET_WORKING_DIR'; projectId: string; workingDir: string }
   | {

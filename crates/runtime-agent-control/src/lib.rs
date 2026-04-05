@@ -5,6 +5,10 @@
 //! - 跟踪 parent-child 关系
 //! - 对外暴露 spawn / list / cancel / wait
 //! - 维护父取消传播
+//!
+//! 之所以单独拆成 crate，是为了把“控制平面”从“执行引擎”中拿出来：
+//! `runtime-agent-loop` 专注一次 turn 如何执行，
+//! `runtime-agent-control` 专注多 Agent 生命周期如何被编排和取消。
 
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
@@ -75,7 +79,7 @@ impl AgentControl {
 
     /// 注册一个新的子 Agent 实例。
     ///
-    /// P5 只建立控制面，不假设 spawn 立刻意味着开始执行，因此初始状态为 Pending。
+    /// 只建立控制面，不假设 spawn 立刻意味着开始执行，因此初始状态为 Pending。
     pub async fn spawn(
         &self,
         profile: &AgentProfile,
@@ -180,7 +184,7 @@ impl AgentControl {
     /// 按父 turn 取消所有子 Agent。
     ///
     /// 这里显式按 parent turn 做传播，而不是把取消关系隐式塞进 `CancelToken`，
-    /// 因为 P5 只关心“谁挂在谁下面”，尚未绑定具体执行任务。
+    /// 因为控制平面只关心“谁挂在谁下面”，不应该把执行器内部任务结构反向泄漏进来。
     pub async fn cancel_for_parent_turn(&self, parent_turn_id: &str) -> Vec<SubAgentHandle> {
         let mut state = self.state.write().await;
         let mut roots = state

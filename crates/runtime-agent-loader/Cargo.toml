@@ -12,4 +12,5 @@ serde_yaml.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+astrcode-core = { path = "../core", features = ["test-support"] }
 tempfile.workspace = true

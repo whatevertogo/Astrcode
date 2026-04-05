@@ -8,7 +8,7 @@
 //! - **ToolContext**: 工具执行时的上下文信息（会话 ID、工作目录、取消令牌）
 //! - **ToolCapabilityMetadata**: 工具的能力元数据（用于策略引擎的权限判断）
 
-use std::{fmt, path::PathBuf};
+use std::{fmt, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -16,9 +16,9 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    CancelToken, CapabilityDescriptor, CapabilityKind, DescriptorBuildError, PermissionHint,
-    Result, SideEffectLevel, StabilityLevel, ToolDefinition, ToolExecutionResult, ToolOutputDelta,
-    ToolOutputStream,
+    AgentEventContext, CancelToken, CapabilityDescriptor, CapabilityKind, DescriptorBuildError,
+    PermissionHint, Result, SideEffectLevel, StabilityLevel, StorageEvent, ToolDefinition,
+    ToolExecutionResult, ToolOutputDelta, ToolOutputStream,
 };
 
 /// Unique identifier for a session.
@@ -28,6 +28,14 @@ pub type SessionId = String;
 ///
 /// 超过此大小的输出会被截断，防止大文件导致内存溢出或网络传输问题。
 pub const DEFAULT_MAX_OUTPUT_SIZE: usize = 1024 * 1024;
+
+/// Tool 内部产生 turn 级事件时使用的发射接口。
+///
+/// 子 Agent / 复合工具不能直接依赖 runtime 的会话写入实现，
+/// 因此这里通过一个最小抽象把事件重新交回当前 turn 的持久化/广播链路。
+pub trait ToolEventSink: Send + Sync {
+    fn emit(&self, event: StorageEvent) -> Result<()>;
+}
 
 /// Execution context provided to tools during invocation.
 ///
@@ -40,6 +48,16 @@ pub struct ToolContext {
     working_dir: PathBuf,
     /// Cancellation token for cooperative cancellation.
     cancel: CancelToken,
+    /// 当前工具调用所属 turn。
+    ///
+    /// 普通工具通常不需要感知 turn_id，但像 runAgent 这类复合工具
+    /// 需要把子事件重新挂回父 turn。
+    turn_id: Option<String>,
+    /// 当前工具调用所属 Agent 元数据。
+    ///
+    /// 子 Agent 工具会基于父 Agent 上下文继续派生自己的 agent_id /
+    /// parent_turn_id / agent_profile。
+    agent: AgentEventContext,
     /// Maximum output size in bytes. Defaults to 1MB.
     max_output_size: usize,
     /// Optional override for session-scoped persisted tool artifacts.
@@ -53,6 +71,10 @@ pub struct ToolContext {
     /// Tools emit best-effort deltas through this sender so runtime can persist and fan them out
     /// in-order without coupling individual tools to storage or transport details.
     tool_output_sender: Option<UnboundedSender<ToolOutputDelta>>,
+    /// 工具级 turn 事件发射器。
+    ///
+    /// 只有像 runAgent 这类会在工具内部再触发 turn/tool 事件的复合工具才会使用。
+    event_sink: Option<Arc<dyn ToolEventSink>>,
 }
 
 impl ToolContext {
@@ -64,9 +86,12 @@ impl ToolContext {
             session_id,
             working_dir,
             cancel,
+            turn_id: None,
+            agent: AgentEventContext::default(),
             max_output_size: DEFAULT_MAX_OUTPUT_SIZE,
             session_storage_root: None,
             tool_output_sender: None,
+            event_sink: None,
         }
     }
 
@@ -94,6 +119,24 @@ impl ToolContext {
         self
     }
 
+    /// 为工具上下文注入当前 turn_id。
+    pub fn with_turn_id(mut self, turn_id: impl Into<String>) -> Self {
+        self.turn_id = Some(turn_id.into());
+        self
+    }
+
+    /// 为工具上下文注入当前 Agent 元数据。
+    pub fn with_agent_context(mut self, agent: AgentEventContext) -> Self {
+        self.agent = agent;
+        self
+    }
+
+    /// 为工具上下文注入 turn 事件发射器。
+    pub fn with_event_sink(mut self, event_sink: Arc<dyn ToolEventSink>) -> Self {
+        self.event_sink = Some(event_sink);
+        self
+    }
+
     /// Returns the session identifier.
     pub fn session_id(&self) -> &str {
         &self.session_id
@@ -109,6 +152,16 @@ impl ToolContext {
         &self.cancel
     }
 
+    /// 返回当前 turn_id（若有）。
+    pub fn turn_id(&self) -> Option<&str> {
+        self.turn_id.as_deref()
+    }
+
+    /// 返回当前 Agent 元数据。
+    pub fn agent_context(&self) -> &AgentEventContext {
+        &self.agent
+    }
+
     /// Returns the maximum output size in bytes.
     pub fn max_output_size(&self) -> usize {
         self.max_output_size
@@ -120,6 +173,10 @@ impl ToolContext {
 
     pub fn tool_output_sender(&self) -> Option<UnboundedSender<ToolOutputDelta>> {
         self.tool_output_sender.clone()
+    }
+
+    pub fn event_sink(&self) -> Option<Arc<dyn ToolEventSink>> {
+        self.event_sink.clone()
     }
 
     /// Emits a tool delta to the runtime if streaming is enabled.
@@ -167,9 +224,12 @@ impl Clone for ToolContext {
             session_id: self.session_id.clone(),
             working_dir: self.working_dir.clone(),
             cancel: self.cancel.clone(),
+            turn_id: self.turn_id.clone(),
+            agent: self.agent.clone(),
             max_output_size: self.max_output_size,
             session_storage_root: self.session_storage_root.clone(),
             tool_output_sender: self.tool_output_sender.clone(),
+            event_sink: self.event_sink.clone(),
         }
     }
 }
@@ -180,11 +240,17 @@ impl fmt::Debug for ToolContext {
             .field("session_id", &self.session_id)
             .field("working_dir", &self.working_dir)
             .field("cancel", &self.cancel)
+            .field("turn_id", &self.turn_id)
+            .field("agent", &self.agent)
             .field("max_output_size", &self.max_output_size)
             .field("session_storage_root", &self.session_storage_root)
             .field(
                 "tool_output_sender",
                 &self.tool_output_sender.as_ref().map(|_| "<attached>"),
+            )
+            .field(
+                "event_sink",
+                &self.event_sink.as_ref().map(|_| "<attached>"),
             )
             .finish()
     }

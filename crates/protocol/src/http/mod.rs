@@ -14,6 +14,7 @@
 //! - `session`: 会话管理 DTO（创建、列表、提示词提交）
 //! - `session_event`: 会话目录事件 DTO（创建/删除/分支通知）
 
+mod agent;
 mod auth;
 mod composer;
 mod config;
@@ -22,7 +23,9 @@ mod model;
 mod runtime;
 mod session;
 mod session_event;
+mod tool;
 
+pub use agent::{AgentExecuteRequestDto, AgentExecuteResponseDto, AgentProfileDto};
 pub use auth::{AuthExchangeRequest, AuthExchangeResponse};
 pub use composer::{ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto};
 pub use config::{
@@ -44,3 +47,4 @@ pub use session::{
     SessionHistoryResponseDto, SessionListItem, SessionMessageDto,
 };
 pub use session_event::{SessionCatalogEventEnvelope, SessionCatalogEventPayload};
+pub use tool::{ToolDescriptorDto, ToolExecuteRequestDto, ToolExecuteResponseDto};

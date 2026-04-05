@@ -17,10 +17,10 @@ futures-util.workspace = true
 log.workspace = true
 regex.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+astrcode-core = { path = "../core", features = ["test-support"] }
 astrcode-plugin = { path = "../plugin" }
 astrcode-protocol = { path = "../protocol" }
 tempfile.workspace = true

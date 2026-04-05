@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+# 启用 test_support 模块和 tempfile 依赖，仅供其他 crate 的测试代码使用。
+# 正常发布构建不会启用此 feature，避免将测试依赖编译进产物。
+test-support = ["dep:tempfile"]
+
 [dependencies]
 astrcode-protocol = { path = "../protocol" }
 async-trait.workspace = true
@@ -14,8 +19,11 @@ log.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tempfile.workspace = true
+tempfile = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio.workspace = true
 toml = "1.1.2"
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

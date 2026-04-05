@@ -28,12 +28,13 @@ mod skill_tool;
 #[cfg(test)]
 mod test_support;
 
+pub use astrcode_runtime_agent_control as agent_control;
+pub use astrcode_runtime_agent_control::{AgentControl, AgentControlError};
 pub use astrcode_runtime_agent_loader as agent_loader;
 pub use astrcode_runtime_agent_loader::{
     AgentLoaderError, AgentProfileLoader, AgentProfileRegistry,
 };
 pub use astrcode_runtime_agent_loop as agent_loop;
-pub use astrcode_runtime_agent_loop::{AgentControl, AgentControlError};
 pub use astrcode_runtime_config as config;
 pub use astrcode_runtime_config::{
     ActiveSelection, Config, ConfigOverlay, CurrentModelSelection, ModelConfig, ModelOption,
@@ -52,8 +53,9 @@ pub use astrcode_runtime_skill_loader as skills;
 pub use bootstrap::{PluginLoadHandle, PluginLoadState, RuntimeBootstrap, bootstrap_runtime};
 pub use runtime_governance::{RuntimeGovernance, RuntimeGovernanceSnapshot, RuntimeReloadResult};
 pub use service::{
-    ComposerOption, ComposerOptionKind, ComposerOptionsRequest, OperationMetricsSnapshot,
-    PromptAccepted, ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot,
-    RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent, SessionEventRecord,
-    SessionHistorySnapshot, SessionMessage, SessionReplay, SessionReplaySource,
+    AgentExecutionServiceHandle, AgentProfileSummary, ComposerOption, ComposerOptionKind,
+    ComposerOptionsRequest, OperationMetricsSnapshot, PromptAccepted, ReplayMetricsSnapshot,
+    ReplayPath, RuntimeObservabilitySnapshot, RuntimeService, ServiceError, ServiceResult,
+    SessionCatalogEvent, SessionEventRecord, SessionHistorySnapshot, SessionMessage, SessionReplay,
+    SessionReplaySource, ToolExecutionServiceHandle, ToolSummary,
 };

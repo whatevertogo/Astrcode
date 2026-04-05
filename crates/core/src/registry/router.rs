@@ -21,7 +21,8 @@
 //! 不是核心能力契约本身。
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    fmt,
     path::PathBuf,
     sync::{Arc, RwLock},
 };
@@ -32,15 +33,15 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    AstrError, CancelToken, CapabilityDescriptor, Result, ToolCallRequest, ToolContext,
-    ToolDefinition, ToolExecutionResult, ToolOutputDelta,
+    AgentEventContext, AstrError, CancelToken, CapabilityDescriptor, Result, ToolCallRequest,
+    ToolContext, ToolDefinition, ToolEventSink, ToolExecutionResult, ToolOutputDelta,
 };
 
 /// 能力调用的上下文信息。
 ///
 /// 从 `ToolContext` 转换而来，携带会话标识、工作目录、取消令牌
 /// 以及 profile 上下文等调用期元数据。
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CapabilityContext {
     /// 请求唯一标识，用于追踪单次调用链路
     pub request_id: Option<String>,
@@ -52,6 +53,10 @@ pub struct CapabilityContext {
     pub working_dir: PathBuf,
     /// 取消令牌，用于外部中断长时间运行的能力调用
     pub cancel: CancelToken,
+    /// 当前调用所属 turn。
+    pub turn_id: Option<String>,
+    /// 当前调用所属 Agent 元数据。
+    pub agent: AgentEventContext,
     /// 当前使用的 profile 名称
     pub profile: String,
     /// profile 上下文，包含工作目录、仓库根目录等运行时配置
@@ -60,6 +65,33 @@ pub struct CapabilityContext {
     pub metadata: Value,
     /// 工具增量输出发送器，用于流式推送工具执行结果
     pub tool_output_sender: Option<UnboundedSender<ToolOutputDelta>>,
+    /// 工具内部 turn 事件发射器。
+    pub event_sink: Option<Arc<dyn ToolEventSink>>,
+}
+
+impl fmt::Debug for CapabilityContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CapabilityContext")
+            .field("request_id", &self.request_id)
+            .field("trace_id", &self.trace_id)
+            .field("session_id", &self.session_id)
+            .field("working_dir", &self.working_dir)
+            .field("cancel", &self.cancel)
+            .field("turn_id", &self.turn_id)
+            .field("agent", &self.agent)
+            .field("profile", &self.profile)
+            .field("profile_context", &self.profile_context)
+            .field("metadata", &self.metadata)
+            .field(
+                "tool_output_sender",
+                &self.tool_output_sender.as_ref().map(|_| "<attached>"),
+            )
+            .field(
+                "event_sink",
+                &self.event_sink.as_ref().map(|_| "<attached>"),
+            )
+            .finish()
+    }
 }
 
 impl CapabilityContext {
@@ -73,6 +105,8 @@ impl CapabilityContext {
             session_id: ctx.session_id().to_string(),
             working_dir,
             cancel: ctx.cancel().clone(),
+            turn_id: ctx.turn_id().map(ToString::to_string),
+            agent: ctx.agent_context().clone(),
             profile: "coding".to_string(),
             profile_context: json!({
                 "workingDir": working_dir_str,
@@ -81,6 +115,7 @@ impl CapabilityContext {
             }),
             metadata: Value::Null,
             tool_output_sender: ctx.tool_output_sender(),
+            event_sink: ctx.event_sink(),
         }
     }
 }
@@ -405,6 +440,32 @@ impl CapabilityRouter {
     pub fn tool_names(&self) -> Vec<String> {
         let inner = self.inner.read().unwrap();
         inner.tool_order.clone()
+    }
+
+    /// 基于当前 runtime surface 构建一个仅暴露指定工具的子路由。
+    ///
+    /// 子 Agent 需要复用同一份 invoker 实现、注册顺序和非工具能力，
+    /// 但必须在工具可见性这一层做裁剪，避免 profile allowlist 只停留在 prompt 文本里。
+    pub fn subset_for_tools(&self, allowed_tool_names: &[String]) -> Result<Self> {
+        let allowed = allowed_tool_names
+            .iter()
+            .map(|name| name.as_str())
+            .collect::<HashSet<_>>();
+        let inner = self.inner.read().unwrap();
+        let mut builder = CapabilityRouter::builder();
+
+        for name in &inner.order {
+            let Some(invoker) = inner.invokers_by_name.get(name) else {
+                continue;
+            };
+            let descriptor = invoker.descriptor();
+            if descriptor.kind.is_tool() && !allowed.contains(descriptor.name.as_str()) {
+                continue;
+            }
+            builder = builder.register_invoker(Arc::clone(invoker));
+        }
+
+        builder.build()
     }
 
     /// 执行工具调用。

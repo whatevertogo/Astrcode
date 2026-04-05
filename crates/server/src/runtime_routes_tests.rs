@@ -2,7 +2,10 @@ use astrcode_core::{
     CapabilityDescriptor, CapabilityKind, PluginHealth, PluginState, SideEffectLevel,
     StabilityLevel, plugin::PluginEntry,
 };
-use astrcode_protocol::http::{ConfigReloadResponse, RuntimeStatusDto, SessionHistoryResponseDto};
+use astrcode_protocol::http::{
+    AgentExecuteResponseDto, AgentProfileDto, ConfigReloadResponse, RuntimeStatusDto,
+    SessionHistoryResponseDto, ToolDescriptorDto, ToolExecuteResponseDto,
+};
 use astrcode_runtime::{Config, ModelConfig, Profile, RuntimeConfig, config, save_config};
 use axum::{
     body::{Body, to_bytes},
@@ -249,4 +252,105 @@ async fn session_history_endpoint_returns_404_for_unknown_session() {
         .expect("response should be returned");
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn agents_list_endpoint_returns_current_profiles() {
+    let (state, _guard) = test_state(None);
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/agents")
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body should be readable");
+    let payload: Vec<AgentProfileDto> =
+        serde_json::from_slice(&bytes).expect("agent list should deserialize");
+    assert!(payload.iter().any(|profile| profile.id == "plan"));
+}
+
+#[tokio::test]
+async fn tools_list_endpoint_returns_runtime_tool_surface() {
+    let (state, _guard) = test_state(None);
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/tools")
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body should be readable");
+    let _payload: Vec<ToolDescriptorDto> =
+        serde_json::from_slice(&bytes).expect("tool list should deserialize");
+}
+
+#[tokio::test]
+async fn direct_agent_execute_endpoint_returns_not_implemented() {
+    let (state, _guard) = test_state(None);
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/agents/plan/execute")
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::from("{}"))
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body should be readable");
+    let payload: AgentExecuteResponseDto =
+        serde_json::from_slice(&bytes).expect("response should deserialize");
+    assert!(!payload.accepted);
+}
+
+#[tokio::test]
+async fn direct_tool_execute_endpoint_returns_not_implemented() {
+    let (state, _guard) = test_state(None);
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/tools/readFile/execute")
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::from("{}"))
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body should be readable");
+    let payload: ToolExecuteResponseDto =
+        serde_json::from_slice(&bytes).expect("response should deserialize");
+    assert!(!payload.accepted);
 }

@@ -24,17 +24,19 @@ use astrcode_core::{
     PluginState, SessionEventRecord, SessionMeta, format_local_rfc3339, plugin::PluginEntry,
 };
 use astrcode_protocol::http::{
-    AgentContextDto, AgentEventEnvelope, AgentEventPayload, CompactTriggerDto, ComposerOptionDto,
-    ComposerOptionKindDto, ComposerOptionsResponseDto, ConfigView, CurrentModelInfoDto,
-    ModelOptionDto, OperationMetricsDto, PROTOCOL_VERSION, PhaseDto, PluginHealthDto,
-    PluginRuntimeStateDto, ProfileView, ReplayMetricsDto, RuntimeCapabilityDto, RuntimeMetricsDto,
-    RuntimePluginDto, RuntimeStatusDto, SessionCatalogEventEnvelope, SessionCatalogEventPayload,
-    SessionListItem, SessionMessageDto, ToolCallResultDto, ToolOutputStreamDto,
+    AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentProfileDto, CompactTriggerDto,
+    ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto, ConfigView,
+    CurrentModelInfoDto, ModelOptionDto, OperationMetricsDto, PROTOCOL_VERSION, PhaseDto,
+    PluginHealthDto, PluginRuntimeStateDto, ProfileView, ReplayMetricsDto, RuntimeCapabilityDto,
+    RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto, SessionCatalogEventEnvelope,
+    SessionCatalogEventPayload, SessionListItem, SessionMessageDto, ToolCallResultDto,
+    ToolDescriptorDto, ToolOutputStreamDto,
 };
 use astrcode_runtime::{
-    ComposerOption, ComposerOptionKind, Config, OperationMetricsSnapshot, ReplayMetricsSnapshot,
-    RuntimeGovernanceSnapshot, RuntimeObservabilitySnapshot, SessionCatalogEvent, SessionMessage,
-    is_env_var_name, list_model_options as resolve_model_options, resolve_active_selection,
+    AgentProfileSummary, ComposerOption, ComposerOptionKind, Config, OperationMetricsSnapshot,
+    ReplayMetricsSnapshot, RuntimeGovernanceSnapshot, RuntimeObservabilitySnapshot,
+    SessionCatalogEvent, SessionMessage, ToolSummary, is_env_var_name,
+    list_model_options as resolve_model_options, resolve_active_selection,
     resolve_current_model as resolve_runtime_current_model,
 };
 use axum::{http::StatusCode, response::sse::Event};
@@ -148,6 +150,32 @@ pub(crate) fn to_runtime_status_dto(snapshot: RuntimeGovernanceSnapshot) -> Runt
             .into_iter()
             .map(to_runtime_plugin_dto)
             .collect(),
+    }
+}
+
+pub(crate) fn to_agent_profile_dto(profile: AgentProfileSummary) -> AgentProfileDto {
+    AgentProfileDto {
+        id: profile.id,
+        name: profile.name,
+        description: profile.description,
+        mode: match profile.mode {
+            astrcode_core::AgentMode::Primary => "primary".to_string(),
+            astrcode_core::AgentMode::SubAgent => "subAgent".to_string(),
+            astrcode_core::AgentMode::All => "all".to_string(),
+        },
+        allowed_tools: profile.allowed_tools,
+        disallowed_tools: profile.disallowed_tools,
+        max_steps: profile.max_steps,
+        token_budget: profile.token_budget,
+    }
+}
+
+pub(crate) fn to_tool_descriptor_dto(tool: ToolSummary) -> ToolDescriptorDto {
+    ToolDescriptorDto {
+        name: tool.name,
+        description: tool.description,
+        profiles: tool.profiles,
+        streaming: tool.streaming,
     }
 }
 

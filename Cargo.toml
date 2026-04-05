@@ -2,8 +2,10 @@
 members = [
     "crates/core",
     "crates/storage",
+    "crates/runtime-agent-control",
     "crates/runtime-agent-loop",
     "crates/runtime-agent-loader",
+    "crates/runtime-agent-tool",
     "crates/runtime",
     "crates/runtime-config",
     "crates/runtime-llm",

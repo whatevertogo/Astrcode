@@ -152,8 +152,10 @@ dependencies = [
  "astrcode-core",
  "astrcode-plugin",
  "astrcode-protocol",
+ "astrcode-runtime-agent-control",
  "astrcode-runtime-agent-loader",
  "astrcode-runtime-agent-loop",
+ "astrcode-runtime-agent-tool",
  "astrcode-runtime-config",
  "astrcode-runtime-llm",
  "astrcode-runtime-prompt",
@@ -176,6 +178,15 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uuid",
+]
+
+[[package]]
+name = "astrcode-runtime-agent-control"
+version = "0.1.0"
+dependencies = [
+ "astrcode-core",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -207,7 +218,17 @@ dependencies = [
  "regex",
  "serde_json",
  "tempfile",
- "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "astrcode-runtime-agent-tool"
+version = "0.1.0"
+dependencies = [
+ "astrcode-core",
+ "async-trait",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 

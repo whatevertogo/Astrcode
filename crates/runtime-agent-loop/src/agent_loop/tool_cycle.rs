@@ -18,12 +18,12 @@
 //! 安全工具使用 `FuturesUnordered` 并发执行，上限由 `max_tool_concurrency` 控制。
 //! 不安全工具按顺序执行，避免并发写冲突。
 
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
     AgentEventContext, AgentState, ApprovalPending, ApprovalResolution, CancelToken,
     CapabilityCall, CapabilityRouter, LlmMessage, PolicyVerdict, Result, StorageEvent,
-    ToolCallRequest, ToolExecutionResult, ToolHookResultContext,
+    ToolCallRequest, ToolEventSink, ToolExecutionResult, ToolHookResultContext,
 };
 use futures_util::stream::{self, StreamExt};
 use tokio::sync::mpsc;
@@ -53,6 +53,18 @@ struct CallOutcome {
     result: ToolExecutionResult,
     /// 待刷入的事件列表（用于安全工具的并发执行路径）
     buffered_events: Option<Vec<StorageEvent>>,
+}
+
+struct ChannelToolEventSink {
+    tx: mpsc::UnboundedSender<StorageEvent>,
+}
+
+impl ToolEventSink for ChannelToolEventSink {
+    fn emit(&self, event: StorageEvent) -> Result<()> {
+        self.tx.send(event).map_err(|_| {
+            astrcode_core::AstrError::Internal("tool event channel closed unexpectedly".to_string())
+        })
+    }
 }
 
 pub(crate) struct ToolCycleContext<'a, F>
@@ -403,8 +415,14 @@ where
 
     let start = Instant::now();
     let (tool_output_tx, mut tool_output_rx) = mpsc::unbounded_channel();
+    let (tool_event_tx, mut tool_event_rx) = mpsc::unbounded_channel();
     let tool_call_for_execution = tool_call.clone();
-    let tool_ctx_for_execution = tool_ctx.clone().with_tool_output_sender(tool_output_tx);
+    let tool_ctx_for_execution = tool_ctx
+        .clone()
+        .with_turn_id(turn_id.to_string())
+        .with_agent_context(agent.clone())
+        .with_tool_output_sender(tool_output_tx)
+        .with_event_sink(Arc::new(ChannelToolEventSink { tx: tool_event_tx }));
 
     // Yield before local IO-heavy tools so other tasks can make progress between tool calls.
     tokio::task::yield_now().await;
@@ -415,8 +433,9 @@ where
     }));
     let mut execution_result = None;
     let mut output_stream_open = true;
+    let mut event_stream_open = true;
 
-    while execution_result.is_none() || output_stream_open {
+    while execution_result.is_none() || output_stream_open || event_stream_open {
         if execution_result.is_none() {
             tokio::select! {
                 result = execute_tool
@@ -454,27 +473,57 @@ where
                         }
                     }
                 }
+                maybe_event = tool_event_rx.recv(), if event_stream_open => {
+                    match maybe_event {
+                        Some(event) => {
+                            if let Err(error) = on_event(event) {
+                                tool_ctx.cancel().cancel();
+                                return Err(error);
+                            }
+                        }
+                        None => {
+                            event_stream_open = false;
+                        }
+                    }
+                }
             }
             continue;
         }
 
-        match tool_output_rx.recv().await {
-            Some(delta) => {
-                if let Err(error) = on_event(StorageEvent::ToolCallDelta {
-                    turn_id: Some(turn_id.to_string()),
-                    agent: agent.clone(),
-                    tool_call_id: delta.tool_call_id,
-                    tool_name: delta.tool_name,
-                    stream: delta.stream,
-                    delta: delta.delta,
-                }) {
-                    tool_ctx.cancel().cancel();
-                    return Err(error);
+        tokio::select! {
+            maybe_delta = tool_output_rx.recv(), if output_stream_open => {
+                match maybe_delta {
+                    Some(delta) => {
+                        if let Err(error) = on_event(StorageEvent::ToolCallDelta {
+                            turn_id: Some(turn_id.to_string()),
+                            agent: agent.clone(),
+                            tool_call_id: delta.tool_call_id,
+                            tool_name: delta.tool_name,
+                            stream: delta.stream,
+                            delta: delta.delta,
+                        }) {
+                            tool_ctx.cancel().cancel();
+                            return Err(error);
+                        }
+                    },
+                    None => {
+                        output_stream_open = false;
+                    },
                 }
-            },
-            None => {
-                output_stream_open = false;
-            },
+            }
+            maybe_event = tool_event_rx.recv(), if event_stream_open => {
+                match maybe_event {
+                    Some(event) => {
+                        if let Err(error) = on_event(event) {
+                            tool_ctx.cancel().cancel();
+                            return Err(error);
+                        }
+                    }
+                    None => {
+                        event_stream_open = false;
+                    }
+                }
+            }
         }
     }
 

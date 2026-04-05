@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+astrcode-runtime-agent-control = { path = "../runtime-agent-control" }
 astrcode-runtime-agent-loop = { path = "../runtime-agent-loop" }
 astrcode-core = { path = "../core" }
 astrcode-plugin = { path = "../plugin" }
@@ -17,6 +18,7 @@ astrcode-runtime-llm = { path = "../runtime-llm" }
 astrcode-runtime-prompt = { path = "../runtime-prompt" }
 astrcode-runtime-skill-loader = { path = "../runtime-skill-loader" }
 astrcode-runtime-agent-loader = { path = "../runtime-agent-loader" }
+astrcode-runtime-agent-tool = { path = "../runtime-agent-tool" }
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
@@ -35,4 +37,5 @@ tokio-util.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+astrcode-core = { path = "../core", features = ["test-support"] }
 tempfile.workspace = true

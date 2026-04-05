@@ -297,12 +297,14 @@ pub(crate) async fn assemble_runtime_surface<I>(
     initializer: &I,
     plugin_registry: Arc<PluginRegistry>,
     builtin_skills: Vec<SkillSpec>,
+    subagent_executor: Arc<dyn astrcode_runtime_agent_tool::SubAgentExecutor>,
 ) -> std::result::Result<AssembledRuntimeSurface, AstrError>
 where
     I: PluginInitializer,
 {
     let skill_catalog = Arc::new(SkillCatalog::new(builtin_skills.clone()));
-    let built_in_invokers = built_in_capability_invokers(Arc::clone(&skill_catalog))?;
+    let built_in_invokers =
+        built_in_capability_invokers(Arc::clone(&skill_catalog), subagent_executor)?;
     let mut registered_capability_names: HashSet<String> = built_in_invokers
         .iter()
         .map(|invoker| invoker.descriptor().name)

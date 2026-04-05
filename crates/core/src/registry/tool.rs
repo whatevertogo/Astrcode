@@ -203,8 +203,15 @@ impl CapabilityInvoker for ToolCapabilityInvoker {
             ctx.working_dir.clone(),
             ctx.cancel.clone(),
         );
+        if let Some(turn_id) = &ctx.turn_id {
+            tool_ctx = tool_ctx.with_turn_id(turn_id.clone());
+        }
+        tool_ctx = tool_ctx.with_agent_context(ctx.agent.clone());
         if let Some(sender) = ctx.tool_output_sender.clone() {
             tool_ctx = tool_ctx.with_tool_output_sender(sender);
+        }
+        if let Some(event_sink) = ctx.event_sink.clone() {
+            tool_ctx = tool_ctx.with_event_sink(event_sink);
         }
         let result = self
             .tool
@@ -428,10 +435,13 @@ mod tests {
                     session_id: "session-1".to_string(),
                     working_dir: std::env::temp_dir(),
                     cancel: CancelToken::new(),
+                    turn_id: None,
+                    agent: crate::AgentEventContext::default(),
                     profile: "coding".to_string(),
                     profile_context: serde_json::Value::Null,
                     metadata: serde_json::Value::Null,
                     tool_output_sender: None,
+                    event_sink: None,
                 },
             )
             .await

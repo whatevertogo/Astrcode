@@ -7,16 +7,19 @@
 //! - **TestEnvGuard**: RAII 风格的环境变量守卫，测试结束后自动恢复
 //! - **env_lock**: 全局互斥锁，确保测试间环境变量操作串行化
 //!
-//! ## 为什么是 pub mod 而非 #[cfg(test)]？
+//! ## 为什么用 feature gate 而非 #[cfg(test)]？
 //!
-//! 其他 crate（runtime、runtime-config、runtime-prompt）的测试代码通过
-//! `astrcode_core::test_support::TestEnvGuard` 导入此模块。
-//! Rust 不支持跨 crate 的 `#[cfg(test)]` 导出，所以只能保持 pub。
-//! tempfile 依赖也因此无法移到 `[dev-dependencies]`。
+//! 此模块通过 `#[cfg(feature = "test-support")]` 守卫，而非 `#[cfg(test)]`。
+//! 原因：其他 crate 的测试代码需要通过 `astrcode_core::test_support::TestEnvGuard` 导入，
+//! 而 Rust 不支持跨 crate 的 `#[cfg(test)]` 导出。
+//! 使用 feature flag 后，tempfile 可以作为 optional dependency，不会编译进发布产物。
 //!
 //! ## 使用方式
 //!
 //! ```ignore
+//! // 在 Cargo.toml 的 [dev-dependencies] 中：
+//! // astrcode-core = { path = "../core", features = ["test-support"] }
+//!
 //! let guard = TestEnvGuard::new();
 //! // 此时 ASTRCODE_TEST_HOME 指向临时目录
 //! // 测试代码...
