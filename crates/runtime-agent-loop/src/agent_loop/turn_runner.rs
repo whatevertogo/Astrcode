@@ -183,6 +183,7 @@ pub(crate) async fn run_turn(
         };
         if matches!(context_strategy, ContextStrategy::Compact) {
             let system_prompt_for_compact = request.system_prompt.clone();
+            let tools = agent_loop.capabilities.tool_definitions();
             match maybe_compact_conversation(
                 agent_loop,
                 CompactContext {
@@ -194,6 +195,7 @@ pub(crate) async fn run_turn(
                     turn_id,
                     cancel: cancel.clone(),
                     tail: compaction_tail.clone(),
+                    tools,
                 },
                 on_event,
             )
@@ -269,6 +271,7 @@ pub(crate) async fn run_turn(
                             turn_id,
                             cancel: cancel.clone(),
                             tail: compaction_tail.clone(),
+                            tools: agent_loop.capabilities.tool_definitions(),
                         },
                         on_event,
                     )
@@ -490,6 +493,8 @@ struct CompactContext<'a> {
     turn_id: &'a str,
     cancel: CancelToken,
     tail: CompactionTailSnapshot,
+    /// 工具定义列表，用于 pre-compact hook 上下文。
+    tools: Vec<astrcode_core::ToolDefinition>,
 }
 
 async fn maybe_compact_conversation(
@@ -497,32 +502,65 @@ async fn maybe_compact_conversation(
     ctx: CompactContext<'_>,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
 ) -> Result<Option<ConversationView>> {
-    match agent_loop
+    let decision = agent_loop
         .hooks
-        .run_pre_compact(agent_loop.compaction_hook_context(
+        .run_pre_compact(agent_loop.compaction_hook_context_full(
             ctx.state,
             ctx.conversation,
             ctx.reason,
             agent_loop.compact_keep_recent_turns(),
+            &ctx.tools,
+            ctx.base_system_prompt,
         ))
-        .await?
-    {
-        crate::hook_runtime::PreCompactDecision::Continue => {},
-        crate::hook_runtime::PreCompactDecision::Blocked { reason } => {
-            return Err(astrcode_core::AstrError::Validation(reason));
-        },
+        .await?;
+
+    // 检查 hook 是否阻止压缩
+    if !decision.allowed {
+        return Err(astrcode_core::AstrError::Validation(
+            decision
+                .block_reason
+                .unwrap_or_else(|| "compaction blocked by hook".to_string()),
+        ));
     }
 
-    let compact_result = agent_loop
-        .compaction
-        .compact(
-            ctx.provider.as_ref(),
-            ctx.conversation,
-            ctx.base_system_prompt,
+    // 如果 hook 提供了自定义摘要，跳过 LLM 调用直接使用
+    let compact_result = if let Some(custom_summary) = &decision.custom_summary {
+        log::info!(
+            "using custom summary from hook ({} chars)",
+            custom_summary.len()
+        );
+        // 使用自定义摘要构建 artifact
+        let keep_turns = decision
+            .override_keep_recent_turns
+            .unwrap_or(agent_loop.compact_keep_recent_turns());
+        crate::compaction_runtime::build_artifact_from_custom_summary(
+            &ctx.conversation.messages,
+            custom_summary,
+            keep_turns,
             ctx.reason,
-            ctx.cancel,
         )
-        .await?;
+    } else {
+        // 正常的 LLM 压缩流程，应用 hook 修改
+        let keep_turns = decision
+            .override_keep_recent_turns
+            .unwrap_or(agent_loop.compact_keep_recent_turns());
+        let system_prompt = decision
+            .override_system_prompt
+            .as_deref()
+            .or(ctx.base_system_prompt);
+
+        agent_loop
+            .compaction
+            .compact_with_keep_recent_turns(
+                ctx.provider.as_ref(),
+                ctx.conversation,
+                system_prompt,
+                keep_turns,
+                ctx.reason,
+                ctx.cancel,
+            )
+            .await?
+    };
 
     let Some(mut artifact) = compact_result else {
         return Ok(None);

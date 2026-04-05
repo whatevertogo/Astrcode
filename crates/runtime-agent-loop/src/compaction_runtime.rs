@@ -374,11 +374,39 @@ impl CompactionRuntime {
         }
     }
 
+    /// 使用配置中的默认保留轮数执行压缩。
+    ///
+    /// 仅用于测试。生产代码使用 `compact_with_keep_recent_turns` 以便 hook 修改保留轮数。
+    #[cfg(test)]
     pub(crate) async fn compact(
         &self,
         provider: &dyn LlmProvider,
         conversation: &ConversationView,
         base_system_prompt: Option<&str>,
+        reason: CompactionReason,
+        cancel: CancelToken,
+    ) -> Result<Option<CompactionArtifact>> {
+        self.compact_with_keep_recent_turns(
+            provider,
+            conversation,
+            base_system_prompt,
+            self.keep_recent_turns,
+            reason,
+            cancel,
+        )
+        .await
+    }
+
+    /// 使用显式保留轮数执行压缩。
+    ///
+    /// 当 hook 修改了 `keep_recent_turns` 时使用此方法。
+    /// 与 `compact` 不同，此方法不会自动使用配置中的 `keep_recent_turns`。
+    pub(crate) async fn compact_with_keep_recent_turns(
+        &self,
+        provider: &dyn LlmProvider,
+        conversation: &ConversationView,
+        base_system_prompt: Option<&str>,
+        keep_recent_turns: usize,
         reason: CompactionReason,
         cancel: CancelToken,
     ) -> Result<Option<CompactionArtifact>> {
@@ -389,7 +417,7 @@ impl CompactionRuntime {
                 conversation,
                 base_system_prompt,
                 cancel,
-                keep_recent_turns: self.keep_recent_turns,
+                keep_recent_turns: keep_recent_turns.max(1),
                 reason,
             })
             .await;
@@ -621,6 +649,74 @@ impl CompactionRebuilder for ConversationViewRebuilder {
         messages.extend(projected_tail.messages);
         Ok(ConversationView::new(messages))
     }
+}
+
+/// 从自定义摘要构建 CompactionArtifact。
+///
+/// 当 hook 提供 custom_summary 时使用此函数，跳过 LLM 压缩调用。
+/// 这允许插件完全接管压缩逻辑（例如使用外部服务生成摘要）。
+pub(crate) fn build_artifact_from_custom_summary(
+    messages: &[astrcode_core::LlmMessage],
+    custom_summary: &str,
+    keep_recent_turns: usize,
+    reason: CompactionReason,
+) -> Option<CompactionArtifact> {
+    use crate::context_window::estimate_text_tokens;
+
+    let total_messages = messages.len();
+
+    // 计算保留的最近 turn 起始索引（复用已有的函数）
+    let keep_start = recent_turn_start_index(messages, keep_recent_turns).unwrap_or(total_messages);
+    let messages_removed = keep_start;
+    // hook 自定义摘要也必须真正替换掉一段旧历史；如果没有任何消息被折叠，
+    // 继续生成 artifact 只会把“摘要 + 原始全量尾部”叠在一起，反而扩大上下文。
+    if messages_removed == 0 {
+        return None;
+    }
+
+    // 计算保留的 turn 数量
+    let preserved_recent_turns = messages[keep_start..]
+        .iter()
+        .filter(|m| {
+            matches!(
+                m,
+                astrcode_core::LlmMessage::User {
+                    origin: astrcode_core::UserMessageOrigin::User,
+                    ..
+                }
+            )
+        })
+        .count();
+
+    // 估算 token 数
+    let pre_tokens: usize = messages
+        .iter()
+        .map(|m| estimate_text_tokens(&format!("{:?}", m)))
+        .sum();
+    let summary_tokens = estimate_text_tokens(custom_summary);
+    let post_tokens_estimate = summary_tokens
+        + messages[keep_start..]
+            .iter()
+            .map(|m| estimate_text_tokens(&format!("{:?}", m)))
+            .sum::<usize>();
+
+    Some(CompactionArtifact {
+        summary: custom_summary.to_string(),
+        source_range: EventRange {
+            start: 0,
+            end: messages_removed,
+        },
+        preserved_tail_start: messages_removed as u64,
+        strategy_id: "custom_summary_hook".to_string(),
+        pre_tokens,
+        post_tokens_estimate,
+        compacted_at_seq: 0,
+        trigger: reason,
+        preserved_recent_turns,
+        messages_removed,
+        tokens_freed: pre_tokens.saturating_sub(post_tokens_estimate),
+        recovered_files: Vec::new(),
+    })
 }
 
 #[cfg(test)]
@@ -890,6 +986,38 @@ mod tests {
         assert_eq!(
             policy.should_compact(&snapshot),
             Some(CompactionReason::Auto)
+        );
+    }
+
+    #[test]
+    fn custom_summary_returns_none_when_keep_recent_turns_preserves_all_real_turns() {
+        let messages = vec![
+            LlmMessage::User {
+                content: "turn-1".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "reply-1".to_string(),
+                tool_calls: Vec::new(),
+                reasoning: None,
+            },
+            LlmMessage::User {
+                content: "turn-2".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ];
+
+        let artifact = build_artifact_from_custom_summary(
+            &messages,
+            "custom summary",
+            2,
+            CompactionReason::Manual,
+        );
+
+        assert!(
+            artifact.is_none(),
+            "when no historical turn can be removed, custom summary should not fabricate a \
+             compact artifact"
         );
     }
 

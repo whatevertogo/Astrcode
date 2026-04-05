@@ -29,7 +29,7 @@ pub struct ReasoningContent {
 /// 工具定义，用于向 LLM 描述可用的工具。
 ///
 /// 该结构会被序列化为 LLM API 的 `tools` 参数格式。
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolDefinition {
     /// 工具名称（在会话中唯一标识该工具）
     pub name: String,
@@ -43,7 +43,7 @@ pub struct ToolDefinition {
 ///
 /// 由 LLM 响应中的 `tool_calls` 字段解析而来，
 /// 包含调用哪个工具以及传入的参数。
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolCallRequest {
     /// 调用 ID（由 LLM 生成，用于将结果与调用关联）
     pub id: String,
@@ -149,7 +149,8 @@ pub enum UserMessageOrigin {
 /// - `User`: 用户输入（含来源标记）
 /// - `Assistant`: 助手回复（含文本、工具调用、推理内容）
 /// - `Tool`: 工具执行结果
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub enum LlmMessage {
     /// 用户消息
     User {

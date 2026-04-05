@@ -407,6 +407,9 @@ impl AgentLoop {
         }
     }
 
+    /// 构建压缩 hook 上下文（简化版本，不包含 messages/tools/system_prompt）。
+    ///
+    /// 用于 post-compact hook 和不需要完整上下文的场景。
     pub(crate) fn compaction_hook_context(
         &self,
         state: &AgentState,
@@ -426,6 +429,39 @@ impl AgentLoop {
             },
             keep_recent_turns,
             message_count: conversation.messages.len(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            system_prompt: None,
+        }
+    }
+
+    /// 构建压缩 hook 上下文（完整版本，包含 messages/tools/system_prompt）。
+    ///
+    /// 用于 pre-compact hook，允许插件检查完整上下文并做出修改决策。
+    pub(crate) fn compaction_hook_context_full(
+        &self,
+        state: &AgentState,
+        conversation: &crate::context_pipeline::ConversationView,
+        reason: crate::compaction_runtime::CompactionReason,
+        keep_recent_turns: usize,
+        tools: &[astrcode_core::ToolDefinition],
+        system_prompt: Option<&str>,
+    ) -> CompactionHookContext {
+        CompactionHookContext {
+            session_id: state.session_id.clone(),
+            working_dir: state.working_dir.clone(),
+            reason: match reason {
+                crate::compaction_runtime::CompactionReason::Auto => HookCompactionReason::Auto,
+                crate::compaction_runtime::CompactionReason::Reactive => {
+                    HookCompactionReason::Reactive
+                },
+                crate::compaction_runtime::CompactionReason::Manual => HookCompactionReason::Manual,
+            },
+            keep_recent_turns,
+            message_count: conversation.messages.len(),
+            messages: conversation.messages.clone(),
+            tools: tools.to_vec(),
+            system_prompt: system_prompt.map(ToOwned::to_owned),
         }
     }
 
@@ -482,32 +518,65 @@ impl AgentLoop {
             .keep_recent_turns()
             .min(user_turns.saturating_sub(1))
             .max(1);
-        match self
+        // 手动 compact 也要给 pre-hook 暴露完整上下文，否则插件在手动/自动
+        // 两条路径上看到的输入会分叉，导致同一条压缩策略静默失效。
+        let conversation = crate::context_pipeline::ConversationView::new(state.messages.clone());
+        let tools = self.capabilities.tool_definitions();
+        let decision = self
             .hooks
-            .run_pre_compact(self.compaction_hook_context(
+            .run_pre_compact(self.compaction_hook_context_full(
                 state,
-                &crate::context_pipeline::ConversationView::new(state.messages.clone()),
+                &conversation,
                 crate::compaction_runtime::CompactionReason::Manual,
                 manual_keep_recent_turns,
-            ))
-            .await?
-        {
-            crate::hook_runtime::PreCompactDecision::Continue => {},
-            crate::hook_runtime::PreCompactDecision::Blocked { reason } => {
-                return Err(AstrError::Validation(reason));
-            },
-        }
-        let provider = self.build_provider(Some(state.working_dir.clone())).await?;
-        let artifact = self
-            .compaction
-            .compact_manual_with_keep_recent_turns(
-                provider.as_ref(),
-                &crate::context_pipeline::ConversationView::new(state.messages.clone()),
+                &tools,
                 None,
-                manual_keep_recent_turns,
-                CancelToken::new(),
-            )
+            ))
             .await?;
+
+        // 检查 hook 是否阻止压缩
+        if !decision.allowed {
+            return Err(AstrError::Validation(
+                decision
+                    .block_reason
+                    .unwrap_or_else(|| "compaction blocked by hook".to_string()),
+            ));
+        }
+
+        // 应用 hook 修改的保留轮数
+        let effective_keep_turns = decision
+            .override_keep_recent_turns
+            .unwrap_or(manual_keep_recent_turns);
+
+        let provider = self.build_provider(Some(state.working_dir.clone())).await?;
+
+        // 如果 hook 提供了自定义摘要，跳过 LLM 调用
+        let artifact = if let Some(custom_summary) = &decision.custom_summary {
+            log::info!(
+                "using custom summary from hook ({} chars)",
+                custom_summary.len()
+            );
+            // 使用自定义摘要构建 artifact
+            crate::compaction_runtime::build_artifact_from_custom_summary(
+                &conversation.messages,
+                custom_summary,
+                effective_keep_turns,
+                crate::compaction_runtime::CompactionReason::Manual,
+            )
+        } else {
+            // 应用 hook 修改的 system prompt
+            let system_prompt = decision.override_system_prompt.as_deref();
+
+            self.compaction
+                .compact_manual_with_keep_recent_turns(
+                    provider.as_ref(),
+                    &conversation,
+                    system_prompt,
+                    effective_keep_turns,
+                    CancelToken::new(),
+                )
+                .await?
+        };
 
         let Some(mut artifact) = artifact else {
             return Ok(None);

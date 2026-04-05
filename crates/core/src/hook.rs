@@ -1,7 +1,22 @@
 //! # Lifecycle Hook 契约
 //!
-//! 将“可拦截的生命周期点”和“纯事件广播”分开，避免再引入第二条事实来源。
+//! 将"可拦截的生命周期点"和"纯事件广播"分开，避免再引入第二条事实来源。
 //! Hook 只负责少数明确的执行节点，且输入输出必须是强类型的。
+//!
+//! ## PreCompact Hook 扩展能力
+//!
+//! PreCompact hook 支持三种控制方式：
+//! - `Continue`: 允许压缩继续，不做任何修改
+//! - `Block`: 阻止本次压缩
+//! - `ModifyCompactContext`: 修改压缩参数，包括：
+//!   - `override_system_prompt`: 覆盖压缩时使用的 system prompt
+//!   - `override_keep_recent_turns`: 覆盖保留的最近 turn 数量
+//!   - `custom_summary`: 直接提供摘要内容，跳过 LLM 调用
+//!
+//! 这个设计允许插件：
+//! - 自定义压缩 prompt（注入特定指令）
+//! - 调整保留策略（根据上下文动态决定保留多少）
+//! - 提供自定义摘要（完全接管压缩逻辑）
 
 use std::path::PathBuf;
 
@@ -9,7 +24,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{Result, ToolExecutionResult};
+use crate::{LlmMessage, Result, ToolDefinition, ToolExecutionResult};
 
 /// 可被外部扩展拦截的生命周期事件。
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -52,6 +67,10 @@ pub struct ToolHookResultContext {
 }
 
 /// 压缩前公共上下文。
+///
+/// 包含压缩决策所需的所有信息，允许 hook 根据上下文内容做出决策。
+/// `messages` 和 `tools` 字段仅在 hook 需要检查上下文时才填充，
+/// 避免不必要的序列化开销。
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactionHookContext {
@@ -60,6 +79,16 @@ pub struct CompactionHookContext {
     pub reason: HookCompactionReason,
     pub keep_recent_turns: usize,
     pub message_count: usize,
+    /// 当前对话中的消息（序列化形式）。
+    /// Hook 可以检查这些消息来决定是否需要修改压缩策略。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<LlmMessage>,
+    /// 当前可用的工具定义。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolDefinition>,
+    /// 当前的 system prompt。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
 }
 
 /// 压缩完成后的上下文。
@@ -109,6 +138,27 @@ pub enum HookOutcome {
     Block { reason: String },
     /// 仅允许 `PreToolUse` 修改工具参数。
     ReplaceToolArgs { args: Value },
+    /// 仅允许 `PreCompact` 修改压缩上下文。
+    ///
+    /// 通过此变体，hook 可以：
+    /// - 覆盖压缩时使用的 system prompt（注入自定义指令）
+    /// - 覆盖保留的最近 turn 数量（动态调整保留策略）
+    /// - 提供自定义摘要（跳过 LLM 调用，完全接管压缩逻辑）
+    ModifyCompactContext {
+        /// 覆盖压缩时使用的 system prompt。
+        /// 如果提供，将替换默认的压缩 prompt。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        override_system_prompt: Option<String>,
+        /// 覆盖保留的最近 turn 数量。
+        /// 如果提供，将替换 `keep_recent_turns` 配置。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        override_keep_recent_turns: Option<usize>,
+        /// 提供自定义摘要内容。
+        /// 如果提供，将跳过 LLM 压缩调用，直接使用此摘要。
+        /// 这允许插件完全接管压缩逻辑（例如使用外部服务生成摘要）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        custom_summary: Option<String>,
+    },
 }
 
 #[async_trait]

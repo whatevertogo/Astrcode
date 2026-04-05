@@ -247,9 +247,12 @@ async fn manual_compact_runs_pre_and_post_compact_hooks() {
     });
     let pre_hits = Arc::new(Mutex::new(Vec::new()));
     let post_hits = Arc::new(Mutex::new(Vec::new()));
+    let tools = astrcode_core::ToolRegistry::builder()
+        .register(Box::new(EchoArgsTool))
+        .build();
     let loop_runner = AgentLoop::from_capabilities(
         Arc::new(StaticProviderFactory { provider }),
-        capabilities_from_tools(astrcode_core::ToolRegistry::builder().build()),
+        capabilities_from_tools(tools),
     )
     .with_compaction_runtime(CompactionRuntime::new(
         true,
@@ -307,6 +310,23 @@ async fn manual_compact_runs_pre_and_post_compact_hooks() {
     assert_eq!(
         pre_hits[0].reason,
         astrcode_core::HookCompactionReason::Manual
+    );
+    assert_eq!(
+        pre_hits[0].messages, state.messages,
+        "manual compact 的 pre-hook 应该看到完整消息，而不是精简后的空上下文"
+    );
+    assert_eq!(
+        pre_hits[0].tools.len(),
+        1,
+        "manual compact 的 pre-hook 应该暴露当前可见工具列表"
+    );
+    assert_eq!(
+        pre_hits[0].tools[0].name, "echoArgsTool",
+        "manual compact 应向 hook 传递真实的工具 surface"
+    );
+    assert_eq!(
+        pre_hits[0].system_prompt, None,
+        "手动 compact 当前没有额外 system prompt，应显式传 None 而不是遗漏字段"
     );
     let post_hits = post_hits.lock().expect("post hits");
     assert_eq!(post_hits.len(), 1);
