@@ -297,14 +297,79 @@ fn resolve_main_window_url(app_handle: &tauri::AppHandle) -> Result<WebviewUrl> 
     };
 
     // 开发环境优先直连 Vite，这样 `cargo tauri dev` 仍保留 HMR。
-    if dev_server_is_reachable(dev_url) {
+    // `beforeDevCommand` 会先编译 sidecar 再启动 Vite，
+    // 所以这里需要重试等待 Vite 就绪，避免 fallback 到不可用的 asset URL。
+    if wait_for_dev_server(dev_url) {
         return Ok(WebviewUrl::External(dev_url.clone()));
     }
 
-    // 不使用 `WebviewUrl::App("index.html")` 做 fallback。
-    // 在 Tauri 的 dev 编译形态下，`App(...)` 的基址仍会被解释成 `devUrl`，
-    // 于是即便我们逻辑上想退回内置资源，WebView 仍可能导航到 localhost。
-    explicit_embedded_frontend_url(window_config.use_https_scheme)
+    // Vite 未能在规定时间内启动。
+    // 在 Tauri dev 模式下，`App("index.html")` 的基址会被解释为 `devUrl`，
+    // 所以这里不用 asset fallback，而是返回一个明确错误提示的 data URI 页面。
+    eprintln!(
+        "[astrcode-window] Vite dev server at {} is not reachable after retries. Check frontend \
+         build output for errors.",
+        dev_url
+    );
+    let error_page_html = build_vite_unreachable_error_page(dev_url);
+    let error_uri = format!(
+        "data:text/html;charset=utf-8,{}",
+        error_page_html.replace('%', "%25").replace('#', "%23")
+    );
+    let url = Url::parse(&error_uri).with_context(|| "failed to build error page url")?;
+    Ok(WebviewUrl::External(url))
+}
+
+/// 等待 Vite 开发服务器就绪，最多重试数秒。
+fn wait_for_dev_server(dev_url: &Url) -> bool {
+    // 首次立即检查（Vite 可能已就绪）。
+    if dev_server_is_reachable(dev_url) {
+        return true;
+    }
+    // Vite 可能需要额外时间完成首次编译。
+    // 每次重试间隔 500ms，最多等待 20 秒。
+    for i in 1..=40 {
+        std::thread::sleep(Duration::from_millis(500));
+        eprintln!(
+            "[astrcode-window] waiting for Vite dev server at {}... ({}/40)",
+            dev_url, i
+        );
+        if dev_server_is_reachable(dev_url) {
+            return true;
+        }
+    }
+    false
+}
+
+/// 生成一个可读的错误页 HTML，提示用户 Vite 未启动。
+fn build_vite_unreachable_error_page(dev_url: &Url) -> String {
+    format!(
+        r#"<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>AstrCode – 前端未就绪</title>
+<style>
+  body {{ font-family: system-ui, -apple-system, sans-serif; padding: 3rem; max-width: 640px; margin: 0 auto; background: #1a1a2e; color: #eee; }}
+  h1 {{ color: #e05555; }}
+  code {{ background: #2d2d44; padding: 0.2em 0.5em; border-radius: 4px; }}
+  pre {{ background: #16162a; color: #c8c8d8; padding: 1rem; border-radius: 8px; overflow-x: auto; font-size: 0.9em; }}
+  a {{ color: #66b3ff; }}
+</style></head>
+<body>
+  <h1>⚠️ 前端开发服务器未就绪</h1>
+  <p>桌面端尝试连接 <code>{}</code> 失败。</p>
+  <p>可能的原因：</p>
+  <ol>
+    <li><code>beforeDevCommand</code>（<code>scripts/tauri-frontend.js</code>）编译 sidecar 耗时过长</li>
+    <li>前端 <code>npm install</code> 依赖未安装</li>
+    <li>Vite 端口 <code>5173</code> 被占用</li>
+  </ol>
+  <p>建议操作：</p>
+  <pre>cd frontend && npm install && npm run dev</pre>
+  <p>然后重启桌面应用。如果只想验证已构建的前端产物：<code>cargo tauri build</code></p>
+</body>
+</html>"#,
+        dev_url
+    )
 }
 
 fn explicit_embedded_frontend_url(use_https_scheme: bool) -> Result<WebviewUrl> {
