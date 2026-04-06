@@ -16,20 +16,16 @@
 //! - **工具调用聚合**: 同一 step 的多个工具调用聚合到一个消息中
 //! - **流式工具输出**: `ToolOutputDelta` 事件聚合为完整的工具结果
 
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::collections::HashMap;
 
 use astrcode_core::{
-    AstrError, StorageEvent, StoredEvent, ToolOutputDelta, ToolOutputStream, UserMessageOrigin,
-    format_local_rfc3339, format_local_rfc3339_opt, replay_records, split_assistant_content,
+    StorageEvent, StoredEvent, ToolOutputDelta, ToolOutputStream, UserMessageOrigin,
+    format_local_rfc3339, format_local_rfc3339_opt, split_assistant_content,
 };
-use astrcode_runtime_session::normalize_session_id;
 use async_trait::async_trait;
 use serde_json::{Map, Value, json};
 
-use super::{
-    ReplayPath, RuntimeService, ServiceResult, SessionMessage, SessionReplay, SessionReplaySource,
-    session::load_events,
-};
+use super::{RuntimeService, ServiceResult, SessionMessage, SessionReplay, SessionReplaySource};
 
 #[async_trait]
 impl SessionReplaySource for RuntimeService {
@@ -38,52 +34,9 @@ impl SessionReplaySource for RuntimeService {
         session_id: &str,
         last_event_id: Option<&str>,
     ) -> ServiceResult<SessionReplay> {
-        let session_id = normalize_session_id(session_id);
-        let state = self.ensure_session_loaded(&session_id).await?;
-
-        let receiver = state.broadcaster.subscribe();
-        let started_at = Instant::now();
-        let replay_result = match state
-            .recent_records_after(last_event_id)
-            .map_err(|error| AstrError::Internal(error.to_string()))?
-        {
-            Some(history) => Ok((history, ReplayPath::Cache)),
-            None => load_events(Arc::clone(&self.session_manager), &session_id)
-                .await
-                .map(|events| {
-                    (
-                        replay_records(&events, last_event_id),
-                        ReplayPath::DiskFallback,
-                    )
-                }),
-        };
-        let elapsed = started_at.elapsed();
-        match &replay_result {
-            Ok((history, path)) => {
-                self.observability
-                    .record_sse_catch_up(elapsed, true, path.clone(), history.len());
-                if matches!(path, ReplayPath::DiskFallback) {
-                    log::warn!(
-                        "session '{}' replay used durable fallback and recovered {} events in {}ms",
-                        session_id,
-                        history.len(),
-                        elapsed.as_millis()
-                    );
-                }
-            },
-            Err(error) => {
-                self.observability
-                    .record_sse_catch_up(elapsed, false, ReplayPath::DiskFallback, 0);
-                log::error!(
-                    "failed to replay session '{}' after {}ms: {}",
-                    session_id,
-                    elapsed.as_millis(),
-                    error
-                );
-            },
-        }
-        let (history, _) = replay_result?;
-        Ok(SessionReplay { history, receiver })
+        self.execution_service()
+            .replay(session_id, last_event_id)
+            .await
     }
 }
 

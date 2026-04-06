@@ -7,11 +7,8 @@ authors.workspace = true
 
 [dependencies]
 astrcode-core = { path = "../core" }
-astrcode-runtime-agent-loop = { path = "../runtime-agent-loop" }
 astrcode-runtime-config = { path = "../runtime-config" }
 astrcode-runtime-prompt = { path = "../runtime-prompt" }
-astrcode-runtime-skill-loader = { path = "../runtime-skill-loader" }
-astrcode-runtime-agent-tool = { path = "../runtime-agent-tool" }
 astrcode-runtime-registry = { path = "../runtime-registry" }
 async-trait.workspace = true
 uuid.workspace = true

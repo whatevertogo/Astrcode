@@ -175,7 +175,9 @@ impl AgentExecutionServiceHandle {
                         SubRunOutcome::Completed
                     },
                     summary: summarize_child_result(
-                        &tracker,
+                        tracker.last_summary(),
+                        tracker.token_limit_hit(),
+                        tracker.step_limit_hit(),
                         started_at.elapsed().as_millis() as u64,
                         "子 Agent 已完成任务。",
                     ),
@@ -193,7 +195,9 @@ impl AgentExecutionServiceHandle {
                 SubRunResult {
                     status,
                     summary: summarize_child_result(
-                        &tracker,
+                        tracker.last_summary(),
+                        tracker.token_limit_hit(),
+                        tracker.step_limit_hit(),
                         started_at.elapsed().as_millis() as u64,
                         "子 Agent 被中止。",
                     ),
@@ -208,7 +212,9 @@ impl AgentExecutionServiceHandle {
                         error: message.clone(),
                     },
                     summary: summarize_child_result(
-                        &tracker,
+                        tracker.last_summary(),
+                        tracker.token_limit_hit(),
+                        tracker.step_limit_hit(),
                         started_at.elapsed().as_millis() as u64,
                         &format!("子 Agent 执行失败：{message}"),
                     ),
@@ -223,7 +229,9 @@ impl AgentExecutionServiceHandle {
                         error: error.to_string(),
                     },
                     summary: summarize_child_result(
-                        &tracker,
+                        tracker.last_summary(),
+                        tracker.token_limit_hit(),
+                        tracker.step_limit_hit(),
                         started_at.elapsed().as_millis() as u64,
                         &format!("子 Agent 执行失败：{error}"),
                     ),

@@ -90,11 +90,19 @@
 
 ---
 
-## [ ] 阶段 3：RuntimeService 拆职责（1-1.5 周）
+## [x] 阶段 3：RuntimeService 拆职责（1-1.5 周）
 
 ### 阶段目标
 
 把 RuntimeService 从“全能服务”收敛为“门面编排”。
+
+### 当前进展
+
+1. 已完成第一批拆分：`CapabilityManager`（能力面替换）、`ConfigManager`（配置读写/重载）、`WatchManager`（watcher 启动与幂等控制）。
+2. `RuntimeService` 对外 API 保持不变，内部改为门面委托。
+3. 已完成第二批拆分：`SessionService`（create/load/delete/ensure_loaded）。
+4. 已完成第三批拆分：`ExecutionService`（submit/interrupt/replay）。
+5. 收口完成：已补充 `ExecutionService` 直连单测，降低对 `turn/replay` 门面测试的间接依赖。
 
 ### 主要动作
 
@@ -120,11 +128,27 @@
 
 ---
 
-## [ ]阶段 4：runtime-execution 与 agent-loop 降耦（1 周）
+## [x]阶段 4：runtime-execution 与 agent-loop 降耦（1 周）
 
 ### 阶段目标
 
 按子域拆分执行链路，降低依赖扇出与认知负担。
+
+### 当前进展（已完成 ✅）
+
+1. 已完成第一刀降耦：`ScopedExecutionSurface` 与 `prepare_scoped_agent_execution` 改为泛型透传 skill catalog，`runtime-execution` 不再绑定具体 `SkillCatalog` 类型。
+2. 已移除 `runtime-execution` 对 `runtime-skill-loader` 的直接 crate 依赖，边界从“编译期强耦合”收敛为“调用方注入”。
+3. 上游装配已完成泛型参数适配（`runtime/service/execution/surface.rs`），并通过 `runtime-execution` + `runtime` 编译回归。
+4. 已完成第二刀降耦：`PreparedAgentExecution` / `prepare_scoped_agent_execution` 对 loop 输出类型泛型化，`runtime-execution` 不再绑定 `AgentLoop` 类型。
+5. `summarize_child_result` 已改为纯数据入参（summary/budget flags），清理了对 `ChildExecutionTracker` 具体类型的跨 crate 耦合。
+6. 已移除 `runtime-execution` 对 `runtime-agent-loop` 的直接 crate 依赖，并完成编译/单测回归。
+7. 已完成第三刀降耦：execution 装配入参抽象为 `AgentExecutionRequest`，不再直接依赖 `RunAgentParams`。
+8. runtime 侧新增参数适配层（`RunAgentParams -> AgentExecutionRequest`），边界回到“runtime 负责 tool 参数解释，execution 仅处理执行语义”。
+9. 已移除 `runtime-execution` 对 `runtime-agent-tool` 的直接 crate 依赖，并通过 `runtime-execution` + `runtime` 编译与单测回归。
+10. 已补齐 context pipeline 独立单测（compact summary 继承、recent tail 组装、single_line 截断等），上下文子域可在 execution crate 内单独回归。
+11. 已补齐 override/budget 摘要独立单测（`resolve_subagent_overrides` 与 `summarize_child_result`），compaction 相关策略语义可在 execution 子域独立回归。
+12. 策略校验与执行装配解耦验证已通过，execution crate 不再需要理解外部 runtime 配置细节的拼装。
+13. agent-loop 核心循环与 execution 准备层完成职责分离，阶段4结构收敛达到预期。
 
 ### 主要动作
 

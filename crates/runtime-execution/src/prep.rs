@@ -3,16 +3,14 @@ use std::{collections::HashSet, sync::Arc};
 use astrcode_core::{
     AgentMode, AgentProfile, AgentState, ArtifactRef, AstrError, ExecutionOwner, HookHandler,
     InvocationKind, LlmMessage, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    SubRunStorageMode, SubagentContextOverrides, UserMessageOrigin,
+    SubagentContextOverrides, UserMessageOrigin,
 };
-use astrcode_runtime_agent_loop::AgentLoop;
-use astrcode_runtime_agent_tool::RunAgentParams;
-use astrcode_runtime_config::resolve_agent_experimental_independent_session;
 use astrcode_runtime_prompt::PromptDeclaration;
 use astrcode_runtime_registry::CapabilityRouter;
-use astrcode_runtime_skill_loader::SkillCatalog;
 
-use crate::{ResolvedContextSnapshot, resolve_context_snapshot};
+use crate::{
+    ResolvedContextSnapshot, policy::resolve_subagent_overrides, resolve_context_snapshot,
+};
 
 #[derive(Debug, Clone)]
 pub struct AgentExecutionSpec {
@@ -22,18 +20,26 @@ pub struct AgentExecutionSpec {
     pub resolved_context_snapshot: ResolvedContextSnapshot,
 }
 
-#[derive(Clone)]
-pub struct PreparedAgentExecution {
-    pub execution_spec: AgentExecutionSpec,
-    pub runtime_config: astrcode_runtime_config::RuntimeConfig,
-    pub loop_: Arc<AgentLoop>,
+#[derive(Debug, Clone)]
+pub struct AgentExecutionRequest {
+    pub task: String,
+    pub context: Option<String>,
+    pub max_steps: Option<u32>,
+    pub context_overrides: Option<SubagentContextOverrides>,
 }
 
 #[derive(Clone)]
-pub struct ScopedExecutionSurface {
+pub struct PreparedAgentExecution<TLoop> {
+    pub execution_spec: AgentExecutionSpec,
+    pub runtime_config: astrcode_runtime_config::RuntimeConfig,
+    pub loop_: TLoop,
+}
+
+#[derive(Clone)]
+pub struct ScopedExecutionSurface<TSkillCatalog> {
     pub capabilities: CapabilityRouter,
     pub prompt_declarations: Vec<PromptDeclaration>,
-    pub skill_catalog: Arc<SkillCatalog>,
+    pub skill_catalog: TSkillCatalog,
     pub hook_handlers: Vec<Arc<dyn HookHandler>>,
     pub runtime_config: astrcode_runtime_config::RuntimeConfig,
 }
@@ -41,7 +47,7 @@ pub struct ScopedExecutionSurface {
 fn build_execution_spec(
     invocation_kind: InvocationKind,
     profile: &AgentProfile,
-    params: &RunAgentParams,
+    params: &AgentExecutionRequest,
     allowed_tools: &[String],
     runtime_config: &astrcode_runtime_config::RuntimeConfig,
     parent_state: Option<&AgentState>,
@@ -65,22 +71,23 @@ fn build_execution_spec(
 
 // 这里统一 root/sub-agent 的 profile 裁剪与 loop 装配，避免 façade 同时维护两套
 // 几乎一致的 surface -> execution spec -> prompt -> loop 组装路径。
-pub fn prepare_scoped_agent_execution<F>(
+pub fn prepare_scoped_agent_execution<F, TSkillCatalog, TLoop>(
     invocation_kind: InvocationKind,
     profile: &AgentProfile,
-    params: &RunAgentParams,
-    surface: ScopedExecutionSurface,
+    params: &AgentExecutionRequest,
+    surface: ScopedExecutionSurface<TSkillCatalog>,
     parent_state: Option<&AgentState>,
     build_loop: F,
-) -> Result<PreparedAgentExecution, AstrError>
+) -> Result<PreparedAgentExecution<TLoop>, AstrError>
 where
+    TSkillCatalog: Clone,
     F: FnOnce(
         CapabilityRouter,
         Vec<PromptDeclaration>,
-        Arc<SkillCatalog>,
+        TSkillCatalog,
         Vec<Arc<dyn HookHandler>>,
         &astrcode_runtime_config::RuntimeConfig,
-    ) -> Arc<AgentLoop>,
+    ) -> TLoop,
 {
     let final_tool_names = resolve_profile_tool_names(&surface.capabilities, profile)?;
     if final_tool_names.is_empty() {
@@ -107,7 +114,7 @@ where
     let loop_ = build_loop(
         scoped_capabilities,
         prompt_declarations.clone(),
-        Arc::clone(&surface.skill_catalog),
+        surface.skill_catalog.clone(),
         surface.hook_handlers.clone(),
         &surface.runtime_config,
     );
@@ -119,91 +126,6 @@ where
     })
 }
 
-pub fn resolve_subagent_overrides(
-    overrides: Option<&SubagentContextOverrides>,
-    runtime_config: &astrcode_runtime_config::RuntimeConfig,
-) -> Result<ResolvedSubagentContextOverrides, AstrError> {
-    let mut resolved = ResolvedSubagentContextOverrides::default();
-    if let Some(overrides) = overrides {
-        if let Some(storage_mode) = overrides.storage_mode {
-            resolved.storage_mode = storage_mode;
-        }
-        if let Some(value) = overrides.inherit_system_instructions {
-            resolved.inherit_system_instructions = value;
-        }
-        if let Some(value) = overrides.inherit_project_instructions {
-            resolved.inherit_project_instructions = value;
-        }
-        if let Some(value) = overrides.inherit_working_dir {
-            resolved.inherit_working_dir = value;
-        }
-        if let Some(value) = overrides.inherit_policy_upper_bound {
-            resolved.inherit_policy_upper_bound = value;
-        }
-        if let Some(value) = overrides.inherit_cancel_token {
-            resolved.inherit_cancel_token = value;
-        }
-        if let Some(value) = overrides.include_compact_summary {
-            resolved.include_compact_summary = value;
-        }
-        if let Some(value) = overrides.include_recent_tail {
-            resolved.include_recent_tail = value;
-        }
-        if let Some(value) = overrides.include_recovery_refs {
-            resolved.include_recovery_refs = value;
-        }
-        if let Some(value) = overrides.include_parent_findings {
-            resolved.include_parent_findings = value;
-        }
-    }
-
-    if matches!(resolved.storage_mode, SubRunStorageMode::IndependentSession)
-        && !resolve_agent_experimental_independent_session(runtime_config.agent.as_ref())
-    {
-        return Err(AstrError::Validation(
-            "independent_session is experimental and currently disabled by \
-             runtime.agent.experimentalIndependentSession"
-                .to_string(),
-        ));
-    }
-    if resolved.inherit_system_instructions != resolved.inherit_project_instructions {
-        return Err(AstrError::Validation(
-            "inheritSystemInstructions and inheritProjectInstructions must currently resolve to \
-             the same value"
-                .to_string(),
-        ));
-    }
-    if !resolved.inherit_working_dir {
-        return Err(AstrError::Validation(
-            "inheritWorkingDir=false is not supported yet; child agents must stay in the parent \
-             workspace"
-                .to_string(),
-        ));
-    }
-    if !resolved.inherit_cancel_token {
-        return Err(AstrError::Validation(
-            "inheritCancelToken=false is not supported yet; child agents must stay linked to the \
-             parent cancellation chain"
-                .to_string(),
-        ));
-    }
-    if resolved.include_recovery_refs {
-        return Err(AstrError::Validation(
-            "includeRecoveryRefs=true is not supported yet; recovery refs are not exposed to \
-             sub-agent context overrides in this release"
-                .to_string(),
-        ));
-    }
-    if resolved.include_parent_findings {
-        return Err(AstrError::Validation(
-            "includeParentFindings=true is not supported yet; parent findings are not exposed to \
-             sub-agent context overrides in this release"
-                .to_string(),
-        ));
-    }
-
-    Ok(resolved)
-}
 
 fn build_child_prompt_declarations(
     parent: &[PromptDeclaration],
@@ -392,21 +314,42 @@ pub fn build_result_artifacts(child: &astrcode_core::SubRunHandle) -> Vec<Artifa
 }
 
 pub fn summarize_child_result(
-    tracker: &astrcode_runtime_agent_loop::ChildExecutionTracker,
+    last_summary: Option<&str>,
+    token_limit_hit: bool,
+    step_limit_hit: bool,
     duration_ms: u64,
     fallback: &str,
 ) -> String {
-    let base = tracker
-        .last_summary()
+    let base = last_summary
         .filter(|summary| !summary.trim().is_empty())
         .unwrap_or(fallback)
         .trim()
         .to_string();
-    if tracker.token_limit_hit() || tracker.step_limit_hit() {
+    if token_limit_hit || step_limit_hit {
         return format!(
             "{base}\n\n[stopped after {duration_ms}ms because a sub-agent budget limit was \
              reached]"
         );
     }
     base
+}
+
+#[cfg(test)]
+mod tests {
+    use super::summarize_child_result;
+
+    #[test]
+    fn summarize_child_result_appends_budget_limit_note() {
+        let summary = summarize_child_result(Some("done"), true, false, 1200, "fallback summary");
+
+        assert!(summary.contains("done"));
+        assert!(summary.contains("stopped after 1200ms"));
+    }
+
+    #[test]
+    fn summarize_child_result_uses_fallback_when_summary_missing() {
+        let summary = summarize_child_result(None, false, false, 100, "fallback summary");
+
+        assert_eq!(summary, "fallback summary");
+    }
 }

@@ -210,7 +210,12 @@ pub struct ToolCallResultDto {
 /// - **生命周期**: `TurnDone`
 /// - **错误**: `Error`
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "event", content = "data", rename_all = "camelCase")]
+#[serde(
+    tag = "event",
+    content = "data",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum AgentEventPayload {
     /// 会话开始事件，携带新会话的 ID。
     SessionStarted { session_id: String },

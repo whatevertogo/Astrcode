@@ -14,15 +14,14 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use super::{RuntimeService, ServiceError, ServiceResult, blocking_bridge::spawn_blocking_service};
-use crate::config::{config_path, open_config_in_editor, save_config, test_connection};
+use super::{RuntimeService, ServiceResult};
 
 impl RuntimeService {
     /// 获取当前运行时配置的完整快照。
     ///
     /// 返回配置的克隆副本，调用方可以安全地读取而不持有锁。
     pub async fn get_config(&self) -> crate::config::Config {
-        self.config.lock().await.clone()
+        self.config_manager().get_config().await
     }
 
     /// 从磁盘重新加载用户级配置，并原子替换当前运行时的配置快照与 loop。
@@ -30,23 +29,7 @@ impl RuntimeService {
     /// 这条路径只更新运行时“配置维度”的行为参数，例如默认 profile/model、
     /// max tool concurrency、自动压缩阈值等；当前 capability surface 保持不变。
     pub async fn reload_config_from_disk(&self) -> ServiceResult<crate::config::Config> {
-        let next_config = spawn_blocking_service("reload config from disk", || {
-            crate::config::load_config().map_err(ServiceError::from)
-        })
-        .await?;
-
-        let _guard = self.rebuild_lock.lock().await;
-        let surface = self.surface.read().await.clone();
-        let next_loop = super::build_agent_loop(
-            &surface,
-            &next_config.runtime,
-            Arc::clone(&self.policy),
-            Arc::clone(&self.approval),
-        );
-
-        *self.config.lock().await = next_config.clone();
-        *self.loop_.write().await = next_loop;
-        Ok(next_config)
+        self.config_manager().reload_config_from_disk().await
     }
 
     /// 从磁盘重新加载 agent 定义，并原子替换当前 profile 快照。
@@ -56,22 +39,9 @@ impl RuntimeService {
     pub async fn reload_agent_profiles_from_disk(
         &self,
     ) -> ServiceResult<Arc<crate::AgentProfileRegistry>> {
-        let loader = self.agent_loader();
-        let next_registry = spawn_blocking_service("reload agent profiles from disk", move || {
-            loader.load().map_err(|error| {
-                ServiceError::Internal(astrcode_core::AstrError::Validation(error.to_string()))
-            })
-        })
-        .await?;
-        let next_registry = Arc::new(next_registry);
-
-        let _guard = self.rebuild_lock.lock().await;
-        *self.agent_profiles.write().map_err(|_| {
-            ServiceError::Internal(astrcode_core::AstrError::LockPoisoned(
-                "agent profile registry".to_string(),
-            ))
-        })? = Arc::clone(&next_registry);
-        Ok(next_registry)
+        self.config_manager()
+            .reload_agent_profiles_from_disk()
+            .await
     }
 
     /// 保存活跃的配置选择（profile 和 model）。
@@ -88,45 +58,23 @@ impl RuntimeService {
         active_profile: String,
         active_model: String,
     ) -> ServiceResult<()> {
-        let mut config = self.config.lock().await;
-        let profile = config
-            .profiles
-            .iter()
-            .find(|profile| profile.name == active_profile)
-            .ok_or_else(|| {
-                ServiceError::InvalidInput(format!("profile '{}' does not exist", active_profile))
-            })?;
-
-        if !profile.models.iter().any(|model| model.id == active_model) {
-            return Err(ServiceError::InvalidInput(format!(
-                "model '{}' does not exist in profile '{}'",
-                active_model, active_profile
-            )));
-        }
-
-        config.active_profile = active_profile;
-        config.active_model = active_model;
-        save_config(&config).map_err(ServiceError::from)
+        self.config_manager()
+            .save_active_selection(active_profile, active_model)
+            .await
     }
 
     /// 解析并返回当前配置文件的绝对路径。
     ///
     /// 此操作涉及文件系统查询，通过阻塞线程池执行。
     pub async fn current_config_path(&self) -> ServiceResult<PathBuf> {
-        spawn_blocking_service("resolve config path", || {
-            config_path().map_err(ServiceError::from)
-        })
-        .await
+        self.config_manager().current_config_path().await
     }
 
     /// 在系统默认编辑器中打开配置文件。
     ///
     /// 此操作涉及进程启动，通过阻塞线程池执行。
     pub async fn open_config_in_editor(&self) -> ServiceResult<()> {
-        spawn_blocking_service("open config in editor", || {
-            open_config_in_editor().map_err(ServiceError::from)
-        })
-        .await
+        self.config_manager().open_config_in_editor().await
     }
 
     /// 测试指定 profile 和 model 的 LLM 连接。
@@ -137,17 +85,9 @@ impl RuntimeService {
         profile_name: &str,
         model: &str,
     ) -> ServiceResult<crate::config::TestResult> {
-        let config = self.config.lock().await.clone();
-        let profile = config
-            .profiles
-            .iter()
-            .find(|profile| profile.name == profile_name)
-            .ok_or_else(|| {
-                ServiceError::InvalidInput(format!("profile '{}' does not exist", profile_name))
-            })?;
-        test_connection(profile, model)
+        self.config_manager()
+            .test_connection(profile_name, model)
             .await
-            .map_err(ServiceError::from)
     }
 }
 
@@ -156,6 +96,7 @@ mod tests {
     use super::*;
     use crate::{
         config::{Config, ModelConfig, Profile, RuntimeConfig, save_config},
+        service::ServiceError,
         test_support::{TestEnvGuard, empty_capabilities},
     };
 

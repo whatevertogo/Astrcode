@@ -2,10 +2,7 @@
 //!
 //! RuntimeService 是 Astrcode 的核心服务，负责管理会话和执行 Agent 循环。
 
-use std::sync::{
-    Arc, RwLock as StdRwLock,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, RwLock as StdRwLock, atomic::AtomicBool};
 
 use astrcode_core::{
     AllowAllPolicyEngine, AstrError, HookHandler, PolicyEngine, RuntimeHandle, SessionManager,
@@ -28,15 +25,20 @@ use crate::config::load_config;
 #[cfg(test)]
 mod baselines;
 mod blocking_bridge;
+mod capability_manager;
 mod composer_ops;
+mod config_manager;
 mod config_ops;
 mod execution;
+mod execution_service;
 mod loop_factory;
 mod observability;
 mod replay;
 mod service_contract;
 mod session;
+mod session_service;
 mod turn;
+mod watch_manager;
 mod watch_ops;
 
 pub(crate) use execution::DeferredSubAgentExecutor;
@@ -135,6 +137,26 @@ pub struct RuntimeService {
 }
 
 impl RuntimeService {
+    fn capability_manager(&self) -> capability_manager::CapabilityManager<'_> {
+        capability_manager::CapabilityManager::new(self)
+    }
+
+    fn config_manager(&self) -> config_manager::ConfigManager<'_> {
+        config_manager::ConfigManager::new(self)
+    }
+
+    fn watch_manager(self: &Arc<Self>) -> watch_manager::WatchManager {
+        watch_manager::WatchManager::new(Arc::clone(self))
+    }
+
+    fn session_service(&self) -> session_service::SessionService<'_> {
+        session_service::SessionService::new(self)
+    }
+
+    fn execution_service(&self) -> execution_service::ExecutionService<'_> {
+        execution_service::ExecutionService::new(self)
+    }
+
     pub fn from_capabilities(capabilities: CapabilityRouter) -> ServiceResult<Self> {
         Self::from_capabilities_with_prompt_inputs(
             capabilities,
@@ -233,7 +255,7 @@ impl RuntimeService {
     }
 
     pub async fn current_loop(&self) -> Arc<AgentLoop> {
-        self.loop_.read().await.clone()
+        self.capability_manager().current_loop().await
     }
 
     #[deprecated(
@@ -262,60 +284,22 @@ impl RuntimeService {
         skill_catalog: Arc<SkillCatalog>,
         hook_handlers: Vec<Arc<dyn HookHandler>>,
     ) -> ServiceResult<()> {
-        let _guard = self.rebuild_lock.lock().await;
-        let runtime_config = {
-            let config = self.config.lock().await;
-            config.runtime.clone()
-        };
-        let next_surface = RuntimeSurfaceState {
-            capabilities,
-            prompt_declarations,
-            skill_catalog,
-            hook_handlers,
-        };
-        let next_loop = build_agent_loop(
-            &next_surface,
-            &runtime_config,
-            Arc::clone(&self.policy),
-            Arc::clone(&self.approval),
-        );
-        *self.loop_.write().await = next_loop;
-        *self.surface.write().await = next_surface;
-        Ok(())
+        self.capability_manager()
+            .replace_surface(
+                capabilities,
+                prompt_declarations,
+                skill_catalog,
+                hook_handlers,
+            )
+            .await
     }
 
     pub fn start_config_auto_reload(self: &Arc<Self>) {
-        if self
-            .config_watch_started
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            return;
-        }
-
-        let service = Arc::clone(self);
-        tokio::spawn(async move {
-            if let Err(error) = watch_ops::run_config_watch_loop(service).await {
-                log::warn!("config hot reload watcher stopped: {}", error);
-            }
-        });
+        self.watch_manager().start_config_auto_reload();
     }
 
     pub fn start_agent_auto_reload(self: &Arc<Self>) {
-        if self
-            .agent_watch_started
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            return;
-        }
-
-        let service = Arc::clone(self);
-        tokio::spawn(async move {
-            if let Err(error) = watch_ops::run_agent_watch_loop(service).await {
-                log::warn!("agent hot reload watcher stopped: {}", error);
-            }
-        });
+        self.watch_manager().start_agent_auto_reload();
     }
 
     pub fn loaded_session_count(&self) -> usize {

@@ -13,18 +13,18 @@ use crate::service::{
 };
 
 /// Turn 提交真正落地的目标，包括分支后 session 和独占 turn lease。
-pub(super) struct SubmitTarget {
-    pub(super) session_id: String,
-    pub(super) branched_from_session_id: Option<String>,
-    pub(super) session: Arc<SessionState>,
-    pub(super) turn_lease: Box<dyn SessionTurnLease>,
+pub(in crate::service) struct SubmitTarget {
+    pub(in crate::service) session_id: String,
+    pub(in crate::service) branched_from_session_id: Option<String>,
+    pub(in crate::service) session: Arc<SessionState>,
+    pub(in crate::service) turn_lease: Box<dyn SessionTurnLease>,
 }
 
 /// 并发分支深度不应该无限增长，否则说明调用侧持续对忙会话进行并发写入。
 const MAX_CONCURRENT_BRANCH_DEPTH: usize = 3;
 
 impl RuntimeService {
-    pub(super) async fn resolve_submit_target(
+    pub(in crate::service) async fn resolve_submit_target(
         &self,
         session_id: &str,
         turn_id: &str,
