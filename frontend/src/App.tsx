@@ -143,11 +143,7 @@ export default function App() {
           return;
         }
         const replayed = replaySessionHistory(nextSessionId, snapshot.events, snapshot.phase);
-        const hydratedProjects = replaceSessionMessages(
-          projects,
-          nextSessionId,
-          replayed.messages
-        );
+        const hydratedProjects = replaceSessionMessages(projects, nextSessionId, replayed.messages);
         activeSessionIdRef.current = nextSessionId;
         phaseRef.current = replayed.phase;
         dispatch({

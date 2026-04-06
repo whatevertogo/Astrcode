@@ -5,11 +5,7 @@
 import type { DeleteProjectResult, SessionMeta } from '../../types';
 import { getErrorMessage, request, requestJson, requestRaw } from './client';
 // 共享工具函数，消除与 lib/shared/index.ts 的重复定义
-import {
-  asRecord,
-  pickStringOrUndefined as pickString,
-  pickOptionalString,
-} from '../shared';
+import { asRecord, pickStringOrUndefined as pickString, pickOptionalString } from '../shared';
 import { normalizeAgentEvent } from '../agentEvent';
 import type { AgentEventPayload, Phase } from '../../types';
 
