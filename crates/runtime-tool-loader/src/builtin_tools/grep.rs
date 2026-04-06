@@ -48,7 +48,9 @@ pub struct GrepTool;
 #[serde(rename_all = "camelCase")]
 struct GrepArgs {
     pattern: String,
-    path: PathBuf,
+    /// 搜索路径，可选。未提供时使用当前工作目录。
+    #[serde(default)]
+    path: Option<PathBuf>,
     #[serde(default)]
     recursive: bool,
     #[serde(default)]
@@ -124,9 +126,9 @@ impl Tool for GrepTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "grep".to_string(),
-            description: "Search for a regex pattern in a file or directory. Requires both \
-                          `pattern` and `path`, then returns matching lines with file path and \
-                          line number."
+            description: "Search for a regex pattern in files, returning matching lines with file \
+                          path and line number. `path` defaults to the current working directory \
+                          when omitted."
                 .to_string(),
             parameters: json!({
                 "type": "object",
@@ -137,7 +139,7 @@ impl Tool for GrepTool {
                     },
                     "path": {
                         "type": "string",
-                        "description": "File or directory to search in. Required even when using glob/fileType filters"
+                        "description": "Optional. File or directory to search in (defaults to current working directory)"
                     },
                     "recursive": {
                         "type": "boolean",
@@ -147,7 +149,7 @@ impl Tool for GrepTool {
                     "maxMatches": {
                         "type": "integer",
                         "minimum": 1,
-                        "description": "Maximum number of matches to return (default 100)"
+                        "description": "Maximum number of matches to return (default 250)"
                     },
                     "offset": {
                         "type": "integer",
@@ -178,7 +180,7 @@ impl Tool for GrepTool {
                         "description": "Output mode (default: content)"
                     }
                 },
-                "required": ["pattern", "path"],
+                "required": ["pattern"],
                 "additionalProperties": false
             }),
         }
@@ -239,7 +241,11 @@ impl Tool for GrepTool {
 
         let args: GrepArgs = serde_json::from_value(args)
             .map_err(|e| AstrError::parse(explain_grep_args_error(&e), e))?;
-        let path = resolve_path(ctx, &args.path)?;
+        let path = match &args.path {
+            Some(p) => resolve_path(ctx, p)?,
+            None => std::env::current_dir()
+                .map_err(|e| AstrError::io("failed to get current directory", e))?,
+        };
         let started_at = Instant::now();
         let regex = RegexBuilder::new(&args.pattern)
             .case_insensitive(args.case_insensitive)
@@ -250,7 +256,7 @@ impl Tool for GrepTool {
             })?;
 
         let output_mode = args.output_mode.unwrap_or_default();
-        let max_matches = args.max_matches.unwrap_or(100);
+        let max_matches = args.max_matches.unwrap_or(250);
         let offset = args.offset.unwrap_or(0);
         let glob_matcher = build_glob_matcher(args.glob.as_deref())?;
         let type_extensions = args.file_type.as_deref().and_then(extensions_for_file_type);
@@ -778,16 +784,15 @@ fn explain_grep_args_error(error: &serde_json::Error) -> String {
     let detail = error.to_string();
 
     if detail.contains("missing field `pattern`") {
-        return "invalid args for grep: missing required field `pattern`. `grep` always needs \
-                both `pattern` and `path`; `glob` only filters files inside `path`. If you only \
-                know a filename or glob, use `findFiles` first."
+        return "invalid args for grep: missing required field `pattern`. If you only know a \
+                filename or glob, use `findFiles` first."
             .to_string();
     }
 
+    // `path` 现在是可选的，此错误不再出现，但保留防御性处理
     if detail.contains("missing field `path`") {
-        return "invalid args for grep: missing required field `path`. `glob` and `fileType` only \
-                narrow files inside `path`; they cannot replace it. If you only know candidate \
-                file patterns, use `findFiles` first."
+        return "invalid args for grep: `path` is optional and defaults to the current working \
+                directory."
             .to_string();
     }
 
