@@ -623,21 +623,29 @@ impl AgentLoop {
         recent_stored_events: Option<&[StoredEvent]>,
     ) -> Result<Option<StorageEvent>> {
         let user_turns = count_real_user_turns(&state.messages);
-        // 手动 compact 是否可执行不再由“至少两个真实用户 turn”粗暴决定，而是交给
+        // 手动 compact 是否可执行不再由”至少两个真实用户 turn”粗暴决定，而是交给
         // compact 边界计算：只要后续能找到安全 cut point（旧 turn 或 assistant step），
         // 单 turn 长会话也允许压缩；如果没有安全边界，则返回 Ok(None)。
         // TODO:必须要当前turn结束了才允许手动压缩和自动压缩防止丢失信息
         //
-        // 手动 compact 应该“尽量立刻压缩”，因此最多只保留到还能留下至少一个旧 turn
+        // 手动 compact 应该”尽量立刻压缩”，因此最多只保留到还能留下至少一个旧 turn
         // 可被折叠，而不是盲目复用自动 compact 的保守保留值。
         let manual_keep_recent_turns = self
             .compaction
             .keep_recent_turns()
             .min(user_turns.saturating_sub(1))
             .max(1);
+
+        // 早期检查：如果没有可压缩的内容，直接返回 None，避免不必要的 provider 构建。
+        // 这对于 CI 环境（没有 API key）尤为重要，确保在缺少配置时不会因为
+        // build_provider 失败而掩盖真正的”无可压缩历史”错误。
+        let conversation = crate::context_pipeline::ConversationView::new(state.messages.clone());
+        if !crate::context_window::can_compact(&conversation.messages, manual_keep_recent_turns) {
+            return Ok(None);
+        }
+
         // 手动 compact 也要给 pre-hook 暴露完整上下文，否则插件在手动/自动
         // 两条路径上看到的输入会分叉，导致同一条压缩策略静默失效。
-        let conversation = crate::context_pipeline::ConversationView::new(state.messages.clone());
         let tools = self.capabilities.tool_definitions();
         let decision = self
             .hooks

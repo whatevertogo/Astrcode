@@ -14,8 +14,8 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentEventContext, AstrError, CancelToken, LlmMessage, Phase, StorageEvent, Tool,
-    ToolDefinition, ToolExecutionResult, UserMessageOrigin,
+    AgentEventContext, AstrError, CancelToken, LlmMessage, Phase, SideEffectLevel, StorageEvent,
+    Tool, ToolCapabilityMetadata, ToolDefinition, ToolExecutionResult, UserMessageOrigin,
 };
 use astrcode_runtime_llm::{EventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
 use astrcode_runtime_registry::ToolRegistry;
@@ -89,6 +89,13 @@ impl Tool for ReadFileMetadataTool {
             description: "returns file content with metadata.path for recovery tests".to_string(),
             parameters: json!({"type":"object"}),
         }
+    }
+
+    fn capability_metadata(&self) -> ToolCapabilityMetadata {
+        ToolCapabilityMetadata::builtin()
+            .side_effect(SideEffectLevel::None)
+            .concurrency_safe(true)
+            .compact_clearable(true)
     }
 
     async fn execute(
@@ -249,6 +256,124 @@ async fn auto_compact_emits_compact_applied_before_retrying_the_turn() {
             StorageEvent::AssistantFinal { content, .. } if content == "final answer"
         )
     }));
+}
+
+#[tokio::test]
+async fn auto_compact_with_keep_recent_turns_two_keeps_second_latest_turn_tool_result() {
+    let _guard = super::test_support::TestEnvGuard::new();
+    let protected_tool_result = "protected readFile result\n".repeat(80);
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(RecordingProvider {
+        responses: Mutex::new(VecDeque::from([
+            LlmOutput {
+                content: "<analysis>trimmed</analysis><summary>condensed history</summary>"
+                    .to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            },
+            LlmOutput {
+                content: "final answer".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            },
+        ])),
+        requests: Arc::clone(&requests),
+    });
+    let tools = ToolRegistry::builder()
+        .register(Box::new(ReadFileMetadataTool {
+            path: PathBuf::from("src/protected.rs"),
+            output: protected_tool_result.clone(),
+        }))
+        .build();
+    let loop_runner = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory { provider }),
+        capabilities_from_tools(tools),
+    )
+    .with_auto_compact_enabled(true)
+    .with_compact_threshold_percent(1)
+    .with_compact_keep_recent_turns(2);
+    let state = astrcode_core::AgentState {
+        session_id: "test".into(),
+        working_dir: std::env::temp_dir(),
+        messages: vec![
+            LlmMessage::User {
+                content: "legacy ".repeat(2_500),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "legacy answer".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+            LlmMessage::User {
+                content: "inspect protected file".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: String::new(),
+                tool_calls: vec![astrcode_core::ToolCallRequest {
+                    id: "call-read".to_string(),
+                    name: "readFile".to_string(),
+                    args: json!({"path":"src/protected.rs"}),
+                }],
+                reasoning: None,
+            },
+            LlmMessage::Tool {
+                tool_call_id: "call-read".to_string(),
+                content: protected_tool_result.clone(),
+            },
+            LlmMessage::User {
+                content: "continue with the protected file context".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ],
+        phase: Phase::Thinking,
+        turn_count: 0,
+    };
+    let (_events, mut on_event) = collect_events();
+
+    let outcome = loop_runner
+        .run_turn(
+            &state,
+            "turn-auto-compact-keep-two",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+
+    assert!(matches!(outcome, TurnOutcome::Completed));
+    let requests = requests.lock().expect("request log lock");
+    assert_eq!(
+        requests.len(),
+        2,
+        "auto compact should issue one summary request and one final model request"
+    );
+    let final_request = requests.last().expect("final request should exist");
+    assert!(
+        final_request.messages.iter().any(|message| {
+            matches!(
+                message,
+                LlmMessage::Tool { tool_call_id, content }
+                    if tool_call_id == "call-read" && content == &protected_tool_result
+            )
+        }),
+        "the final post-compact request should still carry the clearable tool result from the \
+         second-latest preserved turn"
+    );
+    assert!(
+        !final_request.messages.iter().any(|message| {
+            matches!(
+                message,
+                LlmMessage::Tool { content, .. } if content.contains("[cleared older tool result")
+            )
+        }),
+        "prune pass must not rewrite tool results that belong to the requested recent two turns"
+    );
 }
 
 #[tokio::test]

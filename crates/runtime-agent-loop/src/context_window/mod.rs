@@ -18,9 +18,9 @@ pub(crate) mod file_access;
 pub mod prune_pass;
 pub mod token_usage;
 
-pub(crate) use compaction::merge_compact_prompt_context;
 /// 自动压缩配置和入口函数。
 pub use compaction::{CompactConfig, CompactResult, auto_compact, is_prompt_too_long};
+pub(crate) use compaction::{can_compact, merge_compact_prompt_context};
 /// 本地 prune pass 应用函数。
 pub(crate) use prune_pass::{PruneStats, apply_prune_pass};
 /// Token 估算、预算跟踪和压缩决策相关函数。

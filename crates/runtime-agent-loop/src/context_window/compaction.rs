@@ -214,6 +214,14 @@ fn latest_previous_summary(messages: &[LlmMessage]) -> Option<String> {
     })
 }
 
+/// 检查消息是否可以被压缩。
+///
+/// 返回 `Some` 表示存在可压缩的前缀，返回 `None` 表示没有可压缩的内容。
+/// 这个函数用于在调用 provider 之前进行早期检查，避免不必要的 API 调用。
+pub(crate) fn can_compact(messages: &[LlmMessage], keep_recent_turns: usize) -> bool {
+    split_for_compaction(messages, keep_recent_turns).is_some()
+}
+
 fn split_for_compaction(
     messages: &[LlmMessage],
     keep_recent_turns: usize,
