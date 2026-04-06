@@ -56,7 +56,7 @@ jobs:
         run: node scripts/check-crate-boundaries.mjs
 
       - name: Run phase0 targeted regression
-        run: node scripts/regressions.mjs
+        run: node scripts/phase0-regression.mjs
 
       - name: Run tests
         run: cargo test --workspace --exclude astrcode
