@@ -167,6 +167,44 @@ mod tests {
         assert_eq!(loop_.max_tool_concurrency(), 6);
     }
 
+    /// 验证运行时从配置文件读取 `compact_keep_recent_turns` 并应用到 agent loop。
+    #[tokio::test]
+    async fn service_uses_runtime_compact_keep_recent_turns_from_config_file() {
+        let _guard = TestEnvGuard::new();
+        save_config(&Config {
+            runtime: RuntimeConfig {
+                compact_keep_recent_turns: Some(2),
+                ..RuntimeConfig::default()
+            },
+            ..Config::default()
+        })
+        .expect("config should save");
+
+        let service = RuntimeService::from_capabilities(empty_capabilities()).expect("service");
+        let loop_ = service.current_loop().await;
+
+        assert_eq!(loop_.compact_keep_recent_turns(), 2);
+    }
+
+    /// 验证未配置 `compact_keep_recent_turns` 时，agent loop 使用 runtime-config 默认值。
+    #[tokio::test]
+    async fn service_uses_default_compact_keep_recent_turns_when_runtime_value_is_missing() {
+        let _guard = TestEnvGuard::new();
+        save_config(&Config {
+            runtime: RuntimeConfig::default(),
+            ..Config::default()
+        })
+        .expect("config should save");
+
+        let service = RuntimeService::from_capabilities(empty_capabilities()).expect("service");
+        let loop_ = service.current_loop().await;
+
+        assert_eq!(
+            loop_.compact_keep_recent_turns(),
+            crate::config::DEFAULT_COMPACT_KEEP_RECENT_TURNS as usize
+        );
+    }
+
     #[tokio::test]
     async fn reload_config_from_disk_rebuilds_loop_with_new_runtime_settings() {
         let _guard = TestEnvGuard::new();

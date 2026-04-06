@@ -766,9 +766,11 @@ pub fn resolve_api_session_ttl_hours(runtime: &RuntimeConfig) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ANTHROPIC_MESSAGES_API_URL, ANTHROPIC_MODELS_API_URL, resolve_anthropic_messages_api_url,
-        resolve_anthropic_models_api_url, resolve_openai_chat_completions_api_url,
+        ANTHROPIC_MESSAGES_API_URL, ANTHROPIC_MODELS_API_URL, DEFAULT_COMPACT_KEEP_RECENT_TURNS,
+        resolve_anthropic_messages_api_url, resolve_anthropic_models_api_url,
+        resolve_compact_keep_recent_turns, resolve_openai_chat_completions_api_url,
     };
+    use crate::types::RuntimeConfig;
 
     #[test]
     fn anthropic_url_helpers_fall_back_to_official_defaults() {
@@ -900,5 +902,25 @@ mod tests {
             ),
             "https://gateway.example.com/openai/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn resolve_compact_keep_recent_turns_uses_default_when_runtime_value_is_missing() {
+        let runtime = RuntimeConfig::default();
+
+        assert_eq!(
+            resolve_compact_keep_recent_turns(&runtime),
+            DEFAULT_COMPACT_KEEP_RECENT_TURNS
+        );
+    }
+
+    #[test]
+    fn resolve_compact_keep_recent_turns_honors_runtime_override() {
+        let runtime = RuntimeConfig {
+            compact_keep_recent_turns: Some(2),
+            ..RuntimeConfig::default()
+        };
+
+        assert_eq!(resolve_compact_keep_recent_turns(&runtime), 2);
     }
 }
