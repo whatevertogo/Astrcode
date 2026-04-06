@@ -22,8 +22,8 @@ use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
     AgentEventContext, AgentState, ApprovalPending, ApprovalResolution, CancelToken,
-    CapabilityCall, CapabilityRouter, LlmMessage, PolicyVerdict, Result, StorageEvent,
-    ToolCallRequest, ToolEventSink, ToolExecutionResult, ToolHookResultContext,
+    CapabilityCall, CapabilityRouter, ExecutionOwner, LlmMessage, PolicyVerdict, Result,
+    StorageEvent, ToolCallRequest, ToolEventSink, ToolExecutionResult, ToolHookResultContext,
 };
 use futures_util::stream::{self, StreamExt};
 use tokio::sync::mpsc;
@@ -77,6 +77,7 @@ where
     pub(crate) state: &'a AgentState,
     pub(crate) step_index: usize,
     pub(crate) agent: &'a AgentEventContext,
+    pub(crate) execution_owner: &'a ExecutionOwner,
     pub(crate) messages: &'a mut Vec<LlmMessage>,
     pub(crate) on_event: &'a mut F,
     pub(crate) cancel: &'a CancelToken,
@@ -96,6 +97,7 @@ where
         state,
         step_index,
         agent,
+        execution_owner,
         messages,
         on_event,
         cancel,
@@ -186,6 +188,7 @@ where
             turn_id,
             state,
             agent,
+            execution_owner,
             cancel,
         )
         .await?
@@ -210,7 +213,7 @@ where
             return Ok(ToolCycleOutcome::Interrupted);
         }
 
-        let ctx = agent_loop.tool_context(state, cancel.clone());
+        let ctx = agent_loop.tool_context(state, cancel.clone(), execution_owner.clone());
         let result = execute_raw_tool_call(
             pending.tool_call,
             RawToolExecutionContext {
@@ -260,6 +263,7 @@ struct RecordedExecution {
     events: Vec<StorageEvent>,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_safe_tool_calls(
     agent_loop: &AgentLoop,
     capabilities: &CapabilityRouter,
@@ -267,6 +271,7 @@ async fn execute_safe_tool_calls(
     turn_id: &str,
     state: &AgentState,
     agent: &AgentEventContext,
+    execution_owner: &ExecutionOwner,
     cancel: &CancelToken,
 ) -> Result<Vec<(usize, RecordedExecution)>> {
     let concurrency_limit = agent_loop
@@ -274,7 +279,7 @@ async fn execute_safe_tool_calls(
         .min(safe_calls.len().max(1));
     let results = stream::iter(safe_calls)
         .map(|pending| async move {
-            let ctx = agent_loop.tool_context(state, cancel.clone());
+            let ctx = agent_loop.tool_context(state, cancel.clone(), execution_owner.clone());
             let recorded = execute_raw_tool_call_recorded(
                 agent_loop,
                 capabilities,

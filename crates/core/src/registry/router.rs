@@ -33,8 +33,9 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    AgentEventContext, AstrError, CancelToken, CapabilityDescriptor, Result, ToolCallRequest,
-    ToolContext, ToolDefinition, ToolEventSink, ToolExecutionResult, ToolOutputDelta,
+    AgentEventContext, AstrError, CancelToken, CapabilityDescriptor, ExecutionOwner, Result,
+    ToolCallRequest, ToolContext, ToolDefinition, ToolEventSink, ToolExecutionResult,
+    ToolOutputDelta,
 };
 
 /// 能力调用的上下文信息。
@@ -57,6 +58,8 @@ pub struct CapabilityContext {
     pub turn_id: Option<String>,
     /// 当前调用所属 Agent 元数据。
     pub agent: AgentEventContext,
+    /// 当前调用所属执行 owner。
+    pub execution_owner: Option<ExecutionOwner>,
     /// 当前使用的 profile 名称
     pub profile: String,
     /// profile 上下文，包含工作目录、仓库根目录等运行时配置
@@ -79,6 +82,7 @@ impl fmt::Debug for CapabilityContext {
             .field("cancel", &self.cancel)
             .field("turn_id", &self.turn_id)
             .field("agent", &self.agent)
+            .field("execution_owner", &self.execution_owner)
             .field("profile", &self.profile)
             .field("profile_context", &self.profile_context)
             .field("metadata", &self.metadata)
@@ -107,6 +111,7 @@ impl CapabilityContext {
             cancel: ctx.cancel().clone(),
             turn_id: ctx.turn_id().map(ToString::to_string),
             agent: ctx.agent_context().clone(),
+            execution_owner: ctx.execution_owner().cloned(),
             profile: "coding".to_string(),
             profile_context: json!({
                 "workingDir": working_dir_str,

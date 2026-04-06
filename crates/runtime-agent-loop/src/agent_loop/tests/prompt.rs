@@ -111,8 +111,11 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
         assert!(request.tools.iter().any(|tool| tool.name == "quickTool"));
     }
 
-    assert_eq!(requests[0].messages.len(), 3);
-    assert_eq!(requests[1].messages.len(), 3);
+    // RequestAssembler 现在会在真实会话消息前编码 structured workset，所以消息数比
+    // 旧基线多 1。第二轮仍沿用历史基线：只保留继续执行所需的 assistant/tool 记录，
+    // 不再重复首轮用户消息。
+    assert_eq!(requests[0].messages.len(), 4);
+    assert_eq!(requests[1].messages.len(), 4);
     assert!(matches!(
         &requests[0].messages[0],
         LlmMessage::User { content, .. } if content.starts_with("Before changing code, inspect the relevant files and gather context first.")
@@ -123,16 +126,42 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
     ));
     assert!(matches!(
         &requests[0].messages[2],
+        LlmMessage::User { content, .. } if content.contains("[Structured workset: working-dir]")
+    ));
+    assert!(matches!(
+        &requests[0].messages[3],
         LlmMessage::User { content, .. } if content == "run quick tool"
     ));
-    assert!(matches!(
-        &requests[1].messages[1],
-        LlmMessage::Assistant { tool_calls, .. } if tool_calls.len() == 1 && tool_calls[0].name == "quickTool"
-    ));
-    assert!(matches!(
-        &requests[1].messages[2],
-        LlmMessage::Tool { tool_call_id, content } if tool_call_id == "call-1" && content == "ok"
-    ));
+    assert!(
+        requests[1].messages.iter().any(|message| {
+            matches!(
+                message,
+                LlmMessage::Assistant { tool_calls, .. }
+                    if tool_calls.len() == 1 && tool_calls[0].name == "quickTool"
+            )
+        }),
+        "assistant tool call should remain visible on later steps"
+    );
+    assert!(
+        requests[1].messages.iter().any(|message| {
+            matches!(
+                message,
+                LlmMessage::User { content, .. }
+                    if content.contains("[Structured workset: working-dir]")
+            )
+        }),
+        "structured workset should remain present on later steps"
+    );
+    assert!(
+        requests[1].messages.iter().any(|message| {
+            matches!(
+                message,
+                LlmMessage::Tool { tool_call_id, content }
+                    if tool_call_id == "call-1" && content == "ok"
+            )
+        }),
+        "tool result should remain visible on later steps"
+    );
 }
 
 #[tokio::test]

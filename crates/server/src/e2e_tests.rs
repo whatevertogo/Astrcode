@@ -938,7 +938,7 @@ async fn e2e_manual_compact_endpoint_rejects_busy_sessions() {
 }
 
 #[tokio::test]
-async fn e2e_manual_compact_endpoint_rejects_single_turn_sessions() {
+async fn e2e_manual_compact_endpoint_does_not_reject_single_turn_sessions_upfront() {
     let (base_url, server_handle) =
         spawn_openai_chat_server("single-turn answer", Duration::from_millis(10), 1);
     let (state, _guard) = configured_state_with_openai_server(&base_url);
@@ -995,15 +995,23 @@ async fn e2e_manual_compact_endpoint_rejects_single_turn_sessions() {
         .oneshot(compact_req)
         .await
         .expect("response should return");
-    assert_eq!(compact_resp.status(), StatusCode::BAD_REQUEST);
-
+    let compact_status = compact_resp.status();
     let payload: serde_json::Value = json_body(compact_resp).await;
-    assert!(
-        payload["error"]
-            .as_str()
-            .is_some_and(|message| message.contains("at least 2 real user turns")),
-        "single-turn rejection should explain why /compact is unavailable"
+    assert_ne!(
+        compact_status,
+        StatusCode::BAD_REQUEST,
+        "single-turn compact should now reach execution instead of being rejected upfront: {:?}",
+        payload
     );
+    if compact_status.is_client_error() || compact_status.is_server_error() {
+        assert!(
+            payload["error"]
+                .as_str()
+                .is_none_or(|message| !message.contains("needs at least 2 user turns")),
+            "old single-turn validation should no longer fire, got: {:?}",
+            payload
+        );
+    }
 
     server_handle.await.expect("server should finish");
 }

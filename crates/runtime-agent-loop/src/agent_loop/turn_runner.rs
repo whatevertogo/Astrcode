@@ -27,7 +27,8 @@
 //! 自动停止或请求继续（auto-continue nudge）。
 
 use astrcode_core::{
-    AgentEventContext, AgentState, CancelToken, ContextStrategy, Result, StorageEvent,
+    AgentEventContext, AgentState, CancelToken, ContextStrategy, ExecutionOwner, Result,
+    StorageEvent,
 };
 use astrcode_runtime_prompt::{DiagnosticLevel, PromptDiagnostics};
 
@@ -39,7 +40,9 @@ use crate::{
     compaction_runtime::{
         CompactionArtifact, CompactionReason, CompactionTailSnapshot, MAX_RECOVERED_FILES,
     },
-    context_pipeline::{ContextBundleInput, ConversationView},
+    context_pipeline::{
+        CompactionView, ContextBlock, ContextBundleInput, ConversationView, RecoveryRef,
+    },
     context_window::{
         TokenUsageTracker, file_access::FileAccessTracker, is_prompt_too_long,
         merge_compact_prompt_context,
@@ -90,6 +93,7 @@ where
     pub(crate) cancel: CancelToken,
     pub(crate) emit_turn_done: bool,
     pub(crate) agent: AgentEventContext,
+    pub(crate) execution_owner: ExecutionOwner,
     pub(crate) compaction_tail: CompactionTailSnapshot,
 }
 
@@ -105,6 +109,7 @@ where
         cancel,
         emit_turn_done,
         agent,
+        execution_owner,
         compaction_tail,
     } = ctx;
     let provider =
@@ -123,6 +128,8 @@ where
         },
     };
     let mut conversation = ConversationView::new(state.messages.clone());
+    let mut recovered_memory = Vec::<ContextBlock>::new();
+    let mut recovery_refs = Vec::<RecoveryRef>::new();
     let mut step_index = 0usize;
     let mut output_continuation_count = 0u8;
     let mut reactive_compact_attempts = 0usize;
@@ -138,12 +145,17 @@ where
             return report_interrupted(turn_id, &agent, on_event, emit_turn_done);
         }
 
+        let prior_compaction_view = CompactionView {
+            messages: conversation.messages.clone(),
+            memory_blocks: recovered_memory.clone(),
+            recovery_refs: recovery_refs.clone(),
+        };
         let bundle = match agent_loop.context.build_bundle(
             state,
             ContextBundleInput {
                 turn_id,
                 step_index,
-                prior_compaction_view: Some(&conversation),
+                prior_compaction_view: Some(&prior_compaction_view),
                 capability_descriptors: agent_loop.prompt.capability_descriptors(),
                 keep_recent_turns: agent_loop.compact_keep_recent_turns(),
                 model_context_window: model_limits.context_window,
@@ -237,7 +249,9 @@ where
             .await
             {
                 Ok(Some(compacted_view)) => {
-                    conversation = compacted_view;
+                    recovered_memory = compacted_view.memory_blocks;
+                    recovery_refs = compacted_view.recovery_refs;
+                    conversation = ConversationView::new(compacted_view.messages);
                     continue;
                 },
                 Ok(None) => {},
@@ -317,7 +331,9 @@ where
                     .await
                     {
                         Ok(Some(compacted_view)) => {
-                            conversation = compacted_view;
+                            recovered_memory = compacted_view.memory_blocks;
+                            recovery_refs = compacted_view.recovery_refs;
+                            conversation = ConversationView::new(compacted_view.messages);
                             continue 'step;
                         },
                         Ok(None) => {
@@ -458,6 +474,7 @@ where
                 state,
                 step_index,
                 agent: &agent,
+                execution_owner: &execution_owner,
                 messages: &mut conversation.messages,
                 on_event: &mut |event| {
                     emit_event_with_file_tracking(&mut file_access, on_event, event)
@@ -585,7 +602,7 @@ async fn maybe_compact_conversation(
     agent_loop: &AgentLoop,
     ctx: CompactContext<'_>,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
-) -> Result<Option<ConversationView>> {
+) -> Result<Option<CompactionView>> {
     let decision = agent_loop
         .hooks
         .run_pre_compact(agent_loop.compaction_hook_context_full(

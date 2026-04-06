@@ -7,5 +7,6 @@ authors.workspace = true
 
 [dependencies]
 astrcode-core = { path = "../core" }
+astrcode-runtime-config = { path = "../runtime-config" }
 thiserror.workspace = true
 tokio.workspace = true

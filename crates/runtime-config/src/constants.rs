@@ -25,7 +25,7 @@
 //! 3. 确保 `ALL_ASTRCODE_ENV_VARS` 包含新变量
 //! 4. 不要在其他模块中硬编码环境变量名
 
-use crate::types::RuntimeConfig;
+use crate::types::{AgentConfig, RuntimeConfig};
 
 /// OpenAI 兼容协议 Provider 标识符。
 ///
@@ -412,11 +412,54 @@ pub const DEFAULT_MAX_CONCURRENT_BRANCH_DEPTH: usize = 3;
 pub const DEFAULT_API_SESSION_TTL_HOURS: i64 = 8;
 
 // ============================================================================
-// 多智能体配置 (TODO: 未来实现)
+// 多 Agent 控制配置
 // ============================================================================
 
-// TODO(multi-agent): 以下常量预留给未来的多智能体并行执行功能：
-// - DEFAULT_MAX_AGENT_CONCURRENCY: 并行 agent 数量上限
+/// 默认 Agent 嵌套深度上限。
+///
+/// 限制子 Agent 可被嵌套的层数，防止无限递归。
+/// 例如 maxDepth=3 表示最多允许 root→child→grandchild 三层。
+pub const DEFAULT_MAX_AGENT_DEPTH: usize = 3;
+
+/// 默认受控子会话最大深度。
+///
+/// 默认值刻意比旧多 Agent 原型更保守，防止子 agent 再起子 agent
+/// 过早把事件流和 UI 复杂度推高。
+pub const DEFAULT_MAX_SUBRUN_DEPTH: usize = 1;
+
+/// 默认并发子 Agent 数上限。
+///
+/// 同时处于活跃状态的子 Agent 最大数量。
+pub const DEFAULT_MAX_CONCURRENT_AGENTS: usize = 5;
+
+/// 默认终态 Agent 保留数。
+///
+/// 已完成/已失败/已取消的 Agent 条目在内存中的保留上限。
+pub const DEFAULT_FINALIZED_AGENT_RETAIN_LIMIT: usize = 256;
+
+/// 是否默认启用独立子会话实验特性。
+pub const DEFAULT_EXPERIMENTAL_INDEPENDENT_SESSION: bool = false;
+
+// ============================================================================
+// 压缩恢复与熔断配置
+// ============================================================================
+
+/// 默认熔断阈值：连续压缩失败次数达到此值后暂停自动压缩。
+///
+/// 网络不稳定环境下可适当调大此值，避免过早熔断导致上下文无法压缩。
+pub const DEFAULT_MAX_CONSECUTIVE_FAILURES: usize = 3;
+
+/// 默认压缩恢复文件内容的截断字节数。
+///
+/// Post-compact 文件恢复时注入的文件内容超过此大小会被截断，
+/// 防止单个文件占用过多上下文窗口。
+pub const DEFAULT_RECOVERY_TRUNCATE_BYTES: usize = 30_000;
+
+// ============================================================================
+// 预留给未来多智能体消息传递功能
+// ============================================================================
+
+// TODO(multi-agent): 以下常量随 P2 的 Agent 间消息传递功能一起实现：
 // - DEFAULT_AGENT_MESSAGE_QUEUE_CAPACITY: agent 间消息队列容量
 // - DEFAULT_AGENT_COORDINATION_TIMEOUT_SECS: agent 协调超时
 
@@ -447,6 +490,82 @@ pub fn resolve_max_tool_concurrency(runtime: &RuntimeConfig) -> usize {
         .max_tool_concurrency
         .unwrap_or_else(max_tool_concurrency)
         .max(1)
+}
+
+// ============================================================================
+// 多 Agent 控制配置解析
+// ============================================================================
+
+/// 解析 Agent 嵌套深度上限。
+///
+/// 当 `runtime.agent.maxDepth` 未设置时回退到 [`DEFAULT_MAX_AGENT_DEPTH`]。
+pub fn resolve_agent_max_depth(agent: Option<&AgentConfig>) -> usize {
+    agent
+        .and_then(|a| a.max_depth)
+        .unwrap_or(DEFAULT_MAX_AGENT_DEPTH)
+        .max(1)
+}
+
+/// 解析受控子会话最大深度。
+///
+/// 新逻辑优先读取 `maxSubrunDepth`，并在旧配置里回退到 `maxDepth`，
+/// 这样可以平滑兼容已经存在的用户配置。
+pub fn resolve_agent_max_subrun_depth(agent: Option<&AgentConfig>) -> usize {
+    agent
+        .and_then(|a| a.max_subrun_depth.or(a.max_depth))
+        .unwrap_or(DEFAULT_MAX_SUBRUN_DEPTH)
+        .max(1)
+}
+
+/// 解析并发子 Agent 数上限。
+///
+/// 当 `runtime.agent.maxConcurrent` 未设置时回退到 [`DEFAULT_MAX_CONCURRENT_AGENTS`]。
+pub fn resolve_agent_max_concurrent(agent: Option<&AgentConfig>) -> usize {
+    agent
+        .and_then(|a| a.max_concurrent)
+        .unwrap_or(DEFAULT_MAX_CONCURRENT_AGENTS)
+        .max(1)
+}
+
+/// 解析终态 Agent 保留数。
+///
+/// 当 `runtime.agent.finalizedRetainLimit` 未设置时回退到
+/// [`DEFAULT_FINALIZED_AGENT_RETAIN_LIMIT`]。
+pub fn resolve_agent_finalized_retain_limit(agent: Option<&AgentConfig>) -> usize {
+    agent
+        .and_then(|a| a.finalized_retain_limit)
+        .unwrap_or(DEFAULT_FINALIZED_AGENT_RETAIN_LIMIT)
+}
+
+/// 解析是否启用独立子会话实验特性。
+pub fn resolve_agent_experimental_independent_session(agent: Option<&AgentConfig>) -> bool {
+    agent
+        .and_then(|a| a.experimental_independent_session)
+        .unwrap_or(DEFAULT_EXPERIMENTAL_INDEPENDENT_SESSION)
+}
+
+// ============================================================================
+// 压缩恢复与熔断配置解析
+// ============================================================================
+
+/// 解析熔断阈值（连续压缩失败次数）。
+///
+/// 当 `runtime.maxConsecutiveFailures` 未设置时回退到 [`DEFAULT_MAX_CONSECUTIVE_FAILURES`]。
+pub fn resolve_max_consecutive_failures(runtime: &RuntimeConfig) -> usize {
+    runtime
+        .max_consecutive_failures
+        .unwrap_or(DEFAULT_MAX_CONSECUTIVE_FAILURES)
+        .max(1)
+}
+
+/// 解析压缩恢复文件内容的截断字节数。
+///
+/// 当 `runtime.recoveryTruncateBytes` 未设置时回退到 [`DEFAULT_RECOVERY_TRUNCATE_BYTES`]。
+pub fn resolve_recovery_truncate_bytes(runtime: &RuntimeConfig) -> usize {
+    runtime
+        .recovery_truncate_bytes
+        .unwrap_or(DEFAULT_RECOVERY_TRUNCATE_BYTES)
+        .max(1024) // 至少 1KB
 }
 
 pub fn resolve_auto_compact_enabled(runtime: &RuntimeConfig) -> bool {

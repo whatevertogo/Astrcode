@@ -21,7 +21,7 @@ use std::path::PathBuf;
 
 use crate::{
     LlmMessage, Phase, ReasoningContent, ToolCallRequest, UserMessageOrigin, event::StorageEvent,
-    split_assistant_content,
+    format_compact_summary, split_assistant_content,
 };
 
 /// Agent 的当前状态快照。
@@ -168,10 +168,15 @@ impl AgentStateProjector {
             StorageEvent::CompactApplied {
                 summary,
                 preserved_recent_turns,
+                messages_removed,
                 ..
             } => {
                 self.flush_pending_assistant();
-                self.apply_compaction(summary, *preserved_recent_turns as usize);
+                self.apply_compaction(
+                    summary,
+                    *preserved_recent_turns as usize,
+                    *messages_removed as usize,
+                );
             },
 
             StorageEvent::TurnDone { .. } => {
@@ -184,6 +189,8 @@ impl AgentStateProjector {
             | StorageEvent::ToolCallDelta { .. }
             | StorageEvent::PromptMetrics { .. }
             | StorageEvent::ThinkingDelta { .. }
+            | StorageEvent::SubRunStarted { .. }
+            | StorageEvent::SubRunFinished { .. }
             | StorageEvent::Error { .. } => {},
         }
     }
@@ -205,29 +212,31 @@ impl AgentStateProjector {
         }
     }
 
-    fn apply_compaction(&mut self, summary: &str, preserved_recent_turns: usize) {
-        let keep_start = recent_turn_start_index(&self.state.messages, preserved_recent_turns);
-        let keep_start = keep_start.unwrap_or(self.state.messages.len());
-        let removed = self.state.messages[..keep_start].len();
+    fn apply_compaction(
+        &mut self,
+        summary: &str,
+        preserved_recent_turns: usize,
+        messages_removed: usize,
+    ) {
+        // 优先使用事件里记录的 removed 数量精确回放当前阶段的 prefix compaction。
+        // 若读取旧事件或异常值，再回退到 preserved_recent_turns 的旧逻辑，保证兼容历史日志。
+        let removed = if messages_removed > 0 && messages_removed <= self.state.messages.len() {
+            messages_removed
+        } else {
+            recent_turn_start_index(&self.state.messages, preserved_recent_turns)
+                .unwrap_or(self.state.messages.len())
+        };
         if removed == 0 {
             return;
         }
 
-        let preserved = self.state.messages.split_off(keep_start);
+        let preserved = self.state.messages.split_off(removed);
         self.state.messages = vec![LlmMessage::User {
             content: format_compact_summary(summary),
             origin: UserMessageOrigin::CompactSummary,
         }];
         self.state.messages.extend(preserved);
     }
-}
-
-pub fn format_compact_summary(summary: &str) -> String {
-    format!(
-        "[Auto-compact summary]\n{}\n\nContinue from this summary without repeating it to the \
-         user.",
-        summary.trim()
-    )
 }
 
 fn recent_turn_start_index(

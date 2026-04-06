@@ -176,6 +176,32 @@ impl EventTranslator {
                     preserved_recent_turns: *preserved_recent_turns,
                 });
             },
+            StorageEvent::SubRunStarted {
+                resolved_overrides,
+                resolved_limits,
+                ..
+            } => {
+                push(AgentEvent::SubRunStarted {
+                    turn_id: turn_id.clone(),
+                    agent: agent.clone(),
+                    resolved_overrides: resolved_overrides.clone(),
+                    resolved_limits: resolved_limits.clone(),
+                });
+            },
+            StorageEvent::SubRunFinished {
+                result,
+                step_count,
+                estimated_tokens,
+                ..
+            } => {
+                push(AgentEvent::SubRunFinished {
+                    turn_id: turn_id.clone(),
+                    agent: agent.clone(),
+                    result: result.clone(),
+                    step_count: *step_count,
+                    estimated_tokens: *estimated_tokens,
+                });
+            },
             StorageEvent::AssistantDelta { token, .. } => {
                 if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::ModelDelta {

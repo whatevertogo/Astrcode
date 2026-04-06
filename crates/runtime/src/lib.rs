@@ -37,15 +37,18 @@ pub use astrcode_runtime_agent_loader::{
 pub use astrcode_runtime_agent_loop as agent_loop;
 pub use astrcode_runtime_config as config;
 pub use astrcode_runtime_config::{
-    ActiveSelection, Config, ConfigOverlay, CurrentModelSelection, ModelConfig, ModelOption,
-    ParsedEnvValue, Profile, RuntimeConfig, TestResult, config_path, env_reference,
+    ActiveSelection, AgentConfig, Config, ConfigOverlay, CurrentModelSelection, ModelConfig,
+    ModelOption, ParsedEnvValue, Profile, RuntimeConfig, TestResult, config_path, env_reference,
     is_env_var_name, list_model_options, load_config, load_resolved_config, open_config_in_editor,
-    parse_env_value, resolve_active_selection, resolve_anthropic_messages_api_url,
+    parse_env_value, resolve_active_selection, resolve_agent_experimental_independent_session,
+    resolve_agent_finalized_retain_limit, resolve_agent_max_concurrent, resolve_agent_max_depth,
+    resolve_agent_max_subrun_depth, resolve_anthropic_messages_api_url,
     resolve_anthropic_models_api_url, resolve_auto_compact_enabled,
     resolve_compact_keep_recent_turns, resolve_compact_threshold_percent,
     resolve_continuation_min_delta_tokens, resolve_current_model, resolve_default_token_budget,
-    resolve_env_value, resolve_max_continuations, resolve_max_tool_concurrency,
-    resolve_tool_result_max_bytes, save_config, test_connection,
+    resolve_env_value, resolve_max_consecutive_failures, resolve_max_continuations,
+    resolve_max_tool_concurrency, resolve_recovery_truncate_bytes, resolve_tool_result_max_bytes,
+    save_config, test_connection,
 };
 pub use astrcode_runtime_llm as llm;
 pub use astrcode_runtime_prompt as prompt;
@@ -53,9 +56,10 @@ pub use astrcode_runtime_skill_loader as skills;
 pub use bootstrap::{PluginLoadHandle, PluginLoadState, RuntimeBootstrap, bootstrap_runtime};
 pub use runtime_governance::{RuntimeGovernance, RuntimeGovernanceSnapshot, RuntimeReloadResult};
 pub use service::{
-    AgentExecutionServiceHandle, AgentProfileSummary, ComposerOption, ComposerOptionKind,
-    ComposerOptionsRequest, OperationMetricsSnapshot, PromptAccepted, ReplayMetricsSnapshot,
-    ReplayPath, RuntimeObservabilitySnapshot, RuntimeService, ServiceError, ServiceResult,
-    SessionCatalogEvent, SessionEventRecord, SessionHistorySnapshot, SessionMessage, SessionReplay,
-    SessionReplaySource, ToolExecutionServiceHandle, ToolSummary,
+    AgentExecutionAccepted, AgentExecutionServiceHandle, AgentProfileSummary, ComposerOption,
+    ComposerOptionKind, ComposerOptionsRequest, OperationMetricsSnapshot, PromptAccepted,
+    ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot, RuntimeService, ServiceError,
+    ServiceResult, SessionCatalogEvent, SessionEventRecord, SessionHistorySnapshot, SessionMessage,
+    SessionReplay, SessionReplaySource, SubRunExecutionMetricsSnapshot, SubRunStatusSnapshot,
+    ToolExecutionServiceHandle, ToolSummary,
 };

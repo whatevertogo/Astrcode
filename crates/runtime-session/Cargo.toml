@@ -1,0 +1,17 @@
+[package]
+name = "astrcode-runtime-session"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+astrcode-core = { path = "../core" }
+astrcode-runtime-agent-control = { path = "../runtime-agent-control" }
+astrcode-runtime-agent-loop = { path = "../runtime-agent-loop" }
+anyhow.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

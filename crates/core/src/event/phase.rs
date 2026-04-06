@@ -11,7 +11,10 @@ pub fn target_phase(event: &StorageEvent) -> Phase {
     match event {
         StorageEvent::SessionStart { .. } => Phase::Idle,
         StorageEvent::UserMessage { .. } => Phase::Thinking,
-        StorageEvent::PromptMetrics { .. } | StorageEvent::CompactApplied { .. } => Phase::Idle,
+        StorageEvent::PromptMetrics { .. }
+        | StorageEvent::CompactApplied { .. }
+        | StorageEvent::SubRunStarted { .. }
+        | StorageEvent::SubRunFinished { .. } => Phase::Idle,
         StorageEvent::AssistantDelta { .. }
         | StorageEvent::ThinkingDelta { .. }
         | StorageEvent::AssistantFinal { .. } => Phase::Streaming,
@@ -48,7 +51,10 @@ impl PhaseTracker {
     ) -> Option<AgentEvent> {
         if matches!(
             event,
-            StorageEvent::PromptMetrics { .. } | StorageEvent::CompactApplied { .. }
+            StorageEvent::PromptMetrics { .. }
+                | StorageEvent::CompactApplied { .. }
+                | StorageEvent::SubRunStarted { .. }
+                | StorageEvent::SubRunFinished { .. }
         ) {
             return None;
         }

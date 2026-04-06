@@ -92,8 +92,33 @@ pub struct RunAgentParams {
     pub context: Option<String>,
     /// 覆盖最大步数
     pub max_steps: Option<usize>,
+    /// 子会话上下文 override
+    pub context_overrides: Option<SubagentContextOverrides>,
 }
 ```
+
+#### 当前 `contextOverrides` 契约
+
+Astrcode 当前坚持“有限 override”，不会开放 Claude Code 式的自由共享父状态模型。
+
+当前已稳定支持：
+
+- `storageMode`
+- `includeCompactSummary`
+- `includeRecentTail`
+
+当前明确拒绝并返回错误：
+
+- `inheritSystemInstructions` 与 `inheritProjectInstructions` 解析后不一致
+- `inheritCancelToken=false`
+- `includeRecoveryRefs=true`
+- `includeParentFindings=true`
+
+当前继续保守处理：
+
+- `inheritSystemInstructions` / `inheritProjectInstructions` 仍按“全继承 / 不继承”处理，
+  暂不对 prompt declarations 做更细粒度拆分
+- `independentSession` 继续受运行时 experimental 开关控制
 
 ### 4.3 预置 Agent Profiles
 
@@ -166,7 +191,8 @@ GET  /api/v1/sessions/{id}/events          - 订阅事件 (SSE)
 GET  /api/v1/sessions/{id}/events/stream   - WebSocket 事件流
 
 GET  /api/v1/agents                 - 列出可用 Agent
-POST /api/v1/agents/{id}/execute     - 直接执行 Agent 任务
+POST /api/v1/agents/{id}/execute     - 创建 root execution
+GET  /api/v1/sessions/{id}/subruns/{sub_run_id} - 查询子会话状态
 
 GET  /api/v1/tools                  - 列出可用工具
 POST /api/v1/tools/{id}/execute      - 执行单个工具
@@ -240,9 +266,10 @@ pub struct TurnStatus {
 }
 ```
 
-#### POST /api/v1/agents/{id}/execute (直接执行 Agent, 不调用主循环)
+#### POST /api/v1/agents/{id}/execute (创建 root execution，会走正常 AgentLoop)
 
-这是 "Agent as API" 的核心端点。允许外部系统直接调用预定义的 Agent:
+这是 "Agent as API" 的核心端点。允许外部系统创建一个独立 session，
+并异步启动对应的 root execution：
 
 ```rust
 pub struct AgentExecuteRequest {
@@ -250,17 +277,29 @@ pub struct AgentExecuteRequest {
     pub task: String,
     /// 工作目录
     pub working_dir: Option<String>,
-    /// 额外参数
-    pub options: Option<AgentOptions>,
+    /// 子会话上下文 override（可选）
+    pub context_overrides: Option<SubagentContextOverrides>,
 }
 
-// SSE 流式响应
-// event: agent_event
-// data: {"type": "tool_call", ...}
-//
-// event: done
-// data: {"summary": "...", "artifacts": [...]}
+// 202 Accepted
+pub struct AgentExecuteResponse {
+    pub accepted: bool,
+    pub session_id: String,
+    pub turn_id: String,
+    pub agent_id: String,
+}
 ```
+
+### 4.6 Shared Observability
+
+父流程当前可以通过结构化生命周期事件和运行时指标消费子执行域结果，而不需要共享父可变状态：
+
+- `SubRunFinished.result`
+- `SubRunFinished.step_count`
+- `SubRunFinished.estimated_tokens`
+- runtime status 中的 `metrics.subrunExecution`
+
+这部分是 Astrcode 当前允许扩展的共享面；父状态直写、权限提示直通、缓存共享仍不在本轮语义范围内。
 
 ### 5.3 WebSocket API
 

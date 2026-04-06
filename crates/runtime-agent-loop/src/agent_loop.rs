@@ -58,9 +58,9 @@ use std::{path::PathBuf, sync::Arc};
 
 use astrcode_core::{
     AgentEventContext, AgentState, AllowAllPolicyEngine, AstrError, CancelToken,
-    CapabilityDescriptor, CapabilityRouter, CompactionHookContext, HookCompactionReason,
-    HookHandler, LlmMessage, PolicyContext, PolicyEngine, Result, StorageEvent, StoredEvent,
-    ToolContext, ToolHookContext, UserMessageOrigin,
+    CapabilityDescriptor, CapabilityRouter, CompactionHookContext, ExecutionOwner,
+    HookCompactionReason, HookHandler, InvocationKind, LlmMessage, PolicyContext, PolicyEngine,
+    Result, StorageEvent, StoredEvent, ToolContext, ToolHookContext, UserMessageOrigin,
 };
 use astrcode_runtime_config::{
     DEFAULT_AUTO_COMPACT_ENABLED, DEFAULT_COMPACT_KEEP_RECENT_TURNS,
@@ -75,7 +75,8 @@ use crate::{
     approval_service::{ApprovalBroker, DefaultApprovalBroker},
     compaction_runtime::{
         AutoCompactStrategy, CompactionRuntime, CompactionTailSnapshot, ConversationViewRebuilder,
-        FsFileContentProvider, MAX_RECOVERED_FILES, ThresholdCompactionPolicy,
+        DEFAULT_RECOVERY_TRUNCATE_BYTES, FsFileContentProvider, MAX_RECOVERED_FILES,
+        ThresholdCompactionPolicy,
     },
     context_pipeline::ContextRuntime,
     context_window::{file_access::FileAccessTracker, merge_compact_prompt_context},
@@ -181,10 +182,11 @@ impl AgentLoop {
                 skill_catalog,
             ),
             context: ContextRuntime::new(DEFAULT_TOOL_RESULT_MAX_BYTES),
-            compaction: CompactionRuntime::new(
+            compaction: CompactionRuntime::with_truncate_bytes(
                 DEFAULT_AUTO_COMPACT_ENABLED,
                 DEFAULT_COMPACT_KEEP_RECENT_TURNS as usize,
                 DEFAULT_COMPACT_THRESHOLD_PERCENT,
+                DEFAULT_RECOVERY_TRUNCATE_BYTES,
                 Arc::new(ThresholdCompactionPolicy::new(DEFAULT_AUTO_COMPACT_ENABLED)),
                 Arc::new(AutoCompactStrategy),
                 Arc::new(ConversationViewRebuilder),
@@ -241,14 +243,9 @@ impl AgentLoop {
 
     /// 是否启用自动上下文压缩
     pub fn with_auto_compact_enabled(mut self, auto_compact_enabled: bool) -> Self {
-        self.compaction = CompactionRuntime::new(
+        self.compaction = self.compaction.with_enabled_and_policy(
             auto_compact_enabled,
-            self.compaction.keep_recent_turns(),
-            self.compaction.threshold_percent(),
             Arc::new(ThresholdCompactionPolicy::new(auto_compact_enabled)),
-            self.compaction.strategy.clone(),
-            self.compaction.rebuilder.clone(),
-            self.compaction.file_provider.clone(),
         );
         self
     }
@@ -257,16 +254,10 @@ impl AgentLoop {
     ///
     /// 最小值会被钳制到 1，确保至少保留一个最近的 Turn 不被压缩。
     pub fn with_compact_keep_recent_turns(mut self, compact_keep_recent_turns: usize) -> Self {
-        self.compaction = CompactionRuntime::new(
-            self.compaction.auto_compact_enabled(),
-            compact_keep_recent_turns.max(1),
-            self.compaction.threshold_percent(),
-            Arc::new(ThresholdCompactionPolicy::new(
-                self.compaction.auto_compact_enabled(),
-            )),
-            self.compaction.strategy.clone(),
-            self.compaction.rebuilder.clone(),
-            self.compaction.file_provider.clone(),
+        let enabled = self.compaction.auto_compact_enabled();
+        self.compaction = self.compaction.with_keep_recent_turns(
+            compact_keep_recent_turns,
+            Arc::new(ThresholdCompactionPolicy::new(enabled)),
         );
         self
     }
@@ -307,12 +298,17 @@ impl AgentLoop {
         on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
         cancel: CancelToken,
     ) -> Result<TurnOutcome> {
-        self.run_turn_with_agent_context(
+        self.run_turn_with_agent_context_and_owner(
             state,
             turn_id,
             on_event,
             cancel,
             AgentEventContext::default(),
+            ExecutionOwner::root(
+                state.session_id.clone(),
+                turn_id.to_string(),
+                InvocationKind::RootExecution,
+            ),
         )
         .await
     }
@@ -328,12 +324,40 @@ impl AgentLoop {
         cancel: CancelToken,
         agent: AgentEventContext,
     ) -> Result<TurnOutcome> {
+        self.run_turn_with_agent_context_and_owner(
+            state,
+            turn_id,
+            on_event,
+            cancel,
+            agent,
+            ExecutionOwner::root(
+                state.session_id.clone(),
+                turn_id.to_string(),
+                InvocationKind::RootExecution,
+            ),
+        )
+        .await
+    }
+
+    /// 执行带 Agent 事件上下文和稳定 owner 的 Turn。
+    ///
+    /// owner 会继续向工具上下文透传，为后续根级任务控制平面预留稳定归属标识。
+    pub async fn run_turn_with_agent_context_and_owner(
+        &self,
+        state: &AgentState,
+        turn_id: &str,
+        on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
+        cancel: CancelToken,
+        agent: AgentEventContext,
+        execution_owner: ExecutionOwner,
+    ) -> Result<TurnOutcome> {
         self.run_turn_with_compaction_tail(
             state,
             turn_id,
             on_event,
             cancel,
             agent,
+            execution_owner,
             CompactionTailSnapshot::from_messages(
                 &state.messages,
                 self.compact_keep_recent_turns(),
@@ -352,12 +376,17 @@ impl AgentLoop {
         on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
         cancel: CancelToken,
     ) -> Result<TurnOutcome> {
-        self.run_turn_without_finish_with_agent_context(
+        self.run_turn_without_finish_with_agent_context_and_owner(
             state,
             turn_id,
             on_event,
             cancel,
             AgentEventContext::default(),
+            ExecutionOwner::root(
+                state.session_id.clone(),
+                turn_id.to_string(),
+                InvocationKind::RootExecution,
+            ),
         )
         .await
     }
@@ -371,12 +400,38 @@ impl AgentLoop {
         cancel: CancelToken,
         agent: AgentEventContext,
     ) -> Result<TurnOutcome> {
+        self.run_turn_without_finish_with_agent_context_and_owner(
+            state,
+            turn_id,
+            on_event,
+            cancel,
+            agent,
+            ExecutionOwner::root(
+                state.session_id.clone(),
+                turn_id.to_string(),
+                InvocationKind::RootExecution,
+            ),
+        )
+        .await
+    }
+
+    /// 执行 Turn，但由调用方自行负责补 finish 事件，同时显式携带 owner。
+    pub async fn run_turn_without_finish_with_agent_context_and_owner(
+        &self,
+        state: &AgentState,
+        turn_id: &str,
+        on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
+        cancel: CancelToken,
+        agent: AgentEventContext,
+        execution_owner: ExecutionOwner,
+    ) -> Result<TurnOutcome> {
         self.run_turn_without_finish_with_compaction_tail(
             state,
             turn_id,
             on_event,
             cancel,
             agent,
+            execution_owner,
             CompactionTailSnapshot::from_messages(
                 &state.messages,
                 self.compact_keep_recent_turns(),
@@ -386,6 +441,7 @@ impl AgentLoop {
     }
 
     /// Execute a turn while carrying a real tail snapshot for compaction rebuilds.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_turn_with_compaction_tail(
         &self,
         state: &AgentState,
@@ -393,6 +449,7 @@ impl AgentLoop {
         on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
         cancel: CancelToken,
         agent: AgentEventContext,
+        execution_owner: ExecutionOwner,
         compaction_tail: CompactionTailSnapshot,
     ) -> Result<TurnOutcome> {
         turn_runner::run_turn(turn_runner::TurnRunContext {
@@ -403,12 +460,14 @@ impl AgentLoop {
             cancel,
             emit_turn_done: true,
             agent,
+            execution_owner,
             compaction_tail,
         })
         .await
     }
 
     /// Internal turn execution variant used by runtime service when it has a live tail recorder.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_turn_without_finish_with_compaction_tail(
         &self,
         state: &AgentState,
@@ -416,6 +475,7 @@ impl AgentLoop {
         on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
         cancel: CancelToken,
         agent: AgentEventContext,
+        execution_owner: ExecutionOwner,
         compaction_tail: CompactionTailSnapshot,
     ) -> Result<TurnOutcome> {
         turn_runner::run_turn(turn_runner::TurnRunContext {
@@ -426,6 +486,7 @@ impl AgentLoop {
             cancel,
             emit_turn_done: false,
             agent,
+            execution_owner,
             compaction_tail,
         })
         .await
@@ -434,8 +495,14 @@ impl AgentLoop {
     /// 创建工具执行上下文
     ///
     /// 包含会话 ID、工作目录和取消令牌，供工具执行时访问。
-    pub(crate) fn tool_context(&self, state: &AgentState, cancel: CancelToken) -> ToolContext {
+    pub(crate) fn tool_context(
+        &self,
+        state: &AgentState,
+        cancel: CancelToken,
+        execution_owner: ExecutionOwner,
+    ) -> ToolContext {
         ToolContext::new(state.session_id.clone(), state.working_dir.clone(), cancel)
+            .with_execution_owner(execution_owner)
     }
 
     pub(crate) fn tool_hook_context(
@@ -555,12 +622,11 @@ impl AgentLoop {
         recent_stored_events: Option<&[StoredEvent]>,
     ) -> Result<Option<StorageEvent>> {
         let user_turns = count_real_user_turns(&state.messages);
-        if user_turns < 2 {
-            return Err(AstrError::Validation(
-                "manual compact requires at least 2 real user turns".to_string(),
-            ));
-        }
-
+        // 手动 compact 是否可执行不再由“至少两个真实用户 turn”粗暴决定，而是交给
+        // compact 边界计算：只要后续能找到安全 cut point（旧 turn 或 assistant step），
+        // 单 turn 长会话也允许压缩；如果没有安全边界，则返回 Ok(None)。
+        // TODO:必须要当前turn结束了才允许手动压缩和自动压缩防止丢失信息
+        //
         // 手动 compact 应该“尽量立刻压缩”，因此最多只保留到还能留下至少一个旧 turn
         // 可被折叠，而不是盲目复用自动 compact 的保守保留值。
         let manual_keep_recent_turns = self
@@ -711,15 +777,9 @@ impl AgentLoop {
     /// 该值实际上由 CompactionRuntime 持有，此处保留 builder 方法以保持
     /// RuntimeService 装配层的调用兼容性。
     pub fn with_compact_threshold_percent(mut self, compact_threshold_percent: u8) -> Self {
-        self.compaction = CompactionRuntime::new(
-            self.compaction.auto_compact_enabled(),
-            self.compaction.keep_recent_turns(),
-            compact_threshold_percent,
-            self.compaction.policy.clone(),
-            self.compaction.strategy.clone(),
-            self.compaction.rebuilder.clone(),
-            self.compaction.file_provider.clone(),
-        );
+        self.compaction = self
+            .compaction
+            .with_threshold_percent(compact_threshold_percent);
         self
     }
 

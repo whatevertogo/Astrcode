@@ -28,17 +28,26 @@
 //! - `StepRequestConfig` 结构体将 5 个相关参数打包为一个，避免函数签名膨胀
 //! - `PromptTokenSnapshot` 携带 context_tokens / threshold_tokens / effective_window 等字段， 供
 //!   `CompactionRuntime` 决策时使用
-//! - `truncated_tool_results` 返回被 microcompact 裁剪的工具结果数量，上报给前端指标
+//! - `truncated_tool_results` 返回被 prune pass 裁剪的工具结果数量，上报给前端指标
 
 use astrcode_core::{LlmMessage, ModelRequest, Result, ToolDefinition};
 use astrcode_runtime_prompt::{PromptPlan, append_unique_tools};
 
 use crate::{
-    context_pipeline::{ContextBundle, ConversationView},
+    context_pipeline::{ContextBlock, ContextBundle},
     context_window::{PromptTokenSnapshot, TokenUsageTracker, build_prompt_snapshot},
 };
 
 pub(crate) struct RequestAssembler;
+
+#[derive(Debug, Clone)]
+enum AssembledContextMessage {
+    Conversation(LlmMessage),
+    StructuredContext {
+        slot: &'static str,
+        block: ContextBlock,
+    },
+}
 
 /// Prepared request plus request-shape diagnostics needed by the loop.
 pub(crate) struct PreparedRequest {
@@ -95,7 +104,7 @@ impl RequestAssembler {
         );
         append_unique_tools(&mut tools, prompt.extra_tools.clone());
         Ok(ModelRequest {
-            messages: self.compose_messages(prompt, &context.conversation),
+            messages: self.compose_messages(prompt, context),
             tools,
             system_prompt: prompt.render_system(),
         })
@@ -126,15 +135,62 @@ impl RequestAssembler {
         }
     }
 
-    fn compose_messages(
+    fn compose_messages(&self, prompt: &PromptPlan, context: &ContextBundle) -> Vec<LlmMessage> {
+        let mut assembled = prompt
+            .prepend_messages
+            .iter()
+            .cloned()
+            .map(AssembledContextMessage::Conversation)
+            .collect::<Vec<_>>();
+        assembled.extend(self.assemble_structured_context("workset", &context.workset));
+        assembled.extend(self.assemble_structured_context("memory", &context.memory));
+        assembled.extend(
+            context
+                .conversation
+                .messages
+                .iter()
+                .cloned()
+                .map(AssembledContextMessage::Conversation),
+        );
+        assembled.extend(
+            prompt
+                .append_messages
+                .iter()
+                .cloned()
+                .map(AssembledContextMessage::Conversation),
+        );
+
+        assembled.into_iter().map(lower_assembled_message).collect()
+    }
+
+    fn assemble_structured_context(
         &self,
-        prompt: &PromptPlan,
-        conversation: &ConversationView,
-    ) -> Vec<LlmMessage> {
-        let mut messages = prompt.prepend_messages.clone();
-        messages.extend(conversation.messages.iter().cloned());
-        messages.extend(prompt.append_messages.clone());
-        messages
+        slot: &'static str,
+        blocks: &[ContextBlock],
+    ) -> Vec<AssembledContextMessage> {
+        blocks
+            .iter()
+            .cloned()
+            .map(|block| AssembledContextMessage::StructuredContext { slot, block })
+            .collect()
+    }
+}
+
+fn lower_assembled_message(message: AssembledContextMessage) -> LlmMessage {
+    match message {
+        AssembledContextMessage::Conversation(message) => message,
+        AssembledContextMessage::StructuredContext { slot, block } => {
+            // structured context 只存在于请求装配边界，不进入持久化消息模型。
+            // 到 provider wire 层前统一降级为普通 user role 文本，保证下游协议不扩面。
+            LlmMessage::User {
+                content: format!(
+                    "[Structured {slot}: {}]\n{}",
+                    block.id,
+                    block.content.trim()
+                ),
+                origin: astrcode_core::UserMessageOrigin::User,
+            }
+        },
     }
 }
 
@@ -144,7 +200,10 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::context_pipeline::{ContextBundle, ConversationView, TokenBudgetState};
+    use crate::{
+        context_pipeline::{ContextBundle, ConversationView, TokenBudgetState},
+        context_window::PruneStats,
+    };
 
     fn plan() -> PromptPlan {
         PromptPlan {
@@ -180,6 +239,7 @@ mod tests {
                     diagnostics: Vec::new(),
                     budget_state: TokenBudgetState,
                     truncated_tool_results: 0,
+                    prune_stats: PruneStats::default(),
                 },
                 vec![ToolDefinition {
                     name: "base".to_string(),
@@ -221,6 +281,7 @@ mod tests {
                         diagnostics: Vec::new(),
                         budget_state: TokenBudgetState,
                         truncated_tool_results: 2,
+                        prune_stats: PruneStats::default(),
                     },
                     tools: vec![],
                     model_context_window: 8192,
@@ -233,5 +294,43 @@ mod tests {
         assert_eq!(prepared.request.messages.len(), 3);
         assert_eq!(prepared.prompt_snapshot.context_window, 8192);
         assert_eq!(prepared.truncated_tool_results, 2);
+    }
+
+    #[test]
+    fn assemble_encodes_structured_context_before_conversation_messages() {
+        let request = RequestAssembler
+            .assemble(
+                &plan(),
+                &ContextBundle {
+                    conversation: ConversationView::new(vec![LlmMessage::User {
+                        content: "body".to_string(),
+                        origin: UserMessageOrigin::User,
+                    }]),
+                    workset: vec![crate::context_pipeline::ContextBlock {
+                        id: "working-dir".to_string(),
+                        content: "/repo".to_string(),
+                    }],
+                    memory: vec![crate::context_pipeline::ContextBlock {
+                        id: "recover".to_string(),
+                        content: "important".to_string(),
+                    }],
+                    diagnostics: Vec::new(),
+                    budget_state: TokenBudgetState,
+                    truncated_tool_results: 0,
+                    prune_stats: PruneStats::default(),
+                },
+                vec![],
+            )
+            .expect("request should assemble");
+
+        assert_eq!(request.messages.len(), 5);
+        assert!(matches!(
+            &request.messages[1],
+            LlmMessage::User { content, .. } if content.contains("[Structured workset: working-dir]")
+        ));
+        assert!(matches!(
+            &request.messages[2],
+            LlmMessage::User { content, .. } if content.contains("[Structured memory: recover]")
+        ));
     }
 }

@@ -1,4 +1,4 @@
-//! # 微压缩 (Microcompact)
+//! # Prune Pass
 //!
 //! 轻量级上下文优化，不需要调用 LLM，直接在本地执行：
 //! - 截断过长的工具结果（超过 `max_tool_result_bytes`）
@@ -25,22 +25,28 @@ use astrcode_core::{CapabilityDescriptor, LlmMessage, UserMessageOrigin};
 
 use crate::context_window::estimate_message_tokens;
 
-#[derive(Debug, Clone)]
-pub(crate) struct MicrocompactResult {
-    pub messages: Vec<LlmMessage>,
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PruneStats {
     pub truncated_tool_results: usize,
+    pub cleared_tool_results: usize,
 }
 
-pub(crate) fn apply_microcompact(
+#[derive(Debug, Clone)]
+pub(crate) struct PruneOutcome {
+    pub messages: Vec<LlmMessage>,
+    pub stats: PruneStats,
+}
+
+pub(crate) fn apply_prune_pass(
     messages: &[LlmMessage],
     descriptors: &[CapabilityDescriptor],
     max_tool_result_bytes: usize,
     keep_recent_turns: usize,
     effective_window: usize,
-) -> MicrocompactResult {
+) -> PruneOutcome {
     // TODO(claude-auto-compact): when Astrcode gains prompt-cache prefix editing, extend this
-    // module with Claude-style cache-edit microcompact instead of only replacing old tool results.
-    // TODO(claude-auto-compact): Claude also uses gap-based/time-based microcompact triggers tied
+    // module with Claude-style cache-edit prune pass instead of only replacing old tool results.
+    // TODO(claude-auto-compact): Claude also uses gap-based/time-based prune triggers tied
     // to cache TTL; Astrcode currently lacks prompt-cache semantics, so v1 keeps the trigger purely
     // token-pressure based.
     let clearable_tools = descriptors
@@ -52,6 +58,7 @@ pub(crate) fn apply_microcompact(
     let keep_start =
         recent_turn_start_with_cap(messages, keep_recent_turns.max(1), effective_window / 2);
     let mut truncated_tool_results = 0usize;
+    let mut cleared_tool_results = 0usize;
     let mut compacted = messages.to_vec();
 
     for (index, message) in compacted.iter_mut().enumerate() {
@@ -80,12 +87,16 @@ pub(crate) fn apply_microcompact(
                 "[cleared older tool result from '{tool_name}' to reduce prompt size; reload it \
                  if needed]"
             );
+            cleared_tool_results += 1;
         }
     }
 
-    MicrocompactResult {
+    PruneOutcome {
         messages: compacted,
-        truncated_tool_results,
+        stats: PruneStats {
+            truncated_tool_results,
+            cleared_tool_results,
+        },
     }
 }
 
@@ -165,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn microcompact_truncates_large_tool_results_and_clears_old_safe_tools() {
+    fn prune_pass_truncates_large_tool_results_and_clears_old_safe_tools() {
         let messages = vec![
             LlmMessage::User {
                 content: "inspect".to_string(),
@@ -190,9 +201,10 @@ mod tests {
             },
         ];
 
-        let result = apply_microcompact(&messages, &[descriptor("readFile", true)], 128, 1, 10_000);
+        let result = apply_prune_pass(&messages, &[descriptor("readFile", true)], 128, 1, 10_000);
 
-        assert_eq!(result.truncated_tool_results, 1);
+        assert_eq!(result.stats.truncated_tool_results, 1);
+        assert_eq!(result.stats.cleared_tool_results, 1);
         match &result.messages[2] {
             LlmMessage::Tool { content, .. } => {
                 assert!(content.contains("[cleared older tool result"));

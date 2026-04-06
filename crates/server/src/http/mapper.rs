@@ -20,24 +20,29 @@
 //! - **SSE 工具**：事件 ID 解析/格式化（`{storage_seq}.{subindex}` 格式）
 
 use astrcode_core::{
-    AgentEvent, AgentEventContext, AstrError, CapabilityDescriptor, Phase, PluginHealth,
-    PluginState, SessionEventRecord, SessionMeta, format_local_rfc3339, plugin::PluginEntry,
+    AgentEvent, AgentEventContext, ArtifactRef, AstrError, CapabilityDescriptor, Phase,
+    PluginHealth, PluginState, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
+    SessionEventRecord, SessionMeta, SubRunOutcome, SubRunResult, SubRunStorageMode,
+    SubagentContextOverrides, format_local_rfc3339, plugin::PluginEntry,
 };
 use astrcode_protocol::http::{
-    AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentProfileDto, CompactTriggerDto,
-    ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto, ConfigView,
-    CurrentModelInfoDto, ModelOptionDto, OperationMetricsDto, PROTOCOL_VERSION, PhaseDto,
-    PluginHealthDto, PluginRuntimeStateDto, ProfileView, ReplayMetricsDto, RuntimeCapabilityDto,
-    RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto, SessionCatalogEventEnvelope,
-    SessionCatalogEventPayload, SessionListItem, SessionMessageDto, ToolCallResultDto,
-    ToolDescriptorDto, ToolOutputStreamDto,
+    AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentProfileDto, ArtifactRefDto,
+    CompactTriggerDto, ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto,
+    ConfigView, CurrentModelInfoDto, InvocationKindDto, ModelOptionDto, OperationMetricsDto,
+    PROTOCOL_VERSION, PhaseDto, PluginHealthDto, PluginRuntimeStateDto, ProfileView,
+    ReplayMetricsDto, ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto,
+    RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto,
+    SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem, SessionMessageDto,
+    SubRunExecutionMetricsDto, SubRunOutcomeDto, SubRunResultDto, SubRunStatusDto,
+    SubRunStorageModeDto, SubagentContextOverridesDto, ToolCallResultDto, ToolDescriptorDto,
+    ToolOutputStreamDto,
 };
 use astrcode_runtime::{
     AgentProfileSummary, ComposerOption, ComposerOptionKind, Config, OperationMetricsSnapshot,
     ReplayMetricsSnapshot, RuntimeGovernanceSnapshot, RuntimeObservabilitySnapshot,
-    SessionCatalogEvent, SessionMessage, ToolSummary, is_env_var_name,
-    list_model_options as resolve_model_options, resolve_active_selection,
-    resolve_current_model as resolve_runtime_current_model,
+    SessionCatalogEvent, SessionMessage, SubRunExecutionMetricsSnapshot, SubRunStatusSnapshot,
+    ToolSummary, is_env_var_name, list_model_options as resolve_model_options,
+    resolve_active_selection, resolve_current_model as resolve_runtime_current_model,
 };
 use axum::{http::StatusCode, response::sse::Event};
 
@@ -179,6 +184,49 @@ pub(crate) fn to_tool_descriptor_dto(tool: ToolSummary) -> ToolDescriptorDto {
     }
 }
 
+pub(crate) fn to_subrun_status_dto(snapshot: SubRunStatusSnapshot) -> SubRunStatusDto {
+    SubRunStatusDto {
+        sub_run_id: snapshot.handle.sub_run_id,
+        agent_id: snapshot.handle.agent_id,
+        agent_profile: snapshot.handle.agent_profile,
+        session_id: snapshot.handle.session_id,
+        child_session_id: snapshot.handle.child_session_id,
+        depth: snapshot.handle.depth,
+        parent_turn_id: snapshot.handle.parent_turn_id,
+        parent_agent_id: snapshot.handle.parent_agent_id,
+        storage_mode: to_subrun_storage_mode_dto(snapshot.handle.storage_mode),
+        status: match snapshot.handle.status {
+            astrcode_core::AgentStatus::Pending => "pending".to_string(),
+            astrcode_core::AgentStatus::Running => "running".to_string(),
+            astrcode_core::AgentStatus::Completed => "completed".to_string(),
+            astrcode_core::AgentStatus::Cancelled => "cancelled".to_string(),
+            astrcode_core::AgentStatus::Failed => "failed".to_string(),
+        },
+        result: snapshot.result.map(to_subrun_result_dto),
+        step_count: snapshot.step_count,
+        estimated_tokens: snapshot.estimated_tokens,
+        resolved_overrides: snapshot.resolved_overrides.map(to_resolved_overrides_dto),
+        resolved_limits: snapshot.resolved_limits.map(to_resolved_limits_dto),
+    }
+}
+
+pub(crate) fn from_subagent_context_overrides_dto(
+    dto: Option<SubagentContextOverridesDto>,
+) -> Option<SubagentContextOverrides> {
+    dto.map(|dto| SubagentContextOverrides {
+        storage_mode: dto.storage_mode.map(from_subrun_storage_mode_dto),
+        inherit_system_instructions: dto.inherit_system_instructions,
+        inherit_project_instructions: dto.inherit_project_instructions,
+        inherit_working_dir: dto.inherit_working_dir,
+        inherit_policy_upper_bound: dto.inherit_policy_upper_bound,
+        inherit_cancel_token: dto.inherit_cancel_token,
+        include_compact_summary: dto.include_compact_summary,
+        include_recent_tail: dto.include_recent_tail,
+        include_recovery_refs: dto.include_recovery_refs,
+        include_parent_findings: dto.include_parent_findings,
+    })
+}
+
 /// 将会话事件记录转换为 SSE 事件。
 ///
 /// 将 `SessionEventRecord` 包装为 `AgentEventEnvelope` 并序列化为 JSON，
@@ -288,6 +336,85 @@ fn to_agent_context_dto(agent: AgentEventContext) -> AgentContextDto {
         agent_id: agent.agent_id,
         parent_turn_id: agent.parent_turn_id,
         agent_profile: agent.agent_profile,
+        sub_run_id: agent.sub_run_id,
+        invocation_kind: agent.invocation_kind.map(|kind| match kind {
+            astrcode_core::InvocationKind::SubRun => InvocationKindDto::SubRun,
+            astrcode_core::InvocationKind::RootExecution => InvocationKindDto::RootExecution,
+        }),
+        storage_mode: agent.storage_mode.map(to_subrun_storage_mode_dto),
+        child_session_id: agent.child_session_id,
+    }
+}
+
+fn to_artifact_ref_dto(artifact: ArtifactRef) -> ArtifactRefDto {
+    ArtifactRefDto {
+        kind: artifact.kind,
+        id: artifact.id,
+        label: artifact.label,
+        session_id: artifact.session_id,
+        storage_seq: artifact.storage_seq,
+        uri: artifact.uri,
+    }
+}
+
+fn from_subrun_storage_mode_dto(mode: SubRunStorageModeDto) -> SubRunStorageMode {
+    match mode {
+        SubRunStorageModeDto::SharedSession => SubRunStorageMode::SharedSession,
+        SubRunStorageModeDto::IndependentSession => SubRunStorageMode::IndependentSession,
+    }
+}
+
+fn to_subrun_storage_mode_dto(mode: SubRunStorageMode) -> SubRunStorageModeDto {
+    match mode {
+        SubRunStorageMode::SharedSession => SubRunStorageModeDto::SharedSession,
+        SubRunStorageMode::IndependentSession => SubRunStorageModeDto::IndependentSession,
+    }
+}
+
+fn to_subrun_outcome_dto(outcome: SubRunOutcome) -> SubRunOutcomeDto {
+    match outcome {
+        SubRunOutcome::Completed => SubRunOutcomeDto::Completed,
+        SubRunOutcome::Failed { error } => SubRunOutcomeDto::Failed { error },
+        SubRunOutcome::Aborted => SubRunOutcomeDto::Aborted,
+        SubRunOutcome::TokenExceeded => SubRunOutcomeDto::TokenExceeded,
+    }
+}
+
+fn to_subrun_result_dto(result: SubRunResult) -> SubRunResultDto {
+    SubRunResultDto {
+        summary: result.summary,
+        artifacts: result
+            .artifacts
+            .into_iter()
+            .map(to_artifact_ref_dto)
+            .collect(),
+        findings: result.findings,
+        status: to_subrun_outcome_dto(result.status),
+    }
+}
+
+fn to_resolved_overrides_dto(
+    overrides: ResolvedSubagentContextOverrides,
+) -> ResolvedSubagentContextOverridesDto {
+    ResolvedSubagentContextOverridesDto {
+        storage_mode: to_subrun_storage_mode_dto(overrides.storage_mode),
+        inherit_system_instructions: overrides.inherit_system_instructions,
+        inherit_project_instructions: overrides.inherit_project_instructions,
+        inherit_working_dir: overrides.inherit_working_dir,
+        inherit_policy_upper_bound: overrides.inherit_policy_upper_bound,
+        inherit_cancel_token: overrides.inherit_cancel_token,
+        include_compact_summary: overrides.include_compact_summary,
+        include_recent_tail: overrides.include_recent_tail,
+        include_recovery_refs: overrides.include_recovery_refs,
+        include_parent_findings: overrides.include_parent_findings,
+    }
+}
+
+fn to_resolved_limits_dto(limits: ResolvedExecutionLimitsSnapshot) -> ResolvedExecutionLimitsDto {
+    ResolvedExecutionLimitsDto {
+        max_steps: limits.max_steps,
+        token_budget: limits.token_budget,
+        allowed_tools: limits.allowed_tools,
     }
 }
 
@@ -343,12 +470,13 @@ fn to_runtime_plugin_dto(entry: PluginEntry) -> RuntimePluginDto {
 /// 将运行时观测指标快照映射为 DTO。
 ///
 /// 包含三个维度的指标：会话重连（session_rehydrate）、
-/// SSE 追赶（sse_catch_up）、轮次执行（turn_execution）。
+/// SSE 追赶（sse_catch_up）、轮次执行（turn_execution）和子执行域观测（subrun_execution）。
 fn to_runtime_metrics_dto(snapshot: RuntimeObservabilitySnapshot) -> RuntimeMetricsDto {
     RuntimeMetricsDto {
         session_rehydrate: to_operation_metrics_dto(snapshot.session_rehydrate),
         sse_catch_up: to_replay_metrics_dto(snapshot.sse_catch_up),
         turn_execution: to_operation_metrics_dto(snapshot.turn_execution),
+        subrun_execution: to_subrun_execution_metrics_dto(snapshot.subrun_execution),
     }
 }
 
@@ -376,6 +504,26 @@ fn to_replay_metrics_dto(snapshot: ReplayMetricsSnapshot) -> ReplayMetricsDto {
         cache_hits: snapshot.cache_hits,
         disk_fallbacks: snapshot.disk_fallbacks,
         recovered_events: snapshot.recovered_events,
+    }
+}
+
+fn to_subrun_execution_metrics_dto(
+    snapshot: SubRunExecutionMetricsSnapshot,
+) -> SubRunExecutionMetricsDto {
+    SubRunExecutionMetricsDto {
+        total: snapshot.total,
+        failures: snapshot.failures,
+        completed: snapshot.completed,
+        aborted: snapshot.aborted,
+        token_exceeded: snapshot.token_exceeded,
+        shared_session_total: snapshot.shared_session_total,
+        independent_session_total: snapshot.independent_session_total,
+        total_duration_ms: snapshot.total_duration_ms,
+        last_duration_ms: snapshot.last_duration_ms,
+        total_steps: snapshot.total_steps,
+        last_step_count: snapshot.last_step_count,
+        total_estimated_tokens: snapshot.total_estimated_tokens,
+        last_estimated_tokens: snapshot.last_estimated_tokens,
     }
 }
 
@@ -495,6 +643,30 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
             trigger: to_compact_trigger_dto(trigger),
             summary,
             preserved_recent_turns,
+        },
+        AgentEvent::SubRunStarted {
+            turn_id,
+            agent,
+            resolved_overrides,
+            resolved_limits,
+        } => AgentEventPayload::SubRunStarted {
+            turn_id,
+            agent: to_agent_context_dto(agent),
+            resolved_overrides: to_resolved_overrides_dto(resolved_overrides),
+            resolved_limits: to_resolved_limits_dto(resolved_limits),
+        },
+        AgentEvent::SubRunFinished {
+            turn_id,
+            agent,
+            result,
+            step_count,
+            estimated_tokens,
+        } => AgentEventPayload::SubRunFinished {
+            turn_id,
+            agent: to_agent_context_dto(agent),
+            result: to_subrun_result_dto(result),
+            step_count,
+            estimated_tokens,
         },
         AgentEvent::TurnDone { turn_id, agent } => AgentEventPayload::TurnDone {
             turn_id,

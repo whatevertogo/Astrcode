@@ -48,10 +48,17 @@ impl Drop for ServerTestEnvGuard {
 }
 
 pub(crate) fn test_state(frontend_build: Option<FrontendBuild>) -> (AppState, ServerTestEnvGuard) {
-    let guard = ServerTestEnvGuard::new();
     let capabilities = CapabilityRouter::builder()
         .build()
         .expect("empty capability router should build");
+    test_state_with_capabilities(capabilities, frontend_build)
+}
+
+pub(crate) fn test_state_with_capabilities(
+    capabilities: CapabilityRouter,
+    frontend_build: Option<FrontendBuild>,
+) -> (AppState, ServerTestEnvGuard) {
+    let guard = ServerTestEnvGuard::new();
     let service = Arc::new(
         RuntimeService::from_capabilities(capabilities).expect("runtime service should initialize"),
     );

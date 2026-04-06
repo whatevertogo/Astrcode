@@ -12,7 +12,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{AgentEventContext, ToolOutputStream, UserMessageOrigin};
+use crate::{
+    AgentEventContext, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
+    SubRunResult, ToolOutputStream, UserMessageOrigin,
+};
 
 /// 上下文压缩的触发方式。
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +166,37 @@ pub enum StorageEvent {
         #[serde(with = "crate::local_rfc3339")]
         timestamp: DateTime<Utc>,
     },
+    /// 受控子会话开始执行。
+    SubRunStarted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
+        agent: AgentEventContext,
+        resolved_overrides: ResolvedSubagentContextOverrides,
+        resolved_limits: ResolvedExecutionLimitsSnapshot,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "crate::local_rfc3339_option"
+        )]
+        timestamp: Option<DateTime<Utc>>,
+    },
+    /// 受控子会话执行结束。
+    SubRunFinished {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
+        agent: AgentEventContext,
+        result: SubRunResult,
+        step_count: u32,
+        estimated_tokens: u64,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "crate::local_rfc3339_option"
+        )]
+        timestamp: Option<DateTime<Utc>>,
+    },
     /// Turn 完成（一轮 Agent 循环结束）。
     TurnDone {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -205,6 +239,8 @@ impl StorageEvent {
             | Self::ToolResult { turn_id, .. }
             | Self::PromptMetrics { turn_id, .. }
             | Self::CompactApplied { turn_id, .. }
+            | Self::SubRunStarted { turn_id, .. }
+            | Self::SubRunFinished { turn_id, .. }
             | Self::TurnDone { turn_id, .. }
             | Self::Error { turn_id, .. } => turn_id.as_deref(),
             Self::SessionStart { .. } => None,
@@ -223,6 +259,8 @@ impl StorageEvent {
             | Self::ToolResult { agent, .. }
             | Self::PromptMetrics { agent, .. }
             | Self::CompactApplied { agent, .. }
+            | Self::SubRunStarted { agent, .. }
+            | Self::SubRunFinished { agent, .. }
             | Self::TurnDone { agent, .. }
             | Self::Error { agent, .. } => Some(agent),
             Self::SessionStart { .. } => None,

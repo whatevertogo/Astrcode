@@ -16,6 +16,8 @@ use std::{
     time::Duration,
 };
 
+use astrcode_core::{SubRunOutcome, SubRunStorageMode};
+
 /// 回放路径：优先缓存，不足时回退到磁盘。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplayPath {
@@ -62,6 +64,8 @@ pub struct RuntimeObservabilitySnapshot {
     pub sse_catch_up: ReplayMetricsSnapshot,
     /// Turn 执行的指标
     pub turn_execution: OperationMetricsSnapshot,
+    /// 子执行域共享观测指标
+    pub subrun_execution: SubRunExecutionMetricsSnapshot,
 }
 
 #[derive(Default)]
@@ -69,6 +73,7 @@ pub struct RuntimeObservability {
     session_rehydrate: OperationMetrics,
     sse_catch_up: ReplayMetrics,
     turn_execution: OperationMetrics,
+    subrun_execution: SubRunExecutionMetrics,
 }
 
 impl RuntimeObservability {
@@ -91,13 +96,49 @@ impl RuntimeObservability {
         self.turn_execution.record(duration, ok);
     }
 
+    pub fn record_subrun_execution(
+        &self,
+        duration: Duration,
+        outcome: &SubRunOutcome,
+        storage_mode: SubRunStorageMode,
+        step_count: u32,
+        estimated_tokens: u64,
+    ) {
+        self.subrun_execution.record(
+            duration,
+            outcome,
+            storage_mode,
+            u64::from(step_count),
+            estimated_tokens,
+        );
+    }
+
     pub fn snapshot(&self) -> RuntimeObservabilitySnapshot {
         RuntimeObservabilitySnapshot {
             session_rehydrate: self.session_rehydrate.snapshot(),
             sse_catch_up: self.sse_catch_up.snapshot(),
             turn_execution: self.turn_execution.snapshot(),
+            subrun_execution: self.subrun_execution.snapshot(),
         }
     }
+}
+
+/// 子执行域共享观测指标快照。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubRunExecutionMetricsSnapshot {
+    pub total: u64,
+    pub failures: u64,
+    pub completed: u64,
+    pub aborted: u64,
+    pub token_exceeded: u64,
+    pub shared_session_total: u64,
+    pub independent_session_total: u64,
+    pub total_duration_ms: u64,
+    pub last_duration_ms: u64,
+    pub total_steps: u64,
+    pub last_step_count: u64,
+    pub total_estimated_tokens: u64,
+    pub last_estimated_tokens: u64,
 }
 
 /// 单一操作的指标收集器，使用原子计数器避免锁竞争。
@@ -184,4 +225,124 @@ impl ReplayMetrics {
 
 fn saturating_duration_ms(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+#[derive(Default)]
+struct SubRunExecutionMetrics {
+    total: AtomicU64,
+    failures: AtomicU64,
+    completed: AtomicU64,
+    aborted: AtomicU64,
+    token_exceeded: AtomicU64,
+    shared_session_total: AtomicU64,
+    independent_session_total: AtomicU64,
+    total_duration_ms: AtomicU64,
+    last_duration_ms: AtomicU64,
+    total_steps: AtomicU64,
+    last_step_count: AtomicU64,
+    total_estimated_tokens: AtomicU64,
+    last_estimated_tokens: AtomicU64,
+}
+
+impl SubRunExecutionMetrics {
+    fn record(
+        &self,
+        duration: Duration,
+        outcome: &SubRunOutcome,
+        storage_mode: SubRunStorageMode,
+        step_count: u64,
+        estimated_tokens: u64,
+    ) {
+        let elapsed_ms = saturating_duration_ms(duration);
+        self.total.fetch_add(1, Ordering::Relaxed);
+        self.total_duration_ms
+            .fetch_add(elapsed_ms, Ordering::Relaxed);
+        self.last_duration_ms.store(elapsed_ms, Ordering::Relaxed);
+        self.total_steps.fetch_add(step_count, Ordering::Relaxed);
+        self.last_step_count.store(step_count, Ordering::Relaxed);
+        self.total_estimated_tokens
+            .fetch_add(estimated_tokens, Ordering::Relaxed);
+        self.last_estimated_tokens
+            .store(estimated_tokens, Ordering::Relaxed);
+
+        match storage_mode {
+            SubRunStorageMode::SharedSession => {
+                self.shared_session_total.fetch_add(1, Ordering::Relaxed);
+            },
+            SubRunStorageMode::IndependentSession => {
+                self.independent_session_total
+                    .fetch_add(1, Ordering::Relaxed);
+            },
+        }
+
+        match outcome {
+            SubRunOutcome::Completed => {
+                self.completed.fetch_add(1, Ordering::Relaxed);
+            },
+            SubRunOutcome::Aborted => {
+                self.aborted.fetch_add(1, Ordering::Relaxed);
+            },
+            SubRunOutcome::TokenExceeded => {
+                self.token_exceeded.fetch_add(1, Ordering::Relaxed);
+            },
+            SubRunOutcome::Failed { .. } => {
+                self.failures.fetch_add(1, Ordering::Relaxed);
+            },
+        }
+    }
+
+    fn snapshot(&self) -> SubRunExecutionMetricsSnapshot {
+        SubRunExecutionMetricsSnapshot {
+            total: self.total.load(Ordering::Relaxed),
+            failures: self.failures.load(Ordering::Relaxed),
+            completed: self.completed.load(Ordering::Relaxed),
+            aborted: self.aborted.load(Ordering::Relaxed),
+            token_exceeded: self.token_exceeded.load(Ordering::Relaxed),
+            shared_session_total: self.shared_session_total.load(Ordering::Relaxed),
+            independent_session_total: self.independent_session_total.load(Ordering::Relaxed),
+            total_duration_ms: self.total_duration_ms.load(Ordering::Relaxed),
+            last_duration_ms: self.last_duration_ms.load(Ordering::Relaxed),
+            total_steps: self.total_steps.load(Ordering::Relaxed),
+            last_step_count: self.last_step_count.load(Ordering::Relaxed),
+            total_estimated_tokens: self.total_estimated_tokens.load(Ordering::Relaxed),
+            last_estimated_tokens: self.last_estimated_tokens.load(Ordering::Relaxed),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subrun_execution_metrics_record_outcomes_and_storage_modes() {
+        let metrics = RuntimeObservability::default();
+        metrics.record_subrun_execution(
+            Duration::from_millis(10),
+            &SubRunOutcome::Completed,
+            SubRunStorageMode::SharedSession,
+            3,
+            120,
+        );
+        metrics.record_subrun_execution(
+            Duration::from_millis(20),
+            &SubRunOutcome::Failed {
+                error: "boom".to_string(),
+            },
+            SubRunStorageMode::IndependentSession,
+            5,
+            240,
+        );
+
+        let snapshot = metrics.snapshot().subrun_execution;
+        assert_eq!(snapshot.total, 2);
+        assert_eq!(snapshot.completed, 1);
+        assert_eq!(snapshot.failures, 1);
+        assert_eq!(snapshot.shared_session_total, 1);
+        assert_eq!(snapshot.independent_session_total, 1);
+        assert_eq!(snapshot.total_steps, 8);
+        assert_eq!(snapshot.total_estimated_tokens, 360);
+        assert_eq!(snapshot.last_step_count, 5);
+        assert_eq!(snapshot.last_estimated_tokens, 240);
+    }
 }

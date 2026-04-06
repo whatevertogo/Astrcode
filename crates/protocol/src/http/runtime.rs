@@ -70,6 +70,27 @@ pub struct RuntimeMetricsDto {
     pub sse_catch_up: ReplayMetricsDto,
     /// turn 执行指标
     pub turn_execution: OperationMetricsDto,
+    /// 子执行域共享观测指标
+    pub subrun_execution: SubRunExecutionMetricsDto,
+}
+
+/// 子执行域共享观测指标。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubRunExecutionMetricsDto {
+    pub total: u64,
+    pub failures: u64,
+    pub completed: u64,
+    pub aborted: u64,
+    pub token_exceeded: u64,
+    pub shared_session_total: u64,
+    pub independent_session_total: u64,
+    pub total_duration_ms: u64,
+    pub last_duration_ms: u64,
+    pub total_steps: u64,
+    pub last_step_count: u64,
+    pub total_estimated_tokens: u64,
+    pub last_estimated_tokens: u64,
 }
 
 /// 插件运行时状态。

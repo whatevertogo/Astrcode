@@ -4,27 +4,26 @@
 //!
 //! ## 压缩策略
 //!
-//! 1. 将消息分为前缀（可压缩）和后缀（保留最近 Turn）
+//! 1. 将消息分为前缀（可压缩）和后缀（保留最近安全边界）
 //! 2. 调用 LLM 对前缀生成摘要
 //! 3. 用摘要替换前缀，保留后缀不变
 //!
 //! ## 重试机制
 //!
-//! 如果压缩请求本身超出上下文窗口，会逐步丢弃最旧的 Turn 并重试，
+//! 如果压缩请求本身超出上下文窗口，会逐步丢弃最旧的 compact unit 并重试，
 //! 最多重试 3 次。这是为了处理极端情况：即使前缀也可能超出窗口。
-//!
-//! ## 已知限制（TODO）
-//!
-//! - 当前仅支持文本消息，多模态消息需要额外处理
-//! - 仅支持后缀保留（suffix-preserving），不支持 Claude 风格的 "from" 方向部分压缩
-//! - 压缩后不恢复 prompt 附件（如文件内容），需要后续优化
-//! - 当前总是重新摘要完整前缀，未来可升级为增量重压缩（incremental recompact）
 
-use astrcode_core::{AstrError, CancelToken, LlmMessage, Result, UserMessageOrigin};
+use astrcode_core::{
+    AstrError, CancelToken, LlmMessage, Result, UserMessageOrigin, format_compact_summary,
+    parse_compact_summary_message,
+};
 use astrcode_runtime_llm::{LlmProvider, LlmRequest};
 use chrono::{DateTime, Utc};
 
 use crate::context_window::estimate_request_tokens;
+
+const BASE_COMPACT_PROMPT_TEMPLATE: &str = include_str!("templates/compact/base.md");
+const INCREMENTAL_COMPACT_PROMPT_TEMPLATE: &str = include_str!("templates/compact/incremental.md");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompactConfig {
@@ -44,6 +43,32 @@ pub struct CompactResult {
     pub timestamp: DateTime<Utc>,
 }
 
+/// compact 输入的边界类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompactionBoundary {
+    RealUserTurn,
+    AssistantStep,
+}
+
+/// 一段可以安全作为 compact 重试裁剪单位的前缀区间。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CompactionUnit {
+    pub start: usize,
+    pub boundary: CompactionBoundary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ParsedCompactOutput {
+    pub summary: String,
+    pub has_analysis: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CompactPromptMode {
+    Fresh,
+    Incremental { previous_summary: String },
+}
+
 pub async fn auto_compact(
     provider: &dyn LlmProvider,
     messages: &[LlmMessage],
@@ -55,45 +80,46 @@ pub async fn auto_compact(
     // strip or downsample images/documents before sending the compact prompt, like Claude Code.
     // TODO(claude-auto-compact): add Claude-style partial compact ("from" direction) when prompt
     // cache support exists. v1 only supports suffix-preserving compaction.
+    // TODO(claude-auto-compact): add cache-sharing fork when prompt cache semantics become stable.
     // TODO(claude-auto-compact): once sessions persist richer prompt attachments, restore them
     // after compaction here instead of scattering attachment recovery across prompt contributors.
-    // TODO(claude-auto-compact): upgrade this entry point to incremental recompact by folding the
-    // latest `CompactApplied` summary forward instead of always re-summarizing the full prefix.
     // `compact_prompt_context` 是正常请求所见的运行时 system prompt 参考材料。
     // compact 流程不会直接把它当成最终 system prompt，而是嵌入专用 compact 模板中，
     // 让摘要模型知道当前会话原本运行在什么约束之下。
     let preserved_recent_turns = config.keep_recent_turns.max(1);
-    let (mut prefix, suffix, keep_start) = split_for_compaction(messages, preserved_recent_turns);
-    if prefix.is_empty() {
+    let Some(mut split) = split_for_compaction(messages, preserved_recent_turns) else {
         return Ok(None);
-    }
+    };
 
     let pre_tokens = estimate_request_tokens(messages, compact_prompt_context);
-    let summary_prompt = render_compact_system_prompt(compact_prompt_context);
     let mut attempts = 0usize;
     let summary = loop {
-        let request_messages = compact_input_messages(&prefix);
+        let request_messages = compact_input_messages(&split.prefix);
         if request_messages.is_empty() {
             return Ok(None);
         }
 
-        let request = LlmRequest::new(request_messages, Vec::new(), cancel.clone())
-            .with_system(summary_prompt.clone());
+        let prompt_mode = latest_previous_summary(&split.prefix)
+            .map(|previous_summary| CompactPromptMode::Incremental { previous_summary })
+            .unwrap_or(CompactPromptMode::Fresh);
+        let request = LlmRequest::new(request_messages, Vec::new(), cancel.clone()).with_system(
+            render_compact_system_prompt(compact_prompt_context, prompt_mode),
+        );
         match provider.generate(request, None).await {
-            Ok(output) => break extract_summary(&output.content)?,
+            Ok(output) => break parse_compact_output(&output.content)?.summary,
             Err(error) if is_prompt_too_long(&error) && attempts < 3 => {
                 attempts += 1;
-                if !drop_oldest_turn_group(&mut prefix) {
+                if !drop_oldest_compaction_unit(&mut split.prefix) {
                     return Err(error);
                 }
+                split.keep_start = split.prefix.len();
             },
             Err(error) => return Err(error),
         }
     };
 
-    let messages_removed = keep_start;
     let auto_continue = matches!(config.trigger, astrcode_core::CompactTrigger::Auto);
-    let compacted_messages = compacted_messages(&summary, suffix, auto_continue);
+    let compacted_messages = compacted_messages(&summary, split.suffix, auto_continue);
     let post_tokens_estimate = estimate_request_tokens(&compacted_messages, compact_prompt_context);
     Ok(Some(CompactResult {
         messages: compacted_messages,
@@ -101,68 +127,36 @@ pub async fn auto_compact(
         preserved_recent_turns,
         pre_tokens,
         post_tokens_estimate,
-        messages_removed,
+        messages_removed: split.keep_start,
         tokens_freed: pre_tokens.saturating_sub(post_tokens_estimate),
         timestamp: Utc::now(),
     }))
 }
 
-// TODO: 一旦提示配置能够独立拥有压缩策略而无需与通用系统提示耦合，
-// 替换此硬编码的摘要合约为更结构化的输入（如 JSON）以支持更丰富的摘要内容和更可靠的解析。
-// TODO: 未来考虑通过一个独立的压缩 agent 来生成摘要，允许更复杂的压缩逻辑和多轮压缩对话，
-// 而不仅仅是单轮系统提示调用。
-fn render_compact_system_prompt(compact_prompt_context: Option<&str>) -> String {
-    // 整合 kimi-cli、pi-mono、opencode 等 CLI 工具的最佳实践：
-    // - pi-mono: 结构化进度跟踪（Done/In Progress/Blocked）、迭代式更新、分支摘要
-    // - kimi-cli: 压缩优先级规则（MUST KEEP/MERGE/REMOVE/CONDENSE）、代码长度阈值
-    // - opencode: 发现跟踪（Discoveries）、目标与指令分离
-    let mut prompt = String::from(
-        "You are a context summarization assistant for a coding-agent session.\nYour summary will \
-         replace earlier conversation history so another agent can continue seamlessly.\n\n## \
-         CRITICAL RULES\n**DO NOT CALL ANY TOOLS.** This is for summary generation only.\n**Do \
-         NOT continue the conversation.** Only output the structured summary.\n\n## Compression \
-         Priorities (highest → lowest)\n1. **Current Task State** — What's being worked on, exact \
-         status, immediate next steps\n2. **Errors & Solutions** — Stack traces, error messages, \
-         and how they were resolved\n3. **User Requests** — All user messages verbatim in \
-         order\n4. **Code Changes** — Final working versions; for code < 15 lines keep all, \
-         otherwise signatures + key logic only\n5. **Key Decisions** — The \"why\" behind \
-         choices, not just \"what\"\n6. **Discoveries** — Important learnings about the codebase, \
-         APIs, or constraints\n7. **Environment** — Config/setup only if relevant to continuing \
-         work\n\n## Compression Rules\n**MUST KEEP:** Error messages, stack traces, working \
-         solutions, current task, exact file paths, function names\n**MERGE:** Similar \
-         discussions into single summary points\n**REMOVE:** Redundant explanations, failed \
-         attempts (keep only lessons learned), boilerplate code\n**CONDENSE:** Long code blocks → \
-         signatures + key logic; long explanations → bullet points\n\n## Output Format\nReturn \
-         exactly two XML blocks:\n\n<analysis>\n[Self-check before writing]\n- Did I cover ALL \
-         user messages?\n- Is the current task state accurate?\n- Are all errors and their \
-         solutions captured?\n- Are file paths and function names \
-         exact?\n</analysis>\n\n<summary>\n\n## Goal\n[What the user is trying to accomplish — \
-         can be multiple items]\n\n## Constraints & Preferences\n- [User-specified constraints, \
-         preferences, requirements]\n- [Or \"(none)\" if not mentioned]\n\n## Progress\n### \
-         Done\n- [x] [Completed tasks with brief outcome]\n\n### In Progress\n- [ ] [Current work \
-         with status]\n\n### Blocked\n- [Issues preventing progress, or \"(none)\"]\n\n## Key \
-         Decisions\n- **[Decision]**: [Rationale — why this choice was made]\n\n## Discoveries\n- \
-         [Important learnings about codebase/APIs/constraints that future agent should \
-         know]\n\n## Files\n### Read\n- `path/to/file` — [Why read, key findings]\n\n### \
-         Modified/Created\n- `path/to/file` — [What changed, why]\n\n## Errors & Fixes\n- \
-         **Error**: [Exact error message/stack trace]\n  - **Cause**: [Root cause]\n  - **Fix**: \
-         [How it was resolved]\n\n## Next Steps\n1. [Ordered list of what should happen \
-         next]\n\n## Critical Context\n[Any essential information not covered above, or \
-         \"(none)\"]\n\n</summary>\n\n## Rules\n- Output **only** the <analysis> and <summary> \
-         blocks — no preamble, no closing remarks.\n- Be concise. Prefer bullet points over \
-         paragraphs.\n- Ignore synthetic auto-continue nudges.\n- Write in third-person, factual \
-         tone. Do not address the end user.\n- Preserve exact file paths, function names, error \
-         messages — never paraphrase these.\n- If a section has no content, write \"(none)\" \
-         rather than omitting it.",
-    );
+#[derive(Debug, Clone)]
+struct CompactionSplit {
+    prefix: Vec<LlmMessage>,
+    suffix: Vec<LlmMessage>,
+    keep_start: usize,
+}
 
-    if let Some(compact_prompt_context) =
-        compact_prompt_context.filter(|value| !value.trim().is_empty())
-    {
-        prompt.push_str("\nCurrent runtime system prompt for context:\n");
-        prompt.push_str(compact_prompt_context);
-    }
-    prompt
+fn render_compact_system_prompt(
+    compact_prompt_context: Option<&str>,
+    mode: CompactPromptMode,
+) -> String {
+    let incremental_block = match mode {
+        CompactPromptMode::Fresh => String::new(),
+        CompactPromptMode::Incremental { previous_summary } => INCREMENTAL_COMPACT_PROMPT_TEMPLATE
+            .replace("{{PREVIOUS_SUMMARY}}", previous_summary.trim()),
+    };
+    let runtime_context = compact_prompt_context
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| format!("\nCurrent runtime system prompt for context:\n{value}"))
+        .unwrap_or_default();
+
+    BASE_COMPACT_PROMPT_TEMPLATE
+        .replace("{{INCREMENTAL_MODE}}", incremental_block.trim())
+        .replace("{{RUNTIME_CONTEXT}}", runtime_context.trim_end())
 }
 
 /// 合并 compact 使用的 prompt 上下文。
@@ -171,7 +165,7 @@ fn render_compact_system_prompt(compact_prompt_context: Option<&str>) -> String 
 /// 1. 保留当前运行时已有的 system prompt 上下文
 /// 2. 把 hook 提供的附加约束追加到末尾
 ///
-/// 同时在 merge 边界折叠空字符串，避免把 `Some("")` 继续向下游传播。
+/// 同时在 merge 边界折叠空字符串，避免把 `Some(\"\")` 继续向下游传播。
 pub(crate) fn merge_compact_prompt_context(
     runtime_system_prompt: Option<&str>,
     additional_system_prompt: Option<&str>,
@@ -196,8 +190,6 @@ fn compact_input_messages(messages: &[LlmMessage]) -> Vec<LlmMessage> {
     messages
         .iter()
         .filter_map(|message| match message {
-            // Keep earlier compact summaries in the next compaction input because they are the
-            // only surviving representation of history that was already folded away.
             LlmMessage::User {
                 origin: UserMessageOrigin::CompactSummary,
                 ..
@@ -212,11 +204,43 @@ fn compact_input_messages(messages: &[LlmMessage]) -> Vec<LlmMessage> {
         .collect()
 }
 
+fn latest_previous_summary(messages: &[LlmMessage]) -> Option<String> {
+    messages.iter().rev().find_map(|message| match message {
+        LlmMessage::User {
+            content,
+            origin: UserMessageOrigin::CompactSummary,
+        } => parse_compact_summary_message(content).map(|envelope| envelope.summary),
+        _ => None,
+    })
+}
+
 fn split_for_compaction(
     messages: &[LlmMessage],
     keep_recent_turns: usize,
-) -> (Vec<LlmMessage>, Vec<LlmMessage>, usize) {
-    let user_turn_indices = messages
+) -> Option<CompactionSplit> {
+    if messages.is_empty() {
+        return None;
+    }
+
+    let real_user_indices = real_user_turn_indices(messages);
+    let primary_keep_start = real_user_indices
+        .len()
+        .checked_sub(keep_recent_turns.max(1))
+        .map(|index| real_user_indices[index]);
+    let keep_start = primary_keep_start
+        .filter(|index| *index > 0)
+        .or_else(|| fallback_keep_start(messages));
+
+    let keep_start = keep_start?;
+    Some(CompactionSplit {
+        prefix: messages[..keep_start].to_vec(),
+        suffix: messages[keep_start..].to_vec(),
+        keep_start,
+    })
+}
+
+fn real_user_turn_indices(messages: &[LlmMessage]) -> Vec<usize> {
+    messages
         .iter()
         .enumerate()
         .filter_map(|(index, message)| match message {
@@ -226,55 +250,55 @@ fn split_for_compaction(
             } => Some(index),
             _ => None,
         })
-        .collect::<Vec<_>>();
-    if user_turn_indices.is_empty() {
-        return (messages.to_vec(), Vec::new(), messages.len());
-    }
-
-    let keep_turns = keep_recent_turns.min(user_turn_indices.len()).max(1);
-    let keep_start = user_turn_indices[user_turn_indices.len() - keep_turns];
-    (
-        messages[..keep_start].to_vec(),
-        messages[keep_start..].to_vec(),
-        keep_start,
-    )
+        .collect()
 }
 
-fn drop_oldest_turn_group(prefix: &mut Vec<LlmMessage>) -> bool {
-    let Some(first_turn_index) = prefix.iter().position(|message| {
-        matches!(
-            message,
+fn fallback_keep_start(messages: &[LlmMessage]) -> Option<usize> {
+    // 当没有“旧 turn 前缀”可折叠时，允许在单 turn 长会话中退化到最近的 assistant step
+    // 边界。这样手动 compact 和极长单用户请求仍有一条安全的 prefix compaction 路径，
+    // 同时不在 tool result 中间切断。
+    compaction_units(messages)
+        .into_iter()
+        .rev()
+        .find(|unit| unit.boundary == CompactionBoundary::AssistantStep && unit.start > 0)
+        .map(|unit| unit.start)
+}
+
+fn compaction_units(messages: &[LlmMessage]) -> Vec<CompactionUnit> {
+    messages
+        .iter()
+        .enumerate()
+        .filter_map(|(index, message)| match message {
             LlmMessage::User {
                 origin: UserMessageOrigin::User,
                 ..
-            }
-        )
-    }) else {
-        return false;
-    };
-
-    let next_turn_index = prefix
-        .iter()
-        .enumerate()
-        .skip(first_turn_index + 1)
-        .find_map(|(index, message)| {
-            matches!(
-                message,
-                LlmMessage::User {
-                    origin: UserMessageOrigin::User,
-                    ..
-                }
-            )
-            .then_some(index)
+            } => Some(CompactionUnit {
+                start: index,
+                boundary: CompactionBoundary::RealUserTurn,
+            }),
+            LlmMessage::Assistant { .. } => Some(CompactionUnit {
+                start: index,
+                boundary: CompactionBoundary::AssistantStep,
+            }),
+            _ => None,
         })
-        .unwrap_or(prefix.len());
+        .collect()
+}
 
-    if next_turn_index == 0 || next_turn_index >= prefix.len() {
+fn drop_oldest_compaction_unit(prefix: &mut Vec<LlmMessage>) -> bool {
+    let units = compaction_units(prefix);
+    if units.len() < 2 {
         prefix.clear();
         return false;
     }
 
-    prefix.drain(..next_turn_index);
+    let next_start = units[1].start;
+    if next_start == 0 || next_start >= prefix.len() {
+        prefix.clear();
+        return false;
+    }
+
+    prefix.drain(..next_start);
     !prefix.is_empty()
 }
 
@@ -284,11 +308,7 @@ fn compacted_messages(
     auto_continue: bool,
 ) -> Vec<LlmMessage> {
     let mut messages = vec![LlmMessage::User {
-        content: format!(
-            "[Auto-compact summary]\n{}\n\nContinue from this summary without repeating it to the \
-             user.",
-            summary.trim()
-        ),
+        content: format_compact_summary(summary),
         origin: UserMessageOrigin::CompactSummary,
     }];
     if auto_continue {
@@ -302,24 +322,35 @@ fn compacted_messages(
     messages
 }
 
-fn extract_summary(content: &str) -> Result<String> {
-    let summary = if let Some(start) = content.find("<summary>") {
-        let start = start + "<summary>".len();
-        let end = content[start..]
-            .find("</summary>")
-            .map(|offset| start + offset)
-            .unwrap_or(content.len());
-        content[start..end].trim().to_string()
-    } else {
-        content.trim().to_string()
-    };
+fn parse_compact_output(content: &str) -> Result<ParsedCompactOutput> {
+    let has_analysis = content.contains("<analysis>") && content.contains("</analysis>");
+    if !has_analysis {
+        log::warn!("compact: missing <analysis> block in LLM response");
+    }
 
+    let Some(summary_start) = content.find("<summary>") else {
+        return Err(AstrError::LlmStreamError(
+            "compact response missing <summary> block".to_string(),
+        ));
+    };
+    let summary_start = summary_start + "<summary>".len();
+    let Some(summary_end_offset) = content[summary_start..].find("</summary>") else {
+        return Err(AstrError::LlmStreamError(
+            "compact response missing closing </summary> tag".to_string(),
+        ));
+    };
+    let summary_end = summary_start + summary_end_offset;
+    let summary = content[summary_start..summary_end].trim().to_string();
     if summary.is_empty() {
         return Err(AstrError::LlmStreamError(
             "compact summary response was empty".to_string(),
         ));
     }
-    Ok(summary)
+
+    Ok(ParsedCompactOutput {
+        summary,
+        has_analysis,
+    })
 }
 
 /// 判断错误是否为 prompt too long。
@@ -346,12 +377,26 @@ mod tests {
 
     #[test]
     fn render_compact_system_prompt_keeps_do_not_continue_instruction_intact() {
-        let prompt = render_compact_system_prompt(None);
+        let prompt = render_compact_system_prompt(None, CompactPromptMode::Fresh);
 
         assert!(
             prompt.contains("**Do NOT continue the conversation.**"),
             "compact prompt must explicitly instruct the summarizer not to continue the session"
         );
+    }
+
+    #[test]
+    fn render_compact_system_prompt_renders_incremental_block() {
+        let prompt = render_compact_system_prompt(
+            None,
+            CompactPromptMode::Incremental {
+                previous_summary: "older summary".to_string(),
+            },
+        );
+
+        assert!(prompt.contains("## Incremental Mode"));
+        assert!(prompt.contains("<previous-summary>"));
+        assert!(prompt.contains("older summary"));
     }
 
     #[test]
@@ -386,20 +431,34 @@ mod tests {
 
     #[test]
     fn render_compact_system_prompt_skips_whitespace_only_context() {
-        let prompt_none = render_compact_system_prompt(None);
-        let prompt_ws = render_compact_system_prompt(Some("   \n\t  "));
+        let prompt_none = render_compact_system_prompt(None, CompactPromptMode::Fresh);
+        let prompt_ws = render_compact_system_prompt(Some("   \n\t  "), CompactPromptMode::Fresh);
 
-        // 纯空白上下文不应追加任何额外指令
         assert_eq!(prompt_ws, prompt_none);
-        assert!(!prompt_ws.contains("Additional Compact Instructions"));
+        assert!(!prompt_ws.contains("Current runtime system prompt for context:"));
     }
 
     #[test]
-    fn extract_summary_prefers_summary_block() {
-        let summary = extract_summary("<analysis>draft</analysis><summary>\nSection\n</summary>")
-            .expect("summary should parse");
+    fn parse_compact_output_requires_summary_block() {
+        let error = parse_compact_output("plain text").expect_err("missing summary should fail");
+        assert!(error.to_string().contains("missing <summary> block"));
+    }
 
-        assert_eq!(summary, "Section");
+    #[test]
+    fn parse_compact_output_requires_closed_summary_block() {
+        let error =
+            parse_compact_output("<summary>open").expect_err("unclosed summary should fail");
+        assert!(error.to_string().contains("closing </summary>"));
+    }
+
+    #[test]
+    fn parse_compact_output_prefers_summary_block() {
+        let parsed =
+            parse_compact_output("<analysis>draft</analysis><summary>\nSection\n</summary>")
+                .expect("summary should parse");
+
+        assert_eq!(parsed.summary, "Section");
+        assert!(parsed.has_analysis);
     }
 
     #[test]
@@ -415,7 +474,7 @@ mod tests {
                 reasoning: None,
             },
             LlmMessage::User {
-                content: "[Auto-compact summary]\nolder".to_string(),
+                content: format_compact_summary("older"),
                 origin: UserMessageOrigin::CompactSummary,
             },
             LlmMessage::User {
@@ -424,18 +483,41 @@ mod tests {
             },
         ];
 
-        let (prefix, suffix, keep_start) = split_for_compaction(&messages, 1);
+        let split = split_for_compaction(&messages, 1).expect("split should exist");
 
-        assert_eq!(keep_start, 3);
-        assert_eq!(prefix.len(), 3);
-        assert_eq!(suffix.len(), 1);
+        assert_eq!(split.keep_start, 3);
+        assert_eq!(split.prefix.len(), 3);
+        assert_eq!(split.suffix.len(), 1);
+    }
+
+    #[test]
+    fn split_for_compaction_falls_back_to_assistant_boundary_for_single_turn() {
+        let messages = vec![
+            LlmMessage::User {
+                content: "task".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "step 1".to_string(),
+                tool_calls: Vec::new(),
+                reasoning: None,
+            },
+            LlmMessage::Assistant {
+                content: "step 2".to_string(),
+                tool_calls: Vec::new(),
+                reasoning: None,
+            },
+        ];
+
+        let split = split_for_compaction(&messages, 1).expect("single turn should still split");
+        assert_eq!(split.keep_start, 2);
     }
 
     #[test]
     fn compact_input_messages_keeps_previous_compact_summaries() {
         let messages = vec![
             LlmMessage::User {
-                content: "[Auto-compact summary]\nOlder work".to_string(),
+                content: format_compact_summary("Older work"),
                 origin: UserMessageOrigin::CompactSummary,
             },
             LlmMessage::User {
@@ -467,11 +549,7 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(
-            compacted.len(),
-            1,
-            "no auto-continue nudge when auto_continue=false"
-        );
+        assert_eq!(compacted.len(), 1);
     }
 
     #[test]
@@ -479,13 +557,6 @@ mod tests {
         let compacted = compacted_messages("Older history", Vec::new(), true);
 
         assert_eq!(compacted.len(), 2);
-        assert!(matches!(
-            &compacted[0],
-            LlmMessage::User {
-                origin: UserMessageOrigin::CompactSummary,
-                ..
-            }
-        ));
         assert!(matches!(
             &compacted[1],
             LlmMessage::User {
@@ -496,16 +567,28 @@ mod tests {
     }
 
     #[test]
-    fn compacted_messages_omits_nudge_when_not_auto() {
-        let compacted = compacted_messages("Older history", Vec::new(), false);
-
-        assert_eq!(compacted.len(), 1);
-        assert!(!compacted.iter().any(|m| matches!(
-            m,
+    fn drop_oldest_compaction_unit_is_deterministic() {
+        let mut prefix = vec![
             LlmMessage::User {
-                origin: UserMessageOrigin::AutoContinueNudge,
-                ..
-            }
-        )));
+                content: "task".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "step-1".to_string(),
+                tool_calls: Vec::new(),
+                reasoning: None,
+            },
+            LlmMessage::Assistant {
+                content: "step-2".to_string(),
+                tool_calls: Vec::new(),
+                reasoning: None,
+            },
+        ];
+
+        assert!(drop_oldest_compaction_unit(&mut prefix));
+        assert!(matches!(
+            &prefix[0],
+            LlmMessage::Assistant { content, .. } if content == "step-1"
+        ));
     }
 }

@@ -15,6 +15,7 @@ use astrcode_runtime_agent_control::AgentControl;
 use astrcode_runtime_agent_loader::{AgentProfileLoader, AgentProfileRegistry};
 use astrcode_runtime_agent_loop::{AgentLoop, ApprovalBroker, DefaultApprovalBroker};
 use astrcode_runtime_prompt::PromptDeclaration;
+use astrcode_runtime_session::SessionState;
 use astrcode_runtime_skill_loader::SkillCatalog;
 use astrcode_storage::session::FileSystemSessionRepository;
 use async_trait::async_trait;
@@ -22,42 +23,38 @@ use dashmap::DashMap;
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    config::{
-        load_config, resolve_auto_compact_enabled, resolve_compact_keep_recent_turns,
-        resolve_compact_threshold_percent, resolve_max_tool_concurrency,
-        resolve_tool_result_max_bytes,
-    },
-    provider_factory::ConfigFileProviderFactory,
-};
+use crate::config::load_config;
 
-mod agent_execution;
 #[cfg(test)]
 mod baselines;
+mod blocking_bridge;
 mod composer_ops;
 mod config_ops;
+mod execution;
+mod loop_factory;
 mod observability;
 mod replay;
-mod session_ops;
-mod session_state;
-mod support;
-mod turn_ops;
-mod types;
+mod service_contract;
+mod session;
+mod turn;
+mod watch_ops;
 
-pub(crate) use agent_execution::DeferredSubAgentExecutor;
-pub use agent_execution::{
+pub(crate) use execution::DeferredSubAgentExecutor;
+pub use execution::{
     AgentExecutionServiceHandle, AgentProfileSummary, ToolExecutionServiceHandle, ToolSummary,
 };
 use observability::RuntimeObservability;
 pub use observability::{
     OperationMetricsSnapshot, ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot,
+    SubRunExecutionMetricsSnapshot,
 };
 
-use self::session_state::SessionState;
-pub use self::types::{
-    ComposerOption, ComposerOptionKind, ComposerOptionsRequest, PromptAccepted, ServiceError,
-    ServiceResult, SessionCatalogEvent, SessionEventRecord, SessionHistorySnapshot, SessionMessage,
-    SessionReplay, SessionReplaySource,
+use self::loop_factory::build_agent_loop;
+pub use self::service_contract::{
+    AgentExecutionAccepted, ComposerOption, ComposerOptionKind, ComposerOptionsRequest,
+    PromptAccepted, ServiceError, ServiceResult, SessionCatalogEvent, SessionEventRecord,
+    SessionHistorySnapshot, SessionMessage, SessionReplay, SessionReplaySource,
+    SubRunStatusSnapshot,
 };
 
 const SESSION_CATALOG_BROADCAST_CAPACITY: usize = 256;
@@ -76,51 +73,6 @@ pub(crate) struct RuntimeServiceDeps {
     policy: Arc<dyn PolicyEngine>,
     approval: Arc<dyn ApprovalBroker>,
     session_manager: Arc<dyn SessionManager>,
-}
-
-fn build_agent_loop(
-    surface: &RuntimeSurfaceState,
-    runtime_config: &crate::config::RuntimeConfig,
-    policy: Arc<dyn PolicyEngine>,
-    approval: Arc<dyn ApprovalBroker>,
-) -> Arc<AgentLoop> {
-    build_agent_loop_from_parts(
-        surface.capabilities.clone(),
-        surface.prompt_declarations.clone(),
-        Arc::clone(&surface.skill_catalog),
-        surface.hook_handlers.clone(),
-        runtime_config,
-        policy,
-        approval,
-    )
-}
-
-pub(super) fn build_agent_loop_from_parts(
-    capabilities: CapabilityRouter,
-    prompt_declarations: Vec<PromptDeclaration>,
-    skill_catalog: Arc<SkillCatalog>,
-    hook_handlers: Vec<Arc<dyn HookHandler>>,
-    runtime_config: &crate::config::RuntimeConfig,
-    policy: Arc<dyn PolicyEngine>,
-    approval: Arc<dyn ApprovalBroker>,
-) -> Arc<AgentLoop> {
-    let max_tool_concurrency = resolve_max_tool_concurrency(runtime_config);
-    Arc::new(
-        AgentLoop::from_capabilities_with_prompt_inputs(
-            Arc::new(ConfigFileProviderFactory),
-            capabilities,
-            prompt_declarations,
-            skill_catalog,
-        )
-        .with_hook_handlers(hook_handlers)
-        .with_max_tool_concurrency(max_tool_concurrency)
-        .with_auto_compact_enabled(resolve_auto_compact_enabled(runtime_config))
-        .with_compact_threshold_percent(resolve_compact_threshold_percent(runtime_config))
-        .with_tool_result_max_bytes(resolve_tool_result_max_bytes(runtime_config))
-        .with_compact_keep_recent_turns(resolve_compact_keep_recent_turns(runtime_config) as usize)
-        .with_policy_engine(policy)
-        .with_approval_broker(approval),
-    )
 }
 
 /// 运行时服务
@@ -257,6 +209,7 @@ impl RuntimeService {
             Arc::clone(&policy),
             Arc::clone(&approval),
         );
+        let agent_control = AgentControl::from_config(&config.runtime);
         let (session_catalog_events, _) = broadcast::channel(SESSION_CATALOG_BROADCAST_CAPACITY);
         Ok(Self {
             sessions: DashMap::new(),
@@ -268,7 +221,7 @@ impl RuntimeService {
             session_manager,
             session_load_lock: Mutex::new(()),
             observability: Arc::new(RuntimeObservability::default()),
-            agent_control: AgentControl::new(),
+            agent_control,
             agent_loader,
             agent_profiles,
             session_catalog_events,
@@ -342,7 +295,7 @@ impl RuntimeService {
 
         let service = Arc::clone(self);
         tokio::spawn(async move {
-            if let Err(error) = config_ops::run_config_watch_loop(service).await {
+            if let Err(error) = watch_ops::run_config_watch_loop(service).await {
                 log::warn!("config hot reload watcher stopped: {}", error);
             }
         });
@@ -359,7 +312,7 @@ impl RuntimeService {
 
         let service = Arc::clone(self);
         tokio::spawn(async move {
-            if let Err(error) = config_ops::run_agent_watch_loop(service).await {
+            if let Err(error) = watch_ops::run_agent_watch_loop(service).await {
                 log::warn!("agent hot reload watcher stopped: {}", error);
             }
         });

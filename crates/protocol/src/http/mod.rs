@@ -25,7 +25,10 @@ mod session;
 mod session_event;
 mod tool;
 
-pub use agent::{AgentExecuteRequestDto, AgentExecuteResponseDto, AgentProfileDto};
+pub use agent::{
+    AgentExecuteRequestDto, AgentExecuteResponseDto, AgentProfileDto, SubRunStatusDto,
+    SubagentContextOverridesDto,
+};
 pub use auth::{AuthExchangeRequest, AuthExchangeResponse};
 pub use composer::{ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto};
 pub use config::{
@@ -33,14 +36,16 @@ pub use config::{
     TestConnectionRequest, TestResultDto,
 };
 pub use event::{
-    AgentContextDto, AgentEventEnvelope, AgentEventPayload, CompactTriggerDto, PROTOCOL_VERSION,
-    PhaseDto, ToolCallResultDto, ToolOutputStreamDto,
+    AgentContextDto, AgentEventEnvelope, AgentEventPayload, ArtifactRefDto, CompactTriggerDto,
+    InvocationKindDto, PROTOCOL_VERSION, PhaseDto, ResolvedExecutionLimitsDto,
+    ResolvedSubagentContextOverridesDto, SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto,
+    ToolCallResultDto, ToolOutputStreamDto,
 };
 pub use model::{CurrentModelInfoDto, ModelOptionDto};
 pub use runtime::{
     OperationMetricsDto, PluginHealthDto, PluginRuntimeStateDto, ReplayMetricsDto,
     RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeReloadResponseDto,
-    RuntimeStatusDto,
+    RuntimeStatusDto, SubRunExecutionMetricsDto,
 };
 pub use session::{
     CreateSessionRequest, DeleteProjectResultDto, PromptAcceptedResponse, PromptRequest,

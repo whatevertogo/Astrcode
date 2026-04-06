@@ -9,11 +9,11 @@
 //! 因此前端候选查询应该在 service 层统一组装，而不是让前端自行拼接多套来源。
 
 use astrcode_core::{CapabilityDescriptor, ToolPromptMetadata};
+use astrcode_runtime_session::normalize_session_id;
 use astrcode_runtime_skill_loader::{SkillSource, SkillSpec};
 
 use super::{
     ComposerOption, ComposerOptionKind, ComposerOptionsRequest, RuntimeService, ServiceResult,
-    session_ops::normalize_session_id,
 };
 
 impl RuntimeService {

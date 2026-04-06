@@ -57,6 +57,31 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
             </pre>
           ) : message.kind === 'compact' ? (
             <pre className={styles.renderErrorBody}>{message.summary}</pre>
+          ) : message.kind === 'subRunStart' ? (
+            <pre className={styles.renderErrorBody}>
+              {JSON.stringify(
+                {
+                  subRunId: message.subRunId,
+                  storageMode: message.storageMode,
+                  agentProfile: message.agentProfile,
+                },
+                null,
+                2
+              )}
+            </pre>
+          ) : message.kind === 'subRunFinish' ? (
+            <pre className={styles.renderErrorBody}>
+              {JSON.stringify(
+                {
+                  subRunId: message.subRunId,
+                  status: message.result.status,
+                  stepCount: message.stepCount,
+                  estimatedTokens: message.estimatedTokens,
+                },
+                null,
+                2
+              )}
+            </pre>
           ) : (
             <pre className={styles.renderErrorBody}>{message.text}</pre>
           )}
@@ -72,8 +97,12 @@ function isAssistantLike(message: Message): boolean {
   return message.kind === 'assistant' || message.kind === 'toolCall';
 }
 
+function isSubRunLifecycleMessage(message: Message): boolean {
+  return message.kind === 'subRunStart' || message.kind === 'subRunFinish';
+}
+
 function isNestedAgentMessage(message: Message): boolean {
-  return Boolean(message.agentId && message.parentTurnId);
+  return Boolean(message.subRunId);
 }
 
 export default function MessageList({ messages }: MessageListProps) {
@@ -137,6 +166,9 @@ export default function MessageList({ messages }: MessageListProps) {
     if (msg.kind === 'compact') {
       return <CompactMessage message={msg} />;
     }
+    if (msg.kind === 'subRunStart' || msg.kind === 'subRunFinish') {
+      return null;
+    }
     return null;
   }, []);
 
@@ -182,28 +214,53 @@ export default function MessageList({ messages }: MessageListProps) {
     let nextIndex = index + 1;
     while (nextIndex < messages.length) {
       const nextMessage = messages[nextIndex];
-      if (
-        nextMessage.agentId !== message.agentId ||
-        nextMessage.parentTurnId !== message.parentTurnId
-      ) {
+      if (nextMessage.subRunId !== message.subRunId) {
         break;
       }
       group.push(nextMessage);
       nextIndex += 1;
     }
 
+    const startMessage = group.find(
+      (item): item is Extract<Message, { kind: 'subRunStart' }> => item.kind === 'subRunStart'
+    );
+    const finishMessage = group.find(
+      (item): item is Extract<Message, { kind: 'subRunFinish' }> => item.kind === 'subRunFinish'
+    );
+    const bodyMessages = group.filter((item) => !isSubRunLifecycleMessage(item));
+    const status =
+      finishMessage === undefined
+        ? 'running'
+        : typeof finishMessage.result.status === 'string'
+          ? finishMessage.result.status
+          : 'failed';
+    const metrics =
+      finishMessage !== undefined
+        ? `${finishMessage.stepCount} steps · ${finishMessage.estimatedTokens} tokens`
+        : startMessage?.storageMode === 'independentSession'
+          ? 'independent session'
+          : 'shared session';
+    const title =
+      startMessage?.agentProfile ??
+      finishMessage?.agentProfile ??
+      message.agentProfile ??
+      message.agentId ??
+      '子会话';
+
     renderedRows.push(
       <div
-        key={`agent-group-${message.agentId ?? 'unknown'}-${index}`}
+        key={`agent-group-${message.subRunId ?? 'unknown'}-${index}`}
         className={styles.agentGroup}
       >
         <div className={styles.agentGroupHeader}>
-          <span className={styles.agentGroupLabel}>子 Agent</span>
-          <span className={styles.agentGroupTitle}>{message.agentProfile ?? message.agentId}</span>
+          <span className={styles.agentGroupLabel}>子会话</span>
+          <span className={styles.agentGroupTitle}>{title}</span>
+          <span className={styles.agentGroupLabel}>{status}</span>
+          <span className={styles.agentGroupTitle}>{metrics}</span>
         </div>
         <div className={styles.agentGroupBody}>
-          {group.map((groupMessage, groupIndex) =>
-            renderMessageRow(groupMessage, groupIndex > 0 ? group[groupIndex - 1] : null, {
+          {bodyMessages.map((groupMessage, groupIndex) =>
+            renderMessageRow(groupMessage, groupIndex > 0 ? bodyMessages[groupIndex - 1] : null, {
               key: groupMessage.id,
               nested: true,
             })

@@ -1,0 +1,90 @@
+//! # AgentLoop 组装器
+//!
+//! RuntimeService 只持有当前 loop 与 surface 快照；真正的 loop 构造与 scoped
+//! policy 包装统一收敛到这里，避免 `mod.rs` 同时承担 façade 与装配职责。
+
+use std::sync::Arc;
+
+use astrcode_core::{CapabilityRouter, HookHandler, PolicyEngine};
+use astrcode_runtime_agent_loop::{AgentLoop, ApprovalBroker, SubAgentPolicyEngine};
+use astrcode_runtime_prompt::PromptDeclaration;
+use astrcode_runtime_skill_loader::SkillCatalog;
+
+use super::RuntimeSurfaceState;
+use crate::{
+    config::{
+        resolve_auto_compact_enabled, resolve_compact_keep_recent_turns,
+        resolve_compact_threshold_percent, resolve_max_tool_concurrency,
+        resolve_tool_result_max_bytes,
+    },
+    provider_factory::ConfigFileProviderFactory,
+};
+
+pub(super) fn build_agent_loop(
+    surface: &RuntimeSurfaceState,
+    runtime_config: &crate::config::RuntimeConfig,
+    policy: Arc<dyn PolicyEngine>,
+    approval: Arc<dyn ApprovalBroker>,
+) -> Arc<AgentLoop> {
+    build_agent_loop_from_parts(
+        surface.capabilities.clone(),
+        surface.prompt_declarations.clone(),
+        Arc::clone(&surface.skill_catalog),
+        surface.hook_handlers.clone(),
+        runtime_config,
+        policy,
+        approval,
+    )
+}
+
+pub(super) fn build_agent_loop_from_parts(
+    capabilities: CapabilityRouter,
+    prompt_declarations: Vec<PromptDeclaration>,
+    skill_catalog: Arc<SkillCatalog>,
+    hook_handlers: Vec<Arc<dyn HookHandler>>,
+    runtime_config: &crate::config::RuntimeConfig,
+    policy: Arc<dyn PolicyEngine>,
+    approval: Arc<dyn ApprovalBroker>,
+) -> Arc<AgentLoop> {
+    let max_tool_concurrency = resolve_max_tool_concurrency(runtime_config);
+    Arc::new(
+        AgentLoop::from_capabilities_with_prompt_inputs(
+            Arc::new(ConfigFileProviderFactory),
+            capabilities,
+            prompt_declarations,
+            skill_catalog,
+        )
+        .with_hook_handlers(hook_handlers)
+        .with_max_tool_concurrency(max_tool_concurrency)
+        .with_auto_compact_enabled(resolve_auto_compact_enabled(runtime_config))
+        .with_compact_threshold_percent(resolve_compact_threshold_percent(runtime_config))
+        .with_tool_result_max_bytes(resolve_tool_result_max_bytes(runtime_config))
+        .with_compact_keep_recent_turns(resolve_compact_keep_recent_turns(runtime_config) as usize)
+        .with_policy_engine(policy)
+        .with_approval_broker(approval),
+    )
+}
+
+pub(super) fn build_scoped_agent_loop(
+    capabilities: CapabilityRouter,
+    prompt_declarations: Vec<PromptDeclaration>,
+    skill_catalog: Arc<SkillCatalog>,
+    hook_handlers: Vec<Arc<dyn HookHandler>>,
+    runtime_config: &crate::config::RuntimeConfig,
+    policy: Arc<dyn PolicyEngine>,
+    approval: Arc<dyn ApprovalBroker>,
+) -> Arc<AgentLoop> {
+    let scoped_policy = Arc::new(SubAgentPolicyEngine::new(
+        policy,
+        capabilities.tool_names().into_iter().collect(),
+    ));
+    build_agent_loop_from_parts(
+        capabilities,
+        prompt_declarations,
+        skill_catalog,
+        hook_handlers,
+        runtime_config,
+        scoped_policy,
+        approval,
+    )
+}

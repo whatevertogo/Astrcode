@@ -157,8 +157,10 @@ dependencies = [
  "astrcode-runtime-agent-loop",
  "astrcode-runtime-agent-tool",
  "astrcode-runtime-config",
+ "astrcode-runtime-execution",
  "astrcode-runtime-llm",
  "astrcode-runtime-prompt",
+ "astrcode-runtime-session",
  "astrcode-runtime-skill-loader",
  "astrcode-runtime-tool-loader",
  "astrcode-storage",
@@ -185,6 +187,7 @@ name = "astrcode-runtime-agent-control"
 version = "0.1.0"
 dependencies = [
  "astrcode-core",
+ "astrcode-runtime-config",
  "thiserror 2.0.18",
  "tokio",
 ]
@@ -246,6 +249,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrcode-runtime-execution"
+version = "0.1.0"
+dependencies = [
+ "astrcode-core",
+ "astrcode-runtime-agent-loop",
+ "astrcode-runtime-agent-tool",
+ "astrcode-runtime-config",
+ "astrcode-runtime-prompt",
+ "astrcode-runtime-skill-loader",
+ "async-trait",
+ "uuid",
+]
+
+[[package]]
 name = "astrcode-runtime-llm"
 version = "0.1.0"
 dependencies = [
@@ -274,6 +291,19 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "astrcode-runtime-session"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "astrcode-core",
+ "astrcode-runtime-agent-control",
+ "astrcode-runtime-agent-loop",
+ "chrono",
  "tempfile",
  "tokio",
 ]
@@ -328,6 +358,7 @@ dependencies = [
  "astrcode-protocol",
  "astrcode-runtime",
  "async-stream",
+ "async-trait",
  "axum",
  "axum-extra",
  "chrono",

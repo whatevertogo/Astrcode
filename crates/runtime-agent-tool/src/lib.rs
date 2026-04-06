@@ -8,7 +8,8 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    Result, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
+    Result, SubRunOutcome, SubRunResult, SubagentContextOverrides, Tool, ToolCapabilityMetadata,
+    ToolContext, ToolDefinition, ToolExecutionResult,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -28,37 +29,9 @@ pub struct RunAgentParams {
     /// 可选步数覆盖。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<u32>,
-}
-
-/// 子 Agent 执行结果类型。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SubAgentOutcome {
-    Completed,
-    Failed { error: String },
-    Aborted,
-    TokenExceeded,
-}
-
-impl SubAgentOutcome {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Completed => "completed",
-            Self::Failed { .. } => "failed",
-            Self::Aborted => "aborted",
-            Self::TokenExceeded => "token_exceeded",
-        }
-    }
-}
-
-/// 子 Agent 执行的最小返回面。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct SubAgentResult {
-    pub outcome: SubAgentOutcome,
-    pub summary: String,
+    /// 子会话上下文 override。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
+    pub context_overrides: Option<SubagentContextOverrides>,
 }
 
 /// 子 Agent 执行器抽象。
@@ -66,7 +39,7 @@ pub struct SubAgentResult {
 /// 真实执行器由 runtime 提供，这里只定义 Tool 所需的最小边界。
 #[async_trait]
 pub trait SubAgentExecutor: Send + Sync {
-    async fn execute(&self, params: RunAgentParams, ctx: &ToolContext) -> Result<SubAgentResult>;
+    async fn execute(&self, params: RunAgentParams, ctx: &ToolContext) -> Result<SubRunResult>;
 }
 
 /// 把子 Agent 能力暴露给 LLM 的内置工具。
@@ -100,6 +73,26 @@ impl RunAgentTool {
                     "type": "integer",
                     "minimum": 1,
                     "description": "可选的 step 上限覆盖"
+                },
+                "contextOverrides": {
+                    "type": "object",
+                    "description": "可选的子会话上下文 override",
+                    "additionalProperties": false,
+                    "properties": {
+                        "storageMode": {
+                            "type": "string",
+                            "enum": ["sharedSession", "independentSession"]
+                        },
+                        "inheritSystemInstructions": { "type": "boolean" },
+                        "inheritProjectInstructions": { "type": "boolean" },
+                        "inheritWorkingDir": { "type": "boolean" },
+                        "inheritPolicyUpperBound": { "type": "boolean" },
+                        "inheritCancelToken": { "type": "boolean" },
+                        "includeCompactSummary": { "type": "boolean" },
+                        "includeRecentTail": { "type": "boolean" },
+                        "includeRecoveryRefs": { "type": "boolean" },
+                        "includeParentFindings": { "type": "boolean" }
+                    }
                 }
             },
             "required": ["name", "task"]
@@ -154,23 +147,30 @@ impl Tool for RunAgentTool {
         };
 
         let result = self.executor.execute(params, ctx).await?;
-        let mut metadata = result.metadata.unwrap_or_else(|| json!({}));
+        let mut metadata = json!({
+            "outcome": result.status.as_str(),
+            "findings": result.findings,
+            "artifacts": result.artifacts,
+            "result": result,
+        });
         if let Value::Object(object) = &mut metadata {
             object.insert(
-                "outcome".to_string(),
-                Value::String(result.outcome.as_str().to_string()),
+                "schema".to_string(),
+                Value::String("subRunResult".to_string()),
             );
         }
+        let output = result.summary.clone();
+        let error = match &result.status {
+            SubRunOutcome::Failed { error } => Some(error.clone()),
+            _ => None,
+        };
 
         Ok(ToolExecutionResult {
             tool_call_id,
             tool_name: "runAgent".to_string(),
-            ok: !matches!(result.outcome, SubAgentOutcome::Failed { .. }),
-            output: result.summary,
-            error: match result.outcome {
-                SubAgentOutcome::Failed { error } => Some(error),
-                _ => None,
-            },
+            ok: !matches!(result.status, SubRunOutcome::Failed { .. }),
+            output,
+            error,
             metadata: Some(metadata),
             duration_ms: 0,
             truncated: false,
@@ -182,11 +182,11 @@ impl Tool for RunAgentTool {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use astrcode_core::{CancelToken, Tool, ToolContext};
+    use astrcode_core::{CancelToken, SubRunOutcome, SubRunResult, Tool, ToolContext};
     use async_trait::async_trait;
     use serde_json::json;
 
-    use super::{RunAgentParams, RunAgentTool, SubAgentExecutor, SubAgentOutcome, SubAgentResult};
+    use super::{RunAgentParams, RunAgentTool, SubAgentExecutor};
 
     struct RecordingExecutor {
         calls: Mutex<Vec<RunAgentParams>>,
@@ -198,12 +198,13 @@ mod tests {
             &self,
             params: RunAgentParams,
             _ctx: &ToolContext,
-        ) -> astrcode_core::Result<SubAgentResult> {
+        ) -> astrcode_core::Result<SubRunResult> {
             self.calls.lock().expect("calls lock").push(params);
-            Ok(SubAgentResult {
-                outcome: SubAgentOutcome::Completed,
+            Ok(SubRunResult {
                 summary: "done".to_string(),
-                metadata: Some(json!({"agentId": "agent-1"})),
+                artifacts: Vec::new(),
+                findings: vec!["checked".to_string()],
+                status: SubRunOutcome::Completed,
             })
         }
     }
@@ -243,6 +244,13 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "review");
         assert_eq!(calls[0].max_steps, Some(3));
+        assert_eq!(
+            result
+                .metadata
+                .as_ref()
+                .and_then(|value| value.get("schema")),
+            Some(&json!("subRunResult"))
+        );
     }
 
     #[tokio::test]

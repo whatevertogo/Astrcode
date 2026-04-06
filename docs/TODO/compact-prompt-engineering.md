@@ -5,32 +5,36 @@
 
 ---
 
-## 一、当前实现状态（2026-04 截止 f431095）
+## 一、当前实现状态（2026-04-05）
 
 ### 已完成
 
 | 改进项 | 状态 | 说明 |
 |--------|------|------|
-| `<analysis>` + `<summary>` XML 块 | ✅ 已有 | `render_compact_system_prompt()` 要求 LLM 返回两个 XML 块 |
-| `extract_summary()` 解析 | ✅ 已有 | 正确提取 `<summary>` 块内容，回退到原文 |
+| `<analysis>` + `<summary>` XML 块 | ✅ 已有 | compact prompt 强制输出 XML 双块 |
+| **摘要协议模块** | ✅ 已上线 | `crates/core/src/compact_summary.rs` 统一 `format_compact_summary()` / `parse_compact_summary_message()` / `CompactSummaryEnvelope` |
+| **严格输出解析** | ✅ 已上线 | `parse_compact_output()` 要求 `<summary>` 存在、闭合且非空；缺 `<analysis>` 仅告警 |
 | **Hook 系统 PreCompact / PostCompact** | ✅ 已上线 | `hook.rs` + `hook_runtime.rs`，支持 Block / ModifyCompactContext / Continue |
 | **插件适配层** | ✅ 已上线 | `plugin_hook_adapter.rs` 将插件 handler 映射为 HookHandler |
+| **增量 compact 模式** | ✅ 已上线 | 仅读取最近一条 `CompactSummary` 作为 previous summary，避免多摘要歧义 |
 | 重试 + 熔断 | ✅ 已有 | `ThresholdCompactionPolicy` 3 次连续失败后断路，manual 不计入 |
-| 文件恢复 | ✅ 已有 | `CompactionRuntime.recover_file_contents()` 带 token 预算限制 |
-| 手动压缩 | ✅ 已有 | `compact_manual_with_keep_recent_turns()` 独立入口 |
+| **PrunePass** | ✅ 已上线 | 现有 `microcompact` 明确收口为 AI summarization 前的本地 prune pass |
+| **step 级 compact 边界** | ✅ 已上线 | `CompactionBoundary` / `CompactionUnit` 支持单 turn 长会话按 assistant-step 安全切分 |
+| **恢复层独立上下文槽位** | ✅ 已上线 | `CompactionView { messages, memory_blocks, recovery_refs }`，恢复文件内容不再伪装为会话消息 |
+| **Structured workset / memory request 编码** | ✅ 已上线 | `RequestAssembler` 在请求装配边界把 `workset` / `memory` 编码进请求 |
+| **messages_removed 精确回放** | ✅ 已上线 | projector 优先使用 `CompactApplied.messages_removed`，旧事件回退 `preserved_recent_turns` |
+| **模板外部化** | ✅ 已上线 | compact prompt 模板已拆到 `templates/compact/base.md` 与 `incremental.md` |
+| **Claude 风格 TODO 占位** | ✅ 已保留 | `TODO(claude-auto-compact)` 覆盖 cache-sharing fork / time-based microcompact / cache-edit microcompact |
+| 手动压缩 | ✅ 已升级 | `manual /compact` 只要存在安全 cut point 即可执行，不再要求至少 2 个真实用户 turn |
 
-### 待改进
+### 仍待推进
 
 | 改进项 | 当前状况 | 优先级 |
 |--------|---------|--------|
-| **Prompt 内容优先级** | LLM 不知道哪些信息更重要，可能生成流水账 | P0 |
-| **NO_TOOLS 力度** | "Never call tools." 藏在 Rules 中间，不够醒目 | P0 |
-| **Analysis 自检校验** | `extract_summary()` 不检查 `<analysis>` 块是否存在/有效 | P1 |
-| **增量重压缩** | 代码保留了 `CompactSummary` 消息，但 prompt 没指示 LLM 如何合并 | P1 |
-| **"Output ONLY" 约束** | 无约束，LLM 可能加 "Here is the summary..." 废话 | P1 |
-| **Scannable 格式要求** | 无，摘要可能是大段连续文本 | P2 |
-| **第三方称语气** | 无约束 | P2 |
-| **Prompt 模板外部化** | inline 在 `render_compact_system_prompt()` | P3 |
+| **Prompt 继续精炼** | 当前模板已经外部化并支持 incremental，但内容优先级和 section 约束仍可继续打磨 | P1 |
+| **PrunePass 审计增强** | 已有 `PruneStats`，但尚未下沉到更细粒度的诊断事件或 UI 指标 | P2 |
+| **Boundary 持久化标识** | 当前 `messages_removed` 对现阶段精确；若未来 compact unit 与消息数脱钩，需要补 boundary 级 ID | P2 |
+| **恢复引用类型扩展** | `recovery_refs` 目前主要承接文件引用，后续可扩展 ghost snapshot / undo 恢复点等 artifact | P3 |
 
 ---
 

@@ -90,7 +90,10 @@ impl Default for TestEnvGuard {
 
 impl TestEnvGuard {
     pub fn new() -> Self {
-        let lock = env_lock().lock().expect("env lock should be acquired");
+        // 即使锁被之前 panic 的测试毒化，也可以安全恢复——仅隔离环境变量，无内部不变量需要维护
+        let lock = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp_home = tempfile::tempdir().expect("tempdir should be created");
         let previous_dir = std::env::current_dir().expect("cwd should resolve");
         let previous_home = std::env::var_os("HOME");

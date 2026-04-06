@@ -17,8 +17,8 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     AgentEventContext, CancelToken, CapabilityDescriptor, CapabilityKind, DescriptorBuildError,
-    PermissionHint, Result, SideEffectLevel, StabilityLevel, StorageEvent, ToolDefinition,
-    ToolExecutionResult, ToolOutputDelta, ToolOutputStream,
+    InvocationKind, PermissionHint, Result, SideEffectLevel, StabilityLevel, StorageEvent,
+    ToolDefinition, ToolExecutionResult, ToolOutputDelta, ToolOutputStream,
 };
 
 /// Unique identifier for a session.
@@ -28,6 +28,51 @@ pub type SessionId = String;
 ///
 /// 超过此大小的输出会被截断，防止大文件导致内存溢出或网络传输问题。
 pub const DEFAULT_MAX_OUTPUT_SIZE: usize = 1024 * 1024;
+
+/// 工具调用链路的稳定归属标识。
+///
+/// 该结构只服务 runtime 内部的控制面演进，用于把“根执行归属”和
+/// “当前 sub-run 归属”显式挂到工具上下文里，避免后续长任务注册继续
+/// 依赖 `parent_turn_id` 这类脆弱字符串推断。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionOwner {
+    /// 根执行所在的 session。
+    pub root_session_id: SessionId,
+    /// 根执行所在的 turn。
+    pub root_turn_id: String,
+    /// 当前工具调用若属于子执行域，则记录 sub-run id。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_run_id: Option<String>,
+    /// 当前归属来源。
+    pub invocation_kind: InvocationKind,
+}
+
+impl ExecutionOwner {
+    /// 为顶层执行构造 owner。
+    pub fn root(
+        root_session_id: impl Into<SessionId>,
+        root_turn_id: impl Into<String>,
+        invocation_kind: InvocationKind,
+    ) -> Self {
+        Self {
+            root_session_id: root_session_id.into(),
+            root_turn_id: root_turn_id.into(),
+            sub_run_id: None,
+            invocation_kind,
+        }
+    }
+
+    /// 在现有根归属上挂接当前 sub-run。
+    pub fn for_sub_run(&self, sub_run_id: impl Into<String>) -> Self {
+        Self {
+            root_session_id: self.root_session_id.clone(),
+            root_turn_id: self.root_turn_id.clone(),
+            sub_run_id: Some(sub_run_id.into()),
+            invocation_kind: InvocationKind::SubRun,
+        }
+    }
+}
 
 /// Tool 内部产生 turn 级事件时使用的发射接口。
 ///
@@ -75,6 +120,10 @@ pub struct ToolContext {
     ///
     /// 只有像 runAgent 这类会在工具内部再触发 turn/tool 事件的复合工具才会使用。
     event_sink: Option<Arc<dyn ToolEventSink>>,
+    /// 工具调用链路归属。
+    ///
+    /// 当前只作为只读上下文向下游传播，为后续根级任务控制平面预留稳定 owner。
+    execution_owner: Option<ExecutionOwner>,
 }
 
 impl ToolContext {
@@ -92,6 +141,7 @@ impl ToolContext {
             session_storage_root: None,
             tool_output_sender: None,
             event_sink: None,
+            execution_owner: None,
         }
     }
 
@@ -137,6 +187,12 @@ impl ToolContext {
         self
     }
 
+    /// 为工具上下文注入执行 owner。
+    pub fn with_execution_owner(mut self, execution_owner: ExecutionOwner) -> Self {
+        self.execution_owner = Some(execution_owner);
+        self
+    }
+
     /// Returns the session identifier.
     pub fn session_id(&self) -> &str {
         &self.session_id
@@ -177,6 +233,11 @@ impl ToolContext {
 
     pub fn event_sink(&self) -> Option<Arc<dyn ToolEventSink>> {
         self.event_sink.clone()
+    }
+
+    /// 返回当前执行 owner。
+    pub fn execution_owner(&self) -> Option<&ExecutionOwner> {
+        self.execution_owner.as_ref()
     }
 
     /// Emits a tool delta to the runtime if streaming is enabled.
@@ -230,6 +291,7 @@ impl Clone for ToolContext {
             session_storage_root: self.session_storage_root.clone(),
             tool_output_sender: self.tool_output_sender.clone(),
             event_sink: self.event_sink.clone(),
+            execution_owner: self.execution_owner.clone(),
         }
     }
 }
@@ -252,6 +314,7 @@ impl fmt::Debug for ToolContext {
                 "event_sink",
                 &self.event_sink.as_ref().map(|_| "<attached>"),
             )
+            .field("execution_owner", &self.execution_owner)
             .finish()
     }
 }

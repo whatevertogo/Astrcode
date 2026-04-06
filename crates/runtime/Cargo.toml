@@ -6,6 +6,8 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+astrcode-runtime-session = { path = "../runtime-session" }
+astrcode-runtime-execution = { path = "../runtime-execution" }
 astrcode-runtime-agent-control = { path = "../runtime-agent-control" }
 astrcode-runtime-agent-loop = { path = "../runtime-agent-loop" }
 astrcode-core = { path = "../core" }

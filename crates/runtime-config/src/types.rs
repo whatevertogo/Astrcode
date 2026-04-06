@@ -93,6 +93,29 @@ pub struct RuntimeConfig {
     pub compact_keep_recent_turns: Option<u8>,
 
     // -------------------------------------------------------------------------
+    // 多 Agent 控制
+    // -------------------------------------------------------------------------
+    /// 多 Agent 控制参数。
+    ///
+    /// 所有字段保持 `Option<T>`，用户无需在每次新增字段后都更新 `config.json`。
+    /// 未设置时回退到内置默认值。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentConfig>,
+
+    /// 熔断阈值：连续压缩失败次数达到此值后暂停自动压缩。
+    ///
+    /// 网络不稳定环境下可适当调大，避免过早熔断导致上下文无法压缩。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_consecutive_failures: Option<usize>,
+
+    /// 压缩恢复时文件内容的截断字节数。
+    ///
+    /// Post-compact 文件恢复注入的文件内容超过此大小时会被截断，
+    /// 防止单个文件占用过多上下文窗口。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_truncate_bytes: Option<usize>,
+
+    // -------------------------------------------------------------------------
     // Token 预算与续调
     // -------------------------------------------------------------------------
     /// 自动续调 token 预算。
@@ -178,6 +201,82 @@ pub struct RuntimeConfig {
     /// API 会话有效期（小时）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_session_ttl_hours: Option<i64>,
+}
+
+/// 多 Agent 控制参数。
+///
+/// 所有字段保持 `Option<T>`，让用户按需调整 Agent 行为，
+/// 不设置的参数会回退到内置默认值。
+///
+/// # 示例配置
+///
+/// ```json
+/// {
+///   "runtime": {
+///     "agent": {
+///       "maxSubrunDepth": 1,
+///       "maxConcurrent": 5,
+///       "finalizedRetainLimit": 256,
+///       "experimentalIndependentSession": false
+///     }
+///   }
+/// }
+/// ```
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+#[serde(default)]
+pub struct AgentConfig {
+    /// 子会话最大嵌套深度。
+    ///
+    /// 这是新的受控子会话深度限制，默认值更保守，优先服务 `runAgent`
+    /// 和未来的根执行 API，而不是继续沿用早期多 Agent 原型的宽松值。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_subrun_depth: Option<usize>,
+
+    /// Agent 嵌套深度上限。
+    ///
+    /// 限制子 Agent 可被嵌套的层数，防止无限递归。
+    /// 例如 maxDepth=3 表示最多允许 root→child→grandchild 三层。
+    ///
+    /// 保留该字段是为了兼容旧配置；新逻辑优先读取 `maxSubrunDepth`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<usize>,
+
+    /// 并发子 Agent 数上限。
+    ///
+    /// 同时处于活跃状态（Pending / Running）的子 Agent 最大数量，
+    /// 超过此限制时新 spawn 会被拒绝。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_concurrent: Option<usize>,
+
+    /// 终态 Agent 保留数。
+    ///
+    /// 已完成 / 已失败 / 已取消的 Agent 条目在内存中的保留上限，
+    /// 超过后最旧的终态 leaf 条目会被清理，供 UI / replay 查询使用。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finalized_retain_limit: Option<usize>,
+
+    /// 是否启用独立子会话实验特性。
+    ///
+    /// 该开关默认关闭，避免把尚未完全打磨的跨 session 行为暴露给普通会话。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experimental_independent_session: Option<bool>,
+}
+
+impl fmt::Debug for AgentConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AgentConfig")
+            .field("max_subrun_depth", &self.max_subrun_depth)
+            .field("max_depth", &self.max_depth)
+            .field("max_concurrent", &self.max_concurrent)
+            .field("finalized_retain_limit", &self.finalized_retain_limit)
+            .field(
+                "experimental_independent_session",
+                &self.experimental_independent_session,
+            )
+            .finish()
+    }
 }
 
 impl Default for Config {
@@ -277,6 +376,10 @@ impl fmt::Debug for RuntimeConfig {
             .field("compact_threshold_percent", &self.compact_threshold_percent)
             .field("tool_result_max_bytes", &self.tool_result_max_bytes)
             .field("compact_keep_recent_turns", &self.compact_keep_recent_turns)
+            // 多 Agent 控制
+            .field("agent", &self.agent)
+            .field("max_consecutive_failures", &self.max_consecutive_failures)
+            .field("recovery_truncate_bytes", &self.recovery_truncate_bytes)
             // Token 预算与续调
             .field("default_token_budget", &self.default_token_budget)
             .field(

@@ -20,10 +20,10 @@ protocol (纯 DTO，无业务依赖)
 
 **依赖规则：**
 - `protocol` 不得依赖 `core`/`runtime`；跨边界走显式 DTO + mapper
-- `runtime-tool-loader` 仅依赖 `core`，不依赖 `runtime`
+- `runtime-...-loader` 仅依赖 `core`，不依赖 `runtime`
 - `storage` 实现持久化（`EventLog`、`FileSystemSessionRepository`）；`core` 只定义接口
 - `runtime-prompt`/`runtime-llm`/`runtime-config` 保持编译隔离，`runtime` 作为门面组合，不重复实现
-- 环境变量常量源头在 `crates/core/src/env.rs`，`runtime-config/src/constants.rs` 聚合导出
+- 环境变量常量源头在 `crates/core/src/env.rs`，`runtime-config/src/constants.rs`, 聚合导出
 
 ## Workflow Checklist
 
@@ -35,4 +35,6 @@ protocol (纯 DTO，无业务依赖)
 
 ## 注意
 
-- 用中文注释，且注释尽量表明为什么和做了什么
+- 用中文注释，且注释尽量表明为什么和做了什么、
+- 为了干净架构和良好实现可以不需要向后兼容，如果向后兼容需要说明为什么
+- 最后需要cargo fmt --all --check  && cargo clippy --all-targets --all-features -- -D warnings && cargo test验证你的更改

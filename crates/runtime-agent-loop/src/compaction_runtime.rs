@@ -13,7 +13,7 @@
 //! - **调用时机 3**：LLM 返回 413 prompt-too-long 时，触发 reactive compact
 //! - **调用时机 4**：用户手动触发压缩时，`manual_compact_event()` 被调用
 //! - **输入**：LLM Provider、当前 `ConversationView`、可选的 system prompt、压缩原因
-//! - **输出**：可选的 `CompactionArtifact` + 重建后的 `ConversationView`
+//! - **输出**：可选的 `CompactionArtifact` + 重建后的 `CompactionView`
 //!
 //! ## 依赖和协作
 //!
@@ -34,12 +34,15 @@
 //! | `Reactive` | LLM 返回 413 prompt-too-long | 自动触发，最多重试 3 次 |
 //! | `Manual` | 用户主动触发 | 与 Auto 共享同一条压缩路径 |
 //!
+//! ## TODO:
+//! fork agent,后台 compact,分段 compact,增量 merge
+//!
 //! ## 关键设计
 //!
 //! - `CompactionRuntime` 持有三个协作者：`policy`（触发策略）、`strategy`（自动压缩策略）、
 //!   `rebuilder`（对话视图重建器），各自通过 trait 抽象，可独立替换
 //! - `CompactionTailSnapshot` 携带最近 N 个 turn 的消息快照，用于压缩后保留尾部上下文
-//! - `rebuild_conversation()` 将 artifact 转换为 `ConversationView`，供 pipeline 注入
+//! - `rebuild_conversation()` 将 artifact 转换为 `CompactionView`，供 pipeline 注入
 
 use std::{
     path::PathBuf,
@@ -59,7 +62,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use crate::{
-    context_pipeline::ConversationView,
+    context_pipeline::{CompactionView, ContextBlock, ConversationView, RecoveryRef},
     context_window::{CompactConfig, PromptTokenSnapshot, auto_compact, should_compact},
 };
 
@@ -256,6 +259,17 @@ fn recent_turn_start_index(
     last_index
 }
 
+fn fallback_assistant_step_start(messages: &[LlmMessage]) -> Option<usize> {
+    messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, message)| {
+            matches!(message, LlmMessage::Assistant { .. }).then_some(index)
+        })
+        .filter(|index| *index > 0)
+}
+
 pub(crate) struct CompactionInput<'a> {
     pub provider: &'a dyn LlmProvider,
     pub conversation: &'a ConversationView,
@@ -287,7 +301,8 @@ pub(crate) trait CompactionRebuilder: Send + Sync {
         artifact: &CompactionArtifact,
         tail: &[StoredEvent],
         file_contents: &[(PathBuf, String)],
-    ) -> Result<ConversationView>;
+        truncate_bytes: usize,
+    ) -> Result<CompactionView>;
 }
 
 /// 文件内容读取抽象，用于 post-compact 文件恢复。
@@ -306,10 +321,16 @@ impl FileContentProvider for FsFileContentProvider {
     }
 }
 
+/// 默认文件恢复内容截断字节数（30KB）。
+///
+/// 在没有 RuntimeConfig 可用时作为兜底默认值。
+pub(crate) const DEFAULT_RECOVERY_TRUNCATE_BYTES: usize = 30_000;
+
 pub(crate) struct CompactionRuntime {
     enabled: bool,
     keep_recent_turns: usize,
     threshold_percent: u8,
+    recovery_truncate_bytes: usize,
     pub(crate) policy: Arc<dyn CompactionPolicy>,
     pub(crate) strategy: Arc<dyn CompactionStrategy>,
     pub(crate) rebuilder: Arc<dyn CompactionRebuilder>,
@@ -322,6 +343,7 @@ pub(crate) const MAX_RECOVERED_FILES: usize = 5;
 const RECOVERY_TOKEN_BUDGET: usize = 50_000;
 
 impl CompactionRuntime {
+    #[cfg(test)]
     pub(crate) fn new(
         enabled: bool,
         keep_recent_turns: usize,
@@ -331,10 +353,38 @@ impl CompactionRuntime {
         rebuilder: Arc<dyn CompactionRebuilder>,
         file_provider: Arc<dyn FileContentProvider>,
     ) -> Self {
+        Self::with_truncate_bytes(
+            enabled,
+            keep_recent_turns,
+            threshold_percent,
+            DEFAULT_RECOVERY_TRUNCATE_BYTES,
+            policy,
+            strategy,
+            rebuilder,
+            file_provider,
+        )
+    }
+
+    /// 构建时显式指定文件恢复截断字节数。
+    ///
+    /// 该值从 RuntimeConfig.recoveryTruncateBytes 解析。
+    // 参数数量合理：与 CompactionRuntime 字段一一对应，用于从 RuntimeConfig 显式构建
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn with_truncate_bytes(
+        enabled: bool,
+        keep_recent_turns: usize,
+        threshold_percent: u8,
+        recovery_truncate_bytes: usize,
+        policy: Arc<dyn CompactionPolicy>,
+        strategy: Arc<dyn CompactionStrategy>,
+        rebuilder: Arc<dyn CompactionRebuilder>,
+        file_provider: Arc<dyn FileContentProvider>,
+    ) -> Self {
         Self {
             enabled,
             keep_recent_turns: keep_recent_turns.max(1),
             threshold_percent: threshold_percent.clamp(1, 100),
+            recovery_truncate_bytes: recovery_truncate_bytes.max(1024),
             policy,
             strategy,
             rebuilder,
@@ -352,6 +402,34 @@ impl CompactionRuntime {
 
     pub(crate) fn threshold_percent(&self) -> u8 {
         self.threshold_percent
+    }
+
+    /// 仅替换 enabled 和 policy，其余字段不变。
+    pub(crate) fn with_enabled_and_policy(
+        mut self,
+        enabled: bool,
+        policy: Arc<dyn CompactionPolicy>,
+    ) -> Self {
+        self.enabled = enabled;
+        self.policy = policy;
+        self
+    }
+
+    /// 仅替换 keep_recent_turns 和 policy，其余字段不变。
+    pub(crate) fn with_keep_recent_turns(
+        mut self,
+        keep_recent_turns: usize,
+        policy: Arc<dyn CompactionPolicy>,
+    ) -> Self {
+        self.keep_recent_turns = keep_recent_turns.max(1);
+        self.policy = policy;
+        self
+    }
+
+    /// 仅替换 threshold_percent，其余字段不变。
+    pub(crate) fn with_threshold_percent(mut self, threshold_percent: u8) -> Self {
+        self.threshold_percent = threshold_percent.clamp(1, 100);
+        self
     }
 
     pub(crate) fn build_context_decision(
@@ -477,10 +555,11 @@ impl CompactionRuntime {
         &self,
         artifact: &CompactionArtifact,
         tail: &[StoredEvent],
-    ) -> Result<ConversationView> {
+    ) -> Result<CompactionView> {
         // 从 FileAccessTracker 跟踪的文件路径中恢复文件内容
         let file_contents = self.recover_file_contents(&artifact.recovered_files);
-        self.rebuilder.rebuild(artifact, tail, &file_contents)
+        self.rebuilder
+            .rebuild(artifact, tail, &file_contents, self.recovery_truncate_bytes)
     }
 
     /// 读取恢复文件的最近内容，受 MAX_RECOVERED_FILES 和 token 预算限制。
@@ -531,6 +610,7 @@ pub(crate) const MAX_CONSECUTIVE_FAILURES: usize = 3;
 
 pub(crate) struct ThresholdCompactionPolicy {
     enabled: bool,
+    max_consecutive_failures: usize,
     consecutive_failures: AtomicUsize,
 }
 
@@ -538,6 +618,7 @@ impl ThresholdCompactionPolicy {
     pub(crate) fn new(enabled: bool) -> Self {
         Self {
             enabled,
+            max_consecutive_failures: MAX_CONSECUTIVE_FAILURES,
             consecutive_failures: AtomicUsize::new(0),
         }
     }
@@ -548,11 +629,11 @@ impl CompactionPolicy for ThresholdCompactionPolicy {
         if !self.enabled || !should_compact(*snapshot) {
             return None;
         }
-        if self.consecutive_failures.load(Ordering::Relaxed) >= MAX_CONSECUTIVE_FAILURES {
+        if self.consecutive_failures.load(Ordering::Relaxed) >= self.max_consecutive_failures {
             log::warn!(
                 "circuit breaker open: skipping auto-compaction after {} consecutive failures \
                  (consecutive_failures={})",
-                MAX_CONSECUTIVE_FAILURES,
+                self.max_consecutive_failures,
                 self.consecutive_failures.load(Ordering::Relaxed),
             );
             return None;
@@ -619,39 +700,47 @@ impl CompactionRebuilder for ConversationViewRebuilder {
         artifact: &CompactionArtifact,
         tail: &[StoredEvent],
         file_contents: &[(PathBuf, String)],
-    ) -> Result<ConversationView> {
+        truncate_bytes: usize,
+    ) -> Result<CompactionView> {
         let projected_tail = project(
             &tail
                 .iter()
                 .map(|stored| stored.event.clone())
                 .collect::<Vec<_>>(),
         );
-        let mut messages = vec![astrcode_core::LlmMessage::User {
+        let messages = vec![astrcode_core::LlmMessage::User {
             content: format_compact_summary(&artifact.summary),
             origin: UserMessageOrigin::CompactSummary,
         }];
+        let mut memory_blocks = Vec::new();
+        let mut recovery_refs = Vec::new();
 
-        // 注入恢复的文件内容，作为压缩摘要和尾部消息之间的上下文补充
+        // 恢复文件内容进入独立 memory 槽位，而不是再次伪装成 compact summary 消息。
         for (path, content) in file_contents {
-            // 截断过长的文件内容，保留前 30K 字节
-            // 使用 char 边界安全截断，避免在多字节 UTF-8 字符中间切割导致 panic
-            let mut truncate_at = content.len().min(30_000);
-            while !content.is_char_boundary(truncate_at) && truncate_at > 0 {
-                truncate_at -= 1;
-            }
+            // floor_char_boundary 安全地将截断位置对齐到 UTF-8 字符边界
+            let truncate_at = content.floor_char_boundary(content.len().min(truncate_bytes));
             let truncated = &content[..truncate_at];
-            messages.push(LlmMessage::User {
+            memory_blocks.push(ContextBlock {
+                id: format!("recovered-file:{}", path.display()),
                 content: format!(
                     "[Post-compact file recovery: {}]\n```\n{}\n```",
                     path.display(),
                     truncated
                 ),
-                origin: UserMessageOrigin::CompactSummary,
+            });
+            recovery_refs.push(RecoveryRef {
+                kind: "file".to_string(),
+                value: path.display().to_string(),
             });
         }
 
-        messages.extend(projected_tail.messages);
-        Ok(ConversationView::new(messages))
+        let mut rebuilt_messages = messages;
+        rebuilt_messages.extend(projected_tail.messages);
+        Ok(CompactionView {
+            messages: rebuilt_messages,
+            memory_blocks,
+            recovery_refs,
+        })
     }
 }
 
@@ -667,10 +756,15 @@ pub(crate) fn build_artifact_from_custom_summary(
 ) -> Option<CompactionArtifact> {
     use crate::context_window::estimate_text_tokens;
 
-    let total_messages = messages.len();
-
     // 计算保留的最近 turn 起始索引（复用已有的函数）
-    let keep_start = recent_turn_start_index(messages, keep_recent_turns).unwrap_or(total_messages);
+    let Some(keep_start) = recent_turn_start_index(messages, keep_recent_turns)
+        .filter(|start| *start > 0)
+        .or_else(|| fallback_assistant_step_start(messages))
+    else {
+        // 自定义摘要也必须遵守与标准 compact 相同的安全 cut point 规则；
+        // 如果既没有旧 real-user turn，也没有 assistant-step 边界，就不能凭空折叠整段会话。
+        return None;
+    };
     let messages_removed = keep_start;
     // hook 自定义摘要也必须真正替换掉一段旧历史；如果没有任何消息被折叠，
     // 继续生成 artifact 只会把“摘要 + 原始全量尾部”叠在一起，反而扩大上下文。
@@ -810,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn rebuilder_returns_conversation_view_from_artifact() {
+    fn rebuilder_returns_compaction_view_from_artifact() {
         let artifact = CompactionArtifact {
             summary: "summary".to_string(),
             source_range: EventRange { start: 0, end: 1 },
@@ -837,7 +931,7 @@ mod tests {
         }];
 
         let rebuilt = ConversationViewRebuilder
-            .rebuild(&artifact, &tail, &[])
+            .rebuild(&artifact, &tail, &[], 30_000)
             .expect("rebuild should succeed");
 
         assert_eq!(rebuilt.messages.len(), 2);
@@ -849,6 +943,49 @@ mod tests {
             &rebuilt.messages[1],
             LlmMessage::User { content, .. } if content == "current ask"
         ));
+        assert!(rebuilt.memory_blocks.is_empty());
+        assert!(rebuilt.recovery_refs.is_empty());
+    }
+
+    #[test]
+    fn rebuilder_moves_recovered_file_context_into_memory_blocks() {
+        let artifact = CompactionArtifact {
+            summary: "summary".to_string(),
+            source_range: EventRange { start: 0, end: 1 },
+            preserved_tail_start: 1,
+            strategy_id: "test".to_string(),
+            pre_tokens: 100,
+            post_tokens_estimate: 40,
+            compacted_at_seq: 0,
+            trigger: CompactionReason::Auto,
+            preserved_recent_turns: 1,
+            messages_removed: 1,
+            tokens_freed: 60,
+            recovered_files: vec![PathBuf::from("src/lib.rs")],
+        };
+
+        let rebuilt = ConversationViewRebuilder
+            .rebuild(
+                &artifact,
+                &[],
+                &[(
+                    PathBuf::from("src/lib.rs"),
+                    "fn recovered_context() {}".to_string(),
+                )],
+                30_000,
+            )
+            .expect("rebuild should succeed");
+
+        assert!(rebuilt.messages.len() == 1);
+        assert_eq!(rebuilt.memory_blocks.len(), 1);
+        assert!(
+            rebuilt.memory_blocks[0]
+                .content
+                .contains("recovered_context")
+        );
+        assert_eq!(rebuilt.recovery_refs.len(), 1);
+        assert_eq!(rebuilt.recovery_refs[0].kind, "file");
+        assert_eq!(rebuilt.recovery_refs[0].value, "src/lib.rs");
     }
 
     #[test]
@@ -997,34 +1134,23 @@ mod tests {
     }
 
     #[test]
-    fn custom_summary_returns_none_when_keep_recent_turns_preserves_all_real_turns() {
-        let messages = vec![
-            LlmMessage::User {
-                content: "turn-1".to_string(),
-                origin: UserMessageOrigin::User,
-            },
-            LlmMessage::Assistant {
-                content: "reply-1".to_string(),
-                tool_calls: Vec::new(),
-                reasoning: None,
-            },
-            LlmMessage::User {
-                content: "turn-2".to_string(),
-                origin: UserMessageOrigin::User,
-            },
-        ];
+    fn custom_summary_returns_none_when_no_safe_compaction_boundary_exists() {
+        let messages = vec![LlmMessage::User {
+            content: "turn-1".to_string(),
+            origin: UserMessageOrigin::User,
+        }];
 
         let artifact = build_artifact_from_custom_summary(
             &messages,
             "custom summary",
-            2,
+            1,
             CompactionReason::Manual,
         );
 
         assert!(
             artifact.is_none(),
-            "when no historical turn can be removed, custom summary should not fabricate a \
-             compact artifact"
+            "when neither an old real turn nor an assistant-step boundary exists, custom summary \
+             should not fabricate a compact artifact"
         );
     }
 

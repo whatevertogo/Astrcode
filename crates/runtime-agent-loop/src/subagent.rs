@@ -89,6 +89,9 @@ pub struct ChildExecutionTracker {
     token_budget: Option<u64>,
     token_limit_hit: bool,
     step_limit_hit: bool,
+    /// 已观察到的最大 step index。
+    /// 使用 `max` 而非"最后看到的"语义，因为事件流可能乱序或重放。
+    peak_step_index: u32,
     estimated_tokens: u64,
     last_summary: Option<String>,
 }
@@ -100,6 +103,7 @@ impl ChildExecutionTracker {
             token_budget,
             token_limit_hit: false,
             step_limit_hit: false,
+            peak_step_index: 0,
             estimated_tokens: 0,
             last_summary: None,
         }
@@ -112,6 +116,7 @@ impl ChildExecutionTracker {
                 estimated_tokens,
                 ..
             } => {
+                self.peak_step_index = self.peak_step_index.max(*step_index);
                 self.estimated_tokens = self
                     .estimated_tokens
                     .saturating_add(*estimated_tokens as u64);
@@ -159,6 +164,14 @@ impl ChildExecutionTracker {
 
     pub fn last_summary(&self) -> Option<&str> {
         self.last_summary.as_deref()
+    }
+
+    pub fn estimated_tokens_used(&self) -> u64 {
+        self.estimated_tokens
+    }
+
+    pub fn step_count(&self) -> u32 {
+        self.peak_step_index
     }
 }
 

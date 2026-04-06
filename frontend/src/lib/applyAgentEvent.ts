@@ -34,16 +34,27 @@ export function applyAgentEvent(
     );
   };
   const agentFields =
-    'agentId' in event.data || 'parentTurnId' in event.data || 'agentProfile' in event.data
+    'agentId' in event.data ||
+    'parentTurnId' in event.data ||
+    'agentProfile' in event.data ||
+    'subRunId' in event.data
       ? {
           agentId: 'agentId' in event.data ? event.data.agentId : undefined,
           parentTurnId: 'parentTurnId' in event.data ? event.data.parentTurnId : undefined,
           agentProfile: 'agentProfile' in event.data ? event.data.agentProfile : undefined,
+          subRunId: 'subRunId' in event.data ? event.data.subRunId : undefined,
+          invocationKind: 'invocationKind' in event.data ? event.data.invocationKind : undefined,
+          storageMode: 'storageMode' in event.data ? event.data.storageMode : undefined,
+          childSessionId: 'childSessionId' in event.data ? event.data.childSessionId : undefined,
         }
       : {
           agentId: undefined,
           parentTurnId: undefined,
           agentProfile: undefined,
+          subRunId: undefined,
+          invocationKind: undefined,
+          storageMode: undefined,
+          childSessionId: undefined,
         };
 
   switch (event.event) {
@@ -204,6 +215,49 @@ export function applyAgentEvent(
           trigger: event.data.trigger,
           summary: event.data.summary,
           preservedRecentTurns: event.data.preservedRecentTurns,
+          timestamp: Date.now(),
+        },
+      });
+      break;
+    }
+
+    case 'subRunStarted': {
+      const sessionId = context.activeSessionIdRef.current;
+      if (!sessionId) {
+        break;
+      }
+      context.dispatch({
+        type: 'ADD_MESSAGE',
+        sessionId,
+        message: {
+          id: uuid(),
+          kind: 'subRunStart',
+          turnId: event.data.turnId ?? null,
+          ...agentFields,
+          resolvedOverrides: event.data.resolvedOverrides,
+          resolvedLimits: event.data.resolvedLimits,
+          timestamp: Date.now(),
+        },
+      });
+      break;
+    }
+
+    case 'subRunFinished': {
+      const sessionId = context.activeSessionIdRef.current;
+      if (!sessionId) {
+        break;
+      }
+      context.dispatch({
+        type: 'ADD_MESSAGE',
+        sessionId,
+        message: {
+          id: uuid(),
+          kind: 'subRunFinish',
+          turnId: event.data.turnId ?? null,
+          ...agentFields,
+          result: event.data.result,
+          stepCount: event.data.stepCount,
+          estimatedTokens: event.data.estimatedTokens,
           timestamp: Date.now(),
         },
       });

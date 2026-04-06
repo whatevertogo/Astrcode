@@ -5,11 +5,22 @@
 export type Phase = 'idle' | 'thinking' | 'callingTool' | 'streaming' | 'interrupted' | 'done';
 export type ToolOutputStream = 'stdout' | 'stderr';
 export type CompactTrigger = 'auto' | 'manual';
+export type InvocationKind = 'subRun' | 'rootExecution';
+export type SubRunStorageMode = 'sharedSession' | 'independentSession';
+export type SubRunOutcome =
+  | 'completed'
+  | 'aborted'
+  | 'token_exceeded'
+  | { failed: { error: string } };
 
 export interface AgentContext {
   agentId?: string;
   parentTurnId?: string;
   agentProfile?: string;
+  subRunId?: string;
+  invocationKind?: InvocationKind;
+  storageMode?: SubRunStorageMode;
+  childSessionId?: string;
 }
 
 type AgentScoped<T> = T & AgentContext;
@@ -23,6 +34,49 @@ export interface ToolCallResultEnvelope {
   metadata?: unknown;
   durationMs: number;
   truncated?: boolean;
+}
+
+export interface ArtifactRef {
+  kind: string;
+  id: string;
+  label: string;
+  sessionId?: string;
+  storageSeq?: number;
+  uri?: string;
+}
+
+export interface ResolvedSubagentContextOverrides {
+  storageMode: SubRunStorageMode;
+  inheritSystemInstructions: boolean;
+  inheritProjectInstructions: boolean;
+  inheritWorkingDir: boolean;
+  inheritPolicyUpperBound: boolean;
+  inheritCancelToken: boolean;
+  includeCompactSummary: boolean;
+  includeRecentTail: boolean;
+  includeRecoveryRefs: boolean;
+  includeParentFindings: boolean;
+}
+
+export interface ResolvedExecutionLimits {
+  maxSteps?: number;
+  tokenBudget?: number;
+  allowedTools: string[];
+}
+
+export interface SubRunResult {
+  summary: string;
+  artifacts: ArtifactRef[];
+  findings: string[];
+  status:
+    | 'completed'
+    | 'aborted'
+    | 'token_exceeded'
+    | {
+        failed: {
+          error: string;
+        };
+      };
 }
 
 export type AgentEventPayload =
@@ -67,6 +121,23 @@ export type AgentEventPayload =
         preservedRecentTurns: number;
       }>;
     }
+  | {
+      event: 'subRunStarted';
+      data: AgentScoped<{
+        turnId?: string | null;
+        resolvedOverrides: ResolvedSubagentContextOverrides;
+        resolvedLimits: ResolvedExecutionLimits;
+      }>;
+    }
+  | {
+      event: 'subRunFinished';
+      data: AgentScoped<{
+        turnId?: string | null;
+        result: SubRunResult;
+        stepCount: number;
+        estimatedTokens: number;
+      }>;
+    }
   | { event: 'turnDone'; data: AgentScoped<{ turnId: string }> }
   | {
       event: 'error';
@@ -93,6 +164,10 @@ export interface UserMessage {
   agentId?: string;
   parentTurnId?: string;
   agentProfile?: string;
+  subRunId?: string;
+  invocationKind?: InvocationKind;
+  storageMode?: SubRunStorageMode;
+  childSessionId?: string;
   text: string;
   timestamp: number;
 }
@@ -104,6 +179,10 @@ export interface AssistantMessage {
   agentId?: string;
   parentTurnId?: string;
   agentProfile?: string;
+  subRunId?: string;
+  invocationKind?: InvocationKind;
+  storageMode?: SubRunStorageMode;
+  childSessionId?: string;
   text: string;
   reasoningText?: string;
   streaming: boolean;
@@ -119,6 +198,10 @@ export interface ToolCallMessage {
   agentId?: string;
   parentTurnId?: string;
   agentProfile?: string;
+  subRunId?: string;
+  invocationKind?: InvocationKind;
+  storageMode?: SubRunStorageMode;
+  childSessionId?: string;
   toolCallId: string;
   toolName: string;
   status: ToolStatus;
@@ -138,13 +221,56 @@ export interface CompactMessage {
   agentId?: string;
   parentTurnId?: string;
   agentProfile?: string;
+  subRunId?: string;
+  invocationKind?: InvocationKind;
+  storageMode?: SubRunStorageMode;
+  childSessionId?: string;
   trigger: CompactTrigger;
   summary: string;
   preservedRecentTurns: number;
   timestamp: number;
 }
 
-export type Message = UserMessage | AssistantMessage | ToolCallMessage | CompactMessage;
+export interface SubRunStartMessage {
+  id: string;
+  kind: 'subRunStart';
+  turnId?: string | null;
+  agentId?: string;
+  parentTurnId?: string;
+  agentProfile?: string;
+  subRunId?: string;
+  invocationKind?: InvocationKind;
+  storageMode?: SubRunStorageMode;
+  childSessionId?: string;
+  resolvedOverrides: ResolvedSubagentContextOverrides;
+  resolvedLimits: ResolvedExecutionLimits;
+  timestamp: number;
+}
+
+export interface SubRunFinishMessage {
+  id: string;
+  kind: 'subRunFinish';
+  turnId?: string | null;
+  agentId?: string;
+  parentTurnId?: string;
+  agentProfile?: string;
+  subRunId?: string;
+  invocationKind?: InvocationKind;
+  storageMode?: SubRunStorageMode;
+  childSessionId?: string;
+  result: SubRunResult;
+  stepCount: number;
+  estimatedTokens: number;
+  timestamp: number;
+}
+
+export type Message =
+  | UserMessage
+  | AssistantMessage
+  | ToolCallMessage
+  | CompactMessage
+  | SubRunStartMessage
+  | SubRunFinishMessage;
 
 export interface Session {
   id: string;
@@ -233,6 +359,16 @@ export interface AppState {
   phase: Phase;
 }
 
+type AgentActionContext = {
+  agentId?: string;
+  parentTurnId?: string;
+  agentProfile?: string;
+  subRunId?: string;
+  invocationKind?: InvocationKind;
+  storageMode?: SubRunStorageMode;
+  childSessionId?: string;
+};
+
 // ────────────────────────────────────────────────────────────
 // Reducer action 联合类型（App 和 hooks 之间共享）
 // ────────────────────────────────────────────────────────────
@@ -247,45 +383,33 @@ export type Action =
   | { type: 'RENAME_SESSION'; projectId: string; sessionId: string; title: string }
   | { type: 'DELETE_SESSION'; projectId: string; sessionId: string }
   | { type: 'ADD_MESSAGE'; sessionId: string; message: Message }
-  | {
+  | ({
       type: 'UPSERT_USER_MESSAGE';
       sessionId: string;
       turnId: string;
       content: string;
-      agentId?: string;
-      parentTurnId?: string;
-      agentProfile?: string;
-    }
-  | {
+    } & AgentActionContext)
+  | ({
       type: 'APPEND_DELTA';
       sessionId: string;
       turnId: string;
       delta: string;
-      agentId?: string;
-      parentTurnId?: string;
-      agentProfile?: string;
-    }
-  | {
+    } & AgentActionContext)
+  | ({
       type: 'APPEND_REASONING_DELTA';
       sessionId: string;
       turnId: string;
       delta: string;
-      agentId?: string;
-      parentTurnId?: string;
-      agentProfile?: string;
-    }
-  | {
+    } & AgentActionContext)
+  | ({
       type: 'FINALIZE_ASSISTANT';
       sessionId: string;
       turnId: string;
       content: string;
       reasoningText?: string;
-      agentId?: string;
-      parentTurnId?: string;
-      agentProfile?: string;
-    }
+    } & AgentActionContext)
   | { type: 'END_STREAMING'; sessionId: string; turnId: string }
-  | {
+  | ({
       type: 'APPEND_TOOL_CALL_DELTA';
       sessionId: string;
       turnId?: string | null;
@@ -293,11 +417,8 @@ export type Action =
       toolName: string;
       stream: ToolOutputStream;
       delta: string;
-      agentId?: string;
-      parentTurnId?: string;
-      agentProfile?: string;
-    }
-  | {
+    } & AgentActionContext)
+  | ({
       type: 'UPDATE_TOOL_CALL';
       sessionId: string;
       turnId?: string | null;
@@ -309,10 +430,7 @@ export type Action =
       metadata?: unknown;
       durationMs: number;
       truncated?: boolean;
-      agentId?: string;
-      parentTurnId?: string;
-      agentProfile?: string;
-    }
+    } & AgentActionContext)
   | { type: 'SET_WORKING_DIR'; projectId: string; workingDir: string }
   | {
       type: 'INITIALIZE';

@@ -1,12 +1,14 @@
 use astrcode_core::{
-    CapabilityDescriptor, CapabilityKind, PluginHealth, PluginState, SideEffectLevel,
-    StabilityLevel, plugin::PluginEntry,
+    CapabilityDescriptor, CapabilityKind, CapabilityRouter, PluginHealth, PluginState, Result,
+    SideEffectLevel, StabilityLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
+    ToolExecutionResult, ToolRegistry, plugin::PluginEntry,
 };
 use astrcode_protocol::http::{
     AgentExecuteResponseDto, AgentProfileDto, ConfigReloadResponse, RuntimeStatusDto,
     SessionHistoryResponseDto, ToolDescriptorDto, ToolExecuteResponseDto,
 };
 use astrcode_runtime::{Config, ModelConfig, Profile, RuntimeConfig, config, save_config};
+use async_trait::async_trait;
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
@@ -14,7 +16,89 @@ use axum::{
 use serde_json::json;
 use tower::ServiceExt;
 
-use crate::{AUTH_HEADER_NAME, routes::build_api_router, test_support::test_state};
+use crate::{
+    AUTH_HEADER_NAME,
+    routes::build_api_router,
+    test_support::{test_state, test_state_with_capabilities},
+};
+
+struct DemoReadTool;
+
+#[async_trait]
+impl Tool for DemoReadTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "readFile".to_string(),
+            description: "Demo readable tool for root execution route tests.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+        }
+    }
+
+    fn capability_metadata(&self) -> ToolCapabilityMetadata {
+        ToolCapabilityMetadata::builtin()
+    }
+
+    async fn execute(
+        &self,
+        tool_call_id: String,
+        _input: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<ToolExecutionResult> {
+        Ok(ToolExecutionResult {
+            tool_call_id,
+            tool_name: "readFile".to_string(),
+            ok: true,
+            output: "ok".to_string(),
+            error: None,
+            metadata: None,
+            duration_ms: 0,
+            truncated: false,
+        })
+    }
+}
+
+/// Demo grep tool for plan agent tests.
+/// Plan agent requires both readFile and grep tools.
+struct DemoGrepTool;
+
+#[async_trait]
+impl Tool for DemoGrepTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "grep".to_string(),
+            description: "Demo grep tool for root execution route tests.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+        }
+    }
+
+    fn capability_metadata(&self) -> ToolCapabilityMetadata {
+        ToolCapabilityMetadata::builtin()
+    }
+
+    async fn execute(
+        &self,
+        tool_call_id: String,
+        _input: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<ToolExecutionResult> {
+        Ok(ToolExecutionResult {
+            tool_call_id,
+            tool_name: "grep".to_string(),
+            ok: true,
+            output: "ok".to_string(),
+            error: None,
+            metadata: None,
+            duration_ms: 0,
+            truncated: false,
+        })
+    }
+}
 
 #[tokio::test]
 async fn runtime_status_requires_authentication() {
@@ -304,8 +388,24 @@ async fn tools_list_endpoint_returns_runtime_tool_surface() {
 }
 
 #[tokio::test]
-async fn direct_agent_execute_endpoint_returns_not_implemented() {
-    let (state, _guard) = test_state(None);
+async fn direct_agent_execute_endpoint_accepts_root_execution() {
+    // Plan agent requires both readFile and grep tools.
+    // Register both to satisfy the agent's tool requirements.
+    let invokers = ToolRegistry::builder()
+        .register(Box::new(DemoReadTool))
+        .register(Box::new(DemoGrepTool))
+        .build()
+        .into_capability_invokers()
+        .expect("demo tool descriptors should build");
+    let mut builder = CapabilityRouter::builder();
+    for invoker in invokers {
+        builder = builder.register_invoker(invoker);
+    }
+    let capabilities = builder
+        .build()
+        .expect("tool-derived capability router should build");
+    let (state, _guard) = test_state_with_capabilities(capabilities, None);
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let app = build_api_router().with_state(state);
 
     let response = app
@@ -314,19 +414,62 @@ async fn direct_agent_execute_endpoint_returns_not_implemented() {
                 .method("POST")
                 .uri("/api/v1/agents/plan/execute")
                 .header(AUTH_HEADER_NAME, "browser-token")
-                .body(Body::from("{}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "task": "summarize the workspace",
+                        "workingDir": temp_dir.path().display().to_string()
+                    })
+                    .to_string(),
+                ))
                 .expect("request should be valid"),
         )
         .await
         .expect("response should be returned");
 
-    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
     let bytes = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("body should be readable");
     let payload: AgentExecuteResponseDto =
         serde_json::from_slice(&bytes).expect("response should deserialize");
-    assert!(!payload.accepted);
+    assert!(payload.accepted);
+    assert!(payload.session_id.is_some());
+    assert!(payload.turn_id.is_some());
+    assert!(payload.agent_id.is_some());
+}
+
+#[tokio::test]
+async fn subrun_status_endpoint_returns_not_found_for_unknown_subrun() {
+    let (state, _guard) = test_state(None);
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let created = state
+        .service
+        .create_session(temp_dir.path())
+        .await
+        .expect("session should be created");
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/sessions/{}/subruns/missing-subrun",
+                    created.session_id
+                ))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body should be readable");
+    let _payload: serde_json::Value =
+        serde_json::from_slice(&bytes).expect("error payload should deserialize");
 }
 
 #[tokio::test]

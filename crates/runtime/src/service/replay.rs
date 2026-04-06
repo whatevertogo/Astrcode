@@ -22,12 +22,13 @@ use astrcode_core::{
     AstrError, StorageEvent, StoredEvent, ToolOutputDelta, ToolOutputStream, UserMessageOrigin,
     format_local_rfc3339, format_local_rfc3339_opt, replay_records, split_assistant_content,
 };
+use astrcode_runtime_session::normalize_session_id;
 use async_trait::async_trait;
 use serde_json::{Map, Value, json};
 
 use super::{
     ReplayPath, RuntimeService, ServiceResult, SessionMessage, SessionReplay, SessionReplaySource,
-    session_ops::{load_events, normalize_session_id},
+    session::load_events,
 };
 
 #[async_trait]

@@ -2,7 +2,15 @@
 //!
 //! 将 SSE 接收的原始事件规范化为前端可用的格式。
 
-import type { AgentEventPayload, CompactTrigger, Phase, ToolOutputStream } from '../types';
+import type {
+  AgentEventPayload,
+  CompactTrigger,
+  InvocationKind,
+  Phase,
+  SubRunResult,
+  SubRunStorageMode,
+  ToolOutputStream,
+} from '../types';
 import {
   asRecord,
   pickString,
@@ -24,6 +32,8 @@ const VALID_PHASES: Phase[] = [
   'done',
 ];
 const VALID_TOOL_OUTPUT_STREAMS: ToolOutputStream[] = ['stdout', 'stderr'];
+const VALID_INVOCATION_KINDS: InvocationKind[] = ['subRun', 'rootExecution'];
+const VALID_SUBRUN_STORAGE_MODES: SubRunStorageMode[] = ['sharedSession', 'independentSession'];
 
 function toPhase(value: unknown): Phase | null {
   if (typeof value !== 'string') {
@@ -56,6 +66,26 @@ function toCompactTrigger(value: unknown): CompactTrigger | null {
   return null;
 }
 
+function toInvocationKind(value: unknown): InvocationKind | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  if ((VALID_INVOCATION_KINDS as string[]).includes(value)) {
+    return value as InvocationKind;
+  }
+  return null;
+}
+
+function toSubRunStorageMode(value: unknown): SubRunStorageMode | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  if ((VALID_SUBRUN_STORAGE_MODES as string[]).includes(value)) {
+    return value as SubRunStorageMode;
+  }
+  return null;
+}
+
 function invalidEvent(reason: string, raw: unknown): AgentEventPayload {
   return {
     event: 'error',
@@ -71,10 +101,19 @@ function pickAgentContext(data: Record<string, unknown>) {
   const agentId = pickOptionalString(data, 'agentId', 'agent_id') ?? undefined;
   const parentTurnId = pickOptionalString(data, 'parentTurnId', 'parent_turn_id') ?? undefined;
   const agentProfile = pickOptionalString(data, 'agentProfile', 'agent_profile') ?? undefined;
+  const subRunId = pickOptionalString(data, 'subRunId', 'sub_run_id') ?? undefined;
+  const childSessionId =
+    pickOptionalString(data, 'childSessionId', 'child_session_id') ?? undefined;
+  const invocationKind = toInvocationKind(data.invocationKind ?? data.invocation_kind) ?? undefined;
+  const storageMode = toSubRunStorageMode(data.storageMode ?? data.storage_mode) ?? undefined;
   return {
     ...(agentId ? { agentId } : {}),
     ...(parentTurnId ? { parentTurnId } : {}),
     ...(agentProfile ? { agentProfile } : {}),
+    ...(subRunId ? { subRunId } : {}),
+    ...(childSessionId ? { childSessionId } : {}),
+    ...(invocationKind ? { invocationKind } : {}),
+    ...(storageMode ? { storageMode } : {}),
   };
 }
 
@@ -263,6 +302,99 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
         summary,
         preservedRecentTurns,
         ...pickAgentContext(data),
+      },
+    };
+  }
+
+  if (event === 'subRunStarted') {
+    const storageMode = toSubRunStorageMode(
+      data.resolvedOverrides && typeof data.resolvedOverrides === 'object'
+        ? ((data.resolvedOverrides as Record<string, unknown>).storageMode ??
+            (data.resolvedOverrides as Record<string, unknown>).storage_mode)
+        : undefined
+    );
+    const resolvedOverrides = asRecord(data.resolvedOverrides);
+    const resolvedLimits = asRecord(data.resolvedLimits);
+    if (!resolvedOverrides || !resolvedLimits || !storageMode) {
+      return invalidEvent('subRunStarted requires resolvedOverrides and resolvedLimits', raw);
+    }
+    return {
+      event: 'subRunStarted',
+      data: {
+        turnId: pickOptionalString(data, 'turnId', 'turn_id') ?? null,
+        ...pickAgentContext(data),
+        resolvedOverrides: {
+          storageMode,
+          inheritSystemInstructions: resolvedOverrides.inheritSystemInstructions === true,
+          inheritProjectInstructions: resolvedOverrides.inheritProjectInstructions === true,
+          inheritWorkingDir: resolvedOverrides.inheritWorkingDir === true,
+          inheritPolicyUpperBound: resolvedOverrides.inheritPolicyUpperBound === true,
+          inheritCancelToken: resolvedOverrides.inheritCancelToken === true,
+          includeCompactSummary: resolvedOverrides.includeCompactSummary === true,
+          includeRecentTail: resolvedOverrides.includeRecentTail === true,
+          includeRecoveryRefs: resolvedOverrides.includeRecoveryRefs === true,
+          includeParentFindings: resolvedOverrides.includeParentFindings === true,
+        },
+        resolvedLimits: {
+          maxSteps: pickNumber(resolvedLimits, 'maxSteps', 'max_steps') ?? undefined,
+          tokenBudget: pickNumber(resolvedLimits, 'tokenBudget', 'token_budget') ?? undefined,
+          allowedTools: Array.isArray(resolvedLimits.allowedTools)
+            ? resolvedLimits.allowedTools.filter(
+                (value): value is string => typeof value === 'string'
+              )
+            : [],
+        },
+      },
+    };
+  }
+
+  if (event === 'subRunFinished') {
+    const result = asRecord(data.result);
+    if (!result) {
+      return invalidEvent('subRunFinished requires result', raw);
+    }
+    const status = result.status;
+    let parsedStatus: SubRunResult['status'];
+    const statusRecord = asRecord(status);
+    if (typeof status === 'string') {
+      parsedStatus = status as SubRunResult['status'];
+    } else if (statusRecord && typeof statusRecord.failed === 'object') {
+      const failed = asRecord(statusRecord.failed);
+      if (!failed || typeof failed.error !== 'string') {
+        return invalidEvent('subRunFinished.result.status.failed.error is invalid', raw);
+      }
+      parsedStatus = { failed: { error: failed.error } };
+    } else {
+      return invalidEvent('subRunFinished.result.status is invalid', raw);
+    }
+
+    return {
+      event: 'subRunFinished',
+      data: {
+        turnId: pickOptionalString(data, 'turnId', 'turn_id') ?? null,
+        ...pickAgentContext(data),
+        result: {
+          summary: pickString(result, 'summary') ?? '',
+          artifacts: Array.isArray(result.artifacts)
+            ? result.artifacts
+                .map((value) => asRecord(value))
+                .filter((value): value is Record<string, unknown> => Boolean(value))
+                .map((artifact) => ({
+                  kind: pickString(artifact, 'kind') ?? 'unknown',
+                  id: pickString(artifact, 'id') ?? 'unknown',
+                  label: pickString(artifact, 'label') ?? 'artifact',
+                  sessionId: pickOptionalString(artifact, 'sessionId', 'session_id') ?? undefined,
+                  storageSeq: pickNumber(artifact, 'storageSeq', 'storage_seq') ?? undefined,
+                  uri: pickOptionalString(artifact, 'uri') ?? undefined,
+                }))
+            : [],
+          findings: Array.isArray(result.findings)
+            ? result.findings.filter((value): value is string => typeof value === 'string')
+            : [],
+          status: parsedStatus,
+        },
+        stepCount: pickNumber(data, 'stepCount', 'step_count') ?? 0,
+        estimatedTokens: pickNumber(data, 'estimatedTokens', 'estimated_tokens') ?? 0,
       },
     };
   }

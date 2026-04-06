@@ -19,6 +19,7 @@ mod action;
 pub mod agent;
 mod cancel;
 pub mod capability;
+mod compact_summary;
 pub mod env;
 mod error;
 pub mod event;
@@ -46,11 +47,19 @@ pub use action::{
     ToolExecutionResult, ToolOutputDelta, ToolOutputStream, UserMessageOrigin,
     split_assistant_content,
 };
-pub use agent::{AgentEventContext, AgentMode, AgentProfile, AgentStatus, SubAgentHandle};
+pub use agent::{
+    AgentEventContext, AgentMode, AgentProfile, AgentStatus, ArtifactRef, InvocationKind,
+    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SubRunHandle, SubRunOutcome,
+    SubRunResult, SubRunStorageMode, SubagentContextOverrides,
+};
 pub use cancel::CancelToken;
 pub use capability::{
     CapabilityDescriptor, CapabilityDescriptorBuilder, CapabilityKind, DescriptorBuildError,
     PermissionHint, SideEffectLevel, StabilityLevel,
+};
+pub use compact_summary::{
+    COMPACT_SUMMARY_CONTINUATION, COMPACT_SUMMARY_PREFIX, CompactSummaryEnvelope,
+    format_compact_summary, parse_compact_summary_message,
 };
 pub use error::{AstrError, Result, ResultExt};
 pub use event::{
@@ -68,7 +77,7 @@ pub use policy::{
     CapabilityCall, ContextDecisionInput, ContextStrategy, ModelRequest, PolicyContext,
     PolicyEngine, PolicyVerdict,
 };
-pub use projection::{AgentState, AgentStateProjector, format_compact_summary, project};
+pub use projection::{AgentState, AgentStateProjector, project};
 pub use registry::{
     CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, CapabilityRouter,
     CapabilityRouterBuilder, ToolCapabilityInvoker, ToolRegistry, ToolRegistryBuilder,
@@ -83,6 +92,6 @@ pub use time::{
     format_local_rfc3339, format_local_rfc3339_opt, local_rfc3339, local_rfc3339_option,
 };
 pub use tool::{
-    DEFAULT_MAX_OUTPUT_SIZE, SessionId, Tool, ToolCapabilityMetadata, ToolContext, ToolEventSink,
-    ToolPromptMetadata,
+    DEFAULT_MAX_OUTPUT_SIZE, ExecutionOwner, SessionId, Tool, ToolCapabilityMetadata, ToolContext,
+    ToolEventSink, ToolPromptMetadata,
 };

@@ -20,16 +20,17 @@
 //! | `RecentTailStage` | 占位，当前 `AgentState.messages` 已包含完整尾部视图 |
 //! | `WorksetStage` | 注入工作目录等结构化工作集槽位 |
 //! | `CompactionViewStage` | 若已有压缩后的窄视图，覆盖 baseline 对话视图 |
-//! | `ToolNoiseTrimStage` | 运行 microcompact，裁剪大工具结果、清理安全工具元数据 |
+//! | `RecoveryContextStage` | 注入 compact rebuild 产出的瞬时恢复上下文 |
+//! | `PrunePassStage` | 运行 prune pass，裁剪大工具结果、清理安全工具元数据 |
 //! | `BudgetTrimStage` | 占位，未来实现 token budget 感知的主动裁剪 |
 //!
 //! ## 依赖和协作
 //!
-//! - **使用** `apply_microcompact` / `effective_context_window` 执行工具噪声裁剪
+//! - **使用** `apply_prune_pass` / `effective_context_window` 执行本地 prune
 //! - **被调用方**：`turn_runner` 在每个 step 中调用 `build_bundle()`
 //! - **输出给**：`PromptRuntime.build_plan()` 和 `RequestAssembler` 消费 `ContextBundle`
-//! - **与 Compaction 的关系**：Compaction 重建 `ConversationView` 后，通过 `prior_compaction_view`
-//!   传入管道，`CompactionViewStage` 负责将其注入到 bundle 中
+//! - **与 Compaction 的关系**：Compaction 重建 `CompactionView` 后，通过 `prior_compaction_view`
+//!   传入管道，`CompactionViewStage` / `RecoveryContextStage` 负责将其注入到 bundle 中
 //!
 //! ## 关键设计
 //!
@@ -40,7 +41,7 @@ use std::path::Path;
 
 use astrcode_core::{AgentState, CapabilityDescriptor, LlmMessage, Result};
 
-use crate::context_window::{apply_microcompact, effective_context_window};
+use crate::context_window::{PruneStats, apply_prune_pass, effective_context_window};
 
 /// 当前对模型可见的会话视图。
 ///
@@ -55,6 +56,27 @@ impl ConversationView {
     pub(crate) fn new(messages: Vec<LlmMessage>) -> Self {
         Self { messages }
     }
+}
+
+/// compact rebuild 后的窄视图。
+///
+/// 这里把可继续对话的 messages 与瞬时恢复上下文分开，避免再把恢复文件内容
+/// 伪装成 compact summary 混回消息流。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CompactionView {
+    pub messages: Vec<LlmMessage>,
+    pub memory_blocks: Vec<ContextBlock>,
+    pub recovery_refs: Vec<RecoveryRef>,
+}
+
+/// compact rebuild 产出的恢复引用。
+///
+/// 首期主要承接最近关键文件等可恢复材料，后续可以继续扩展到 ghost snapshot
+/// 或 compact metadata，而不必再次拆结构。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecoveryRef {
+    pub kind: String,
+    pub value: String,
 }
 
 /// 结构化的上下文块占位。
@@ -87,6 +109,7 @@ pub(crate) struct ContextBundle {
     pub diagnostics: Vec<ContextDiagnostic>,
     pub budget_state: TokenBudgetState,
     pub truncated_tool_results: usize,
+    pub prune_stats: PruneStats,
 }
 
 /// Stage 的只读输入快照。
@@ -98,7 +121,7 @@ pub(crate) struct ContextStageContext<'a> {
     pub turn_id: &'a str,
     pub step_index: usize,
     pub base_messages: &'a [LlmMessage],
-    pub prior_compaction_view: Option<&'a ConversationView>,
+    pub prior_compaction_view: Option<&'a CompactionView>,
     pub capability_descriptors: &'a [CapabilityDescriptor],
     pub keep_recent_turns: usize,
     pub model_context_window: usize,
@@ -112,7 +135,7 @@ pub(crate) struct ContextStageContext<'a> {
 pub(crate) struct ContextBundleInput<'a> {
     pub turn_id: &'a str,
     pub step_index: usize,
-    pub prior_compaction_view: Option<&'a ConversationView>,
+    pub prior_compaction_view: Option<&'a CompactionView>,
     pub capability_descriptors: &'a [CapabilityDescriptor],
     pub keep_recent_turns: usize,
     pub model_context_window: usize,
@@ -139,7 +162,8 @@ impl ContextRuntime {
                 Box::new(RecentTailStage),
                 Box::new(WorksetStage),
                 Box::new(CompactionViewStage),
-                Box::new(ToolNoiseTrimStage),
+                Box::new(RecoveryContextStage),
+                Box::new(PrunePassStage),
                 Box::new(BudgetTrimStage),
             ],
             tool_result_max_bytes: tool_result_max_bytes.max(1),
@@ -252,26 +276,56 @@ impl ContextStage for CompactionViewStage {
         ctx: &ContextStageContext<'_>,
     ) -> Result<ContextBundle> {
         if let Some(view) = ctx.prior_compaction_view {
-            bundle.conversation = view.clone();
+            bundle.conversation = ConversationView::new(view.messages.clone());
         }
         Ok(bundle)
     }
 }
 
-/// Trim tool noise directly on the model-visible conversation view.
+/// 注入 compact rebuild 产出的恢复上下文。
 ///
-/// We run microcompact here so request assembly becomes a pure serialization step. That keeps
-/// prompt/context selection separate from request encoding and removes the last request-level
-/// mutation path from `RequestAssembler`.
-struct ToolNoiseTrimStage;
+/// 把恢复块和恢复引用折叠进 bundle.memory，而不是混进 conversation messages。
+struct RecoveryContextStage;
 
-impl ContextStage for ToolNoiseTrimStage {
+impl ContextStage for RecoveryContextStage {
     fn apply(
         &self,
         mut bundle: ContextBundle,
         ctx: &ContextStageContext<'_>,
     ) -> Result<ContextBundle> {
-        let result = apply_microcompact(
+        let Some(view) = ctx.prior_compaction_view else {
+            return Ok(bundle);
+        };
+
+        bundle.memory.extend(view.memory_blocks.iter().cloned());
+        if !view.recovery_refs.is_empty() {
+            let refs = view
+                .recovery_refs
+                .iter()
+                .map(|item| format!("- [{}] {}", item.kind, item.value))
+                .collect::<Vec<_>>()
+                .join("\n");
+            bundle.memory.push(ContextBlock {
+                id: "recovery-refs".to_string(),
+                content: format!("Recent recovery refs:\n{refs}"),
+            });
+        }
+        Ok(bundle)
+    }
+}
+
+/// 直接在模型可见的 conversation 上执行本地 prune。
+///
+/// 这样 request assembler 继续保持纯编码边界，不再悄悄修改上下文内容。
+struct PrunePassStage;
+
+impl ContextStage for PrunePassStage {
+    fn apply(
+        &self,
+        mut bundle: ContextBundle,
+        ctx: &ContextStageContext<'_>,
+    ) -> Result<ContextBundle> {
+        let result = apply_prune_pass(
             &bundle.conversation.messages,
             ctx.capability_descriptors,
             ctx.tool_result_max_bytes,
@@ -282,7 +336,8 @@ impl ContextStage for ToolNoiseTrimStage {
             }),
         );
         bundle.conversation = ConversationView::new(result.messages);
-        bundle.truncated_tool_results = result.truncated_tool_results;
+        bundle.truncated_tool_results = result.stats.truncated_tool_results;
+        bundle.prune_stats = result.stats;
         Ok(bundle)
     }
 }
@@ -357,10 +412,14 @@ mod tests {
             content: "old".to_string(),
             origin: UserMessageOrigin::User,
         }]);
-        let compacted = ConversationView::new(vec![LlmMessage::User {
-            content: "summary".to_string(),
-            origin: UserMessageOrigin::CompactSummary,
-        }]);
+        let compacted = CompactionView {
+            messages: vec![LlmMessage::User {
+                content: "summary".to_string(),
+                origin: UserMessageOrigin::CompactSummary,
+            }],
+            memory_blocks: Vec::new(),
+            recovery_refs: Vec::new(),
+        };
 
         let bundle = ContextRuntime::new(100_000)
             .build_bundle(
@@ -381,6 +440,56 @@ mod tests {
             &bundle.conversation.messages[0],
             LlmMessage::User { content, .. } if content == "summary"
         ));
+    }
+
+    #[test]
+    fn recovery_context_stage_injects_memory_blocks_and_refs() {
+        let state = make_state(vec![LlmMessage::User {
+            content: "old".to_string(),
+            origin: UserMessageOrigin::User,
+        }]);
+        let compacted = CompactionView {
+            messages: vec![LlmMessage::User {
+                content: "summary".to_string(),
+                origin: UserMessageOrigin::CompactSummary,
+            }],
+            memory_blocks: vec![ContextBlock {
+                id: "recovered-file:src/lib.rs".to_string(),
+                content: "fn recovered() {}".to_string(),
+            }],
+            recovery_refs: vec![RecoveryRef {
+                kind: "file".to_string(),
+                value: "src/lib.rs".to_string(),
+            }],
+        };
+
+        let bundle = ContextRuntime::new(100_000)
+            .build_bundle(
+                &state,
+                ContextBundleInput {
+                    turn_id: "turn-1",
+                    step_index: 1,
+                    prior_compaction_view: Some(&compacted),
+                    capability_descriptors: &[],
+                    keep_recent_turns: 1,
+                    model_context_window: 8_192,
+                },
+            )
+            .expect("bundle should build");
+
+        assert_eq!(bundle.memory.len(), 2);
+        assert!(
+            bundle
+                .memory
+                .iter()
+                .any(|block| block.id == "recovered-file:src/lib.rs")
+        );
+        assert!(
+            bundle
+                .memory
+                .iter()
+                .any(|block| block.id == "recovery-refs" && block.content.contains("src/lib.rs"))
+        );
     }
 
     struct RecordingStage {
@@ -473,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_noise_trim_stage_runs_microcompact_inside_pipeline() {
+    fn tool_noise_trim_stage_runs_prune_pass_inside_pipeline() {
         let state = make_state(vec![
             LlmMessage::User {
                 content: "inspect".to_string(),
@@ -521,6 +630,7 @@ mod tests {
             .expect("bundle should build");
 
         assert_eq!(bundle.truncated_tool_results, 1);
+        assert_eq!(bundle.prune_stats.cleared_tool_results, 1);
         assert!(matches!(
             &bundle.conversation.messages[2],
             LlmMessage::Tool { content, .. } if content.contains("[cleared older tool result")

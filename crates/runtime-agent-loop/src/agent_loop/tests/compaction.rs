@@ -32,7 +32,7 @@ use crate::{
         CompactionArtifact, CompactionInput, CompactionReason, CompactionRuntime,
         CompactionTailSnapshot, FsFileContentProvider, ThresholdCompactionPolicy,
     },
-    context_pipeline::ConversationView,
+    context_pipeline::CompactionView,
 };
 
 struct RecordingFailingProvider {
@@ -142,7 +142,8 @@ impl crate::compaction_runtime::CompactionRebuilder for FailingRebuilder {
         _artifact: &CompactionArtifact,
         _tail: &[astrcode_core::StoredEvent],
         _file_contents: &[(std::path::PathBuf, String)],
-    ) -> astrcode_core::Result<ConversationView> {
+        _truncate_bytes: usize,
+    ) -> astrcode_core::Result<CompactionView> {
         Err(AstrError::Internal("rebuild failed".to_string()))
     }
 }
@@ -157,9 +158,14 @@ impl crate::compaction_runtime::CompactionRebuilder for RecordingRebuilder {
         _artifact: &CompactionArtifact,
         _tail: &[astrcode_core::StoredEvent],
         file_contents: &[(std::path::PathBuf, String)],
-    ) -> astrcode_core::Result<ConversationView> {
+        _truncate_bytes: usize,
+    ) -> astrcode_core::Result<CompactionView> {
         *self.recovered_files.lock().expect("recovered files lock") = file_contents.to_vec();
-        Ok(ConversationView::new(Vec::new()))
+        Ok(CompactionView {
+            messages: Vec::new(),
+            memory_blocks: Vec::new(),
+            recovery_refs: Vec::new(),
+        })
     }
 }
 
@@ -349,11 +355,15 @@ async fn reactive_compact_restores_recent_file_context_after_current_turn_file_a
         .find_map(|message| match message {
             LlmMessage::User {
                 content,
-                origin: UserMessageOrigin::CompactSummary,
-            } if content.contains("[Post-compact file recovery:") => Some(content.as_str()),
+                origin: UserMessageOrigin::User,
+            } if content.contains("[Structured memory: recovered-file:")
+                && content.contains("[Post-compact file recovery:") =>
+            {
+                Some(content.as_str())
+            },
             _ => None,
         })
-        .expect("rebuilt request should include a post-compact file recovery message");
+        .expect("rebuilt request should include a structured memory recovery message");
     assert!(
         recovery_message.contains("recent.rs"),
         "recovery message should name the recently accessed file"
@@ -486,7 +496,7 @@ async fn manual_compact_event_caps_keep_recent_turns_so_manual_requests_do_real_
 }
 
 #[tokio::test]
-async fn manual_compact_event_rejects_single_turn_sessions() {
+async fn manual_compact_event_returns_none_when_single_turn_has_no_safe_cut_point() {
     let _guard = super::test_support::TestEnvGuard::new();
     let provider = Arc::new(ScriptedProvider {
         responses: Mutex::new(VecDeque::new()),
@@ -508,13 +518,64 @@ async fn manual_compact_event_rejects_single_turn_sessions() {
         turn_count: 1,
     };
 
-    let error = loop_runner
+    let event = loop_runner
         .manual_compact_event(&state, CompactionTailSnapshot::default(), None)
         .await
-        .expect_err("single-turn sessions should reject manual compact");
+        .expect("single-turn sessions without assistant steps should not error");
 
-    assert!(matches!(error, AstrError::Validation(_)));
-    assert!(error.to_string().contains("at least 2 real user turns"));
+    assert!(event.is_none());
+}
+
+#[tokio::test]
+async fn manual_compact_event_allows_single_real_turn_when_assistant_step_boundary_exists() {
+    let _guard = super::test_support::TestEnvGuard::new();
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([LlmOutput {
+            content: "<analysis>trimmed</analysis><summary>manual summary</summary>".to_string(),
+            tool_calls: vec![],
+            reasoning: None,
+            usage: None,
+            finish_reason: Default::default(),
+        }])),
+        delay: std::time::Duration::from_millis(0),
+    });
+    let loop_runner = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory { provider }),
+        empty_capabilities(),
+    )
+    .with_compact_keep_recent_turns(4);
+    let state = astrcode_core::AgentState {
+        session_id: "test".into(),
+        working_dir: std::env::temp_dir(),
+        messages: vec![
+            LlmMessage::User {
+                content: "only ask".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "partial progress".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+        ],
+        phase: Phase::Idle,
+        turn_count: 1,
+    };
+
+    let event = loop_runner
+        .manual_compact_event(&state, CompactionTailSnapshot::default(), None)
+        .await
+        .expect("single real turn should compact when assistant-step cut point exists")
+        .expect("compact event should be emitted");
+
+    assert!(matches!(
+        event,
+        StorageEvent::CompactApplied {
+            trigger: astrcode_core::CompactTrigger::Manual,
+            ref summary,
+            ..
+        } if summary == "manual summary"
+    ));
 }
 
 #[tokio::test]

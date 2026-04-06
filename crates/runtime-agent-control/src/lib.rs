@@ -18,18 +18,23 @@ use std::{
     },
 };
 
-use astrcode_core::{AgentProfile, AgentStatus, CancelToken, SubAgentHandle};
+use astrcode_core::{AgentProfile, AgentStatus, CancelToken, SubRunHandle, SubRunStorageMode};
+use astrcode_runtime_config::{
+    RuntimeConfig, resolve_agent_finalized_retain_limit, resolve_agent_max_concurrent,
+    resolve_agent_max_subrun_depth,
+};
 use thiserror::Error;
 use tokio::sync::{RwLock, watch};
 
 #[derive(Default)]
 struct AgentRegistryState {
     entries: HashMap<String, AgentEntry>,
+    agent_index: HashMap<String, String>,
     active_count: usize,
 }
 
 struct AgentEntry {
-    handle: SubAgentHandle,
+    handle: SubRunHandle,
     cancel: CancelToken,
     status_tx: watch::Sender<AgentStatus>,
     parent_agent_id: Option<String>,
@@ -58,24 +63,27 @@ pub struct AgentControl {
     state: Arc<RwLock<AgentRegistryState>>,
 }
 
-const DEFAULT_MAX_AGENT_DEPTH: usize = 3;
-const DEFAULT_MAX_CONCURRENT_AGENTS: usize = 5;
-const DEFAULT_FINALIZED_AGENT_RETAIN_LIMIT: usize = 256;
-
 impl Default for AgentControl {
     fn default() -> Self {
-        Self {
-            next_id: Arc::new(AtomicU64::new(0)),
-            next_finalized_seq: Arc::new(AtomicU64::new(0)),
-            max_depth: DEFAULT_MAX_AGENT_DEPTH,
-            max_concurrent: DEFAULT_MAX_CONCURRENT_AGENTS,
-            finalized_retain_limit: DEFAULT_FINALIZED_AGENT_RETAIN_LIMIT,
-            state: Arc::new(RwLock::new(AgentRegistryState::default())),
-        }
+        Self::from_config(&RuntimeConfig::default())
     }
 }
 
 impl AgentControl {
+    /// 从 RuntimeConfig 构建 AgentControl，读取 agent 子分组配置。
+    ///
+    /// 未设置的字段会回退到内置默认值。
+    pub fn from_config(runtime: &RuntimeConfig) -> Self {
+        Self {
+            next_id: Arc::new(AtomicU64::new(0)),
+            next_finalized_seq: Arc::new(AtomicU64::new(0)),
+            max_depth: resolve_agent_max_subrun_depth(runtime.agent.as_ref()),
+            max_concurrent: resolve_agent_max_concurrent(runtime.agent.as_ref()),
+            finalized_retain_limit: resolve_agent_finalized_retain_limit(runtime.agent.as_ref()),
+            state: Arc::new(RwLock::new(AgentRegistryState::default())),
+        }
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -99,11 +107,37 @@ impl AgentControl {
         session_id: impl Into<String>,
         parent_turn_id: Option<String>,
         parent_agent_id: Option<String>,
-    ) -> Result<SubAgentHandle, AgentControlError> {
+    ) -> Result<SubRunHandle, AgentControlError> {
+        self.spawn_with_storage(
+            profile,
+            session_id,
+            None,
+            parent_turn_id,
+            parent_agent_id,
+            SubRunStorageMode::SharedSession,
+        )
+        .await
+    }
+
+    /// 注册一个新的子 Agent / 子会话实例，并显式指定存储模式。
+    pub async fn spawn_with_storage(
+        &self,
+        profile: &AgentProfile,
+        session_id: impl Into<String>,
+        child_session_id: Option<String>,
+        parent_turn_id: Option<String>,
+        parent_agent_id: Option<String>,
+        storage_mode: SubRunStorageMode,
+    ) -> Result<SubRunHandle, AgentControlError> {
         let mut state = self.state.write().await;
         let depth = match parent_agent_id.as_ref() {
             Some(parent_agent_id) => {
-                let Some(parent) = state.entries.get(parent_agent_id) else {
+                let Some(parent_sub_run_id) = state.agent_index.get(parent_agent_id) else {
+                    return Err(AgentControlError::ParentAgentNotFound {
+                        agent_id: parent_agent_id.clone(),
+                    });
+                };
+                let Some(parent) = state.entries.get(parent_sub_run_id) else {
                     return Err(AgentControlError::ParentAgentNotFound {
                         agent_id: parent_agent_id.clone(),
                     });
@@ -125,20 +159,26 @@ impl AgentControl {
             });
         }
         // 只有在父节点校验通过后才分配新 ID，避免失败的 spawn 留下无意义的编号空洞。
-        let agent_id = format!("agent-{}", self.next_id.fetch_add(1, Ordering::SeqCst) + 1);
+        let next_id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
+        let agent_id = format!("agent-{next_id}");
+        let sub_run_id = format!("subrun-{next_id}");
         let session_id = session_id.into();
-        let handle = SubAgentHandle {
+        let handle = SubRunHandle {
+            sub_run_id: sub_run_id.clone(),
             agent_id: agent_id.clone(),
             session_id,
+            child_session_id,
             depth,
             parent_turn_id,
+            parent_agent_id: parent_agent_id.clone(),
             agent_profile: profile.id.clone(),
+            storage_mode,
             status: AgentStatus::Pending,
         };
         let cancel = CancelToken::new();
         let (status_tx, _status_rx) = watch::channel(handle.status);
         state.entries.insert(
-            agent_id.clone(),
+            sub_run_id.clone(),
             AgentEntry {
                 handle: handle.clone(),
                 cancel,
@@ -148,10 +188,13 @@ impl AgentControl {
                 finalized_seq: None,
             },
         );
+        state.agent_index.insert(agent_id, sub_run_id.clone());
         state.active_count += 1;
         if let Some(parent_agent_id) = parent_agent_id {
-            if let Some(parent) = state.entries.get_mut(&parent_agent_id) {
-                parent.children.insert(agent_id);
+            if let Some(parent_sub_run_id) = state.agent_index.get(&parent_agent_id).cloned() {
+                if let Some(parent) = state.entries.get_mut(&parent_sub_run_id) {
+                    parent.children.insert(sub_run_id);
+                }
             }
         }
         prune_finalized_agents_locked(&mut state, self.finalized_retain_limit);
@@ -159,55 +202,55 @@ impl AgentControl {
     }
 
     /// 列出当前已注册的 Agent。
-    pub async fn list(&self) -> Vec<SubAgentHandle> {
+    pub async fn list(&self) -> Vec<SubRunHandle> {
         let state = self.state.read().await;
         let mut handles = state
             .entries
             .values()
             .map(|entry| entry.handle.clone())
             .collect::<Vec<_>>();
-        handles.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+        handles.sort_by(|left, right| left.sub_run_id.cmp(&right.sub_run_id));
         handles
     }
 
     /// 查询单个 Agent。
-    pub async fn get(&self, agent_id: &str) -> Option<SubAgentHandle> {
+    pub async fn get(&self, sub_run_or_agent_id: &str) -> Option<SubRunHandle> {
         let state = self.state.read().await;
-        state
-            .entries
-            .get(agent_id)
-            .map(|entry| entry.handle.clone())
+        let key = resolve_entry_key(&state, sub_run_or_agent_id)?;
+        state.entries.get(key).map(|entry| entry.handle.clone())
     }
 
     /// 获取某个 Agent 的取消令牌，供真正的执行器复用。
-    pub async fn cancel_token(&self, agent_id: &str) -> Option<CancelToken> {
+    pub async fn cancel_token(&self, sub_run_or_agent_id: &str) -> Option<CancelToken> {
         let state = self.state.read().await;
-        state
-            .entries
-            .get(agent_id)
-            .map(|entry| entry.cancel.clone())
+        let key = resolve_entry_key(&state, sub_run_or_agent_id)?;
+        state.entries.get(key).map(|entry| entry.cancel.clone())
     }
 
     /// 标记 Agent 已开始运行。
-    pub async fn mark_running(&self, agent_id: &str) -> Option<SubAgentHandle> {
-        self.update_status(agent_id, AgentStatus::Running).await
+    pub async fn mark_running(&self, sub_run_or_agent_id: &str) -> Option<SubRunHandle> {
+        self.update_status(sub_run_or_agent_id, AgentStatus::Running)
+            .await
     }
 
     /// 标记 Agent 正常完成。
-    pub async fn mark_completed(&self, agent_id: &str) -> Option<SubAgentHandle> {
-        self.update_status(agent_id, AgentStatus::Completed).await
+    pub async fn mark_completed(&self, sub_run_or_agent_id: &str) -> Option<SubRunHandle> {
+        self.update_status(sub_run_or_agent_id, AgentStatus::Completed)
+            .await
     }
 
     /// 标记 Agent 执行失败。
-    pub async fn mark_failed(&self, agent_id: &str) -> Option<SubAgentHandle> {
-        self.update_status(agent_id, AgentStatus::Failed).await
+    pub async fn mark_failed(&self, sub_run_or_agent_id: &str) -> Option<SubRunHandle> {
+        self.update_status(sub_run_or_agent_id, AgentStatus::Failed)
+            .await
     }
 
     /// 取消指定 Agent，并级联取消其子树。
-    pub async fn cancel(&self, agent_id: &str) -> Option<SubAgentHandle> {
+    pub async fn cancel(&self, sub_run_or_agent_id: &str) -> Option<SubRunHandle> {
         let mut state = self.state.write().await;
         let mut visited = HashSet::new();
-        let handle = cancel_tree(&mut state, agent_id, &mut visited, &self.next_finalized_seq);
+        let key = resolve_entry_key(&state, sub_run_or_agent_id)?.to_string();
+        let handle = cancel_tree(&mut state, &key, &mut visited, &self.next_finalized_seq);
         prune_finalized_agents_locked(&mut state, self.finalized_retain_limit);
         handle
     }
@@ -216,7 +259,7 @@ impl AgentControl {
     ///
     /// 这里显式按 parent turn 做传播，而不是把取消关系隐式塞进 `CancelToken`，
     /// 因为控制平面只关心“谁挂在谁下面”，不应该把执行器内部任务结构反向泄漏进来。
-    pub async fn cancel_for_parent_turn(&self, parent_turn_id: &str) -> Vec<SubAgentHandle> {
+    pub async fn cancel_for_parent_turn(&self, parent_turn_id: &str) -> Vec<SubRunHandle> {
         let mut state = self.state.write().await;
         let mut roots = state
             .entries
@@ -227,12 +270,16 @@ impl AgentControl {
                     .parent_agent_id
                     .as_ref()
                     .is_some_and(|parent_agent_id| {
-                        state.entries.get(parent_agent_id).is_some_and(|parent| {
-                            parent.handle.parent_turn_id.as_deref() == Some(parent_turn_id)
-                        })
+                        state
+                            .agent_index
+                            .get(parent_agent_id)
+                            .and_then(|parent_sub_run_id| state.entries.get(parent_sub_run_id))
+                            .is_some_and(|parent| {
+                                parent.handle.parent_turn_id.as_deref() == Some(parent_turn_id)
+                            })
                     })
             })
-            .map(|entry| entry.handle.agent_id.clone())
+            .map(|entry| entry.handle.sub_run_id.clone())
             .collect::<Vec<_>>();
         roots.sort();
 
@@ -252,34 +299,48 @@ impl AgentControl {
     }
 
     /// 等待 Agent 到达终态。
-    pub async fn wait(&self, agent_id: &str) -> Option<SubAgentHandle> {
+    pub async fn wait(&self, sub_run_or_agent_id: &str) -> Option<SubRunHandle> {
         let mut status_rx = {
             let state = self.state.read().await;
-            state.entries.get(agent_id)?.status_tx.subscribe()
+            let key = resolve_entry_key(&state, sub_run_or_agent_id)?;
+            state.entries.get(key)?.status_tx.subscribe()
         };
 
         loop {
             let current = *status_rx.borrow_and_update();
             if current.is_final() {
-                return self.get(agent_id).await;
+                return self.get(sub_run_or_agent_id).await;
             }
             if status_rx.changed().await.is_err() {
-                return self.get(agent_id).await;
+                return self.get(sub_run_or_agent_id).await;
             }
         }
     }
 
     async fn update_status(
         &self,
-        agent_id: &str,
+        sub_run_or_agent_id: &str,
         next_status: AgentStatus,
-    ) -> Option<SubAgentHandle> {
+    ) -> Option<SubRunHandle> {
         let mut state = self.state.write().await;
-        let handle =
-            update_status_locked(&mut state, agent_id, next_status, &self.next_finalized_seq);
+        let key = resolve_entry_key(&state, sub_run_or_agent_id)?.to_string();
+        let handle = update_status_locked(&mut state, &key, next_status, &self.next_finalized_seq);
         prune_finalized_agents_locked(&mut state, self.finalized_retain_limit);
         handle
     }
+}
+
+fn resolve_entry_key<'a>(
+    state: &'a AgentRegistryState,
+    sub_run_or_agent_id: &'a str,
+) -> Option<&'a str> {
+    if state.entries.contains_key(sub_run_or_agent_id) {
+        return Some(sub_run_or_agent_id);
+    }
+    state
+        .agent_index
+        .get(sub_run_or_agent_id)
+        .map(String::as_str)
 }
 
 fn update_status_locked(
@@ -287,7 +348,7 @@ fn update_status_locked(
     agent_id: &str,
     next_status: AgentStatus,
     next_finalized_seq: &AtomicU64,
-) -> Option<SubAgentHandle> {
+) -> Option<SubRunHandle> {
     let entry = state.entries.get_mut(agent_id)?;
     if entry.handle.status.is_final() {
         return Some(entry.handle.clone());
@@ -314,7 +375,7 @@ fn cancel_tree(
     agent_id: &str,
     visited: &mut HashSet<String>,
     next_finalized_seq: &AtomicU64,
-) -> Option<SubAgentHandle> {
+) -> Option<SubRunHandle> {
     if !visited.insert(agent_id.to_string()) {
         return state
             .entries
@@ -339,7 +400,7 @@ fn cancel_tree_collect(
     state: &mut AgentRegistryState,
     agent_id: &str,
     visited: &mut HashSet<String>,
-    cancelled: &mut Vec<SubAgentHandle>,
+    cancelled: &mut Vec<SubRunHandle>,
     next_finalized_seq: &AtomicU64,
 ) {
     if !visited.insert(agent_id.to_string()) {
@@ -398,11 +459,15 @@ fn prune_finalized_agents_locked(state: &mut AgentRegistryState, finalized_retai
 
         // 先从父节点摘链，再删除当前终态 leaf，避免留下悬挂 child 引用。
         if let Some(parent_agent_id) = parent_agent_id {
-            if let Some(parent) = state.entries.get_mut(&parent_agent_id) {
-                parent.children.remove(&agent_id);
+            if let Some(parent_sub_run_id) = state.agent_index.get(&parent_agent_id).cloned() {
+                if let Some(parent) = state.entries.get_mut(&parent_sub_run_id) {
+                    parent.children.remove(&agent_id);
+                }
             }
         }
-        state.entries.remove(&agent_id);
+        if let Some(entry) = state.entries.remove(&agent_id) {
+            state.agent_index.remove(&entry.handle.agent_id);
+        }
     }
 }
 
@@ -411,6 +476,7 @@ mod tests {
     use std::time::Duration;
 
     use astrcode_core::{AgentMode, AgentProfile, AgentStatus};
+    use astrcode_runtime_config::{DEFAULT_MAX_AGENT_DEPTH, DEFAULT_MAX_CONCURRENT_AGENTS};
 
     use super::{AgentControl, AgentControlError};
 
@@ -477,7 +543,8 @@ mod tests {
 
     #[tokio::test]
     async fn cancelling_parent_turn_cascades_to_children() {
-        let control = AgentControl::new();
+        // 需要 depth ≥ 2 才能测试 parent → child 嵌套
+        let control = AgentControl::with_limits(3, 10, 256);
         let parent = control
             .spawn(
                 &explore_profile(),
@@ -573,7 +640,8 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_directly_cascades_to_child_tree() {
-        let control = AgentControl::new();
+        // 需要 depth ≥ 3 才能测试 parent → child → grandchild 嵌套
+        let control = AgentControl::with_limits(3, 10, 256);
         let parent = control
             .spawn(
                 &explore_profile(),
@@ -649,11 +717,8 @@ mod tests {
 
     #[tokio::test]
     async fn gc_prunes_old_finalized_leaf_agents_but_keeps_recent_and_live_nodes() {
-        let control = AgentControl::with_limits(
-            super::DEFAULT_MAX_AGENT_DEPTH,
-            super::DEFAULT_MAX_CONCURRENT_AGENTS,
-            1,
-        );
+        let control =
+            AgentControl::with_limits(DEFAULT_MAX_AGENT_DEPTH, DEFAULT_MAX_CONCURRENT_AGENTS, 1);
 
         let first = control
             .spawn(

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::http::{ResolvedSubagentContextOverridesDto, SubRunResultDto, SubRunStorageModeDto};
+
 /// 对外暴露的 Agent Profile 摘要。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -26,7 +28,11 @@ pub struct AgentExecuteRequestDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_overrides: Option<SubagentContextOverridesDto>,
 }
 
 /// `POST /api/v1/agents/{id}/execute` 响应体。
@@ -35,4 +41,63 @@ pub struct AgentExecuteRequestDto {
 pub struct AgentExecuteResponseDto {
     pub accepted: bool,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentContextOverridesDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_mode: Option<SubRunStorageModeDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherit_system_instructions: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherit_project_instructions: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherit_working_dir: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherit_policy_upper_bound: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherit_cancel_token: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_compact_summary: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_recent_tail: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_recovery_refs: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_parent_findings: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubRunStatusDto {
+    pub sub_run_id: String,
+    pub agent_id: String,
+    pub agent_profile: String,
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_session_id: Option<String>,
+    pub depth: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<String>,
+    pub storage_mode: SubRunStorageModeDto,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<SubRunResultDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_overrides: Option<ResolvedSubagentContextOverridesDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_limits: Option<crate::http::ResolvedExecutionLimitsDto>,
 }

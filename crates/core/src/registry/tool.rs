@@ -213,6 +213,9 @@ impl CapabilityInvoker for ToolCapabilityInvoker {
         if let Some(event_sink) = ctx.event_sink.clone() {
             tool_ctx = tool_ctx.with_event_sink(event_sink);
         }
+        if let Some(owner) = ctx.execution_owner.clone() {
+            tool_ctx = tool_ctx.with_execution_owner(owner);
+        }
         let result = self
             .tool
             .execute(
@@ -437,6 +440,7 @@ mod tests {
                     cancel: CancelToken::new(),
                     turn_id: None,
                     agent: crate::AgentEventContext::default(),
+                    execution_owner: None,
                     profile: "coding".to_string(),
                     profile_context: serde_json::Value::Null,
                     metadata: serde_json::Value::Null,

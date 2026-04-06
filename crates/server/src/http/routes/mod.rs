@@ -74,7 +74,8 @@ use crate::{ApiError, AppState, bootstrap::serve_run_info};
 ///
 /// ### 未来 API 骨架
 /// - `GET /api/v1/agents` — 列出可用 Agent Profiles
-/// - `POST /api/v1/agents/{id}/execute` — 预留的直接 Agent 执行入口
+/// - `POST /api/v1/agents/{id}/execute` — 创建 root execution 并返回 session/turn 标识
+/// - `GET /api/v1/sessions/{id}/subruns/{sub_run_id}` — 查询子会话执行状态
 /// - `GET /api/v1/tools` — 列出当前 runtime 可调用工具
 /// - `POST /api/v1/tools/{id}/execute` — 预留的直接工具执行入口
 pub(crate) fn build_api_router() -> Router<AppState> {
@@ -123,6 +124,10 @@ pub(crate) fn build_api_router() -> Router<AppState> {
         )
         .route("/api/v1/agents", get(agents::list_agents))
         .route("/api/v1/agents/{id}/execute", post(agents::execute_agent))
+        .route(
+            "/api/v1/sessions/{id}/subruns/{sub_run_id}",
+            get(agents::get_subrun_status),
+        )
         .route("/api/v1/tools", get(tools::list_tools))
         .route("/api/v1/tools/{id}/execute", post(tools::execute_tool))
 }

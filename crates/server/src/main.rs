@@ -18,19 +18,30 @@
     windows_subsystem = "windows"
 )]
 
+#[path = "http/auth.rs"]
 mod auth;
 #[cfg(test)]
+#[path = "tests/auth_routes_tests.rs"]
 mod auth_routes_tests;
+#[path = "bootstrap/mod.rs"]
 mod bootstrap;
 #[cfg(test)]
+#[path = "tests/composer_routes_tests.rs"]
 mod composer_routes_tests;
 #[cfg(test)]
 mod e2e_tests;
+#[path = "http/mapper.rs"]
 mod mapper;
+#[path = "http/routes/mod.rs"]
 mod routes;
 #[cfg(test)]
+#[path = "tests/runtime_routes_tests.rs"]
 mod runtime_routes_tests;
 #[cfg(test)]
+#[path = "tests/session_contract_tests.rs"]
+mod session_contract_tests;
+#[cfg(test)]
+#[path = "tests/test_support.rs"]
 mod test_support;
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};

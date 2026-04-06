@@ -5,7 +5,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{AgentEventContext, CompactTrigger, ToolExecutionResult, ToolOutputStream};
+use crate::{
+    AgentEventContext, CompactTrigger, ResolvedExecutionLimitsSnapshot,
+    ResolvedSubagentContextOverrides, SubRunResult, ToolExecutionResult, ToolOutputStream,
+};
 
 /// 会话阶段
 ///
@@ -110,6 +113,21 @@ pub enum AgentEvent {
         trigger: CompactTrigger,
         summary: String,
         preserved_recent_turns: u32,
+    },
+    /// 受控子会话开始。
+    SubRunStarted {
+        turn_id: Option<String>,
+        agent: AgentEventContext,
+        resolved_overrides: ResolvedSubagentContextOverrides,
+        resolved_limits: ResolvedExecutionLimitsSnapshot,
+    },
+    /// 受控子会话完成。
+    SubRunFinished {
+        turn_id: Option<String>,
+        agent: AgentEventContext,
+        result: SubRunResult,
+        step_count: u32,
+        estimated_tokens: u64,
     },
     /// Turn 完成
     TurnDone {

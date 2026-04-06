@@ -61,6 +61,80 @@ pub enum CompactTriggerDto {
     Manual,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum InvocationKindDto {
+    SubRun,
+    RootExecution,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SubRunStorageModeDto {
+    SharedSession,
+    IndependentSession,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubRunOutcomeDto {
+    Completed,
+    Failed { error: String },
+    Aborted,
+    TokenExceeded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactRefDto {
+    pub kind: String,
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubRunResultDto {
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<ArtifactRefDto>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<String>,
+    pub status: SubRunOutcomeDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedSubagentContextOverridesDto {
+    pub storage_mode: SubRunStorageModeDto,
+    pub inherit_system_instructions: bool,
+    pub inherit_project_instructions: bool,
+    pub inherit_working_dir: bool,
+    pub inherit_policy_upper_bound: bool,
+    pub inherit_cancel_token: bool,
+    pub include_compact_summary: bool,
+    pub include_recent_tail: bool,
+    pub include_recovery_refs: bool,
+    pub include_parent_findings: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedExecutionLimitsDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_steps: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_budget: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_tools: Vec<String>,
+}
+
 /// Agent 父子关系元数据。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -71,11 +145,25 @@ pub struct AgentContextDto {
     pub parent_turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation_kind: Option<InvocationKindDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_mode: Option<SubRunStorageModeDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_session_id: Option<String>,
 }
 
 impl AgentContextDto {
     pub fn is_empty(&self) -> bool {
-        self.agent_id.is_none() && self.parent_turn_id.is_none() && self.agent_profile.is_none()
+        self.agent_id.is_none()
+            && self.parent_turn_id.is_none()
+            && self.agent_profile.is_none()
+            && self.sub_run_id.is_none()
+            && self.invocation_kind.is_none()
+            && self.storage_mode.is_none()
+            && self.child_session_id.is_none()
     }
 }
 
@@ -213,6 +301,23 @@ pub enum AgentEventPayload {
         trigger: CompactTriggerDto,
         summary: String,
         preserved_recent_turns: u32,
+    },
+    SubRunStarted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
+        agent: AgentContextDto,
+        resolved_overrides: ResolvedSubagentContextOverridesDto,
+        resolved_limits: ResolvedExecutionLimitsDto,
+    },
+    SubRunFinished {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
+        agent: AgentContextDto,
+        result: SubRunResultDto,
+        step_count: u32,
+        estimated_tokens: u64,
     },
     /// 当前 turn 完成事件。
     TurnDone {
