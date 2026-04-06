@@ -161,4 +161,43 @@ describe('normalizeAgentEvent protocol gate', () => {
       },
     });
   });
+
+  it('accepts failed subRunFinished payloads with structured failure details', () => {
+    const normalized = normalizeAgentEvent({
+      protocolVersion: 1,
+      event: 'subRunFinished',
+      data: {
+        turn_id: 'turn-subrun',
+        result: {
+          status: 'failed',
+          failure: {
+            code: 'transport',
+            display_message: '子 Agent 调用模型时网络连接中断，未完成任务。',
+            technical_message: 'HTTP request error: failed to read anthropic response stream',
+            retryable: true,
+          },
+        },
+        step_count: 3,
+        estimated_tokens: 120,
+      },
+    });
+
+    expect(normalized).toEqual({
+      event: 'subRunFinished',
+      data: {
+        turnId: 'turn-subrun',
+        result: {
+          status: 'failed',
+          failure: {
+            code: 'transport',
+            displayMessage: '子 Agent 调用模型时网络连接中断，未完成任务。',
+            technicalMessage: 'HTTP request error: failed to read anthropic response stream',
+            retryable: true,
+          },
+        },
+        stepCount: 3,
+        estimatedTokens: 120,
+      },
+    });
+  });
 });

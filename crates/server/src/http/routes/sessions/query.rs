@@ -10,6 +10,7 @@ use crate::{
     ApiError, AppState, SESSION_CURSOR_HEADER_NAME,
     auth::require_auth,
     mapper::{to_agent_event_envelope, to_phase_dto, to_session_list_item, to_session_message_dto},
+    routes::sessions::validate_session_path_id,
 };
 
 pub(crate) async fn list_sessions(
@@ -34,6 +35,7 @@ pub(crate) async fn session_messages(
     Path(session_id): Path<String>,
 ) -> Result<Response, ApiError> {
     require_auth(&state, &headers, None)?;
+    let session_id = validate_session_path_id(&session_id)?;
     let (messages, cursor) = state
         .service
         .load_session_snapshot(&session_id)
@@ -63,6 +65,7 @@ pub(crate) async fn session_history(
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionHistoryResponseDto>, ApiError> {
     require_auth(&state, &headers, None)?;
+    let session_id = validate_session_path_id(&session_id)?;
     let snapshot = state
         .service
         .load_session_history(&session_id)

@@ -1,18 +1,51 @@
 use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, AstrError, CancelToken, InvocationKind, StorageEvent, SubRunOutcome,
-    SubRunResult, SubRunStorageMode, ToolContext, ToolEventSink, UserMessageOrigin,
+    AgentEventContext, AgentProfile, AgentState, AstrError, CancelToken, ExecutionOwner,
+    InvocationKind, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
+    StorageEvent, SubRunHandle, SubRunOutcome, SubRunResult, SubRunStorageMode, ToolContext,
+    ToolEventSink, UserMessageOrigin,
 };
-use astrcode_runtime_agent_loop::ChildExecutionTracker;
+use astrcode_runtime_agent_loop::{AgentLoop, ChildExecutionTracker, TurnOutcome};
 use astrcode_runtime_execution::{
-    build_child_agent_state, build_result_artifacts, build_result_findings,
-    derive_child_execution_owner, ensure_subagent_mode, summarize_child_result,
+    PreparedAgentExecution, build_background_subrun_handoff, build_child_agent_state,
+    build_subrun_failure, build_subrun_handoff, derive_child_execution_owner, ensure_subagent_mode,
 };
-use astrcode_runtime_session::SessionStateEventSink;
+use astrcode_runtime_session::{SessionState, SessionStateEventSink};
 
 use super::root::AgentExecutionServiceHandle;
 use crate::service::{ServiceError, ServiceResult};
+
+struct ParentExecutionContext {
+    parent_turn_id: String,
+    parent_state: Arc<SessionState>,
+    parent_snapshot: AgentState,
+    parent_agent_id_for_control: Option<String>,
+}
+
+struct PreparedSubagentExecution {
+    profile: AgentProfile,
+    prepared_execution: PreparedAgentExecution<Arc<AgentLoop>>,
+    child_storage_mode: SubRunStorageMode,
+    child_task: String,
+}
+
+struct SpawnedSubagentExecution {
+    child: SubRunHandle,
+    child_agent: AgentEventContext,
+    child_turn_id: String,
+    child_task: String,
+    child_execution_owner: ExecutionOwner,
+    child_state: AgentState,
+    child_loop: Arc<AgentLoop>,
+    child_cancel: CancelToken,
+    child_storage_mode: SubRunStorageMode,
+    parent_turn_id: String,
+    parent_event_sink: Arc<dyn ToolEventSink>,
+    active_sink: Arc<dyn ToolEventSink>,
+    resolved_overrides: ResolvedSubagentContextOverrides,
+    resolved_limits: ResolvedExecutionLimitsSnapshot,
+}
 
 impl AgentExecutionServiceHandle {
     pub async fn execute_subagent(
@@ -20,30 +53,98 @@ impl AgentExecutionServiceHandle {
         params: astrcode_runtime_agent_tool::RunAgentParams,
         ctx: &ToolContext,
     ) -> ServiceResult<SubRunResult> {
+        params.validate().map_err(ServiceError::from)?;
+        let profile = self.resolve_profile(&params)?;
+        let parent = self.resolve_parent_execution(ctx).await?;
+        self.launch_background(params, profile, parent, ctx).await
+    }
+
+    fn resolve_profile(
+        &self,
+        params: &astrcode_runtime_agent_tool::RunAgentParams,
+    ) -> ServiceResult<AgentProfile> {
+        let profile_id = params.r#type.as_deref().unwrap_or("explore");
+        let profile = self
+            .runtime
+            .agent_profiles()
+            .get(profile_id)
+            .cloned()
+            .ok_or_else(|| {
+                ServiceError::InvalidInput(format!("unknown agent profile '{profile_id}'"))
+            })?;
+        ensure_subagent_mode(&profile)?;
+        Ok(profile)
+    }
+
+    async fn resolve_parent_execution(
+        &self,
+        ctx: &ToolContext,
+    ) -> ServiceResult<ParentExecutionContext> {
         let parent_turn_id = ctx.turn_id().ok_or_else(|| {
             ServiceError::InvalidInput("runAgent requires a parent turn id".to_string())
         })?;
-        let event_sink = ctx.event_sink().ok_or_else(|| {
-            ServiceError::InvalidInput(
-                "runAgent requires a tool event sink in the current runtime".to_string(),
-            )
-        })?;
-        let runtime = &self.runtime;
-        let profiles = runtime.agent_profiles();
-        let profile = profiles.get(&params.name).cloned().ok_or_else(|| {
-            ServiceError::InvalidInput(format!("unknown agent profile '{}'", params.name))
-        })?;
-        ensure_subagent_mode(&profile)?;
-        let parent_state = runtime.ensure_session_loaded(ctx.session_id()).await?;
+        let parent_state = self.runtime.ensure_session_loaded(ctx.session_id()).await?;
         let parent_snapshot = parent_state
             .snapshot_projected_state()
             .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
+        let parent_agent_id_for_control = if matches!(
+            ctx.agent_context().invocation_kind,
+            Some(InvocationKind::RootExecution)
+        ) {
+            None
+        } else {
+            ctx.agent_context().agent_id.clone()
+        };
+
+        Ok(ParentExecutionContext {
+            parent_turn_id: parent_turn_id.to_string(),
+            parent_state,
+            parent_snapshot,
+            parent_agent_id_for_control,
+        })
+    }
+
+    async fn launch_background(
+        &self,
+        params: astrcode_runtime_agent_tool::RunAgentParams,
+        profile: AgentProfile,
+        parent: ParentExecutionContext,
+        ctx: &ToolContext,
+    ) -> ServiceResult<SubRunResult> {
+        let prepared = self.prepare_child(&profile, &params, &parent).await?;
+        let spawned = self.spawn_child(prepared, &parent, ctx).await?;
+        self.emit_child_started_or_fail(&spawned).await?;
+
+        let running_result = SubRunResult {
+            status: SubRunOutcome::Running,
+            handoff: Some(build_background_subrun_handoff(&spawned.child)),
+            failure: None,
+        };
+
+        let service = self.clone();
+        tokio::spawn(async move {
+            let started_at = Instant::now();
+            let (outcome, tracker) = service.run_child_loop(&spawned).await;
+            let _ = service
+                .finalize_child_execution(spawned, tracker, started_at, outcome)
+                .await;
+        });
+
+        Ok(running_result)
+    }
+
+    async fn prepare_child(
+        &self,
+        profile: &AgentProfile,
+        params: &astrcode_runtime_agent_tool::RunAgentParams,
+        parent: &ParentExecutionContext,
+    ) -> ServiceResult<PreparedSubagentExecution> {
         let prepared_execution = self.prepare_scoped_execution(
             InvocationKind::SubRun,
-            &profile,
-            &params,
+            profile,
+            params,
             self.snapshot_execution_surface().await,
-            Some(&parent_snapshot),
+            Some(&parent.parent_snapshot),
         )?;
         let child_storage_mode = prepared_execution
             .execution_spec
@@ -54,11 +155,25 @@ impl AgentExecutionServiceHandle {
             .resolved_context_snapshot
             .composed_task
             .clone();
-        let child_loop = Arc::clone(&prepared_execution.loop_);
-        let child_session_meta = match child_storage_mode {
+
+        Ok(PreparedSubagentExecution {
+            profile: profile.clone(),
+            prepared_execution,
+            child_storage_mode,
+            child_task,
+        })
+    }
+
+    async fn spawn_child(
+        &self,
+        prepared: PreparedSubagentExecution,
+        parent: &ParentExecutionContext,
+        ctx: &ToolContext,
+    ) -> ServiceResult<SpawnedSubagentExecution> {
+        let child_session_meta = match prepared.child_storage_mode {
             SubRunStorageMode::SharedSession => None,
             SubRunStorageMode::IndependentSession => Some(
-                runtime
+                self.runtime
                     .create_session(ctx.working_dir())
                     .await
                     .map_err(|error| ServiceError::Conflict(error.to_string()))?,
@@ -72,38 +187,37 @@ impl AgentExecutionServiceHandle {
             .as_ref()
             .map(|meta| meta.session_id.clone());
 
-        let parent_agent_id_for_control = if matches!(
-            ctx.agent_context().invocation_kind,
-            Some(InvocationKind::RootExecution)
-        ) {
-            None
-        } else {
-            ctx.agent_context().agent_id.clone()
-        };
-        let child = runtime
+        let child = self
+            .runtime
             .agent_control
             .spawn_with_storage(
-                &profile,
+                &prepared.profile,
                 target_session_id.clone(),
                 child_session_id.clone(),
-                Some(parent_turn_id.to_string()),
-                parent_agent_id_for_control,
-                child_storage_mode,
+                Some(parent.parent_turn_id.clone()),
+                parent.parent_agent_id_for_control.clone(),
+                prepared.child_storage_mode,
             )
             .await
             .map_err(|error| ServiceError::Conflict(error.to_string()))?;
-        let _ = runtime.agent_control.mark_running(&child.agent_id).await;
-        let child_cancel = runtime
+        let _ = self
+            .runtime
+            .agent_control
+            .mark_running(&child.agent_id)
+            .await;
+        let child_cancel = self
+            .runtime
             .agent_control
             .cancel_token(&child.agent_id)
             .await
             .unwrap_or_else(CancelToken::new);
-        let child_turn_id = format!("{}-child-{}", parent_turn_id, uuid::Uuid::new_v4());
-        let child_execution_owner = derive_child_execution_owner(ctx, parent_turn_id, &child);
+        let child_turn_id = format!("{}-child-{}", parent.parent_turn_id, uuid::Uuid::new_v4());
+        let child_execution_owner =
+            derive_child_execution_owner(ctx, &parent.parent_turn_id, &child);
         let child_agent = AgentEventContext::sub_run(
             child.agent_id.clone(),
-            parent_turn_id.to_string(),
-            profile.id.clone(),
+            parent.parent_turn_id.clone(),
+            prepared.profile.id.clone(),
             child.sub_run_id.clone(),
             child.storage_mode,
             child.child_session_id.clone(),
@@ -111,82 +225,163 @@ impl AgentExecutionServiceHandle {
         let child_state = build_child_agent_state(
             &target_session_id,
             ctx.working_dir().to_path_buf(),
-            &child_task,
+            &prepared.child_task,
         );
-        let parent_event_sink = event_sink.clone();
+        let (parent_event_sink, active_sink) = self
+            .build_event_sinks(parent, &target_session_id, prepared.child_storage_mode)
+            .await?;
+
+        Ok(SpawnedSubagentExecution {
+            child,
+            child_agent,
+            child_turn_id,
+            child_task: prepared.child_task,
+            child_execution_owner,
+            child_state,
+            child_loop: Arc::clone(&prepared.prepared_execution.loop_),
+            child_cancel,
+            child_storage_mode: prepared.child_storage_mode,
+            parent_turn_id: parent.parent_turn_id.clone(),
+            parent_event_sink,
+            active_sink,
+            resolved_overrides: prepared
+                .prepared_execution
+                .execution_spec
+                .resolved_overrides,
+            resolved_limits: prepared.prepared_execution.execution_spec.resolved_limits,
+        })
+    }
+
+    async fn build_event_sinks(
+        &self,
+        parent: &ParentExecutionContext,
+        target_session_id: &str,
+        child_storage_mode: SubRunStorageMode,
+    ) -> ServiceResult<(Arc<dyn ToolEventSink>, Arc<dyn ToolEventSink>)> {
+        let parent_event_sink: Arc<dyn ToolEventSink> = Arc::new(
+            SessionStateEventSink::new(Arc::clone(&parent.parent_state))
+                .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?,
+        );
         let active_sink: Arc<dyn ToolEventSink> =
-            if matches!(child.storage_mode, SubRunStorageMode::IndependentSession) {
-                let child_state = runtime.ensure_session_loaded(&target_session_id).await?;
+            if matches!(child_storage_mode, SubRunStorageMode::IndependentSession) {
+                let child_state = self
+                    .runtime
+                    .ensure_session_loaded(target_session_id)
+                    .await?;
                 Arc::new(SessionStateEventSink::new(child_state).map_err(|error| {
                     ServiceError::Internal(AstrError::Internal(error.to_string()))
                 })?)
             } else {
-                event_sink
+                parent_event_sink.clone()
             };
+        Ok((parent_event_sink, active_sink))
+    }
 
-        parent_event_sink.emit(StorageEvent::SubRunStarted {
-            turn_id: Some(parent_turn_id.to_string()),
-            agent: child_agent.clone(),
-            resolved_overrides: prepared_execution.execution_spec.resolved_overrides.clone(),
-            resolved_limits: prepared_execution.execution_spec.resolved_limits.clone(),
-            timestamp: Some(chrono::Utc::now()),
-        })?;
+    fn emit_child_started(&self, execution: &SpawnedSubagentExecution) -> ServiceResult<()> {
+        if let Err(error) = execution
+            .parent_event_sink
+            .emit(StorageEvent::SubRunStarted {
+                turn_id: Some(execution.parent_turn_id.clone()),
+                agent: execution.child_agent.clone(),
+                resolved_overrides: execution.resolved_overrides.clone(),
+                resolved_limits: execution.resolved_limits.clone(),
+                timestamp: Some(chrono::Utc::now()),
+            })
+        {
+            return Err(ServiceError::Internal(error));
+        }
 
-        active_sink.emit(StorageEvent::UserMessage {
-            turn_id: Some(child_turn_id.clone()),
-            agent: child_agent.clone(),
-            content: child_task,
+        if let Err(error) = execution.active_sink.emit(StorageEvent::UserMessage {
+            turn_id: Some(execution.child_turn_id.clone()),
+            agent: execution.child_agent.clone(),
+            content: execution.child_task.clone(),
             timestamp: chrono::Utc::now(),
             origin: UserMessageOrigin::User,
-        })?;
+        }) {
+            return Err(ServiceError::Internal(error));
+        }
 
+        Ok(())
+    }
+
+    async fn emit_child_started_or_fail(
+        &self,
+        execution: &SpawnedSubagentExecution,
+    ) -> ServiceResult<()> {
+        if let Err(error) = self.emit_child_started(execution) {
+            let _ = self
+                .runtime
+                .agent_control
+                .mark_failed(&execution.child.agent_id)
+                .await;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn run_child_loop(
+        &self,
+        execution: &SpawnedSubagentExecution,
+    ) -> (astrcode_core::Result<TurnOutcome>, ChildExecutionTracker) {
         let mut tracker = ChildExecutionTracker::new(
-            prepared_execution.execution_spec.resolved_limits.max_steps,
-            prepared_execution
-                .execution_spec
-                .resolved_limits
-                .token_budget,
+            execution.resolved_limits.max_steps,
+            execution.resolved_limits.token_budget,
         );
-        let started_at = Instant::now();
-        let outcome = child_loop
+        let outcome = execution
+            .child_loop
             .run_turn_with_agent_context_and_owner(
-                &child_state,
-                &child_turn_id,
+                &execution.child_state,
+                &execution.child_turn_id,
                 &mut |event| {
-                    if ctx.cancel().is_cancelled() {
-                        child_cancel.cancel();
-                    }
-                    tracker.observe(&event, &child_cancel);
-                    active_sink.emit(event)
+                    tracker.observe(&event, &execution.child_cancel);
+                    execution.active_sink.emit(event)
                 },
-                child_cancel.clone(),
-                child_agent.clone(),
-                child_execution_owner,
+                execution.child_cancel.clone(),
+                execution.child_agent.clone(),
+                execution.child_execution_owner.clone(),
             )
             .await;
 
+        (outcome, tracker)
+    }
+
+    async fn finalize_child_execution(
+        &self,
+        execution: SpawnedSubagentExecution,
+        tracker: ChildExecutionTracker,
+        started_at: Instant,
+        outcome: astrcode_core::Result<TurnOutcome>,
+    ) -> ServiceResult<SubRunResult> {
         let result = match outcome {
-            Ok(astrcode_runtime_agent_loop::TurnOutcome::Completed) => {
-                let _ = runtime.agent_control.mark_completed(&child.agent_id).await;
+            Ok(TurnOutcome::Completed) => {
+                let _ = self
+                    .runtime
+                    .agent_control
+                    .mark_completed(&execution.child.agent_id)
+                    .await;
                 SubRunResult {
                     status: if tracker.token_limit_hit() || tracker.step_limit_hit() {
                         SubRunOutcome::TokenExceeded
                     } else {
                         SubRunOutcome::Completed
                     },
-                    summary: summarize_child_result(
+                    handoff: Some(build_subrun_handoff(
+                        &execution.child,
                         tracker.last_summary(),
                         tracker.token_limit_hit(),
                         tracker.step_limit_hit(),
                         started_at.elapsed().as_millis() as u64,
                         "子 Agent 已完成任务。",
-                    ),
-                    artifacts: build_result_artifacts(&child),
-                    findings: build_result_findings(&prepared_execution.execution_spec),
+                    )),
+                    failure: None,
                 }
             },
-            Ok(astrcode_runtime_agent_loop::TurnOutcome::Cancelled) => {
-                let _ = runtime.agent_control.cancel(&child.agent_id).await;
+            Ok(TurnOutcome::Cancelled) => {
+                let _ = self
+                    .runtime
+                    .agent_control
+                    .cancel(&execution.child.agent_id)
+                    .await;
                 let status = if tracker.token_limit_hit() || tracker.step_limit_hit() {
                     SubRunOutcome::TokenExceeded
                 } else {
@@ -194,70 +389,63 @@ impl AgentExecutionServiceHandle {
                 };
                 SubRunResult {
                     status,
-                    summary: summarize_child_result(
+                    handoff: Some(build_subrun_handoff(
+                        &execution.child,
                         tracker.last_summary(),
                         tracker.token_limit_hit(),
                         tracker.step_limit_hit(),
                         started_at.elapsed().as_millis() as u64,
                         "子 Agent 被中止。",
-                    ),
-                    artifacts: build_result_artifacts(&child),
-                    findings: build_result_findings(&prepared_execution.execution_spec),
+                    )),
+                    failure: None,
                 }
             },
-            Ok(astrcode_runtime_agent_loop::TurnOutcome::Error { message }) => {
-                let _ = runtime.agent_control.mark_failed(&child.agent_id).await;
+            Ok(TurnOutcome::Error { message }) => {
+                let _ = self
+                    .runtime
+                    .agent_control
+                    .mark_failed(&execution.child.agent_id)
+                    .await;
+                let error = AstrError::Internal(message);
                 SubRunResult {
-                    status: SubRunOutcome::Failed {
-                        error: message.clone(),
-                    },
-                    summary: summarize_child_result(
-                        tracker.last_summary(),
-                        tracker.token_limit_hit(),
-                        tracker.step_limit_hit(),
-                        started_at.elapsed().as_millis() as u64,
-                        &format!("子 Agent 执行失败：{message}"),
-                    ),
-                    artifacts: build_result_artifacts(&child),
-                    findings: build_result_findings(&prepared_execution.execution_spec),
+                    status: SubRunOutcome::Failed,
+                    handoff: None,
+                    failure: Some(build_subrun_failure(&error)),
                 }
             },
             Err(error) => {
-                let _ = runtime.agent_control.mark_failed(&child.agent_id).await;
+                let _ = self
+                    .runtime
+                    .agent_control
+                    .mark_failed(&execution.child.agent_id)
+                    .await;
                 SubRunResult {
-                    status: SubRunOutcome::Failed {
-                        error: error.to_string(),
-                    },
-                    summary: summarize_child_result(
-                        tracker.last_summary(),
-                        tracker.token_limit_hit(),
-                        tracker.step_limit_hit(),
-                        started_at.elapsed().as_millis() as u64,
-                        &format!("子 Agent 执行失败：{error}"),
-                    ),
-                    artifacts: build_result_artifacts(&child),
-                    findings: build_result_findings(&prepared_execution.execution_spec),
+                    status: SubRunOutcome::Failed,
+                    handoff: None,
+                    failure: Some(build_subrun_failure(&error)),
                 }
             },
         };
 
         let duration = started_at.elapsed();
-        runtime.observability.record_subrun_execution(
+        self.runtime.observability.record_subrun_execution(
             duration,
             &result.status,
-            child_storage_mode,
+            execution.child_storage_mode,
             tracker.step_count(),
             tracker.estimated_tokens_used(),
         );
 
-        parent_event_sink.emit(StorageEvent::SubRunFinished {
-            turn_id: Some(parent_turn_id.to_string()),
-            agent: child_agent,
-            result: result.clone(),
-            step_count: tracker.step_count(),
-            estimated_tokens: tracker.estimated_tokens_used(),
-            timestamp: Some(chrono::Utc::now()),
-        })?;
+        execution
+            .parent_event_sink
+            .emit(StorageEvent::SubRunFinished {
+                turn_id: Some(execution.parent_turn_id),
+                agent: execution.child_agent,
+                result: result.clone(),
+                step_count: tracker.step_count(),
+                estimated_tokens: tracker.estimated_tokens_used(),
+                timestamp: Some(chrono::Utc::now()),
+            })?;
 
         Ok(result)
     }

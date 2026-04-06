@@ -75,14 +75,14 @@ impl OpenAiProvider {
         api_key: String,
         model: String,
         limits: ModelLimits,
-    ) -> Self {
-        Self {
-            client: build_http_client(),
+    ) -> Result<Self> {
+        Ok(Self {
+            client: build_http_client()?,
             chat_completions_api_url,
             api_key,
             model,
             limits,
-        }
+        })
     }
 
     /// 构建 OpenAI Chat Completions API 请求体。
@@ -935,7 +935,8 @@ mod tests {
                 context_window: 128_000,
                 max_output_tokens: 2048,
             },
-        );
+        )
+        .expect("provider should build");
         let messages = [LlmMessage::User {
             content: "hi".to_string(),
             origin: UserMessageOrigin::User,
@@ -981,7 +982,8 @@ mod tests {
                 context_window: 128_000,
                 max_output_tokens: 2048,
             },
-        );
+        )
+        .expect("provider should build");
 
         let output = provider
             .generate(
@@ -1046,7 +1048,8 @@ mod tests {
                 context_window: 128_000,
                 max_output_tokens: 2048,
             },
-        );
+        )
+        .expect("provider should build");
         let events = Arc::new(Mutex::new(Vec::new()));
 
         let output = provider

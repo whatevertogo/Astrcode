@@ -48,9 +48,10 @@ pub use action::{
     split_assistant_content,
 };
 pub use agent::{
-    AgentEventContext, AgentMode, AgentProfile, AgentStatus, ArtifactRef, InvocationKind,
-    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SubRunHandle, SubRunOutcome,
-    SubRunResult, SubRunStorageMode, SubagentContextOverrides,
+    AgentEventContext, AgentMode, AgentProfile, AgentStatus, ArtifactRef, ForkMode, InvocationKind,
+    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SubRunFailure,
+    SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunOutcome, SubRunResult, SubRunStorageMode,
+    SubagentContextOverrides,
 };
 pub use cancel::CancelToken;
 pub use capability::{

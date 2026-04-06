@@ -20,22 +20,23 @@
 //! - **SSE 工具**：事件 ID 解析/格式化（`{storage_seq}.{subindex}` 格式）
 
 use astrcode_core::{
-    AgentEvent, AgentEventContext, ArtifactRef, AstrError, CapabilityDescriptor, Phase,
+    AgentEvent, AgentEventContext, ArtifactRef, AstrError, CapabilityDescriptor, ForkMode, Phase,
     PluginHealth, PluginState, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    SessionEventRecord, SessionMeta, SubRunOutcome, SubRunResult, SubRunStorageMode,
-    SubagentContextOverrides, format_local_rfc3339, plugin::PluginEntry,
+    SessionEventRecord, SessionMeta, SubRunFailure, SubRunFailureCode, SubRunHandoff,
+    SubRunOutcome, SubRunResult, SubRunStorageMode, SubagentContextOverrides, format_local_rfc3339,
+    plugin::PluginEntry,
 };
 use astrcode_protocol::http::{
     AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentProfileDto, ArtifactRefDto,
     CompactTriggerDto, ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto,
-    ConfigView, CurrentModelInfoDto, InvocationKindDto, ModelOptionDto, OperationMetricsDto,
-    PROTOCOL_VERSION, PhaseDto, PluginHealthDto, PluginRuntimeStateDto, ProfileView,
-    ReplayMetricsDto, ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto,
+    ConfigView, CurrentModelInfoDto, ForkModeDto, InvocationKindDto, ModelOptionDto,
+    OperationMetricsDto, PROTOCOL_VERSION, PhaseDto, PluginHealthDto, PluginRuntimeStateDto,
+    ProfileView, ReplayMetricsDto, ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto,
     RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto,
     SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem, SessionMessageDto,
-    SubRunExecutionMetricsDto, SubRunOutcomeDto, SubRunResultDto, SubRunStatusDto,
-    SubRunStorageModeDto, SubagentContextOverridesDto, ToolCallResultDto, ToolDescriptorDto,
-    ToolOutputStreamDto,
+    SubRunExecutionMetricsDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
+    SubRunOutcomeDto, SubRunResultDto, SubRunStatusDto, SubRunStorageModeDto,
+    SubagentContextOverridesDto, ToolCallResultDto, ToolDescriptorDto, ToolOutputStreamDto,
 };
 use astrcode_runtime::{
     AgentProfileSummary, ComposerOption, ComposerOptionKind, Config, OperationMetricsSnapshot,
@@ -224,7 +225,15 @@ pub(crate) fn from_subagent_context_overrides_dto(
         include_recent_tail: dto.include_recent_tail,
         include_recovery_refs: dto.include_recovery_refs,
         include_parent_findings: dto.include_parent_findings,
+        fork_mode: dto.fork_mode.map(from_fork_mode_dto),
     })
+}
+
+fn from_fork_mode_dto(dto: ForkModeDto) -> ForkMode {
+    match dto {
+        ForkModeDto::FullHistory => ForkMode::FullHistory,
+        ForkModeDto::LastNTurns(n) => ForkMode::LastNTurns(n),
+    }
 }
 
 /// 将会话事件记录转换为 SSE 事件。
@@ -373,8 +382,9 @@ fn to_subrun_storage_mode_dto(mode: SubRunStorageMode) -> SubRunStorageModeDto {
 
 fn to_subrun_outcome_dto(outcome: SubRunOutcome) -> SubRunOutcomeDto {
     match outcome {
+        SubRunOutcome::Running => SubRunOutcomeDto::Running,
         SubRunOutcome::Completed => SubRunOutcomeDto::Completed,
-        SubRunOutcome::Failed { error } => SubRunOutcomeDto::Failed { error },
+        SubRunOutcome::Failed => SubRunOutcomeDto::Failed,
         SubRunOutcome::Aborted => SubRunOutcomeDto::Aborted,
         SubRunOutcome::TokenExceeded => SubRunOutcomeDto::TokenExceeded,
     }
@@ -382,14 +392,40 @@ fn to_subrun_outcome_dto(outcome: SubRunOutcome) -> SubRunOutcomeDto {
 
 fn to_subrun_result_dto(result: SubRunResult) -> SubRunResultDto {
     SubRunResultDto {
-        summary: result.summary,
-        artifacts: result
+        status: to_subrun_outcome_dto(result.status),
+        handoff: result.handoff.map(to_subrun_handoff_dto),
+        failure: result.failure.map(to_subrun_failure_dto),
+    }
+}
+
+fn to_subrun_handoff_dto(handoff: SubRunHandoff) -> SubRunHandoffDto {
+    SubRunHandoffDto {
+        summary: handoff.summary,
+        findings: handoff.findings,
+        artifacts: handoff
             .artifacts
             .into_iter()
             .map(to_artifact_ref_dto)
             .collect(),
-        findings: result.findings,
-        status: to_subrun_outcome_dto(result.status),
+    }
+}
+
+fn to_subrun_failure_dto(failure: SubRunFailure) -> SubRunFailureDto {
+    SubRunFailureDto {
+        code: to_subrun_failure_code_dto(failure.code),
+        display_message: failure.display_message,
+        technical_message: failure.technical_message,
+        retryable: failure.retryable,
+    }
+}
+
+fn to_subrun_failure_code_dto(code: SubRunFailureCode) -> SubRunFailureCodeDto {
+    match code {
+        SubRunFailureCode::Transport => SubRunFailureCodeDto::Transport,
+        SubRunFailureCode::ProviderHttp => SubRunFailureCodeDto::ProviderHttp,
+        SubRunFailureCode::StreamParse => SubRunFailureCodeDto::StreamParse,
+        SubRunFailureCode::Interrupted => SubRunFailureCodeDto::Interrupted,
+        SubRunFailureCode::Internal => SubRunFailureCodeDto::Internal,
     }
 }
 
@@ -407,6 +443,14 @@ fn to_resolved_overrides_dto(
         include_recent_tail: overrides.include_recent_tail,
         include_recovery_refs: overrides.include_recovery_refs,
         include_parent_findings: overrides.include_parent_findings,
+        fork_mode: overrides.fork_mode.map(to_fork_mode_dto),
+    }
+}
+
+fn to_fork_mode_dto(fork_mode: ForkMode) -> ForkModeDto {
+    match fork_mode {
+        ForkMode::FullHistory => ForkModeDto::FullHistory,
+        ForkMode::LastNTurns(n) => ForkModeDto::LastNTurns(n),
     }
 }
 

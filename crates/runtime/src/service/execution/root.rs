@@ -80,23 +80,38 @@ impl AgentExecutionServiceHandle {
         context_overrides: Option<SubagentContextOverrides>,
         working_dir: PathBuf,
     ) -> ServiceResult<AgentExecutionAccepted> {
+        // 从 task 提取 description（取前几个词或直接使用）
+        let description = if task.len() > 50 {
+            task.chars().take(30).collect::<String>() + "..."
+        } else {
+            task.clone()
+        };
+
         let params = astrcode_runtime_agent_tool::RunAgentParams {
-            name: agent_id,
-            task,
+            r#type: Some(agent_id),
+            description,
+            prompt: task,
             context,
-            max_steps,
-            context_overrides,
         };
         let runtime = &self.runtime;
         let profiles = runtime.agent_profiles();
-        let profile = profiles.get(&params.name).cloned().ok_or_else(|| {
-            ServiceError::InvalidInput(format!("unknown agent profile '{}'", params.name))
+        let profile_id = params.r#type.as_deref().unwrap_or("explore");
+        let profile = profiles.get(profile_id).cloned().ok_or_else(|| {
+            ServiceError::InvalidInput(format!("unknown agent profile '{profile_id}'"))
         })?;
         astrcode_runtime_execution::ensure_root_execution_mode(&profile)?;
-        let prepared_execution = self.prepare_scoped_execution(
+        let request = astrcode_runtime_execution::AgentExecutionRequest {
+            subagent_type: params.r#type.clone(),
+            description: params.description.clone(),
+            prompt: params.prompt.clone(),
+            context: params.context.clone(),
+            max_steps,
+            context_overrides,
+        };
+        let prepared_execution = self.prepare_scoped_execution_request(
             InvocationKind::RootExecution,
             &profile,
-            &params,
+            request,
             self.snapshot_execution_surface().await,
             None,
         )?;

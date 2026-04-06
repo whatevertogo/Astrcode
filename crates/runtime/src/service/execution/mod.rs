@@ -11,7 +11,7 @@ mod surface;
 
 use std::sync::{Arc, RwLock as StdRwLock, Weak};
 
-use astrcode_core::{AstrError, Result, SubRunResult, ToolContext};
+use astrcode_core::{AgentProfile, AstrError, Result, SubRunResult, ToolContext};
 use astrcode_runtime_agent_tool::{RunAgentParams, SubAgentExecutor};
 use async_trait::async_trait;
 pub use root::{
@@ -62,6 +62,25 @@ impl SubAgentExecutor for DeferredSubAgentExecutor {
             .await
             .map_err(service_error_to_astr)
     }
+
+    fn available_profiles(&self) -> Vec<AgentProfile> {
+        self.runtime()
+            .map(|runtime| {
+                runtime
+                    .agent_profiles()
+                    .list()
+                    .into_iter()
+                    .filter(|p| {
+                        matches!(
+                            p.mode,
+                            astrcode_core::AgentMode::SubAgent | astrcode_core::AgentMode::All
+                        )
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 impl RuntimeService {
@@ -84,6 +103,21 @@ impl SubAgentExecutor for root::AgentExecutionServiceHandle {
         self.execute_subagent(params, ctx)
             .await
             .map_err(service_error_to_astr)
+    }
+
+    fn available_profiles(&self) -> Vec<AgentProfile> {
+        self.runtime
+            .agent_profiles()
+            .list()
+            .into_iter()
+            .filter(|p| {
+                matches!(
+                    p.mode,
+                    astrcode_core::AgentMode::SubAgent | astrcode_core::AgentMode::All
+                )
+            })
+            .cloned()
+            .collect()
     }
 }
 

@@ -254,19 +254,15 @@ const MAX_RETRIES: u32 = 2;
 /// 首次重试延迟（毫秒），后续重试指数退避
 const RETRY_BASE_DELAY_MS: u64 = 250;
 
-/// 构建共享超时策略的 HTTP 客户端
+/// 构建共享超时策略的 HTTP 客户端。
 ///
-/// # Panics
-///
-/// 仅在 reqwest 内部配置极端异常时 panic（几乎不可能发生）。
-/// 库 crate 通常应避免 panic，但 HTTP 客户端构建失败意味着
-/// 整个 LLM 子系统无法工作，此时 panic 比静默失败更合适。
-pub fn build_http_client() -> reqwest::Client {
+/// 不在库层 panic，统一返回 `AstrError` 交由上层决定是降级、重试还是失败。
+pub fn build_http_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)
         .build()
-        .expect("http client should build with valid timeout config")
+        .map_err(|error| AstrError::http("failed to build shared http client", error))
 }
 
 /// 判断 HTTP 状态码是否可重试

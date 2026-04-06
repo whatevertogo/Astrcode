@@ -10,7 +10,10 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::{ApiError, AppState, auth::require_auth, mapper::to_session_list_item};
+use crate::{
+    ApiError, AppState, auth::require_auth, mapper::to_session_list_item,
+    routes::sessions::validate_session_path_id,
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +42,7 @@ pub(crate) async fn submit_prompt(
     Json(request): Json<PromptRequest>,
 ) -> Result<(StatusCode, Json<PromptAcceptedResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
+    let session_id = validate_session_path_id(&session_id)?;
     let accepted: PromptAccepted = state
         .service
         .submit_prompt(&session_id, request.text)
@@ -60,6 +64,7 @@ pub(crate) async fn interrupt_session(
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     require_auth(&state, &headers, None)?;
+    let session_id = validate_session_path_id(&session_id)?;
     state
         .service
         .interrupt(&session_id)
@@ -74,6 +79,7 @@ pub(crate) async fn compact_session(
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     require_auth(&state, &headers, None)?;
+    let session_id = validate_session_path_id(&session_id)?;
     state
         .service
         .compact_session(&session_id)
@@ -88,6 +94,7 @@ pub(crate) async fn delete_session(
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     require_auth(&state, &headers, None)?;
+    let session_id = validate_session_path_id(&session_id)?;
     state
         .service
         .delete_session(&session_id)

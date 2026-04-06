@@ -77,6 +77,8 @@ pub struct SubagentContextOverridesDto {
     pub include_recovery_refs: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_parent_findings: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_mode: Option<super::event::ForkModeDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

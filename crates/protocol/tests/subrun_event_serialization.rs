@@ -1,6 +1,7 @@
 use astrcode_protocol::http::{
     AgentContextDto, AgentEventEnvelope, AgentEventPayload, InvocationKindDto,
-    ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto, SubRunStorageModeDto,
+    ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto, SubRunFailureCodeDto,
+    SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto,
 };
 
 #[test]
@@ -27,6 +28,7 @@ fn sub_run_started_serializes_contract_fields_in_camel_case() {
             include_recent_tail: false,
             include_recovery_refs: false,
             include_parent_findings: false,
+            fork_mode: None,
         },
         resolved_limits: ResolvedExecutionLimitsDto {
             max_steps: Some(30),
@@ -72,6 +74,7 @@ fn sub_run_started_payload_roundtrip() {
             include_recent_tail: false,
             include_recovery_refs: true,
             include_parent_findings: false,
+            fork_mode: None,
         },
         resolved_limits: ResolvedExecutionLimitsDto {
             max_steps: Some(50),
@@ -121,4 +124,65 @@ fn sub_run_started_rejects_snake_case_fields() {
     let result: Result<AgentEventPayload, _> = serde_json::from_value(payload);
 
     assert!(result.is_err(), "snake_case 字段应被拒绝");
+}
+
+#[test]
+fn sub_run_finished_payload_roundtrip_new_result_shape() {
+    let original = AgentEventPayload::SubRunFinished {
+        turn_id: Some("turn-1".to_string()),
+        agent: AgentContextDto {
+            agent_id: Some("agent-1".to_string()),
+            parent_turn_id: Some("parent-turn".to_string()),
+            agent_profile: Some("explore".to_string()),
+            sub_run_id: Some("subrun-1".to_string()),
+            invocation_kind: Some(InvocationKindDto::SubRun),
+            storage_mode: Some(SubRunStorageModeDto::SharedSession),
+            child_session_id: None,
+        },
+        result: SubRunResultDto {
+            status: SubRunOutcomeDto::Failed,
+            handoff: None,
+            failure: Some(SubRunFailureDto {
+                code: SubRunFailureCodeDto::Transport,
+                display_message: "子 Agent 调用模型时网络连接中断，未完成任务。".to_string(),
+                technical_message: "HTTP request error: failed to read anthropic response stream"
+                    .to_string(),
+                retryable: true,
+            }),
+        },
+        step_count: 2,
+        estimated_tokens: 123,
+    };
+
+    let json = serde_json::to_value(&original).expect("serialize payload");
+    let roundtripped: AgentEventPayload =
+        serde_json::from_value(json).expect("deserialize payload");
+
+    assert_eq!(original, roundtripped);
+}
+
+#[test]
+fn sub_run_finished_omits_parent_handoff_on_failure() {
+    let payload = AgentEventPayload::SubRunFinished {
+        turn_id: Some("turn-1".to_string()),
+        agent: AgentContextDto::default(),
+        result: SubRunResultDto {
+            status: SubRunOutcomeDto::Completed,
+            handoff: Some(SubRunHandoffDto {
+                summary: "done".to_string(),
+                findings: vec!["checked".to_string()],
+                artifacts: Vec::new(),
+            }),
+            failure: None,
+        },
+        step_count: 1,
+        estimated_tokens: 12,
+    };
+
+    let json = serde_json::to_value(AgentEventEnvelope::new(payload)).expect("serialize");
+    let data = json.get("data").expect("data");
+    let result = data.get("result").expect("result");
+
+    assert!(result.get("handoff").is_some());
+    assert!(result.get("failure").is_none());
 }

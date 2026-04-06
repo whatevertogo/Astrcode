@@ -1,9 +1,19 @@
+//! Agent 执行装配模块。
+//!
+//! 负责执行前的准备工作，包括：
+//! - Profile 工具集裁剪与验证
+//! - 执行限制解析（步数、token、工具白名单）
+//! - 子 Agent 状态构建
+//! - 执行结果构建（handoff/failure/artifacts）
+//!
+//! 设计原则：纯函数无状态，让 runtime façade 专注于编排。
+
 use std::{collections::HashSet, sync::Arc};
 
 use astrcode_core::{
     AgentMode, AgentProfile, AgentState, ArtifactRef, AstrError, ExecutionOwner, HookHandler,
     InvocationKind, LlmMessage, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    SubagentContextOverrides, UserMessageOrigin,
+    SubRunFailure, SubRunFailureCode, SubRunHandoff, SubagentContextOverrides, UserMessageOrigin,
 };
 use astrcode_runtime_prompt::PromptDeclaration;
 use astrcode_runtime_registry::CapabilityRouter;
@@ -22,9 +32,18 @@ pub struct AgentExecutionSpec {
 
 #[derive(Debug, Clone)]
 pub struct AgentExecutionRequest {
-    pub task: String,
+    /// 子 Agent 类型标识。
+    pub subagent_type: Option<String>,
+    /// 任务描述摘要（用于可观测性）。
+    pub description: String,
+    /// 任务正文。子 Agent 收到的指令主体。
+    pub prompt: String,
+    /// 可选补充材料。
     pub context: Option<String>,
+    /// 可选的步数上限覆盖。
     pub max_steps: Option<u32>,
+    /// 内部使用：上下文继承控制。
+    /// TODO: 未来 compact agent 将通过此字段实现 fork 上下文继承。
     pub context_overrides: Option<SubagentContextOverrides>,
 }
 
@@ -61,7 +80,15 @@ fn build_execution_spec(
         invocation_kind,
         resolved_overrides,
         resolved_limits: ResolvedExecutionLimitsSnapshot {
-            max_steps: profile.max_steps.or(params.max_steps),
+            // 步数限制采用“更严格者优先”，避免外部请求绕过 profile 上限。
+            max_steps: match (profile.max_steps, params.max_steps) {
+                (Some(profile_limit), Some(request_limit)) => {
+                    Some(profile_limit.min(request_limit))
+                },
+                (Some(profile_limit), None) => Some(profile_limit),
+                (None, Some(request_limit)) => Some(request_limit),
+                (None, None) => None,
+            },
             token_budget: profile.token_budget,
             allowed_tools: allowed_tools.to_vec(),
         },
@@ -272,31 +299,6 @@ pub fn derive_child_execution_owner(
     )
 }
 
-pub fn build_result_findings(spec: &AgentExecutionSpec) -> Vec<String> {
-    let mut findings = vec![
-        format!("invocationKind={:?}", spec.invocation_kind),
-        format!("storageMode={:?}", spec.resolved_overrides.storage_mode),
-    ];
-    if let Some(summary) = spec
-        .resolved_context_snapshot
-        .inherited_compact_summary
-        .as_ref()
-    {
-        findings.push(format!("inheritedCompactSummary={} chars", summary.len()));
-    }
-    if !spec
-        .resolved_context_snapshot
-        .inherited_recent_tail
-        .is_empty()
-    {
-        findings.push(format!(
-            "inheritedRecentTailLines={}",
-            spec.resolved_context_snapshot.inherited_recent_tail.len()
-        ));
-    }
-    findings
-}
-
 pub fn build_result_artifacts(child: &astrcode_core::SubRunHandle) -> Vec<ArtifactRef> {
     child
         .child_session_id
@@ -313,43 +315,209 @@ pub fn build_result_artifacts(child: &astrcode_core::SubRunHandle) -> Vec<Artifa
         })
 }
 
-pub fn summarize_child_result(
+pub fn build_subrun_handoff(
+    child: &astrcode_core::SubRunHandle,
     last_summary: Option<&str>,
     token_limit_hit: bool,
     step_limit_hit: bool,
     duration_ms: u64,
     fallback: &str,
-) -> String {
+) -> SubRunHandoff {
     let base = last_summary
         .filter(|summary| !summary.trim().is_empty())
         .unwrap_or(fallback)
         .trim()
         .to_string();
-    if token_limit_hit || step_limit_hit {
-        return format!(
+    let summary = if token_limit_hit || step_limit_hit {
+        format!(
             "{base}\n\n[stopped after {duration_ms}ms because a sub-agent budget limit was \
              reached]"
-        );
+        )
+    } else {
+        base
+    };
+
+    SubRunHandoff {
+        summary,
+        // `findings` 应只承载对子任务有业务价值的发现，不能再混入内部执行诊断。
+        findings: Vec::new(),
+        artifacts: build_result_artifacts(child),
     }
-    base
+}
+
+pub fn build_background_subrun_handoff(child: &astrcode_core::SubRunHandle) -> SubRunHandoff {
+    let mut artifacts = vec![ArtifactRef {
+        // `subRun` artifact 把后台句柄结构化暴露给上层，避免再把 sub_run_id 塞进 summary/findings。
+        kind: "subRun".to_string(),
+        id: child.sub_run_id.clone(),
+        label: "Background sub-run".to_string(),
+        session_id: None,
+        storage_seq: None,
+        uri: None,
+    }];
+    artifacts.extend(build_result_artifacts(child));
+
+    SubRunHandoff {
+        summary: "runAgent 已在后台启动。".to_string(),
+        findings: Vec::new(),
+        artifacts,
+    }
+}
+
+pub fn build_subrun_failure(error: &AstrError) -> SubRunFailure {
+    let code = classify_subrun_failure(error);
+    let display_message = match code {
+        SubRunFailureCode::Transport => "子 Agent 调用模型时网络连接中断，未完成任务。",
+        SubRunFailureCode::ProviderHttp => "子 Agent 调用模型服务失败，未完成任务。",
+        SubRunFailureCode::StreamParse => "子 Agent 解析模型流式响应失败，未完成任务。",
+        SubRunFailureCode::Interrupted => "子 Agent 执行被中断，未完成任务。",
+        SubRunFailureCode::Internal => "子 Agent 执行失败，未完成任务。",
+    }
+    .to_string();
+
+    SubRunFailure {
+        code,
+        display_message,
+        technical_message: error.to_string(),
+        retryable: error.is_retryable(),
+    }
+}
+
+fn classify_subrun_failure(error: &AstrError) -> SubRunFailureCode {
+    match error {
+        AstrError::LlmRequestFailed { .. } => SubRunFailureCode::ProviderHttp,
+        AstrError::LlmStreamError(_) => SubRunFailureCode::StreamParse,
+        AstrError::Cancelled | AstrError::LlmInterrupted => SubRunFailureCode::Interrupted,
+        AstrError::Network(_) | AstrError::HttpRequest { .. } => SubRunFailureCode::Transport,
+        _ => SubRunFailureCode::Internal,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::summarize_child_result;
+    use astrcode_core::{
+        AgentMode, AgentProfile, AgentStatus, AstrError, InvocationKind, SubRunFailureCode,
+        SubRunStorageMode,
+    };
+
+    use super::{
+        AgentExecutionRequest, build_background_subrun_handoff, build_execution_spec,
+        build_subrun_failure, build_subrun_handoff,
+    };
 
     #[test]
-    fn summarize_child_result_appends_budget_limit_note() {
-        let summary = summarize_child_result(Some("done"), true, false, 1200, "fallback summary");
+    fn build_subrun_handoff_appends_budget_limit_note() {
+        let handoff = build_subrun_handoff(
+            &astrcode_core::SubRunHandle {
+                sub_run_id: "subrun-1".to_string(),
+                agent_id: "agent-1".to_string(),
+                session_id: "session-1".to_string(),
+                child_session_id: None,
+                depth: 1,
+                parent_turn_id: Some("turn-1".to_string()),
+                parent_agent_id: None,
+                agent_profile: "plan".to_string(),
+                storage_mode: SubRunStorageMode::SharedSession,
+                status: AgentStatus::Completed,
+            },
+            Some("done"),
+            true,
+            false,
+            1200,
+            "fallback summary",
+        );
 
-        assert!(summary.contains("done"));
-        assert!(summary.contains("stopped after 1200ms"));
+        assert!(handoff.summary.contains("done"));
+        assert!(handoff.summary.contains("stopped after 1200ms"));
     }
 
     #[test]
-    fn summarize_child_result_uses_fallback_when_summary_missing() {
-        let summary = summarize_child_result(None, false, false, 100, "fallback summary");
+    fn build_subrun_handoff_uses_fallback_when_summary_missing() {
+        let handoff = build_subrun_handoff(
+            &astrcode_core::SubRunHandle {
+                sub_run_id: "subrun-1".to_string(),
+                agent_id: "agent-1".to_string(),
+                session_id: "session-1".to_string(),
+                child_session_id: None,
+                depth: 1,
+                parent_turn_id: Some("turn-1".to_string()),
+                parent_agent_id: None,
+                agent_profile: "plan".to_string(),
+                storage_mode: SubRunStorageMode::SharedSession,
+                status: AgentStatus::Completed,
+            },
+            None,
+            false,
+            false,
+            100,
+            "fallback summary",
+        );
 
-        assert_eq!(summary, "fallback summary");
+        assert_eq!(handoff.summary, "fallback summary");
+    }
+
+    #[test]
+    fn build_subrun_failure_classifies_transport_errors() {
+        let failure = build_subrun_failure(&AstrError::Network("connection reset".to_string()));
+
+        assert_eq!(failure.code, SubRunFailureCode::Transport);
+        assert_eq!(failure.technical_message, "network error: connection reset");
+    }
+
+    #[test]
+    fn build_background_subrun_handoff_exposes_subrun_artifact() {
+        let handoff = build_background_subrun_handoff(&astrcode_core::SubRunHandle {
+            sub_run_id: "subrun-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            session_id: "session-1".to_string(),
+            child_session_id: Some("child-1".to_string()),
+            depth: 1,
+            parent_turn_id: Some("turn-1".to_string()),
+            parent_agent_id: None,
+            agent_profile: "plan".to_string(),
+            storage_mode: SubRunStorageMode::IndependentSession,
+            status: AgentStatus::Running,
+        });
+
+        assert_eq!(handoff.summary, "runAgent 已在后台启动。");
+        assert_eq!(handoff.artifacts[0].kind, "subRun");
+        assert_eq!(handoff.artifacts[0].id, "subrun-1");
+        assert_eq!(handoff.artifacts[1].kind, "session");
+    }
+
+    #[test]
+    fn build_execution_spec_uses_stricter_of_profile_and_request_max_steps() {
+        let profile = AgentProfile {
+            id: "plan".to_string(),
+            name: "Plan".to_string(),
+            description: "plan".to_string(),
+            mode: AgentMode::All,
+            system_prompt: None,
+            allowed_tools: Vec::new(),
+            disallowed_tools: Vec::new(),
+            max_steps: Some(8),
+            token_budget: None,
+            model_preference: None,
+        };
+        let request = AgentExecutionRequest {
+            subagent_type: Some("plan".to_string()),
+            description: "task".to_string(),
+            prompt: "task".to_string(),
+            context: None,
+            max_steps: Some(3),
+            context_overrides: None,
+        };
+
+        let spec = build_execution_spec(
+            InvocationKind::RootExecution,
+            &profile,
+            &request,
+            &["readFile".to_string()],
+            &astrcode_runtime_config::RuntimeConfig::default(),
+            None,
+        )
+        .expect("execution spec should build");
+
+        assert_eq!(spec.resolved_limits.max_steps, Some(3));
     }
 }

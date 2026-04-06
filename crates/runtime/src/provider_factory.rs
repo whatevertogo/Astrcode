@@ -78,14 +78,14 @@ fn build_provider(profile: &Profile, model: &ModelConfig) -> Result<BuiltProvide
                 api_key,
                 model.id.clone(),
                 limits,
-            )))
+            )?))
         },
         PROVIDER_KIND_ANTHROPIC => Ok(BuiltProvider::Anthropic(AnthropicProvider::new(
             resolve_anthropic_messages_api_url(&profile.base_url),
             api_key,
             model.id.clone(),
             limits,
-        ))),
+        )?)),
         other => Err(AstrError::UnsupportedProvider(other.to_string())),
     }
 }

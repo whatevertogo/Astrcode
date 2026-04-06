@@ -4,10 +4,13 @@ import UserMessage from './UserMessage';
 import AssistantMessage from './AssistantMessage';
 import ToolCallBlock from './ToolCallBlock';
 import CompactMessage from './CompactMessage';
+import SubRunBlock from './SubRunBlock';
 import styles from './MessageList.module.css';
 
 interface MessageListProps {
+  sessionId: string | null;
   messages: Message[];
+  onCancelSubRun: (sessionId: string, subRunId: string) => void | Promise<void>;
 }
 
 interface MessageBoundaryProps {
@@ -105,7 +108,7 @@ function isNestedAgentMessage(message: Message): boolean {
   return Boolean(message.subRunId);
 }
 
-export default function MessageList({ messages }: MessageListProps) {
+export default function MessageList({ sessionId, messages, onCancelSubRun }: MessageListProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
@@ -201,6 +204,15 @@ export default function MessageList({ messages }: MessageListProps) {
     [renderMessageContent]
   );
 
+  const renderNestedMessageRow = useCallback(
+    (msg: Message, previousMessage: Message | null) =>
+      renderMessageRow(msg, previousMessage, {
+        key: msg.id,
+        nested: true,
+      }),
+    [renderMessageRow]
+  );
+
   const renderedRows: React.ReactNode[] = [];
   for (let index = 0; index < messages.length; ) {
     const message = messages[index];
@@ -228,18 +240,6 @@ export default function MessageList({ messages }: MessageListProps) {
       (item): item is Extract<Message, { kind: 'subRunFinish' }> => item.kind === 'subRunFinish'
     );
     const bodyMessages = group.filter((item) => !isSubRunLifecycleMessage(item));
-    const status =
-      finishMessage === undefined
-        ? 'running'
-        : typeof finishMessage.result.status === 'string'
-          ? finishMessage.result.status
-          : 'failed';
-    const metrics =
-      finishMessage !== undefined
-        ? `${finishMessage.stepCount} steps · ${finishMessage.estimatedTokens} tokens`
-        : startMessage?.storageMode === 'independentSession'
-          ? 'independent session'
-          : 'shared session';
     const title =
       startMessage?.agentProfile ??
       finishMessage?.agentProfile ??
@@ -250,22 +250,20 @@ export default function MessageList({ messages }: MessageListProps) {
     renderedRows.push(
       <div
         key={`agent-group-${message.subRunId ?? 'unknown'}-${index}`}
-        className={styles.agentGroup}
+        className={styles.messageRow}
       >
-        <div className={styles.agentGroupHeader}>
-          <span className={styles.agentGroupLabel}>子会话</span>
-          <span className={styles.agentGroupTitle}>{title}</span>
-          <span className={styles.agentGroupLabel}>{status}</span>
-          <span className={styles.agentGroupTitle}>{metrics}</span>
-        </div>
-        <div className={styles.agentGroupBody}>
-          {bodyMessages.map((groupMessage, groupIndex) =>
-            renderMessageRow(groupMessage, groupIndex > 0 ? bodyMessages[groupIndex - 1] : null, {
-              key: groupMessage.id,
-              nested: true,
-            })
-          )}
-        </div>
+        <MessageBoundary message={message}>
+          <SubRunBlock
+            subRunId={message.subRunId ?? 'unknown'}
+            sessionId={sessionId}
+            title={title}
+            startMessage={startMessage}
+            finishMessage={finishMessage}
+            bodyMessages={bodyMessages}
+            renderMessageRow={renderNestedMessageRow}
+            onCancelSubRun={onCancelSubRun}
+          />
+        </MessageBoundary>
       </div>
     );
     index = nextIndex;

@@ -19,6 +19,7 @@ interface ChatProps {
   toggleSidebar: () => void;
   onSubmitPrompt: (text: string) => void | Promise<void>;
   onInterrupt: () => void | Promise<void>;
+  onCancelSubRun: (sessionId: string, subRunId: string) => void | Promise<void>;
   listComposerOptions: (
     sessionId: string,
     query: string,
@@ -38,6 +39,7 @@ export default function Chat({
   toggleSidebar,
   onSubmitPrompt,
   onInterrupt,
+  onCancelSubRun,
   listComposerOptions,
   modelRefreshKey,
   getCurrentModel,
@@ -52,7 +54,11 @@ export default function Chat({
         isSidebarOpen={isSidebarOpen}
         toggleSidebar={toggleSidebar}
       />
-      <MessageList messages={session?.messages ?? []} />
+      <MessageList
+        sessionId={session?.id ?? null}
+        messages={session?.messages ?? []}
+        onCancelSubRun={onCancelSubRun}
+      />
       <InputBar
         sessionId={session?.id ?? null}
         workingDir={project?.workingDir ?? ''}

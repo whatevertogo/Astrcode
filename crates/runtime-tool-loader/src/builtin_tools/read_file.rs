@@ -37,16 +37,14 @@ const MAX_IMAGE_SIZE: usize = 20 * 1024 * 1024;
 
 /// 支持的图片扩展名及其 MIME 类型。
 ///
-/// TODO: Decide whether SVG should keep following the multimodal-image path or fall back to the
-/// plain-text reader. SVG is text, so code-oriented workflows often want grep/read semantics
-/// instead of base64 transport.
+/// 注意：`svg` 故意不走图片 base64 分支，而是走文本读取分支。
+/// 这样代码/检索类工作流可以直接按行读取与 grep，而不是拿到不可检索的 base64。
 const IMAGE_TYPES: &[(&str, &str)] = &[
     ("png", "image/png"),
     ("jpg", "image/jpeg"),
     ("jpeg", "image/jpeg"),
     ("gif", "image/gif"),
     ("webp", "image/webp"),
-    ("svg", "image/svg+xml"),
     ("ico", "image/x-icon"),
     ("bmp", "image/bmp"),
 ];
@@ -314,37 +312,30 @@ impl Tool for ReadFileTool {
             .len() as usize;
         let reader = BufReader::new(file);
 
-        // TODO: Replace this second full-file pass with a lazy/streaming width strategy once
-        // line-number formatting rules settle. The current implementation is simple and stable,
-        // but it doubles I/O for very large text files.
-        // 需要先知道总行数来计算行号宽度
-        let total_line_count = count_total_lines(&path, ctx.cancel())?;
-
-        let (text, _returned_lines, truncated) = if args.offset.is_some() || args.limit.is_some() {
-            read_lines_range(
+        let is_ranged_read = args.offset.is_some() || args.limit.is_some();
+        let mut total_line_count = None;
+        let (text, truncated) = if is_ranged_read {
+            let (text, counted_total_lines, truncated) = read_lines_range(
                 reader,
                 args.offset.unwrap_or(0),
                 args.limit,
                 max_chars,
                 args.line_numbers,
-                total_line_count,
                 ctx.cancel(),
-            )
+            )?;
+            total_line_count = Some(counted_total_lines);
+            (text, truncated)
         } else {
-            read_file_full(
-                reader,
-                max_chars,
-                args.line_numbers,
-                total_line_count,
-                ctx.cancel(),
-            )
-        }?;
+            let (text, _returned_lines, truncated) =
+                read_file_full(reader, max_chars, args.line_numbers, ctx.cancel())?;
+            (text, truncated)
+        };
 
-        let meta = if args.offset.is_some() || args.limit.is_some() {
+        let meta = if is_ranged_read {
             json!({
                 "path": path.to_string_lossy(),
                 "bytes": total_bytes,
-                "total_lines": total_line_count,
+                "total_lines": total_line_count.unwrap_or(0),
                 "offset": args.offset.unwrap_or(0),
                 "limit": args.limit,
                 "truncated": truncated,
@@ -383,28 +374,14 @@ impl Tool for ReadFileTool {
     }
 }
 
-/// 统计文件总行数（用于计算行号显示宽度)。
-fn count_total_lines(path: &std::path::Path, cancel: &astrcode_core::CancelToken) -> Result<usize> {
-    let file = fs::File::open(path)
-        .map_err(|e| AstrError::io(format!("failed opening file '{}'", path.display()), e))?;
-    let reader = BufReader::new(file);
-    let mut count = 0usize;
-    for line_result in reader.lines() {
-        check_cancel(cancel)?;
-        let _ = line_result.map_err(|e| AstrError::io("failed counting lines", e))?;
-        count += 1;
-    }
-    Ok(count)
-}
-
-/// 讣算行号的显示宽度（字符数)。
+/// 计算行号的显示宽度（字符数)。
 ///
 /// 例如 999 行需要 3 位宽度， 1000 行需要 4 位宽度。
-fn line_number_width(total_lines: usize) -> usize {
-    if total_lines == 0 {
+fn line_number_width(max_line_number: usize) -> usize {
+    if max_line_number == 0 {
         return 1;
     }
-    let digits = format!("{}", total_lines).len();
+    let digits = format!("{}", max_line_number).len();
     // 至少 4 位,保持对齐美观
     digits.max(4)
 }
@@ -419,14 +396,8 @@ fn read_file_full(
     reader: BufReader<fs::File>,
     max_chars: usize,
     line_numbers: bool,
-    total_lines: usize,
     cancel: &astrcode_core::CancelToken,
 ) -> Result<(String, usize, bool)> {
-    let num_width = if line_numbers {
-        line_number_width(total_lines)
-    } else {
-        0
-    };
     let mut output = String::new();
     let mut line_no = 0usize;
 
@@ -436,7 +407,8 @@ fn read_file_full(
         line_no += 1;
 
         let formatted = if line_numbers {
-            format_line(line_no, &line, num_width)
+            // 单次扫描时按已见到的最大行号动态宽度格式化，避免为宽度计算做二次全量 I/O。
+            format_line(line_no, &line, line_number_width(line_no))
         } else {
             line.clone()
         };
@@ -485,18 +457,13 @@ fn read_lines_range(
     limit: Option<usize>,
     max_chars: usize,
     line_numbers: bool,
-    total_lines: usize,
     cancel: &astrcode_core::CancelToken,
 ) -> Result<(String, usize, bool)> {
-    let num_width = if line_numbers {
-        line_number_width(total_lines)
-    } else {
-        0
-    };
     let mut output = String::new();
     let mut line_count = 0usize;
     let mut lines_read = 0usize;
     let max_lines = limit.unwrap_or(usize::MAX);
+    let mut truncated = false;
 
     for line_result in reader.lines() {
         check_cancel(cancel)?;
@@ -512,16 +479,23 @@ fn read_lines_range(
             continue;
         }
 
+        if truncated {
+            continue;
+        }
+
         // line_count 是 1-based 行号（用于显示）
         let formatted = if line_numbers {
-            format_line(line_count, &line, num_width)
+            // 按当前行号动态计算宽度，避免额外的全文件预扫描。
+            format_line(line_count, &line, line_number_width(line_count))
         } else {
-            line.to_string()
+            line
         };
 
         let remaining = max_chars.saturating_sub(output.chars().count());
         if remaining == 0 {
-            return Ok((output, line_count, true));
+            // 保持继续扫描，确保 metadata.total_lines 是真实总行数。
+            truncated = true;
+            continue;
         }
         if !output.is_empty() {
             output.push('\n');
@@ -530,18 +504,21 @@ fn read_lines_range(
         let take = remaining.min(formatted.chars().count());
         if take == 0 && line_numbers {
             // 行号本身就超出预算
-            return Ok((output, line_count, true));
+            // 同样继续扫描到 EOF，保证 total_lines 准确。
+            truncated = true;
+            continue;
         }
         output.push_str(&formatted[..char_count_to_byte_offset(&formatted, take)]);
         lines_read += 1;
         // 单行超出字符预算
         if take < formatted.chars().count() {
-            return Ok((output, line_count, true));
+            // 不提前返回，继续扫描剩余行只做计数。
+            truncated = true;
         }
     }
 
     // 自然 EOF：只有字符预算耗尽才算截断
-    let truncated = output.chars().count() >= max_chars && line_count > offset;
+    let truncated = truncated || (output.chars().count() >= max_chars && line_count > offset);
     Ok((output, line_count, truncated))
 }
 
@@ -776,5 +753,33 @@ mod tests {
                 .unwrap_or_default()
                 .contains("exceeding the current inline limit"),
         );
+    }
+
+    #[tokio::test]
+    async fn read_file_treats_svg_as_text_for_code_workflows() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file = temp.path().join("icon.svg");
+        tokio::fs::write(&file, "<svg><rect /></svg>")
+            .await
+            .expect("write should work");
+        let tool = ReadFileTool;
+
+        let result = tool
+            .execute(
+                "tc-svg-text".to_string(),
+                json!({
+                    "path": file.to_string_lossy(),
+                    "lineNumbers": false
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("readFile should succeed");
+
+        assert!(result.ok);
+        assert_eq!(result.output, "<svg><rect /></svg>");
+        let metadata = result.metadata.expect("metadata should exist");
+        assert_eq!(metadata["bytes"], json!(19));
+        assert!(metadata.get("fileType").is_none());
     }
 }

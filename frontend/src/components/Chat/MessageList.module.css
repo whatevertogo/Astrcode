@@ -41,53 +41,6 @@
   margin-top: -16px;
 }
 
-.agentGroup {
-  width: min(100%, var(--chat-content-max-width));
-  margin: 0 auto;
-  border: 1px solid rgba(128, 151, 178, 0.28);
-  border-radius: 20px;
-  background: linear-gradient(180deg, rgba(246, 250, 255, 0.92), rgba(255, 255, 255, 0.96));
-  box-shadow: 0 14px 36px rgba(24, 39, 75, 0.08);
-  overflow: hidden;
-}
-
-.agentGroupHeader {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
-  border-bottom: 1px solid rgba(128, 151, 178, 0.18);
-  background: rgba(228, 238, 250, 0.72);
-}
-
-.agentGroupLabel {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 56px;
-  height: 24px;
-  padding: 0 10px;
-  border-radius: 999px;
-  background: rgba(33, 81, 145, 0.12);
-  color: #215191;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-
-.agentGroupTitle {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.agentGroupBody {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-  padding: 16px;
-}
-
 .renderError {
   align-self: stretch;
   border: 1px solid #f0d5d2;
@@ -121,11 +74,6 @@
   .list {
     padding: 18px var(--chat-content-horizontal-padding-mobile) 8px;
     gap: 18px;
-  }
-
-  .agentGroupBody {
-    padding: 14px;
-    gap: 16px;
   }
 
   .empty {

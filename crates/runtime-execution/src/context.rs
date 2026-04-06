@@ -1,3 +1,12 @@
+//! 子 Agent 上下文解析模块。
+//!
+//! 负责将父会话状态和子 Agent 参数组合成完整的上下文快照，包括：
+//! - 任务主体（prompt）和补充上下文（context）
+//! - 父会话的 compact summary 继承
+//! - 父会话的最近 N 轮对话 tail 继承
+//!
+//! 设计原则：纯函数无状态，便于测试和复用。
+
 use astrcode_core::{AgentState, LlmMessage, UserMessageOrigin};
 
 use crate::AgentExecutionRequest;
@@ -20,13 +29,11 @@ pub fn resolve_context_snapshot(
         Vec::new()
     };
 
-    let mut sections = vec![format!("# Task\n{}", params.task.trim())];
-    if let Some(context) = params
-        .context
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        sections.push(format!("# Context\n{}", context.trim()));
+    let mut sections = Vec::new();
+    // 从扁平字段读取：prompt 是任务主体，context 是可选补充
+    sections.push(format!("# Task\n{}", params.prompt.trim()));
+    if let Some(ctx) = params.context.as_deref().filter(|s| !s.trim().is_empty()) {
+        sections.push(format!("# Context\n{}", ctx.trim()));
     }
     if let Some(summary) = inherited_compact_summary.as_ref() {
         sections.push(format!("# Parent Compact Summary\n{}", summary.trim()));
@@ -39,7 +46,11 @@ pub fn resolve_context_snapshot(
     }
 
     ResolvedContextSnapshot {
-        composed_task: sections.join("\n\n"),
+        composed_task: if sections.is_empty() {
+            "# Task\n(无任务描述)".to_string()
+        } else {
+            sections.join("\n\n")
+        },
         inherited_compact_summary,
         inherited_recent_tail,
     }
@@ -137,9 +148,11 @@ mod tests {
             ..AgentState::default()
         };
         let request = AgentExecutionRequest {
-            task: "investigate issue".to_string(),
+            subagent_type: Some("explore".to_string()),
+            description: "investigate issue".to_string(),
+            prompt: "investigate issue".to_string(),
             context: Some("focus on regressions".to_string()),
-            max_steps: Some(5),
+            max_steps: None,
             context_overrides: None,
         };
         let overrides = ResolvedSubagentContextOverrides {
@@ -179,7 +192,9 @@ mod tests {
             ..AgentState::default()
         };
         let request = AgentExecutionRequest {
-            task: "investigate issue".to_string(),
+            subagent_type: None,
+            description: "investigate issue".to_string(),
+            prompt: "investigate issue".to_string(),
             context: None,
             max_steps: None,
             context_overrides: None,

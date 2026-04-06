@@ -15,8 +15,9 @@ pub use context::{
 pub use policy::resolve_subagent_overrides;
 pub use prep::{
     AgentExecutionRequest, AgentExecutionSpec, PreparedAgentExecution, ScopedExecutionSurface,
-    build_child_agent_state, build_result_artifacts, build_result_findings,
-    derive_child_execution_owner, ensure_root_execution_mode, ensure_subagent_mode,
-    prepare_scoped_agent_execution, resolve_profile_tool_names, summarize_child_result,
+    build_background_subrun_handoff, build_child_agent_state, build_result_artifacts,
+    build_subrun_failure, build_subrun_handoff, derive_child_execution_owner,
+    ensure_root_execution_mode, ensure_subagent_mode, prepare_scoped_agent_execution,
+    resolve_profile_tool_names,
 };
 pub use subrun::{ParsedSubRunStatus, find_subrun_status_in_events, snapshot_from_active_handle};

@@ -75,11 +75,20 @@ pub enum SubRunStorageModeDto {
     IndependentSession,
 }
 
+/// Fork 上下文继承模式 DTO。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ForkModeDto {
+    FullHistory,
+    LastNTurns(usize),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SubRunOutcomeDto {
+    Running,
     Completed,
-    Failed { error: String },
+    Failed,
     Aborted,
     TokenExceeded,
 }
@@ -99,14 +108,42 @@ pub struct ArtifactRefDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubRunFailureCodeDto {
+    Transport,
+    ProviderHttp,
+    StreamParse,
+    Interrupted,
+    Internal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct SubRunResultDto {
+pub struct SubRunHandoffDto {
     pub summary: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub artifacts: Vec<ArtifactRefDto>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub findings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<ArtifactRefDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubRunFailureDto {
+    pub code: SubRunFailureCodeDto,
+    pub display_message: String,
+    pub technical_message: String,
+    pub retryable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubRunResultDto {
     pub status: SubRunOutcomeDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<SubRunHandoffDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<SubRunFailureDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -122,6 +159,8 @@ pub struct ResolvedSubagentContextOverridesDto {
     pub include_recent_tail: bool,
     pub include_recovery_refs: bool,
     pub include_parent_findings: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_mode: Option<ForkModeDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

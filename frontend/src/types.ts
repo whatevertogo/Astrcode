@@ -7,11 +7,13 @@ export type ToolOutputStream = 'stdout' | 'stderr';
 export type CompactTrigger = 'auto' | 'manual';
 export type InvocationKind = 'subRun' | 'rootExecution';
 export type SubRunStorageMode = 'sharedSession' | 'independentSession';
-export type SubRunOutcome =
-  | 'completed'
-  | 'aborted'
-  | 'token_exceeded'
-  | { failed: { error: string } };
+export type SubRunOutcome = 'running' | 'completed' | 'failed' | 'aborted' | 'token_exceeded';
+export type SubRunFailureCode =
+  | 'transport'
+  | 'provider_http'
+  | 'stream_parse'
+  | 'interrupted'
+  | 'internal';
 
 export interface AgentContext {
   agentId?: string;
@@ -65,18 +67,18 @@ export interface ResolvedExecutionLimits {
 }
 
 export interface SubRunResult {
-  summary: string;
-  artifacts: ArtifactRef[];
-  findings: string[];
-  status:
-    | 'completed'
-    | 'aborted'
-    | 'token_exceeded'
-    | {
-        failed: {
-          error: string;
-        };
-      };
+  status: SubRunOutcome;
+  handoff?: {
+    summary: string;
+    findings: string[];
+    artifacts: ArtifactRef[];
+  };
+  failure?: {
+    code: SubRunFailureCode;
+    displayMessage: string;
+    technicalMessage: string;
+    retryable: boolean;
+  };
 }
 
 export type AgentEventPayload =

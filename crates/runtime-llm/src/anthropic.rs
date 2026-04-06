@@ -84,14 +84,14 @@ impl AnthropicProvider {
         api_key: String,
         model: String,
         limits: ModelLimits,
-    ) -> Self {
-        Self {
-            client: build_http_client(),
+    ) -> Result<Self> {
+        Ok(Self {
+            client: build_http_client()?,
             messages_api_url,
             api_key,
             model,
             limits,
-        }
+        })
     }
 
     /// 构建 Anthropic Messages API 请求体。
@@ -1096,7 +1096,8 @@ mod tests {
                 context_window: 200_000,
                 max_output_tokens: 8096,
             },
-        );
+        )
+        .expect("provider should build");
         let request = provider.build_request(
             &[LlmMessage::User {
                 content: "hi".to_string(),
@@ -1130,7 +1131,8 @@ mod tests {
                 context_window: 200_000,
                 max_output_tokens: 8096,
             },
-        );
+        )
+        .expect("provider should build");
 
         assert_eq!(
             provider.messages_api_url,

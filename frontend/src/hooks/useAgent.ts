@@ -17,6 +17,7 @@ import { request } from '../lib/api/client';
 import { listComposerOptions } from '../lib/api/composer';
 import {
   compactSession,
+  cancelSubRun,
   createSession,
   deleteProject,
   deleteSession,
@@ -323,6 +324,18 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     await compactSession(sessionId);
   }, []);
 
+  const handleCancelSubRun = useCallback(
+    async (sessionId: string, subRunId: string): Promise<void> => {
+      try {
+        await cancelSubRun(sessionId, subRunId);
+      } catch (error) {
+        console.error('failed to cancel sub-run:', error);
+        throw error;
+      }
+    },
+    []
+  );
+
   const handleDeleteSession = useCallback(async (sessionId: string): Promise<void> => {
     await deleteSession(sessionId);
   }, []);
@@ -391,6 +404,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     disconnectSession,
     submitPrompt: handleSubmitPrompt,
     interrupt: handleInterrupt,
+    cancelSubRun: handleCancelSubRun,
     compactSession: handleCompactSession,
     deleteSession: handleDeleteSession,
     deleteProject: handleDeleteProject,

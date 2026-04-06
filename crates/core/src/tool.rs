@@ -102,7 +102,9 @@ pub struct ToolContext {
     ///
     /// 子 Agent 工具会基于父 Agent 上下文继续派生自己的 agent_id /
     /// parent_turn_id / agent_profile。
-    agent: AgentEventContext,
+    ///
+    /// 使用 Arc 避免 ToolContext 在高频 clone 时反复复制整块 AgentEventContext。
+    agent: Arc<AgentEventContext>,
     /// Maximum output size in bytes. Defaults to 1MB.
     max_output_size: usize,
     /// Optional override for session-scoped persisted tool artifacts.
@@ -136,7 +138,7 @@ impl ToolContext {
             working_dir,
             cancel,
             turn_id: None,
-            agent: AgentEventContext::default(),
+            agent: Arc::new(AgentEventContext::default()),
             max_output_size: DEFAULT_MAX_OUTPUT_SIZE,
             session_storage_root: None,
             tool_output_sender: None,
@@ -177,7 +179,7 @@ impl ToolContext {
 
     /// 为工具上下文注入当前 Agent 元数据。
     pub fn with_agent_context(mut self, agent: AgentEventContext) -> Self {
-        self.agent = agent;
+        self.agent = Arc::new(agent);
         self
     }
 
@@ -215,7 +217,7 @@ impl ToolContext {
 
     /// 返回当前 Agent 元数据。
     pub fn agent_context(&self) -> &AgentEventContext {
-        &self.agent
+        self.agent.as_ref()
     }
 
     /// Returns the maximum output size in bytes.
@@ -303,7 +305,7 @@ impl fmt::Debug for ToolContext {
             .field("working_dir", &self.working_dir)
             .field("cancel", &self.cancel)
             .field("turn_id", &self.turn_id)
-            .field("agent", &self.agent)
+            .field("agent", self.agent.as_ref())
             .field("max_output_size", &self.max_output_size)
             .field("session_storage_root", &self.session_storage_root)
             .field(
@@ -509,7 +511,9 @@ impl ToolCapabilityMetadata {
             metadata.insert(
                 "prompt".to_string(),
                 serde_json::to_value(prompt)
-                    .expect("tool prompt metadata should serialize into JSON"),
+                    // 提示词元数据必须作为 descriptor 的一部分向上游显式报错，
+                    // 不能在库层 panic 吞掉调用方的构建上下文。
+                    .map_err(|_| DescriptorBuildError::InvalidSchema("metadata"))?,
             );
         }
 

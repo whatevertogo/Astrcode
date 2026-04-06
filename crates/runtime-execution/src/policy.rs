@@ -48,6 +48,9 @@ pub fn resolve_subagent_overrides(
         if let Some(value) = overrides.include_parent_findings {
             resolved.include_parent_findings = value;
         }
+        if let Some(fork_mode) = overrides.fork_mode.clone() {
+            resolved.fork_mode = Some(fork_mode);
+        }
     }
 
     validate_resolved_overrides(&resolved, runtime_config)?;
@@ -110,7 +113,7 @@ fn validate_resolved_overrides(
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{SubRunStorageMode, SubagentContextOverrides};
+    use astrcode_core::{ForkMode, SubRunStorageMode, SubagentContextOverrides};
     use astrcode_runtime_config::{AgentConfig, RuntimeConfig};
 
     use super::resolve_subagent_overrides;
@@ -168,5 +171,18 @@ mod tests {
         assert!(result.is_err());
         let message = result.expect_err("must fail").to_string();
         assert!(message.contains("inheritSystemInstructions"));
+    }
+
+    #[test]
+    fn resolve_subagent_overrides_preserves_fork_mode_for_future_consumers() {
+        let overrides = SubagentContextOverrides {
+            fork_mode: Some(ForkMode::LastNTurns(3)),
+            ..SubagentContextOverrides::default()
+        };
+
+        let resolved = resolve_subagent_overrides(Some(&overrides), &RuntimeConfig::default())
+            .expect("fork mode should remain visible in resolved overrides");
+
+        assert_eq!(resolved.fork_mode, Some(ForkMode::LastNTurns(3)));
     }
 }

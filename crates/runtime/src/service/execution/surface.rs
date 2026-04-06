@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use astrcode_core::SubagentContextOverrides;
 use astrcode_runtime_agent_loop::AgentLoop;
 use astrcode_runtime_agent_tool::RunAgentParams;
 use astrcode_runtime_execution::{
@@ -11,12 +12,18 @@ use super::root::AgentExecutionServiceHandle;
 use crate::service::{ServiceResult, loop_factory::build_scoped_agent_loop};
 
 impl AgentExecutionServiceHandle {
-    fn to_execution_request(params: &RunAgentParams) -> AgentExecutionRequest {
+    fn to_execution_request(
+        params: &RunAgentParams,
+        max_steps: Option<u32>,
+        context_overrides: Option<SubagentContextOverrides>,
+    ) -> AgentExecutionRequest {
         AgentExecutionRequest {
-            task: params.task.clone(),
+            subagent_type: params.r#type.clone(),
+            description: params.description.clone(),
+            prompt: params.prompt.clone(),
             context: params.context.clone(),
-            max_steps: params.max_steps,
-            context_overrides: params.context_overrides.clone(),
+            max_steps,
+            context_overrides,
         }
     }
 
@@ -42,7 +49,24 @@ impl AgentExecutionServiceHandle {
         surface: ScopedExecutionSurface<Arc<astrcode_runtime_skill_loader::SkillCatalog>>,
         parent_state: Option<&astrcode_core::AgentState>,
     ) -> ServiceResult<PreparedAgentExecution<Arc<AgentLoop>>> {
-        let request = Self::to_execution_request(params);
+        let request = Self::to_execution_request(params, None, None);
+        self.prepare_scoped_execution_request(
+            invocation_kind,
+            profile,
+            request,
+            surface,
+            parent_state,
+        )
+    }
+
+    pub(super) fn prepare_scoped_execution_request(
+        &self,
+        invocation_kind: astrcode_core::InvocationKind,
+        profile: &astrcode_core::AgentProfile,
+        request: AgentExecutionRequest,
+        surface: ScopedExecutionSurface<Arc<astrcode_runtime_skill_loader::SkillCatalog>>,
+        parent_state: Option<&astrcode_core::AgentState>,
+    ) -> ServiceResult<PreparedAgentExecution<Arc<AgentLoop>>> {
         prepare_scoped_agent_execution(
             invocation_kind,
             profile,

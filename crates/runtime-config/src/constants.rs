@@ -430,7 +430,7 @@ pub const DEFAULT_MAX_SUBRUN_DEPTH: usize = 1;
 /// 默认并发子 Agent 数上限。
 ///
 /// 同时处于活跃状态的子 Agent 最大数量。
-pub const DEFAULT_MAX_CONCURRENT_AGENTS: usize = 5;
+pub const DEFAULT_MAX_CONCURRENT_AGENTS: usize = 8;
 
 /// 默认终态 Agent 保留数。
 ///

@@ -12,7 +12,10 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::{ApiError, AppState, auth::require_auth, mapper::to_composer_options_response};
+use crate::{
+    ApiError, AppState, auth::require_auth, mapper::to_composer_options_response,
+    routes::sessions::validate_session_path_id,
+};
 
 /// 输入候选查询参数。
 ///
@@ -33,6 +36,7 @@ pub(crate) async fn session_composer_options(
     Query(query): Query<ComposerOptionsQuery>,
 ) -> Result<Json<ComposerOptionsResponseDto>, ApiError> {
     require_auth(&state, &headers, None)?;
+    let session_id = validate_session_path_id(&session_id)?;
     let requested_kinds = parse_composer_option_kinds(query.kinds.as_deref())?;
     let items = state
         .service

@@ -76,6 +76,15 @@ export async function interruptSession(sessionId: string): Promise<void> {
   });
 }
 
+export async function cancelSubRun(sessionId: string, subRunId: string): Promise<void> {
+  await request(
+    `/api/v1/sessions/${encodeURIComponent(sessionId)}/subruns/${encodeURIComponent(subRunId)}/cancel`,
+    {
+      method: 'POST',
+    }
+  );
+}
+
 export async function compactSession(sessionId: string): Promise<void> {
   const response = await requestRaw(`/api/sessions/${encodeURIComponent(sessionId)}/compact`, {
     method: 'POST',

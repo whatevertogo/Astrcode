@@ -1,176 +1,438 @@
-## 4. 基本一: Agent as Tool (子代理系统)
+# Agent as Tool (子代理系统) 设计文档
 
-### 4.1 架构设计
+## 1. 概述
+
+Agent as Tool 允许主 Agent 通过 `runAgent` 工具委派任务给专门的子 Agent。子 Agent 在受控的隔离环境中执行，拥有独立的工具集、策略和执行限制，最终返回摘要结果给父 Agent。
+
+### 核心价值
+
+- **专业性**: 每个 Agent 专注于特定任务类型（探索、规划、执行、审查）
+- **安全性**: 子 Agent 默认只读，权限可被精确控制
+- **效率**: 子 Agent 可使用更小/更快的模型，节省成本
+- **可观测性**: 完整的事件链追踪，支持嵌套执行
+
+## 2. 架构设计
 
 ```
-AgentLoop (主循环)
-    ↓ LLM 决定需要委派任务
-    ↓
-Tool Call: runAgent(name="explore", task="查找所有使用 X 的地方")
-    ↓
-AgentToolExecutor
-    ├─ 查找已注册的 Agent Profile
-    ├─ 创建子 Agent Loop (独立的 AgentLoop 实例)
-    ├─ 配置独立的:
-    │  ├─ Prompt (任务描述 + 上下文)
-    │  ├─ Policy (子 Agent 权限, 可能是主 Agent 的子集)
-    │  ├─ Tool Set (可用工具集, 通常只读)
-    │  └─ Token Budget (防止子 Agent 消耗过多)
-    ├─ 执行子 Agent Loop
-    ├─ 收集结果 (摘要 + 关键发现)
-    └─ 返回 ToolResult 给主 Agent
+┌─────────────────────────────────────────────────────────────┐
+│                    主 Agent Loop                             │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │ LLM 决定需要委派任务                                   │   │
+│  │ Tool Call: runAgent(type="explore", tasks=[...])    │   │
+│  └──────────────────────┬───────────────────────────────┘   │
+└─────────────────────────┼───────────────────────────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    RunAgentTool                             │
+│  ├─ 解析 RunAgentParams                                   │
+│  ├─ 委托给 SubAgentExecutor trait                         │
+│  └─ 返回 ToolExecutionResult                              │
+└──────────────────────┬──────────────────────────────────────┘
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│              AgentExecutionServiceHandle                    │
+│  ├─ 查找已注册的 AgentProfile                             │
+│  ├─ 验证 AgentMode::SubAgent                              │
+│  ├─ 准备执行上下文 (prepare_scoped_execution)             │
+│  │   ├─ 解析 SubagentContextOverrides                     │
+│  │   ├─ 构建子 Agent 状态                                 │
+│  │   └─ 配置独立的 Policy/Tool Set                        │
+│  ├─ 通过 AgentControlPlane spawn 子 Agent                 │
+│  ├─ 执行子 Agent Loop (ChildExecutionTracker)             │
+│  ├─ 收集结果 (SubRunResult)                               │
+│  └─ 发送 SubRunStarted/SubRunFinished 事件                │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### 4.2 数据模型
+## 3. 核心数据模型
 
-#### Agent Profile (Agent 配置)
+### 3.1 AgentProfile (Agent 画像定义)
+
+定义文件: `crates/core/src/agent/mod.rs`
 
 ```rust
-/// Agent Profile 定义
+/// Agent 画像定义。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentProfile {
-    /// Agent 唯一标识 (如 "explore", "plan", "refactor")
+    /// Profile 唯一标识 (如 "explore", "plan")。
     pub id: String,
-    /// 显示名称
+    /// 人类可读名称。
     pub name: String,
-    /// 描述 (用于 LLM 理解何时调用此 Agent)
+    /// 作用说明，供路由/提示词/UI 复用。
     pub description: String,
-    /// 角色/系统提示
+    /// 该 profile 允许的使用模式。
+    pub mode: AgentMode,
+    /// 子 Agent 专用系统提示，可为空。
     pub system_prompt: Option<String>,
-    /// 工具集限制 (只允许使用的工具)
-    pub allowed_tools: Option<Vec<String>>,
-    /// 最大步数限制
-    pub max_steps: usize,
-    /// Token 预算
-    pub token_budget: Option<usize>,
-    /// 模型偏好 (可能使用更小/更快的模型)
+    /// 允许使用的工具集合；为空表示由上层策略决定。
+    pub allowed_tools: Vec<String>,
+    /// 显式禁止的工具集合。
+    pub disallowed_tools: Vec<String>,
+    /// 最大 step 数上限。
+    pub max_steps: Option<u32>,
+    /// token 预算上限。
+    pub token_budget: Option<u64>,
+    /// 模型偏好。
     pub model_preference: Option<String>,
-    /// 策略覆盖
-    pub policy_override: Option<PolicyOverride>,
 }
 ```
 
-#### Agent Tool 定义
+**字段说明:**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | String | 唯一标识符，从 `name` 自动规范化生成 (小写 + 连字符) |
+| `name` | String | 用户定义的显示名称 |
+| `description` | String | Agent 用途描述，LLM 用于路由决策 |
+| `mode` | AgentMode | `Primary` / `SubAgent` / `All`，控制可用场景 |
+| `system_prompt` | Option<String> | 子 Agent 的系统提示，Markdown body 或 frontmatter 中的 prompt |
+| `allowed_tools` | Vec<String> | 白名单工具集 |
+| `disallowed_tools` | Vec<String> | 黑名单工具集（优先级高于白名单） |
+| `max_steps` | Option<u32> | 执行步数上限 |
+| `token_budget` | Option<u64> | Token 预算上限 |
+| `model_preference` | Option<String> | 模型偏好（当前未使用，保留扩展） |
+
+### 3.2 AgentMode (Agent 模式)
 
 ```rust
-/// runAgent 工具的实现
-pub struct RunAgentTool {
-    profiles: Arc<Vec<AgentProfile>>,
-    runtime: Arc<RuntimeService>,
-}
-
-impl Tool for RunAgentTool {
-    async fn invoke(&self, params: RunAgentParams, ctx: &ToolContext) -> Result<ToolExecutionResult> {
-        // 1. 查找 Profile
-        let profile = self.find_profile(&params.name)
-            .ok_or_else(|| NotFoundError::new(...))?;
-            
-        // 2. 创建子 Agent Loop
-        let sub_agent = SubAgentLoop::new(
-            profile.clone(),
-            params.task.clone(),
-            ctx.working_dir.clone(),
-        );
-        
-        // 3. 执行
-        let result = sub_agent.run(cancel_token).await;
-        
-        // 4. 返回摘要 (而非完整输出, 节省token)
-        ToolExecutionResult::ok(Self::summarize_result(&result))
-    }
+pub enum AgentMode {
+    /// 只能作为主 Agent 使用。
+    Primary,
+    /// 只能作为子 Agent 使用。
+    SubAgent,
+    /// 主/子 Agent 均可使用。
+    All,
 }
 ```
 
-#### Agent 调用参数
+### 3.3 RunAgentParams (工具调用参数)
+
+定义文件: `crates/runtime-agent-tool/src/lib.rs`
 
 ```rust
+/// `runAgent` 工具的调用参数。
 pub struct RunAgentParams {
-    /// Agent 名称
-    pub name: String,
-    /// 任务描述 (会作为子 Agent 的用户消息)
+    /// 顶层默认 Agent Profile 标识。
+    pub r#type: Option<String>,
+    /// 任务摘要，用于日志与观测。
+    pub description: String,
+    /// 任务列表；支持单任务、并行多任务、链式依赖。
+    pub tasks: Vec<SubTaskDef>,
+    /// 是否在后台执行整条 runAgent 编排。
+    pub run_in_background: bool,
+}
+
+pub struct SubTaskDef {
+    /// 当前任务的 Agent Profile；为空则继承顶层 type。
+    pub r#type: Option<String>,
+    /// 当前任务描述。
     pub task: String,
-    /// 额外上下文 (可选)
+    /// 当前任务的补充上下文。
     pub context: Option<String>,
-    /// 覆盖最大步数
-    pub max_steps: Option<usize>,
-    /// 子会话上下文 override
-    pub context_overrides: Option<SubagentContextOverrides>,
+    /// 是否依赖前一个任务结果。
+    pub depends_on_previous: bool,
 }
 ```
 
-#### 当前 `contextOverrides` 契约
+### 3.4 SubagentContextOverrides (上下文覆写)
 
-Astrcode 当前坚持“有限 override”，不会开放 Claude Code 式的自由共享父状态模型。
-
-当前已稳定支持：
-
-- `storageMode`
-- `includeCompactSummary`
-- `includeRecentTail`
-
-当前明确拒绝并返回错误：
-
-- `inheritSystemInstructions` 与 `inheritProjectInstructions` 解析后不一致
-- `inheritCancelToken=false`
-- `includeRecoveryRefs=true`
-- `includeParentFindings=true`
-
-当前继续保守处理：
-
-- `inheritSystemInstructions` / `inheritProjectInstructions` 仍按“全继承 / 不继承”处理，
-  暂不对 prompt declarations 做更细粒度拆分
-- `independentSession` 继续受运行时 experimental 开关控制
-
-### 4.3 预置 Agent Profiles
-
-基于竞品分析, 推荐预置以下 Agent:
-
-| Agent ID | 用途 | 工具集 | 最大步数 | 说明 |
-|----------|------|--------|----------|------|
-| `explore` | 代码探索 | 只读工具 | 5 | 读取文件、搜索、理解代码 |
-| `plan` | 任务规划 | 只读 + 思考 | 3 | 分析需求, 输出执行计划 |
-| `execute` | 代码执行 | 读写 + Shell | 10 | 执行具体的代码修改 |
-| `review` | 代码审查 | 只读 | 5 | 审查代码质量、安全问题 |
-
-### 4.4 执行隔离
+定义文件: `crates/core/src/agent/mod.rs`
 
 ```rust
-/// 子 Agent 执行上下文
-pub struct SubAgentContext {
-    /// 父 Agent 的 turn_id
-    pub parent_turn_id: String,
-    /// 子 Agent 自己 turn 的 turn_id
-    pub sub_turn_id: String,
-    /// 独立的 Event Writer (可选: 写入同一 session 或独立 session)
-    pub event_writer: Arc<dyn EventLogWriter>,
-    /// 取消令牌 (父 Agent 取消时子 Agent 也取消)
-    pub cancel_token: CancelToken,
-    /// 父调用上下文
-    pub parent_call_id: String,
+/// 调用侧可传入的子会话上下文 override。
+pub struct SubagentContextOverrides {
+    pub storage_mode: Option<SubRunStorageMode>,
+    pub inherit_system_instructions: Option<bool>,
+    pub inherit_project_instructions: Option<bool>,
+    pub inherit_working_dir: Option<bool>,
+    pub inherit_policy_upper_bound: Option<bool>,
+    pub inherit_cancel_token: Option<bool>,
+    pub include_compact_summary: Option<bool>,
+    pub include_recent_tail: Option<bool>,
+    pub include_recovery_refs: Option<bool>,
+    pub include_parent_findings: Option<bool>,
 }
 ```
 
-### 4.5 事件关联
+**当前实现的约束:**
 
-子 Agent 的执行事件会标记 `parent_turn_id`, 这样在 EventLog 中可以看出嵌套关系:
+| Override 字段 | 默认值 | 当前行为 |
+|--------------|--------|---------|
+| `storage_mode` | `SharedSession` | 支持 `SharedSession` / `IndependentSession` |
+| `inherit_system_instructions` | `true` | 全继承或不继承，无细粒度拆分 |
+| `inherit_project_instructions` | `true` | 全继承或不继承，无细粒度拆分 |
+| `inherit_working_dir` | `true` | - |
+| `inherit_policy_upper_bound` | `true` | - |
+| `inherit_cancel_token` | `true` | **不支持设为 false** - 取消必须级联传播，否则父取消后子 Agent 成为孤儿进程 |
+| `include_compact_summary` | `false` | - |
+| `include_recent_tail` | `true` | - |
+| `include_recovery_refs` | `false` | **不支持设为 true** - 跨会话引用协议未定义 |
+| `include_parent_findings` | `false` | **不支持设为 true** - findings 格式非结构化，需先定义过滤机制 |
+
+### 3.5 SubRunResult (执行结果)
+
+```rust
+/// 子执行结构化结果。
+pub struct SubRunResult {
+    pub summary: String,
+    pub artifacts: Vec<ArtifactRef>,
+    pub findings: Vec<String>,
+    pub status: SubRunOutcome,
+}
+
+/// 子执行结果状态。
+pub enum SubRunOutcome {
+    Completed,
+    Failed { error: String },
+    Aborted,
+    TokenExceeded,
+}
+```
+
+### 3.6 SubRunHandle (运行时句柄)
+
+```rust
+/// 受控子会话的轻量运行句柄。
+pub struct SubRunHandle {
+    pub sub_run_id: String,
+    pub agent_id: String,
+    pub session_id: String,
+    pub child_session_id: Option<String>,
+    pub depth: usize,
+    pub parent_turn_id: Option<String>,
+    pub parent_agent_id: Option<String>,
+    pub agent_profile: String,
+    pub storage_mode: SubRunStorageMode,
+    pub status: AgentStatus,
+}
+```
+
+### 3.7 AgentEventContext (事件上下文)
+
+```rust
+/// turn 级事件的 Agent 元数据。
+pub struct AgentEventContext {
+    pub agent_id: Option<String>,
+    pub parent_turn_id: Option<String>,
+    pub agent_profile: Option<String>,
+    pub sub_run_id: Option<String>,
+    pub invocation_kind: Option<InvocationKind>,
+    pub storage_mode: Option<SubRunStorageMode>,
+    pub child_session_id: Option<String>,
+}
+```
+
+## 4. 工具实现
+
+### 4.1 RunAgentTool
+
+定义文件: `crates/runtime-agent-tool/src/lib.rs`
+
+```rust
+/// 把子 Agent 能力暴露给 LLM 的内置工具。
+pub struct RunAgentTool {
+    executor: Arc<dyn SubAgentExecutor>,
+}
+
+/// 子 Agent 执行器抽象。
+#[async_trait]
+pub trait SubAgentExecutor: Send + Sync {
+    async fn execute(&self, params: RunAgentParams, ctx: &ToolContext) -> Result<SubRunResult>;
+}
+```
+
+**设计要点:**
+
+1. **依赖倒置**: `RunAgentTool` 不直接依赖 `RuntimeService`，而是通过 `SubAgentExecutor` trait 解耦
+2. **参数验证**: 在工具层做参数解析，失败返回 `ToolExecutionResult { ok: false, error: ... }`
+3. **结果格式化**: 返回包含 `outcome`、`findings`、`artifacts` 的 metadata
+
+### 4.2 execute_subagent 实现
+
+定义文件: `crates/runtime/src/service/execution/subagent.rs`
+
+**执行流程:**
+
+1. **前置校验**: 获取 parent_turn_id、event_sink，查找 AgentProfile
+2. **模式验证**: 调用 `ensure_subagent_mode()` 确认 profile 可作为子 Agent
+3. **准备执行**: 调用 `prepare_scoped_execution()` 解析 overrides 和构建执行规格
+4. **存储模式**: 根据 `storage_mode` 决定是否创建独立 session
+5. **控制平面**: 通过 `agent_control.spawn_with_storage()` 注册子 Agent
+6. **事件发送**: 发送 `SubRunStarted` 事件
+7. **执行循环**: 使用 `ChildExecutionTracker` 跟踪步数和 token
+8. **结果收集**: 构建 `SubRunResult`，发送 `SubRunFinished` 事件
+
+## 5. Agent Profile 加载
+
+### 5.1 加载器架构
+
+定义文件: `crates/runtime-agent-loader/src/lib.rs`
+
+```
+AgentProfileLoader
+    ├─ user_agent_dirs: [~/.claude/agents, ~/.astrcode/agents]
+    └─ load_for_working_dir(working_dir)
+        ├─ 1. builtin agents (内置)
+        ├─ 2. ~/.claude/agents (用户级)
+        ├─ 3. ~/.astrcode/agents (用户级)
+        ├─ 4. <project>/.claude/agents (项目级)
+        └─ 5. <project>/.astrcode/agents (项目级)
+```
+
+**优先级**: 后者覆盖前者，项目级 > 用户级 > 内置
+
+### 5.2 文件格式
+
+**Markdown + YAML Frontmatter (推荐)**:
+
+```markdown
+---
+name: review
+description: 审查代码的质量、安全性和最佳实践
+tools: ["readFile", "grep"]
+disallowedTools: ["shell"]
+---
+
+重点审查行为回归、边界条件和测试缺口。
+```
+
+**纯 YAML**:
+
+```yaml
+name: planner
+description: 计划任务
+tools: ["readFile", "grep"]
+systemPrompt: |
+  先阅读代码，然后制定计划。
+```
+
+### 5.3 工具列表格式
+
+支持两种格式:
+
+```yaml
+# YAML 列表
+tools: ["readFile", "grep", "glob"]
+
+# CSV 字符串
+tools: readFile, grep, glob
+```
+
+## 6. 预置 Agent Profiles
+
+定义目录: `crates/runtime-agent-loader/src/builtin_agents/`
+
+| Agent ID | 用途 | 工具集 | 说明 |
+|----------|------|--------|------|
+| `explore` | 代码探索 | `readFile`, `listDir`, `findFiles`, `grep` | 快速检索和阅读代码，偏向并行搜索 |
+| `plan` | 任务规划 | `readFile`, `grep` | 分析需求，输出执行计划，不执行改写 |
+| `execute` | 定向执行 | `readFile`, `writeFile`, `editFile`, `shell` | 围绕明确目标做定向实现 |
+| `reviewer` | 代码审查 | 只读工具 | 多视角审查（安全、质量、测试、架构） |
+
+### 6.1 explore Agent
+
+**特点:**
+- 广度优先搜索策略
+- 最大并行化工具调用
+- 返回简洁答案，不做全面概述
+
+### 6.2 plan Agent
+
+**特点:**
+- 只规划，不实现
+- 可调用 explore 子 Agent 进行发现
+- 输出结构化计划到 `/memories/session/plan.md`
+
+### 6.3 execute Agent
+
+**特点:**
+- 定向修改，保持范围可控
+- 结束前做最小必要验证
+
+### 6.4 reviewer Agent
+
+**特点:**
+- 四视角审查: 安全、代码质量、测试、架构
+- 高置信度过滤，只报告真实问题
+- 输出到 `CODE_REVIEW_ISSUES.md`
+
+## 7. 执行隔离与事件关联
+
+### 7.1 隔离机制
+
+| 维度 | 隔离策略 |
+|------|---------|
+| **工具集** | `allowed_tools` + `disallowed_tools` 白黑名单 |
+| **策略** | 继承父策略上界，可进一步收紧 |
+| **取消** | 父取消 → 子自动取消 (CancelToken 级联) |
+| **存储** | `SharedSession` 或 `IndependentSession` |
+| **步数/Token** | `max_steps` / `token_budget` 限制 |
+
+### 7.2 事件关联
 
 ```
 Turn #5 (用户: "重构 auth 模块")
-  → LLM 决定调用 runAgent(name="explore")
+  → LLM 决定调用 runAgent(type="explore")
+  → SubRunStarted { sub_run_id, parent_turn_id: "turn-5", agent_profile: "explore" }
   → Turn #5.1 (sub: explore)
     → tool_call: readFile("auth.rs")
     → tool_call: grep("authenticate")
     → tool_result: ...
-  → turn_done → ToolResult: {"summary": "auth 模块有3个核心函数..."}
+  → SubRunFinished { result: { summary: "auth 模块有3个核心函数..." } }
   → LLM 继续 Turn #5...
 ```
 
----
+**事件链:**
+- `SubRunStarted.agent.parent_turn_id` → 父 turn
+- `SubRunFinished.result` → 结构化结果
 
-## 5. 扩展二: 开放 API 设计
+## 8. 可观测性
 
-### 5.1 API 概览
+### 8.1 指标
 
-基于 OpenCode 和 Pi-Mono 的成熟 API 设计, 扩展 Astrcode 的 server crate:
+通过 `observability.record_subrun_execution()` 记录:
+
+- 执行时长
+- 结果状态 (completed/failed/aborted/token_exceeded)
+- 存储模式
+- 步数
+- 估算 token
+
+### 8.2 事件流
+
+父 Agent 可通过以下事件消费子执行结果:
+
+- `SubRunFinished.result.summary`
+- `SubRunFinished.result.findings`
+- `SubRunFinished.result.artifacts`
+- `SubRunFinished.step_count`
+- `SubRunFinished.estimated_tokens`
+
+## 9. 安全与策略
+
+### 9.1 子 Agent 策略上下文
+
+子 Agent 的策略评估继承父 Agent 的策略上界，并额外检查:
+
+1. **工具白名单**: `allowed_tools` 限制
+2. **工具黑名单**: `disallowed_tools` 排除
+3. **审批限制**: 子 Agent 通常不能请求用户审批（无 UI 权限）
+
+### 9.2 取消传播
+
+```rust
+// CancelToken 级联
+let parent_cancel = CancelToken::new();
+let child_cancel = parent_cancel.child_token();
+
+// 父取消时，子也自动取消
+parent_cancel.cancel();
+assert!(child_cancel.is_cancelled());
+```
+
+## 10. API 设计 (扩展)
+
+### 10.1 REST API
 
 ```
 POST /api/v1/sessions              - 创建会话
@@ -178,429 +440,66 @@ GET  /api/v1/sessions              - 列出会话
 GET  /api/v1/sessions/{id}          - 获取会话详情
 DELETE /api/v1/sessions/{id}        - 删除会话
 
-POST /api/v1/sessions/{id}/message         - 发送消息 (流式)
-POST /api/v1/sessions/{id}/message/async   - 发送消息 (异步)
-GET  /api/v1/sessions/{id}/messages        - 获取消息历史
-POST /api/v1/sessions/{id}/abort           - 中止执行
-
-POST /api/v1/sessions/{id}/fork            - 分叉会话
-POST /api/v1/sessions/{id}/summarize       - 压缩会话
-POST /api/v1/sessions/{id}/revert          - 撤销到指定位置
-
-GET  /api/v1/sessions/{id}/events          - 订阅事件 (SSE)
-GET  /api/v1/sessions/{id}/events/stream   - WebSocket 事件流
+POST /api/v1/sessions/{id}/message  - 发送消息 (流式)
+POST /api/v1/sessions/{id}/abort    - 中止执行
 
 GET  /api/v1/agents                 - 列出可用 Agent
-POST /api/v1/agents/{id}/execute     - 创建 root execution
-GET  /api/v1/sessions/{id}/subruns/{sub_run_id} - 查询子会话状态
+POST /api/v1/agents/{id}/execute    - 创建 root execution
 
 GET  /api/v1/tools                  - 列出可用工具
-POST /api/v1/tools/{id}/execute      - 执行单个工具
-
-GET  /health                        - 健康检查
+POST /api/v1/tools/{id}/execute     - 执行单个工具
 ```
 
-### 5.2 核心端点详情
+### 10.2 Root Execution
 
-#### POST /api/v1/sessions/{id}/message (流式)
-
-```rust
-// 请求
-pub struct MessageRequest {
-    /// 消息内容 (支持多部分)
-    pub content: Vec<MessagePart>,
-    /// 使用的 Agent Profile (可选, 默认主 Agent)
-    pub agent_id: Option<String>,
-    /// 指定模型 (可选)
-    pub model: Option<String>,
-}
-
-pub enum MessagePart {
-    Text { content: String },
-    File { path: String, content: Option<String> },
-    Command { command: String },  // 直接命令
-}
-
-// 响应: SSE 流
-// event: assistant_delta
-// data: {"token": "let", "turn_id": "turn-123"}
-//
-// event: tool_call
-// data: {"tool_call_id": "tc-1", "name": "readFile", "args": {...}}
-//
-// event: tool_result
-// data: {"tool_call_id": "tc-1", "output": "...", "success": true}
-//
-// event: done
-// data: {"turn_id": "turn-123", "outcome": "completed"}
-```
-
-#### POST /api/v1/sessions/{id}/message/async (异步)
-
-```rust
-// 请求
-pub struct AsyncMessageRequest {
-    pub content: Vec<MessagePart>,
-    pub agent_id: Option<String>,
-    pub callback_url: Option<String>,  // 完成后回调
-}
-
-// 响应: 202 Accepted
-pub struct AsyncResponse {
-    pub turn_id: String,
-    pub status: "accepted" | "running" | "completed" | "failed",
-    pub status_url: String,  // GET /api/v1/sessions/{id}/turns/:turn_id
-}
-```
-
-#### GET /api/v1/sessions/{id}/turns/:turn_id (查询异步任务状态)
-
-```rust
-// 响应
-pub struct TurnStatus {
-    pub turn_id: String,
-    pub status: "running" | "completed" | "failed" | "aborted",
-    pub events: Vec<TurnEvent>,     // 目前为止的事件
-    pub started_at: DateTime,
-    pub completed_at: Option<DateTime>,
-}
-```
-
-#### POST /api/v1/agents/{id}/execute (创建 root execution，会走正常 AgentLoop)
-
-这是 "Agent as API" 的核心端点。允许外部系统创建一个独立 session，
-并异步启动对应的 root execution：
+允许外部系统创建独立 session 并启动 root execution:
 
 ```rust
 pub struct AgentExecuteRequest {
-    /// Agent 任务描述
     pub task: String,
-    /// 工作目录
+    pub context: Option<String>,
     pub working_dir: Option<String>,
-    /// 子会话上下文 override（可选）
+    pub max_steps: Option<u32>,
     pub context_overrides: Option<SubagentContextOverrides>,
 }
-
-// 202 Accepted
-pub struct AgentExecuteResponse {
-    pub accepted: bool,
-    pub session_id: String,
-    pub turn_id: String,
-    pub agent_id: String,
-}
 ```
 
-### 4.6 Shared Observability
+## 11. 配置
 
-父流程当前可以通过结构化生命周期事件和运行时指标消费子执行域结果，而不需要共享父可变状态：
+### 11.1 Agent 配置文件
 
-- `SubRunFinished.result`
-- `SubRunFinished.step_count`
-- `SubRunFinished.estimated_tokens`
-- runtime status 中的 `metrics.subrunExecution`
+优先级 (后者覆盖前者):
 
-这部分是 Astrcode 当前允许扩展的共享面；父状态直写、权限提示直通、缓存共享仍不在本轮语义范围内。
+1. `builtin://` 内置 agents
+2. `~/.claude/agents/`
+3. `~/.astrcode/agents/`
+4. `<working_dir>/.claude/agents/`
+5. `<working_dir>/.astrcode/agents/`
 
-### 5.3 WebSocket API
+### 11.2 示例配置
 
-```
-WS /api/v1/ws
-
-// Client → Server
-{
-    "type": "subscribe",
-    "session_id": "session-123"
-}
-{
-    "type": "send_message",
-    "session_id": "session-123",
-    "content": "重构 auth 模块"
-}
-{
-    "type": "abort",
-    "session_id": "session-123"
-}
-
-// Server → Client
-{
-    "type": "event",
-    "event": {
-        "type": "assistant_delta",
-        "token": "我会使用...",
-        "turn_id": "turn-123"
-    }
-}
-{
-    "type": "error",
-    "error": {"code": "TOOL_DENIED", "message": "工具被策略拒绝"}
-}
-```
-
-### 5.4 认证与授权
-
-```rust
-// 简化的 API Key 认证
-pub struct ApiConfig {
-    /// API Key (环境变量 ASTRCODE_API_KEY)
-    pub api_key: Option<String>,
-    /// CORS 配置
-    pub cors_origins: Vec<String>,
-    /// 请求限流
-    pub rate_limit: Option<RateLimitConfig>,
-}
-
-// Middleware 验证
-async fn auth_middleware<B>(
-    req: Request<B>,
-    next: Next<B>,
-) -> Result<Response> {
-    if let Some(expected_key) = &config.api_key {
-        if req.headers().get("Authorization") != Some(&expected_key.as_bytes()) {
-            return unauthorized();
-        }
-    }
-    next.run(req).await
-}
-```
-
+```markdown
+---
+name: security-reviewer
+description: 专门审查安全问题的 Agent
+tools: ["readFile", "grep"]
+disallowedTools: ["shell", "writeFile"]
 ---
 
-## 7. 关键实现决策
-
-### 7.1 子 Agent 事件存储策略
-
-**决策**: 子 Agent 事件写入同一个 EventLog, 但标记 `parent_turn_id`
-
-**理由**:
-- 复用现有的 EventLog 和 EventTranslator
-- 在 Event Stream 中可追溯完整的父子关系
-- 不需要引入新的存储后端
-
-**实现**:
-```rust
-// StorageEvent 扩展
-pub enum StorageEvent {
-    // ... 现有 variants
-    
-    /// 子 Agent Turn 开始
-    SubAgentTurnStart {
-        storage_seq: u64,
-        sub_turn_id: String,
-        parent_turn_id: String,
-        agent_profile: String,
-        task: String,
-        timestamp: DateTime,
-    },
-    
-    /// 子 Agent Turn 完成
-    SubAgentTurnEnd {
-        storage_seq: u64,
-        sub_turn_id: String,
-        parent_turn_id: String,
-        outcome: String,
-        summary: String,
-        token_usage: Option<TokenUsage>,
-        timestamp: DateTime,
-    },
-}
+你是安全审查专家，重点关注:
+- SQL 注入
+- XSS
+- 硬编码密钥
+- 不安全的反序列化
 ```
 
-### 7.2 Tool Set 隔离策略
+## 12. 与竞品对比
 
-**决策**: 子 Agent 默认只读工具, 可通过 Profile 配置覆盖
-
-**理由**:
-- 安全性: 子 Agent 不应意外修改用户文件
-- 可控性: 父 Agent 控制子 Agent 能力
-- 参考 Codex: 只读 Agent (`explore`) 默认安全
-
-### 7.3 模型选择策略
-
-**决策**: 子 Agent 可使用独立模型 (可能更小/更快)
-
-**理由**:
-- 成本控制: 探索类任务不需要 GPT-4o
-- 速度: 简单任务用 GPT-4o-mini
-- 参考 Pi-Mono: 多 Provider, 灵活选择
-
-**实现**:
-```rust
-/// 模型选择逻辑
-fn resolve_model(profile: &AgentProfile, config: &LlmConfig) -> String {
-    profile.model_preference
-        .or(config.default_sub_agent_model)
-        .unwrap_or(config.default_model)
-}
-```
-
-### 7.4 取消传播策略
-
-**决策**: 父 Agent 取消 → 所有活跃的子 Agent 也取消
-
-**实现**:
-```rust
-// CancelToken 天然支持 (tokio_util::sync::CancellationToken)
-let parent_cancel = CancelToken::new();
-let child_cancel = parent_cancel.child();  // 子 token
-
-// 父取消时, 子也自动取消
-parent_cancel.cancel();  // child_cancel.is_cancelled() == true
-```
-
----
-
-## 8. 流式事件格式 (扩展)
-
-### 8.1 新增 SSE 事件类型
-
-```rust
-// 现有的 StorageEvent 扩展 + 新事件
-
-/// Agent Tool 调用 (从父 Agent 视角)
-pub struct AgentToolCallEvent {
-    pub name: String,           // Agent Profile ID
-    pub task: String,
-    pub max_steps: Option<usize>,
-    pub token_budget: Option<usize>,
-}
-
-/// Agent 工具结果
-pub struct AgentToolResultEvent {
-    pub status: "completed" | "failed" | "aborted",
-    pub summary: String,        // LLM 可读的摘要
-    pub artifacts: Vec<ArtifactRef>,  // 产生的文件/变更
-    pub token_usage: Option<TokenUsage>,
-}
-
-/// Agent 执行中的进度
-pub struct AgentProgressEvent {
-    pub sub_turn_id: String,
-    pub step: usize,
-    pub max_steps: usize,
-    pub current_action: String,  // 当前正在做什么
-}
-```
-
-### 8.2 前端事件投影
-
-前端需要将子 Agent 事件投影为嵌套的展示:
-
-```
-用户消息: "重构 auth"
-  → Agent 思考...
-  → 📦 调用 Agent: explore 
-     → 正在执行第 2/5 步... (progress)
-     → 正在读取 auth.rs... (progress)
-     → ✅ 完成 (summary: "auth 模块有3个函数...")
-  → Agent 继续思考... (基于 explore 的结果)
-  → 📦 调用 Agent: plan
-     → ...
-```
-
-> **TODO**: 前端嵌套展示的具体交互细节需要询问用户确认
-
----
-
-## 9. 安全与权限
-
-### 9.1 策略引擎适配
-
-子 Agent 的策略评估需要额外上下文:
-
-```rust
-pub struct SubAgentPolicyContext {
-    /// 父 call 的 turn_id
-    pub parent_turn_id: String,
-    /// Agent Profile
-    pub agent_profile: String,
-    /// 子 Agent 是否允许请求用户审批 (通常不允许)
-    pub can_request_approval: bool,
-}
-
-impl PolicyEngine for SubAgentPolicyEngine {
-    async fn check(&self, call: &CapabilityCall, ctx: &PolicyContext) -> PolicyVerdict {
-        // 1. 检查工具是否在 allowed_tools 中
-        if !self.allowed_tools.contains(&call.tool_name) {
-            return PolicyVerdict::deny("工具不在 Agent 允许列表中");
-        }
-        
-        // 2. 子 Agent 不能请求用户审批 (无UI权限)
-        if call.requires_approval {
-            return PolicyVerdict::deny("子 Agent 不能请求用户审批");
-        }
-        
-        // 3. 继承父策略引擎的判断
-        self.parent.check(call, ctx).await
-    }
-}
-```
-
-### 9.2 API 安全
-
-| 安全措施 | 实现 |
-|----------|------|
-| API Key | `Authorization: Bearer <key>` |
-| CORS | 可配置白名单 |
-| 限流 | 每 IP 每分钟请求数 |
-| 请求体大小 | 限制最大 Prompt 长度 |
-| 工具黑名单 | 通过策略引擎配置 |
-| 文件系统权限 | 继承 OS 级权限 |
-
----
-
-## 10. 配置系统扩展
-
-### 10.1 Agent 配置 (Claude Markdown Frontmatter)
-
-当前实现会按优先级加载这些目录：
-
-- builtin agents
-- `~/.claude/agents`
-- `~/.astrcode/agents`
-- `<working_dir>/.claude/agents`
-- `<working_dir>/.astrcode/agents`
-
-同名 agent 按后者覆盖前者，文件格式与 Claude Code sub-agents 一致：
-
-```md
----
-name: review
-description: 审查代码的质量、安全性和最佳实践
-tools: [readFile, grep]
-disallowedTools: [shell]
-model: quality
----
-重点审查行为回归、边界条件和测试缺口，避免只给样式建议。
-```
-
-### 10.2 API 配置
-
-```toml
-[api]
-enabled = true
-host = "0.0.0.0"
-port = 6543
-api_key = "your-secret-key"  # 或环境变量 ASTRCODE_API_KEY
-
-[api.cors]
-origins = ["http://localhost:3000", "https://your-app.com"]
-
-[api.rate_limit]
-requests_per_minute = 60
-burst = 10
-```
-
----
-
-## 11. 与竞品的差异化
-
-| 特性 | Astrcode 方案 | 竞品 |
-|------|---------------|------|
-| Agent as Tool | ✅ 内置 Profile 系统, 策略安全 | Codex 有 spawn_agent, 但无 Profile 管理 |
-| API 开放 | ✅ REST + SSE + WS 全支持 | OpenCode 只有 REST+SSE |
-| 时间旅行 | ❌ (Phase 2) | Kimi-CLI 有 D-Mail, OpenCode 有 revert |
-| 安全沙箱 | ❌ (Phase 3) | 仅 Codex 有完整沙箱 |
-| 多模型路由 | ✅ 子 Agent 独立模型选择 | Pi-Mono 有, 但不在 Agent 级别 |
-| 事件嵌套 | ✅ parent_turn_id 关联 | 无明确先例 |
-
----
+| 特性 | Astrcode | Codex | Claude Code |
+|------|----------|-------|-------------|
+| Agent as Tool | ✅ 内置 Profile 系统 | spawn_agent，无 Profile 管理 | sub-agents |
+| Profile 加载 | ✅ 多目录优先级 | - | ✅ |
+| 工具白黑名单 | ✅ | - | ✅ |
+| 事件嵌套 | ✅ parent_turn_id | - | - |
+| 独立 Session | ✅ 实验性支持 | - | - |
+| 模型选择 | ⏳ 保留字段 | ✅ | - |

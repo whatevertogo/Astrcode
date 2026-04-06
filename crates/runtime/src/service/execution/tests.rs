@@ -7,6 +7,7 @@ use astrcode_core::{
     ToolEventSink, ToolExecutionResult, test_support::TestEnvGuard,
 };
 use astrcode_runtime_agent_tool::{RunAgentParams, RunAgentTool, SubAgentExecutor};
+use astrcode_runtime_config::DEFAULT_MAX_CONCURRENT_AGENTS;
 use astrcode_runtime_execution::{
     derive_child_execution_owner, resolve_profile_tool_names, resolve_subagent_overrides,
 };
@@ -107,11 +108,10 @@ async fn deferred_executor_fails_before_runtime_binding() {
     let error = executor
         .execute(
             RunAgentParams {
-                name: "review".to_string(),
-                task: "check".to_string(),
+                r#type: Some("review".to_string()),
+                description: "check".to_string(),
+                prompt: "check".to_string(),
                 context: None,
-                max_steps: None,
-                context_overrides: None,
             },
             &context,
         )
@@ -157,9 +157,9 @@ async fn run_agent_tool_emits_child_events_with_agent_context() {
         .execute(
             "call-1".to_string(),
             json!({
-                "name": "plan",
-                "task": "summarize the repository layout",
-                "maxSteps": 1
+                "type": "plan",
+                "description": "summarize repository layout",
+                "prompt": "summarize the repository layout"
             }),
             &context,
         )
@@ -173,6 +173,80 @@ async fn run_agent_tool_emits_child_events_with_agent_context() {
                 "session should be loaded successfully, got: {error}"
             );
         },
+    }
+}
+
+#[tokio::test]
+async fn run_agent_background_cancellation_releases_concurrency_slots() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(capabilities_from_tools(
+            ToolRegistry::builder()
+                .register(Box::new(DemoTool { name: "readFile" }))
+                .register(Box::new(DemoTool { name: "grep" }))
+                .build(),
+        ))
+        .expect("runtime service should build"),
+    );
+    let executor = Arc::new(DeferredSubAgentExecutor::default());
+    executor.bind(&service);
+    let tool = RunAgentTool::new(executor);
+    let sink: Arc<dyn ToolEventSink> = Arc::new(RecordingEventSink {
+        events: Mutex::new(Vec::new()),
+    });
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let session = service
+        .create_session(temp_dir.path())
+        .await
+        .expect("session should be created");
+    let context = ToolContext::new(
+        session.session_id.clone(),
+        temp_dir.path().to_path_buf(),
+        CancelToken::new(),
+    )
+    .with_turn_id("turn-parent")
+    .with_event_sink(sink);
+
+    // 连续启动后台子会话并显式取消，验证取消后的终态会及时释放并发槽位。
+    for _ in 0..(DEFAULT_MAX_CONCURRENT_AGENTS + 2) {
+        let result = tool
+            .execute(
+                "call-1".to_string(),
+                json!({
+                    "type": "plan",
+                    "description": "regression test for runAgent slot leak",
+                    "prompt": "collect quick summary"
+                }),
+                &context,
+            )
+            .await
+            .expect("background launch should succeed");
+        let sub_run_id = result
+            .metadata
+            .as_ref()
+            .and_then(|value| value.get("handoff"))
+            .and_then(|value| value.get("artifacts"))
+            .and_then(|value| value.as_array())
+            .and_then(|artifacts| artifacts.first())
+            .and_then(|artifact| artifact.get("id"))
+            .and_then(|value| value.as_str())
+            .expect("background launch should expose sub-run artifact")
+            .to_string();
+        service
+            .agent_execution_service()
+            .cancel_subrun(&session.session_id, &sub_run_id)
+            .await
+            .expect("sub-run cancel should succeed");
+        let handle = service
+            .agent_control()
+            .wait(&sub_run_id)
+            .await
+            .expect("cancelled sub-run should still be observable");
+        assert!(
+            matches!(handle.status, AgentStatus::Cancelled | AgentStatus::Failed),
+            "background sub-run should reach a final state after explicit cancel"
+        );
     }
 }
 

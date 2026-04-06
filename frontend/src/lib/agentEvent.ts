@@ -354,19 +354,17 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
       return invalidEvent('subRunFinished requires result', raw);
     }
     const status = result.status;
-    let parsedStatus: SubRunResult['status'];
-    const statusRecord = asRecord(status);
-    if (typeof status === 'string') {
-      parsedStatus = status as SubRunResult['status'];
-    } else if (statusRecord && typeof statusRecord.failed === 'object') {
-      const failed = asRecord(statusRecord.failed);
-      if (!failed || typeof failed.error !== 'string') {
-        return invalidEvent('subRunFinished.result.status.failed.error is invalid', raw);
-      }
-      parsedStatus = { failed: { error: failed.error } };
-    } else {
+    if (
+      status !== 'running' &&
+      status !== 'completed' &&
+      status !== 'failed' &&
+      status !== 'aborted' &&
+      status !== 'token_exceeded'
+    ) {
       return invalidEvent('subRunFinished.result.status is invalid', raw);
     }
+    const handoff = asRecord(result.handoff);
+    const failure = asRecord(result.failure);
 
     return {
       event: 'subRunFinished',
@@ -374,24 +372,45 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
         turnId: pickOptionalString(data, 'turnId', 'turn_id') ?? null,
         ...pickAgentContext(data),
         result: {
-          summary: pickString(result, 'summary') ?? '',
-          artifacts: Array.isArray(result.artifacts)
-            ? result.artifacts
-                .map((value) => asRecord(value))
-                .filter((value): value is Record<string, unknown> => Boolean(value))
-                .map((artifact) => ({
-                  kind: pickString(artifact, 'kind') ?? 'unknown',
-                  id: pickString(artifact, 'id') ?? 'unknown',
-                  label: pickString(artifact, 'label') ?? 'artifact',
-                  sessionId: pickOptionalString(artifact, 'sessionId', 'session_id') ?? undefined,
-                  storageSeq: pickNumber(artifact, 'storageSeq', 'storage_seq') ?? undefined,
-                  uri: pickOptionalString(artifact, 'uri') ?? undefined,
-                }))
-            : [],
-          findings: Array.isArray(result.findings)
-            ? result.findings.filter((value): value is string => typeof value === 'string')
-            : [],
-          status: parsedStatus,
+          status,
+          handoff: handoff
+            ? {
+                summary: pickString(handoff, 'summary') ?? '',
+                artifacts: Array.isArray(handoff.artifacts)
+                  ? handoff.artifacts
+                      .map((value) => asRecord(value))
+                      .filter((value): value is Record<string, unknown> => Boolean(value))
+                      .map((artifact) => ({
+                        kind: pickString(artifact, 'kind') ?? 'unknown',
+                        id: pickString(artifact, 'id') ?? 'unknown',
+                        label: pickString(artifact, 'label') ?? 'artifact',
+                        sessionId:
+                          pickOptionalString(artifact, 'sessionId', 'session_id') ?? undefined,
+                        storageSeq: pickNumber(artifact, 'storageSeq', 'storage_seq') ?? undefined,
+                        uri: pickOptionalString(artifact, 'uri') ?? undefined,
+                      }))
+                  : [],
+                findings: Array.isArray(handoff.findings)
+                  ? handoff.findings.filter((value): value is string => typeof value === 'string')
+                  : [],
+              }
+            : undefined,
+          failure: failure
+            ? {
+                code:
+                  pickString(failure, 'code') === 'transport' ||
+                  pickString(failure, 'code') === 'provider_http' ||
+                  pickString(failure, 'code') === 'stream_parse' ||
+                  pickString(failure, 'code') === 'interrupted' ||
+                  pickString(failure, 'code') === 'internal'
+                    ? (pickString(failure, 'code') as NonNullable<SubRunResult['failure']>['code'])
+                    : 'internal',
+                displayMessage: pickString(failure, 'displayMessage', 'display_message') ?? '',
+                technicalMessage:
+                  pickString(failure, 'technicalMessage', 'technical_message') ?? '',
+                retryable: failure.retryable === true,
+              }
+            : undefined,
         },
         stepCount: pickNumber(data, 'stepCount', 'step_count') ?? 0,
         estimatedTokens: pickNumber(data, 'estimatedTokens', 'estimated_tokens') ?? 0,

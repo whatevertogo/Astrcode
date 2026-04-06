@@ -77,6 +77,7 @@ export default function App() {
     disconnectSession,
     submitPrompt,
     interrupt,
+    cancelSubRun,
     compactSession,
     deleteSession,
     deleteProject,
@@ -478,6 +479,7 @@ export default function App() {
           phase={state.phase}
           onSubmitPrompt={handleSubmit}
           onInterrupt={handleInterrupt}
+          onCancelSubRun={cancelSubRun}
           listComposerOptions={listComposerOptions}
           modelRefreshKey={modelRefreshKey}
           getCurrentModel={getCurrentModel}

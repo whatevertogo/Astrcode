@@ -1,42 +1,5 @@
 # AstrCode Architecture
 
-## Crate Dependency Graph
-
-```text
-protocol (纯 DTO，零业务依赖)
-    ↑
-core (核心契约：Event/Policy/Capability/Tool trait + 持久化接口)
-    ↑
-storage (JSONL 会话持久化实现)
-tools (内置工具)    runtime-config (配置)    runtime-llm (LLM)    runtime-prompt (Prompt)    runtime-skill-loader (Skill)    plugin (插件宿主)    sdk (插件 SDK)
-    ↑                     ↑                       ↑                     ↑                          ↑                          ↑                    ↑
-    +────────────── runtime-agent-loop (AgentLoop 执行引擎) ──────────────────
-                                        ↑
-                          runtime (RuntimeService 门面，re-export 子 crate)
-                                        ↑
-                                     server (HTTP/SSE)
-```
-
-实际依赖关系（workspace 内）：
-
-| Crate | 依赖的 workspace crate |
-|-------|----------------------|
-| `protocol` | 无（叶子节点） |
-| `core` | `protocol` |
-| `storage` | `core` |
-| `tools` | `core` |
-| `runtime-config` | `core` |
-| `runtime-llm` | `core` |
-| `runtime-prompt` | `core` |
-| `runtime-skill-loader` | `core` |
-| `runtime-agent-loop` | `core` + `runtime-llm` + `runtime-prompt` + `runtime-skill-loader` + `runtime-config` |
-| `plugin` | `core` + `protocol` |
-| `sdk` | `protocol` |
-| `runtime` | `runtime-agent-loop` + `runtime-config` + `runtime-llm` + `runtime-prompt` + `runtime-skill-loader`（纯 re-export 门面） |
-| `server` | `core` + `protocol` + `runtime` |
-
----
-
 ## Three-Layer Architecture
 
 ### Layer 1: Immutable Core Contracts
@@ -46,163 +9,345 @@ tools (内置工具)    runtime-config (配置)    runtime-llm (LLM)    runtime-
 | 模块 | 位置 | 核心类型 | 职责 |
 |------|------|---------|------|
 | DTO 协议 | `crates/protocol/src/` | `http::*`, `plugin::*`, `transport::*` | 跨模块通信协议 |
-| AgentLoop | `crates/runtime-agent-loop/src/agent_loop.rs` | `AgentLoop`, `TurnOutcome` | 唯一执行语义 |
-| Capability | `crates/core/src/capability.rs` `crates/core/src/registry/` | `CapabilityDescriptor`, `CapabilityKind`, `CapabilityRouter`, `CapabilityInvoker` | 唯一动作模型 |
-| Policy | `crates/core/src/policy/` | `PolicyEngine`, `PolicyVerdict<T>` (Allow/Deny/Ask) | 唯一同步决策面 |
-| Event | `crates/core/src/event/` | `AgentEvent`(观测), `StorageEvent`(持久化), `Phase`, `EventTranslator` | 唯一异步观测面 |
-| Tool | `crates/core/src/tool.rs` + `action.rs` | `Tool` trait, `ToolContext`, `ToolDefinition`, `ToolExecutionResult` | 工具抽象接口 |
-| Session Store | `crates/core/src/store.rs` | `SessionManager`, `EventLogWriter`, `SessionTurnLease` | 持久化接口 |
-
-**不进入 Layer 1 的东西**：PluginHost、具体 Provider 实现、文件系统工具、SessionStore 后端、HTTP/SSE、Tauri、CLI。
+| Tool | `crates/core/src/tool.rs` | `Tool` trait, `ToolContext`, `ToolDefinition`, `ToolExecutionResult` | 工具抽象接口 |
+| Capability | `crates/core/src/capability.rs` | `CapabilityDescriptor`, `CapabilityKind`, `CapabilityInvoker`, `CapabilityContext` | 一等动作模型 |
+| Policy | `crates/core/src/policy/` | `PolicyEngine`, `PolicyVerdict<T>` | 同步决策面 |
+| Event | `crates/core/src/event/` | `AgentEvent`(观测), `StorageEvent`(持久化), `Phase`, `EventTranslator` | 异步观测面 |
+| Agent | `crates/core/src/agent/` | `AgentProfile`, `AgentMode`, `SubRunHandle`, `SubRunResult`, `SubagentContextOverrides` | Agent 生命周期 DTO |
+| Session | `crates/core/src/store.rs` + `event/mod.rs` | `SessionManager`, `SessionTurnLease`, `EventLogWriter`, `SessionMeta` | 持久化接口 |
+| Hook | `crates/core/src/hook.rs` | `HookHandler`, `HookEvent`, `HookInput`, `HookOutcome` | 生命周期钩子接口 |
+| Cancel | `crates/core/src/cancel.rs` | `CancelToken` | 取消令牌 |
+| Plugin | `crates/core/src/plugin/` | `PluginManifest`, `PluginRegistry`, `PluginHealth` | 插件契约 |
+| Runtime | `crates/core/src/runtime/` | `RuntimeHandle`, `ManagedRuntimeComponent`, `RuntimeCoordinator` | 运行时契约 |
 
 ### Layer 2: Runtime Assembly
 
-把 core 契约组装成可运行 runtime：
-
 | Crate | 核心入口 | 职责 |
 |-------|---------|------|
-| `runtime` | `crates/runtime/src/lib.rs` | 纯门面：`RuntimeService`，re-export 子 crate |
-| `runtime-agent-loop` | `crates/runtime-agent-loop/src/lib.rs` | `AgentLoop`, `TurnOutcome`, prompt/context/compaction/assembler 四层运行时 |
-| `runtime-config` | `crates/runtime-config/src/` | 配置模型与加载/校验/env 解析 |
-| `runtime-llm` | `crates/runtime-llm/src/` | LLM 提供者抽象，OpenAI-compatible/Anthropic 适配 |
-| `runtime-prompt` | `crates/runtime-prompt/src/` | Prompt Contributor 模式、`PromptComposer` |
-| `runtime-skill-loader` | `crates/runtime-skill-loader/src/` | Skill 资源发现、解析、目录扫描、`SkillCatalog` |
-| `storage` | `crates/storage/src/session/` | JSONL 会话持久化（`FileSystemSessionRepository`） |
-| `tools` | `crates/tools/src/tools/` | 内置工具(7个)：`readFile`, `writeFile`, `editFile`, `listDir`, `findFiles`, `grep`, `shell` |
-| `plugin` | `crates/plugin/src/` | 插件宿主（`Supervisor`, `Peer`, `PluginCapabilityInvoker`） |
-| `sdk` | `crates/sdk/src/` | 插件开发 SDK（protocol 兼容的流式、错误处理、工具上下文） |
+| `storage` | `FileSystemSessionRepository` | JSONL 会话持久化实现 |
+| `runtime-tool-loader` | 内置工具集 | `ReadFile`, `WriteFile`, `EditFile`, `ListDir`, `FindFiles`, `Grep`, `Shell` |
+| `runtime-config` | `ConfigManager` | 配置加载/保存/验证、API Key 解析、模型选择回退 |
+| `runtime-llm` | `LlmProvider` trait | Anthropic + OpenAI 兼容 API、SSE 流式、指数退避重试 |
+| `runtime-prompt` | `PromptComposer` | 贡献者模式、拓扑排序、条件渲染、skill 索引摘要 |
+| `runtime-skill-loader` | `SkillCatalog` | 技能发现解析、内置 skill(仅 `git-commit`)、目录扫描 |
+| `runtime-registry` | `CapabilityRouter`, `ToolRegistry` | 能力路由 + 工具注册表实现 |
+| `plugin` | `Supervisor` | 子进程管理、stdio JSON-RPC 双向通信、生命周期 |
+| `sdk` | `ToolHandler`, `PluginContext` | 插件开发者 SDK |
+| `runtime-session` | `SessionState` | 会话状态、token 预算跟踪、turn 执行引擎 |
+| `runtime-execution` | `prepare_scoped_agent_execution()` | 执行上下文快照、策略验证、作用域装配 |
+| `runtime-agent-control` | `AgentControl` | spawn/list/cancel/wait、parent-child 关系、深度/并发/GC 限制 |
+| `runtime-agent-loader` | `AgentProfileLoader` | builtin(4) + 用户 + 项目 agent 定义加载 (Markdown/YAML) |
+| `runtime-agent-loop` | `AgentLoop` | LLM 调用 + 工具执行主循环、审批、prompt/context/compaction |
+| `runtime-agent-tool` | `RunAgentTool` | 把 `runAgent` 能力暴露为 LLM 工具 |
+| `runtime` | `RuntimeService` | 门面：组合所有 runtime crate 提供统一 API |
 
-**关键装配流程** (`crates/runtime/src/bootstrap.rs`):
-`RuntimeBootstrap { service: Arc<RuntimeService>, coordinator: Arc<RuntimeCoordinator>, governance: Arc<RuntimeGovernance> }`
+#### RuntimeService 公开 API
 
-`runtime` crate 是纯门面，通过 `pub use` re-export 所有子 crate：
-- `astrcode_runtime_agent_loop as agent_loop`
-- `astrcode_runtime_config as config`
-- `astrcode_runtime_llm as llm`
-- `astrcode_runtime_prompt as prompt`
-- `astrcode_runtime_skill_loader as skills`
-
-**Runtime Service 内部子模块** (`crates/runtime/src/service/`):
-- `turn_ops.rs` — turn 执行、事件广播、EventTranslator 投影
-- `session_ops.rs` — 会话 CRUD (create/delete/fork/list)
-- `config_ops.rs` — 配置查询/更新
-- `composer_ops.rs` — composer 选项管理
-- `replay.rs` — 会话事件回放 (SSE 断线重连)
-- `session_state.rs` — 每会话状态 (AgentState + 事件日志)
-- `baselines.rs` — Session 基线快照
-- `support.rs` — 辅助/诊断工具
-- `observability.rs` — 运行时指标快照
-- `types.rs` — 服务类型定义 (`ServiceError`, `PromptAccepted`, `SessionReplay`, `SessionCatalogEvent`, `ComposerOption`)
-
-**AgentLoop 内部子模块** (`crates/runtime-agent-loop/src/`):
-
-核心运行时（四层分离，详见 [ADR-0008](../adr/0008-agent-loop-content-architecture.md)）：
-- `prompt_runtime.rs` — Prompt 运行时：桥接 `PromptComposer`，只负责"说明书"
-- `context_pipeline.rs` — Context 运行时：Pipeline + Stage 模式，只负责"材料选择"
-- `compaction_runtime.rs` — Compaction 运行时：Policy + Strategy + Rebuilder 三件套
-- `request_assembler.rs` — 请求装配：`PromptPlan + ContextBundle + Tools → ModelRequest` 唯一边界
-
-执行层：
-- `agent_loop.rs` — `AgentLoop` 结构体与 builder API
-- `agent_loop/turn_runner.rs` — Turn 编排主循环 (状态机骨架)
-- `agent_loop/llm_cycle.rs` — LLM provider 构建与调用
-- `agent_loop/tool_cycle.rs` — 工具执行 (含并行执行)、Policy 三态检查、Approval Broker 集成
-- `agent_loop/token_budget.rs` — Token 预算解析与续命决策
-
-上下文窗口算法：
-- `context_window/compaction.rs` — 上下文压缩算法
-- `context_window/microcompact.rs` — 微调压缩
-- `context_window/token_usage.rs` — Token 用量统计
-
-**其他重要运行时模块** (`crates/runtime/src/`):
-- `skill_tool.rs` — `Skill` tool 实现（按需加载 SKILL.md 正文）
-- `builtin_capabilities.rs` — 内置能力装配
-- `runtime_surface_assembler.rs` — 运行时表面装配
-- `plugin_discovery.rs` — 插件发现
-- `plugin_skill_materializer.rs` — 插件 skill 资源落盘
-- `runtime_governance.rs` — 配置热重载、插件健康监控
-
-### Layer 3: Transports
-
-`crates/server` + `src-tauri` + `frontend`。对外暴露 runtime，不定义 agent 语义。
-
-**Server 路由** (`crates/server/src/routes/`):
-| 路由模块 | 端点 | 职责 |
-|---------|------|------|
-| `sessions.rs` | `POST /api/sessions`, `GET /api/sessions`, `DELETE /api/sessions/{id}`, `POST /api/sessions/{id}/prompts`, `GET /api/sessions/{id}/messages`, `GET /api/sessions/{id}/events`, `POST /api/sessions/{id}/interrupt`, `POST /api/sessions/{id}/compact`, `DELETE /api/projects`, `GET /api/session-events` | 会话 CRUD、turn 执行、SSE 事件流 |
-| `config.rs` | `GET /api/config`, `POST /api/config/active-selection` | 配置查询/更新 |
-| `model.rs` | `GET /api/models`, `GET /api/models/current`, `POST /api/models/test` | 模型列表/连接测试/当前模型 |
-| `runtime.rs` | `GET /api/runtime/plugins`, `POST /api/runtime/plugins/reload` | 运行时插件状态/重载 |
-| `composer.rs` | `GET /api/composer/options` | Prompt composer 选项查询 |
-
-**Server 认证** (`crates/server/src/auth.rs` + `bootstrap.rs`):
-- `BootstrapAuth` — 短期 bootstrap token (24h TTL), 常量时间比较
-- `AuthSessionManager` — 长期会话 token (8h TTL), 自动清理过期
-- `AUTH_HEADER_NAME = "x-astrcode-token"` — 支持 header 和 query param
-
-**Tauri 桌面壳** (`src-tauri/`):
-- 窗口控制
-- Sidecar 管理（`astrcode-server` 复制到 `~/.astrcode/runtime/sidecars/` 后启动）
-- 多实例复用（通过 `~/.astrcode/run.json` 发现现有 server）
-
-**前端** (`frontend/src/`):
-- React 18 + TypeScript + Vite 单页应用
-- 状态管理：`useReducer` + `store/reducer.ts`
-- SSE 双通道：Agent events (`/api/sessions/{id}/events`) + Session catalog events (`/api/session-events`)
-- 详见 [frontend-architecture.md](./frontend-architecture.md)
-
----
-
-## Four Core Contracts
-
-### 1. AgentLoop Contract
-
-Turn 是基本调度单位。AgentLoop 按 turn 调度，Policy 按 turn 决策，Event 按 turn 关联。
-
-```
-loop {
-    PromptRuntime.build_plan → PromptPlan
-    ContextRuntime.build_bundle → ContextBundle
-    CompactionRuntime → maybe compact / rebuild conversation view
-    RequestAssembler.assemble → ModelRequest
-    policy.check_model_request → call_llm
-    for each capability_call (并行执行):
-        policy.check_capability_call → Allow / Deny / Ask
-        Ask → ApprovalBroker.resolve → Allow / Deny
-    CompactionPolicy → PolicyEngine.decide_context_strategy → compact if needed
-    check token budget → continue with nudge or stop
-} until LLM 返回纯文本 或 CancelToken 触发
-```
-
-执行结果通过 `TurnOutcome` 枚举显式表达：
 ```rust
-pub enum TurnOutcome {
-    Completed,   // LLM 返回纯文本（无 tool_calls），自然结束
-    Cancelled,   // 用户取消或 CancelToken 触发
-    Error { message: String },  // 不可恢复错误
+pub struct RuntimeService {
+    sessions: DashMap<String, Arc<SessionState>>,
+    loop_: RwLock<Arc<AgentLoop>>,
+    surface: RwLock<RuntimeSurfaceState>,
+    policy: Arc<dyn PolicyEngine>,
+    approval: Arc<dyn ApprovalBroker>,
+    config: Mutex<Config>,
+    session_manager: Arc<dyn SessionManager>,
+    observability: Arc<RuntimeObservability>,
+    agent_control: AgentControl,
+    agent_loader: Arc<AgentProfileLoader>,
+    agent_profiles: Arc<StdRwLock<Arc<AgentProfileRegistry>>>,
+    // ...
+}
+
+impl RuntimeService {
+    // 构造
+    pub fn from_capabilities(CapabilityRouter) -> ServiceResult<Self>
+    pub fn from_capabilities_with_prompt_inputs(...) -> ServiceResult<Self>
+
+    // Loop 访问
+    pub async fn current_loop(&self) -> Arc<AgentLoop>
+    pub async fn replace_capabilities_with_prompt_inputs_and_hooks(...) -> ServiceResult<()>
+
+    // 会话 CRUD
+    pub async fn create_session(working_dir: &str) -> ServiceResult<SessionMeta>
+    pub async fn list_sessions_with_meta(&self) -> ServiceResult<Vec<SessionMeta>>
+    pub async fn load_session_snapshot(&self, session_id: &str) -> ServiceResult<(Vec<SessionMessage>, Option<String>)>
+    pub async fn load_session_history(&self, session_id: &str) -> ServiceResult<SessionHistorySnapshot>
+    pub async fn delete_session(&self, session_id: &str) -> ServiceResult<()>
+    pub async fn delete_project(&self, working_dir: &str) -> ServiceResult<DeleteProjectResult>
+
+    // Turn 执行
+    pub async fn submit_prompt(session_id: &str, text: &str) -> ServiceResult<PromptAccepted>
+    pub async fn interrupt(&self, session_id: &str) -> ServiceResult<()>
+    pub async fn compact_session(&self, session_id: &str) -> ServiceResult<()>
+
+    // 配置
+    pub async fn get_config(&self) -> Config
+    pub async fn reload_config_from_disk(&self) -> ServiceResult<Config>
+    pub async fn reload_agent_profiles_from_disk(&self) -> ServiceResult<Arc<AgentProfileRegistry>>
+    pub async fn save_active_selection(profile: &str, model: &str) -> ServiceResult<()>
+    pub async fn test_connection(profile: &str, model: &str) -> ServiceResult<TestResult>
+    pub async fn open_config_in_editor(&self) -> ServiceResult<()>
+
+    // 服务句柄
+    pub fn agent_execution_service(self: &Arc<Self>) -> AgentExecutionServiceHandle
+    pub fn tool_execution_service(self: &Arc<Self>) -> ToolExecutionServiceHandle
+
+    // Agent 控制
+    pub fn agent_control(&self) -> AgentControl
+    pub fn agent_loader(&self) -> Arc<AgentProfileLoader>
+    pub fn agent_profiles(&self) -> Arc<AgentProfileRegistry>
+
+    // Composer
+    pub async fn list_composer_options(&self, session_id: &str, request: ...) -> ServiceResult<Vec<ComposerOption>>
+
+    // 事件
+    pub fn subscribe_session_catalog_events(&self) -> broadcast::Receiver<SessionCatalogEvent>
+
+    // 可观测性
+    pub fn observability_snapshot(&self) -> RuntimeObservabilitySnapshot
+    pub fn loaded_session_count(&self) -> usize
+    pub fn running_session_ids(&self) -> Vec<String>
+
+    // 自动重载
+    pub fn start_config_auto_reload(self: &Arc<Self>)
+    pub fn start_agent_auto_reload(self: &Arc<Self>)
+
+    // 关闭
+    pub async fn shutdown(&self, timeout_secs: u64)
 }
 ```
 
-详见 [ADR-0006](../adr/0006-turn-outcome-state-machine.md)。
+#### RuntimeService service/ 模块分组
+
+| 模块组 | 文件 | 职责 |
+|--------|------|------|
+| 核心 | `mod.rs` (15k+行) + `service_contract.rs` | RuntimeService 结构体、`RuntimeHandle` trait 实现 |
+| 会话 | `session/create.rs` | 创建/列出会话 |
+| 会话 | `session/load.rs` | 加载会话快照/历史 |
+| 会话 | `session/delete.rs` | 删除会话/项目 |
+| Turn | `turn/submit.rs` | 提交 prompt / 中断 |
+| Turn | `turn/branch.rs` | 自动分支逻辑 (忙时自动分支) |
+| Turn | `turn/compact.rs` | 手动压缩 |
+| 执行 | `execution/mod.rs` | `AgentExecutionServiceHandle` + `ToolExecutionServiceHandle` |
+| 执行 | `execution/root.rs` | 根执行入口 |
+| 执行 | `execution/subagent.rs` | 子 agent 执行 |
+| 执行 | `status.rs` | Sub-run 状态查询 |
+| 配置 | `config_manager.rs` / `config_ops.rs` | 配置快照读写、磁盘重载 |
+| 监听 | `watch_manager.rs` / `watch_ops.rs` | 文件系统自动重载 (防抖) |
+| 能力面 | `capabaility_manager.rs` | capability surface 与 loop 热替换 |
+| 装配 | `loop_factory.rs` | AgentLoop 组装器 |
+| 观测 | `observability.rs` | 原子计数器指标收集 |
+| 回放 | `replay.rs` | `SessionReplaySource` trait 实现 |
+| Composer | `composer_ops.rs` | 输入候选查询 |
+| 辅助 | `blocking_bridge.rs` | async/blocking 桥接 |
+
+#### AgentLoop 内部模块
+
+| 模块 | 职责 |
+|------|------|
+| `agent_loop.rs` | `AgentLoop` 结构体 + `TurnOutcome` 枚举 |
+| `agent_loop/turn_runner.rs` | Turn 编排主循环 (LLM → 工具 → LLM step 循环) |
+| `agent_loop/llm_cycle.rs` | LLM provider 构建与调用 |
+| `agent_loop/tool_cycle.rs` | 工具执行 (安全工具并发、unsafe 串行)、Policy 三态检查、审批 |
+| `agent_loop/token_budget.rs` | Token 预算决策 |
+| `context_pipeline.rs` | Context 构建管道 (7 Stage: Baseline/RecentTail/Workset/CompactionView/Recovery/PrunePass/BudgetTrim) |
+| `compaction_runtime.rs` | 压缩运行时 (Policy + Strategy + Rebuilder 三件套) |
+| `request_assembler.rs` | PromptPlan + ContextBundle → ModelRequest |
+| `prompt_runtime.rs` | 桥接 PromptComposer |
+| `context_window/compaction.rs` | 自动压缩逻辑 (Auto/Reactive/Manual 触发) |
+| `context_window/prune_pass.rs` | 轻量裁剪 (截断长工具结果、清除旧工具结果) |
+| `context_window/token_usage.rs` | Token 启发式估算 (4 chars/token) |
+| `context_window/file_access.rs` | 文件访问跟踪 (用于恢复) |
+| `approval_service.rs` | 审批代理 |
+| `provider_factory.rs` | LLM Provider 工厂 |
+| `hook_runtime.rs` | Hook 运行时 |
+| `subagent.rs` | `ChildExecutionTracker` + `SubAgentPolicyEngine` |
+
+### Layer 3: Transports
+
+`crates/server` + `src-tauri` + `frontend`。对外暴露 runtime。
+
+## HTTP API 端点
+
+### 认证
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/__astrcode__/run-info` | GET | Bootstrap 信息 (不认证) |
+| `/api/auth/exchange` | POST | Bootstrap token → Session token |
+
+### 会话
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/sessions` | POST | 创建会话 |
+| `/api/sessions` | GET | 列出会话 |
+| `/api/sessions/{id}` | DELETE | 删除会话 |
+| `/api/sessions/{id}/prompts` | POST | 提交 prompt (202 异步执行) |
+| `/api/sessions/{id}/interrupt` | POST | 中断执行 |
+| `/api/sessions/{id}/compact` | POST | 手动压缩 |
+| `/api/sessions/{id}/messages` | GET | 会话消息快照 |
+| `/api/sessions/{id}/history` | GET | 会话历史完整事件 |
+| `/api/sessions/{id}/events` | GET (SSE) | 事件流，支持 `?afterEventId=` 断线重连 |
+| `/api/sessions/{id}/composer/options` | GET | Composer 输入候选 |
+| `/api/session-events` | GET (SSE) | 全局目录事件 (创建/删除/分支) |
+| `/api/projects` | DELETE | 删除整个项目 (?workingDir=) |
+
+### 配置
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/config` | GET | 查看配置 |
+| `/api/config/reload` | POST | 从磁盘重载配置 |
+| `/api/config/active-selection` | POST | 保存 active profile/model |
+
+### 模型
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/models` | GET | 列出可用模型 |
+| `/api/models/current` | GET | 当前模型信息 |
+| `/api/models/test` | POST | 测试模型连接 |
+
+### 运行时
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/runtime/plugins` | GET | 插件状态 |
+| `/api/runtime/plugins/reload` | POST | 重载插件 |
+
+### v1 API
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/v1/agents` | GET | 列出 Agent Profiles |
+| `/api/v1/agents/{id}/execute` | POST | 创建 root execution |
+| `/api/v1/sessions/{id}/subruns/{sub_run_id}` | GET | 查询子 run 状态 |
+| `/api/v1/tools` | GET | 列出工具 |
+| `/api/v1/tools/{id}/execute` | POST | 501 Not Implemented (未启用) |
+
+## 配置模型
+
+```rust
+pub struct Config {
+    pub version: String,                 // "1"
+    pub active_profile: String,          // 默认 "deepseek"
+    pub active_model: String,            // 默认 "deepseek-chat"
+    pub runtime: RuntimeConfig,
+    pub profiles: Vec<Profile>,
+}
+
+pub struct RuntimeConfig {
+    // 工具并发 (默认 10, 可被 ASTRCODE_MAX_TOOL_CONCURRENCY 覆盖)
+    pub max_tool_concurrency: Option<usize>,
+    // 自动压缩 (默认 true)
+    pub auto_compact_enabled: Option<bool>,
+    pub compact_threshold_percent: Option<u8>,    // 默认 90
+    pub compact_keep_recent_turns: Option<u8>,   // 默认 4
+    pub tool_result_max_bytes: Option<usize>,      // 默认 100_000
+    // Token 预算 (默认 0 = 禁用)
+    pub default_token_budget: Option<u64>,
+    pub continuation_min_delta_tokens: Option<usize>, // 默认 500
+    pub max_continuations: Option<u8>,                // 默认 3
+    // Agent 控制
+    pub agent: Option<AgentConfig>,
+    // LLM 客户端
+    pub llm_connect_timeout_secs: Option<u64>,     // 默认 10
+    pub llm_read_timeout_secs: Option<u64>,        // 默认 90
+    // ... 更多高级配置选项
+}
+
+pub struct AgentConfig {
+    pub max_subrun_depth: Option<usize>,           // 默认 1
+    pub max_depth: Option<usize>,                  // 兼容旧值，默认 3
+    pub max_concurrent: Option<usize>,             // 默认 10
+    pub finalized_retain_limit: Option<usize>,     // 默认 256
+    pub experimental_independent_session: Option<bool>, // 默认 false
+}
+
+pub struct Profile {
+    pub name: String,
+    pub provider_kind: String,         // "openai-compatible" 或 "anthropic"
+    pub base_url: String,
+    pub api_key: Option<String>,       // 支持 env:/literal: 前缀
+    pub models: Vec<ModelConfig>,
+}
+```
+
+**配置路径**：
+- 用户级：`~/.astrcode/config.json`
+- 项目级 overlay：`<project>/.astrcode/config.json` (runtime 配置不被 overlay)
+
+## 认证模型
+
+两层 Token：
+
+1. **Bootstrap Token** (24h) — server 启动时生成 `random_hex_token()` (64字符)，写入 `~/.astrcode/run.json`，用于首次握手
+2. **Session Token** (8h) — `POST /api/auth/exchange` 交换后签发，后续所有 API 请求通过 `x-astrcode-token` header 或 SSE 场景下 `?token=` query param 注入
+
+## Bootstrap 时序
+
+```
+main() → bootstrap_runtime() → RuntimeBootstrap { service, coordinator, governance }
+  → 绑定 127.0.0.1:0 (随机端口)
+  → 生成 bootstrap token (24h TTL, 64字符)
+  → 写入 ~/.astrcode/run.json (port, token, pid, startedAt, expiresAtMs)
+  → 加载 frontend/dist/ (如存在) → 注入 window.__ASTRCODE_BOOTSTRAP__ 到 index.html
+  → 构建 Axum Router + CORS (允许 localhost:5173)
+  → 启动 HTTP server + graceful shutdown (SIGTERM/Ctrl+C/stdin关闭)
+```
+
+## 存储模型
+
+- **事件存储**：`~/.astrcode/projects/<hash>/sessions/<session-id>/session-*.jsonl`
+- **JSONL 格式**：`StoredEvent { storage_seq, event: StorageEvent }` (append-only)
+- **会话 turn 锁**：跨进程文件锁 (`fs2`)
+- **SSE 事件 id**：`{storage_seq}.{subindex}`
+- **广播**：`broadcast::Sender<SessionEventRecord>` 容量 2048
+- **LRU 缓存**：`recent_records` / `recent_stored` 各 4096 条
+
+## 四大核心契约
+
+### 1. AgentLoop Contract
+
+Turn 是基本调度单位。AgentLoop 按 turn 调度 (每 turn 包含多个 step 循环: LLM → 工具执行 → LLM ...)。
+
+```
+step 循环 {
+    1. 取消检查
+    2. ContextPipeline.build_bundle()     → ContextBundle (7-stage pipeline)
+    3. PromptRuntime.build_plan()          → PromptPlan
+    4. RequestAssembler.build_step_request()  → ModelRequest + TokenSnapshot
+    5. Policy.decide_context_strategy() → maybe compact
+    6. Policy.check_model_request()     → call LLM
+    7. if 413 → reactive compact (最多 3 次)
+    8. if max_tokens → auto-continue nudge (最多 3 次)
+    9. if no tool_calls → Complete
+    10. if tool_calls → execute (安全工具并发, unsafe 串行) → step_index++
+}
+```
+
+```rust
+pub enum TurnOutcome {
+    Completed,   // LLM 返回纯文本，自然结束
+    Cancelled,   // 用户取消或 CancelToken 触发
+    Error { message: String },
+}
+```
 
 ### 2. Capability Contract
 
-Capability 是唯一一等动作模型。`CapabilityKind` 是路由元数据，不是第二套协议。
+Capability 是唯一一等动作模型。`CapabilityRouter` 按名称路由到 `CapabilityInvoker`。
 
+```rust
+pub enum CapabilityKind {
+    tool(), agent(), context_provider(), memory_provider(),
+    policy_hook(), renderer(), resource(), prompt(),
+}
 ```
-Tool → ToolCapabilityInvoker → CapabilityRouter ← PluginCapabilityInvoker ← Plugin
-                                     ↑
-                              runtime 只消费 router
-```
-
-`CapabilityDescriptor` 校验在装配阶段统一执行，不依赖 builder。
-`Tool` trait 提供 `capability_descriptor()` 默认实现，从 `definition()` + `capability_metadata()` 自动构建。
-
-**`CapabilityKind` 变体**: `tool()`, `agent()`, `context_provider()`, `memory_provider()`, `policy_hook()`, `renderer()`, `resource()`, `prompt()`.
 
 ### 3. Policy Contract
-
-Policy 拥有改变执行结果的权力。三态决策：
 
 ```rust
 pub enum PolicyVerdict<T> {
@@ -213,101 +358,10 @@ pub enum PolicyVerdict<T> {
 ```
 
 三个决策点：`check_model_request`、`check_capability_call`、`decide_context_strategy`。
-
-`Ask` 分支通过 `ApprovalBroker` 挂起/恢复，不通过 EventBus。
-
-默认实现：`AllowAllPolicyEngine` 放行一切。
+子 Agent 的 `Ask` 被 `SubAgentPolicyEngine` 强制转为 `Deny`。
 
 ### 4. Event Contract
 
-Event 只表达"发生了什么"，不表达"下一步该怎么做"。
-
-两类事件，通过 `EventTranslator` 互相投影，不强制等同：
-
-| 类型 | 位置 | 用途 | 消费者 |
-|------|------|------|--------|
-| `AgentEvent` | `core/src/event/domain.rs` | 运行时观测：UI/SSE/telemetry | 前端 SSE |
-| `StorageEvent` | `core/src/event/types.rs` | 持久化：replay/cursor/session 恢复 | JSONL 持久化 |
-
-`StorageEvent` 变体: `SessionStart`, `UserMessage`, `AssistantDelta`, `ThinkingDelta`, `AssistantFinal`, `ToolCall`, `ToolCallDelta`, `ToolResult`, `PromptMetrics`, `CompactApplied`, `TurnDone`, `Error`。
-
-持久化实现在 `storage` crate：
-- `EventLog` (append-only JSONL): `crates/storage/src/session/event_log.rs`
-- `FileSystemSessionRepository` (会话管理): `crates/storage/src/session/repository.rs`
-
-`StoredEvent { storage_seq, event: StorageEvent }` — `storage_seq` 由会话 writer 独占分配，`StoredEventLine` 向后兼容旧格式（无 `storage_seq`）。
-
-SSE 事件 id 格式: `{storage_seq}.{subindex}`，客户端通过 `?afterEventId=` 参数断线重连。
-
-**`Phase` 枚举**: `Idle`, `Thinking`, `CallingTool`, `Streaming`, `Interrupted`, `Done` — 通过 `PhaseTracker` 从 `StorageEvent` 流自动追踪。
-
----
-
-## Key Design Rules
-
-1. **`protocol` 不得依赖 `core`/`runtime`**；跨边界数据走显式 DTO + mapper
-2. **`core` 不持有运行态**；进程内运行态（broadcast、cancel、活动 session）放在 `runtime`
-3. **Transport 不定义 agent 语义**；HTTP/SSE/Tauri 只消费 runtime surface
-4. **Capability 是唯一动作模型**；不为 tool/workflow/plugin 维护独立调用协议
-5. **Policy 是唯一同步决策面**；Event 只负责观测
-6. **持久化实现与核心契约分离**；`core` 定义接口（`EventLogWriter`, `SessionManager`），`storage` 提供文件系统实现
-7. **`tools` 仅依赖 `core`**，不直接依赖 `runtime`
-8. **`runtime-prompt`、`runtime-llm`、`runtime-config` 为独立 crate**，保持编译隔离
-9. **Server is the Truth** — 所有会话、配置、模型、事件流业务入口只通过 `server` 暴露的 API
-
----
-
-## Session / Event Model
-
-- **全局配置**: `~/.astrcode/config.json`（项目级 overlay: `~/.astrcode/projects/<hash>.json`）
-- **会话存储**: `~/.astrcode/projects/<project>/sessions/<session-id>/session-*.jsonl`
-- **JSONL 格式**: append-only `StoredEvent { storage_seq, event: StorageEvent }`
-- **会话 turn 锁**: 跨进程文件锁（`fs2`），`SessionTurnBusy` 返回占用者 PID
-- **SSE 断线重连**: `GET /api/sessions/{id}/events?afterEventId=` — 先通过 `SessionReplaySource` 回放历史，再实时订阅广播
-- **Bootstrap 发现**: `~/.astrcode/run.json` (port, token, pid, expires_at_ms)
-
-## Bootstrap 时序
-
-```
-main() → bootstrap_runtime() → RuntimeBootstrap { service, coordinator, governance }
-  → 绑定 127.0.0.1:0 (随机端口)
-  → 生成 bootstrap token (24h TTL)
-  → 写入 ~/.astrcode/run.json (多实例发现)
-  → 加载 frontend/dist/ (如存在) → 注入 window.__ASTRCODE_BOOTSTRAP__
-  → 构建 Axum Router + CORS (允许 localhost:5173)
-  → 启动 HTTP server + graceful shutdown
-```
-
-Vite 前端先启动 → Tauri sidecar 后启动 → 首个 API 请求等待 `window.__ASTRCODE_BOOTSTRAP__` 注入。
-
-## 配置模型
-
-```rust
-pub struct Config {
-    version: String,                 // 当前 "1"
-    active_profile: String,          // 默认 "deepseek"
-    active_model: String,            // 默认 "deepseek-chat"
-    runtime: RuntimeConfig,          // 运行时配置
-    profiles: Vec<Profile>,          // Provider profiles
-}
-
-pub struct RuntimeConfig {
-    max_tool_concurrency: usize,         // 默认 10 (env: ASTRCODE_MAX_TOOL_CONCURRENCY)
-    auto_compact_enabled: bool,          // 默认 true
-    compact_threshold_percent: u8,       // 默认 90
-    tool_result_max_bytes: usize,        // 默认 100_000
-    compact_keep_recent_turns: u8,       // 默认 4
-    default_token_budget: u64,           // 默认 0 (不限制)
-    continuation_min_delta_tokens: u64,  // 默认 500
-    max_continuations: usize,            // 默认 3
-}
-```
-
-## 认证模型
-
-两层 Token：
-
-1. **Bootstrap Token** (24h TTL) — server 启动时生成，写入 `run.json`，用于首次握手的身份认证
-2. **Session Token** (8h TTL) — 通过 `POST /api/auth/exchange` 用 bootstrap token 交换，后续所有 API 请求通过 `x-astrcode-token` header 注入
-
-安全特性：常量时间比较 (`secure_token_eq`)、自动清理过期 session token。
+两类事件通过 `EventTranslator` 互相投影：
+- `AgentEvent` — SSE 推送前端
+- `StorageEvent` — JSONL 持久化

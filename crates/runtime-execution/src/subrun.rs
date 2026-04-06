@@ -1,3 +1,12 @@
+//! 子执行状态回放与解析模块。
+//!
+//! 负责从持久化的事件流中解析子执行的状态和结果，包括：
+//! - 从 SubRunStarted/SubRunFinished 事件中提取完整状态
+//! - 支持活动中的子执行快照（无结果）
+//! - 支持已完成的子执行结果解析
+//!
+//! 设计目的：让 runtime façade 不需要了解事件拼装细节。
+
 use astrcode_core::{
     AgentEventContext, AgentStatus, ResolvedExecutionLimitsSnapshot,
     ResolvedSubagentContextOverrides, StorageEvent, StoredEvent, SubRunHandle, SubRunOutcome,
@@ -107,9 +116,10 @@ fn build_replayed_handle(
 
 fn status_from_result(result: &SubRunResult) -> AgentStatus {
     match result.status {
+        SubRunOutcome::Running => AgentStatus::Running,
         SubRunOutcome::Completed | SubRunOutcome::TokenExceeded => AgentStatus::Completed,
         SubRunOutcome::Aborted => AgentStatus::Cancelled,
-        SubRunOutcome::Failed { .. } => AgentStatus::Failed,
+        SubRunOutcome::Failed => AgentStatus::Failed,
     }
 }
 
@@ -117,7 +127,8 @@ fn status_from_result(result: &SubRunResult) -> AgentStatus {
 mod tests {
     use astrcode_core::{
         AgentEventContext, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-        StorageEvent, StoredEvent, SubRunHandle, SubRunOutcome, SubRunResult, SubRunStorageMode,
+        StorageEvent, StoredEvent, SubRunHandle, SubRunHandoff, SubRunOutcome, SubRunResult,
+        SubRunStorageMode,
     };
 
     use super::{find_subrun_status_in_events, snapshot_from_active_handle};
@@ -168,9 +179,12 @@ mod tests {
         };
         let result = SubRunResult {
             status: SubRunOutcome::Completed,
-            summary: "done".to_string(),
-            artifacts: Vec::new(),
-            findings: vec!["ok".to_string()],
+            handoff: Some(SubRunHandoff {
+                summary: "done".to_string(),
+                findings: vec!["ok".to_string()],
+                artifacts: Vec::new(),
+            }),
+            failure: None,
         };
         let events = vec![
             StoredEvent {
@@ -212,7 +226,11 @@ mod tests {
             astrcode_core::AgentStatus::Completed
         );
         assert_eq!(
-            snapshot.result.as_ref().map(|item| item.summary.as_str()),
+            snapshot
+                .result
+                .as_ref()
+                .and_then(|item| item.handoff.as_ref())
+                .map(|item| item.summary.as_str()),
             Some("done")
         );
         assert_eq!(snapshot.step_count, Some(2));

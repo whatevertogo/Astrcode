@@ -276,6 +276,7 @@ impl SubRunExecutionMetrics {
         }
 
         match outcome {
+            SubRunOutcome::Running => {},
             SubRunOutcome::Completed => {
                 self.completed.fetch_add(1, Ordering::Relaxed);
             },
@@ -285,7 +286,7 @@ impl SubRunExecutionMetrics {
             SubRunOutcome::TokenExceeded => {
                 self.token_exceeded.fetch_add(1, Ordering::Relaxed);
             },
-            SubRunOutcome::Failed { .. } => {
+            SubRunOutcome::Failed => {
                 self.failures.fetch_add(1, Ordering::Relaxed);
             },
         }
@@ -326,9 +327,7 @@ mod tests {
         );
         metrics.record_subrun_execution(
             Duration::from_millis(20),
-            &SubRunOutcome::Failed {
-                error: "boom".to_string(),
-            },
+            &SubRunOutcome::Failed,
             SubRunStorageMode::IndependentSession,
             5,
             240,

@@ -36,5 +36,5 @@ protocol (纯 DTO，无业务依赖)
 ## 注意
 
 - 用中文注释，且注释尽量表明为什么和做了什么、
-- 为了干净架构和良好实现可以不需要向后兼容，如果向后兼容需要说明为什么
+- 为了干净架构和良好实现可以不需要向后兼容，能不向后兼容干净实现就干净实现，如果真的需要向后兼容你需要说明为什么
 - 最后需要cargo fmt --all --check  && cargo clippy --all-targets --all-features -- -D warnings && cargo test验证你的更改

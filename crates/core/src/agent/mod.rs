@@ -54,6 +54,20 @@ pub enum InvocationKind {
     RootExecution,
 }
 
+/// Fork 上下文继承模式。
+///
+/// TODO: 当前仅定义枚举，runtime 侧未完整消费。
+/// 未来 compact agent 将使用此字段决定子 agent 继承多少父对话上下文。
+/// 参考 Codex 的 SpawnAgentForkMode 设计。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ForkMode {
+    /// 继承完整对话历史。
+    FullHistory,
+    /// 只继承最近 N 轮对话。
+    LastNTurns(usize),
+}
+
 /// 子会话事件写入的存储模式。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -86,8 +100,9 @@ pub struct ArtifactRef {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SubRunOutcome {
+    Running,
     Completed,
-    Failed { error: String },
+    Failed,
     Aborted,
     TokenExceeded,
 }
@@ -95,30 +110,84 @@ pub enum SubRunOutcome {
 impl SubRunOutcome {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Running => "running",
             Self::Completed => "completed",
-            Self::Failed { .. } => "failed",
+            Self::Failed => "failed",
             Self::Aborted => "aborted",
             Self::TokenExceeded => "token_exceeded",
         }
     }
 }
 
+/// 子执行失败分类。
+///
+/// 这里使用稳定枚举而不是裸字符串，避免前后端各自维护一套错误码字面量。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubRunFailureCode {
+    Transport,
+    ProviderHttp,
+    StreamParse,
+    Interrupted,
+    Internal,
+}
+
+/// 子执行传递给父会话的业务结果。
+///
+/// 该结构只承载“父 Agent 后续决策真正需要消费的内容”，
+/// 明确排除 transport/provider/internal diagnostics。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubRunHandoff {
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<ArtifactRef>,
+}
+
+/// 子执行失败的结构化信息。
+///
+/// `display_message` 面向父 Agent / UI 主视图，要求短且稳定；
+/// `technical_message` 仅用于调试与次级展示，不应直接进入父会话 handoff。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubRunFailure {
+    pub code: SubRunFailureCode,
+    pub display_message: String,
+    pub technical_message: String,
+    pub retryable: bool,
+}
+
 /// 子执行结构化结果。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubRunResult {
-    pub summary: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub artifacts: Vec<ArtifactRef>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub findings: Vec<String>,
     pub status: SubRunOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<SubRunHandoff>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<SubRunFailure>,
 }
 
 /// 调用侧可传入的子会话上下文 override。
 ///
 /// 使用 `Option` 字段而不是硬编码完整配置，原因是调用方通常只覆写极少数字段；
 /// 其余维度应继续沿用 runtime 的默认强隔离策略。
+///
+/// ## 当前约束
+///
+/// 以下字段有运行时限制，不是所有值都支持：
+///
+/// - `inherit_cancel_token`: 不支持设为 `false`。原因是取消必须级联传播， 否则父 Agent 取消后子
+///   Agent 会成为孤儿进程继续运行，造成资源泄漏。 TODO: 未来可考虑实现独立的子 Agent
+///   超时机制，允许有限度的取消隔离。
+///
+/// - `include_recovery_refs`: 不支持设为 `true`。恢复引用涉及复杂的跨会话状态依赖， 当前子 Agent
+///   执行模型不保证这些引用在子会话中仍然有效。 TODO: 需要先设计跨会话引用的稳定协议后才能开放。
+///
+/// - `include_parent_findings`: 不支持设为 `true`。父 Agent 的 findings 是非结构化的，
+///   直接注入可能导致上下文污染或意外行为。 TODO: 需要先定义 findings 的结构化格式和过滤机制。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubagentContextOverrides {
@@ -132,16 +201,22 @@ pub struct SubagentContextOverrides {
     pub inherit_working_dir: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherit_policy_upper_bound: Option<bool>,
+    /// 取消令牌继承。**不支持设为 false**，见结构体文档说明。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherit_cancel_token: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_compact_summary: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_recent_tail: Option<bool>,
+    /// 恢复引用包含。**不支持设为 true**，见结构体文档说明。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_recovery_refs: Option<bool>,
+    /// 父 Agent findings 包含。**不支持设为 true**，见结构体文档说明。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_parent_findings: Option<bool>,
+    /// Fork 上下文继承模式。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_mode: Option<ForkMode>,
 }
 
 /// 解析后的子会话 override 快照。
@@ -160,6 +235,7 @@ pub struct ResolvedSubagentContextOverrides {
     pub include_recent_tail: bool,
     pub include_recovery_refs: bool,
     pub include_parent_findings: bool,
+    pub fork_mode: Option<ForkMode>,
 }
 
 impl Default for ResolvedSubagentContextOverrides {
@@ -171,10 +247,11 @@ impl Default for ResolvedSubagentContextOverrides {
             inherit_working_dir: true,
             inherit_policy_upper_bound: true,
             inherit_cancel_token: true,
-            include_compact_summary: true,
-            include_recent_tail: false,
+            include_compact_summary: false,
+            include_recent_tail: true,
             include_recovery_refs: false,
             include_parent_findings: false,
+            fork_mode: None,
         }
     }
 }
