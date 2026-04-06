@@ -372,6 +372,62 @@ async fn session_routes_reject_invalid_session_id_format() {
 }
 
 #[tokio::test]
+async fn session_history_contract_rejects_scope_without_subrun_id() {
+    let (state, _guard) = test_state(None);
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let created = state
+        .service
+        .create_session(temp_dir.path())
+        .await
+        .expect("session should be created");
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/sessions/{}/history?scope=self",
+                    created.session_id
+                ))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn session_events_contract_rejects_scope_without_subrun_id() {
+    let (state, _guard) = test_state(None);
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let created = state
+        .service
+        .create_session(temp_dir.path())
+        .await
+        .expect("session should be created");
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/sessions/{}/events?scope=self",
+                    created.session_id
+                ))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn subrun_status_contract_rejects_invalid_session_id_format() {
     let (state, _guard) = test_state(None);
     let app = build_api_router().with_state(state);

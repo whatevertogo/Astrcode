@@ -3,8 +3,8 @@ use std::{sync::Arc, time::Instant};
 use astrcode_core::{
     AgentEventContext, AgentProfile, AgentState, AstrError, CancelToken, ExecutionOwner,
     InvocationKind, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    StorageEvent, SubRunHandle, SubRunOutcome, SubRunResult, SubRunStorageMode, ToolContext,
-    ToolEventSink, UserMessageOrigin,
+    SpawnAgentParams, StorageEvent, SubRunHandle, SubRunOutcome, SubRunResult, SubRunStorageMode,
+    ToolContext, ToolEventSink, UserMessageOrigin,
 };
 use astrcode_runtime_agent_loop::{AgentLoop, ChildExecutionTracker, TurnOutcome};
 use astrcode_runtime_execution::{
@@ -50,7 +50,7 @@ struct SpawnedSubagentExecution {
 impl AgentExecutionServiceHandle {
     pub async fn launch_subagent(
         &self,
-        params: astrcode_runtime_agent_tool::SpawnAgentParams,
+        params: SpawnAgentParams,
         ctx: &ToolContext,
     ) -> ServiceResult<SubRunResult> {
         params.validate().map_err(ServiceError::from)?;
@@ -59,10 +59,7 @@ impl AgentExecutionServiceHandle {
         self.launch_background(params, profile, parent, ctx).await
     }
 
-    fn resolve_profile(
-        &self,
-        params: &astrcode_runtime_agent_tool::SpawnAgentParams,
-    ) -> ServiceResult<AgentProfile> {
+    fn resolve_profile(&self, params: &SpawnAgentParams) -> ServiceResult<AgentProfile> {
         let profile_id = params.r#type.as_deref().unwrap_or("explore");
         let profile = self
             .runtime
@@ -106,7 +103,7 @@ impl AgentExecutionServiceHandle {
 
     async fn launch_background(
         &self,
-        params: astrcode_runtime_agent_tool::SpawnAgentParams,
+        params: SpawnAgentParams,
         profile: AgentProfile,
         parent: ParentExecutionContext,
         ctx: &ToolContext,
@@ -136,7 +133,7 @@ impl AgentExecutionServiceHandle {
     async fn prepare_child(
         &self,
         profile: &AgentProfile,
-        params: &astrcode_runtime_agent_tool::SpawnAgentParams,
+        params: &SpawnAgentParams,
         parent: &ParentExecutionContext,
     ) -> ServiceResult<PreparedSubagentExecution> {
         let prepared_execution = self.prepare_scoped_execution(

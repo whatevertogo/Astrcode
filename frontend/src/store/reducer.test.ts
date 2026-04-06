@@ -52,4 +52,41 @@ describe('app reducer user message sync', () => {
       timestamp: 123,
     });
   });
+
+  it('clears focused sub-run when switching active session', () => {
+    const initial = {
+      ...makeInitialState(),
+      activeProjectId: 'project-1',
+      activeSessionId: 'session-1',
+      activeSubRunPath: ['subrun-1', 'subrun-2'],
+    };
+
+    const next = reducer(initial, {
+      type: 'SET_ACTIVE',
+      projectId: 'project-2',
+      sessionId: 'session-2',
+    });
+
+    expect(next.activeProjectId).toBe('project-2');
+    expect(next.activeSessionId).toBe('session-2');
+    expect(next.activeSubRunPath).toEqual([]);
+  });
+
+  it('pushes and trims nested sub-run path', () => {
+    const initial = makeInitialState();
+
+    const pushed = reducer(initial, {
+      type: 'PUSH_ACTIVE_SUBRUN',
+      subRunId: 'subrun-1',
+    });
+    const nested = reducer(pushed, {
+      type: 'PUSH_ACTIVE_SUBRUN',
+      subRunId: 'subrun-2',
+    });
+    const popped = reducer(nested, { type: 'POP_ACTIVE_SUBRUN' });
+
+    expect(pushed.activeSubRunPath).toEqual(['subrun-1']);
+    expect(nested.activeSubRunPath).toEqual(['subrun-1', 'subrun-2']);
+    expect(popped.activeSubRunPath).toEqual(['subrun-1']);
+  });
 });

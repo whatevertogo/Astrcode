@@ -50,7 +50,7 @@ pub use runtime::{
 };
 pub use session::{
     CreateSessionRequest, DeleteProjectResultDto, PromptAcceptedResponse, PromptRequest,
-    SessionHistoryResponseDto, SessionListItem, SessionMessageDto,
+    SessionHistoryResponseDto, SessionListItem,
 };
 pub use session_event::{SessionCatalogEventEnvelope, SessionCatalogEventPayload};
 pub use tool::{ToolDescriptorDto, ToolExecuteRequestDto, ToolExecuteResponseDto};

@@ -43,7 +43,6 @@ graph TD
   astrcode-runtime-agent-tool[astrcode-runtime-agent-tool] --> astrcode-core[astrcode-core]
   astrcode-runtime-config[astrcode-runtime-config] --> astrcode-core[astrcode-core]
   astrcode-runtime-execution[astrcode-runtime-execution] --> astrcode-core[astrcode-core]
-  astrcode-runtime-execution[astrcode-runtime-execution] --> astrcode-runtime-agent-tool[astrcode-runtime-agent-tool]
   astrcode-runtime-execution[astrcode-runtime-execution] --> astrcode-runtime-config[astrcode-runtime-config]
   astrcode-runtime-execution[astrcode-runtime-execution] --> astrcode-runtime-prompt[astrcode-runtime-prompt]
   astrcode-runtime-execution[astrcode-runtime-execution] --> astrcode-runtime-registry[astrcode-runtime-registry]
@@ -76,7 +75,7 @@ graph TD
 | astrcode-runtime-agent-loop | crates/runtime-agent-loop | 9 | astrcode-core, astrcode-plugin, astrcode-protocol, astrcode-runtime-agent-tool, astrcode-runtime-config, astrcode-runtime-llm, astrcode-runtime-prompt, astrcode-runtime-registry, astrcode-runtime-skill-loader |
 | astrcode-runtime-agent-tool | crates/runtime-agent-tool | 1 | astrcode-core |
 | astrcode-runtime-config | crates/runtime-config | 1 | astrcode-core |
-| astrcode-runtime-execution | crates/runtime-execution | 5 | astrcode-core, astrcode-runtime-agent-tool, astrcode-runtime-config, astrcode-runtime-prompt, astrcode-runtime-registry |
+| astrcode-runtime-execution | crates/runtime-execution | 4 | astrcode-core, astrcode-runtime-config, astrcode-runtime-prompt, astrcode-runtime-registry |
 | astrcode-runtime-llm | crates/runtime-llm | 1 | astrcode-core |
 | astrcode-runtime-prompt | crates/runtime-prompt | 1 | astrcode-core |
 | astrcode-runtime-registry | crates/runtime-registry | 1 | astrcode-core |

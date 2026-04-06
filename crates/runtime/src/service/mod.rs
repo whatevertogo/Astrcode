@@ -57,8 +57,7 @@ use self::loop_factory::{LoopRuntimeDeps, build_agent_loop};
 pub use self::service_contract::{
     AgentExecutionAccepted, ComposerOption, ComposerOptionKind, ComposerOptionsRequest,
     PromptAccepted, ServiceError, ServiceResult, SessionCatalogEvent, SessionEventRecord,
-    SessionHistorySnapshot, SessionMessage, SessionReplay, SessionReplaySource,
-    SubRunStatusSnapshot,
+    SessionHistorySnapshot, SessionReplay, SessionReplaySource, SubRunStatusSnapshot,
 };
 
 const SESSION_CATALOG_BROADCAST_CAPACITY: usize = 256;

@@ -81,6 +81,31 @@ Agent as Tool 允许主 Agent 通过 `spawnAgent` 工具委派任务给专门的
    - `SubRunFinished.result`
    持续观察子会话，而不是依赖额外的摘要事件
 
+### 2.1 subrun 生命周期与 tool call 的关联约束
+
+前端不应通过硬编码 `tool_name == "spawnAgent"` 来判断“这是不是子执行卡片”；  
+真正的子执行真相来自：
+
+- `SubRunStarted`
+- `SubRunFinished`
+
+但是如果要把某个普通 tool card “升级”为特定 subrun card，协议还必须提供稳定关联规则。
+
+当前文档约束更新为：
+
+1. **不新增额外的“这是 subrun tool” DTO 标记**
+2. **但必须保证 `spawnAgent` tool call 与 subrun 生命周期之间存在稳定关联**
+
+推荐顺序：
+
+- **首选**：在 `SubRunStarted / SubRunFinished` 中补 `tool_call_id`
+- **兼容**：若暂时不补字段，至少将“同一 `turn_id` 内按发出顺序 1:1 配对”写成明确协议
+
+这条约束的原因是：
+
+- 同一 turn 内可能出现多个 `spawnAgent`
+- 只靠 `turn_id` 无法稳定区分哪个 tool call 对应哪个 `sub_run_id`
+
 ## 3. 核心数据模型
 
 ### 3.1 AgentProfile (Agent 画像定义)
@@ -144,7 +169,7 @@ pub enum AgentMode {
 
 ### 3.3 SpawnAgentParams (工具调用参数)
 
-定义文件: `crates/runtime-agent-tool/src/lib.rs`
+定义文件: `crates/core/src/agent/mod.rs`
 
 ```rust
 /// `spawnAgent` 工具的调用参数。
@@ -159,6 +184,9 @@ pub struct SpawnAgentParams {
     pub context: Option<String>,
 }
 ```
+
+> `SpawnAgentParams` 归属 `core`，因为它既是 `spawnAgent` 工具的稳定 schema，
+> 也是 `runtime-execution` 装配子执行请求时复用的共享 DTO，避免 execution 反向依赖 tool crate。
 
 ### 3.4 SubagentContextOverrides (上下文覆写)
 

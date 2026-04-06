@@ -12,7 +12,7 @@ use chrono::Utc;
 
 use super::{
     RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent, SessionHistorySnapshot,
-    SessionMessage, SessionReplaySource, replay::convert_events_to_messages, session::load_events,
+    SessionReplaySource,
 };
 use crate::service::blocking_bridge::spawn_blocking_service;
 
@@ -100,18 +100,6 @@ impl<'a> SessionService<'a> {
             });
 
         Ok(meta)
-    }
-
-    pub(super) async fn load_session_snapshot(
-        &self,
-        session_id: &str,
-    ) -> ServiceResult<(Vec<SessionMessage>, Option<String>)> {
-        let session_id = normalize_session_id(session_id);
-        let events = load_events(Arc::clone(&self.runtime.session_manager), &session_id).await?;
-        let cursor = replay_records(&events, None)
-            .last()
-            .map(|record| record.event_id.clone());
-        Ok((convert_events_to_messages(&events), cursor))
     }
 
     pub(super) async fn load_session_history(

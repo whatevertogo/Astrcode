@@ -69,13 +69,8 @@ use crate::{
 /// 认证请求头名称。
 ///
 /// 所有 API 请求通过此请求头携带认证 token，
-/// 备选方案是通过 `token` 查询参数传递（SSE EventSource 不支持自定义请求头）。
+/// TODO:备选方案是通过 `token` 查询参数传递（SSE EventSource 不支持自定义请求头）。
 pub(crate) const AUTH_HEADER_NAME: &str = "x-astrcode-token";
-/// 会话游标响应头名称。
-///
-/// 用于 `GET /api/sessions/:id/messages` 响应，携带快照游标，
-/// 前端可据此实现增量更新。
-pub(crate) const SESSION_CURSOR_HEADER_NAME: &str = "x-session-cursor";
 
 /// 应用状态（共享给所有路由处理器）。
 ///
@@ -134,6 +129,13 @@ impl ApiError {
         Self {
             status: StatusCode::UNAUTHORIZED,
             message: "unauthorized".to_string(),
+        }
+    }
+
+    pub(crate) fn bad_request(message: String) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message,
         }
     }
 }

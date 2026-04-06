@@ -1,16 +1,18 @@
-use astrcode_protocol::http::{SessionHistoryResponseDto, SessionListItem, SessionMessageDto};
+use astrcode_protocol::http::{SessionHistoryResponseDto, SessionListItem};
 use axum::{
     Json,
-    extract::{Path, State},
-    http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    extract::{Path, Query, State},
+    http::HeaderMap,
 };
 
 use crate::{
-    ApiError, AppState, SESSION_CURSOR_HEADER_NAME,
+    ApiError, AppState,
     auth::require_auth,
-    mapper::{to_agent_event_envelope, to_phase_dto, to_session_list_item, to_session_message_dto},
-    routes::sessions::validate_session_path_id,
+    mapper::{to_agent_event_envelope, to_phase_dto, to_session_list_item},
+    routes::sessions::{
+        filter::{SessionEventFilter, SessionEventFilterQuery, SessionEventFilterSpec},
+        validate_session_path_id,
+    },
 };
 
 pub(crate) async fn list_sessions(
@@ -29,55 +31,44 @@ pub(crate) async fn list_sessions(
     Ok(Json(sessions))
 }
 
-pub(crate) async fn session_messages(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(session_id): Path<String>,
-) -> Result<Response, ApiError> {
-    require_auth(&state, &headers, None)?;
-    let session_id = validate_session_path_id(&session_id)?;
-    let (messages, cursor) = state
-        .service
-        .load_session_snapshot(&session_id)
-        .await
-        .map_err(ApiError::from)?;
-    let payload = messages
-        .into_iter()
-        .map(to_session_message_dto)
-        .collect::<Vec<SessionMessageDto>>();
-
-    let mut response = Json(payload).into_response();
-    if let Some(cursor) = cursor {
-        response.headers_mut().insert(
-            SESSION_CURSOR_HEADER_NAME,
-            axum::http::HeaderValue::from_str(&cursor).map_err(|error| ApiError {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: error.to_string(),
-            })?,
-        );
-    }
-    Ok(response)
-}
-
 pub(crate) async fn session_history(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(session_id): Path<String>,
+    Query(filter_query): Query<SessionEventFilterQuery>,
 ) -> Result<Json<SessionHistoryResponseDto>, ApiError> {
     require_auth(&state, &headers, None)?;
     let session_id = validate_session_path_id(&session_id)?;
+    let filter_spec = SessionEventFilterSpec::from_query(filter_query)?;
     let snapshot = state
         .service
         .load_session_history(&session_id)
         .await
         .map_err(ApiError::from)?;
+    let history = filter_history(snapshot.history, filter_spec);
+    let cursor = history.last().map(|record| record.event_id.clone());
+
     Ok(Json(SessionHistoryResponseDto {
-        events: snapshot
-            .history
+        events: history
             .into_iter()
             .map(|record| to_agent_event_envelope(record.event))
             .collect(),
-        cursor: snapshot.cursor,
+        cursor,
         phase: to_phase_dto(snapshot.phase),
     }))
+}
+
+fn filter_history(
+    history: Vec<astrcode_core::SessionEventRecord>,
+    filter_spec: Option<SessionEventFilterSpec>,
+) -> Vec<astrcode_core::SessionEventRecord> {
+    let Some(filter_spec) = filter_spec else {
+        return history;
+    };
+
+    let mut filter = SessionEventFilter::new(filter_spec);
+    history
+        .into_iter()
+        .filter(|record| filter.matches(record))
+        .collect()
 }

@@ -28,4 +28,5 @@ tower-http.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+astrcode-storage = { path = "../storage" }
 tempfile.workspace = true

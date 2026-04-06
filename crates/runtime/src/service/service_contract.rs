@@ -7,11 +7,11 @@
 
 use std::fmt::{Display, Formatter};
 
+pub use astrcode_core::SessionEventRecord;
 use astrcode_core::{
     AstrError, Phase, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
     StoreError, SubRunHandle, SubRunResult,
 };
-pub use astrcode_core::{SessionEventRecord, SessionMessage};
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 

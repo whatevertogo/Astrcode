@@ -1,4 +1,4 @@
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, pin::Pin, time::Duration};
 
 use astrcode_protocol::http::PROTOCOL_VERSION;
 use astrcode_runtime::SessionReplaySource;
@@ -15,14 +15,22 @@ use crate::{
     ApiError, AppState,
     auth::require_auth,
     mapper::{format_event_id, parse_event_id, to_session_catalog_sse_event, to_sse_event},
-    routes::sessions::validate_session_path_id,
+    routes::sessions::{
+        filter::{
+            SessionEventFilter, SessionEventFilterQuery, SessionEventFilterSpec,
+            record_is_after_cursor,
+        },
+        validate_session_path_id,
+    },
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SessionEventsQuery {
     after_event_id: Option<String>,
     token: Option<String>,
+    #[serde(flatten)]
+    filter: SessionEventFilterQuery,
 }
 
 pub(crate) async fn session_catalog_events(
@@ -60,14 +68,28 @@ pub(crate) async fn session_events(
     headers: HeaderMap,
     Path(session_id): Path<String>,
     Query(query): Query<SessionEventsQuery>,
-) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiError> {
+) -> Result<SessionEventSse, ApiError> {
     require_auth(&state, &headers, query.token.as_deref())?;
     let session_id = validate_session_path_id(&session_id)?;
+    let filter_spec = SessionEventFilterSpec::from_query(query.filter)?;
     let last_event_id = headers
         .get("last-event-id")
         .and_then(|value| value.to_str().ok())
         .map(|value| value.to_string())
         .or(query.after_event_id);
+
+    if let Some(filter_spec) = filter_spec {
+        return filtered_session_events(state, session_id, filter_spec, last_event_id).await;
+    }
+
+    unfiltered_session_events(state, session_id, last_event_id).await
+}
+
+async fn unfiltered_session_events(
+    state: AppState,
+    session_id: String,
+    last_event_id: Option<String>,
+) -> Result<SessionEventSse, ApiError> {
     let mut replay = state
         .service
         .replay(&session_id, last_event_id.as_deref())
@@ -131,11 +153,120 @@ pub(crate) async fn session_events(
         }
     };
 
-    Ok(Sse::new(event_stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text("keepalive"),
-    ))
+    Ok(
+        Sse::new(Box::pin(event_stream) as SessionEventStream).keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keepalive"),
+        ),
+    )
+}
+
+async fn filtered_session_events(
+    state: AppState,
+    session_id: String,
+    filter_spec: SessionEventFilterSpec,
+    last_event_id: Option<String>,
+) -> Result<SessionEventSse, ApiError> {
+    let snapshot = state
+        .service
+        .load_session_history(&session_id)
+        .await
+        .map_err(ApiError::from)?;
+    let latest_cursor = snapshot.cursor.clone();
+    let mut filter = SessionEventFilter::new(filter_spec);
+    let mut initial_history = Vec::new();
+    let mut last_sent = last_event_id.as_deref().and_then(parse_event_id);
+
+    for record in snapshot.history {
+        let matched = filter.matches(&record);
+        if !matched || !record_is_after_cursor(&record, last_event_id.as_deref()) {
+            continue;
+        }
+        if let Some(id) = parse_event_id(&record.event_id) {
+            last_sent = Some(id);
+        }
+        initial_history.push(record);
+    }
+
+    let mut replay = state
+        .service
+        .replay(&session_id, latest_cursor.as_deref())
+        .await
+        .map_err(ApiError::from)?;
+    let service = state.service.clone();
+    let session_id_for_stream = session_id.clone();
+
+    let event_stream = stream! {
+        for record in initial_history {
+            yield Ok::<Event, Infallible>(to_sse_event(record));
+        }
+
+        loop {
+            match replay.receiver.recv().await {
+                Ok(record) => {
+                    let Some(current_id) = parse_event_id(&record.event_id) else {
+                        continue;
+                    };
+                    if let Some(last_id) = last_sent {
+                        if current_id <= last_id {
+                            continue;
+                        }
+                    }
+                    if !filter.matches(&record) {
+                        continue;
+                    }
+                    last_sent = Some(current_id);
+                    yield Ok::<Event, Infallible>(to_sse_event(record));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    let cursor = last_sent.map(format_event_id);
+                    match service.replay(&session_id_for_stream, cursor.as_deref()).await {
+                        Ok(recovered) => {
+                            for record in &recovered.history {
+                                let Some(current_id) = parse_event_id(&record.event_id) else {
+                                    continue;
+                                };
+                                if let Some(last_id) = last_sent {
+                                    if current_id <= last_id {
+                                        continue;
+                                    }
+                                }
+                                if !filter.matches(record) {
+                                    continue;
+                                }
+                                last_sent = Some(current_id);
+                                yield Ok::<Event, Infallible>(to_sse_event(record.clone()));
+                            }
+                            replay = recovered;
+                        }
+                        Err(error) => {
+                            yield Ok::<Event, Infallible>(stream_error_event(
+                                "session_event_replay_failed",
+                                format!("failed to recover lagged session events: {error}"),
+                            ));
+                            break;
+                        },
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    yield Ok::<Event, Infallible>(stream_error_event(
+                        "session_event_stream_closed",
+                        "session event stream closed",
+                    ));
+                    break;
+                },
+            }
+        }
+    };
+
+    Ok(
+        Sse::new(Box::pin(event_stream) as SessionEventStream).keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keepalive"),
+        ),
+    )
 }
 
 /// 在 SSE 终止前发送结构化错误事件，帮助前端给出可解释的断流提示。
@@ -150,3 +281,7 @@ fn stream_error_event(code: &str, message: impl Into<String>) -> Event {
     });
     Event::default().event("error").data(payload.to_string())
 }
+
+type SessionEventStream =
+    Pin<Box<dyn futures_util::Stream<Item = Result<Event, Infallible>> + Send>>;
+type SessionEventSse = Sse<axum::response::sse::KeepAliveStream<SessionEventStream>>;

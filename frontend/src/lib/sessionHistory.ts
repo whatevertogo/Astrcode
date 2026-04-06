@@ -37,6 +37,7 @@ export function replaySessionHistory(
     ],
     activeProjectId: '__history_project__',
     activeSessionId: sessionId,
+    activeSubRunPath: [],
     phase: 'idle',
   };
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { uuid } from './utils/uuid';
 import { reducer as appReducer, makeInitialState } from './store/reducer';
 import { groupSessionsByProject, replaceSessionMessages } from './store/utils';
@@ -11,6 +11,7 @@ import { useAgentEventHandler } from './hooks/useAgentEventHandler';
 import { useSessionCatalogEvents } from './hooks/useSessionCatalogEvents';
 import { useSidebarResize } from './hooks/useSidebarResize';
 import { replaySessionHistory } from './lib/sessionHistory';
+import { buildSubRunPathView, buildSubRunThreadTree } from './lib/subRunView';
 import { cn } from './lib/utils';
 import { parseRuntimeSlashCommand } from './lib/slashCommands';
 import type { SessionCatalogEventPayload } from './types';
@@ -31,6 +32,7 @@ export default function App() {
     onConfirm: () => void | Promise<void>;
   } | null>(null);
   const activeSessionIdRef = useRef<string | null>(state.activeSessionId);
+  const activeSubRunPathRef = useRef(state.activeSubRunPath);
   const phaseRef = useRef(state.phase);
   const turnSessionMapRef = useRef<Record<string, string>>({});
   const pendingSubmitSessionRef = useRef<string[]>([]);
@@ -57,6 +59,10 @@ export default function App() {
   useEffect(() => {
     activeSessionIdRef.current = state.activeSessionId;
   }, [state.activeSessionId]);
+
+  useEffect(() => {
+    activeSubRunPathRef.current = state.activeSubRunPath;
+  }, [state.activeSubRunPath]);
 
   useEffect(() => {
     phaseRef.current = state.phase;
@@ -133,6 +139,8 @@ export default function App() {
           : activeSessionIdRef.current && availableSessionIds.has(activeSessionIdRef.current)
             ? activeSessionIdRef.current
             : (projects[0]?.sessions[0]?.id ?? null);
+      const nextActiveSubRunPath =
+        nextSessionId === activeSessionIdRef.current ? activeSubRunPathRef.current : [];
       const nextProjectId =
         projects.find((project) => project.sessions.some((session) => session.id === nextSessionId))
           ?.id ?? null;
@@ -152,6 +160,7 @@ export default function App() {
           projects: hydratedProjects,
           activeProjectId: nextProjectId,
           activeSessionId: nextSessionId,
+          activeSubRunPath: nextActiveSubRunPath,
         });
         dispatch({ type: 'SET_PHASE', phase: replayed.phase });
         await connectSession(nextSessionId, snapshot.cursor);
@@ -169,6 +178,7 @@ export default function App() {
         projects,
         activeProjectId: nextProjectId,
         activeSessionId: nextSessionId,
+        activeSubRunPath: [],
       });
       dispatch({ type: 'SET_PHASE', phase: 'idle' });
       disconnectSession();
@@ -198,6 +208,39 @@ export default function App() {
     state.projects.find((project) => project.id === state.activeProjectId) ?? null;
   const activeSession =
     activeProject?.sessions.find((session) => session.id === state.activeSessionId) ?? null;
+  const activeSubRunThreadTree = useMemo(
+    () => (activeSession ? buildSubRunThreadTree(activeSession.messages) : null),
+    [activeSession]
+  );
+  const activeSubRunPathView = useMemo(() => {
+    if (!activeSubRunThreadTree || state.activeSubRunPath.length === 0) {
+      return {
+        validPath: [] as string[],
+        views: [],
+        activeView: null,
+      };
+    }
+    return buildSubRunPathView(activeSubRunThreadTree, state.activeSubRunPath);
+  }, [activeSubRunThreadTree, state.activeSubRunPath]);
+  const activeSubRunView = activeSubRunPathView.activeView;
+  const activeSubRunBreadcrumbs = activeSubRunPathView.views.map((view) => ({
+    subRunId: view.subRunId,
+    title: view.title,
+  }));
+  const threadItems =
+    activeSubRunView?.threadItems ?? activeSubRunThreadTree?.rootThreadItems ?? [];
+  const contentFingerprint =
+    activeSubRunView?.streamFingerprint ?? activeSubRunThreadTree?.rootStreamFingerprint ?? '';
+
+  useEffect(() => {
+    const nextPath = activeSubRunPathView.validPath;
+    if (
+      nextPath.length !== state.activeSubRunPath.length ||
+      nextPath.some((subRunId, index) => subRunId !== state.activeSubRunPath[index])
+    ) {
+      dispatch({ type: 'SET_ACTIVE_SUBRUN_PATH', subRunPath: nextPath });
+    }
+  }, [activeSubRunPathView.validPath, state.activeSubRunPath]);
 
   const handleSessionCatalogEvent = useCallback(
     (event: SessionCatalogEventPayload) => {
@@ -258,6 +301,32 @@ export default function App() {
   const handleToggleExpand = (projectId: string) => {
     dispatch({ type: 'TOGGLE_EXPAND', projectId });
   };
+
+  const handleOpenSubRun = useCallback((subRunId: string) => {
+    dispatch({ type: 'PUSH_ACTIVE_SUBRUN', subRunId });
+  }, []);
+
+  const handleCloseSubRun = useCallback(() => {
+    dispatch({ type: 'CLEAR_ACTIVE_SUBRUN_PATH' });
+  }, []);
+
+  const handleNavigateSubRunPath = useCallback((subRunPath: string[]) => {
+    dispatch({ type: 'SET_ACTIVE_SUBRUN_PATH', subRunPath });
+  }, []);
+
+  const handleOpenChildSession = useCallback(
+    async (childSessionId: string) => {
+      const project = state.projects.find((item) =>
+        item.sessions.some((session) => session.id === childSessionId)
+      );
+      if (project) {
+        await loadAndActivateSession(project.id, childSessionId);
+        return;
+      }
+      await refreshSessions(childSessionId);
+    },
+    [loadAndActivateSession, refreshSessions, state.projects]
+  );
 
   const handleDeleteProject = (projectId: string) => {
     const project = state.projects.find((item) => item.id === projectId);
@@ -474,9 +543,19 @@ export default function App() {
         <Chat
           project={activeProject}
           session={activeSession}
+          threadItems={threadItems}
+          subRunViews={activeSubRunThreadTree?.subRuns ?? new Map()}
+          contentFingerprint={contentFingerprint}
           isSidebarOpen={isSidebarOpen}
           toggleSidebar={toggleSidebar}
           phase={state.phase}
+          activeSubRunPath={state.activeSubRunPath}
+          activeSubRunTitle={activeSubRunView?.title ?? null}
+          activeSubRunBreadcrumbs={activeSubRunBreadcrumbs}
+          onOpenSubRun={handleOpenSubRun}
+          onCloseSubRun={handleCloseSubRun}
+          onNavigateSubRunPath={handleNavigateSubRunPath}
+          onOpenChildSession={handleOpenChildSession}
           onSubmitPrompt={handleSubmit}
           onInterrupt={handleInterrupt}
           onCancelSubRun={cancelSubRun}

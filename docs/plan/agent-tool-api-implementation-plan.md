@@ -43,6 +43,7 @@ Phase 0 (设计) ✅
 - 通过结构化 `ArtifactRef { kind: "subRun" }` 暴露后台句柄
 
 **对应实现：**
+- `crates/core/src/agent/mod.rs`
 - `crates/runtime-agent-tool/src/lib.rs`
 - `crates/runtime/src/service/execution/subagent.rs`
 - `crates/runtime-execution/src/prep.rs`

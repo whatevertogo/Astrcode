@@ -13,9 +13,9 @@ use std::{collections::HashSet, sync::Arc};
 use astrcode_core::{
     AgentMode, AgentProfile, AgentState, ArtifactRef, AstrError, ExecutionOwner, HookHandler,
     InvocationKind, LlmMessage, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    SubRunFailure, SubRunFailureCode, SubRunHandoff, SubagentContextOverrides, UserMessageOrigin,
+    SpawnAgentParams, SubRunFailure, SubRunFailureCode, SubRunHandoff, SubagentContextOverrides,
+    UserMessageOrigin,
 };
-use astrcode_runtime_agent_tool::SpawnAgentParams;
 use astrcode_runtime_prompt::PromptDeclaration;
 use astrcode_runtime_registry::CapabilityRouter;
 
@@ -414,10 +414,9 @@ fn classify_subrun_failure(error: &AstrError) -> SubRunFailureCode {
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        AgentMode, AgentProfile, AgentStatus, AstrError, InvocationKind, SubRunFailureCode,
-        SubRunStorageMode, SubagentContextOverrides,
+        AgentMode, AgentProfile, AgentStatus, AstrError, InvocationKind, SpawnAgentParams,
+        SubRunFailureCode, SubRunStorageMode, SubagentContextOverrides,
     };
-    use astrcode_runtime_agent_tool::SpawnAgentParams;
 
     use super::{
         AgentExecutionRequest, build_background_subrun_handoff, build_execution_spec,

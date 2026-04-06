@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::{AstrError, Result};
+
 /// Agent 可见模式。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -66,6 +68,47 @@ pub enum ForkMode {
     FullHistory,
     /// 只继承最近 N 轮对话。
     LastNTurns(usize),
+}
+
+/// `spawnAgent` 的稳定调用参数。
+///
+/// 该 DTO 下沉到 core，是为了让工具层和执行装配层共享同一份参数语义，
+/// 避免 `runtime-execution` 只为了复用字段定义而反向依赖 `runtime-agent-tool`。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpawnAgentParams {
+    /// Agent profile 标识。留空默认 "explore"。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<String>,
+
+    /// 短摘要，给 UI / 标题 / 日志展示用。不参与任务语义。
+    pub description: String,
+
+    /// 任务正文。子 Agent 收到的指令主体。必填。
+    pub prompt: String,
+
+    /// 可选补充材料。不保证完整历史，只是附加信息。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+}
+
+impl SpawnAgentParams {
+    /// 校验参数合法性。
+    pub fn validate(&self) -> Result<()> {
+        // prompt 是子 Agent 收到的指令主体，不能为空；
+        // 否则 runtime 只能启动一个没有任务语义的空会话。
+        if self.prompt.trim().is_empty() {
+            return Err(AstrError::Validation("prompt 不能为空".to_string()));
+        }
+        // description 只承担可观测性职责；
+        // 允许空串兼容模型输出，但纯空白会污染标题与日志。
+        if !self.description.is_empty() && self.description.trim().is_empty() {
+            return Err(AstrError::Validation(
+                "description 不能为纯空白".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// 子会话事件写入的存储模式。
@@ -402,5 +445,38 @@ impl AgentEventContext {
             && self.invocation_kind.is_none()
             && self.storage_mode.is_none()
             && self.child_session_id.is_none()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SpawnAgentParams;
+
+    #[test]
+    fn spawn_agent_params_reject_empty_prompt() {
+        let error = SpawnAgentParams {
+            r#type: Some("plan".to_string()),
+            description: "review".to_string(),
+            prompt: "   ".to_string(),
+            context: None,
+        }
+        .validate()
+        .expect_err("blank prompt should be rejected");
+
+        assert!(error.to_string().contains("prompt 不能为空"));
+    }
+
+    #[test]
+    fn spawn_agent_params_reject_whitespace_only_description() {
+        let error = SpawnAgentParams {
+            r#type: Some("plan".to_string()),
+            description: " \t ".to_string(),
+            prompt: "review".to_string(),
+            context: None,
+        }
+        .validate()
+        .expect_err("whitespace-only description should be rejected");
+
+        assert!(error.to_string().contains("description 不能为纯空白"));
     }
 }

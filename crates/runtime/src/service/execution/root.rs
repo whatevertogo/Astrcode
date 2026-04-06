@@ -2,7 +2,8 @@ use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use astrcode_core::{
     AgentEventContext, AgentMode, CancelToken, ExecutionOwner, InvocationKind,
-    SessionTurnAcquireResult, SubRunStorageMode, SubagentContextOverrides, UserMessageOrigin,
+    SessionTurnAcquireResult, SpawnAgentParams, SubRunStorageMode, SubagentContextOverrides,
+    UserMessageOrigin,
 };
 use astrcode_runtime_session::{
     complete_session_execution, prepare_session_execution, run_session_turn,
@@ -87,7 +88,7 @@ impl AgentExecutionServiceHandle {
             task.clone()
         };
 
-        let params = astrcode_runtime_agent_tool::SpawnAgentParams {
+        let params = SpawnAgentParams {
             r#type: Some(agent_id),
             description,
             prompt: task,

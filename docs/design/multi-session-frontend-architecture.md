@@ -5,7 +5,7 @@
 前端需要在不破坏当前 session 真相的前提下，支持下面三类体验：
 
 1. 在父会话中看到子执行（subrun）的启动、运行中与完成状态
-2. 在 `SharedSession` 模式下查看“同一 session 内的子执行视图”
+2. 在 `SharedSession` 模式下查看“同一 session 内的子执行树 / 过滤视图”
 3. 在 `IndependentSession` 模式下跳转到独立 child session
 
 > 文档边界：session/turn 生命周期真相见  
@@ -21,11 +21,12 @@
 当前已经存在并可直接利用的能力：
 
 - `GET /api/sessions`
-- `GET /api/sessions/{id}/messages`
 - `GET /api/sessions/{id}/history`
 - `GET /api/sessions/{id}/events`
 - `GET /api/v1/sessions/{id}/subruns/{sub_run_id}`
 - `POST /api/v1/sessions/{id}/subruns/{sub_run_id}/cancel`
+
+`GET /api/sessions/{id}/messages` 已删除，前端主线只保留 `/history + /events`。
 
 ## 2.2 当前稳定语义
 
@@ -34,6 +35,7 @@
 - `IndependentSession` 仍属 experimental
 - `SubRunStarted / SubRunFinished` 是父侧稳定生命周期事件
 - `SubRunFinished.result` 是父流程和 UI 的结果中心
+- `StorageEvent` 是唯一事实源，前端应基于 `/history + /events` 统一归并
 
 ## 2.3 当前不要做错的事
 
@@ -43,6 +45,7 @@
 - 把 `SessionMeta.parent_session_id` 当成通用 subrun tree 字段
 - 假设每个 subrun 都有 `child_session_id`
 - 假设必须先做 `/api/v1/sessions/tree` 才能做多会话 UI
+- 继续把 `/messages` 当成主线首屏快照协议
 
 ---
 
@@ -68,13 +71,22 @@
 
 这一步不要求新的全局 tree API。
 
-### 3.3 `SharedSession` 优先做客户端过滤视图
+### 3.3 `SharedSession` 优先做客户端树视图
 
 在 `SharedSession` 下：
 
 - 子执行内容仍属于父 session
-- 因此前端最先需要的是 **同 session 的过滤视图**
+- 前端最先需要的是 **同 session 的嵌套子执行树 / 过滤视图**
 - 而不是再为它人为制造一个“伪 session”
+
+### 3.4 前端渲染模型不是后端契约
+
+后端需要保证的是：
+
+- 事件语义完整
+- `sub_run_id` / `child_session_id` / `turn_id` 等字段可用于归并
+
+前端如何归并出 breadcrumb、树形 subrun block、compact 提示卡片，属于前端实现自由，不应反向塑造后端事实层。
 
 ---
 
@@ -83,12 +95,13 @@
 ```ts
 type ActiveView =
   | { kind: 'session'; sessionId: string }
-  | { kind: 'subRun'; sessionId: string; subRunId: string };
+  | { kind: 'subRun'; sessionId: string; subRunPath: string[] };
 
 interface SubRunRef {
   subRunId: string;
   sessionId: string;
   parentTurnId?: string;
+  parentSubRunId?: string | null;
   agentProfile?: string;
   storageMode?: 'sharedSession' | 'independentSession';
   childSessionId?: string;
@@ -112,6 +125,15 @@ interface SessionsState {
 - 它主要来自 `SubRunStarted / SubRunFinished` 事件归并
 - 它既可能指向“同 session 过滤视图”，也可能指向“独立 child session”
 
+### 4.2 为什么 `subRunPath` 比单个 `subRunId` 更合适
+
+因为当前 UI 目标已经不是单层 focus，而是：
+
+- 根会话视图中的嵌套子执行树
+- `subrun-a -> subrun-b -> subrun-c` 的 breadcrumb 导航
+
+这要求前端用 path 表达“当前正在看的嵌套层级”，而不是只保留单个 subrun id。
+
 ---
 
 ## 5. 数据来源与构建方式
@@ -128,7 +150,7 @@ interface SessionsState {
 - 根 session 切换
 - 显示标题、时间、phase 等摘要
 
-## 5.2 当前会话的 subrun 列表
+## 5.2 当前会话的 subrun 列表 / 子执行树
 
 ### MVP：直接从历史事件构建
 
@@ -141,7 +163,8 @@ interface SessionsState {
 
 1. 扫描 `SubRunStarted`
 2. 以 `sub_run_id` 建立 `SubRunRef`
-3. 收到 `SubRunFinished` 后更新状态、summary、childSessionId 等字段
+3. 用 `parent_turn_id` 与同 session 中的 turn 归属关系推导 `parentSubRunId`
+4. 收到 `SubRunFinished` 后更新状态、summary、childSessionId 等字段
 
 这个方案的优点：
 
@@ -185,19 +208,19 @@ interface SessionsState {
 
 - 当前 session 的完整对话
 - 其中夹杂 subrun 卡片
+- subrun 卡片之间保留真正的嵌套层级
 
 ### B. SharedSession 的 subrun 视图
 
 本质上是：
 
 - 仍然停留在同一个 `sessionId`
-- 但只展示与某个 `sub_run_id` 相关的内容
+- 但只展示某个 `sub_run_id` 对应的子树视图
 
-过滤维度通常包括：
+这里的“只展示”不是简单 equality filter，而是一个**子树作用域**：
 
-- `agent.sub_run_id == 当前 sub_run_id` 的事件
-- 该 subrun 的 `SubRunStarted / SubRunFinished`
-- 必要时显示父会话中的上下文入口卡片
+- 当前 subrun 自己的内容
+- 当前 subrun 的直接子执行或完整子树（取决于视图设计）
 
 ### C. IndependentSession 的 child session 视图
 
@@ -222,19 +245,28 @@ interface SessionsState {
 - `SharedSession` 的子执行本来就在同一个 session stream 中
 - 多条同 session SSE 连接会放大浏览器和服务端压力
 
-## 7.2 subrun 过滤优先在客户端完成
+## 7.2 当前阶段优先客户端归并
 
-MVP 先使用客户端过滤：
+MVP 先使用客户端归并：
 
-```ts
-function belongsToSubRun(event: AgentEvent, subRunId: string): boolean {
-  return event.data.agent?.subRunId === subRunId;
-}
-```
+- 用 `/history` 做首屏 hydration
+- 用 `/events` 追加增量
+- 在前端按 `sub_run_id` / `parent_turn_id` / turn owner 关系构建子执行树
 
-这样可以更快落地，也不需要马上扩展后端。
+### 7.2.1 为什么不是简单 `belongsToSubRun(event, subRunId)`
 
-## 7.3 服务端过滤是优化项，不是前置条件
+因为嵌套子执行树需要的不只是：
+
+- `event.agent.subRunId == 当前 subRunId`
+
+还需要：
+
+- 当前 subrun 的子 subrun 生命周期
+- 当前 subrun 下一级导航入口
+
+所以前端应构建树，而不是只做简单 equality 过滤。
+
+## 7.3 服务端过滤是优化项，但应直接支持 `scope`
 
 如果后续发现：
 
@@ -243,10 +275,10 @@ function belongsToSubRun(event: AgentEvent, subRunId: string): boolean {
 
 再考虑追加：
 
-- `/api/sessions/{id}/events?subRunId=...`
-- 或 history 的 server-side filter
+- `/api/sessions/{id}/events?subRunId=...&scope=self|subtree|directChildren`
+- `/api/sessions/{id}/history?subRunId=...&scope=self|subtree|directChildren`
 
-但这应该是优化项，而不是第一阶段 blocker。
+这里推荐直接用 `subRunId + scope`，而不是只提供单个 `subRunId` equality filter。
 
 ---
 
@@ -279,11 +311,11 @@ function belongsToSubRun(event: AgentEvent, subRunId: string): boolean {
 ```text
 用户在父会话中点击 SubRunCard
     ↓
-activeView = { kind: 'subRun', sessionId: 父会话, subRunId }
+activeView = { kind: 'subRun', sessionId: 父会话, subRunPath }
     ↓
 复用同一个 session SSE 连接
     ↓
-前端按 subRunId 过滤历史与增量事件
+前端在本地子执行树上切换当前 path
     ↓
 展示 SubRunConversationView
 ```
@@ -297,7 +329,7 @@ activeView = { kind: 'subRun', sessionId: 父会话, subRunId }
     ↓
 activeView = { kind: 'session', sessionId: childSessionId }
     ↓
-加载 child session messages/history
+加载 child session history/events
     ↓
 breadcrumb 保留父 subrun 入口
 ```
@@ -308,10 +340,10 @@ breadcrumb 保留父 subrun 入口
 
 ### 阶段 A：不新增 API 的 MVP
 
-- 使用 `/sessions/{id}/messages` + `/history` + `/events`
+- 使用 `/sessions/{id}/history` + `/events`
 - 本地提取 `SubRunRef`
 - 实现 `SubRunCard`
-- 实现 SharedSession 子执行过滤视图
+- 实现 SharedSession 子执行树与过滤视图
 - 如果 `childSessionId` 存在，支持跳转独立 session
 
 ### 阶段 B：补 durable subrun read model
@@ -320,9 +352,9 @@ breadcrumb 保留父 subrun 入口
 - 用于更轻量地构建 subrun 列表和摘要
 - 与单个 `subruns/{sub_run_id}` 状态查询对齐
 
-### 阶段 C：做更高层的 tree / filter 优化
+### 阶段 C：做更高层的 tree 优化
 
-- server-side `sub_run_id` filter
+- 继续在既有 `subRunId + scope` 过滤基础上做 tree/read-model 优化
 - session tree 聚合接口
 - 跨会话 breadcrumbs 优化
 
@@ -334,6 +366,7 @@ breadcrumb 保留父 subrun 入口
 - 先做全局 `/sessions/tree` 再做子执行导航
 - 为 SharedSession 的每个 subrun 单独创建 SSE 连接
 - 把 subrun 当成新的 session 真相层级
+- 继续依赖 `/messages` 作为主线首屏协议
 
 ---
 
@@ -343,5 +376,6 @@ breadcrumb 保留父 subrun 入口
 
 1. **session 仍然是 durable 真正单位**
 2. **subrun 是前端导航对象，不是新的底层 session 模型**
-3. **SharedSession 先用同 session 过滤视图实现**
+3. **SharedSession 先用同 session 的嵌套子执行树 / 过滤视图实现**
 4. **IndependentSession 再通过 `childSessionId` 做跳转增强**
+5. **后端优先保证统一事件协议；过滤与树形优化属于下一阶段能力**

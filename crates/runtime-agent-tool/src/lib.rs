@@ -7,55 +7,13 @@
 
 use std::sync::Arc;
 
+pub use astrcode_core::SpawnAgentParams;
 use astrcode_core::{
-    AgentProfile, AstrError, Result, SubRunOutcome, SubRunResult, Tool, ToolCapabilityMetadata,
-    ToolContext, ToolDefinition, ToolExecutionResult,
+    AgentProfile, Result, SubRunOutcome, SubRunResult, Tool, ToolCapabilityMetadata, ToolContext,
+    ToolDefinition, ToolExecutionResult,
 };
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-
-/// `spawnAgent` 工具的调用参数。
-///
-/// **字段职责（不可漂移）**：
-/// - `description`：短摘要，仅供 UI/日志/标题展示，不参与任务语义
-/// - `prompt`：任务正文，是子 Agent 收到的指令主体
-/// - `context`：可选补充材料，不保证完整历史
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SpawnAgentParams {
-    /// Agent profile 标识。留空默认 "explore"。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub r#type: Option<String>,
-
-    /// 短摘要，给 UI / 标题 / 日志展示用。不参与任务语义。
-    pub description: String,
-
-    /// 任务正文。子 Agent 收到的指令主体。必填。
-    pub prompt: String,
-
-    /// 可选补充材料。不保证完整历史，只是附加信息。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context: Option<String>,
-}
-
-impl SpawnAgentParams {
-    /// 校验参数合法性。
-    pub fn validate(&self) -> Result<()> {
-        // prompt 是子 Agent 收到的指令主体，不能为空
-        if self.prompt.trim().is_empty() {
-            return Err(AstrError::Validation("prompt 不能为空".to_string()));
-        }
-        // description 承担 UI/标题/日志展示职责，纯空白无意义
-        // 允许空串（LLM 可能传 ""），但拒绝纯空白
-        if !self.description.is_empty() && self.description.trim().is_empty() {
-            return Err(AstrError::Validation(
-                "description 不能为纯空白".to_string(),
-            ));
-        }
-        Ok(())
-    }
-}
 
 /// 子 Agent 执行器抽象。
 ///

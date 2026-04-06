@@ -1,5 +1,6 @@
 import React, { Component, useCallback, useEffect, useRef } from 'react';
 import type { Message } from '../../types';
+import type { SubRunViewData, ThreadItem } from '../../lib/subRunView';
 import UserMessage from './UserMessage';
 import AssistantMessage from './AssistantMessage';
 import ToolCallBlock from './ToolCallBlock';
@@ -9,8 +10,13 @@ import styles from './MessageList.module.css';
 
 interface MessageListProps {
   sessionId: string | null;
-  messages: Message[];
+  threadItems: ThreadItem[];
+  subRunViews: Map<string, SubRunViewData>;
+  contentFingerprint: string;
+  emptyStateText?: string;
   onCancelSubRun: (sessionId: string, subRunId: string) => void | Promise<void>;
+  onFocusSubRun: (subRunId: string) => void;
+  onOpenChildSession: (childSessionId: string) => void | Promise<void>;
 }
 
 interface MessageBoundaryProps {
@@ -100,19 +106,24 @@ function isAssistantLike(message: Message): boolean {
   return message.kind === 'assistant' || message.kind === 'toolCall';
 }
 
-function isSubRunLifecycleMessage(message: Message): boolean {
-  return message.kind === 'subRunStart' || message.kind === 'subRunFinish';
+function isRowNested(options?: { nested?: boolean }): boolean {
+  return options?.nested === true;
 }
 
-function isNestedAgentMessage(message: Message): boolean {
-  return Boolean(message.subRunId);
-}
-
-export default function MessageList({ sessionId, messages, onCancelSubRun }: MessageListProps) {
+export default function MessageList({
+  sessionId,
+  threadItems,
+  subRunViews,
+  contentFingerprint,
+  emptyStateText,
+  onCancelSubRun,
+  onFocusSubRun,
+  onOpenChildSession,
+}: MessageListProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
-  const previousMessageCountRef = useRef(0);
+  const previousContentFingerprintRef = useRef('');
 
   const updateStickiness = useCallback(() => {
     const container = listRef.current;
@@ -140,8 +151,8 @@ export default function MessageList({ sessionId, messages, onCancelSubRun }: Mes
 
   useEffect(() => {
     const shouldAutoScroll =
-      previousMessageCountRef.current === 0 || shouldStickToBottomRef.current;
-    previousMessageCountRef.current = messages.length;
+      previousContentFingerprintRef.current === '' || shouldStickToBottomRef.current;
+    previousContentFingerprintRef.current = contentFingerprint;
     if (!shouldAutoScroll) {
       return;
     }
@@ -154,7 +165,7 @@ export default function MessageList({ sessionId, messages, onCancelSubRun }: Mes
       updateStickiness();
     });
     return () => window.cancelAnimationFrame(rafId);
-  }, [messages, stickToBottom, updateStickiness]);
+  }, [contentFingerprint, stickToBottom, updateStickiness]);
 
   const renderMessageContent = useCallback((msg: Message, hideAvatar: boolean) => {
     if (msg.kind === 'user') {
@@ -187,7 +198,7 @@ export default function MessageList({ sessionId, messages, onCancelSubRun }: Mes
       const isContinuation =
         previousMessage !== null && isAssistantLike(msg) && isAssistantLike(previousMessage);
       const rowClass = [
-        options?.nested ? styles.groupMessageRow : styles.messageRow,
+        isRowNested(options) ? styles.groupMessageRow : styles.messageRow,
         isContinuation ? styles.messageRowContinuation : '',
       ]
         .filter(Boolean)
@@ -204,74 +215,77 @@ export default function MessageList({ sessionId, messages, onCancelSubRun }: Mes
     [renderMessageContent]
   );
 
-  const renderNestedMessageRow = useCallback(
-    (msg: Message, previousMessage: Message | null) =>
-      renderMessageRow(msg, previousMessage, {
-        key: msg.id,
-        nested: true,
+  const renderThreadItems = useCallback(
+    (
+      items: ThreadItem[],
+      options?: {
+        nested?: boolean;
+      }
+    ): React.ReactNode[] =>
+      items.map((item, index) => {
+        if (item.kind === 'message') {
+          const previousItem = items[index - 1];
+          const previousMessage = previousItem?.kind === 'message' ? previousItem.message : null;
+          return renderMessageRow(item.message, previousMessage, {
+            key: item.message.id,
+            nested: options?.nested,
+          });
+        }
+
+        const subRunView = subRunViews.get(item.subRunId);
+        if (!subRunView) {
+          return (
+            <div
+              key={`subrun-missing-${item.subRunId}`}
+              className={isRowNested(options) ? styles.groupMessageRow : styles.messageRow}
+            >
+              <div className={styles.renderError}>
+                <div className={styles.renderErrorTitle}>子执行渲染失败</div>
+                <div className={styles.renderErrorMeta}>subRunId: {item.subRunId}</div>
+              </div>
+            </div>
+          );
+        }
+
+        const boundaryMessage =
+          subRunView.startMessage ?? subRunView.finishMessage ?? subRunView.bodyMessages[0];
+        const rowClass = isRowNested(options) ? styles.groupMessageRow : styles.messageRow;
+        const subRunBlock = (
+          <SubRunBlock
+            subRunId={subRunView.subRunId}
+            sessionId={sessionId}
+            title={subRunView.title}
+            startMessage={subRunView.startMessage}
+            finishMessage={subRunView.finishMessage}
+            threadItems={subRunView.threadItems}
+            streamFingerprint={subRunView.streamFingerprint}
+            renderThreadItems={renderThreadItems}
+            onCancelSubRun={onCancelSubRun}
+            onFocusSubRun={onFocusSubRun}
+            onOpenChildSession={onOpenChildSession}
+          />
+        );
+
+        return (
+          <div key={`subrun-${subRunView.subRunId}`} className={rowClass}>
+            {boundaryMessage ? (
+              <MessageBoundary message={boundaryMessage}>{subRunBlock}</MessageBoundary>
+            ) : (
+              subRunBlock
+            )}
+          </div>
+        );
       }),
-    [renderMessageRow]
+    [onCancelSubRun, onFocusSubRun, onOpenChildSession, renderMessageRow, sessionId, subRunViews]
   );
 
-  const renderedRows: React.ReactNode[] = [];
-  for (let index = 0; index < messages.length; ) {
-    const message = messages[index];
-    if (!isNestedAgentMessage(message)) {
-      renderedRows.push(renderMessageRow(message, index > 0 ? messages[index - 1] : null));
-      index += 1;
-      continue;
-    }
-
-    const group = [message];
-    let nextIndex = index + 1;
-    while (nextIndex < messages.length) {
-      const nextMessage = messages[nextIndex];
-      if (nextMessage.subRunId !== message.subRunId) {
-        break;
-      }
-      group.push(nextMessage);
-      nextIndex += 1;
-    }
-
-    const startMessage = group.find(
-      (item): item is Extract<Message, { kind: 'subRunStart' }> => item.kind === 'subRunStart'
-    );
-    const finishMessage = group.find(
-      (item): item is Extract<Message, { kind: 'subRunFinish' }> => item.kind === 'subRunFinish'
-    );
-    const bodyMessages = group.filter((item) => !isSubRunLifecycleMessage(item));
-    const title =
-      startMessage?.agentProfile ??
-      finishMessage?.agentProfile ??
-      message.agentProfile ??
-      message.agentId ??
-      '子会话';
-
-    renderedRows.push(
-      <div
-        key={`agent-group-${message.subRunId ?? 'unknown'}-${index}`}
-        className={styles.messageRow}
-      >
-        <MessageBoundary message={message}>
-          <SubRunBlock
-            subRunId={message.subRunId ?? 'unknown'}
-            sessionId={sessionId}
-            title={title}
-            startMessage={startMessage}
-            finishMessage={finishMessage}
-            bodyMessages={bodyMessages}
-            renderMessageRow={renderNestedMessageRow}
-            onCancelSubRun={onCancelSubRun}
-          />
-        </MessageBoundary>
-      </div>
-    );
-    index = nextIndex;
-  }
+  const renderedRows = renderThreadItems(threadItems);
 
   return (
     <div ref={listRef} className={styles.list} onScroll={updateStickiness}>
-      {messages.length === 0 && <div className={styles.empty}>向 AstrCode 提问，开始对话...</div>}
+      {threadItems.length === 0 && (
+        <div className={styles.empty}>{emptyStateText ?? '向 AstrCode 提问，开始对话...'}</div>
+      )}
       {renderedRows}
       <div ref={bottomRef} />
     </div>

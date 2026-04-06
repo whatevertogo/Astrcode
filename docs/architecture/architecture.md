@@ -13,7 +13,7 @@
 | Capability | `crates/core/src/capability.rs` | `CapabilityDescriptor`, `CapabilityKind`, `CapabilityInvoker`, `CapabilityContext` | 一等动作模型 |
 | Policy | `crates/core/src/policy/` | `PolicyEngine`, `PolicyVerdict<T>` | 同步决策面 |
 | Event | `crates/core/src/event/` | `AgentEvent`(观测), `StorageEvent`(持久化), `Phase`, `EventTranslator` | 异步观测面 |
-| Agent | `crates/core/src/agent/` | `AgentProfile`, `AgentMode`, `SubRunHandle`, `SubRunResult`, `SubagentContextOverrides` | Agent 生命周期 DTO |
+| Agent | `crates/core/src/agent/` | `AgentProfile`, `SpawnAgentParams`, `AgentMode`, `SubRunHandle`, `SubRunResult`, `SubagentContextOverrides` | Agent 生命周期 DTO |
 | Session | `crates/core/src/store.rs` + `event/mod.rs` | `SessionManager`, `SessionTurnLease`, `EventLogWriter`, `SessionMeta` | 持久化接口 |
 | Hook | `crates/core/src/hook.rs` | `HookHandler`, `HookEvent`, `HookInput`, `HookOutcome` | 生命周期钩子接口 |
 | Cancel | `crates/core/src/cancel.rs` | `CancelToken` | 取消令牌 |
@@ -71,7 +71,6 @@ impl RuntimeService {
     // 会话 CRUD
     pub async fn create_session(working_dir: &str) -> ServiceResult<SessionMeta>
     pub async fn list_sessions_with_meta(&self) -> ServiceResult<Vec<SessionMeta>>
-    pub async fn load_session_snapshot(&self, session_id: &str) -> ServiceResult<(Vec<SessionMessage>, Option<String>)>
     pub async fn load_session_history(&self, session_id: &str) -> ServiceResult<SessionHistorySnapshot>
     pub async fn delete_session(&self, session_id: &str) -> ServiceResult<()>
     pub async fn delete_project(&self, working_dir: &str) -> ServiceResult<DeleteProjectResult>
@@ -187,9 +186,8 @@ impl RuntimeService {
 | `/api/sessions/{id}/prompts` | POST | 提交 prompt (202 异步执行) |
 | `/api/sessions/{id}/interrupt` | POST | 中断执行 |
 | `/api/sessions/{id}/compact` | POST | 手动压缩 |
-| `/api/sessions/{id}/messages` | GET | 会话消息快照 |
 | `/api/sessions/{id}/history` | GET | 会话历史完整事件 |
-| `/api/sessions/{id}/events` | GET (SSE) | 事件流，支持 `?afterEventId=` 断线重连 |
+| `/api/sessions/{id}/events` | GET (SSE) | 事件流，支持 `?afterEventId=` 与 `?subRunId=&scope=` 过滤 |
 | `/api/sessions/{id}/composer/options` | GET | Composer 输入候选 |
 | `/api/session-events` | GET (SSE) | 全局目录事件 (创建/删除/分支) |
 | `/api/projects` | DELETE | 删除整个项目 (?workingDir=) |

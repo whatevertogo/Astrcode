@@ -256,7 +256,6 @@ name = "astrcode-runtime-execution"
 version = "0.1.0"
 dependencies = [
  "astrcode-core",
- "astrcode-runtime-agent-tool",
  "astrcode-runtime-config",
  "astrcode-runtime-prompt",
  "astrcode-runtime-registry",
@@ -370,6 +369,7 @@ dependencies = [
  "astrcode-protocol",
  "astrcode-runtime",
  "astrcode-runtime-registry",
+ "astrcode-storage",
  "async-stream",
  "async-trait",
  "axum",

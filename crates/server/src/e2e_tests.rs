@@ -7,8 +7,8 @@ use std::{collections::HashSet, net::TcpListener, path::Path, sync::Arc, time::D
 
 use astrcode_core::{PluginRegistry, RuntimeCoordinator, RuntimeHandle, project::project_dir_name};
 use astrcode_protocol::http::{
-    CreateSessionRequest, PromptAcceptedResponse, PromptRequest, SaveActiveSelectionRequest,
-    SessionListItem, SessionMessageDto,
+    AgentEventPayload, CreateSessionRequest, PromptAcceptedResponse, PromptRequest,
+    SaveActiveSelectionRequest, SessionHistoryResponseDto, SessionListItem,
 };
 use astrcode_runtime::{
     Config, ModelConfig, Profile, RuntimeConfig, RuntimeGovernance, RuntimeService,
@@ -53,27 +53,50 @@ async fn json_body<T: serde::de::DeserializeOwned>(response: axum::http::Respons
     serde_json::from_slice(&bytes).expect("response should deserialize to expected type")
 }
 
-/// Wait until the background prompt task has persisted the expected number of session messages.
+async fn load_session_history(app: axum::Router, session_id: &str) -> SessionHistoryResponseDto {
+    let history_req = auth_request("GET", &format!("/api/sessions/{session_id}/history"))
+        .body(Body::empty())
+        .expect("request should build");
+    let history_resp = app
+        .clone()
+        .oneshot(history_req)
+        .await
+        .expect("response should return");
+    assert_eq!(history_resp.status(), StatusCode::OK);
+    json_body(history_resp).await
+}
+
+fn count_visible_messages(history: &SessionHistoryResponseDto) -> usize {
+    history
+        .events
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.event,
+                AgentEventPayload::UserMessage { .. } | AgentEventPayload::AssistantMessage { .. }
+            )
+        })
+        .count()
+}
+
+fn count_user_messages(history: &SessionHistoryResponseDto) -> usize {
+    history
+        .events
+        .iter()
+        .filter(|event| matches!(&event.event, AgentEventPayload::UserMessage { .. }))
+        .count()
+}
+
+/// Wait until the background prompt task has persisted the expected number of visible messages.
 async fn wait_for_total_message_count(
     app: axum::Router,
     session_id: &str,
     expected_count: usize,
-) -> Vec<SessionMessageDto> {
+) -> SessionHistoryResponseDto {
     for _ in 0..40 {
-        let messages_req = auth_request("GET", &format!("/api/sessions/{session_id}/messages"))
-            .body(Body::empty())
-            .expect("request should build");
-
-        let messages_resp = app
-            .clone()
-            .oneshot(messages_req)
-            .await
-            .expect("response should return");
-        assert_eq!(messages_resp.status(), StatusCode::OK);
-
-        let messages: Vec<SessionMessageDto> = json_body(messages_resp).await;
-        if messages.len() == expected_count {
-            return messages;
+        let history = load_session_history(app.clone(), session_id).await;
+        if count_visible_messages(&history) == expected_count {
+            return history;
         }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
@@ -87,26 +110,11 @@ async fn wait_for_user_message_count(
     app: axum::Router,
     session_id: &str,
     expected_count: usize,
-) -> Vec<SessionMessageDto> {
+) -> SessionHistoryResponseDto {
     for _ in 0..20 {
-        let messages_req = auth_request("GET", &format!("/api/sessions/{session_id}/messages"))
-            .body(Body::empty())
-            .expect("request should build");
-
-        let messages_resp = app
-            .clone()
-            .oneshot(messages_req)
-            .await
-            .expect("response should return");
-        assert_eq!(messages_resp.status(), StatusCode::OK);
-
-        let messages: Vec<SessionMessageDto> = json_body(messages_resp).await;
-        let user_message_count = messages
-            .iter()
-            .filter(|message| matches!(message, SessionMessageDto::User { .. }))
-            .count();
-        if user_message_count == expected_count {
-            return messages;
+        let history = load_session_history(app.clone(), session_id).await;
+        if count_user_messages(&history) == expected_count {
+            return history;
         }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
@@ -474,17 +482,8 @@ async fn e2e_multiple_sessions_isolation() {
     let messages_b = wait_for_user_message_count(app.clone(), &session_b.session_id, 1).await;
 
     // Each session should have its own user message
-    let user_messages_a: Vec<_> = messages_a
-        .iter()
-        .filter(|m| matches!(m, SessionMessageDto::User { .. }))
-        .collect();
-    let user_messages_b: Vec<_> = messages_b
-        .iter()
-        .filter(|m| matches!(m, SessionMessageDto::User { .. }))
-        .collect();
-
-    assert_eq!(user_messages_a.len(), 1);
-    assert_eq!(user_messages_b.len(), 1);
+    assert_eq!(count_user_messages(&messages_a), 1);
+    assert_eq!(count_user_messages(&messages_b), 1);
 }
 
 #[tokio::test]
@@ -548,16 +547,18 @@ async fn e2e_concurrent_submit_branches_second_prompt() {
     let branched_messages = wait_for_user_message_count(app.clone(), &second.session_id, 1).await;
 
     let original_user_messages = original_messages
+        .events
         .iter()
-        .filter_map(|message| match message {
-            SessionMessageDto::User { content, .. } => Some(content.as_str()),
+        .filter_map(|event| match &event.event {
+            AgentEventPayload::UserMessage { content, .. } => Some(content.as_str()),
             _ => None,
         })
         .collect::<Vec<_>>();
     let branched_user_messages = branched_messages
+        .events
         .iter()
-        .filter_map(|message| match message {
-            SessionMessageDto::User { content, .. } => Some(content.as_str()),
+        .filter_map(|event| match &event.event {
+            AgentEventPayload::UserMessage { content, .. } => Some(content.as_str()),
             _ => None,
         })
         .collect::<Vec<_>>();

@@ -59,7 +59,7 @@ pub use service::{
     AgentExecutionAccepted, AgentExecutionServiceHandle, AgentProfileSummary, ComposerOption,
     ComposerOptionKind, ComposerOptionsRequest, OperationMetricsSnapshot, PromptAccepted,
     ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot, RuntimeService, ServiceError,
-    ServiceResult, SessionCatalogEvent, SessionEventRecord, SessionHistorySnapshot, SessionMessage,
-    SessionReplay, SessionReplaySource, SubRunExecutionMetricsSnapshot, SubRunStatusSnapshot,
+    ServiceResult, SessionCatalogEvent, SessionEventRecord, SessionHistorySnapshot, SessionReplay,
+    SessionReplaySource, SubRunExecutionMetricsSnapshot, SubRunStatusSnapshot,
     ToolExecutionServiceHandle, ToolSummary,
 };

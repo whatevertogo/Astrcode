@@ -1,11 +1,9 @@
-# Code Review — staged changes
+# Code Review — current spawnAgent boundary fix
 
 ## Summary
-Files reviewed: 43 | New issues: 0 (0 critical, 0 high, 0 medium, 0 low) | Perspectives: 4/4
+Files reviewed: 15 | New issues: 0 (0 critical, 0 high, 0 medium, 0 low) | Perspectives: 4/4
 
-本轮已修复上一版审查中发现的两项问题：
-- `agent_profile_summary` 现在只向 prompt 注入有长度上限的 profile 摘要，不再原样展开长描述
-- `spawnAgent` 相关设计/计划文档已同步到当前 schema 与代码路径
+本轮审查聚焦 `SpawnAgentParams` 下沉到 `core`、`runtime-execution` 去除对 `runtime-agent-tool` 的直接依赖，以及相关文档同步。
 
 ---
 
@@ -17,7 +15,7 @@ Files reviewed: 43 | New issues: 0 (0 critical, 0 high, 0 medium, 0 low) | Persp
 
 ## 📝 Code Quality
 
-*No code-quality issues found in the current staged state.*
+*No code-quality issues found in this diff.*
 
 ---
 
@@ -25,24 +23,27 @@ Files reviewed: 43 | New issues: 0 (0 critical, 0 high, 0 medium, 0 low) | Persp
 **Run results**:
 - `cargo fmt --all --check` ✅ passed
 - `cargo clippy --all-targets --all-features -- -D warnings` ✅ passed
-- `cargo test` ✅ passed
+- crate boundary check（PowerShell 复刻 `scripts/check-crate-boundaries.mjs` 规则）✅ passed
+- `cargo test` ⚠️ failed, but the observed failures are pre-existing / environment-related:
+  - `astrcode-runtime-agent-loop` 现有测试 `agent_loop::tests::plugin::unified_capability_router_executes_builtin_and_plugin_tools` 失败，报错为 `expected initialize result ... received kind None`
+  - 当前环境缺少 `link.exe`，导致部分测试二进制无法完成链接
 
 ---
 
 ## 🏗️ Architecture
 
-*No architecture or consistency issues found in the current staged state.*
+*No architecture or consistency issues found in this diff.*
 
 ---
 
 ## 🚨 Must Fix Before Merge
 
-None.
+None for this diff.
 
 ---
 
 ## 📎 Pre-Existing Issues (not blocking)
-- None noted in this review.
+- 当前环境缺少 MSVC `link.exe`，会阻断部分 Rust test binary 链接。
 
 ---
 

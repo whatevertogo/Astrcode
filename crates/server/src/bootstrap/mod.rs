@@ -36,7 +36,7 @@ use serde::Serialize;
 use tower::ServiceExt;
 use tower_http::{cors::CorsLayer, services::ServeDir};
 
-use crate::{AUTH_HEADER_NAME, ApiError, AppState, FrontendBuild, SESSION_CURSOR_HEADER_NAME};
+use crate::{AUTH_HEADER_NAME, ApiError, AppState, FrontendBuild};
 
 /// Bootstrap token 有效期（小时）。
 ///
@@ -275,9 +275,6 @@ fn browser_index_response(index_html: &str) -> Response {
 /// - `content-type` — JSON 请求体
 /// - `last-event-id` — SSE 断点续传
 /// - `cache-control` — 缓存控制
-///
-/// 暴露的响应头：
-/// - `x-session-cursor` — 会话快照游标，用于 SSE 断点续传
 pub(crate) fn build_cors_layer() -> CorsLayer {
     CorsLayer::new()
         .allow_origin([
@@ -291,7 +288,6 @@ pub(crate) fn build_cors_layer() -> CorsLayer {
             HeaderName::from_static("last-event-id"),
             HeaderName::from_static("cache-control"),
         ])
-        .expose_headers([HeaderName::from_static(SESSION_CURSOR_HEADER_NAME)])
 }
 
 /// 生成 32 字节随机 hex token。

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
+use astrcode_core::SpawnAgentParams;
 use astrcode_runtime_agent_loop::AgentLoop;
-use astrcode_runtime_agent_tool::SpawnAgentParams;
 use astrcode_runtime_execution::{
     AgentExecutionRequest, PreparedAgentExecution, ScopedExecutionSurface,
     prepare_scoped_agent_execution,

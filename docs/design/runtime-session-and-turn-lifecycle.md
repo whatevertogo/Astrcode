@@ -358,6 +358,7 @@ turn 收尾时，运行时会：
 1. `subrun` 是当前主线中真实稳定的执行对象
 2. `tree` 只是更高层的导航投影
 3. `subrun` read model 可以先基于 durable `SubRunStarted / SubRunFinished` 事件重建，再按需用 live `AgentControl` 丰富运行中状态
+4. `/history` 与 `/events` 已经是统一事件协议；旧 `/messages` 不应继续扩展成主线内容模型
 
 ---
 
@@ -374,6 +375,7 @@ turn 收尾时，运行时会：
 ### 10.2 后续开放问题
 
 1. 是否需要 durable 的 `list_subruns(session_id)` read model
-2. 是否需要 server-side `sub_run_id` 过滤来优化 SSE/历史查询
+2. 是否需要 server-side `subRunId + scope(self|subtree|directChildren)` 过滤来优化 SSE/历史查询
 3. `IndependentSession` 何时从 experimental 升级为正式路径
-4. 是否需要把 session compaction / replay cache 指标进一步下沉到独立 service 文档
+4. 是否需要为 `SubRunStarted / SubRunFinished` 补 `tool_call_id` 级别的稳定关联
+5. 是否需要把 session compaction / replay cache 指标进一步下沉到独立 service 文档

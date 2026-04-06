@@ -4,4 +4,4 @@
 
 mod types;
 
-pub use types::{DeleteProjectResult, SessionEventRecord, SessionMessage, SessionMeta};
+pub use types::{DeleteProjectResult, SessionEventRecord, SessionMeta};

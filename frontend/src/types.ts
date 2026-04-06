@@ -358,6 +358,7 @@ export interface AppState {
   projects: Project[];
   activeProjectId: string | null;
   activeSessionId: string | null;
+  activeSubRunPath: string[];
   phase: Phase;
 }
 
@@ -376,6 +377,10 @@ type AgentActionContext = {
 // ────────────────────────────────────────────────────────────
 export type Action =
   | { type: 'SET_PHASE'; phase: Phase }
+  | { type: 'PUSH_ACTIVE_SUBRUN'; subRunId: string }
+  | { type: 'POP_ACTIVE_SUBRUN' }
+  | { type: 'SET_ACTIVE_SUBRUN_PATH'; subRunPath: string[] }
+  | { type: 'CLEAR_ACTIVE_SUBRUN_PATH' }
   | { type: 'ADD_PROJECT'; project: Project }
   | { type: 'ADD_SESSION'; projectId: string; session: Session }
   | { type: 'SET_ACTIVE'; projectId: string; sessionId: string }
@@ -439,6 +444,7 @@ export type Action =
       projects: Project[];
       activeProjectId: string | null;
       activeSessionId: string | null;
+      activeSubRunPath?: string[];
     }
   | { type: 'REPLACE_SESSION_MESSAGES'; sessionId: string; messages: Message[] }
   | { type: 'ADD_SESSION_BACKEND'; projectId: string; sessionId: string };

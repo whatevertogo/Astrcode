@@ -1,6 +1,7 @@
 use astrcode_core::{
-    CapabilityDescriptor, CapabilityKind, PluginHealth, PluginState, Result, SideEffectLevel,
-    StabilityLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
+    AgentEventContext, CapabilityDescriptor, CapabilityKind, EventLogWriter, PluginHealth,
+    PluginState, Result, SideEffectLevel, StabilityLevel, StorageEvent, Tool,
+    ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult, UserMessageOrigin,
     plugin::PluginEntry,
 };
 use astrcode_protocol::http::{
@@ -9,11 +10,13 @@ use astrcode_protocol::http::{
 };
 use astrcode_runtime::{Config, ModelConfig, Profile, RuntimeConfig, config, save_config};
 use astrcode_runtime_registry::{CapabilityRouter, ToolRegistry};
+use astrcode_storage::session::EventLog;
 use async_trait::async_trait;
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
+use chrono::Utc;
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -24,6 +27,90 @@ use crate::{
 };
 
 struct DemoReadTool;
+
+fn seed_shared_subrun_session(session_id: &str, working_dir: &std::path::Path) {
+    let mut log =
+        EventLog::create(session_id, working_dir).expect("session file should be created");
+    let root = AgentEventContext::root_execution("root-agent", "primary");
+    let sub_a = AgentEventContext::sub_run(
+        "agent-a",
+        "turn-root",
+        "review",
+        "sub-a",
+        astrcode_core::SubRunStorageMode::SharedSession,
+        None,
+    );
+    let sub_b = AgentEventContext::sub_run(
+        "agent-b",
+        "turn-a",
+        "review",
+        "sub-b",
+        astrcode_core::SubRunStorageMode::SharedSession,
+        None,
+    );
+    let sub_c = AgentEventContext::sub_run(
+        "agent-c",
+        "turn-b",
+        "review",
+        "sub-c",
+        astrcode_core::SubRunStorageMode::SharedSession,
+        None,
+    );
+
+    for event in [
+        StorageEvent::SessionStart {
+            session_id: session_id.to_string(),
+            timestamp: Utc::now(),
+            working_dir: working_dir.display().to_string(),
+            parent_session_id: None,
+            parent_storage_seq: None,
+        },
+        StorageEvent::UserMessage {
+            turn_id: Some("turn-root".to_string()),
+            agent: root,
+            content: "root".to_string(),
+            origin: UserMessageOrigin::User,
+            timestamp: Utc::now(),
+        },
+        StorageEvent::SubRunStarted {
+            turn_id: Some("turn-root".to_string()),
+            agent: sub_a.clone(),
+            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+            timestamp: Some(Utc::now()),
+        },
+        StorageEvent::UserMessage {
+            turn_id: Some("turn-a".to_string()),
+            agent: sub_a.clone(),
+            content: "sub-a".to_string(),
+            origin: UserMessageOrigin::User,
+            timestamp: Utc::now(),
+        },
+        StorageEvent::SubRunStarted {
+            turn_id: Some("turn-a".to_string()),
+            agent: sub_b.clone(),
+            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+            timestamp: Some(Utc::now()),
+        },
+        StorageEvent::UserMessage {
+            turn_id: Some("turn-b".to_string()),
+            agent: sub_b.clone(),
+            content: "sub-b".to_string(),
+            origin: UserMessageOrigin::User,
+            timestamp: Utc::now(),
+        },
+        StorageEvent::SubRunStarted {
+            turn_id: Some("turn-b".to_string()),
+            agent: sub_c,
+            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+            timestamp: Some(Utc::now()),
+        },
+    ] {
+        log.append(&event).expect("event should append");
+    }
+}
 
 #[async_trait]
 impl Tool for DemoReadTool {
@@ -318,6 +405,63 @@ async fn session_history_endpoint_returns_agent_event_snapshot_and_phase() {
         payload.events[0].event,
         astrcode_protocol::http::AgentEventPayload::SessionStarted { .. }
     ));
+}
+
+#[tokio::test]
+async fn session_history_endpoint_filters_subrun_scope_and_cursor() {
+    let (state, _guard) = test_state(None);
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    seed_shared_subrun_session("history-filter-session", temp_dir.path());
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(
+                    "/api/sessions/history-filter-session/history?subRunId=sub-a&\
+                     scope=directChildren",
+                )
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body should be readable");
+    let payload: SessionHistoryResponseDto =
+        serde_json::from_slice(&bytes).expect("history response should deserialize");
+
+    let event_names = payload
+        .events
+        .iter()
+        .filter_map(|event| match &event.event {
+            astrcode_protocol::http::AgentEventPayload::SubRunStarted { agent, .. } => {
+                Some(format!(
+                    "subrun:{}",
+                    agent.sub_run_id.as_deref().unwrap_or("unknown")
+                ))
+            },
+            astrcode_protocol::http::AgentEventPayload::UserMessage { content, .. } => {
+                Some(format!("user:{content}"))
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        event_names,
+        vec![
+            "subrun:sub-a".to_string(),
+            "user:sub-a".to_string(),
+            "subrun:sub-b".to_string(),
+            "user:sub-b".to_string(),
+        ]
+    );
+    assert_eq!(payload.cursor.as_deref(), Some("6.0"));
 }
 
 #[tokio::test]

@@ -12,7 +12,7 @@
 //!
 //! ## 映射分类
 //!
-//! - **会话相关**：`SessionMeta` → `SessionListItem`、`SessionMessage` → `SessionMessageDto`
+//! - **会话相关**：`SessionMeta` → `SessionListItem`
 //! - **运行时相关**：`RuntimeGovernanceSnapshot` → `RuntimeStatusDto`
 //! - **事件相关**：`AgentEvent` → `AgentEventPayload`、`SessionCatalogEvent` →
 //!   `SessionCatalogEventPayload`
@@ -33,7 +33,7 @@ use astrcode_protocol::http::{
     OperationMetricsDto, PROTOCOL_VERSION, PhaseDto, PluginHealthDto, PluginRuntimeStateDto,
     ProfileView, ReplayMetricsDto, ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto,
     RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto,
-    SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem, SessionMessageDto,
+    SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem,
     SubRunExecutionMetricsDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
     SubRunOutcomeDto, SubRunResultDto, SubRunStatusDto, SubRunStorageModeDto,
     SubagentContextOverridesDto, ToolCallResultDto, ToolDescriptorDto, ToolOutputStreamDto,
@@ -41,9 +41,9 @@ use astrcode_protocol::http::{
 use astrcode_runtime::{
     AgentProfileSummary, ComposerOption, ComposerOptionKind, Config, OperationMetricsSnapshot,
     ReplayMetricsSnapshot, RuntimeGovernanceSnapshot, RuntimeObservabilitySnapshot,
-    SessionCatalogEvent, SessionMessage, SubRunExecutionMetricsSnapshot, SubRunStatusSnapshot,
-    ToolSummary, is_env_var_name, list_model_options as resolve_model_options,
-    resolve_active_selection, resolve_current_model as resolve_runtime_current_model,
+    SessionCatalogEvent, SubRunExecutionMetricsSnapshot, SubRunStatusSnapshot, ToolSummary,
+    is_env_var_name, list_model_options as resolve_model_options, resolve_active_selection,
+    resolve_current_model as resolve_runtime_current_model,
 };
 use axum::{http::StatusCode, response::sse::Event};
 
@@ -64,69 +64,6 @@ pub(crate) fn to_session_list_item(meta: SessionMeta) -> SessionListItem {
         parent_session_id: meta.parent_session_id,
         parent_storage_seq: meta.parent_storage_seq,
         phase: to_phase_dto(meta.phase),
-    }
-}
-
-/// 将会话消息映射为 DTO。
-///
-/// 保持消息类型（User/Assistant/ToolCall）不变，仅做字段投影。
-/// ToolCall 类型消息包含完整的工具调用元数据（参数、输出、错误、耗时）。
-pub(crate) fn to_session_message_dto(message: SessionMessage) -> SessionMessageDto {
-    match message {
-        SessionMessage::User {
-            turn_id,
-            content,
-            timestamp,
-        } => SessionMessageDto::User {
-            turn_id,
-            content,
-            timestamp,
-        },
-        SessionMessage::Assistant {
-            turn_id,
-            content,
-            timestamp,
-            reasoning_content,
-        } => SessionMessageDto::Assistant {
-            turn_id,
-            content,
-            timestamp,
-            reasoning_content,
-        },
-        SessionMessage::ToolCall {
-            turn_id,
-            tool_call_id,
-            tool_name,
-            args,
-            output,
-            error,
-            metadata,
-            ok,
-            duration_ms,
-        } => SessionMessageDto::ToolCall {
-            turn_id,
-            tool_call_id,
-            tool_name,
-            args,
-            output,
-            error,
-            metadata,
-            ok,
-            duration_ms,
-        },
-        SessionMessage::Compact {
-            turn_id,
-            trigger,
-            summary,
-            preserved_recent_turns,
-            timestamp,
-        } => SessionMessageDto::Compact {
-            turn_id,
-            trigger: to_compact_trigger_dto(trigger),
-            summary,
-            preserved_recent_turns,
-            timestamp,
-        },
     }
 }
 

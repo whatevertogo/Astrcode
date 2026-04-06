@@ -166,11 +166,51 @@ export function reducer(state: AppState, action: Action): AppState {
       }
       return { ...state, phase: action.phase };
 
+    case 'PUSH_ACTIVE_SUBRUN':
+      if (state.activeSubRunPath[state.activeSubRunPath.length - 1] === action.subRunId) {
+        return state;
+      }
+      return {
+        ...state,
+        activeSubRunPath: [...state.activeSubRunPath, action.subRunId],
+      };
+
+    case 'POP_ACTIVE_SUBRUN':
+      if (state.activeSubRunPath.length === 0) {
+        return state;
+      }
+      return {
+        ...state,
+        activeSubRunPath: state.activeSubRunPath.slice(0, -1),
+      };
+
+    case 'SET_ACTIVE_SUBRUN_PATH':
+      if (
+        state.activeSubRunPath.length === action.subRunPath.length &&
+        state.activeSubRunPath.every((subRunId, index) => subRunId === action.subRunPath[index])
+      ) {
+        return state;
+      }
+      return {
+        ...state,
+        activeSubRunPath: [...action.subRunPath],
+      };
+
+    case 'CLEAR_ACTIVE_SUBRUN_PATH':
+      if (state.activeSubRunPath.length === 0) {
+        return state;
+      }
+      return {
+        ...state,
+        activeSubRunPath: [],
+      };
+
     case 'SET_ACTIVE':
       return {
         ...state,
         activeProjectId: action.projectId,
         activeSessionId: action.sessionId,
+        activeSubRunPath: [],
       };
 
     case 'ADD_PROJECT':
@@ -179,6 +219,7 @@ export function reducer(state: AppState, action: Action): AppState {
         projects: [action.project, ...state.projects],
         activeProjectId: action.project.id,
         activeSessionId: action.project.sessions[0]?.id ?? null,
+        activeSubRunPath: [],
       };
 
     case 'ADD_SESSION':
@@ -189,6 +230,7 @@ export function reducer(state: AppState, action: Action): AppState {
         })),
         activeProjectId: action.projectId,
         activeSessionId: action.session.id,
+        activeSubRunPath: [],
       };
 
     case 'TOGGLE_EXPAND':
@@ -205,7 +247,7 @@ export function reducer(state: AppState, action: Action): AppState {
         activeProjectId = projects[0]?.id ?? null;
         activeSessionId = projects[0]?.sessions[0]?.id ?? null;
       }
-      return { ...state, projects, activeProjectId, activeSessionId };
+      return { ...state, projects, activeProjectId, activeSessionId, activeSubRunPath: [] };
     }
 
     case 'DELETE_SESSION': {
@@ -220,7 +262,7 @@ export function reducer(state: AppState, action: Action): AppState {
         activeSessionId = project?.sessions[0]?.id ?? null;
         activeProjectId = project?.id ?? nextState.projects[0]?.id ?? null;
       }
-      return { ...nextState, activeProjectId, activeSessionId };
+      return { ...nextState, activeProjectId, activeSessionId, activeSubRunPath: [] };
     }
 
     case 'ADD_MESSAGE':
@@ -573,6 +615,7 @@ export function reducer(state: AppState, action: Action): AppState {
         projects: action.projects,
         activeProjectId: action.activeProjectId,
         activeSessionId: action.activeSessionId,
+        activeSubRunPath: action.activeSubRunPath ?? [],
       };
 
     case 'REPLACE_SESSION_MESSAGES':
@@ -591,6 +634,7 @@ export function makeInitialState(): AppState {
     projects: [],
     activeProjectId: null,
     activeSessionId: null,
+    activeSubRunPath: [],
     phase: 'idle',
   };
 }

@@ -18,3 +18,13 @@
   background: var(--panel-bg);
   min-width: 0;
 }
+
+.subRunFocusHint {
+  flex-shrink: 0;
+  padding: 14px 24px 18px;
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  background: linear-gradient(180deg, rgba(255, 252, 247, 0.94) 0%, rgba(252, 250, 247, 0.88) 100%);
+}

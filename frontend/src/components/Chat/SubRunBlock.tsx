@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Message, SubRunFinishMessage, SubRunStartMessage } from '../../types';
+import type { SubRunFinishMessage, SubRunStartMessage } from '../../types';
+import type { ThreadItem } from '../../lib/subRunView';
 import ToolJsonView from './ToolJsonView';
 import styles from './SubRunBlock.module.css';
 
@@ -9,9 +10,17 @@ interface SubRunBlockProps {
   title: string;
   startMessage?: SubRunStartMessage;
   finishMessage?: SubRunFinishMessage;
-  bodyMessages: Message[];
-  renderMessageRow: (message: Message, previousMessage: Message | null) => React.ReactNode;
+  threadItems: ThreadItem[];
+  streamFingerprint: string;
+  renderThreadItems: (
+    items: ThreadItem[],
+    options?: {
+      nested?: boolean;
+    }
+  ) => React.ReactNode[];
   onCancelSubRun: (sessionId: string, subRunId: string) => void | Promise<void>;
+  onFocusSubRun?: (subRunId: string) => void;
+  onOpenChildSession?: (childSessionId: string) => void | Promise<void>;
 }
 
 type SubRunStatus = 'running' | 'completed' | 'aborted' | 'token_exceeded' | 'failed';
@@ -45,26 +54,6 @@ function getStorageModeLabel(startMessage?: SubRunStartMessage): string {
     : 'shared session';
 }
 
-function buildMessageFingerprint(message: Message): string {
-  if (message.kind === 'assistant') {
-    return `${message.id}:assistant:${message.text.length}:${message.reasoningText?.length ?? 0}:${
-      message.streaming ? 1 : 0
-    }`;
-  }
-  if (message.kind === 'toolCall') {
-    return `${message.id}:tool:${message.status}:${message.output?.length ?? 0}:${
-      message.error?.length ?? 0
-    }`;
-  }
-  if (message.kind === 'compact') {
-    return `${message.id}:compact:${message.summary.length}`;
-  }
-  if (message.kind === 'user') {
-    return `${message.id}:user:${message.text.length}`;
-  }
-  return `${message.id}:${message.kind}`;
-}
-
 function getStatusClassName(status: SubRunStatus): string {
   switch (status) {
     case 'completed':
@@ -87,9 +76,12 @@ function SubRunBlock({
   title,
   startMessage,
   finishMessage,
-  bodyMessages,
-  renderMessageRow,
+  threadItems,
+  streamFingerprint,
+  renderThreadItems,
   onCancelSubRun,
+  onFocusSubRun,
+  onOpenChildSession,
 }: SubRunBlockProps) {
   const [userInteracted, setUserInteracted] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -109,6 +101,8 @@ function SubRunBlock({
   const resultFailure = finishMessage?.result.failure;
   const resultSummary = resultHandoff?.summary.trim() || '子会话未返回摘要。';
   const isBackgroundRunning = status === 'running';
+  const childSessionId = startMessage?.childSessionId ?? finishMessage?.childSessionId;
+  const navigationLabel = childSessionId ? '打开独立会话' : '查看子执行';
   const visibleFindings = useMemo(
     () => (resultHandoff?.findings ?? []).filter((finding) => finding.trim().length > 0),
     [resultHandoff?.findings]
@@ -132,10 +126,6 @@ function SubRunBlock({
 
   const sessionConfigSummary = `Object (${Object.keys(sessionConfig).length})`;
 
-  const streamFingerprint = useMemo(
-    () => bodyMessages.map((message) => buildMessageFingerprint(message)).join('|'),
-    [bodyMessages]
-  );
   const shouldAutoOpen = !userInteracted;
 
   const updateStreamStickiness = useCallback(() => {
@@ -218,6 +208,14 @@ function SubRunBlock({
     }
   }, [cancelling, onCancelSubRun, sessionId, subRunId]);
 
+  const handleOpenView = useCallback(async () => {
+    if (childSessionId) {
+      await onOpenChildSession?.(childSessionId);
+      return;
+    }
+    onFocusSubRun?.(subRunId);
+  }, [childSessionId, onFocusSubRun, onOpenChildSession, subRunId]);
+
   return (
     <details
       ref={detailsRef}
@@ -258,6 +256,15 @@ function SubRunBlock({
                 <span className={styles.runningHint}>
                   子 Agent 会继续把回复和思考流式回传到这里。
                 </span>
+                {(onFocusSubRun || (childSessionId && onOpenChildSession)) && (
+                  <button
+                    type="button"
+                    className={styles.openButton}
+                    onClick={() => void handleOpenView()}
+                  >
+                    {navigationLabel}
+                  </button>
+                )}
                 {sessionId && (
                   <button
                     type="button"
@@ -274,6 +281,26 @@ function SubRunBlock({
           </div>
         )}
 
+        {!isBackgroundRunning && (onFocusSubRun || (childSessionId && onOpenChildSession)) && (
+          <div className={styles.section}>
+            <div className={styles.sectionLabel}>查看方式</div>
+            <div className={styles.navigationCard}>
+              <div className={styles.runningHint}>
+                {childSessionId
+                  ? '该子会话拥有独立 session，可直接跳转查看完整历史。'
+                  : '该子会话与父会话共享 session，可进入按子执行过滤的独立视图。'}
+              </div>
+              <button
+                type="button"
+                className={styles.openButton}
+                onClick={() => void handleOpenView()}
+              >
+                {navigationLabel}
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className={styles.section}>
           <div className={styles.sectionLabel}>调用参数</div>
           <ToolJsonView value={sessionConfig} summary={sessionConfigSummary} />
@@ -282,7 +309,7 @@ function SubRunBlock({
         <details className={styles.streamSection} open>
           <summary className={styles.streamSummary}>
             <span>子会话流</span>
-            <span className={styles.streamCount}>{bodyMessages.length} 条消息</span>
+            <span className={styles.streamCount}>{threadItems.length} 条记录</span>
             <span className={styles.summaryChevron}>
               <svg
                 width="14"
@@ -299,12 +326,10 @@ function SubRunBlock({
             </span>
           </summary>
           <div ref={streamRef} className={styles.streamBody} onScroll={updateStreamStickiness}>
-            {bodyMessages.length === 0 ? (
+            {threadItems.length === 0 ? (
               <div className={styles.streamEmpty}>等待子会话输出...</div>
             ) : (
-              bodyMessages.map((groupMessage, groupIndex) =>
-                renderMessageRow(groupMessage, groupIndex > 0 ? bodyMessages[groupIndex - 1] : null)
-              )
+              renderThreadItems(threadItems, { nested: true })
             )}
           </div>
         </details>

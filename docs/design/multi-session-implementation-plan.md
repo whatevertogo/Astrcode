@@ -5,9 +5,9 @@
 在不改写当前 session 真相的前提下，逐步实现：
 
 - 父会话内展示 subrun 生命周期
-- `SharedSession` 的同 session 子执行视图
+- `SharedSession` 的同 session 子执行树 / 过滤视图
 - `IndependentSession` 的 child session 跳转
-- 后续可扩展的 subrun read model 与会话导航能力
+- 后续可扩展的 subrun read model 与过滤能力
 
 > 设计前提：session 与 turn 生命周期以  
 > [runtime-session-and-turn-lifecycle](./runtime-session-and-turn-lifecycle.md) 为准。  
@@ -20,7 +20,6 @@
 ### 已有能力
 
 - `GET /api/sessions`
-- `GET /api/sessions/{id}/messages`
 - `GET /api/sessions/{id}/history`
 - `GET /api/sessions/{id}/events`
 - `GET /api/v1/sessions/{id}/subruns/{sub_run_id}`
@@ -31,9 +30,10 @@
 ### 当前限制
 
 - 还没有 session 级 `list_subruns` read model
-- 前端没有统一的 `ActiveView(session | subRun)` 模型
-- `SharedSession` 子执行还没有独立过滤视图
+- 前端还在从事件流本地构造 subrun 树
+- 服务端还没有 `subRunId + scope` 过滤能力
 - `IndependentSession` 仍属 experimental
+- `/messages` 仍存在兼容链路，但不应再作为主线继续依赖
 
 ---
 
@@ -42,10 +42,10 @@
 完成后至少应满足：
 
 1. 父会话里能稳定看到 subrun 卡片与状态变化
-2. 用户能打开 `SharedSession` 子执行视图，而无需新建伪 session
+2. 用户能打开 `SharedSession` 子执行树视图，而无需新建伪 session
 3. 当 `childSessionId` 存在时，用户能跳到独立 child session
 4. 同一 `sessionId` 只保留一条 SSE 连接
-5. 后续若新增 `list_subruns` API，也不需要推翻已有前端状态模型
+5. 后续若新增 `list_subruns` / server-side filter，也不需要推翻已有前端状态模型
 
 ---
 
@@ -55,18 +55,20 @@
 
 ### 目标
 
-先把 session 真相、内容投影和前端导航边界固定下来，避免后续实现建立在过时文档模型上。
+先把 session 真相、统一事件协议和前端导航边界固定下来，避免后续实现建立在过时文档模型上。
 
 ### 交付
 
 - `runtime-session-and-turn-lifecycle.md`
 - 收口后的内容架构文档
 - 收口后的多会话前端设计与实施计划
+- 明确 `/messages` 进入废弃路径，主线统一到 `/history + /events`
 
 ### 验收
 
 - 不再在多份文档里重复定义 `Session / SubSession / SessionRepository`
 - 明确 `subrun != child session`
+- 明确 `StorageEvent -> AgentEventEnvelope -> frontend render model` 主线
 - 明确 `SessionMeta.parent_session_id` 不是通用 subrun tree 字段
 
 ---
@@ -81,26 +83,28 @@
 
 - 引入 `ActiveView = session | subRun`
 - 在前端从 `history/events` 中提取 `SubRunRef`
-- 新增 `SubRunCard` 组件
+- 在根会话中渲染真正的嵌套子执行树
 - 新增 `SubRunConversationView`
-- 实现对 `SharedSession` 的客户端过滤视图
+- 实现 `SharedSession` 的同 session 子树过滤视图
 - 如果 `childSessionId` 存在，支持跳到独立 session
 
 ### 关键实现点
 
 1. 打开会话时：
-   - 先加载 `/messages`
-   - 再加载 `/history` 以构建 subrun 索引
+   - 加载 `/history`
+   - 用统一事件协议做首屏 hydration
 2. 运行中：
    - 订阅 `/events`
    - 将新的 `SubRunStarted / SubRunFinished` 归并到本地索引
-3. 过滤规则：
-   - `agent.subRunId` 命中当前 subrun
-   - 同时保留该 subrun 自己的开始/结束事件
+3. 树构建规则：
+   - 用 `sub_run_id` 建立节点
+   - 用 `parent_turn_id` + turn owner 推导父子 subrun 关系
+   - 根视图展示完整树；subrun 视图展示当前子树
 
 ### 验收
 
 - 在已有 session 页面中可点击 subrun 卡片进入子执行视图
+- 根视图中 subrun 以树形方式展示，而不是扁平混排
 - SharedSession 不新增额外 SSE 连接
 - IndependentSession 在 `childSessionId` 存在时可跳转
 
@@ -127,15 +131,11 @@
    - 因为 finalized handle 会被裁剪
    - durable history 才是完整来源
 
-### 可复用实现锚点
-
-- 现有 `GET /api/v1/sessions/{id}/subruns/{sub_run_id}`
-- `runtime-execution` 中现有的 subrun 状态重建逻辑
-
 ### 验收
 
 - 前端可仅用 `list_subruns` 构建当前 session 的 subrun 摘要列表
 - running/completed 状态与单个 `subruns/{id}` 查询保持一致
+- 返回结果足以支持子执行树与 breadcrumb 构建
 
 ---
 
@@ -158,25 +158,46 @@
 
 ---
 
-## 阶段 4：服务端过滤与会话树优化（可选）
+## 阶段 4：服务端过滤与协议补强
 
 ### 目标
 
-在 MVP 和 durable subrun read model 稳定后，再做性能和导航优化。
+在 MVP 和 durable subrun read model 稳定后，再做性能与协议补强。
 
-### 可选项
+### 推荐新增能力
 
-- `GET /api/sessions/{id}/events?subRunId=...`
-- `GET /api/sessions/{id}/history?subRunId=...`
-- 更高层的 `/api/v1/sessions/tree`
+- `GET /api/sessions/{id}/history?subRunId=...&scope=self|subtree|directChildren`
+- `GET /api/sessions/{id}/events?subRunId=...&scope=self|subtree|directChildren`
 
-### 前置条件
+### 设计要求
 
-只有在下面任一条件成立时才值得做：
+- 不建议只做 `subRunId` equality filter
+- 过滤语义必须能支撑嵌套子执行树
+- `sub_run_id` 应是主公开过滤键；`agent_id` 仅作调试/内部补充
 
-- 当前 history/events 载荷过大
-- 客户端过滤成本明显影响体验
-- 需要跨多个 session 做统一导航入口
+### 验收
+
+- 当前 subrun 视图可通过服务端直接拉取其子树事件
+- 不会因为过滤过窄而丢失下一层 subrun 生命周期
+
+---
+
+## 阶段 5：协议关联规则补强
+
+### 目标
+
+让 `spawnAgent` tool call 与 `SubRunStarted / SubRunFinished` 的关联不再依赖前端猜测。
+
+### 推荐方案
+
+优先补强生命周期事件与 tool call 的稳定关联：
+
+1. **首选**：在 subrun 生命周期事件中补 `tool_call_id`
+2. **兼容**：若暂时不补字段，至少把“同 turn 内按顺序 1:1 配对”写成显式协议约束
+
+### 验收
+
+- 同一 turn 内多个 `spawnAgent` 时，前端仍能稳定把 tool card 升级为正确的 subrun card
 
 ---
 
@@ -185,16 +206,18 @@
 按投入产出比排序，建议顺序是：
 
 1. 文档定锚
-2. 前端侧 MVP（本地提取 subrun）
+2. 前端侧 MVP（本地提取 subrun 树）
 3. durable `list_subruns` API
 4. IndependentSession 导航补强
-5. 服务端过滤 / tree 优化
+5. server-side `subRunId + scope` filter
+6. subrun ↔ toolCall 关联规则补强
 
 这条顺序的核心原因是：
 
 - 当前已经有足够的事件面可做 MVP
 - `subrun` read model 比 `session tree` 更贴近当前真实执行对象
 - 过早做 tree 容易把错误模型固化进 API
+- 简单 equality filter 不值得单独做一版，最好直接一步到位定义 `scope`
 
 ---
 
@@ -205,6 +228,7 @@
 - 只靠 `AgentControl.list()` 做 subrun 列表
 - 为 SharedSession 的每个 subrun 开单独 SSE
 - 把 `IndependentSession` 当成当前默认主线
+- 继续把 `/messages` 当成必须维护的主线快照协议
 
 ---
 
@@ -216,14 +240,16 @@
 - [x] 收口内容架构文档
 - [x] 收口多会话前端设计文档
 - [x] 收口本实施计划
+- [x] 明确 `/messages` 进入废弃路径
 
 ## M2：前端 MVP
 
-- [ ] 建立 `ActiveView(session | subRun)`
-- [ ] 从 `history/events` 构建 `SubRunRef`
-- [ ] 渲染 `SubRunCard`
-- [ ] 支持 SharedSession 过滤视图
-- [ ] 支持 child session 跳转
+- [x] 建立 `ActiveView(session | subRun)` 基础导航模型
+- [x] 从 `history/events` 构建 `SubRunRef`
+- [x] 渲染 `SubRunCard`
+- [x] 支持 SharedSession 过滤视图
+- [x] 支持 child session 跳转
+- [x] 根视图改为真正的嵌套子执行树
 
 ## M3：durable subrun read model
 
@@ -235,8 +261,8 @@
 
 - [ ] breadcrumb 完整化
 - [ ] 独立 child session 返回路径
-- [ ] 评估是否需要 server-side filter
-- [ ] 评估是否值得引入 session tree 聚合接口
+- [ ] 追加 `subRunId + scope` server-side filter
+- [ ] 明确 subrun ↔ toolCall 关联规则
 
 ---
 
@@ -246,4 +272,5 @@
 
 1. 先承认 **session 是 durable 真相单位**
 2. 再把 **subrun 作为导航 read model** 做出来
-3. 最后才考虑更高层的 tree / filter / cross-session 聚合
+3. 主线统一到 **`/history + /events`**
+4. 然后才考虑更高层的 filter / tree / cross-session 聚合

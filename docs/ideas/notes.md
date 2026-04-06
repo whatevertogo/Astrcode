@@ -5,4 +5,4 @@
  description: Coordinates work across specialized agents
  tools: Agent(worker, researcher), Read, Bash
  ---
-4.
+4.我想到了个设计agent company，一个部门审查其他部门的内容，其他部门自己干自己的事情，每个部门都是一个agent team.每个部门的leader会将自己队员做了的事情发在leaders session里面，由leaders自行编排逻辑，只有所有leaders都同意才能完成plan编排部门teammates工作，这样工作流基本就被废弃了，全依靠agent的自己的能力

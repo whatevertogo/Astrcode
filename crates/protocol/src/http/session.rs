@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{AgentEventEnvelope, CompactTriggerDto, PhaseDto};
+use super::{AgentEventEnvelope, PhaseDto};
 
 /// `POST /api/sessions` 请求体——创建新会话。
 ///
@@ -68,62 +68,6 @@ pub struct PromptAcceptedResponse {
     /// 如果是分支会话，指向源会话 ID
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branched_from_session_id: Option<String>,
-}
-
-/// 会话历史中的单条消息。
-///
-/// 采用 `#[serde(tag = "kind")]` 序列化策略，通过 `kind` 字段区分消息类型。
-/// 用于 `GET /api/sessions/:id/messages` 响应中返回会话历史。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum SessionMessageDto {
-    /// 用户消息。
-    User {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        turn_id: Option<String>,
-        content: String,
-        timestamp: String,
-    },
-    /// 助手回复消息。
-    ///
-    /// `reasoning_content` 在模型支持 thinking 时存在。
-    Assistant {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        turn_id: Option<String>,
-        content: String,
-        timestamp: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        reasoning_content: Option<String>,
-    },
-    /// 工具调用消息。
-    ///
-    /// 包含工具名称、参数、输出、执行状态等完整信息。
-    ToolCall {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        turn_id: Option<String>,
-        tool_call_id: String,
-        tool_name: String,
-        args: serde_json::Value,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        output: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        error: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        metadata: Option<serde_json::Value>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        ok: Option<bool>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        duration_ms: Option<u64>,
-    },
-    /// 上下文压缩消息。
-    Compact {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        turn_id: Option<String>,
-        trigger: CompactTriggerDto,
-        summary: String,
-        preserved_recent_turns: u32,
-        timestamp: String,
-    },
 }
 
 /// `GET /api/sessions/:id/history` 响应体。

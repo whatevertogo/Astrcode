@@ -3,15 +3,23 @@ import styles from './TopBar.module.css';
 interface TopBarProps {
   projectName: string | null;
   sessionTitle: string | null;
+  activeSubRunPath: string[];
+  activeSubRunBreadcrumbs: Array<{ subRunId: string; title: string }>;
   isSidebarOpen: boolean;
   toggleSidebar: () => void;
+  onCloseSubRun: () => void;
+  onNavigateSubRunPath: (subRunPath: string[]) => void;
 }
 
 export default function TopBar({
   projectName,
   sessionTitle,
+  activeSubRunPath,
+  activeSubRunBreadcrumbs,
   isSidebarOpen,
   toggleSidebar,
+  onCloseSubRun,
+  onNavigateSubRunPath,
 }: TopBarProps) {
   return (
     <div className={styles.topBar}>
@@ -42,9 +50,34 @@ export default function TopBar({
             {sessionTitle && (
               <>
                 <span className={styles.sep}>›</span>
-                <span className={styles.sessionTitle}>{sessionTitle}</span>
+                {activeSubRunPath.length > 0 ? (
+                  <button type="button" className={styles.breadcrumbButton} onClick={onCloseSubRun}>
+                    {sessionTitle}
+                  </button>
+                ) : (
+                  <span className={styles.sessionTitle}>{sessionTitle}</span>
+                )}
               </>
             )}
+            {activeSubRunBreadcrumbs.map((breadcrumb, index) => {
+              const isLast = index === activeSubRunBreadcrumbs.length - 1;
+              return (
+                <span key={breadcrumb.subRunId} className={styles.breadcrumbSegment}>
+                  <span className={styles.sep}>›</span>
+                  {isLast ? (
+                    <span className={styles.subRunTitle}>{breadcrumb.title}</span>
+                  ) : (
+                    <button
+                      type="button"
+                      className={styles.subRunBackBtn}
+                      onClick={() => onNavigateSubRunPath(activeSubRunPath.slice(0, index + 1))}
+                    >
+                      {breadcrumb.title}
+                    </button>
+                  )}
+                </span>
+              );
+            })}
           </>
         ) : (
           <span className={styles.empty}>未选择会话</span>

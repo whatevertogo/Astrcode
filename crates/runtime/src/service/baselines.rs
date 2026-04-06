@@ -32,6 +32,25 @@ use crate::{
     test_support::{TestEnvGuard, empty_capabilities},
 };
 
+async fn latest_cursor(service: &RuntimeService, session_id: &str) -> String {
+    service
+        .load_session_history(session_id)
+        .await
+        .expect("history should load")
+        .cursor
+        .expect("history cursor should exist")
+}
+
+fn user_messages_from_history(history: &[astrcode_core::SessionEventRecord]) -> Vec<&str> {
+    history
+        .iter()
+        .filter_map(|record| match &record.event {
+            astrcode_core::AgentEvent::UserMessage { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// 静态 LLM Provider，返回预设输出并支持模拟延迟。
 ///
 /// 用于测试中替代真实 LLM 调用，确保确定性和可重复性。
@@ -254,13 +273,10 @@ async fn reconnect_with_recent_cursor_uses_cached_tail_and_updates_metrics() {
         .await
         .expect("session should load");
 
-    let (_, cursor) = service
-        .load_session_snapshot("baseline-replay-cache")
-        .await
-        .expect("snapshot should load");
+    let cursor = latest_cursor(&service, "baseline-replay-cache").await;
     let before = service.observability_snapshot();
     let replay = service
-        .replay("baseline-replay-cache", cursor.as_deref())
+        .replay("baseline-replay-cache", Some(&cursor))
         .await
         .expect("replay should succeed");
 
@@ -353,30 +369,17 @@ async fn concurrent_submit_branches_second_prompt_and_records_two_turns() {
     );
 
     wait_until_idle(&service).await;
-    let (original_messages, _) = service
-        .load_session_snapshot(&session.session_id)
+    let original_history = service
+        .load_session_history(&session.session_id)
         .await
-        .expect("original session snapshot should load");
-    let (branched_messages, _) = service
-        .load_session_snapshot(&second.session_id)
+        .expect("original session history should load");
+    let branched_history = service
+        .load_session_history(&second.session_id)
         .await
-        .expect("branched session snapshot should load");
+        .expect("branched session history should load");
 
-    // 提取用户消息内容进行验证
-    let original_user_messages = original_messages
-        .iter()
-        .filter_map(|message| match message {
-            crate::service::SessionMessage::User { content, .. } => Some(content.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let branched_user_messages = branched_messages
-        .iter()
-        .filter_map(|message| match message {
-            crate::service::SessionMessage::User { content, .. } => Some(content.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    let original_user_messages = user_messages_from_history(&original_history.history);
+    let branched_user_messages = user_messages_from_history(&branched_history.history);
     assert_eq!(original_user_messages, vec!["first"]);
     assert_eq!(branched_user_messages, vec!["second"]);
 

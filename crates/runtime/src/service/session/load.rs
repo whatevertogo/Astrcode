@@ -4,20 +4,9 @@ use astrcode_core::StoredEvent;
 use astrcode_runtime_session::SessionState;
 
 use super::super::blocking_bridge::spawn_blocking_service;
-use crate::service::{
-    RuntimeService, ServiceError, ServiceResult, SessionHistorySnapshot, SessionMessage,
-};
+use crate::service::{RuntimeService, ServiceError, ServiceResult, SessionHistorySnapshot};
 
 impl RuntimeService {
-    pub async fn load_session_snapshot(
-        &self,
-        session_id: &str,
-    ) -> ServiceResult<(Vec<SessionMessage>, Option<String>)> {
-        self.session_service()
-            .load_session_snapshot(session_id)
-            .await
-    }
-
     pub async fn load_session_history(
         &self,
         session_id: &str,
