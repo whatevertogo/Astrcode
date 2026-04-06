@@ -1,15 +1,15 @@
 use std::{collections::HashSet, sync::Arc};
 
 use astrcode_core::{
-    AgentMode, AgentProfile, AgentState, ArtifactRef, AstrError, CapabilityRouter, ExecutionOwner,
-    HookHandler, InvocationKind, LlmMessage, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, SubRunStorageMode, SubagentContextOverrides,
-    UserMessageOrigin,
+    AgentMode, AgentProfile, AgentState, ArtifactRef, AstrError, ExecutionOwner, HookHandler,
+    InvocationKind, LlmMessage, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
+    SubRunStorageMode, SubagentContextOverrides, UserMessageOrigin,
 };
 use astrcode_runtime_agent_loop::AgentLoop;
 use astrcode_runtime_agent_tool::RunAgentParams;
 use astrcode_runtime_config::resolve_agent_experimental_independent_session;
 use astrcode_runtime_prompt::PromptDeclaration;
+use astrcode_runtime_registry::CapabilityRouter;
 use astrcode_runtime_skill_loader::SkillCatalog;
 
 use crate::{ResolvedContextSnapshot, resolve_context_snapshot};
@@ -274,7 +274,7 @@ pub fn ensure_root_execution_mode(profile: &AgentProfile) -> Result<(), AstrErro
 }
 
 pub fn resolve_profile_tool_names(
-    capabilities: &astrcode_core::CapabilityRouter,
+    capabilities: &CapabilityRouter,
     profile: &AgentProfile,
 ) -> Result<Vec<String>, AstrError> {
     let available = capabilities

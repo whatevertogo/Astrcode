@@ -47,7 +47,7 @@ async fn tool_events_are_ordered_and_turn_finishes() {
         delay: std::time::Duration::from_millis(0),
     });
 
-    let tools = astrcode_core::ToolRegistry::builder()
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
         .register(Box::new(QuickTool))
         .build();
     let factory = Arc::new(StaticProviderFactory { provider });
@@ -110,7 +110,7 @@ async fn streaming_tool_emits_deltas_before_tool_result() {
         delay: std::time::Duration::from_millis(0),
     });
 
-    let tools = astrcode_core::ToolRegistry::builder()
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
         .register(Box::new(StreamingTool))
         .build();
     let factory = Arc::new(StaticProviderFactory { provider });
@@ -192,7 +192,7 @@ async fn concurrency_safe_tools_run_in_parallel() {
         ])),
         delay: std::time::Duration::from_millis(0),
     });
-    let tools = astrcode_core::ToolRegistry::builder()
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
         .register(Box::new(ConcurrencyTrackingTool {
             name: "parallelSafeTool",
             concurrency_safe: true,
@@ -254,7 +254,7 @@ async fn unsafe_tools_remain_sequential() {
         ])),
         delay: std::time::Duration::from_millis(0),
     });
-    let tools = astrcode_core::ToolRegistry::builder()
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
         .register(Box::new(ConcurrencyTrackingTool {
             name: "sequentialUnsafeTool",
             concurrency_safe: false,
@@ -317,7 +317,7 @@ async fn max_tool_concurrency_limits_safe_parallelism() {
         ])),
         delay: std::time::Duration::from_millis(0),
     });
-    let tools = astrcode_core::ToolRegistry::builder()
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
         .register(Box::new(ConcurrencyTrackingTool {
             name: "limitedSafeTool",
             concurrency_safe: true,
@@ -381,7 +381,7 @@ async fn parallel_safe_tool_results_preserve_original_request_order() {
         ])),
         requests: Arc::clone(&requests),
     });
-    let tools = astrcode_core::ToolRegistry::builder()
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
         .register(Box::new(ConcurrencyTrackingTool {
             name: "orderedSafeTool",
             concurrency_safe: true,
@@ -450,7 +450,7 @@ async fn long_tool_chains_complete_without_a_step_cap() {
         delay: std::time::Duration::from_millis(0),
     });
 
-    let tools = astrcode_core::ToolRegistry::builder()
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
         .register(Box::new(QuickTool))
         .build();
 

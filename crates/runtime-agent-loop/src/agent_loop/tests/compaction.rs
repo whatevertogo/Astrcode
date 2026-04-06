@@ -15,9 +15,10 @@ use std::{
 
 use astrcode_core::{
     AgentEventContext, AstrError, CancelToken, LlmMessage, Phase, StorageEvent, Tool,
-    ToolDefinition, ToolExecutionResult, ToolRegistry, UserMessageOrigin,
+    ToolDefinition, ToolExecutionResult, UserMessageOrigin,
 };
 use astrcode_runtime_llm::{EventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
+use astrcode_runtime_registry::ToolRegistry;
 use async_trait::async_trait;
 use serde_json::json;
 

@@ -1,7 +1,8 @@
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use astrcode_core::{CapabilityRouter, PluginRegistry, RuntimeCoordinator, RuntimeHandle};
+use astrcode_core::{PluginRegistry, RuntimeCoordinator, RuntimeHandle};
 use astrcode_runtime::{RuntimeGovernance, RuntimeService};
+use astrcode_runtime_registry::CapabilityRouter;
 
 use crate::{
     AppState, FrontendBuild,

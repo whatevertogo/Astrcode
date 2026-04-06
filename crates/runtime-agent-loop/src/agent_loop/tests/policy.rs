@@ -89,7 +89,7 @@ async fn denied_tool_calls_emit_failure_without_executing_tool() {
         ])),
         delay: std::time::Duration::from_millis(0),
     });
-    let tools = astrcode_core::ToolRegistry::builder()
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
         .register(Box::new(CountingTool {
             executions: Arc::clone(&executions),
         }))
@@ -159,7 +159,7 @@ async fn ask_policy_uses_approval_broker_before_tool_execution() {
         requests: Arc::clone(&approval_requests),
         resolutions: Mutex::new(VecDeque::from([ApprovalResolution::approved()])),
     });
-    let tools = astrcode_core::ToolRegistry::builder()
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
         .register(Box::new(CountingTool {
             executions: Arc::clone(&executions),
         }))
@@ -223,7 +223,7 @@ async fn denied_approval_returns_failed_tool_result_without_execution() {
             "approval rejected in test",
         )])),
     });
-    let tools = astrcode_core::ToolRegistry::builder()
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
         .register(Box::new(CountingTool {
             executions: Arc::clone(&executions),
         }))

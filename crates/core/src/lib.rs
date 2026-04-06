@@ -78,10 +78,7 @@ pub use policy::{
     PolicyEngine, PolicyVerdict,
 };
 pub use projection::{AgentState, AgentStateProjector, project};
-pub use registry::{
-    CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, CapabilityRouter,
-    CapabilityRouterBuilder, ToolCapabilityInvoker, ToolRegistry, ToolRegistryBuilder,
-};
+pub use registry::{CapabilityContext, CapabilityExecutionResult, CapabilityInvoker};
 pub use runtime::{ManagedRuntimeComponent, RuntimeCoordinator, RuntimeHandle};
 pub use session::{DeleteProjectResult, SessionEventRecord, SessionMessage, SessionMeta};
 pub use store::{

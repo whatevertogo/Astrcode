@@ -1,13 +1,14 @@
 use astrcode_core::{
-    CapabilityDescriptor, CapabilityKind, CapabilityRouter, PluginHealth, PluginState, Result,
-    SideEffectLevel, StabilityLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult, ToolRegistry, plugin::PluginEntry,
+    CapabilityDescriptor, CapabilityKind, PluginHealth, PluginState, Result, SideEffectLevel,
+    StabilityLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
+    plugin::PluginEntry,
 };
 use astrcode_protocol::http::{
     AgentExecuteResponseDto, AgentProfileDto, ConfigReloadResponse, RuntimeStatusDto,
     SessionHistoryResponseDto, ToolDescriptorDto, ToolExecuteResponseDto,
 };
 use astrcode_runtime::{Config, ModelConfig, Profile, RuntimeConfig, config, save_config};
+use astrcode_runtime_registry::{CapabilityRouter, ToolRegistry};
 use async_trait::async_trait;
 use axum::{
     body::{Body, to_bytes},

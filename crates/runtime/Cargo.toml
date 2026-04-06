@@ -21,6 +21,7 @@ astrcode-runtime-prompt = { path = "../runtime-prompt" }
 astrcode-runtime-skill-loader = { path = "../runtime-skill-loader" }
 astrcode-runtime-agent-loader = { path = "../runtime-agent-loader" }
 astrcode-runtime-agent-tool = { path = "../runtime-agent-tool" }
+astrcode-runtime-registry = { path = "../runtime-registry" }
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
@@ -40,4 +41,5 @@ uuid.workspace = true
 
 [dev-dependencies]
 astrcode-core = { path = "../core", features = ["test-support"] }
+astrcode-runtime-registry = { path = "../runtime-registry" }
 tempfile.workspace = true

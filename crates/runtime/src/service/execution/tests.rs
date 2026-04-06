@@ -4,12 +4,13 @@ use astrcode_core::{
     AgentEventContext, AgentMode, AgentProfile, AgentStatus, AstrError, CancelToken,
     ExecutionOwner, InvocationKind, StorageEvent, SubRunHandle, SubRunStorageMode,
     SubagentContextOverrides, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolEventSink, ToolExecutionResult, ToolRegistry, test_support::TestEnvGuard,
+    ToolEventSink, ToolExecutionResult, test_support::TestEnvGuard,
 };
 use astrcode_runtime_agent_tool::{RunAgentParams, RunAgentTool, SubAgentExecutor};
 use astrcode_runtime_execution::{
     derive_child_execution_owner, resolve_profile_tool_names, resolve_subagent_overrides,
 };
+use astrcode_runtime_registry::ToolRegistry;
 use async_trait::async_trait;
 use serde_json::json;
 

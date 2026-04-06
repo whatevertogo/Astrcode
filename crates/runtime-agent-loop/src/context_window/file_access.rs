@@ -26,10 +26,11 @@ pub(crate) struct FileAccessEntry {
     #[allow(dead_code)]
     pub tool_name: String,
 }
-/// 有界环形缓冲区，追踪通过工具调用访问的文件路径。
+/// Tracks file paths accessed during a session via tool calls.
 ///
-/// 通过检查 `StorageEvent::ToolResult` 事件，提取与文件相关工具
-/// （`readFile`、`editFile`、`writeFile`）关联的 `"path"` 元数据。
+/// The tracker inspects `StorageEvent::ToolResult` events and extracts
+/// the `"path"` field from `metadata` for file-related tools (`readFile`,
+/// `editFile`, `writeFile`).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FileAccessTracker {
     entries: Vec<FileAccessEntry>,

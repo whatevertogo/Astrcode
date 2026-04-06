@@ -58,9 +58,9 @@ use std::{path::PathBuf, sync::Arc};
 
 use astrcode_core::{
     AgentEventContext, AgentState, AllowAllPolicyEngine, AstrError, CancelToken,
-    CapabilityDescriptor, CapabilityRouter, CompactionHookContext, ExecutionOwner,
-    HookCompactionReason, HookHandler, InvocationKind, LlmMessage, PolicyContext, PolicyEngine,
-    Result, StorageEvent, StoredEvent, ToolContext, ToolHookContext, UserMessageOrigin,
+    CapabilityDescriptor, CompactionHookContext, ExecutionOwner, HookCompactionReason, HookHandler,
+    InvocationKind, LlmMessage, PolicyContext, PolicyEngine, Result, StorageEvent, StoredEvent,
+    ToolContext, ToolHookContext, UserMessageOrigin,
 };
 use astrcode_runtime_config::{
     DEFAULT_AUTO_COMPACT_ENABLED, DEFAULT_COMPACT_KEEP_RECENT_TURNS,
@@ -68,6 +68,7 @@ use astrcode_runtime_config::{
 };
 use astrcode_runtime_llm::LlmProvider;
 use astrcode_runtime_prompt::{PromptComposer, PromptDeclaration};
+use astrcode_runtime_registry::CapabilityRouter;
 use astrcode_runtime_skill_loader::{SkillCatalog, load_builtin_skills};
 use chrono::Utc;
 

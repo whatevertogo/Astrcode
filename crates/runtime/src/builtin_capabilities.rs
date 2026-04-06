@@ -16,8 +16,9 @@
 
 use std::sync::Arc;
 
-use astrcode_core::{CapabilityInvoker, Result, ToolCapabilityInvoker};
+use astrcode_core::{CapabilityInvoker, Result};
 use astrcode_runtime_agent_tool::{RunAgentTool, SubAgentExecutor};
+use astrcode_runtime_registry::ToolCapabilityInvoker;
 use astrcode_runtime_skill_loader::SkillCatalog;
 
 use crate::skill_tool::SkillTool;

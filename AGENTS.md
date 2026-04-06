@@ -3,20 +3,18 @@
 
 ## Crate 依赖关系
 
-```
 protocol (纯 DTO，无业务依赖)
-    ↑
-  core (核心契约：Tool trait、Policy、Event/持久化接口)
-    ↑
-  storage     runtime-tool-loader  runtime-config  runtime-llm  runtime-prompt  plugin
-  (JSONL持久化) (内置工具)          (配置)           (LLM)        (Prompt)       (插件宿主)
-    ↑            ↑                ↑              ↑            ↑              ↑
-    +────────── runtime (RuntimeService 门面) ─────────────────────────────────+
+   ↑
+ core (核心契约：Tool trait、Policy、Event/持久化接口)
+   ↑
+ storage   runtime-tool-loader  runtime-config  runtime-llm  runtime-prompt  plugin
+ (JSONL持久化) (内置工具)          (配置)           (LLM)        (Prompt)       (插件宿主)
+   ↑            ↑                ↑              ↑            ↑              ↑
+   +────────── runtime (RuntimeService 门面) ─────────────────────────────────+
                                    ↑
                                 server (HTTP/SSE API)
                                    ↑
                                src-tauri (桌面端壳)
-```
 
 **依赖规则：**
 - `protocol` 不得依赖 `core`/`runtime`；跨边界走显式 DTO + mapper

@@ -73,7 +73,7 @@ async fn pre_tool_hook_can_rewrite_args_and_post_success_hook_sees_final_payload
         delay: std::time::Duration::from_millis(0),
     });
     let post_hits = Arc::new(Mutex::new(Vec::new()));
-    let tools = astrcode_core::ToolRegistry::builder()
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
         .register(Box::new(EchoArgsTool))
         .build();
     let loop_runner = AgentLoop::from_capabilities(
@@ -147,7 +147,7 @@ async fn pre_tool_hook_can_block_tool_execution_without_running_the_tool() {
         delay: std::time::Duration::from_millis(0),
     });
     let executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let tools = astrcode_core::ToolRegistry::builder()
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
         .register(Box::new(CountingTool {
             executions: Arc::clone(&executions),
         }))
@@ -210,7 +210,7 @@ async fn post_tool_failure_hook_observes_failed_tool_results() {
         delay: std::time::Duration::from_millis(0),
     });
     let failure_hits = Arc::new(Mutex::new(Vec::new()));
-    let tools = astrcode_core::ToolRegistry::builder()
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
         .register(Box::new(FailingExecutionTool))
         .build();
     let loop_runner = AgentLoop::from_capabilities(
@@ -247,7 +247,7 @@ async fn manual_compact_runs_pre_and_post_compact_hooks() {
     });
     let pre_hits = Arc::new(Mutex::new(Vec::new()));
     let post_hits = Arc::new(Mutex::new(Vec::new()));
-    let tools = astrcode_core::ToolRegistry::builder()
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
         .register(Box::new(EchoArgsTool))
         .build();
     let loop_runner = AgentLoop::from_capabilities(

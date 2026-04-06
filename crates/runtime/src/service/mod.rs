@@ -8,13 +8,13 @@ use std::sync::{
 };
 
 use astrcode_core::{
-    AllowAllPolicyEngine, AstrError, CapabilityRouter, HookHandler, PolicyEngine, RuntimeHandle,
-    SessionManager,
+    AllowAllPolicyEngine, AstrError, HookHandler, PolicyEngine, RuntimeHandle, SessionManager,
 };
 use astrcode_runtime_agent_control::AgentControl;
 use astrcode_runtime_agent_loader::{AgentProfileLoader, AgentProfileRegistry};
 use astrcode_runtime_agent_loop::{AgentLoop, ApprovalBroker, DefaultApprovalBroker};
 use astrcode_runtime_prompt::PromptDeclaration;
+use astrcode_runtime_registry::CapabilityRouter;
 use astrcode_runtime_session::SessionState;
 use astrcode_runtime_skill_loader::SkillCatalog;
 use astrcode_storage::session::FileSystemSessionRepository;

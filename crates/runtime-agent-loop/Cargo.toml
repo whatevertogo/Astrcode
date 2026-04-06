@@ -11,6 +11,7 @@ astrcode-runtime-config = { path = "../runtime-config" }
 astrcode-runtime-llm = { path = "../runtime-llm" }
 astrcode-runtime-prompt = { path = "../runtime-prompt" }
 astrcode-runtime-skill-loader = { path = "../runtime-skill-loader" }
+astrcode-runtime-registry = { path = "../runtime-registry" }
 async-trait.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
@@ -23,4 +24,5 @@ tokio.workspace = true
 astrcode-core = { path = "../core", features = ["test-support"] }
 astrcode-plugin = { path = "../plugin" }
 astrcode-protocol = { path = "../protocol" }
+astrcode-runtime-registry = { path = "../runtime-registry" }
 tempfile.workspace = true

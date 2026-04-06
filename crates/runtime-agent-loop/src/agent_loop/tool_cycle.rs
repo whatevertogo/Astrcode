@@ -22,9 +22,10 @@ use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
     AgentEventContext, AgentState, ApprovalPending, ApprovalResolution, CancelToken,
-    CapabilityCall, CapabilityRouter, ExecutionOwner, LlmMessage, PolicyVerdict, Result,
-    StorageEvent, ToolCallRequest, ToolEventSink, ToolExecutionResult, ToolHookResultContext,
+    CapabilityCall, ExecutionOwner, LlmMessage, PolicyVerdict, Result, StorageEvent,
+    ToolCallRequest, ToolEventSink, ToolExecutionResult, ToolHookResultContext,
 };
+use astrcode_runtime_registry::CapabilityRouter;
 use futures_util::stream::{self, StreamExt};
 use tokio::sync::mpsc;
 

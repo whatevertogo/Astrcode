@@ -64,7 +64,7 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
         requests: requests.clone(),
     });
 
-    let tools = astrcode_core::ToolRegistry::builder()
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
         .register(Box::new(QuickTool))
         .build();
 
@@ -198,7 +198,7 @@ async fn reuses_prompt_contributor_cache_across_llm_steps() {
         ])),
         delay: std::time::Duration::from_millis(0),
     });
-    let tools = astrcode_core::ToolRegistry::builder()
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
         .register(Box::new(QuickTool))
         .build();
     let factory = Arc::new(StaticProviderFactory { provider });

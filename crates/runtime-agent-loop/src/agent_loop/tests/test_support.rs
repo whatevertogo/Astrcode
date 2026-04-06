@@ -6,7 +6,7 @@
 //! - `TestEnvGuard` - 测试环境变量保护（复用 core 的实现）
 
 pub(crate) use astrcode_core::test_support::TestEnvGuard;
-use astrcode_core::{CapabilityRouter, ToolRegistry};
+use astrcode_runtime_registry::{CapabilityRouter, ToolRegistry};
 
 /// 创建一个空的能力路由器，不包含任何工具。
 ///

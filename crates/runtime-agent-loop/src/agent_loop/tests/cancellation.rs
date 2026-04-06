@@ -38,7 +38,7 @@ async fn interrupt_emits_error_and_turn_done() {
         delay: std::time::Duration::from_millis(0),
     });
 
-    let tools = astrcode_core::ToolRegistry::builder()
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
         .register(Box::new(SlowTool))
         .build();
 
@@ -106,7 +106,7 @@ async fn cancellation_propagates_to_parallel_safe_tools() {
         }])),
         delay: std::time::Duration::from_millis(0),
     });
-    let tools = astrcode_core::ToolRegistry::builder()
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
         .register(Box::new(ConcurrencyTrackingTool {
             name: "cancelSafeTool",
             concurrency_safe: true,

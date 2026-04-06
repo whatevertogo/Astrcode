@@ -5,9 +5,7 @@
 
 use std::{collections::HashSet, net::TcpListener, path::Path, sync::Arc, time::Duration};
 
-use astrcode_core::{
-    CapabilityRouter, PluginRegistry, RuntimeCoordinator, RuntimeHandle, project::project_dir_name,
-};
+use astrcode_core::{PluginRegistry, RuntimeCoordinator, RuntimeHandle, project::project_dir_name};
 use astrcode_protocol::http::{
     CreateSessionRequest, PromptAcceptedResponse, PromptRequest, SaveActiveSelectionRequest,
     SessionListItem, SessionMessageDto,
@@ -16,6 +14,7 @@ use astrcode_runtime::{
     Config, ModelConfig, Profile, RuntimeConfig, RuntimeGovernance, RuntimeService,
     config::PROVIDER_KIND_OPENAI, save_config,
 };
+use astrcode_runtime_registry::CapabilityRouter;
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},

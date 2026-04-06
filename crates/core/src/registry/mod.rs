@@ -9,10 +9,5 @@
 //! - **ToolRegistry**: 工具注册表，管理所有可用工具
 
 pub mod router;
-pub mod tool;
 
-pub use router::{
-    CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, CapabilityRouter,
-    CapabilityRouterBuilder,
-};
-pub use tool::{ToolCapabilityInvoker, ToolRegistry, ToolRegistryBuilder};
+pub use router::{CapabilityContext, CapabilityExecutionResult, CapabilityInvoker};

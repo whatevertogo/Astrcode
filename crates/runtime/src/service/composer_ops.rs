@@ -211,8 +211,9 @@ mod tests {
 
     use astrcode_core::{
         Result, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
-        ToolPromptMetadata, ToolRegistry,
+        ToolPromptMetadata,
     };
+    use astrcode_runtime_registry::ToolRegistry;
     use astrcode_runtime_skill_loader::{SkillCatalog, SkillSource, SkillSpec};
     use serde_json::json;
 

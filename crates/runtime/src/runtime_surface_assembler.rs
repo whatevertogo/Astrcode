@@ -27,13 +27,14 @@ use std::{
 };
 
 use astrcode_core::{
-    AstrError, CapabilityDescriptor, CapabilityExecutionResult, CapabilityInvoker,
-    CapabilityRouter, HookHandler, ManagedRuntimeComponent, PluginHealth, PluginManifest,
-    PluginRegistry, format_local_rfc3339, plugin::PluginEntry,
+    AstrError, CapabilityDescriptor, CapabilityExecutionResult, CapabilityInvoker, HookHandler,
+    ManagedRuntimeComponent, PluginHealth, PluginManifest, PluginRegistry, format_local_rfc3339,
+    plugin::PluginEntry,
 };
 use astrcode_plugin::{PluginLoader, Supervisor, SupervisorHealth};
 use astrcode_protocol::plugin::{PeerDescriptor, PeerRole, SkillDescriptor};
 use astrcode_runtime_prompt::{PromptDeclaration, PromptDeclarationSource};
+use astrcode_runtime_registry::CapabilityRouter;
 use astrcode_runtime_skill_loader::{SkillCatalog, SkillSpec, merge_skill_layers};
 use async_trait::async_trait;
 use chrono::Utc;

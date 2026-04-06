@@ -9,6 +9,7 @@ authors.workspace = true
 astrcode-core = { path = "../core" }
 astrcode-protocol = { path = "../protocol" }
 astrcode-runtime = { path = "../runtime" }
+astrcode-runtime-registry = { path = "../runtime-registry" }
 async-stream = "0.3"
 anyhow.workspace = true
 axum.workspace = true

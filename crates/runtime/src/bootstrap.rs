@@ -21,10 +21,9 @@ use std::{
     sync::{Arc, RwLock as StdRwLock},
 };
 
-use astrcode_core::{
-    AstrError, CapabilityRouter, PluginManifest, PluginRegistry, RuntimeCoordinator, RuntimeHandle,
-};
+use astrcode_core::{AstrError, PluginManifest, PluginRegistry, RuntimeCoordinator, RuntimeHandle};
 use astrcode_runtime_agent_loader::{AgentLoaderError, AgentProfileLoader, AgentProfileRegistry};
+use astrcode_runtime_registry::CapabilityRouter;
 use astrcode_runtime_skill_loader::{SkillCatalog, merge_skill_layers};
 use tokio::sync::RwLock;
 

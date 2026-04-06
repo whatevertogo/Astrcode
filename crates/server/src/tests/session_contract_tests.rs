@@ -1,11 +1,12 @@
 use std::{net::TcpListener, sync::Arc, time::Duration};
 
-use astrcode_core::{CapabilityRouter, PluginRegistry, RuntimeCoordinator, RuntimeHandle};
+use astrcode_core::{PluginRegistry, RuntimeCoordinator, RuntimeHandle};
 use astrcode_protocol::http::{PromptAcceptedResponse, PromptRequest};
 use astrcode_runtime::{
     Config, ModelConfig, Profile, RuntimeConfig, RuntimeGovernance, RuntimeService,
     config::PROVIDER_KIND_OPENAI, save_config,
 };
+use astrcode_runtime_registry::CapabilityRouter;
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},

@@ -95,7 +95,7 @@ async fn phase0_behavior_regression_matrix_keeps_core_turn_outcomes_stable() {
                     delay: std::time::Duration::from_millis(0),
                 }) as Arc<dyn astrcode_runtime_llm::LlmProvider>,
                 capabilities_from_tools(
-                    astrcode_core::ToolRegistry::builder()
+                    astrcode_runtime_registry::ToolRegistry::builder()
                         .register(Box::new(QuickTool))
                         .build(),
                 ),
@@ -328,7 +328,7 @@ async fn phase0_behavior_regression_covers_compaction_and_policy_edges() {
             ])),
             delay: std::time::Duration::from_millis(0),
         });
-        let tools = astrcode_core::ToolRegistry::builder()
+        let tools = astrcode_runtime_registry::ToolRegistry::builder()
             .register(Box::new(CountingTool {
                 executions: Arc::clone(&executions),
             }))
@@ -401,7 +401,7 @@ async fn phase0_behavior_regression_covers_compaction_and_policy_edges() {
             requests: Arc::clone(&approval_requests),
             resolutions: Mutex::new(VecDeque::from([ApprovalResolution::approved()])),
         });
-        let tools = astrcode_core::ToolRegistry::builder()
+        let tools = astrcode_runtime_registry::ToolRegistry::builder()
             .register(Box::new(CountingTool {
                 executions: Arc::clone(&executions),
             }))
