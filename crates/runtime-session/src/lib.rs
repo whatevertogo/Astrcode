@@ -16,5 +16,6 @@ pub use support::{lock_anyhow, spawn_blocking_anyhow};
 pub use turn_runtime::{
     BudgetSettings, SessionTurnRunResult, append_and_broadcast,
     append_and_broadcast_from_turn_callback, complete_session_execution, execute_turn_chain,
-    prepare_session_execution, run_session_turn,
+    prepare_session_execution, recent_turn_event_tail, run_session_turn,
+    should_record_compaction_tail_event,
 };

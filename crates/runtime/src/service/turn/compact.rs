@@ -1,8 +1,6 @@
-use astrcode_core::{
-    AstrError, EventTranslator, Phase, StorageEvent, StoredEvent, UserMessageOrigin,
-};
+use astrcode_core::{AstrError, EventTranslator, Phase};
 use astrcode_runtime_agent_loop::CompactionTailSnapshot;
-use astrcode_runtime_session::append_and_broadcast;
+use astrcode_runtime_session::{append_and_broadcast, recent_turn_event_tail};
 
 use crate::service::{RuntimeService, ServiceError, ServiceResult, blocking_bridge::lock_anyhow};
 
@@ -61,48 +59,4 @@ impl RuntimeService {
         }
         Ok(())
     }
-}
-
-/// Manual / auto compact 都应该基于 durable tail，而不是投影后的消息列表。
-pub(super) fn recent_turn_event_tail(
-    events: &[StoredEvent],
-    keep_recent_turns: usize,
-) -> Vec<StoredEvent> {
-    let tail_events = events
-        .iter()
-        .filter(|stored| should_record_compaction_tail_event(&stored.event))
-        .cloned()
-        .collect::<Vec<_>>();
-
-    let user_turn_indices = tail_events
-        .iter()
-        .enumerate()
-        .filter_map(|(index, stored)| match &stored.event {
-            StorageEvent::UserMessage {
-                origin: UserMessageOrigin::User,
-                ..
-            } => Some(index),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-
-    let Some(&keep_start) = user_turn_indices
-        .iter()
-        .rev()
-        .nth(keep_recent_turns.saturating_sub(1))
-    else {
-        return tail_events;
-    };
-
-    tail_events[keep_start..].to_vec()
-}
-
-fn should_record_compaction_tail_event(event: &StorageEvent) -> bool {
-    matches!(
-        event,
-        StorageEvent::UserMessage { .. }
-            | StorageEvent::AssistantFinal { .. }
-            | StorageEvent::ToolCall { .. }
-            | StorageEvent::ToolResult { .. }
-    )
 }

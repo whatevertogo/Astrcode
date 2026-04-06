@@ -7,7 +7,7 @@ use astrcode_core::{
 use astrcode_runtime_agent_loop::{AgentLoop, ProviderFactory, TurnOutcome, estimate_text_tokens};
 use astrcode_runtime_session::{
     SessionState, SessionTokenBudgetState, SessionWriter, append_and_broadcast,
-    append_and_broadcast_from_turn_callback, execute_turn_chain,
+    append_and_broadcast_from_turn_callback, execute_turn_chain, recent_turn_event_tail,
 };
 use astrcode_storage::session::EventLog;
 use async_trait::async_trait;
@@ -17,7 +17,6 @@ use serde_json::json;
 use super::{
     BudgetSettings,
     branch::{ensure_branch_depth_within_limit, stable_events_before_active_turn},
-    compact::recent_turn_event_tail,
 };
 use crate::{
     llm::{EventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits},

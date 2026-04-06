@@ -374,7 +374,12 @@ pub fn append_and_broadcast_from_turn_callback(
     }
 }
 
-fn recent_turn_event_tail(events: &[StoredEvent], keep_recent_turns: usize) -> Vec<StoredEvent> {
+/// Manual / auto compact 都应该基于 durable tail，而不是投影后的消息列表。
+/// 公开导出给 runtime façade 使用，避免重复定义。
+pub fn recent_turn_event_tail(
+    events: &[StoredEvent],
+    keep_recent_turns: usize,
+) -> Vec<StoredEvent> {
     let tail_events = events
         .iter()
         .filter(|stored| should_record_compaction_tail_event(&stored.event))
@@ -404,7 +409,9 @@ fn recent_turn_event_tail(events: &[StoredEvent], keep_recent_turns: usize) -> V
     tail_events[keep_start..].to_vec()
 }
 
-fn should_record_compaction_tail_event(event: &StorageEvent) -> bool {
+/// 判断事件是否应纳入 compaction tail 记录。
+/// 只有用户消息、助手回复、工具调用和工具结果需要保留用于 compaction。
+pub fn should_record_compaction_tail_event(event: &StorageEvent) -> bool {
     matches!(
         event,
         StorageEvent::UserMessage { .. }
