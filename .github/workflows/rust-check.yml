@@ -55,8 +55,8 @@ jobs:
       - name: Check crate boundaries (soft mode)
         run: node scripts/check-crate-boundaries.mjs
 
-      - name: Run phase0 targeted regression
-        run: node scripts/phase0-regression.mjs
+      - name: Run targeted regression
+        run: node scripts/regressions.mjs
 
       - name: Run tests
         run: cargo test --workspace --exclude astrcode
