@@ -84,6 +84,7 @@ mod tests {
                 tool_names: vec!["shell".to_string(), "Skill".to_string()],
                 capability_descriptors: Vec::new(),
                 prompt_declarations: Vec::new(),
+                agent_profiles: Vec::new(),
                 skills: vec![PromptSkillSummary::new(
                     "git-commit",
                     "Use this skill when the user asks you to write and run a git commit.",
@@ -111,6 +112,7 @@ mod tests {
                 tool_names: vec!["shell".to_string()],
                 capability_descriptors: Vec::new(),
                 prompt_declarations: Vec::new(),
+                agent_profiles: Vec::new(),
                 skills: Vec::new(),
                 step_index: 0,
                 turn_index: 0,

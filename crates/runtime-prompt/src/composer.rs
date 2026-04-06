@@ -38,8 +38,9 @@ use super::{
     PromptContribution, PromptContributor, PromptPlan, RenderTarget, TemplateRenderError,
     ValidationPolicy, append_unique_tools,
     contributors::{
-        AgentsMdContributor, CapabilityPromptContributor, EnvironmentContributor,
-        IdentityContributor, SkillSummaryContributor, WorkflowExamplesContributor,
+        AgentProfileSummaryContributor, AgentsMdContributor, CapabilityPromptContributor,
+        EnvironmentContributor, IdentityContributor, SkillSummaryContributor,
+        WorkflowExamplesContributor,
     },
     diagnostics::{DiagnosticLevel, DiagnosticReason, PromptDiagnostic, PromptDiagnostics},
 };
@@ -153,7 +154,7 @@ impl PromptComposer {
     /// 使用默认选项和内置贡献者链创建 composer。
     ///
     /// 内置贡献者包括：Identity、Environment、AgentsMd、CapabilityPrompt、
-    /// SkillSummary、WorkflowExamples。
+    /// AgentProfileSummary、SkillSummary、WorkflowExamples。
     pub fn with_defaults() -> Self {
         Self::with_options(PromptComposerOptions::default())
     }
@@ -165,6 +166,7 @@ impl PromptComposer {
             .with_contributor(Arc::new(EnvironmentContributor))
             .with_contributor(Arc::new(AgentsMdContributor))
             .with_contributor(Arc::new(CapabilityPromptContributor))
+            .with_contributor(Arc::new(AgentProfileSummaryContributor))
             .with_contributor(Arc::new(SkillSummaryContributor))
             .with_contributor(Arc::new(WorkflowExamplesContributor))
     }
@@ -684,6 +686,7 @@ mod tests {
             tool_names: vec!["shell".to_string()],
             capability_descriptors: Vec::new(),
             prompt_declarations: Vec::new(),
+            agent_profiles: Vec::new(),
             skills: Vec::new(),
             step_index: 0,
             turn_index: 0,

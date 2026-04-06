@@ -211,6 +211,7 @@ dependencies = [
  "astrcode-core",
  "astrcode-plugin",
  "astrcode-protocol",
+ "astrcode-runtime-agent-tool",
  "astrcode-runtime-config",
  "astrcode-runtime-llm",
  "astrcode-runtime-prompt",

@@ -1,32 +1,19 @@
 use std::sync::Arc;
 
-use astrcode_core::SubagentContextOverrides;
 use astrcode_runtime_agent_loop::AgentLoop;
-use astrcode_runtime_agent_tool::RunAgentParams;
+use astrcode_runtime_agent_tool::SpawnAgentParams;
 use astrcode_runtime_execution::{
     AgentExecutionRequest, PreparedAgentExecution, ScopedExecutionSurface,
     prepare_scoped_agent_execution,
 };
 
 use super::root::AgentExecutionServiceHandle;
-use crate::service::{ServiceResult, loop_factory::build_scoped_agent_loop};
+use crate::service::{
+    ServiceResult,
+    loop_factory::{LoopRuntimeDeps, build_scoped_agent_loop},
+};
 
 impl AgentExecutionServiceHandle {
-    fn to_execution_request(
-        params: &RunAgentParams,
-        max_steps: Option<u32>,
-        context_overrides: Option<SubagentContextOverrides>,
-    ) -> AgentExecutionRequest {
-        AgentExecutionRequest {
-            subagent_type: params.r#type.clone(),
-            description: params.description.clone(),
-            prompt: params.prompt.clone(),
-            context: params.context.clone(),
-            max_steps,
-            context_overrides,
-        }
-    }
-
     pub(super) async fn snapshot_execution_surface(
         &self,
     ) -> ScopedExecutionSurface<Arc<astrcode_runtime_skill_loader::SkillCatalog>> {
@@ -45,11 +32,11 @@ impl AgentExecutionServiceHandle {
         &self,
         invocation_kind: astrcode_core::InvocationKind,
         profile: &astrcode_core::AgentProfile,
-        params: &RunAgentParams,
+        params: &SpawnAgentParams,
         surface: ScopedExecutionSurface<Arc<astrcode_runtime_skill_loader::SkillCatalog>>,
         parent_state: Option<&astrcode_core::AgentState>,
     ) -> ServiceResult<PreparedAgentExecution<Arc<AgentLoop>>> {
-        let request = Self::to_execution_request(params, None, None);
+        let request = AgentExecutionRequest::from_spawn_agent_params(params, None, None);
         self.prepare_scoped_execution_request(
             invocation_kind,
             profile,
@@ -80,8 +67,11 @@ impl AgentExecutionServiceHandle {
                     skill_catalog,
                     hook_handlers,
                     runtime_config,
-                    Arc::clone(&self.runtime.policy),
-                    Arc::clone(&self.runtime.approval),
+                    LoopRuntimeDeps::new(
+                        Arc::clone(&self.runtime.policy),
+                        Arc::clone(&self.runtime.approval),
+                        Some(self.runtime.agent_profile_catalog()),
+                    ),
                 )
             },
         )

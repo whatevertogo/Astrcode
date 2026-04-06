@@ -62,6 +62,7 @@ use astrcode_core::{
     InvocationKind, LlmMessage, PolicyContext, PolicyEngine, Result, StorageEvent, StoredEvent,
     ToolContext, ToolHookContext, UserMessageOrigin,
 };
+use astrcode_runtime_agent_tool::AgentProfileCatalog;
 use astrcode_runtime_config::{
     DEFAULT_AUTO_COMPACT_ENABLED, DEFAULT_COMPACT_KEEP_RECENT_TURNS,
     DEFAULT_COMPACT_THRESHOLD_PERCENT, DEFAULT_TOOL_RESULT_MAX_BYTES, max_tool_concurrency,
@@ -155,6 +156,7 @@ impl AgentLoop {
             capabilities,
             Vec::new(),
             Arc::new(SkillCatalog::new(load_builtin_skills())),
+            None,
         )
     }
 
@@ -167,6 +169,7 @@ impl AgentLoop {
         capabilities: CapabilityRouter,
         prompt_declarations: Vec<PromptDeclaration>,
         skill_catalog: Arc<SkillCatalog>,
+        agent_profile_catalog: Option<Arc<dyn AgentProfileCatalog>>,
     ) -> Self {
         let tool_names = capabilities.tool_names().to_vec();
         let prompt_capability_descriptors = capabilities.descriptors();
@@ -181,6 +184,7 @@ impl AgentLoop {
                 prompt_capability_descriptors,
                 prompt_declarations,
                 skill_catalog,
+                agent_profile_catalog,
             ),
             context: ContextRuntime::new(DEFAULT_TOOL_RESULT_MAX_BYTES),
             compaction: CompactionRuntime::with_truncate_bytes(

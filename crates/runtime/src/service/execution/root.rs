@@ -87,7 +87,7 @@ impl AgentExecutionServiceHandle {
             task.clone()
         };
 
-        let params = astrcode_runtime_agent_tool::RunAgentParams {
+        let params = astrcode_runtime_agent_tool::SpawnAgentParams {
             r#type: Some(agent_id),
             description,
             prompt: task,
@@ -100,14 +100,11 @@ impl AgentExecutionServiceHandle {
             ServiceError::InvalidInput(format!("unknown agent profile '{profile_id}'"))
         })?;
         astrcode_runtime_execution::ensure_root_execution_mode(&profile)?;
-        let request = astrcode_runtime_execution::AgentExecutionRequest {
-            subagent_type: params.r#type.clone(),
-            description: params.description.clone(),
-            prompt: params.prompt.clone(),
-            context: params.context.clone(),
+        let request = astrcode_runtime_execution::AgentExecutionRequest::from_spawn_agent_params(
+            &params,
             max_steps,
             context_overrides,
-        };
+        );
         let prepared_execution = self.prepare_scoped_execution_request(
             InvocationKind::RootExecution,
             &profile,

@@ -1163,7 +1163,7 @@ useEffect(() => {
 #### 8.2 测试场景
 
 1. **单会话测试**：创建根会话，发送消息
-2. **子会话创建**：调用 runAgent，验证 SubRunStart 事件
+2. **子会话创建**：调用 spawnAgent，验证 SubRunStart 事件
 3. **子会话切换**：点击子会话卡片，验证导航和消息过滤
 4. **SharedSession 测试**：验证事件过滤正确
 5. **IndependentSession 测试**：验证独立会话加载和显示

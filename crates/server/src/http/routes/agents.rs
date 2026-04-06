@@ -17,7 +17,7 @@ use crate::{
     ApiError, AppState,
     auth::require_auth,
     mapper::{from_subagent_context_overrides_dto, to_agent_profile_dto, to_subrun_status_dto},
-    routes::sessions::validate_session_path_id,
+    routes::sessions,
 };
 
 pub(crate) async fn list_agents(
@@ -83,7 +83,7 @@ pub(crate) async fn get_subrun_status(
     Path((session_id, sub_run_id)): Path<(String, String)>,
 ) -> Result<Json<SubRunStatusDto>, ApiError> {
     require_auth(&state, &headers, None)?;
-    let session_id = validate_session_path_id(&session_id)?;
+    let session_id = sessions::validate_session_path_id(&session_id)?;
     let snapshot = state
         .service
         .agent_execution_service()
@@ -99,7 +99,7 @@ pub(crate) async fn cancel_subrun(
     Path((session_id, sub_run_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     require_auth(&state, &headers, None)?;
-    let session_id = validate_session_path_id(&session_id)?;
+    let session_id = sessions::validate_session_path_id(&session_id)?;
     let sub_run_id = validate_subrun_path_id(&sub_run_id)?;
     state
         .service
@@ -111,18 +111,5 @@ pub(crate) async fn cancel_subrun(
 }
 
 fn validate_subrun_path_id(raw_sub_run_id: &str) -> Result<String, ApiError> {
-    let trimmed = raw_sub_run_id.trim();
-    let is_valid = !trimmed.is_empty()
-        && trimmed
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-
-    if is_valid {
-        Ok(trimmed.to_string())
-    } else {
-        Err(ApiError {
-            status: StatusCode::BAD_REQUEST,
-            message: format!("invalid sub-run id: {raw_sub_run_id}"),
-        })
-    }
+    sessions::validate_path_id(raw_sub_run_id, None, false, "sub-run")
 }

@@ -5,11 +5,13 @@
 use std::sync::{Arc, RwLock as StdRwLock, atomic::AtomicBool};
 
 use astrcode_core::{
-    AllowAllPolicyEngine, AstrError, HookHandler, PolicyEngine, RuntimeHandle, SessionManager,
+    AgentProfile, AllowAllPolicyEngine, AstrError, HookHandler, PolicyEngine, RuntimeHandle,
+    SessionManager,
 };
 use astrcode_runtime_agent_control::AgentControl;
 use astrcode_runtime_agent_loader::{AgentProfileLoader, AgentProfileRegistry};
 use astrcode_runtime_agent_loop::{AgentLoop, ApprovalBroker, DefaultApprovalBroker};
+use astrcode_runtime_agent_tool::AgentProfileCatalog;
 use astrcode_runtime_prompt::PromptDeclaration;
 use astrcode_runtime_registry::CapabilityRouter;
 use astrcode_runtime_session::SessionState;
@@ -51,7 +53,7 @@ pub use observability::{
     SubRunExecutionMetricsSnapshot,
 };
 
-use self::loop_factory::build_agent_loop;
+use self::loop_factory::{LoopRuntimeDeps, build_agent_loop};
 pub use self::service_contract::{
     AgentExecutionAccepted, ComposerOption, ComposerOptionKind, ComposerOptionsRequest,
     PromptAccepted, ServiceError, ServiceResult, SessionCatalogEvent, SessionEventRecord,
@@ -75,6 +77,29 @@ pub(crate) struct RuntimeServiceDeps {
     policy: Arc<dyn PolicyEngine>,
     approval: Arc<dyn ApprovalBroker>,
     session_manager: Arc<dyn SessionManager>,
+}
+
+#[derive(Clone)]
+struct RuntimeAgentProfileCatalog {
+    agent_profiles: Arc<StdRwLock<Arc<AgentProfileRegistry>>>,
+}
+
+impl RuntimeAgentProfileCatalog {
+    fn new(agent_profiles: Arc<StdRwLock<Arc<AgentProfileRegistry>>>) -> Self {
+        Self { agent_profiles }
+    }
+}
+
+impl AgentProfileCatalog for RuntimeAgentProfileCatalog {
+    fn list_subagent_profiles(&self) -> Vec<AgentProfile> {
+        self.agent_profiles
+            .read()
+            .expect("agent profile registry lock should not be poisoned")
+            .list_subagent_profiles()
+            .into_iter()
+            .cloned()
+            .collect()
+    }
 }
 
 /// 运行时服务
@@ -157,6 +182,12 @@ impl RuntimeService {
         execution_service::ExecutionService::new(self)
     }
 
+    fn agent_profile_catalog(&self) -> Arc<dyn AgentProfileCatalog> {
+        Arc::new(RuntimeAgentProfileCatalog::new(Arc::clone(
+            &self.agent_profiles,
+        )))
+    }
+
     pub fn from_capabilities(capabilities: CapabilityRouter) -> ServiceResult<Self> {
         Self::from_capabilities_with_prompt_inputs(
             capabilities,
@@ -228,8 +259,13 @@ impl RuntimeService {
         let loop_ = build_agent_loop(
             &surface,
             &config.runtime,
-            Arc::clone(&policy),
-            Arc::clone(&approval),
+            LoopRuntimeDeps::new(
+                Arc::clone(&policy),
+                Arc::clone(&approval),
+                Some(Arc::new(RuntimeAgentProfileCatalog::new(Arc::clone(
+                    &agent_profiles,
+                )))),
+            ),
         );
         let agent_control = AgentControl::from_config(&config.runtime);
         let (session_catalog_events, _) = broadcast::channel(SESSION_CATALOG_BROADCAST_CAPACITY);

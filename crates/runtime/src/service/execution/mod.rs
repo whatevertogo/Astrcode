@@ -12,7 +12,7 @@ mod surface;
 use std::sync::{Arc, RwLock as StdRwLock, Weak};
 
 use astrcode_core::{AgentProfile, AstrError, Result, SubRunResult, ToolContext};
-use astrcode_runtime_agent_tool::{RunAgentParams, SubAgentExecutor};
+use astrcode_runtime_agent_tool::{AgentProfileCatalog, SpawnAgentParams, SubAgentExecutor};
 use async_trait::async_trait;
 pub use root::{
     AgentExecutionServiceHandle, AgentProfileSummary, ToolExecutionServiceHandle, ToolSummary,
@@ -22,7 +22,7 @@ use crate::service::{RuntimeService, ServiceError};
 
 /// bootstrap 阶段使用的延迟执行器桥。
 ///
-/// builtin router 在 `RuntimeService` 创建前就要注册 `runAgent`，因此这里先占位，
+/// builtin router 在 `RuntimeService` 创建前就要注册 `spawnAgent`，因此这里先占位，
 /// 等 service 创建完成后再绑定真实 runtime。
 #[derive(Default)]
 pub(crate) struct DeferredSubAgentExecutor {
@@ -45,7 +45,7 @@ impl DeferredSubAgentExecutor {
             .expect("sub-agent executor binding lock should not be poisoned");
         let Some(runtime) = guard.as_ref().and_then(Weak::upgrade) else {
             return Err(AstrError::Internal(
-                "runAgent executor is not bound to runtime service yet".to_string(),
+                "spawnAgent executor is not bound to runtime service yet".to_string(),
             ));
         };
         Ok(runtime)
@@ -54,32 +54,13 @@ impl DeferredSubAgentExecutor {
 
 #[async_trait]
 impl SubAgentExecutor for DeferredSubAgentExecutor {
-    async fn execute(&self, params: RunAgentParams, ctx: &ToolContext) -> Result<SubRunResult> {
+    async fn launch(&self, params: SpawnAgentParams, ctx: &ToolContext) -> Result<SubRunResult> {
         let runtime = self.runtime()?;
         runtime
             .agent_execution_service()
-            .execute_subagent(params, ctx)
+            .launch_subagent(params, ctx)
             .await
             .map_err(service_error_to_astr)
-    }
-
-    fn available_profiles(&self) -> Vec<AgentProfile> {
-        self.runtime()
-            .map(|runtime| {
-                runtime
-                    .agent_profiles()
-                    .list()
-                    .into_iter()
-                    .filter(|p| {
-                        matches!(
-                            p.mode,
-                            astrcode_core::AgentMode::SubAgent | astrcode_core::AgentMode::All
-                        )
-                    })
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
     }
 }
 
@@ -99,23 +80,19 @@ impl RuntimeService {
 
 #[async_trait]
 impl SubAgentExecutor for root::AgentExecutionServiceHandle {
-    async fn execute(&self, params: RunAgentParams, ctx: &ToolContext) -> Result<SubRunResult> {
-        self.execute_subagent(params, ctx)
+    async fn launch(&self, params: SpawnAgentParams, ctx: &ToolContext) -> Result<SubRunResult> {
+        self.launch_subagent(params, ctx)
             .await
             .map_err(service_error_to_astr)
     }
+}
 
-    fn available_profiles(&self) -> Vec<AgentProfile> {
+impl AgentProfileCatalog for root::AgentExecutionServiceHandle {
+    fn list_subagent_profiles(&self) -> Vec<AgentProfile> {
         self.runtime
             .agent_profiles()
-            .list()
+            .list_subagent_profiles()
             .into_iter()
-            .filter(|p| {
-                matches!(
-                    p.mode,
-                    astrcode_core::AgentMode::SubAgent | astrcode_core::AgentMode::All
-                )
-            })
             .cloned()
             .collect()
     }

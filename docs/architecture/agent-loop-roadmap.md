@@ -6,7 +6,7 @@
 本文档基于以下输入整理：
 - 现有实现：`crates/runtime-agent-loop/src/agent_loop.rs`、`crates/runtime-agent-loop/src/agent_loop/turn_runner.rs`、`crates/runtime-agent-loop/src/agent_loop/tool_cycle.rs`
 - Agent 控制平面：`crates/runtime-agent-control/src/lib.rs`
-- Agent 执行接线：`crates/runtime/src/service/agent_execution.rs`
+- Agent 执行接线：`crates/runtime/src/service/execution/`
 - 对比分析：`docs/compare/agent-loopcompare.md`
 - 现有设计稿：`docs/design/agent-tool-and-api-design.md`
 - 参考仓库：Codex、Kimi-CLI、OpenCode、Pi-Mono、claude-code-sourcemap
@@ -21,7 +21,7 @@
 
 - 来自 Codex：控制平面与执行引擎分离（`runtime-agent-control` 独立承载 `AgentControl`）。
 - 来自 Claude Code：按副作用/并发安全进行工具并发执行（P2 已完成）。
-- 来自 OpenCode/Kimi：主 Agent 通过 `runAgent` 调起子 Agent，并返回结构化结果。
+- 来自 OpenCode/Kimi：主 Agent 通过 `spawnAgent` 调起子 Agent，并返回结构化结果。
 - 来自 OpenCode：Agent Profile 进入配置/加载体系（builtin + loader + hot reload）。
 - 来自 Pi-Mono：子 Agent 事件带 parent-child 元数据并可回灌主会话。
 
@@ -38,7 +38,7 @@
 | P3 压缩 + Token Budget | ✅ | 上下文构建分层，预算控制可插拔 |
 | P4 错误恢复 | ✅ | 超长上下文与续跑异常可恢复 |
 | P5 Agent Control Plane | 🟡 | 控制平面与执行引擎解耦，支持父子取消传播 |
-| P6 runAgent MVP | 🟡 | 子 Agent 可调用、可裁剪、可回灌结果 |
+| P6 spawnAgent MVP | 🟡 | 子 Agent 可调用、可裁剪、可回灌结果 |
 
 当前内核已经完成“执行层分层 + 控制层外置”的基础形态，后续重点是把这些能力稳定暴露给 session/API/UI。
 
@@ -147,7 +147,7 @@ Astrcode 下一步最该做的不是：
 ### 4.2 子 Agent 先做成“受控 child session”，不要先做成“无限递归 loop”
 
 更推荐的落地方向是：
-- 主 Agent 发起 `runAgent` 工具调用
+- 主 Agent 发起 `spawnAgent` 工具调用
 - runtime 创建 child session / child turn
 - child session 运行自己的 `AgentLoop`
 - 主 Agent 收到摘要化结果
@@ -215,7 +215,7 @@ Astrcode 下一步最该做的不是：
 
 ---
 
-### P6：`runAgent` / `task` 工具 MVP（已可用，建议补齐隔离语义）
+### P6：`spawnAgent` / `task` 工具 MVP（已可用，建议补齐隔离语义）
 
 #### 目标
 
@@ -230,7 +230,7 @@ Astrcode 下一步最该做的不是：
 
 #### 交付物
 
-1. `runAgent` 工具
+1. `spawnAgent` 工具
    - 参数：`agent/profile`、`task`、`context`、`max_steps?`
 2. child session 启动器
    - 复用现有 `AgentLoop`
@@ -252,7 +252,7 @@ Astrcode 下一步最该做的不是：
 
 #### 当前进展（2026-04-05）
 
-- 已支持 `runAgent` 调用子 Agent
+- 已支持 `spawnAgent` 调用子 Agent
 - 结果已结构化返回（completed/failed/aborted/token_exceeded）
 - 工具权限已按 profile 裁剪（allow/deny）
 - 子事件已回灌主会话并带父子元数据
@@ -265,7 +265,7 @@ Astrcode 下一步最该做的不是：
 
 #### 验收标准
 
-- 主 Agent 能调用 `runAgent(explore, ...)`
+- 主 Agent 能调用 `spawnAgent(explore, ...)`
 - 子 Agent 输出不会污染主对话历史
 - 子 Agent 失败/取消会以结构化 tool result 返回
 - 禁止无限递归调用，默认深度上限 2 或 3
@@ -415,7 +415,7 @@ Astrcode 下一步最该做的不是：
 ## 6. 推荐实现顺序
 
 ```text
-P5/P6 收口（控制平面 + runAgent）
+P5/P6 收口（控制平面 + spawnAgent）
   -> P7 session/turn control API
      -> P8 steering + hook + event protocol
         -> P9 checkpoint/session memory
@@ -459,7 +459,7 @@ P5/P6 收口（控制平面 + runAgent）
 
 如果按最小可落地补丁推进，建议第一批只做这些：
 
-1. 把 `runAgent` 从“同 session child turn”升级为“独立 child session”
+1. 把 `spawnAgent` 从“同 session child turn”升级为“独立 child session”
 2. 增加 sub-agent 递归深度上限与循环调用防护
 3. 给 server 增加 turn status 查询与 turn 级 `abort`
 4. 增加显式 `fork/revert` API，并与 compaction 语义对齐
@@ -484,7 +484,7 @@ P5/P6 收口（控制平面 + runAgent）
 - 安全策略
 
 升级路线应该改成分层推进：
-- 先收口已落地的 AgentControl 和 `runAgent`
+- 先收口已落地的 AgentControl 和 `spawnAgent`
 - 再把 child session 做实
 - 再扩 session API
 - 最后补高级记忆与安全隔离

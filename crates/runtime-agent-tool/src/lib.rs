@@ -1,6 +1,6 @@
 //! # Agent as Tool
 //!
-//! 提供 `runAgent` 工具的稳定抽象：
+//! 提供 `spawnAgent` 工具的稳定抽象：
 //! - 对 LLM 暴露统一的工具定义和参数 schema
 //! - 将真实执行委托给运行时注入的 `SubAgentExecutor`
 //! - 不直接依赖 `RuntimeService`，避免把 runtime 细节扩散到 Tool crate
@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-/// `runAgent` 工具的调用参数。
+/// `spawnAgent` 工具的调用参数。
 ///
 /// **字段职责（不可漂移）**：
 /// - `description`：短摘要，仅供 UI/日志/标题展示，不参与任务语义
@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 /// - `context`：可选补充材料，不保证完整历史
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct RunAgentParams {
+pub struct SpawnAgentParams {
     /// Agent profile 标识。留空默认 "explore"。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#type: Option<String>,
@@ -39,7 +39,7 @@ pub struct RunAgentParams {
     pub context: Option<String>,
 }
 
-impl RunAgentParams {
+impl SpawnAgentParams {
     /// 校验参数合法性。
     pub fn validate(&self) -> Result<()> {
         // prompt 是子 Agent 收到的指令主体，不能为空
@@ -62,55 +62,39 @@ impl RunAgentParams {
 /// 真实执行器由 runtime 提供，这里只定义 Tool 所需的最小边界。
 #[async_trait]
 pub trait SubAgentExecutor: Send + Sync {
-    /// 执行子 Agent。
-    async fn execute(&self, params: RunAgentParams, ctx: &ToolContext) -> Result<SubRunResult>;
+    /// 启动子 Agent。
+    async fn launch(&self, params: SpawnAgentParams, ctx: &ToolContext) -> Result<SubRunResult>;
+}
 
-    /// 返回当前可用的 Agent Profile 列表，用于生成工具描述。
-    fn available_profiles(&self) -> Vec<AgentProfile>;
+/// 子 Agent profile 目录抽象。
+///
+/// 动态 profile 列表不应该再内嵌进 `spawnAgent` 的静态 tool definition，
+/// 这里单独抽出 discovery 边界，供 prompt contributor 或独立索引能力按需使用。
+pub trait AgentProfileCatalog: Send + Sync {
+    fn list_subagent_profiles(&self) -> Vec<AgentProfile>;
 }
 
 /// 把子 Agent 能力暴露给 LLM 的内置工具。
-pub struct RunAgentTool {
-    executor: Arc<dyn SubAgentExecutor>,
+pub struct SpawnAgentTool {
+    launcher: Arc<dyn SubAgentExecutor>,
 }
 
-impl RunAgentTool {
-    pub fn new(executor: Arc<dyn SubAgentExecutor>) -> Self {
-        Self { executor }
+impl SpawnAgentTool {
+    pub fn new(launcher: Arc<dyn SubAgentExecutor>) -> Self {
+        Self { launcher }
     }
 
-    fn build_description(profiles: &[AgentProfile]) -> String {
-        let profiles_desc = if profiles.is_empty() {
-            "（当前没有可用的子 Agent）".to_string()
-        } else {
-            profiles
-                .iter()
-                .map(|p| {
-                    format!(
-                        "- **{}**: {}",
-                        p.id,
-                        p.description.lines().next().unwrap_or(&p.name)
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-
-        format!(
-            r#"调用专门的子 Agent 执行特定任务，并返回摘要结果。
-
-## 可用的子 Agent
-
-{profiles_desc}
+    fn build_description() -> String {
+        r#"调用专门的子 Agent 执行特定任务，并返回摘要结果。
 
 ## 使用指南
 
-1. **选择合适的 Agent**: 根据任务类型选择对应的 Agent（如代码探索用 `explore`，代码审查用 `reviewer`）
+1. **选择合适的 Agent**: `type` 填目标 profile 标识；可用 profile 以当前会话提供的 agent 索引或提示信息为准
 2. **写清楚任务**: `prompt` 参数要具体、明确，说明要做什么、找什么、分析什么
 3. **补充上下文**: 如果任务涉及特定背景，在 `context` 中说明（如"关注安全问题"、"只看 frontend 目录"）
-4. **默认异步**: `runAgent` 统一用后台子会话方式启动，通过子会话流持续回传进度
-5. **并行执行**: 需要并行时，直接在同一轮对话中发起多个 `runAgent` 调用即可
-6. **链式执行**: 需要链式时，你可以等待每个agent的工作，读取前一步的 `summary`，然后在下一步的 `context` 中显式传入
+4. **默认异步**: `spawnAgent` 统一用后台子会话方式启动，通过子会话流持续回传进度
+5. **并行执行**: 需要并行时，直接在同一轮对话中发起多个 `spawnAgent` 调用即可
+6. **链式执行**: 需要链式时，你可以等待每个 agent 的工作，读取前一步的 `summary`，然后在下一步的 `context` 中显式传入
 
 ## 何时使用
 
@@ -123,9 +107,8 @@ impl RunAgentTool {
 
 - 简单的文件读取或搜索（直接用 `readFile`、`grep` 等工具更快）
 - 已经清楚答案的确认性问题
-- 不需要独立上下文的简单操作"#,
-            profiles_desc = profiles_desc
-        )
+- 不需要独立上下文的简单操作"#
+            .to_string()
     }
 
     fn parameters_schema() -> Value {
@@ -135,7 +118,7 @@ impl RunAgentTool {
             "properties": {
                 "type": {
                     "type": "string",
-                    "description": "Agent profile 名称。留空默认 'explore'。可用列表见工具描述。"
+                    "description": "Agent profile 名称。留空默认 'explore'。可用 profile 以当前会话里的 agent 索引或提示信息为准。"
                 },
                 "description": {
                     "type": "string",
@@ -157,7 +140,7 @@ impl RunAgentTool {
     fn invalid_params_result(tool_call_id: String, message: String) -> ToolExecutionResult {
         ToolExecutionResult {
             tool_call_id,
-            tool_name: "runAgent".to_string(),
+            tool_name: "spawnAgent".to_string(),
             ok: false,
             output: String::new(),
             error: Some(message),
@@ -169,12 +152,11 @@ impl RunAgentTool {
 }
 
 #[async_trait]
-impl Tool for RunAgentTool {
+impl Tool for SpawnAgentTool {
     fn definition(&self) -> ToolDefinition {
-        let profiles = self.executor.available_profiles();
         ToolDefinition {
-            name: "runAgent".to_string(),
-            description: Self::build_description(&profiles),
+            name: "spawnAgent".to_string(),
+            description: Self::build_description(),
             parameters: Self::parameters_schema(),
         }
     }
@@ -183,7 +165,7 @@ impl Tool for RunAgentTool {
         ToolCapabilityMetadata::builtin()
             .tag("agent")
             .tag("subagent")
-            // `runAgent` 已统一为后台启动，工具本身只负责快速建链和返回句柄，
+            // `spawnAgent` 已统一为后台启动，工具本身只负责快速建链和返回句柄，
             // 可以安全地和其他同类启动请求并发执行。
             .concurrency_safe(true)
             .compact_clearable(true)
@@ -195,12 +177,12 @@ impl Tool for RunAgentTool {
         input: Value,
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult> {
-        let params = match serde_json::from_value::<RunAgentParams>(input) {
+        let params = match serde_json::from_value::<SpawnAgentParams>(input) {
             Ok(params) => params,
             Err(error) => {
                 return Ok(Self::invalid_params_result(
                     tool_call_id,
-                    format!("invalid runAgent params: {error}"),
+                    format!("invalid spawnAgent params: {error}"),
                 ));
             },
         };
@@ -209,11 +191,11 @@ impl Tool for RunAgentTool {
         if let Err(err) = params.validate() {
             return Ok(Self::invalid_params_result(
                 tool_call_id,
-                format!("invalid runAgent params: {err}"),
+                format!("invalid spawnAgent params: {err}"),
             ));
         }
 
-        let result = self.executor.execute(params, ctx).await?;
+        let result = self.launcher.launch(params, ctx).await?;
         let mut metadata = json!({
             "outcome": result.status.as_str(),
             "handoff": result.handoff,
@@ -234,7 +216,7 @@ impl Tool for RunAgentTool {
 
         Ok(ToolExecutionResult {
             tool_call_id,
-            tool_name: "runAgent".to_string(),
+            tool_name: "spawnAgent".to_string(),
             ok: !matches!(result.status, SubRunOutcome::Failed),
             output,
             error,
@@ -265,24 +247,23 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use astrcode_core::{
-        AgentMode, AgentProfile, CancelToken, SubRunFailure, SubRunFailureCode, SubRunHandoff,
-        SubRunOutcome, SubRunResult, Tool, ToolContext,
+        CancelToken, SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunOutcome, SubRunResult,
+        Tool, ToolContext,
     };
     use async_trait::async_trait;
     use serde_json::json;
 
-    use super::{RunAgentParams, RunAgentTool, SubAgentExecutor};
+    use super::{SpawnAgentParams, SpawnAgentTool, SubAgentExecutor};
 
     struct RecordingExecutor {
-        calls: Mutex<Vec<RunAgentParams>>,
-        profiles: Vec<AgentProfile>,
+        calls: Mutex<Vec<SpawnAgentParams>>,
     }
 
     #[async_trait]
     impl SubAgentExecutor for RecordingExecutor {
-        async fn execute(
+        async fn launch(
             &self,
-            params: RunAgentParams,
+            params: SpawnAgentParams,
             _ctx: &ToolContext,
         ) -> astrcode_core::Result<SubRunResult> {
             self.calls.lock().expect("calls lock").push(params);
@@ -296,10 +277,6 @@ mod tests {
                 failure: None,
             })
         }
-
-        fn available_profiles(&self) -> Vec<AgentProfile> {
-            self.profiles.clone()
-        }
     }
 
     fn tool_context() -> ToolContext {
@@ -310,42 +287,12 @@ mod tests {
         )
     }
 
-    fn test_profiles() -> Vec<AgentProfile> {
-        vec![
-            AgentProfile {
-                id: "explore".to_string(),
-                name: "Explore".to_string(),
-                description: "快速检索和阅读代码".to_string(),
-                mode: AgentMode::SubAgent,
-                system_prompt: None,
-                allowed_tools: vec!["readFile".to_string(), "grep".to_string()],
-                disallowed_tools: Vec::new(),
-                max_steps: None,
-                token_budget: None,
-                model_preference: None,
-            },
-            AgentProfile {
-                id: "reviewer".to_string(),
-                name: "Reviewer".to_string(),
-                description: "多视角代码审查".to_string(),
-                mode: AgentMode::SubAgent,
-                system_prompt: None,
-                allowed_tools: vec!["readFile".to_string()],
-                disallowed_tools: Vec::new(),
-                max_steps: None,
-                token_budget: None,
-                model_preference: None,
-            },
-        ]
-    }
-
     #[tokio::test]
-    async fn run_agent_tool_parses_params_and_returns_summary() {
+    async fn spawn_agent_tool_parses_params_and_returns_summary() {
         let executor = Arc::new(RecordingExecutor {
             calls: Mutex::new(Vec::new()),
-            profiles: test_profiles(),
         });
-        let tool = RunAgentTool::new(executor.clone());
+        let tool = SpawnAgentTool::new(executor.clone());
 
         let result = tool
             .execute(
@@ -376,10 +323,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_agent_tool_reports_invalid_params_as_tool_failure() {
-        let tool = RunAgentTool::new(Arc::new(RecordingExecutor {
+    async fn spawn_agent_tool_reports_invalid_params_as_tool_failure() {
+        let tool = SpawnAgentTool::new(Arc::new(RecordingExecutor {
             calls: Mutex::new(Vec::new()),
-            profiles: test_profiles(),
         }));
 
         let result = tool
@@ -396,51 +342,36 @@ mod tests {
             result
                 .error
                 .as_deref()
-                .is_some_and(|error| error.contains("invalid runAgent params"))
+                .is_some_and(|error| error.contains("invalid spawnAgent params"))
         );
     }
 
     #[test]
-    fn tool_description_includes_available_profiles() {
+    fn tool_description_is_stable_and_excludes_dynamic_profile_listing() {
         let executor = Arc::new(RecordingExecutor {
             calls: Mutex::new(Vec::new()),
-            profiles: test_profiles(),
         });
-        let tool = RunAgentTool::new(executor);
+        let tool = SpawnAgentTool::new(executor);
 
         let definition = tool.definition();
 
-        assert!(definition.description.contains("explore"));
-        assert!(definition.description.contains("reviewer"));
-        assert!(definition.description.contains("快速检索和阅读代码"));
+        assert!(!definition.description.contains("## 可用的子 Agent"));
+        assert!(!definition.description.contains("当前没有可用的子 Agent"));
         assert!(definition.description.contains("何时使用"));
         assert!(definition.description.contains("写清楚任务"));
         assert!(definition.description.contains("并行执行"));
         assert!(definition.description.contains("链式执行"));
     }
 
-    #[test]
-    fn tool_description_handles_empty_profiles() {
-        let executor = Arc::new(RecordingExecutor {
-            calls: Mutex::new(Vec::new()),
-            profiles: Vec::new(),
-        });
-        let tool = RunAgentTool::new(executor);
-
-        let definition = tool.definition();
-
-        assert!(definition.description.contains("当前没有可用的子 Agent"));
-    }
-
     #[tokio::test]
-    async fn run_agent_tool_preserves_running_outcome_in_metadata() {
+    async fn spawn_agent_tool_preserves_running_outcome_in_metadata() {
         struct RunningExecutor;
 
         #[async_trait]
         impl SubAgentExecutor for RunningExecutor {
-            async fn execute(
+            async fn launch(
                 &self,
-                _params: RunAgentParams,
+                _params: SpawnAgentParams,
                 _ctx: &ToolContext,
             ) -> astrcode_core::Result<SubRunResult> {
                 Ok(SubRunResult {
@@ -453,13 +384,9 @@ mod tests {
                     failure: None,
                 })
             }
-
-            fn available_profiles(&self) -> Vec<AgentProfile> {
-                test_profiles()
-            }
         }
 
-        let tool = RunAgentTool::new(Arc::new(RunningExecutor));
+        let tool = SpawnAgentTool::new(Arc::new(RunningExecutor));
         let result = tool
             .execute(
                 "call-running".to_string(),
@@ -483,14 +410,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_agent_tool_surfaces_failure_display_and_technical_messages_separately() {
+    async fn spawn_agent_tool_surfaces_failure_display_and_technical_messages_separately() {
         struct FailingExecutor;
 
         #[async_trait]
         impl SubAgentExecutor for FailingExecutor {
-            async fn execute(
+            async fn launch(
                 &self,
-                _params: RunAgentParams,
+                _params: SpawnAgentParams,
                 _ctx: &ToolContext,
             ) -> astrcode_core::Result<SubRunResult> {
                 Ok(SubRunResult {
@@ -507,13 +434,9 @@ mod tests {
                     }),
                 })
             }
-
-            fn available_profiles(&self) -> Vec<AgentProfile> {
-                test_profiles()
-            }
         }
 
-        let tool = RunAgentTool::new(Arc::new(FailingExecutor));
+        let tool = SpawnAgentTool::new(Arc::new(FailingExecutor));
         let result = tool
             .execute(
                 "call-failed".to_string(),
@@ -538,20 +461,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_agent_tool_background_returns_subrun_artifact() {
+    async fn spawn_agent_tool_background_returns_subrun_artifact() {
         struct BackgroundExecutor;
 
         #[async_trait]
         impl SubAgentExecutor for BackgroundExecutor {
-            async fn execute(
+            async fn launch(
                 &self,
-                _params: RunAgentParams,
+                _params: SpawnAgentParams,
                 _ctx: &ToolContext,
             ) -> astrcode_core::Result<SubRunResult> {
                 Ok(SubRunResult {
                     status: SubRunOutcome::Running,
                     handoff: Some(SubRunHandoff {
-                        summary: "runAgent 已在后台启动。".to_string(),
+                        summary: "spawnAgent 已在后台启动。".to_string(),
                         findings: Vec::new(),
                         artifacts: vec![astrcode_core::ArtifactRef {
                             kind: "subRun".to_string(),
@@ -565,13 +488,9 @@ mod tests {
                     failure: None,
                 })
             }
-
-            fn available_profiles(&self) -> Vec<AgentProfile> {
-                test_profiles()
-            }
         }
 
-        let tool = RunAgentTool::new(Arc::new(BackgroundExecutor));
+        let tool = SpawnAgentTool::new(Arc::new(BackgroundExecutor));
         let result = tool
             .execute(
                 "call-background".to_string(),
@@ -585,7 +504,7 @@ mod tests {
             .expect("background outcome should serialize");
 
         assert!(result.ok);
-        assert_eq!(result.output, "runAgent 已在后台启动。");
+        assert_eq!(result.output, "spawnAgent 已在后台启动。");
         let artifact_kind = result
             .metadata
             .as_ref()

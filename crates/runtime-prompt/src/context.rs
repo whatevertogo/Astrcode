@@ -34,10 +34,30 @@ pub struct PromptContext {
     pub tool_names: Vec<String>,
     pub capability_descriptors: Vec<CapabilityDescriptor>,
     pub prompt_declarations: Vec<PromptDeclaration>,
+    pub agent_profiles: Vec<PromptAgentProfileSummary>,
     pub skills: Vec<PromptSkillSummary>,
     pub step_index: usize,
     pub turn_index: usize,
     pub vars: HashMap<String, String>,
+}
+
+/// Prompt 侧的轻量 agent profile 摘要。
+///
+/// prompt 组装只需要稳定的 profile id 与描述，不依赖 runtime loader 的完整模型，
+/// 这样可以把动态 profile 索引注入 prompt，同时保持 crate 边界清晰。
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptAgentProfileSummary {
+    pub id: String,
+    pub description: String,
+}
+
+impl PromptAgentProfileSummary {
+    pub fn new(id: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            description: description.into(),
+        }
+    }
 }
 
 /// Prompt 侧的轻量 skill 摘要。
@@ -111,6 +131,9 @@ impl PromptContext {
         serde_json::to_string(&self.prompt_declarations)
             .expect("prompt declarations should serialize")
             .hash(&mut hasher);
+        serde_json::to_string(&self.agent_profiles)
+            .expect("agent profiles should serialize")
+            .hash(&mut hasher);
         serde_json::to_string(&self.skills)
             .expect("skills should serialize")
             .hash(&mut hasher);
@@ -170,6 +193,7 @@ mod tests {
             tool_names: vec!["shell".to_string(), "grep".to_string()],
             capability_descriptors: Vec::new(),
             prompt_declarations: Vec::new(),
+            agent_profiles: Vec::new(),
             skills: Vec::new(),
             step_index: 1,
             turn_index: 2,

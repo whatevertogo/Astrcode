@@ -41,7 +41,7 @@ pub struct SessionMetadata {
 ### SubSession（子会话）
 
 ```rust
-/// 子会话表示由主会话通过 runAgent 工具创建的独立会话实例
+/// 子会话表示由主会话通过 spawnAgent 工具创建的独立会话实例
 pub struct SubSession {
     /// 子会话自己的 session_id
     pub session_id: Uuid,
@@ -335,7 +335,7 @@ pub struct TokenUsage {
 
 子会话在以下情况下创建：
 
-1. **Agent 调用 `runAgent` 工具**
+1. **Agent 调用 `spawnAgent` 工具**
 2. **LLM 返回包含子 agent 调用的工具使用块**
 
 子会话创建后会：
@@ -430,7 +430,7 @@ GET /api/sessions/{sub_session_id}/messages
 ║  🔧 [thinking]                     ║
 ║  需要先了解模块结构和依赖关系...     ║
 ║                                     ║
-║  🔧 Tool: runAgent                  ║
+║  🔧 Tool: spawnAgent                  ║
 ║  ┌─────────────────────────────┐    ║
 ║  │ 🧩 [SubSession: Explore] ↓  │    ║
 ║  │ 共 5 步 | 耗时 12s           │    ║
@@ -443,7 +443,7 @@ GET /api/sessions/{sub_session_id}/messages
 
 ### 工具调用特殊处理
 
-`runAgent` 工具调用渲染为 **SubSession 卡片**：
+`spawnAgent` 工具调用渲染为 **SubSession 卡片**：
 
 **折叠状态：**
 ```

@@ -6,7 +6,7 @@ use astrcode_core::{
     SubagentContextOverrides, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
     ToolEventSink, ToolExecutionResult, test_support::TestEnvGuard,
 };
-use astrcode_runtime_agent_tool::{RunAgentParams, RunAgentTool, SubAgentExecutor};
+use astrcode_runtime_agent_tool::{SpawnAgentParams, SpawnAgentTool, SubAgentExecutor};
 use astrcode_runtime_config::DEFAULT_MAX_CONCURRENT_AGENTS;
 use astrcode_runtime_execution::{
     derive_child_execution_owner, resolve_profile_tool_names, resolve_subagent_overrides,
@@ -106,8 +106,8 @@ async fn deferred_executor_fails_before_runtime_binding() {
     );
 
     let error = executor
-        .execute(
-            RunAgentParams {
+        .launch(
+            SpawnAgentParams {
                 r#type: Some("review".to_string()),
                 description: "check".to_string(),
                 prompt: "check".to_string(),
@@ -122,7 +122,7 @@ async fn deferred_executor_fails_before_runtime_binding() {
 }
 
 #[tokio::test]
-async fn run_agent_tool_emits_child_events_with_agent_context() {
+async fn spawn_agent_tool_emits_child_events_with_agent_context() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
         RuntimeService::from_capabilities(capabilities_from_tools(
@@ -135,7 +135,7 @@ async fn run_agent_tool_emits_child_events_with_agent_context() {
     );
     let executor = Arc::new(DeferredSubAgentExecutor::default());
     executor.bind(&service);
-    let tool = RunAgentTool::new(executor);
+    let tool = SpawnAgentTool::new(executor);
     let sink = Arc::new(RecordingEventSink {
         events: Mutex::new(Vec::new()),
     });
@@ -177,7 +177,7 @@ async fn run_agent_tool_emits_child_events_with_agent_context() {
 }
 
 #[tokio::test]
-async fn run_agent_background_cancellation_releases_concurrency_slots() {
+async fn spawn_agent_background_cancellation_releases_concurrency_slots() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
         RuntimeService::from_capabilities(capabilities_from_tools(
@@ -190,7 +190,7 @@ async fn run_agent_background_cancellation_releases_concurrency_slots() {
     );
     let executor = Arc::new(DeferredSubAgentExecutor::default());
     executor.bind(&service);
-    let tool = RunAgentTool::new(executor);
+    let tool = SpawnAgentTool::new(executor);
     let sink: Arc<dyn ToolEventSink> = Arc::new(RecordingEventSink {
         events: Mutex::new(Vec::new()),
     });
@@ -215,7 +215,7 @@ async fn run_agent_background_cancellation_releases_concurrency_slots() {
                 "call-1".to_string(),
                 json!({
                     "type": "plan",
-                    "description": "regression test for runAgent slot leak",
+                    "description": "regression test for spawnAgent slot leak",
                     "prompt": "collect quick summary"
                 }),
                 &context,

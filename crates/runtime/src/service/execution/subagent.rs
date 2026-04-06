@@ -48,9 +48,9 @@ struct SpawnedSubagentExecution {
 }
 
 impl AgentExecutionServiceHandle {
-    pub async fn execute_subagent(
+    pub async fn launch_subagent(
         &self,
-        params: astrcode_runtime_agent_tool::RunAgentParams,
+        params: astrcode_runtime_agent_tool::SpawnAgentParams,
         ctx: &ToolContext,
     ) -> ServiceResult<SubRunResult> {
         params.validate().map_err(ServiceError::from)?;
@@ -61,7 +61,7 @@ impl AgentExecutionServiceHandle {
 
     fn resolve_profile(
         &self,
-        params: &astrcode_runtime_agent_tool::RunAgentParams,
+        params: &astrcode_runtime_agent_tool::SpawnAgentParams,
     ) -> ServiceResult<AgentProfile> {
         let profile_id = params.r#type.as_deref().unwrap_or("explore");
         let profile = self
@@ -81,7 +81,7 @@ impl AgentExecutionServiceHandle {
         ctx: &ToolContext,
     ) -> ServiceResult<ParentExecutionContext> {
         let parent_turn_id = ctx.turn_id().ok_or_else(|| {
-            ServiceError::InvalidInput("runAgent requires a parent turn id".to_string())
+            ServiceError::InvalidInput("spawnAgent requires a parent turn id".to_string())
         })?;
         let parent_state = self.runtime.ensure_session_loaded(ctx.session_id()).await?;
         let parent_snapshot = parent_state
@@ -106,7 +106,7 @@ impl AgentExecutionServiceHandle {
 
     async fn launch_background(
         &self,
-        params: astrcode_runtime_agent_tool::RunAgentParams,
+        params: astrcode_runtime_agent_tool::SpawnAgentParams,
         profile: AgentProfile,
         parent: ParentExecutionContext,
         ctx: &ToolContext,
@@ -136,7 +136,7 @@ impl AgentExecutionServiceHandle {
     async fn prepare_child(
         &self,
         profile: &AgentProfile,
-        params: &astrcode_runtime_agent_tool::RunAgentParams,
+        params: &astrcode_runtime_agent_tool::SpawnAgentParams,
         parent: &ParentExecutionContext,
     ) -> ServiceResult<PreparedSubagentExecution> {
         let prepared_execution = self.prepare_scoped_execution(

@@ -15,6 +15,7 @@ use astrcode_core::{
     InvocationKind, LlmMessage, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
     SubRunFailure, SubRunFailureCode, SubRunHandoff, SubagentContextOverrides, UserMessageOrigin,
 };
+use astrcode_runtime_agent_tool::SpawnAgentParams;
 use astrcode_runtime_prompt::PromptDeclaration;
 use astrcode_runtime_registry::CapabilityRouter;
 
@@ -45,6 +46,23 @@ pub struct AgentExecutionRequest {
     /// 内部使用：上下文继承控制。
     /// TODO: 未来 compact agent 将通过此字段实现 fork 上下文继承。
     pub context_overrides: Option<SubagentContextOverrides>,
+}
+
+impl AgentExecutionRequest {
+    pub fn from_spawn_agent_params(
+        params: &SpawnAgentParams,
+        max_steps: Option<u32>,
+        context_overrides: Option<SubagentContextOverrides>,
+    ) -> Self {
+        Self {
+            subagent_type: params.r#type.clone(),
+            description: params.description.clone(),
+            prompt: params.prompt.clone(),
+            context: params.context.clone(),
+            max_steps,
+            context_overrides,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -175,7 +193,7 @@ fn build_child_prompt_declarations(
             priority_hint: Some(100),
             always_include: true,
             source: astrcode_runtime_prompt::PromptDeclarationSource::Builtin,
-            capability_name: Some("runAgent".to_string()),
+            capability_name: Some("spawnAgent".to_string()),
             origin: Some(format!("agent-profile:{}", profile.id)),
         });
     }
@@ -358,7 +376,7 @@ pub fn build_background_subrun_handoff(child: &astrcode_core::SubRunHandle) -> S
     artifacts.extend(build_result_artifacts(child));
 
     SubRunHandoff {
-        summary: "runAgent 已在后台启动。".to_string(),
+        summary: "spawnAgent 已在后台启动。".to_string(),
         findings: Vec::new(),
         artifacts,
     }
@@ -397,8 +415,9 @@ fn classify_subrun_failure(error: &AstrError) -> SubRunFailureCode {
 mod tests {
     use astrcode_core::{
         AgentMode, AgentProfile, AgentStatus, AstrError, InvocationKind, SubRunFailureCode,
-        SubRunStorageMode,
+        SubRunStorageMode, SubagentContextOverrides,
     };
+    use astrcode_runtime_agent_tool::SpawnAgentParams;
 
     use super::{
         AgentExecutionRequest, build_background_subrun_handoff, build_execution_spec,
@@ -479,7 +498,7 @@ mod tests {
             status: AgentStatus::Running,
         });
 
-        assert_eq!(handoff.summary, "runAgent 已在后台启动。");
+        assert_eq!(handoff.summary, "spawnAgent 已在后台启动。");
         assert_eq!(handoff.artifacts[0].kind, "subRun");
         assert_eq!(handoff.artifacts[0].id, "subrun-1");
         assert_eq!(handoff.artifacts[1].kind, "session");
@@ -519,5 +538,26 @@ mod tests {
         .expect("execution spec should build");
 
         assert_eq!(spec.resolved_limits.max_steps, Some(3));
+    }
+
+    #[test]
+    fn execution_request_can_be_built_from_spawn_agent_params() {
+        let request = AgentExecutionRequest::from_spawn_agent_params(
+            &SpawnAgentParams {
+                r#type: Some("reviewer".to_string()),
+                description: "review patch".to_string(),
+                prompt: "review the latest diff".to_string(),
+                context: Some("focus on correctness".to_string()),
+            },
+            Some(5),
+            Some(SubagentContextOverrides::default()),
+        );
+
+        assert_eq!(request.subagent_type.as_deref(), Some("reviewer"));
+        assert_eq!(request.description, "review patch");
+        assert_eq!(request.prompt, "review the latest diff");
+        assert_eq!(request.context.as_deref(), Some("focus on correctness"));
+        assert_eq!(request.max_steps, Some(5));
+        assert!(request.context_overrides.is_some());
     }
 }

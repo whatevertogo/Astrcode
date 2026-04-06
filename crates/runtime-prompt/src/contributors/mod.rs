@@ -1,6 +1,7 @@
 //! 内置 prompt 贡献者实现。
 //!
 //! 每个 contributor 负责一个特定领域的 prompt 内容生成：
+//! - [`AgentProfileSummaryContributor`]：子 Agent profile 动态索引
 //! - [`IdentityContributor`]：AI 身份定义
 //! - [`EnvironmentContributor`]：工作环境信息
 //! - [`AgentsMdContributor`]：用户和项目级 AGENTS.md 规则
@@ -8,6 +9,7 @@
 //! - [`SkillSummaryContributor`]：Skill 索引摘要
 //! - [`WorkflowExamplesContributor`]：Few-shot 示例对话
 
+pub mod agent_profile_summary;
 pub mod agents_md;
 pub mod capability_prompt;
 pub mod environment;
@@ -16,6 +18,7 @@ pub mod shared;
 pub mod skill_summary;
 pub mod workflow_examples;
 
+pub use agent_profile_summary::AgentProfileSummaryContributor;
 pub use agents_md::AgentsMdContributor;
 pub use capability_prompt::CapabilityPromptContributor;
 pub use environment::EnvironmentContributor;

@@ -229,7 +229,7 @@ pub struct RuntimeConfig {
 pub struct AgentConfig {
     /// 子会话最大嵌套深度。
     ///
-    /// 这是新的受控子会话深度限制，默认值更保守，优先服务 `runAgent`
+    /// 这是新的受控子会话深度限制，默认值更保守，优先服务 `spawnAgent`
     /// 和未来的根执行 API，而不是继续沿用早期多 Agent 原型的宽松值。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_subrun_depth: Option<usize>,

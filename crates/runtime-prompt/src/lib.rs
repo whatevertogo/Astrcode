@@ -11,6 +11,8 @@
 //! - **Block**：prompt 的最小组成单元，带有语义分类（[`BlockKind`]）、优先级、条件、依赖等元数据
 //! - **Contributor**：独立的 prompt 内容提供者，如身份、环境、规则、工具指南等
 //! - **Composer**：管线编排器，负责收集、去重、拓扑排序、渲染和验证
+//! - **Agent Profile Summary**：基于动态 profile catalog 生成的子 Agent 索引块，供 `spawnAgent`
+//!   路由使用
 //! - **Skill Summary**：基于外部 skill catalog 生成的索引摘要块，供 `Skill` tool 两阶段加载模型使用
 //!
 //! # 设计原则
@@ -36,7 +38,7 @@ pub use block::{
     BlockCondition, BlockContent, BlockKind, BlockSpec, PromptBlock, RenderTarget, ValidationPolicy,
 };
 pub use composer::{PromptComposer, PromptComposerOptions, ValidationLevel};
-pub use context::{PromptContext, PromptSkillSummary};
+pub use context::{PromptAgentProfileSummary, PromptContext, PromptSkillSummary};
 pub use contribution::{PromptContribution, append_unique_tools};
 pub use contributor::PromptContributor;
 pub use diagnostics::{DiagnosticLevel, PromptDiagnostics};

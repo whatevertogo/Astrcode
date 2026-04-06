@@ -6,7 +6,10 @@ use astrcode_runtime_prompt::PromptDeclaration;
 use astrcode_runtime_registry::CapabilityRouter;
 use astrcode_runtime_skill_loader::SkillCatalog;
 
-use super::{RuntimeService, RuntimeSurfaceState, ServiceResult, loop_factory::build_agent_loop};
+use super::{
+    RuntimeService, RuntimeSurfaceState, ServiceResult,
+    loop_factory::{LoopRuntimeDeps, build_agent_loop},
+};
 
 /// 能力面管理器：集中处理 capability surface 与 loop 热替换。
 ///
@@ -46,8 +49,11 @@ impl<'a> CapabilityManager<'a> {
         let next_loop = build_agent_loop(
             &next_surface,
             &runtime_config,
-            Arc::clone(&self.runtime.policy),
-            Arc::clone(&self.runtime.approval),
+            LoopRuntimeDeps::new(
+                Arc::clone(&self.runtime.policy),
+                Arc::clone(&self.runtime.approval),
+                Some(self.runtime.agent_profile_catalog()),
+            ),
         );
         *self.runtime.loop_.write().await = next_loop;
         *self.runtime.surface.write().await = next_surface;

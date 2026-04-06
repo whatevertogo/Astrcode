@@ -123,6 +123,7 @@ mod tests {
             tool_names: vec!["shell".to_string()],
             capability_descriptors: Vec::new(),
             prompt_declarations: Vec::new(),
+            agent_profiles: Vec::new(),
             skills: Vec::new(),
             step_index: 0,
             turn_index: 0,

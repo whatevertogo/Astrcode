@@ -66,13 +66,13 @@ struct AgentEntry {
 ### 核心思路
 
 ```
-runAgent 工具参数增加一个可选字段：
+spawnAgent 工具参数增加一个可选字段：
 
-pub struct RunAgentParams {
-    pub name: String,
-    pub task: String,
+pub struct SpawnAgentParams {
+    pub r#type: Option<String>,
+    pub description: String,
+    pub prompt: String,
     pub context: Option<String>,
-    pub max_steps: Option<u32>,
     
     // === 新增 ===
     /// 是否创建独立子会话（默认 false，共享父 session）
@@ -92,20 +92,20 @@ pub struct RunAgentParams {
 
 ### 1. 数据模型变更
 
-#### 1.1 RunAgentParams 扩展
+#### 1.1 SpawnAgentParams 扩展
 
 ```rust
-// crates/protocol/src/tools/run_agent.rs
+// crates/runtime-agent-tool/src/lib.rs
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RunAgentParams {
-    /// Agent profile ID
-    pub name: String,
-    /// Task description
-    pub task: String,
+pub struct SpawnAgentParams {
+    /// Agent profile ID；为空默认 `explore`
+    pub r#type: Option<String>,
+    /// 短摘要，仅用于 UI / 日志 / 标题
+    pub description: String,
+    /// 子 Agent 实际收到的任务正文
+    pub prompt: String,
     /// Additional context
     pub context: Option<String>,
-    /// Override max steps
-    pub max_steps: Option<u32>,
     /// 是否创建独立子会话（默认 false，共享父 session）
     #[serde(default)]
     pub isolated_session: bool,
@@ -171,7 +171,7 @@ pub enum ChildSessionOutcome {
     Completed,
     Aborted,
     TokenExceeded,
-    Failed { error: String },
+    Failed,
 }
 ```
 
@@ -196,7 +196,7 @@ pub enum ChildSessionOutcome {
 #### 2.1 共享 session 模式（默认，当前行为不变）
 
 ```
-execute_subagent(params, ctx)
+launch_subagent(params, ctx)
     ↓
 child = agent_control.spawn(profile, ctx.session_id, parent_turn_id, ...)
     ↓
@@ -213,7 +213,7 @@ events → parent session JSONL
 #### 2.2 独立子会话模式（新增）
 
 ```
-execute_subagent(params, ctx)
+launch_subagent(params, ctx)
     ↓
 // 1️⃣ 创建子 session
 child_session_id = generate_session_id()
@@ -271,7 +271,7 @@ parent_event_sink.emit(StorageEvent::ToolResult {
 
 **文件：** `crates/protocol/src/tools/run_agent.rs`
 
-- [ ] `RunAgentParams` 增加 `isolated_session: bool` 字段
+- [ ] `SpawnAgentParams` 增加 `isolated_session: bool` 字段
 
 #### 3.2 Core 层（核心契约）
 
@@ -287,9 +287,9 @@ parent_event_sink.emit(StorageEvent::ToolResult {
 
 #### 3.3 Runtime 层（执行引擎）
 
-**文件：** `crates/runtime/src/service/agent_execution.rs`
+**文件：** `crates/runtime/src/service/execution/subagent.rs`
 
-- [ ] `execute_subagent()` 分支逻辑：
+- [ ] `launch_subagent()` 分支逻辑：
   - 如果 `params.isolated_session == false`：**保持当前逻辑不变**
   - 如果 `params.isolated_session == true`：
     1. 调用 `repository.create_event_log()` 创建子 session
@@ -300,27 +300,27 @@ parent_event_sink.emit(StorageEvent::ToolResult {
 **关键代码结构（伪代码）：**
 
 ```rust
-pub async fn execute_subagent(
+pub async fn launch_subagent(
     &self,
-    params: RunAgentParams,
+    params: SpawnAgentParams,
     ctx: &ToolContext,
-) -> ServiceResult<SubAgentResult> {
+) -> ServiceResult<SubRunResult> {
     // ... 现有验证逻辑不变 ...
     
     if params.isolated_session {
         // === 独立子会话模式 ===
-        self.execute_subagent_isolated(params, ctx).await
+        self.launch_subagent_isolated(params, ctx).await
     } else {
         // === 共享 session 模式（当前逻辑） ===
-        self.execute_subagent_shared(params, ctx).await
+        self.launch_subagent_shared(params, ctx).await
     }
 }
 
-async fn execute_subagent_isolated(
+async fn launch_subagent_isolated(
     &self,
-    params: RunAgentParams,
+    params: SpawnAgentParams,
     ctx: &ToolContext,
-) -> ServiceResult<SubAgentResult> {
+) -> ServiceResult<SubRunResult> {
     let start = Instant::now();
     let parent_session_id = ctx.session_id();
     
@@ -396,11 +396,21 @@ async fn execute_subagent_isolated(
     self.agent_control.complete(&child.agent_id, &outcome).await;
     
     // 9. 返回结果（摘要 + 子 session_id）
-    Ok(SubAgentResult {
-        outcome,
-        summary,
-        child_session_id: Some(child_session_id),  // ✅ 前端可用此 ID 拉取完整子会话
-        // ...
+    Ok(SubRunResult {
+        status: map_outcome(&outcome),
+        handoff: Some(SubRunHandoff {
+            summary,
+            findings: Vec::new(),
+            artifacts: vec![ArtifactRef {
+                kind: "session".to_string(),
+                id: child_session_id.clone(),
+                label: "Child session".to_string(),
+                session_id: Some(child_session_id),
+                storage_seq: None,
+                uri: None,
+            }],
+        }),
+        failure: None,
     })
 }
 ```
@@ -495,10 +505,10 @@ session-2025-12-31T20-50-00-abc12345.jsonl:
 {"storage_seq":1,"type":"SessionStart","session_id":"2025-12-31T20-50-00-abc12345"}
 {"storage_seq":2,"type":"UserMessage","turn_id":"turn-5","content":"重构这个模块"}
 {"storage_seq":3,"type":"AssistantFinal","turn_id":"turn-5","content":"让我先用 explore 分析..."}
-{"storage_seq":4,"type":"ToolCall","turn_id":"turn-5","tool_name":"runAgent","args":{"name":"explore","task":"查找 UserTrait 的使用","isolated_session":true}}
+{"storage_seq":4,"type":"ToolCall","turn_id":"turn-5","tool_name":"spawnAgent","args":{"type":"explore","description":"查找 UserTrait 使用","prompt":"查找 UserTrait 的使用","isolated_session":true}}
 {"storage_seq":5,"type":"SessionStart","session_id":"2025-12-31T20-53-00-def67890","parent_session_id":"2025-12-31T20-50-00-abc12345"}  ← 子会话创建
 {"storage_seq":6,"type":"ChildSessionSummary","parent_turn_id":"turn-5","child_session_id":"2025-12-31T20-53-00-def67890","summary":"发现 3 处使用","steps_executed":5,"duration_ms":12000,"outcome":"Completed"}
-{"storage_seq":7,"type":"ToolResult","turn_id":"turn-5","tool_name":"runAgent","output":"[子会话摘要] 发现 3 处...","child_session_id":"2025-12-31T20-53-00-def67890"}
+{"storage_seq":7,"type":"ToolResult","turn_id":"turn-5","tool_name":"spawnAgent","output":"[子会话摘要] 发现 3 处...","child_session_id":"2025-12-31T20-53-00-def67890"}
 {"storage_seq":8,"type":"AssistantFinal","turn_id":"turn-5","content":"基于 explore 结果，我看到 3 处..."}
 ```
 
@@ -540,7 +550,7 @@ default_isolated_session: false  # 默认共享（保持当前行为）
 #### 5.2 覆盖方式
 
 **优先级：**
-1. `runAgent` 工具显式传入 `isolated_session: true/false` → **最高优先级**
+1. `spawnAgent` 工具显式传入 `isolated_session: true/false` → **最高优先级**
 2. Profile 的 `default_isolated_session` 配置 → **次优先级**
 3. 全局运行时默认值（false） → **最低优先级**
 
@@ -556,7 +566,7 @@ let use_isolated = params.isolated_session
 ```mermaid
 graph TD
     User[用户提问] --> Agent[主 Agent 执行]
-    Agent --> LLM{LLM 决定调用 runAgent}
+    Agent --> LLM{LLM 决定调用 spawnAgent}
     LLM -->|isolated_session: false| Shared[共享 session 模式]
     LLM -->|isolated_session: true| Isolated[独立子会话模式]
     
@@ -594,12 +604,12 @@ graph TD
 ### 8. 实施阶段
 
 #### Phase 1：核心数据结构（Protocol + Core）
-- [ ] `RunAgentParams` + `SubAgentHandle` + `AgentEventContext` 扩展
+- [ ] `SpawnAgentParams` + `SubAgentHandle` + `AgentEventContext` 扩展
 - [ ] 新增 `ChildSessionSummary` 事件
 - **验证：** 编译通过，现有测试全部通过
 
 #### Phase 2：执行引擎（Runtime）
-- [ ] `execute_subagent_isolated()` 实现
+- [ ] `launch_subagent_isolated()` 实现
 - [ ] 子 session 创建与 event sink 管理
 - [ ] 摘要生成与写回逻辑
 - **验证：** 单元测试覆盖两种模式
@@ -626,7 +636,7 @@ graph TD
 
 | 风险 | 影响 | 缓解 |
 |------|------|------|
-| 子 session 文件未正确创建 | 数据不一致 | 在 `execute_subagent_isolated()` 中增加 try-finally 回滚 |
+| 子 session 文件未正确创建 | 数据不一致 | 在 `launch_subagent_isolated()` 中增加 try-finally 回滚 |
 | 并发写入父子 session | 事件顺序混乱 | 使用文件锁（已有机制）|
 | 子 session 泄漏（创建后未清理） | 磁盘空间浪费 | 增加定时清理任务，清理孤儿 session |
 | 前端渲染性能（大量子会话） | 页面卡顿 | 虚拟滚动 + 懒加载子会话卡片 |
@@ -639,8 +649,9 @@ graph TD
 
 ```json
 {
-  "name": "explore",
-  "task": "查找所有使用 UserTrait 的地方",
+  "type": "explore",
+  "description": "查找 UserTrait 使用",
+  "prompt": "查找所有使用 UserTrait 的地方",
   "isolated_session": false
 }
 ```
@@ -648,10 +659,10 @@ graph TD
 父 session JSONL 中包含子 agent 的所有事件：
 ```
 Turn 5: UserMessage("重构这个模块")
-  → ToolCall("runAgent", {name: "explore", ...})
+  → ToolCall("spawnAgent", {type: "explore", prompt: "...", ...})
     → ToolCall("read_file", ...) [agent_id=agent-1, parent_turn_id=turn-5]
     → ToolResult("read_file", ...) [agent_id=agent-1, parent_turn_id=turn-5]
-  → ToolResult("runAgent", output="[摘要] 发现 3 处...")
+  → ToolResult("spawnAgent", output="[摘要] 发现 3 处...")
   → AssistantFinal("基于 explore 结果...")
 ```
 
@@ -659,8 +670,9 @@ Turn 5: UserMessage("重构这个模块")
 
 ```json
 {
-  "name": "explore",
-  "task": "查找所有使用 UserTrait 的地方",
+  "type": "explore",
+  "description": "查找 UserTrait 使用",
+  "prompt": "查找所有使用 UserTrait 的地方",
   "isolated_session": true
 }
 ```
@@ -668,10 +680,10 @@ Turn 5: UserMessage("重构这个模块")
 父 session JSONL：
 ```
 Turn 5: UserMessage("重构这个模块")
-  → ToolCall("runAgent", {name: "explore", ..., isolated_session: true})
+  → ToolCall("spawnAgent", {type: "explore", prompt: "...", isolated_session: true})
     → SessionStart(session_id="child-abc", parent_session_id="parent-xyz") ← 标记子会话创建
     → ChildSessionSummary(child_session_id="child-abc", summary="发现 3 处使用")
-  → ToolResult("runAgent", output="[子会话摘要] 发现 3 处...", child_session_id="child-abc")
+  → ToolResult("spawnAgent", output="[子会话摘要] 发现 3 处...", child_session_id="child-abc")
   → AssistantFinal("基于 explore 结果...")
 ```
 
@@ -694,7 +706,7 @@ Turn 1: UserMessage("查找所有使用 UserTrait 的地方")
 │ 用户：重构这个模块                            │
 │                                              │
 │ 助手：让我先用 explore 分析...                │
-│  🔧 runAgent("explore", "查找 UserTrait...") │
+│  🔧 spawnAgent("explore", "查找 UserTrait...") │
 │  ┌───────────────────────────────────────┐   │
 │  │ 🔍 [子会话: explore]                  │   │
 │  │ 5 步 | 12 秒 | ✅ 完成                │   │

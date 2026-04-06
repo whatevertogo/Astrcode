@@ -26,7 +26,7 @@
 
 **涉及文件**：
 - `crates/runtime-agent-control/src/lib.rs`
-- `crates/runtime/src/service/agent_execution.rs`
+- `crates/runtime/src/service/execution/`
 
 ```rust
 pub struct AgentControl {
@@ -58,7 +58,7 @@ pub enum AgentControlError {
 - [ ] 内置 Profile 指定模型偏好（如 explore 用 haiku，review 用 sonnet）
 
 **涉及文件**：
-- `crates/runtime/src/service/agent_execution.rs`
+- `crates/runtime/src/service/execution/`
 - `crates/runtime/src/provider_factory.rs` 或 `crates/runtime-agent-loop/src/provider_factory.rs`
 
 ### 1.2 Profile 增加 `inherit_rules` 控制
@@ -74,7 +74,7 @@ pub enum AgentControlError {
 
 **涉及文件**：
 - `crates/core/src/agent/mod.rs`
-- `crates/runtime/src/service/agent_execution.rs`
+- `crates/runtime/src/service/execution/`
 - `crates/runtime-agent-loader/src/lib.rs`
 
 ### 1.3 Profile 增加 `isolation` 模式
@@ -90,7 +90,7 @@ pub enum AgentControlError {
 
 **涉及文件**：
 - `crates/core/src/agent/mod.rs`
-- `crates/runtime/src/service/agent_execution.rs`
+- `crates/runtime/src/service/execution/`
 
 ```rust
 #[derive(Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -108,7 +108,7 @@ pub enum AgentIsolation {
 
 ### 2.1 Agent 间消息传递
 
-**现状**：`runAgent` 是单向的——主 Agent 调用子 Agent，等待结果。子 Agent 无法主动向主 Agent 报告进展。
+**现状**：`spawnAgent` 是单向的——主 Agent 调用子 Agent，等待结果。子 Agent 无法主动向主 Agent 报告进展。
 
 **参考**：
 - Claude Code：`SendMessage` 工具 + 邮箱系统
@@ -124,7 +124,7 @@ pub enum AgentIsolation {
 **涉及文件**：
 - 新增 `crates/runtime-agent-tool/src/send_message.rs`
 - `crates/runtime-agent-loop/src/agent_control.rs`
-- `crates/runtime/src/service/agent_execution.rs`
+- `crates/runtime/src/service/execution/`
 
 ### 2.2 Hook 系统增加 `block` 语义
 
@@ -155,7 +155,7 @@ pub enum AgentIsolation {
 - [ ] 如果当前场景不支持审批 UI，则回退到 deny
 
 **涉及文件**：
-- `crates/runtime/src/service/agent_execution.rs`（`SubAgentPolicyEngine`）
+- `crates/runtime/src/service/execution/`（`SubAgentPolicyEngine`）
 
 ---
 
@@ -239,7 +239,7 @@ Roadmap 已在"推荐落点"中提到这一点。这是正确的方向：
 
 ### SubAgentPolicyEngine 和 ChildExecutionTracker 应移到 `runtime-agent-loop`
 
-**现状**：两者都在 `crates/runtime/src/service/agent_execution.rs` 中，但它们实现了 `core` trait 或消费了 `runtime-agent-loop` 的导出函数。
+**现状**：两者都在 `crates/runtime/src/service/execution/` 中，但它们实现了 `core` trait 或消费了 `runtime-agent-loop` 的导出函数。
 
 **理由**：
 - `SubAgentPolicyEngine` 实现了 `PolicyEngine` trait（core 层），应靠近 trait 定义

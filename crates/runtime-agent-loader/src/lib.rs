@@ -82,6 +82,13 @@ impl AgentProfileRegistry {
     pub fn list(&self) -> Vec<&AgentProfile> {
         self.profiles.values().collect()
     }
+
+    pub fn list_subagent_profiles(&self) -> Vec<&AgentProfile> {
+        self.profiles
+            .values()
+            .filter(|profile| matches!(profile.mode, AgentMode::SubAgent | AgentMode::All))
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -525,7 +532,7 @@ impl ToolList {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::test_support::TestEnvGuard;
+    use astrcode_core::{AgentMode, AgentProfile, test_support::TestEnvGuard};
 
     use super::{AgentProfileLoader, AgentProfileRegistry};
 
@@ -534,6 +541,55 @@ mod tests {
         let registry = AgentProfileRegistry::with_builtin_defaults();
         assert!(registry.get("explore").is_some());
         assert!(registry.get("reviewer").is_some());
+    }
+
+    #[test]
+    fn list_subagent_profiles_filters_out_primary_only_profiles() {
+        let mut registry = AgentProfileRegistry::new();
+        registry.insert(AgentProfile {
+            id: "primary".to_string(),
+            name: "Primary".to_string(),
+            description: "root only".to_string(),
+            mode: AgentMode::Primary,
+            system_prompt: None,
+            allowed_tools: Vec::new(),
+            disallowed_tools: Vec::new(),
+            max_steps: None,
+            token_budget: None,
+            model_preference: None,
+        });
+        registry.insert(AgentProfile {
+            id: "subagent".to_string(),
+            name: "Subagent".to_string(),
+            description: "subagent".to_string(),
+            mode: AgentMode::SubAgent,
+            system_prompt: None,
+            allowed_tools: Vec::new(),
+            disallowed_tools: Vec::new(),
+            max_steps: None,
+            token_budget: None,
+            model_preference: None,
+        });
+        registry.insert(AgentProfile {
+            id: "all".to_string(),
+            name: "All".to_string(),
+            description: "all modes".to_string(),
+            mode: AgentMode::All,
+            system_prompt: None,
+            allowed_tools: Vec::new(),
+            disallowed_tools: Vec::new(),
+            max_steps: None,
+            token_budget: None,
+            model_preference: None,
+        });
+
+        let ids = registry
+            .list_subagent_profiles()
+            .into_iter()
+            .map(|profile| profile.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec!["all", "subagent"]);
     }
 
     #[test]

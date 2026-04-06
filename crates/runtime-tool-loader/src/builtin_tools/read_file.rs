@@ -400,6 +400,7 @@ fn read_file_full(
 ) -> Result<(String, usize, bool)> {
     let mut output = String::new();
     let mut line_no = 0usize;
+    let mut cached_width = 0usize;
 
     for line_result in reader.lines() {
         check_cancel(cancel)?;
@@ -407,8 +408,12 @@ fn read_file_full(
         line_no += 1;
 
         let formatted = if line_numbers {
-            // 单次扫描时按已见到的最大行号动态宽度格式化，避免为宽度计算做二次全量 I/O。
-            format_line(line_no, &line, line_number_width(line_no))
+            // 缓存行号宽度，避免每行都重新计算（避免频繁字符串分配）
+            let width = line_number_width(line_no);
+            if width > cached_width {
+                cached_width = width;
+            }
+            format_line(line_no, &line, cached_width)
         } else {
             line.clone()
         };

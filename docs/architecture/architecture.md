@@ -38,7 +38,7 @@
 | `runtime-agent-control` | `AgentControl` | spawn/list/cancel/wait、parent-child 关系、深度/并发/GC 限制 |
 | `runtime-agent-loader` | `AgentProfileLoader` | builtin(4) + 用户 + 项目 agent 定义加载 (Markdown/YAML) |
 | `runtime-agent-loop` | `AgentLoop` | LLM 调用 + 工具执行主循环、审批、prompt/context/compaction |
-| `runtime-agent-tool` | `RunAgentTool` | 把 `runAgent` 能力暴露为 LLM 工具 |
+| `runtime-agent-tool` | `SpawnAgentTool` | 把 `spawnAgent` 能力暴露为 LLM 工具 |
 | `runtime` | `RuntimeService` | 门面：组合所有 runtime crate 提供统一 API |
 
 #### RuntimeService 公开 API

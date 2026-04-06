@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use astrcode_core::{HookHandler, PolicyEngine};
 use astrcode_runtime_agent_loop::{AgentLoop, ApprovalBroker, SubAgentPolicyEngine};
+use astrcode_runtime_agent_tool::AgentProfileCatalog;
 use astrcode_runtime_prompt::PromptDeclaration;
 use astrcode_runtime_registry::CapabilityRouter;
 use astrcode_runtime_skill_loader::SkillCatalog;
@@ -21,11 +22,31 @@ use crate::{
     provider_factory::ConfigFileProviderFactory,
 };
 
+#[derive(Clone)]
+pub(super) struct LoopRuntimeDeps {
+    policy: Arc<dyn PolicyEngine>,
+    approval: Arc<dyn ApprovalBroker>,
+    agent_profile_catalog: Option<Arc<dyn AgentProfileCatalog>>,
+}
+
+impl LoopRuntimeDeps {
+    pub(super) fn new(
+        policy: Arc<dyn PolicyEngine>,
+        approval: Arc<dyn ApprovalBroker>,
+        agent_profile_catalog: Option<Arc<dyn AgentProfileCatalog>>,
+    ) -> Self {
+        Self {
+            policy,
+            approval,
+            agent_profile_catalog,
+        }
+    }
+}
+
 pub(super) fn build_agent_loop(
     surface: &RuntimeSurfaceState,
     runtime_config: &crate::config::RuntimeConfig,
-    policy: Arc<dyn PolicyEngine>,
-    approval: Arc<dyn ApprovalBroker>,
+    deps: LoopRuntimeDeps,
 ) -> Arc<AgentLoop> {
     build_agent_loop_from_parts(
         surface.capabilities.clone(),
@@ -33,8 +54,7 @@ pub(super) fn build_agent_loop(
         Arc::clone(&surface.skill_catalog),
         surface.hook_handlers.clone(),
         runtime_config,
-        policy,
-        approval,
+        deps,
     )
 }
 
@@ -44,9 +64,13 @@ pub(super) fn build_agent_loop_from_parts(
     skill_catalog: Arc<SkillCatalog>,
     hook_handlers: Vec<Arc<dyn HookHandler>>,
     runtime_config: &crate::config::RuntimeConfig,
-    policy: Arc<dyn PolicyEngine>,
-    approval: Arc<dyn ApprovalBroker>,
+    deps: LoopRuntimeDeps,
 ) -> Arc<AgentLoop> {
+    let LoopRuntimeDeps {
+        policy,
+        approval,
+        agent_profile_catalog,
+    } = deps;
     let max_tool_concurrency = resolve_max_tool_concurrency(runtime_config);
     Arc::new(
         AgentLoop::from_capabilities_with_prompt_inputs(
@@ -54,6 +78,7 @@ pub(super) fn build_agent_loop_from_parts(
             capabilities,
             prompt_declarations,
             skill_catalog,
+            agent_profile_catalog,
         )
         .with_hook_handlers(hook_handlers)
         .with_max_tool_concurrency(max_tool_concurrency)
@@ -72,9 +97,13 @@ pub(super) fn build_scoped_agent_loop(
     skill_catalog: Arc<SkillCatalog>,
     hook_handlers: Vec<Arc<dyn HookHandler>>,
     runtime_config: &crate::config::RuntimeConfig,
-    policy: Arc<dyn PolicyEngine>,
-    approval: Arc<dyn ApprovalBroker>,
+    deps: LoopRuntimeDeps,
 ) -> Arc<AgentLoop> {
+    let LoopRuntimeDeps {
+        policy,
+        approval,
+        agent_profile_catalog,
+    } = deps;
     let scoped_policy = Arc::new(SubAgentPolicyEngine::new(
         policy,
         capabilities.tool_names().into_iter().collect(),
@@ -85,7 +114,6 @@ pub(super) fn build_scoped_agent_loop(
         skill_catalog,
         hook_handlers,
         runtime_config,
-        scoped_policy,
-        approval,
+        LoopRuntimeDeps::new(scoped_policy, approval, agent_profile_catalog),
     )
 }

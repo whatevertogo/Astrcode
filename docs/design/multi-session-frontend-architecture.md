@@ -15,7 +15,7 @@
 ```
 Root Session (root-agent-xxx)
 ├── Turn 1: 用户问"分析代码"
-├── Turn 2: 调用 runAgent
+├── Turn 2: 调用 spawnAgent
 │   └── SubRun (explore-agent-yyy)  ← 可切换到此会话
 │       ├── Turn 1: "搜索文件"
 │       ├── Turn 2: "读取文件"

@@ -31,9 +31,10 @@
 use std::{collections::HashMap, sync::Arc};
 
 use astrcode_core::{AgentState, AstrError, CapabilityDescriptor, Result};
+use astrcode_runtime_agent_tool::AgentProfileCatalog;
 use astrcode_runtime_prompt::{
-    PromptComposer, PromptContext, PromptDeclaration, PromptSkillSummary,
-    composer::PromptBuildOutput,
+    PromptAgentProfileSummary, PromptComposer, PromptContext, PromptDeclaration,
+    PromptSkillSummary, composer::PromptBuildOutput,
 };
 use astrcode_runtime_skill_loader::SkillCatalog;
 
@@ -45,6 +46,7 @@ pub(crate) struct PromptRuntime {
     capability_descriptors: Vec<CapabilityDescriptor>,
     prompt_declarations: Vec<PromptDeclaration>,
     skill_catalog: Arc<SkillCatalog>,
+    agent_profile_catalog: Option<Arc<dyn AgentProfileCatalog>>,
 }
 
 impl PromptRuntime {
@@ -54,6 +56,7 @@ impl PromptRuntime {
         capability_descriptors: Vec<CapabilityDescriptor>,
         prompt_declarations: Vec<PromptDeclaration>,
         skill_catalog: Arc<SkillCatalog>,
+        agent_profile_catalog: Option<Arc<dyn AgentProfileCatalog>>,
     ) -> Self {
         Self {
             composer,
@@ -61,6 +64,7 @@ impl PromptRuntime {
             capability_descriptors,
             prompt_declarations,
             skill_catalog,
+            agent_profile_catalog,
         }
     }
 
@@ -97,6 +101,19 @@ impl PromptRuntime {
             tool_names: self.tool_names.clone(),
             capability_descriptors: self.capability_descriptors.clone(),
             prompt_declarations: self.prompt_declarations.clone(),
+            agent_profiles: self
+                .agent_profile_catalog
+                .as_ref()
+                .map(|catalog| {
+                    catalog
+                        .list_subagent_profiles()
+                        .into_iter()
+                        .map(|profile| {
+                            PromptAgentProfileSummary::new(profile.id, profile.description)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             skills: self
                 .skill_catalog
                 .resolve_for_working_dir(&state.working_dir.to_string_lossy())

@@ -1,6 +1,9 @@
 use std::{path::PathBuf, sync::Arc};
 
-use super::{RuntimeService, ServiceError, ServiceResult, blocking_bridge::spawn_blocking_service};
+use super::{
+    RuntimeService, ServiceError, ServiceResult, blocking_bridge::spawn_blocking_service,
+    loop_factory::LoopRuntimeDeps,
+};
 use crate::config::{config_path, open_config_in_editor, save_config, test_connection};
 
 /// 配置管理器：负责配置快照读写与磁盘重载。
@@ -31,8 +34,11 @@ impl<'a> ConfigManager<'a> {
         let next_loop = super::build_agent_loop(
             &surface,
             &next_config.runtime,
-            Arc::clone(&self.runtime.policy),
-            Arc::clone(&self.runtime.approval),
+            LoopRuntimeDeps::new(
+                Arc::clone(&self.runtime.policy),
+                Arc::clone(&self.runtime.approval),
+                Some(self.runtime.agent_profile_catalog()),
+            ),
         );
 
         *self.runtime.config.lock().await = next_config.clone();

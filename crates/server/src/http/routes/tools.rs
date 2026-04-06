@@ -41,7 +41,7 @@ pub(crate) async fn execute_tool(
             accepted: false,
             message: format!(
                 "direct tool execution for '{}' is not enabled yet; use a session turn or \
-                 runAgent for now",
+                 spawnAgent for now",
                 tool_id
             ),
         }),

@@ -253,6 +253,7 @@ mod tests {
                 capability_name: Some("plugin.search".to_string()),
                 origin: Some("example-plugin".to_string()),
             }],
+            agent_profiles: Vec::new(),
             skills: Vec::new(),
             step_index: 0,
             turn_index: 0,
