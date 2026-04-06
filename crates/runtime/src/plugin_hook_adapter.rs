@@ -116,12 +116,6 @@ struct PluginHookResponse {
     /// PreCompact 专用：追加到默认 compact prompt 后的 system prompt 片段
     #[serde(default)]
     additional_system_prompt: Option<String>,
-    /// 兼容旧插件返回的 `overrideSystemPrompt`。
-    ///
-    /// 旧字段原意也是“给 compact prompt 增加额外约束”，这里只做向后兼容映射，
-    /// 避免插件升级宿主后二进制无报错但行为静默失效。
-    #[serde(default)]
-    override_system_prompt: Option<String>,
     /// PreCompact 专用：覆盖保留的最近 turn 数量
     #[serde(default)]
     override_keep_recent_turns: Option<usize>,
@@ -334,9 +328,7 @@ fn parse_plugin_hook_outcome(output: Value) -> Result<HookOutcome> {
             args: response.args.unwrap_or(Value::Null),
         }),
         "modifyCompactContext" => Ok(HookOutcome::ModifyCompactContext {
-            additional_system_prompt: response
-                .additional_system_prompt
-                .or(response.override_system_prompt),
+            additional_system_prompt: response.additional_system_prompt,
             override_keep_recent_turns: response.override_keep_recent_turns,
             custom_summary: response.custom_summary,
         }),
@@ -467,54 +459,6 @@ mod tests {
                 assert_eq!(additional_system_prompt, None);
                 assert_eq!(override_keep_recent_turns, Some(3));
                 assert_eq!(custom_summary, None);
-            },
-            _ => panic!("expected ModifyCompactContext"),
-        }
-    }
-
-    #[test]
-    fn plugin_hook_response_keeps_backward_compat_for_override_system_prompt() {
-        let outcome = parse_plugin_hook_outcome(json!({
-            "action": "modifyCompactContext",
-            "overrideSystemPrompt": "Legacy prompt"
-        }))
-        .expect("legacy compact prompt field should remain compatible");
-
-        match outcome {
-            HookOutcome::ModifyCompactContext {
-                additional_system_prompt,
-                override_keep_recent_turns,
-                custom_summary,
-            } => {
-                assert_eq!(additional_system_prompt, Some("Legacy prompt".to_string()));
-                assert_eq!(override_keep_recent_turns, None);
-                assert_eq!(custom_summary, None);
-            },
-            _ => panic!("expected ModifyCompactContext"),
-        }
-    }
-
-    /// additionalSystemPrompt 优先于 overrideSystemPrompt——当两者同时存在时，
-    /// overrideSystemPrompt 应被忽略，避免旧字段静默覆盖新字段的值。
-    #[test]
-    fn plugin_hook_response_prefers_additional_over_override_system_prompt() {
-        let outcome = parse_plugin_hook_outcome(json!({
-            "action": "modifyCompactContext",
-            "additionalSystemPrompt": "New prompt",
-            "overrideSystemPrompt": "Legacy prompt"
-        }))
-        .expect("both fields present");
-
-        match outcome {
-            HookOutcome::ModifyCompactContext {
-                additional_system_prompt,
-                ..
-            } => {
-                assert_eq!(
-                    additional_system_prompt,
-                    Some("New prompt".to_string()),
-                    "additionalSystemPrompt should take priority over overrideSystemPrompt"
-                );
             },
             _ => panic!("expected ModifyCompactContext"),
         }
