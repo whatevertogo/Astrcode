@@ -41,6 +41,8 @@ pub(crate) fn built_in_capability_invokers(
 ) -> Result<Vec<Arc<dyn CapabilityInvoker>>> {
     vec![
         ToolCapabilityInvoker::boxed(Box::new(SkillTool::new(skill_catalog))),
+        // 注意 RunAgentTool 依赖 SubAgentExecutor，因此放在 SkillTool 之后注册，确保
+        // subagent_executor 已经准备好 子agent工具
         ToolCapabilityInvoker::boxed(Box::new(RunAgentTool::new(subagent_executor))),
         ToolCapabilityInvoker::boxed(Box::new(
             astrcode_runtime_tool_loader::builtin_tools::shell::ShellTool,
