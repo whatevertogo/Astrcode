@@ -419,8 +419,10 @@ export default function App() {
     await interrupt(activeSessionIdRef.current);
   }, [interrupt]);
 
+  // 使用 h-full 而非 h-dvh，因为 WebView2 对 dvh（动态视口高度）的支持不稳定，
+  // 会导致桌面端滚动容器高度计算错误，表现为消息列表无法继续下滑。
   return (
-    <div className="flex h-dvh min-h-0 overflow-hidden bg-[var(--app-bg)] text-[var(--text-primary)]">
+    <div className="flex h-full min-h-0 overflow-hidden bg-[var(--app-bg)] text-[var(--text-primary)]">
       {isSidebarOpen && (
         <>
           <div className="flex-none min-w-0 min-h-0" style={{ width: `${sidebarWidth}px` }}>

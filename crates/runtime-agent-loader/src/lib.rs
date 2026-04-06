@@ -205,8 +205,8 @@ fn builtin_agents() -> &'static [BuiltinAgent] {
             content: include_str!("builtin_agents/plan.md"),
         },
         BuiltinAgent {
-            path: "builtin://review.md",
-            content: include_str!("builtin_agents/review.md"),
+            path: "builtin://reviewer.md",
+            content: include_str!("builtin_agents/reviewer.md"),
         },
         BuiltinAgent {
             path: "builtin://execute.md",
@@ -533,7 +533,7 @@ mod tests {
     fn builtin_defaults_are_available() {
         let registry = AgentProfileRegistry::with_builtin_defaults();
         assert!(registry.get("explore").is_some());
-        assert!(registry.get("review").is_some());
+        assert!(registry.get("reviewer").is_some());
     }
 
     #[test]

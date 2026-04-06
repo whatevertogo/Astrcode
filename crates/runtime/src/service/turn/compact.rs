@@ -102,6 +102,7 @@ fn should_record_compaction_tail_event(event: &StorageEvent) -> bool {
         event,
         StorageEvent::UserMessage { .. }
             | StorageEvent::AssistantFinal { .. }
+            | StorageEvent::ToolCall { .. }
             | StorageEvent::ToolResult { .. }
     )
 }

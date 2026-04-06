@@ -2,7 +2,8 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  scrollbar-gutter: stable both-edges;
+  /* WebView2 对 scrollbar-gutter: stable both-edges 支持不稳定，
+     会导致滚动高度计算错误。改为使用 padding 预留滚动条空间。 */
   padding: 28px var(--chat-content-horizontal-padding) 10px;
   display: flex;
   flex-direction: column;
