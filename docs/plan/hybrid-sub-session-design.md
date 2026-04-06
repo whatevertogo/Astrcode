@@ -1,740 +1,396 @@
-# 混合子会话架构设计
+# 混合子会话 / 受控子会话计划同步
 
-## 概要
-
-当前子 agent 实现是"受控子回合"（Controlled Sub-Turns），所有事件写入同一个 session，通过 `AgentEventContext` 标记亲缘关系。
-
-本方案提出**混合模式**：
-- **默认共享 session** — 保持当前的简单关联模型
-- **可选独立子会话** — 子 agent 拥有自己的 session_id，通过已有 `parent_session_id` 机制关联
-
----
-
-## 现有基础（可直接复用）
-
-### 1. SessionMeta 已支持分叉
-
-```rust
-// crates/core/src/event/mod.rs
-pub struct SessionMeta {
-    pub session_id: String,
-    pub parent_session_id: Option<String>,  // ✅ 已有
-    pub parent_storage_seq: Option<u64>,    // ✅ 已有
-    // ...
-}
-```
-
-**说明：** `SessionStart` 事件已经携带 `parent_session_id` 字段，只需在创建子 session 时使用。
-
-### 2. AgentEventContext 已关联亲缘
-
-```rust
-// crates/core/src/agent/mod.rs
-pub struct AgentEventContext {
-    pub agent_id: Option<String>,          // ✅ 已有
-    pub parent_turn_id: Option<String>,    // ✅ 已有
-    pub agent_profile: Option<String>,     // ✅ 已有
-}
-```
-
-### 3. FileSystemSessionRepository 已支持多 session
-
-```
-~/.astrcode/projects/<hash>/sessions/
-  └─ <parent_session_id>/
-      └── session-<id>.jsonl
-  └─ <child_session_id>/       // ✅ 目录结构已支持
-      └── session-<id>.jsonl
-```
-
-### 4. AgentControl 已管理亲缘树
-
-```rust
-// crates/runtime-agent-control/src/lib.rs
-struct AgentEntry {
-    handle: SubAgentHandle,          // 包含 session_id
-    parent_agent_id: Option<String>,
-    children: BTreeSet<String>,
-    // ...
-}
-```
+> **最后更新**：2026-04-07  
+> **当前结论**：仓库已经从早期的 `isolated_session + ChildSessionSummary` 设想，演进到 **`spawnAgent + controlled sub-session`** 主线。  
+> 本文档不再把原始方案当作当前实施蓝图，而是同步：
+> 1. 已经落地的真实能力  
+> 2. 与旧方案的差异  
+> 3. 后续仍值得推进的阶段
 
 ---
 
-## 设计方案
+## 已完成内容（简化总结，放最上面）
 
-### 核心思路
+### 1. 核心身份模型已经从“事件打标”演进到受控子会话
 
-```
-spawnAgent 工具参数增加一个可选字段：
+当前实现已经不只是“子 Agent 事件写回父 session 再打标签”，而是有了稳定的子执行域模型：
 
+- 已有 `sub_run_id`，显式区分 **agent 实例** 与 **子执行域实例**
+- 已有 `InvocationKind`，区分 `RootExecution` / `SubRun`
+- 已有 `SubRunStorageMode::{SharedSession, IndependentSession}`
+- 已有 `SubRunHandle.child_session_id`
+- 已有 `AgentEventContext.child_session_id`
+- 已有 `SubRunStarted / SubRunFinished` 生命周期事件
+
+**对应实现：**
+- `crates/core/src/agent/mod.rs`
+- `crates/core/src/event/types.rs`
+
+### 2. Runtime 已形成统一的子会话执行链
+
+当前 `spawnAgent` 的运行时路径已经比较稳定，不再需要早期文档里那套“分支式伪代码”来解释：
+
+- `launch_subagent()` 是统一入口
+- 已拆出：
+  - `resolve_profile()`
+  - `resolve_parent_execution()`
+  - `prepare_child()`
+  - `spawn_child()`
+  - `build_event_sinks()`
+  - `run_child_loop()`
+  - `finalize_child_execution()`
+- `IndependentSession` 模式下会创建 child session，并使用独立 sink
+- `SharedSession` 模式下继续复用父 session sink
+- 后台子会话返回结构化 `subRun` artifact；如果是独立子会话，还会返回 `session` artifact
+
+**对应实现：**
+- `crates/runtime/src/service/execution/subagent.rs`
+- `crates/runtime-execution/src/prep.rs`
+
+### 3. API / 前端 / 测试已经具备可用骨架
+
+**API 已落地：**
+- `GET /api/v1/agents`
+- `POST /api/v1/agents/{id}/execute`
+- `GET /api/v1/sessions/{id}/subruns/{sub_run_id}`
+- `POST /api/v1/sessions/{id}/subruns/{sub_run_id}/cancel`
+
+**前端已落地：**
+- 子会话事件已进入状态层
+- `MessageList` 已按 `subRunId` 归组
+- `SubRunBlock` 已能内联展示运行中 / 完成 / 失败 / token 超限等状态
+
+**测试已落地：**
+- 子会话事件链基本集成测试
+- 后台 `subRun` artifact 测试
+- 显式取消释放并发槽位测试
+
+**对应实现：**
+- `crates/server/src/http/routes/mod.rs`
+- `crates/server/src/http/routes/agents.rs`
+- `frontend/src/components/Chat/SubRunBlock.tsx`
+- `frontend/src/lib/applyAgentEvent.ts`
+- `crates/runtime/src/service/execution/tests.rs`
+
+---
+
+## 与原始方案的主要差异（需要明确）
+
+这部分是同步文档时最重要的地方：**哪些内容已经被主线吸收，哪些内容已经偏离实际，不应再当作短期实施目标。**
+
+### 1. `isolated_session` 没有作为 `spawnAgent` 的公开参数落地
+
+原方案希望：
+
+```rust
 pub struct SpawnAgentParams {
-    pub r#type: Option<String>,
-    pub description: String,
-    pub prompt: String,
-    pub context: Option<String>,
-    
-    // === 新增 ===
-    /// 是否创建独立子会话（默认 false，共享父 session）
-    #[serde(default)]
     pub isolated_session: bool,
 }
 ```
 
-| 模式 | `isolated_session` | 行为 |
-|------|-------------------|------|
-| 共享 session（默认） | `false` | 当前行为不变，事件写入同一 session，通过 `AgentEventContext` 关联 |
-| 独立子会话 | `true` | 创建新的 session_id，事件写入子 session，通过 `parent_session_id` 关联 |
+但当前真实实现没有走这条路。现在的设计是：
+
+- `spawnAgent` 工具面保持极简，不暴露额外 override
+- `storage_mode` / `independent_session` 主要留在 runtime / API 的受控边界内
+- 避免把更多存储语义开关直接暴露给 LLM
+
+### 2. 没有采用 `ChildSessionSummary`，而是采用 `SubRunStarted / SubRunFinished`
+
+原方案希望父 session 写入一个独立的 `ChildSessionSummary` 事件。  
+当前实现没有采用该事件，而是使用：
+
+- `SubRunStarted`
+- `SubRunFinished { result, step_count, estimated_tokens }`
+
+这使得父侧消费统一基于：
+
+- 生命周期事件
+- `SubRunFinished.result`
+- `handoff.summary / findings / artifacts`
+
+而不是再新增一套平行摘要事件。
+
+### 3. “点击卡片跳转到完整子会话页面”还没有产品化落地
+
+原方案里前端目标是：
+
+- 父会话展示 `ChildSessionSummary` 卡片
+- 点击后跳转到子会话详情页
+
+当前实现更保守：
+
+- 使用 inline `SubRunBlock`
+- 优先保证可观测性与稳定性
+- `childSessionId` 已贯通，但还没有完整变成“独立子会话详情页”产品交互
+
+### 4. `IndependentSession` 已可工作，但仍保持 experimental
+
+这点必须在文档中写清楚：
+
+- `SharedSession` 是正式路径
+- `IndependentSession` 是实验路径
+- 当前承诺是“可查询 / 可展示 / 可回填结果”
+- 在控制平面和观测平面完全清晰前，不扩大产品承诺范围
+
+参考：
+- `docs/design/subagent-session-modes-analysis.md`
 
 ---
 
-## 详细设计
+## 当前主线设计（基于真实实现）
 
-### 1. 数据模型变更
+### 核心结论
 
-#### 1.1 SpawnAgentParams 扩展
+当前更准确的表述应该是：
 
-```rust
-// crates/runtime-agent-tool/src/lib.rs
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SpawnAgentParams {
-    /// Agent profile ID；为空默认 `explore`
-    pub r#type: Option<String>,
-    /// 短摘要，仅用于 UI / 日志 / 标题
-    pub description: String,
-    /// 子 Agent 实际收到的任务正文
-    pub prompt: String,
-    /// Additional context
-    pub context: Option<String>,
-    /// 是否创建独立子会话（默认 false，共享父 session）
-    #[serde(default)]
-    pub isolated_session: bool,
-}
-```
+> **默认主线是受控子会话（controlled sub-session），而不是“共享 session / 独立 session 二元切换工具参数”。**
 
-#### 1.2 SubAgentHandle 扩展
+其中：
 
-```rust
-// crates/core/src/agent/mod.rs
-pub struct SubAgentHandle {
-    pub agent_id: String,
-    pub session_id: String,          // ✅ 已有：共享时等于父 session_id
-    pub parent_agent_id: Option<String>,
-    pub parent_turn_id: Option<String>,
-    pub depth: usize,
-    pub status: AgentStatus,
-    pub created_at: DateTime<Utc>,
-    pub agent_profile: String,
-    
-    // === 新增 ===
-    /// 子会话的独立 session_id（仅 isolated_session=true 时设置）
-    pub child_session_id: Option<String>,
-}
-```
+- `SharedSession` / `IndependentSession` 是 **存储落点**
+- `SubRunStarted / SubRunFinished` 是 **生命周期事件**
+- `SubRunResult` 是 **父流程消费的结构化结果中心**
+- `child_session_id` 是 **独立子会话的引用**
 
-#### 1.3 AgentEventContext 扩展
+### 当前推荐的数据消费方式
 
-```rust
-// crates/core/src/agent/mod.rs
-pub struct AgentEventContext {
-    pub agent_id: Option<String>,
-    pub parent_turn_id: Option<String>,
-    pub agent_profile: Option<String>,
-    
-    // === 新增 ===
-    /// 独立子会话 ID（仅 isolated_session=true 时设置）
-    pub child_session_id: Option<String>,
-}
-```
+父流程与 UI 不应依赖“额外摘要事件”，而应优先消费：
 
-#### 1.4 子会话摘要事件（新增）
+- `SubRunFinished.result.summary`
+- `SubRunFinished.result.findings`
+- `SubRunFinished.result.artifacts`
+- `SubRunFinished.step_count`
+- `SubRunFinished.estimated_tokens`
 
-```rust
-// crates/core/src/event/types.rs
-/// 子会话完成摘要（写入父 session）
-pub struct ChildSessionSummary {
-    /// 对应的父 turn_id
-    pub parent_turn_id: String,
-    /// 子会话 ID
-    pub child_session_id: String,
-    /// 子会话执行结果摘要（LLM 生成或系统生成）
-    pub summary: String,
-    /// 子会话执行步数
-    pub steps_executed: u32,
-    /// 子会话执行耗时（毫秒）
-    pub duration_ms: u64,
-    /// 子会话终止原因
-    pub outcome: ChildSessionOutcome,
-}
-
-pub enum ChildSessionOutcome {
-    Completed,
-    Aborted,
-    TokenExceeded,
-    Failed,
-}
-```
-
-**序列化后的 JSON 格式：**
-
-```json
-{
-  "type": "ChildSessionSummary",
-  "parent_turn_id": "turn-5",
-  "child_session_id": "2025-12-31T20-53-00-abc12345",
-  "summary": "共执行 5 步，探索了 3 个文件，发现 UserTrait 在 3 处被引用。",
-  "steps_executed": 5,
-  "duration_ms": 12000,
-  "outcome": "Completed"
-}
-```
+这与当前 runtime / server / frontend 的真实实现是一致的。
 
 ---
 
-### 2. 执行流程变更
+## 后续阶段（按当前主线整理）
 
-#### 2.1 共享 session 模式（默认，当前行为不变）
+## Phase 1：文档与命名收口
 
-```
-launch_subagent(params, ctx)
-    ↓
-child = agent_control.spawn(profile, ctx.session_id, parent_turn_id, ...)
-    ↓
-// ✅ 使用父 session 的 event_sink
-event_sink = ctx.event_sink()
-    ↓
-child_loop.run_turn_with_agent_context(event_sink, ...)
-    ↓
-// ✅ 所有事件写入同一 session
-//    通过 AgentEventContext(agent_id, parent_turn_id) 标记归属
-events → parent session JSONL
-```
+### 目标
 
-#### 2.2 独立子会话模式（新增）
+把历史文档统一到真实实现，避免后续讨论继续混用两套语义。
 
-```
-launch_subagent(params, ctx)
-    ↓
-// 1️⃣ 创建子 session
-child_session_id = generate_session_id()
-meta = SessionMeta {
-    session_id: child_session_id.clone(),
-    parent_session_id: Some(ctx.session_id().to_string()),  // ✅ 关联父 session
-    parent_storage_seq: None,  // 子会话不复制历史
-    working_dir: ctx.working_dir.clone(),
-    // ...
-}
-    ↓
-// 2️⃣ 触发 SessionStart 事件（写入父 session）
-parent_event_sink.emit(StorageEvent::SessionStart {
-    session_id: child_session_id.clone(),
-    parent_session_id: Some(ctx.session_id().to_string()),
-    parent_storage_seq: None,
-})
-    ↓
-// 3️⃣ 创建子 session 的事件日志写入器
-child_log = repository.create_event_log(&child_session_id, working_dir)?
-child_event_sink = EventSink::new(child_log)
-    ↓
-// 4️⃣ 创建子 agent 控制面
-child = agent_control.spawn(profile, child_session_id.clone(), parent_turn_id, ...)
-    ↓
-// 5️⃣ 执行子 agent loop（使用子 session 的 event_sink）
-child_loop.run_turn_with_agent_context(child_event_sink, ...)
-    ↓
-// 6️⃣ 子会话执行完成，生成摘要
-summary = generate_summary(child_session_id, child.outcome, ...)
-    ↓
-// 7️⃣ 将摘要写回父 session
-parent_event_sink.emit(StorageEvent::ChildSessionSummary {
-    parent_turn_id,
-    child_session_id: child_session_id.clone(),
-    summary,
-    steps_executed,
-    duration_ms,
-    outcome,
-})
-    ↓
-// 8️⃣ 父 session 也写入一个 ToolResult（标记子会话已关联）
-parent_event_sink.emit(StorageEvent::ToolResult {
-    turn_id: parent_turn_id,
-    // ...
-    child_session_id: Some(child_session_id),  // ✅ 关联标记
-})
-```
+### 需要完成
+
+- [ ] 将涉及 `isolated_session` 的旧计划标记为“历史设想 / 未采纳”
+- [ ] 将“子会话摘要事件”统一改写为 `SubRunStarted / SubRunFinished`
+- [ ] 将示例里的 `ChildSessionSummary` 流程改写为当前事件流
+- [ ] 在相关文档中统一使用：
+  - `spawnAgent`
+  - `SubRun`
+  - `SharedSession / IndependentSession`
+  - `controlled sub-session`
+
+### 如何完成（思考）
+
+这一步优先级最高，因为现在的主要问题不是代码缺失，而是**文档仍然在描述已经偏离的实施路线**。  
+如果不先收口，后续所有设计讨论都会重复落到：
+
+- 到底是继续做 `isolated_session` 参数，还是保持当前工具面极简？
+- 到底是再加 `ChildSessionSummary`，还是沿用 `SubRunFinished.result`？
+
+### 建议
+
+- **不要把 `isolated_session` 重新加回工具参数。**
+- **不要再新增平行的摘要事件类型，优先复用 `SubRunFinished.result`。**
 
 ---
 
-### 3. 代码变更清单
+## Phase 2：控制平面补强
 
-#### 3.1 Protocol 层（纯 DTO，无业务依赖）
+### 目标
 
-**文件：** `crates/protocol/src/tools/run_agent.rs`
+把“子任务归谁管、如何 kill / cleanup / timeout”从存储语义中剥离出来。
 
-- [ ] `SpawnAgentParams` 增加 `isolated_session: bool` 字段
+### 需要完成
 
-#### 3.2 Core 层（核心契约）
+- [ ] 设计并落地 `root-owned task registry`
+- [ ] 补 `task owner resolver`
+- [ ] 统一 `SharedSession` / `IndependentSession` 的 kill / cleanup / timeout 通道
+- [ ] 明确长任务、shell、MCP 的 owner 与回收责任
 
-**文件：** `crates/core/src/agent/mod.rs`
+### 如何完成（思考）
 
-- [ ] `SubAgentHandle` 增加 `child_session_id: Option<String>`
-- [ ] `AgentEventContext` 增加 `child_session_id: Option<String>`
+下一阶段最重要的不是继续增加 session 相关开关，而是解决：
 
-**文件：** `crates/core/src/event/types.rs`
+1. **任务 ownership**
+2. **控制链路一致性**
 
-- [ ] 新增 `ChildSessionSummary` 事件类型
-- [ ] 新增 `ChildSessionOutcome` 枚举
+也就是：
 
-#### 3.3 Runtime 层（执行引擎）
+- session 归属是谁
+- task 归属是谁
 
-**文件：** `crates/runtime/src/service/execution/subagent.rs`
+必须拆开。
 
-- [ ] `launch_subagent()` 分支逻辑：
-  - 如果 `params.isolated_session == false`：**保持当前逻辑不变**
-  - 如果 `params.isolated_session == true`：
-    1. 调用 `repository.create_event_log()` 创建子 session
-    2. 创建独立的 `EventSink`
-    3. 传递子 session 的 event_sink 给子 agent loop
-    4. 子会话完成后生成 `ChildSessionSummary` 写入父 session
+### 建议
 
-**关键代码结构（伪代码）：**
-
-```rust
-pub async fn launch_subagent(
-    &self,
-    params: SpawnAgentParams,
-    ctx: &ToolContext,
-) -> ServiceResult<SubRunResult> {
-    // ... 现有验证逻辑不变 ...
-    
-    if params.isolated_session {
-        // === 独立子会话模式 ===
-        self.launch_subagent_isolated(params, ctx).await
-    } else {
-        // === 共享 session 模式（当前逻辑） ===
-        self.launch_subagent_shared(params, ctx).await
-    }
-}
-
-async fn launch_subagent_isolated(
-    &self,
-    params: SpawnAgentParams,
-    ctx: &ToolContext,
-) -> ServiceResult<SubRunResult> {
-    let start = Instant::now();
-    let parent_session_id = ctx.session_id();
-    
-    // 1. 创建子 session
-    let child_session_id = generate_session_id();
-    let meta = SessionMeta {
-        session_id: child_session_id.clone(),
-        parent_session_id: Some(parent_session_id.to_string()),
-        parent_storage_seq: None,
-        working_dir: ctx.working_dir.clone(),
-        // ...
-    };
-    
-    // 2. 写入 SessionStart 到父 session
-    if let Some(sink) = ctx.event_sink() {
-        sink.emit(StorageEvent::SessionStart {
-            session_id: child_session_id.clone(),
-            parent_session_id: Some(parent_session_id.to_string()),
-            parent_storage_seq: None,
-        });
-    }
-    
-    // 3. 创建子 session 的事件日志
-    let repository = self.repository.lock().await;
-    let child_log = repository.create_event_log(
-        &child_session_id,
-        Path::new(&ctx.working_dir),
-    )?;
-    let child_sink = Arc::new(EventSink::new(child_log));
-    
-    // 4. Spawn 子 agent（使用子 session_id）
-    let child = self.agent_control.spawn(
-        &profile,
-        child_session_id.clone(),  // ✅ 独立的 session_id
-        Some(parent_turn_id.to_string()),
-        ctx.agent_context().agent_id.clone(),
-    ).await?;
-    
-    // 5. 执行子 agent loop（使用子 sink）
-    let child_turn_id = format!("{}-child-{}", parent_turn_id, Uuid::new_v4());
-    // ... 构建子 agent loop ...
-    
-    let child_loop = AgentLoop::new(...);
-    let outcome = child_loop.run_turn_with_agent_context(
-        child_sink.clone(),  // ✅ 独立的 event sink
-        // ...
-    ).await;
-    
-    let duration = start.elapsed();
-    let steps = child_loop.step_count();
-    
-    // 6. 生成摘要
-    let summary = self.generate_child_summary(
-        &child_session_id,
-        &outcome,
-        steps,
-        duration,
-    ).await?;
-    
-    // 7. 将摘要写回父 session
-    if let Some(sink) = ctx.event_sink() {
-        sink.emit(StorageEvent::ChildSessionSummary {
-            parent_turn_id: parent_turn_id.to_string(),
-            child_session_id: child_session_id.clone(),
-            summary: summary.clone(),
-            steps_executed: steps,
-            duration_ms: duration.as_millis() as u64,
-            outcome: map_outcome(&outcome),
-        });
-    }
-    
-    // 8. 标记子 agent 完成
-    self.agent_control.complete(&child.agent_id, &outcome).await;
-    
-    // 9. 返回结果（摘要 + 子 session_id）
-    Ok(SubRunResult {
-        status: map_outcome(&outcome),
-        handoff: Some(SubRunHandoff {
-            summary,
-            findings: Vec::new(),
-            artifacts: vec![ArtifactRef {
-                kind: "session".to_string(),
-                id: child_session_id.clone(),
-                label: "Child session".to_string(),
-                session_id: Some(child_session_id),
-                storage_seq: None,
-                uri: None,
-            }],
-        }),
-        failure: None,
-    })
-}
-```
-
-#### 3.4 Storage 层（文件存储）
-
-**文件：** `crates/storage/src/session/repository.rs`
-
-- [ ] `FileSystemSessionRepository::create_event_log()` 已可用 ✅
-- [ ] 可能需要增加 `list_child_sessions(parent_session_id)` 方法
-
-```rust
-impl FileSystemSessionRepository {
-    // ... 现有方法不变 ...
-    
-    /// 列出父会话的所有子会话
-    pub fn list_child_sessions(&self, parent_session_id: &str) 
-        -> StoreResult<Vec<SessionMeta>> 
-    {
-        // 扫描 sessions 目录，过滤 parent_session_id 匹配的
-    }
-}
-```
-
-#### 3.5 Server 层（API 端点）
-
-**文件：** `crates/server/src/routes/sessions.rs`
-
-- [ ] 新增 `GET /api/sessions/{parent_id}/child_sessions` 端点
-
-```rust
-// 获取子会话列表
-async fn list_child_sessions(
-    Path(parent_session_id): Path<String>,
-    State(state): State<AppState>,
-) -> Result<Json<Vec<SessionMeta>>> {
-    let children = state.repository.list_child_sessions(&parent_session_id)?;
-    Ok(Json(children))
-}
-```
-
-- [ ] 新增 `GET /api/sessions/{child_id}` 端点获取子会话详情
-
-```rust
-// 获取子会话详情（含父会话信息）
-async fn get_child_session(
-    Path(child_session_id): Path<String>,
-    State(state): State<AppState>,
-) -> Result<Json<SessionDetail>> {
-    let session = state.repository.get_session(&child_session_id)?;
-    Ok(Json(session))
-}
-```
-
-#### 3.6 前端层（展示逻辑）
-
-**文件：** `frontend/`
-
-前端需要展示两种模式：
-
-**共享 session 模式** — 当前展示逻辑不变
-
-**独立子会话模式** — 新增展示组件：
-
-```tsx
-// 子会话卡片组件
-<ChildSessionCard
-  sessionId={child_session_id}
-  summary={summary}
-  steps={steps_executed}
-  duration={duration_ms}
-  outcome={outcome}
-  onExpand={() => navigate(`/sessions/${child_session_id}`)}  // 点击跳转到子会话详情
-/>
-```
-
-**交互流程：**
-1. 父会话消息中出现 `ChildSessionSummary` 事件 → 渲染为**可点击卡片**
-2. 默认折叠展示：`[子会话: explore] | 5 步 | 12 秒 | ✅ 完成`
-3. 点击卡片 → 跳转到 `/sessions/{child_session_id}` → 展示完整的子会话消息流
-4. 子会话页面可"返回父会话"
+- **先做 root-owned task control，再考虑扩大 `IndependentSession` 的产品承诺。**
+- **不要让 `storage_mode` 承担取消、任务注册、指标聚合职责。**
 
 ---
 
-### 4. 数据持久化示例
+## Phase 3：观测与结果聚合补强
 
-#### 4.1 父 session 的 JSONL
+### 目标
 
-```
-session-2025-12-31T20-50-00-abc12345.jsonl:
+增强父流程“如何看见子流程”，而不是让子流程直接改父状态。
 
-{"storage_seq":1,"type":"SessionStart","session_id":"2025-12-31T20-50-00-abc12345"}
-{"storage_seq":2,"type":"UserMessage","turn_id":"turn-5","content":"重构这个模块"}
-{"storage_seq":3,"type":"AssistantFinal","turn_id":"turn-5","content":"让我先用 explore 分析..."}
-{"storage_seq":4,"type":"ToolCall","turn_id":"turn-5","tool_name":"spawnAgent","args":{"type":"explore","description":"查找 UserTrait 使用","prompt":"查找 UserTrait 的使用","isolated_session":true}}
-{"storage_seq":5,"type":"SessionStart","session_id":"2025-12-31T20-53-00-def67890","parent_session_id":"2025-12-31T20-50-00-abc12345"}  ← 子会话创建
-{"storage_seq":6,"type":"ChildSessionSummary","parent_turn_id":"turn-5","child_session_id":"2025-12-31T20-53-00-def67890","summary":"发现 3 处使用","steps_executed":5,"duration_ms":12000,"outcome":"Completed"}
-{"storage_seq":7,"type":"ToolResult","turn_id":"turn-5","tool_name":"spawnAgent","output":"[子会话摘要] 发现 3 处...","child_session_id":"2025-12-31T20-53-00-def67890"}
-{"storage_seq":8,"type":"AssistantFinal","turn_id":"turn-5","content":"基于 explore 结果，我看到 3 处..."}
-```
+### 需要完成
 
-#### 4.2 子 session 的 JSONL（独立存储）
+- [ ] 强化 step / token / outcome 聚合
+- [ ] 规范 findings / artifacts 的聚合展示
+- [ ] 让 `SubRunFinished.result` 更稳定地承担父侧 handoff 中心
+- [ ] 明确 `IndependentSession` 在 replay / compact / debug 下的边界
 
-```
-session-2025-12-31T20-53-00-def67890.jsonl:
+### 如何完成（思考）
 
-{"storage_seq":1,"type":"SessionStart","session_id":"2025-12-31T20-53-00-def67890","parent_session_id":"2025-12-31T20-50-00-abc12345","parent_storage_seq":null}
-{"storage_seq":2,"type":"UserMessage","turn_id":"turn-1","content":"查找 UserTrait 的使用"}
-{"storage_seq":3,"type":"AssistantDelta","turn_id":"turn-1","token":"让我"}
-{"storage_seq":4,"type":"AssistantDelta","turn_id":"turn-1","token":"先探索"}
-{"storage_seq":5,"type":"ToolCall","turn_id":"turn-1","tool_name":"grep","args":{"pattern":"UserTrait"}}
-{"storage_seq":6,"type":"ToolResult","turn_id":"turn-1","tool_name":"grep","output":"Found 3 matches..."}
-{"storage_seq":7,"type":"AssistantFinal","turn_id":"turn-1","content":"我在以下文件发现 UserTrait..."}
-```
+仓库主线已经明确拒绝“父状态直写”。  
+因此后续增强应该集中在：
 
----
+- 生命周期事件
+- 结构化结果
+- 父侧 reducer / coordinator
 
-### 5. 配置与默认行为
+而不是：
 
-#### 5.1 Profile 级别配置
+- 子流程直接共享父可变状态
 
-```yaml
-# ~/.astrcode/agents/explore.yaml
-id: explore
-name: 代码探索
-mode: SubAgent
-allowed_tools:
-  - read_file
-  - grep
-  - semantic_search
-max_steps: 5
+### 建议
 
-# === 新增：默认是否使用独立子会话 ===
-default_isolated_session: false  # 默认共享（保持当前行为）
-```
-
-#### 5.2 覆盖方式
-
-**优先级：**
-1. `spawnAgent` 工具显式传入 `isolated_session: true/false` → **最高优先级**
-2. Profile 的 `default_isolated_session` 配置 → **次优先级**
-3. 全局运行时默认值（false） → **最低优先级**
-
-```rust
-let use_isolated = params.isolated_session
-    || (params.isolated_session.is_none() && profile.default_isolated_session == Some(true));
-```
+- **优先增强 observability，不要引入 shared mutable state。**
+- **如果未来需要“子影响父”，也只能通过结果与事件，而不是回调句柄。**
 
 ---
 
-### 6. 前端交互流程图
+## Phase 4：Storage / API 能力按需补齐
 
-```mermaid
-graph TD
-    User[用户提问] --> Agent[主 Agent 执行]
-    Agent --> LLM{LLM 决定调用 spawnAgent}
-    LLM -->|isolated_session: false| Shared[共享 session 模式]
-    LLM -->|isolated_session: true| Isolated[独立子会话模式]
-    
-    Shared --> Events1[事件写入父 session]
-    Events1 --> Result1[ToolResult 写入父 session]
-    Result1 --> UI1[前端展示工具结果]
-    
-    Isolated --> CreateSession[创建子 session]
-    CreateSession --> ChildEvents[子事件写入子 session]
-    ChildEvents --> Summary[生成 ChildSessionSummary]
-    Summary --> WriteSummary[摘要写入父 session]
-    WriteSummary --> UI2[前端展示子会话卡片]
-    
-    UI2 -->|点击卡片| Navigate[跳转到子会话页面]
-    Navigate --> ChildView[展示子会话完整消息流]
-    ChildView -->|返回| ParentView[返回父会话]
-```
+### 目标
 
----
+仅在产品和前端确实需要时，再补父子会话查询接口，而不是为了匹配旧设计而补。
 
-### 7. 向后兼容性
+### 需要完成
 
-| 场景 | 处理 |
-|------|------|
-| 现有调用不传 `isolated_session` | 默认 `false`，共享 session（**行为不变**） |
-| 旧版本前端加载新格式的 `ChildSessionSummary` | 忽略新字段，展示原始 `ToolResult` |
-| 旧版 `AgentEventContext` 加载到新代码 | `child_session_id` 为 `None`，走共享路径 |
+- [ ] 评估是否真的需要 `list_child_sessions(parent_session_id)`
+- [ ] 如果需要，再补 repository / server 查询接口
+- [ ] 评估是否要新增：
+  - `GET /api/v1/sessions/{parent_id}/child-sessions`
+  - 或基于现有 session 查询体系复用
+- [ ] 统一 child session 详情的获取方式，避免另起一套平行 API
 
-**迁移路径：**
-- 默认行为完全不变，现有功能零影响
-- 仅在显式传入 `isolated_session: true` 时触发新行为
+### 如何完成（思考）
+
+原始文档里的：
+
+- `list_child_sessions()`
+- `GET /api/sessions/{parent_id}/child_sessions`
+- `GET /api/sessions/{child_id}`
+
+这些接口都不是当前最短路径。  
+更合理的做法是先判断：
+
+- 前端是否真的需要“父 → 子会话列表页”
+- 还是只需要一个“打开该 child session”的能力
+
+### 建议
+
+- **先补最小可用查询能力，不要一次性扩成完整父子会话 API 套件。**
+- **尽量复用既有 session 查询接口，而不是新增过多专用路由。**
 
 ---
 
-### 8. 实施阶段
+## Phase 5：前端从“能看”升级到“更好用”
 
-#### Phase 1：核心数据结构（Protocol + Core）
-- [ ] `SpawnAgentParams` + `SubAgentHandle` + `AgentEventContext` 扩展
-- [ ] 新增 `ChildSessionSummary` 事件
-- **验证：** 编译通过，现有测试全部通过
+### 目标
 
-#### Phase 2：执行引擎（Runtime）
-- [ ] `launch_subagent_isolated()` 实现
-- [ ] 子 session 创建与 event sink 管理
-- [ ] 摘要生成与写回逻辑
-- **验证：** 单元测试覆盖两种模式
+在不破坏当前 inline 可观测性的前提下，让独立子会话更易读、更易打开。
 
-#### Phase 3：存储层（Storage）
-- [ ] `list_child_sessions()` 方法
-- [ ] 子 session 事件查询
-- **验证：** 集成测试验证文件读写
+### 需要完成
 
-#### Phase 4：Server API
-- [ ] `GET /sessions/{parent_id}/child_sessions` 端点
-- [ ] 子 session 事件查询端点
-- **验证：** curl 测试 API 返回正确
+- [ ] 优化 `SubRunBlock` 的信息层级
+- [ ] 对存在 `childSessionId` 的独立子会话增加“打开子会话”入口
+- [ ] 评估是否需要“完整子会话详情页”
+- [ ] 明确父 / 子会话切换后的返回路径
 
-#### Phase 5：前端
-- [ ] 子会话卡片组件
-- [ ] 子会话页面路由
-- [ ] 父子会话切换
-- **验证：** 手动测试 UI 交互
+### 如何完成（思考）
+
+当前前端已经证明协议链路是通的，所以下一步重点不应是再造协议，而应是：
+
+- 降低阅读成本
+- 改善运行中与完成态呈现
+- 让 `childSessionId` 真正变成可操作引用
+
+### 建议
+
+- **短期继续保留 inline `SubRunBlock`。**
+- **中期只在 `IndependentSession` 情况下增加“打开子会话”按钮。**
+- **不要急着做复杂树状多层 UI，先把单层 subrun 体验做好。**
 
 ---
 
-### 9. 风险与缓解
+## Phase 6：测试补强
 
-| 风险 | 影响 | 缓解 |
-|------|------|------|
-| 子 session 文件未正确创建 | 数据不一致 | 在 `launch_subagent_isolated()` 中增加 try-finally 回滚 |
-| 并发写入父子 session | 事件顺序混乱 | 使用文件锁（已有机制）|
-| 子 session 泄漏（创建后未清理） | 磁盘空间浪费 | 增加定时清理任务，清理孤儿 session |
-| 前端渲染性能（大量子会话） | 页面卡顿 | 虚拟滚动 + 懒加载子会话卡片 |
+### 目标
 
----
+守住最容易在重构中回退的边界。
 
-### 10. 使用示例
+### 需要完成
 
-#### 示例 1：默认共享 session（当前行为不变）
+- [ ] 增加 `IndependentSession` 端到端测试：
+  - child session 建立
+  - parent / child sink 分离
+  - `child_session_id` 回填
+  - 查询 / 取消 / 展示链路
+- [ ] 补 `SubAgentPolicyEngine` 相关边界测试
+- [ ] 补 `CapabilityRouter::subset_for_tools` 测试
+- [ ] 覆盖 `SubRunStarted / SubRunFinished` 的生命周期完整性
 
-```json
-{
-  "type": "explore",
-  "description": "查找 UserTrait 使用",
-  "prompt": "查找所有使用 UserTrait 的地方",
-  "isolated_session": false
-}
-```
+### 如何完成（思考）
 
-父 session JSONL 中包含子 agent 的所有事件：
-```
-Turn 5: UserMessage("重构这个模块")
-  → ToolCall("spawnAgent", {type: "explore", prompt: "...", ...})
-    → ToolCall("read_file", ...) [agent_id=agent-1, parent_turn_id=turn-5]
-    → ToolResult("read_file", ...) [agent_id=agent-1, parent_turn_id=turn-5]
-  → ToolResult("spawnAgent", output="[摘要] 发现 3 处...")
-  → AssistantFinal("基于 explore 结果...")
-```
+这里不应只补 happy path，而应优先守住：
 
-#### 示例 2：独立子会话（新功能）
+- 参数校验
+- 工具裁剪
+- 存储切换
+- 后台取消
+- 生命周期事件完整性
 
-```json
-{
-  "type": "explore",
-  "description": "查找 UserTrait 使用",
-  "prompt": "查找所有使用 UserTrait 的地方",
-  "isolated_session": true
-}
-```
+### 建议
 
-父 session JSONL：
-```
-Turn 5: UserMessage("重构这个模块")
-  → ToolCall("spawnAgent", {type: "explore", prompt: "...", isolated_session: true})
-    → SessionStart(session_id="child-abc", parent_session_id="parent-xyz") ← 标记子会话创建
-    → ChildSessionSummary(child_session_id="child-abc", summary="发现 3 处使用")
-  → ToolResult("spawnAgent", output="[子会话摘要] 发现 3 处...", child_session_id="child-abc")
-  → AssistantFinal("基于 explore 结果...")
-```
-
-子 session JSONL（独立文件）：
-```
-SessionStart(session_id="child-abc", parent_session_id="parent-xyz")
-Turn 1: UserMessage("查找所有使用 UserTrait 的地方")
-  → AssistantDelta("让我先探索...")
-  → ToolCall("read_file", ...)
-  → ToolResult("read_file", ...)
-  → AssistantFinal("发现 3 处使用...")
-```
-
-前端展示：
-
-```
-┌─────────────────────────────────────────────┐
-│ 父会话                                       │
-│                                              │
-│ 用户：重构这个模块                            │
-│                                              │
-│ 助手：让我先用 explore 分析...                │
-│  🔧 spawnAgent("explore", "查找 UserTrait...") │
-│  ┌───────────────────────────────────────┐   │
-│  │ 🔍 [子会话: explore]                  │   │
-│  │ 5 步 | 12 秒 | ✅ 完成                │   │
-│  │ 摘要：发现 3 处使用...                │   │
-│  │ ▶ 点击查看完整子会话                   │   │  ← 点击跳转到子会话页面
-│  └───────────────────────────────────────┘   │
-│                                              │
-│ 助手：基于 explore 结果，我看到 3 处...      │
-└─────────────────────────────────────────────┘
-```
+- **测试优先围绕“边界”和“回退风险”来写，而不是继续堆功能展示型测试。**
 
 ---
 
-### 11. 关键决策记录
+## 当前不建议作为短期目标推进的旧项
 
-| 决策 | 选择 | 原因 |
-|------|------|------|
-| 默认行为 | 共享 session（false） | 向后兼容，保持当前行为 |
-| 子会话触发方式 | 参数传入 | 由 LLM 或调用者动态决定 |
-| 子事件存储位置 | 独立文件 | 隔离性，方便单独查询/回放 |
-| 父子关联方式 | `parent_session_id` + `ChildSessionSummary` | 复用已有机制，最小侵入 |
-| 摘要生成方式 | 系统自动生成（步数+结果摘要） | 减少 LLM 调用开销 |
+以下内容建议在短期内明确标记为“不按当前主线推进”：
+
+- `spawnAgent.isolated_session: bool` 作为公开工具参数
+- `ChildSessionSummary` 作为新的父侧摘要事件
+- 为了匹配旧文档而强行补一套专用父子会话 API
+- 先做复杂子会话页面导航，再回头补控制平面
+
+**原因**：这些内容要么已经被当前实现替代，要么实现顺序不合理，容易导致语义再次分叉。
 
 ---
 
-### 12. 相关文档
+## 推荐执行顺序
 
-- [当前设计文档](../design/agent-tool-and-api-design.md) — 第 4 节"Agent as Tool"
-- [Agent Loop 内容架构](./agent-loop-content-architecture.md) — Session/Message 数据模型
-- [ADR-0005](../adr/0005-split-policy-decision-plane-from-event-observation-plane.md) — 事件观察面设计
-- [ADR-0006](../adr/0006-turn-outcome-state-machine.md) — Turn 状态机
+1. **先改文档**：统一到真实主线
+2. **再补控制面**：task registry / owner resolver
+3. **再补 observability**：继续围绕 `SubRunFinished.result`
+4. **再做前端增强**：优先改善 inline block 与 child session 打开能力
+5. **最后补专用 API 与更多 UI**：仅在需求被证明后再做
+
+---
+
+## 相关文档
+
+- [Agent as Tool + 开放 API 实施计划](./agent-tool-api-implementation-plan.md)
+- [多 Agent 会话模式：对 Claude 设计的采纳与边界](../design/subagent-session-modes-analysis.md)
+- [当前设计文档](../design/agent-tool-and-api-design.md)
+- [Agent Loop 内容架构](./agent-loop-content-architecture.md)

@@ -2,540 +2,315 @@
 
 ## 概要
 
-本文档定义了 Astrcode Agent Loop 中消息、工具使用、思考等内容的数据模型和组织结构。
+本文档只定义 **Agent Loop 中“内容如何被表示、传输和渲染”**。
+
+它回答的问题是：
+
+- durable `StorageEvent` 如何投影成可消费内容
+- `/messages`、`/history`、`/events` 三类接口分别承载什么内容形态
+- 前端应如何把工具调用、thinking、subrun 生命周期渲染为对话内容
+
+> 文档边界：session 真相、turn 生命周期与 replay/compaction 规则，见  
+> [../design/runtime-session-and-turn-lifecycle.md](../design/runtime-session-and-turn-lifecycle.md)。
 
 ---
 
-## 核心数据模型
+## 1. 范围与非目标
 
-### Session（会话）
+## 1.1 本文档覆盖范围
 
-```rust
-/// 会话表示一次独立的对话实例
-pub struct Session {
-    /// 会话唯一标识
-    pub session_id: Uuid,
-    /// 会话标题（可选，AI 生成或用户手动设置）
-    pub title: Option<String>,
-    /// 所属项目路径
-    pub project_path: PathBuf,
-    /// 创建时间
-    pub created_at: DateTime<Utc>,
-    /// 最后活跃时间
-    pub last_activity_at: DateTime<Utc>,
-    /// 会话元数据（可选）
-    pub metadata: Option<SessionMetadata>,
-}
+本文档关注三层内容视图：
 
-/// 会话元数据
-pub struct SessionMetadata {
-    /// 父会话 ID（子会话时设置）
-    pub parent_session_id: Option<Uuid>,
-    /// 父会话中的 turn_id（子会话时设置）
-    pub parent_turn_id: Option<String>,
-    /// 子会话摘要（父会话视角）
-    pub child_session_summary: Option<String>,
-}
-```
+1. **durable 事件层**：`StorageEvent`
+2. **传输投影层**：`SessionMessage` / `SessionEventRecord`
+3. **前端渲染层**：消息气泡、工具卡片、subrun 状态卡片等
 
-### SubSession（子会话）
+## 1.2 本文档不再定义的内容
 
-```rust
-/// 子会话表示由主会话通过 spawnAgent 工具创建的独立会话实例
-pub struct SubSession {
-    /// 子会话自己的 session_id
-    pub session_id: Uuid,
-    /// 创建者（父会话的 session_id）
-    pub parent_session_id: Uuid,
-    /// 父会话中触发创建的 turn_id
-    pub parent_turn_id: String,
-    /// 子会话标题（可选，AI 生成或基于任务自动生成）
-    pub title: Option<String>,
-    /// 创建时间
-    pub created_at: DateTime<Utc>,
-    /// 最后活跃时间
-    pub last_activity_at: DateTime<Utc>,
-}
-```
+下面这些内容不再由本文档定义：
 
-### Message（消息）
+- `Session` / `SubSession` 领域模型
+- `SessionRepository` 接口
+- `messages.jsonl` / `sub_sessions.json` 一类文件布局真相
+- session 生命周期、turn lease、recent tail、token budget
+- child session tree 的后端存储结构
 
-```rust
-/// 会话中的一条消息
-pub struct Message {
-    /// 消息唯一标识
-    pub id: String,
-    /// 所属会话 ID
-    pub session_id: Uuid,
-    /// 消息角色
-    pub role: MessageRole,
-    /// 消息内容块列表
-    pub blocks: Vec<ContentBlock>,
-    /// 消息元数据
-    pub metadata: Option<MessageMetadata>,
-    /// 父消息 ID（可选）
-    pub parent_id: Option<String>,
-}
-
-/// 消息角色
-pub enum MessageRole {
-    User,
-    Assistant,
-}
-
-/// 内容块：消息由多个内容块组成
-pub enum ContentBlock {
-    Text(TextBlock),
-    ToolUse(ToolUseBlock),
-    ToolResult(ToolResultBlock),
-    Thinking(ThinkingBlock),
-}
-
-/// 纯文本内容
-pub struct TextBlock {
-    pub text: String,
-}
-
-/// 工具调用
-pub struct ToolUseBlock {
-    /// 工具唯一调用 ID
-    pub tool_use_id: String,
-    /// 工具名称
-    pub name: String,
-    /// 工具调用参数（JSON 原始值）
-    pub input: JsonValue,
-}
-
-/// 工具调用结果
-pub struct ToolResultBlock {
-    /// 对应的 tool_use_id
-    pub tool_use_id: String,
-    /// 工具返回内容
-    pub content: Vec<ToolResultContent>,
-    /// 工具执行状态
-    pub status: ToolResultStatus,
-}
-
-pub enum ToolResultContent {
-    Text(String),
-    Image { data: String, format: String, detail: Option<ImageDetail> },
-}
-
-pub enum ToolResultStatus {
-    Success,
-    Error,
-    Interrupted,
-}
-
-/// 思考内容
-pub struct ThinkingBlock {
-    pub thinking: String,
-}
-```
-
-### MessageMetadata（消息元数据）
-
-```rust
-pub struct MessageMetadata {
-    /// 消息创建时间
-    pub created_at: DateTime<Utc>,
-    /// 模型名称（仅 Assistant）
-    pub model: Option<String>,
-    /// 停止原因（仅 Assistant）
-    pub stop_reason: Option<String>,
-    /// Token 使用情况
-    pub token_usage: Option<TokenUsage>,
-    /// 子会话关联（当工具调用触发子会话时）
-    pub child_session_id: Option<Uuid>,
-    /// 代理实例 ID（多代理时区分）
-    pub agent_instance_id: Option<Uuid>,
-}
-```
+这些内容统一以 `runtime-session` 设计文档和真实代码为准。
 
 ---
 
-## 消息持久化
+## 2. 三层内容模型
 
-### SessionRepository trait
+## 2.1 durable 事件层：`StorageEvent`
 
-```rust
-/// 会话持久化接口
-pub trait SessionRepository: Send + Sync {
-    /// 创建新会话
-    async fn create_session(&self, session: Session) -> Result<Session, StorageError>;
-    
-    /// 获取会话
-    async fn get_session(&self, session_id: &str) -> Result<Session, StorageError>;
-    
-    /// 更新会话（标题、活跃时间等）
-    async fn update_session(&self, session_id: &str, updates: SessionUpdate) -> Result<Session, StorageError>;
-    
-    /// 获取会话的消息列表
-    async fn list_messages(&self, session_id: &str, limit: usize, before_id: Option<&str>) -> Result<Vec<Message>, StorageError>;
-    
-    /// 追加消息
-    async fn add_message(&self, message: Message) -> Result<Message, StorageError>;
-    
-    /// 更新消息
-    async fn update_message(&self, message: Message) -> Result<Message, StorageError>;
-    
-    /// 获取会话的所有工具调用
-    async fn list_tool_calls(&self, session_id: &str) -> Result<Vec<ToolHistory>, StorageError>;
-}
+运行时的源头仍然是 append-only `StorageEvent` 日志。当前与内容展示直接相关的主要事件包括：
 
-/// 字段更新（只发变化部分）
-pub struct SessionUpdate {
-    pub title: Option<String>,
-    pub metadata: Option<SessionMetadata>,
-}
+- `UserMessage`
+- `AssistantDelta`
+- `ThinkingDelta`
+- `AssistantFinal`
+- `ToolCall`
+- `ToolCallDelta`
+- `ToolResult`
+- `CompactApplied`
+- `SubRunStarted`
+- `SubRunFinished`
+- `Error`
+- `TurnDone`
 
-/// 工具调用历史
-pub struct ToolHistory {
-    /// 工具调用 ID
-    pub tool_call_id: String,
-    /// 工具名称
-    pub name: String,
-    /// 调用参数（JSON 原始值）
-    pub args: JsonValue,
-    /// 调用结果
-    pub result: String,
-    /// 调用状态
-    pub status: ToolResultStatus,
-    /// 所属消息 ID
-    pub message_id: String,
-    /// 创建时间
-    pub created_at: DateTime<Utc>,
-}
-```
+其中：
 
-### 文件存储
+- `SessionStart` 主要更新 session 元数据，不属于对话正文
+- `PromptMetrics` 更偏执行指标，不属于常规对话内容
 
-```rust
-/// 文件存储实现：每会话一个文件夹
-///
-/// 目录结构：
-/// sessions/
-///   └─ {session_id}/
-///       ├── session.json         # 会话基础信息
-///       ├── sub_sessions.json    # 子会话列表（如果是父会话）
-///       └─ messages.jsonl        # 消息行式存储
-pub struct FileSessionRepository {
-    /// 存储基础路径
-    base_path: PathBuf,
-    // ...
-}
-```
+## 2.2 传输投影层
 
-**子会话的独立存储：**
-```
-sessions/
-  └─ {parent_session_id}/
-      ├── session.json           # 父会话基础信息
-      ├── sub_sessions.json      # 子会话元数据列表
-      └── messages.jsonl         # 父会话消息
+当前对外有两类主要投影：
 
-  └─ {child_session_id}/
-      ├── session.json           # 子会话基础信息（含 parent_session_id）
-      └── messages.jsonl         # 子会话的完整消息记录
-```
+### A. 稳定快照：`SessionMessage`
 
-### 数据库存储
+用于：
 
-```rust
-/// 数据库存储实现：关系型/文档型
-pub struct DbSessionRepository {
-    db: Arc<dyn Database>,
-}
-```
+- `GET /api/sessions/{id}/messages`
 
-#### 会话主表 (sessions)
+当前快照消息主要聚合为：
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | UUID | 会话唯一标识 |
-| `title` | VARCHAR | 会话标题 |
-| `project_path` | TEXT | 所属项目路径 |
-| `is_sub_session` | BOOLEAN | 是否为子会话 |
-| `parent_session_id` | UUID NULL | 父会话 ID（子会话时） |
-| `parent_turn_id` | VARCHAR NULL | 父会话的 turn_id（子会话时） |
-| `summary` | TEXT NULL | 子会话摘要（父会话可见） |
-| `created_at` | TIMESTAMPTZ | 创建时间 |
-| `updated_at` | TIMESTAMPTZ | 更新时间 |
+- `User`
+- `Assistant`
+- `ToolCall`
+- `Compact`
 
-#### 消息表 (messages)
+它适合作为“打开会话时的稳定初始内容”。
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | VARCHAR | 消息唯一标识 |
-| `session_id` | UUID | 所属会话 ID |
-| `turn_id` | VARCHAR | 对话轮次 ID |
-| `role` | VARCHAR | 消息角色：user/assistant |
-| `blocks` | JSONB | 内容块列表 |
-| `metadata` | JSONB | 消息元数据 |
-| `parent_id` | VARCHAR NULL | 父消息 ID |
-| `sequence` | INT | 消息排序（用于有序加载） |
-| `created_at` | TIMESTAMPTZ | 创建时间 |
+### B. 历史/流式事件：`SessionEventRecord` / `AgentEvent`
 
-**索引：**
-- `(session_id, turn_id, sequence)` 复合索引：按轮次有序加载消息
-- `(session_id, turn_id, message_index)` 覆盖索引：用于快速跳转
+用于：
 
-#### 事件日志表 (event_logs, 保留用于审计/回放)
+- `GET /api/sessions/{id}/history`
+- `GET /api/sessions/{id}/events`
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | BIGSERIAL | 事件 ID |
-| `session_id` | UUID | 所属会话 ID |
-| `agent_id` | UUID NULL | 代理实例 ID |
-| `timestamp` | TIMESTAMPTZ | 事件时间 |
-| `kind` | VARCHAR | 事件类型 |
-| `data` | JSONB | 事件详细数据 |
-| `parent_turn_id` | VARCHAR NULL | 父 turn 编号（子 agent） |
-| `agent_profile` | VARCHAR NULL | Agent Profile 名称 |
+它保留更细粒度的执行过程，尤其适合：
+
+- streaming 文本
+- 工具流式输出
+- subrun 生命周期
+- 错误、完成等执行边界事件
+
+## 2.3 前端渲染层
+
+前端最终看到的不是原始 `StorageEvent`，而是经过归并后的 render model。这个 render model 可以来自：
+
+- `SessionMessageDto` 的稳定快照
+- `AgentEvent` 的实时增量
+- 前端基于 `turn_id` / `tool_call_id` / `sub_run_id` 做的本地归并
 
 ---
 
-## LLM 交互与内容转换
+## 3. 从事件到内容的映射规则
 
-### LLM API 到 ContentBlock
+| `StorageEvent` | 主要消费者 | 典型渲染 |
+|---|---|---|
+| `UserMessage` | `/messages`、`/history`、`/events` | 用户消息气泡 |
+| `AssistantDelta` | `/history`、`/events` | 助手消息流式正文 |
+| `ThinkingDelta` | `/history`、`/events` | thinking 折叠区流式内容 |
+| `AssistantFinal` | `/messages`、`/history`、`/events` | 助手最终消息 |
+| `ToolCall` | `/messages`、`/history`、`/events` | 工具调用卡片 |
+| `ToolCallDelta` | `/history`、`/events` | 工具输出流式增量 |
+| `ToolResult` | `/messages`、`/history`、`/events` | 工具结果 |
+| `CompactApplied` | `/messages`、`/history`、`/events` | compact 摘要卡片 |
+| `SubRunStarted` | `/history`、`/events` | subrun 状态卡片（running） |
+| `SubRunFinished` | `/history`、`/events` | subrun 状态卡片（completed/failed/aborted） |
+| `Error` | `/history`、`/events` | 错误提示 |
+| `TurnDone` | `/history`、`/events` | 一般不作为单独聊天内容，而是执行边界 |
 
-```rust
-/// 将 LLM 返回的消息内容转换为 ContentBlock 列表
-pub fn llm_message_to_content_blocks(
-    llm_message: LlmMessage,
-    // ...
-) -> Vec<ContentBlock> {
-    // ...
-}
+### 3.1 `SubRunStarted / SubRunFinished` 的特殊地位
 
-/// 将 ContentBlock 列表转换为 LLM 请求的内容格式
-pub fn content_blocks_to_llm_format(
-    blocks: &[ContentBlock],
-) -> LlmMessageContent {
-    // ...
-}
-```
+这两个事件很重要，因为它们承载的是：
 
-### Token 统计
+- 子执行是否启动成功
+- resolved overrides / limits
+- 最终 `SubRunResult`
+- `child_session_id`（若存在）
+- step_count / estimated_tokens 等执行摘要
 
-```rust
-pub struct TokenUsage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cache_creation_tokens: u64,
-}
-```
+因此，前端在展示 `spawnAgent` 后续进展时，应该优先依赖：
 
----
+- `SubRunStarted`
+- `SubRunFinished.result`
 
-## 子会话（SubSession）
-
-### 子会话的创建
-
-子会话在以下情况下创建：
-
-1. **Agent 调用 `spawnAgent` 工具**
-2. **LLM 返回包含子 agent 调用的工具使用块**
-
-子会话创建后会：
-1. 创建新的 `SessionRecord` 标记为 is_sub_session = true
-2. 创建对应的 `SubSessionRecord` 关联父会话
-3. 返回子会话 ID 给调用方
-
-### 子会话的消息同步
-
-子会话在运行时会：
-1. 在子会话的 `messages.jsonl` 中追加消息
-2. 子会话运行完成后，将摘要写入父会话消息的 `child_session_id`
-3. 父会话可选择展示子会话摘要或展开子会话消息
-
-### 子会话的折叠与展开
-
-子会话的折叠与展开由 **前端** 决定是否折叠展示：
-
-- **默认折叠**：显示 `[SubSession: Explore code]` + 摘要 + 耗时/步数
-- **展开后**：显示子会话完整消息流
+而不是再设计一套平行的 `ChildSessionSummary` 事件。
 
 ---
 
-## 会话查询 API
+## 4. 推荐的渲染模型
 
-### 获取会话的消息
+这里给出的是 **前端 render model**，不是要求后端立刻新增一套完全一致的 Rust 类型。
 
-```
-GET /api/sessions/{session_id}/messages
-    ?limit=50           # 每次加载的消息数
-    &before_id=xxx      # 分页游标
-```
+```ts
+type ConversationRenderable =
+  | { kind: 'message'; role: 'user' | 'assistant'; turnId?: string; blocks: RenderBlock[] }
+  | { kind: 'tool'; turnId?: string; toolCallId: string; toolName: string; status: 'running' | 'done'; input?: unknown; output?: string; error?: string }
+  | { kind: 'compact'; turnId?: string; summary: string; preservedRecentTurns: number }
+  | { kind: 'subRun'; turnId?: string; subRunId: string; agentProfile?: string; storageMode?: 'sharedSession' | 'independentSession'; childSessionId?: string; status: 'running' | 'completed' | 'failed' | 'aborted' | 'tokenExceeded'; summary?: string; findings?: string[] }
+  | { kind: 'error'; turnId?: string; message: string };
 
-**响应：**
-```json
-{
-  "messages": [...],
-  "has_more": true
-}
-```
-
-### 获取会话的子会话列表
-
-```
-GET /api/sessions/{session_id}/sub_sessions
+type RenderBlock =
+  | { kind: 'text'; text: string }
+  | { kind: 'reasoning'; text: string; collapsedByDefault: boolean };
 ```
 
-**响应：**
-```json
-{
-  "sub_sessions": [
-    {
-      "id": "...",
-      "session_id": "...",
-      "parent_session_id": "...",
-      "parent_turn_id": "turn-5",
-      "title": "探索代码库",
-      "created_at": "2025-12-31T00:00:00Z",
-      "summary": "共执行 5 步，发现 3 处使用点",
-      "status": "completed"
-    }
-  ]
-}
-```
+### 4.1 为什么把 `subRun` 视为独立 renderable
 
-### 获取子会话的消息
+因为它与普通 `ToolResult` 不同：
 
-```
-GET /api/sessions/{sub_session_id}/messages
-    ?limit=50
-    &before_id=xxx
-```
-
-返回子会话的完整消息列表。
+- 它有持续中的生命周期
+- 它可能关联另一个 child session
+- 它天然需要被点击跳转或展开
+- 它的摘要中心是 `SubRunFinished.result`，不是单一字符串 output
 
 ---
 
-## 前端展示
+## 5. `spawnAgent` 的内容语义
 
-### 消息渲染
+## 5.1 `spawnAgent` 本身仍然是普通工具调用
 
-会话中的每条消息都渲染为对应的内容块：
+也就是说：
 
-```
-╔══════════════════════════════════════╗
-║  👤 用户消息 (20:53)                ║
-║  我想重构这个模块                    ║
-╠══════════════════════════════════════╣
-║  🤖 助手消息 (20:53) [model]        ║
-║  好的，让我先分析一下当前的代码...   ║
-║                                     ║
-║  🔧 [thinking]                     ║
-║  需要先了解模块结构和依赖关系...     ║
-║                                     ║
-║  🔧 Tool: spawnAgent                  ║
-║  ┌─────────────────────────────┐    ║
-║  │ 🧩 [SubSession: Explore] ↓  │    ║
-║  │ 共 5 步 | 耗时 12s           │    ║
-║  │ 发现 3 处相关使用点...       │    ║
-║  └─────────────────────────────┘    ║
-║                                     ║
-║  根据 explore 结果，我看到...        ║
-╚══════════════════════════════════════╝
-```
+- LLM 发起 `ToolCall(tool_name = "spawnAgent")`
+- 工具返回一个普通 tool result（例如 running 句柄）
 
-### 工具调用特殊处理
+## 5.2 子执行进展不靠 tool result 持续更新
 
-`spawnAgent` 工具调用渲染为 **SubSession 卡片**：
+后续进展应主要从生命周期事件里拿：
 
-**折叠状态：**
-```
-┌─────────────────────────────────────┐
-│ 🔍 [SubSession: Explore]           │
-│ 共 5 步 | 耗时 12s                  │
-│ 摘要：发现 3 处相关使用点...        │
-│ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
-│ ▶ 点击展开详情                       │
-└─────────────────────────────────────┘
-```
+- `SubRunStarted`
+- `SubRunFinished`
 
-**展开状态：**
-```
-┌─────────────────────────────────────┐
-│ 🔍 [SubSession: Explore]            ▼│
-│ 共 5 步 | 耗时 12s                  │
-│ ─────────────────────────────────   │
-│   ╔═══════════════════════════╗     │
-│   │  🤖 Agent 消息            │     │
-│   │  让我分析一下代码...      │     │
-│   │                           │     │
-│   │  🔧 Tool: read_file       │     │
-│   │  src/models/user.rs       │     │
-│   │                           │     │
-│   │  🔧 Tool: grep            │     │
-│   │  pattern: "UserTrait"     │     │
-│   │                           │     │
-│   │  🔧 Tool: semantic_search │     │
-│   │  query: "user module"     │     │
-│   ════════════════════════════╝     │
-│                                     │
-│  根据 explore 结果，我看到...        │
-└─────────────────────────────────────┘
-```
+### 5.3 SharedSession 与 IndependentSession 在内容上的区别
 
-### 折叠状态的持久化
+#### SharedSession
 
-折叠状态由前端本地存储管理（如 `localStorage`），不保存到 Session。
+- 子执行内容仍在父 session 的事件流里
+- 需要通过 `agent.sub_run_id` / `agent.agent_id` 归并视图
+- “查看子会话”本质上是 **查看同一 session 内的过滤视图**
+
+#### IndependentSession
+
+- 父 session 里保留 subrun 生命周期摘要
+- 子执行本体在独立 child session 中继续增长
+- UI 可以基于 `child_session_id` 进行跳转
 
 ---
 
-## 消息加载策略
+## 6. LLM 上下文与内容投影的关系
 
-### 分页加载
+Agent Loop 并不是直接把 UI 渲染块喂给模型；它使用的是更底层的状态投影与 prompt 组装。
 
-为优化性能，消息采用分页加载：
+但内容架构仍然需要保证下面几点：
 
-- **初始加载**：最近 50 条消息
-- **向下滚动**：加载更早的消息
-- **向上滚动**：（可选）预加载更新的消息或新轮次
-
-### 按需加载内容
-
-对于 `ToolResultBlock` 中的图片等内容，可按需加载：
-
-```rust
-// 先加载缩略图/占位符
-message.blocks.iter()
-    .filter_map(|block| match block {
-        ContentBlock::ToolResult(r) if r.has_image() => {
-            Some(r.get_thumbnail_url())
-        }
-        _ => None,
-    })
-
-// 用户点击后加载完整图片
-message.get_tool_result_image(tool_use_id, high_resolution: true)
-```
+1. **用户消息、助手最终消息、工具结果** 必须能从 durable events 中稳定重建
+2. `CompactApplied` 要能被视为上下文压缩后的稳定摘要输入
+3. `SubRunFinished.result` 要能成为父流程与 UI 的结构化 handoff 来源
+4. `PromptMetrics`、`TurnDone`、`Error` 这类执行控制事件，除非显式需要，否则不应污染常规聊天正文
 
 ---
 
-## 多 Agent 支持
+## 7. 加载与渲染策略
 
-### 会话中的 Agent 实例
+## 7.1 初始加载
 
-每个 Agent 实例有独立的 `session_id`：
-- 用户直接对话的 Agent 使用根 session
-- 子 Agent 创建新的会话，并关联到父会话
+建议优先使用：
 
-### 消息路由
+- `GET /api/sessions/{id}/messages`
 
+理由：
+
+- 快照更稳定
+- 数据量比全量历史事件更小
+- 适合作为打开会话时的首屏内容
+
+## 7.2 执行中增量
+
+执行中建议同时订阅：
+
+- `GET /api/sessions/{id}/events`
+
+用于补充：
+
+- streaming assistant/thinking
+- 工具流式输出
+- subrun 生命周期
+- 错误与完成边界
+
+## 7.3 需要完整执行语义时
+
+使用：
+
+- `GET /api/sessions/{id}/history`
+
+它更适合：
+
+- 复盘完整执行过程
+- 首次构建 subrun 列表
+- 调试 / 可观测性 / 回放场景
+
+---
+
+## 8. 前端渲染建议
+
+### 8.1 thinking 默认折叠
+
+thinking 内容应保留，但默认折叠显示，避免压过正式答案。
+
+### 8.2 工具输出需要有“执行中”状态
+
+因为：
+
+- `ToolCall` 与 `ToolResult` 间存在时间差
+- `ToolCallDelta` 可能持续输出
+
+所以工具卡片应天然支持 `running → done` 的状态切换。
+
+### 8.3 `spawnAgent` 渲染为 subrun 卡片，而不是普通长文本
+
+推荐展示：
+
+- agent profile
+- sub_run_id
+- storage mode
+- 运行状态
+- `SubRunFinished.result.summary`
+- 如果有 `child_session_id`，显示“打开独立会话”入口
+- 如果没有 `child_session_id`，显示“查看同 session 子执行视图”入口
+
+---
+
+## 9. 当前阶段明确不再采用的旧模型
+
+以下内容不再作为当前内容架构主线：
+
+- 在本文档里继续定义 `Session` / `SubSession` / `SessionRepository`
+- 认为每个子 Agent 都必须创建独立 session
+- 把 `messages.jsonl` 当成新的持久化真相
+- 额外设计 `ChildSessionSummary` 一类平行事件来承载 subrun 摘要
+- 把 session tree 直接当成 content model 的基础对象
+
+---
+
+## 10. 当前阶段结论
+
+内容架构现在应当稳定在下面这条线上：
+
+```text
+StorageEvent (durable truth)
+    ↓
+SessionMessage / SessionEventRecord (transport projections)
+    ↓
+frontend renderables (message / tool / compact / subRun / error)
 ```
-Event { session_id, agent_instance_id, ... }
-    → 写入对应的 Session 的消息列表
-```
 
-### 上下文传递
+也就是说：
 
-当 Agent A 调用 Agent B 时：
-1. Agent A 创建一个子会话（SubSession）
-2. 子会话继承工作目录等上下文
-3. Agent B 在子会话中独立运行
-4. 子会话完成后，结果以摘要形式同步到 Agent A 的消息
-5. 前端可选择展示完整子会话或仅显示摘要
+- session 真相属于 `runtime-session`
+- subrun 生命周期属于事件层
+- UI 再把这些事件归并成用户看得懂的消息与卡片

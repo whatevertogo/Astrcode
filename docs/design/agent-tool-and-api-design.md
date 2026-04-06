@@ -2,7 +2,11 @@
 
 ## 1. 概述
 
-Agent as Tool 允许主 Agent 通过 `spawnAgent` 工具委派任务给专门的子 Agent。子 Agent 在受控的隔离环境中执行，拥有独立的工具集、策略和执行限制，最终返回摘要结果给父 Agent。
+Agent as Tool 允许主 Agent 通过 `spawnAgent` 工具委派任务给专门的子 Agent。当前仓库主线已经从早期“共享 session + 事件打标”的原型，演进到 **`spawnAgent + controlled sub-session`（受控子会话）**。子 Agent 在受控边界内执行，拥有独立的工具集、策略和执行限制，并通过结构化结果与生命周期事件把信息回传给父 Agent。
+
+> 文档边界：本文只定义 `spawnAgent` / `subrun` / API surface。  \
+> session 真相、turn 生命周期、recent tail 与 compaction 规则，统一见  \
+> [runtime-session-and-turn-lifecycle](./runtime-session-and-turn-lifecycle.md)。
 
 ### 核心价值
 
@@ -10,6 +14,24 @@ Agent as Tool 允许主 Agent 通过 `spawnAgent` 工具委派任务给专门的
 - **安全性**: 子 Agent 默认只读，权限可被精确控制
 - **效率**: 子 Agent 可使用更小/更快的模型，节省成本
 - **可观测性**: 完整的事件链追踪，支持嵌套执行
+
+### 当前实现姿态（必须与后续设计保持一致）
+
+- **主线模型**：`spawnAgent + controlled sub-session`
+- **存储模式**：`SharedSession` 是正式路径，`IndependentSession` 仍是 experimental
+- **工具边界**：`spawnAgent` 保持极简 schema，不直接暴露 `storage_mode` 等 override
+- **生命周期事件**：父侧统一消费 `SubRunStarted / SubRunFinished`
+- **结果中心**：父流程与 UI 优先基于 `SubRunFinished.result` 消费摘要、findings、artifacts
+- **后台语义**：`spawnAgent` 默认后台启动，先返回 `SubRunResult(status=Running)` 与结构化句柄，再由子会话持续回传事件
+
+### 当前不采纳的旧路线
+
+以下内容不属于当前主线，不应再作为短期实现目标：
+
+- `spawnAgent.isolated_session: bool` 作为公开工具参数
+- `ChildSessionSummary` 作为新的父侧摘要事件
+- 在单个工具内部恢复 `tasks[] / depends_on_previous / DAG` 编排语义
+- 再增加一套与 `spawnAgent` 平行的子 Agent 工具入口
 
 ## 2. 架构设计
 
@@ -46,6 +68,18 @@ Agent as Tool 允许主 Agent 通过 `spawnAgent` 工具委派任务给专门的
 │  └─ 发送 SubRunStarted/SubRunFinished 事件                │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+**当前执行语义补充：**
+
+1. `spawnAgent` 工具调用后，默认立即返回一个 `SubRunResult`  
+2. 如果子会话仍在后台运行，返回值中的 `handoff.artifacts` 会包含：
+   - `ArtifactRef { kind: "subRun" }`
+   - 如果是独立子会话，还可能包含 `ArtifactRef { kind: "session" }`
+3. 父侧后续通过：
+   - `SubRunStarted`
+   - `SubRunFinished`
+   - `SubRunFinished.result`
+   持续观察子会话，而不是依赖额外的摘要事件
 
 ## 3. 核心数据模型
 
@@ -164,6 +198,12 @@ pub struct SubagentContextOverrides {
 | `include_recovery_refs` | `false` | **不支持设为 true** - 跨会话引用协议未定义 |
 | `include_parent_findings` | `false` | **不支持设为 true** - findings 格式非结构化，需先定义过滤机制 |
 
+**设计边界说明：**
+
+- `storage_mode` 只回答一个问题：**事件写到哪个 session，以及子执行域归属哪个 session**
+- 它**不应继续承载**取消传播、任务注册、指标聚合、权限路由等语义
+- 后续控制平面增强应进入独立模型，而不是继续堆到 `SubagentContextOverrides`
+
 ### 3.5 SubRunResult (执行结果)
 
 ```rust
@@ -196,6 +236,14 @@ pub struct SubRunFailure {
     pub retryable: bool,
 }
 ```
+
+**当前消费约定：**
+
+- `status=Running`：表示子会话已成功后台启动
+- `handoff.artifacts`：
+  - `kind="subRun"`：后台子会话句柄
+  - `kind="session"`：独立子会话引用
+- `failure` 只在失败态出现，父流程不应把技术错误细节混入正常 handoff
 
 ### 3.6 SubRunHandle (运行时句柄)
 
@@ -275,7 +323,14 @@ pub trait AgentProfileCatalog: Send + Sync {
 5. **控制平面**: 通过 `agent_control.spawn_with_storage()` 注册子 Agent
 6. **事件发送**: 发送 `SubRunStarted` 事件
 7. **执行循环**: 使用 `ChildExecutionTracker` 跟踪步数和 token
-8. **结果收集**: 构建 `SubRunResult`，发送 `SubRunFinished` 事件
+8. **立即返回**: 默认后台启动，先返回 `SubRunResult(status=Running)` 与 `subRun` artifact
+9. **结果收集**: 后台执行完成后构建 `SubRunResult`，发送 `SubRunFinished` 事件
+
+**当前主线约束：**
+
+- `spawnAgent` 默认后台启动，不再依赖 `runInBackground` 显式布尔开关
+- 父侧应基于生命周期事件和结构化结果消费子会话
+- 不再把“多任务编排语言”塞回单个工具 schema
 
 ## 5. Agent Profile 加载
 
@@ -383,6 +438,12 @@ tools: readFile, grep, glob
 | **存储** | `SharedSession` 或 `IndependentSession` |
 | **步数/Token** | `max_steps` / `token_budget` 限制 |
 
+**额外边界：**
+
+- **任务 ownership 不等于 session ownership**
+- `SharedSession` / `IndependentSession` 只应影响存储落点
+- kill / cleanup / timeout 后续应统一走 root-owned task control
+
 ### 7.2 事件关联
 
 ```
@@ -423,6 +484,12 @@ Turn #5 (用户: "重构 auth 模块")
 - `SubRunFinished.step_count`
 - `SubRunFinished.estimated_tokens`
 
+**当前不推荐：**
+
+- 不再新增 `ChildSessionSummary` 一类平行摘要事件
+- 不让子 Agent 直接共享父可变状态
+- 不通过 UI / 权限提示直通来传播父运行时状态
+
 ## 9. 安全与策略
 
 ### 9.1 子 Agent 策略上下文
@@ -460,10 +527,17 @@ POST /api/v1/sessions/{id}/abort    - 中止执行
 
 GET  /api/v1/agents                 - 列出可用 Agent
 POST /api/v1/agents/{id}/execute    - 创建 root execution
+GET  /api/v1/sessions/{id}/subruns/{sub_run_id} - 查询子会话状态
+POST /api/v1/sessions/{id}/subruns/{sub_run_id}/cancel - 显式取消后台子会话
 
 GET  /api/v1/tools                  - 列出可用工具
-POST /api/v1/tools/{id}/execute     - 执行单个工具
+POST /api/v1/tools/{id}/execute     - 当前仍为 501 骨架
 ```
+
+**当前阶段说明：**
+
+- `subruns/{id}` 查询与取消已经存在，属于当前正式可用 API 面
+- `/api/v1/tools/{id}/execute` 还不是正式执行入口；是否继续实现，需要单独做边界确认
 
 ### 10.2 Root Execution
 
@@ -478,6 +552,14 @@ pub struct AgentExecuteRequestDto {
     pub context_overrides: Option<SubagentContextOverridesDto>,
 }
 ```
+
+**说明：**
+
+- root execution API 可以使用有限 `contextOverrides`
+- `spawnAgent` 工具本身不直接暴露这组 override
+- 这两条路径必须继续保持职责分离：
+  - `spawnAgent`：给 LLM 的稳定入口
+  - root execution API：给外部系统的显式控制入口
 
 ## 11. 配置
 

@@ -1,263 +1,402 @@
-# Agent as Tool + 开放 API 实施计划
+# Agent as Tool + 开放 API 实施计划（同步版）
 
-> **最后更新**：2026-04-05
-> **当前状态**：Phase 0-2 已实现，Phase 3 已具备真实 root execution 与 sub-run 状态查询
+> **最后更新**：2026-04-07  
+> **当前状态**：Phase 0-2 已完成；Phase 3 已有真实 root execution、sub-run 状态查询与显式取消；Phase 4 暂缓；Phase 5 为初版完成；Phase 6 为部分完成。
 
 ```text
-Phase 0 (设计完成) → Phase 1 (Agent Loader) → Phase 2 (Agent as Tool) ✅
-    → Phase 3 (扩展 API) 🟡 进行中 → Phase 4 (WebSocket) → Phase 5 (前端适配 ✅ 已完成)
+Phase 0 (设计) ✅
+  → Phase 1 (Agent Loader) ✅
+  → Phase 2 (Agent as Tool / Controlled Sub-Session) ✅
+  → Phase 3 (扩展 API) 🟡 部分完成
+  → Phase 4 (WebSocket) ⏸ 暂缓
+  → Phase 5 (前端适配) 🟡 初版完成
+  → Phase 6 (测试与回归) 🟡 持续补强
 ```
 
 ---
 
-## Phase 0 — Phase 1 总结
+## 已完成内容（简化总结，放最上面）
 
-### Phase 0: 设计 ✅ 已完成  
-### Phase 1: Agent Loader ✅ 已完成  
+### 1. Agent Loader 已完成
 
-- 已实现 Markdown 目录加载 Agent 定义
-- builtin profile: explore / plan / reviewer / execute
-- 集成到 Runtime Bootstrap
-- 支持热重载（`start_agent_auto_reload`）
+- 已支持从 Markdown / YAML 加载 Agent 定义
+- 已内置 profile：`explore` / `plan` / `reviewer` / `execute`
+- 已集成到 Runtime Bootstrap
+- 已支持热重载
 
+**对应实现：**
+- `crates/runtime-agent-loader/src/lib.rs`
 
-## Phase 2: Agent as Tool 实现 ✅ 已完成
+### 2. `spawnAgent` 工具与受控子会话主链路已完成
 
-**实际实现**：
+当前仓库已经明确从早期“共享 session + 事件打标”的原型，演进到：
 
-### 2.1 工具定义与参数（`crates/runtime-agent-tool/src/lib.rs`）
-- `SpawnAgentTool` 通过 `SubAgentExecutor` trait 委托执行，不直接耦合 runtime
-- `SpawnAgentParams` 序列化字段为 camelCase: `type`, `description`, `prompt`, `context`
-- tool description 只保留稳定 schema 与使用说明，不再把动态 profile 列表固化进 descriptor
-- 参数验证失败时返回 `ok=false` 的 `ToolExecutionResult`，error 描述原因
+> **`spawnAgent + controlled sub-session`**
 
-### 2.2 子 Agent 执行服务（`crates/runtime/src/service/execution/{subagent,root,surface}.rs`）
-- `AgentExecutionServiceHandle` 持有 `RuntimeService` 引用
-- `DeferredSubAgentExecutor` 在 bootstrap 阶段占位，service 创建后 bind
-- `launch_subagent` 执行路径：
-  - 校验 `turn_id` 和 `event_sink`（来自 ToolContext）
-  - 查找 profile → 校验 `AgentMode::SubAgent` → `resolve_profile_tool_names()` 按 allow/deny 裁剪可见工具
-  - `runtime.agent_control.spawn()` 注册子 Agent，`mark_running()` → 获取 CancelToken
-  - 构建 `SubAgentPolicyEngine`（禁止 Ask，只允许白名单工具）
-  - `ChildExecutionTracker` 跟踪 step/token 预算，超限时 cancel
-  - `event_sink.emit()` 写入子 Agent 的 `UserMessage` 和后续事件，带 `AgentEventContext`
-  - 结果折叠为 `SubRunResult(status, handoff, failure)` 回主 turn
+已经具备：
 
-### 2.3 策略与预算（`crates/runtime-agent-loop/src/subagent.rs`）
-- `SubAgentPolicyEngine`: 包装父 PolicyEngine，白名单过滤 + 将 Ask 转为 Deny
-- `ChildExecutionTracker`: 通过 `observe()` 监听事件流，步数/预算超限即 cancel
-- 注意：`step_index >= max_steps` 是"软限制"（允许第 N+1 步部分执行后即取消）
+- `SpawnAgentTool` 通过 `SubAgentExecutor` 委托执行
+- `SpawnAgentParams` 使用稳定的扁平 schema：`type` / `description` / `prompt` / `context`
+- 参数校验失败会返回结构化 `ToolExecutionResult`
+- `launch_subagent()` 使用统一执行入口
+- 默认后台启动，快速返回 `SubRunResult`
+- 通过结构化 `ArtifactRef { kind: "subRun" }` 暴露后台句柄
 
-### 2.4 路由注册（`crates/runtime/src/builtin_capabilities.rs`）
-- 在 `built_in_capability_invokers()` 中注册 `SpawnAgentTool`，通过 `ToolCapabilityInvoker` 包装
-- 所有内置工具统一走同一套 capability dispatch
+**对应实现：**
+- `crates/runtime-agent-tool/src/lib.rs`
+- `crates/runtime/src/service/execution/subagent.rs`
+- `crates/runtime-execution/src/prep.rs`
 
-### 2.5 事件投影（前端）
-- `StorageEvent` 已通过 `AgentEventContext` 承载 `agent_id` / `parent_turn_id` / `agent_profile`
-- 前端 `MessageList.tsx` 实现 `agentGroup` 嵌套 UI
-- `applyAgentEvent.ts` 提取 agent 字段注入消息 action
+### 3. 核心数据模型与生命周期事件已完成
 
-### 2.6 API 端点（`crates/server/src/http/routes/`）
-- `/api/v1/agents` — 列出 Agent Profiles（GET）
-- `/api/v1/agents/{id}/execute` — 创建 root execution 并返回 `sessionId/turnId/agentId`
-- `/api/v1/sessions/{id}/subruns/{sub_run_id}` — 查询子会话状态
-- `/api/v1/tools` — 列出当前工具列表（GET）
-- `/api/v1/tools/{id}/execute` — 返回 501 Not Implemented（骨架）
+已具备当前主线需要的关键 DTO：
 
-**验收标准**：
-- ✅ `spawnAgent` 工具可被 LLM 调用
-- ✅ 子 Agent 事件带父子元数据写入 JSONL
-- ✅ 子 Agent 失败/取消返回结构化 tool result
-- ✅ 前端可渲染子 Agent 消息分组
+- `InvocationKind::{RootExecution, SubRun}`
+- `SubRunStorageMode::{SharedSession, IndependentSession}`
+- `SubRunHandle`
+- `SubRunResult / SubRunHandoff / SubRunFailure`
+- `SubRunStarted / SubRunFinished`
+- `AgentEventContext.child_session_id`
 
----
+**对应实现：**
+- `crates/core/src/agent/mod.rs`
+- `crates/core/src/event/types.rs`
 
-## Phase 3: 扩展 API 🟡 进行中
+### 4. API 初版已可用
 
-**目标**: 基于现有 server crate 扩展 API 端点，不引入独立 API crate
+已落地：
 
-### 已实现
+- `GET /api/v1/agents`
+- `POST /api/v1/agents/{id}/execute`
+- `GET /api/v1/sessions/{id}/subruns/{sub_run_id}`
+- `POST /api/v1/sessions/{id}/subruns/{sub_run_id}/cancel`
+- `GET /api/v1/tools`
+- `POST /api/v1/tools/{id}/execute`（当前仍为 `501 Not Implemented` 骨架）
 
-**文件**: `crates/server/src/http/routes/`
+**对应实现：**
+- `crates/server/src/http/routes/mod.rs`
+- `crates/server/src/http/routes/agents.rs`
+- `crates/server/src/http/routes/tools.rs`
 
-- `GET /api/v1/agents` → `routes/agents.rs`: 列出 Agent Profiles
-  - 使用 `AgentExecutionServiceHandle::list_profiles()` → `AgentProfileDto`
-- `POST /api/v1/agents/{id}/execute` → 创建独立 session 并异步启动 root execution
-  - 返回 `accepted/sessionId/turnId/agentId`
-- `GET /api/v1/sessions/{id}/subruns/{sub_run_id}` → 查询子会话当前状态
-  - 返回 `SubRunStatusDto`
-- `GET /api/v1/tools` → `routes/tools.rs`: 列出当前运行时工具列表
-  - 使用 `ToolExecutionServiceHandle::list_tools()` → `ToolDescriptorDto`
-- `POST /api/v1/tools/{id}/execute` → 返回 `501 Not Implemented`
-  - 提示当前应使用 session turn 或 `spawnAgent`
+### 5. 前端与测试已有可用闭环
 
-### 当前 override / 观测状态
+**前端：**
+- SSE 事件已能提取 `subRunId / storageMode / childSessionId`
+- `MessageList` 已按 `subRunId` 归组
+- `SubRunBlock` 已内联展示子会话运行状态与结果
 
-- root execution API 的 `contextOverrides` 继续走有限 override（`spawnAgent` 工具本身不暴露该字段）：
-  - 已支持：`storageMode`、`includeCompactSummary`、`includeRecentTail`
-  - 显式拒绝：`inheritCancelToken=false`、`includeRecoveryRefs=true`、`includeParentFindings=true`
-  - `inheritSystemInstructions` 与 `inheritProjectInstructions` 当前必须解析为相同值
-- runtime status 已可暴露 `metrics.subrunExecution`
-  - 用于聚合 sub-run 的 outcome / storage mode / step / estimated token
-  - 不引入父状态直写或共享 callback
+**测试：**
+- tool 参数解析 / 错误路径测试
+- 后台 `subRun` artifact 测试
+- 基础集成测试
+- 显式取消释放并发槽位测试
+- Agent Control 的 spawn / cancel / wait / GC 测试
 
-**DTO 定义**: `crates/protocol/src/http/agent.rs` + `crates/protocol/src/http/tool.rs`
-- `AgentProfileDto`, `AgentExecuteRequestDto`, `AgentExecuteResponseDto`
-- `ToolDescriptorDto`, `ToolExecuteRequestDto`, `ToolExecuteResponseDto`
-
-**Router 注册**: `crates/server/src/http/routes/mod.rs` → `build_api_router()`
-
-### 待完成
-
-- `POST /api/v1/sessions/{id}/abort` — turn 级取消
-- `POST /api/v1/sessions/{id}/fork` — 从指定 turn 派生新 session
-- `POST /api/v1/sessions/{id}/revert` — 回滚到指定 turn
-- `/api/v1/tools/{id}/execute` 从骨架升级为真实执行端点
-
-### 多 Agent 后续 Roadmap
-
-当前多 agent 语义已经从早期的“共享 session + 事件打标”演进到受控子会话，但后续扩展顺序需要继续保持克制：
-
-1. `root-owned task registry`
-   - 子 agent 启动的 shell / MCP / 长任务后续应统一归 runtime 根级 task registry 管理。
-   - 目标是让 kill / cleanup / timeout 不再依赖 `shared_session` 或 `independent_session` 的存储语义。
-
-2. `shared observability aggregation`
-   - 允许父流程聚合子执行域的 step / token / outcome / findings / artifacts 摘要。
-   - 不允许因此引入父状态直写能力；父侧消费继续基于 `SubRunFinished.result` 和生命周期事件。
-
-3. `independent_session` 保持 experimental
-   - 当前只保证可查询、可展示、可回填结果。
-   - 在 root-owned task control 与 shared observability 清晰前，不扩大其产品承诺范围，不引入新的自由共享开关。
+**对应实现：**
+- `frontend/src/lib/applyAgentEvent.ts`
+- `frontend/src/components/Chat/MessageList.tsx`
+- `frontend/src/components/Chat/SubRunBlock.tsx`
+- `crates/runtime/src/service/execution/tests.rs`
+- `crates/runtime-agent-tool/src/lib.rs`
+- `crates/runtime-agent-control/src/lib.rs`
 
 ---
 
-## Phase 4: WebSocket 实时通信
+## Phase 0：设计 ✅ 已完成
 
-**目标**: 实现 WebSocket 双向通信, 支持实时交互
+### 已完成
 
-**预估时间**: 1 天
+- [x] 明确 Agent as Tool 的整体边界
+- [x] 确定 Agent Profile、Tool、Runtime、Server 的分层职责
+- [x] 明确后续 API 由现有 `server` crate 承载，不新增独立 API crate
 
-### 备注
+### 建议
 
-当前已通过 SSE 事件流（`/api/sessions/:id/events`）+ 断点续传机制实现实时事件推送。
-WebSocket 是备选方案，目前优先级较低。如后续需要真正的双向通信（如客户端主动下发 steer/follow-up），再评估引入。
-
-（原有设计方案保留，但暂不实施）
-
----
-
-## Phase 5: 前端适配  已较为简洁的完成
-
-TODO: 更好的前端
-
-### 已实现
-
-**事件层**（`frontend/src/lib/applyAgentEvent.ts`）:
-- 从 SSE 事件提取 `agentId` / `parentTurnId` / `agentProfile` 字段
-- 通过 spread `...agentFields` 注入到所有消息 action（UserMessage, AssistantMessage, ToolCall, Compact）
-
-**状态层**（`frontend/src/store/reducer.ts`）:
-- 所有消息类型新增 `agentId`, `parentTurnId`, `agentProfile` 字段
-- 所有 action 类型扩展对应字段声明
-
-**类型层**（`frontend/src/types.ts`）:
-- `UserMessage`, `AssistantMessage`, `ToolCallMessage`, `CompactMessage` 均新增可选 agent 字段
-- Action 类型扩展对应属性
-
-**渲染层**（`frontend/src/components/Chat/MessageList.tsx`）:
-- `isNestedAgentMessage()` 检测带 `agentId + parentTurnId` 的消息
-- 连续子 Agent 消息渲染为 `agentGroup`（header 显示 "子 Agent" + profile ID）
-- 使用 `groupMessageRow` 类名区分嵌套消息样式
-- CSS: `MessageList.module.css` 定义 `agentGroup` / `agentGroupHeader` / `agentGroupLabel` / `agentGroupTitle` / `agentGroupBody`
-
-**验收标准**：
-- ✅ 前端正确消费带 agent 元数据的 SSE 事件
-- ✅ 状态机正确写入 agent 字段
-- ✅ UI 将子 Agent 消息渲染为嵌套分组
+- 后续设计评审统一以 **controlled sub-session** 为中心，不再回到早期“单纯共享 session + 事件打标”的表述。
 
 ---
 
-## Phase 6: 测试与验证
+## Phase 1：Agent Loader ✅ 已完成
 
-### 已实现
+### 已完成
 
-- **Agent Loader 测试**: `crates/runtime-agent-loader/src/lib.rs` 内建多项测试（profile 加载、merge、Markdown/YAML 解析）
-- **Agent Tool 测试**: `crates/runtime-agent-tool/src/lib.rs` 覆盖 params 解析 + 无效参数报错
-- **SpawnAgent 集成**: `crates/runtime/src/service/execution/tests.rs` 中 `spawn_agent_tool_emits_child_events_with_agent_context` 端到端测试
-- **API 路由测试**: `crates/server/src/tests/runtime_routes_tests.rs` 覆盖 `/api/v1/agents`、`/api/v1/tools`、execute 端点 501
-- **Agent Control 测试**: `crates/runtime-agent-control/src/lib.rs` 覆盖 spawn/list/cancel/wait/级联取消/GC
+- [x] Markdown / YAML Agent Profile 加载
+- [x] builtin profile 注册
+- [x] Runtime Bootstrap 集成
+- [x] 热重载支持
 
-### 待补充
+### 建议
 
-- [ ] `SubAgentPolicyEngine::check_capability_call` 三个分支测试（allow/deny/ask→deny）
+- 除非出现新的 profile 继承或分层需求，否则这一阶段不应继续膨胀。
+- 后续 profile 侧增强应优先围绕：
+  - 可见工具边界
+  - 提示词来源可追踪
+  - 配置诊断体验
+
+---
+
+## Phase 2：Agent as Tool / Controlled Sub-Session ✅ 已完成
+
+## 2.1 工具定义与参数
+
+### 已完成
+
+- [x] `SpawnAgentTool` 通过 trait 解耦 runtime
+- [x] 参数 schema 稳定为 `type` / `description` / `prompt` / `context`
+- [x] 参数校验失败时返回结构化 tool failure
+- [x] tool description 不再固化动态 profile 列表
+
+### 如何完成（基于实际内容的思考）
+
+这一阶段最重要的完成点，不是“把 Agent 做成一个更强大的超级工具”，而是**把工具面收窄为稳定的子会话入口**。  
+这让：
+
+- LLM 面对的 schema 更简单
+- runtime 可以自由演进
+- profile 发现能力也能独立演进
+
+### 建议
+
+- **保持 `spawnAgent` 工具 schema 极简。**
+- **不要把 `storageMode` 或更多 override 直接暴露给 LLM。**
+
+## 2.2 Runtime 执行链
+
+### 已完成
+
+- [x] 统一入口 `launch_subagent()`
+- [x] `resolve_profile()` / `resolve_parent_execution()`
+- [x] `prepare_child()` / `spawn_child()`
+- [x] `build_event_sinks()` / `run_child_loop()`
+- [x] `finalize_child_execution()`
+- [x] 后台启动时返回 `subRun` artifact
+
+### 已确认的当前行为
+
+- `spawnAgent` 默认后台启动
+- `SubRunResult.status=Running` 时，`handoff.artifacts` 可包含：
+  - `subRun`
+  - `session`（当存在独立子会话时）
+
+### 如何完成（基于实际内容的思考）
+
+仓库已经实际选择了：
+
+- **后台默认**
+- **结构化返回句柄**
+- **受控子会话**
+
+这条路线比早期“tool 内部编排多任务 / 用布尔参数切换后台”更稳定，也更容易维护。
+
+### 建议
+
+- **不要再回到 `runInBackground` 这类显式布尔开关。**
+- **不要恢复工具内部的多任务 DSL。**
+
+## 2.3 策略与预算
+
+### 已完成
+
+- [x] `SubAgentPolicyEngine`：白名单过滤 + Ask → Deny
+- [x] `ChildExecutionTracker`：步数 / token 预算跟踪
+- [x] 子 Agent 继续受父策略上界约束
+
+### 建议
+
+- 该阶段后续应以**补测试**为主，而不是继续扩充更多策略开关。
+
+---
+
+## Phase 3：扩展 API 🟡 部分完成
+
+## 3.1 已完成
+
+### 路由
+
+- [x] `GET /api/v1/agents`
+- [x] `POST /api/v1/agents/{id}/execute`
+- [x] `GET /api/v1/sessions/{id}/subruns/{sub_run_id}`
+- [x] `POST /api/v1/sessions/{id}/subruns/{sub_run_id}/cancel`
+- [x] `GET /api/v1/tools`
+- [x] `POST /api/v1/tools/{id}/execute`（501 骨架）
+
+### DTO 与映射
+
+- [x] `AgentProfileDto`
+- [x] `AgentExecuteRequestDto`
+- [x] `AgentExecuteResponseDto`
+- [x] `SubRunStatusDto`
+- [x] `ToolDescriptorDto`
+
+### override / 观测现状
+
+- [x] root execution API 已支持有限 `contextOverrides`
+- [x] 当前允许 `storageMode`、`includeCompactSummary`、`includeRecentTail`
+- [x] 当前明确拒绝：
+  - `inheritCancelToken=false`
+  - `includeRecoveryRefs=true`
+  - `includeParentFindings=true`
+- [x] runtime status 已可暴露 `metrics.subrunExecution`
+
+## 3.2 待完成
+
+- [ ] `POST /api/v1/sessions/{id}/abort` — turn 级取消
+- [ ] `POST /api/v1/sessions/{id}/fork` — 从指定 turn 派生新 session
+- [ ] `POST /api/v1/sessions/{id}/revert` — 回滚到指定 turn
+- [ ] `/api/v1/tools/{id}/execute` 升级为真实执行端点，或正式确认长期保留 501
+
+## 3.3 如何完成（基于实际内容的思考）
+
+这一阶段的关键不是“多加几个 API”，而是保持边界清晰：
+
+- `spawnAgent` 是给 LLM 用的稳定入口
+- root execution API 是给外部系统用的显式入口
+- `tools/{id}/execute` 如果要变真实执行端点，必须复用现有执行链，不能另起一套主路径
+
+## 3.4 建议
+
+- **优先补 `abort / fork / revert`，因为它们更接近 session 生命周期主线。**
+- `/api/v1/tools/{id}/execute` 如果短期无明确消费者，可以继续保留 501。
+- 如果未来实现真实工具执行端点，必须复用现有 session / tool runtime，不要新造直通路径。
+
+---
+
+## 多 Agent 后续 Roadmap（当前仍成立）
+
+### 1. `root-owned task registry`
+
+- 子 Agent 启动的 shell / MCP / 长任务应统一归 runtime 根级 task registry 管理
+- kill / cleanup / timeout 不应依赖 `SharedSession` / `IndependentSession`
+
+### 2. `shared observability aggregation`
+
+- 允许父流程聚合 step / token / outcome / findings / artifacts 摘要
+- 不引入父状态直写能力
+
+### 3. `IndependentSession` 继续保持 experimental
+
+- 当前只承诺：可查询 / 可展示 / 可回填结果
+- 在控制平面清晰前，不扩大产品承诺范围
+
+---
+
+## Phase 4：WebSocket ⏸ 暂缓
+
+### 当前判断
+
+当前已经通过：
+
+- SSE 事件流
+- 断点续传
+
+满足实时推送需要。  
+因此 WebSocket 不是当前优先项。
+
+### 何时再考虑推进
+
+仅当出现以下真实需求时再重启：
+
+- 客户端主动 steer / follow-up
+- 需要真正的双向交互
+- 需要比 SSE 更复杂的会话控制语义
+
+### 建议
+
+- **Phase 4 暂不实施，不要抢在控制平面之前推进。**
+
+---
+
+## Phase 5：前端适配 🟡 初版完成
+
+## 5.1 已完成
+
+- [x] SSE 事件已提取 `subRunId / storageMode / childSessionId`
+- [x] 状态层已携带子会话相关字段
+- [x] `MessageList` 已按 `subRunId` 分组
+- [x] `SubRunBlock` 已支持：
+  - 运行中状态
+  - 完成状态
+  - 失败信息
+  - 结果 handoff 展示
+  - 显式取消按钮
+
+## 5.2 待完成
+
+- [ ] 改善 `SubRunBlock` 的信息层级与可读性
+- [ ] 对 `IndependentSession` 增加“打开子会话”入口
+- [ ] 评估是否需要“完整子会话详情页”
+- [ ] 改善多层 / 长输出场景下的 UI 体验
+
+## 5.3 如何完成（基于实际内容的思考）
+
+当前前端已经证明协议链路打通了，所以后续重点不是再造协议，而是：
+
+- 降低阅读成本
+- 更清晰地区分运行中 / 完成 / 失败态
+- 让 `childSessionId` 成为真正可点击的引用
+
+## 5.4 建议
+
+- **短期继续保留 inline `SubRunBlock`。**
+- **中期只在存在 `childSessionId` 时增加“打开子会话”入口。**
+- **不要急着做复杂树状多层 UI。**
+
+---
+
+## Phase 6：测试与回归 🟡 持续补强
+
+## 6.1 已完成
+
+- [x] Agent Loader 基础测试
+- [x] Agent Tool 参数解析 / 失败路径测试
+- [x] `spawnAgent` 基础集成测试
+- [x] 后台 `subRun` artifact 测试
+- [x] 显式取消释放并发槽位测试
+- [x] Agent Control 的 spawn / list / cancel / wait / GC 测试
+
+## 6.2 待补充
+
+- [ ] `SubAgentPolicyEngine::check_capability_call` 三个分支测试
 - [ ] `CapabilityRouter::subset_for_tools` 测试
-```
+- [ ] `IndependentSession` 端到端测试：
+  - child session 建立
+  - parent / child sink 分离
+  - `child_session_id` 回填
+  - 查询 / 取消 / 恢复显示
+- [ ] 生命周期事件完整性测试：
+  - `SubRunStarted`
+  - `SubRunFinished`
 
-### 6.3 API 测试
+## 6.3 如何完成（基于实际内容的思考）
 
-使用 `curl` 验证所有端点:
+测试不应只继续补 happy path，而应优先守住最容易在重构里退化的边界：
 
-```bash
-# 健康检查
-curl http://localhost:6543/health
+- 参数校验
+- 工具裁剪
+- 存储切换
+- 后台取消
+- 生命周期事件完整性
 
-# 列出 Agent
-curl http://localhost:6543/agents
+## 6.4 建议
 
-# 发送消息 (SSE)
-curl -N http://localhost:6543/sessions/session-123/message \
-  -H "Content-Type: application/json" \
-  -d '{"content": "分析 src/ 目录下的代码结构"}'
-
-# 执行 Agent 任务 (SSE)
-curl -N http://localhost:6543/agents/explore/execute \
-  -H "Content-Type: application/json" \
-  -d '{"task": "查找所有使用 X 的地方", "working_dir": "/path/to/project"}'
-```
-
----
-
-## 总工作量评估
-
-| Phase | 内容 | 预估时间 |
-|-------|------|----------|
-| Phase 0 | 基础设施 | 0.5 天 |
-| Phase 1 | Agent Profile 系统 | 1 天 |
-| Phase 2 | Agent as Tool | 2 天 |
-| Phase 3 | 扩展 REST API | 2 天 |
-| Phase 4 | WebSocket | 1 天 |
-| Phase 5 | 前端集成 | 1 天 |
-| Phase 6 | 测试验证 | 1 天 |
-| **总计** | | **8.5 天** |
+- **优先补“边界回归测试”，而不是继续堆功能展示型测试。**
+- **独立子会话测试一定要覆盖 parent sink / child sink 分离。**
 
 ---
 
-## 风险评估与缓解
+## 风险与缓解（同步版）
 
-| 风险 | 影响 | 概率 | 缓解措施 |
-|------|------|------|----------|
-| AgentLoop 重构影响现有功能 | 高 | 中 | 子 Agent 使用独立代码路径, 不修改现有 turn_runner |
-| Token 预算控制失效 | 高 | 低 | 在 SubAgentExecutor 中强制检查 |
-| SSE 流泄漏 (连接断开) | 中 | 中 | 使用 mpsc 的 `try_send`, 断开时自动清理 |
-| 策略引擎绕过 | 高 | 低 | SubAgentPolicyEngine 在 tool_cycle 前拦截 |
-| API Key 管理不善 | 高 | 低 | 通过环境变量, 不硬编码 |
-| WebSocket 并发冲突 | 中 | 低 | Axum 的 ws 实现已处理并发 |
-
----
-
-## 后续扩展 (Phase 7+)
-
-- [ ] D-Mail 时间旅行 (参考 Kimi-CLI)
-- [ ] 安全沙箱 (参考 Codex)
-- [ ] Auto-configure Agent (LLM 自行创建子 Agent Profile)
-- [ ] 多工作空间路由
-- [ ] MCP Server 集成
-- [ ] 分布式 Agent 编排
+| 风险 | 影响 | 缓解 |
+|------|------|------|
+| 文档继续沿用旧语义（`runAgent` / `isolated_session`） | 设计讨论反复回摆 | 统一到 `spawnAgent + controlled sub-session` |
+| `IndependentSession` 过早扩大承诺 | 产品语义不稳 | 在控制平面补齐前保持 experimental |
+| API 再分叉出第二套执行主链 | 维护成本上升 | 新端点必须复用现有 runtime 执行链 |
+| 前端过早追求复杂树状视图 | UI 复杂度失控 | 先优化 inline `SubRunBlock` |
+| 缺少存储切换与取消回归测试 | 重构后隐性退化 | 优先补 boundary tests |
 
 ---
 
-## 验证命令速查
+## 验证命令速查（已修正）
 
 ```bash
 # 全量检查
@@ -267,11 +406,15 @@ cargo test --workspace --exclude astrcode
 
 # 单个 package
 cargo test --package astrcode-runtime-agent-loader
-cargo test --package runtime-agent-tool
-
-# 运行 API 服务
-cargo run --package runtime-agent-api
+cargo test --package astrcode-runtime-agent-tool
+cargo test --package astrcode-runtime
 
 # 前端检查
 cd frontend && npm run typecheck && npm run lint
 ```
+
+---
+
+## 一句话建议
+
+**后续不要再按“重构一个更复杂的 Agent 工具”推进，而应继续沿着 `spawnAgent + controlled sub-session` 主线，收口文档、补强控制平面、完善前端与测试。**
