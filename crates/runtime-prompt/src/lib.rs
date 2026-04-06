@@ -36,7 +36,7 @@ pub use block::{
     BlockCondition, BlockContent, BlockKind, BlockSpec, PromptBlock, RenderTarget, ValidationPolicy,
 };
 pub use composer::{PromptComposer, PromptComposerOptions, ValidationLevel};
-pub use context::PromptContext;
+pub use context::{PromptContext, PromptSkillSummary};
 pub use contribution::{PromptContribution, append_unique_tools};
 pub use contributor::PromptContributor;
 pub use diagnostics::{DiagnosticLevel, PromptDiagnostics};

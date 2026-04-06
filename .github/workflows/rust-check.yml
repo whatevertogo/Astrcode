@@ -22,6 +22,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -43,6 +48,15 @@ jobs:
 
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Verify crates dependency graph
+        run: node scripts/generate-crate-deps-graph.mjs --check
+
+      - name: Check crate boundaries (soft mode)
+        run: node scripts/check-crate-boundaries.mjs
+
+      - name: Run phase0 targeted regression
+        run: node scripts/regressions.mjs
 
       - name: Run tests
         run: cargo test --workspace --exclude astrcode

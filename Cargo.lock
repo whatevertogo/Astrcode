@@ -283,7 +283,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "astrcode-core",
- "astrcode-runtime-skill-loader",
  "async-trait",
  "chrono",
  "dirs",

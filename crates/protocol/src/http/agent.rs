@@ -1,3 +1,8 @@
+//! Agent 管理相关 DTO
+//!
+//! 定义 Agent profile 查询、执行、子执行域（sub-run）状态查询等接口的请求/响应结构。
+//! 这些 DTO 用于前端展示和管理 Agent 配置、触发 Agent 执行任务以及监控 sub-run 状态。
+
 use serde::{Deserialize, Serialize};
 
 use crate::http::{ResolvedSubagentContextOverridesDto, SubRunResultDto, SubRunStorageModeDto};

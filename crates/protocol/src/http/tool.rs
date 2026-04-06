@@ -1,3 +1,8 @@
+//! 工具管理相关 DTO
+//!
+//! 定义工具摘要查询和工具执行接口的请求/响应结构。
+//! 这些 DTO 用于前端展示可用工具列表和触发工具执行请求。
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

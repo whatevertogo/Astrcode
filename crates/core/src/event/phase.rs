@@ -1,8 +1,15 @@
-//! # Phase Tracker
+//! # 阶段追踪器
 //!
-//! Tracks session phase transitions and emits `PhaseChanged` events when the
-//! phase actually changes. Extracted from `EventTranslator` so the core phase
-//! transition logic can be tested in isolation.
+//! 追踪会话的阶段转换，在阶段实际发生变化时发送 `PhaseChanged` 事件。
+//! 从 `EventTranslator` 中提取出来，以便独立测试阶段转换逻辑。
+//!
+//! ## 阶段类型
+//!
+//! - `Idle`: 空闲状态，等待用户输入
+//! - `Thinking`: 正在思考/生成响应
+//! - `Streaming`: 正在流式输出内容
+//! - `CallingTool`: 正在调用工具
+//! - `Interrupted`: 被用户中断
 
 use crate::{AgentEvent, AgentEventContext, Phase, StorageEvent};
 

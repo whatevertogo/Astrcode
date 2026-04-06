@@ -4,12 +4,13 @@
 //! 这是两阶段 skill 模型的第一阶段：仅暴露 skill 名称和描述，
 //! 完整指南通过 `Skill` tool 按需加载。
 
-use astrcode_runtime_skill_loader::{SKILL_TOOL_NAME, skill_roots_cache_marker};
 use async_trait::async_trait;
 
 use crate::{BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor};
 
 pub struct SkillSummaryContributor;
+
+const SKILL_TOOL_NAME: &str = "Skill";
 
 #[async_trait]
 impl PromptContributor for SkillSummaryContributor {
@@ -22,11 +23,7 @@ impl PromptContributor for SkillSummaryContributor {
     }
 
     fn cache_fingerprint(&self, ctx: &PromptContext) -> String {
-        format!(
-            "{}|{}",
-            ctx.contributor_cache_fingerprint(),
-            skill_roots_cache_marker(&ctx.working_dir)
-        )
+        ctx.contributor_cache_fingerprint()
     }
 
     async fn contribute(&self, ctx: &PromptContext) -> PromptContribution {
@@ -74,10 +71,9 @@ impl PromptContributor for SkillSummaryContributor {
 #[cfg(test)]
 mod tests {
     use astrcode_core::test_support::TestEnvGuard;
-    use astrcode_runtime_skill_loader::{SkillSource, SkillSpec};
 
     use super::*;
-    use crate::{BlockContent, PromptContext};
+    use crate::{BlockContent, PromptContext, PromptSkillSummary};
 
     #[tokio::test]
     async fn renders_skill_listing_when_skill_tool_is_available() {
@@ -88,18 +84,10 @@ mod tests {
                 tool_names: vec!["shell".to_string(), "Skill".to_string()],
                 capability_descriptors: Vec::new(),
                 prompt_declarations: Vec::new(),
-                skills: vec![SkillSpec {
-                    id: "git-commit".to_string(),
-                    name: "git-commit".to_string(),
-                    description: "Use this skill when the user asks you to write and run a git \
-                                  commit."
-                        .to_string(),
-                    guide: "# Guide".to_string(),
-                    skill_root: None,
-                    asset_files: Vec::new(),
-                    allowed_tools: Vec::new(),
-                    source: SkillSource::Builtin,
-                }],
+                skills: vec![PromptSkillSummary::new(
+                    "git-commit",
+                    "Use this skill when the user asks you to write and run a git commit.",
+                )],
                 step_index: 0,
                 turn_index: 0,
                 vars: Default::default(),

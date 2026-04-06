@@ -1,9 +1,15 @@
-//! Plugin-local policy utilities.
+//! # 插件策略钩子 (Plugin Policy Hooks)
 //!
-//! These hooks run inside a plugin process and help plugin authors compose reusable allow/deny
-//! checks around their own handlers. They are intentionally narrower than the host runtime's
-//! global policy contract, which also covers approval, context pressure, and model request
-//! rewriting.
+//! 提供插件内策略决策工具函数，用于编写可复用的允许/拒绝检查。
+//!
+//! ## 核心类型
+//! - `PolicyDecision`: 策略决策结果，包含允许/拒绝标志、原因和附加元数据
+//! - `PolicyHook`: 策略钩子接口，包含 `before_invoke` 决策点和可选的短路语义
+//!
+//! ## 与运行时策略的区别
+//!
+//! 这些钩子有意设计得比宿主运行时全局策略更窄，只关注插件本地的 allow/deny 检查。
+//! 全局策略还覆盖审批流程、上下文压力和模型请求重写等能力。
 
 use std::sync::Arc;
 

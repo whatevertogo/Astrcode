@@ -1,10 +1,15 @@
-//! 子 Agent 执行相关的共享构件。
+//! # 子 Agent 执行构件
 //!
-//! 这些逻辑本质上都服务于“受限 AgentLoop 的一次执行”：
-//! - `SubAgentPolicyEngine` 负责把父策略收窄为子 Agent 可接受的能力边界
-//! - `ChildExecutionTracker` 负责根据事件流追踪步数 / token 预算
+//! 提供子 Agent（受限 AgentLoop 执行）所需的共享逻辑。
 //!
-//! 放在 `runtime-agent-loop` 而不是 `runtime`，是为了让执行约束靠近执行引擎，
+//! ## 核心类型
+//! - `SubAgentPolicyEngine`: 将父策略收窄为子 Agent 可接受的能力边界，显式拒绝审批（子 Agent
+//!   无独立人机交互通道）
+//! - `ChildExecutionTracker`: 根据事件流追踪步数和 Token 预算，实现子 Agent 的自主运行约束
+//!
+//! ## 为什么放在 `runtime-agent-loop`
+//!
+//! 放在此 crate 而非 `runtime`，是为了让执行约束靠近执行引擎，
 //! 避免 service 层同时承担“编排 + 执行细节”两类职责。
 
 use std::collections::HashSet;

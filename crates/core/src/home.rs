@@ -1,7 +1,12 @@
-//! Home directory resolution for Astrcode.
+//! # Home 目录解析
 //!
-//! Provides a single canonical function for resolving the application home directory,
-//! shared across all crates in the workspace.
+//! 提供 Astrcode 应用主目录的统一解析入口，供整个 workspace 的所有 crate 共享使用。
+//!
+//! ## 解析优先级
+//!
+//! 1. `ASTRCODE_TEST_HOME` — 测试隔离环境变量，优先级最高
+//! 2. `ASTRCODE_HOME_DIR` — 生产环境覆盖变量
+//! 3. 系统默认 home 目录下的 `.astrcode` 文件夹
 
 use std::path::PathBuf;
 

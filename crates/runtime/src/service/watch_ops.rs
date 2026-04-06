@@ -250,17 +250,18 @@ mod tests {
 
     #[test]
     fn event_targets_config_matches_exact_path_and_same_filename() {
-        let config_path = PathBuf::from(r"C:\Users\test\.astrcode\config.json");
+        // 使用跨平台路径格式，避免 Windows 特有路径在 Linux CI 上失败
+        let config_path = PathBuf::from("/home/test/.astrcode/config.json");
         let exact = Event::new(EventKind::Modify(notify::event::ModifyKind::Data(
             notify::event::DataChange::Any,
         )))
         .add_path(config_path.clone());
         let sibling = Event::new(EventKind::Create(notify::event::CreateKind::File))
-            .add_path(PathBuf::from(r"D:\shadow\config.json"));
+            .add_path(PathBuf::from("/opt/shadow/config.json"));
         let other = Event::new(EventKind::Modify(notify::event::ModifyKind::Name(
             notify::event::RenameMode::Both,
         )))
-        .add_path(PathBuf::from(r"C:\Users\test\.astrcode\settings.toml"));
+        .add_path(PathBuf::from("/home/test/.astrcode/settings.toml"));
 
         assert!(event_targets_config(&exact, &config_path));
         assert!(event_targets_config(&sibling, &config_path));
@@ -269,24 +270,25 @@ mod tests {
 
     #[test]
     fn event_targets_agent_dirs_matches_watched_roots_and_descendants() {
+        // 使用跨平台路径格式，避免 Windows 特有路径在 Linux CI 上失败
         let watch_targets = vec![
             astrcode_runtime_agent_loader::AgentWatchPath {
-                path: PathBuf::from(r"C:\Users\test\.astrcode\agents"),
+                path: PathBuf::from("/home/test/.astrcode/agents"),
                 recursive: false,
             },
             astrcode_runtime_agent_loader::AgentWatchPath {
-                path: PathBuf::from(r"D:\repo\.astrcode\agents"),
+                path: PathBuf::from("/opt/repo/.astrcode/agents"),
                 recursive: true,
             },
         ];
         let direct = Event::new(EventKind::Create(notify::event::CreateKind::File))
-            .add_path(PathBuf::from(r"C:\Users\test\.astrcode\agents\review.md"));
+            .add_path(PathBuf::from("/home/test/.astrcode/agents/review.md"));
         let descendant = Event::new(EventKind::Modify(notify::event::ModifyKind::Data(
             notify::event::DataChange::Any,
         )))
-        .add_path(PathBuf::from(r"D:\repo\.astrcode\agents\nested\plan.md"));
+        .add_path(PathBuf::from("/opt/repo/.astrcode/agents/nested/plan.md"));
         let unrelated = Event::new(EventKind::Remove(notify::event::RemoveKind::File))
-            .add_path(PathBuf::from(r"D:\repo\README.md"));
+            .add_path(PathBuf::from("/opt/repo/README.md"));
 
         assert!(event_targets_agent_dirs(&direct, &watch_targets));
         assert!(event_targets_agent_dirs(&descendant, &watch_targets));

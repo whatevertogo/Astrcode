@@ -1,16 +1,21 @@
-//! # File Access Tracker (文件访问跟踪器)
+//! # 文件访问跟踪器 (File Access Tracker)
 //!
-//! 跟踪会话中通过工具调用访问的文件路径，用于 post-compact 附件恢复。
+//! 跟踪会话中通过工具调用访问的文件路径，用于压缩后的附件恢复。
 //! 从 `StorageEvent::ToolResult` 的 `metadata` 字段中提取文件路径。
+//!
+//! ## 核心类型
+//! - `FileAccessEntry`: 记录访问过的文件路径和触发工具名
+//! - `FileAccessTracker`: 有界环形缓冲区，保留最近 N 个文件（默认 10 个）， 用于 post-compact
+//!   重建附件时知道之前用过哪些文件
 
 use std::path::PathBuf;
 
 use astrcode_core::{StorageEvent, StoredEvent};
 
-/// File-access tracking tools whose `metadata` contains a `"path"` field.
+/// 标记为文件访问跟踪的工具名列表，其 `metadata` 中包含 `"path"` 字段。
 const FILE_TOOLS: &[&str] = &["readFile", "editFile", "writeFile"];
 
-/// Maximum number of recent files to retain for post-compact recovery.
+/// 用于 post-compact 恢复而保留的最近文件数上限。
 const DEFAULT_MAX_TRACKED_FILES: usize = 10;
 
 /// A tracked file access with the source tool name.
@@ -21,11 +26,10 @@ pub(crate) struct FileAccessEntry {
     #[allow(dead_code)]
     pub tool_name: String,
 }
-/// Tracks file paths accessed during a session via tool calls.
+/// 有界环形缓冲区，追踪通过工具调用访问的文件路径。
 ///
-/// The tracker inspects `StorageEvent::ToolResult` events and extracts
-/// the `"path"` field from `metadata` for file-related tools (`readFile`,
-/// `editFile`, `writeFile`).
+/// 通过检查 `StorageEvent::ToolResult` 事件，提取与文件相关工具
+/// （`readFile`、`editFile`、`writeFile`）关联的 `"path"` 元数据。
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FileAccessTracker {
     entries: Vec<FileAccessEntry>,

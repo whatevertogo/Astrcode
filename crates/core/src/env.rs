@@ -1,16 +1,16 @@
-//! Workspace-defined environment variable names.
+//! # 环境变量常量
 //!
-//! These constants are the lowest-level source of truth for Astrcode-specific
-//! environment variables so foundational crates do not need to depend on
-//! higher-level configuration crates just to read process environment.
+//! 定义 Astrcode 专用的环境变量名称常量，是整个项目最低级别的环境变量来源。
+//! 基础 crate 无需依赖高层配置 crate，直接通过此模块读取进程环境变量。
+//! 这些常量也是环境变量名称的唯一真实来源（single source of truth）。
 
-/// Overrides the Astrcode home directory in normal runtime execution.
+/// 用于覆盖正常运行时执行的 Astrcode 主目录。
 pub const ASTRCODE_HOME_DIR_ENV: &str = "ASTRCODE_HOME_DIR";
 
-/// Overrides the Astrcode home directory for test isolation.
+/// 用于测试隔离的 Astrcode 主目录覆盖变量。
 pub const ASTRCODE_TEST_HOME_ENV: &str = "ASTRCODE_TEST_HOME";
 
-/// Adds extra plugin discovery roots, separated using OS-specific path rules.
+/// 添加额外的插件发现路径，使用操作系统特定路径分隔符分隔。
 pub const ASTRCODE_PLUGIN_DIRS_ENV: &str = "ASTRCODE_PLUGIN_DIRS";
 
 /// Supplies the Tauri target triple used when preparing the sidecar binary.

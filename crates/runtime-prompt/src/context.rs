@@ -14,7 +14,7 @@ use std::{
 };
 
 use astrcode_core::CapabilityDescriptor;
-use astrcode_runtime_skill_loader::SkillSpec;
+use serde::{Deserialize, Serialize};
 
 use crate::PromptDeclaration;
 
@@ -34,10 +34,29 @@ pub struct PromptContext {
     pub tool_names: Vec<String>,
     pub capability_descriptors: Vec<CapabilityDescriptor>,
     pub prompt_declarations: Vec<PromptDeclaration>,
-    pub skills: Vec<SkillSpec>,
+    pub skills: Vec<PromptSkillSummary>,
     pub step_index: usize,
     pub turn_index: usize,
     pub vars: HashMap<String, String>,
+}
+
+/// Prompt 侧的轻量 skill 摘要。
+///
+/// prompt 组装只需要稳定的 skill id 与描述，不需要依赖 skill loader 的完整模型，
+/// 这样可以保持 runtime-prompt 的编译隔离。
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptSkillSummary {
+    pub id: String,
+    pub description: String,
+}
+
+impl PromptSkillSummary {
+    pub fn new(id: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            description: description.into(),
+        }
+    }
 }
 
 impl PromptContext {

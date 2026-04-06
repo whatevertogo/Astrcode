@@ -32,7 +32,8 @@ use std::{collections::HashMap, sync::Arc};
 
 use astrcode_core::{AgentState, AstrError, CapabilityDescriptor, Result};
 use astrcode_runtime_prompt::{
-    PromptComposer, PromptContext, PromptDeclaration, composer::PromptBuildOutput,
+    PromptComposer, PromptContext, PromptDeclaration, PromptSkillSummary,
+    composer::PromptBuildOutput,
 };
 use astrcode_runtime_skill_loader::SkillCatalog;
 
@@ -98,7 +99,10 @@ impl PromptRuntime {
             prompt_declarations: self.prompt_declarations.clone(),
             skills: self
                 .skill_catalog
-                .resolve_for_working_dir(&state.working_dir.to_string_lossy()),
+                .resolve_for_working_dir(&state.working_dir.to_string_lossy())
+                .into_iter()
+                .map(|skill| PromptSkillSummary::new(skill.id, skill.description))
+                .collect(),
             step_index,
             turn_index: state.turn_count,
             vars,

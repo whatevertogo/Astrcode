@@ -7,7 +7,6 @@ authors.workspace = true
 
 [dependencies]
 astrcode-core = { path = "../core" }
-astrcode-runtime-skill-loader = { path = "../runtime-skill-loader" }
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
