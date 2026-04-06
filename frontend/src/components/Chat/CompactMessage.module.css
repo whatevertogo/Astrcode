@@ -1,5 +1,5 @@
 .wrapper {
-  margin-left: 44px; /* 对齐 assistant 正文起始列：avatar(28) + gap(16) */
+  margin-left: var(--chat-assistant-content-offset);
   border: 1px solid rgba(122, 185, 153, 0.28);
   background: linear-gradient(180deg, rgba(245, 252, 248, 0.98) 0%, rgba(237, 247, 241, 0.96) 100%);
   border-radius: 18px;

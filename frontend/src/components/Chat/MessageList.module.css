@@ -2,7 +2,8 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 28px 32px 10px;
+  scrollbar-gutter: stable both-edges;
+  padding: 28px var(--chat-content-horizontal-padding) 10px;
   display: flex;
   flex-direction: column;
   gap: 22px;
@@ -10,7 +11,7 @@
 }
 
 .empty {
-  width: min(100%, 860px);
+  width: min(100%, var(--chat-content-max-width));
   color: var(--text-secondary);
   font-size: 14px;
   text-align: center;
@@ -22,7 +23,7 @@
 }
 
 .messageRow {
-  width: min(100%, 860px);
+  width: min(100%, var(--chat-content-max-width));
   margin: 0 auto;
   /* WebView2 在 overflow 容器内对 content-visibility 的支持不稳定，
      会导致消息列表滚动高度计算错误（浏览器正常、桌面应用不能继续下滑）。 */
@@ -40,7 +41,7 @@
 }
 
 .agentGroup {
-  width: min(100%, 860px);
+  width: min(100%, var(--chat-content-max-width));
   margin: 0 auto;
   border: 1px solid rgba(128, 151, 178, 0.28);
   border-radius: 20px;
@@ -117,7 +118,7 @@
 
 @media (max-width: 640px) {
   .list {
-    padding: 18px 16px 8px;
+    padding: 18px var(--chat-content-horizontal-padding-mobile) 8px;
     gap: 18px;
   }
 

@@ -1,7 +1,7 @@
 .wrapper {
   display: block; /* details element, no flex */
   margin: 0 0 4px;
-  margin-left: 44px; /* align with assistant message body (avatar 28px + gap 16px) */
+  margin-left: var(--chat-assistant-content-offset);
   animation: blockEnter 320ms cubic-bezier(0.2, 1, 0.32, 1);
 }
 

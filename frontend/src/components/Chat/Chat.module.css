@@ -1,4 +1,12 @@
 .chat {
+  --chat-content-max-width: 860px;
+  --chat-composer-max-width: calc(var(--chat-content-max-width) + 56px);
+  --chat-content-horizontal-padding: 32px;
+  --chat-content-horizontal-padding-mobile: 16px;
+  --chat-assistant-content-offset: 44px; /* avatar(28) + gap(16) */
+  --chat-assistant-center-shift: calc(var(--chat-assistant-content-offset) / 2);
+  --chat-composer-shell-padding-x: 16px;
+
   flex: 1;
   display: flex;
   flex-direction: column;
