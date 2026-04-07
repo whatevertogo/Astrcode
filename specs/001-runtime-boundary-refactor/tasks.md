@@ -122,9 +122,9 @@
 
 **Purpose**: Final documentation sync and full validation across backend and frontend
 
-- [ ] T038 [P] Refresh the final architecture/contracts docs in `specs/001-runtime-boundary-refactor/findings.md`, `specs/001-runtime-boundary-refactor/design-subrun-protocol.md`, `specs/001-runtime-boundary-refactor/contracts/session-history-and-events.md`, and `specs/001-runtime-boundary-refactor/contracts/execution-status-and-agent-resolution.md`
-- [ ] T039 Run backend validation commands documented in `specs/001-runtime-boundary-refactor/quickstart.md`
-- [ ] T040 Run frontend validation and manual acceptance scenarios documented in `specs/001-runtime-boundary-refactor/quickstart.md`
+- [X] T038 [P] Refresh the final architecture/contracts docs in `specs/001-runtime-boundary-refactor/findings.md`, `specs/001-runtime-boundary-refactor/design-subrun-protocol.md`, `specs/001-runtime-boundary-refactor/contracts/session-history-and-events.md`, and `specs/001-runtime-boundary-refactor/contracts/execution-status-and-agent-resolution.md`
+- [X] T039 Run backend validation commands documented in `specs/001-runtime-boundary-refactor/quickstart.md`
+- [X] T040 Run frontend validation and manual acceptance scenarios documented in `specs/001-runtime-boundary-refactor/quickstart.md`
 
 ---
 
