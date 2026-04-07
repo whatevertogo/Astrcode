@@ -11,7 +11,13 @@ import { useAgentEventHandler } from './hooks/useAgentEventHandler';
 import { useSessionCatalogEvents } from './hooks/useSessionCatalogEvents';
 import { useSidebarResize } from './hooks/useSidebarResize';
 import { replaySessionHistory } from './lib/sessionHistory';
-import { buildSubRunPathView, buildSubRunThreadTree } from './lib/subRunView';
+import { buildSubRunThreadTree, listRootSubRunViews } from './lib/subRunView';
+import {
+  buildFocusedSubRunFilter,
+  buildSubRunChildrenFilter,
+  buildSessionViewLocationHref,
+  readSessionViewLocation,
+} from './lib/sessionView';
 import { cn } from './lib/utils';
 import { parseRuntimeSlashCommand } from './lib/slashCommands';
 import type { SessionCatalogEventPayload } from './types';
@@ -19,7 +25,15 @@ import type { SessionCatalogEventPayload } from './types';
 const reducer = appReducer;
 
 export default function App() {
+  const initialViewLocationRef = useRef(readSessionViewLocation(window.location.href));
   const [state, dispatch] = useReducer(reducer, undefined, makeInitialState);
+  const [activeSubRunChildren, setActiveSubRunChildren] = useState<{
+    subRuns: ReturnType<typeof listRootSubRunViews>;
+    contentFingerprint: string;
+  }>({
+    subRuns: [],
+    contentFingerprint: '',
+  });
   const [showSettings, setShowSettings] = useState(false);
   const [modelRefreshKey, setModelRefreshKey] = useState(0);
   // 确认对话框状态（替代 window.confirm）
@@ -33,6 +47,7 @@ export default function App() {
   } | null>(null);
   const activeSessionIdRef = useRef<string | null>(state.activeSessionId);
   const activeSubRunPathRef = useRef(state.activeSubRunPath);
+  const subRunTitleCacheRef = useRef(new Map<string, string>());
   const phaseRef = useRef(state.phase);
   const turnSessionMapRef = useRef<Record<string, string>>({});
   const pendingSubmitSessionRef = useRef<string[]>([]);
@@ -67,6 +82,11 @@ export default function App() {
   useEffect(() => {
     phaseRef.current = state.phase;
   }, [state.phase]);
+
+  useEffect(() => {
+    subRunTitleCacheRef.current.clear();
+  }, [state.activeSessionId]);
+
   const handleAgentEvent = useAgentEventHandler({
     activeSessionIdRef,
     pendingSubmitSessionRef,
@@ -99,40 +119,89 @@ export default function App() {
     hostBridge,
   } = useAgent(handleAgentEvent);
 
+  const loadSessionView = useCallback(
+    async (sessionId: string, subRunPath: string[]) => {
+      const filter = buildFocusedSubRunFilter(subRunPath);
+      const [snapshot, childSnapshot] = await Promise.all([
+        loadSession(sessionId, filter),
+        filter?.subRunId
+          ? loadSession(sessionId, buildSubRunChildrenFilter(filter.subRunId))
+          : Promise.resolve(null),
+      ]);
+      const replayed = replaySessionHistory(sessionId, snapshot.events, snapshot.phase);
+
+      if (!filter?.subRunId || !childSnapshot) {
+        return {
+          filter,
+          cursor: snapshot.cursor,
+          phase: replayed.phase,
+          messages: replayed.messages,
+          childSubRuns: [] as ReturnType<typeof listRootSubRunViews>,
+          childContentFingerprint: '',
+        };
+      }
+
+      const childReplayed = replaySessionHistory(
+        sessionId,
+        childSnapshot.events,
+        childSnapshot.phase
+      );
+      const childTree = buildSubRunThreadTree(childReplayed.messages);
+      return {
+        filter,
+        cursor: snapshot.cursor,
+        phase: replayed.phase,
+        messages: replayed.messages,
+        childSubRuns: listRootSubRunViews(childTree),
+        childContentFingerprint: childTree.rootStreamFingerprint,
+      };
+    },
+    [loadSession]
+  );
+
   const loadAndActivateSession = useCallback(
-    async (projectId: string, sessionId: string) => {
+    async (projectId: string, sessionId: string, subRunPath: string[] = []) => {
       const activationGeneration = ++sessionActivationGenerationRef.current;
+      const previousSessionId = activeSessionIdRef.current;
       disconnectSession();
-      const snapshot = await loadSession(sessionId);
+      const loaded = await loadSessionView(sessionId, subRunPath);
       if (activationGeneration !== sessionActivationGenerationRef.current) {
         return;
       }
-      const replayed = replaySessionHistory(sessionId, snapshot.events, snapshot.phase);
       dispatch({
         type: 'REPLACE_SESSION_MESSAGES',
         sessionId,
-        messages: replayed.messages,
+        messages: loaded.messages,
+      });
+      setActiveSubRunChildren({
+        subRuns: loaded.childSubRuns,
+        contentFingerprint: loaded.childContentFingerprint,
       });
       // 先写入快照，再切换 active，避免会话切换瞬间渲染空白列表。
       activeSessionIdRef.current = sessionId;
       dispatch({ type: 'SET_ACTIVE', projectId, sessionId });
-      phaseRef.current = replayed.phase;
-      dispatch({ type: 'SET_PHASE', phase: replayed.phase });
-      await connectSession(sessionId, snapshot.cursor);
+      dispatch({ type: 'SET_ACTIVE_SUBRUN_PATH', subRunPath });
+      phaseRef.current = loaded.phase;
+      dispatch({ type: 'SET_PHASE', phase: loaded.phase });
+      await connectSession(sessionId, loaded.cursor, loaded.filter);
       if (activationGeneration !== sessionActivationGenerationRef.current) {
         return;
       }
-      setModelRefreshKey((value) => value + 1);
+      if (previousSessionId !== sessionId) {
+        setModelRefreshKey((value) => value + 1);
+      }
     },
-    [connectSession, disconnectSession, loadSession]
+    [connectSession, disconnectSession, loadSessionView]
   );
 
   const refreshSessions = useCallback(
-    async (preferredSessionId?: string | null) => {
+    async (options?: { preferredSessionId?: string | null; preferredSubRunPath?: string[] }) => {
       const activationGeneration = ++sessionActivationGenerationRef.current;
+      const previousSessionId = activeSessionIdRef.current;
       const sessionMetas = await listSessionsWithMeta();
       const projects = groupSessionsByProject(sessionMetas);
       const availableSessionIds = new Set(sessionMetas.map((meta) => meta.sessionId));
+      const preferredSessionId = options?.preferredSessionId;
       const nextSessionId =
         preferredSessionId && availableSessionIds.has(preferredSessionId)
           ? preferredSessionId
@@ -140,21 +209,28 @@ export default function App() {
             ? activeSessionIdRef.current
             : (projects[0]?.sessions[0]?.id ?? null);
       const nextActiveSubRunPath =
-        nextSessionId === activeSessionIdRef.current ? activeSubRunPathRef.current : [];
+        nextSessionId === preferredSessionId
+          ? (options?.preferredSubRunPath ?? [])
+          : nextSessionId === activeSessionIdRef.current
+            ? activeSubRunPathRef.current
+            : [];
       const nextProjectId =
         projects.find((project) => project.sessions.some((session) => session.id === nextSessionId))
           ?.id ?? null;
 
       if (nextProjectId && nextSessionId) {
         disconnectSession();
-        const snapshot = await loadSession(nextSessionId);
+        const loaded = await loadSessionView(nextSessionId, nextActiveSubRunPath);
         if (activationGeneration !== sessionActivationGenerationRef.current) {
           return;
         }
-        const replayed = replaySessionHistory(nextSessionId, snapshot.events, snapshot.phase);
-        const hydratedProjects = replaceSessionMessages(projects, nextSessionId, replayed.messages);
+        const hydratedProjects = replaceSessionMessages(projects, nextSessionId, loaded.messages);
         activeSessionIdRef.current = nextSessionId;
-        phaseRef.current = replayed.phase;
+        phaseRef.current = loaded.phase;
+        setActiveSubRunChildren({
+          subRuns: loaded.childSubRuns,
+          contentFingerprint: loaded.childContentFingerprint,
+        });
         dispatch({
           type: 'INITIALIZE',
           projects: hydratedProjects,
@@ -162,17 +238,23 @@ export default function App() {
           activeSessionId: nextSessionId,
           activeSubRunPath: nextActiveSubRunPath,
         });
-        dispatch({ type: 'SET_PHASE', phase: replayed.phase });
-        await connectSession(nextSessionId, snapshot.cursor);
+        dispatch({ type: 'SET_PHASE', phase: loaded.phase });
+        await connectSession(nextSessionId, loaded.cursor, loaded.filter);
         if (activationGeneration !== sessionActivationGenerationRef.current) {
           return;
         }
-        setModelRefreshKey((value) => value + 1);
+        if (previousSessionId !== nextSessionId) {
+          setModelRefreshKey((value) => value + 1);
+        }
         return;
       }
 
       activeSessionIdRef.current = null;
       phaseRef.current = 'idle';
+      setActiveSubRunChildren({
+        subRuns: [],
+        contentFingerprint: '',
+      });
       dispatch({
         type: 'INITIALIZE',
         projects,
@@ -183,14 +265,17 @@ export default function App() {
       dispatch({ type: 'SET_PHASE', phase: 'idle' });
       disconnectSession();
     },
-    [connectSession, disconnectSession, listSessionsWithMeta, loadSession]
+    [connectSession, disconnectSession, listSessionsWithMeta, loadSessionView]
   );
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        await refreshSessions();
+        await refreshSessions({
+          preferredSessionId: initialViewLocationRef.current.sessionId,
+          preferredSubRunPath: initialViewLocationRef.current.subRunPath,
+        });
       } catch (error) {
         if (!cancelled) {
           console.error('Failed to initialize sessions:', error);
@@ -212,42 +297,55 @@ export default function App() {
     () => (activeSession ? buildSubRunThreadTree(activeSession.messages) : null),
     [activeSession]
   );
-  const activeSubRunPathView = useMemo(() => {
-    if (!activeSubRunThreadTree || state.activeSubRunPath.length === 0) {
-      return {
-        validPath: [] as string[],
-        views: [],
-        activeView: null,
-      };
+  useEffect(() => {
+    if (!activeSubRunThreadTree) {
+      return;
     }
-    return buildSubRunPathView(activeSubRunThreadTree, state.activeSubRunPath);
-  }, [activeSubRunThreadTree, state.activeSubRunPath]);
-  const activeSubRunView = activeSubRunPathView.activeView;
-  const activeSubRunBreadcrumbs = activeSubRunPathView.views.map((view) => ({
-    subRunId: view.subRunId,
-    title: view.title,
+    activeSubRunThreadTree.subRuns.forEach((view, subRunId) => {
+      subRunTitleCacheRef.current.set(subRunId, view.title);
+    });
+  }, [activeSubRunThreadTree]);
+
+  useEffect(() => {
+    activeSubRunChildren.subRuns.forEach((view) => {
+      subRunTitleCacheRef.current.set(view.subRunId, view.title);
+    });
+  }, [activeSubRunChildren.subRuns]);
+
+  const focusedSubRunId = state.activeSubRunPath[state.activeSubRunPath.length - 1] ?? null;
+  const activeSubRunView = focusedSubRunId
+    ? (activeSubRunThreadTree?.subRuns.get(focusedSubRunId) ?? null)
+    : null;
+  const activeSubRunBreadcrumbs = state.activeSubRunPath.map((subRunId) => ({
+    subRunId,
+    title:
+      activeSubRunThreadTree?.subRuns.get(subRunId)?.title ??
+      subRunTitleCacheRef.current.get(subRunId) ??
+      subRunId,
   }));
   const threadItems =
     activeSubRunView?.threadItems ?? activeSubRunThreadTree?.rootThreadItems ?? [];
-  const contentFingerprint =
-    activeSubRunView?.streamFingerprint ?? activeSubRunThreadTree?.rootStreamFingerprint ?? '';
+  const contentFingerprint = activeSubRunView
+    ? `${activeSubRunView.streamFingerprint}|children:${activeSubRunChildren.contentFingerprint}`
+    : (activeSubRunThreadTree?.rootStreamFingerprint ?? '');
 
   useEffect(() => {
-    const nextPath = activeSubRunPathView.validPath;
-    if (
-      nextPath.length !== state.activeSubRunPath.length ||
-      nextPath.some((subRunId, index) => subRunId !== state.activeSubRunPath[index])
-    ) {
-      dispatch({ type: 'SET_ACTIVE_SUBRUN_PATH', subRunPath: nextPath });
+    const nextHref = buildSessionViewLocationHref(window.location.href, {
+      sessionId: state.activeSessionId,
+      subRunPath: state.activeSubRunPath,
+    });
+    const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (nextHref !== currentPath) {
+      window.history.replaceState({}, document.title, nextHref);
     }
-  }, [activeSubRunPathView.validPath, state.activeSubRunPath]);
+  }, [state.activeSessionId, state.activeSubRunPath]);
 
   const handleSessionCatalogEvent = useCallback(
     (event: SessionCatalogEventPayload) => {
       switch (event.event) {
         case 'sessionBranched':
           if (activeSessionIdRef.current === event.data.sourceSessionId) {
-            void refreshSessions(event.data.sessionId);
+            void refreshSessions({ preferredSessionId: event.data.sessionId });
             return;
           }
           void refreshSessions();
@@ -272,7 +370,7 @@ export default function App() {
   const handleNewProject = async (workingDir: string) => {
     try {
       const created = await createSession(workingDir);
-      await refreshSessions(created.sessionId);
+      await refreshSessions({ preferredSessionId: created.sessionId });
     } catch (error) {
       console.error('Failed to create project session:', error);
     }
@@ -284,7 +382,7 @@ export default function App() {
     }
     try {
       const created = await createSession(activeProject.workingDir);
-      await refreshSessions(created.sessionId);
+      await refreshSessions({ preferredSessionId: created.sessionId });
     } catch (error) {
       console.error('Failed to create session:', error);
     }
@@ -302,17 +400,33 @@ export default function App() {
     dispatch({ type: 'TOGGLE_EXPAND', projectId });
   };
 
-  const handleOpenSubRun = useCallback((subRunId: string) => {
-    dispatch({ type: 'PUSH_ACTIVE_SUBRUN', subRunId });
-  }, []);
+  const handleOpenSubRun = useCallback(
+    async (subRunId: string) => {
+      if (!state.activeProjectId || !state.activeSessionId) {
+        return;
+      }
+      const nextSubRunPath = [...activeSubRunPathRef.current, subRunId];
+      await loadAndActivateSession(state.activeProjectId, state.activeSessionId, nextSubRunPath);
+    },
+    [loadAndActivateSession, state.activeProjectId, state.activeSessionId]
+  );
 
-  const handleCloseSubRun = useCallback(() => {
-    dispatch({ type: 'CLEAR_ACTIVE_SUBRUN_PATH' });
-  }, []);
+  const handleCloseSubRun = useCallback(async () => {
+    if (!state.activeProjectId || !state.activeSessionId) {
+      return;
+    }
+    await loadAndActivateSession(state.activeProjectId, state.activeSessionId, []);
+  }, [loadAndActivateSession, state.activeProjectId, state.activeSessionId]);
 
-  const handleNavigateSubRunPath = useCallback((subRunPath: string[]) => {
-    dispatch({ type: 'SET_ACTIVE_SUBRUN_PATH', subRunPath });
-  }, []);
+  const handleNavigateSubRunPath = useCallback(
+    async (subRunPath: string[]) => {
+      if (!state.activeProjectId || !state.activeSessionId) {
+        return;
+      }
+      await loadAndActivateSession(state.activeProjectId, state.activeSessionId, subRunPath);
+    },
+    [loadAndActivateSession, state.activeProjectId, state.activeSessionId]
+  );
 
   const handleOpenChildSession = useCallback(
     async (childSessionId: string) => {
@@ -320,10 +434,10 @@ export default function App() {
         item.sessions.some((session) => session.id === childSessionId)
       );
       if (project) {
-        await loadAndActivateSession(project.id, childSessionId);
+        await loadAndActivateSession(project.id, childSessionId, []);
         return;
       }
-      await refreshSessions(childSessionId);
+      await refreshSessions({ preferredSessionId: childSessionId });
     },
     [loadAndActivateSession, refreshSessions, state.projects]
   );
@@ -455,7 +569,7 @@ export default function App() {
           // 先本地兜底回 idle，避免 UI 把"正在思考"状态卡死到下一次刷新。
           phaseRef.current = 'idle';
           dispatch({ type: 'SET_PHASE', phase: 'idle' });
-          await refreshSessions(effectiveSessionId);
+          await refreshSessions({ preferredSessionId: effectiveSessionId });
           return;
         }
 
@@ -544,6 +658,7 @@ export default function App() {
           project={activeProject}
           session={activeSession}
           threadItems={threadItems}
+          childSubRuns={activeSubRunChildren.subRuns}
           subRunViews={activeSubRunThreadTree?.subRuns ?? new Map()}
           contentFingerprint={contentFingerprint}
           isSidebarOpen={isSidebarOpen}
@@ -552,9 +667,15 @@ export default function App() {
           activeSubRunPath={state.activeSubRunPath}
           activeSubRunTitle={activeSubRunView?.title ?? null}
           activeSubRunBreadcrumbs={activeSubRunBreadcrumbs}
-          onOpenSubRun={handleOpenSubRun}
-          onCloseSubRun={handleCloseSubRun}
-          onNavigateSubRunPath={handleNavigateSubRunPath}
+          onOpenSubRun={(subRunId) => {
+            void handleOpenSubRun(subRunId);
+          }}
+          onCloseSubRun={() => {
+            void handleCloseSubRun();
+          }}
+          onNavigateSubRunPath={(subRunPath) => {
+            void handleNavigateSubRunPath(subRunPath);
+          }}
           onOpenChildSession={handleOpenChildSession}
           onSubmitPrompt={handleSubmit}
           onInterrupt={handleInterrupt}

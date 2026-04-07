@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Message } from '../types';
-import { buildSubRunPathView, buildSubRunThreadTree, buildSubRunView } from './subRunView';
+import {
+  buildSubRunPathView,
+  buildSubRunThreadTree,
+  buildSubRunView,
+  listRootSubRunViews,
+} from './subRunView';
 
 describe('buildSubRunView', () => {
   it('extracts lifecycle and direct-child messages for a nested sub-run view', () => {
@@ -298,5 +303,73 @@ describe('buildSubRunView', () => {
 
   it('returns null when the sub-run does not exist', () => {
     expect(buildSubRunView([], 'missing')).toBeNull();
+  });
+
+  it('lists root-level sub-runs in render order for a directory view', () => {
+    const messages: Message[] = [
+      {
+        id: 'subrun-a-start',
+        kind: 'subRunStart',
+        turnId: 'turn-root',
+        parentTurnId: 'turn-root',
+        subRunId: 'subrun-a',
+        agentProfile: 'planner',
+        resolvedOverrides: {
+          storageMode: 'sharedSession',
+          inheritSystemInstructions: true,
+          inheritProjectInstructions: true,
+          inheritWorkingDir: true,
+          inheritPolicyUpperBound: true,
+          inheritCancelToken: true,
+          includeCompactSummary: false,
+          includeRecentTail: true,
+          includeRecoveryRefs: false,
+          includeParentFindings: false,
+        },
+        resolvedLimits: {
+          allowedTools: ['readFile'],
+        },
+        timestamp: 1,
+      },
+      {
+        id: 'subrun-b-start',
+        kind: 'subRunStart',
+        turnId: 'turn-root',
+        parentTurnId: 'turn-root',
+        subRunId: 'subrun-b',
+        agentProfile: 'reviewer',
+        resolvedOverrides: {
+          storageMode: 'sharedSession',
+          inheritSystemInstructions: true,
+          inheritProjectInstructions: true,
+          inheritWorkingDir: true,
+          inheritPolicyUpperBound: true,
+          inheritCancelToken: true,
+          includeCompactSummary: false,
+          includeRecentTail: true,
+          includeRecoveryRefs: false,
+          includeParentFindings: false,
+        },
+        resolvedLimits: {
+          allowedTools: ['readFile'],
+        },
+        timestamp: 2,
+      },
+      {
+        id: 'subrun-a-assistant',
+        kind: 'assistant',
+        turnId: 'turn-a',
+        parentTurnId: 'turn-root',
+        subRunId: 'subrun-a',
+        text: 'a',
+        streaming: false,
+        timestamp: 3,
+      },
+    ];
+
+    expect(listRootSubRunViews(messages).map((view) => view.subRunId)).toEqual([
+      'subrun-a',
+      'subrun-b',
+    ]);
   });
 });

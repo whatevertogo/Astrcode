@@ -16,6 +16,7 @@ interface ChatProps {
   project: Project | null;
   session: Session | null;
   threadItems: ThreadItem[];
+  childSubRuns: SubRunViewData[];
   subRunViews: Map<string, SubRunViewData>;
   contentFingerprint: string;
   phase: Phase;
@@ -46,6 +47,7 @@ export default function Chat({
   project,
   session,
   threadItems,
+  childSubRuns,
   subRunViews,
   contentFingerprint,
   phase,
@@ -82,6 +84,7 @@ export default function Chat({
       <MessageList
         sessionId={session?.id ?? null}
         threadItems={threadItems}
+        childSubRuns={childSubRuns}
         subRunViews={subRunViews}
         contentFingerprint={contentFingerprint}
         emptyStateText={activeSubRunPath.length > 0 ? '等待该子执行输出...' : undefined}
@@ -92,7 +95,8 @@ export default function Chat({
       {activeSubRunPath.length > 0 ? (
         <div className={styles.subRunFocusHint}>
           当前正在查看子执行
-          {activeSubRunTitle ? `「${activeSubRunTitle}」` : ''} 的过滤视图。返回主会话后可继续输入。
+          {activeSubRunTitle ? `「${activeSubRunTitle}」` : ''}{' '}
+          的内容视图。下方会单独列出下一层子执行；返回主会话后可继续输入。
         </div>
       ) : (
         <InputBar

@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { normalizeAgentEvent } from '../lib/agentEvent';
 import { getHostBridge } from '../lib/hostBridge';
 import { consumeSseStream } from '../lib/sse/consumer';
+import { buildSessionEventQueryString } from '../lib/sessionView';
 import { ensureServerSession } from '../lib/serverAuth';
 import { request } from '../lib/api/client';
 import { listComposerOptions } from '../lib/api/composer';
@@ -39,6 +40,7 @@ import type {
   SessionMeta,
   TestResult,
 } from '../types';
+import type { SessionEventFilterQuery } from '../lib/sessionView';
 
 export interface SessionSnapshot {
   events: AgentEventPayload[];
@@ -85,6 +87,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptRef = useRef(0);
   const connectedSessionIdRef = useRef<string | null>(null);
+  const connectedSessionFilterRef = useRef<SessionEventFilterQuery | undefined>(undefined);
   const lastEventIdRef = useRef<string | null>(null);
 
   // Generation counter to prevent race conditions when switching sessions
@@ -109,6 +112,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
       streamAbortRef.current?.abort();
       streamAbortRef.current = null;
       connectedSessionIdRef.current = null;
+      connectedSessionFilterRef.current = undefined;
       lastEventIdRef.current = null;
       reconnectAttemptRef.current = 0;
       streamGenerationRef.current += 1;
@@ -130,7 +134,11 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
   }, []);
 
   const connectSession = useCallback(
-    async (sessionId: string, afterEventId?: string | null): Promise<void> => {
+    async (
+      sessionId: string,
+      afterEventId?: string | null,
+      filter?: SessionEventFilterQuery
+    ): Promise<void> => {
       await ensureServerSession();
       clearReconnectTimer();
       streamAbortRef.current?.abort();
@@ -139,6 +147,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
       const generation = ++streamGenerationRef.current;
 
       connectedSessionIdRef.current = sessionId;
+      connectedSessionFilterRef.current = filter;
       lastEventIdRef.current = afterEventId ?? null;
       reconnectAttemptRef.current = 0;
 
@@ -188,9 +197,10 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
         streamAbortRef.current = controller;
         try {
           const response = await request(
-            `/api/sessions/${encodeURIComponent(sessionId)}/events${
-              cursor ? `?afterEventId=${encodeURIComponent(cursor)}` : ''
-            }`,
+            `/api/sessions/${encodeURIComponent(sessionId)}/events${buildSessionEventQueryString({
+              afterEventId: cursor,
+              filter: connectedSessionFilterRef.current,
+            })}`,
             {
               headers: {
                 Accept: 'text/event-stream',
@@ -281,6 +291,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     streamAbortRef.current?.abort();
     streamAbortRef.current = null;
     connectedSessionIdRef.current = null;
+    connectedSessionFilterRef.current = undefined;
     lastEventIdRef.current = null;
     reconnectAttemptRef.current = 0;
     // Increment generation to invalidate any pending operations
@@ -295,10 +306,13 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     return listSessionsWithMeta();
   }, []);
 
-  const handleLoadSession = useCallback(async (sessionId: string): Promise<SessionSnapshot> => {
-    const { events, cursor, phase } = await loadSession(sessionId);
-    return { events, cursor, phase };
-  }, []);
+  const handleLoadSession = useCallback(
+    async (sessionId: string, filter?: SessionEventFilterQuery): Promise<SessionSnapshot> => {
+      const { events, cursor, phase } = await loadSession(sessionId, filter);
+      return { events, cursor, phase };
+    },
+    []
+  );
 
   const handleSubmitPrompt = useCallback(
     async (sessionId: string, text: string): Promise<PromptSubmission> => {

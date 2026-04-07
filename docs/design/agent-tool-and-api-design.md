@@ -1,630 +1,89 @@
-# Agent as Tool (子代理系统) 设计文档
+# Agent as Tool（子代理系统）设计
 
-## 1. 概述
+## 问题
 
-Agent as Tool 允许主 Agent 通过 `spawnAgent` 工具委派任务给专门的子 Agent。当前仓库主线已经从早期“共享 session + 事件打标”的原型，演进到 **`spawnAgent + controlled sub-session`（受控子会话）**。子 Agent 在受控边界内执行，拥有独立的工具集、策略和执行限制，并通过结构化结果与生命周期事件把信息回传给父 Agent。
+Astrcode 需要让主 Agent 把工作委派给子 Agent，但不能把子 Agent 做成“另一个不受控的主会话”。
 
-> 文档边界：本文只定义 `spawnAgent` / `subrun` / API surface。  \
-> session 真相、turn 生命周期、recent tail 与 compaction 规则，统一见  \
-> [runtime-session-and-turn-lifecycle](./runtime-session-and-turn-lifecycle.md)。
+设计的关键不是“能不能起子 Agent”，而是：
 
-### 核心价值
+- 子执行如何被限制
+- 子执行结果如何回流
+- session / tool call / 生命周期之间如何稳定关联
 
-- **专业性**: 每个 Agent 专注于特定任务类型（探索、规划、执行、审查）
-- **安全性**: 子 Agent 默认只读，权限可被精确控制
-- **效率**: 子 Agent 可使用更小/更快的模型，节省成本
-- **可观测性**: 完整的事件链追踪，支持嵌套执行
+## 目标
 
-### 当前实现姿态（必须与后续设计保持一致）
+1. 让 `spawnAgent` 成为稳定、简单、可长期演进的工具入口。
+2. 让子执行拥有独立的执行边界，但不破坏父会话真相。
+3. 让 UI 和父流程都能通过统一事件消费子执行结果。
 
-- **主线模型**：`spawnAgent + controlled sub-session`
-- **存储模式**：`SharedSession` 是正式路径，`IndependentSession` 仍是 experimental
-- **工具边界**：`spawnAgent` 保持极简 schema，不直接暴露 `storage_mode` 等 override
-- **生命周期事件**：父侧统一消费 `SubRunStarted / SubRunFinished`
-- **结果中心**：父流程与 UI 优先基于 `SubRunFinished.result` 消费摘要、findings、artifacts
-- **后台语义**：`spawnAgent` 默认后台启动，先返回 `SubRunResult(status=Running)` 与结构化句柄，再由子会话持续回传事件
+## 主线方案
 
-### 当前不采纳的旧路线
+### 1. 受控子会话，而不是自由分叉
 
-以下内容不属于当前主线，不应再作为短期实现目标：
+主线模型固定为：
 
-- `spawnAgent.isolated_session: bool` 作为公开工具参数
-- `ChildSessionSummary` 作为新的父侧摘要事件
-- 在单个工具内部恢复 `tasks[] / depends_on_previous / DAG` 编排语义
-- 再增加一套与 `spawnAgent` 平行的子 Agent 工具入口
+- `spawnAgent + controlled sub-session`
+- `SharedSession` 为正式路径
+- `IndependentSession` 仍为 experimental 扩展面
 
-## 2. 架构设计
+### 2. `spawnAgent` 保持极简 schema
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    主 Agent Loop                             │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │ LLM 决定需要委派任务                                   │   │
-│  │ Tool Call: spawnAgent(type="explore",                │   │
-│  │                      description="inspect auth",      │   │
-│  │                      prompt="inspect auth module")    │   │
-│  └──────────────────────┬───────────────────────────────┘   │
-└─────────────────────────┼───────────────────────────────────┘
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    SpawnAgentTool                             │
-│  ├─ 解析 SpawnAgentParams                                   │
-│  ├─ 暴露稳定 schema + 稳定使用说明                         │
-│  ├─ 委托给 SubAgentExecutor.launch()                      │
-│  └─ 返回 ToolExecutionResult                              │
-└──────────────────────┬──────────────────────────────────────┘
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│              AgentExecutionServiceHandle                    │
-│  ├─ 查找已注册的 AgentProfile                             │
-│  ├─ 验证 AgentMode::SubAgent                              │
-│  ├─ 准备执行上下文 (prepare_scoped_execution)             │
-│  │   ├─ 解析 SubagentContextOverrides                     │
-│  │   ├─ 构建子 Agent 状态                                 │
-│  │   └─ 配置独立的 Policy/Tool Set                        │
-│  ├─ 通过 AgentControlPlane spawn 子 Agent                 │
-│  ├─ 执行子 Agent Loop (ChildExecutionTracker)             │
-│  ├─ 收集结果 (SubRunResult)                               │
-│  └─ 发送 SubRunStarted/SubRunFinished 事件                │
-└─────────────────────────────────────────────────────────────┘
-```
+公开工具参数只保留：
 
-**当前执行语义补充：**
+- `type`
+- `description`
+- `prompt`
+- `context`
 
-1. `spawnAgent` 工具调用后，默认立即返回一个 `SubRunResult`  
-2. 如果子会话仍在后台运行，返回值中的 `handoff.artifacts` 会包含：
-   - `ArtifactRef { kind: "subRun" }`
-   - 如果是独立子会话，还可能包含 `ArtifactRef { kind: "session" }`
-3. 父侧后续通过：
-   - `SubRunStarted`
-   - `SubRunFinished`
-   - `SubRunFinished.result`
-   持续观察子会话，而不是依赖额外的摘要事件
+`storage_mode`、继承控制、执行上界等能力留在内部执行装配或 root execution API，不直接暴露给 LLM。
 
-### 2.1 subrun 生命周期与 tool call 的关联约束
+### 3. 生命周期事件是父侧真相
 
-前端不应通过硬编码 `tool_name == "spawnAgent"` 来判断“这是不是子执行卡片”；  
-真正的子执行真相来自：
+父流程和 UI 识别子执行，优先依赖：
 
 - `SubRunStarted`
 - `SubRunFinished`
+- `SubRunFinished.result`
 
-但是如果要把某个普通 tool card “升级”为特定 subrun card，协议还必须提供稳定关联规则。
+而不是设计一套平行摘要事件。
 
-当前文档约束更新为：
+### 4. 结果以 handoff 为中心
 
-1. **不新增额外的“这是 subrun tool” DTO 标记**
-2. **但必须保证 `spawnAgent` tool call 与 subrun 生命周期之间存在稳定关联**
+`spawnAgent` 可以先返回 running 句柄，但真正稳定的消费面是 `SubRunFinished.result` 中的：
 
-推荐顺序：
+- `summary`
+- `findings`
+- `artifacts`
+- `failure`
 
-- **首选**：在 `SubRunStarted / SubRunFinished` 中补 `tool_call_id`
-- **兼容**：若暂时不补字段，至少将“同一 `turn_id` 内按发出顺序 1:1 配对”写成明确协议
+### 5. session 归属与任务归属分离
 
-这条约束的原因是：
+`SharedSession` / `IndependentSession` 只回答“事件写到哪里”。
 
-- 同一 turn 内可能出现多个 `spawnAgent`
-- 只靠 `turn_id` 无法稳定区分哪个 tool call 对应哪个 `sub_run_id`
+shell、MCP、长任务、kill / cleanup / timeout 等控制责任，应该收口到 root-owned task control，而不是继续挂在 session mode 上。
 
-## 3. 核心数据模型
+## 明确边界
 
-### 3.1 AgentProfile (Agent 画像定义)
+### 当前不做
 
-定义文件: `crates/core/src/agent/mod.rs`
+- 不把 `isolated_session` 暴露成公开工具参数
+- 不新增 `ChildSessionSummary` 一类平行结果事件
+- 不让子 Agent 共享父可变状态
+- 不在单个工具里恢复 DAG / `tasks[]` 编排语义
 
-```rust
-/// Agent 画像定义。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AgentProfile {
-    /// Profile 唯一标识 (如 "explore", "plan")。
-    pub id: String,
-    /// 人类可读名称。
-    pub name: String,
-    /// 作用说明，供路由/提示词/UI 复用。
-    pub description: String,
-    /// 该 profile 允许的使用模式。
-    pub mode: AgentMode,
-    /// 子 Agent 专用系统提示，可为空。
-    pub system_prompt: Option<String>,
-    /// 允许使用的工具集合；为空表示由上层策略决定。
-    pub allowed_tools: Vec<String>,
-    /// 显式禁止的工具集合。
-    pub disallowed_tools: Vec<String>,
-    /// 最大 step 数上限。
-    pub max_steps: Option<u32>,
-    /// token 预算上限。
-    pub token_budget: Option<u64>,
-    /// 模型偏好。
-    pub model_preference: Option<String>,
-}
-```
+### 当前必须补强
 
-**字段说明:**
+- `spawnAgent` tool call 与 subrun 生命周期的稳定关联
+- root-owned task control
+- shared observability 的聚合能力
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | String | 唯一标识符，从 `name` 自动规范化生成 (小写 + 连字符) |
-| `name` | String | 用户定义的显示名称 |
-| `description` | String | Agent 用途描述，LLM 用于路由决策 |
-| `mode` | AgentMode | `Primary` / `SubAgent` / `All`，控制可用场景 |
-| `system_prompt` | Option<String> | 子 Agent 的系统提示，Markdown body 或 frontmatter 中的 prompt |
-| `allowed_tools` | Vec<String> | 白名单工具集 |
-| `disallowed_tools` | Vec<String> | 黑名单工具集（优先级高于白名单） |
-| `max_steps` | Option<u32> | 执行步数上限 |
-| `token_budget` | Option<u64> | Token 预算上限 |
-| `model_preference` | Option<String> | 模型偏好（当前未使用，保留扩展） |
+## 设计原则
 
-### 3.2 AgentMode (Agent 模式)
+1. 先固定协议真相，再讨论体验增强。
+2. 先做 shared observability，不做 shared mutable state。
+3. 不把控制面能力继续堆进 `SubagentContextOverrides`。
 
-```rust
-pub enum AgentMode {
-    /// 只能作为主 Agent 使用。
-    Primary,
-    /// 只能作为子 Agent 使用。
-    SubAgent,
-    /// 主/子 Agent 均可使用。
-    All,
-}
-```
+## 对应规范
 
-### 3.3 SpawnAgentParams (工具调用参数)
-
-定义文件: `crates/core/src/agent/mod.rs`
-
-```rust
-/// `spawnAgent` 工具的调用参数。
-pub struct SpawnAgentParams {
-    /// Agent profile 标识；为空默认 `explore`。
-    pub r#type: Option<String>,
-    /// 短摘要，只用于 UI / 日志 / 标题。
-    pub description: String,
-    /// 子 Agent 实际收到的任务正文。
-    pub prompt: String,
-    /// 可选补充上下文。
-    pub context: Option<String>,
-}
-```
-
-> `SpawnAgentParams` 归属 `core`，因为它既是 `spawnAgent` 工具的稳定 schema，
-> 也是 `runtime-execution` 装配子执行请求时复用的共享 DTO，避免 execution 反向依赖 tool crate。
-
-### 3.4 SubagentContextOverrides (上下文覆写)
-
-定义文件: `crates/core/src/agent/mod.rs`
-
-> 说明：这组字段当前用于 root execution API 与内部执行装配，
-> **不是** `spawnAgent` 工具的公开参数 schema。
-
-```rust
-/// 调用侧可传入的子会话上下文 override。
-pub struct SubagentContextOverrides {
-    pub storage_mode: Option<SubRunStorageMode>,
-    pub inherit_system_instructions: Option<bool>,
-    pub inherit_project_instructions: Option<bool>,
-    pub inherit_working_dir: Option<bool>,
-    pub inherit_policy_upper_bound: Option<bool>,
-    pub inherit_cancel_token: Option<bool>,
-    pub include_compact_summary: Option<bool>,
-    pub include_recent_tail: Option<bool>,
-    pub include_recovery_refs: Option<bool>,
-    pub include_parent_findings: Option<bool>,
-}
-```
-
-**当前实现的约束:**
-
-| Override 字段 | 默认值 | 当前行为 |
-|--------------|--------|---------|
-| `storage_mode` | `SharedSession` | 支持 `SharedSession` / `IndependentSession` |
-| `inherit_system_instructions` | `true` | 全继承或不继承，无细粒度拆分 |
-| `inherit_project_instructions` | `true` | 全继承或不继承，无细粒度拆分 |
-| `inherit_working_dir` | `true` | - |
-| `inherit_policy_upper_bound` | `true` | - |
-| `inherit_cancel_token` | `true` | **不支持设为 false** - 取消必须级联传播，否则父取消后子 Agent 成为孤儿进程 |
-| `include_compact_summary` | `false` | - |
-| `include_recent_tail` | `true` | - |
-| `include_recovery_refs` | `false` | **不支持设为 true** - 跨会话引用协议未定义 |
-| `include_parent_findings` | `false` | **不支持设为 true** - findings 格式非结构化，需先定义过滤机制 |
-
-**设计边界说明：**
-
-- `storage_mode` 只回答一个问题：**事件写到哪个 session，以及子执行域归属哪个 session**
-- 它**不应继续承载**取消传播、任务注册、指标聚合、权限路由等语义
-- 后续控制平面增强应进入独立模型，而不是继续堆到 `SubagentContextOverrides`
-
-### 3.5 SubRunResult (执行结果)
-
-```rust
-/// 子执行结构化结果。
-pub struct SubRunResult {
-    pub status: SubRunOutcome,
-    pub handoff: Option<SubRunHandoff>,
-    pub failure: Option<SubRunFailure>,
-}
-
-/// 子执行结果状态。
-pub enum SubRunOutcome {
-    Running,
-    Completed,
-    Failed,
-    Aborted,
-    TokenExceeded,
-}
-
-pub struct SubRunHandoff {
-    pub summary: String,
-    pub findings: Vec<String>,
-    pub artifacts: Vec<ArtifactRef>,
-}
-
-pub struct SubRunFailure {
-    pub code: SubRunFailureCode,
-    pub display_message: String,
-    pub technical_message: String,
-    pub retryable: bool,
-}
-```
-
-**当前消费约定：**
-
-- `status=Running`：表示子会话已成功后台启动
-- `handoff.artifacts`：
-  - `kind="subRun"`：后台子会话句柄
-  - `kind="session"`：独立子会话引用
-- `failure` 只在失败态出现，父流程不应把技术错误细节混入正常 handoff
-
-### 3.6 SubRunHandle (运行时句柄)
-
-```rust
-/// 受控子会话的轻量运行句柄。
-pub struct SubRunHandle {
-    pub sub_run_id: String,
-    pub agent_id: String,
-    pub session_id: String,
-    pub child_session_id: Option<String>,
-    pub depth: usize,
-    pub parent_turn_id: Option<String>,
-    pub parent_agent_id: Option<String>,
-    pub agent_profile: String,
-    pub storage_mode: SubRunStorageMode,
-    pub status: AgentStatus,
-}
-```
-
-### 3.7 AgentEventContext (事件上下文)
-
-```rust
-/// turn 级事件的 Agent 元数据。
-pub struct AgentEventContext {
-    pub agent_id: Option<String>,
-    pub parent_turn_id: Option<String>,
-    pub agent_profile: Option<String>,
-    pub sub_run_id: Option<String>,
-    pub invocation_kind: Option<InvocationKind>,
-    pub storage_mode: Option<SubRunStorageMode>,
-    pub child_session_id: Option<String>,
-}
-```
-
-## 4. 工具实现
-
-### 4.1 SpawnAgentTool
-
-定义文件: `crates/runtime-agent-tool/src/lib.rs`
-
-```rust
-/// 把子 Agent 能力暴露给 LLM 的内置工具。
-pub struct SpawnAgentTool {
-    launcher: Arc<dyn SubAgentExecutor>,
-}
-
-/// 子 Agent 启动器抽象。
-#[async_trait]
-pub trait SubAgentExecutor: Send + Sync {
-    async fn launch(&self, params: SpawnAgentParams, ctx: &ToolContext) -> Result<SubRunResult>;
-}
-
-/// 子 Agent profile 目录抽象。
-pub trait AgentProfileCatalog: Send + Sync {
-    fn list_subagent_profiles(&self) -> Vec<AgentProfile>;
-}
-```
-
-**设计要点:**
-
-1. **依赖倒置**: `SpawnAgentTool` 不直接依赖 `RuntimeService`，而是通过 `SubAgentExecutor` trait 解耦
-2. **稳定 tool surface**: tool description 不再内嵌动态 profile 列表，避免 bootstrap 与热重载后出现陈旧描述
-3. **职责拆分**: profile discovery 通过 `AgentProfileCatalog` 单独暴露，供 prompt contributor 或独立索引能力使用
-4. **参数验证**: 在工具层做参数解析，失败返回 `ToolExecutionResult { ok: false, error: ... }`
-5. **结果格式化**: 返回包含 `outcome`、`findings`、`artifacts` 的 metadata
-
-### 4.2 launch_subagent 实现
-
-定义文件: `crates/runtime/src/service/execution/subagent.rs`
-
-**执行流程:**
-
-1. **前置校验**: 获取 parent_turn_id、event_sink，查找 AgentProfile
-2. **模式验证**: 调用 `ensure_subagent_mode()` 确认 profile 可作为子 Agent
-3. **准备执行**: 调用 `prepare_scoped_execution()` 解析 overrides 和构建执行规格
-4. **存储模式**: 根据 `storage_mode` 决定是否创建独立 session
-5. **控制平面**: 通过 `agent_control.spawn_with_storage()` 注册子 Agent
-6. **事件发送**: 发送 `SubRunStarted` 事件
-7. **执行循环**: 使用 `ChildExecutionTracker` 跟踪步数和 token
-8. **立即返回**: 默认后台启动，先返回 `SubRunResult(status=Running)` 与 `subRun` artifact
-9. **结果收集**: 后台执行完成后构建 `SubRunResult`，发送 `SubRunFinished` 事件
-
-**当前主线约束：**
-
-- `spawnAgent` 默认后台启动，不再依赖 `runInBackground` 显式布尔开关
-- 父侧应基于生命周期事件和结构化结果消费子会话
-- 不再把“多任务编排语言”塞回单个工具 schema
-
-## 5. Agent Profile 加载
-
-### 5.1 加载器架构
-
-定义文件: `crates/runtime-agent-loader/src/lib.rs`
-
-```
-AgentProfileLoader
-    ├─ user_agent_dirs: [~/.claude/agents, ~/.astrcode/agents]
-    └─ load_for_working_dir(working_dir)
-        ├─ 1. builtin agents (内置)
-        ├─ 2. ~/.claude/agents (用户级)
-        ├─ 3. ~/.astrcode/agents (用户级)
-        ├─ 4. <project>/.claude/agents (项目级)
-        └─ 5. <project>/.astrcode/agents (项目级)
-```
-
-**优先级**: 后者覆盖前者，项目级 > 用户级 > 内置
-
-### 5.2 文件格式
-
-**Markdown + YAML Frontmatter (推荐)**:
-
-```markdown
----
-name: review
-description: 审查代码的质量、安全性和最佳实践
-tools: ["readFile", "grep"]
-disallowedTools: ["shell"]
----
-
-重点审查行为回归、边界条件和测试缺口。
-```
-
-**纯 YAML**:
-
-```yaml
-name: planner
-description: 计划任务
-tools: ["readFile", "grep"]
-systemPrompt: |
-  先阅读代码，然后制定计划。
-```
-
-### 5.3 工具列表格式
-
-支持两种格式:
-
-```yaml
-# YAML 列表
-tools: ["readFile", "grep", "glob"]
-
-# CSV 字符串
-tools: readFile, grep, glob
-```
-
-## 6. 预置 Agent Profiles
-
-定义目录: `crates/runtime-agent-loader/src/builtin_agents/`
-
-| Agent ID | 用途 | 工具集 | 说明 |
-|----------|------|--------|------|
-| `explore` | 代码探索 | `readFile`, `listDir`, `findFiles`, `grep` | 快速检索和阅读代码，偏向并行搜索 |
-| `plan` | 任务规划 | `readFile`, `grep` | 分析需求，输出执行计划，不执行改写 |
-| `execute` | 定向执行 | `readFile`, `writeFile`, `editFile`, `shell` | 围绕明确目标做定向实现 |
-| `reviewer` | 代码审查 | 只读工具 | 多视角审查（安全、质量、测试、架构） |
-
-### 6.1 explore Agent
-
-**特点:**
-- 广度优先搜索策略
-- 最大并行化工具调用
-- 返回简洁答案，不做全面概述
-
-### 6.2 plan Agent
-
-**特点:**
-- 只规划，不实现
-- 可调用 explore 子 Agent 进行发现
-- 输出结构化计划到 `/memories/session/plan.md`
-
-### 6.3 execute Agent
-
-**特点:**
-- 定向修改，保持范围可控
-- 结束前做最小必要验证
-
-### 6.4 reviewer Agent
-
-**特点:**
-- 四视角审查: 安全、代码质量、测试、架构
-- 高置信度过滤，只报告真实问题
-- 输出到 `CODE_REVIEW_ISSUES.md`
-
-## 7. 执行隔离与事件关联
-
-### 7.1 隔离机制
-
-| 维度 | 隔离策略 |
-|------|---------|
-| **工具集** | `allowed_tools` + `disallowed_tools` 白黑名单 |
-| **策略** | 继承父策略上界，可进一步收紧 |
-| **取消** | 父取消 → 子自动取消 (CancelToken 级联) |
-| **存储** | `SharedSession` 或 `IndependentSession` |
-| **步数/Token** | `max_steps` / `token_budget` 限制 |
-
-**额外边界：**
-
-- **任务 ownership 不等于 session ownership**
-- `SharedSession` / `IndependentSession` 只应影响存储落点
-- kill / cleanup / timeout 后续应统一走 root-owned task control
-
-### 7.2 事件关联
-
-```
-Turn #5 (用户: "重构 auth 模块")
-  → LLM 决定调用 spawnAgent(type="explore")
-  → SubRunStarted { sub_run_id, parent_turn_id: "turn-5", agent_profile: "explore" }
-  → Turn #5.1 (sub: explore)
-    → tool_call: readFile("auth.rs")
-    → tool_call: grep("authenticate")
-    → tool_result: ...
-  → SubRunFinished { result: { summary: "auth 模块有3个核心函数..." } }
-  → LLM 继续 Turn #5...
-```
-
-**事件链:**
-- `SubRunStarted.agent.parent_turn_id` → 父 turn
-- `SubRunFinished.result` → 结构化结果
-
-## 8. 可观测性
-
-### 8.1 指标
-
-通过 `observability.record_subrun_execution()` 记录:
-
-- 执行时长
-- 结果状态 (completed/failed/aborted/token_exceeded)
-- 存储模式
-- 步数
-- 估算 token
-
-### 8.2 事件流
-
-父 Agent 可通过以下事件消费子执行结果:
-
-- `SubRunFinished.result.summary`
-- `SubRunFinished.result.findings`
-- `SubRunFinished.result.artifacts`
-- `SubRunFinished.step_count`
-- `SubRunFinished.estimated_tokens`
-
-**当前不推荐：**
-
-- 不再新增 `ChildSessionSummary` 一类平行摘要事件
-- 不让子 Agent 直接共享父可变状态
-- 不通过 UI / 权限提示直通来传播父运行时状态
-
-## 9. 安全与策略
-
-### 9.1 子 Agent 策略上下文
-
-子 Agent 的策略评估继承父 Agent 的策略上界，并额外检查:
-
-1. **工具白名单**: `allowed_tools` 限制
-2. **工具黑名单**: `disallowed_tools` 排除
-3. **审批限制**: 子 Agent 通常不能请求用户审批（无 UI 权限）
-
-### 9.2 取消传播
-
-```rust
-// CancelToken 级联
-let parent_cancel = CancelToken::new();
-let child_cancel = parent_cancel.child_token();
-
-// 父取消时，子也自动取消
-parent_cancel.cancel();
-assert!(child_cancel.is_cancelled());
-```
-
-## 10. API 设计 (扩展)
-
-### 10.1 REST API
-
-```
-POST /api/v1/sessions              - 创建会话
-GET  /api/v1/sessions              - 列出会话
-GET  /api/v1/sessions/{id}          - 获取会话详情
-DELETE /api/v1/sessions/{id}        - 删除会话
-
-POST /api/v1/sessions/{id}/message  - 发送消息 (流式)
-POST /api/v1/sessions/{id}/abort    - 中止执行
-
-GET  /api/v1/agents                 - 列出可用 Agent
-POST /api/v1/agents/{id}/execute    - 创建 root execution
-GET  /api/v1/sessions/{id}/subruns/{sub_run_id} - 查询子会话状态
-POST /api/v1/sessions/{id}/subruns/{sub_run_id}/cancel - 显式取消后台子会话
-
-GET  /api/v1/tools                  - 列出可用工具
-POST /api/v1/tools/{id}/execute     - 当前仍为 501 骨架
-```
-
-**当前阶段说明：**
-
-- `subruns/{id}` 查询与取消已经存在，属于当前正式可用 API 面
-- `/api/v1/tools/{id}/execute` 还不是正式执行入口；是否继续实现，需要单独做边界确认
-
-### 10.2 Root Execution
-
-允许外部系统创建独立 session 并启动 root execution:
-
-```rust
-pub struct AgentExecuteRequestDto {
-    pub task: String,
-    pub context: Option<String>,
-    pub working_dir: Option<String>,
-    pub max_steps: Option<u32>,
-    pub context_overrides: Option<SubagentContextOverridesDto>,
-}
-```
-
-**说明：**
-
-- root execution API 可以使用有限 `contextOverrides`
-- `spawnAgent` 工具本身不直接暴露这组 override
-- 这两条路径必须继续保持职责分离：
-  - `spawnAgent`：给 LLM 的稳定入口
-  - root execution API：给外部系统的显式控制入口
-
-## 11. 配置
-
-### 11.1 Agent 配置文件
-
-优先级 (后者覆盖前者):
-
-1. `builtin://` 内置 agents
-2. `~/.claude/agents/`
-3. `~/.astrcode/agents/`
-4. `<working_dir>/.claude/agents/`
-5. `<working_dir>/.astrcode/agents/`
-
-### 11.2 示例配置
-
-```markdown
----
-name: security-reviewer
-description: 专门审查安全问题的 Agent
-tools: ["readFile", "grep"]
-disallowedTools: ["shell", "writeFile"]
----
-
-你是安全审查专家，重点关注:
-- SQL 注入
-- XSS
-- 硬编码密钥
-- 不安全的反序列化
-```
-
-## 12. 与竞品对比
-
-| 特性 | Astrcode | Codex | Claude Code |
-|------|----------|-------|-------------|
-| Agent as Tool | ✅ 内置 Profile 系统 | spawn_agent，无 Profile 管理 | sub-agents |
-| Profile 加载 | ✅ 多目录优先级 | - | ✅ |
-| 工具白黑名单 | ✅ | - | ✅ |
-| 事件嵌套 | ✅ parent_turn_id | - | - |
-| 独立 Session | ✅ 实验性支持 | - | - |
-| 模型选择 | ⏳ 保留字段 | ✅ | - |
+- [../spec/agent-tool-and-api-spec.md](../spec/agent-tool-and-api-spec.md)
+- [../spec/open-items.md](../spec/open-items.md)

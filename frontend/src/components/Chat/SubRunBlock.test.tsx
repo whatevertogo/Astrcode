@@ -154,4 +154,42 @@ describe('SubRunBlock result rendering', () => {
 
     expect(html).toContain('打开独立会话');
   });
+
+  it('renders directory-mode summary without nested stream copy', () => {
+    const finishMessage: SubRunFinishMessage = {
+      id: 'subrun-finish-2',
+      kind: 'subRunFinish',
+      subRunId: 'subrun-3',
+      result: {
+        status: 'completed',
+        handoff: {
+          summary: '完成了静态分析并整理出两个风险点。',
+          findings: ['问题一', '问题二'],
+          artifacts: [],
+        },
+      },
+      stepCount: 2,
+      estimatedTokens: 80,
+      timestamp: Date.now(),
+    };
+
+    const html = renderToStaticMarkup(
+      <SubRunBlock
+        subRunId="subrun-3"
+        sessionId="session-1"
+        title="planner"
+        finishMessage={finishMessage}
+        threadItems={[]}
+        streamFingerprint=""
+        renderThreadItems={renderThreadItems}
+        onCancelSubRun={async () => {}}
+        onFocusSubRun={() => {}}
+        displayMode="directory"
+      />
+    );
+
+    expect(html).toContain('进入子执行');
+    expect(html).toContain('完成了静态分析并整理出两个风险点。');
+    expect(html).not.toContain('子会话流');
+  });
 });

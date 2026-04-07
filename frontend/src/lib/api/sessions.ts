@@ -8,6 +8,8 @@ import { getErrorMessage, request, requestJson, requestRaw } from './client';
 import { asRecord, pickStringOrUndefined as pickString, pickOptionalString } from '../shared';
 import { normalizeAgentEvent } from '../agentEvent';
 import type { AgentEventPayload, Phase } from '../../types';
+import { buildSessionEventQueryString } from '../sessionView';
+import type { SessionEventFilterQuery } from '../sessionView';
 
 export interface PromptSubmission {
   turnId: string;
@@ -27,12 +29,17 @@ export async function listSessionsWithMeta(): Promise<SessionMeta[]> {
   return requestJson<SessionMeta[]>('/api/sessions');
 }
 
-export async function loadSession(sessionId: string): Promise<{
+export async function loadSession(
+  sessionId: string,
+  filter?: SessionEventFilterQuery
+): Promise<{
   events: AgentEventPayload[];
   cursor: string | null;
   phase: Phase;
 }> {
-  const response = await request(`/api/sessions/${encodeURIComponent(sessionId)}/history`);
+  const response = await request(
+    `/api/sessions/${encodeURIComponent(sessionId)}/history${buildSessionEventQueryString({ filter })}`
+  );
   const payload = asRecord((await response.json()) as unknown);
   if (!payload) {
     throw new Error('invalid session history response');

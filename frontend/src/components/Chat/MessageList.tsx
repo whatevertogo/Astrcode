@@ -11,6 +11,7 @@ import styles from './MessageList.module.css';
 interface MessageListProps {
   sessionId: string | null;
   threadItems: ThreadItem[];
+  childSubRuns: SubRunViewData[];
   subRunViews: Map<string, SubRunViewData>;
   contentFingerprint: string;
   emptyStateText?: string;
@@ -113,6 +114,7 @@ function isRowNested(options?: { nested?: boolean }): boolean {
 export default function MessageList({
   sessionId,
   threadItems,
+  childSubRuns,
   subRunViews,
   contentFingerprint,
   emptyStateText,
@@ -280,13 +282,49 @@ export default function MessageList({
   );
 
   const renderedRows = renderThreadItems(threadItems);
+  const childSubRunRows = childSubRuns.map((subRunView) => {
+    const boundaryMessage =
+      subRunView.startMessage ?? subRunView.finishMessage ?? subRunView.bodyMessages[0];
+    const subRunBlock = (
+      <SubRunBlock
+        subRunId={subRunView.subRunId}
+        sessionId={sessionId}
+        title={subRunView.title}
+        startMessage={subRunView.startMessage}
+        finishMessage={subRunView.finishMessage}
+        threadItems={subRunView.threadItems}
+        streamFingerprint={subRunView.streamFingerprint}
+        renderThreadItems={renderThreadItems}
+        onCancelSubRun={onCancelSubRun}
+        onFocusSubRun={onFocusSubRun}
+        onOpenChildSession={onOpenChildSession}
+        displayMode="directory"
+      />
+    );
+
+    return (
+      <div key={`child-subrun-${subRunView.subRunId}`} className={styles.messageRow}>
+        {boundaryMessage ? (
+          <MessageBoundary message={boundaryMessage}>{subRunBlock}</MessageBoundary>
+        ) : (
+          subRunBlock
+        )}
+      </div>
+    );
+  });
 
   return (
     <div ref={listRef} className={styles.list} onScroll={updateStickiness}>
-      {threadItems.length === 0 && (
+      {threadItems.length === 0 && childSubRuns.length === 0 && (
         <div className={styles.empty}>{emptyStateText ?? '向 AstrCode 提问，开始对话...'}</div>
       )}
       {renderedRows}
+      {childSubRuns.length > 0 && (
+        <section className={styles.childSubRunSection}>
+          <div className={styles.childSubRunHeader}>下一级子执行</div>
+          <div className={styles.childSubRunList}>{childSubRunRows}</div>
+        </section>
+      )}
       <div ref={bottomRef} />
     </div>
   );

@@ -352,3 +352,16 @@ export function buildSubRunPathView(
     activeView: views[views.length - 1] ?? null,
   };
 }
+
+export function listRootSubRunViews(
+  messagesOrTree: Message[] | SubRunThreadTree
+): SubRunViewData[] {
+  const tree = Array.isArray(messagesOrTree)
+    ? buildSubRunThreadTree(messagesOrTree)
+    : messagesOrTree;
+
+  return tree.rootThreadItems
+    .filter((item): item is ThreadSubRunItem => item.kind === 'subRun')
+    .map((item) => tree.subRuns.get(item.subRunId))
+    .filter((view): view is SubRunViewData => view !== undefined);
+}

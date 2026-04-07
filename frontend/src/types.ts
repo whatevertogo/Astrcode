@@ -7,6 +7,7 @@ export type ToolOutputStream = 'stdout' | 'stderr';
 export type CompactTrigger = 'auto' | 'manual';
 export type InvocationKind = 'subRun' | 'rootExecution';
 export type SubRunStorageMode = 'sharedSession' | 'independentSession';
+export type SessionEventScope = 'self' | 'subtree' | 'directChildren';
 export type SubRunOutcome = 'running' | 'completed' | 'failed' | 'aborted' | 'token_exceeded';
 export type SubRunFailureCode =
   | 'transport'

@@ -1,175 +1,103 @@
-# Skills Architecture
+# Skills 架构
 
-## Goal
+## 1. 目标
 
-AstrCode 的 skill 系统采用 Claude 风格的两阶段模型：
+Skill 系统的目标是：
 
-1. system prompt 只暴露 skill 索引（`name` + `description`）
-2. 当模型命中某个 skill 时，再调用内置 `Skill` tool 按需加载正文
+- 让模型先知道“有哪些可用技能”
+- 只在命中某个 skill 时再加载正文
+- 把发现、加载和执行边界拆开，避免把大量技能正文常驻系统提示
 
-三个职责彻底拆开：
-- `runtime-skill-loader` 负责发现、解析和列出 skills
-- `runtime` 负责执行 `Skill` tool、注入运行时变量
-- `SKILL.md` 只负责描述"什么时候用"和"具体怎么做"
+## 2. 两阶段模型
 
----
+### 2.1 发现阶段
 
-## Current Flow
+prompt 里只暴露 skill 索引：
 
-### Phase 1: Skill Discovery
+- `name`
+- `description`
 
-`runtime-prompt` 在构建 prompt 时只有两件事：
-- 扫描 builtin / user / project skill 目录
-- 生成 skill 索引块，告诉模型有哪些 skill 可用，以及必须通过 `Skill` tool 调用
+模型在这一步只能知道“什么时候该用某个 skill”。
 
-模型在这一阶段只能看到：
-- skill id (= name)
-- description
+### 2.2 加载阶段
 
-### Phase 2: Skill Loading
+当模型决定使用 skill 时，调用内置 `Skill` 工具，再加载：
 
-当模型决定使用 skill 时，调用内置 `Skill` tool：
-- 解析当前 working directory 下实际生效的 skills
-- 按 skill 名称查找目标 skill
-- 返回完整 `SKILL.md` 正文
-- 注入 `Base directory for this skill`
-- 列出该 skill 目录下可用的资产文件
+- `SKILL.md` 正文
+- skill 根目录
+- 可用资产文件（如 `references/`、`scripts/`）
 
----
+这样做的好处是：
 
-## Skill Directory Contract
+- 降低常驻 prompt 体积
+- 避免模型被大量低相关技能正文干扰
+- 保持 skill 目录可移植、可覆盖、可热重载
+
+## 3. 目录契约
+
+一个 skill 目录至少包含：
 
 ```text
-your-skill-name/
-├── SKILL.md          # 正文 + frontmatter
-├── references/       # 参考文档
-└── scripts/          # 可执行脚本
+<skill-name>/
+├── SKILL.md
+├── references/
+└── scripts/
 ```
 
-### `SKILL.md` Frontmatter
+当前 `SKILL.md` frontmatter 只稳定支持：
 
-当前**只认两个字段**：
-```yaml
----
-name: git-commit                                    # 必须与文件夹名一致 (kebab-case)
-description: Use this skill when the user asks...   # 触发入口
----
-```
+- `name`
+- `description`
 
-规则：
-- `name` 必须和文件夹名一致 (kebab-case)
-- frontmatter 只允许 `name` 和 `description`（`deny_unknown_fields`）
-- 运行时元数据不能写进 frontmatter（与外部 Claude style skill 兼容）
+其中 `name` 必须与文件夹名一致。
 
----
+## 4. 加载优先级
 
-## Asset Model
+同名 skill 的优先级为：
 
-除 `SKILL.md` 外的所有文件统一收集为 `asset_files`（`references/`, `scripts/`, 未来其他）。
-`Skill` tool 负责暴露整个 skill 资源面。
+1. project
+2. user
+3. builtin
 
----
+这样项目可以覆盖用户，全局用户可以覆盖内置实现。
 
-## Builtin Skills
+## 5. 运行时分工
 
-Built-in skill 由 build script 自动扫描目录，不再手写常量清单：
+| 模块 | 职责 |
+| --- | --- |
+| `runtime-skill-loader` | 扫描目录、解析 `SKILL.md`、收集资产 |
+| `runtime-prompt` | 生成 skill 索引块 |
+| `runtime` | 提供 `Skill` 工具并负责运行时注入 |
+| `core` | 承载 `SkillSpec` 等共享结构 |
 
-- **扫描脚本**: `crates/runtime-skill-loader/build.rs` — 编译期扫描 `crates/runtime-skill-loader/src/builtin_skills/*/`
-- **产物**: `OUT_DIR/bundled_skills.generated.rs`（由 `include_str!` 打包所有资产）
-- **运行时落盘**: `~/.astrcode/runtime/builtin-skills/<skill-name>/`
+## 6. 内置 skill
 
-当前内置 skill:
-- `git-commit` (`crates/runtime-skill-loader/src/builtin_skills/git-commit/`, 含 `SKILL.md`)
+内置 skill 通过 build script 扫描并打包，而不是手写常量列表。
 
----
+当前仓库内置 skill 仍以 `git-commit` 为主；新增 builtin skill 时，优先沿用同一目录与打包机制。
 
-## Skill Loading Pipeline（运行时）
+## 7. 设计边界
 
-```
-bootstrap_runtime()
-  → builtin_skills() [crates/runtime-skill-loader/src/builtin_skills/]
-    → 读取编译期打包的 BUNDLED_SKILLS
-    → parse_skill_md() → SkillSpec
-    → SkillTool 注册到 CapabilityRouter
-```
-```
+### 7.1 skill 不是 prompt contributor 的副产品
 
-**Skill 优先级**（`resolve_prompt_skills`）：project > user > builtin（同名覆盖）。
+它既有 prompt 索引面，也有 capability surface；不能只把它看成静态文档注入。
 
-**用户 skill 目录**：
-- `~/.claude/skills/`（Claude 兼容路径）
-- `~/.astrcode/skills/`（AstrCode 专属路径，优先级更高）
+### 7.2 skill 不是插件系统替代品
 
-**项目 skill 目录**：`<working_dir>/.astrcode/skills/`（可选）
+skill 更像“按需加载的工作流知识”；插件仍负责可执行能力与外部进程集成。
 
----
+### 7.3 运行时元数据不写进 frontmatter
 
-## Prompt Contributors
+这是为了兼容 Claude 风格 skill，并保持 `SKILL.md` 可迁移、可复用。
 
-与 skill 直接相关的 contributors (`crates/runtime-prompt/src/contributors/`):
+## 8. 当前不做
 
-| Contributor | 职责 |
-|------------|------|
-| `SkillSummaryContributor` | 产出 skill 索引（name + description），仅当工具列表含 `Skill` 时激活 |
-| `WorkflowExamplesContributor` | few-shot 行为约束（首步示例） |
-| `IdentityContributor` | 助手身份声明 |
-| `AgentsMdContributor` | `AGENTS.md` 加载 |
-| `EnvironmentContributor` | 环境上下文（OS、shell、cwd） |
-| `CapabilityPromptContributor` | 工具描述注入（从 `CapabilityDescriptor` 提取） |
+- 不把所有 skill 正文预先注入系统提示
+- 不在 frontmatter 里堆运行时配置
+- 不让 skill 目录结构与某个传输层强绑定
 
-**完整 contributor 列表**（`PromptComposer::with_defaults()` 顺序）：
-1. `IdentityContributor` (block kind=100)
-2. `EnvironmentContributor` (block kind=200)
-3. `AgentsMdContributor` (block kind=300)
-4. `CapabilityPromptContributor` (block kind=400)
-5. `SkillSummaryContributor` (block kind=600)
-6. `WorkflowExamplesContributor` (block kind=700)
+## 9. 相关文档
 
----
+- [./architecture.md](./architecture.md)
+- [../design/README.md](../design/README.md)
 
-## Prompt Composition Engine
-
-`PromptComposer` (`crates/runtime-prompt/src/composer.rs`):
-- 按依赖关系拓扑排序 contributor（wave-based topological sort）
-- 支持条件渲染：`Always`, `StepEquals`, `FirstStepOnly`, `HasTool`, `VarEquals`
-- 支持渲染目标：`System`, `PrependUser`, `PrependAssistant`, `AppendUser`, `AppendAssistant`
-- 缓存策略：per-contributor cache fingerprint + TTL
-- 诊断系统：`PromptDiagnostics`（`Off` / `Warn` / `Strict`）
-
-`SkillSpec` 结构：
-```rust
-pub struct SkillSpec {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub guide: String,
-    pub skill_root: Option<String>,
-    pub asset_files: Vec<String>,
-    pub allowed_tools: Vec<String>,
-    pub source: SkillSource,  // Builtin | User | Project | Plugin | Mcp
-}
-```
-
----
-
-## Capability Surface
-
-`Skill` 是 capability surface 的一部分（不是 prompt contributor 的副产品）：
-- `SKILL_TOOL_NAME = "Skill"` — 工具名固定
-- skill 加载通过统一的 capability router 暴露
-- runtime reload 时，`Skill` tool 跟随 builtin capability surface 一起重建
-
----
-
-## Key Files
-
-| 文件 | 职责 |
-|------|------|
-| `crates/runtime-skill-loader/src/skill_loader.rs` | 目录扫描、`parse_skill_md`、`collect_asset_files` |
-| `crates/runtime-skill-loader/src/skill_spec.rs` | `SkillSpec`, `SkillSource` |
-| `crates/runtime-skill-loader/src/skill_catalog.rs` | `SkillCatalog` |
-| `crates/runtime-prompt/src/contributors/skill_summary.rs` | Skill 索引 contributor |
-| `crates/runtime/src/skill_tool.rs` | `Skill` tool 实现（`Tool` trait） |
-| `crates/runtime/src/builtin_capabilities.rs` | Capability 装配 (含 Skill) |
-| `crates/runtime-skill-loader/src/builtin_skills/` | Builtin skill 目录 (`git-commit/`) |
-| `crates/runtime-skill-loader/build.rs` | 编译期自动扫描 builtin skills, 生成 `bundled_skills.generated.rs` |
