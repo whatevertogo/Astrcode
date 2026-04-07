@@ -16,7 +16,7 @@
 
 ## 推荐阅读顺序
 
-1. [architecture.md](./architecture.md) — 系统总览与分层边界
+1. [architecture.md](./architecture.md) — 项目总架构总览，重点解释后端主线与前后端边界
 2. [crates-dependency-graph.md](./crates-dependency-graph.md) — crate 依赖附录（自动生成）
 3. [frontend-architecture.md](./frontend-architecture.md) — 前端状态、数据流与边界
 4. [skills-architecture.md](./skills-architecture.md) — Skill 系统架构
