@@ -78,6 +78,12 @@ src-tauri + frontend
 
 `runtime` 是门面层，负责把上面的能力装配成统一服务，不复制子 crate 逻辑。
 
+当前门面只保留三个 owner handle 作为公开入口：
+
+- `RuntimeService::sessions()`：session 真相、replay、compact、catalog
+- `RuntimeService::execution()`：submit / interrupt / root execute / subrun
+- `RuntimeService::tools()`：runtime 当前工具面
+
 ### 3.5 `server`
 
 负责把 runtime 投影成：
@@ -129,7 +135,7 @@ src-tauri + frontend
 一次执行大致经过：
 
 1. `server` 接收请求
-2. `runtime` 选择 session 与执行入口
+2. `runtime` 通过 `sessions()` / `execution()` 选择唯一 owner surface
 3. `runtime-execution` 装配 prompt、policy、tool surface、limits
 4. `runtime-session` 建立 turn 边界并写 durable 事件
 5. `runtime-agent-loop` 运行 LLM / tool 主循环
@@ -140,6 +146,7 @@ src-tauri + frontend
 - `runtime-execution` 负责“怎么装”
 - `runtime-agent-loop` 负责“怎么跑”
 - `runtime-session` 负责“怎么记真相”
+- `runtime` façade 只负责注入这几个 owner，不再保留第二套转发 façade
 
 ### 4.4 Transport Contract
 

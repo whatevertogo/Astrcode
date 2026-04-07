@@ -2,7 +2,10 @@
 //!
 //! RuntimeService 是 Astrcode 的核心服务，负责管理会话和执行 Agent 循环。
 
-use std::sync::{Arc, RwLock as StdRwLock, atomic::AtomicBool};
+use std::{
+    path::PathBuf,
+    sync::{Arc, RwLock as StdRwLock, atomic::AtomicBool},
+};
 
 use astrcode_core::{
     AgentProfile, AllowAllPolicyEngine, AstrError, HookHandler, PolicyEngine, RuntimeHandle,
@@ -32,13 +35,10 @@ mod composer_ops;
 mod config_manager;
 mod config_ops;
 mod execution;
-mod execution_service;
 mod loop_factory;
 mod observability;
-mod replay;
 mod service_contract;
 mod session;
-mod session_service;
 mod turn;
 mod watch_manager;
 mod watch_ops;
@@ -52,15 +52,24 @@ pub use observability::{
     OperationMetricsSnapshot, ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot,
     SubRunExecutionMetricsSnapshot,
 };
+pub use session::SessionServiceHandle;
 
 use self::loop_factory::{LoopRuntimeDeps, build_agent_loop};
 pub use self::service_contract::{
     AgentExecutionAccepted, ComposerOption, ComposerOptionKind, ComposerOptionsRequest,
     PromptAccepted, ServiceError, ServiceResult, SessionCatalogEvent, SessionEventRecord,
     SessionHistorySnapshot, SessionReplay, SessionReplaySource, SubRunStatusSnapshot,
+    SubRunStatusSource,
 };
 
 const SESSION_CATALOG_BROADCAST_CAPACITY: usize = 256;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeOwnerGraph {
+    pub session_owner: &'static str,
+    pub execution_owner: &'static str,
+    pub tool_owner: &'static str,
+}
 
 #[derive(Clone)]
 struct RuntimeSurfaceState {
@@ -161,6 +170,14 @@ pub struct RuntimeService {
 }
 
 impl RuntimeService {
+    pub fn owner_graph(&self) -> RuntimeOwnerGraph {
+        RuntimeOwnerGraph {
+            session_owner: "runtime-session",
+            execution_owner: "runtime-execution",
+            tool_owner: "runtime-execution",
+        }
+    }
+
     fn capability_manager(&self) -> capability_manager::CapabilityManager<'_> {
         capability_manager::CapabilityManager::new(self)
     }
@@ -171,14 +188,6 @@ impl RuntimeService {
 
     fn watch_manager(self: &Arc<Self>) -> watch_manager::WatchManager {
         watch_manager::WatchManager::new(Arc::clone(self))
-    }
-
-    fn session_service(&self) -> session_service::SessionService<'_> {
-        session_service::SessionService::new(self)
-    }
-
-    fn execution_service(&self) -> execution_service::ExecutionService<'_> {
-        execution_service::ExecutionService::new(self)
     }
 
     fn agent_profile_catalog(&self) -> Arc<dyn AgentProfileCatalog> {
@@ -377,8 +386,23 @@ impl RuntimeService {
             .clone()
     }
 
-    pub fn subscribe_session_catalog_events(&self) -> broadcast::Receiver<SessionCatalogEvent> {
-        self.session_catalog_events.subscribe()
+    pub(super) async fn known_agent_working_dirs(&self) -> ServiceResult<Vec<PathBuf>> {
+        let session_manager = Arc::clone(&self.session_manager);
+        blocking_bridge::spawn_blocking_service("list agent working dirs", move || {
+            session_manager
+                .list_sessions_with_meta()
+                .map(|metas| {
+                    let mut working_dirs = metas
+                        .into_iter()
+                        .map(|meta| PathBuf::from(meta.working_dir))
+                        .collect::<Vec<_>>();
+                    working_dirs.sort();
+                    working_dirs.dedup();
+                    working_dirs
+                })
+                .map_err(ServiceError::from)
+        })
+        .await
     }
 
     pub(super) fn emit_session_catalog_event(&self, event: SessionCatalogEvent) {

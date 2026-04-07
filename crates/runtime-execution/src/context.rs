@@ -7,7 +7,12 @@
 //!
 //! 设计原则：纯函数无状态，便于测试和复用。
 
-use astrcode_core::{AgentState, LlmMessage, UserMessageOrigin};
+use std::collections::{HashMap, HashSet};
+
+use astrcode_core::{
+    AgentEvent, AgentState, LlmMessage, SessionEventRecord, StorageEvent, StoredEvent,
+    SubRunDescriptor, UserMessageOrigin,
+};
 
 use crate::AgentExecutionRequest;
 
@@ -118,13 +123,216 @@ pub fn single_line(content: &str) -> String {
     }
 }
 
+pub const LINEAGE_METADATA_UNAVAILABLE_MESSAGE: &str =
+    "lineage metadata unavailable for requested scope";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionLineageScope {
+    SelfOnly,
+    DirectChildren,
+    Subtree,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionLineageEntry {
+    pub sub_run_id: String,
+    pub agent_id: Option<String>,
+    pub descriptor: Option<SubRunDescriptor>,
+    pub parent_sub_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExecutionLineageIndex {
+    by_sub_run_id: HashMap<String, ExecutionLineageEntry>,
+    agent_to_sub_run: HashMap<String, String>,
+    children_by_parent_sub_run: HashMap<String, Vec<String>>,
+    legacy_gap_sub_run_ids: HashSet<String>,
+}
+
+impl ExecutionLineageIndex {
+    pub fn from_session_history(history: &[SessionEventRecord]) -> Self {
+        let mut index = Self::default();
+        for record in history {
+            index.observe_agent_event(&record.event);
+        }
+        index
+    }
+
+    pub fn from_stored_events(events: &[StoredEvent]) -> Self {
+        let mut index = Self::default();
+        for stored in events {
+            index.observe_storage_event(&stored.event);
+        }
+        index
+    }
+
+    pub fn observe_session_record(&mut self, record: &SessionEventRecord) {
+        self.observe_agent_event(&record.event);
+    }
+
+    pub fn observe_stored_event(&mut self, stored: &StoredEvent) {
+        self.observe_storage_event(&stored.event);
+    }
+
+    pub fn contains(&self, sub_run_id: &str) -> bool {
+        self.by_sub_run_id.contains_key(sub_run_id)
+    }
+
+    pub fn has_legacy_gap(&self) -> bool {
+        !self.legacy_gap_sub_run_ids.is_empty()
+    }
+
+    pub fn require_scope(
+        &self,
+        sub_run_id: &str,
+        scope: ExecutionLineageScope,
+    ) -> Result<(), String> {
+        if matches!(scope, ExecutionLineageScope::SelfOnly) {
+            return Ok(());
+        }
+        if self.legacy_gap_sub_run_ids.contains(sub_run_id) || self.has_legacy_gap() {
+            return Err(LINEAGE_METADATA_UNAVAILABLE_MESSAGE.to_string());
+        }
+        Ok(())
+    }
+
+    pub fn is_direct_child_of(&self, sub_run_id: &str, target_sub_run_id: &str) -> bool {
+        self.by_sub_run_id
+            .get(sub_run_id)
+            .and_then(|entry| entry.parent_sub_run_id.as_deref())
+            == Some(target_sub_run_id)
+    }
+
+    pub fn is_in_subtree(&self, sub_run_id: &str, target_sub_run_id: &str) -> bool {
+        if sub_run_id == target_sub_run_id {
+            return true;
+        }
+
+        let mut current = self
+            .by_sub_run_id
+            .get(sub_run_id)
+            .and_then(|entry| entry.parent_sub_run_id.as_deref());
+        while let Some(parent_sub_run_id) = current {
+            if parent_sub_run_id == target_sub_run_id {
+                return true;
+            }
+            current = self
+                .by_sub_run_id
+                .get(parent_sub_run_id)
+                .and_then(|entry| entry.parent_sub_run_id.as_deref());
+        }
+        false
+    }
+
+    pub fn direct_children_of(&self, target_sub_run_id: &str) -> Vec<String> {
+        self.children_by_parent_sub_run
+            .get(target_sub_run_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn observe_storage_event(&mut self, event: &StorageEvent) {
+        match event {
+            StorageEvent::SubRunStarted {
+                agent, descriptor, ..
+            }
+            | StorageEvent::SubRunFinished {
+                agent, descriptor, ..
+            } => self.observe_lifecycle(
+                agent.sub_run_id.as_deref(),
+                agent.agent_id.as_deref(),
+                descriptor.as_ref(),
+            ),
+            _ => {},
+        }
+    }
+
+    fn observe_agent_event(&mut self, event: &AgentEvent) {
+        match event {
+            AgentEvent::SubRunStarted {
+                agent, descriptor, ..
+            }
+            | AgentEvent::SubRunFinished {
+                agent, descriptor, ..
+            } => self.observe_lifecycle(
+                agent.sub_run_id.as_deref(),
+                agent.agent_id.as_deref(),
+                descriptor.as_ref(),
+            ),
+            _ => {},
+        }
+    }
+
+    fn observe_lifecycle(
+        &mut self,
+        sub_run_id: Option<&str>,
+        agent_id: Option<&str>,
+        descriptor: Option<&SubRunDescriptor>,
+    ) {
+        let Some(sub_run_id) = sub_run_id else {
+            return;
+        };
+        let entry = self
+            .by_sub_run_id
+            .entry(sub_run_id.to_string())
+            .or_insert_with(|| ExecutionLineageEntry {
+                sub_run_id: sub_run_id.to_string(),
+                agent_id: None,
+                descriptor: None,
+                parent_sub_run_id: None,
+            });
+
+        if let Some(agent_id) = agent_id {
+            entry.agent_id = Some(agent_id.to_string());
+            self.agent_to_sub_run
+                .insert(agent_id.to_string(), sub_run_id.to_string());
+        }
+
+        if let Some(descriptor) = descriptor {
+            entry.descriptor = Some(descriptor.clone());
+            entry.parent_sub_run_id = descriptor
+                .parent_agent_id
+                .as_deref()
+                .and_then(|parent_agent_id| self.agent_to_sub_run.get(parent_agent_id))
+                .cloned();
+            self.legacy_gap_sub_run_ids.remove(sub_run_id);
+        } else if entry.descriptor.is_none() {
+            self.legacy_gap_sub_run_ids.insert(sub_run_id.to_string());
+        }
+
+        self.rebuild_children_index();
+    }
+
+    fn rebuild_children_index(&mut self) {
+        let mut children_by_parent_sub_run: HashMap<String, Vec<String>> = HashMap::new();
+        for entry in self.by_sub_run_id.values() {
+            let Some(parent_sub_run_id) = entry.parent_sub_run_id.as_ref() else {
+                continue;
+            };
+            children_by_parent_sub_run
+                .entry(parent_sub_run_id.clone())
+                .or_default()
+                .push(entry.sub_run_id.clone());
+        }
+        for children in children_by_parent_sub_run.values_mut() {
+            children.sort();
+            children.dedup();
+        }
+        self.children_by_parent_sub_run = children_by_parent_sub_run;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        AgentState, LlmMessage, ResolvedSubagentContextOverrides, UserMessageOrigin,
+        AgentEvent, AgentEventContext, AgentState, LlmMessage, ResolvedExecutionLimitsSnapshot,
+        ResolvedSubagentContextOverrides, SessionEventRecord, SubRunDescriptor, UserMessageOrigin,
     };
 
-    use super::{latest_compact_summary, recent_tail_lines, resolve_context_snapshot, single_line};
+    use super::{
+        ExecutionLineageIndex, ExecutionLineageScope, LINEAGE_METADATA_UNAVAILABLE_MESSAGE,
+        latest_compact_summary, recent_tail_lines, resolve_context_snapshot, single_line,
+    };
     use crate::AgentExecutionRequest;
 
     #[test]
@@ -270,5 +478,109 @@ mod tests {
         assert!(one_line.len() <= 203);
         assert!(one_line.ends_with("..."));
         assert!(!one_line.contains('\n'));
+    }
+
+    fn lineage_record(event_id: &str, event: AgentEvent) -> SessionEventRecord {
+        SessionEventRecord {
+            event_id: event_id.to_string(),
+            event,
+        }
+    }
+
+    #[test]
+    fn execution_lineage_index_tracks_direct_children_from_descriptors() {
+        let history = vec![
+            lineage_record(
+                "1.0",
+                AgentEvent::SubRunStarted {
+                    turn_id: Some("turn-root".to_string()),
+                    agent: AgentEventContext::sub_run(
+                        "agent-a",
+                        "turn-root",
+                        "review",
+                        "sub-a",
+                        astrcode_core::SubRunStorageMode::SharedSession,
+                        None,
+                    ),
+                    descriptor: Some(SubRunDescriptor {
+                        sub_run_id: "sub-a".to_string(),
+                        parent_turn_id: "turn-root".to_string(),
+                        parent_agent_id: None,
+                        depth: 1,
+                    }),
+                    tool_call_id: None,
+                    resolved_overrides: ResolvedSubagentContextOverrides::default(),
+                    resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+                },
+            ),
+            lineage_record(
+                "2.0",
+                AgentEvent::SubRunStarted {
+                    turn_id: Some("turn-a".to_string()),
+                    agent: AgentEventContext::sub_run(
+                        "agent-b",
+                        "turn-a",
+                        "review",
+                        "sub-b",
+                        astrcode_core::SubRunStorageMode::SharedSession,
+                        None,
+                    ),
+                    descriptor: Some(SubRunDescriptor {
+                        sub_run_id: "sub-b".to_string(),
+                        parent_turn_id: "turn-a".to_string(),
+                        parent_agent_id: Some("agent-a".to_string()),
+                        depth: 2,
+                    }),
+                    tool_call_id: None,
+                    resolved_overrides: ResolvedSubagentContextOverrides::default(),
+                    resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+                },
+            ),
+        ];
+
+        let index = ExecutionLineageIndex::from_session_history(&history);
+
+        assert!(index.contains("sub-a"));
+        assert!(index.contains("sub-b"));
+        assert!(index.is_direct_child_of("sub-b", "sub-a"));
+        assert!(index.is_in_subtree("sub-b", "sub-a"));
+        assert_eq!(index.direct_children_of("sub-a"), vec!["sub-b".to_string()]);
+    }
+
+    #[test]
+    fn execution_lineage_index_rejects_non_self_scope_when_legacy_gap_exists() {
+        let history = vec![lineage_record(
+            "1.0",
+            AgentEvent::SubRunStarted {
+                turn_id: Some("turn-legacy".to_string()),
+                agent: AgentEventContext::sub_run(
+                    "agent-legacy",
+                    "turn-legacy",
+                    "review",
+                    "sub-legacy",
+                    astrcode_core::SubRunStorageMode::SharedSession,
+                    None,
+                ),
+                descriptor: None,
+                tool_call_id: None,
+                resolved_overrides: ResolvedSubagentContextOverrides::default(),
+                resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+            },
+        )];
+
+        let index = ExecutionLineageIndex::from_session_history(&history);
+
+        assert_eq!(
+            index.require_scope("sub-legacy", ExecutionLineageScope::DirectChildren),
+            Err(LINEAGE_METADATA_UNAVAILABLE_MESSAGE.to_string())
+        );
+        assert_eq!(
+            index.require_scope("sub-legacy", ExecutionLineageScope::Subtree),
+            Err(LINEAGE_METADATA_UNAVAILABLE_MESSAGE.to_string())
+        );
+        assert_eq!(
+            index.require_scope("sub-legacy", ExecutionLineageScope::SelfOnly),
+            Ok(())
+        );
     }
 }

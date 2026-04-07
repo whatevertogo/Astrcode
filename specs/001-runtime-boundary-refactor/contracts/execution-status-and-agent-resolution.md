@@ -18,7 +18,7 @@
 {
   "task": "review the current backend runtime design",
   "context": [],
-  "maxSteps": 64,
+  "maxSteps": -1,//无限制
   "contextOverrides": {
     "storageMode": "sharedSession"
   },
@@ -75,7 +75,7 @@
     "storageMode": "sharedSession"
   },
   "resolvedLimits": {
-    "maxSteps": 64
+    "maxSteps": 128
   }
 }
 ```
@@ -116,4 +116,11 @@
 1. frontend 不再从 `parentTurnId -> turn owner` 启发式推导 parent/child，而是以 `descriptor.parentAgentId` + lifecycle 索引为准。
 2. 执行列表、subrun tree、detail panel 与 cancel button 都必须消费同一个 status shape。
 3. `source=legacyDurable` 时，UI 可以展示“lineage 不完整”，但不能伪造完整 breadcrumb 或 subtree。
+
+## Implementation Checklist
+
+- [x] root execute 的 `workingDir` 必填约束和错误码已在契约中固定。
+- [x] subrun status 的 `source` 语义（`live`/`durable`/`legacyDurable`）已明确。
+- [x] cancel 的 204/409/404 行为边界已固定，避免用 durable 历史伪造 live 可取消状态。
+- [x] 前端消费规则与 descriptor-based tree 语义保持一致。
 

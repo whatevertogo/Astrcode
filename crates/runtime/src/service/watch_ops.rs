@@ -83,8 +83,7 @@ pub(super) async fn run_config_watch_loop(service: Arc<RuntimeService>) -> Servi
 }
 
 pub(super) async fn run_agent_watch_loop(service: Arc<RuntimeService>) -> ServiceResult<()> {
-    let working_dir = std::env::current_dir().ok();
-    let mut watch_targets = service.agent_loader().watch_paths(working_dir.as_deref());
+    let mut watch_targets = resolve_agent_watch_targets(&service).await?;
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut watcher = RecommendedWatcher::new(
@@ -123,7 +122,7 @@ pub(super) async fn run_agent_watch_loop(service: Arc<RuntimeService>) -> Servic
 
                 drain_watch_events_with_debounce(&service, &mut rx, "agent").await?;
 
-                let next_watch_targets = service.agent_loader().watch_paths(working_dir.as_deref());
+                let next_watch_targets = resolve_agent_watch_targets(&service).await?;
                 if next_watch_targets != watch_targets {
                     let current = watch_targets
                         .iter()
@@ -240,13 +239,27 @@ fn apply_agent_watch_targets(
     Ok(())
 }
 
+async fn resolve_agent_watch_targets(
+    service: &RuntimeService,
+) -> ServiceResult<Vec<AgentWatchPath>> {
+    let working_dirs = service.known_agent_working_dirs().await?;
+    let working_dir_refs = working_dirs
+        .iter()
+        .map(|path| path.as_path())
+        .collect::<Vec<_>>();
+    Ok(service
+        .agent_loader()
+        .watch_paths_for_working_dirs(working_dir_refs))
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{path::PathBuf, sync::Arc};
 
     use notify::{Event, EventKind};
 
-    use super::{event_targets_agent_dirs, event_targets_config};
+    use super::{event_targets_agent_dirs, event_targets_config, resolve_agent_watch_targets};
+    use crate::test_support::{TestEnvGuard, empty_capabilities};
 
     #[test]
     fn event_targets_config_matches_exact_path_and_same_filename() {
@@ -293,5 +306,47 @@ mod tests {
         assert!(event_targets_agent_dirs(&direct, &watch_targets));
         assert!(event_targets_agent_dirs(&descendant, &watch_targets));
         assert!(!event_targets_agent_dirs(&unrelated, &watch_targets));
+    }
+
+    #[tokio::test]
+    async fn resolve_agent_watch_targets_uses_session_working_dirs_instead_of_process_cwd() {
+        let _guard = TestEnvGuard::new();
+        let service = Arc::new(
+            super::super::RuntimeService::from_capabilities(empty_capabilities())
+                .expect("service should initialize"),
+        );
+        let workspace = tempfile::tempdir().expect("tempdir should be created");
+        let repo = workspace.path().join("repo");
+        let nested = repo.join("apps").join("desktop");
+        std::fs::create_dir_all(&nested).expect("nested dir should exist");
+        std::fs::create_dir_all(repo.join(".astrcode").join("agents"))
+            .expect("repo agents dir should exist");
+
+        let _session = service
+            .sessions()
+            .create(&nested)
+            .await
+            .expect("session should be created");
+
+        let watch_targets = resolve_agent_watch_targets(&service)
+            .await
+            .expect("watch targets should resolve");
+
+        let expected_repo_agents = repo.join(".astrcode").join("agents");
+        assert!(
+            watch_targets.iter().any(|target| {
+                target
+                    .path
+                    .to_string_lossy()
+                    .ends_with(&*expected_repo_agents.to_string_lossy())
+                    && target.recursive
+            }),
+            "watch targets: {watch_targets:?}"
+        );
+        assert!(
+            watch_targets
+                .iter()
+                .all(|target| target.path != std::env::temp_dir())
+        );
     }
 }

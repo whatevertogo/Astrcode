@@ -94,6 +94,12 @@ flowchart TD
 | `RuntimeService::agent_execution_service()` | `service/execution/*` handle | `runtime.execution()` |
 | `RuntimeService::tool_execution_service()` | `service/execution/*` handle | `runtime.tools()` |
 
+目前代码状态已经与上表对齐：
+
+- server 的 session / stream / mutation / agents / tools 路由都改为 `sessions()` / `execution()` / `tools()`
+- `DeferredSubAgentExecutor` 与 `RuntimeGovernance` 也直接走 `execution()`
+- `session_service.rs`、`execution_service.rs`、`replay.rs`、`turn/submit.rs`、`session/load.rs` 已删除
+
 ## File Ownership Changes
 
 ### `runtime-session`
@@ -151,6 +157,13 @@ flowchart TD
 - `crates/runtime/src/service/turn/submit.rs`
 - `crates/runtime/src/service/session/load.rs` 中仅剩 façade 转发的方法
 
+## Implementation Checklist
+
+- [x] 五个 boundary 的 owner / public surface / must-not-own 约束已显式化。
+- [x] compile-time 依赖方向与仓库 crate 分层规则保持单向。
+- [x] caller 迁移目标面已与 `migration.md` 中删除顺序对齐。
+- [x] 待删除文件清单与 `tasks.md`（T022-T028）保持一致。
+
 ## Boundary Acceptance Criteria
 
 一个 boundary 只有在同时满足下列条件后，才算真正收敛：
@@ -159,4 +172,3 @@ flowchart TD
 2. compile-time 依赖方向符合上面的图。
 3. 不再需要通过上游 façade 回调自己拥有的职责。
 4. server 与 frontend 的调用点能直接指出唯一 owner，而不是“先走 façade 再看内部委托”。
-

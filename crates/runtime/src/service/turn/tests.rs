@@ -7,7 +7,7 @@ use astrcode_core::{
 use astrcode_runtime_agent_loop::{AgentLoop, ProviderFactory, TurnOutcome, estimate_text_tokens};
 use astrcode_runtime_session::{
     SessionState, SessionTokenBudgetState, SessionWriter, append_and_broadcast,
-    append_and_broadcast_from_turn_callback, execute_turn_chain, recent_turn_event_tail,
+    append_and_broadcast_from_turn_callback, recent_turn_event_tail,
 };
 use astrcode_storage::session::EventLog;
 use async_trait::async_trait;
@@ -17,6 +17,7 @@ use serde_json::json;
 use super::{
     BudgetSettings,
     branch::{ensure_branch_depth_within_limit, stable_events_before_active_turn},
+    orchestration::execute_turn_chain,
 };
 use crate::{
     llm::{EventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits},
@@ -489,10 +490,12 @@ async fn interrupt_cascades_to_registered_child_agents() {
     *service.loop_.write().await = Arc::new(loop_);
 
     let session = service
-        .create_session(temp_dir.path())
+        .sessions()
+        .create(temp_dir.path())
         .await
         .expect("session should be created");
     let accepted = service
+        .execution()
         .submit_prompt(&session.session_id, "hello".to_string())
         .await
         .expect("prompt should be accepted");
@@ -521,7 +524,8 @@ async fn interrupt_cascades_to_registered_child_agents() {
     let _ = control.mark_running(&child.agent_id).await;
 
     service
-        .interrupt(&session.session_id)
+        .execution()
+        .interrupt_session(&session.session_id)
         .await
         .expect("interrupt should succeed");
 
@@ -536,10 +540,13 @@ async fn interrupt_cascades_to_registered_child_agents() {
 async fn compact_session_rejects_busy_sessions() {
     let _guard = TestEnvGuard::new();
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    let service = RuntimeService::from_capabilities(crate::test_support::empty_capabilities())
-        .expect("service should build");
+    let service = Arc::new(
+        RuntimeService::from_capabilities(crate::test_support::empty_capabilities())
+            .expect("service should build"),
+    );
     let session = service
-        .create_session(temp_dir.path())
+        .sessions()
+        .create(temp_dir.path())
         .await
         .expect("session should be created");
 
@@ -552,7 +559,8 @@ async fn compact_session_rejects_busy_sessions() {
         .store(true, std::sync::atomic::Ordering::SeqCst);
 
     let error = service
-        .compact_session(&session.session_id)
+        .sessions()
+        .compact(&session.session_id)
         .await
         .expect_err("busy session should reject manual compact");
 
@@ -563,17 +571,67 @@ async fn compact_session_rejects_busy_sessions() {
 async fn compact_session_rejects_sessions_without_compressible_history() {
     let _guard = TestEnvGuard::new();
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    let service = RuntimeService::from_capabilities(crate::test_support::empty_capabilities())
-        .expect("service should build");
+    let service = Arc::new(
+        RuntimeService::from_capabilities(crate::test_support::empty_capabilities())
+            .expect("service should build"),
+    );
     let session = service
-        .create_session(temp_dir.path())
+        .sessions()
+        .create(temp_dir.path())
         .await
         .expect("session should be created");
 
     let error = service
-        .compact_session(&session.session_id)
+        .sessions()
+        .compact(&session.session_id)
         .await
         .expect_err("empty session should not have compressible history");
 
     assert!(matches!(error, ServiceError::InvalidInput(_)));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn submit_prompt_surface_returns_accepted_shape() {
+    let _guard = TestEnvGuard::new();
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let service = Arc::new(
+        RuntimeService::from_capabilities(crate::test_support::empty_capabilities())
+            .expect("service should build"),
+    );
+    let session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("session should be created");
+
+    let accepted = service
+        .execution()
+        .submit_prompt(&session.session_id, "hello".to_string())
+        .await
+        .expect("prompt should be accepted");
+
+    assert_eq!(accepted.session_id, session.session_id);
+    assert!(!accepted.turn_id.is_empty());
+    assert!(accepted.branched_from_session_id.is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn interrupt_surface_is_idempotent_for_idle_session() {
+    let _guard = TestEnvGuard::new();
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let service = Arc::new(
+        RuntimeService::from_capabilities(crate::test_support::empty_capabilities())
+            .expect("service should build"),
+    );
+    let session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("session should be created");
+
+    service
+        .execution()
+        .interrupt_session(&session.session_id)
+        .await
+        .expect("interrupt should be a no-op for idle sessions");
 }

@@ -3,6 +3,7 @@
 //! Model discovery and connection testing.
 
 import type { CurrentModelInfo, ModelOption, TestResult } from '../../types';
+import { asRecord, pickNumber, pickOptionalString, pickString } from '../shared';
 import { requestJson } from './client';
 
 export async function getCurrentModel(): Promise<CurrentModelInfo> {
@@ -20,3 +21,6 @@ export async function testConnection(profileName: string, model: string): Promis
     body: JSON.stringify({ profileName, model }),
   });
 }
+
+// SubRunStatusSnapshot normalization removed - unused dead code.
+// If needed in future, implement when actual API endpoint is added.

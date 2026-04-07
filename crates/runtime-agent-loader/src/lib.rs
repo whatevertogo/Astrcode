@@ -118,12 +118,12 @@ impl AgentProfileLoader {
         })
     }
 
-    /// 加载当前进程工作目录可见的全部 agents。
+    /// 加载不绑定项目 scope 的 agents。
     ///
-    /// bootstrap 场景没有显式 working_dir，因此这里退化为使用当前进程 cwd。
+    /// 只包含 builtin + 用户级目录；项目级 agent 必须通过显式 working_dir 注入，
+    /// 避免解析语义偷偷依赖进程 cwd。
     pub fn load(&self) -> Result<AgentProfileRegistry, AgentLoaderError> {
-        let cwd = std::env::current_dir().ok();
-        self.load_for_working_dir(cwd.as_deref())
+        self.load_for_working_dirs(std::iter::empty::<&Path>())
     }
 
     /// 加载指定工作目录可见的全部 agents。
@@ -140,23 +140,53 @@ impl AgentProfileLoader {
         &self,
         working_dir: Option<&Path>,
     ) -> Result<AgentProfileRegistry, AgentLoaderError> {
+        match working_dir {
+            Some(working_dir) => self.load_for_working_dirs([working_dir]),
+            None => self.load(),
+        }
+    }
+
+    pub fn load_for_working_dirs<'a, I>(
+        &self,
+        working_dirs: I,
+    ) -> Result<AgentProfileRegistry, AgentLoaderError>
+    where
+        I: IntoIterator<Item = &'a Path>,
+    {
         let mut registry = AgentProfileRegistry::with_builtin_defaults();
-        for dir in self.search_dirs(working_dir) {
+        for dir in self.search_dirs_for_working_dirs(working_dirs) {
             merge_agents_dir(&mut registry, &dir)?;
         }
         Ok(registry)
     }
 
     pub fn search_dirs(&self, working_dir: Option<&Path>) -> Vec<PathBuf> {
+        match working_dir {
+            Some(working_dir) => self.search_dirs_for_working_dirs([working_dir]),
+            None => self.search_dirs_for_working_dirs(std::iter::empty::<&Path>()),
+        }
+    }
+
+    pub fn search_dirs_for_working_dirs<'a, I>(&self, working_dirs: I) -> Vec<PathBuf>
+    where
+        I: IntoIterator<Item = &'a Path>,
+    {
         let mut dirs = self
             .user_agent_dirs
             .iter()
             .filter(|dir| dir.exists())
             .cloned()
             .collect::<Vec<_>>();
-        if let Some(working_dir) = working_dir {
-            dirs.extend(project_agent_dirs(working_dir));
+
+        let mut seen = dirs.iter().cloned().collect::<HashSet<_>>();
+        for working_dir in working_dirs {
+            for dir in project_agent_dirs(working_dir) {
+                if seen.insert(dir.clone()) {
+                    dirs.push(dir);
+                }
+            }
         }
+
         dirs
     }
 
@@ -166,6 +196,16 @@ impl AgentProfileLoader {
     /// - `agents/` 已存在时，直接递归监听该目录
     /// - `agents/` 不存在时，监听最近的已存在父目录，等待目录被创建
     pub fn watch_paths(&self, working_dir: Option<&Path>) -> Vec<AgentWatchPath> {
+        match working_dir {
+            Some(working_dir) => self.watch_paths_for_working_dirs([working_dir]),
+            None => self.watch_paths_for_working_dirs(std::iter::empty::<&Path>()),
+        }
+    }
+
+    pub fn watch_paths_for_working_dirs<'a, I>(&self, working_dirs: I) -> Vec<AgentWatchPath>
+    where
+        I: IntoIterator<Item = &'a Path>,
+    {
         let mut watch_paths = Vec::new();
         let mut seen = HashSet::new();
 
@@ -178,11 +218,8 @@ impl AgentProfileLoader {
             }
         }
 
-        if let Some(working_dir) = working_dir {
-            for dir in [
-                working_dir.join(".claude").join("agents"),
-                working_dir.join(".astrcode").join("agents"),
-            ] {
+        for working_dir in working_dirs {
+            for dir in project_agent_dir_candidates(working_dir) {
                 if let Some(target) = watch_path_for_agent_dir(&dir) {
                     let key = (target.path.clone(), target.recursive);
                     if seen.insert(key) {
@@ -224,13 +261,22 @@ fn builtin_agents() -> &'static [BuiltinAgent] {
 
 fn project_agent_dirs(working_dir: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    let claude_dir = working_dir.join(".claude").join("agents");
-    if claude_dir.exists() {
-        dirs.push(claude_dir);
+    for dir in project_agent_dir_candidates(working_dir) {
+        if dir.exists() {
+            dirs.push(dir);
+        }
     }
-    let astrcode_dir = working_dir.join(".astrcode").join("agents");
-    if astrcode_dir.exists() {
-        dirs.push(astrcode_dir);
+    dirs
+}
+
+fn project_agent_dir_candidates(working_dir: &Path) -> Vec<PathBuf> {
+    let mut ancestors = working_dir.ancestors().collect::<Vec<_>>();
+    ancestors.reverse();
+
+    let mut dirs = Vec::new();
+    for ancestor in ancestors {
+        dirs.push(ancestor.join(".claude").join("agents"));
+        dirs.push(ancestor.join(".astrcode").join("agents"));
     }
     dirs
 }
@@ -649,9 +695,58 @@ Prefer repository-local conventions first.
     }
 
     #[test]
+    fn load_for_working_dir_walks_project_ancestor_chain() {
+        let _guard = TestEnvGuard::new();
+        let workspace = tempfile::tempdir().expect("tempdir should be created");
+        let nested = workspace.path().join("apps").join("desktop");
+        std::fs::create_dir_all(&nested).expect("nested dir should exist");
+
+        let repo_agents = workspace.path().join(".astrcode").join("agents");
+        std::fs::create_dir_all(&repo_agents).expect("repo agents dir should exist");
+        std::fs::write(
+            repo_agents.join("planner.md"),
+            r#"---
+name: planner
+description: Repo planner
+tools: ["readFile"]
+---
+Prefer the repo root defaults.
+"#,
+        )
+        .expect("repo agent should be written");
+
+        let nested_agents = nested.join(".astrcode").join("agents");
+        std::fs::create_dir_all(&nested_agents).expect("nested agents dir should exist");
+        std::fs::write(
+            nested_agents.join("planner.md"),
+            r#"---
+name: planner
+description: Nested planner
+tools: ["readFile", "grep"]
+---
+Prefer the nested project defaults.
+"#,
+        )
+        .expect("nested agent should be written");
+
+        let loader = AgentProfileLoader::new().expect("loader should initialize");
+        let registry = loader
+            .load_for_working_dir(Some(&nested))
+            .expect("ancestor chain should load");
+        let planner = registry.get("planner").expect("planner should exist");
+
+        assert_eq!(planner.description, "Nested planner");
+        assert_eq!(
+            planner.allowed_tools,
+            vec!["readFile".to_string(), "grep".to_string()]
+        );
+    }
+
+    #[test]
     fn load_for_working_dir_keeps_builtins_when_no_external_agents_exist() {
         let _guard = TestEnvGuard::new();
         let project = tempfile::tempdir().expect("tempdir should be created");
+        // loader 必须在 guard 之后创建，这样才能读取到测试环境的 home 目录
         let loader = AgentProfileLoader::new().expect("loader should initialize");
 
         let registry = loader
@@ -660,7 +755,42 @@ Prefer repository-local conventions first.
 
         assert!(registry.get("explore").is_some());
         assert!(registry.get("execute").is_some());
-        assert!(loader.search_dirs(Some(project.path())).is_empty());
+
+        // search_dirs 可能包含项目祖先链中存在的 agents 目录
+        // 但不应该包含不存在的临时测试目录
+        let search_dirs = loader.search_dirs(Some(project.path()));
+        for dir in &search_dirs {
+            assert!(
+                dir.exists(),
+                "search_dirs should only include existing directories, but got non-existent: \
+                 {dir:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn watch_paths_include_project_ancestor_chain() {
+        let _guard = TestEnvGuard::new();
+        let workspace = tempfile::tempdir().expect("tempdir should be created");
+        let nested = workspace.path().join("apps").join("desktop");
+        std::fs::create_dir_all(&nested).expect("nested dir should exist");
+
+        let repo_agents = workspace.path().join(".astrcode").join("agents");
+        std::fs::create_dir_all(&repo_agents).expect("repo agents dir should exist");
+
+        let loader = AgentProfileLoader::new().expect("loader should initialize");
+        let watch_paths = loader.watch_paths(Some(&nested));
+
+        assert!(
+            watch_paths
+                .iter()
+                .any(|target| target.path == repo_agents && target.recursive)
+        );
+        assert!(
+            watch_paths
+                .iter()
+                .any(|target| { target.path == nested && !target.recursive })
+        );
     }
 
     #[test]

@@ -7,6 +7,7 @@ import type {
   CompactTrigger,
   InvocationKind,
   Phase,
+  SubRunDescriptor,
   SubRunResult,
   SubRunStorageMode,
   ToolOutputStream,
@@ -97,7 +98,13 @@ function invalidEvent(reason: string, raw: unknown): AgentEventPayload {
   };
 }
 
-function pickAgentContext(data: Record<string, unknown>) {
+function pickAgentContext(
+  data: Record<string, unknown>,
+  options?: {
+    includeParentTurnId?: boolean;
+  }
+) {
+  const includeParentTurnId = options?.includeParentTurnId !== false;
   const agentId = pickOptionalString(data, 'agentId', 'agent_id') ?? undefined;
   const parentTurnId = pickOptionalString(data, 'parentTurnId', 'parent_turn_id') ?? undefined;
   const agentProfile = pickOptionalString(data, 'agentProfile', 'agent_profile') ?? undefined;
@@ -106,15 +113,51 @@ function pickAgentContext(data: Record<string, unknown>) {
     pickOptionalString(data, 'childSessionId', 'child_session_id') ?? undefined;
   const invocationKind = toInvocationKind(data.invocationKind ?? data.invocation_kind) ?? undefined;
   const storageMode = toSubRunStorageMode(data.storageMode ?? data.storage_mode) ?? undefined;
-  return {
+  const context = {
     ...(agentId ? { agentId } : {}),
-    ...(parentTurnId ? { parentTurnId } : {}),
     ...(agentProfile ? { agentProfile } : {}),
     ...(subRunId ? { subRunId } : {}),
     ...(childSessionId ? { childSessionId } : {}),
     ...(invocationKind ? { invocationKind } : {}),
     ...(storageMode ? { storageMode } : {}),
   };
+
+  if (includeParentTurnId && parentTurnId) {
+    return {
+      ...context,
+      parentTurnId,
+    };
+  }
+
+  return context;
+}
+
+function pickSubRunDescriptor(data: Record<string, unknown>): SubRunDescriptor | undefined {
+  const raw = asRecord(data.descriptor);
+  if (!raw) {
+    return undefined;
+  }
+  const subRunId = pickString(raw, 'subRunId', 'sub_run_id');
+  const parentTurnId = pickString(raw, 'parentTurnId', 'parent_turn_id');
+  const depth = pickNumber(raw, 'depth');
+  if (!subRunId || !parentTurnId || depth === null) {
+    return undefined;
+  }
+  return {
+    subRunId,
+    parentTurnId,
+    depth,
+    parentAgentId: pickOptionalString(raw, 'parentAgentId', 'parent_agent_id') ?? undefined,
+  };
+}
+
+function pickBooleanFlag(
+  data: Record<string, unknown>,
+  camelCaseKey: string,
+  snakeCaseKey: string
+): boolean {
+  const value = data[camelCaseKey] ?? data[snakeCaseKey];
+  return value === true;
 }
 
 export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
@@ -349,41 +392,80 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
   }
 
   if (event === 'subRunStarted') {
+    const descriptor = pickSubRunDescriptor(data);
+    const toolCallId = pickOptionalString(data, 'toolCallId', 'tool_call_id') ?? undefined;
+    const resolvedOverrides = asRecord(data.resolvedOverrides ?? data.resolved_overrides);
+    const resolvedLimits = asRecord(data.resolvedLimits ?? data.resolved_limits);
     const storageMode = toSubRunStorageMode(
-      data.resolvedOverrides && typeof data.resolvedOverrides === 'object'
-        ? ((data.resolvedOverrides as Record<string, unknown>).storageMode ??
-            (data.resolvedOverrides as Record<string, unknown>).storage_mode)
+      resolvedOverrides
+        ? (resolvedOverrides.storageMode ?? resolvedOverrides.storage_mode)
         : undefined
     );
-    const resolvedOverrides = asRecord(data.resolvedOverrides);
-    const resolvedLimits = asRecord(data.resolvedLimits);
     if (!resolvedOverrides || !resolvedLimits || !storageMode) {
       return invalidEvent('subRunStarted requires resolvedOverrides and resolvedLimits', raw);
     }
+    const rawAllowedTools = resolvedLimits.allowedTools ?? resolvedLimits.allowed_tools;
     return {
       event: 'subRunStarted',
       data: {
         turnId: pickOptionalString(data, 'turnId', 'turn_id') ?? null,
-        ...pickAgentContext(data),
+        // Why: descriptor 缺失意味着 lineage 是 legacy 降级态，不能继续把 parentTurnId 当作稳定事实。
+        ...pickAgentContext(data, { includeParentTurnId: descriptor !== undefined }),
+        ...(descriptor ? { descriptor } : {}),
+        ...(toolCallId ? { toolCallId } : {}),
         resolvedOverrides: {
           storageMode,
-          inheritSystemInstructions: resolvedOverrides.inheritSystemInstructions === true,
-          inheritProjectInstructions: resolvedOverrides.inheritProjectInstructions === true,
-          inheritWorkingDir: resolvedOverrides.inheritWorkingDir === true,
-          inheritPolicyUpperBound: resolvedOverrides.inheritPolicyUpperBound === true,
-          inheritCancelToken: resolvedOverrides.inheritCancelToken === true,
-          includeCompactSummary: resolvedOverrides.includeCompactSummary === true,
-          includeRecentTail: resolvedOverrides.includeRecentTail === true,
-          includeRecoveryRefs: resolvedOverrides.includeRecoveryRefs === true,
-          includeParentFindings: resolvedOverrides.includeParentFindings === true,
+          inheritSystemInstructions: pickBooleanFlag(
+            resolvedOverrides,
+            'inheritSystemInstructions',
+            'inherit_system_instructions'
+          ),
+          inheritProjectInstructions: pickBooleanFlag(
+            resolvedOverrides,
+            'inheritProjectInstructions',
+            'inherit_project_instructions'
+          ),
+          inheritWorkingDir: pickBooleanFlag(
+            resolvedOverrides,
+            'inheritWorkingDir',
+            'inherit_working_dir'
+          ),
+          inheritPolicyUpperBound: pickBooleanFlag(
+            resolvedOverrides,
+            'inheritPolicyUpperBound',
+            'inherit_policy_upper_bound'
+          ),
+          inheritCancelToken: pickBooleanFlag(
+            resolvedOverrides,
+            'inheritCancelToken',
+            'inherit_cancel_token'
+          ),
+          includeCompactSummary: pickBooleanFlag(
+            resolvedOverrides,
+            'includeCompactSummary',
+            'include_compact_summary'
+          ),
+          includeRecentTail: pickBooleanFlag(
+            resolvedOverrides,
+            'includeRecentTail',
+            'include_recent_tail'
+          ),
+          includeRecoveryRefs: pickBooleanFlag(
+            resolvedOverrides,
+            'includeRecoveryRefs',
+            'include_recovery_refs'
+          ),
+          includeParentFindings: pickBooleanFlag(
+            resolvedOverrides,
+            'includeParentFindings',
+            'include_parent_findings'
+          ),
         },
         resolvedLimits: {
           maxSteps: pickNumber(resolvedLimits, 'maxSteps', 'max_steps') ?? undefined,
           tokenBudget: pickNumber(resolvedLimits, 'tokenBudget', 'token_budget') ?? undefined,
-          allowedTools: Array.isArray(resolvedLimits.allowedTools)
-            ? resolvedLimits.allowedTools.filter(
-                (value): value is string => typeof value === 'string'
-              )
+          allowedTools: Array.isArray(rawAllowedTools)
+            ? rawAllowedTools.filter((value: unknown): value is string => typeof value === 'string')
             : [],
         },
       },
@@ -391,6 +473,8 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
   }
 
   if (event === 'subRunFinished') {
+    const descriptor = pickSubRunDescriptor(data);
+    const toolCallId = pickOptionalString(data, 'toolCallId', 'tool_call_id') ?? undefined;
     const result = asRecord(data.result);
     if (!result) {
       return invalidEvent('subRunFinished requires result', raw);
@@ -412,7 +496,9 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
       event: 'subRunFinished',
       data: {
         turnId: pickOptionalString(data, 'turnId', 'turn_id') ?? null,
-        ...pickAgentContext(data),
+        ...pickAgentContext(data, { includeParentTurnId: descriptor !== undefined }),
+        ...(descriptor ? { descriptor } : {}),
+        ...(toolCallId ? { toolCallId } : {}),
         result: {
           status,
           handoff: handoff

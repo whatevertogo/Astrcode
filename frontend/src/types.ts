@@ -7,6 +7,7 @@ export type ToolOutputStream = 'stdout' | 'stderr';
 export type CompactTrigger = 'auto' | 'manual';
 export type InvocationKind = 'subRun' | 'rootExecution';
 export type SubRunStorageMode = 'sharedSession' | 'independentSession';
+export type SubRunStatusSource = 'live' | 'durable' | 'legacyDurable';
 export type SessionEventScope = 'self' | 'subtree' | 'directChildren';
 export type SubRunOutcome = 'running' | 'completed' | 'failed' | 'aborted' | 'token_exceeded';
 export type SubRunFailureCode =
@@ -52,6 +53,13 @@ export interface PromptMetricsSnapshot {
   cacheReadInputTokens?: number;
 }
 
+export interface SubRunDescriptor {
+  subRunId: string;
+  parentTurnId: string;
+  parentAgentId?: string;
+  depth: number;
+}
+
 export interface ArtifactRef {
   kind: string;
   id: string;
@@ -93,6 +101,27 @@ export interface SubRunResult {
     technicalMessage: string;
     retryable: boolean;
   };
+}
+
+export interface SubRunStatusSnapshot {
+  subRunId: string;
+  descriptor?: SubRunDescriptor;
+  toolCallId?: string;
+  source: SubRunStatusSource;
+  agentId: string;
+  agentProfile: string;
+  sessionId: string;
+  childSessionId?: string;
+  depth: number;
+  parentTurnId?: string;
+  parentAgentId?: string;
+  storageMode: SubRunStorageMode;
+  status: 'pending' | 'running' | 'completed' | 'cancelled' | 'failed';
+  result?: SubRunResult;
+  stepCount?: number;
+  estimatedTokens?: number;
+  resolvedOverrides?: ResolvedSubagentContextOverrides;
+  resolvedLimits?: ResolvedExecutionLimits;
 }
 
 export type AgentEventPayload =
@@ -149,6 +178,8 @@ export type AgentEventPayload =
       event: 'subRunStarted';
       data: AgentScoped<{
         turnId?: string | null;
+        descriptor?: SubRunDescriptor;
+        toolCallId?: string;
         resolvedOverrides: ResolvedSubagentContextOverrides;
         resolvedLimits: ResolvedExecutionLimits;
       }>;
@@ -157,6 +188,8 @@ export type AgentEventPayload =
       event: 'subRunFinished';
       data: AgentScoped<{
         turnId?: string | null;
+        descriptor?: SubRunDescriptor;
+        toolCallId?: string;
         result: SubRunResult;
         stepCount: number;
         estimatedTokens: number;
@@ -290,6 +323,8 @@ export interface SubRunStartMessage {
   invocationKind?: InvocationKind;
   storageMode?: SubRunStorageMode;
   childSessionId?: string;
+  descriptor?: SubRunDescriptor;
+  toolCallId?: string;
   resolvedOverrides: ResolvedSubagentContextOverrides;
   resolvedLimits: ResolvedExecutionLimits;
   timestamp: number;
@@ -306,6 +341,8 @@ export interface SubRunFinishMessage {
   invocationKind?: InvocationKind;
   storageMode?: SubRunStorageMode;
   childSessionId?: string;
+  descriptor?: SubRunDescriptor;
+  toolCallId?: string;
   result: SubRunResult;
   stepCount: number;
   estimatedTokens: number;

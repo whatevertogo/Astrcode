@@ -98,6 +98,11 @@ pub struct ToolContext {
     /// 普通工具通常不需要感知 turn_id，但像 spawnAgent 这类复合工具
     /// 需要把子事件重新挂回父 turn。
     turn_id: Option<String>,
+    /// 当前工具调用 ID。
+    ///
+    /// spawnAgent 等复合工具会把这个值落到 durable lifecycle 事件，
+    /// 保证重放后仍然能还原触发链路。
+    tool_call_id: Option<String>,
     /// 当前工具调用所属 Agent 元数据。
     ///
     /// 子 Agent 工具会基于父 Agent 上下文继续派生自己的 agent_id /
@@ -138,6 +143,7 @@ impl ToolContext {
             working_dir,
             cancel,
             turn_id: None,
+            tool_call_id: None,
             agent: Arc::new(AgentEventContext::default()),
             max_output_size: DEFAULT_MAX_OUTPUT_SIZE,
             session_storage_root: None,
@@ -177,6 +183,12 @@ impl ToolContext {
         self
     }
 
+    /// 为工具上下文注入当前 tool_call_id。
+    pub fn with_tool_call_id(mut self, tool_call_id: impl Into<String>) -> Self {
+        self.tool_call_id = Some(tool_call_id.into());
+        self
+    }
+
     /// 为工具上下文注入当前 Agent 元数据。
     pub fn with_agent_context(mut self, agent: AgentEventContext) -> Self {
         self.agent = Arc::new(agent);
@@ -213,6 +225,11 @@ impl ToolContext {
     /// 返回当前 turn_id（若有）。
     pub fn turn_id(&self) -> Option<&str> {
         self.turn_id.as_deref()
+    }
+
+    /// 返回当前 tool_call_id（若有）。
+    pub fn tool_call_id(&self) -> Option<&str> {
+        self.tool_call_id.as_deref()
     }
 
     /// 返回当前 Agent 元数据。
@@ -288,6 +305,7 @@ impl Clone for ToolContext {
             working_dir: self.working_dir.clone(),
             cancel: self.cancel.clone(),
             turn_id: self.turn_id.clone(),
+            tool_call_id: self.tool_call_id.clone(),
             agent: self.agent.clone(),
             max_output_size: self.max_output_size,
             session_storage_root: self.session_storage_root.clone(),

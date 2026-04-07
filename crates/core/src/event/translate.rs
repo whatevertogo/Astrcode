@@ -204,6 +204,8 @@ impl EventTranslator {
                 });
             },
             StorageEvent::SubRunStarted {
+                descriptor,
+                tool_call_id,
                 resolved_overrides,
                 resolved_limits,
                 ..
@@ -211,11 +213,15 @@ impl EventTranslator {
                 push(AgentEvent::SubRunStarted {
                     turn_id: turn_id.clone(),
                     agent: agent.clone(),
+                    descriptor: descriptor.clone(),
+                    tool_call_id: tool_call_id.clone(),
                     resolved_overrides: resolved_overrides.clone(),
                     resolved_limits: resolved_limits.clone(),
                 });
             },
             StorageEvent::SubRunFinished {
+                descriptor,
+                tool_call_id,
                 result,
                 step_count,
                 estimated_tokens,
@@ -224,6 +230,8 @@ impl EventTranslator {
                 push(AgentEvent::SubRunFinished {
                     turn_id: turn_id.clone(),
                     agent: agent.clone(),
+                    descriptor: descriptor.clone(),
+                    tool_call_id: tool_call_id.clone(),
                     result: result.clone(),
                     step_count: *step_count,
                     estimated_tokens: *estimated_tokens,
@@ -413,8 +421,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        AgentEvent, AgentEventContext, StoredEvent, ToolOutputStream, UserMessageOrigin,
-        phase_of_storage_event,
+        AgentEvent, AgentEventContext, StoredEvent, SubRunDescriptor, SubRunOutcome, SubRunResult,
+        SubRunStorageMode, ToolOutputStream, UserMessageOrigin, phase_of_storage_event,
     };
 
     #[test]
@@ -627,5 +635,107 @@ mod tests {
                 && *provider_input_tokens == Some(900)
                 && *cache_read_input_tokens == Some(650)
         ));
+    }
+
+    #[test]
+    fn subrun_lifecycle_translation_preserves_descriptor_and_tool_call_id() {
+        let descriptor = SubRunDescriptor {
+            sub_run_id: "subrun-1".to_string(),
+            parent_turn_id: "turn-parent".to_string(),
+            parent_agent_id: Some("agent-parent".to_string()),
+            depth: 2,
+        };
+        let records = replay_records(
+            &[
+                StoredEvent {
+                    storage_seq: 10,
+                    event: StorageEvent::SubRunStarted {
+                        turn_id: Some("turn-parent".to_string()),
+                        agent: AgentEventContext::sub_run(
+                            "agent-child",
+                            "turn-parent",
+                            "review",
+                            "subrun-1",
+                            SubRunStorageMode::SharedSession,
+                            None,
+                        ),
+                        descriptor: Some(descriptor.clone()),
+                        tool_call_id: Some("call-1".to_string()),
+                        resolved_overrides: crate::ResolvedSubagentContextOverrides::default(),
+                        resolved_limits: crate::ResolvedExecutionLimitsSnapshot::default(),
+                        timestamp: None,
+                    },
+                },
+                StoredEvent {
+                    storage_seq: 11,
+                    event: StorageEvent::SubRunFinished {
+                        turn_id: Some("turn-parent".to_string()),
+                        agent: AgentEventContext::sub_run(
+                            "agent-child",
+                            "turn-parent",
+                            "review",
+                            "subrun-1",
+                            SubRunStorageMode::SharedSession,
+                            None,
+                        ),
+                        descriptor: Some(descriptor.clone()),
+                        tool_call_id: Some("call-1".to_string()),
+                        result: SubRunResult {
+                            status: SubRunOutcome::Completed,
+                            handoff: None,
+                            failure: None,
+                        },
+                        step_count: 4,
+                        estimated_tokens: 88,
+                        timestamp: None,
+                    },
+                },
+            ],
+            None,
+        );
+
+        let started = records.iter().find_map(|record| match &record.event {
+            AgentEvent::SubRunStarted {
+                descriptor,
+                tool_call_id,
+                ..
+            } => Some((descriptor.clone(), tool_call_id.clone())),
+            _ => None,
+        });
+        let finished = records.iter().find_map(|record| match &record.event {
+            AgentEvent::SubRunFinished {
+                descriptor,
+                tool_call_id,
+                result,
+                ..
+            } => Some((descriptor.clone(), tool_call_id.clone(), result.clone())),
+            _ => None,
+        });
+
+        assert_eq!(
+            started
+                .as_ref()
+                .and_then(|(descriptor, _)| descriptor.as_ref())
+                .map(|item| item.parent_turn_id.as_str()),
+            Some("turn-parent")
+        );
+        assert_eq!(
+            started
+                .as_ref()
+                .and_then(|(_, tool_call_id)| tool_call_id.as_deref()),
+            Some("call-1")
+        );
+        assert_eq!(
+            finished
+                .as_ref()
+                .and_then(|(_, tool_call_id, _)| tool_call_id.as_deref()),
+            Some("call-1")
+        );
+        assert_eq!(
+            finished
+                .as_ref()
+                .map(|(_, _, result)| result.status.clone()),
+            Some(SubRunOutcome::Completed)
+        );
     }
 }

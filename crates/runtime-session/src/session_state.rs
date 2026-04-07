@@ -12,7 +12,7 @@ use tokio::sync::broadcast;
 
 use crate::{
     append_and_broadcast_from_turn_callback,
-    support::{lock_anyhow, spawn_blocking_anyhow},
+    support::{lock_anyhow, spawn_blocking_anyhow, with_lock_recovery},
 };
 
 const SESSION_BROADCAST_CAPACITY: usize = 2048;
@@ -174,6 +174,30 @@ impl SessionState {
 
     pub fn current_phase(&self) -> Result<Phase> {
         Ok(*lock_anyhow(&self.phase, "session phase")?)
+    }
+
+    pub fn complete_execution_state(&self, phase: Phase) {
+        with_lock_recovery(&self.phase, "session phase", |phase_guard| {
+            *phase_guard = phase;
+        });
+        with_lock_recovery(
+            &self.active_turn_id,
+            "session active turn",
+            |active_turn_guard| {
+                *active_turn_guard = None;
+            },
+        );
+        with_lock_recovery(&self.turn_lease, "session turn lease", |lease_guard| {
+            *lease_guard = None;
+        });
+        with_lock_recovery(&self.token_budget, "session token budget", |budget_guard| {
+            *budget_guard = None;
+        });
+        with_lock_recovery(&self.cancel, "session cancel", |cancel_guard| {
+            *cancel_guard = CancelToken::new();
+        });
+        self.running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn translate_store_and_cache(

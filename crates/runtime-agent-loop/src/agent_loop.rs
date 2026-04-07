@@ -72,6 +72,7 @@ use astrcode_runtime_prompt::{PromptComposer, PromptDeclaration};
 use astrcode_runtime_registry::CapabilityRouter;
 use astrcode_runtime_skill_loader::{SkillCatalog, load_builtin_skills};
 use chrono::Utc;
+pub use turn_runner::{TurnRunner, TurnRunnerRuntime};
 
 use crate::{
     approval_service::{ApprovalBroker, DefaultApprovalBroker},

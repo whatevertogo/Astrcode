@@ -189,6 +189,7 @@ version = "0.1.0"
 dependencies = [
  "astrcode-core",
  "astrcode-runtime-config",
+ "async-trait",
  "thiserror 2.0.18",
  "tokio",
 ]
@@ -260,6 +261,8 @@ dependencies = [
  "astrcode-runtime-prompt",
  "astrcode-runtime-registry",
  "async-trait",
+ "chrono",
+ "tracing",
  "uuid",
 ]
 
@@ -312,8 +315,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "astrcode-core",
- "astrcode-runtime-agent-control",
- "astrcode-runtime-agent-loop",
+ "async-trait",
  "chrono",
  "log",
  "tempfile",
@@ -369,6 +371,7 @@ dependencies = [
  "astrcode-core",
  "astrcode-protocol",
  "astrcode-runtime",
+ "astrcode-runtime-execution",
  "astrcode-runtime-registry",
  "astrcode-storage",
  "async-stream",

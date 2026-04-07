@@ -7,7 +7,8 @@ use serde_json::Value;
 
 use crate::{
     AgentEventContext, CompactTrigger, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, SubRunResult, ToolExecutionResult, ToolOutputStream,
+    ResolvedSubagentContextOverrides, SubRunDescriptor, SubRunResult, ToolExecutionResult,
+    ToolOutputStream,
 };
 
 /// 会话阶段
@@ -137,6 +138,8 @@ pub enum AgentEvent {
     SubRunStarted {
         turn_id: Option<String>,
         agent: AgentEventContext,
+        descriptor: Option<SubRunDescriptor>,
+        tool_call_id: Option<String>,
         resolved_overrides: ResolvedSubagentContextOverrides,
         resolved_limits: ResolvedExecutionLimitsSnapshot,
     },
@@ -144,6 +147,8 @@ pub enum AgentEvent {
     SubRunFinished {
         turn_id: Option<String>,
         agent: AgentEventContext,
+        descriptor: Option<SubRunDescriptor>,
+        tool_call_id: Option<String>,
         result: SubRunResult,
         step_count: u32,
         estimated_tokens: u64,

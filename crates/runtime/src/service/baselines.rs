@@ -26,15 +26,16 @@ use astrcode_storage::session::EventLog;
 use async_trait::async_trait;
 use chrono::{Duration as ChronoDuration, Utc};
 
-use super::{RuntimeService, SessionReplaySource};
+use super::RuntimeService;
 use crate::{
     llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest, ModelLimits},
     test_support::{TestEnvGuard, empty_capabilities},
 };
 
-async fn latest_cursor(service: &RuntimeService, session_id: &str) -> String {
+async fn latest_cursor(service: &Arc<RuntimeService>, session_id: &str) -> String {
     service
-        .load_session_history(session_id)
+        .sessions()
+        .history(session_id)
         .await
         .expect("history should load")
         .cursor
@@ -224,8 +225,10 @@ async fn wait_until_idle(service: &RuntimeService) {
 #[tokio::test]
 async fn long_loaded_session_submit_avoids_extra_rehydrate_and_records_turn_metrics() {
     let _guard = TestEnvGuard::new();
-    let service = RuntimeService::from_capabilities(empty_capabilities())
-        .expect("runtime service should initialize");
+    let service = Arc::new(
+        RuntimeService::from_capabilities(empty_capabilities())
+            .expect("runtime service should initialize"),
+    );
     install_test_loop(&service, Duration::from_millis(0)).await;
 
     let working_dir = tempfile::tempdir().expect("tempdir should be created");
@@ -239,6 +242,7 @@ async fn long_loaded_session_submit_avoids_extra_rehydrate_and_records_turn_metr
     assert_eq!(before.session_rehydrate.total, 1);
 
     service
+        .execution()
         .submit_prompt("baseline-long-submit", "follow-up".to_string())
         .await
         .expect("prompt should be accepted");
@@ -263,8 +267,10 @@ async fn long_loaded_session_submit_avoids_extra_rehydrate_and_records_turn_metr
 #[tokio::test]
 async fn reconnect_with_recent_cursor_uses_cached_tail_and_updates_metrics() {
     let _guard = TestEnvGuard::new();
-    let service = RuntimeService::from_capabilities(empty_capabilities())
-        .expect("runtime service should initialize");
+    let service = Arc::new(
+        RuntimeService::from_capabilities(empty_capabilities())
+            .expect("runtime service should initialize"),
+    );
 
     let working_dir = tempfile::tempdir().expect("tempdir should be created");
     seed_session_log("baseline-replay-cache", working_dir.path(), 64);
@@ -276,6 +282,7 @@ async fn reconnect_with_recent_cursor_uses_cached_tail_and_updates_metrics() {
     let cursor = latest_cursor(&service, "baseline-replay-cache").await;
     let before = service.observability_snapshot();
     let replay = service
+        .sessions()
         .replay("baseline-replay-cache", Some(&cursor))
         .await
         .expect("replay should succeed");
@@ -303,8 +310,10 @@ async fn reconnect_with_recent_cursor_uses_cached_tail_and_updates_metrics() {
 #[tokio::test]
 async fn reconnect_with_stale_cursor_falls_back_to_disk_and_records_it() {
     let _guard = TestEnvGuard::new();
-    let service = RuntimeService::from_capabilities(empty_capabilities())
-        .expect("runtime service should initialize");
+    let service = Arc::new(
+        RuntimeService::from_capabilities(empty_capabilities())
+            .expect("runtime service should initialize"),
+    );
 
     let working_dir = tempfile::tempdir().expect("tempdir should be created");
     seed_session_log("baseline-replay-disk", working_dir.path(), 1_500);
@@ -315,6 +324,7 @@ async fn reconnect_with_stale_cursor_falls_back_to_disk_and_records_it() {
 
     let before = service.observability_snapshot();
     let replay = service
+        .sessions()
         .replay("baseline-replay-disk", Some("1.0"))
         .await
         .expect("replay should succeed");
@@ -342,21 +352,26 @@ async fn reconnect_with_stale_cursor_falls_back_to_disk_and_records_it() {
 #[tokio::test]
 async fn concurrent_submit_branches_second_prompt_and_records_two_turns() {
     let _guard = TestEnvGuard::new();
-    let service = RuntimeService::from_capabilities(empty_capabilities())
-        .expect("runtime service should initialize");
+    let service = Arc::new(
+        RuntimeService::from_capabilities(empty_capabilities())
+            .expect("runtime service should initialize"),
+    );
     install_test_loop(&service, Duration::from_millis(250)).await;
 
     let working_dir = tempfile::tempdir().expect("tempdir should be created");
     let session = service
-        .create_session(working_dir.path())
+        .sessions()
+        .create(working_dir.path())
         .await
         .expect("session should be created");
 
     let first = service
+        .execution()
         .submit_prompt(&session.session_id, "first".to_string())
         .await
         .expect("first prompt should be accepted");
     let second = service
+        .execution()
         .submit_prompt(&session.session_id, "second".to_string())
         .await
         .expect("second prompt should branch while the first turn runs");
@@ -370,11 +385,13 @@ async fn concurrent_submit_branches_second_prompt_and_records_two_turns() {
 
     wait_until_idle(&service).await;
     let original_history = service
-        .load_session_history(&session.session_id)
+        .sessions()
+        .history(&session.session_id)
         .await
         .expect("original session history should load");
     let branched_history = service
-        .load_session_history(&second.session_id)
+        .sessions()
+        .history(&second.session_id)
         .await
         .expect("branched session history should load");
 

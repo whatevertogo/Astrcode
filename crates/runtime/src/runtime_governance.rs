@@ -137,7 +137,7 @@ impl RuntimeGovernance {
             initializer,
             self.coordinator.plugin_registry(),
             astrcode_runtime_skill_loader::load_builtin_skills(),
-            Arc::new(self.service.agent_execution_service()),
+            Arc::new(self.service.execution()),
         )
         .await
         .map_err(ServiceError::Internal)?;

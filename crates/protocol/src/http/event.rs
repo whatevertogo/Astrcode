@@ -148,6 +148,16 @@ pub struct SubRunResultDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct SubRunDescriptorDto {
+    pub sub_run_id: String,
+    pub parent_turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<String>,
+    pub depth: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ResolvedSubagentContextOverridesDto {
     pub storage_mode: SubRunStorageModeDto,
     pub inherit_system_instructions: bool,
@@ -351,6 +361,10 @@ pub enum AgentEventPayload {
         turn_id: Option<String>,
         #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
         agent: AgentContextDto,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        descriptor: Option<SubRunDescriptorDto>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_call_id: Option<String>,
         resolved_overrides: ResolvedSubagentContextOverridesDto,
         resolved_limits: ResolvedExecutionLimitsDto,
     },
@@ -359,6 +373,10 @@ pub enum AgentEventPayload {
         turn_id: Option<String>,
         #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
         agent: AgentContextDto,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        descriptor: Option<SubRunDescriptorDto>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_call_id: Option<String>,
         result: SubRunResultDto,
         step_count: u32,
         estimated_tokens: u64,

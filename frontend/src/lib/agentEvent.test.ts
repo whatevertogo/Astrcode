@@ -237,4 +237,163 @@ describe('normalizeAgentEvent protocol gate', () => {
       },
     });
   });
+
+  it('normalizes subRunStarted payloads with descriptor/toolCallId and snake_case overrides', () => {
+    const normalized = normalizeAgentEvent({
+      protocolVersion: 1,
+      event: 'subRunStarted',
+      data: {
+        turn_id: 'turn-parent',
+        descriptor: {
+          sub_run_id: 'sub-1',
+          parent_turn_id: 'turn-parent',
+          parent_agent_id: 'agent-parent',
+          depth: 2,
+        },
+        tool_call_id: 'call-1',
+        resolved_overrides: {
+          storage_mode: 'independentSession',
+          inherit_system_instructions: true,
+          inherit_project_instructions: true,
+          inherit_working_dir: true,
+          inherit_policy_upper_bound: true,
+          inherit_cancel_token: true,
+          include_compact_summary: true,
+          include_recent_tail: true,
+          include_recovery_refs: false,
+          include_parent_findings: false,
+        },
+        resolved_limits: {
+          max_steps: 12,
+          token_budget: 2400,
+          allowed_tools: ['readFile', 'grep'],
+        },
+      },
+    });
+
+    expect(normalized).toEqual({
+      event: 'subRunStarted',
+      data: {
+        turnId: 'turn-parent',
+        descriptor: {
+          subRunId: 'sub-1',
+          parentTurnId: 'turn-parent',
+          parentAgentId: 'agent-parent',
+          depth: 2,
+        },
+        toolCallId: 'call-1',
+        resolvedOverrides: {
+          storageMode: 'independentSession',
+          inheritSystemInstructions: true,
+          inheritProjectInstructions: true,
+          inheritWorkingDir: true,
+          inheritPolicyUpperBound: true,
+          inheritCancelToken: true,
+          includeCompactSummary: true,
+          includeRecentTail: true,
+          includeRecoveryRefs: false,
+          includeParentFindings: false,
+        },
+        resolvedLimits: {
+          maxSteps: 12,
+          tokenBudget: 2400,
+          allowedTools: ['readFile', 'grep'],
+        },
+      },
+    });
+  });
+
+  it('downgrades legacy subRunStarted payloads without descriptor', () => {
+    const normalized = normalizeAgentEvent({
+      protocolVersion: 1,
+      event: 'subRunStarted',
+      data: {
+        turn_id: 'turn-legacy',
+        parent_turn_id: 'turn-legacy',
+        sub_run_id: 'sub-legacy',
+        resolved_overrides: {
+          storage_mode: 'sharedSession',
+          inherit_system_instructions: true,
+          inherit_project_instructions: true,
+          inherit_working_dir: true,
+          inherit_policy_upper_bound: true,
+          inherit_cancel_token: true,
+          include_compact_summary: false,
+          include_recent_tail: true,
+          include_recovery_refs: false,
+          include_parent_findings: false,
+        },
+        resolved_limits: {
+          allowed_tools: ['readFile'],
+        },
+      },
+    });
+
+    expect(normalized).toEqual({
+      event: 'subRunStarted',
+      data: {
+        turnId: 'turn-legacy',
+        subRunId: 'sub-legacy',
+        resolvedOverrides: {
+          storageMode: 'sharedSession',
+          inheritSystemInstructions: true,
+          inheritProjectInstructions: true,
+          inheritWorkingDir: true,
+          inheritPolicyUpperBound: true,
+          inheritCancelToken: true,
+          includeCompactSummary: false,
+          includeRecentTail: true,
+          includeRecoveryRefs: false,
+          includeParentFindings: false,
+        },
+        resolvedLimits: {
+          maxSteps: undefined,
+          tokenBudget: undefined,
+          allowedTools: ['readFile'],
+        },
+      },
+    });
+
+    if (normalized.event === 'subRunStarted') {
+      expect('parentTurnId' in normalized.data).toBe(false);
+      expect('descriptor' in normalized.data).toBe(false);
+    }
+  });
+
+  it('downgrades legacy subRunFinished payloads without descriptor', () => {
+    const normalized = normalizeAgentEvent({
+      protocolVersion: 1,
+      event: 'subRunFinished',
+      data: {
+        turn_id: 'turn-legacy',
+        parent_turn_id: 'turn-legacy',
+        sub_run_id: 'sub-legacy',
+        result: {
+          status: 'completed',
+        },
+        step_count: 1,
+        estimated_tokens: 20,
+      },
+    });
+
+    expect(normalized).toEqual({
+      event: 'subRunFinished',
+      data: {
+        turnId: 'turn-legacy',
+        subRunId: 'sub-legacy',
+        result: {
+          status: 'completed',
+          handoff: undefined,
+          failure: undefined,
+        },
+        stepCount: 1,
+        estimatedTokens: 20,
+      },
+    });
+
+    if (normalized.event === 'subRunFinished') {
+      expect('parentTurnId' in normalized.data).toBe(false);
+      expect('descriptor' in normalized.data).toBe(false);
+    }
+  });
 });

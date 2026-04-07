@@ -5,7 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::http::{ResolvedSubagentContextOverridesDto, SubRunResultDto, SubRunStorageModeDto};
+use crate::http::{
+    ResolvedSubagentContextOverridesDto, SubRunDescriptorDto, SubRunResultDto, SubRunStorageModeDto,
+};
 
 /// 对外暴露的 Agent Profile 摘要。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -83,16 +85,27 @@ pub struct SubagentContextOverridesDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub enum SubRunStatusSourceDto {
+    Live,
+    Durable,
+    LegacyDurable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct SubRunStatusDto {
     pub sub_run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descriptor: Option<SubRunDescriptorDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    pub source: SubRunStatusSourceDto,
     pub agent_id: String,
     pub agent_profile: String,
     pub session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_session_id: Option<String>,
     pub depth: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<String>,
     pub storage_mode: SubRunStorageModeDto,

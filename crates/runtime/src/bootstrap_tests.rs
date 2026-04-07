@@ -14,7 +14,7 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
 
 use astrcode_core::{
@@ -244,6 +244,37 @@ fn bootstrap_from(
     (bootstrap, guard)
 }
 
+fn current_dir_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct CurrentDirGuard {
+    _lock: MutexGuard<'static, ()>,
+    previous_dir: PathBuf,
+}
+
+impl CurrentDirGuard {
+    fn enter(path: &std::path::Path) -> Self {
+        let lock = match current_dir_lock().lock() {
+            Ok(lock) => lock,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let previous_dir = std::env::current_dir().expect("current dir should resolve");
+        std::env::set_current_dir(path).expect("current dir should change");
+        Self {
+            _lock: lock,
+            previous_dir,
+        }
+    }
+}
+
+impl Drop for CurrentDirGuard {
+    fn drop(&mut self) {
+        std::env::set_current_dir(&self.previous_dir).expect("current dir should restore");
+    }
+}
+
 #[test]
 fn bootstrap_without_plugins_keeps_builtin_capabilities() {
     let initializer = FakeInitializer {
@@ -325,6 +356,40 @@ tools: ["readFile"]
         .description
         .clone();
     assert_eq!(service_explore, "用户级代码探索器");
+}
+
+#[test]
+fn bootstrap_does_not_resolve_project_agents_from_process_cwd() {
+    let guard = TestEnvGuard::new();
+    let workspace = tempfile::tempdir().expect("tempdir should be created");
+    let agent_dir = workspace.path().join(".astrcode").join("agents");
+    std::fs::create_dir_all(&agent_dir).expect("agent dir should be created");
+    std::fs::write(
+        agent_dir.join("cwd-only.md"),
+        r#"---
+name: cwd-only
+description: cwd scoped agent
+tools: ["readFile"]
+---
+Only visible when working dir is explicit.
+"#,
+    )
+    .expect("agent definition should be written");
+    let _cwd = CurrentDirGuard::enter(workspace.path());
+
+    let initializer = FakeInitializer {
+        responses: Default::default(),
+    };
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime should build");
+    let bootstrap = runtime
+        .block_on(async { bootstrap_runtime_from_manifests(Vec::new(), &initializer).await })
+        .expect("runtime bootstrap should succeed");
+
+    assert!(
+        bootstrap.service.agent_profiles().get("cwd-only").is_none(),
+        "bootstrap must not silently bind agent resolution to process cwd"
+    );
+    drop(guard);
 }
 
 #[tokio::test]
@@ -460,7 +525,8 @@ async fn bootstrap_integrates_plugin_declared_skills_into_runtime_catalog() {
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let session = bootstrap
         .service
-        .create_session(temp_dir.path())
+        .sessions()
+        .create(temp_dir.path())
         .await
         .expect("session should be created");
 

@@ -9,13 +9,25 @@
 
 use astrcode_core::{
     AgentEventContext, AgentStatus, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, StorageEvent, StoredEvent, SubRunHandle, SubRunOutcome,
-    SubRunResult, SubRunStorageMode,
+    ResolvedSubagentContextOverrides, StorageEvent, StoredEvent, SubRunDescriptor, SubRunHandle,
+    SubRunOutcome, SubRunResult, SubRunStorageMode,
 };
+
+use crate::ExecutionLineageIndex;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParsedSubRunStatusSource {
+    Live,
+    Durable,
+    LegacyDurable,
+}
 
 #[derive(Debug, Clone)]
 pub struct ParsedSubRunStatus {
     pub handle: SubRunHandle,
+    pub descriptor: Option<SubRunDescriptor>,
+    pub tool_call_id: Option<String>,
+    pub source: ParsedSubRunStatusSource,
     pub result: Option<SubRunResult>,
     pub step_count: Option<u32>,
     pub estimated_tokens: Option<u64>,
@@ -23,14 +35,192 @@ pub struct ParsedSubRunStatus {
     pub resolved_limits: Option<ResolvedExecutionLimitsSnapshot>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelSubRunResolution {
+    CancelLive,
+    AlreadyFinalized,
+    Missing,
+}
+
 pub fn snapshot_from_active_handle(handle: SubRunHandle) -> ParsedSubRunStatus {
     ParsedSubRunStatus {
+        descriptor: handle.descriptor(),
+        tool_call_id: None,
+        source: ParsedSubRunStatusSource::Live,
         handle,
         result: None,
         step_count: None,
         estimated_tokens: None,
         resolved_overrides: None,
         resolved_limits: None,
+    }
+}
+
+pub fn build_subrun_descriptor(child: &SubRunHandle, parent_turn_id: &str) -> SubRunDescriptor {
+    SubRunDescriptor {
+        sub_run_id: child.sub_run_id.clone(),
+        parent_turn_id: parent_turn_id.to_string(),
+        parent_agent_id: child.parent_agent_id.clone(),
+        depth: child.depth,
+    }
+}
+
+pub fn build_subrun_started_event(
+    parent_turn_id: &str,
+    agent: AgentEventContext,
+    child: &SubRunHandle,
+    tool_call_id: Option<String>,
+    resolved_overrides: ResolvedSubagentContextOverrides,
+    resolved_limits: ResolvedExecutionLimitsSnapshot,
+) -> StorageEvent {
+    StorageEvent::SubRunStarted {
+        turn_id: Some(parent_turn_id.to_string()),
+        agent,
+        descriptor: Some(build_subrun_descriptor(child, parent_turn_id)),
+        tool_call_id,
+        resolved_overrides,
+        resolved_limits,
+        timestamp: Some(chrono::Utc::now()),
+    }
+}
+
+pub fn build_subrun_finished_event(
+    parent_turn_id: &str,
+    agent: AgentEventContext,
+    child: &SubRunHandle,
+    tool_call_id: Option<String>,
+    result: SubRunResult,
+    step_count: u32,
+    estimated_tokens: u64,
+) -> StorageEvent {
+    StorageEvent::SubRunFinished {
+        turn_id: Some(parent_turn_id.to_string()),
+        agent,
+        descriptor: Some(build_subrun_descriptor(child, parent_turn_id)),
+        tool_call_id,
+        result,
+        step_count,
+        estimated_tokens,
+        timestamp: Some(chrono::Utc::now()),
+    }
+}
+
+pub fn build_execution_lineage_index(events: &[StoredEvent]) -> ExecutionLineageIndex {
+    ExecutionLineageIndex::from_stored_events(events)
+}
+
+/// 将 live snapshot 叠加到 durable snapshot 上。
+///
+/// durable 继续提供结果、限制快照和计数等历史真相；
+/// live 只覆盖运行态状态以及更接近当前的 lineage/tool_call 字段。
+pub fn overlay_live_snapshot_on_durable(
+    live_snapshot: ParsedSubRunStatus,
+    durable_snapshot: ParsedSubRunStatus,
+) -> ParsedSubRunStatus {
+    let mut merged_handle = durable_snapshot.handle;
+    merged_handle.status = live_snapshot.handle.status;
+
+    ParsedSubRunStatus {
+        handle: merged_handle,
+        descriptor: live_snapshot.descriptor.or(durable_snapshot.descriptor),
+        tool_call_id: live_snapshot.tool_call_id.or(durable_snapshot.tool_call_id),
+        source: ParsedSubRunStatusSource::Live,
+        result: durable_snapshot.result,
+        step_count: durable_snapshot.step_count,
+        estimated_tokens: durable_snapshot.estimated_tokens,
+        resolved_overrides: durable_snapshot.resolved_overrides,
+        resolved_limits: durable_snapshot.resolved_limits,
+    }
+}
+
+pub fn live_handle_owned_by_session<F>(
+    session_id: &str,
+    live_handle: &SubRunHandle,
+    durable_snapshot: Option<&ParsedSubRunStatus>,
+    normalize_session_id: F,
+) -> bool
+where
+    F: Fn(&str) -> String,
+{
+    let live_session_id = normalize_session_id(&live_handle.session_id);
+    if live_session_id == session_id {
+        return true;
+    }
+
+    let live_child_session_id = live_handle
+        .child_session_id
+        .as_deref()
+        .map(&normalize_session_id);
+    if live_child_session_id.as_deref() == Some(session_id) {
+        return true;
+    }
+
+    let Some(durable_snapshot) = durable_snapshot else {
+        return false;
+    };
+    let durable_session_id = normalize_session_id(&durable_snapshot.handle.session_id);
+    if durable_session_id != session_id {
+        return false;
+    }
+
+    let durable_child_session_id = durable_snapshot
+        .handle
+        .child_session_id
+        .as_deref()
+        .map(normalize_session_id);
+    durable_snapshot.handle.agent_id == live_handle.agent_id
+        && durable_child_session_id.as_deref() == Some(live_session_id.as_str())
+}
+
+pub fn resolve_subrun_status_snapshot<F>(
+    session_id: &str,
+    live_handle: Option<SubRunHandle>,
+    durable_snapshot: Option<ParsedSubRunStatus>,
+    normalize_session_id: F,
+) -> Option<ParsedSubRunStatus>
+where
+    F: Fn(&str) -> String + Copy,
+{
+    if let Some(handle) = live_handle {
+        if live_handle_owned_by_session(
+            session_id,
+            &handle,
+            durable_snapshot.as_ref(),
+            normalize_session_id,
+        ) {
+            let live_snapshot = snapshot_from_active_handle(handle);
+            return Some(durable_snapshot.map_or(live_snapshot.clone(), |durable| {
+                overlay_live_snapshot_on_durable(live_snapshot, durable)
+            }));
+        }
+    }
+    durable_snapshot
+}
+
+pub fn resolve_cancel_subrun_resolution<F>(
+    session_id: &str,
+    live_handle: Option<&SubRunHandle>,
+    durable_snapshot: Option<&ParsedSubRunStatus>,
+    normalize_session_id: F,
+) -> CancelSubRunResolution
+where
+    F: Fn(&str) -> String + Copy,
+{
+    if let Some(handle) = live_handle {
+        let normalized_live_session_id = normalize_session_id(&handle.session_id);
+        let normalized_live_child_session_id =
+            handle.child_session_id.as_deref().map(normalize_session_id);
+        if normalized_live_session_id == session_id
+            || normalized_live_child_session_id.as_deref() == Some(session_id)
+        {
+            return CancelSubRunResolution::CancelLive;
+        }
+    }
+
+    if durable_snapshot.is_some() {
+        CancelSubRunResolution::AlreadyFinalized
+    } else {
+        CancelSubRunResolution::Missing
     }
 }
 
@@ -42,24 +232,34 @@ pub fn find_subrun_status_in_events(
     sub_run_id: &str,
 ) -> Option<ParsedSubRunStatus> {
     let mut started_agent: Option<AgentEventContext> = None;
+    let mut started_descriptor = None;
+    let mut started_tool_call_id = None;
     let mut resolved_overrides = None;
     let mut resolved_limits = None;
+    let mut finished_descriptor = None;
+    let mut finished_tool_call_id = None;
     let mut finished: Option<(SubRunResult, u32, u64)> = None;
 
     for stored in events {
         match &stored.event {
             StorageEvent::SubRunStarted {
                 agent,
+                descriptor,
+                tool_call_id,
                 resolved_overrides: started_overrides,
                 resolved_limits: started_limits,
                 ..
             } if agent.sub_run_id.as_deref() == Some(sub_run_id) => {
                 started_agent = Some(agent.clone());
+                started_descriptor = descriptor.clone();
+                started_tool_call_id = tool_call_id.clone();
                 resolved_overrides = Some(started_overrides.clone());
                 resolved_limits = Some(started_limits.clone());
             },
             StorageEvent::SubRunFinished {
                 agent,
+                descriptor,
+                tool_call_id,
                 result,
                 step_count,
                 estimated_tokens,
@@ -68,42 +268,91 @@ pub fn find_subrun_status_in_events(
                 if started_agent.is_none() {
                     started_agent = Some(agent.clone());
                 }
+                finished_descriptor = descriptor.clone();
+                finished_tool_call_id = tool_call_id.clone();
                 finished = Some((result.clone(), *step_count, *estimated_tokens));
             },
             _ => {},
         }
     }
 
-    started_agent.map(|agent| ParsedSubRunStatus {
-        handle: build_replayed_handle(session_id, sub_run_id, agent, finished.as_ref()),
-        result: finished.as_ref().map(|(result, _, _)| result.clone()),
-        step_count: finished.as_ref().map(|(_, step_count, _)| *step_count),
-        estimated_tokens: finished
-            .as_ref()
-            .map(|(_, _, estimated_tokens)| *estimated_tokens),
-        resolved_overrides,
-        resolved_limits,
+    started_agent.map(|agent| {
+        // Validate descriptor consistency if both events have descriptors
+        if let (Some(ref started), Some(ref finished)) = (&started_descriptor, &finished_descriptor)
+        {
+            if started.sub_run_id != finished.sub_run_id
+                || started.parent_turn_id != finished.parent_turn_id
+                || started.parent_agent_id != finished.parent_agent_id
+                || started.depth != finished.depth
+            {
+                tracing::warn!(
+                    sub_run_id = %sub_run_id,
+                    started_descriptor = ?started,
+                    finished_descriptor = ?finished,
+                    "SubRunStarted and SubRunFinished have mismatched descriptors"
+                );
+            }
+        }
+
+        let descriptor = finished_descriptor.or(started_descriptor);
+        let tool_call_id = finished_tool_call_id.or(started_tool_call_id);
+        let source = if descriptor.is_some() {
+            ParsedSubRunStatusSource::Durable
+        } else {
+            ParsedSubRunStatusSource::LegacyDurable
+        };
+
+        ParsedSubRunStatus {
+            handle: build_replayed_handle(
+                session_id,
+                sub_run_id,
+                &agent,
+                descriptor.as_ref(),
+                finished.as_ref(),
+            ),
+            descriptor,
+            tool_call_id,
+            source,
+            result: finished.as_ref().map(|(result, _, _)| result.clone()),
+            step_count: finished.as_ref().map(|(_, step_count, _)| *step_count),
+            estimated_tokens: finished
+                .as_ref()
+                .map(|(_, _, estimated_tokens)| *estimated_tokens),
+            resolved_overrides,
+            resolved_limits,
+        }
     })
 }
 
 fn build_replayed_handle(
     session_id: &str,
     sub_run_id: &str,
-    agent: AgentEventContext,
+    agent: &AgentEventContext,
+    descriptor: Option<&SubRunDescriptor>,
     finished: Option<&(SubRunResult, u32, u64)>,
 ) -> SubRunHandle {
+    let sub_run_id = descriptor
+        .map(|item| item.sub_run_id.clone())
+        .unwrap_or_else(|| sub_run_id.to_string());
+    // legacy durable 回放缺少 descriptor 时，不能再伪造 lineage 字段。
+    let parent_turn_id = descriptor.map(|item| item.parent_turn_id.clone());
+    let parent_agent_id = descriptor.and_then(|item| item.parent_agent_id.clone());
+    let depth = descriptor.map(|item| item.depth).unwrap_or(0);
+
     SubRunHandle {
-        sub_run_id: sub_run_id.to_string(),
+        sub_run_id,
         agent_id: agent
             .agent_id
+            .clone()
             .unwrap_or_else(|| "unknown-agent".to_string()),
         session_id: session_id.to_string(),
         child_session_id: agent.child_session_id.clone(),
-        depth: 1,
-        parent_turn_id: agent.parent_turn_id.clone(),
-        parent_agent_id: None,
+        depth,
+        parent_turn_id,
+        parent_agent_id,
         agent_profile: agent
             .agent_profile
+            .clone()
             .unwrap_or_else(|| "unknown-profile".to_string()),
         storage_mode: agent
             .storage_mode
@@ -126,12 +375,17 @@ fn status_from_result(result: &SubRunResult) -> AgentStatus {
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        AgentEventContext, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-        StorageEvent, StoredEvent, SubRunHandle, SubRunHandoff, SubRunOutcome, SubRunResult,
-        SubRunStorageMode,
+        AgentEventContext, AgentStatus, ResolvedExecutionLimitsSnapshot,
+        ResolvedSubagentContextOverrides, StorageEvent, StoredEvent, SubRunDescriptor,
+        SubRunHandle, SubRunHandoff, SubRunOutcome, SubRunResult, SubRunStorageMode,
     };
 
-    use super::{find_subrun_status_in_events, snapshot_from_active_handle};
+    use super::{
+        CancelSubRunResolution, ParsedSubRunStatus, ParsedSubRunStatusSource,
+        build_subrun_finished_event, build_subrun_started_event, find_subrun_status_in_events,
+        overlay_live_snapshot_on_durable, resolve_cancel_subrun_resolution,
+        resolve_subrun_status_snapshot, snapshot_from_active_handle,
+    };
 
     #[test]
     fn snapshot_from_active_handle_keeps_fast_path_shape() {
@@ -151,6 +405,14 @@ mod tests {
         let snapshot = snapshot_from_active_handle(handle.clone());
 
         assert_eq!(snapshot.handle, handle);
+        assert_eq!(snapshot.source, ParsedSubRunStatusSource::Live);
+        assert_eq!(
+            snapshot
+                .descriptor
+                .as_ref()
+                .map(|item| item.parent_turn_id.as_str()),
+            Some("turn-1")
+        );
         assert!(snapshot.result.is_none());
         assert!(snapshot.step_count.is_none());
         assert!(snapshot.estimated_tokens.is_none());
@@ -192,6 +454,8 @@ mod tests {
                 event: StorageEvent::SubRunStarted {
                     turn_id: Some("turn-1".to_string()),
                     agent: agent.clone(),
+                    descriptor: None,
+                    tool_call_id: None,
                     resolved_overrides: overrides.clone(),
                     resolved_limits: limits.clone(),
                     timestamp: None,
@@ -202,6 +466,8 @@ mod tests {
                 event: StorageEvent::SubRunFinished {
                     turn_id: Some("turn-1".to_string()),
                     agent,
+                    descriptor: None,
+                    tool_call_id: None,
                     result: result.clone(),
                     step_count: 2,
                     estimated_tokens: 123,
@@ -237,6 +503,290 @@ mod tests {
         assert_eq!(snapshot.estimated_tokens, Some(123));
         assert_eq!(snapshot.resolved_overrides, Some(overrides));
         assert_eq!(snapshot.resolved_limits, Some(limits));
+        assert_eq!(snapshot.source, ParsedSubRunStatusSource::LegacyDurable);
+        assert_eq!(snapshot.handle.depth, 0);
+        assert!(snapshot.handle.parent_turn_id.is_none());
+        assert!(snapshot.handle.parent_agent_id.is_none());
+        assert!(snapshot.descriptor.is_none());
+        assert!(snapshot.tool_call_id.is_none());
+    }
+
+    #[test]
+    fn find_subrun_status_in_events_rebuilds_started_only_snapshot() {
+        let agent = AgentEventContext::sub_run(
+            "agent-1".to_string(),
+            "turn-1".to_string(),
+            "review".to_string(),
+            "subrun-1".to_string(),
+            SubRunStorageMode::SharedSession,
+            None,
+        );
+        let overrides = ResolvedSubagentContextOverrides::default();
+        let limits = ResolvedExecutionLimitsSnapshot {
+            max_steps: Some(5),
+            token_budget: Some(3000),
+            allowed_tools: vec!["readFile".to_string(), "grep".to_string()],
+        };
+        let events = vec![StoredEvent {
+            storage_seq: 1,
+            event: StorageEvent::SubRunStarted {
+                turn_id: Some("turn-1".to_string()),
+                agent,
+                descriptor: None,
+                tool_call_id: None,
+                resolved_overrides: overrides.clone(),
+                resolved_limits: limits.clone(),
+                timestamp: None,
+            },
+        }];
+
+        let snapshot =
+            find_subrun_status_in_events(&events, "session-1", "subrun-1").expect("snapshot");
+
+        assert_eq!(snapshot.handle.status, AgentStatus::Pending);
+        assert!(snapshot.result.is_none());
+        assert!(snapshot.step_count.is_none());
+        assert!(snapshot.estimated_tokens.is_none());
+        assert_eq!(snapshot.resolved_overrides, Some(overrides));
+        assert_eq!(snapshot.resolved_limits, Some(limits));
+        assert_eq!(snapshot.source, ParsedSubRunStatusSource::LegacyDurable);
+        assert_eq!(snapshot.handle.depth, 0);
+        assert!(snapshot.handle.parent_turn_id.is_none());
+        assert!(snapshot.handle.parent_agent_id.is_none());
+    }
+
+    #[test]
+    fn find_subrun_status_in_events_uses_finished_event_without_start() {
+        let result = SubRunResult {
+            status: SubRunOutcome::TokenExceeded,
+            handoff: None,
+            failure: None,
+        };
+        let events = vec![StoredEvent {
+            storage_seq: 1,
+            event: StorageEvent::SubRunFinished {
+                turn_id: Some("turn-2".to_string()),
+                agent: AgentEventContext::sub_run(
+                    "agent-2".to_string(),
+                    "turn-2".to_string(),
+                    "plan".to_string(),
+                    "subrun-2".to_string(),
+                    SubRunStorageMode::IndependentSession,
+                    Some("child-2".to_string()),
+                ),
+                descriptor: None,
+                tool_call_id: None,
+                result: result.clone(),
+                step_count: 7,
+                estimated_tokens: 321,
+                timestamp: None,
+            },
+        }];
+
+        let snapshot =
+            find_subrun_status_in_events(&events, "session-2", "subrun-2").expect("snapshot");
+
+        assert_eq!(snapshot.handle.agent_profile, "plan");
+        assert_eq!(snapshot.handle.child_session_id.as_deref(), Some("child-2"));
+        assert_eq!(
+            snapshot.handle.storage_mode,
+            SubRunStorageMode::IndependentSession
+        );
+        assert_eq!(snapshot.handle.status, AgentStatus::Completed);
+        assert_eq!(snapshot.result, Some(result));
+        assert_eq!(snapshot.step_count, Some(7));
+        assert_eq!(snapshot.estimated_tokens, Some(321));
+        assert!(snapshot.resolved_overrides.is_none());
+        assert!(snapshot.resolved_limits.is_none());
+        assert_eq!(snapshot.source, ParsedSubRunStatusSource::LegacyDurable);
+        assert_eq!(snapshot.handle.depth, 0);
+        assert!(snapshot.handle.parent_turn_id.is_none());
+        assert!(snapshot.handle.parent_agent_id.is_none());
+    }
+
+    #[test]
+    fn find_subrun_status_in_events_maps_parent_abort_to_cancelled_status() {
+        let agent = AgentEventContext::sub_run(
+            "agent-abort".to_string(),
+            "turn-parent".to_string(),
+            "review".to_string(),
+            "subrun-abort".to_string(),
+            SubRunStorageMode::IndependentSession,
+            Some("child-abort".to_string()),
+        );
+        let events = vec![
+            StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent::SubRunStarted {
+                    turn_id: Some("turn-parent".to_string()),
+                    agent: agent.clone(),
+                    descriptor: None,
+                    tool_call_id: None,
+                    resolved_overrides: ResolvedSubagentContextOverrides::default(),
+                    resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+                    timestamp: None,
+                },
+            },
+            StoredEvent {
+                storage_seq: 2,
+                event: StorageEvent::SubRunFinished {
+                    turn_id: Some("turn-parent".to_string()),
+                    agent,
+                    descriptor: None,
+                    tool_call_id: None,
+                    result: SubRunResult {
+                        status: SubRunOutcome::Aborted,
+                        handoff: None,
+                        failure: None,
+                    },
+                    step_count: 1,
+                    estimated_tokens: 20,
+                    timestamp: None,
+                },
+            },
+        ];
+
+        let snapshot = find_subrun_status_in_events(&events, "session-abort", "subrun-abort")
+            .expect("snapshot should exist");
+
+        assert_eq!(snapshot.handle.status, AgentStatus::Cancelled);
+        assert_eq!(
+            snapshot.handle.storage_mode,
+            SubRunStorageMode::IndependentSession
+        );
+        assert_eq!(
+            snapshot.result.as_ref().map(|item| item.status.clone()),
+            Some(SubRunOutcome::Aborted)
+        );
+        assert_eq!(snapshot.source, ParsedSubRunStatusSource::LegacyDurable);
+    }
+
+    #[test]
+    fn find_subrun_status_in_events_uses_durable_descriptor_and_tool_call_id() {
+        let descriptor = astrcode_core::SubRunDescriptor {
+            sub_run_id: "subrun-3".to_string(),
+            parent_turn_id: "turn-parent".to_string(),
+            parent_agent_id: Some("agent-parent".to_string()),
+            depth: 3,
+        };
+        let events = vec![StoredEvent {
+            storage_seq: 1,
+            event: StorageEvent::SubRunFinished {
+                turn_id: Some("turn-parent".to_string()),
+                agent: AgentEventContext::sub_run(
+                    "agent-3".to_string(),
+                    "turn-parent".to_string(),
+                    "review".to_string(),
+                    "subrun-3".to_string(),
+                    SubRunStorageMode::SharedSession,
+                    None,
+                ),
+                descriptor: Some(descriptor.clone()),
+                tool_call_id: Some("call-3".to_string()),
+                result: SubRunResult {
+                    status: SubRunOutcome::Completed,
+                    handoff: None,
+                    failure: None,
+                },
+                step_count: 1,
+                estimated_tokens: 12,
+                timestamp: None,
+            },
+        }];
+
+        let snapshot =
+            find_subrun_status_in_events(&events, "session-3", "subrun-3").expect("snapshot");
+
+        assert_eq!(snapshot.source, ParsedSubRunStatusSource::Durable);
+        assert_eq!(snapshot.descriptor, Some(descriptor));
+        assert_eq!(snapshot.tool_call_id.as_deref(), Some("call-3"));
+        assert_eq!(snapshot.handle.depth, 3);
+        assert_eq!(
+            snapshot.handle.parent_turn_id.as_deref(),
+            Some("turn-parent")
+        );
+        assert_eq!(
+            snapshot.handle.parent_agent_id.as_deref(),
+            Some("agent-parent")
+        );
+    }
+
+    #[test]
+    fn overlay_live_snapshot_on_durable_prefers_live_lineage_fields() {
+        let live = ParsedSubRunStatus {
+            handle: SubRunHandle {
+                sub_run_id: "subrun-1".to_string(),
+                agent_id: "agent-live".to_string(),
+                session_id: "session-child".to_string(),
+                child_session_id: Some("session-child".to_string()),
+                depth: 1,
+                parent_turn_id: Some("turn-live".to_string()),
+                parent_agent_id: Some("agent-root-live".to_string()),
+                agent_profile: "review".to_string(),
+                storage_mode: SubRunStorageMode::IndependentSession,
+                status: AgentStatus::Running,
+            },
+            descriptor: Some(SubRunDescriptor {
+                sub_run_id: "subrun-1".to_string(),
+                parent_turn_id: "turn-live".to_string(),
+                parent_agent_id: Some("agent-root-live".to_string()),
+                depth: 1,
+            }),
+            tool_call_id: Some("call-live".to_string()),
+            source: ParsedSubRunStatusSource::Live,
+            result: None,
+            step_count: None,
+            estimated_tokens: None,
+            resolved_overrides: None,
+            resolved_limits: None,
+        };
+        let durable = ParsedSubRunStatus {
+            handle: SubRunHandle {
+                sub_run_id: "subrun-1".to_string(),
+                agent_id: "agent-durable".to_string(),
+                session_id: "session-parent".to_string(),
+                child_session_id: Some("session-child".to_string()),
+                depth: 1,
+                parent_turn_id: Some("turn-durable".to_string()),
+                parent_agent_id: Some("agent-root-durable".to_string()),
+                agent_profile: "review".to_string(),
+                storage_mode: SubRunStorageMode::IndependentSession,
+                status: AgentStatus::Completed,
+            },
+            descriptor: Some(SubRunDescriptor {
+                sub_run_id: "subrun-1".to_string(),
+                parent_turn_id: "turn-durable".to_string(),
+                parent_agent_id: Some("agent-root-durable".to_string()),
+                depth: 1,
+            }),
+            tool_call_id: Some("call-durable".to_string()),
+            source: ParsedSubRunStatusSource::Durable,
+            result: Some(SubRunResult {
+                status: SubRunOutcome::Completed,
+                handoff: None,
+                failure: None,
+            }),
+            step_count: Some(5),
+            estimated_tokens: Some(256),
+            resolved_overrides: Some(ResolvedSubagentContextOverrides::default()),
+            resolved_limits: Some(ResolvedExecutionLimitsSnapshot::default()),
+        };
+
+        let merged = overlay_live_snapshot_on_durable(live, durable);
+
+        assert_eq!(merged.source, ParsedSubRunStatusSource::Live);
+        assert_eq!(merged.handle.session_id, "session-parent");
+        assert_eq!(merged.handle.status, AgentStatus::Running);
+        assert_eq!(
+            merged
+                .descriptor
+                .as_ref()
+                .map(|item| item.parent_turn_id.as_str()),
+            Some("turn-live")
+        );
+        assert_eq!(merged.tool_call_id.as_deref(), Some("call-live"));
+        assert_eq!(merged.step_count, Some(5));
+        assert_eq!(merged.estimated_tokens, Some(256));
     }
 
     #[test]
@@ -253,6 +803,8 @@ mod tests {
                     SubRunStorageMode::SharedSession,
                     None,
                 ),
+                descriptor: None,
+                tool_call_id: None,
                 resolved_overrides: ResolvedSubagentContextOverrides::default(),
                 resolved_limits: ResolvedExecutionLimitsSnapshot {
                     max_steps: Some(1),
@@ -264,5 +816,167 @@ mod tests {
         };
 
         assert!(find_subrun_status_in_events(&[unrelated], "session-1", "subrun-1").is_none());
+    }
+
+    #[test]
+    fn subrun_lifecycle_event_builders_reuse_handle_descriptor_fields() {
+        let handle = SubRunHandle {
+            sub_run_id: "subrun-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            session_id: "session-1".to_string(),
+            child_session_id: Some("child-1".to_string()),
+            depth: 2,
+            parent_turn_id: Some("turn-parent".to_string()),
+            parent_agent_id: Some("agent-parent".to_string()),
+            agent_profile: "review".to_string(),
+            storage_mode: SubRunStorageMode::IndependentSession,
+            status: AgentStatus::Running,
+        };
+        let agent = AgentEventContext::sub_run(
+            "agent-1".to_string(),
+            "turn-parent".to_string(),
+            "review".to_string(),
+            "subrun-1".to_string(),
+            SubRunStorageMode::IndependentSession,
+            Some("child-1".to_string()),
+        );
+        let started = build_subrun_started_event(
+            "turn-parent",
+            agent.clone(),
+            &handle,
+            Some("call-1".to_string()),
+            ResolvedSubagentContextOverrides::default(),
+            ResolvedExecutionLimitsSnapshot::default(),
+        );
+        let finished = build_subrun_finished_event(
+            "turn-parent",
+            agent,
+            &handle,
+            Some("call-1".to_string()),
+            SubRunResult {
+                status: SubRunOutcome::Completed,
+                handoff: None,
+                failure: None,
+            },
+            3,
+            42,
+        );
+
+        match started {
+            StorageEvent::SubRunStarted { descriptor, .. } => {
+                assert_eq!(descriptor.expect("descriptor").depth, 2);
+            },
+            _ => panic!("expected subrun started event"),
+        }
+        match finished {
+            StorageEvent::SubRunFinished {
+                descriptor,
+                step_count,
+                estimated_tokens,
+                ..
+            } => {
+                assert_eq!(
+                    descriptor.expect("descriptor").parent_turn_id,
+                    "turn-parent"
+                );
+                assert_eq!(step_count, 3);
+                assert_eq!(estimated_tokens, 42);
+            },
+            _ => panic!("expected subrun finished event"),
+        }
+    }
+
+    #[test]
+    fn resolve_subrun_status_snapshot_prefers_owned_live_handle() {
+        let live = snapshot_from_active_handle(SubRunHandle {
+            sub_run_id: "subrun-1".to_string(),
+            agent_id: "agent-live".to_string(),
+            session_id: "session-1".to_string(),
+            child_session_id: None,
+            depth: 1,
+            parent_turn_id: Some("turn-1".to_string()),
+            parent_agent_id: None,
+            agent_profile: "review".to_string(),
+            storage_mode: SubRunStorageMode::SharedSession,
+            status: AgentStatus::Running,
+        });
+        let durable = ParsedSubRunStatus {
+            handle: SubRunHandle {
+                status: AgentStatus::Completed,
+                ..live.handle.clone()
+            },
+            source: ParsedSubRunStatusSource::Durable,
+            result: Some(SubRunResult {
+                status: SubRunOutcome::Completed,
+                handoff: None,
+                failure: None,
+            }),
+            step_count: Some(4),
+            estimated_tokens: Some(21),
+            resolved_overrides: None,
+            resolved_limits: None,
+            descriptor: live.descriptor.clone(),
+            tool_call_id: Some("call-1".to_string()),
+        };
+
+        let resolved = resolve_subrun_status_snapshot(
+            "session-1",
+            Some(live.handle.clone()),
+            Some(durable),
+            str::to_string,
+        )
+        .expect("snapshot should resolve");
+
+        assert_eq!(resolved.source, ParsedSubRunStatusSource::Live);
+        assert_eq!(resolved.handle.status, AgentStatus::Running);
+        assert_eq!(resolved.step_count, Some(4));
+    }
+
+    #[test]
+    fn resolve_cancel_subrun_resolution_distinguishes_live_and_finalized_states() {
+        let live = SubRunHandle {
+            sub_run_id: "subrun-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            session_id: "session-1".to_string(),
+            child_session_id: None,
+            depth: 1,
+            parent_turn_id: Some("turn-1".to_string()),
+            parent_agent_id: None,
+            agent_profile: "review".to_string(),
+            storage_mode: SubRunStorageMode::SharedSession,
+            status: AgentStatus::Running,
+        };
+        let durable = ParsedSubRunStatus {
+            handle: SubRunHandle {
+                status: AgentStatus::Completed,
+                ..live.clone()
+            },
+            source: ParsedSubRunStatusSource::Durable,
+            result: None,
+            step_count: None,
+            estimated_tokens: None,
+            resolved_overrides: None,
+            resolved_limits: None,
+            descriptor: None,
+            tool_call_id: None,
+        };
+
+        assert_eq!(
+            resolve_cancel_subrun_resolution(
+                "session-1",
+                Some(&live),
+                Some(&durable),
+                str::to_string,
+            ),
+            CancelSubRunResolution::CancelLive
+        );
+        assert_eq!(
+            resolve_cancel_subrun_resolution("session-2", None, Some(&durable), str::to_string,),
+            CancelSubRunResolution::AlreadyFinalized
+        );
+        assert_eq!(
+            resolve_cancel_subrun_resolution("session-2", None, None, str::to_string,),
+            CancelSubRunResolution::Missing
+        );
     }
 }

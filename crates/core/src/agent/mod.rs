@@ -311,6 +311,19 @@ pub struct ResolvedExecutionLimitsSnapshot {
     pub allowed_tools: Vec<String>,
 }
 
+/// 子执行 lineage 的稳定描述。
+///
+/// 与运行态 `SubRunHandle` 区分：该结构只承载 durable 事实，不包含状态字段。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubRunDescriptor {
+    pub sub_run_id: String,
+    pub parent_turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<String>,
+    pub depth: usize,
+}
+
 /// Agent 画像定义。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -373,6 +386,23 @@ pub struct SubRunHandle {
     pub storage_mode: SubRunStorageMode,
     /// 当前状态。
     pub status: AgentStatus,
+}
+
+impl SubRunHandle {
+    /// 将运行句柄转换为 lineage descriptor（若 parent turn 可用）。
+    ///
+    /// descriptor 只表达 ownership，不携带运行态 status；
+    /// SharedSession/IndependentSession 的差异不会改变该语义。
+    pub fn descriptor(&self) -> Option<SubRunDescriptor> {
+        self.parent_turn_id
+            .as_ref()
+            .map(|parent_turn_id| SubRunDescriptor {
+                sub_run_id: self.sub_run_id.clone(),
+                parent_turn_id: parent_turn_id.clone(),
+                parent_agent_id: self.parent_agent_id.clone(),
+                depth: self.depth,
+            })
+    }
 }
 
 /// turn 级事件的 Agent 元数据。

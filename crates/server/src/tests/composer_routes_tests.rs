@@ -20,7 +20,8 @@ async fn composer_options_require_authentication() {
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let session = state
         .service
-        .create_session(temp_dir.path())
+        .sessions()
+        .create(temp_dir.path())
         .await
         .expect("session should be created");
     let app = build_api_router().with_state(state);
@@ -47,7 +48,8 @@ async fn composer_options_expose_session_scoped_skill_entries() {
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let session = state
         .service
-        .create_session(temp_dir.path())
+        .sessions()
+        .create(temp_dir.path())
         .await
         .expect("session should be created");
     let app = build_api_router().with_state(state);
@@ -84,7 +86,8 @@ async fn composer_options_expose_runtime_command_entries() {
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let session = state
         .service
-        .create_session(temp_dir.path())
+        .sessions()
+        .create(temp_dir.path())
         .await
         .expect("session should be created");
     let app = build_api_router().with_state(state);
@@ -117,7 +120,8 @@ async fn composer_options_reject_unknown_kind_filters() {
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let session = state
         .service
-        .create_session(temp_dir.path())
+        .sessions()
+        .create(temp_dir.path())
         .await
         .expect("session should be created");
     let app = build_api_router().with_state(state);

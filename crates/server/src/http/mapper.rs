@@ -22,9 +22,9 @@
 use astrcode_core::{
     AgentEvent, AgentEventContext, ArtifactRef, AstrError, CapabilityDescriptor, ForkMode, Phase,
     PluginHealth, PluginState, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    SessionEventRecord, SessionMeta, SubRunFailure, SubRunFailureCode, SubRunHandoff,
-    SubRunOutcome, SubRunResult, SubRunStorageMode, SubagentContextOverrides, format_local_rfc3339,
-    plugin::PluginEntry,
+    SessionEventRecord, SessionMeta, SubRunDescriptor, SubRunFailure, SubRunFailureCode,
+    SubRunHandoff, SubRunOutcome, SubRunResult, SubRunStorageMode, SubagentContextOverrides,
+    format_local_rfc3339, plugin::PluginEntry,
 };
 use astrcode_protocol::http::{
     AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentProfileDto, ArtifactRefDto,
@@ -33,17 +33,18 @@ use astrcode_protocol::http::{
     OperationMetricsDto, PROTOCOL_VERSION, PhaseDto, PluginHealthDto, PluginRuntimeStateDto,
     ProfileView, ReplayMetricsDto, ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto,
     RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto,
-    SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem,
+    SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem, SubRunDescriptorDto,
     SubRunExecutionMetricsDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
-    SubRunOutcomeDto, SubRunResultDto, SubRunStatusDto, SubRunStorageModeDto,
-    SubagentContextOverridesDto, ToolCallResultDto, ToolDescriptorDto, ToolOutputStreamDto,
+    SubRunOutcomeDto, SubRunResultDto, SubRunStatusDto, SubRunStatusSourceDto,
+    SubRunStorageModeDto, SubagentContextOverridesDto, ToolCallResultDto, ToolDescriptorDto,
+    ToolOutputStreamDto,
 };
 use astrcode_runtime::{
     AgentProfileSummary, ComposerOption, ComposerOptionKind, Config, OperationMetricsSnapshot,
     ReplayMetricsSnapshot, RuntimeGovernanceSnapshot, RuntimeObservabilitySnapshot,
-    SessionCatalogEvent, SubRunExecutionMetricsSnapshot, SubRunStatusSnapshot, ToolSummary,
-    is_env_var_name, list_model_options as resolve_model_options, resolve_active_selection,
-    resolve_current_model as resolve_runtime_current_model,
+    SessionCatalogEvent, SubRunExecutionMetricsSnapshot, SubRunStatusSnapshot, SubRunStatusSource,
+    ToolSummary, is_env_var_name, list_model_options as resolve_model_options,
+    resolve_active_selection, resolve_current_model as resolve_runtime_current_model,
 };
 use axum::{http::StatusCode, response::sse::Event};
 
@@ -123,28 +124,51 @@ pub(crate) fn to_tool_descriptor_dto(tool: ToolSummary) -> ToolDescriptorDto {
 }
 
 pub(crate) fn to_subrun_status_dto(snapshot: SubRunStatusSnapshot) -> SubRunStatusDto {
+    let SubRunStatusSnapshot {
+        handle,
+        descriptor,
+        tool_call_id,
+        source,
+        result,
+        step_count,
+        estimated_tokens,
+        resolved_overrides,
+        resolved_limits,
+    } = snapshot;
+    let is_legacy_source = matches!(source, SubRunStatusSource::LegacyDurable);
+    let source = match source {
+        SubRunStatusSource::Live => SubRunStatusSourceDto::Live,
+        SubRunStatusSource::Durable => SubRunStatusSourceDto::Durable,
+        SubRunStatusSource::LegacyDurable => SubRunStatusSourceDto::LegacyDurable,
+    };
+    // Why: legacyDurable 只能表达“可读但 lineage 不完整”，不能把非 durable 事实伪装成完整字段。
+    let descriptor = if is_legacy_source { None } else { descriptor };
+    let tool_call_id = if is_legacy_source { None } else { tool_call_id };
+
     SubRunStatusDto {
-        sub_run_id: snapshot.handle.sub_run_id,
-        agent_id: snapshot.handle.agent_id,
-        agent_profile: snapshot.handle.agent_profile,
-        session_id: snapshot.handle.session_id,
-        child_session_id: snapshot.handle.child_session_id,
-        depth: snapshot.handle.depth,
-        parent_turn_id: snapshot.handle.parent_turn_id,
-        parent_agent_id: snapshot.handle.parent_agent_id,
-        storage_mode: to_subrun_storage_mode_dto(snapshot.handle.storage_mode),
-        status: match snapshot.handle.status {
+        sub_run_id: handle.sub_run_id,
+        descriptor: descriptor.map(to_subrun_descriptor_dto),
+        tool_call_id,
+        source,
+        agent_id: handle.agent_id,
+        agent_profile: handle.agent_profile,
+        session_id: handle.session_id,
+        child_session_id: handle.child_session_id,
+        depth: handle.depth,
+        parent_agent_id: handle.parent_agent_id,
+        storage_mode: to_subrun_storage_mode_dto(handle.storage_mode),
+        status: match handle.status {
             astrcode_core::AgentStatus::Pending => "pending".to_string(),
             astrcode_core::AgentStatus::Running => "running".to_string(),
             astrcode_core::AgentStatus::Completed => "completed".to_string(),
             astrcode_core::AgentStatus::Cancelled => "cancelled".to_string(),
             astrcode_core::AgentStatus::Failed => "failed".to_string(),
         },
-        result: snapshot.result.map(to_subrun_result_dto),
-        step_count: snapshot.step_count,
-        estimated_tokens: snapshot.estimated_tokens,
-        resolved_overrides: snapshot.resolved_overrides.map(to_resolved_overrides_dto),
-        resolved_limits: snapshot.resolved_limits.map(to_resolved_limits_dto),
+        result: result.map(to_subrun_result_dto),
+        step_count,
+        estimated_tokens,
+        resolved_overrides: resolved_overrides.map(to_resolved_overrides_dto),
+        resolved_limits: resolved_limits.map(to_resolved_limits_dto),
     }
 }
 
@@ -314,6 +338,15 @@ fn to_subrun_storage_mode_dto(mode: SubRunStorageMode) -> SubRunStorageModeDto {
     match mode {
         SubRunStorageMode::SharedSession => SubRunStorageModeDto::SharedSession,
         SubRunStorageMode::IndependentSession => SubRunStorageModeDto::IndependentSession,
+    }
+}
+
+fn to_subrun_descriptor_dto(descriptor: SubRunDescriptor) -> SubRunDescriptorDto {
+    SubRunDescriptorDto {
+        sub_run_id: descriptor.sub_run_id,
+        parent_turn_id: descriptor.parent_turn_id,
+        parent_agent_id: descriptor.parent_agent_id,
+        depth: descriptor.depth,
     }
 }
 
@@ -628,23 +661,31 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
         AgentEvent::SubRunStarted {
             turn_id,
             agent,
+            descriptor,
+            tool_call_id,
             resolved_overrides,
             resolved_limits,
         } => AgentEventPayload::SubRunStarted {
             turn_id,
             agent: to_agent_context_dto(agent),
+            descriptor: descriptor.map(to_subrun_descriptor_dto),
+            tool_call_id,
             resolved_overrides: to_resolved_overrides_dto(resolved_overrides),
             resolved_limits: to_resolved_limits_dto(resolved_limits),
         },
         AgentEvent::SubRunFinished {
             turn_id,
             agent,
+            descriptor,
+            tool_call_id,
             result,
             step_count,
             estimated_tokens,
         } => AgentEventPayload::SubRunFinished {
             turn_id,
             agent: to_agent_context_dto(agent),
+            descriptor: descriptor.map(to_subrun_descriptor_dto),
+            tool_call_id,
             result: to_subrun_result_dto(result),
             step_count,
             estimated_tokens,

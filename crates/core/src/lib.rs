@@ -50,8 +50,8 @@ pub use action::{
 pub use agent::{
     AgentEventContext, AgentMode, AgentProfile, AgentStatus, ArtifactRef, ForkMode, InvocationKind,
     ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SpawnAgentParams,
-    SubRunFailure, SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunOutcome, SubRunResult,
-    SubRunStorageMode, SubagentContextOverrides,
+    SubRunDescriptor, SubRunFailure, SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunOutcome,
+    SubRunResult, SubRunStorageMode, SubagentContextOverrides,
 };
 pub use cancel::CancelToken;
 pub use capability::{
@@ -80,7 +80,11 @@ pub use policy::{
 };
 pub use projection::{AgentState, AgentStateProjector, project};
 pub use registry::{CapabilityContext, CapabilityExecutionResult, CapabilityInvoker};
-pub use runtime::{ManagedRuntimeComponent, RuntimeCoordinator, RuntimeHandle};
+pub use runtime::{
+    ExecutionOrchestrationBoundary, LiveSubRunControlBoundary, LoopRunnerBoundary,
+    ManagedRuntimeComponent, PromptAccepted, RootExecutionAccepted, RuntimeCoordinator,
+    RuntimeHandle, SessionTruthBoundary,
+};
 pub use session::{DeleteProjectResult, SessionEventRecord, SessionMeta};
 pub use store::{
     EventLogWriter, SessionManager, SessionTurnAcquireResult, SessionTurnBusy, SessionTurnLease,

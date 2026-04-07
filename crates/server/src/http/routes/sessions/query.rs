@@ -22,7 +22,8 @@ pub(crate) async fn list_sessions(
     require_auth(&state, &headers, None)?;
     let sessions = state
         .service
-        .list_sessions_with_meta()
+        .sessions()
+        .list()
         .await
         .map_err(ApiError::from)?
         .into_iter()
@@ -42,10 +43,11 @@ pub(crate) async fn session_history(
     let filter_spec = SessionEventFilterSpec::from_query(filter_query)?;
     let snapshot = state
         .service
-        .load_session_history(&session_id)
+        .sessions()
+        .history(&session_id)
         .await
         .map_err(ApiError::from)?;
-    let history = filter_history(snapshot.history, filter_spec);
+    let history = filter_history(snapshot.history, filter_spec)?;
     let cursor = history.last().map(|record| record.event_id.clone());
 
     Ok(Json(SessionHistoryResponseDto {
@@ -61,14 +63,14 @@ pub(crate) async fn session_history(
 fn filter_history(
     history: Vec<astrcode_core::SessionEventRecord>,
     filter_spec: Option<SessionEventFilterSpec>,
-) -> Vec<astrcode_core::SessionEventRecord> {
+) -> Result<Vec<astrcode_core::SessionEventRecord>, ApiError> {
     let Some(filter_spec) = filter_spec else {
-        return history;
+        return Ok(history);
     };
 
-    let mut filter = SessionEventFilter::new(filter_spec);
-    history
+    let mut filter = SessionEventFilter::new(filter_spec, &history)?;
+    Ok(history
         .into_iter()
         .filter(|record| filter.matches(record))
-        .collect()
+        .collect())
 }

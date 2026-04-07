@@ -9,7 +9,8 @@ use astrcode_core::{
 use astrcode_runtime_agent_loop::{AgentLoop, ChildExecutionTracker, TurnOutcome};
 use astrcode_runtime_execution::{
     PreparedAgentExecution, build_background_subrun_handoff, build_child_agent_state,
-    build_subrun_failure, build_subrun_handoff, derive_child_execution_owner, ensure_subagent_mode,
+    build_subrun_failure, build_subrun_finished_event, build_subrun_handoff,
+    build_subrun_started_event, derive_child_execution_owner, ensure_subagent_mode,
 };
 use astrcode_runtime_session::{SessionState, SessionStateEventSink};
 
@@ -41,6 +42,7 @@ struct SpawnedSubagentExecution {
     child_cancel: CancelToken,
     child_storage_mode: SubRunStorageMode,
     parent_turn_id: String,
+    parent_tool_call_id: Option<String>,
     parent_event_sink: Arc<dyn ToolEventSink>,
     active_sink: Arc<dyn ToolEventSink>,
     resolved_overrides: ResolvedSubagentContextOverrides,
@@ -54,16 +56,20 @@ impl AgentExecutionServiceHandle {
         ctx: &ToolContext,
     ) -> ServiceResult<SubRunResult> {
         params.validate().map_err(ServiceError::from)?;
-        let profile = self.resolve_profile(&params)?;
+        let profile = self.resolve_profile(&params, ctx.working_dir()).await?;
         let parent = self.resolve_parent_execution(ctx).await?;
         self.launch_background(params, profile, parent, ctx).await
     }
 
-    fn resolve_profile(&self, params: &SpawnAgentParams) -> ServiceResult<AgentProfile> {
+    async fn resolve_profile(
+        &self,
+        params: &SpawnAgentParams,
+        working_dir: &std::path::Path,
+    ) -> ServiceResult<AgentProfile> {
         let profile_id = params.r#type.as_deref().unwrap_or("explore");
         let profile = self
-            .runtime
-            .agent_profiles()
+            .load_profiles_for_working_dir(working_dir)
+            .await?
             .get(profile_id)
             .cloned()
             .ok_or_else(|| {
@@ -171,7 +177,8 @@ impl AgentExecutionServiceHandle {
             SubRunStorageMode::SharedSession => None,
             SubRunStorageMode::IndependentSession => Some(
                 self.runtime
-                    .create_session(ctx.working_dir())
+                    .sessions()
+                    .create(ctx.working_dir())
                     .await
                     .map_err(|error| ServiceError::Conflict(error.to_string()))?,
             ),
@@ -239,6 +246,7 @@ impl AgentExecutionServiceHandle {
             child_cancel,
             child_storage_mode: prepared.child_storage_mode,
             parent_turn_id: parent.parent_turn_id.clone(),
+            parent_tool_call_id: ctx.tool_call_id().map(ToString::to_string),
             parent_event_sink,
             active_sink,
             resolved_overrides: prepared
@@ -275,16 +283,14 @@ impl AgentExecutionServiceHandle {
     }
 
     fn emit_child_started(&self, execution: &SpawnedSubagentExecution) -> ServiceResult<()> {
-        if let Err(error) = execution
-            .parent_event_sink
-            .emit(StorageEvent::SubRunStarted {
-                turn_id: Some(execution.parent_turn_id.clone()),
-                agent: execution.child_agent.clone(),
-                resolved_overrides: execution.resolved_overrides.clone(),
-                resolved_limits: execution.resolved_limits.clone(),
-                timestamp: Some(chrono::Utc::now()),
-            })
-        {
+        if let Err(error) = execution.parent_event_sink.emit(build_subrun_started_event(
+            &execution.parent_turn_id,
+            execution.child_agent.clone(),
+            &execution.child,
+            execution.parent_tool_call_id.clone(),
+            execution.resolved_overrides.clone(),
+            execution.resolved_limits.clone(),
+        )) {
             return Err(ServiceError::Internal(error));
         }
 
@@ -435,14 +441,15 @@ impl AgentExecutionServiceHandle {
 
         execution
             .parent_event_sink
-            .emit(StorageEvent::SubRunFinished {
-                turn_id: Some(execution.parent_turn_id),
-                agent: execution.child_agent,
-                result: result.clone(),
-                step_count: tracker.step_count(),
-                estimated_tokens: tracker.estimated_tokens_used(),
-                timestamp: Some(chrono::Utc::now()),
-            })?;
+            .emit(build_subrun_finished_event(
+                &execution.parent_turn_id,
+                execution.child_agent,
+                &execution.child,
+                execution.parent_tool_call_id,
+                result.clone(),
+                tracker.step_count(),
+                tracker.estimated_tokens_used(),
+            ))?;
 
         Ok(result)
     }

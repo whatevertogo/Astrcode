@@ -52,7 +52,7 @@
     "inheritWorkingDir": true
   },
   "resolvedLimits": {
-    "maxSteps": 64
+    "maxSteps": 128
   }
 }
 ```
@@ -117,4 +117,11 @@
 - `last-event-id` / `afterEventId` 只决定增量起点，不得改变 lineage 语义。
 - filtered SSE 的 initial replay 与 lag recovery 都必须复用同一个 lineage index 构建逻辑。
 - lag recovery 期间若发现 lineage 需要的 durable 事实缺失，必须发显式错误事件或直接失败，而不是回退到启发式过滤。
+
+## Implementation Checklist
+
+- [x] `/history` 与 `/events` 的 shared rules 明确要求同一 `SessionEventFilterSpec` 与 `ExecutionLineageIndex`。
+- [x] `scope=self/directChildren/subtree` 的行为和拒绝条件已显式定义。
+- [x] legacy 行为中 `scope=directChildren/subtree -> 409` 的约束已写入契约。
+- [x] lifecycle payload 示例与 `design-subrun-protocol.md` 的字段集合保持一致。
 

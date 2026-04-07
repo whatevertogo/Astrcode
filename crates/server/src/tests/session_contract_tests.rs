@@ -1,16 +1,23 @@
 use std::{net::TcpListener, sync::Arc, time::Duration};
 
-use astrcode_core::{PluginRegistry, RuntimeCoordinator, RuntimeHandle};
-use astrcode_protocol::http::{PromptAcceptedResponse, PromptRequest};
+use astrcode_core::{
+    AgentEventContext, EventLogWriter, PluginRegistry, RuntimeCoordinator, RuntimeHandle,
+    StorageEvent,
+};
+use astrcode_protocol::http::{
+    PromptAcceptedResponse, PromptRequest, SubRunStatusDto, SubRunStatusSourceDto,
+};
 use astrcode_runtime::{
     Config, ModelConfig, Profile, RuntimeConfig, RuntimeGovernance, RuntimeService,
     config::PROVIDER_KIND_OPENAI, save_config,
 };
 use astrcode_runtime_registry::CapabilityRouter;
+use astrcode_storage::session::EventLog;
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
+use chrono::Utc;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     task::JoinHandle,
@@ -23,6 +30,111 @@ use crate::{
     routes::build_api_router,
     test_support::{ServerTestEnvGuard, test_state},
 };
+
+// Why: 这些契约测试是 quickstart 验证矩阵中 scope 参数合法性与显式错误语义的
+// 稳定保障，防止 server 在重构后回退到隐式容错或启发式行为。
+
+fn seed_subrun_status_contract_session(session_id: &str, working_dir: &std::path::Path) {
+    let mut log =
+        EventLog::create(session_id, working_dir).expect("session file should be created");
+    let descriptor = astrcode_core::SubRunDescriptor {
+        sub_run_id: "subrun-contract".to_string(),
+        parent_turn_id: "turn-contract".to_string(),
+        parent_agent_id: Some("agent-parent".to_string()),
+        depth: 1,
+    };
+    let sub = AgentEventContext::sub_run(
+        "agent-contract",
+        "turn-contract",
+        "review",
+        "subrun-contract",
+        astrcode_core::SubRunStorageMode::SharedSession,
+        None,
+    );
+
+    for event in [
+        StorageEvent::SessionStart {
+            session_id: session_id.to_string(),
+            timestamp: Utc::now(),
+            working_dir: working_dir.display().to_string(),
+            parent_session_id: None,
+            parent_storage_seq: None,
+        },
+        StorageEvent::SubRunStarted {
+            turn_id: Some("turn-contract".to_string()),
+            agent: sub.clone(),
+            descriptor: Some(descriptor.clone()),
+            tool_call_id: Some("call-contract".to_string()),
+            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+            timestamp: Some(Utc::now()),
+        },
+        StorageEvent::SubRunFinished {
+            turn_id: Some("turn-contract".to_string()),
+            agent: sub,
+            descriptor: Some(descriptor),
+            tool_call_id: Some("call-contract".to_string()),
+            result: astrcode_core::SubRunResult {
+                status: astrcode_core::SubRunOutcome::Completed,
+                handoff: None,
+                failure: None,
+            },
+            step_count: 1,
+            estimated_tokens: 42,
+            timestamp: Some(Utc::now()),
+        },
+    ] {
+        log.append(&event).expect("event should append");
+    }
+}
+
+fn seed_legacy_subrun_status_contract_session(session_id: &str, working_dir: &std::path::Path) {
+    let mut log =
+        EventLog::create(session_id, working_dir).expect("session file should be created");
+    let sub = AgentEventContext::sub_run(
+        "agent-legacy-contract",
+        "turn-legacy-contract",
+        "review",
+        "subrun-legacy-contract",
+        astrcode_core::SubRunStorageMode::SharedSession,
+        None,
+    );
+
+    for event in [
+        StorageEvent::SessionStart {
+            session_id: session_id.to_string(),
+            timestamp: Utc::now(),
+            working_dir: working_dir.display().to_string(),
+            parent_session_id: None,
+            parent_storage_seq: None,
+        },
+        StorageEvent::SubRunStarted {
+            turn_id: Some("turn-legacy-contract".to_string()),
+            agent: sub.clone(),
+            descriptor: None,
+            tool_call_id: Some("call-legacy-contract".to_string()),
+            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+            timestamp: Some(Utc::now()),
+        },
+        StorageEvent::SubRunFinished {
+            turn_id: Some("turn-legacy-contract".to_string()),
+            agent: sub,
+            descriptor: None,
+            tool_call_id: Some("call-legacy-contract".to_string()),
+            result: astrcode_core::SubRunResult {
+                status: astrcode_core::SubRunOutcome::Completed,
+                handoff: None,
+                failure: None,
+            },
+            step_count: 1,
+            estimated_tokens: 21,
+            timestamp: Some(Utc::now()),
+        },
+    ] {
+        log.append(&event).expect("event should append");
+    }
+}
 
 fn configured_state_with_openai_server(base_url: &str) -> (AppState, ServerTestEnvGuard) {
     let guard = ServerTestEnvGuard::new();
@@ -150,7 +262,8 @@ async fn submit_prompt_contract_returns_accepted_shape() {
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
         .service
-        .create_session(temp_dir.path())
+        .sessions()
+        .create(temp_dir.path())
         .await
         .expect("session should be created");
     let app = build_api_router().with_state(state);
@@ -192,7 +305,8 @@ async fn compact_session_contract_returns_conflict_for_busy_session() {
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
         .service
-        .create_session(temp_dir.path())
+        .sessions()
+        .create(temp_dir.path())
         .await
         .expect("session should be created");
     let app = build_api_router().with_state(state);
@@ -241,7 +355,8 @@ async fn interrupt_contract_returns_no_content_for_running_session() {
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
         .service
-        .create_session(temp_dir.path())
+        .sessions()
+        .create(temp_dir.path())
         .await
         .expect("session should be created");
     let app = build_api_router().with_state(state);
@@ -301,7 +416,8 @@ async fn subrun_status_contract_returns_not_found_for_missing_subrun() {
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
         .service
-        .create_session(temp_dir.path())
+        .sessions()
+        .create(temp_dir.path())
         .await
         .expect("session should be created");
     let app = build_api_router().with_state(state);
@@ -324,12 +440,84 @@ async fn subrun_status_contract_returns_not_found_for_missing_subrun() {
 }
 
 #[tokio::test]
+async fn subrun_status_contract_returns_expected_payload_shape() {
+    let (state, _guard) = test_state(None);
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    seed_subrun_status_contract_session("subrun-contract-session", temp_dir.path());
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/sessions/subrun-contract-session/subruns/subrun-contract")
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: SubRunStatusDto = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable"),
+    )
+    .expect("payload should deserialize");
+    assert_eq!(payload.sub_run_id, "subrun-contract");
+    assert_eq!(payload.source, SubRunStatusSourceDto::Durable);
+    assert_eq!(payload.status, "completed");
+    assert_eq!(payload.step_count, Some(1));
+    assert_eq!(payload.estimated_tokens, Some(42));
+    assert!(payload.descriptor.is_some());
+    assert_eq!(payload.tool_call_id.as_deref(), Some("call-contract"));
+}
+
+#[tokio::test]
+async fn subrun_status_contract_downgrades_legacy_durable_payload_shape() {
+    let (state, _guard) = test_state(None);
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    seed_legacy_subrun_status_contract_session("subrun-legacy-contract-session", temp_dir.path());
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(
+                    "/api/v1/sessions/subrun-legacy-contract-session/subruns/\
+                     subrun-legacy-contract",
+                )
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: SubRunStatusDto = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable"),
+    )
+    .expect("payload should deserialize");
+
+    assert_eq!(payload.source, SubRunStatusSourceDto::LegacyDurable);
+    assert_eq!(payload.status, "completed");
+    assert_eq!(payload.depth, 0);
+    assert!(payload.descriptor.is_none());
+    assert!(payload.tool_call_id.is_none());
+    assert!(payload.parent_agent_id.is_none());
+}
+
+#[tokio::test]
 async fn subrun_cancel_contract_returns_not_found_for_missing_subrun() {
     let (state, _guard) = test_state(None);
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
         .service
-        .create_session(temp_dir.path())
+        .sessions()
+        .create(temp_dir.path())
         .await
         .expect("session should be created");
     let app = build_api_router().with_state(state);
@@ -377,7 +565,8 @@ async fn session_history_contract_rejects_scope_without_subrun_id() {
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
         .service
-        .create_session(temp_dir.path())
+        .sessions()
+        .create(temp_dir.path())
         .await
         .expect("session should be created");
     let app = build_api_router().with_state(state);
@@ -405,7 +594,8 @@ async fn session_events_contract_rejects_scope_without_subrun_id() {
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
         .service
-        .create_session(temp_dir.path())
+        .sessions()
+        .create(temp_dir.path())
         .await
         .expect("session should be created");
     let app = build_api_router().with_state(state);
@@ -425,6 +615,54 @@ async fn session_events_contract_rejects_scope_without_subrun_id() {
         .expect("response should be returned");
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn session_history_contract_rejects_legacy_subtree_scope_with_conflict() {
+    let (state, _guard) = test_state(None);
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    seed_legacy_subrun_status_contract_session("legacy-history-contract-session", temp_dir.path());
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(
+                    "/api/sessions/legacy-history-contract-session/history?\
+                     subRunId=subrun-legacy-contract&scope=subtree",
+                )
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn session_events_contract_rejects_legacy_direct_children_scope_with_conflict() {
+    let (state, _guard) = test_state(None);
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    seed_legacy_subrun_status_contract_session("legacy-events-contract-session", temp_dir.path());
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(
+                    "/api/sessions/legacy-events-contract-session/events?\
+                     subRunId=subrun-legacy-contract&scope=directChildren",
+                )
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
 }
 
 #[tokio::test]
@@ -452,7 +690,8 @@ async fn subrun_cancel_contract_rejects_invalid_subrun_id_format() {
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
         .service
-        .create_session(temp_dir.path())
+        .sessions()
+        .create(temp_dir.path())
         .await
         .expect("session should be created");
     let app = build_api_router().with_state(state);
@@ -473,4 +712,149 @@ async fn subrun_cancel_contract_rejects_invalid_subrun_id_format() {
         .expect("response should be returned");
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+// ============================================================================
+// Scope Filter Contract Tests (T029 - Additional Coverage)
+// ============================================================================
+
+fn seed_nested_subrun_hierarchy(session_id: &str, working_dir: &std::path::Path) {
+    // Why: 创建一个三层嵌套的子执行层级用于测试 scope 过滤语义
+    // root -> sub-level1 -> sub-level2 -> sub-level3
+    let mut log =
+        EventLog::create(session_id, working_dir).expect("session file should be created");
+
+    let root = AgentEventContext::root_execution("agent-root", "primary");
+    let sub1 = AgentEventContext::sub_run(
+        "agent-level1",
+        "turn-root",
+        "review",
+        "sub-level1",
+        astrcode_core::SubRunStorageMode::SharedSession,
+        None,
+    );
+    let sub2 = AgentEventContext::sub_run(
+        "agent-level2",
+        "turn-level1",
+        "review",
+        "sub-level2",
+        astrcode_core::SubRunStorageMode::SharedSession,
+        None,
+    );
+    let sub3 = AgentEventContext::sub_run(
+        "agent-level3",
+        "turn-level2",
+        "review",
+        "sub-level3",
+        astrcode_core::SubRunStorageMode::SharedSession,
+        None,
+    );
+
+    for event in [
+        StorageEvent::SessionStart {
+            session_id: session_id.to_string(),
+            timestamp: Utc::now(),
+            working_dir: working_dir.display().to_string(),
+            parent_session_id: None,
+            parent_storage_seq: None,
+        },
+        StorageEvent::UserMessage {
+            turn_id: Some("turn-root".to_string()),
+            agent: root,
+            content: "root message".to_string(),
+            origin: astrcode_core::UserMessageOrigin::User,
+            timestamp: Utc::now(),
+        },
+        StorageEvent::SubRunStarted {
+            turn_id: Some("turn-root".to_string()),
+            agent: sub1.clone(),
+            descriptor: Some(astrcode_core::SubRunDescriptor {
+                sub_run_id: "sub-level1".to_string(),
+                parent_turn_id: "turn-root".to_string(),
+                parent_agent_id: Some("agent-root".to_string()),
+                depth: 1,
+            }),
+            tool_call_id: Some("call-1".to_string()),
+            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+            timestamp: Some(Utc::now()),
+        },
+        StorageEvent::UserMessage {
+            turn_id: Some("turn-level1".to_string()),
+            agent: sub1,
+            content: "level1 message".to_string(),
+            origin: astrcode_core::UserMessageOrigin::User,
+            timestamp: Utc::now(),
+        },
+        StorageEvent::SubRunStarted {
+            turn_id: Some("turn-level1".to_string()),
+            agent: sub2.clone(),
+            descriptor: Some(astrcode_core::SubRunDescriptor {
+                sub_run_id: "sub-level2".to_string(),
+                parent_turn_id: "turn-level1".to_string(),
+                parent_agent_id: Some("agent-level1".to_string()),
+                depth: 2,
+            }),
+            tool_call_id: Some("call-2".to_string()),
+            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+            timestamp: Some(Utc::now()),
+        },
+        StorageEvent::UserMessage {
+            turn_id: Some("turn-level2".to_string()),
+            agent: sub2,
+            content: "level2 message".to_string(),
+            origin: astrcode_core::UserMessageOrigin::User,
+            timestamp: Utc::now(),
+        },
+        StorageEvent::SubRunStarted {
+            turn_id: Some("turn-level2".to_string()),
+            agent: sub3.clone(),
+            descriptor: Some(astrcode_core::SubRunDescriptor {
+                sub_run_id: "sub-level3".to_string(),
+                parent_turn_id: "turn-level2".to_string(),
+                parent_agent_id: Some("agent-level2".to_string()),
+                depth: 3,
+            }),
+            tool_call_id: Some("call-3".to_string()),
+            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+            timestamp: Some(Utc::now()),
+        },
+        StorageEvent::UserMessage {
+            turn_id: Some("turn-level3".to_string()),
+            agent: sub3,
+            content: "level3 message".to_string(),
+            origin: astrcode_core::UserMessageOrigin::User,
+            timestamp: Utc::now(),
+        },
+    ] {
+        log.append(&event).expect("event should append");
+    }
+}
+
+#[tokio::test]
+async fn scope_parameter_without_subrun_id_is_rejected() {
+    // Why: scope 参数只有在提供 subRunId 时才有意义
+    let (state, _guard) = test_state(None);
+    seed_nested_subrun_hierarchy("scope-no-subrun-session", _guard.path());
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/sessions/scope-no-subrun-session/history?scope=directChildren")
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    // 应该返回 400 或其他客户端错误
+    assert!(
+        response.status().is_client_error(),
+        "scope without subRunId should be rejected, got: {}",
+        response.status()
+    );
 }

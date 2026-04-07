@@ -51,10 +51,17 @@ impl<'a> ConfigManager<'a> {
         &self,
     ) -> ServiceResult<Arc<crate::AgentProfileRegistry>> {
         let loader = self.runtime.agent_loader();
+        let working_dirs = self.runtime.known_agent_working_dirs().await?;
         let next_registry = spawn_blocking_service("reload agent profiles from disk", move || {
-            loader.load().map_err(|error| {
-                ServiceError::Internal(astrcode_core::AstrError::Validation(error.to_string()))
-            })
+            let working_dir_refs = working_dirs
+                .iter()
+                .map(|path| path.as_path())
+                .collect::<Vec<_>>();
+            loader
+                .load_for_working_dirs(working_dir_refs)
+                .map_err(|error| {
+                    ServiceError::Internal(astrcode_core::AstrError::Validation(error.to_string()))
+                })
         })
         .await?;
         let next_registry = Arc::new(next_registry);

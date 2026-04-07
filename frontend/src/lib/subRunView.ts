@@ -10,9 +10,11 @@ interface SubRunRecord {
   startMessage?: SubRunStartMessage;
   finishMessage?: SubRunFinishMessage;
   ownBodyEntries: IndexedMessage[];
+  agentId?: string;
   childSessionId?: string;
   title: string;
-  parentTurnId?: string;
+  descriptorParentAgentId?: string | null;
+  hasDescriptorLineage: boolean;
   parentSubRunId: string | null;
   directChildSubRunIds: string[];
   firstMessageIndex: number;
@@ -47,6 +49,7 @@ export interface SubRunViewData {
   childSessionId?: string;
   parentSubRunId: string | null;
   directChildSubRunIds: string[];
+  hasDescriptorLineage: boolean;
 }
 
 export interface SubRunThreadTree {
@@ -67,10 +70,6 @@ function isSubRunStartMessage(message: Message): message is SubRunStartMessage {
 
 function isSubRunFinishMessage(message: Message): message is SubRunFinishMessage {
   return message.kind === 'subRunFinish';
-}
-
-function isSubRunLifecycleMessage(message: Message): boolean {
-  return isSubRunStartMessage(message) || isSubRunFinishMessage(message);
 }
 
 function deriveSubRunTitle(
@@ -130,6 +129,7 @@ function getOrCreateRecord(
     subRunId,
     ownBodyEntries: [],
     title: subRunId,
+    hasDescriptorLineage: false,
     parentSubRunId: null,
     directChildSubRunIds: [],
     firstMessageIndex,
@@ -142,31 +142,34 @@ function getOrCreateRecord(
 function buildSubRunIndex(messages: Message[]): SubRunIndex {
   const records = new Map<string, SubRunRecord>();
   const rootEntries: IndexedMessage[] = [];
-  const turnOwnerMap = new Map<string, string | null>();
 
   messages.forEach((message, index) => {
-    if (message.turnId && !isSubRunLifecycleMessage(message) && !turnOwnerMap.has(message.turnId)) {
-      turnOwnerMap.set(message.turnId, message.subRunId ?? null);
-    }
-
     if (!message.subRunId) {
       rootEntries.push({ index, message });
       return;
     }
 
     const record = getOrCreateRecord(records, message.subRunId, index);
-    if (message.parentTurnId && !record.parentTurnId) {
-      record.parentTurnId = message.parentTurnId;
+    if (message.agentId && !record.agentId) {
+      record.agentId = message.agentId;
     }
 
     if (isSubRunStartMessage(message)) {
       record.startMessage ??= message;
       record.startIndex = Math.min(record.startIndex, index);
+      if (message.descriptor) {
+        record.hasDescriptorLineage = true;
+        record.descriptorParentAgentId = message.descriptor.parentAgentId ?? null;
+      }
       return;
     }
 
     if (isSubRunFinishMessage(message)) {
       record.finishMessage ??= message;
+      if (message.descriptor) {
+        record.hasDescriptorLineage = true;
+        record.descriptorParentAgentId = message.descriptor.parentAgentId ?? null;
+      }
       return;
     }
 
@@ -176,10 +179,9 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
   const orderedRecords = [...records.values()].sort(
     (left, right) => left.firstMessageIndex - right.firstMessageIndex
   );
+  const agentOwnerMap = new Map<string, string>();
 
   orderedRecords.forEach((record) => {
-    record.parentSubRunId =
-      record.parentTurnId !== undefined ? (turnOwnerMap.get(record.parentTurnId) ?? null) : null;
     record.childSessionId =
       record.startMessage?.childSessionId ?? record.finishMessage?.childSessionId;
     record.title = deriveSubRunTitle(
@@ -188,6 +190,20 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
       record.finishMessage,
       record.ownBodyEntries.map((entry) => entry.message)
     );
+
+    if (record.agentId && !agentOwnerMap.has(record.agentId)) {
+      agentOwnerMap.set(record.agentId, record.subRunId);
+    }
+  });
+
+  orderedRecords.forEach((record) => {
+    if (!record.hasDescriptorLineage) {
+      record.parentSubRunId = null;
+      return;
+    }
+
+    const parentAgentId = record.descriptorParentAgentId;
+    record.parentSubRunId = parentAgentId ? (agentOwnerMap.get(parentAgentId) ?? null) : null;
   });
 
   orderedRecords.forEach((record) => {
@@ -284,6 +300,7 @@ export function buildSubRunThreadTree(messages: Message[]): SubRunThreadTree {
       childSessionId: record.childSessionId,
       parentSubRunId: record.parentSubRunId,
       directChildSubRunIds: record.directChildSubRunIds,
+      hasDescriptorLineage: record.hasDescriptorLineage,
     };
     subRuns.set(subRunId, view);
     return view;

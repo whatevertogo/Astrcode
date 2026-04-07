@@ -14,7 +14,15 @@ const srcFiles = ['src/**/*.{ts,tsx}'];
 export default [
   // 忽略文件
   {
-    ignores: ['dist/**', 'node_modules/**', '*.config.ts', '*.config.js'],
+    ignores: [
+      'dist/**',
+      'build/**',
+      'coverage/**',
+      'node_modules/**',
+      '*.min.js',
+      '*.config.ts',
+      '*.config.js',
+    ],
   },
 
   // 把规则显式限定到 src 源码，避免 flat config 在 CLI 传入目录时把整个树判成 ignored。

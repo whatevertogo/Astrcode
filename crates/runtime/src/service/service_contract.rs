@@ -10,7 +10,7 @@ use std::fmt::{Display, Formatter};
 pub use astrcode_core::SessionEventRecord;
 use astrcode_core::{
     AstrError, Phase, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    StoreError, SubRunHandle, SubRunResult,
+    StoreError, SubRunDescriptor, SubRunHandle, SubRunResult,
 };
 use async_trait::async_trait;
 use tokio::sync::broadcast;
@@ -41,9 +41,19 @@ pub struct SessionHistorySnapshot {
     pub phase: Phase,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubRunStatusSource {
+    Live,
+    Durable,
+    LegacyDurable,
+}
+
 #[derive(Debug, Clone)]
 pub struct SubRunStatusSnapshot {
     pub handle: SubRunHandle,
+    pub descriptor: Option<SubRunDescriptor>,
+    pub tool_call_id: Option<String>,
+    pub source: SubRunStatusSource,
     pub result: Option<SubRunResult>,
     pub step_count: Option<u32>,
     pub estimated_tokens: Option<u64>,

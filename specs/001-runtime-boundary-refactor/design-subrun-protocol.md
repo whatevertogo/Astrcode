@@ -153,6 +153,13 @@ frontend 仍然从 `/history + /events` 生成 read model，但 parent/child 关
 - `frontend/src/lib/agentEvent.test.ts`
 - `frontend/src/lib/subRunView.test.ts`
 
+## Implementation Checklist
+
+- [x] `SubRunDescriptor` 与 `SubRunStarted`/`SubRunFinished` 的字段设计已与 `data-model.md` 对齐。
+- [x] durable -> domain -> protocol 映射链路已在文档中给出一一对应的 crate/file 清单。
+- [x] `legacyDurable` 降级语义与 contracts 中的 scope/status 规则保持一致。
+- [x] 本文涉及的实现范围已与 `tasks.md`（T004-T019）映射一致。
+
 ## Explicitly Out Of Scope For This Slice
 
 - 不在这一刀里删除 `session_service.rs` / `execution_service.rs`

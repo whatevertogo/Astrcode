@@ -283,14 +283,17 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("tempdir should be created");
         let tools = ToolRegistry::builder().register(Box::new(DemoTool)).build();
 
-        let service = RuntimeService::from_capabilities_with_prompt_inputs(
-            capabilities_from_tools(tools),
-            Vec::new(),
-            Arc::new(SkillCatalog::new(vec![demo_skill()])),
-        )
-        .expect("service should initialize");
+        let service = Arc::new(
+            RuntimeService::from_capabilities_with_prompt_inputs(
+                capabilities_from_tools(tools),
+                Vec::new(),
+                Arc::new(SkillCatalog::new(vec![demo_skill()])),
+            )
+            .expect("service should initialize"),
+        );
         let session = service
-            .create_session(temp_dir.path())
+            .sessions()
+            .create(temp_dir.path())
             .await
             .expect("session should be created");
 
@@ -320,14 +323,17 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("tempdir should be created");
         let tools = ToolRegistry::builder().register(Box::new(DemoTool)).build();
 
-        let service = RuntimeService::from_capabilities_with_prompt_inputs(
-            capabilities_from_tools(tools),
-            Vec::new(),
-            Arc::new(SkillCatalog::new(vec![demo_skill()])),
-        )
-        .expect("service should initialize");
+        let service = Arc::new(
+            RuntimeService::from_capabilities_with_prompt_inputs(
+                capabilities_from_tools(tools),
+                Vec::new(),
+                Arc::new(SkillCatalog::new(vec![demo_skill()])),
+            )
+            .expect("service should initialize"),
+        );
         let session = service
-            .create_session(temp_dir.path())
+            .sessions()
+            .create(temp_dir.path())
             .await
             .expect("session should be created");
 
@@ -354,14 +360,17 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("tempdir should be created");
         let tools = ToolRegistry::builder().register(Box::new(DemoTool)).build();
 
-        let service = RuntimeService::from_capabilities_with_prompt_inputs(
-            capabilities_from_tools(tools),
-            Vec::new(),
-            Arc::new(SkillCatalog::new(vec![demo_skill()])),
-        )
-        .expect("service should initialize");
+        let service = Arc::new(
+            RuntimeService::from_capabilities_with_prompt_inputs(
+                capabilities_from_tools(tools),
+                Vec::new(),
+                Arc::new(SkillCatalog::new(vec![demo_skill()])),
+            )
+            .expect("service should initialize"),
+        );
         let session = service
-            .create_session(temp_dir.path())
+            .sessions()
+            .create(temp_dir.path())
             .await
             .expect("session should be created");
 

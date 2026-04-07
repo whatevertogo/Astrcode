@@ -144,7 +144,9 @@ where
     let builtin_skills = astrcode_runtime_skill_loader::load_builtin_skills();
     let agent_loader = Arc::new(AgentProfileLoader::new()?);
     let agent_profiles = Arc::new(StdRwLock::new(Arc::new(
-        agent_loader.load().map_err(agent_loader_error_to_astr)?,
+        agent_loader
+            .load_for_working_dir(None)
+            .map_err(agent_loader_error_to_astr)?,
     )));
 
     // 为当前 surface 创建独立的 skill 目录和 router。

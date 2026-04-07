@@ -1,6 +1,7 @@
-use std::collections::HashMap;
-
 use astrcode_core::{AgentEvent, SessionEventRecord};
+use astrcode_runtime_execution::{
+    ExecutionLineageIndex, ExecutionLineageScope, LINEAGE_METADATA_UNAVAILABLE_MESSAGE,
+};
 use serde::Deserialize;
 
 use super::validate_path_id;
@@ -45,88 +46,43 @@ impl SessionEventFilterSpec {
 #[derive(Debug, Clone)]
 pub(crate) struct SessionEventFilter {
     spec: SessionEventFilterSpec,
-    turn_owner: HashMap<String, Option<String>>,
-    sub_run_parent: HashMap<String, Option<String>>,
+    lineage: ExecutionLineageIndex,
 }
 
 impl SessionEventFilter {
-    pub(crate) fn new(spec: SessionEventFilterSpec) -> Self {
-        Self {
-            spec,
-            turn_owner: HashMap::new(),
-            sub_run_parent: HashMap::new(),
-        }
+    pub(crate) fn new(
+        spec: SessionEventFilterSpec,
+        history: &[SessionEventRecord],
+    ) -> Result<Self, ApiError> {
+        let lineage = ExecutionLineageIndex::from_session_history(history);
+        lineage
+            .require_scope(&spec.target_sub_run_id, map_lineage_scope(spec.scope))
+            .map_err(|message| ApiError {
+                status: axum::http::StatusCode::CONFLICT,
+                message,
+            })?;
+        Ok(Self { spec, lineage })
     }
 
     pub(crate) fn matches(&mut self, record: &SessionEventRecord) -> bool {
-        self.observe_turn_owner(&record.event);
-        self.observe_sub_run_parent(&record.event);
-
-        let Some(event_sub_run_id) = event_sub_run_id(&record.event, &self.turn_owner) else {
+        self.lineage.observe_session_record(record);
+        let Some(event_sub_run_id) = event_sub_run_id(&record.event) else {
             return false;
         };
-        self.matches_scope(event_sub_run_id)
-    }
-
-    fn matches_scope(&self, event_sub_run_id: &str) -> bool {
-        if event_sub_run_id == self.spec.target_sub_run_id {
-            return true;
-        }
 
         match self.spec.scope {
-            SubRunEventScope::SelfOnly => false,
-            SubRunEventScope::DirectChildren => {
-                self.sub_run_parent
-                    .get(event_sub_run_id)
-                    .and_then(|parent| parent.as_deref())
-                    == Some(self.spec.target_sub_run_id.as_str())
-            },
-            SubRunEventScope::Subtree => self.is_descendant_of(event_sub_run_id),
+            SubRunEventScope::SelfOnly => event_sub_run_id == self.spec.target_sub_run_id,
+            SubRunEventScope::DirectChildren => self
+                .lineage
+                .is_direct_child_of(event_sub_run_id, &self.spec.target_sub_run_id),
+            SubRunEventScope::Subtree => self
+                .lineage
+                .is_in_subtree(event_sub_run_id, &self.spec.target_sub_run_id),
         }
     }
 
-    fn is_descendant_of(&self, event_sub_run_id: &str) -> bool {
-        let mut current = self
-            .sub_run_parent
-            .get(event_sub_run_id)
-            .and_then(|id| id.as_deref());
-        while let Some(sub_run_id) = current {
-            if sub_run_id == self.spec.target_sub_run_id {
-                return true;
-            }
-            current = self
-                .sub_run_parent
-                .get(sub_run_id)
-                .and_then(|id| id.as_deref());
-        }
-        false
-    }
-
-    fn observe_turn_owner(&mut self, event: &AgentEvent) {
-        if !event_establishes_turn_owner(event) {
-            return;
-        }
-        let Some(turn_id) = event_turn_id(event) else {
-            return;
-        };
-        self.turn_owner
-            .entry(turn_id.to_string())
-            .or_insert_with(|| event_agent_sub_run_id(event).map(ToOwned::to_owned));
-    }
-
-    fn observe_sub_run_parent(&mut self, event: &AgentEvent) {
-        let Some(sub_run_id) = event_agent_sub_run_id(event) else {
-            return;
-        };
-        if self.sub_run_parent.contains_key(sub_run_id) {
-            return;
-        }
-        let parent_sub_run_id = event_parent_turn_id(event)
-            .and_then(|parent_turn_id| self.turn_owner.get(parent_turn_id))
-            .cloned()
-            .flatten();
-        self.sub_run_parent
-            .insert(sub_run_id.to_string(), parent_sub_run_id);
+    pub(crate) fn spec(&self) -> SessionEventFilterSpec {
+        self.spec.clone()
     }
 }
 
@@ -141,68 +97,23 @@ pub(crate) fn record_is_after_cursor(record: &SessionEventRecord, cursor: Option
     }
 }
 
+fn map_lineage_scope(scope: SubRunEventScope) -> ExecutionLineageScope {
+    match scope {
+        SubRunEventScope::SelfOnly => ExecutionLineageScope::SelfOnly,
+        SubRunEventScope::DirectChildren => ExecutionLineageScope::DirectChildren,
+        SubRunEventScope::Subtree => ExecutionLineageScope::Subtree,
+    }
+}
+
 fn validate_subrun_query_id(raw_sub_run_id: &str) -> Result<String, ApiError> {
     validate_path_id(raw_sub_run_id, None, false, "sub-run")
 }
 
-fn event_turn_id(event: &AgentEvent) -> Option<&str> {
-    match event {
-        AgentEvent::SessionStarted { .. } => None,
-        AgentEvent::UserMessage { turn_id, .. }
-        | AgentEvent::ModelDelta { turn_id, .. }
-        | AgentEvent::ThinkingDelta { turn_id, .. }
-        | AgentEvent::AssistantMessage { turn_id, .. }
-        | AgentEvent::ToolCallStart { turn_id, .. }
-        | AgentEvent::ToolCallDelta { turn_id, .. }
-        | AgentEvent::ToolCallResult { turn_id, .. }
-        | AgentEvent::TurnDone { turn_id, .. } => Some(turn_id.as_str()),
-        AgentEvent::PhaseChanged { turn_id, .. }
-        | AgentEvent::CompactApplied { turn_id, .. }
-        | AgentEvent::SubRunStarted { turn_id, .. }
-        | AgentEvent::SubRunFinished { turn_id, .. }
-        | AgentEvent::PromptMetrics { turn_id, .. }
-        | AgentEvent::Error { turn_id, .. } => turn_id.as_deref(),
-    }
-}
-
-fn event_parent_turn_id(event: &AgentEvent) -> Option<&str> {
-    event_agent_context(event)?
-        .parent_turn_id
-        .as_deref()
-        .filter(|parent_turn_id| !parent_turn_id.is_empty())
-}
-
-fn event_agent_sub_run_id(event: &AgentEvent) -> Option<&str> {
+fn event_sub_run_id(event: &AgentEvent) -> Option<&str> {
     event_agent_context(event)?
         .sub_run_id
         .as_deref()
         .filter(|sub_run_id| !sub_run_id.is_empty())
-}
-
-fn event_sub_run_id<'a>(
-    event: &'a AgentEvent,
-    turn_owner: &'a HashMap<String, Option<String>>,
-) -> Option<&'a str> {
-    event_agent_sub_run_id(event).or_else(|| {
-        event_turn_id(event)
-            .and_then(|turn_id| turn_owner.get(turn_id))
-            .and_then(|sub_run_id| sub_run_id.as_deref())
-    })
-}
-
-fn event_establishes_turn_owner(event: &AgentEvent) -> bool {
-    matches!(
-        event,
-        AgentEvent::UserMessage { .. }
-            | AgentEvent::ModelDelta { .. }
-            | AgentEvent::ThinkingDelta { .. }
-            | AgentEvent::AssistantMessage { .. }
-            | AgentEvent::ToolCallStart { .. }
-            | AgentEvent::ToolCallDelta { .. }
-            | AgentEvent::ToolCallResult { .. }
-            | AgentEvent::TurnDone { .. }
-            | AgentEvent::Error { .. }
-    )
 }
 
 fn event_agent_context(event: &AgentEvent) -> Option<&astrcode_core::AgentEventContext> {
@@ -227,7 +138,10 @@ fn event_agent_context(event: &AgentEvent) -> Option<&astrcode_core::AgentEventC
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{AgentEventContext, Phase};
+    use astrcode_core::{
+        AgentEventContext, Phase, ResolvedExecutionLimitsSnapshot,
+        ResolvedSubagentContextOverrides, SessionEventRecord, SubRunDescriptor, SubRunStorageMode,
+    };
 
     use super::*;
 
@@ -242,25 +156,24 @@ mod tests {
         AgentEventContext::root_execution("root-agent", "primary")
     }
 
-    fn sub_context(sub_run_id: &str, parent_turn_id: &str) -> AgentEventContext {
+    fn sub_context(sub_run_id: &str, parent_turn_id: &str, agent_id: &str) -> AgentEventContext {
         AgentEventContext::sub_run(
-            format!("agent-{sub_run_id}"),
+            agent_id.to_string(),
             parent_turn_id.to_string(),
             "review",
             sub_run_id.to_string(),
-            astrcode_core::SubRunStorageMode::SharedSession,
+            SubRunStorageMode::SharedSession,
             None,
         )
     }
 
     #[test]
-    fn direct_children_scope_excludes_grandchildren() {
+    fn direct_children_scope_excludes_self_and_grandchildren() {
         let spec = SessionEventFilterSpec {
             target_sub_run_id: "sub-a".to_string(),
             scope: SubRunEventScope::DirectChildren,
         };
-        let mut filter = SessionEventFilter::new(spec);
-        let events = [
+        let events = vec![
             record(
                 "1.0",
                 AgentEvent::UserMessage {
@@ -273,16 +186,23 @@ mod tests {
                 "2.0",
                 AgentEvent::SubRunStarted {
                     turn_id: Some("turn-root".to_string()),
-                    agent: sub_context("sub-a", "turn-root"),
-                    resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
-                    resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+                    agent: sub_context("sub-a", "turn-root", "agent-a"),
+                    descriptor: Some(SubRunDescriptor {
+                        sub_run_id: "sub-a".to_string(),
+                        parent_turn_id: "turn-root".to_string(),
+                        parent_agent_id: None,
+                        depth: 1,
+                    }),
+                    tool_call_id: None,
+                    resolved_overrides: ResolvedSubagentContextOverrides::default(),
+                    resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
                 },
             ),
             record(
                 "3.0",
                 AgentEvent::UserMessage {
                     turn_id: "turn-a".to_string(),
-                    agent: sub_context("sub-a", "turn-root"),
+                    agent: sub_context("sub-a", "turn-root", "agent-a"),
                     content: "child".to_string(),
                 },
             ),
@@ -290,16 +210,23 @@ mod tests {
                 "4.0",
                 AgentEvent::SubRunStarted {
                     turn_id: Some("turn-a".to_string()),
-                    agent: sub_context("sub-b", "turn-a"),
-                    resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
-                    resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+                    agent: sub_context("sub-b", "turn-a", "agent-b"),
+                    descriptor: Some(SubRunDescriptor {
+                        sub_run_id: "sub-b".to_string(),
+                        parent_turn_id: "turn-a".to_string(),
+                        parent_agent_id: Some("agent-a".to_string()),
+                        depth: 2,
+                    }),
+                    tool_call_id: None,
+                    resolved_overrides: ResolvedSubagentContextOverrides::default(),
+                    resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
                 },
             ),
             record(
                 "5.0",
                 AgentEvent::UserMessage {
                     turn_id: "turn-b".to_string(),
-                    agent: sub_context("sub-b", "turn-a"),
+                    agent: sub_context("sub-b", "turn-a", "agent-b"),
                     content: "grandchild".to_string(),
                 },
             ),
@@ -307,20 +234,52 @@ mod tests {
                 "6.0",
                 AgentEvent::SubRunStarted {
                     turn_id: Some("turn-b".to_string()),
-                    agent: sub_context("sub-c", "turn-b"),
-                    resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
-                    resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+                    agent: sub_context("sub-c", "turn-b", "agent-c"),
+                    descriptor: Some(SubRunDescriptor {
+                        sub_run_id: "sub-c".to_string(),
+                        parent_turn_id: "turn-b".to_string(),
+                        parent_agent_id: Some("agent-b".to_string()),
+                        depth: 3,
+                    }),
+                    tool_call_id: None,
+                    resolved_overrides: ResolvedSubagentContextOverrides::default(),
+                    resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
                 },
             ),
         ];
 
+        let mut filter = SessionEventFilter::new(spec, &events).expect("filter should build");
         let matched = events
             .iter()
             .filter(|event| filter.matches(event))
             .map(|event| event.event_id.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(matched, vec!["2.0", "3.0", "4.0", "5.0"]);
+        assert_eq!(matched, vec!["4.0", "5.0"]);
+    }
+
+    #[test]
+    fn non_self_scope_rejects_legacy_lineage_gap() {
+        let spec = SessionEventFilterSpec {
+            target_sub_run_id: "sub-legacy".to_string(),
+            scope: SubRunEventScope::Subtree,
+        };
+        let events = vec![record(
+            "1.0",
+            AgentEvent::SubRunStarted {
+                turn_id: Some("turn-legacy".to_string()),
+                agent: sub_context("sub-legacy", "turn-legacy", "agent-legacy"),
+                descriptor: None,
+                tool_call_id: None,
+                resolved_overrides: ResolvedSubagentContextOverrides::default(),
+                resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+            },
+        )];
+
+        let error = SessionEventFilter::new(spec, &events).expect_err("legacy scope should fail");
+
+        assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+        assert_eq!(error.message, LINEAGE_METADATA_UNAVAILABLE_MESSAGE);
     }
 
     #[test]

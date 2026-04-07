@@ -27,10 +27,11 @@
 //! 自动停止或请求继续（auto-continue nudge）。
 
 use astrcode_core::{
-    AgentEventContext, AgentState, CancelToken, ContextStrategy, ExecutionOwner, Result,
-    StorageEvent,
+    AgentEventContext, AgentState, AstrError, CancelToken, ContextStrategy, ExecutionOwner,
+    LoopRunnerBoundary, Result, StorageEvent,
 };
 use astrcode_runtime_prompt::{DiagnosticLevel, PromptDiagnostics};
+use async_trait::async_trait;
 
 use super::{
     AgentLoop, TurnOutcome, finish_interrupted, finish_turn, finish_with_error, internal_error,
@@ -778,4 +779,90 @@ fn emit_event_with_file_tracking(
     // 这样同一个 turn 内的后续 compact 才能恢复刚刚读过/改过的文件内容。
     file_access.record_event(&event);
     on_event(event)
+}
+
+#[async_trait]
+pub trait TurnRunnerRuntime: Send + Sync {
+    async fn run_session_turn(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+    ) -> std::result::Result<(), AstrError>;
+}
+
+/// `runtime-agent-loop` 对外暴露的主循环 trait surface。
+///
+/// 具体 session lookup / durable append 仍由外部 owner 注入，loop crate 只保留
+/// “run a turn” 这一条稳定 surface，而不是直接依赖 runtime façade。
+#[derive(Clone)]
+pub struct TurnRunner<T> {
+    runtime: T,
+}
+
+impl<T> TurnRunner<T> {
+    pub fn new(runtime: T) -> Self {
+        Self { runtime }
+    }
+
+    pub fn runtime(&self) -> &T {
+        &self.runtime
+    }
+}
+
+#[async_trait]
+impl<T> LoopRunnerBoundary for TurnRunner<T>
+where
+    T: TurnRunnerRuntime,
+{
+    async fn run_session_turn(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+    ) -> std::result::Result<(), AstrError> {
+        self.runtime.run_session_turn(session_id, turn_id).await
+    }
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use async_trait::async_trait;
+
+    use super::{LoopRunnerBoundary, TurnRunner, TurnRunnerRuntime};
+
+    #[derive(Clone)]
+    struct StubTurnRunner {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl TurnRunnerRuntime for StubTurnRunner {
+        async fn run_session_turn(
+            &self,
+            _session_id: &str,
+            _turn_id: &str,
+        ) -> std::result::Result<(), astrcode_core::AstrError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_runner_surface_delegates_loop_boundary_calls() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let runner = TurnRunner::new(StubTurnRunner {
+            calls: Arc::clone(&calls),
+        });
+
+        runner
+            .run_session_turn("session-1", "turn-1")
+            .await
+            .expect("turn should run");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 }

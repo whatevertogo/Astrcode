@@ -280,6 +280,7 @@ export default function MessageList({
             finishMessage={subRunView.finishMessage}
             threadItems={subRunView.threadItems}
             streamFingerprint={subRunView.streamFingerprint}
+            hasDescriptorLineage={subRunView.hasDescriptorLineage}
             renderThreadItems={renderThreadItems}
             onCancelSubRun={onCancelSubRun}
             onFocusSubRun={onFocusSubRun}
@@ -313,6 +314,7 @@ export default function MessageList({
         finishMessage={subRunView.finishMessage}
         threadItems={subRunView.threadItems}
         streamFingerprint={subRunView.streamFingerprint}
+        hasDescriptorLineage={subRunView.hasDescriptorLineage}
         renderThreadItems={renderThreadItems}
         onCancelSubRun={onCancelSubRun}
         onFocusSubRun={onFocusSubRun}

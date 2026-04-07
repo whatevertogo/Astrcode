@@ -29,7 +29,8 @@ pub(crate) async fn create_session(
     require_auth(&state, &headers, None)?;
     let meta = state
         .service
-        .create_session(request.working_dir)
+        .sessions()
+        .create(request.working_dir)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(to_session_list_item(meta)))
@@ -45,6 +46,7 @@ pub(crate) async fn submit_prompt(
     let session_id = validate_session_path_id(&session_id)?;
     let accepted: PromptAccepted = state
         .service
+        .execution()
         .submit_prompt(&session_id, request.text)
         .await
         .map_err(ApiError::from)?;
@@ -67,7 +69,8 @@ pub(crate) async fn interrupt_session(
     let session_id = validate_session_path_id(&session_id)?;
     state
         .service
-        .interrupt(&session_id)
+        .execution()
+        .interrupt_session(&session_id)
         .await
         .map_err(ApiError::from)?;
     Ok(StatusCode::NO_CONTENT)
@@ -82,7 +85,8 @@ pub(crate) async fn compact_session(
     let session_id = validate_session_path_id(&session_id)?;
     state
         .service
-        .compact_session(&session_id)
+        .sessions()
+        .compact(&session_id)
         .await
         .map_err(ApiError::from)?;
     Ok(StatusCode::NO_CONTENT)
@@ -97,6 +101,7 @@ pub(crate) async fn delete_session(
     let session_id = validate_session_path_id(&session_id)?;
     state
         .service
+        .sessions()
         .delete_session(&session_id)
         .await
         .map_err(ApiError::from)?;
@@ -111,6 +116,7 @@ pub(crate) async fn delete_project(
     require_auth(&state, &headers, None)?;
     let result = state
         .service
+        .sessions()
         .delete_project(&query.working_dir)
         .await
         .map_err(ApiError::from)?;

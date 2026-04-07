@@ -13,14 +13,28 @@
 
 ## Caller Inventory
 
+## Implementation Status
+
+本轮实现已经完成 M4/M5 的 owner handle 切换与 façade 删除：
+
+- server 路由统一改为 `RuntimeService::sessions()` / `execution()` / `tools()`
+- `DeferredSubAgentExecutor` 与 `RuntimeGovernance` 已不再调用旧的 execution façade
+- `crates/runtime/src/service/session_service.rs`
+- `crates/runtime/src/service/execution_service.rs`
+- `crates/runtime/src/service/replay.rs`
+- `crates/runtime/src/service/turn/submit.rs`
+- `crates/runtime/src/service/session/load.rs`
+
+以上 legacy 文件已删除；下面的 caller inventory 保留为迁移审计记录。
+
 ### A. 当前 legacy façade 的直接与间接调用方
 
 | Surface | Current implementation | Current callers |
 |---------|------------------------|-----------------|
-| `RuntimeService::load_session_history()` | `service/session/load.rs` -> `session_service.rs` | `crates/server/src/http/routes/sessions/query.rs`、`crates/server/src/http/routes/sessions/stream.rs` |
-| `RuntimeService::replay()` | `service/replay.rs` -> `execution_service.rs` | `crates/server/src/http/routes/sessions/stream.rs` |
-| `RuntimeService::submit_prompt()` | `service/turn/submit.rs` -> `execution_service.rs` | `crates/server/src/http/routes/sessions/mutation.rs` |
-| `RuntimeService::interrupt()` | `service/turn/submit.rs` -> `execution_service.rs` | `crates/server/src/http/routes/sessions/mutation.rs`、`crates/runtime/src/service/session_service.rs` |
+| `RuntimeService::load_session_history()` | `service/session/load.rs` -> `session_service.rs` | `crates/server/src/http/routes/sessions/query.rs::session_history()`、`crates/server/src/http/routes/sessions/stream.rs::filtered_session_events()` |
+| `RuntimeService::replay()` | `service/replay.rs` -> `execution_service.rs` | `crates/server/src/http/routes/sessions/stream.rs::unfiltered_session_events()`、`crates/server/src/http/routes/sessions/stream.rs::filtered_session_events()`（lag recovery） |
+| `RuntimeService::submit_prompt()` | `service/turn/submit.rs` -> `execution_service.rs` | `crates/server/src/http/routes/sessions/mutation.rs::submit_prompt()` |
+| `RuntimeService::interrupt()` | `service/turn/submit.rs` -> `execution_service.rs` | `crates/server/src/http/routes/sessions/mutation.rs::interrupt_session()`、`crates/runtime/src/service/session_service.rs` |
 | `session_service()` helper | `service/mod.rs` | `crates/runtime/src/service/session/create.rs`、`delete.rs`、`load.rs` |
 | `execution_service()` helper | `service/mod.rs` | `crates/runtime/src/service/replay.rs`、`crates/runtime/src/service/turn/submit.rs` |
 
@@ -28,8 +42,9 @@
 
 | Surface | Current callers |
 |---------|-----------------|
-| `agent_execution_service()` | `crates/server/src/http/routes/agents.rs`、`crates/runtime/src/service/execution/mod.rs`、`crates/runtime/src/runtime_governance.rs` |
-| `tool_execution_service()` | `crates/server/src/http/routes/tools.rs` |
+| `RuntimeService::execution()` | `crates/server/src/http/routes/agents.rs`、`crates/server/src/http/routes/sessions/mutation.rs`、`crates/runtime/src/service/execution/mod.rs`、`crates/runtime/src/runtime_governance.rs` |
+| `RuntimeService::sessions()` | `crates/server/src/http/routes/sessions/query.rs`、`crates/server/src/http/routes/sessions/stream.rs`、`crates/server/src/http/routes/sessions/mutation.rs` |
+| `RuntimeService::tools()` | `crates/server/src/http/routes/tools.rs` |
 
 ### C. 与 working-dir resolver 直接相关的调用点
 
@@ -38,6 +53,15 @@
 | root execute 请求 working dir | `crates/server/src/http/routes/agents.rs` |
 | runtime bootstrap profile load | `crates/runtime/src/bootstrap.rs` |
 | agent watch paths | `crates/runtime/src/service/watch_ops.rs` |
+
+## Validated Deletion Order
+
+基于当前调用图，删除顺序必须按下面的依赖方向执行，避免先删 façade 造成 server/runtime 内部断链：
+
+1. 先迁移 server 调用点：`query.rs`、`stream.rs`、`mutation.rs`、`agents.rs` 改为 `sessions()` / `execution()` / `tools()`。
+2. 再迁移 runtime 内部调用点：`session/create.rs`、`session/delete.rs`、`session/load.rs`、`replay.rs`、`turn/submit.rs`。
+3. 确认 `RuntimeService::{load_session_history,replay,submit_prompt,interrupt}` 无剩余调用后，删除 `session_service.rs` / `execution_service.rs`。
+4. 最后删除 `service/mod.rs` 中 `session_service()` / `execution_service()` helper，避免新调用回流到旧 façade。
 
 ## Stage Plan
 
@@ -232,4 +256,3 @@ npm run build
 3. `runtime-session` 不再依赖 `runtime-agent-loop` / `runtime-agent-control`。
 4. `session_service.rs` 与 `execution_service.rs` 已删除。
 5. root execute 的 agent 解析只由显式 `workingDir` 或 session context 决定。
-

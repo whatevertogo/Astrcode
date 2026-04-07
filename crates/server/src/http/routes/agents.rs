@@ -27,7 +27,7 @@ pub(crate) async fn list_agents(
     require_auth(&state, &headers, None)?;
     let profiles = state
         .service
-        .agent_execution_service()
+        .execution()
         .list_profiles()
         .into_iter()
         .map(to_agent_profile_dto)
@@ -42,16 +42,13 @@ pub(crate) async fn execute_agent(
     Json(request): Json<AgentExecuteRequestDto>,
 ) -> Result<(StatusCode, Json<AgentExecuteResponseDto>), ApiError> {
     require_auth(&state, &headers, None)?;
-    let working_dir = match request.working_dir {
-        Some(working_dir) => PathBuf::from(working_dir),
-        None => std::env::current_dir().map_err(|error| ApiError {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: format!("failed to resolve current working directory: {error}"),
-        })?,
-    };
+    let working_dir = request
+        .working_dir
+        .map(PathBuf::from)
+        .ok_or_else(|| ApiError::bad_request("workingDir is required".to_string()))?;
     let accepted = state
         .service
-        .agent_execution_service()
+        .execution()
         .execute_root_agent(
             agent_id.clone(),
             request.task,
@@ -86,7 +83,7 @@ pub(crate) async fn get_subrun_status(
     let session_id = sessions::validate_session_path_id(&session_id)?;
     let snapshot = state
         .service
-        .agent_execution_service()
+        .execution()
         .get_subrun_status(&session_id, &sub_run_id)
         .await
         .map_err(ApiError::from)?;
@@ -103,7 +100,7 @@ pub(crate) async fn cancel_subrun(
     let sub_run_id = validate_subrun_path_id(&sub_run_id)?;
     state
         .service
-        .agent_execution_service()
+        .execution()
         .cancel_subrun(&session_id, &sub_run_id)
         .await
         .map_err(ApiError::from)?;

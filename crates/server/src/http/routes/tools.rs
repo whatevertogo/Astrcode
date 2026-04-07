@@ -20,7 +20,7 @@ pub(crate) async fn list_tools(
     require_auth(&state, &headers, None)?;
     let tools = state
         .service
-        .tool_execution_service()
+        .tools()
         .list_tools()
         .await
         .into_iter()

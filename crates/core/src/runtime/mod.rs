@@ -12,4 +12,8 @@ mod coordinator;
 mod traits;
 
 pub use coordinator::RuntimeCoordinator;
-pub use traits::{ManagedRuntimeComponent, RuntimeHandle};
+pub use traits::{
+    ExecutionOrchestrationBoundary, LiveSubRunControlBoundary, LoopRunnerBoundary,
+    ManagedRuntimeComponent, PromptAccepted, RootExecutionAccepted, RuntimeHandle,
+    SessionTruthBoundary,
+};

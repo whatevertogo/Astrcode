@@ -156,6 +156,9 @@ impl CapabilityInvoker for ToolCapabilityInvoker {
         if let Some(turn_id) = &ctx.turn_id {
             tool_ctx = tool_ctx.with_turn_id(turn_id.clone());
         }
+        if let Some(tool_call_id) = &ctx.request_id {
+            tool_ctx = tool_ctx.with_tool_call_id(tool_call_id.clone());
+        }
         tool_ctx = tool_ctx.with_agent_context(ctx.agent.clone());
         if let Some(sender) = ctx.tool_output_sender.clone() {
             tool_ctx = tool_ctx.with_tool_output_sender(sender);

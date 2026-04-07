@@ -1,67 +1,12 @@
-use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex as StdMutex, atomic::Ordering},
-};
+use std::{collections::VecDeque, sync::atomic::Ordering};
 
 use anyhow::Result;
 use astrcode_core::{
-    AgentEventContext, AstrError, CancelToken, EventTranslator, ExecutionOwner, Phase,
-    SessionTurnLease, StorageEvent, StoredEvent, UserMessageOrigin,
-};
-use astrcode_runtime_agent_control::AgentControl;
-use astrcode_runtime_agent_loop::{
-    AgentLoop, CompactionTailSnapshot, TokenBudgetDecision, TurnOutcome, build_auto_continue_nudge,
-    check_token_budget, estimate_text_tokens,
-};
-use chrono::Utc;
-
-use crate::{
-    SessionState, SessionTokenBudgetState,
-    support::{lock_anyhow, with_lock_recovery},
+    AstrError, CancelToken, EventTranslator, Phase, SessionTurnLease, StorageEvent, StoredEvent,
+    UserMessageOrigin,
 };
 
-#[derive(Debug, Clone, Copy)]
-pub struct BudgetSettings {
-    pub continuation_min_delta_tokens: usize,
-    pub max_continuations: u8,
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-struct TurnExecutionStats {
-    estimated_tokens_used: u64,
-    last_assistant_output_tokens: usize,
-    pending_prompt_tokens: Option<u64>,
-}
-
-impl TurnExecutionStats {
-    fn record_prompt_metrics(&mut self, estimated_tokens: u32) {
-        self.pending_prompt_tokens = Some(estimated_tokens as u64);
-    }
-
-    fn record_assistant_output(&mut self, content: &str, reasoning_content: Option<&str>) {
-        self.flush_pending_prompt_tokens();
-        let output_tokens = estimate_text_tokens(content)
-            + reasoning_content
-                .map(estimate_text_tokens)
-                .unwrap_or_default();
-        self.estimated_tokens_used = self
-            .estimated_tokens_used
-            .saturating_add(output_tokens as u64);
-        self.last_assistant_output_tokens = output_tokens;
-    }
-
-    fn flush_pending_prompt_tokens(&mut self) {
-        if let Some(prompt_tokens) = self.pending_prompt_tokens.take() {
-            self.estimated_tokens_used = self.estimated_tokens_used.saturating_add(prompt_tokens);
-        }
-    }
-}
-
-pub struct SessionTurnRunResult {
-    pub outcome: std::result::Result<TurnOutcome, AstrError>,
-    pub phase: Phase,
-    pub succeeded: bool,
-}
+use crate::{SessionState, SessionTokenBudgetState, support::lock_anyhow};
 
 pub fn prepare_session_execution(
     session: &SessionState,
@@ -92,258 +37,8 @@ pub fn prepare_session_execution(
     Ok(())
 }
 
-pub async fn complete_session_execution(
-    session: &SessionState,
-    agent_control: &AgentControl,
-    turn_id: &str,
-    phase: Phase,
-) {
-    with_lock_recovery(&session.phase, "session phase", |phase_guard| {
-        *phase_guard = phase;
-    });
-    with_lock_recovery(
-        &session.active_turn_id,
-        "session active turn",
-        |active_turn_guard| {
-            *active_turn_guard = None;
-        },
-    );
-    let _ = agent_control.cancel_for_parent_turn(turn_id).await;
-    with_lock_recovery(&session.turn_lease, "session turn lease", |lease_guard| {
-        *lease_guard = None;
-    });
-    with_lock_recovery(
-        &session.token_budget,
-        "session token budget",
-        |budget_guard| {
-            *budget_guard = None;
-        },
-    );
-    with_lock_recovery(&session.cancel, "session cancel", |cancel_guard| {
-        *cancel_guard = CancelToken::new();
-    });
-    session.running.store(false, Ordering::SeqCst);
-}
-
-// 这里的参数和运行时回调链一一对应，先保留显式签名以避免把调用点语义埋进匿名元组。
-#[allow(clippy::too_many_arguments)]
-pub async fn run_session_turn(
-    session: &SessionState,
-    loop_: &AgentLoop,
-    turn_id: &str,
-    cancel: CancelToken,
-    user_event: StorageEvent,
-    agent: AgentEventContext,
-    execution_owner: ExecutionOwner,
-    budget_settings: BudgetSettings,
-) -> SessionTurnRunResult {
-    let initial_phase = lock_anyhow(&session.phase, "session phase")
-        .map(|guard| *guard)
-        .unwrap_or(Phase::Idle);
-    let mut translator = EventTranslator::new(initial_phase);
-    let outcome =
-        match append_and_broadcast_from_turn_callback(session, &user_event, &mut translator) {
-            Ok(_) => {
-                execute_turn_chain(
-                    session,
-                    loop_,
-                    turn_id,
-                    cancel,
-                    &mut translator,
-                    agent.clone(),
-                    execution_owner,
-                    budget_settings,
-                )
-                .await
-            },
-            Err(error) => Err(AstrError::Internal(error.to_string())),
-        };
-    let succeeded = matches!(
-        outcome.as_ref(),
-        Ok(TurnOutcome::Completed) | Ok(TurnOutcome::Cancelled)
-    );
-    if let Err(error) = &outcome {
-        let error_event = StorageEvent::Error {
-            turn_id: Some(turn_id.to_string()),
-            agent: agent.clone(),
-            message: error.to_string(),
-            timestamp: Some(Utc::now()),
-        };
-        let _ = append_and_broadcast_from_turn_callback(session, &error_event, &mut translator);
-        let turn_done = StorageEvent::TurnDone {
-            turn_id: Some(turn_id.to_string()),
-            agent,
-            timestamp: Utc::now(),
-            reason: Some("error".to_string()),
-        };
-        let _ = append_and_broadcast_from_turn_callback(session, &turn_done, &mut translator);
-    }
-
-    SessionTurnRunResult {
-        outcome,
-        phase: translator.phase(),
-        succeeded,
-    }
-}
-
-// 这里继续保持显式参数列表，方便 runtime façade 与测试共享同一条 turn 链执行路径。
-#[allow(clippy::too_many_arguments)]
-pub async fn execute_turn_chain(
-    state: &SessionState,
-    loop_: &AgentLoop,
-    turn_id: &str,
-    cancel: CancelToken,
-    translator: &mut EventTranslator,
-    agent: AgentEventContext,
-    execution_owner: ExecutionOwner,
-    budget_settings: BudgetSettings,
-) -> std::result::Result<TurnOutcome, AstrError> {
-    loop {
-        let projected = state
-            .snapshot_projected_state()
-            .map_err(|error| AstrError::Internal(error.to_string()))?;
-        let tail_seed = recent_turn_event_tail(
-            &state
-                .snapshot_recent_stored_events()
-                .map_err(|error| AstrError::Internal(error.to_string()))?,
-            loop_.compact_keep_recent_turns(),
-        );
-        let live_tail = Arc::new(StdMutex::new(Vec::new()));
-        let mut stats = TurnExecutionStats::default();
-        let outcome = loop_
-            .run_turn_without_finish_with_compaction_tail(
-                &projected,
-                turn_id,
-                &mut |event| {
-                    observe_turn_event(&mut stats, &event);
-                    let stored = append_and_broadcast_from_turn_callback(state, &event, translator)
-                        .map_err(|error| AstrError::Internal(error.to_string()))?;
-                    if should_record_compaction_tail_event(&event) {
-                        with_lock_recovery(&live_tail, "compaction live tail", |tail| {
-                            tail.push(stored);
-                        });
-                    }
-                    Ok(())
-                },
-                cancel.clone(),
-                agent.clone(),
-                execution_owner.clone(),
-                CompactionTailSnapshot::from_seed(tail_seed)
-                    .with_live_recorder(Arc::clone(&live_tail)),
-            )
-            .await?;
-
-        if matches!(outcome, TurnOutcome::Completed)
-            && maybe_continue_after_turn(
-                state,
-                turn_id,
-                translator,
-                agent.clone(),
-                stats,
-                budget_settings,
-            )
-            .await
-            .map_err(|error| AstrError::Internal(error.to_string()))?
-        {
-            continue;
-        }
-
-        append_and_broadcast(
-            state,
-            &StorageEvent::TurnDone {
-                turn_id: Some(turn_id.to_string()),
-                agent: agent.clone(),
-                timestamp: Utc::now(),
-                reason: Some(turn_done_reason(&outcome).to_string()),
-            },
-            translator,
-        )
-        .await
-        .map_err(|error| AstrError::Internal(error.to_string()))?;
-        return Ok(outcome);
-    }
-}
-
-async fn maybe_continue_after_turn(
-    state: &SessionState,
-    turn_id: &str,
-    translator: &mut EventTranslator,
-    agent: AgentEventContext,
-    stats: TurnExecutionStats,
-    budget_settings: BudgetSettings,
-) -> Result<bool> {
-    let (decision, total_budget, used_tokens) = {
-        let mut budget_guard = lock_anyhow(&state.token_budget, "session token budget")?;
-        let Some(budget_state) = budget_guard.as_mut() else {
-            return Ok(false);
-        };
-
-        budget_state.used_tokens = budget_state
-            .used_tokens
-            .saturating_add(stats.estimated_tokens_used);
-        let decision = check_token_budget(
-            budget_state.used_tokens,
-            budget_state.total_budget,
-            budget_state.continuation_count,
-            stats.last_assistant_output_tokens,
-            budget_settings.continuation_min_delta_tokens,
-            budget_settings.max_continuations,
-        );
-        let total_budget = budget_state.total_budget;
-        let used_tokens = budget_state.used_tokens;
-        if matches!(decision, TokenBudgetDecision::Continue) {
-            budget_state.continuation_count = budget_state.continuation_count.saturating_add(1);
-        } else {
-            *budget_guard = None;
-        }
-        (decision, total_budget, used_tokens)
-    };
-
-    if !matches!(decision, TokenBudgetDecision::Continue) {
-        return Ok(false);
-    }
-
-    append_and_broadcast(
-        state,
-        &StorageEvent::UserMessage {
-            turn_id: Some(turn_id.to_string()),
-            agent,
-            content: build_auto_continue_nudge(used_tokens, total_budget),
-            timestamp: Utc::now(),
-            origin: UserMessageOrigin::AutoContinueNudge,
-        },
-        translator,
-    )
-    .await?;
-    Ok(true)
-}
-
-fn observe_turn_event(stats: &mut TurnExecutionStats, event: &StorageEvent) {
-    match event {
-        StorageEvent::PromptMetrics {
-            estimated_tokens,
-            provider_input_tokens: None,
-            ..
-        } => {
-            stats.record_prompt_metrics(*estimated_tokens);
-        },
-        StorageEvent::AssistantFinal {
-            content,
-            reasoning_content,
-            ..
-        } => {
-            stats.record_assistant_output(content, reasoning_content.as_deref());
-        },
-        _ => {},
-    }
-}
-
-fn turn_done_reason(outcome: &TurnOutcome) -> &'static str {
-    match outcome {
-        TurnOutcome::Completed => "completed",
-        TurnOutcome::Cancelled => "cancelled",
-        TurnOutcome::Error { .. } => "error",
-    }
+pub fn complete_session_execution(session: &SessionState, phase: Phase) {
+    session.complete_execution_state(phase);
 }
 
 pub async fn append_and_broadcast(
@@ -436,13 +131,14 @@ pub fn should_record_compaction_tail_event(event: &StorageEvent) -> bool {
 mod tests {
     use std::{
         panic::{AssertUnwindSafe, catch_unwind},
-        sync::Arc,
+        sync::{Arc, Mutex as StdMutex},
     };
 
     use astrcode_core::{
-        AgentStateProjector, EventLogWriter, Phase, SessionTurnLease, StoreResult, StoredEvent,
+        AgentEventContext, AgentStateProjector, EventLogWriter, Phase, SessionTurnLease,
+        StoreResult, StoredEvent, UserMessageOrigin,
     };
-    use astrcode_runtime_agent_control::AgentControl;
+    use chrono::Utc;
 
     use super::*;
     use crate::SessionWriter;
@@ -524,8 +220,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn complete_session_execution_recovers_poisoned_mutexes() {
+    #[test]
+    fn complete_session_execution_recovers_poisoned_mutexes() {
         let session = test_session();
         session.running.store(true, Ordering::SeqCst);
 
@@ -561,7 +257,7 @@ mod tests {
         }));
         poison_mutex(&session.cancel);
 
-        complete_session_execution(&session, &AgentControl::new(), "turn-1", Phase::Idle).await;
+        complete_session_execution(&session, Phase::Idle);
 
         assert_eq!(
             session.current_phase().expect("phase should recover"),
@@ -646,28 +342,12 @@ mod tests {
     }
 
     #[test]
-    fn observe_turn_event_ignores_provider_usage_prompt_metrics() {
-        let mut stats = TurnExecutionStats::default();
-
-        observe_turn_event(
-            &mut stats,
-            &StorageEvent::PromptMetrics {
-                turn_id: Some("turn-1".to_string()),
-                agent: AgentEventContext::default(),
-                step_index: 0,
-                estimated_tokens: 800,
-                context_window: 100_000,
-                effective_window: 80_000,
-                threshold_tokens: 72_000,
-                truncated_tool_results: 0,
-                provider_input_tokens: Some(640),
-                provider_output_tokens: Some(120),
-                cache_creation_input_tokens: Some(600),
-                cache_read_input_tokens: Some(500),
-            },
-        );
-
-        assert_eq!(stats.pending_prompt_tokens, None);
-        assert_eq!(stats.estimated_tokens_used, 0);
+    fn turn_runtime_surface_exports_session_boundary_primitives() {
+        let _prepare_signature = prepare_session_execution;
+        let _complete_signature = complete_session_execution;
+        let _append_signature = append_and_broadcast;
+        let _callback_append_signature = append_and_broadcast_from_turn_callback;
+        let _tail_signature = recent_turn_event_tail;
+        let _record_signature = should_record_compaction_tail_event;
     }
 }

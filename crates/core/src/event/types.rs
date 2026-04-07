@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::{
     AgentEventContext, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    SubRunResult, ToolOutputStream, UserMessageOrigin,
+    SubRunDescriptor, SubRunResult, ToolOutputStream, UserMessageOrigin,
 };
 
 /// 上下文压缩的触发方式。
@@ -180,6 +180,10 @@ pub enum StorageEvent {
         turn_id: Option<String>,
         #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
         agent: AgentEventContext,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        descriptor: Option<SubRunDescriptor>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_call_id: Option<String>,
         resolved_overrides: ResolvedSubagentContextOverrides,
         resolved_limits: ResolvedExecutionLimitsSnapshot,
         #[serde(
@@ -195,6 +199,10 @@ pub enum StorageEvent {
         turn_id: Option<String>,
         #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
         agent: AgentEventContext,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        descriptor: Option<SubRunDescriptor>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_call_id: Option<String>,
         result: SubRunResult,
         step_count: u32,
         estimated_tokens: u64,
@@ -331,7 +339,10 @@ mod tests {
     use serde_json::Value;
 
     use super::{CompactTrigger, StorageEvent};
-    use crate::{AgentEventContext, format_local_rfc3339};
+    use crate::{
+        AgentEventContext, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
+        SubRunDescriptor, SubRunOutcome, SubRunResult, SubRunStorageMode, format_local_rfc3339,
+    };
 
     #[test]
     fn tool_result_deserializes_legacy_lines_without_error_or_metadata() {
@@ -519,5 +530,84 @@ mod tests {
             encoded["timestamp"],
             Value::String(format_local_rfc3339(timestamp))
         );
+    }
+
+    #[test]
+    fn subrun_lifecycle_round_trip_preserves_descriptor_and_tool_call_id() {
+        let descriptor = SubRunDescriptor {
+            sub_run_id: "subrun-1".to_string(),
+            parent_turn_id: "turn-parent".to_string(),
+            parent_agent_id: Some("agent-parent".to_string()),
+            depth: 2,
+        };
+        let started = StorageEvent::SubRunStarted {
+            turn_id: Some("turn-parent".to_string()),
+            agent: AgentEventContext::sub_run(
+                "agent-child",
+                "turn-parent",
+                "review",
+                "subrun-1",
+                SubRunStorageMode::IndependentSession,
+                Some("child-session".to_string()),
+            ),
+            descriptor: Some(descriptor.clone()),
+            tool_call_id: Some("call-1".to_string()),
+            resolved_overrides: ResolvedSubagentContextOverrides::default(),
+            resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+            timestamp: None,
+        };
+        let finished = StorageEvent::SubRunFinished {
+            turn_id: Some("turn-parent".to_string()),
+            agent: AgentEventContext::sub_run(
+                "agent-child",
+                "turn-parent",
+                "review",
+                "subrun-1",
+                SubRunStorageMode::IndependentSession,
+                Some("child-session".to_string()),
+            ),
+            descriptor: Some(descriptor),
+            tool_call_id: Some("call-1".to_string()),
+            result: SubRunResult {
+                status: SubRunOutcome::Completed,
+                handoff: None,
+                failure: None,
+            },
+            step_count: 3,
+            estimated_tokens: 99,
+            timestamp: None,
+        };
+
+        for event in [started, finished] {
+            let encoded = serde_json::to_value(&event).expect("event should serialize");
+            let decoded: StorageEvent =
+                serde_json::from_value(encoded.clone()).expect("event should deserialize");
+
+            match decoded {
+                StorageEvent::SubRunStarted {
+                    descriptor,
+                    tool_call_id,
+                    ..
+                }
+                | StorageEvent::SubRunFinished {
+                    descriptor,
+                    tool_call_id,
+                    ..
+                } => {
+                    assert_eq!(tool_call_id.as_deref(), Some("call-1"));
+                    assert_eq!(
+                        descriptor.map(|item| item.parent_turn_id),
+                        Some("turn-parent".to_string())
+                    );
+                },
+                other => panic!("expected subrun lifecycle event, got {other:?}"),
+            }
+
+            assert_eq!(encoded["tool_call_id"], Value::String("call-1".to_string()));
+            assert_eq!(
+                encoded["descriptor"]["parentTurnId"],
+                Value::String("turn-parent".to_string())
+            );
+        }
     }
 }

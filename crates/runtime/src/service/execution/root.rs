@@ -1,19 +1,18 @@
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, AgentMode, CancelToken, ExecutionOwner, InvocationKind,
-    SessionTurnAcquireResult, SpawnAgentParams, SubRunStorageMode, SubagentContextOverrides,
-    UserMessageOrigin,
+    AgentMode, CancelToken, InvocationKind, SessionTurnAcquireResult, SubagentContextOverrides,
 };
-use astrcode_runtime_session::{
-    complete_session_execution, prepare_session_execution, run_session_turn,
+use astrcode_runtime_execution::{
+    build_root_spawn_params, prepare_root_execution_launch, validate_root_execution_storage_mode,
 };
-use chrono::Utc;
+use astrcode_runtime_session::prepare_session_execution;
 use uuid::Uuid;
 
 use crate::service::{
     AgentExecutionAccepted, RuntimeService, ServiceError, ServiceResult,
-    blocking_bridge::spawn_blocking_service, turn::BudgetSettings,
+    blocking_bridge::spawn_blocking_service,
+    turn::{BudgetSettings, complete_session_execution, run_session_turn},
 };
 
 /// 面向 API / Tool 的 Agent Profile 摘要。
@@ -81,21 +80,9 @@ impl AgentExecutionServiceHandle {
         context_overrides: Option<SubagentContextOverrides>,
         working_dir: PathBuf,
     ) -> ServiceResult<AgentExecutionAccepted> {
-        // 从 task 提取 description（取前几个词或直接使用）
-        let description = if task.len() > 50 {
-            task.chars().take(30).collect::<String>() + "..."
-        } else {
-            task.clone()
-        };
-
-        let params = SpawnAgentParams {
-            r#type: Some(agent_id),
-            description,
-            prompt: task,
-            context,
-        };
+        let params = build_root_spawn_params(agent_id, task, context);
         let runtime = &self.runtime;
-        let profiles = runtime.agent_profiles();
+        let profiles = self.load_profiles_for_working_dir(&working_dir).await?;
         let profile_id = params.r#type.as_deref().unwrap_or("explore");
         let profile = profiles.get(profile_id).cloned().ok_or_else(|| {
             ServiceError::InvalidInput(format!("unknown agent profile '{profile_id}'"))
@@ -113,21 +100,14 @@ impl AgentExecutionServiceHandle {
             self.snapshot_execution_surface().await,
             None,
         )?;
-        if matches!(
+        validate_root_execution_storage_mode(
             prepared_execution
                 .execution_spec
                 .resolved_overrides
                 .storage_mode,
-            SubRunStorageMode::IndependentSession
-        ) {
-            return Err(ServiceError::InvalidInput(
-                "root execution already runs in its own session; \
-                 contextOverrides.storageMode=independentSession is not applicable"
-                    .to_string(),
-            ));
-        }
+        )?;
 
-        let session_meta = runtime.create_session(working_dir).await?;
+        let session_meta = runtime.sessions().create(working_dir).await?;
         let session_state = runtime
             .ensure_session_loaded(&session_meta.session_id)
             .await?;
@@ -151,8 +131,6 @@ impl AgentExecutionServiceHandle {
             ))),
         }?;
         let root_agent_id = format!("root-agent-{}", Uuid::new_v4());
-        let root_agent =
-            AgentEventContext::root_execution(root_agent_id.clone(), profile.id.clone());
         let budget_settings = BudgetSettings {
             continuation_min_delta_tokens: crate::config::resolve_continuation_min_delta_tokens(
                 &prepared_execution.runtime_config,
@@ -176,32 +154,27 @@ impl AgentExecutionServiceHandle {
         let agent_control = runtime.agent_control.clone();
         let session_state_for_task = Arc::clone(&session_state);
         let accepted_turn_id = turn_id.clone();
-        let root_execution_owner = ExecutionOwner::root(
-            session_meta.session_id.clone(),
-            turn_id.clone(),
-            InvocationKind::RootExecution,
+        let launch = prepare_root_execution_launch(
+            &session_meta.session_id,
+            &turn_id,
+            root_agent_id.clone(),
+            profile.id.clone(),
+            prepared_execution
+                .execution_spec
+                .resolved_context_snapshot
+                .composed_task
+                .clone(),
         );
         tokio::spawn(async move {
             let turn_started_at = Instant::now();
-            let user_event = astrcode_core::StorageEvent::UserMessage {
-                turn_id: Some(turn_id.clone()),
-                agent: root_agent.clone(),
-                content: prepared_execution
-                    .execution_spec
-                    .resolved_context_snapshot
-                    .composed_task
-                    .clone(),
-                timestamp: Utc::now(),
-                origin: UserMessageOrigin::User,
-            };
             let task_result = run_session_turn(
                 &session_state_for_task,
                 &prepared_execution.loop_,
                 &turn_id,
                 session_cancel.clone(),
-                user_event,
-                root_agent.clone(),
-                root_execution_owner.clone(),
+                launch.user_event,
+                launch.agent,
+                launch.execution_owner,
                 budget_settings,
             )
             .await;

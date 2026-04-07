@@ -12,6 +12,7 @@ interface SubRunBlockProps {
   finishMessage?: SubRunFinishMessage;
   threadItems: ThreadItem[];
   streamFingerprint: string;
+  hasDescriptorLineage: boolean;
   renderThreadItems: (
     items: ThreadItem[],
     options?: {
@@ -79,6 +80,7 @@ function SubRunBlock({
   finishMessage,
   threadItems,
   streamFingerprint,
+  hasDescriptorLineage,
   renderThreadItems,
   onCancelSubRun,
   onFocusSubRun,
@@ -375,6 +377,17 @@ function SubRunBlock({
               <div className={styles.sectionLabel}>调用参数</div>
               <ToolJsonView value={sessionConfig} summary={sessionConfigSummary} />
             </div>
+
+            {!hasDescriptorLineage && (
+              <div className={styles.section}>
+                <div className={styles.sectionLabel}>Lineage 状态</div>
+                <div className={styles.runningCard}>
+                  <div className={styles.runningHint}>
+                    该子会话来自旧版本历史，父子关系信息不完整。
+                  </div>
+                </div>
+              </div>
+            )}
 
             <details className={styles.streamSection} open>
               <summary className={styles.streamSummary}>

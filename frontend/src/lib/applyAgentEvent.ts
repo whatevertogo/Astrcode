@@ -252,6 +252,8 @@ export function applyAgentEvent(
       if (!sessionId) {
         break;
       }
+      const descriptor = event.data.descriptor;
+      const toolCallId = event.data.toolCallId;
       context.dispatch({
         type: 'ADD_MESSAGE',
         sessionId,
@@ -260,6 +262,8 @@ export function applyAgentEvent(
           kind: 'subRunStart',
           turnId: event.data.turnId ?? null,
           ...agentFields,
+          ...(descriptor ? { descriptor } : {}),
+          ...(toolCallId ? { toolCallId } : {}),
           resolvedOverrides: event.data.resolvedOverrides,
           resolvedLimits: event.data.resolvedLimits,
           timestamp: Date.now(),
@@ -273,6 +277,8 @@ export function applyAgentEvent(
       if (!sessionId) {
         break;
       }
+      const descriptor = event.data.descriptor;
+      const toolCallId = event.data.toolCallId;
       context.dispatch({
         type: 'ADD_MESSAGE',
         sessionId,
@@ -281,6 +287,8 @@ export function applyAgentEvent(
           kind: 'subRunFinish',
           turnId: event.data.turnId ?? null,
           ...agentFields,
+          ...(descriptor ? { descriptor } : {}),
+          ...(toolCallId ? { toolCallId } : {}),
           result: event.data.result,
           stepCount: event.data.stepCount,
           estimatedTokens: event.data.estimatedTokens,

@@ -426,6 +426,7 @@ where
     let tool_ctx_for_execution = tool_ctx
         .clone()
         .with_turn_id(turn_id.to_string())
+        .with_tool_call_id(tool_call.id.clone())
         .with_agent_context(agent.clone())
         .with_tool_output_sender(tool_output_tx)
         .with_event_sink(Arc::new(ChannelToolEventSink { tx: tool_event_tx }));

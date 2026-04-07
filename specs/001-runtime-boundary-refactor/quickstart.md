@@ -30,7 +30,16 @@ npm run test -- subRunView
 npm run test -- agentEvent
 ```
 
-## 3. 手工验收场景
+## 3. 验证矩阵与样本覆盖
+
+| 验证目标 | 样本来源 | 关键测试/命令 |
+|---------|---------|--------------|
+| 协议事件序列化兼容性 | `crates/protocol/tests/fixtures/v4/initialize.json`、`invoke.json`、`event_delta.json`、`cancel.json`、`result_initialize.json`、`result_error.json` | `cargo test -p astrcode-protocol conformance` |
+| history scope 过滤语义 | `crates/server/src/tests/runtime_routes_tests.rs::seed_shared_subrun_session()` | `cargo test -p astrcode-server session_history_endpoint_filters_subrun_scope_and_cursor` |
+| scope 参数契约校验 | `crates/server/src/tests/session_contract_tests.rs` 中的 scope 参数契约测试 | `cargo test -p astrcode-server session_history_contract_rejects_scope_without_subrun_id` + `cargo test -p astrcode-server session_events_contract_rejects_scope_without_subrun_id` |
+| legacy 历史降级行为 | 当前由 server 路由测试中的手工 durable 样本覆盖；协议 fixture 侧通过 `crates/protocol/tests/fixtures/README.md` 记录覆盖边界 | 场景 C 手工验收 + server/runtime 回归测试 |
+
+## 4. 手工验收场景
 
 ### 场景 A: durable subrun lineage 在 live 清理后仍然成立
 

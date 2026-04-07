@@ -25,6 +25,7 @@ describe('SubRunBlock result rendering', () => {
         title="reviewer"
         threadItems={[]}
         streamFingerprint=""
+        hasDescriptorLineage={true}
         renderThreadItems={renderThreadItems}
         onCancelSubRun={async () => {}}
       />
@@ -61,6 +62,7 @@ describe('SubRunBlock result rendering', () => {
         finishMessage={finishMessage}
         threadItems={[]}
         streamFingerprint=""
+        hasDescriptorLineage={true}
         renderThreadItems={renderThreadItems}
         onCancelSubRun={async () => {}}
       />
@@ -104,6 +106,7 @@ describe('SubRunBlock result rendering', () => {
         startMessage={startMessage}
         threadItems={[]}
         streamFingerprint=""
+        hasDescriptorLineage={true}
         renderThreadItems={renderThreadItems}
         onCancelSubRun={async () => {}}
         onFocusSubRun={() => {}}
@@ -146,6 +149,7 @@ describe('SubRunBlock result rendering', () => {
         startMessage={startMessage}
         threadItems={[]}
         streamFingerprint=""
+        hasDescriptorLineage={true}
         renderThreadItems={renderThreadItems}
         onCancelSubRun={async () => {}}
         onOpenChildSession={async () => {}}
@@ -181,6 +185,7 @@ describe('SubRunBlock result rendering', () => {
         finishMessage={finishMessage}
         threadItems={[]}
         streamFingerprint=""
+        hasDescriptorLineage={true}
         renderThreadItems={renderThreadItems}
         onCancelSubRun={async () => {}}
         onFocusSubRun={() => {}}

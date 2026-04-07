@@ -60,6 +60,6 @@ pub use service::{
     ComposerOptionKind, ComposerOptionsRequest, OperationMetricsSnapshot, PromptAccepted,
     ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot, RuntimeService, ServiceError,
     ServiceResult, SessionCatalogEvent, SessionEventRecord, SessionHistorySnapshot, SessionReplay,
-    SessionReplaySource, SubRunExecutionMetricsSnapshot, SubRunStatusSnapshot,
-    ToolExecutionServiceHandle, ToolSummary,
+    SessionReplaySource, SessionServiceHandle, SubRunExecutionMetricsSnapshot,
+    SubRunStatusSnapshot, SubRunStatusSource, ToolExecutionServiceHandle, ToolSummary,
 };

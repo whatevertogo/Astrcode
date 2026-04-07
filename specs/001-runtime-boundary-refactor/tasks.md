@@ -17,9 +17,9 @@
 
 **Purpose**: Freeze the migration baseline, caller inventory, and validation targets before code movement starts
 
-- [ ] T001 Reconcile the caller inventory and deletion order in `specs/001-runtime-boundary-refactor/migration.md` against `crates/runtime/src/service/mod.rs`, `crates/server/src/http/routes/sessions/query.rs`, `crates/server/src/http/routes/sessions/stream.rs`, `crates/server/src/http/routes/sessions/mutation.rs`, and `crates/server/src/http/routes/agents.rs`
-- [ ] T002 Capture the validation matrix and legacy-history sample coverage in `specs/001-runtime-boundary-refactor/quickstart.md`, `crates/protocol/tests/fixtures/`, `crates/server/src/tests/runtime_routes_tests.rs`, and `crates/server/src/tests/session_contract_tests.rs`
-- [ ] T003 [P] Align implementation checklists in `specs/001-runtime-boundary-refactor/design-subrun-protocol.md`, `specs/001-runtime-boundary-refactor/design-execution-boundary.md`, and `specs/001-runtime-boundary-refactor/contracts/`
+- [X] T001 Reconcile the caller inventory and deletion order in `specs/001-runtime-boundary-refactor/migration.md` against `crates/runtime/src/service/mod.rs`, `crates/server/src/http/routes/sessions/query.rs`, `crates/server/src/http/routes/sessions/stream.rs`, `crates/server/src/http/routes/sessions/mutation.rs`, and `crates/server/src/http/routes/agents.rs`
+- [X] T002 Capture the validation matrix and legacy-history sample coverage in `specs/001-runtime-boundary-refactor/quickstart.md`, `crates/protocol/tests/fixtures/`, `crates/server/src/tests/runtime_routes_tests.rs`, and `crates/server/src/tests/session_contract_tests.rs`
+- [X] T003 [P] Align implementation checklists in `specs/001-runtime-boundary-refactor/design-subrun-protocol.md`, `specs/001-runtime-boundary-refactor/design-execution-boundary.md`, and `specs/001-runtime-boundary-refactor/contracts/`
 
 ---
 
@@ -29,11 +29,11 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T004 Add shared lineage value objects in `crates/core/src/agent/mod.rs` and `crates/core/src/lib.rs`
-- [ ] T005 Update shared durable/domain event scaffolding in `crates/core/src/event/types.rs`, `crates/core/src/event/domain.rs`, and `crates/core/src/event/translate.rs`
-- [ ] T006 Define protocol DTO shells and mapper/front-end type placeholders in `crates/protocol/src/http/event.rs`, `crates/protocol/src/http/agent.rs`, `crates/server/src/http/mapper.rs`, and `frontend/src/types.ts`
-- [ ] T007 Define cross-boundary runtime traits for session truth, execution orchestration, loop running, and live subrun control in `crates/core/src/runtime/traits.rs`, `crates/core/src/runtime/mod.rs`, and `crates/core/src/lib.rs`
-- [ ] T008 Configure the target owner graph in `crates/runtime-session/Cargo.toml`, `crates/runtime-execution/Cargo.toml`, `crates/runtime/Cargo.toml`, and `crates/runtime/src/service/mod.rs`
+- [X] T004 Add shared lineage value objects in `crates/core/src/agent/mod.rs` and `crates/core/src/lib.rs`
+- [X] T005 Update shared durable/domain event scaffolding in `crates/core/src/event/types.rs`, `crates/core/src/event/domain.rs`, and `crates/core/src/event/translate.rs`
+- [X] T006 Define protocol DTO shells and mapper/front-end type placeholders in `crates/protocol/src/http/event.rs`, `crates/protocol/src/http/agent.rs`, `crates/server/src/http/mapper.rs`, and `frontend/src/types.ts`
+- [X] T007 Define cross-boundary runtime traits for session truth, execution orchestration, loop running, and live subrun control in `crates/core/src/runtime/traits.rs`, `crates/core/src/runtime/mod.rs`, and `crates/core/src/lib.rs`
+- [X] T008 Configure the target owner graph in `crates/runtime-session/Cargo.toml`, `crates/runtime-execution/Cargo.toml`, `crates/runtime/Cargo.toml`, and `crates/runtime/src/service/mod.rs`
 
 **Checkpoint**: Foundation ready — durable lineage, protocol surfaces, core traits, and boundary wiring are defined for implementation
 
@@ -49,20 +49,20 @@
 
 > **NOTE: Write these tests first and confirm they fail before implementation**
 
-- [ ] T009 [P] [US1] Extend durable event serialization coverage in `crates/protocol/tests/subrun_event_serialization.rs` and `crates/protocol/tests/conformance.rs`
-- [ ] T010 [P] [US1] Add durable/live status reconstruction tests in `crates/runtime-execution/src/subrun.rs` and `crates/runtime/src/service/execution/tests.rs`
-- [ ] T011 [P] [US1] Add server subrun status contract coverage in `crates/server/src/tests/runtime_routes_tests.rs` and `crates/server/src/tests/session_contract_tests.rs`
-- [ ] T012 [P] [US1] Add parent-termination and storage-mode parity regressions in `crates/runtime-execution/src/subrun.rs`, `crates/runtime/src/service/execution/tests.rs`, and `crates/server/src/tests/runtime_routes_tests.rs`
+- [X] T009 [P] [US1] Extend durable event serialization coverage in `crates/protocol/tests/subrun_event_serialization.rs` and `crates/protocol/tests/conformance.rs`
+- [X] T010 [P] [US1] Add durable/live status reconstruction tests in `crates/runtime-execution/src/subrun.rs` and `crates/runtime/src/service/execution/tests.rs`
+- [X] T011 [P] [US1] Add server subrun status contract coverage in `crates/server/src/tests/runtime_routes_tests.rs` and `crates/server/src/tests/session_contract_tests.rs`
+- [X] T012 [P] [US1] Add parent-termination and storage-mode parity regressions in `crates/runtime-execution/src/subrun.rs`, `crates/runtime/src/service/execution/tests.rs`, and `crates/server/src/tests/runtime_routes_tests.rs`
 
 ### Implementation for User Story 1
 
-- [ ] T013 [US1] Persist `descriptor` and `tool_call_id` on lifecycle writes in `crates/runtime/src/service/execution/subagent.rs` and `crates/runtime/src/service/execution/status.rs`
-- [ ] T014 [US1] Finalize `SubRunStarted` and `SubRunFinished` durable/domain schemas in `crates/core/src/event/types.rs`, `crates/core/src/event/domain.rs`, and `crates/core/src/event/translate.rs`
-- [ ] T015 [US1] Rebuild durable-first replay and status lookup for completed, cancelled, and parent-aborted child executions in `crates/runtime-execution/src/subrun.rs` and `crates/runtime-execution/src/lib.rs`
-- [ ] T016 [US1] Expose `descriptor`, `toolCallId`, and `source` through `crates/protocol/src/http/event.rs`, `crates/protocol/src/http/agent.rs`, `crates/server/src/http/mapper.rs`, and `crates/server/src/http/routes/agents.rs`
-- [ ] T017 [US1] Update frontend subrun payload normalization in `frontend/src/types.ts`, `frontend/src/lib/agentEvent.ts`, and `frontend/src/lib/api/models.ts`
-- [ ] T018 [US1] Preserve identical ownership semantics for `SharedSession` and `IndependentSession` execution paths in `crates/runtime/src/service/execution/subagent.rs`, `crates/runtime-execution/src/subrun.rs`, `crates/core/src/agent/mod.rs`, and `crates/server/src/http/routes/agents.rs`
-- [ ] T019 [US1] Implement `legacyDurable` downgrade handling in `crates/runtime-execution/src/subrun.rs`, `crates/server/src/http/mapper.rs`, `frontend/src/lib/agentEvent.ts`, and `frontend/src/lib/subRunView.ts`
+- [X] T013 [US1] Persist `descriptor` and `tool_call_id` on lifecycle writes in `crates/runtime/src/service/execution/subagent.rs` and `crates/runtime/src/service/execution/status.rs`
+- [X] T014 [US1] Finalize `SubRunStarted` and `SubRunFinished` durable/domain schemas in `crates/core/src/event/types.rs`, `crates/core/src/event/domain.rs`, and `crates/core/src/event/translate.rs`
+- [X] T015 [US1] Rebuild durable-first replay and status lookup for completed, cancelled, and parent-aborted child executions in `crates/runtime-execution/src/subrun.rs` and `crates/runtime-execution/src/lib.rs`
+- [X] T016 [US1] Expose `descriptor`, `toolCallId`, and `source` through `crates/protocol/src/http/event.rs`, `crates/protocol/src/http/agent.rs`, `crates/server/src/http/mapper.rs`, and `crates/server/src/http/routes/agents.rs`
+- [X] T017 [US1] Update frontend subrun payload normalization in `frontend/src/types.ts`, `frontend/src/lib/agentEvent.ts`, and `frontend/src/lib/api/models.ts`
+- [X] T018 [US1] Preserve identical ownership semantics for `SharedSession` and `IndependentSession` execution paths in `crates/runtime/src/service/execution/subagent.rs`, `crates/runtime-execution/src/subrun.rs`, `crates/core/src/agent/mod.rs`, and `crates/server/src/http/routes/agents.rs`
+- [X] T019 [US1] Implement `legacyDurable` downgrade handling in `crates/runtime-execution/src/subrun.rs`, `crates/server/src/http/mapper.rs`, `frontend/src/lib/agentEvent.ts`, and `frontend/src/lib/subRunView.ts`
 
 **Checkpoint**: User Story 1 is complete when durable history alone can answer subrun lineage and trigger questions after live cleanup, parent teardown, and storage-mode changes
 
@@ -76,18 +76,18 @@
 
 ### Tests for User Story 2 ⚠️
 
-- [ ] T020 [P] [US2] Add execution-surface regression coverage in `crates/runtime/src/service/execution/tests.rs`, `crates/runtime/src/service/turn/tests.rs`, and `crates/server/src/tests/runtime_routes_tests.rs`
-- [ ] T021 [P] [US2] Add boundary/dependency smoke coverage in `crates/runtime-session/src/lib.rs`, `crates/runtime-session/src/turn_runtime.rs`, and `crates/runtime-execution/src/lib.rs`
+- [X] T020 [P] [US2] Add execution-surface regression coverage in `crates/runtime/src/service/execution/tests.rs`, `crates/runtime/src/service/turn/tests.rs`, and `crates/server/src/tests/runtime_routes_tests.rs`
+- [X] T021 [P] [US2] Add boundary/dependency smoke coverage in `crates/runtime-session/src/lib.rs`, `crates/runtime-session/src/turn_runtime.rs`, and `crates/runtime-execution/src/lib.rs`
 
 ### Implementation for User Story 2
 
-- [ ] T022 [US2] Strip execution orchestration out of the session boundary in `crates/runtime-session/src/lib.rs`, `crates/runtime-session/src/turn_runtime.rs`, and `crates/runtime-session/src/session_state.rs`
-- [ ] T023 [US2] Move submit/interrupt/root-execute/subrun orchestration into `crates/runtime-execution/src/lib.rs`, `crates/runtime-execution/src/context.rs`, `crates/runtime-execution/src/prep.rs`, and `crates/runtime-execution/src/subrun.rs`
-- [ ] T024 [US2] Implement the core runtime traits from `crates/core/src/runtime/traits.rs` in `crates/runtime-agent-loop/src/agent_loop/turn_runner.rs`, `crates/runtime-agent-control/src/lib.rs`, `crates/runtime-session/src/lib.rs`, and `crates/runtime/src/service/execution/mod.rs`
-- [ ] T025 [US2] Refactor the runtime facade to expose only owner handles in `crates/runtime/src/service/mod.rs`, `crates/runtime/src/service/execution/mod.rs`, and `crates/runtime/src/runtime_governance.rs`
-- [ ] T026 [US2] Migrate server and internal callers to `sessions()` / `execution()` / `tools()` in `crates/server/src/http/routes/sessions/query.rs`, `crates/server/src/http/routes/sessions/stream.rs`, `crates/server/src/http/routes/sessions/mutation.rs`, `crates/server/src/http/routes/agents.rs`, `crates/server/src/http/routes/tools.rs`, `crates/runtime/src/service/session/create.rs`, and `crates/runtime/src/service/session/delete.rs`
-- [ ] T027 [US2] Delete legacy facades in `crates/runtime/src/service/session_service.rs`, `crates/runtime/src/service/execution_service.rs`, `crates/runtime/src/service/replay.rs`, `crates/runtime/src/service/turn/submit.rs`, and `crates/runtime/src/service/session/load.rs`
-- [ ] T028 [US2] Sync final owner and deletion decisions in `specs/001-runtime-boundary-refactor/design-execution-boundary.md`, `specs/001-runtime-boundary-refactor/migration.md`, and `docs/architecture/architecture.md`
+- [X] T022 [US2] Strip execution orchestration out of the session boundary in `crates/runtime-session/src/lib.rs`, `crates/runtime-session/src/turn_runtime.rs`, and `crates/runtime-session/src/session_state.rs`
+- [X] T023 [US2] Move submit/interrupt/root-execute/subrun orchestration into `crates/runtime-execution/src/lib.rs`, `crates/runtime-execution/src/context.rs`, `crates/runtime-execution/src/prep.rs`, and `crates/runtime-execution/src/subrun.rs`
+- [X] T024 [US2] Implement the core runtime traits from `crates/core/src/runtime/traits.rs` in `crates/runtime-agent-loop/src/agent_loop/turn_runner.rs`, `crates/runtime-agent-control/src/lib.rs`, `crates/runtime-session/src/lib.rs`, and `crates/runtime/src/service/execution/mod.rs`
+- [X] T025 [US2] Refactor the runtime facade to expose only owner handles in `crates/runtime/src/service/mod.rs`, `crates/runtime/src/service/execution/mod.rs`, and `crates/runtime/src/runtime_governance.rs`
+- [X] T026 [US2] Migrate server and internal callers to `sessions()` / `execution()` / `tools()` in `crates/server/src/http/routes/sessions/query.rs`, `crates/server/src/http/routes/sessions/stream.rs`, `crates/server/src/http/routes/sessions/mutation.rs`, `crates/server/src/http/routes/agents.rs`, `crates/server/src/http/routes/tools.rs`, `crates/runtime/src/service/session/create.rs`, and `crates/runtime/src/service/session/delete.rs`
+- [X] T027 [US2] Delete legacy facades in `crates/runtime/src/service/session_service.rs`, `crates/runtime/src/service/execution_service.rs`, `crates/runtime/src/service/replay.rs`, `crates/runtime/src/service/turn/submit.rs`, and `crates/runtime/src/service/session/load.rs`
+- [X] T028 [US2] Sync final owner and deletion decisions in `specs/001-runtime-boundary-refactor/design-execution-boundary.md`, `specs/001-runtime-boundary-refactor/migration.md`, and `docs/architecture/architecture.md`
 
 **Checkpoint**: User Story 2 is complete when there is one owner per boundary, one public surface per responsibility, and no remaining legacy facade callers
 
@@ -101,18 +101,18 @@
 
 ### Tests for User Story 3 ⚠️
 
-- [ ] T029 [P] [US3] Add scope-filter contract coverage in `crates/server/src/tests/runtime_routes_tests.rs` and `crates/server/src/tests/session_contract_tests.rs`
-- [ ] T030 [P] [US3] Add frontend lineage/tree regression coverage in `frontend/src/lib/subRunView.test.ts`, `frontend/src/lib/sessionHistory.test.ts`, `frontend/src/lib/agentEvent.test.ts`, and `frontend/src/components/Chat/SubRunBlock.test.tsx`
-- [ ] T031 [P] [US3] Add working-dir resolver regression coverage in `crates/runtime-agent-loader/src/lib.rs`, `crates/runtime/src/bootstrap.rs`, and `crates/runtime/src/service/watch_ops.rs`
+- [X] T029 [P] [US3] Add scope-filter contract coverage in `crates/server/src/tests/runtime_routes_tests.rs` and `crates/server/src/tests/session_contract_tests.rs`
+- [X] T030 [P] [US3] Add frontend lineage/tree regression coverage in `frontend/src/lib/subRunView.test.ts`, `frontend/src/lib/sessionHistory.test.ts`, `frontend/src/lib/agentEvent.test.ts`, and `frontend/src/components/Chat/SubRunBlock.test.tsx`
+- [X] T031 [P] [US3] Add working-dir resolver regression coverage in `crates/runtime-agent-loader/src/lib.rs`, `crates/runtime/src/bootstrap.rs`, and `crates/runtime/src/service/watch_ops.rs`
 
 ### Implementation for User Story 3
 
-- [ ] T032 [US3] Implement the shared `ExecutionLineageIndex` and legacy-gap errors in `crates/runtime-execution/src/subrun.rs` and `crates/runtime-execution/src/context.rs`
-- [ ] T033 [US3] Replace server ancestry heuristics with lineage-based filtering in `crates/server/src/http/routes/sessions/filter.rs`, `crates/server/src/http/routes/sessions/query.rs`, and `crates/server/src/http/routes/sessions/stream.rs`
-- [ ] T034 [US3] Align history/event/status projections with one filter semantic in `crates/server/src/http/mapper.rs`, `crates/protocol/src/http/event.rs`, and `crates/protocol/src/http/agent.rs`
-- [ ] T035 [US3] Replace frontend `parentTurnId -> turn owner` inference with descriptor-based trees in `frontend/src/lib/subRunView.ts`, `frontend/src/lib/sessionHistory.ts`, and `frontend/src/components/Chat/SubRunBlock.tsx`
-- [ ] T036 [US3] Bind agent resolution and watch scope to execution context in `crates/runtime/src/bootstrap.rs`, `crates/runtime/src/service/watch_ops.rs`, `crates/runtime-agent-loader/src/lib.rs`, and `crates/server/src/http/routes/agents.rs`
-- [ ] T037 [US3] Surface lineage-gap and `legacyDurable` UI states in `frontend/src/types.ts`, `frontend/src/lib/api/models.ts`, and `frontend/src/components/Chat/SubRunBlock.tsx`
+- [X] T032 [US3] Implement the shared `ExecutionLineageIndex` and legacy-gap errors in `crates/runtime-execution/src/subrun.rs` and `crates/runtime-execution/src/context.rs`
+- [X] T033 [US3] Replace server ancestry heuristics with lineage-based filtering in `crates/server/src/http/routes/sessions/filter.rs`, `crates/server/src/http/routes/sessions/query.rs`, and `crates/server/src/http/routes/sessions/stream.rs`
+- [X] T034 [US3] Align history/event/status projections with one filter semantic in `crates/server/src/http/mapper.rs`, `crates/protocol/src/http/event.rs`, and `crates/protocol/src/http/agent.rs`
+- [X] T035 [US3] Replace frontend `parentTurnId -> turn owner` inference with descriptor-based trees in `frontend/src/lib/subRunView.ts`, `frontend/src/lib/sessionHistory.ts`, and `frontend/src/components/Chat/SubRunBlock.tsx`
+- [X] T036 [US3] Bind agent resolution and watch scope to execution context in `crates/runtime/src/bootstrap.rs`, `crates/runtime/src/service/watch_ops.rs`, `crates/runtime-agent-loader/src/lib.rs`, and `crates/server/src/http/routes/agents.rs`
+- [X] T037 [US3] Surface lineage-gap and `legacyDurable` UI states in `frontend/src/types.ts`, `frontend/src/lib/api/models.ts`, and `frontend/src/components/Chat/SubRunBlock.tsx`
 
 **Checkpoint**: User Story 3 is complete when history, SSE, status, scope filtering, and the frontend tree all agree on the same ownership semantics
 
@@ -127,6 +127,11 @@
 - [ ] T040 Run frontend validation and manual acceptance scenarios documented in `specs/001-runtime-boundary-refactor/quickstart.md`
 
 ---
+
+## Phase 7: Review all the codes
+
+review 所有代码
+
 
 ## Dependencies & Execution Order
 

@@ -18,11 +18,15 @@ use std::{
     },
 };
 
-use astrcode_core::{AgentProfile, AgentStatus, CancelToken, SubRunHandle, SubRunStorageMode};
+use astrcode_core::{
+    AgentProfile, AgentStatus, AstrError, CancelToken, LiveSubRunControlBoundary, SubRunHandle,
+    SubRunStorageMode,
+};
 use astrcode_runtime_config::{
     RuntimeConfig, resolve_agent_finalized_retain_limit, resolve_agent_max_concurrent,
     resolve_agent_max_subrun_depth,
 };
+use async_trait::async_trait;
 use thiserror::Error;
 use tokio::sync::{RwLock, watch};
 
@@ -61,6 +65,74 @@ pub struct AgentControl {
     max_concurrent: usize,
     finalized_retain_limit: usize,
     state: Arc<RwLock<AgentRegistryState>>,
+}
+
+pub trait AgentProfileSource: Send + Sync {
+    fn list_profiles(&self) -> Vec<AgentProfile>;
+}
+
+#[derive(Clone)]
+pub struct StaticAgentProfileSource {
+    profiles: Vec<AgentProfile>,
+}
+
+impl StaticAgentProfileSource {
+    pub fn new(profiles: Vec<AgentProfile>) -> Self {
+        Self { profiles }
+    }
+}
+
+impl AgentProfileSource for StaticAgentProfileSource {
+    fn list_profiles(&self) -> Vec<AgentProfile> {
+        self.profiles.clone()
+    }
+}
+
+/// `runtime-agent-control` 对外暴露的 live 控制面。
+///
+/// live registry 负责 handle/cancel 真相，profile 列表由外部 profile catalog 注入，
+/// 避免控制平面反向依赖 loader/runtime façade。
+#[derive(Clone)]
+pub struct LiveSubRunControl<P> {
+    control: AgentControl,
+    profiles: P,
+}
+
+impl<P> LiveSubRunControl<P> {
+    pub fn new(control: AgentControl, profiles: P) -> Self {
+        Self { control, profiles }
+    }
+
+    pub fn control(&self) -> &AgentControl {
+        &self.control
+    }
+}
+
+#[async_trait]
+impl<P> LiveSubRunControlBoundary for LiveSubRunControl<P>
+where
+    P: AgentProfileSource,
+{
+    async fn get_subrun_handle(
+        &self,
+        _session_id: &str,
+        sub_run_id: &str,
+    ) -> std::result::Result<Option<SubRunHandle>, AstrError> {
+        Ok(self.control.get(sub_run_id).await)
+    }
+
+    async fn cancel_subrun(
+        &self,
+        _session_id: &str,
+        sub_run_id: &str,
+    ) -> std::result::Result<(), AstrError> {
+        let _ = self.control.cancel(sub_run_id).await;
+        Ok(())
+    }
+
+    async fn list_profiles(&self) -> std::result::Result<Vec<AgentProfile>, AstrError> {
+        Ok(self.profiles.list_profiles())
+    }
 }
 
 impl Default for AgentControl {
@@ -475,10 +547,10 @@ fn prune_finalized_agents_locked(state: &mut AgentRegistryState, finalized_retai
 mod tests {
     use std::time::Duration;
 
-    use astrcode_core::{AgentMode, AgentProfile, AgentStatus};
+    use astrcode_core::{AgentMode, AgentProfile, AgentStatus, LiveSubRunControlBoundary};
     use astrcode_runtime_config::{DEFAULT_MAX_AGENT_DEPTH, DEFAULT_MAX_CONCURRENT_AGENTS};
 
-    use super::{AgentControl, AgentControlError};
+    use super::{AgentControl, AgentControlError, LiveSubRunControl, StaticAgentProfileSource};
 
     fn explore_profile() -> AgentProfile {
         AgentProfile {
@@ -869,6 +941,48 @@ mod tests {
                 .expect("second should still exist")
                 .status,
             AgentStatus::Pending
+        );
+    }
+
+    #[tokio::test]
+    async fn live_subrun_control_surface_delegates_registry_and_profiles() {
+        let control = AgentControl::new();
+        let profile = explore_profile();
+        let handle = control
+            .spawn(&profile, "session-1", Some("turn-1".to_string()), None)
+            .await
+            .expect("spawn should succeed");
+        let surface = LiveSubRunControl::new(
+            control.clone(),
+            StaticAgentProfileSource::new(vec![profile.clone()]),
+        );
+
+        let loaded = surface
+            .get_subrun_handle("session-1", &handle.sub_run_id)
+            .await
+            .expect("lookup should succeed")
+            .expect("handle should exist");
+        assert_eq!(loaded.agent_id, handle.agent_id);
+        assert_eq!(
+            surface
+                .list_profiles()
+                .await
+                .expect("profiles should load")
+                .len(),
+            1
+        );
+
+        surface
+            .cancel_subrun("session-1", &handle.sub_run_id)
+            .await
+            .expect("cancel should succeed");
+        assert_eq!(
+            control
+                .get(&handle.sub_run_id)
+                .await
+                .expect("handle should remain visible")
+                .status,
+            AgentStatus::Cancelled
         );
     }
 }

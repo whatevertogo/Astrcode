@@ -1,7 +1,8 @@
 use astrcode_protocol::http::{
     AgentContextDto, AgentEventEnvelope, AgentEventPayload, InvocationKindDto,
-    ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto, SubRunFailureCodeDto,
-    SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto,
+    ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto, SubRunDescriptorDto,
+    SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto,
+    SubRunStorageModeDto,
 };
 
 #[test]
@@ -17,6 +18,8 @@ fn sub_run_started_serializes_contract_fields_in_camel_case() {
             storage_mode: Some(SubRunStorageModeDto::SharedSession),
             child_session_id: None,
         },
+        descriptor: None,
+        tool_call_id: None,
         resolved_overrides: ResolvedSubagentContextOverridesDto {
             storage_mode: SubRunStorageModeDto::SharedSession,
             inherit_system_instructions: true,
@@ -63,6 +66,13 @@ fn sub_run_started_payload_roundtrip() {
             storage_mode: Some(SubRunStorageModeDto::SharedSession),
             child_session_id: None,
         },
+        descriptor: Some(SubRunDescriptorDto {
+            sub_run_id: "subrun-1".to_string(),
+            parent_turn_id: "parent-turn".to_string(),
+            parent_agent_id: Some("agent-root".to_string()),
+            depth: 2,
+        }),
+        tool_call_id: Some("call-1".to_string()),
         resolved_overrides: ResolvedSubagentContextOverridesDto {
             storage_mode: SubRunStorageModeDto::SharedSession,
             inherit_system_instructions: true,
@@ -88,6 +98,55 @@ fn sub_run_started_payload_roundtrip() {
         serde_json::from_value(json).expect("deserialize payload");
 
     assert_eq!(original, roundtripped);
+}
+
+#[test]
+fn sub_run_started_serializes_descriptor_and_tool_call_id_in_camel_case() {
+    let payload = AgentEventPayload::SubRunStarted {
+        turn_id: Some("turn-1".to_string()),
+        agent: AgentContextDto::default(),
+        descriptor: Some(SubRunDescriptorDto {
+            sub_run_id: "subrun-1".to_string(),
+            parent_turn_id: "parent-turn".to_string(),
+            parent_agent_id: None,
+            depth: 1,
+        }),
+        tool_call_id: Some("call-1".to_string()),
+        resolved_overrides: ResolvedSubagentContextOverridesDto {
+            storage_mode: SubRunStorageModeDto::SharedSession,
+            inherit_system_instructions: true,
+            inherit_project_instructions: true,
+            inherit_working_dir: true,
+            inherit_policy_upper_bound: true,
+            inherit_cancel_token: true,
+            include_compact_summary: false,
+            include_recent_tail: true,
+            include_recovery_refs: false,
+            include_parent_findings: false,
+            fork_mode: None,
+        },
+        resolved_limits: ResolvedExecutionLimitsDto {
+            max_steps: Some(4),
+            token_budget: Some(4000),
+            allowed_tools: vec!["readFile".to_string()],
+        },
+    };
+
+    let encoded = serde_json::to_value(AgentEventEnvelope::new(payload)).expect("serialize");
+    let data = encoded.get("data").expect("data should exist");
+    let descriptor = data.get("descriptor").expect("descriptor should exist");
+
+    assert_eq!(
+        descriptor.get("subRunId"),
+        Some(&serde_json::json!("subrun-1"))
+    );
+    assert_eq!(
+        descriptor.get("parentTurnId"),
+        Some(&serde_json::json!("parent-turn"))
+    );
+    assert_eq!(descriptor.get("depth"), Some(&serde_json::json!(1)));
+    assert_eq!(data.get("toolCallId"), Some(&serde_json::json!("call-1")));
+    assert!(data.get("tool_call_id").is_none());
 }
 
 #[test]
@@ -139,6 +198,13 @@ fn sub_run_finished_payload_roundtrip_new_result_shape() {
             storage_mode: Some(SubRunStorageModeDto::SharedSession),
             child_session_id: None,
         },
+        descriptor: Some(SubRunDescriptorDto {
+            sub_run_id: "subrun-1".to_string(),
+            parent_turn_id: "parent-turn".to_string(),
+            parent_agent_id: Some("agent-root".to_string()),
+            depth: 2,
+        }),
+        tool_call_id: Some("call-1".to_string()),
         result: SubRunResultDto {
             status: SubRunOutcomeDto::Failed,
             handoff: None,
@@ -166,6 +232,8 @@ fn sub_run_finished_omits_parent_handoff_on_failure() {
     let payload = AgentEventPayload::SubRunFinished {
         turn_id: Some("turn-1".to_string()),
         agent: AgentContextDto::default(),
+        descriptor: None,
+        tool_call_id: None,
         result: SubRunResultDto {
             status: SubRunOutcomeDto::Completed,
             handoff: Some(SubRunHandoffDto {
@@ -185,4 +253,75 @@ fn sub_run_finished_omits_parent_handoff_on_failure() {
 
     assert!(result.get("handoff").is_some());
     assert!(result.get("failure").is_none());
+}
+
+#[test]
+fn sub_run_started_omits_descriptor_field_when_none() {
+    let payload = AgentEventPayload::SubRunStarted {
+        turn_id: Some("turn-1".to_string()),
+        agent: AgentContextDto::default(),
+        descriptor: None,
+        tool_call_id: None,
+        resolved_overrides: ResolvedSubagentContextOverridesDto {
+            storage_mode: SubRunStorageModeDto::SharedSession,
+            inherit_system_instructions: true,
+            inherit_project_instructions: true,
+            inherit_working_dir: true,
+            inherit_policy_upper_bound: true,
+            inherit_cancel_token: true,
+            include_compact_summary: false,
+            include_recent_tail: false,
+            include_recovery_refs: false,
+            include_parent_findings: false,
+            fork_mode: None,
+        },
+        resolved_limits: ResolvedExecutionLimitsDto {
+            max_steps: Some(10),
+            token_budget: None,
+            allowed_tools: vec![],
+        },
+    };
+
+    let json = serde_json::to_value(AgentEventEnvelope::new(payload)).expect("serialize");
+    let data = json.get("data").expect("data should exist");
+
+    // Why: descriptor: None 应该省略字段，而非序列化为 null
+    // 这样 frontend 可以用 `descriptor === undefined` 判断 legacy 事件
+    assert!(
+        !data.as_object().unwrap().contains_key("descriptor"),
+        "descriptor field should be omitted when None, not serialized as null"
+    );
+    assert!(
+        !data.as_object().unwrap().contains_key("toolCallId"),
+        "toolCallId field should be omitted when None, not serialized as null"
+    );
+}
+
+#[test]
+fn sub_run_finished_omits_descriptor_field_when_none() {
+    let payload = AgentEventPayload::SubRunFinished {
+        turn_id: Some("turn-1".to_string()),
+        agent: AgentContextDto::default(),
+        descriptor: None,
+        tool_call_id: None,
+        result: SubRunResultDto {
+            status: SubRunOutcomeDto::Completed,
+            handoff: None,
+            failure: None,
+        },
+        step_count: 5,
+        estimated_tokens: 100,
+    };
+
+    let json = serde_json::to_value(AgentEventEnvelope::new(payload)).expect("serialize");
+    let data = json.get("data").expect("data should exist");
+
+    assert!(
+        !data.as_object().unwrap().contains_key("descriptor"),
+        "descriptor field should be omitted when None, not serialized as null"
+    );
+    assert!(
+        !data.as_object().unwrap().contains_key("toolCallId"),
+        "toolCallId field should be omitted when None, not serialized as null"
+    );
 }

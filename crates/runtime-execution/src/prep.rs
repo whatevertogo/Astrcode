@@ -11,9 +11,10 @@
 use std::{collections::HashSet, sync::Arc};
 
 use astrcode_core::{
-    AgentMode, AgentProfile, AgentState, ArtifactRef, AstrError, ExecutionOwner, HookHandler,
-    InvocationKind, LlmMessage, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    SpawnAgentParams, SubRunFailure, SubRunFailureCode, SubRunHandoff, SubagentContextOverrides,
+    AgentEventContext, AgentMode, AgentProfile, AgentState, ArtifactRef, AstrError, ExecutionOwner,
+    HookHandler, InvocationKind, LlmMessage, ResolvedExecutionLimitsSnapshot,
+    ResolvedSubagentContextOverrides, SpawnAgentParams, StorageEvent, SubRunFailure,
+    SubRunFailureCode, SubRunHandoff, SubRunStorageMode, SubagentContextOverrides,
     UserMessageOrigin,
 };
 use astrcode_runtime_prompt::PromptDeclaration;
@@ -80,6 +81,27 @@ pub struct ScopedExecutionSurface<TSkillCatalog> {
     pub hook_handlers: Vec<Arc<dyn HookHandler>>,
     pub active_profile: String,
     pub runtime_config: astrcode_runtime_config::RuntimeConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedPromptSubmission {
+    pub text: String,
+    pub token_budget: Option<u64>,
+    pub user_event: StorageEvent,
+    pub execution_owner: ExecutionOwner,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterruptSessionPlan {
+    pub should_cancel_session: bool,
+    pub active_turn_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RootExecutionLaunch {
+    pub agent: AgentEventContext,
+    pub user_event: StorageEvent,
+    pub execution_owner: ExecutionOwner,
 }
 
 fn build_execution_spec(
@@ -217,6 +239,99 @@ pub fn build_child_agent_state(
         }],
         phase: astrcode_core::Phase::Thinking,
         turn_count: 0,
+    }
+}
+
+pub fn prepare_prompt_submission(
+    session_id: &str,
+    turn_id: &str,
+    text: String,
+    token_budget: Option<u64>,
+) -> PreparedPromptSubmission {
+    PreparedPromptSubmission {
+        user_event: StorageEvent::UserMessage {
+            turn_id: Some(turn_id.to_string()),
+            agent: AgentEventContext::default(),
+            content: text.clone(),
+            timestamp: chrono::Utc::now(),
+            origin: UserMessageOrigin::User,
+        },
+        execution_owner: ExecutionOwner::root(
+            session_id.to_string(),
+            turn_id.to_string(),
+            InvocationKind::RootExecution,
+        ),
+        text,
+        token_budget,
+    }
+}
+
+pub fn resolve_interrupt_session_plan(
+    is_running: bool,
+    active_turn_id: Option<&str>,
+) -> InterruptSessionPlan {
+    InterruptSessionPlan {
+        should_cancel_session: is_running && active_turn_id.is_some(),
+        active_turn_id: active_turn_id.map(ToOwned::to_owned),
+    }
+}
+
+pub fn summarize_execution_description(task: &str) -> String {
+    if task.len() > 50 {
+        task.chars().take(30).collect::<String>() + "..."
+    } else {
+        task.to_string()
+    }
+}
+
+pub fn build_root_spawn_params(
+    agent_id: String,
+    task: String,
+    context: Option<String>,
+) -> SpawnAgentParams {
+    SpawnAgentParams {
+        r#type: Some(agent_id),
+        description: summarize_execution_description(&task),
+        prompt: task,
+        context,
+    }
+}
+
+pub fn validate_root_execution_storage_mode(
+    storage_mode: SubRunStorageMode,
+) -> Result<(), AstrError> {
+    if matches!(storage_mode, SubRunStorageMode::IndependentSession) {
+        return Err(AstrError::Validation(
+            "root execution already runs in its own session; \
+             contextOverrides.storageMode=independentSession is not applicable"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn prepare_root_execution_launch(
+    session_id: &str,
+    turn_id: &str,
+    root_agent_id: String,
+    profile_id: String,
+    composed_task: String,
+) -> RootExecutionLaunch {
+    let agent = AgentEventContext::root_execution(root_agent_id, profile_id);
+    RootExecutionLaunch {
+        user_event: StorageEvent::UserMessage {
+            turn_id: Some(turn_id.to_string()),
+            agent: agent.clone(),
+            content: composed_task,
+            timestamp: chrono::Utc::now(),
+            origin: UserMessageOrigin::User,
+        },
+        execution_owner: ExecutionOwner::root(
+            session_id.to_string(),
+            turn_id.to_string(),
+            InvocationKind::RootExecution,
+        ),
+        agent,
     }
 }
 
@@ -423,7 +538,9 @@ mod tests {
 
     use super::{
         AgentExecutionRequest, build_background_subrun_handoff, build_execution_spec,
-        build_subrun_failure, build_subrun_handoff,
+        build_root_spawn_params, build_subrun_failure, build_subrun_handoff,
+        prepare_prompt_submission, prepare_root_execution_launch, resolve_interrupt_session_plan,
+        summarize_execution_description, validate_root_execution_storage_mode,
     };
 
     #[test]
@@ -561,5 +678,70 @@ mod tests {
         assert_eq!(request.context.as_deref(), Some("focus on correctness"));
         assert_eq!(request.max_steps, Some(5));
         assert!(request.context_overrides.is_some());
+    }
+
+    #[test]
+    fn prepare_prompt_submission_builds_root_owner_and_user_event() {
+        let prepared =
+            prepare_prompt_submission("session-1", "turn-1", "hello".to_string(), Some(128));
+
+        assert_eq!(prepared.text, "hello");
+        assert_eq!(prepared.token_budget, Some(128));
+        assert_eq!(prepared.execution_owner.root_session_id, "session-1");
+        assert_eq!(prepared.execution_owner.root_turn_id, "turn-1");
+        assert!(matches!(
+            prepared.user_event,
+            astrcode_core::StorageEvent::UserMessage { .. }
+        ));
+    }
+
+    #[test]
+    fn resolve_interrupt_session_plan_requires_running_turn() {
+        assert_eq!(
+            resolve_interrupt_session_plan(false, Some("turn-1")),
+            super::InterruptSessionPlan {
+                should_cancel_session: false,
+                active_turn_id: Some("turn-1".to_string()),
+            }
+        );
+        assert_eq!(
+            resolve_interrupt_session_plan(true, None),
+            super::InterruptSessionPlan {
+                should_cancel_session: false,
+                active_turn_id: None,
+            }
+        );
+        assert!(resolve_interrupt_session_plan(true, Some("turn-1")).should_cancel_session);
+    }
+
+    #[test]
+    fn root_execution_helpers_build_consistent_launch_shapes() {
+        let params = build_root_spawn_params(
+            "plan".to_string(),
+            "review the repository layout and write down findings".to_string(),
+            Some("focus on boundaries".to_string()),
+        );
+        assert_eq!(params.r#type.as_deref(), Some("plan"));
+        assert_eq!(params.context.as_deref(), Some("focus on boundaries"));
+        assert!(params.description.ends_with("..."));
+        assert!(summarize_execution_description("short") == "short");
+        assert!(validate_root_execution_storage_mode(SubRunStorageMode::SharedSession).is_ok());
+        assert!(
+            validate_root_execution_storage_mode(SubRunStorageMode::IndependentSession).is_err()
+        );
+
+        let launch = prepare_root_execution_launch(
+            "session-1",
+            "turn-1",
+            "root-agent-1".to_string(),
+            "plan".to_string(),
+            "task body".to_string(),
+        );
+        assert_eq!(launch.agent.agent_id.as_deref(), Some("root-agent-1"));
+        assert_eq!(launch.execution_owner.root_session_id, "session-1");
+        assert!(matches!(
+            launch.user_event,
+            astrcode_core::StorageEvent::UserMessage { .. }
+        ));
     }
 }

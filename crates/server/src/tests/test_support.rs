@@ -37,6 +37,10 @@ impl ServerTestEnvGuard {
             previous_home_override,
         }
     }
+
+    pub(crate) fn path(&self) -> &std::path::Path {
+        self._temp_home.path()
+    }
 }
 
 impl Drop for ServerTestEnvGuard {

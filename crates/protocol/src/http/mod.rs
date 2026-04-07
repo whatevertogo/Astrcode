@@ -27,7 +27,7 @@ mod tool;
 
 pub use agent::{
     AgentExecuteRequestDto, AgentExecuteResponseDto, AgentProfileDto, SubRunStatusDto,
-    SubagentContextOverridesDto,
+    SubRunStatusSourceDto, SubagentContextOverridesDto,
 };
 pub use auth::{AuthExchangeRequest, AuthExchangeResponse};
 pub use composer::{ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto};
@@ -38,9 +38,9 @@ pub use config::{
 pub use event::{
     AgentContextDto, AgentEventEnvelope, AgentEventPayload, ArtifactRefDto, CompactTriggerDto,
     ForkModeDto, InvocationKindDto, PROTOCOL_VERSION, PhaseDto, ResolvedExecutionLimitsDto,
-    ResolvedSubagentContextOverridesDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
-    SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto, ToolCallResultDto,
-    ToolOutputStreamDto,
+    ResolvedSubagentContextOverridesDto, SubRunDescriptorDto, SubRunFailureCodeDto,
+    SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto,
+    ToolCallResultDto, ToolOutputStreamDto,
 };
 pub use model::{CurrentModelInfoDto, ModelOptionDto};
 pub use runtime::{

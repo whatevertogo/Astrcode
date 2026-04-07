@@ -153,7 +153,8 @@ impl Tool for SpawnAgentTool {
             ));
         }
 
-        let result = self.launcher.launch(params, ctx).await?;
+        let launch_ctx = ctx.clone().with_tool_call_id(tool_call_id.clone());
+        let result = self.launcher.launch(params, &launch_ctx).await?;
         let mut metadata = json!({
             "outcome": result.status.as_str(),
             "handoff": result.handoff,
