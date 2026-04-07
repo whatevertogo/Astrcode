@@ -36,9 +36,9 @@ impl<'a> CapabilityManager<'a> {
         hook_handlers: Vec<Arc<dyn HookHandler>>,
     ) -> ServiceResult<()> {
         let _guard = self.runtime.rebuild_lock.lock().await;
-        let runtime_config = {
+        let (active_profile, runtime_config) = {
             let config = self.runtime.config.lock().await;
-            config.runtime.clone()
+            (config.active_profile.clone(), config.runtime.clone())
         };
         let next_surface = RuntimeSurfaceState {
             capabilities,
@@ -48,6 +48,7 @@ impl<'a> CapabilityManager<'a> {
         };
         let next_loop = build_agent_loop(
             &next_surface,
+            &active_profile,
             &runtime_config,
             LoopRuntimeDeps::new(
                 Arc::clone(&self.runtime.policy),

@@ -11,6 +11,7 @@ astrcode-runtime-agent-control = { path = "../runtime-agent-control" }
 astrcode-runtime-agent-loop = { path = "../runtime-agent-loop" }
 anyhow.workspace = true
 chrono.workspace = true
+log.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]

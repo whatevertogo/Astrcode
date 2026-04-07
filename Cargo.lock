@@ -315,6 +315,7 @@ dependencies = [
  "astrcode-runtime-agent-control",
  "astrcode-runtime-agent-loop",
  "chrono",
+ "log",
  "tempfile",
  "tokio",
 ]

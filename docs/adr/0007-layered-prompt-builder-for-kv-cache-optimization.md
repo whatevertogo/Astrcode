@@ -1,11 +1,11 @@
 # ADR-0007: Use Layered Prompt Construction for KV Cache Optimization
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-04-03
 
 ## Context
 
-当前 prompt 构建会频繁整体重建 system prompt。即使只有工具列表或技能摘要变化，也会破坏前缀稳定性，降低 LLM KV cache 命中率，增加延迟与成本。为了提升缓存复用，需要把 prompt 中“长期稳定”和“高频变化”的内容明确分层。
+当前 prompt 构建会频繁整体重建 system prompt。即使只有工具列表或技能摘要变化，也会破坏前缀稳定性，降低 LLM KV cache 命中率，增加延迟与成本。为了提升缓存复用，需要把 prompt 中”长期稳定”和”高频变化”的内容明确分层。
 
 ## Decision
 
@@ -19,6 +19,6 @@
 
 ## Consequences
 
-- 未来实现需要围绕“前缀稳定性”和“明确失效边界”设计缓存策略。
+- 未来实现需要围绕”前缀稳定性”和”明确失效边界”设计缓存策略。
 - prompt 组装会比单层方案更复杂，需要维护分层失效规则。
-- 在正式接入前，该 ADR 不改变当前生产行为。
+- `LayeredPromptBuilder` 已在 `runtime-prompt` 中实现，但尚未接入 `agent_loop`；在正式接入前，该 ADR 不改变当前生产行为。

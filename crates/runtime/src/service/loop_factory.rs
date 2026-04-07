@@ -45,6 +45,7 @@ impl LoopRuntimeDeps {
 
 pub(super) fn build_agent_loop(
     surface: &RuntimeSurfaceState,
+    active_profile: &str,
     runtime_config: &crate::config::RuntimeConfig,
     deps: LoopRuntimeDeps,
 ) -> Arc<AgentLoop> {
@@ -53,6 +54,7 @@ pub(super) fn build_agent_loop(
         surface.prompt_declarations.clone(),
         Arc::clone(&surface.skill_catalog),
         surface.hook_handlers.clone(),
+        active_profile,
         runtime_config,
         deps,
     )
@@ -63,6 +65,7 @@ pub(super) fn build_agent_loop_from_parts(
     prompt_declarations: Vec<PromptDeclaration>,
     skill_catalog: Arc<SkillCatalog>,
     hook_handlers: Vec<Arc<dyn HookHandler>>,
+    active_profile: &str,
     runtime_config: &crate::config::RuntimeConfig,
     deps: LoopRuntimeDeps,
 ) -> Arc<AgentLoop> {
@@ -80,6 +83,7 @@ pub(super) fn build_agent_loop_from_parts(
             skill_catalog,
             agent_profile_catalog,
         )
+        .with_policy_profile(active_profile)
         .with_hook_handlers(hook_handlers)
         .with_max_tool_concurrency(max_tool_concurrency)
         .with_auto_compact_enabled(resolve_auto_compact_enabled(runtime_config))
@@ -96,6 +100,7 @@ pub(super) fn build_scoped_agent_loop(
     prompt_declarations: Vec<PromptDeclaration>,
     skill_catalog: Arc<SkillCatalog>,
     hook_handlers: Vec<Arc<dyn HookHandler>>,
+    active_profile: &str,
     runtime_config: &crate::config::RuntimeConfig,
     deps: LoopRuntimeDeps,
 ) -> Arc<AgentLoop> {
@@ -113,6 +118,7 @@ pub(super) fn build_scoped_agent_loop(
         prompt_declarations,
         skill_catalog,
         hook_handlers,
+        active_profile,
         runtime_config,
         LoopRuntimeDeps::new(scoped_policy, approval, agent_profile_catalog),
     )

@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex as StdMutex, atomic::Ordering};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex as StdMutex, atomic::Ordering},
+};
 
 use anyhow::Result;
 use astrcode_core::{
@@ -12,7 +15,10 @@ use astrcode_runtime_agent_loop::{
 };
 use chrono::Utc;
 
-use crate::{SessionState, SessionTokenBudgetState, support::lock_anyhow};
+use crate::{
+    SessionState, SessionTokenBudgetState,
+    support::{lock_anyhow, with_lock_recovery},
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct BudgetSettings {
@@ -65,27 +71,24 @@ pub fn prepare_session_execution(
     turn_lease: Box<dyn SessionTurnLease>,
     token_budget: Option<u64>,
 ) -> Result<()> {
-    {
-        let mut cancel_guard = lock_anyhow(&session.cancel, "session cancel")?;
-        let mut active_turn_guard = lock_anyhow(&session.active_turn_id, "session active turn")?;
-        let mut lease_guard = lock_anyhow(&session.turn_lease, "session turn lease")?;
-        if session.running.swap(true, Ordering::SeqCst) {
-            return Err(anyhow::Error::from(AstrError::Validation(format!(
-                "session '{}' entered an inconsistent running state",
-                session_id
-            ))));
-        }
-        *cancel_guard = cancel;
-        *active_turn_guard = Some(turn_id.to_string());
-        *lease_guard = Some(turn_lease);
+    let mut cancel_guard = lock_anyhow(&session.cancel, "session cancel")?;
+    let mut active_turn_guard = lock_anyhow(&session.active_turn_id, "session active turn")?;
+    let mut lease_guard = lock_anyhow(&session.turn_lease, "session turn lease")?;
+    let mut budget_guard = lock_anyhow(&session.token_budget, "session token budget")?;
+    if session.running.swap(true, Ordering::SeqCst) {
+        return Err(anyhow::Error::from(AstrError::Validation(format!(
+            "session '{}' entered an inconsistent running state",
+            session_id
+        ))));
     }
-    if let Ok(mut budget_guard) = lock_anyhow(&session.token_budget, "session token budget") {
-        *budget_guard = token_budget.map(|total_budget| SessionTokenBudgetState {
-            total_budget,
-            used_tokens: 0,
-            continuation_count: 0,
-        });
-    }
+    *cancel_guard = cancel;
+    *active_turn_guard = Some(turn_id.to_string());
+    *lease_guard = Some(turn_lease);
+    *budget_guard = token_budget.map(|total_budget| SessionTokenBudgetState {
+        total_budget,
+        used_tokens: 0,
+        continuation_count: 0,
+    });
     Ok(())
 }
 
@@ -95,22 +98,30 @@ pub async fn complete_session_execution(
     turn_id: &str,
     phase: Phase,
 ) {
-    if let Ok(mut phase_guard) = lock_anyhow(&session.phase, "session phase") {
+    with_lock_recovery(&session.phase, "session phase", |phase_guard| {
         *phase_guard = phase;
-    }
-    if let Ok(mut active_turn_guard) = lock_anyhow(&session.active_turn_id, "session active turn") {
-        *active_turn_guard = None;
-    }
+    });
+    with_lock_recovery(
+        &session.active_turn_id,
+        "session active turn",
+        |active_turn_guard| {
+            *active_turn_guard = None;
+        },
+    );
     let _ = agent_control.cancel_for_parent_turn(turn_id).await;
-    if let Ok(mut lease_guard) = lock_anyhow(&session.turn_lease, "session turn lease") {
+    with_lock_recovery(&session.turn_lease, "session turn lease", |lease_guard| {
         *lease_guard = None;
-    }
-    if let Ok(mut budget_guard) = lock_anyhow(&session.token_budget, "session token budget") {
-        *budget_guard = None;
-    }
-    if let Ok(mut cancel_guard) = lock_anyhow(&session.cancel, "session cancel") {
+    });
+    with_lock_recovery(
+        &session.token_budget,
+        "session token budget",
+        |budget_guard| {
+            *budget_guard = None;
+        },
+    );
+    with_lock_recovery(&session.cancel, "session cancel", |cancel_guard| {
         *cancel_guard = CancelToken::new();
-    }
+    });
     session.running.store(false, Ordering::SeqCst);
 }
 
@@ -208,9 +219,9 @@ pub async fn execute_turn_chain(
                     let stored = append_and_broadcast_from_turn_callback(state, &event, translator)
                         .map_err(|error| AstrError::Internal(error.to_string()))?;
                     if should_record_compaction_tail_event(&event) {
-                        if let Ok(mut tail) = live_tail.lock() {
+                        with_lock_recovery(&live_tail, "compaction live tail", |tail| {
                             tail.push(stored);
-                        }
+                        });
                     }
                     Ok(())
                 },
@@ -380,33 +391,31 @@ pub fn recent_turn_event_tail(
     events: &[StoredEvent],
     keep_recent_turns: usize,
 ) -> Vec<StoredEvent> {
-    let tail_events = events
-        .iter()
-        .filter(|stored| should_record_compaction_tail_event(&stored.event))
-        .cloned()
-        .collect::<Vec<_>>();
+    let keep_recent_turns = keep_recent_turns.max(1);
+    let mut tail_refs = Vec::new();
+    let mut kept_turn_starts = VecDeque::with_capacity(keep_recent_turns);
 
-    let user_turn_indices = tail_events
-        .iter()
-        .enumerate()
-        .filter_map(|(index, stored)| match &stored.event {
+    for stored in events {
+        if !should_record_compaction_tail_event(&stored.event) {
+            continue;
+        }
+        if matches!(
+            &stored.event,
             StorageEvent::UserMessage {
                 origin: UserMessageOrigin::User,
                 ..
-            } => Some(index),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+            }
+        ) {
+            kept_turn_starts.push_back(tail_refs.len());
+            if kept_turn_starts.len() > keep_recent_turns {
+                kept_turn_starts.pop_front();
+            }
+        }
+        tail_refs.push(stored);
+    }
 
-    let Some(&keep_start) = user_turn_indices
-        .iter()
-        .rev()
-        .nth(keep_recent_turns.saturating_sub(1))
-    else {
-        return tail_events;
-    };
-
-    tail_events[keep_start..].to_vec()
+    let keep_start = kept_turn_starts.front().copied().unwrap_or(0);
+    tail_refs.into_iter().skip(keep_start).cloned().collect()
 }
 
 /// 判断事件是否应纳入 compaction tail 记录。
@@ -419,4 +428,218 @@ pub fn should_record_compaction_tail_event(event: &StorageEvent) -> bool {
             | StorageEvent::ToolCall { .. }
             | StorageEvent::ToolResult { .. }
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        panic::{AssertUnwindSafe, catch_unwind},
+        sync::Arc,
+    };
+
+    use astrcode_core::{
+        AgentStateProjector, EventLogWriter, Phase, SessionTurnLease, StoreResult, StoredEvent,
+    };
+    use astrcode_runtime_agent_control::AgentControl;
+
+    use super::*;
+    use crate::SessionWriter;
+
+    #[derive(Default)]
+    struct TestLease;
+
+    impl SessionTurnLease for TestLease {}
+
+    #[derive(Default)]
+    struct TestEventLogWriter {
+        next_seq: u64,
+    }
+
+    impl EventLogWriter for TestEventLogWriter {
+        fn append(&mut self, event: &StorageEvent) -> StoreResult<StoredEvent> {
+            self.next_seq += 1;
+            Ok(StoredEvent {
+                storage_seq: self.next_seq,
+                event: event.clone(),
+            })
+        }
+    }
+
+    fn test_session() -> SessionState {
+        SessionState::new(
+            Phase::Idle,
+            Arc::new(SessionWriter::new(Box::new(TestEventLogWriter::default()))),
+            AgentStateProjector::default(),
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    fn poison_mutex<T>(mutex: &StdMutex<T>) {
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = mutex.lock().expect("mutex should lock");
+            panic!("poison mutex for recovery test");
+        }));
+    }
+
+    #[test]
+    fn prepare_session_execution_keeps_session_idle_when_budget_lock_fails() {
+        let session = test_session();
+        poison_mutex(&session.token_budget);
+
+        let error = prepare_session_execution(
+            &session,
+            "session-1",
+            "turn-1",
+            CancelToken::new(),
+            Box::new(TestLease),
+            Some(128),
+        )
+        .expect_err("poisoned budget lock should fail preparation");
+
+        assert!(error.to_string().contains("session token budget"));
+        assert!(!session.running.load(Ordering::SeqCst));
+        assert!(
+            session
+                .active_turn_id
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_none()
+        );
+        assert!(
+            session
+                .turn_lease
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_none()
+        );
+        assert!(
+            session
+                .token_budget
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_session_execution_recovers_poisoned_mutexes() {
+        let session = test_session();
+        session.running.store(true, Ordering::SeqCst);
+
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let mut guard = session.phase.lock().expect("phase should lock");
+            *guard = Phase::CallingTool;
+            panic!("poison phase");
+        }));
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let mut guard = session
+                .active_turn_id
+                .lock()
+                .expect("active turn should lock");
+            *guard = Some("turn-1".to_string());
+            panic!("poison active turn");
+        }));
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let mut guard = session.turn_lease.lock().expect("turn lease should lock");
+            *guard = Some(Box::new(TestLease));
+            panic!("poison turn lease");
+        }));
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let mut guard = session
+                .token_budget
+                .lock()
+                .expect("token budget should lock");
+            *guard = Some(SessionTokenBudgetState {
+                total_budget: 512,
+                used_tokens: 32,
+                continuation_count: 1,
+            });
+            panic!("poison token budget");
+        }));
+        poison_mutex(&session.cancel);
+
+        complete_session_execution(&session, &AgentControl::new(), "turn-1", Phase::Idle).await;
+
+        assert_eq!(
+            session.current_phase().expect("phase should recover"),
+            Phase::Idle
+        );
+        assert!(
+            session
+                .active_turn_id
+                .lock()
+                .expect("active turn lock should recover")
+                .is_none()
+        );
+        assert!(
+            session
+                .turn_lease
+                .lock()
+                .expect("turn lease lock should recover")
+                .is_none()
+        );
+        assert!(
+            session
+                .token_budget
+                .lock()
+                .expect("token budget lock should recover")
+                .is_none()
+        );
+        assert!(!session.running.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn recent_turn_event_tail_keeps_latest_turn_when_keep_recent_turns_is_zero() {
+        let events = vec![
+            StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent::UserMessage {
+                    turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
+                    content: "first".to_string(),
+                    origin: UserMessageOrigin::User,
+                    timestamp: Utc::now(),
+                },
+            },
+            StoredEvent {
+                storage_seq: 2,
+                event: StorageEvent::AssistantFinal {
+                    turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
+                    content: "reply-1".to_string(),
+                    reasoning_content: None,
+                    reasoning_signature: None,
+                    timestamp: Some(Utc::now()),
+                },
+            },
+            StoredEvent {
+                storage_seq: 3,
+                event: StorageEvent::UserMessage {
+                    turn_id: Some("turn-2".to_string()),
+                    agent: AgentEventContext::default(),
+                    content: "second".to_string(),
+                    origin: UserMessageOrigin::User,
+                    timestamp: Utc::now(),
+                },
+            },
+            StoredEvent {
+                storage_seq: 4,
+                event: StorageEvent::AssistantFinal {
+                    turn_id: Some("turn-2".to_string()),
+                    agent: AgentEventContext::default(),
+                    content: "reply-2".to_string(),
+                    reasoning_content: None,
+                    reasoning_signature: None,
+                    timestamp: Some(Utc::now()),
+                },
+            },
+        ];
+
+        let tail = recent_turn_event_tail(&events, 0);
+
+        assert_eq!(tail.len(), 2);
+        assert_eq!(tail[0].storage_seq, 3);
+        assert_eq!(tail[1].storage_seq, 4);
+    }
 }

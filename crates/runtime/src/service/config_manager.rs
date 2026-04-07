@@ -33,6 +33,7 @@ impl<'a> ConfigManager<'a> {
         let surface = self.runtime.surface.read().await.clone();
         let next_loop = super::build_agent_loop(
             &surface,
+            &next_config.active_profile,
             &next_config.runtime,
             LoopRuntimeDeps::new(
                 Arc::clone(&self.runtime.policy),

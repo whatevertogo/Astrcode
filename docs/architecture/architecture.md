@@ -67,6 +67,10 @@ src-tauri + frontend
 - `runtime-execution`：执行装配
 - `runtime-agent-control`：多 Agent 控制面
 - `runtime-agent-tool`：把 `spawnAgent` 暴露成工具
+- `runtime-agent-loader`：Agent profile 加载
+- `runtime-registry`：capability / tool surface 注册
+- `runtime-tool-loader`：内置工具
+- `runtime-skill-loader`：skill 发现与解析
 - `runtime-prompt` / `runtime-llm` / `runtime-config`：独立子系统
 - `plugin`：插件宿主
 
@@ -239,11 +243,10 @@ src-tauri + frontend
 
 ## 8. 推荐阅读顺序
 
-1. [./architecture.md](./architecture.md)
-2. [./crates-dependency-graph.md](./crates-dependency-graph.md)
-3. [../design/runtime-session-and-turn-lifecycle.md](../design/runtime-session-and-turn-lifecycle.md)
-4. [../design/agent-tool-and-api-design.md](../design/agent-tool-and-api-design.md)
-5. [./frontend-architecture.md](./frontend-architecture.md)
+1. [./crates-dependency-graph.md](./crates-dependency-graph.md)
+2. [../design/runtime-session-and-turn-lifecycle.md](../design/runtime-session-and-turn-lifecycle.md)
+3. [../design/agent-tool-and-api-design.md](../design/agent-tool-and-api-design.md)
+4. [./frontend-architecture.md](./frontend-architecture.md)
 
 ---
 

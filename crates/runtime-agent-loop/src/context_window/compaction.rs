@@ -187,21 +187,22 @@ fn compact_input_messages(messages: &[LlmMessage]) -> Vec<LlmMessage> {
     // Vec<ContentPart>（支持多模态），在此处将 Image/Document 类型的 ContentPart 替换为
     // 文本占位符（"[image]" / "[document: filename]"），避免压缩请求因包含二进制数据而
     // 超出上下文窗口或被 Provider 拒绝。当前 content 是纯 String，暂无需过滤。
-    messages
-        .iter()
-        .filter_map(|message| match message {
+    let mut filtered = Vec::with_capacity(messages.len());
+    for message in messages {
+        match message {
             LlmMessage::User {
                 origin: UserMessageOrigin::CompactSummary,
                 ..
-            } => Some(message.clone()),
-            LlmMessage::User {
+            }
+            | LlmMessage::User {
                 origin: UserMessageOrigin::User,
                 ..
-            } => Some(message.clone()),
-            LlmMessage::User { .. } => None,
-            _ => Some(message.clone()),
-        })
-        .collect()
+            } => filtered.push(message.clone()),
+            LlmMessage::User { .. } => {},
+            _ => filtered.push(message.clone()),
+        }
+    }
+    filtered
 }
 
 fn latest_previous_summary(messages: &[LlmMessage]) -> Option<String> {
@@ -294,13 +295,23 @@ fn compaction_units(messages: &[LlmMessage]) -> Vec<CompactionUnit> {
 }
 
 fn drop_oldest_compaction_unit(prefix: &mut Vec<LlmMessage>) -> bool {
-    let units = compaction_units(prefix);
-    if units.len() < 2 {
+    let mut boundary_starts =
+        prefix
+            .iter()
+            .enumerate()
+            .filter_map(|(index, message)| match message {
+                LlmMessage::User {
+                    origin: UserMessageOrigin::User,
+                    ..
+                }
+                | LlmMessage::Assistant { .. } => Some(index),
+                _ => None,
+            });
+    let _current_start = boundary_starts.next();
+    let Some(next_start) = boundary_starts.next() else {
         prefix.clear();
         return false;
-    }
-
-    let next_start = units[1].start;
+    };
     if next_start == 0 || next_start >= prefix.len() {
         prefix.clear();
         return false;
@@ -368,15 +379,22 @@ fn parse_compact_output(content: &str) -> Result<ParsedCompactOutput> {
 pub fn is_prompt_too_long(error: &astrcode_core::AstrError) -> bool {
     match error {
         astrcode_core::AstrError::LlmRequestFailed { status, body } => {
-            let body_lower = body.to_ascii_lowercase();
             matches!(*status, 400 | 413)
-                && (body_lower.contains("prompt too long")
-                    || body_lower.contains("context length")
-                    || body_lower.contains("maximum context")
-                    || body_lower.contains("too many tokens"))
+                && (contains_ascii_case_insensitive(body, "prompt too long")
+                    || contains_ascii_case_insensitive(body, "context length")
+                    || contains_ascii_case_insensitive(body, "maximum context")
+                    || contains_ascii_case_insensitive(body, "too many tokens"))
         },
         _ => false,
     }
+}
+
+fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    let needle = needle.as_bytes();
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
 #[cfg(test)]

@@ -158,7 +158,16 @@ impl CompactionTailSnapshot {
     pub fn materialize(&self) -> Vec<StoredEvent> {
         let mut tail = self.seed.clone();
         if let Some(live) = &self.live {
-            tail.extend(live.lock().expect("compaction tail lock").iter().cloned());
+            let live_tail = match live.lock() {
+                Ok(guard) => guard.iter().cloned().collect::<Vec<_>>(),
+                Err(poisoned) => {
+                    let guard = poisoned.into_inner();
+                    let snapshot = guard.iter().cloned().collect::<Vec<_>>();
+                    live.clear_poison();
+                    snapshot
+                },
+            };
+            tail.extend(live_tail);
         }
         tail
     }
@@ -884,6 +893,46 @@ mod tests {
                 finish_reason: astrcode_runtime_llm::FinishReason::Stop,
             })
         }
+    }
+
+    #[test]
+    fn compaction_tail_snapshot_recovers_from_poisoned_live_lock() {
+        let live = Arc::new(StdMutex::new(vec![StoredEvent {
+            storage_seq: 2,
+            event: StorageEvent::AssistantFinal {
+                turn_id: Some("turn-1".to_string()),
+                agent: AgentEventContext::default(),
+                content: "live".to_string(),
+                reasoning_content: None,
+                reasoning_signature: None,
+                timestamp: Some(Utc::now()),
+            },
+        }]));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe({
+            let live = Arc::clone(&live);
+            move || {
+                let _guard = live.lock().expect("live tail should lock");
+                panic!("poison live tail");
+            }
+        }));
+
+        let snapshot = CompactionTailSnapshot::from_seed(vec![StoredEvent {
+            storage_seq: 1,
+            event: StorageEvent::UserMessage {
+                turn_id: Some("turn-1".to_string()),
+                agent: AgentEventContext::default(),
+                content: "seed".to_string(),
+                origin: UserMessageOrigin::User,
+                timestamp: Utc::now(),
+            },
+        }])
+        .with_live_recorder(live);
+
+        let materialized = snapshot.materialize();
+
+        assert_eq!(materialized.len(), 2);
+        assert_eq!(materialized[0].storage_seq, 1);
+        assert_eq!(materialized[1].storage_seq, 2);
     }
 
     #[test]

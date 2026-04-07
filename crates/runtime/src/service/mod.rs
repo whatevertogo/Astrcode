@@ -257,6 +257,7 @@ impl RuntimeService {
         };
         let loop_ = build_agent_loop(
             &surface,
+            &config.active_profile,
             &config.runtime,
             LoopRuntimeDeps::new(
                 Arc::clone(&policy),

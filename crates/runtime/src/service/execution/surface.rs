@@ -18,13 +18,14 @@ impl AgentExecutionServiceHandle {
         &self,
     ) -> ScopedExecutionSurface<Arc<astrcode_runtime_skill_loader::SkillCatalog>> {
         let surface = self.runtime.surface.read().await;
-        let runtime_config = self.runtime.config.lock().await.runtime.clone();
+        let config = self.runtime.config.lock().await.clone();
         ScopedExecutionSurface {
             capabilities: surface.capabilities.clone(),
             prompt_declarations: surface.prompt_declarations.clone(),
             skill_catalog: Arc::clone(&surface.skill_catalog),
             hook_handlers: surface.hook_handlers.clone(),
-            runtime_config,
+            active_profile: config.active_profile,
+            runtime_config: config.runtime,
         }
     }
 
@@ -60,12 +61,18 @@ impl AgentExecutionServiceHandle {
             &request,
             surface,
             parent_state,
-            |capabilities, prompt_declarations, skill_catalog, hook_handlers, runtime_config| {
+            |capabilities,
+             prompt_declarations,
+             skill_catalog,
+             hook_handlers,
+             active_profile,
+             runtime_config| {
                 build_scoped_agent_loop(
                     capabilities,
                     prompt_declarations,
                     skill_catalog,
                     hook_handlers,
+                    active_profile,
                     runtime_config,
                     LoopRuntimeDeps::new(
                         Arc::clone(&self.runtime.policy),

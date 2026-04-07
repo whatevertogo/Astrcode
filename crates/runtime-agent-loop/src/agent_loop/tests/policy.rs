@@ -26,6 +26,21 @@ use super::{
 };
 use crate::AgentLoop;
 
+#[test]
+fn policy_context_uses_configured_policy_profile() {
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::new()),
+        delay: std::time::Duration::from_millis(0),
+    });
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner =
+        AgentLoop::from_capabilities(factory, empty_capabilities()).with_policy_profile("deepseek");
+
+    let context = loop_runner.policy_context(&make_state("profile"), "turn-profile", 3);
+
+    assert_eq!(context.profile, "deepseek");
+}
+
 #[tokio::test]
 async fn policy_can_rewrite_model_request_before_provider_execution() {
     let requests = Arc::new(Mutex::new(Vec::new()));

@@ -9,9 +9,9 @@ protocol (纯 DTO，无业务依赖)
    ↑
  core (核心契约：Tool trait、Policy、Event/持久化接口)
    ↑
- storage   runtime-tool-loader  runtime-config  runtime-llm  runtime-prompt  plugin
- (JSONL持久化) (内置工具)          (配置)           (LLM)        (Prompt)       (插件宿主)
-   ↑            ↑                ↑              ↑            ↑              ↑
+ storage   runtime-tool-loader  runtime-...(runtime的其他crates)
+ (JSONL持久化) (内置工具)          
+   ↑            ↑                ↑              
    +────────── runtime (RuntimeService 门面) ─────────────────────────────────+
                                    ↑
                                 server (HTTP/SSE API)

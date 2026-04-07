@@ -141,6 +141,8 @@ pub struct AgentLoop {
     hooks: HookRuntime,
     /// 最终请求装配边界。
     request_assembler: RequestAssembler,
+    /// 供策略引擎评估使用的当前 provider profile。
+    policy_profile: String,
     /// 单个 step 内允许并发执行的只读工具上限
     max_tool_concurrency: usize,
 }
@@ -199,6 +201,7 @@ impl AgentLoop {
             ),
             hooks: HookRuntime::default(),
             request_assembler: RequestAssembler,
+            policy_profile: "coding".to_string(),
             // 默认并行度统一从 runtime-config 读取，这样环境变量覆盖和
             // 直接构造 AgentLoop 的默认行为保持同一套来源。
             max_tool_concurrency: max_tool_concurrency(),
@@ -600,7 +603,7 @@ impl AgentLoop {
             turn_id: turn_id.to_string(),
             step_index,
             working_dir: state.working_dir.to_string_lossy().into_owned(),
-            profile: "coding".to_string(),
+            profile: self.policy_profile.clone(),
             metadata: serde_json::Value::Null,
         }
     }
@@ -782,6 +785,11 @@ impl AgentLoop {
     /// RuntimeService 装配层的调用兼容性。
     pub fn with_tool_result_max_bytes(mut self, tool_result_max_bytes: usize) -> Self {
         self.context = ContextRuntime::new(tool_result_max_bytes);
+        self
+    }
+
+    pub fn with_policy_profile(mut self, policy_profile: impl Into<String>) -> Self {
+        self.policy_profile = policy_profile.into();
         self
     }
 

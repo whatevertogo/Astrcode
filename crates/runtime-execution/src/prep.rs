@@ -78,6 +78,7 @@ pub struct ScopedExecutionSurface<TSkillCatalog> {
     pub prompt_declarations: Vec<PromptDeclaration>,
     pub skill_catalog: TSkillCatalog,
     pub hook_handlers: Vec<Arc<dyn HookHandler>>,
+    pub active_profile: String,
     pub runtime_config: astrcode_runtime_config::RuntimeConfig,
 }
 
@@ -131,6 +132,7 @@ where
         Vec<PromptDeclaration>,
         TSkillCatalog,
         Vec<Arc<dyn HookHandler>>,
+        &str,
         &astrcode_runtime_config::RuntimeConfig,
     ) -> TLoop,
 {
@@ -161,6 +163,7 @@ where
         prompt_declarations.clone(),
         surface.skill_catalog.clone(),
         surface.hook_handlers.clone(),
+        &surface.active_profile,
         &surface.runtime_config,
     );
 
