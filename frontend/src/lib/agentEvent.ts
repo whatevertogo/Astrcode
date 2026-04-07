@@ -287,6 +287,48 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
     };
   }
 
+  if (event === 'promptMetrics') {
+    const stepIndex = pickNumber(data, 'stepIndex', 'step_index');
+    const estimatedTokens = pickNumber(data, 'estimatedTokens', 'estimated_tokens');
+    const contextWindow = pickNumber(data, 'contextWindow', 'context_window');
+    const effectiveWindow = pickNumber(data, 'effectiveWindow', 'effective_window');
+    const thresholdTokens = pickNumber(data, 'thresholdTokens', 'threshold_tokens');
+    const truncatedToolResults = pickNumber(data, 'truncatedToolResults', 'truncated_tool_results');
+
+    if (
+      stepIndex === null ||
+      estimatedTokens === null ||
+      contextWindow === null ||
+      effectiveWindow === null ||
+      thresholdTokens === null ||
+      truncatedToolResults === null
+    ) {
+      return invalidEvent('promptMetrics requires the full snapshot fields', raw);
+    }
+
+    return {
+      event: 'promptMetrics',
+      data: {
+        turnId: pickOptionalString(data, 'turnId', 'turn_id') ?? null,
+        stepIndex,
+        estimatedTokens,
+        contextWindow,
+        effectiveWindow,
+        thresholdTokens,
+        truncatedToolResults,
+        providerInputTokens:
+          pickNumber(data, 'providerInputTokens', 'provider_input_tokens') ?? undefined,
+        providerOutputTokens:
+          pickNumber(data, 'providerOutputTokens', 'provider_output_tokens') ?? undefined,
+        cacheCreationInputTokens:
+          pickNumber(data, 'cacheCreationInputTokens', 'cache_creation_input_tokens') ?? undefined,
+        cacheReadInputTokens:
+          pickNumber(data, 'cacheReadInputTokens', 'cache_read_input_tokens') ?? undefined,
+        ...pickAgentContext(data),
+      },
+    };
+  }
+
   if (event === 'compactApplied') {
     const trigger = toCompactTrigger(data.trigger);
     const summary = pickStringAllowEmpty(data, 'summary');

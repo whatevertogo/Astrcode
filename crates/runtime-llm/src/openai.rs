@@ -218,6 +218,8 @@ impl LlmProvider for OpenAiProvider {
                 let usage = parsed.usage.as_ref().map(|usage| LlmUsage {
                     input_tokens: usage.prompt_tokens.unwrap_or_default() as usize,
                     output_tokens: usage.completion_tokens.unwrap_or_default() as usize,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
                 });
                 let first_choice = parsed.choices.into_iter().next().ok_or_else(|| {
                     AstrError::LlmStreamError(

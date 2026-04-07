@@ -664,6 +664,33 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
             code,
             message,
         },
+        AgentEvent::PromptMetrics {
+            turn_id,
+            agent,
+            step_index,
+            estimated_tokens,
+            context_window,
+            effective_window,
+            threshold_tokens,
+            truncated_tool_results,
+            provider_input_tokens,
+            provider_output_tokens,
+            cache_creation_input_tokens,
+            cache_read_input_tokens,
+        } => AgentEventPayload::PromptMetrics {
+            turn_id,
+            agent: to_agent_context_dto(agent),
+            step_index,
+            estimated_tokens,
+            context_window,
+            effective_window,
+            threshold_tokens,
+            truncated_tool_results,
+            provider_input_tokens,
+            provider_output_tokens,
+            cache_creation_input_tokens,
+            cache_read_input_tokens,
+        },
     }
 }
 

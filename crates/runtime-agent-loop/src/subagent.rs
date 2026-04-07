@@ -119,6 +119,7 @@ impl ChildExecutionTracker {
             StorageEvent::PromptMetrics {
                 step_index,
                 estimated_tokens,
+                provider_input_tokens: None,
                 ..
             } => {
                 self.peak_step_index = self.peak_step_index.max(*step_index);
@@ -201,6 +202,10 @@ mod tests {
                 effective_window: 100_000,
                 threshold_tokens: 90_000,
                 truncated_tool_results: 0,
+                provider_input_tokens: None,
+                provider_output_tokens: None,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
             },
             &cancel,
         );
@@ -224,6 +229,10 @@ mod tests {
                 effective_window: 100_000,
                 threshold_tokens: 90_000,
                 truncated_tool_results: 0,
+                provider_input_tokens: None,
+                provider_output_tokens: None,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
             },
             &cancel,
         );

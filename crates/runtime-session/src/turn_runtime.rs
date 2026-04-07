@@ -321,7 +321,9 @@ async fn maybe_continue_after_turn(
 fn observe_turn_event(stats: &mut TurnExecutionStats, event: &StorageEvent) {
     match event {
         StorageEvent::PromptMetrics {
-            estimated_tokens, ..
+            estimated_tokens,
+            provider_input_tokens: None,
+            ..
         } => {
             stats.record_prompt_metrics(*estimated_tokens);
         },
@@ -641,5 +643,31 @@ mod tests {
         assert_eq!(tail.len(), 2);
         assert_eq!(tail[0].storage_seq, 3);
         assert_eq!(tail[1].storage_seq, 4);
+    }
+
+    #[test]
+    fn observe_turn_event_ignores_provider_usage_prompt_metrics() {
+        let mut stats = TurnExecutionStats::default();
+
+        observe_turn_event(
+            &mut stats,
+            &StorageEvent::PromptMetrics {
+                turn_id: Some("turn-1".to_string()),
+                agent: AgentEventContext::default(),
+                step_index: 0,
+                estimated_tokens: 800,
+                context_window: 100_000,
+                effective_window: 80_000,
+                threshold_tokens: 72_000,
+                truncated_tool_results: 0,
+                provider_input_tokens: Some(640),
+                provider_output_tokens: Some(120),
+                cache_creation_input_tokens: Some(600),
+                cache_read_input_tokens: Some(500),
+            },
+        );
+
+        assert_eq!(stats.pending_prompt_tokens, None);
+        assert_eq!(stats.estimated_tokens_used, 0);
     }
 }

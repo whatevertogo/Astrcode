@@ -50,7 +50,9 @@ impl TestTurnExecutionStats {
 fn observe_test_turn_event(stats: &mut TestTurnExecutionStats, event: &StorageEvent) {
     match event {
         StorageEvent::PromptMetrics {
-            estimated_tokens, ..
+            estimated_tokens,
+            provider_input_tokens: None,
+            ..
         } => stats.record_prompt_metrics(*estimated_tokens),
         StorageEvent::AssistantFinal {
             content,
@@ -327,6 +329,10 @@ fn recent_turn_event_tail_keeps_real_stored_tail_for_latest_turns() {
                 effective_window: 4096,
                 threshold_tokens: 3584,
                 truncated_tool_results: 0,
+                provider_input_tokens: None,
+                provider_output_tokens: None,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
             },
         },
     ];
@@ -367,6 +373,10 @@ fn prompt_metrics_only_charge_budget_after_a_real_model_response() {
             effective_window: 80_000,
             threshold_tokens: 72_000,
             truncated_tool_results: 0,
+            provider_input_tokens: None,
+            provider_output_tokens: None,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
         },
     );
     assert_eq!(stats.estimated_tokens_used, 0);

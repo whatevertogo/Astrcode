@@ -4,6 +4,7 @@ import type { SubRunViewData, ThreadItem } from '../../lib/subRunView';
 import UserMessage from './UserMessage';
 import AssistantMessage from './AssistantMessage';
 import ToolCallBlock from './ToolCallBlock';
+import PromptMetricsMessage from './PromptMetricsMessage';
 import CompactMessage from './CompactMessage';
 import SubRunBlock from './SubRunBlock';
 import styles from './MessageList.module.css';
@@ -67,6 +68,21 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
             </pre>
           ) : message.kind === 'compact' ? (
             <pre className={styles.renderErrorBody}>{message.summary}</pre>
+          ) : message.kind === 'promptMetrics' ? (
+            <pre className={styles.renderErrorBody}>
+              {JSON.stringify(
+                {
+                  stepIndex: message.stepIndex,
+                  estimatedTokens: message.estimatedTokens,
+                  providerInputTokens: message.providerInputTokens,
+                  providerOutputTokens: message.providerOutputTokens,
+                  cacheReadInputTokens: message.cacheReadInputTokens,
+                  cacheCreationInputTokens: message.cacheCreationInputTokens,
+                },
+                null,
+                2
+              )}
+            </pre>
           ) : message.kind === 'subRunStart' ? (
             <pre className={styles.renderErrorBody}>
               {JSON.stringify(
@@ -178,6 +194,9 @@ export default function MessageList({
     }
     if (msg.kind === 'toolCall') {
       return <ToolCallBlock message={msg} />;
+    }
+    if (msg.kind === 'promptMetrics') {
+      return <PromptMetricsMessage message={msg} />;
     }
     if (msg.kind === 'compact') {
       return <CompactMessage message={msg} />;

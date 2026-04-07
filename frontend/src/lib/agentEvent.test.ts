@@ -162,6 +162,43 @@ describe('normalizeAgentEvent protocol gate', () => {
     });
   });
 
+  it('accepts promptMetrics payloads with cache fields', () => {
+    const normalized = normalizeAgentEvent({
+      protocolVersion: 1,
+      event: 'promptMetrics',
+      data: {
+        turn_id: 'turn-metrics',
+        step_index: 1,
+        estimated_tokens: 4096,
+        context_window: 200000,
+        effective_window: 180000,
+        threshold_tokens: 162000,
+        truncated_tool_results: 2,
+        provider_input_tokens: 3200,
+        provider_output_tokens: 120,
+        cache_creation_input_tokens: 2800,
+        cache_read_input_tokens: 2500,
+      },
+    });
+
+    expect(normalized).toEqual({
+      event: 'promptMetrics',
+      data: {
+        turnId: 'turn-metrics',
+        stepIndex: 1,
+        estimatedTokens: 4096,
+        contextWindow: 200000,
+        effectiveWindow: 180000,
+        thresholdTokens: 162000,
+        truncatedToolResults: 2,
+        providerInputTokens: 3200,
+        providerOutputTokens: 120,
+        cacheCreationInputTokens: 2800,
+        cacheReadInputTokens: 2500,
+      },
+    });
+  });
+
   it('accepts failed subRunFinished payloads with structured failure details', () => {
     const normalized = normalizeAgentEvent({
       protocolVersion: 1,

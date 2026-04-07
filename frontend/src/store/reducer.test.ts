@@ -89,4 +89,74 @@ describe('app reducer user message sync', () => {
     expect(nested.activeSubRunPath).toEqual(['subrun-1', 'subrun-2']);
     expect(popped.activeSubRunPath).toEqual(['subrun-1']);
   });
+
+  it('upserts prompt metrics by turn id and step index instead of duplicating the card', () => {
+    const initial = {
+      ...makeInitialState(),
+      projects: [
+        {
+          id: 'project-1',
+          name: 'Project',
+          workingDir: 'D:/repo',
+          isExpanded: true,
+          sessions: [
+            {
+              id: 'session-1',
+              projectId: 'project-1',
+              title: '新会话',
+              createdAt: Date.now(),
+              messages: [
+                {
+                  id: 'metrics-1',
+                  kind: 'promptMetrics' as const,
+                  turnId: 'turn-1',
+                  stepIndex: 0,
+                  estimatedTokens: 1200,
+                  contextWindow: 200000,
+                  effectiveWindow: 180000,
+                  thresholdTokens: 162000,
+                  truncatedToolResults: 0,
+                  timestamp: 123,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      activeProjectId: 'project-1',
+      activeSessionId: 'session-1',
+    };
+
+    const next = reducer(initial, {
+      type: 'UPSERT_PROMPT_METRICS',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      stepIndex: 0,
+      estimatedTokens: 1400,
+      contextWindow: 200000,
+      effectiveWindow: 180000,
+      thresholdTokens: 162000,
+      truncatedToolResults: 1,
+      providerInputTokens: 1000,
+      providerOutputTokens: 120,
+      cacheCreationInputTokens: 900,
+      cacheReadInputTokens: 800,
+    });
+
+    const messages = next.projects[0].sessions[0].messages;
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      id: 'metrics-1',
+      kind: 'promptMetrics',
+      turnId: 'turn-1',
+      stepIndex: 0,
+      estimatedTokens: 1400,
+      truncatedToolResults: 1,
+      providerInputTokens: 1000,
+      providerOutputTokens: 120,
+      cacheCreationInputTokens: 900,
+      cacheReadInputTokens: 800,
+      timestamp: 123,
+    });
+  });
 });

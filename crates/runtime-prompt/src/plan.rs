@@ -65,9 +65,8 @@ impl PromptPlan {
 
         self.system_blocks
             .extend(other.system_blocks.into_iter().map(|block| {
-                block
-                    .with_layer(layer)
-                    .with_insertion_order(block.insertion_order + insertion_offset)
+                let order = block.insertion_order + insertion_offset;
+                block.with_insertion_order(order).with_layer(layer)
             }));
         self.prepend_messages.extend(other.prepend_messages);
         self.append_messages.extend(other.append_messages);

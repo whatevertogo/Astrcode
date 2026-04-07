@@ -6,7 +6,8 @@
 //!
 //! - **Extended Thinking**: 自动为 Claude 模型启用深度推理模式（`thinking` 配置）， 预算 token 设为
 //!   `max_tokens` 的 75%，保留至少 25% 给实际输出
-//! - **Prompt Caching**: 对最后 2 条消息标记 `ephemeral` 缓存控制，复用 KV cache
+//! - **Prompt Caching**: 优先对分层 system blocks 放置 `ephemeral` breakpoint，并在消息尾部保留
+//!   一个缓存边界，复用 KV cache
 //! - **SSE 流式解析**: Anthropic 使用多行 SSE 块格式（`event: ...\ndata: {...}\n\n`）， 与 OpenAI
 //!   的单行 `data: {...}` 不同，因此有独立的解析逻辑
 //! - **内容块模型**: Anthropic 响应由多种内容块组成（text / tool_use / thinking）， 使用
@@ -19,12 +20,14 @@
 //! - `content_block_delta`: 增量内容（text_delta / thinking_delta / signature_delta /
 //!   input_json_delta）
 //! - `message_stop`: 流结束信号
-//! - `message_start / message_delta / content_block_stop / ping`: 元数据事件，静默忽略
+//! - `message_start / message_delta`: 提取 usage / stop_reason 等元数据
+//! - `content_block_stop / ping`: 元数据事件，静默忽略
 
 use std::fmt;
 
 use astrcode_core::{
-    AstrError, CancelToken, LlmMessage, ReasoningContent, Result, ToolCallRequest, ToolDefinition,
+    AstrError, CancelToken, LlmMessage, ReasoningContent, Result, SystemPromptBlock,
+    ToolCallRequest, ToolDefinition,
 };
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -97,7 +100,7 @@ impl AnthropicProvider {
     /// 构建 Anthropic Messages API 请求体。
     ///
     /// - 将 `LlmMessage` 转换为 Anthropic 格式的内容块数组
-    /// - 对最后 2 条消息启用 prompt caching（KV cache 复用）
+    /// - 对分层 system blocks 和消息尾部启用 prompt caching（KV cache 复用）
     /// - 如果启用了工具，附加工具定义
     /// - 根据模型名称和 max_tokens 自动配置 extended thinking
     fn build_request(
@@ -105,17 +108,18 @@ impl AnthropicProvider {
         messages: &[LlmMessage],
         tools: &[ToolDefinition],
         system_prompt: Option<&str>,
+        system_prompt_blocks: &[SystemPromptBlock],
         stream: bool,
     ) -> AnthropicRequest {
         let mut anthropic_messages = to_anthropic_messages(messages);
-        // Enable prompt caching on the last 2 message blocks for KV cache reuse
-        enable_message_caching(&mut anthropic_messages, 2);
+        // 预留大部分 breakpoint 给 system 分层前缀；对消息尾部只保留最后 1 个。
+        enable_message_caching(&mut anthropic_messages, 1);
 
         AnthropicRequest {
             model: self.model.clone(),
             max_tokens: self.limits.max_output_tokens.min(u32::MAX as usize) as u32,
             messages: anthropic_messages,
-            system: system_prompt.map(str::to_string),
+            system: to_anthropic_system(system_prompt, system_prompt_blocks),
             tools: if tools.is_empty() {
                 None
             } else {
@@ -227,6 +231,7 @@ impl LlmProvider for AnthropicProvider {
             &request.messages,
             &request.tools,
             request.system_prompt.as_deref(),
+            &request.system_prompt_blocks,
             sink.is_some(),
         );
         let response = self.send_request(&body, cancel.clone()).await?;
@@ -246,6 +251,7 @@ impl LlmProvider for AnthropicProvider {
                 let mut accumulator = LlmAccumulator::default();
                 // 流式路径下从 message_delta 的 stop_reason 提取 (P4.2)
                 let mut stream_stop_reason: Option<String> = None;
+                let mut stream_usage = AnthropicUsage::default();
 
                 loop {
                     let next_item = select! {
@@ -274,12 +280,14 @@ impl LlmProvider for AnthropicProvider {
                         &mut accumulator,
                         &sink,
                         &mut stream_stop_reason,
+                        &mut stream_usage,
                     )? {
                         let mut output = accumulator.finish();
                         // 优先使用 API 返回的 stop_reason，否则使用推断值
                         if let Some(reason) = stream_stop_reason.as_deref() {
                             output.finish_reason = FinishReason::from_api_value(reason);
                         }
+                        output.usage = stream_usage.into_llm_usage();
                         return Ok(output);
                     }
                 }
@@ -293,12 +301,14 @@ impl LlmProvider for AnthropicProvider {
                         &mut accumulator,
                         &sink,
                         &mut stream_stop_reason,
+                        &mut stream_usage,
                     )?;
                     if done {
                         let mut output = accumulator.finish();
                         if let Some(reason) = stream_stop_reason.as_deref() {
                             output.finish_reason = FinishReason::from_api_value(reason);
                         }
+                        output.usage = stream_usage.into_llm_usage();
                         return Ok(output);
                     }
                 }
@@ -308,11 +318,13 @@ impl LlmProvider for AnthropicProvider {
                     &mut accumulator,
                     &sink,
                     &mut stream_stop_reason,
+                    &mut stream_usage,
                 )?;
                 let mut output = accumulator.finish();
                 if let Some(reason) = stream_stop_reason.as_deref() {
                     output.finish_reason = FinishReason::from_api_value(reason);
                 }
+                output.usage = stream_usage.into_llm_usage();
                 Ok(output)
             },
         }
@@ -421,6 +433,30 @@ fn to_anthropic_tools(tools: &[ToolDefinition]) -> Vec<AnthropicTool> {
         .collect()
 }
 
+fn to_anthropic_system(
+    system_prompt: Option<&str>,
+    system_prompt_blocks: &[SystemPromptBlock],
+) -> Option<AnthropicSystemPrompt> {
+    if !system_prompt_blocks.is_empty() {
+        return Some(AnthropicSystemPrompt::Blocks(
+            system_prompt_blocks
+                .iter()
+                .map(|block| AnthropicSystemBlock {
+                    type_: "text".to_string(),
+                    text: block.render(),
+                    cache_control: if block.cache_boundary {
+                        Some(AnthropicCacheControl::ephemeral())
+                    } else {
+                        None
+                    },
+                })
+                .collect(),
+        ));
+    }
+
+    system_prompt.map(|value| AnthropicSystemPrompt::Text(value.to_string()))
+}
+
 /// 将 Anthropic 非流式响应转换为统一的 `LlmOutput`。
 ///
 /// 遍历内容块数组，根据块类型分派：
@@ -436,10 +472,7 @@ fn to_anthropic_tools(tools: &[ToolDefinition]) -> Vec<AnthropicTool> {
 /// - `tool_use` → ToolCalls
 /// - `stop_sequence` → Stop
 fn response_to_output(response: AnthropicResponse) -> LlmOutput {
-    let usage = response.usage.map(|usage| LlmUsage {
-        input_tokens: usage.input_tokens.unwrap_or_default() as usize,
-        output_tokens: usage.output_tokens.unwrap_or_default() as usize,
-    });
+    let usage = response.usage.and_then(AnthropicUsage::into_llm_usage);
 
     let mut content = String::new();
     let mut tool_calls = Vec::new();
@@ -611,9 +644,9 @@ fn process_sse_block(
     block: &str,
     accumulator: &mut LlmAccumulator,
     sink: &EventSink,
-) -> Result<(bool, Option<String>)> {
+) -> Result<SseProcessResult> {
     let Some((event_type, payload)) = parse_sse_block(block)? else {
-        return Ok((false, None));
+        return Ok(SseProcessResult::default());
     };
 
     match event_type.as_str() {
@@ -640,7 +673,7 @@ fn process_sse_block(
                     sink,
                 );
             }
-            Ok((false, None))
+            Ok(SseProcessResult::default())
         },
         "content_block_delta" => {
             let index = payload
@@ -689,9 +722,12 @@ fn process_sse_block(
                 },
                 _ => {},
             }
-            Ok((false, None))
+            Ok(SseProcessResult::default())
         },
-        "message_stop" => Ok((true, None)),
+        "message_stop" => Ok(SseProcessResult {
+            done: true,
+            ..SseProcessResult::default()
+        }),
         // message_delta 可能包含 stop_reason (P4.2)
         "message_delta" => {
             let stop_reason = payload
@@ -699,12 +735,20 @@ fn process_sse_block(
                 .and_then(|d| d.get("stop_reason"))
                 .and_then(Value::as_str)
                 .map(str::to_string);
-            Ok((false, stop_reason))
+            Ok(SseProcessResult {
+                stop_reason,
+                usage: extract_usage_from_payload(&event_type, &payload),
+                ..SseProcessResult::default()
+            })
         },
-        "message_start" | "content_block_stop" | "ping" => Ok((false, None)),
+        "message_start" => Ok(SseProcessResult {
+            usage: extract_usage_from_payload(&event_type, &payload),
+            ..SseProcessResult::default()
+        }),
+        "content_block_stop" | "ping" => Ok(SseProcessResult::default()),
         other => {
             warn!("anthropic: unknown sse event: {}", other);
-            Ok((false, None))
+            Ok(SseProcessResult::default())
         },
     }
 }
@@ -755,6 +799,7 @@ fn consume_sse_text_chunk(
     accumulator: &mut LlmAccumulator,
     sink: &EventSink,
     stop_reason_out: &mut Option<String>,
+    usage_out: &mut AnthropicUsage,
 ) -> Result<bool> {
     sse_buffer.push_str(chunk_text);
 
@@ -762,11 +807,14 @@ fn consume_sse_text_chunk(
         let block: String = sse_buffer.drain(..block_end + delimiter_len).collect();
         let block = &block[..block_end];
 
-        let (done, reason) = process_sse_block(block, accumulator, sink)?;
-        if let Some(r) = reason {
+        let result = process_sse_block(block, accumulator, sink)?;
+        if let Some(r) = result.stop_reason {
             *stop_reason_out = Some(r);
         }
-        if done {
+        if let Some(usage) = result.usage {
+            usage_out.merge_from(usage);
+        }
+        if result.done {
             return Ok(true);
         }
     }
@@ -779,17 +827,20 @@ fn flush_sse_buffer(
     accumulator: &mut LlmAccumulator,
     sink: &EventSink,
     stop_reason_out: &mut Option<String>,
+    usage_out: &mut AnthropicUsage,
 ) -> Result<()> {
     if sse_buffer.trim().is_empty() {
         sse_buffer.clear();
         return Ok(());
     }
 
-    let (done, reason) = process_sse_block(sse_buffer, accumulator, sink)?;
-    if let Some(r) = reason {
+    let result = process_sse_block(sse_buffer, accumulator, sink)?;
+    if let Some(r) = result.stop_reason {
         *stop_reason_out = Some(r);
     }
-    let _ = done;
+    if let Some(usage) = result.usage {
+        usage_out.merge_from(usage);
+    }
     sse_buffer.clear();
     Ok(())
 }
@@ -808,13 +859,29 @@ struct AnthropicRequest {
     max_tokens: u32,
     messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
+    system: Option<AnthropicSystemPrompt>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<AnthropicTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<AnthropicThinking>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum AnthropicSystemPrompt {
+    Text(String),
+    Blocks(Vec<AnthropicSystemBlock>),
+}
+
+#[derive(Debug, Serialize)]
+struct AnthropicSystemBlock {
+    #[serde(rename = "type")]
+    type_: String,
+    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<AnthropicCacheControl>,
 }
 
 /// Anthropic extended thinking 配置。
@@ -950,12 +1017,73 @@ struct AnthropicResponse {
 ///
 /// 两个字段均为 `Option` 且带 `#[serde(default)]`，
 /// 因为某些旧版 API 或特殊响应可能不包含用量信息。
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 struct AnthropicUsage {
     #[serde(default)]
     input_tokens: Option<u64>,
     #[serde(default)]
     output_tokens: Option<u64>,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u64>,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u64>,
+}
+
+impl AnthropicUsage {
+    fn merge_from(&mut self, other: Self) {
+        self.input_tokens = other.input_tokens.or(self.input_tokens);
+        self.cache_creation_input_tokens = other
+            .cache_creation_input_tokens
+            .or(self.cache_creation_input_tokens);
+        self.cache_read_input_tokens = other
+            .cache_read_input_tokens
+            .or(self.cache_read_input_tokens);
+        // output_tokens 在流式事件里通常是累计值，优先保留最新的非空值。
+        self.output_tokens = other.output_tokens.or(self.output_tokens);
+    }
+
+    fn into_llm_usage(self) -> Option<LlmUsage> {
+        if self.input_tokens.is_none()
+            && self.output_tokens.is_none()
+            && self.cache_creation_input_tokens.is_none()
+            && self.cache_read_input_tokens.is_none()
+        {
+            return None;
+        }
+
+        Some(LlmUsage {
+            input_tokens: self.input_tokens.unwrap_or_default() as usize,
+            output_tokens: self.output_tokens.unwrap_or_default() as usize,
+            cache_creation_input_tokens: self.cache_creation_input_tokens.unwrap_or_default()
+                as usize,
+            cache_read_input_tokens: self.cache_read_input_tokens.unwrap_or_default() as usize,
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+struct SseProcessResult {
+    done: bool,
+    stop_reason: Option<String>,
+    usage: Option<AnthropicUsage>,
+}
+
+fn extract_usage_from_payload(event_type: &str, payload: &Value) -> Option<AnthropicUsage> {
+    match event_type {
+        "message_start" => payload
+            .get("message")
+            .and_then(|message| message.get("usage"))
+            .and_then(parse_usage_value),
+        "message_delta" => payload
+            .get("usage")
+            .or_else(|| payload.get("delta").and_then(|delta| delta.get("usage")))
+            .and_then(parse_usage_value),
+        _ => None,
+    }
+}
+
+fn parse_usage_value(value: &Value) -> Option<AnthropicUsage> {
+    serde_json::from_value::<AnthropicUsage>(value.clone()).ok()
 }
 
 #[cfg(test)]
@@ -1022,12 +1150,14 @@ mod tests {
         );
 
         let mut stop_reason_out: Option<String> = None;
+        let mut usage_out = AnthropicUsage::default();
         let done = consume_sse_text_chunk(
             chunk,
             &mut sse_buffer,
             &mut accumulator,
             &sink,
             &mut stop_reason_out,
+            &mut usage_out,
         )
         .expect("stream chunk should parse");
 
@@ -1105,6 +1235,7 @@ mod tests {
             }],
             &[],
             Some("Follow the rules"),
+            &[],
             true,
         );
         let body = serde_json::to_value(&request).expect("request should serialize");
@@ -1141,6 +1272,109 @@ mod tests {
     }
 
     #[test]
+    fn build_request_serializes_system_blocks_with_cache_boundaries() {
+        let provider = AnthropicProvider::new(
+            "https://api.anthropic.com/v1/messages".to_string(),
+            "sk-ant-test".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            ModelLimits {
+                context_window: 200_000,
+                max_output_tokens: 8096,
+            },
+        )
+        .expect("provider should build");
+        let request = provider.build_request(
+            &[LlmMessage::User {
+                content: "hi".to_string(),
+                origin: UserMessageOrigin::User,
+            }],
+            &[],
+            Some("ignored fallback"),
+            &[SystemPromptBlock {
+                title: "Stable".to_string(),
+                content: "stable".to_string(),
+                cache_boundary: true,
+                layer: astrcode_core::SystemPromptLayer::Stable,
+            }],
+            false,
+        );
+        let body = serde_json::to_value(&request).expect("request should serialize");
+
+        assert!(body.get("system").is_some_and(Value::is_array));
+        assert_eq!(
+            body["system"][0]["cache_control"]["type"],
+            json!("ephemeral")
+        );
+    }
+
+    #[test]
+    fn response_to_output_parses_cache_usage_fields() {
+        let output = response_to_output(AnthropicResponse {
+            content: vec![json!({ "type": "text", "text": "ok" })],
+            stop_reason: Some("end_turn".to_string()),
+            usage: Some(AnthropicUsage {
+                input_tokens: Some(100),
+                output_tokens: Some(20),
+                cache_creation_input_tokens: Some(80),
+                cache_read_input_tokens: Some(60),
+            }),
+        });
+
+        assert_eq!(
+            output.usage,
+            Some(LlmUsage {
+                input_tokens: 100,
+                output_tokens: 20,
+                cache_creation_input_tokens: 80,
+                cache_read_input_tokens: 60,
+            })
+        );
+    }
+
+    #[test]
+    fn streaming_sse_extracts_usage_from_message_events() {
+        let mut accumulator = LlmAccumulator::default();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = sink_collector(events);
+        let mut usage_out = AnthropicUsage::default();
+        let mut stop_reason_out = None;
+        let mut sse_buffer = String::new();
+
+        let chunk = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":120,\"\
+             cache_creation_input_tokens\":90,\"cache_read_input_tokens\":70}}}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":\
+             {\"output_tokens\":33}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
+        );
+
+        let done = consume_sse_text_chunk(
+            chunk,
+            &mut sse_buffer,
+            &mut accumulator,
+            &sink,
+            &mut stop_reason_out,
+            &mut usage_out,
+        )
+        .expect("stream chunk should parse");
+
+        assert!(done);
+        assert_eq!(stop_reason_out.as_deref(), Some("end_turn"));
+        assert_eq!(
+            usage_out.into_llm_usage(),
+            Some(LlmUsage {
+                input_tokens: 120,
+                output_tokens: 33,
+                cache_creation_input_tokens: 90,
+                cache_read_input_tokens: 70,
+            })
+        );
+    }
+
+    #[test]
     fn streaming_sse_handles_multibyte_text_split_across_chunks() {
         let mut accumulator = LlmAccumulator::default();
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -1148,6 +1382,7 @@ mod tests {
         let mut sse_buffer = String::new();
         let mut decoder = Utf8StreamDecoder::default();
         let mut stop_reason_out = None;
+        let mut usage_out = AnthropicUsage::default();
         let chunk = concat!(
             "event: content_block_delta\n",
             "data: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"你",
@@ -1183,6 +1418,7 @@ mod tests {
                     &mut accumulator,
                     &sink,
                     &mut stop_reason_out,
+                    &mut usage_out,
                 )
             })
             .transpose()
@@ -1197,6 +1433,7 @@ mod tests {
                     &mut accumulator,
                     &sink,
                     &mut stop_reason_out,
+                    &mut usage_out,
                 )
             })
             .transpose()

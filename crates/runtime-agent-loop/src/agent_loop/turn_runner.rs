@@ -210,6 +210,10 @@ where
                 effective_window: prompt_snapshot.effective_window.min(u32::MAX as usize) as u32,
                 threshold_tokens: prompt_snapshot.threshold_tokens.min(u32::MAX as usize) as u32,
                 truncated_tool_results: truncated_tool_results.min(u32::MAX as usize) as u32,
+                provider_input_tokens: None,
+                provider_output_tokens: None,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
             },
         )?;
         let decision_input = agent_loop
@@ -265,7 +269,8 @@ where
             }
         }
         let policy_ctx = agent_loop.policy_context(state, turn_id, step_index);
-        let request = match agent_loop
+        let original_system_prompt = request.system_prompt.clone();
+        let mut request = match agent_loop
             .policy
             .check_model_request(request, &policy_ctx)
             .await
@@ -275,6 +280,9 @@ where
                 return report_error(turn_id, error.to_string(), &agent, on_event, emit_turn_done);
             },
         };
+        if request.system_prompt != original_system_prompt {
+            request.system_prompt_blocks.clear();
+        }
         // Reactive compact must reuse the exact system prompt that reached the provider after
         // policy rewrites. Otherwise the recovery compaction can summarize against stale
         // instructions and drift from the request shape that actually overflowed.
@@ -386,6 +394,32 @@ where
         };
         reactive_compact_attempts = 0;
         token_tracker.record_usage(output.usage);
+        if let Some(usage) = output.usage {
+            emit_event_with_file_tracking(
+                &mut file_access,
+                on_event,
+                StorageEvent::PromptMetrics {
+                    turn_id: Some(turn_id.to_string()),
+                    agent: agent.clone(),
+                    step_index: step_index as u32,
+                    estimated_tokens: prompt_snapshot.context_tokens.min(u32::MAX as usize) as u32,
+                    context_window: prompt_snapshot.context_window.min(u32::MAX as usize) as u32,
+                    effective_window: prompt_snapshot.effective_window.min(u32::MAX as usize)
+                        as u32,
+                    threshold_tokens: prompt_snapshot.threshold_tokens.min(u32::MAX as usize)
+                        as u32,
+                    truncated_tool_results: truncated_tool_results.min(u32::MAX as usize) as u32,
+                    provider_input_tokens: Some(usage.input_tokens.min(u32::MAX as usize) as u32),
+                    provider_output_tokens: Some(usage.output_tokens.min(u32::MAX as usize) as u32),
+                    cache_creation_input_tokens: Some(
+                        usage.cache_creation_input_tokens.min(u32::MAX as usize) as u32,
+                    ),
+                    cache_read_input_tokens: Some(
+                        usage.cache_read_input_tokens.min(u32::MAX as usize) as u32,
+                    ),
+                },
+            )?;
+        }
 
         if !output.content.is_empty() || !output.tool_calls.is_empty() || output.reasoning.is_some()
         {

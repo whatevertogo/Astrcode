@@ -197,6 +197,32 @@ export function applyAgentEvent(
       break;
     }
 
+    case 'promptMetrics': {
+      const sessionId = event.data.turnId
+        ? resolveSessionId(event.data.turnId)
+        : context.activeSessionIdRef.current;
+      if (!sessionId) {
+        break;
+      }
+      context.dispatch({
+        type: 'UPSERT_PROMPT_METRICS',
+        sessionId,
+        turnId: event.data.turnId ?? null,
+        ...agentFields,
+        stepIndex: event.data.stepIndex,
+        estimatedTokens: event.data.estimatedTokens,
+        contextWindow: event.data.contextWindow,
+        effectiveWindow: event.data.effectiveWindow,
+        thresholdTokens: event.data.thresholdTokens,
+        truncatedToolResults: event.data.truncatedToolResults,
+        providerInputTokens: event.data.providerInputTokens,
+        providerOutputTokens: event.data.providerOutputTokens,
+        cacheCreationInputTokens: event.data.cacheCreationInputTokens,
+        cacheReadInputTokens: event.data.cacheReadInputTokens,
+      });
+      break;
+    }
+
     case 'compactApplied': {
       const sessionId = event.data.turnId
         ? resolveSessionId(event.data.turnId)

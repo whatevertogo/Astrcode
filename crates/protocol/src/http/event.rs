@@ -379,6 +379,27 @@ pub enum AgentEventPayload {
         code: String,
         message: String,
     },
+    /// Prompt/缓存指标快照，用于前端展示 token 用量等信息。
+    PromptMetrics {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
+        agent: AgentContextDto,
+        step_index: u32,
+        estimated_tokens: u32,
+        context_window: u32,
+        effective_window: u32,
+        threshold_tokens: u32,
+        truncated_tool_results: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_input_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_output_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_creation_input_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_read_input_tokens: Option<u32>,
+    },
 }
 
 /// Agent 事件信封，为事件载荷添加协议版本等元数据。

@@ -149,6 +149,14 @@ pub enum StorageEvent {
         effective_window: u32,
         threshold_tokens: u32,
         truncated_tool_results: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_input_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_output_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_creation_input_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_read_input_tokens: Option<u32>,
     },
     /// 上下文压缩已应用。
     CompactApplied {
@@ -369,6 +377,10 @@ mod tests {
             effective_window: 108_000,
             threshold_tokens: 97_200,
             truncated_tool_results: 3,
+            provider_input_tokens: Some(800),
+            provider_output_tokens: Some(120),
+            cache_creation_input_tokens: Some(600),
+            cache_read_input_tokens: Some(500),
         };
 
         let encoded = serde_json::to_value(&event).expect("event should serialize");
@@ -385,6 +397,10 @@ mod tests {
                 effective_window,
                 threshold_tokens,
                 truncated_tool_results,
+                provider_input_tokens,
+                provider_output_tokens,
+                cache_creation_input_tokens,
+                cache_read_input_tokens,
             } => {
                 assert_eq!(turn_id.as_deref(), Some("turn-1"));
                 assert_eq!(step_index, 2);
@@ -393,6 +409,10 @@ mod tests {
                 assert_eq!(effective_window, 108_000);
                 assert_eq!(threshold_tokens, 97_200);
                 assert_eq!(truncated_tool_results, 3);
+                assert_eq!(provider_input_tokens, Some(800));
+                assert_eq!(provider_output_tokens, Some(120));
+                assert_eq!(cache_creation_input_tokens, Some(600));
+                assert_eq!(cache_read_input_tokens, Some(500));
             },
             other => panic!("expected prompt metrics, got {other:?}"),
         }
@@ -406,6 +426,10 @@ mod tests {
             "effective_window": 108000,
             "threshold_tokens": 97200,
             "truncated_tool_results": 3,
+            "provider_input_tokens": 800,
+            "provider_output_tokens": 120,
+            "cache_creation_input_tokens": 600,
+            "cache_read_input_tokens": 500,
         });
         assert_eq!(encoded, expected);
     }

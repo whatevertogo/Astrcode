@@ -30,8 +30,10 @@
 //!   `CompactionRuntime` 决策时使用
 //! - `truncated_tool_results` 返回被 prune pass 裁剪的工具结果数量，上报给前端指标
 
-use astrcode_core::{LlmMessage, ModelRequest, Result, ToolDefinition};
-use astrcode_runtime_prompt::{PromptPlan, append_unique_tools};
+use astrcode_core::{
+    LlmMessage, ModelRequest, Result, SystemPromptBlock, SystemPromptLayer, ToolDefinition,
+};
+use astrcode_runtime_prompt::{PromptLayer, PromptPlan, append_unique_tools};
 
 use crate::{
     context_pipeline::{ContextBlock, ContextBundle},
@@ -107,6 +109,7 @@ impl RequestAssembler {
             messages: self.compose_messages(prompt, context),
             tools,
             system_prompt: prompt.render_system(),
+            system_prompt_blocks: build_system_prompt_blocks(prompt),
         })
     }
 
@@ -174,6 +177,29 @@ impl RequestAssembler {
             .map(|block| AssembledContextMessage::StructuredContext { slot, block })
             .collect()
     }
+}
+
+fn build_system_prompt_blocks(prompt: &PromptPlan) -> Vec<SystemPromptBlock> {
+    let ordered = prompt.ordered_system_blocks();
+
+    ordered
+        .iter()
+        .enumerate()
+        .map(|(index, block)| SystemPromptBlock {
+            title: block.title.clone(),
+            content: block.content.clone(),
+            cache_boundary: ordered
+                .get(index + 1)
+                .map(|next| next.layer != block.layer)
+                .unwrap_or(true),
+            layer: match block.layer {
+                PromptLayer::Stable => SystemPromptLayer::Stable,
+                PromptLayer::SemiStable => SystemPromptLayer::SemiStable,
+                PromptLayer::Dynamic => SystemPromptLayer::Dynamic,
+                PromptLayer::Unspecified => SystemPromptLayer::Unspecified,
+            },
+        })
+        .collect()
 }
 
 fn lower_assembled_message(message: AssembledContextMessage) -> LlmMessage {
@@ -251,6 +277,7 @@ mod tests {
 
         assert_eq!(request.messages.len(), 3);
         assert_eq!(request.tools.len(), 2);
+        assert!(request.system_prompt_blocks.is_empty());
         assert!(matches!(
             &request.messages[0],
             LlmMessage::User { content, .. } if content == "prepend"
@@ -294,6 +321,55 @@ mod tests {
         assert_eq!(prepared.request.messages.len(), 3);
         assert_eq!(prepared.prompt_snapshot.context_window, 8192);
         assert_eq!(prepared.truncated_tool_results, 2);
+    }
+
+    #[test]
+    fn assemble_builds_system_prompt_blocks_with_layer_boundaries() {
+        let prompt = PromptPlan {
+            system_blocks: vec![
+                astrcode_runtime_prompt::PromptBlock::new(
+                    "identity",
+                    astrcode_runtime_prompt::BlockKind::Identity,
+                    "Identity",
+                    "stable",
+                    100,
+                    astrcode_runtime_prompt::block::BlockMetadata::default(),
+                    0,
+                )
+                .with_layer(astrcode_runtime_prompt::PromptLayer::Stable),
+                astrcode_runtime_prompt::PromptBlock::new(
+                    "rules",
+                    astrcode_runtime_prompt::BlockKind::ProjectRules,
+                    "Rules",
+                    "semi",
+                    200,
+                    astrcode_runtime_prompt::block::BlockMetadata::default(),
+                    1,
+                )
+                .with_layer(astrcode_runtime_prompt::PromptLayer::SemiStable),
+            ],
+            ..PromptPlan::default()
+        };
+
+        let request = RequestAssembler
+            .assemble(
+                &prompt,
+                &ContextBundle {
+                    conversation: ConversationView::new(Vec::new()),
+                    workset: Vec::new(),
+                    memory: Vec::new(),
+                    diagnostics: Vec::new(),
+                    budget_state: TokenBudgetState,
+                    truncated_tool_results: 0,
+                    prune_stats: PruneStats::default(),
+                },
+                vec![],
+            )
+            .expect("request should assemble");
+
+        assert_eq!(request.system_prompt_blocks.len(), 2);
+        assert!(request.system_prompt_blocks[0].cache_boundary);
+        assert!(request.system_prompt_blocks[1].cache_boundary);
     }
 
     #[test]

@@ -161,7 +161,34 @@ impl EventTranslator {
                 self.phase_tracker
                     .force_to(Phase::Thinking, turn_id.clone(), agent.clone());
             },
-            StorageEvent::PromptMetrics { .. } => {},
+            StorageEvent::PromptMetrics {
+                step_index,
+                estimated_tokens,
+                context_window,
+                effective_window,
+                threshold_tokens,
+                truncated_tool_results,
+                provider_input_tokens,
+                provider_output_tokens,
+                cache_creation_input_tokens,
+                cache_read_input_tokens,
+                ..
+            } => {
+                push(AgentEvent::PromptMetrics {
+                    turn_id: turn_id.clone(),
+                    agent: agent.clone(),
+                    step_index: *step_index,
+                    estimated_tokens: *estimated_tokens,
+                    context_window: *context_window,
+                    effective_window: *effective_window,
+                    threshold_tokens: *threshold_tokens,
+                    truncated_tool_results: *truncated_tool_results,
+                    provider_input_tokens: *provider_input_tokens,
+                    provider_output_tokens: *provider_output_tokens,
+                    cache_creation_input_tokens: *cache_creation_input_tokens,
+                    cache_read_input_tokens: *cache_read_input_tokens,
+                });
+            },
             StorageEvent::CompactApplied {
                 trigger,
                 summary,
@@ -560,6 +587,45 @@ mod tests {
                 preserved_recent_turns,
                 ..
             } if summary == "保留最近上下文" && *preserved_recent_turns == 2
+        ));
+    }
+
+    #[test]
+    fn prompt_metrics_replays_as_dedicated_agent_event() {
+        let records = replay_records(
+            &[StoredEvent {
+                storage_seq: 9,
+                event: StorageEvent::PromptMetrics {
+                    turn_id: Some("turn-9".to_string()),
+                    agent: AgentEventContext::default(),
+                    step_index: 1,
+                    estimated_tokens: 1024,
+                    context_window: 200_000,
+                    effective_window: 180_000,
+                    threshold_tokens: 162_000,
+                    truncated_tool_results: 1,
+                    provider_input_tokens: Some(900),
+                    provider_output_tokens: Some(120),
+                    cache_creation_input_tokens: Some(700),
+                    cache_read_input_tokens: Some(650),
+                },
+            }],
+            None,
+        );
+
+        assert_eq!(records.len(), 1);
+        assert!(matches!(
+            &records[0].event,
+            AgentEvent::PromptMetrics {
+                turn_id,
+                step_index,
+                provider_input_tokens,
+                cache_read_input_tokens,
+                ..
+            } if turn_id.as_deref() == Some("turn-9")
+                && *step_index == 1
+                && *provider_input_tokens == Some(900)
+                && *cache_read_input_tokens == Some(650)
         ));
     }
 }

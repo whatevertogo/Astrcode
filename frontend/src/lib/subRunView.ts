@@ -99,6 +99,11 @@ function buildMessageFingerprint(message: Message): string {
       message.error?.length ?? 0
     }`;
   }
+  if (message.kind === 'promptMetrics') {
+    return `${message.id}:promptMetrics:${message.stepIndex}:${message.estimatedTokens}:${
+      message.cacheReadInputTokens ?? 0
+    }:${message.cacheCreationInputTokens ?? 0}`;
+  }
   if (message.kind === 'compact') {
     return `${message.id}:compact:${message.summary.length}`;
   }

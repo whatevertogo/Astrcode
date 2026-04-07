@@ -103,6 +103,25 @@ pub enum AgentEvent {
         agent: AgentEventContext,
         result: ToolExecutionResult,
     },
+    /// Prompt/缓存指标快照。
+    PromptMetrics {
+        turn_id: Option<String>,
+        agent: AgentEventContext,
+        step_index: u32,
+        estimated_tokens: u32,
+        context_window: u32,
+        effective_window: u32,
+        threshold_tokens: u32,
+        truncated_tool_results: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_input_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_output_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_creation_input_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_read_input_tokens: Option<u32>,
+    },
     /// 上下文压缩已应用。
     ///
     /// 这是运行时显式事件，而不是普通 assistant 回复，

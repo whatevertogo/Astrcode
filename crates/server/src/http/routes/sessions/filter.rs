@@ -160,6 +160,7 @@ fn event_turn_id(event: &AgentEvent) -> Option<&str> {
         | AgentEvent::CompactApplied { turn_id, .. }
         | AgentEvent::SubRunStarted { turn_id, .. }
         | AgentEvent::SubRunFinished { turn_id, .. }
+        | AgentEvent::PromptMetrics { turn_id, .. }
         | AgentEvent::Error { turn_id, .. } => turn_id.as_deref(),
     }
 }
@@ -218,6 +219,7 @@ fn event_agent_context(event: &AgentEvent) -> Option<&astrcode_core::AgentEventC
         | AgentEvent::CompactApplied { agent, .. }
         | AgentEvent::SubRunStarted { agent, .. }
         | AgentEvent::SubRunFinished { agent, .. }
+        | AgentEvent::PromptMetrics { agent, .. }
         | AgentEvent::TurnDone { agent, .. }
         | AgentEvent::Error { agent, .. } => Some(agent),
     }

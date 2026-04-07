@@ -144,6 +144,19 @@ function findToolCallMessageIndex(
   return fallbackCandidates.length === 1 ? fallbackCandidates[0] : -1;
 }
 
+function findPromptMetricsMessageIndex(
+  messages: AppState['projects'][number]['sessions'][number]['messages'],
+  stepIndex: number,
+  turnId?: string | null
+): number {
+  return messages.findIndex(
+    (message) =>
+      message.kind === 'promptMetrics' &&
+      message.stepIndex === stepIndex &&
+      message.turnId === (turnId ?? null)
+  );
+}
+
 // ─── Re-exports used by App.tsx ───────────────────────────────────────────────
 
 export {
@@ -152,6 +165,7 @@ export {
   moveUpdatedMessageToTail,
   upsertAssistantTurnMessage,
   findToolCallMessageIndex,
+  findPromptMetricsMessageIndex,
 };
 
 // ─── Reducer ──────────────────────────────────────────────────────────────────
@@ -606,6 +620,56 @@ export function reducer(state: AppState, action: Action): AppState {
               truncated: action.truncated,
             };
           }),
+        };
+      });
+
+    case 'UPSERT_PROMPT_METRICS':
+      return mapSession(state, action.sessionId, (session) => {
+        const targetIndex = findPromptMetricsMessageIndex(
+          session.messages,
+          action.stepIndex,
+          action.turnId
+        );
+        const nextMessage = {
+          id:
+            targetIndex >= 0 && session.messages[targetIndex]?.kind === 'promptMetrics'
+              ? session.messages[targetIndex].id
+              : uuid(),
+          kind: 'promptMetrics' as const,
+          turnId: action.turnId ?? null,
+          agentId: action.agentId,
+          parentTurnId: action.parentTurnId,
+          agentProfile: action.agentProfile,
+          subRunId: action.subRunId,
+          invocationKind: action.invocationKind,
+          storageMode: action.storageMode,
+          childSessionId: action.childSessionId,
+          stepIndex: action.stepIndex,
+          estimatedTokens: action.estimatedTokens,
+          contextWindow: action.contextWindow,
+          effectiveWindow: action.effectiveWindow,
+          thresholdTokens: action.thresholdTokens,
+          truncatedToolResults: action.truncatedToolResults,
+          providerInputTokens: action.providerInputTokens,
+          providerOutputTokens: action.providerOutputTokens,
+          cacheCreationInputTokens: action.cacheCreationInputTokens,
+          cacheReadInputTokens: action.cacheReadInputTokens,
+          timestamp:
+            targetIndex >= 0 && session.messages[targetIndex]?.kind === 'promptMetrics'
+              ? session.messages[targetIndex].timestamp
+              : Date.now(),
+        };
+
+        if (targetIndex < 0) {
+          return {
+            ...session,
+            messages: [...session.messages, nextMessage],
+          };
+        }
+
+        return {
+          ...session,
+          messages: moveUpdatedMessageToTail(session.messages, targetIndex, nextMessage),
         };
       });
 

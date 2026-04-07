@@ -39,6 +39,19 @@ export interface ToolCallResultEnvelope {
   truncated?: boolean;
 }
 
+export interface PromptMetricsSnapshot {
+  stepIndex: number;
+  estimatedTokens: number;
+  contextWindow: number;
+  effectiveWindow: number;
+  thresholdTokens: number;
+  truncatedToolResults: number;
+  providerInputTokens?: number;
+  providerOutputTokens?: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
+}
+
 export interface ArtifactRef {
   kind: string;
   id: string;
@@ -114,6 +127,14 @@ export type AgentEventPayload =
   | {
       event: 'toolCallResult';
       data: AgentScoped<{ turnId: string; result: ToolCallResultEnvelope }>;
+    }
+  | {
+      event: 'promptMetrics';
+      data: AgentScoped<
+        {
+          turnId?: string | null;
+        } & PromptMetricsSnapshot
+      >;
     }
   | {
       event: 'compactApplied';
@@ -234,6 +255,30 @@ export interface CompactMessage {
   timestamp: number;
 }
 
+export interface PromptMetricsMessage {
+  id: string;
+  kind: 'promptMetrics';
+  turnId?: string | null;
+  agentId?: string;
+  parentTurnId?: string;
+  agentProfile?: string;
+  subRunId?: string;
+  invocationKind?: InvocationKind;
+  storageMode?: SubRunStorageMode;
+  childSessionId?: string;
+  stepIndex: number;
+  estimatedTokens: number;
+  contextWindow: number;
+  effectiveWindow: number;
+  thresholdTokens: number;
+  truncatedToolResults: number;
+  providerInputTokens?: number;
+  providerOutputTokens?: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
+  timestamp: number;
+}
+
 export interface SubRunStartMessage {
   id: string;
   kind: 'subRunStart';
@@ -271,6 +316,7 @@ export type Message =
   | UserMessage
   | AssistantMessage
   | ToolCallMessage
+  | PromptMetricsMessage
   | CompactMessage
   | SubRunStartMessage
   | SubRunFinishMessage;
@@ -439,6 +485,12 @@ export type Action =
       durationMs: number;
       truncated?: boolean;
     } & AgentActionContext)
+  | ({
+      type: 'UPSERT_PROMPT_METRICS';
+      sessionId: string;
+      turnId?: string | null;
+    } & AgentActionContext &
+      PromptMetricsSnapshot)
   | { type: 'SET_WORKING_DIR'; projectId: string; workingDir: string }
   | {
       type: 'INITIALIZE';

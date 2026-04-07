@@ -33,15 +33,27 @@ use std::{collections::HashMap, sync::Arc};
 use astrcode_core::{AgentState, AstrError, CapabilityDescriptor, Result};
 use astrcode_runtime_agent_tool::AgentProfileCatalog;
 use astrcode_runtime_prompt::{
-    PromptAgentProfileSummary, PromptComposer, PromptContext, PromptDeclaration,
-    PromptSkillSummary, composer::PromptBuildOutput,
+    LayeredPromptBuilder, PromptAgentProfileSummary, PromptBuildOutput, PromptComposer,
+    PromptContext, PromptDeclaration, PromptSkillSummary,
+    contributors::{
+        AgentProfileSummaryContributor, AgentsMdContributor, CapabilityPromptContributor,
+        EnvironmentContributor, IdentityContributor, SkillSummaryContributor,
+        WorkflowExamplesContributor,
+    },
 };
 use astrcode_runtime_skill_loader::SkillCatalog;
 
 use crate::context_pipeline::ConversationView;
 
+#[allow(dead_code)]
+enum PromptBackend {
+    Layered(LayeredPromptBuilder),
+    #[allow(dead_code)]
+    Composer(PromptComposer),
+}
+
 pub(crate) struct PromptRuntime {
-    composer: PromptComposer,
+    backend: PromptBackend,
     tool_names: Vec<String>,
     capability_descriptors: Vec<CapabilityDescriptor>,
     prompt_declarations: Vec<PromptDeclaration>,
@@ -51,7 +63,7 @@ pub(crate) struct PromptRuntime {
 
 impl PromptRuntime {
     pub(crate) fn new(
-        composer: PromptComposer,
+        _composer: PromptComposer,
         tool_names: Vec<String>,
         capability_descriptors: Vec<CapabilityDescriptor>,
         prompt_declarations: Vec<PromptDeclaration>,
@@ -59,7 +71,7 @@ impl PromptRuntime {
         agent_profile_catalog: Option<Arc<dyn AgentProfileCatalog>>,
     ) -> Self {
         Self {
-            composer,
+            backend: PromptBackend::Layered(default_layered_builder()),
             tool_names,
             capability_descriptors,
             prompt_declarations,
@@ -78,7 +90,7 @@ impl PromptRuntime {
 
     #[cfg(test)]
     pub(crate) fn with_composer(mut self, composer: PromptComposer) -> Self {
-        self.composer = composer;
+        self.backend = PromptBackend::Composer(composer);
         self
     }
 
@@ -124,11 +136,27 @@ impl PromptRuntime {
             turn_index: state.turn_count,
             vars,
         };
-        self.composer
-            .build(&ctx)
-            .await
-            .map_err(|error| AstrError::Internal(error.to_string()))
+        match &self.backend {
+            PromptBackend::Layered(builder) => builder.build(&ctx).await,
+            PromptBackend::Composer(composer) => composer.build(&ctx).await,
+        }
+        .map_err(|error| AstrError::Internal(error.to_string()))
     }
+}
+
+fn default_layered_builder() -> LayeredPromptBuilder {
+    LayeredPromptBuilder::new()
+        .with_stable_layer(vec![
+            Arc::new(IdentityContributor),
+            Arc::new(EnvironmentContributor),
+        ])
+        .with_semi_stable_layer(vec![
+            Arc::new(AgentsMdContributor),
+            Arc::new(CapabilityPromptContributor),
+            Arc::new(AgentProfileSummaryContributor),
+            Arc::new(SkillSummaryContributor),
+        ])
+        .with_dynamic_layer(vec![Arc::new(WorkflowExamplesContributor)])
 }
 
 fn latest_user_message(messages: &[astrcode_core::LlmMessage]) -> Option<&str> {

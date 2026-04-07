@@ -44,8 +44,8 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use astrcode_core::{
-    AstrError, CancelToken, LlmMessage, ModelRequest, ReasoningContent, Result, ToolCallRequest,
-    ToolDefinition,
+    AstrError, CancelToken, LlmMessage, ModelRequest, ReasoningContent, Result, SystemPromptBlock,
+    ToolCallRequest, ToolDefinition,
 };
 use async_trait::async_trait;
 use log::warn;
@@ -217,6 +217,10 @@ pub struct LlmUsage {
     pub input_tokens: usize,
     /// 输出（completion）消耗的 token 数
     pub output_tokens: usize,
+    /// 本次请求中新写入 provider cache 的输入 token 数。
+    pub cache_creation_input_tokens: usize,
+    /// 本次请求从 provider cache 读取的输入 token 数。
+    pub cache_read_input_tokens: usize,
 }
 
 impl LlmUsage {
@@ -476,6 +480,7 @@ pub struct LlmRequest {
     pub tools: Vec<ToolDefinition>,
     pub cancel: CancelToken,
     pub system_prompt: Option<String>,
+    pub system_prompt_blocks: Vec<SystemPromptBlock>,
 }
 
 impl LlmRequest {
@@ -485,6 +490,7 @@ impl LlmRequest {
             tools,
             cancel,
             system_prompt: None,
+            system_prompt_blocks: Vec::new(),
         }
     }
 
@@ -499,6 +505,7 @@ impl LlmRequest {
             tools: request.tools,
             cancel,
             system_prompt: request.system_prompt,
+            system_prompt_blocks: request.system_prompt_blocks,
         }
     }
 }
