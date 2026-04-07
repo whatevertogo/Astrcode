@@ -1,7 +1,5 @@
 use astrcode_core::{AgentEvent, SessionEventRecord};
-use astrcode_runtime_execution::{
-    ExecutionLineageIndex, ExecutionLineageScope, LINEAGE_METADATA_UNAVAILABLE_MESSAGE,
-};
+use astrcode_runtime_execution::{ExecutionLineageIndex, ExecutionLineageScope};
 use serde::Deserialize;
 
 use super::validate_path_id;
@@ -142,6 +140,7 @@ mod tests {
         AgentEventContext, Phase, ResolvedExecutionLimitsSnapshot,
         ResolvedSubagentContextOverrides, SessionEventRecord, SubRunDescriptor, SubRunStorageMode,
     };
+    use astrcode_runtime_execution::LINEAGE_METADATA_UNAVAILABLE_MESSAGE;
 
     use super::*;
 
