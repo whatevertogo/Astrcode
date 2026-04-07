@@ -1,5 +1,7 @@
 # Contract: Session History And Events
 
+**Status**: ✅ IMPLEMENTED (Phase 4 - User Story 2 完成)
+
 ## Scope
 
 该契约定义两条历史消费主线的统一语义：

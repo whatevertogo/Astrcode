@@ -33,6 +33,12 @@ public surface changes.
   compatibility and validation tasks.
 - Every change deleting or moving a public surface MUST include caller inventory and migration tasks
   before removal tasks.
+- Every change that introduces or modifies lock acquisition, async task spawning, or array indexing
+  MUST include runtime robustness tasks: verify no unwrap/expect on locks, verify all spawn handles
+  are managed, verify no lock-held-across-await patterns.
+- Every change touching critical business operations (session lifecycle, tool execution, sub-agent
+  scheduling, config reload) MUST include observability tasks: verify log level correctness, verify
+  no silent error swallowing, verify error context preservation in map_err.
 - When a feature changes durable event format or fields, public runtime surfaces, cross-boundary
   dependency direction, or replaces/deletes modules or interfaces with external callers, it MUST
   include documentation tasks for findings/design/migration artifacts.

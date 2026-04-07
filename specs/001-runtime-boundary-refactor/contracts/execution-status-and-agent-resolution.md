@@ -1,5 +1,7 @@
 # Contract: Execution Status And Agent Resolution
 
+**Status**: ✅ IMPLEMENTED (Phase 5 - User Story 3 完成)
+
 ## Scope
 
 该契约覆盖三类执行相关入口：
