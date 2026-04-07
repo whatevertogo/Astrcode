@@ -76,7 +76,7 @@ pub use plugin::{PluginHealth, PluginManifest, PluginRegistry, PluginState, Plug
 pub use policy::{
     AllowAllPolicyEngine, ApprovalDefault, ApprovalPending, ApprovalRequest, ApprovalResolution,
     CapabilityCall, ContextDecisionInput, ContextStrategy, ModelRequest, PolicyContext,
-    PolicyEngine, PolicyVerdict,
+    PolicyEngine, PolicyVerdict, SystemPromptBlock, SystemPromptLayer,
 };
 pub use projection::{AgentState, AgentStateProjector, project};
 pub use registry::{CapabilityContext, CapabilityExecutionResult, CapabilityInvoker};

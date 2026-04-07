@@ -19,6 +19,48 @@ use serde_json::Value;
 
 use crate::{CapabilityDescriptor, LlmMessage, Result, ToolDefinition};
 
+/// 系统提示词块所属层级。
+///
+/// provider 可以利用该层级决定缓存边界，从而在分层 prompt 下尽量保住稳定前缀。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemPromptLayer {
+    Stable,
+    SemiStable,
+    Dynamic,
+    #[default]
+    Unspecified,
+}
+
+/// 已渲染的系统提示词块。
+///
+/// RequestAssembler 会把 `PromptPlan` 中的 system blocks 降级为这个 provider 无关 DTO。
+/// 这样 `core` 只感知“分段后的系统提示词”，而不依赖 `runtime-prompt` 的内部类型。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemPromptBlock {
+    pub title: String,
+    pub content: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cache_boundary: bool,
+    #[serde(default, skip_serializing_if = "is_unspecified_system_prompt_layer")]
+    pub layer: SystemPromptLayer,
+}
+
+impl SystemPromptBlock {
+    pub fn render(&self) -> String {
+        format!("[{}]\n{}", self.title, self.content)
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn is_unspecified_system_prompt_layer(layer: &SystemPromptLayer) -> bool {
+    matches!(layer, SystemPromptLayer::Unspecified)
+}
+
 /// Turn 范围的模型请求，策略层可在执行前检查或重写。
 #[derive(Debug, Clone)]
 pub struct ModelRequest {
@@ -28,6 +70,11 @@ pub struct ModelRequest {
     pub tools: Vec<ToolDefinition>,
     /// 系统提示词
     pub system_prompt: Option<String>,
+    /// 分段后的系统提示词块。
+    ///
+    /// 默认 provider 可忽略它继续使用 `system_prompt`，但像 Anthropic 这类支持
+    /// block 级 cache breakpoint 的后端可以直接消费它。
+    pub system_prompt_blocks: Vec<SystemPromptBlock>,
 }
 
 /// 通用能力调用提案
@@ -357,6 +404,7 @@ mod tests {
             messages: vec![],
             tools: vec![],
             system_prompt: Some("system".to_string()),
+            system_prompt_blocks: Vec::new(),
         };
         let call = super::CapabilityCall {
             request_id: "call-1".to_string(),

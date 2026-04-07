@@ -16,6 +16,19 @@ use std::{borrow::Cow, collections::HashMap};
 
 use super::template::PromptTemplate;
 
+/// Prompt 块所属的缓存层级。
+///
+/// 分层构建器会在最终 `PromptPlan` 中标记 system block 的层级，
+/// 让 provider 在序列化时可以把稳定前缀拆成多个 cache breakpoint。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum PromptLayer {
+    Stable,
+    SemiStable,
+    Dynamic,
+    #[default]
+    Unspecified,
+}
+
 /// Prompt 块的语义分类。
 ///
 /// 决定 block 在组装后的 system prompt 中的默认优先级顺序。
@@ -284,6 +297,7 @@ pub struct PromptBlock {
     pub title: String,
     pub content: String,
     pub priority: i32,
+    pub layer: PromptLayer,
     pub metadata: BlockMetadata,
     pub insertion_order: usize,
 }
@@ -304,8 +318,14 @@ impl PromptBlock {
             title: title.into(),
             content: content.into(),
             priority,
+            layer: PromptLayer::Unspecified,
             metadata,
             insertion_order,
         }
+    }
+
+    pub fn with_layer(mut self, layer: PromptLayer) -> Self {
+        self.layer = layer;
+        self
     }
 }

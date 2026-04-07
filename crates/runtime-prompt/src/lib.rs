@@ -35,14 +35,15 @@ pub mod prompt_declaration;
 pub mod template;
 
 pub use block::{
-    BlockCondition, BlockContent, BlockKind, BlockSpec, PromptBlock, RenderTarget, ValidationPolicy,
+    BlockCondition, BlockContent, BlockKind, BlockSpec, PromptBlock, PromptLayer, RenderTarget,
+    ValidationPolicy,
 };
-pub use composer::{PromptComposer, PromptComposerOptions, ValidationLevel};
+pub use composer::{PromptBuildOutput, PromptComposer, PromptComposerOptions, ValidationLevel};
 pub use context::{PromptAgentProfileSummary, PromptContext, PromptSkillSummary};
 pub use contribution::{PromptContribution, append_unique_tools};
 pub use contributor::PromptContributor;
 pub use diagnostics::{DiagnosticLevel, PromptDiagnostics};
-pub use layered_builder::{LayeredBuilderOptions, LayeredPromptBuilder, PromptBuildOutput};
+pub use layered_builder::{LayeredBuilderOptions, LayeredPromptBuilder};
 pub use plan::PromptPlan;
 pub use prompt_declaration::{
     PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,

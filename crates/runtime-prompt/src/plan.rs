@@ -10,7 +10,7 @@
 
 use astrcode_core::{LlmMessage, ToolDefinition};
 
-use super::PromptBlock;
+use super::{PromptBlock, append_unique_tools, block::PromptLayer};
 
 /// Prompt 组装的最终计划。
 ///
@@ -25,6 +25,13 @@ pub struct PromptPlan {
 }
 
 impl PromptPlan {
+    /// 以最终渲染顺序返回 system blocks。
+    pub fn ordered_system_blocks(&self) -> Vec<&PromptBlock> {
+        let mut blocks: Vec<&PromptBlock> = self.system_blocks.iter().collect();
+        blocks.sort_by_key(|block| (block.priority, block.insertion_order));
+        blocks
+    }
+
     /// 将 system blocks 渲染为完整的 system prompt 字符串。
     ///
     /// Blocks 按 `(priority, insertion_order)` 排序后，以 `[Title]\ncontent` 格式拼接。
@@ -34,16 +41,48 @@ impl PromptPlan {
             return None;
         }
 
-        let mut blocks: Vec<&PromptBlock> = self.system_blocks.iter().collect();
-        blocks.sort_by_key(|block| (block.priority, block.insertion_order));
-
         Some(
-            blocks
+            self.ordered_system_blocks()
                 .into_iter()
                 .map(|block| format!("[{}]\n{}", block.title, block.content))
                 .collect::<Vec<_>>()
                 .join("\n\n"),
         )
+    }
+
+    /// 以指定层级合并另一个 plan。
+    ///
+    /// 这里显式重写 insertion_order，是为了保证不同 layer 单独 build 后再 merge 时，
+    /// 全局排序仍然稳定且单调递增。
+    pub fn extend_with_layer(&mut self, other: PromptPlan, layer: PromptLayer) {
+        let insertion_offset = self
+            .system_blocks
+            .iter()
+            .map(|block| block.insertion_order)
+            .max()
+            .map(|value| value.saturating_add(1))
+            .unwrap_or(0);
+
+        self.system_blocks
+            .extend(other.system_blocks.into_iter().map(|block| {
+                block
+                    .with_layer(layer)
+                    .with_insertion_order(block.insertion_order + insertion_offset)
+            }));
+        self.prepend_messages.extend(other.prepend_messages);
+        self.append_messages.extend(other.append_messages);
+        append_unique_tools(&mut self.extra_tools, other.extra_tools);
+    }
+}
+
+trait PromptBlockExt {
+    fn with_insertion_order(self, insertion_order: usize) -> Self;
+}
+
+impl PromptBlockExt for PromptBlock {
+    fn with_insertion_order(mut self, insertion_order: usize) -> Self {
+        self.insertion_order = insertion_order;
+        self
     }
 }
 

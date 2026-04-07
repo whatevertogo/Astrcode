@@ -8,7 +8,9 @@ description: "Task list template for feature implementation"
 **Input**: Design documents from `/specs/[###-feature-name]/`
 **Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/
 
-**Tests**: The examples below include test tasks. Tests are OPTIONAL - only include them if explicitly requested in the feature specification.
+**Tests**: Include test tasks whenever the feature spec, constitution, or changed contracts require
+behavioral proof. Validation tasks are NEVER optional for durable event, protocol, boundary, or
+public surface changes.
 
 **Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
 
@@ -24,6 +26,17 @@ description: "Task list template for feature implementation"
 - **Web app**: `backend/src/`, `frontend/src/`
 - **Mobile**: `api/src/`, `ios/src/` or `android/src/`
 - Paths shown below assume single project - adjust based on plan.md structure
+
+## Constitution-Driven Task Rules
+
+- Every change touching durable events, replay, subrun lineage, or transport envelopes MUST include
+  compatibility and validation tasks.
+- Every change deleting or moving a public surface MUST include caller inventory and migration tasks
+  before removal tasks.
+- When a feature changes durable event format or fields, public runtime surfaces, cross-boundary
+  dependency direction, or replaces/deletes modules or interfaces with external callers, it MUST
+  include documentation tasks for findings/design/migration artifacts.
+- Final validation tasks MUST include the concrete repository checks required by the plan.
 
 <!-- 
   ============================================================================
@@ -46,11 +59,11 @@ description: "Task list template for feature implementation"
 
 ## Phase 1: Setup (Shared Infrastructure)
 
-**Purpose**: Project initialization and basic structure
+**Purpose**: Project initialization, fact capture, and basic structure
 
-- [ ] T001 Create project structure per implementation plan
-- [ ] T002 Initialize [language] project with [framework] dependencies
-- [ ] T003 [P] Configure linting and formatting tools
+- [ ] T001 Create feature document structure per implementation plan
+- [ ] T002 Capture affected boundaries, contracts, and caller inventory required by the plan
+- [ ] T003 [P] Record validation commands and baseline samples needed to prove the change
 
 ---
 
@@ -62,12 +75,12 @@ description: "Task list template for feature implementation"
 
 Examples of foundational tasks (adjust based on your project):
 
-- [ ] T004 Setup database schema and migrations framework
-- [ ] T005 [P] Implement authentication/authorization framework
-- [ ] T006 [P] Setup API routing and middleware structure
-- [ ] T007 Create base models/entities that all stories depend on
-- [ ] T008 Configure error handling and logging infrastructure
-- [ ] T009 Setup environment configuration management
+- [ ] T004 Establish durable contract changes and compatibility handling
+- [ ] T005 [P] Establish canonical boundary ownership and replacement entry points
+- [ ] T006 [P] Update shared protocol or mapper contracts required by all stories
+- [ ] T007 Create or update base entities/read models all stories depend on
+- [ ] T008 Configure observability, error exposure, and migration checkpoints
+- [ ] T009 Confirm repository-wide validation workflow for affected stacks
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 
@@ -150,12 +163,12 @@ Examples of foundational tasks (adjust based on your project):
 
 **Purpose**: Improvements that affect multiple user stories
 
-- [ ] TXXX [P] Documentation updates in docs/
+- [ ] TXXX [P] Documentation updates in docs/ and specs/
 - [ ] TXXX Code cleanup and refactoring
 - [ ] TXXX Performance optimization across all stories
 - [ ] TXXX [P] Additional unit tests (if requested) in tests/unit/
 - [ ] TXXX Security hardening
-- [ ] TXXX Run quickstart.md validation
+- [ ] TXXX Run repository validation commands required by the plan
 
 ---
 
@@ -178,7 +191,7 @@ Examples of foundational tasks (adjust based on your project):
 
 ### Within Each User Story
 
-- Tests (if included) MUST be written and FAIL before implementation
+- Tests and validation tasks MUST exist before implementation is considered complete
 - Models before services
 - Services before endpoints
 - Core implementation before integration
@@ -245,7 +258,7 @@ With multiple developers:
 - [P] tasks = different files, no dependencies
 - [Story] label maps task to specific user story for traceability
 - Each user story should be independently completable and testable
-- Verify tests fail before implementing
+- Verify required tests and validation tasks are in place before implementing
 - Commit after each task or logical group
 - Stop at any checkpoint to validate story independently
 - Avoid: vague tasks, same file conflicts, cross-story dependencies that break independence

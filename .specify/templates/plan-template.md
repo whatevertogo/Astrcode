@@ -31,7 +31,22 @@
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-[Gates determined based on constitution file]
+If any check appears to conflict with another, first verify whether the plan is violating the
+hidden prerequisites behind **Durable Truth First** or **One Boundary, One Owner** before accepting
+any tradeoff.
+
+- **Durable Truth First**: Does the plan identify the durable source of truth for every changed
+  history-facing behavior and explain any live overlay or compatibility fallback?
+- **One Boundary, One Owner**: Does the plan name the affected boundaries, the single owner for
+  each changed responsibility, and any duplicated surface scheduled for removal?
+- **Protocol Purity, Projection Fidelity**: If events, DTOs, or transport behavior change, does the
+  plan trace the mapping across durable event, domain event, protocol DTO, and `/history` +
+  `/events` projection semantics?
+- **Ownership Over Storage Mode**: If subruns, tools, or session modes are touched, does the plan
+  define execution ownership separately from storage location and preserve parent/child lineage?
+- **Explicit Migrations, Verifiable Refactors**: If an API, façade, dependency direction, or event
+  contract is moved or deleted, does the plan include caller inventory, migration order,
+  compatibility strategy, and concrete validation commands?
 
 ## Project Structure
 
@@ -44,8 +59,18 @@ specs/[###-feature]/
 ├── data-model.md        # Phase 1 output (/speckit.plan command)
 ├── quickstart.md        # Phase 1 output (/speckit.plan command)
 ├── contracts/           # Phase 1 output (/speckit.plan command)
+├── findings.md          # Required when constitution trigger conditions force three-layer docs
+├── design-*.md          # Required when responsibilities, contracts, or migration steps change
+├── migration.md         # Required when constitution trigger conditions force three-layer docs
 └── tasks.md             # Phase 2 output (/speckit.tasks command - NOT created by /speckit.plan)
 ```
+
+Use the three-layer documentation set (`findings.md`, `design-*.md`, `migration.md`) whenever the
+feature does any of the following:
+- changes durable event format or fields
+- adds, removes, or changes a public runtime surface
+- changes cross-boundary dependency direction
+- deletes or replaces any module or interface with external callers
 
 ### Source Code (repository root)
 <!--
