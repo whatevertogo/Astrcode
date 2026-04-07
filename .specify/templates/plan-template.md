@@ -47,6 +47,11 @@ any tradeoff.
 - **Explicit Migrations, Verifiable Refactors**: If an API, façade, dependency direction, or event
   contract is moved or deleted, does the plan include caller inventory, migration order,
   compatibility strategy, and concrete validation commands?
+- **Runtime Robustness**: Does the plan audit for panic paths (unwrap, expect, unchecked indexing),
+  fire-and-forget spawns, lock-then-await patterns, and specify safe replacements for each?
+- **Observability & Error Visibility**: Does the plan ensure critical operations have structured
+  logging, error levels are semantically correct, and no errors are silently swallowed without
+  explicit justification?
 
 ## Project Structure
 

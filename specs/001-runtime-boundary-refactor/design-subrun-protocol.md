@@ -1,5 +1,7 @@
 # Design: Subrun Protocol Slice
 
+**Status**: ✅ IMPLEMENTED (Phase 3 - User Story 1 完成)
+
 ## Goal
 
 把 subrun 的 durable 真相收敛成一个可以独立评审的“第一刀”：

@@ -1,77 +1,95 @@
-# Findings: Runtime Boundary Refactor
+# Implementation Status: Runtime Boundary Refactor
 
-本文只记录已确认的代码事实，不包含解决方案。
+本文记录重构完成后的实施状态和关键变更点。
 
-## 1. 当前 durable subrun 事件没有独立保存完整 lineage 和 trigger link
+## 1. ✅ Durable subrun 事件现已包含完整 lineage 和 trigger link
 
-- `StorageEvent::SubRunStarted` / `SubRunFinished` 当前字段只有 `turn_id`、`agent`、resolved snapshots 或 result/step/token，没有 `tool_call_id`，也没有单独的 lineage descriptor。  
-  参考：`crates/core/src/event/types.rs:170-199`
-- 对应的 domain event 和 protocol DTO 也是同一组字段，没有额外的 durable lineage 结构。  
-  参考：`crates/core/src/event/domain.rs:118-130`、`crates/protocol/src/http/event.rs:349-365`
-- `AgentEventContext` 当前只包含 `agent_id`、`parent_turn_id`、`agent_profile`、`sub_run_id`、`invocation_kind`、`storage_mode`、`child_session_id`，没有 `depth` 与 `parent_agent_id`。  
-  参考：`crates/core/src/agent/mod.rs:381-403`
-- subrun 生命周期事件的实际写入点 `emit_child_started` / `emit_finished` 也没有写入 `tool_call_id` 或额外 lineage 结构。  
-  参考：`crates/runtime/src/service/execution/subagent.rs:277-286`、`crates/runtime/src/service/execution/subagent.rs:436-445`
+- `StorageEvent::SubRunStarted` / `SubRunFinished` 现在包含 `descriptor: Option<SubRunDescriptor>` 和 `tool_call_id: Option<String>` 字段。  
+  参考：`crates/core/src/event/types.rs:178-196`
+- `SubRunDescriptor` 包含完整的 lineage 信息：`sub_run_id`、`parent_turn_id`、`parent_agent_id`、`depth`。  
+  参考：`crates/core/src/agent/mod.rs:319-325`
+- 对应的 domain event 和 protocol DTO 已同步更新，支持 descriptor 序列化。  
+  参考：`crates/core/src/event/domain.rs`、`crates/protocol/src/http/event.rs`
+- subrun 生命周期事件写入点 `emit_child_started` / `emit_finished` 现在写入完整的 descriptor 和 tool_call_id。  
+  参考：`crates/runtime/src/service/execution/subagent.rs`
 
-## 2. durable replay 目前无法完整重建 subrun handle
+## 2. ✅ Durable replay 现已完整重建 subrun handle
 
-- `find_subrun_status_in_events` 只从 lifecycle event 中收集 `agent`、resolved snapshots、finish result。  
-  参考：`crates/runtime-execution/src/subrun.rs:45-86`
-- `build_replayed_handle` 在 replay 时把 `depth` 硬编码为 `1`，并把 `parent_agent_id` 固定为 `None`。  
-  参考：`crates/runtime-execution/src/subrun.rs:89-110`
-- 当前 status 查询会先读 `agent_control`，live 中找不到时再退回 durable replay。  
-  参考：`crates/runtime/src/service/execution/status.rs:10-45`
+- `ExecutionLineageIndex` 新增，用于从 durable events 中索引和查询 lineage 信息。  
+  参考：`crates/runtime-execution/src/subrun.rs`
+- `find_subrun_status_in_events` 现在从 lifecycle event 的 descriptor 中提取完整的 lineage 信息。  
+  参考：`crates/runtime-execution/src/subrun.rs`
+- `build_replayed_handle` 使用 descriptor 中的实际 `depth` 和 `parent_agent_id`，不再硬编码。  
+  参考：`crates/runtime-execution/src/subrun.rs`
+- Status 查询优先读取 live state，降级到 durable replay 时使用 `ExecutionLineageIndex`。  
+  参考：`crates/runtime/src/service/execution/status.rs`
+- Legacy 历史（缺少 descriptor）返回 `source=legacyDurable`，lineage 字段为 null。
 
-## 3. `runtime-session` 仍然编译依赖 `runtime-agent-control` 和 `runtime-agent-loop`
+## 3. ✅ Runtime boundary 已清晰分离
 
-- `crates/runtime-session/Cargo.toml` 直接依赖 `astrcode-runtime-agent-control` 与 `astrcode-runtime-agent-loop`。  
+- `runtime-session` 不再编译依赖 `runtime-agent-control` 和 `runtime-agent-loop`。  
   参考：`crates/runtime-session/Cargo.toml`
-- `turn_runtime.rs` 直接导入 `AgentControl`、`AgentLoop` 相关类型与工具函数。  
-  参考：`crates/runtime-session/src/turn_runtime.rs:11-15`
-- `complete_session_execution` 会在 session 完成时调用 `agent_control.cancel_for_parent_turn(turn_id)`。  
-  参考：`crates/runtime-session/src/turn_runtime.rs:95-111`
+- Session truth 通过 trait `SessionTruthSource` 定义，execution 通过 trait `ExecutionOrchestrator` 定义。  
+  参考：`crates/core/src/runtime/traits.rs`
+- Turn orchestration 逻辑移至 `crates/runtime/src/service/turn/orchestration.rs`，不再混合在 session 层。
+- `runtime-execution` 作为独立 crate 管理 execution context、subrun lineage index 和 status 查询。  
+  参考：`crates/runtime-execution/src/lib.rs`
 
-## 4. `runtime` 中旧 façade 和新用例模块当前并存
+## 4. ✅ 旧 façade 已删除，新边界已生效
 
-- `service/mod.rs` 仍然同时声明 `execution_service`、`session_service`，以及新的 `execution`、`session`、`turn` 模块。  
-  参考：`crates/runtime/src/service/mod.rs:34-44`
-- `RuntimeService::load_session_history` 经过 `service/session/load.rs` 再委托到 `session_service()`。  
-  参考：`crates/runtime/src/service/session/load.rs:9-27`
-- `RuntimeService::submit_prompt` / `interrupt` 经过 `service/turn/submit.rs` 再委托到 `execution_service()`。  
-  参考：`crates/runtime/src/service/turn/submit.rs:3-16`
-- `SessionReplaySource for RuntimeService` 的 `replay()` 仍然委托到 `ExecutionService::replay()`。  
-  参考：`crates/runtime/src/service/replay.rs:9-19`
-- `SessionService::delete_session` 内部又调用 `self.runtime.interrupt(&normalized)`。  
-  参考：`crates/runtime/src/service/session_service.rs:218-223`
+- `service/execution_service.rs` 和 `service/session_service.rs` 已删除。
+- `service/session/load.rs`、`service/turn/submit.rs`、`service/replay.rs` 已删除。
+- `RuntimeService` 现在通过 trait 方法直接调用新的 execution 和 session 模块。  
+  参考：`crates/runtime/src/service/mod.rs`
+- Server 路由直接使用 `agent_execution_service()` 和新的 session/turn 入口。  
+  参考：`crates/server/src/http/routes/`
+- 所有调用点已迁移到新的边界接口，不再依赖旧 façade。
 
-## 5. server 过滤和 frontend subrun tree 仍在用 turn-owner 启发式推 parent/child
+## 5. ✅ Server 过滤和 frontend 现已使用 descriptor-based lineage
 
-- server 的 `SessionEventFilter` 内部维护 `turn_owner` 和 `sub_run_parent` 两张表。  
-  参考：`crates/server/src/http/routes/sessions/filter.rs:45-50`
-- `matches()` 会先 `observe_turn_owner()` 再 `observe_sub_run_parent()`，最后通过 `turn_owner` 推导 scope。  
-  参考：`crates/server/src/http/routes/sessions/filter.rs:61-85`
-- `observe_sub_run_parent()` 通过 `event_parent_turn_id(event)` 再查 `turn_owner` 得到父 subrun。  
-  参考：`crates/server/src/http/routes/sessions/filter.rs:117-129`
-- frontend 的 `buildSubRunIndex()` 先建立 `turnOwnerMap`，再通过 `parentTurnId` 反推 `parentSubRunId`。  
-  参考：`frontend/src/lib/subRunView.ts:137-177`
+- Server 的 `SessionEventFilter` 现在使用 `ExecutionLineageIndex` 构建 lineage 树。  
+  参考：`crates/server/src/http/routes/sessions/filter.rs`
+- `matches()` 通过 descriptor 的 `parent_agent_id` 直接判断 scope，不再依赖 turn-owner 启发式。  
+  参考：`crates/server/src/http/routes/sessions/filter.rs`
+- Frontend 的 `buildSubRunThreadTree()` 使用 `descriptorParentAgentId` 构建树。  
+  参考：`frontend/src/lib/subRunView.ts:205-207`
+- Legacy 记录（`!hasDescriptorLineage`）显式设置 `parentSubRunId = null`，不再伪造 ancestry。  
+  参考：`frontend/src/lib/subRunView.ts:198-206`
+- Frontend UI 显示 lineage 状态警告，提示用户 legacy 历史的父子关系不完整。  
+  参考：`frontend/src/components/Chat/SubRunBlock.tsx`
 
-## 6. agent profile loader 已支持 working-dir 作用域，但 runtime 启动与 watch 流程仍然绑定进程 cwd
+## 6. ✅ Agent 解析和 watch 作用域已绑定到 execution context
 
-- `AgentProfileLoader::load()` 会读取 `std::env::current_dir()` 并委托到 `load_for_working_dir()`。  
-  参考：`crates/runtime-agent-loader/src/lib.rs:121-148`
-- runtime bootstrap 初始化 agent profile registry 时调用的是 `agent_loader.load()`。  
-  参考：`crates/runtime/src/bootstrap.rs:145-148`
-- agent watch loop 也是从 `std::env::current_dir()` 计算 `watch_paths`，后续 debounce 后仍使用同一个 `working_dir` 重新求 watch target。  
-  参考：`crates/runtime/src/service/watch_ops.rs:85-127`
-- 根执行路由虽然允许请求带 `working_dir`，但缺失时会静默退回 `std::env::current_dir()`。  
-  参考：`crates/server/src/http/routes/agents.rs:45-50`
+- `AgentProfileLoader::load_for_working_dir()` 接受显式的 `working_dir` 参数，不再依赖 `std::env::current_dir()`。  
+  参考：`crates/runtime-agent-loader/src/lib.rs`
+- Runtime bootstrap 和 execution 初始化时调用 `load_for_working_dir(Some(&working_dir))`。  
+  参考：`crates/runtime/src/service/execution/mod.rs:139`
+- Agent watch loop 从活跃 sessions 收集 `working_dirs`，调用 `watch_paths_for_working_dirs()`。  
+  参考：`crates/runtime/src/service/watch_ops.rs:243-247`
+- 根执行路由要求 `working_dir` 必填，缺失时返回 400 错误，不再静默退回进程 cwd。  
+  参考：`crates/server/src/http/routes/agents.rs`
+- 每个 execution context 拥有独立的 agent 解析作用域，多项目隔离生效。
 
-## 7. 当前 server / frontend 外部入口已经同时消费旧 façade和新 handle
+## 7. ✅ Server 和 frontend 入口已统一使用新边界
 
-- server 的 agent 相关路由使用 `agent_execution_service()`。  
-  参考：`crates/server/src/http/routes/agents.rs:28-31`、`crates/server/src/http/routes/agents.rs:52-63`、`crates/server/src/http/routes/agents.rs:87-90`、`crates/server/src/http/routes/agents.rs:104-107`
-- server 的 session 历史、stream、mutation 仍然调用 `RuntimeService::load_session_history()`、`replay()`、`submit_prompt()`、`interrupt()` 这些 façade 入口。  
-  参考：`crates/server/src/http/routes/sessions/query.rs:43-58`、`crates/server/src/http/routes/sessions/stream.rs:93-196`、`crates/server/src/http/routes/sessions/mutation.rs:48-70`
-- `DeferredSubAgentExecutor` 也通过 `runtime.agent_execution_service()` 间接发起 subagent。  
-  参考：`crates/runtime/src/service/execution/mod.rs:55-79`
+- Server 的 agent 路由使用 `agent_execution_service()`。  
+  参考：`crates/server/src/http/routes/agents.rs`
+- Server 的 session 历史、stream、mutation 使用新的 session/turn 入口。  
+  参考：`crates/server/src/http/routes/sessions/`
+- `DeferredSubAgentExecutor` 通过 `runtime.agent_execution_service()` 发起 subagent。  
+  参考：`crates/runtime/src/service/execution/mod.rs`
+- 所有外部入口已迁移完成，不再调用旧 façade。
+
+## 总结
+
+所有 7 个发现点已完成重构：
+1. ✅ Durable events 包含完整 lineage 和 trigger link
+2. ✅ Durable replay 完整重建 subrun handle
+3. ✅ Runtime boundary 清晰分离
+4. ✅ 旧 façade 已删除
+5. ✅ Server 和 frontend 使用 descriptor-based lineage
+6. ✅ Agent 解析绑定到 execution context
+7. ✅ 所有入口统一使用新边界
+
+重构目标已全部达成。
 

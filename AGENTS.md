@@ -19,10 +19,11 @@ protocol (纯 DTO，无业务依赖)
                                src-tauri (桌面端壳)
 
 **依赖规则：**
-- `protocol` 不得依赖 `core`/`runtime`；跨边界走显式 DTO + mapper
+- `protocol` 与 `core` 之间不得有任何直接依赖（宪法 1.2.0）；跨边界走显式 DTO + mapper
 - `runtime-...-loader` 仅依赖 `core`，不依赖 `runtime`
 - `storage` 实现持久化（`EventLog`、`FileSystemSessionRepository`）；`core` 只定义接口
 - `runtime-prompt`/`runtime-llm`/`runtime-config` 保持编译隔离，`runtime` 作为门面组合，不重复实现
+- `runtime` 门面下单文件不得超过 800 行，业务状态必须由子边界持有（宪法 1.2.0）
 - 环境变量常量源头在 `crates/core/src/env.rs`，`runtime-config/src/constants.rs`, 聚合导出
 
 ## Workflow Checklist
