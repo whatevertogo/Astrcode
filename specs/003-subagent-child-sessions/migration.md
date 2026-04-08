@@ -221,3 +221,17 @@ npm run build
 5. child 会话可作为独立 session 打开并查看完整 transcript。
 6. `CapabilityRouter` 成为唯一生产注册中心，`ToolRegistry` 仅保留测试辅助职责。
 7. 当前 mixed-session `SubRunThreadTree` 主路径已退出生产主流程。
+
+## 实施状态（2026-04-09）
+
+所有迁移阶段已完成：
+
+| Stage | 状态 | 关键实现 |
+|-------|------|---------|
+| M1: Durable Foundation | ✓ 完成 | `ChildSessionNode`、`ChildAgentRef`、`AgentInboxEnvelope`、`CollaborationNotification` 已在 core/protocol/session 落地 |
+| M2: Collaboration Surface | ✓ 完成 | 六个协作工具 + `CapabilityRouter` 收口 + `ToolRegistry` 降级为测试辅助 |
+| M3: Inbox / Reactivation | ✓ 完成 | `push_inbox`/`wait_for_inbox`、parent reactivation、leaf-first cascade close、direct-parent delivery |
+| M4: Server / Frontend Projection | ✓ 完成 | 父摘要列表 + 子会话直开 API、可折叠 SubRunBlock、raw JSON 默认隐藏 |
+| M5: Legacy Cleanup | ✓ 完成 | `buildParentSummaryProjection` 独立于 legacy tree、`cancelSubRun` 标注 legacy、SSE 错误上下文增强 |
+
+**Done Criteria 达标情况**：全部 7 项满足。

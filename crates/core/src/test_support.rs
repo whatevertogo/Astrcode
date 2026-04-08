@@ -72,6 +72,7 @@ pub fn child_session_node_fixture(seed: &str) -> ChildSessionNode {
         status: AgentStatus::Running,
         status_source: ChildSessionStatusSource::Durable,
         created_by_tool_call_id: Some(format!("tool-call-{normalized}")),
+        lineage_snapshot: None,
     }
 }
 

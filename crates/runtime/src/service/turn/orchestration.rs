@@ -5,6 +5,7 @@ use astrcode_core::{
     AgentEventContext, AstrError, CancelToken, EventTranslator, ExecutionOwner, Phase,
     StorageEvent, UserMessageOrigin,
 };
+use astrcode_runtime_agent_control::AgentControl;
 use astrcode_runtime_agent_loop::{
     AgentLoop, CompactionTailSnapshot, TokenBudgetDecision, TurnOutcome, build_auto_continue_nudge,
     check_token_budget, estimate_text_tokens,
@@ -54,11 +55,39 @@ pub struct SessionTurnRunResult {
     pub succeeded: bool,
 }
 
-pub async fn complete_session_execution(session: &SessionState, phase: Phase) {
+pub async fn complete_session_execution(
+    session: &SessionState,
+    phase: Phase,
+    agent_control: &AgentControl,
+) {
+    // 在清理 session 状态之前读取 active_turn_id，
+    // 否则 complete_session_execution_state 会将其清除为 None。
+    let active_turn_id = session
+        .active_turn_id
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone());
+
     // 后台子执行的生命周期由 agent_control / subrun API 单独管理。
-    // 父 turn 正常结束时这里只清理 session 自己的活跃状态，不能顺手把后台 subrun 一起取消，
+    // 父 turn 正常结束时只清理 session 自己的活跃状态，不取消后台 subrun，
     // 否则 shared-session 子执行会在父回复刚结束时被错误中断。
     complete_session_execution_state(session, phase);
+
+    // 仅当父 turn 被中断时，取消该 turn 下所有仍在运行的子 agent，
+    // 防止前台（SharedSession）子 agent 变成孤儿。
+    if matches!(phase, Phase::Interrupted) {
+        if let Some(turn_id) = active_turn_id.as_deref() {
+            // 故意忽略：清理子运行失败不应阻断 turn 完成流程
+            let cancelled = agent_control.cancel_for_parent_turn(turn_id).await;
+            if !cancelled.is_empty() {
+                log::info!(
+                    "cancelled {} sub-agents for interrupted parent turn '{}'",
+                    cancelled.len(),
+                    turn_id
+                );
+            }
+        }
+    }
 }
 
 // 这里的参数和运行时回调链一一对应，先保留显式签名以避免把调用点语义埋进匿名元组。

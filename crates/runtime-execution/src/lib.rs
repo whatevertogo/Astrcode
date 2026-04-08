@@ -45,6 +45,19 @@ pub fn child_delivery_outcome_label(result: &astrcode_core::SubRunResult) -> &'s
     }
 }
 
+/// 协作工具（send/wait/close/resume/deliver）结果的统一标签。
+///
+/// 用于 observability 日志，记录协作操作类型与接受状态。
+pub fn collaboration_action_label(result: &astrcode_core::CollaborationResult) -> &'static str {
+    match result.kind {
+        astrcode_core::CollaborationResultKind::Sent => "sent",
+        astrcode_core::CollaborationResultKind::WaitResolved => "wait_resolved",
+        astrcode_core::CollaborationResultKind::Closed => "closed",
+        astrcode_core::CollaborationResultKind::Resumed => "resumed",
+        astrcode_core::CollaborationResultKind::Delivered => "delivered",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

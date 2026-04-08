@@ -2,6 +2,9 @@
 //!
 //! 提供 few-shot 示例对话，教导模型"先收集上下文再修改代码"的行为模式。
 //! 仅在第一步（step_index == 0）时生效，以 prepend 方式插入到对话消息中。
+//!
+//! 同时提供子 Agent 协作决策指导：当父 Agent 收到子 Agent 交付结果后，
+//! 指导模型如何决定关闭或保留子 Agent。
 
 use async_trait::async_trait;
 
@@ -45,6 +48,22 @@ impl PromptContributor for WorkflowExamplesContributor {
                 .with_condition(BlockCondition::FirstStepOnly)
                 .depends_on("few-shot-user")
                 .with_priority(701),
+                // 子 Agent 协作决策指导
+                BlockSpec::system_text(
+                    "child-collaboration-guidance",
+                    BlockKind::CollaborationGuide,
+                    "Child Agent Collaboration Guide",
+                    "When you receive a delivery from a child agent, decide whether to close or \
+                     keep the child: - Use `closeAgent` if the child's task is fully complete and \
+                     no further work is needed. Set `cascade: true` to close the entire subtree, \
+                     or `cascade: false` to close only the target agent. - Use `sendAgent` if you \
+                     need the child to continue with follow-up work or revisions based on the \
+                     delivery. - Use `waitAgent` if you want to wait for the child's next \
+                     delivery before proceeding. Default: close the child if the delivery \
+                     satisfies the original request; keep it running if you need additional \
+                     iterations.",
+                )
+                .with_priority(600),
             ],
             ..PromptContribution::default()
         }

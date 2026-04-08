@@ -683,4 +683,75 @@ mod tests {
             Value::String("note-1".to_string())
         );
     }
+
+    // ─── T041 谱系兼容性测试 ──────────────────────────────
+
+    /// 验证 spawn/fork/resume 三种 lineage kind 在 ChildAgentRef 中均可序列化/反序列化，
+    /// 且在 durable 事件中正确传播。
+    #[test]
+    fn child_agent_ref_lineage_kind_spawn_fork_resume_all_roundtrip() {
+        for (label, kind) in [
+            ("spawn", crate::ChildSessionLineageKind::Spawn),
+            ("fork", crate::ChildSessionLineageKind::Fork),
+            ("resume", crate::ChildSessionLineageKind::Resume),
+        ] {
+            let child_ref = crate::ChildAgentRef {
+                agent_id: "agent-child".to_string(),
+                session_id: "session-parent".to_string(),
+                sub_run_id: "subrun-1".to_string(),
+                parent_agent_id: Some("agent-parent".to_string()),
+                lineage_kind: kind,
+                status: crate::AgentStatus::Running,
+                openable: true,
+                open_session_id: "session-child".to_string(),
+            };
+
+            let json = serde_json::to_value(&child_ref).expect("serialize child ref");
+            assert_eq!(
+                json.get("lineageKind"),
+                Some(&serde_json::json!(label)),
+                "lineage_kind {label} should serialize as snake_case"
+            );
+
+            let back: crate::ChildAgentRef =
+                serde_json::from_value(json).expect("deserialize child ref");
+            assert_eq!(
+                back.lineage_kind, kind,
+                "roundtrip for {label} should match"
+            );
+        }
+    }
+
+    /// 验证 ChildSessionNode 携带 fork/resume lineage 时在 durable 事件中正确传播。
+    #[test]
+    fn child_session_node_lineage_kind_preserves_fork_and_resume_in_durable_events() {
+        for kind in [
+            crate::ChildSessionLineageKind::Fork,
+            crate::ChildSessionLineageKind::Resume,
+        ] {
+            let node = crate::ChildSessionNode {
+                agent_id: "agent-child".to_string(),
+                session_id: "session-parent".to_string(),
+                child_session_id: "session-child".to_string(),
+                sub_run_id: "subrun-1".to_string(),
+                parent_session_id: "session-parent".to_string(),
+                parent_agent_id: Some("agent-parent".to_string()),
+                parent_turn_id: "turn-1".to_string(),
+                lineage_kind: kind,
+                status: crate::AgentStatus::Completed,
+                status_source: crate::ChildSessionStatusSource::Durable,
+                created_by_tool_call_id: None,
+                lineage_snapshot: None,
+            };
+
+            let json = serde_json::to_value(&node).expect("serialize node");
+            let back: crate::ChildSessionNode =
+                serde_json::from_value(json).expect("deserialize node");
+            assert_eq!(back.lineage_kind, kind);
+
+            // 验证 child_ref() 方法也正确传播 lineage
+            let child_ref = node.child_ref();
+            assert_eq!(child_ref.lineage_kind, kind);
+        }
+    }
 }

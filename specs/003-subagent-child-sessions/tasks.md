@@ -85,17 +85,17 @@ description: "Task list for 子 Agent Child Session 与协作工具重构"
 
 ### Tests for User Story 2
 
-- [ ] T019 [P] [US2] Add server projection tests for parent summary lists and direct child-session loading in `crates/server/src/tests/session_contract_tests.rs`
-- [ ] T020 [P] [US2] Add frontend tests for summary cards, single-child expansion, and hidden raw JSON in `frontend/src/lib/subRunView.test.ts` and `frontend/src/components/Chat/SubRunBlock.test.tsx`
+- [X] T019 [P] [US2] Add server projection tests for parent summary lists and direct child-session loading in `crates/server/src/tests/session_contract_tests.rs`
+- [X] T020 [P] [US2] Add frontend tests for summary cards, single-child expansion, and hidden raw JSON in `frontend/src/lib/subRunView.test.ts` and `frontend/src/components/Chat/SubRunBlock.test.tsx`
 
 ### Implementation for User Story 2
 
-- [ ] T021 [US2] Add child summary and child-session route mappers in `crates/protocol/src/http/session.rs`, `crates/server/src/http/routes/sessions/query.rs`, and `crates/server/src/http/routes/sessions/stream.rs`
-- [ ] T022 [US2] Add frontend API client support for child summary lists and direct child-session loading in `frontend/src/lib/api/models.ts` and `frontend/src/lib/api/sessions.ts`
-- [ ] T023 [US2] Replace mixed-session tree building with parent-summary projection helpers in `frontend/src/lib/subRunView.ts` and `frontend/src/lib/sessionView.ts`
-- [ ] T024 [US2] Update session orchestration to preserve active child-session identity across refresh in `frontend/src/hooks/useAgent.ts`, `frontend/src/hooks/useAgentEventHandler.ts`, and `frontend/src/App.tsx`
-- [ ] T025 [US2] Redesign the child-session block as collapsible thinking, tool-activity, and final-reply sections in `frontend/src/components/Chat/SubRunBlock.tsx` and `frontend/src/components/Chat/SubRunBlock.module.css`
-- [ ] T026 [US2] Remove default raw JSON rendering from child-session views in `frontend/src/components/Chat/ToolJsonView.tsx` and `frontend/src/components/Chat/AssistantMessage.tsx`
+- [X] T021 [US2] Add child summary and child-session route mappers in `crates/protocol/src/http/session.rs`, `crates/server/src/http/routes/sessions/query.rs`, and `crates/server/src/http/routes/sessions/stream.rs`
+- [X] T022 [US2] Add frontend API client support for child summary lists and direct child-session loading in `frontend/src/lib/api/models.ts` and `frontend/src/lib/api/sessions.ts`
+- [X] T023 [US2] Replace mixed-session tree building with parent-summary projection helpers in `frontend/src/lib/subRunView.ts` and `frontend/src/lib/sessionView.ts`
+- [X] T024 [US2] Update session orchestration to preserve active child-session identity across refresh in `frontend/src/hooks/useAgent.ts`, `frontend/src/hooks/useAgentEventHandler.ts`, and `frontend/src/App.tsx`
+- [X] T025 [US2] Redesign the child-session block as collapsible thinking, tool-activity, and final-reply sections in `frontend/src/components/Chat/SubRunBlock.tsx` and `frontend/src/components/Chat/SubRunBlock.module.css`
+- [X] T026 [US2] Remove default raw JSON rendering from child-session views in `frontend/src/components/Chat/ToolJsonView.tsx` and `frontend/src/components/Chat/AssistantMessage.tsx`
 
 **Checkpoint**: The parent view uses summaries only, and every child can be reopened directly as its own readable session.
 
@@ -109,17 +109,17 @@ description: "Task list for 子 Agent Child Session 与协作工具重构"
 
 ### Tests for User Story 3
 
-- [ ] T027 [P] [US3] Add tool contract tests for `sendAgent`, `waitAgent`, `closeAgent`, `resumeAgent`, and `deliverToParent` in `crates/runtime-agent-tool/src/tests.rs`
-- [ ] T028 [P] [US3] Add runtime tests for targeted wait, resume, close, and single-consume delivery handling in `crates/runtime/src/service/execution/tests.rs` and `crates/runtime-agent-control/src/lib.rs`
+- [X] T027 [P] [US3] Add tool contract tests for `sendAgent`, `waitAgent`, `closeAgent`, `resumeAgent`, and `deliverToParent` in `crates/runtime-agent-tool/src/tests.rs`
+- [X] T028 [P] [US3] Add runtime tests for targeted wait, resume, close, and single-consume delivery handling in `crates/runtime/src/service/execution/tests.rs` and `crates/runtime-agent-control/src/lib.rs`
 
 ### Implementation for User Story 3
 
-- [ ] T029 [US3] Define collaboration tool params, results, and capability descriptors in `crates/core/src/agent/mod.rs`, `crates/protocol/src/capability/descriptors.rs`, and `crates/protocol/src/http/tool.rs`
-- [ ] T030 [US3] Implement `sendAgent`, `waitAgent`, `closeAgent`, `resumeAgent`, and `deliverToParent` adapters in `crates/runtime-agent-tool/src/lib.rs`, `crates/runtime-agent-tool/src/result_mapping.rs`, `crates/runtime-agent-tool/src/send_tool.rs`, `crates/runtime-agent-tool/src/wait_tool.rs`, `crates/runtime-agent-tool/src/close_tool.rs`, `crates/runtime-agent-tool/src/resume_tool.rs`, and `crates/runtime-agent-tool/src/deliver_tool.rs`
-- [ ] T031 [US3] Add durable inbox and mailbox enqueue plus dedupe handling for collaboration requests in `crates/runtime-execution/src/context.rs`, `crates/runtime-execution/src/lib.rs`, and `crates/runtime-session/src/turn_runtime.rs`
-- [ ] T032 [US3] Reuse the same child session on resume and follow-up requests in `crates/runtime/src/service/execution/subagent.rs` and `crates/runtime/src/service/execution/status.rs`
-- [ ] T033 [US3] Register collaboration tools only through `CapabilityRouter` in `crates/runtime-registry/src/router.rs`, `crates/runtime/src/service/capability_manager.rs`, and `crates/runtime/src/service/execution/surface.rs`
-- [ ] T034 [US3] Surface the collaboration tool family and stable child refs in prompt assembly without recoupling to tool internals in `crates/runtime-prompt/src/contributors/capability_prompt.rs` and `crates/runtime-agent-loop/src/prompt_runtime.rs`
+- [X] T029 [US3] Define collaboration tool params, results, and capability descriptors in `crates/core/src/agent/mod.rs`, `crates/protocol/src/capability/descriptors.rs`, and `crates/protocol/src/http/tool.rs`
+- [X] T030 [US3] Implement `sendAgent`, `waitAgent`, `closeAgent`, `resumeAgent`, and `deliverToParent` adapters in `crates/runtime-agent-tool/src/lib.rs`, `crates/runtime-agent-tool/src/result_mapping.rs`, `crates/runtime-agent-tool/src/send_tool.rs`, `crates/runtime-agent-tool/src/wait_tool.rs`, `crates/runtime-agent-tool/src/close_tool.rs`, `crates/runtime-agent-tool/src/resume_tool.rs`, and `crates/runtime-agent-tool/src/deliver_tool.rs`
+- [X] T031 [US3] Add durable inbox and mailbox enqueue plus dedupe handling for collaboration requests in `crates/runtime-execution/src/context.rs`, `crates/runtime-execution/src/lib.rs`, and `crates/runtime-session/src/turn_runtime.rs`
+- [X] T032 [US3] Reuse the same child session on resume and follow-up requests in `crates/runtime/src/service/execution/subagent.rs` and `crates/runtime/src/service/execution/status.rs`
+- [X] T033 [US3] Register collaboration tools only through `CapabilityRouter` in `crates/runtime-registry/src/router.rs`, `crates/runtime/src/service/capability_manager.rs`, and `crates/runtime/src/service/execution/surface.rs`
+- [X] T034 [US3] Surface the collaboration tool family and stable child refs in prompt assembly without recoupling to tool internals in `crates/runtime-prompt/src/contributors/capability_prompt.rs` and `crates/runtime-agent-loop/src/prompt_runtime.rs`
 
 **Checkpoint**: Parent and child agents can keep collaborating through one stable child session identity and one tool surface.
 
@@ -133,15 +133,15 @@ description: "Task list for 子 Agent Child Session 与协作工具重构"
 
 ### Tests for User Story 4
 
-- [ ] T035 [P] [US4] Add hierarchy regression tests for leaf-first cascade, subtree isolation, and direct-parent-only delivery in `crates/runtime-agent-control/src/lib.rs` and `crates/runtime/src/service/execution/tests.rs`
-- [ ] T036 [P] [US4] Add agent-loop behavior tests for close-or-keep decisions after child delivery in `crates/runtime-agent-loop/src/agent_loop/tests/regression.rs` and `crates/runtime-agent-loop/src/agent_loop/tests/tool_execution.rs`
+- [X] T035 [P] [US4] Add hierarchy regression tests for leaf-first cascade, subtree isolation, and direct-parent-only delivery in `crates/runtime-agent-control/src/lib.rs` and `crates/runtime/src/service/execution/tests.rs`
+- [X] T036 [P] [US4] Add agent-loop behavior tests for close-or-keep decisions after child delivery in `crates/runtime-agent-loop/src/agent_loop/tests/regression.rs` and `crates/runtime-agent-loop/src/agent_loop/tests/tool_execution.rs`
 
 ### Implementation for User Story 4
 
-- [ ] T037 [US4] Persist agent ownership-tree traversal helpers alongside durable child-session nodes in `crates/runtime-agent-control/src/lib.rs` and `crates/runtime-session/src/session_state.rs`
-- [ ] T038 [US4] Execute close propagation by agent subtree instead of parent turn in `crates/runtime-agent-control/src/lib.rs` and `crates/runtime/src/service/execution/cancel.rs`
-- [ ] T039 [US4] Enforce direct-parent routing and one-time consumption for upward deliveries in `crates/runtime-execution/src/lib.rs` and `crates/runtime-session/src/turn_runtime.rs`
-- [ ] T040 [US4] Append default close-or-keep child guidance to parent follow-up input assembly in `crates/runtime-agent-loop/src/request_assembler.rs`, `crates/runtime-agent-loop/src/prompt_runtime.rs`, and `crates/runtime-prompt/src/contributors/workflow_examples.rs`
+- [X] T037 [US4] Persist agent ownership-tree traversal helpers alongside durable child-session nodes in `crates/runtime-agent-control/src/lib.rs` and `crates/runtime-session/src/session_state.rs`
+- [X] T038 [US4] Execute close propagation by agent subtree instead of parent turn in `crates/runtime-agent-control/src/lib.rs` and `crates/runtime/src/service/execution/cancel.rs`
+- [X] T039 [US4] Enforce direct-parent routing and one-time consumption for upward deliveries in `crates/runtime-execution/src/lib.rs` and `crates/runtime-session/src/turn_runtime.rs`
+- [X] T040 [US4] Append default close-or-keep child guidance to parent follow-up input assembly in `crates/runtime-agent-loop/src/request_assembler.rs`, `crates/runtime-agent-loop/src/prompt_runtime.rs`, and `crates/runtime-prompt/src/contributors/workflow_examples.rs`
 
 **Checkpoint**: Collaboration routes by durable ownership, and close propagation is subtree-scoped and leaf-first.
 
@@ -155,13 +155,13 @@ description: "Task list for 子 Agent Child Session 与协作工具重构"
 
 ### Tests for User Story 5
 
-- [ ] T041 [P] [US5] Add lineage compatibility tests for `spawn`, `fork`, and `resume` child refs plus status projections in `crates/core/src/event/types.rs`, `crates/protocol/tests/subrun_event_serialization.rs`, and `crates/server/src/tests/session_contract_tests.rs`
+- [X] T041 [P] [US5] Add lineage compatibility tests for `spawn`, `fork`, and `resume` child refs plus status projections in `crates/core/src/event/types.rs`, `crates/protocol/tests/subrun_event_serialization.rs`, and `crates/server/src/tests/session_contract_tests.rs`
 
 ### Implementation for User Story 5
 
-- [ ] T042 [US5] Add lineage snapshot metadata to durable child-session records in `crates/core/src/agent/mod.rs`, `crates/runtime-session/src/session_state.rs`, and `crates/runtime-execution/src/subrun.rs`
-- [ ] T043 [US5] Propagate lineage kind through server and frontend read models without creating a second lifecycle system in `crates/protocol/src/http/agent.rs`, `frontend/src/lib/api/models.ts`, and `frontend/src/lib/subRunView.ts`
-- [ ] T044 [US5] Reuse existing child-session orchestration entry points for future fork creation in `crates/runtime/src/service/execution/context.rs` and `crates/runtime/src/service/execution/subagent.rs`
+- [X] T042 [US5] Add lineage snapshot metadata to durable child-session records in `crates/core/src/agent/mod.rs`, `crates/runtime-session/src/session_state.rs`, and `crates/runtime-execution/src/subrun.rs`
+- [X] T043 [US5] Propagate lineage kind through server and frontend read models without creating a second lifecycle system in `crates/protocol/src/http/agent.rs`, `frontend/src/lib/api/models.ts`, and `frontend/src/lib/subRunView.ts`
+- [X] T044 [US5] Reuse existing child-session orchestration entry points for future fork creation in `crates/runtime/src/service/execution/context.rs` and `crates/runtime/src/service/execution/subagent.rs`
 
 **Checkpoint**: Fork lineage is a metadata extension on the same child-session model, not a parallel subsystem.
 
@@ -171,10 +171,10 @@ description: "Task list for 子 Agent Child Session 与协作工具重构"
 
 **Purpose**: Final cleanup, observability hardening, documentation sync, and repository-wide validation
 
-- [ ] T045 [P] Update final caller migration and validation docs in `specs/003-subagent-child-sessions/findings.md`, `specs/003-subagent-child-sessions/design-collaboration-runtime.md`, `specs/003-subagent-child-sessions/design-parent-child-projection.md`, `specs/003-subagent-child-sessions/migration.md`, and `specs/003-subagent-child-sessions/quickstart.md`
-- [ ] T046 Remove legacy mixed-session and subrun-only production paths from `frontend/src/lib/subRunView.ts`, `frontend/src/lib/api/sessions.ts`, `crates/server/src/http/routes/sessions/mutation.rs`, and `crates/runtime-registry/src/tool.rs`
-- [ ] T047 Add cross-cutting observability and error-context review for collaboration delivery, reactivation, and child-session projection failures in `crates/runtime-execution/src/lib.rs`, `crates/runtime/src/service/execution/subagent.rs`, and `crates/server/src/http/routes/sessions/stream.rs`
-- [ ] T048 Run the full repository validation matrix documented in `specs/003-subagent-child-sessions/quickstart.md`
+- [X] T045 [P] Update final caller migration and validation docs in `specs/003-subagent-child-sessions/findings.md`, `specs/003-subagent-child-sessions/design-collaboration-runtime.md`, `specs/003-subagent-child-sessions/design-parent-child-projection.md`, `specs/003-subagent-child-sessions/migration.md`, and `specs/003-subagent-child-sessions/quickstart.md`
+- [X] T046 Remove legacy mixed-session and subrun-only production paths from `frontend/src/lib/subRunView.ts`, `frontend/src/lib/api/sessions.ts`, `crates/server/src/http/routes/sessions/mutation.rs`, and `crates/runtime-registry/src/tool.rs`
+- [X] T047 Add cross-cutting observability and error-context review for collaboration delivery, reactivation, and child-session projection failures in `crates/runtime-execution/src/lib.rs`, `crates/runtime/src/service/execution/subagent.rs`, and `crates/server/src/http/routes/sessions/stream.rs`
+- [X] T048 Run the full repository validation matrix documented in `specs/003-subagent-child-sessions/quickstart.md`
 
 ---
 

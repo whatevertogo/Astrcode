@@ -89,6 +89,7 @@ pub fn build_child_session_node(
         status: child.status,
         status_source: ChildSessionStatusSource::Durable,
         created_by_tool_call_id,
+        lineage_snapshot: None,
     }
 }
 

@@ -574,7 +574,7 @@ async fn complete_session_execution_keeps_background_child_agents_alive() {
         .expect("child spawn should succeed");
     let _ = control.mark_running(&child.agent_id).await;
 
-    complete_session_execution(&state, Phase::Idle).await;
+    complete_session_execution(&state, Phase::Idle, &control).await;
 
     let child_handle = control
         .get(&child.agent_id)

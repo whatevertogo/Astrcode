@@ -126,6 +126,16 @@ pub enum ChildSessionLineageKindDto {
     Resume,
 }
 
+/// 谱系来源快照 DTO，fork/resume 时记录来源上下文。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LineageSnapshotDto {
+    pub source_agent_id: String,
+    pub source_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_sub_run_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChildAgentRefDto {

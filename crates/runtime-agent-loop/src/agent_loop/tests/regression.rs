@@ -446,3 +446,144 @@ fn make_prompt_too_long_error() -> astrcode_core::AstrError {
         body: "prompt too long for this model".to_string(),
     }
 }
+
+// ---------------------------------------------------------------------------
+// T036: close-or-keep 决策回归测试
+// ---------------------------------------------------------------------------
+
+/// 验证 agent loop 在收到子 Agent 交付结果后仍然能正常完成 turn。
+/// 模型在收到 closeAgent 工具结果后选择关闭子 Agent，
+/// turn 应正常完成（Completed），不应因子交付的存在而阻塞。
+#[tokio::test]
+async fn parent_turn_completes_after_deciding_to_close_child() {
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([
+            // 第一轮：模型调用 closeAgent 关闭子 Agent
+            LlmOutput {
+                content: String::new(),
+                tool_calls: vec![ToolCallRequest {
+                    id: "call-close-1".to_string(),
+                    name: "closeAgent".to_string(),
+                    args: json!({
+                        "agentId": "agent-child-1",
+                        "cascade": true
+                    }),
+                }],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            },
+            // 第二轮：模型输出最终回复
+            LlmOutput {
+                content: "子 Agent 已关闭，任务完成".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            },
+        ])),
+        delay: std::time::Duration::from_millis(0),
+    });
+
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
+        .register(Box::new(QuickTool))
+        .build();
+    let loop_runner = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory { provider }),
+        capabilities_from_tools(tools),
+    );
+    let state = make_state("close-or-keep close decision");
+
+    let (events, mut on_event) = collect_events();
+
+    let outcome = loop_runner
+        .run_turn(
+            &state,
+            "turn-close-decision",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+    assert_eq!(outcome, TurnOutcome::Completed);
+
+    // 验证事件序列中包含 ToolCall、ToolResult 和 TurnDone
+    let events = events.lock().expect("events lock").clone();
+    assert!(events.iter().any(
+        |e| matches!(e, StorageEvent::ToolCall { tool_name, .. } if tool_name == "closeAgent")
+    ));
+    assert!(events.iter().any(
+        |e| matches!(e, StorageEvent::ToolResult { tool_name, .. } if tool_name == "closeAgent")
+    ));
+    assert!(events.iter().any(|e| matches!(
+        e,
+        StorageEvent::TurnDone { reason, .. } if reason.as_deref() == Some("completed")
+    )));
+}
+
+/// 验证 agent loop 在选择保留子 Agent 时能正常继续执行后续工具调用。
+/// 模型先调用 sendAgent 追加消息，然后输出最终回复，
+/// turn 应正常完成，子 Agent 保留继续运行。
+#[tokio::test]
+async fn parent_turn_completes_after_deciding_to_keep_child() {
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([
+            // 第一轮：模型调用 sendAgent 向子 Agent 发送消息
+            LlmOutput {
+                content: String::new(),
+                tool_calls: vec![ToolCallRequest {
+                    id: "call-send-1".to_string(),
+                    name: "sendAgent".to_string(),
+                    args: json!({
+                        "agentId": "agent-child-1",
+                        "message": "继续执行"
+                    }),
+                }],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            },
+            // 第二轮：模型输出最终回复
+            LlmOutput {
+                content: "已向子 Agent 发送追加指令，继续等待结果".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            },
+        ])),
+        delay: std::time::Duration::from_millis(0),
+    });
+
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
+        .register(Box::new(QuickTool))
+        .build();
+    let loop_runner = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory { provider }),
+        capabilities_from_tools(tools),
+    );
+    let state = make_state("close-or-keep keep decision");
+
+    let (events, mut on_event) = collect_events();
+
+    let outcome = loop_runner
+        .run_turn(
+            &state,
+            "turn-keep-decision",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+    assert_eq!(outcome, TurnOutcome::Completed);
+
+    // 验证事件序列中包含 sendAgent 工具调用
+    let events = events.lock().expect("events lock").clone();
+    assert!(events.iter().any(
+        |e| matches!(e, StorageEvent::ToolCall { tool_name, .. } if tool_name == "sendAgent")
+    ));
+    assert!(events.iter().any(|e| matches!(
+        e,
+        StorageEvent::TurnDone { reason, .. } if reason.as_deref() == Some("completed")
+    )));
+}

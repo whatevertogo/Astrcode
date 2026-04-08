@@ -102,6 +102,15 @@ pub(crate) fn build_api_router() -> Router<AppState> {
             post(sessions::interrupt_session),
         )
         .route("/api/sessions/{id}/events", get(sessions::session_events))
+        // TODO: 尽量少用路由
+        .route(
+            "/api/sessions/{id}/children/summary",
+            get(sessions::parent_child_summary_list),
+        )
+        .route(
+            "/api/sessions/{id}/children/{child_session_id}/view",
+            get(sessions::child_session_view),
+        )
         .route("/api/sessions/{id}", delete(sessions::delete_session))
         .route("/api/projects", delete(sessions::delete_project))
         .route("/api/config", get(config::get_config))

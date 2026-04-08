@@ -508,8 +508,8 @@ fn to_anthropic_system(
                     let cache_control = if block.cache_boundary {
                         match block.layer {
                             SystemPromptLayer::Stable => {
-                                // Stable 层使用 1h TTL，减少过期失效
-                                Some(AnthropicCacheControl::with_ttl("1h"))
+                                // Stable 层使用 ephemeral 缓存标记
+                                Some(AnthropicCacheControl::ephemeral())
                             },
                             SystemPromptLayer::SemiStable => {
                                 // SemiStable 层使用默认 5m TTL
@@ -1059,20 +1059,10 @@ enum AnthropicContentBlock {
 ///
 /// `type: "ephemeral"` 告诉 Anthropic 后端该块可作为缓存前缀的一部分。
 /// 缓存是临时的（ephemeral），不保证长期有效，但在短时间内重复请求可以显著减少延迟。
-///
-/// 支持可选的 `scope` 和 `ttl` 字段：
-/// - `scope`: "global" | "org" - 缓存作用域
-/// - `ttl`: "5m" | "1h" - 缓存生存时间
 #[derive(Debug, Clone, Serialize)]
 struct AnthropicCacheControl {
     #[serde(rename = "type")]
     type_: String,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    scope: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ttl: Option<String>,
 }
 
 impl AnthropicCacheControl {
@@ -1080,37 +1070,6 @@ impl AnthropicCacheControl {
     fn ephemeral() -> Self {
         Self {
             type_: "ephemeral".to_string(),
-            scope: None,
-            ttl: None,
-        }
-    }
-
-    /// 创建带 TTL 的缓存控制标记。
-    fn with_ttl(ttl: &str) -> Self {
-        Self {
-            type_: "ephemeral".to_string(),
-            scope: None,
-            ttl: Some(ttl.to_string()),
-        }
-    }
-
-    /// 创建带 scope 的缓存控制标记。
-    #[allow(dead_code)]
-    fn with_scope(scope: &str) -> Self {
-        Self {
-            type_: "ephemeral".to_string(),
-            scope: Some(scope.to_string()),
-            ttl: None,
-        }
-    }
-
-    /// 创建带 scope 和 TTL 的缓存控制标记。
-    #[allow(dead_code)]
-    fn with_scope_and_ttl(scope: &str, ttl: &str) -> Self {
-        Self {
-            type_: "ephemeral".to_string(),
-            scope: Some(scope.to_string()),
-            ttl: Some(ttl.to_string()),
         }
     }
 }

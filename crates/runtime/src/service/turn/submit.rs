@@ -71,6 +71,8 @@ impl AgentExecutionServiceHandle {
         let accepted_session_id = session_id.clone();
         let user_event = prepared_submission.user_event.clone();
         let execution_owner = prepared_submission.execution_owner.clone();
+        // 在 spawn 前克隆 agent_control，避免借用 `self` 逃逸到 'static 闭包
+        let agent_control = self.runtime.agent_control();
         tokio::spawn(async move {
             let turn_started_at = Instant::now();
             let result = run_session_turn(
@@ -84,7 +86,7 @@ impl AgentExecutionServiceHandle {
                 budget_settings,
             )
             .await;
-            complete_session_execution(&state, result.phase).await;
+            complete_session_execution(&state, result.phase, &agent_control).await;
 
             let elapsed = turn_started_at.elapsed();
             observability.record_turn_execution(elapsed, result.succeeded);

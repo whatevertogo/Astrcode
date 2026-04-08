@@ -93,3 +93,19 @@ server 需要提供稳定的投影输入，前端不应自己猜：
 - 刷新页面后仍能打开同一个 child session
 - 父视图默认不出现 raw JSON
 - legacy 历史能明确提示能力受限，而不是显示错误 parent-child 结构
+
+---
+
+## 实现确认（2026-04-09）
+
+以上投影设计已全部落地：
+
+| 设计要素 | 实现位置 |
+|---------|---------|
+| 父摘要卡片（`ChildSummaryCard`） | `frontend/src/lib/subRunView.ts`（buildParentSummaryProjection） |
+| 子会话直开 API | `frontend/src/lib/api/sessions.ts`（loadChildSessionView、loadParentChildSummaryList） |
+| Server child 投影路由 | `crates/server/src/http/routes/sessions/query.rs`（children summary / child view） |
+| `SubRunThreadTree` 降级为 legacy | `subRunView.ts` 标注为 legacy，新摘要投影直接从索引构建 |
+| Raw JSON 默认隐藏 | `frontend/src/components/Chat/ToolJsonView.tsx`（移除默认 raw JSON 渲染） |
+| 可折叠 SubRunBlock | `frontend/src/components/Chat/SubRunBlock.tsx`（thinking / tool / final-reply 三区折叠） |
+| Lineage 兼容 | spawn / fork / resume 三种 `lineage_kind` 统一投影，新增 `LineageSnapshot` |

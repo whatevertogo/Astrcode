@@ -17,7 +17,10 @@
 use std::sync::Arc;
 
 use astrcode_core::{CapabilityInvoker, Result};
-use astrcode_runtime_agent_tool::{SpawnAgentTool, SubAgentExecutor};
+use astrcode_runtime_agent_tool::{
+    CloseAgentTool, CollaborationExecutor, DeliverToParentTool, ResumeAgentTool, SendAgentTool,
+    SpawnAgentTool, SubAgentExecutor, WaitAgentTool,
+};
 use astrcode_runtime_registry::ToolCapabilityInvoker;
 use astrcode_runtime_skill_loader::SkillCatalog;
 
@@ -38,12 +41,23 @@ use crate::skill_tool::SkillTool;
 pub(crate) fn built_in_capability_invokers(
     skill_catalog: Arc<SkillCatalog>,
     subagent_executor: Arc<dyn SubAgentExecutor>,
+    collaboration_executor: Arc<dyn CollaborationExecutor>,
 ) -> Result<Vec<Arc<dyn CapabilityInvoker>>> {
     vec![
         ToolCapabilityInvoker::boxed(Box::new(SkillTool::new(skill_catalog))),
         // 注意 SpawnAgentTool 依赖 SubAgentExecutor，因此放在 SkillTool 之后注册，确保
         // subagent_executor 已经准备好 子agent工具
         ToolCapabilityInvoker::boxed(Box::new(SpawnAgentTool::new(subagent_executor))),
+        // 协作工具族：通过 CollaborationExecutor 统一委托
+        ToolCapabilityInvoker::boxed(Box::new(SendAgentTool::new(collaboration_executor.clone()))),
+        ToolCapabilityInvoker::boxed(Box::new(WaitAgentTool::new(collaboration_executor.clone()))),
+        ToolCapabilityInvoker::boxed(Box::new(CloseAgentTool::new(
+            collaboration_executor.clone(),
+        ))),
+        ToolCapabilityInvoker::boxed(Box::new(ResumeAgentTool::new(
+            collaboration_executor.clone(),
+        ))),
+        ToolCapabilityInvoker::boxed(Box::new(DeliverToParentTool::new(collaboration_executor))),
         ToolCapabilityInvoker::boxed(Box::new(
             astrcode_runtime_tool_loader::builtin_tools::shell::ShellTool,
         )),

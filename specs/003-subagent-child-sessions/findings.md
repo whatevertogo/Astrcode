@@ -69,3 +69,19 @@
 - `capability_context_from_tool_context()` 仍集中注入 runtime 默认 profile/context
 
 当协作工具从 `spawnAgent` 扩展成一组工具族后，这种双轨和上下文默认值注入会更容易成为边界污染点，因此必须在本轮计划里一起收口。
+
+---
+
+## 实现状态（2026-04-09 更新）
+
+以上 7 项 findings 均已在当前实现中解决：
+
+| Finding | 解决方式 |
+|---------|---------|
+| F1: `spawnAgent` 单一工具 | 新增 `sendAgent`、`waitAgent`、`closeAgent`、`resumeAgent`、`deliverToParent` 五个协作工具 |
+| F2: 以 `SubRunHandle + parent_turn_id` 为中心 | 引入 `ChildSessionNode` 作为 durable 真相，child session 独立于父 turn 存活 |
+| F3: 只有 `get/cancel` 控制面 | 完整协作控制面：send/wait/close/resume/deliver，按 ownership subtree 级联 |
+| F4: server/frontend 围绕 subrun status | 新增 `loadParentChildSummaryList`、`loadChildSessionView` API，父摘要 + 子直开模型 |
+| F5: `SubRunThreadTree` 混合假设 | 新增 `buildParentSummaryProjection` 直接从索引构建摘要卡片，legacy tree 降级为旧版兼容 |
+| F6: ownership 语义未收口 | `ChildSessionNode` 持有完整 ownership 链，`lineage_kind` 区分 spawn/fork/resume |
+| F7: registry 双轨 | `ToolRegistry` 退化为纯测试辅助，`CapabilityRouter` 成为唯一生产入口 |

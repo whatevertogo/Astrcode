@@ -24,6 +24,8 @@ Sync Impact Report
 
 所有文档都需要用中文来生成和书写,方便用户观看
 
+当前文件夹的MEMORY.md 内有更多后续迭代宪章细节
+
 ## Core Principles
 
 ### I. Durable Truth First

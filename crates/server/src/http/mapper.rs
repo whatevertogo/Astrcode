@@ -32,9 +32,9 @@ use astrcode_protocol::{
         AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentProfileDto, ArtifactRefDto,
         ChildAgentRefDto, ChildSessionLineageKindDto, ChildSessionNotificationKindDto,
         CompactTriggerDto, ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto,
-        ConfigView, CurrentModelInfoDto, ForkModeDto, InvocationKindDto, ModelOptionDto,
-        OperationMetricsDto, PROTOCOL_VERSION, PhaseDto, PluginHealthDto, PluginRuntimeStateDto,
-        ProfileView, ReplayMetricsDto, ResolvedExecutionLimitsDto,
+        ConfigView, CurrentModelInfoDto, ForkModeDto, InvocationKindDto, LineageSnapshotDto,
+        ModelOptionDto, OperationMetricsDto, PROTOCOL_VERSION, PhaseDto, PluginHealthDto,
+        PluginRuntimeStateDto, ProfileView, ReplayMetricsDto, ResolvedExecutionLimitsDto,
         ResolvedSubagentContextOverridesDto, RuntimeCapabilityDto, RuntimeMetricsDto,
         RuntimePluginDto, RuntimeStatusDto, SessionCatalogEventEnvelope,
         SessionCatalogEventPayload, SessionListItem, SubRunDescriptorDto,
@@ -398,6 +398,16 @@ fn to_child_lineage_kind_dto(
         astrcode_core::ChildSessionLineageKind::Spawn => ChildSessionLineageKindDto::Spawn,
         astrcode_core::ChildSessionLineageKind::Fork => ChildSessionLineageKindDto::Fork,
         astrcode_core::ChildSessionLineageKind::Resume => ChildSessionLineageKindDto::Resume,
+    }
+}
+
+/// 谱系快照 DTO 映射。当前预留供 fork 场景使用。
+#[allow(dead_code)]
+fn to_lineage_snapshot_dto(snapshot: &astrcode_core::LineageSnapshot) -> LineageSnapshotDto {
+    LineageSnapshotDto {
+        source_agent_id: snapshot.source_agent_id.clone(),
+        source_session_id: snapshot.source_session_id.clone(),
+        source_sub_run_id: snapshot.source_sub_run_id.clone(),
     }
 }
 

@@ -245,6 +245,51 @@ impl SessionState {
             .get(sub_run_id)
             .cloned())
     }
+
+    /// 列出当前 session 所有 child-session 节点快照。
+    ///
+    /// 返回按 sub_run_id 排序的节点列表，用于层级遍历和子树查询。
+    pub fn list_child_session_nodes(&self) -> Result<Vec<ChildSessionNode>> {
+        let nodes = lock_anyhow(&self.child_nodes, "session child nodes")?;
+        let mut result: Vec<_> = nodes.values().cloned().collect();
+        result.sort_by(|a, b| a.sub_run_id.cmp(&b.sub_run_id));
+        Ok(result)
+    }
+
+    /// 查找某个 agent 的直接子节点。
+    ///
+    /// 遍历所有 child_session_node，返回 parent_agent_id 匹配的节点。
+    pub fn child_nodes_for_parent(&self, parent_agent_id: &str) -> Result<Vec<ChildSessionNode>> {
+        let nodes = lock_anyhow(&self.child_nodes, "session child nodes")?;
+        let mut result: Vec<_> = nodes
+            .values()
+            .filter(|node| node.parent_agent_id.as_deref() == Some(parent_agent_id))
+            .cloned()
+            .collect();
+        result.sort_by(|a, b| a.sub_run_id.cmp(&b.sub_run_id));
+        Ok(result)
+    }
+
+    /// 收集指定 agent 子树的所有节点（含自身）。
+    ///
+    /// 从 root_agent_id 出发递归查找所有后代，
+    /// 用于级联关闭时确定影响范围。
+    pub fn subtree_nodes(&self, root_agent_id: &str) -> Result<Vec<ChildSessionNode>> {
+        let nodes = lock_anyhow(&self.child_nodes, "session child nodes")?;
+        let mut result = Vec::new();
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(root_agent_id.to_string());
+        while let Some(agent_id) = queue.pop_front() {
+            for node in nodes.values() {
+                if node.parent_agent_id.as_deref() == Some(&agent_id) {
+                    queue.push_back(node.agent_id.clone());
+                    result.push(node.clone());
+                }
+            }
+        }
+        result.sort_by(|a, b| a.sub_run_id.cmp(&b.sub_run_id));
+        Ok(result)
+    }
 }
 
 pub struct SessionStateEventSink {

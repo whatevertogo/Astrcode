@@ -98,7 +98,7 @@ function JsonNode({ value, label, path, defaultOpen = false }: JsonNodeProps) {
 function ToolJsonView({ value, summary }: ToolJsonViewProps) {
   return (
     <div className={styles.container}>
-      <JsonNode value={value} label="JSON" path="root" defaultOpen />
+      <JsonNode value={value} label="JSON" path="root" defaultOpen={false} />
       <div className={styles.footer}>{summary}</div>
     </div>
   );

@@ -64,6 +64,25 @@ export interface SubRunPathView {
   activeView: SubRunViewData | null;
 }
 
+/// 父视图摘要卡片——从 childSessionNotification 消息中提取的只读投影。
+/// 不包含 child 原始事件流或 raw JSON。
+export interface ChildSummaryCard {
+  agentId: string;
+  subRunId: string;
+  title: string;
+  status: string;
+  summary: string;
+  openSessionId: string | null;
+  hasFinalReply: boolean;
+  finalReplyExcerpt: string | null;
+  hasDescriptorLineage: boolean;
+}
+
+/// 父视图摘要投影——替代混合会话线程树的只读摘要。
+export interface ParentSummaryProjection {
+  cards: ChildSummaryCard[];
+}
+
 function isSubRunStartMessage(message: Message): message is SubRunStartMessage {
   return message.kind === 'subRunStart';
 }
@@ -261,6 +280,9 @@ function buildThreadItems(
   );
 }
 
+/// [Legacy] 构建混合会话线程树。
+/// 此函数将父消息和子执行消息混合构造成线程树，仅用于旧版 UI 渲染。
+/// 新的 child session 模型使用 buildParentSummaryProjection 获取摘要卡片。
 export function buildSubRunThreadTree(messages: Message[]): SubRunThreadTree {
   const index = buildSubRunIndex(messages);
   const subRuns = new Map<string, SubRunViewData>();
@@ -386,4 +408,40 @@ export function listRootSubRunViews(
     .filter((item): item is ThreadSubRunItem => item.kind === 'subRun')
     .map((item) => tree.subRuns.get(item.subRunId))
     .filter((view): view is SubRunViewData => view !== undefined);
+}
+
+/// 从消息列表构建父视图摘要投影。
+/// 直接使用 subrun 索引构建摘要卡片，不依赖 legacy 线程树构建器。
+/// 父视图只消费摘要，不消费子会话原始事件流，不暴露 raw JSON。
+export function buildParentSummaryProjection(messages: Message[]): ParentSummaryProjection {
+  const index = buildSubRunIndex(messages);
+
+  // 只提取 root-level subruns（无父 subrun 嵌套）
+  const rootRecords = [...index.records.values()]
+    .filter((record) => record.parentSubRunId === null)
+    .sort((a, b) => a.startIndex - b.startIndex);
+
+  const cards: ChildSummaryCard[] = rootRecords.map((record) => {
+    const handoff = record.finishMessage?.result.handoff;
+    const failure = record.finishMessage?.result.failure;
+    const status = record.finishMessage?.result.status ?? 'running';
+
+    return {
+      agentId:
+        record.agentId ?? record.startMessage?.agentId ?? record.finishMessage?.agentId ?? '',
+      subRunId: record.subRunId,
+      title: record.title,
+      status,
+      summary:
+        failure?.displayMessage ??
+        handoff?.summary.trim() ??
+        (status === 'running' ? '后台运行中' : ''),
+      openSessionId: record.childSessionId ?? null,
+      hasFinalReply: handoff !== undefined,
+      finalReplyExcerpt: handoff?.summary ?? null,
+      hasDescriptorLineage: record.hasDescriptorLineage,
+    };
+  });
+
+  return { cards };
 }

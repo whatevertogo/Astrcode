@@ -69,10 +69,10 @@ impl CacheTracker {
             if self.tools_hash.as_ref() != Some(&new_tools_hash) {
                 reasons.push(CacheBreakReason::ToolsChanged);
             }
-            if self.model.as_ref() != Some(&model.to_string()) {
+            if self.model.as_deref() != Some(model) {
                 reasons.push(CacheBreakReason::ModelChanged);
             }
-            if self.provider.as_ref() != Some(&provider.to_string()) {
+            if self.provider.as_deref() != Some(provider) {
                 reasons.push(CacheBreakReason::ProviderChanged);
             }
         }
@@ -80,8 +80,12 @@ impl CacheTracker {
         // Update state
         self.system_prompt_hash = Some(new_system_hash);
         self.tools_hash = Some(new_tools_hash);
-        self.model = Some(model.to_string());
-        self.provider = Some(provider.to_string());
+        if self.model.as_deref() != Some(model) {
+            self.model = Some(model.to_string());
+        }
+        if self.provider.as_deref() != Some(provider) {
+            self.provider = Some(provider.to_string());
+        }
         self.break_reasons.extend(reasons.clone());
 
         reasons

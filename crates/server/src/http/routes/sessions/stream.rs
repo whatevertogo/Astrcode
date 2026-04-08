@@ -138,9 +138,17 @@ async fn unfiltered_session_events(
                             replay = recovered;
                         }
                         Err(error) => {
+                            log::warn!(
+                                "SSE replay recovery failed for session '{}': {}",
+                                session_id_for_stream,
+                                error
+                            );
                             yield Ok::<Event, Infallible>(stream_error_event(
                                 "session_event_replay_failed",
-                                format!("failed to recover lagged session events: {error}"),
+                                format!(
+                                    "failed to recover lagged session events for '{}': {error}",
+                                    session_id_for_stream
+                                ),
                             ));
                             break;
                         },
@@ -149,7 +157,7 @@ async fn unfiltered_session_events(
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                     yield Ok::<Event, Infallible>(stream_error_event(
                         "session_event_stream_closed",
-                        "session event stream closed",
+                        format!("session event stream closed for '{}'", session_id_for_stream),
                     ));
                     break;
                 },
@@ -263,9 +271,17 @@ async fn filtered_session_events(
                             replay = recovered;
                         }
                         Err(error) => {
+                            log::warn!(
+                                "SSE filtered replay recovery failed for session '{}': {}",
+                                session_id_for_stream,
+                                error
+                            );
                             yield Ok::<Event, Infallible>(stream_error_event(
                                 "session_event_replay_failed",
-                                format!("failed to recover lagged session events: {error}"),
+                                format!(
+                                    "failed to recover lagged filtered session events for '{}': {error}",
+                                    session_id_for_stream
+                                ),
                             ));
                             break;
                         },
@@ -274,7 +290,7 @@ async fn filtered_session_events(
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                     yield Ok::<Event, Infallible>(stream_error_event(
                         "session_event_stream_closed",
-                        "session event stream closed",
+                        format!("filtered session event stream closed for '{}'", session_id_for_stream),
                     ));
                     break;
                 },

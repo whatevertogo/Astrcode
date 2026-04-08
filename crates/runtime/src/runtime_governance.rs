@@ -138,6 +138,7 @@ impl RuntimeGovernance {
             self.coordinator.plugin_registry(),
             astrcode_runtime_skill_loader::load_builtin_skills(),
             Arc::new(self.service.execution()),
+            self.service.collaboration_executor(),
         )
         .await
         .map_err(ServiceError::Internal)?;

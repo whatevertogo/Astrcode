@@ -274,6 +274,44 @@ function SubRunBlock({
     </details>
   );
 
+  const renderFinalReply = () => {
+    // 成功交付时展示最终回复摘要
+    if (!resultHandoff || status !== 'completed') {
+      return null;
+    }
+    return (
+      <details className={styles.activitySection} open>
+        <summary className={styles.activitySummary}>
+          <span>最终回复</span>
+          <span className={styles.summaryChevron}>
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polyline points="9 18 15 12 9 6"></polyline>
+            </svg>
+          </span>
+        </summary>
+        <div className={styles.activityBody}>
+          <div className={styles.toolbarText}>{resultHandoff.summary}</div>
+          {resultHandoff.findings.length > 0 && (
+            <ul className={styles.findingsList}>
+              {resultHandoff.findings.map((finding, index) => (
+                <li key={index}>{finding}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </details>
+    );
+  };
+
   return (
     <details
       ref={detailsRef}
@@ -352,6 +390,7 @@ function SubRunBlock({
                 )}
               </div>
             )}
+            {renderFinalReply()}
             {renderActivity()}
           </>
         )}

@@ -28,7 +28,7 @@ mod tool;
 pub use agent::{
     AgentExecuteRequestDto, AgentExecuteResponseDto, AgentProfileDto, ChildAgentRefDto,
     ChildSessionLineageKindDto, ChildSessionNotificationDto, ChildSessionNotificationKindDto,
-    ChildSessionViewProjectionDto, SubRunStatusDto, SubRunStatusSourceDto,
+    ChildSessionViewProjectionDto, LineageSnapshotDto, SubRunStatusDto, SubRunStatusSourceDto,
     SubagentContextOverridesDto,
 };
 pub use auth::{AuthExchangeRequest, AuthExchangeResponse};

@@ -19,12 +19,12 @@ use astrcode_runtime_session::{SessionState, SessionStateEventSink};
 use super::{root::AgentExecutionServiceHandle, status::project_child_terminal_delivery};
 use crate::service::{ServiceError, ServiceResult};
 
-struct ParentExecutionContext {
-    parent_session_id: String,
-    parent_turn_id: String,
-    parent_state: Arc<SessionState>,
-    parent_snapshot: AgentState,
-    parent_agent_id_for_control: Option<String>,
+pub(super) struct ParentExecutionContext {
+    pub(super) parent_session_id: String,
+    pub(super) parent_turn_id: String,
+    pub(super) parent_state: Arc<SessionState>,
+    pub(super) parent_snapshot: AgentState,
+    pub(super) parent_agent_id_for_control: Option<String>,
 }
 
 struct PreparedSubagentExecution {
@@ -34,25 +34,25 @@ struct PreparedSubagentExecution {
     child_task: String,
 }
 
-struct SpawnedSubagentExecution {
-    child: SubRunHandle,
-    child_node: astrcode_core::ChildSessionNode,
-    child_agent: AgentEventContext,
-    child_turn_id: String,
-    child_task: String,
-    child_execution_owner: ExecutionOwner,
-    child_state: AgentState,
-    child_loop: Arc<AgentLoop>,
-    child_cancel: CancelToken,
-    child_storage_mode: SubRunStorageMode,
-    parent_session_id: String,
-    parent_turn_id: String,
-    parent_state: Arc<SessionState>,
-    parent_tool_call_id: Option<String>,
-    parent_event_sink: Arc<dyn ToolEventSink>,
-    active_sink: Arc<dyn ToolEventSink>,
-    resolved_overrides: ResolvedSubagentContextOverrides,
-    resolved_limits: ResolvedExecutionLimitsSnapshot,
+pub(super) struct SpawnedSubagentExecution {
+    pub(super) child: SubRunHandle,
+    pub(super) child_node: astrcode_core::ChildSessionNode,
+    pub(super) child_agent: AgentEventContext,
+    pub(super) child_turn_id: String,
+    pub(super) child_task: String,
+    pub(super) child_execution_owner: ExecutionOwner,
+    pub(super) child_state: AgentState,
+    pub(super) child_loop: Arc<AgentLoop>,
+    pub(super) child_cancel: CancelToken,
+    pub(super) child_storage_mode: SubRunStorageMode,
+    pub(super) parent_session_id: String,
+    pub(super) parent_turn_id: String,
+    pub(super) parent_state: Arc<SessionState>,
+    pub(super) parent_tool_call_id: Option<String>,
+    pub(super) parent_event_sink: Arc<dyn ToolEventSink>,
+    pub(super) active_sink: Arc<dyn ToolEventSink>,
+    pub(super) resolved_overrides: ResolvedSubagentContextOverrides,
+    pub(super) resolved_limits: ResolvedExecutionLimitsSnapshot,
 }
 
 impl AgentExecutionServiceHandle {
@@ -67,7 +67,7 @@ impl AgentExecutionServiceHandle {
         self.launch_background(params, profile, parent, ctx).await
     }
 
-    async fn resolve_profile(
+    pub(super) async fn resolve_profile(
         &self,
         params: &SpawnAgentParams,
         working_dir: &std::path::Path,
@@ -85,7 +85,7 @@ impl AgentExecutionServiceHandle {
         Ok(profile)
     }
 
-    async fn resolve_parent_execution(
+    pub(super) async fn resolve_parent_execution(
         &self,
         ctx: &ToolContext,
     ) -> ServiceResult<ParentExecutionContext> {
@@ -114,7 +114,7 @@ impl AgentExecutionServiceHandle {
         })
     }
 
-    async fn launch_background(
+    pub(super) async fn launch_background(
         &self,
         params: SpawnAgentParams,
         profile: AgentProfile,
@@ -401,7 +401,7 @@ impl AgentExecutionServiceHandle {
         Ok(())
     }
 
-    async fn run_child_loop(
+    pub(super) async fn run_child_loop(
         &self,
         execution: &SpawnedSubagentExecution,
     ) -> (astrcode_core::Result<TurnOutcome>, ChildExecutionTracker) {
@@ -425,7 +425,7 @@ impl AgentExecutionServiceHandle {
         (outcome, tracker)
     }
 
-    async fn finalize_child_execution(
+    pub(super) async fn finalize_child_execution(
         &self,
         execution: SpawnedSubagentExecution,
         tracker: ChildExecutionTracker,
