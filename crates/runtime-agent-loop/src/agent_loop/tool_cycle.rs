@@ -49,12 +49,10 @@ struct PendingToolCall {
     tool_call: ToolCallRequest,
 }
 
-/// 单个工具调用的执行结果及可能缓冲的事件。
+/// 单个工具调用的执行结果。
 struct CallOutcome {
     /// 工具执行结果
     result: ToolExecutionResult,
-    /// 待刷入的事件列表（用于安全工具的并发执行路径）
-    buffered_events: Option<Vec<StorageEvent>>,
 }
 
 struct ChannelToolEventSink {
@@ -143,7 +141,6 @@ where
                     denied_tool_result(&call, turn_id, agent, &reason, on_event)?;
                     outcomes[index] = Some(CallOutcome {
                         result: denial_result(&call, reason),
-                        buffered_events: None,
                     });
                 },
                 PolicyVerdict::Ask(pending) => {
@@ -164,7 +161,6 @@ where
                         denied_tool_result(&call, turn_id, agent, &reason, on_event)?;
                         outcomes[index] = Some(CallOutcome {
                             result: denial_result(&call, reason),
-                            buffered_events: None,
                         });
                     }
                 },
@@ -192,16 +188,12 @@ where
             agent,
             execution_owner,
             cancel,
+            on_event,
         )
         .await?
         {
-            outcomes[index] = Some(CallOutcome {
-                result: recorded.result,
-                buffered_events: Some(recorded.events),
-            });
+            outcomes[index] = Some(CallOutcome { result: recorded });
         }
-
-        flush_buffered_events(&mut outcomes, on_event, cancel)?;
     }
 
     if !unsafe_calls.is_empty() && cancel.is_cancelled() {
@@ -229,10 +221,7 @@ where
             },
         )
         .await?;
-        outcomes[pending.index] = Some(CallOutcome {
-            result,
-            buffered_events: None,
-        });
+        outcomes[pending.index] = Some(CallOutcome { result });
     }
 
     push_tool_messages(messages, outcomes);
@@ -260,13 +249,8 @@ fn tool_call_from_capability_call(call: CapabilityCall) -> ToolCallRequest {
     }
 }
 
-struct RecordedExecution {
-    result: ToolExecutionResult,
-    events: Vec<StorageEvent>,
-}
-
 #[allow(clippy::too_many_arguments)]
-async fn execute_safe_tool_calls(
+async fn execute_safe_tool_calls<F>(
     agent_loop: &AgentLoop,
     capabilities: &CapabilityRouter,
     safe_calls: Vec<PendingToolCall>,
@@ -275,81 +259,89 @@ async fn execute_safe_tool_calls(
     agent: &AgentEventContext,
     execution_owner: &ExecutionOwner,
     cancel: &CancelToken,
-) -> Result<Vec<(usize, RecordedExecution)>> {
+    on_event: &mut F,
+) -> Result<Vec<(usize, ToolExecutionResult)>>
+where
+    F: FnMut(StorageEvent) -> Result<()>,
+{
     let concurrency_limit = agent_loop
         .max_tool_concurrency()
         .min(safe_calls.len().max(1));
-    let results = stream::iter(safe_calls)
-        .map(|pending| async move {
-            let ctx = agent_loop.tool_context(state, cancel.clone(), execution_owner.clone());
-            let recorded = execute_raw_tool_call_recorded(
-                agent_loop,
-                capabilities,
-                state,
-                pending.tool_call,
-                turn_id,
-                agent,
-                &ctx,
-            )
-            .await?;
-            Ok((pending.index, recorded))
-        })
-        .buffer_unordered(concurrency_limit)
-        .collect::<Vec<Result<(usize, RecordedExecution)>>>()
-        .await;
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<StorageEvent>();
+    let worker_event_tx = event_tx.clone();
+    let mut runs = Some(
+        stream::iter(safe_calls)
+            .map(move |pending| {
+                let event_tx = worker_event_tx.clone();
+                async move {
+                    let ctx =
+                        agent_loop.tool_context(state, cancel.clone(), execution_owner.clone());
+                    let result = execute_raw_tool_call(
+                        pending.tool_call,
+                        RawToolExecutionContext {
+                            agent_loop,
+                            capabilities,
+                            state,
+                            turn_id,
+                            agent,
+                            tool_ctx: &ctx,
+                            on_event: &mut |event: StorageEvent| {
+                                event_tx.send(event).map_err(|_| {
+                                    astrcode_core::AstrError::Internal(
+                                        "safe tool event channel closed unexpectedly".to_string(),
+                                    )
+                                })
+                            },
+                        },
+                    )
+                    .await?;
+                    Ok((pending.index, result))
+                }
+            })
+            .buffer_unordered(concurrency_limit),
+    );
+    drop(event_tx);
 
-    results.into_iter().collect()
-}
-
-async fn execute_raw_tool_call_recorded(
-    agent_loop: &AgentLoop,
-    capabilities: &CapabilityRouter,
-    state: &AgentState,
-    tool_call: ToolCallRequest,
-    turn_id: &str,
-    agent: &AgentEventContext,
-    ctx: &astrcode_core::ToolContext,
-) -> Result<RecordedExecution> {
-    let mut events = Vec::new();
-    let result = execute_raw_tool_call(
-        tool_call,
-        RawToolExecutionContext {
-            agent_loop,
-            capabilities,
-            state,
-            turn_id,
-            agent,
-            tool_ctx: ctx,
-            on_event: &mut |event| {
-                events.push(event);
-                Ok(())
-            },
-        },
-    )
-    .await?;
-
-    Ok(RecordedExecution { result, events })
-}
-
-fn flush_buffered_events(
-    outcomes: &mut [Option<CallOutcome>],
-    on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
-    cancel: &CancelToken,
-) -> Result<()> {
-    for outcome in outcomes.iter_mut().flatten() {
-        let Some(events) = outcome.buffered_events.take() else {
-            continue;
-        };
-
-        for event in events {
-            if let Err(error) = on_event(event) {
-                cancel.cancel();
-                return Err(error);
+    let mut outcomes = Vec::new();
+    let mut workers_closed = false;
+    let mut events_closed = false;
+    while !workers_closed || !events_closed {
+        tokio::select! {
+            maybe_event = event_rx.recv(), if !events_closed => {
+                match maybe_event {
+                    Some(event) => {
+                        if let Err(error) = on_event(event) {
+                            cancel.cancel();
+                            return Err(error);
+                        }
+                    }
+                    None => {
+                        events_closed = true;
+                    }
+                }
+            }
+            maybe_done = async {
+                match runs.as_mut() {
+                    Some(runs) => runs.next().await,
+                    None => None,
+                }
+            }, if !workers_closed => {
+                match maybe_done {
+                    Some(Ok((index, result))) => outcomes.push((index, result)),
+                    Some(Err(error)) => {
+                        cancel.cancel();
+                        return Err(error);
+                    }
+                    None => {
+                        workers_closed = true;
+                        runs.take();
+                    }
+                }
             }
         }
     }
 
-    Ok(())
+    Ok(outcomes)
 }
 
 fn push_tool_messages(messages: &mut Vec<LlmMessage>, outcomes: Vec<Option<CallOutcome>>) {

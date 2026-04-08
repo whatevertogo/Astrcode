@@ -37,7 +37,7 @@ impl AgentExecutionServiceHandle {
         surface: ScopedExecutionSurface<Arc<astrcode_runtime_skill_loader::SkillCatalog>>,
         parent_state: Option<&astrcode_core::AgentState>,
     ) -> ServiceResult<PreparedAgentExecution<Arc<AgentLoop>>> {
-        let request = AgentExecutionRequest::from_spawn_agent_params(params, None, None);
+        let request = AgentExecutionRequest::from_spawn_agent_params(params, None);
         self.prepare_scoped_execution_request(
             invocation_kind,
             profile,

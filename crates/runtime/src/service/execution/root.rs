@@ -16,6 +16,7 @@ use crate::service::{
 };
 
 /// 面向 API / Tool 的 Agent Profile 摘要。
+// TODO: 未来可能需要重新添加 max_steps 和 token_budget 参数来限制子智能体执行
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentProfileSummary {
     pub id: String,
@@ -24,8 +25,6 @@ pub struct AgentProfileSummary {
     pub mode: AgentMode,
     pub allowed_tools: Vec<String>,
     pub disallowed_tools: Vec<String>,
-    pub max_steps: Option<u32>,
-    pub token_budget: Option<u64>,
 }
 
 /// 面向 API / Tool 的工具摘要。
@@ -63,8 +62,7 @@ impl AgentExecutionServiceHandle {
                 mode: profile.mode,
                 allowed_tools: profile.allowed_tools.clone(),
                 disallowed_tools: profile.disallowed_tools.clone(),
-                max_steps: profile.max_steps,
-                token_budget: profile.token_budget,
+                // TODO: 未来可能需要添加 max_steps 和 token_budget
             })
             .collect::<Vec<_>>();
         profiles.sort_by(|left, right| left.id.cmp(&right.id));
@@ -76,7 +74,6 @@ impl AgentExecutionServiceHandle {
         agent_id: String,
         task: String,
         context: Option<String>,
-        max_steps: Option<u32>,
         context_overrides: Option<SubagentContextOverrides>,
         working_dir: PathBuf,
     ) -> ServiceResult<AgentExecutionAccepted> {
@@ -90,7 +87,6 @@ impl AgentExecutionServiceHandle {
         astrcode_runtime_execution::ensure_root_execution_mode(&profile)?;
         let request = astrcode_runtime_execution::AgentExecutionRequest::from_spawn_agent_params(
             &params,
-            max_steps,
             context_overrides,
         );
         let prepared_execution = self.prepare_scoped_execution_request(

@@ -155,6 +155,12 @@ pub struct RuntimeService {
     /// profile 属于 runtime bootstrap 装配结果，不应该由调用方临时拼接；
     /// service 持有同一份只读快照，确保后续子 Agent/工具看到一致配置。
     agent_profiles: Arc<StdRwLock<Arc<AgentProfileRegistry>>>,
+    /// scoped agent profile 缓存。
+    ///
+    /// `spawnAgent` 会反复查询同一个 working dir 的 profile 视图；如果每次都重新扫盘，
+    /// 子 agent 冷启动前的同步 IO 会明显拖慢工具返回。这里缓存“按目录解析后的注册表”，
+    /// 并在 agent 热重载后统一失效，保持语义集中在 runtime 层。
+    scoped_agent_profiles: DashMap<PathBuf, Arc<AgentProfileRegistry>>,
     /// 跨窗口共享的会话目录广播。
     /// 新建/删除/分叉会话后会发事件，驱动所有前端窗口刷新 sidebar 或跟随新分支。
     session_catalog_events: broadcast::Sender<SessionCatalogEvent>,
@@ -298,6 +304,7 @@ impl RuntimeService {
             agent_control,
             agent_loader,
             agent_profiles,
+            scoped_agent_profiles: DashMap::new(),
             session_catalog_events,
             shutdown_token: CancellationToken::new(),
             rebuild_lock: Mutex::new(()),

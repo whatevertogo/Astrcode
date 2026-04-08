@@ -113,8 +113,7 @@ pub(crate) fn to_agent_profile_dto(profile: AgentProfileSummary) -> AgentProfile
         },
         allowed_tools: profile.allowed_tools,
         disallowed_tools: profile.disallowed_tools,
-        max_steps: profile.max_steps,
-        token_budget: profile.token_budget,
+        // TODO: 未来可能需要添加 max_steps 和 token_budget
     }
 }
 
@@ -430,8 +429,7 @@ fn to_fork_mode_dto(fork_mode: ForkMode) -> ForkModeDto {
 
 fn to_resolved_limits_dto(limits: ResolvedExecutionLimitsSnapshot) -> ResolvedExecutionLimitsDto {
     ResolvedExecutionLimitsDto {
-        max_steps: limits.max_steps,
-        token_budget: limits.token_budget,
+        // TODO: 未来可能需要添加 max_steps 和 token_budget
         allowed_tools: limits.allowed_tools,
     }
 }

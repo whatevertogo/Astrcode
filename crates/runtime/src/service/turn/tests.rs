@@ -511,8 +511,6 @@ async fn interrupt_cascades_to_registered_child_agents() {
                 system_prompt: None,
                 allowed_tools: vec!["readFile".to_string()],
                 disallowed_tools: Vec::new(),
-                max_steps: Some(3),
-                token_budget: Some(1_000),
                 model_preference: None,
             },
             &session.session_id,

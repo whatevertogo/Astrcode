@@ -61,7 +61,7 @@ impl AgentExecutionServiceHandle {
             &turn_id,
             cancel.clone(),
             turn_lease,
-            prepared_submission.token_budget,
+            token_budget,
         )?;
 
         let state = session.clone();

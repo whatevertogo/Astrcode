@@ -218,7 +218,8 @@ export default function MessageList({
       options?: {
         key?: string;
         nested?: boolean;
-      }
+      },
+      metricsOverride?: Message
     ) => {
       const isContinuation =
         previousMessage !== null && isAssistantLike(msg) && isAssistantLike(previousMessage);
@@ -229,17 +230,12 @@ export default function MessageList({
         .filter(Boolean)
         .join(' ');
 
-      // 如果下一条消息是 promptMetrics，将其附加到当前 assistant 消息
+      // 使用传入的 metrics 或检查 nextMessage
       const metricsToAttach =
-        msg.kind === 'assistant' && nextMessage?.kind === 'promptMetrics' ? nextMessage : undefined;
-
-      // 调试：打印附加的 metrics
-      if (metricsToAttach) {
-        console.log('[MessageList] Attaching metrics to assistant message:', {
-          messageId: msg.id,
-          metrics: metricsToAttach,
-        });
-      }
+        metricsOverride ??
+        (msg.kind === 'assistant' && nextMessage?.kind === 'promptMetrics'
+          ? nextMessage
+          : undefined);
 
       return (
         <div key={options?.key ?? msg.id} className={rowClass}>
@@ -258,8 +254,8 @@ export default function MessageList({
       options?: {
         nested?: boolean;
       }
-    ): React.ReactNode[] =>
-      items.map((item, index) => {
+    ): React.ReactNode[] => {
+      return items.map((item, index) => {
         if (item.kind === 'message') {
           const previousItem = items[index - 1];
           const nextItem = items[index + 1];
@@ -271,10 +267,33 @@ export default function MessageList({
             return null;
           }
 
-          return renderMessageRow(item.message, previousMessage, nextMessage, {
-            key: item.message.id,
-            nested: options?.nested,
-          });
+          // 如果当前是 assistant 消息，查找后面的 promptMetrics（跳过中间的其他消息）
+          let metricsToAttach: Message | undefined = undefined;
+          if (item.message.kind === 'assistant') {
+            for (let j = index + 1; j < items.length; j++) {
+              const nextItem = items[j];
+              if (nextItem.kind === 'message') {
+                if (nextItem.message.kind === 'promptMetrics') {
+                  metricsToAttach = nextItem.message;
+                  break;
+                } else if (nextItem.message.kind === 'assistant') {
+                  // 遇到下一个 assistant，停止查找
+                  break;
+                }
+              }
+            }
+          }
+
+          return renderMessageRow(
+            item.message,
+            previousMessage,
+            nextMessage,
+            {
+              key: item.message.id,
+              nested: options?.nested,
+            },
+            metricsToAttach
+          );
         }
 
         const subRunView = subRunViews.get(item.subRunId);
@@ -321,7 +340,8 @@ export default function MessageList({
             )}
           </div>
         );
-      }),
+      });
+    },
     [onCancelSubRun, onFocusSubRun, onOpenChildSession, renderMessageRow, sessionId, subRunViews]
   );
 

@@ -563,8 +563,7 @@ mod tests {
             system_prompt: None,
             allowed_tools: vec!["readFile".to_string()],
             disallowed_tools: Vec::new(),
-            max_steps: Some(5),
-            token_budget: Some(8_000),
+            // TODO: 未来可能需要添加 max_steps 和 token_budget
             model_preference: Some("fast".to_string()),
         }
     }

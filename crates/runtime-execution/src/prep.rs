@@ -32,6 +32,8 @@ pub struct AgentExecutionSpec {
     pub resolved_context_snapshot: ResolvedContextSnapshot,
 }
 
+/// Agent 执行请求。
+// TODO: 未来可能需要重新添加 max_steps 参数来限制子智能体执行
 #[derive(Debug, Clone)]
 pub struct AgentExecutionRequest {
     /// 子 Agent 类型标识。
@@ -42,8 +44,6 @@ pub struct AgentExecutionRequest {
     pub prompt: String,
     /// 可选补充材料。
     pub context: Option<String>,
-    /// 可选的步数上限覆盖。
-    pub max_steps: Option<u32>,
     /// 内部使用：上下文继承控制。
     /// TODO: 未来 compact agent 将通过此字段实现 fork 上下文继承。
     pub context_overrides: Option<SubagentContextOverrides>,
@@ -52,7 +52,6 @@ pub struct AgentExecutionRequest {
 impl AgentExecutionRequest {
     pub fn from_spawn_agent_params(
         params: &SpawnAgentParams,
-        max_steps: Option<u32>,
         context_overrides: Option<SubagentContextOverrides>,
     ) -> Self {
         Self {
@@ -60,7 +59,6 @@ impl AgentExecutionRequest {
             description: params.description.clone(),
             prompt: params.prompt.clone(),
             context: params.context.clone(),
-            max_steps,
             context_overrides,
         }
     }
@@ -86,7 +84,7 @@ pub struct ScopedExecutionSurface<TSkillCatalog> {
 #[derive(Debug, Clone)]
 pub struct PreparedPromptSubmission {
     pub text: String,
-    pub token_budget: Option<u64>,
+    // TODO: 未来可能需要添加 token_budget 参数
     pub user_event: StorageEvent,
     pub execution_owner: ExecutionOwner,
 }
@@ -106,7 +104,7 @@ pub struct RootExecutionLaunch {
 
 fn build_execution_spec(
     invocation_kind: InvocationKind,
-    profile: &AgentProfile,
+    _profile: &AgentProfile, // TODO: 未来可能需要使用 profile 参数
     params: &AgentExecutionRequest,
     allowed_tools: &[String],
     runtime_config: &astrcode_runtime_config::RuntimeConfig,
@@ -121,16 +119,6 @@ fn build_execution_spec(
         invocation_kind,
         resolved_overrides,
         resolved_limits: ResolvedExecutionLimitsSnapshot {
-            // 步数限制采用“更严格者优先”，避免外部请求绕过 profile 上限。
-            max_steps: match (profile.max_steps, params.max_steps) {
-                (Some(profile_limit), Some(request_limit)) => {
-                    Some(profile_limit.min(request_limit))
-                },
-                (Some(profile_limit), None) => Some(profile_limit),
-                (None, Some(request_limit)) => Some(request_limit),
-                (None, None) => None,
-            },
-            token_budget: profile.token_budget,
             allowed_tools: allowed_tools.to_vec(),
         },
         resolved_context_snapshot,
@@ -246,7 +234,7 @@ pub fn prepare_prompt_submission(
     session_id: &str,
     turn_id: &str,
     text: String,
-    token_budget: Option<u64>,
+    _token_budget: Option<u64>, // TODO: 未来可能需要使用 token_budget 参数
 ) -> PreparedPromptSubmission {
     PreparedPromptSubmission {
         user_event: StorageEvent::UserMessage {
@@ -262,7 +250,6 @@ pub fn prepare_prompt_submission(
             InvocationKind::RootExecution,
         ),
         text,
-        token_budget,
     }
 }
 
@@ -633,8 +620,6 @@ mod tests {
             system_prompt: None,
             allowed_tools: Vec::new(),
             disallowed_tools: Vec::new(),
-            max_steps: Some(8),
-            token_budget: None,
             model_preference: None,
         };
         let request = AgentExecutionRequest {
@@ -642,7 +627,6 @@ mod tests {
             description: "task".to_string(),
             prompt: "task".to_string(),
             context: None,
-            max_steps: Some(3),
             context_overrides: None,
         };
 
@@ -656,7 +640,10 @@ mod tests {
         )
         .expect("execution spec should build");
 
-        assert_eq!(spec.resolved_limits.max_steps, Some(3));
+        assert_eq!(
+            spec.resolved_limits.allowed_tools,
+            vec!["readFile".to_string()]
+        );
     }
 
     #[test]
@@ -668,7 +655,6 @@ mod tests {
                 prompt: "review the latest diff".to_string(),
                 context: Some("focus on correctness".to_string()),
             },
-            Some(5),
             Some(SubagentContextOverrides::default()),
         );
 
@@ -676,7 +662,6 @@ mod tests {
         assert_eq!(request.description, "review patch");
         assert_eq!(request.prompt, "review the latest diff");
         assert_eq!(request.context.as_deref(), Some("focus on correctness"));
-        assert_eq!(request.max_steps, Some(5));
         assert!(request.context_overrides.is_some());
     }
 
@@ -686,7 +671,7 @@ mod tests {
             prepare_prompt_submission("session-1", "turn-1", "hello".to_string(), Some(128));
 
         assert_eq!(prepared.text, "hello");
-        assert_eq!(prepared.token_budget, Some(128));
+        // TODO: 未来可能需要验证 token_budget
         assert_eq!(prepared.execution_owner.root_session_id, "session-1");
         assert_eq!(prepared.execution_owner.root_turn_id, "turn-1");
         assert!(matches!(

@@ -72,6 +72,7 @@ impl<'a> ConfigManager<'a> {
                 "agent profile registry".to_string(),
             ))
         })? = Arc::clone(&next_registry);
+        self.runtime.scoped_agent_profiles.clear();
         Ok(next_registry)
     }
 

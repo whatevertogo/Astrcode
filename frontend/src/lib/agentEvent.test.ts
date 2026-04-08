@@ -264,8 +264,6 @@ describe('normalizeAgentEvent protocol gate', () => {
           include_parent_findings: false,
         },
         resolved_limits: {
-          max_steps: 12,
-          token_budget: 2400,
           allowed_tools: ['readFile', 'grep'],
         },
       },
@@ -295,8 +293,6 @@ describe('normalizeAgentEvent protocol gate', () => {
           includeParentFindings: false,
         },
         resolvedLimits: {
-          maxSteps: 12,
-          tokenBudget: 2400,
           allowedTools: ['readFile', 'grep'],
         },
       },
@@ -347,8 +343,6 @@ describe('normalizeAgentEvent protocol gate', () => {
           includeParentFindings: false,
         },
         resolvedLimits: {
-          maxSteps: undefined,
-          tokenBudget: undefined,
           allowedTools: ['readFile'],
         },
       },

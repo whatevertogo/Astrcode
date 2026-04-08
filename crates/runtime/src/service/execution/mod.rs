@@ -72,13 +72,18 @@ impl AgentExecutionServiceHandle {
         &self,
         working_dir: &std::path::Path,
     ) -> ServiceResult<Arc<astrcode_runtime_agent_loader::AgentProfileRegistry>> {
+        if let Some(cached) = self.runtime.scoped_agent_profiles.get(working_dir) {
+            return Ok(Arc::clone(cached.value()));
+        }
+
         let loader = self.runtime.agent_loader();
         let working_dir = working_dir.to_path_buf();
+        let load_working_dir = working_dir.clone();
         let registry = crate::service::blocking_bridge::spawn_blocking_service(
             "load scoped agent profiles",
             move || {
                 loader
-                    .load_for_working_dir(Some(&working_dir))
+                    .load_for_working_dir(Some(&load_working_dir))
                     .map_err(|error| {
                         ServiceError::Internal(astrcode_core::AstrError::Validation(
                             error.to_string(),
@@ -87,7 +92,16 @@ impl AgentExecutionServiceHandle {
             },
         )
         .await?;
-        Ok(Arc::new(registry))
+        let registry = Arc::new(registry);
+
+        if let Some(cached) = self.runtime.scoped_agent_profiles.get(&working_dir) {
+            return Ok(Arc::clone(cached.value()));
+        }
+
+        self.runtime
+            .scoped_agent_profiles
+            .insert(working_dir, Arc::clone(&registry));
+        Ok(registry)
     }
 }
 
@@ -145,7 +159,6 @@ impl ExecutionOrchestrationBoundary for AgentExecutionServiceHandle {
         agent_id: String,
         task: String,
         context: Option<String>,
-        max_steps: Option<u32>,
         context_overrides: Option<astrcode_core::SubagentContextOverrides>,
         working_dir: std::path::PathBuf,
     ) -> std::result::Result<astrcode_core::RootExecutionAccepted, AstrError> {
@@ -154,7 +167,6 @@ impl ExecutionOrchestrationBoundary for AgentExecutionServiceHandle {
             agent_id,
             task,
             context,
-            max_steps,
             context_overrides,
             working_dir,
         )

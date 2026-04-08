@@ -86,12 +86,12 @@ pub trait ExecutionOrchestrationBoundary: Send + Sync {
 
     async fn interrupt_session(&self, session_id: &str) -> std::result::Result<(), AstrError>;
 
+    // TODO: 未来可能需要重新添加 max_steps 参数来限制根智能体执行
     async fn execute_root_agent(
         &self,
         agent_id: String,
         task: String,
         context: Option<String>,
-        max_steps: Option<u32>,
         context_overrides: Option<SubagentContextOverrides>,
         working_dir: std::path::PathBuf,
     ) -> std::result::Result<RootExecutionAccepted, AstrError>;

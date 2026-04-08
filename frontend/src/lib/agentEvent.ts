@@ -462,8 +462,6 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
           ),
         },
         resolvedLimits: {
-          maxSteps: pickNumber(resolvedLimits, 'maxSteps', 'max_steps') ?? undefined,
-          tokenBudget: pickNumber(resolvedLimits, 'tokenBudget', 'token_budget') ?? undefined,
           allowedTools: Array.isArray(rawAllowedTools)
             ? rawAllowedTools.filter((value: unknown): value is string => typeof value === 'string')
             : [],

@@ -423,6 +423,96 @@ async fn parallel_safe_tool_results_preserve_original_request_order() {
 }
 
 #[tokio::test]
+async fn parallel_safe_tool_results_stream_before_slower_peers_finish() {
+    let tracker = Arc::new(ConcurrencyTracker::default());
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([
+            LlmOutput {
+                content: String::new(),
+                tool_calls: vec![
+                    ToolCallRequest {
+                        id: "call-live-slow".to_string(),
+                        name: "liveSafeTool".to_string(),
+                        args: json!({ "delayMs": 120 }),
+                    },
+                    ToolCallRequest {
+                        id: "call-live-fast".to_string(),
+                        name: "liveSafeTool".to_string(),
+                        args: json!({ "delayMs": 20 }),
+                    },
+                ],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            },
+            LlmOutput {
+                content: "done".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            },
+        ])),
+        delay: std::time::Duration::from_millis(0),
+    });
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
+        .register(Box::new(ConcurrencyTrackingTool {
+            name: "liveSafeTool",
+            concurrency_safe: true,
+            tracker,
+        }))
+        .build();
+    let loop_runner = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory { provider }),
+        capabilities_from_tools(tools),
+    );
+    let (events, mut on_event) = collect_events();
+
+    loop_runner
+        .run_turn(
+            &make_state("stream safe tool results"),
+            "turn-live-safe",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+
+    let events = events.lock().expect("events lock").clone();
+    let fast_result_idx = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                StorageEvent::ToolResult {
+                    tool_call_id,
+                    tool_name,
+                    ..
+                } if tool_name == "liveSafeTool" && tool_call_id == "call-live-fast"
+            )
+        })
+        .expect("fast tool result event expected");
+    let slow_result_idx = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                StorageEvent::ToolResult {
+                    tool_call_id,
+                    tool_name,
+                    ..
+                } if tool_name == "liveSafeTool" && tool_call_id == "call-live-slow"
+            )
+        })
+        .expect("slow tool result event expected");
+
+    assert!(
+        fast_result_idx < slow_result_idx,
+        "fast safe tool result should be emitted before the slower peer finishes"
+    );
+}
+
+#[tokio::test]
 async fn long_tool_chains_complete_without_a_step_cap() {
     let mut scripted = (0..8)
         .map(|idx| LlmOutput {

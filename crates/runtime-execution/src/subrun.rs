@@ -435,8 +435,6 @@ mod tests {
             ..Default::default()
         };
         let limits = ResolvedExecutionLimitsSnapshot {
-            max_steps: Some(3),
-            token_budget: Some(4000),
             allowed_tools: vec!["readFile".to_string()],
         };
         let result = SubRunResult {
@@ -523,8 +521,6 @@ mod tests {
         );
         let overrides = ResolvedSubagentContextOverrides::default();
         let limits = ResolvedExecutionLimitsSnapshot {
-            max_steps: Some(5),
-            token_budget: Some(3000),
             allowed_tools: vec!["readFile".to_string(), "grep".to_string()],
         };
         let events = vec![StoredEvent {
@@ -807,8 +803,6 @@ mod tests {
                 tool_call_id: None,
                 resolved_overrides: ResolvedSubagentContextOverrides::default(),
                 resolved_limits: ResolvedExecutionLimitsSnapshot {
-                    max_steps: Some(1),
-                    token_budget: None,
                     allowed_tools: vec!["readFile".to_string()],
                 },
                 timestamp: None,

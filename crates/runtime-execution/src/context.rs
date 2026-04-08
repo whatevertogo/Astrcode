@@ -360,7 +360,6 @@ mod tests {
             description: "investigate issue".to_string(),
             prompt: "investigate issue".to_string(),
             context: Some("focus on regressions".to_string()),
-            max_steps: None,
             context_overrides: None,
         };
         let overrides = ResolvedSubagentContextOverrides {
@@ -404,7 +403,6 @@ mod tests {
             description: "investigate issue".to_string(),
             prompt: "investigate issue".to_string(),
             context: None,
-            max_steps: None,
             context_overrides: None,
         };
         let overrides = ResolvedSubagentContextOverrides {

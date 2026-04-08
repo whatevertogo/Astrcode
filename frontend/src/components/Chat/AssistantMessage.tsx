@@ -193,13 +193,6 @@ function AssistantMessage({ message, hideAvatar, metrics }: AssistantMessageProp
   );
   const streaming = message.streaming;
 
-  // 调试：打印 metrics 数据
-  React.useEffect(() => {
-    if (metrics) {
-      console.log('[AssistantMessage] metrics:', metrics);
-    }
-  }, [metrics]);
-
   return (
     <div className={styles.wrapper}>
       <div
@@ -285,13 +278,10 @@ function AssistantMessage({ message, hideAvatar, metrics }: AssistantMessageProp
           {visibleText ? <MarkdownContent text={visibleText} defer={streaming} /> : null}
           {message.streaming && <span className={styles.cursor}>▋</span>}
         </div>
-        {metrics && !message.streaming && (
+        {metrics && (
           <div className={styles.metricsInline}>
-            📊 {formatTokenCount(metrics.estimatedTokens)} tokens ·{' '}
-            {formatTokenCount(metrics.effectiveWindow ?? 0)}/
-            {formatTokenCount(metrics.contextWindow ?? 0)} context · Cache:{' '}
-            {formatTokenCount(metrics.cacheReadInputTokens)}/
-            {formatTokenCount(metrics.cacheCreationInputTokens)}
+            📊 {formatTokenCount(metrics.estimatedTokens)} tokens · 缓存{' '}
+            {formatTokenCount(metrics.cacheReadInputTokens)} tokens
           </div>
         )}
       </div>

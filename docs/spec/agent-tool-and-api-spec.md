@@ -55,8 +55,6 @@
 | `system_prompt` | 子 Agent 系统提示 |
 | `allowed_tools` | 白名单 |
 | `disallowed_tools` | 黑名单 |
-| `max_steps` | 步数上限 |
-| `token_budget` | token 预算 |
 | `model_preference` | 预留字段；当前未形成稳定生效链路 |
 
 ### 4.2 `SpawnAgentParams`

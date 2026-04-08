@@ -5,7 +5,8 @@
 //! ## 设计要点
 //!
 //! - 仅返回一层目录/文件条目，不递归
-//! - 每个条目返回 `name`、`isDir`、`isFile`、`size`、`modified`、`extension`
+//! - 每个条目返回 `name`、`type`（file/directory/symlink）、`size`、`modified`、
+//!   `extension`（仅文件）
 //! - 默认最多 200 条，超出标记 `truncated`
 //! - 未指定路径时使用上下文工作目录
 //! - 支持排序：按名称（默认）或按修改时间（最新优先）
@@ -55,10 +56,11 @@ enum SortBy {
 #[derive(Debug, Clone)]
 struct DirEntry {
     name: String,
-    is_dir: bool,
-    is_file: bool,
+    /// 条目类型：file / directory / symlink
+    entry_type: String,
     size: u64,
     modified: Option<std::time::SystemTime>,
+    /// 仅文件有扩展名，目录和符号链接不返回此字段
     extension: Option<String>,
 }
 
@@ -69,7 +71,9 @@ impl Tool for ListDirTool {
             name: "listDir".to_string(),
             description: concat!(
                 "List immediate directory entries with metadata ",
-                "(name, type, size, modified time, extension)."
+                "(name, type, size, modified time, extension). ",
+                "The `type` field is one of: file, directory, symlink. ",
+                "The `extension` field is only present for files."
             )
             .to_string(),
             parameters: json!({
@@ -106,9 +110,11 @@ impl Tool for ListDirTool {
                 ToolPromptMetadata::new(
                     "List the immediate contents of a directory before drilling into specific \
                      files.",
-                    "List directory entries as structured metadata (name/isDir/size/modified). \
-                     Returns one level only — use `path` to drill deeper. Directory `size` is \
-                     always 0 on Windows; only file sizes are meaningful.",
+                    "List directory entries as structured metadata (name/type/size/modified). The \
+                     `type` field is \"file\", \"directory\", or \"symlink\". The `extension` \
+                     field only appears for files. Returns one level only — use `path` to drill \
+                     deeper. Directory `size` is always 0 on Windows; only file sizes are \
+                     meaningful.",
                 )
                 .caveat(
                     "Truncated at maxEntries (default 200). When truncated, use a more specific \
@@ -153,16 +159,27 @@ impl Tool for ListDirTool {
             let file_type = entry.file_type()?;
             let metadata = fs::metadata(entry.path()).ok();
 
-            let extension = entry
-                .path()
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|s| s.to_string());
+            let entry_type = if file_type.is_dir() {
+                "directory"
+            } else if file_type.is_file() {
+                "file"
+            } else {
+                "symlink"
+            };
+
+            let extension = if file_type.is_file() {
+                entry
+                    .path()
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            };
 
             entries.push(DirEntry {
                 name: entry.file_name().to_string_lossy().to_string(),
-                is_dir: file_type.is_dir(),
-                is_file: file_type.is_file(),
+                entry_type: entry_type.to_string(),
                 size: metadata.as_ref().map(|m| m.len()).unwrap_or(0),
                 modified: metadata.and_then(|m| m.modified().ok()),
                 extension,
@@ -173,31 +190,37 @@ impl Tool for ListDirTool {
         match sort_by {
             SortBy::Name => {
                 // 目录优先，然后按名称排序
-                entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                });
+                entries.sort_by(
+                    |a, b| match (a.entry_type.as_str(), b.entry_type.as_str()) {
+                        ("directory", "file" | "symlink") => std::cmp::Ordering::Less,
+                        ("file" | "symlink", "directory") => std::cmp::Ordering::Greater,
+                        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                    },
+                );
             },
             SortBy::Modified => {
                 // 按修改时间降序（最新优先），目录优先
-                entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => {
-                        let a_time = a.modified.unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                        let b_time = b.modified.unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                        b_time.cmp(&a_time)
+                entries.sort_by(
+                    |a, b| match (a.entry_type.as_str(), b.entry_type.as_str()) {
+                        ("directory", "file" | "symlink") => std::cmp::Ordering::Less,
+                        ("file" | "symlink", "directory") => std::cmp::Ordering::Greater,
+                        _ => {
+                            let a_time = a.modified.unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                            let b_time = b.modified.unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                            b_time.cmp(&a_time)
+                        },
                     },
-                });
+                );
             },
             SortBy::Size => {
                 // 按文件大小降序（最大优先），目录优先
-                entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => b.size.cmp(&a.size),
-                });
+                entries.sort_by(
+                    |a, b| match (a.entry_type.as_str(), b.entry_type.as_str()) {
+                        ("directory", "file" | "symlink") => std::cmp::Ordering::Less,
+                        ("file" | "symlink", "directory") => std::cmp::Ordering::Greater,
+                        _ => b.size.cmp(&a.size),
+                    },
+                );
             },
         }
 
@@ -205,17 +228,22 @@ impl Tool for ListDirTool {
         let json_entries: Vec<serde_json::Value> = entries
             .iter()
             .map(|e| {
-                json!({
+                let mut obj = json!({
                     "name": e.name,
-                    "isDir": e.is_dir,
-                    "isFile": e.is_file,
+                    "type": e.entry_type,
                     "size": e.size,
                     "modified": e.modified.map(|t| {
                         // 这里返回真实 RFC3339 UTC 时间，便于排序和跨端展示保持一致。
                         DateTime::<Utc>::from(t).to_rfc3339()
                     }),
-                    "extension": e.extension,
-                })
+                });
+                // 仅文件返回 extension，目录/符号链接不返回以避免 AI 误解 null 含义
+                if let Some(ext) = &e.extension {
+                    obj.as_object_mut()
+                        .expect("obj is constructed above as object")
+                        .insert("extension".to_string(), json!(ext));
+                }
+                obj
             })
             .collect();
 
@@ -277,7 +305,7 @@ mod tests {
             serde_json::from_str(&result.output).expect("output should be valid json");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["name"], "a.txt");
-        assert_eq!(entries[0]["isFile"], true);
+        assert_eq!(entries[0]["type"], "file");
         assert_eq!(entries[0]["size"], 11); // "hello world" 的字节数
         assert_eq!(entries[0]["extension"], "txt");
         let modified = entries[0]["modified"]
@@ -373,7 +401,7 @@ mod tests {
             serde_json::from_str(&result.output).expect("output should be valid json");
         // 目录应排在前面，即使名称字母顺序更靠后
         assert_eq!(entries[0]["name"], "zdir");
-        assert_eq!(entries[0]["isDir"], true);
+        assert_eq!(entries[0]["type"], "directory");
         assert_eq!(entries[1]["name"], "afile.txt");
     }
 

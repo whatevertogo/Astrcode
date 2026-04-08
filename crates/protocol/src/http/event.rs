@@ -173,13 +173,10 @@ pub struct ResolvedSubagentContextOverridesDto {
     pub fork_mode: Option<ForkModeDto>,
 }
 
+// TODO: 未来可能需要重新添加 max_steps 和 token_budget 参数来限制子智能体执行
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedExecutionLimitsDto {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_steps: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token_budget: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_tools: Vec<String>,
 }

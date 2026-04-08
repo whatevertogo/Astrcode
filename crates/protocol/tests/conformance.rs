@@ -323,8 +323,6 @@ fn subrun_started_event_envelope_keeps_descriptor_and_tool_call_contract() {
             fork_mode: None,
         },
         resolved_limits: ResolvedExecutionLimitsDto {
-            max_steps: Some(64),
-            token_budget: None,
             allowed_tools: vec!["readFile".to_string(), "grep".to_string()],
         },
     };

@@ -100,8 +100,6 @@ fn resolve_profile_tool_names_rejects_legacy_aliases() {
             system_prompt: None,
             allowed_tools: vec!["Read".to_string()],
             disallowed_tools: vec!["Bash".to_string()],
-            max_steps: None,
-            token_budget: None,
             model_preference: None,
         },
     )
@@ -134,6 +132,92 @@ async fn deferred_executor_fails_before_runtime_binding() {
         .expect_err("unbound executor should fail");
 
     assert!(error.to_string().contains("not bound"));
+}
+
+#[tokio::test]
+async fn scoped_agent_profile_cache_reuses_loaded_registry_until_reload() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(capabilities_from_tools(ToolRegistry::builder().build()))
+            .expect("runtime service should build"),
+    );
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let project_agents_dir = temp_dir.path().join(".astrcode").join("agents");
+    std::fs::create_dir_all(&project_agents_dir).expect("project agents dir should exist");
+    std::fs::write(
+        project_agents_dir.join("review.md"),
+        r#"---
+name: review
+description: 第一版审查员
+tools: [readFile]
+---
+先检查缓存命中。
+"#,
+    )
+    .expect("initial agent definition should be written");
+
+    let _session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("session should be created");
+
+    let first = service
+        .execution()
+        .load_profiles_for_working_dir(temp_dir.path())
+        .await
+        .expect("initial scoped profiles should load");
+    assert_eq!(
+        first
+            .get("review")
+            .expect("review profile should exist")
+            .description,
+        "第一版审查员"
+    );
+
+    std::fs::write(
+        project_agents_dir.join("review.md"),
+        r#"---
+name: review
+description: 第二版审查员
+tools: [readFile, grep]
+---
+缓存失效后应该看到新版。
+"#,
+    )
+    .expect("updated agent definition should be written");
+
+    let cached = service
+        .execution()
+        .load_profiles_for_working_dir(temp_dir.path())
+        .await
+        .expect("cached scoped profiles should load");
+    assert_eq!(
+        cached
+            .get("review")
+            .expect("cached review profile should exist")
+            .description,
+        "第一版审查员"
+    );
+
+    service
+        .reload_agent_profiles_from_disk()
+        .await
+        .expect("agent profile reload should succeed");
+
+    let refreshed = service
+        .execution()
+        .load_profiles_for_working_dir(temp_dir.path())
+        .await
+        .expect("scoped profiles should refresh after reload");
+    let review = refreshed
+        .get("review")
+        .expect("refreshed review profile should exist");
+    assert_eq!(review.description, "第二版审查员");
+    assert_eq!(
+        review.allowed_tools,
+        vec!["readFile".to_string(), "grep".to_string()]
+    );
 }
 
 #[tokio::test]
@@ -422,8 +506,6 @@ async fn get_subrun_status_reconstructs_durable_snapshot_without_live_handle() {
         ..Default::default()
     };
     let limits = ResolvedExecutionLimitsSnapshot {
-        max_steps: Some(4),
-        token_budget: Some(5000),
         allowed_tools: vec!["readFile".to_string()],
     };
     let result = SubRunResult {
@@ -507,8 +589,6 @@ async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
         system_prompt: None,
         allowed_tools: vec!["readFile".to_string()],
         disallowed_tools: Vec::new(),
-        max_steps: Some(5),
-        token_budget: Some(4096),
         model_preference: None,
     };
     let handle = control
@@ -688,8 +768,6 @@ async fn get_subrun_status_rejects_live_handle_from_other_session() {
         system_prompt: None,
         allowed_tools: vec!["readFile".to_string()],
         disallowed_tools: Vec::new(),
-        max_steps: Some(5),
-        token_budget: Some(2048),
         model_preference: None,
     };
     let handle = control
@@ -747,8 +825,6 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
         system_prompt: None,
         allowed_tools: vec!["readFile".to_string()],
         disallowed_tools: Vec::new(),
-        max_steps: Some(5),
-        token_budget: Some(2048),
         model_preference: None,
     };
     let live_handle = control
@@ -864,8 +940,6 @@ async fn get_subrun_status_uses_live_overlay_for_independent_subrun_in_parent_se
         system_prompt: None,
         allowed_tools: vec!["readFile".to_string()],
         disallowed_tools: Vec::new(),
-        max_steps: Some(8),
-        token_budget: Some(4096),
         model_preference: None,
     };
     let control = service.agent_control();

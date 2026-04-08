@@ -335,10 +335,8 @@ impl AgentExecutionServiceHandle {
         &self,
         execution: &SpawnedSubagentExecution,
     ) -> (astrcode_core::Result<TurnOutcome>, ChildExecutionTracker) {
-        let mut tracker = ChildExecutionTracker::new(
-            execution.resolved_limits.max_steps,
-            execution.resolved_limits.token_budget,
-        );
+        // TODO: 未来可能需要从 resolved_limits 中获取 max_steps 和 token_budget
+        let mut tracker = ChildExecutionTracker::new(None, None);
         let outcome = execution
             .child_loop
             .run_turn_with_agent_context_and_owner(

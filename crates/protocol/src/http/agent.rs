@@ -21,10 +21,7 @@ pub struct AgentProfileDto {
     pub allowed_tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disallowed_tools: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_steps: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token_budget: Option<u64>,
+    // TODO: 未来可能需要添加 max_steps 和 token_budget 参数
 }
 
 /// `POST /api/v1/agents/{id}/execute` 请求体。
@@ -36,8 +33,7 @@ pub struct AgentExecuteRequestDto {
     pub context: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_dir: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_steps: Option<u32>,
+    // TODO: 未来可能需要添加 max_steps 参数
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_overrides: Option<SubagentContextOverridesDto>,
 }

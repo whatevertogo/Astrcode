@@ -86,26 +86,26 @@ impl PolicyEngine for SubAgentPolicyEngine {
 /// 子 Agent 执行期间的预算追踪器。
 ///
 /// 为什么通过事件流而不是直接绑在 LLM provider 上：
-/// 因为我们需要的是“整个 child turn 的统一预算”，它既要看 prompt metrics，
+/// 因为我们需要的是”整个 child turn 的统一预算”，它既要看 prompt metrics，
 /// 也要把最终输出内容一并纳入估算，事件流是当前最稳定的聚合边界。
+///
+/// TODO: 未来可能需要重新添加 max_steps 和 token_budget 限制功能
 #[derive(Debug, Clone)]
 pub struct ChildExecutionTracker {
-    max_steps: Option<u32>,
-    token_budget: Option<u64>,
+    // max_steps 和 token_budget 已被移除
     token_limit_hit: bool,
     step_limit_hit: bool,
     /// 已观察到的最大 step index。
-    /// 使用 `max` 而非"最后看到的"语义，因为事件流可能乱序或重放。
+    /// 使用 `max` 而非”最后看到的”语义，因为事件流可能乱序或重放。
     peak_step_index: u32,
     estimated_tokens: u64,
     last_summary: Option<String>,
 }
 
 impl ChildExecutionTracker {
-    pub fn new(max_steps: Option<u32>, token_budget: Option<u64>) -> Self {
+    pub fn new(_max_steps: Option<u32>, _token_budget: Option<u64>) -> Self {
+        // TODO: 未来可能需要使用 max_steps 和 token_budget 参数
         Self {
-            max_steps,
-            token_budget,
             token_limit_hit: false,
             step_limit_hit: false,
             peak_step_index: 0,
@@ -114,7 +114,7 @@ impl ChildExecutionTracker {
         }
     }
 
-    pub fn observe(&mut self, event: &StorageEvent, cancel: &CancelToken) {
+    pub fn observe(&mut self, event: &StorageEvent, _cancel: &CancelToken) {
         match event {
             StorageEvent::PromptMetrics {
                 step_index,
@@ -126,12 +126,7 @@ impl ChildExecutionTracker {
                 self.estimated_tokens = self
                     .estimated_tokens
                     .saturating_add(*estimated_tokens as u64);
-                if let Some(max_steps) = self.max_steps {
-                    if *step_index >= max_steps {
-                        self.step_limit_hit = true;
-                        cancel.cancel();
-                    }
-                }
+                // TODO: 未来可能需要检查 max_steps 限制
             },
             StorageEvent::AssistantFinal {
                 content,
@@ -152,12 +147,7 @@ impl ChildExecutionTracker {
             _ => {},
         }
 
-        if let Some(token_budget) = self.token_budget {
-            if self.estimated_tokens >= token_budget {
-                self.token_limit_hit = true;
-                cancel.cancel();
-            }
-        }
+        // TODO: 未来可能需要检查 token_budget 限制
     }
 
     pub fn token_limit_hit(&self) -> bool {
@@ -178,66 +168,5 @@ impl ChildExecutionTracker {
 
     pub fn step_count(&self) -> u32 {
         self.peak_step_index
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use astrcode_core::{CancelToken, StorageEvent};
-
-    use super::ChildExecutionTracker;
-
-    #[test]
-    fn child_execution_tracker_cancels_when_step_limit_is_hit() {
-        let cancel = CancelToken::new();
-        let mut tracker = ChildExecutionTracker::new(Some(2), None);
-
-        tracker.observe(
-            &StorageEvent::PromptMetrics {
-                turn_id: Some("turn-1".to_string()),
-                agent: Default::default(),
-                step_index: 2,
-                estimated_tokens: 10,
-                context_window: 128_000,
-                effective_window: 100_000,
-                threshold_tokens: 90_000,
-                truncated_tool_results: 0,
-                provider_input_tokens: None,
-                provider_output_tokens: None,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
-            },
-            &cancel,
-        );
-
-        assert!(tracker.step_limit_hit());
-        assert!(cancel.is_cancelled());
-    }
-
-    #[test]
-    fn child_execution_tracker_cancels_when_token_budget_is_hit() {
-        let cancel = CancelToken::new();
-        let mut tracker = ChildExecutionTracker::new(None, Some(8));
-
-        tracker.observe(
-            &StorageEvent::PromptMetrics {
-                turn_id: Some("turn-1".to_string()),
-                agent: Default::default(),
-                step_index: 1,
-                estimated_tokens: 8,
-                context_window: 128_000,
-                effective_window: 100_000,
-                threshold_tokens: 90_000,
-                truncated_tool_results: 0,
-                provider_input_tokens: None,
-                provider_output_tokens: None,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
-            },
-            &cancel,
-        );
-
-        assert!(tracker.token_limit_hit());
-        assert!(cancel.is_cancelled());
     }
 }

@@ -53,7 +53,6 @@ pub(crate) async fn execute_agent(
             agent_id.clone(),
             request.task,
             request.context,
-            request.max_steps,
             from_subagent_context_overrides_dto(request.context_overrides),
             working_dir,
         )

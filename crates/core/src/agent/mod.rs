@@ -300,13 +300,10 @@ impl Default for ResolvedSubagentContextOverrides {
 }
 
 /// 解析后的执行限制快照。
+// TODO: 未来可能需要重新添加 max_steps 和 token_budget 参数来限制子智能体执行
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedExecutionLimitsSnapshot {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_steps: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token_budget: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_tools: Vec<String>,
 }
@@ -348,12 +345,7 @@ pub struct AgentProfile {
     /// 即使当前策略层还未完整消费，也不能在加载阶段静默丢失。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disallowed_tools: Vec<String>,
-    /// 最大 step 数上限。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_steps: Option<u32>,
-    /// token 预算上限。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token_budget: Option<u64>,
+    // TODO: 未来可能需要重新添加 max_steps 和 token_budget 参数来限制子智能体执行
     /// 模型偏好。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_preference: Option<String>,

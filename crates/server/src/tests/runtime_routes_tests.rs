@@ -1185,8 +1185,6 @@ async fn subrun_status_endpoint_reports_live_for_independent_subrun_owned_by_par
         system_prompt: None,
         allowed_tools: vec!["readFile".to_string()],
         disallowed_tools: Vec::new(),
-        max_steps: Some(8),
-        token_budget: Some(4096),
         model_preference: None,
     };
     let control = state.service.agent_control();

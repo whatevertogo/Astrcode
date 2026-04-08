@@ -448,8 +448,7 @@ fn build_agent_profile(
         system_prompt,
         allowed_tools,
         disallowed_tools,
-        max_steps: None,
-        token_budget: None,
+        // TODO: 未来可能需要添加 max_steps 和 token_budget
         // Loader 只消费 Claude 风格 agent 定义里的稳定字段；
         // 模型选择继续交给上层 runtime 配置，避免把私有 frontmatter 扩散成事实标准。
         model_preference: None,
@@ -600,8 +599,6 @@ mod tests {
             system_prompt: None,
             allowed_tools: Vec::new(),
             disallowed_tools: Vec::new(),
-            max_steps: None,
-            token_budget: None,
             model_preference: None,
         });
         registry.insert(AgentProfile {
@@ -612,8 +609,6 @@ mod tests {
             system_prompt: None,
             allowed_tools: Vec::new(),
             disallowed_tools: Vec::new(),
-            max_steps: None,
-            token_budget: None,
             model_preference: None,
         });
         registry.insert(AgentProfile {
@@ -624,8 +619,6 @@ mod tests {
             system_prompt: None,
             allowed_tools: Vec::new(),
             disallowed_tools: Vec::new(),
-            max_steps: None,
-            token_budget: None,
             model_preference: None,
         });
 

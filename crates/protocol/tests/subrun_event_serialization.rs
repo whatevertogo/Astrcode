@@ -34,8 +34,6 @@ fn sub_run_started_serializes_contract_fields_in_camel_case() {
             fork_mode: None,
         },
         resolved_limits: ResolvedExecutionLimitsDto {
-            max_steps: Some(30),
-            token_budget: None,
             allowed_tools: vec!["readFile".to_string(), "grep".to_string()],
         },
     };
@@ -87,8 +85,6 @@ fn sub_run_started_payload_roundtrip() {
             fork_mode: None,
         },
         resolved_limits: ResolvedExecutionLimitsDto {
-            max_steps: Some(50),
-            token_budget: Some(100_000),
             allowed_tools: vec!["readFile".to_string(), "writeFile".to_string()],
         },
     };
@@ -126,8 +122,6 @@ fn sub_run_started_serializes_descriptor_and_tool_call_id_in_camel_case() {
             fork_mode: None,
         },
         resolved_limits: ResolvedExecutionLimitsDto {
-            max_steps: Some(4),
-            token_budget: Some(4000),
             allowed_tools: vec!["readFile".to_string()],
         },
     };
@@ -174,7 +168,6 @@ fn sub_run_started_rejects_snake_case_fields() {
                 "includeParentFindings": false
             },
             "resolved_limits": {
-                "maxSteps": 50,
                 "allowedTools": ["readFile"]
             }
         }
@@ -276,8 +269,6 @@ fn sub_run_started_omits_descriptor_field_when_none() {
             fork_mode: None,
         },
         resolved_limits: ResolvedExecutionLimitsDto {
-            max_steps: Some(10),
-            token_budget: None,
             allowed_tools: vec![],
         },
     };
