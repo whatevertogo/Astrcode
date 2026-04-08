@@ -185,19 +185,26 @@ fn build_system_prompt_blocks(prompt: &PromptPlan) -> Vec<SystemPromptBlock> {
     ordered
         .iter()
         .enumerate()
-        .map(|(index, block)| SystemPromptBlock {
-            title: block.title.clone(),
-            content: block.content.clone(),
-            cache_boundary: ordered
+        .map(|(index, block)| {
+            // 只在层边界标记 cache_boundary：
+            // 1. 下一个 block 属于不同层（层切换点）
+            // 2. 当前是最后一个 block（整个 prompt 结束）
+            let is_layer_boundary = ordered
                 .get(index + 1)
                 .map(|next| next.layer != block.layer)
-                .unwrap_or(true),
-            layer: match block.layer {
-                PromptLayer::Stable => SystemPromptLayer::Stable,
-                PromptLayer::SemiStable => SystemPromptLayer::SemiStable,
-                PromptLayer::Dynamic => SystemPromptLayer::Dynamic,
-                PromptLayer::Unspecified => SystemPromptLayer::Unspecified,
-            },
+                .unwrap_or(true);
+
+            SystemPromptBlock {
+                title: block.title.clone(),
+                content: block.content.clone(),
+                cache_boundary: is_layer_boundary,
+                layer: match block.layer {
+                    PromptLayer::Stable => SystemPromptLayer::Stable,
+                    PromptLayer::SemiStable => SystemPromptLayer::SemiStable,
+                    PromptLayer::Dynamic => SystemPromptLayer::Dynamic,
+                    PromptLayer::Unspecified => SystemPromptLayer::Unspecified,
+                },
+            }
         })
         .collect()
 }
@@ -370,6 +377,127 @@ mod tests {
         assert_eq!(request.system_prompt_blocks.len(), 2);
         assert!(request.system_prompt_blocks[0].cache_boundary);
         assert!(request.system_prompt_blocks[1].cache_boundary);
+    }
+
+    #[test]
+    fn assemble_marks_cache_boundary_only_at_layer_transitions() {
+        let prompt = PromptPlan {
+            system_blocks: vec![
+                astrcode_runtime_prompt::PromptBlock::new(
+                    "stable1",
+                    astrcode_runtime_prompt::BlockKind::Identity,
+                    "Stable 1",
+                    "stable content 1",
+                    100,
+                    astrcode_runtime_prompt::block::BlockMetadata::default(),
+                    0,
+                )
+                .with_layer(astrcode_runtime_prompt::PromptLayer::Stable),
+                astrcode_runtime_prompt::PromptBlock::new(
+                    "stable2",
+                    astrcode_runtime_prompt::BlockKind::Environment,
+                    "Stable 2",
+                    "stable content 2",
+                    200,
+                    astrcode_runtime_prompt::block::BlockMetadata::default(),
+                    1,
+                )
+                .with_layer(astrcode_runtime_prompt::PromptLayer::Stable),
+                astrcode_runtime_prompt::PromptBlock::new(
+                    "stable3",
+                    astrcode_runtime_prompt::BlockKind::UserRules,
+                    "Stable 3",
+                    "stable content 3",
+                    300,
+                    astrcode_runtime_prompt::block::BlockMetadata::default(),
+                    2,
+                )
+                .with_layer(astrcode_runtime_prompt::PromptLayer::Stable),
+                astrcode_runtime_prompt::PromptBlock::new(
+                    "semi1",
+                    astrcode_runtime_prompt::BlockKind::ProjectRules,
+                    "Semi 1",
+                    "semi content 1",
+                    400,
+                    astrcode_runtime_prompt::block::BlockMetadata::default(),
+                    3,
+                )
+                .with_layer(astrcode_runtime_prompt::PromptLayer::SemiStable),
+                astrcode_runtime_prompt::PromptBlock::new(
+                    "semi2",
+                    astrcode_runtime_prompt::BlockKind::ToolGuide,
+                    "Semi 2",
+                    "semi content 2",
+                    500,
+                    astrcode_runtime_prompt::block::BlockMetadata::default(),
+                    4,
+                )
+                .with_layer(astrcode_runtime_prompt::PromptLayer::SemiStable),
+                astrcode_runtime_prompt::PromptBlock::new(
+                    "dynamic1",
+                    astrcode_runtime_prompt::BlockKind::Skill,
+                    "Dynamic 1",
+                    "dynamic content 1",
+                    600,
+                    astrcode_runtime_prompt::block::BlockMetadata::default(),
+                    5,
+                )
+                .with_layer(astrcode_runtime_prompt::PromptLayer::Dynamic),
+            ],
+            ..PromptPlan::default()
+        };
+
+        let request = RequestAssembler
+            .assemble(
+                &prompt,
+                &ContextBundle {
+                    conversation: ConversationView::new(Vec::new()),
+                    workset: Vec::new(),
+                    memory: Vec::new(),
+                    diagnostics: Vec::new(),
+                    budget_state: TokenBudgetState,
+                    truncated_tool_results: 0,
+                    prune_stats: PruneStats::default(),
+                },
+                vec![],
+            )
+            .expect("request should assemble");
+
+        assert_eq!(request.system_prompt_blocks.len(), 6);
+
+        // Stable 层内的前两个 block 不应该有 cache_boundary
+        assert!(
+            !request.system_prompt_blocks[0].cache_boundary,
+            "stable1 should not have cache_boundary"
+        );
+        assert!(
+            !request.system_prompt_blocks[1].cache_boundary,
+            "stable2 should not have cache_boundary"
+        );
+
+        // Stable 层的最后一个 block 应该有 cache_boundary（层切换点）
+        assert!(
+            request.system_prompt_blocks[2].cache_boundary,
+            "stable3 should have cache_boundary (layer transition)"
+        );
+
+        // SemiStable 层的第一个 block 不应该有 cache_boundary
+        assert!(
+            !request.system_prompt_blocks[3].cache_boundary,
+            "semi1 should not have cache_boundary"
+        );
+
+        // SemiStable 层的最后一个 block 应该有 cache_boundary（层切换点）
+        assert!(
+            request.system_prompt_blocks[4].cache_boundary,
+            "semi2 should have cache_boundary (layer transition)"
+        );
+
+        // Dynamic 层的最后一个 block 应该有 cache_boundary（整个 prompt 结束）
+        assert!(
+            request.system_prompt_blocks[5].cache_boundary,
+            "dynamic1 should have cache_boundary (end of prompt)"
+        );
     }
 
     #[test]

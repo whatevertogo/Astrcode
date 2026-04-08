@@ -1308,6 +1308,108 @@ mod tests {
     }
 
     #[test]
+    fn build_request_only_marks_cache_boundaries_at_layer_transitions() {
+        let provider = AnthropicProvider::new(
+            "https://api.anthropic.com/v1/messages".to_string(),
+            "sk-ant-test".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            ModelLimits {
+                context_window: 200_000,
+                max_output_tokens: 8096,
+            },
+        )
+        .expect("provider should build");
+        let request = provider.build_request(
+            &[LlmMessage::User {
+                content: "hi".to_string(),
+                origin: UserMessageOrigin::User,
+            }],
+            &[],
+            Some("ignored fallback"),
+            &[
+                SystemPromptBlock {
+                    title: "Stable 1".to_string(),
+                    content: "stable content 1".to_string(),
+                    cache_boundary: false,
+                    layer: astrcode_core::SystemPromptLayer::Stable,
+                },
+                SystemPromptBlock {
+                    title: "Stable 2".to_string(),
+                    content: "stable content 2".to_string(),
+                    cache_boundary: false,
+                    layer: astrcode_core::SystemPromptLayer::Stable,
+                },
+                SystemPromptBlock {
+                    title: "Stable 3".to_string(),
+                    content: "stable content 3".to_string(),
+                    cache_boundary: true,
+                    layer: astrcode_core::SystemPromptLayer::Stable,
+                },
+                SystemPromptBlock {
+                    title: "Semi 1".to_string(),
+                    content: "semi content 1".to_string(),
+                    cache_boundary: false,
+                    layer: astrcode_core::SystemPromptLayer::SemiStable,
+                },
+                SystemPromptBlock {
+                    title: "Semi 2".to_string(),
+                    content: "semi content 2".to_string(),
+                    cache_boundary: true,
+                    layer: astrcode_core::SystemPromptLayer::SemiStable,
+                },
+                SystemPromptBlock {
+                    title: "Dynamic 1".to_string(),
+                    content: "dynamic content 1".to_string(),
+                    cache_boundary: true,
+                    layer: astrcode_core::SystemPromptLayer::Dynamic,
+                },
+            ],
+            false,
+        );
+        let body = serde_json::to_value(&request).expect("request should serialize");
+
+        assert!(body.get("system").is_some_and(Value::is_array));
+        assert_eq!(body["system"].as_array().unwrap().len(), 6);
+
+        // Stable 层内的前两个 block 不应该有 cache_control
+        assert!(
+            body["system"][0].get("cache_control").is_none(),
+            "stable1 should not have cache_control"
+        );
+        assert!(
+            body["system"][1].get("cache_control").is_none(),
+            "stable2 should not have cache_control"
+        );
+
+        // Stable 层的最后一个 block 应该有 cache_control
+        assert_eq!(
+            body["system"][2]["cache_control"]["type"],
+            json!("ephemeral"),
+            "stable3 should have cache_control"
+        );
+
+        // SemiStable 层的第一个 block 不应该有 cache_control
+        assert!(
+            body["system"][3].get("cache_control").is_none(),
+            "semi1 should not have cache_control"
+        );
+
+        // SemiStable 层的最后一个 block 应该有 cache_control
+        assert_eq!(
+            body["system"][4]["cache_control"]["type"],
+            json!("ephemeral"),
+            "semi2 should have cache_control"
+        );
+
+        // Dynamic 层的最后一个 block 应该有 cache_control
+        assert_eq!(
+            body["system"][5]["cache_control"]["type"],
+            json!("ephemeral"),
+            "dynamic1 should have cache_control"
+        );
+    }
+
+    #[test]
     fn response_to_output_parses_cache_usage_fields() {
         let output = response_to_output(AnthropicResponse {
             content: vec![json!({ "type": "text", "text": "ok" })],

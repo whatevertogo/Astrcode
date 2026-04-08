@@ -87,20 +87,48 @@ impl OpenAiProvider {
 
     /// 构建 OpenAI Chat Completions API 请求体。
     ///
-    /// - 如果存在系统提示，将其作为 `role: "system"` 消息插入到消息列表最前面
+    /// - 如果存在系统提示块，将每个块作为独立的 `role: "system"` 消息插入
+    /// - 如果没有系统提示块但有 system_prompt，使用单一 system 消息
     /// - 将 `LlmMessage` 转换为 OpenAI 格式的消息结构
     /// - 如果启用了工具，附加工具定义和 `tool_choice: "auto"`
-    /// - 对最后 2 条消息启用 prompt caching（KV cache 复用）
+    /// - 对 system 消息的层边界和最后 2 条对话消息启用 prompt caching
     fn build_request<'a>(
         &'a self,
         messages: &'a [LlmMessage],
         tools: &'a [ToolDefinition],
         system_prompt: Option<&'a str>,
+        system_prompt_blocks: &'a [astrcode_core::SystemPromptBlock],
         stream: bool,
     ) -> OpenAiChatRequest<'a> {
-        let mut request_messages =
-            Vec::with_capacity(messages.len() + if system_prompt.is_some() { 1 } else { 0 });
-        if let Some(text) = system_prompt {
+        let system_count = if !system_prompt_blocks.is_empty() {
+            system_prompt_blocks.len()
+        } else if system_prompt.is_some() {
+            1
+        } else {
+            0
+        };
+        let mut request_messages = Vec::with_capacity(messages.len() + system_count);
+
+        // 优先使用 system_prompt_blocks（支持分层缓存）
+        if !system_prompt_blocks.is_empty() {
+            for block in system_prompt_blocks {
+                request_messages.push(OpenAiRequestMessage {
+                    role: "system".to_string(),
+                    content: Some(block.render()),
+                    tool_call_id: None,
+                    tool_calls: None,
+                    // 在层边界标记缓存点，与 Anthropic 保持一致
+                    cache_control: if block.cache_boundary {
+                        Some(OpenAiCacheControl {
+                            type_: "content".to_string(),
+                        })
+                    } else {
+                        None
+                    },
+                });
+            }
+        } else if let Some(text) = system_prompt {
+            // 回退到单一 system prompt（向后兼容）
             request_messages.push(OpenAiRequestMessage {
                 role: "system".to_string(),
                 content: Some(text.to_string()),
@@ -109,10 +137,11 @@ impl OpenAiProvider {
                 cache_control: None,
             });
         }
+
         request_messages.extend(messages.iter().map(to_openai_message));
 
-        // 对最后 2 条消息启用 prompt caching，以便 OpenAI 复用 KV cache
-        // OpenAI 使用 prediction type "content" 来标记可缓存上下文
+        // 对最后 2 条对话消息启用 prompt caching，以便 OpenAI 复用 KV cache
+        // 注意：system 消息的缓存已经在上面通过 cache_boundary 标记了
         enable_message_caching(&mut request_messages, 2);
 
         OpenAiChatRequest {
@@ -205,6 +234,7 @@ impl LlmProvider for OpenAiProvider {
             &request.messages,
             &request.tools,
             request.system_prompt.as_deref(),
+            &request.system_prompt_blocks,
             sink.is_some(),
         );
         let response = self.send_request(&req, cancel.clone()).await?;
@@ -644,6 +674,11 @@ fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
 ///
 /// OpenAI 使用 `prediction: { type: "content" }` 标记可缓存内容，
 /// 而 Anthropic 使用 `cache_control: { type: "ephemeral" }`。
+///
+/// ## 注意
+///
+/// 此函数会跳过已经有 cache_control 的消息（如 system blocks 的层边界），
+/// 避免重复标记。
 fn enable_message_caching(messages: &mut [OpenAiRequestMessage], cache_depth: usize) {
     if messages.is_empty() || cache_depth == 0 {
         return;
@@ -653,9 +688,12 @@ fn enable_message_caching(messages: &mut [OpenAiRequestMessage], cache_depth: us
     let start_idx = messages.len() - cache_count;
 
     for msg in &mut messages[start_idx..] {
-        msg.cache_control = Some(OpenAiCacheControl {
-            type_: "content".to_string(),
-        });
+        // 跳过已经有 cache_control 的消息（如 system blocks 的层边界）
+        if msg.cache_control.is_none() {
+            msg.cache_control = Some(OpenAiCacheControl {
+                type_: "content".to_string(),
+            });
+        }
     }
 }
 
@@ -946,12 +984,75 @@ mod tests {
             content: "hi".to_string(),
             origin: UserMessageOrigin::User,
         }];
-        let request = provider.build_request(&messages, &[], Some("Follow the rules"), false);
+        let request = provider.build_request(&messages, &[], Some("Follow the rules"), &[], false);
 
         assert_eq!(request.messages[0].role, "system");
         assert_eq!(
             request.messages[0].content.as_deref(),
             Some("Follow the rules")
+        );
+    }
+
+    #[test]
+    fn build_request_uses_system_blocks_with_layer_boundaries() {
+        let provider = OpenAiProvider::new(
+            "http://127.0.0.1:12345".to_string(),
+            "sk-test".to_string(),
+            "model-a".to_string(),
+            ModelLimits {
+                context_window: 128_000,
+                max_output_tokens: 2048,
+            },
+        )
+        .expect("provider should build");
+        let messages = [LlmMessage::User {
+            content: "hi".to_string(),
+            origin: UserMessageOrigin::User,
+        }];
+        let system_blocks = vec![
+            astrcode_core::SystemPromptBlock {
+                title: "Stable 1".to_string(),
+                content: "stable content 1".to_string(),
+                cache_boundary: false,
+                layer: astrcode_core::SystemPromptLayer::Stable,
+            },
+            astrcode_core::SystemPromptBlock {
+                title: "Stable 2".to_string(),
+                content: "stable content 2".to_string(),
+                cache_boundary: true,
+                layer: astrcode_core::SystemPromptLayer::Stable,
+            },
+            astrcode_core::SystemPromptBlock {
+                title: "Semi 1".to_string(),
+                content: "semi content 1".to_string(),
+                cache_boundary: true,
+                layer: astrcode_core::SystemPromptLayer::SemiStable,
+            },
+        ];
+        let request = provider.build_request(&messages, &[], None, &system_blocks, false);
+        let body = serde_json::to_value(&request).expect("request should serialize");
+
+        // 应该有 3 个 system 消息 + 1 个 user 消息
+        assert_eq!(request.messages.len(), 4);
+        assert_eq!(request.messages[0].role, "system");
+        assert_eq!(request.messages[1].role, "system");
+        assert_eq!(request.messages[2].role, "system");
+        assert_eq!(request.messages[3].role, "user");
+
+        // 检查缓存边界标记
+        assert!(
+            body["messages"][0].get("cache_control").is_none(),
+            "stable1 should not have cache_control"
+        );
+        assert_eq!(
+            body["messages"][1]["cache_control"]["type"],
+            json!("content"),
+            "stable2 should have cache_control"
+        );
+        assert_eq!(
+            body["messages"][2]["cache_control"]["type"],
+            json!("content"),
+            "semi1 should have cache_control"
         );
     }
 

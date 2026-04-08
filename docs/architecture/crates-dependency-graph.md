@@ -8,10 +8,10 @@
 
 ```mermaid
 graph TD
-  astrcode-core[astrcode-core] --> astrcode-protocol[astrcode-protocol]
+  astrcode-core[astrcode-core]
   astrcode-plugin[astrcode-plugin] --> astrcode-core[astrcode-core]
   astrcode-plugin[astrcode-plugin] --> astrcode-protocol[astrcode-protocol]
-  astrcode-protocol[astrcode-protocol]
+  astrcode-protocol[astrcode-protocol] --> astrcode-core[astrcode-core]
   astrcode-runtime[astrcode-runtime] --> astrcode-core[astrcode-core]
   astrcode-runtime[astrcode-runtime] --> astrcode-plugin[astrcode-plugin]
   astrcode-runtime[astrcode-runtime] --> astrcode-protocol[astrcode-protocol]
@@ -50,15 +50,15 @@ graph TD
   astrcode-runtime-prompt[astrcode-runtime-prompt] --> astrcode-core[astrcode-core]
   astrcode-runtime-registry[astrcode-runtime-registry] --> astrcode-core[astrcode-core]
   astrcode-runtime-session[astrcode-runtime-session] --> astrcode-core[astrcode-core]
-  astrcode-runtime-session[astrcode-runtime-session] --> astrcode-runtime-agent-control[astrcode-runtime-agent-control]
-  astrcode-runtime-session[astrcode-runtime-session] --> astrcode-runtime-agent-loop[astrcode-runtime-agent-loop]
   astrcode-runtime-skill-loader[astrcode-runtime-skill-loader] --> astrcode-core[astrcode-core]
   astrcode-runtime-tool-loader[astrcode-runtime-tool-loader] --> astrcode-core[astrcode-core]
   astrcode-sdk[astrcode-sdk] --> astrcode-protocol[astrcode-protocol]
   astrcode-server[astrcode-server] --> astrcode-core[astrcode-core]
   astrcode-server[astrcode-server] --> astrcode-protocol[astrcode-protocol]
   astrcode-server[astrcode-server] --> astrcode-runtime[astrcode-runtime]
+  astrcode-server[astrcode-server] --> astrcode-runtime-execution[astrcode-runtime-execution]
   astrcode-server[astrcode-server] --> astrcode-runtime-registry[astrcode-runtime-registry]
+  astrcode-server[astrcode-server] --> astrcode-storage[astrcode-storage]
   astrcode-storage[astrcode-storage] --> astrcode-core[astrcode-core]
 ```
 
@@ -66,9 +66,9 @@ graph TD
 
 | Crate | Path | Internal Deps Count | Internal Deps |
 |---|---|---:|---|
-| astrcode-core | crates/core | 1 | astrcode-protocol |
+| astrcode-core | crates/core | 0 | - |
 | astrcode-plugin | crates/plugin | 2 | astrcode-core, astrcode-protocol |
-| astrcode-protocol | crates/protocol | 0 | - |
+| astrcode-protocol | crates/protocol | 1 | astrcode-core |
 | astrcode-runtime | crates/runtime | 16 | astrcode-core, astrcode-plugin, astrcode-protocol, astrcode-runtime-agent-control, astrcode-runtime-agent-loader, astrcode-runtime-agent-loop, astrcode-runtime-agent-tool, astrcode-runtime-config, astrcode-runtime-execution, astrcode-runtime-llm, astrcode-runtime-prompt, astrcode-runtime-registry, astrcode-runtime-session, astrcode-runtime-skill-loader, astrcode-runtime-tool-loader, astrcode-storage |
 | astrcode-runtime-agent-control | crates/runtime-agent-control | 2 | astrcode-core, astrcode-runtime-config |
 | astrcode-runtime-agent-loader | crates/runtime-agent-loader | 1 | astrcode-core |
@@ -79,9 +79,9 @@ graph TD
 | astrcode-runtime-llm | crates/runtime-llm | 1 | astrcode-core |
 | astrcode-runtime-prompt | crates/runtime-prompt | 1 | astrcode-core |
 | astrcode-runtime-registry | crates/runtime-registry | 1 | astrcode-core |
-| astrcode-runtime-session | crates/runtime-session | 3 | astrcode-core, astrcode-runtime-agent-control, astrcode-runtime-agent-loop |
+| astrcode-runtime-session | crates/runtime-session | 1 | astrcode-core |
 | astrcode-runtime-skill-loader | crates/runtime-skill-loader | 1 | astrcode-core |
 | astrcode-runtime-tool-loader | crates/runtime-tool-loader | 1 | astrcode-core |
 | astrcode-sdk | crates/sdk | 1 | astrcode-protocol |
-| astrcode-server | crates/server | 4 | astrcode-core, astrcode-protocol, astrcode-runtime, astrcode-runtime-registry |
+| astrcode-server | crates/server | 6 | astrcode-core, astrcode-protocol, astrcode-runtime, astrcode-runtime-execution, astrcode-runtime-registry, astrcode-storage |
 | astrcode-storage | crates/storage | 1 | astrcode-core |
