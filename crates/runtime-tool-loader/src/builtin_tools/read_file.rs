@@ -35,6 +35,28 @@ const BINARY_DETECT_SAMPLE_SIZE: usize = 8192;
 /// 图片文件最大大小（20MB），超过此大小的图片拒绝读取。
 const MAX_IMAGE_SIZE: usize = 20 * 1024 * 1024;
 
+/// 被阻止的设备文件路径。
+///
+/// 这些设备文件会导致进程挂起或产生无限输出，必须拒绝读取。
+const BLOCKED_DEVICE_PATHS: &[&str] = &[
+    // 无限输出设备 - 永远不会到达 EOF
+    "/dev/zero",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/full",
+    // 阻塞输入设备 - 等待用户输入
+    "/dev/stdin",
+    "/dev/tty",
+    "/dev/console",
+    // 无意义的输出设备
+    "/dev/stdout",
+    "/dev/stderr",
+    // fd 别名
+    "/dev/fd/0",
+    "/dev/fd/1",
+    "/dev/fd/2",
+];
+
 /// 支持的图片扩展名及其 MIME 类型。
 ///
 /// 注意：`svg` 故意不走图片 base64 分支，而是走文本读取分支。
@@ -85,6 +107,29 @@ fn get_image_mime_type(path: &std::path::Path) -> Option<&'static str> {
 /// 检查文件是否为图片。
 fn is_image_file(path: &std::path::Path) -> bool {
     get_image_mime_type(path).is_some()
+}
+
+/// 检查路径是否为被阻止的设备文件。
+///
+/// 设备文件可能导致进程挂起（如 /dev/zero 无限输出）或阻塞等待输入（如 /dev/stdin）。
+fn is_blocked_device_path(path: &std::path::Path) -> bool {
+    let path_str = path.to_string_lossy();
+
+    // 直接匹配黑名单
+    if BLOCKED_DEVICE_PATHS.iter().any(|&p| path_str == p) {
+        return true;
+    }
+
+    // /proc/self/fd/0-2 和 /proc/<pid>/fd/0-2 是 Linux 上 stdio 的别名
+    if path_str.starts_with("/proc/")
+        && (path_str.ends_with("/fd/0")
+            || path_str.ends_with("/fd/1")
+            || path_str.ends_with("/fd/2"))
+    {
+        return true;
+    }
+
+    false
 }
 
 /// 读取图片文件并返回 base64 编码。
@@ -235,6 +280,27 @@ impl Tool for ReadFileTool {
             .map_err(|e| AstrError::parse("invalid args for readFile", e))?;
         let started_at = Instant::now();
         let path = resolve_read_path(ctx, &args.path)?;
+
+        // 设备文件检查：防止读取会导致进程挂起或阻塞的设备文件
+        if is_blocked_device_path(&path) {
+            return Ok(ToolExecutionResult {
+                tool_call_id,
+                tool_name: "readFile".to_string(),
+                ok: false,
+                output: String::new(),
+                error: Some(format!(
+                    "reading from device files is not supported (path: '{}'). Device files like \
+                     /dev/zero, /dev/random, or /dev/stdin can cause the process to hang or block.",
+                    path.display()
+                )),
+                metadata: Some(json!({
+                    "path": path.to_string_lossy(),
+                    "deviceFile": true,
+                })),
+                duration_ms: started_at.elapsed().as_millis() as u64,
+                truncated: false,
+            });
+        }
 
         // 图片文件处理：返回 base64 编码
         if is_image_file(&path) {
@@ -679,6 +745,62 @@ mod tests {
 
         assert!(!result.ok);
         assert!(result.error.unwrap_or_default().contains("binary"));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn read_file_rejects_dev_zero() {
+        let tool = ReadFileTool;
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let result = tool
+            .execute(
+                "tc-dev-zero".to_string(),
+                json!({ "path": "/dev/zero" }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("readFile should succeed");
+
+        assert!(!result.ok);
+        let error = result.error.unwrap_or_default();
+        assert!(error.contains("device files"));
+        assert!(result.metadata.unwrap()["deviceFile"] == json!(true));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn read_file_rejects_dev_stdin() {
+        let tool = ReadFileTool;
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let result = tool
+            .execute(
+                "tc-dev-stdin".to_string(),
+                json!({ "path": "/dev/stdin" }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("readFile should succeed");
+
+        assert!(!result.ok);
+        assert!(result.error.unwrap_or_default().contains("device files"));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn read_file_rejects_proc_fd() {
+        let tool = ReadFileTool;
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let result = tool
+            .execute(
+                "tc-proc-fd".to_string(),
+                json!({ "path": "/proc/self/fd/0" }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("readFile should succeed");
+
+        assert!(!result.ok);
+        assert!(result.error.unwrap_or_default().contains("device files"));
     }
 
     #[tokio::test]

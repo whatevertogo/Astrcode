@@ -33,9 +33,17 @@ use serde_json::json;
 
 use crate::builtin_tools::fs_common::{
     build_text_change_report, capture_file_observation, check_cancel, file_observation_matches,
-    load_file_observation, read_utf8_file, remember_file_observation, resolve_path,
-    write_text_file,
+    is_symlink, is_unc_path, load_file_observation, read_utf8_file, remember_file_observation,
+    resolve_path, write_text_file,
 };
+
+/// 可编辑文件的最大大小（1 GiB）。
+///
+/// V8/Bun 字符串长度限制约为 2^30 字符（~10 亿）。对于典型的 ASCII/Latin-1 文件，
+/// 1 字节 = 1 字符，因此 1 GiB 磁盘字节 ≈ 10 亿字符 ≈ 运行时字符串限制。
+/// 多字节 UTF-8 文件每字符可能占用更多磁盘空间，但 1 GiB 是一个安全的字节级保护，
+/// 可以防止 OOM 而不会过度限制。
+const MAX_EDIT_FILE_SIZE: u64 = 1024 * 1024 * 1024; // 1 GiB
 
 /// EditFile 工具实现。
 ///
@@ -68,6 +76,25 @@ struct EditFileArgs {
     /// 批量编辑：多个 oldText/newText 对，按顺序应用。
     #[serde(default)]
     edits: Option<Vec<EditOperation>>,
+}
+
+/// 将智能引号规范化为 ASCII 引号。
+///
+/// LLM 有时会生成智能引号（如 `""`、`''`），导致与代码中的 ASCII 引号不匹配。
+/// 此函数将常见的智能引号字符替换为标准 ASCII 引号。
+///
+/// ## 替换规则
+///
+/// - `"` (U+201C) → `"` (U+0022)
+/// - `"` (U+201D) → `"` (U+0022)
+/// - `'` (U+2018) → `'` (U+0027)
+/// - `'` (U+2019) → `'` (U+0027)
+#[allow(clippy::collapsible_str_replace)]
+fn normalize_quotes(s: &str) -> String {
+    s.replace('\u{201C}', "\"")
+        .replace('\u{201D}', "\"")
+        .replace('\u{2018}', "'")
+        .replace('\u{2019}', "'")
 }
 
 /// 在 haystack 中查找 needle 的唯一出现位置。
@@ -235,12 +262,94 @@ impl Tool for EditFileTool {
             },
         };
 
+        // 引号规范化：将智能引号转换为 ASCII 引号
+        let edits: Vec<EditOperation> = edits
+            .into_iter()
+            .map(|edit| EditOperation {
+                old_text: normalize_quotes(&edit.old_text),
+                new_text: normalize_quotes(&edit.new_text),
+            })
+            .collect();
+
         let started_at = Instant::now();
         let path = resolve_path(ctx, &args.path)?;
+
+        // UNC 路径检查：防止 Windows NTLM 凭据泄露
+        if is_unc_path(&path) {
+            return Ok(ToolExecutionResult {
+                tool_call_id,
+                tool_name: "editFile".to_string(),
+                ok: false,
+                output: String::new(),
+                error: Some(format!(
+                    "UNC paths are not supported for security reasons (potential NTLM credential \
+                     leak on Windows). Path: '{}'",
+                    path.display()
+                )),
+                metadata: Some(json!({
+                    "path": path.to_string_lossy(),
+                    "uncPath": true,
+                })),
+                duration_ms: started_at.elapsed().as_millis() as u64,
+                truncated: false,
+            });
+        }
+
+        // 符号链接检查：防止绕过路径沙箱
+        if is_symlink(&path)? {
+            return Ok(ToolExecutionResult {
+                tool_call_id,
+                tool_name: "editFile".to_string(),
+                ok: false,
+                output: String::new(),
+                error: Some(format!(
+                    "refusing to edit symlink '{}' (symlinks may point outside working directory)",
+                    path.display()
+                )),
+                metadata: Some(json!({
+                    "path": path.to_string_lossy(),
+                    "isSymlink": true,
+                })),
+                duration_ms: started_at.elapsed().as_millis() as u64,
+                truncated: false,
+            });
+        }
+
         if let Some(stale_result) = stale_file_guard_result(ctx, &path, &tool_call_id, started_at)?
         {
             return Ok(stale_result);
         }
+
+        // 文件大小检查：防止编辑超大文件导致 OOM
+        if path.exists() {
+            let metadata = std::fs::metadata(&path).map_err(|e| {
+                AstrError::io(
+                    format!("failed reading metadata for '{}'", path.display()),
+                    e,
+                )
+            })?;
+            if metadata.len() > MAX_EDIT_FILE_SIZE {
+                return Ok(ToolExecutionResult {
+                    tool_call_id,
+                    tool_name: "editFile".to_string(),
+                    ok: false,
+                    output: String::new(),
+                    error: Some(format!(
+                        "file too large to edit ({} bytes), maximum is {} bytes (1 GiB)",
+                        metadata.len(),
+                        MAX_EDIT_FILE_SIZE
+                    )),
+                    metadata: Some(json!({
+                        "path": path.to_string_lossy(),
+                        "bytes": metadata.len(),
+                        "tooLarge": true,
+                    })),
+                    duration_ms: started_at.elapsed().as_millis() as u64,
+                    truncated: false,
+                });
+            }
+        }
+
         let original_content = read_utf8_file(&path).await?;
         check_cancel(ctx.cancel())?;
 

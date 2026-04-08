@@ -141,7 +141,9 @@ impl Tool for FindFilesTool {
             Some(root) => resolve_path(ctx, &root)?,
             None => resolve_path(ctx, Path::new("."))?,
         };
-        let max_results = args.max_results.unwrap_or(200);
+        // Fixme:500 可能需要调整默认值，或者完全去掉默认值，强制用户指定 maxResults
+        // 来避免误用导致性能问题
+        let max_results = args.max_results.unwrap_or(500);
 
         // 构建 globset 匹配器
         let glob_matcher = build_glob_matcher(&args.pattern)?;

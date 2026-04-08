@@ -39,6 +39,44 @@ pub fn check_cancel(cancel: &CancelToken) -> Result<()> {
     Ok(())
 }
 
+/// 检查路径是否为 UNC 路径（Windows 网络路径）。
+///
+/// UNC 路径（如 `\\server\share\file.txt`）会触发 SMB 认证，
+/// 可能导致 NTLM 凭据泄露到恶意服务器。
+///
+/// ## 安全风险
+///
+/// 在 Windows 上，访问 UNC 路径会自动触发 SMB 认证，
+/// 如果路径指向恶意服务器（如 `\\evil.com\share\file.txt`），
+/// 可能导致 NTLM 凭据泄露。
+pub fn is_unc_path(path: &Path) -> bool {
+    let path_str = path.to_string_lossy();
+    path_str.starts_with("\\\\") || path_str.starts_with("//")
+}
+
+/// 检查路径是否为符号链接。
+///
+/// ## 安全考虑
+///
+/// 符号链接可能指向工作目录外的敏感文件（如 `/etc/passwd`），
+/// 绕过路径沙箱检查。在写入操作前检测符号链接可以防止此类攻击。
+///
+/// ## 返回值
+///
+/// - `Ok(true)`: 路径是符号链接
+/// - `Ok(false)`: 路径不是符号链接（普通文件/目录/不存在）
+/// - `Err(_)`: 无法读取元数据（权限问题等）
+pub fn is_symlink(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.file_type().is_symlink()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(AstrError::io(
+            format!("failed to check if path is symlink: '{}'", path.display()),
+            e,
+        )),
+    }
+}
+
 /// 将路径解析为工作目录内的绝对路径，拒绝逃逸路径。
 ///
 /// **为什么使用 `resolve_for_boundary_check` 而非 `fs::canonicalize`**:

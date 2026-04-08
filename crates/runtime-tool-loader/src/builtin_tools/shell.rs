@@ -62,7 +62,7 @@ struct ShellArgs {
     /// 覆盖默认 shell。
     #[serde(default)]
     shell: Option<String>,
-    /// 超时参数（秒），默认 120，上限 600。
+    /// 超时参数（秒），默认 120，上限 300。
     #[serde(default)]
     timeout: Option<u64>,
 }

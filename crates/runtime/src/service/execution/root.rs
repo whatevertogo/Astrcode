@@ -40,13 +40,13 @@ pub struct ToolSummary {
 /// Agent 执行服务句柄。
 #[derive(Clone)]
 pub struct AgentExecutionServiceHandle {
-    pub(super) runtime: Arc<RuntimeService>,
+    pub(crate) runtime: Arc<RuntimeService>,
 }
 
 /// Tool 执行服务句柄。
 #[derive(Clone)]
 pub struct ToolExecutionServiceHandle {
-    pub(super) runtime: Arc<RuntimeService>,
+    pub(crate) runtime: Arc<RuntimeService>,
 }
 
 impl AgentExecutionServiceHandle {

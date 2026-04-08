@@ -26,7 +26,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::builtin_tools::fs_common::{
-    build_text_change_report, check_cancel, read_utf8_file, resolve_path, write_text_file,
+    build_text_change_report, check_cancel, is_symlink, is_unc_path, read_utf8_file, resolve_path,
+    write_text_file,
 };
 
 /// ApplyPatch 工具实现。
@@ -510,6 +511,36 @@ async fn apply_file_patch(file_patch: &FilePatch, ctx: &ToolContext) -> FileChan
             };
         },
     };
+
+    // UNC 路径检查：防止 Windows NTLM 凭据泄露
+    if is_unc_path(&target_path) {
+        return FileChange {
+            change_type: change_type.into(),
+            path: target_path_str.clone(),
+            applied: false,
+            summary: format!(
+                "UNC paths are not supported for security reasons: '{}'",
+                target_path.display()
+            ),
+            error: Some(
+                "UNC paths are not supported (potential NTLM credential leak on Windows)".into(),
+            ),
+        };
+    }
+
+    // 符号链接检查：防止绕过路径沙箱
+    if let Ok(true) = is_symlink(&target_path) {
+        return FileChange {
+            change_type: change_type.into(),
+            path: target_path_str.clone(),
+            applied: false,
+            summary: format!(
+                "refusing to patch symlink '{}' (symlinks may point outside working directory)",
+                target_path.display()
+            ),
+            error: Some("refusing to patch symlink (may point outside working directory)".into()),
+        };
+    }
 
     let original_content = if target_path.exists() {
         match read_utf8_file(&target_path).await {

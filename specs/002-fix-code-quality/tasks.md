@@ -232,19 +232,19 @@
 - [x] T077 DONE
 - [x] T078 DONE
 - [x] T079 DONE
-- [ ] T080 [US7] Create `crates/runtime/src/service/turn/submit.rs` and move turn submission logic from `service/mod.rs`
-- [ ] T081 [US7] Create `crates/runtime/src/service/turn/interrupt.rs` and move turn interrupt logic from `service/mod.rs`
-- [ ] T082 [US7] Create `crates/runtime/src/service/turn/replay.rs` and move history replay logic from `service/mod.rs`
-- [ ] T083 [US7] Update `crates/runtime/src/service/mod.rs` to re-export all submodules and keep only facade logic (≤800 lines)
+- [x] T080 DONE
+- [x] T081 DONE
+- [x] T082 DONE
+- [x] T083 DONE
 
 ### Phase 8.2: Split execution/mod.rs
 
-- [ ] T084 [US7] Create `crates/runtime/src/service/execution/root.rs` (if not exists) and move root execution logic from `execution/mod.rs`
-- [ ] T085 [US7] Create `crates/runtime/src/service/execution/subagent.rs` (if not exists) and move subagent execution logic from `execution/mod.rs`
-- [ ] T086 [US7] Create `crates/runtime/src/service/execution/status.rs` and move status query logic from `execution/mod.rs`
-- [ ] T087 [US7] Create `crates/runtime/src/service/execution/cancel.rs` and move cancel control logic from `execution/mod.rs`
-- [ ] T088 [US7] Create `crates/runtime/src/service/execution/context.rs` and move execution context logic from `execution/mod.rs`
-- [ ] T089 [US7] Update `crates/runtime/src/service/execution/mod.rs` to re-export all submodules and keep only facade logic (≤800 lines)
+- [x] T084 DONE
+- [x] T085 DONE
+- [x] T086 DONE
+- [x] T087 DONE
+- [x] T088 DONE
+- [x] T089 DONE
 
 ### Phase 8.3: Validation
 
@@ -291,12 +291,12 @@
 
 **Purpose**: Final validation and documentation sync
 
-- [ ] T105 [P] Run complete validation script from `quickstart.md` (all US1-US8 validation commands)
-- [ ] T106 [P] Run `cargo fmt --all -- --check` and verify formatting
-- [ ] T107 [P] Run `cargo clippy --all-targets --all-features -- -D warnings` and verify no warnings
-- [ ] T108 [P] Run `cargo test --workspace --exclude astrcode` and verify all tests pass
-- [ ] T109 [P] Run frontend validation: `cd frontend && npm run typecheck`
-- [ ] T110 Update `CODE_QUALITY_ISSUES.md` to mark all issues as resolved
+- [x] T105 DONE
+- [x] T106 DONE
+- [x] T107 DONE
+- [x] T108 DONE
+- [x] T109 DONE
+- [x] T110 DONE
 
 ---
 

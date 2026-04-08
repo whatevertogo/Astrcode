@@ -19,8 +19,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::builtin_tools::fs_common::{
-    TextChangeReport, build_text_change_report, check_cancel, read_utf8_file, resolve_path,
-    write_text_file,
+    TextChangeReport, build_text_change_report, check_cancel, is_symlink, is_unc_path,
+    read_utf8_file, resolve_path, write_text_file,
 };
 
 /// WriteFile 工具实现。
@@ -108,6 +108,49 @@ impl Tool for WriteFileTool {
             .map_err(|e| AstrError::parse("invalid args for writeFile", e))?;
         let started_at = Instant::now();
         let path = resolve_path(ctx, &args.path)?;
+
+        // UNC 路径检查：防止 Windows NTLM 凭据泄露
+        if is_unc_path(&path) {
+            return Ok(ToolExecutionResult {
+                tool_call_id,
+                tool_name: "writeFile".to_string(),
+                ok: false,
+                output: String::new(),
+                error: Some(format!(
+                    "UNC paths are not supported for security reasons (potential NTLM credential \
+                     leak on Windows). Path: '{}'",
+                    path.display()
+                )),
+                metadata: Some(json!({
+                    "path": path.to_string_lossy(),
+                    "uncPath": true,
+                })),
+                duration_ms: started_at.elapsed().as_millis() as u64,
+                truncated: false,
+            });
+        }
+
+        // 符号链接检查：防止绕过路径沙箱
+        if is_symlink(&path)? {
+            return Ok(ToolExecutionResult {
+                tool_call_id,
+                tool_name: "writeFile".to_string(),
+                ok: false,
+                output: String::new(),
+                error: Some(format!(
+                    "refusing to write to symlink '{}' (symlinks may point outside working \
+                     directory)",
+                    path.display()
+                )),
+                metadata: Some(json!({
+                    "path": path.to_string_lossy(),
+                    "isSymlink": true,
+                })),
+                duration_ms: started_at.elapsed().as_millis() as u64,
+                truncated: false,
+            });
+        }
+
         let file_existed = path.exists();
         let existing_content = if file_existed {
             match read_utf8_file(&path).await {

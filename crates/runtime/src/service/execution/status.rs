@@ -1,8 +1,10 @@
+//! Sub-run 状态查询：从 live handle 或 durable 事件中解析状态快照。
+
 use std::sync::Arc;
 
 use astrcode_runtime_execution::{
-    CancelSubRunResolution, ParsedSubRunStatus, ParsedSubRunStatusSource,
-    find_subrun_status_in_events, resolve_cancel_subrun_resolution, resolve_subrun_status_snapshot,
+    ParsedSubRunStatus, ParsedSubRunStatusSource, find_subrun_status_in_events,
+    resolve_subrun_status_snapshot,
 };
 use astrcode_runtime_session::normalize_session_id;
 
@@ -10,6 +12,7 @@ use super::root::AgentExecutionServiceHandle;
 use crate::service::{ServiceError, ServiceResult, SubRunStatusSnapshot, SubRunStatusSource};
 
 impl AgentExecutionServiceHandle {
+    /// 查询指定 sub-run 的状态快照。
     pub async fn get_subrun_status(
         &self,
         session_id: &str,
@@ -35,39 +38,6 @@ impl AgentExecutionServiceHandle {
             )));
         };
         Ok(to_service_subrun_snapshot(snapshot))
-    }
-
-    pub async fn cancel_subrun(&self, session_id: &str, sub_run_id: &str) -> ServiceResult<()> {
-        let session_id = normalize_session_id(session_id);
-        let live_handle = self.runtime.agent_control.get(sub_run_id).await;
-
-        let events = crate::service::session::load_events(
-            Arc::clone(&self.runtime.session_manager),
-            &session_id,
-        )
-        .await?;
-        let durable_snapshot = find_subrun_status_in_events(&events, &session_id, sub_run_id);
-
-        match resolve_cancel_subrun_resolution(
-            &session_id,
-            live_handle.as_ref(),
-            durable_snapshot.as_ref(),
-            normalize_session_id,
-        ) {
-            CancelSubRunResolution::CancelLive => {
-                // 故意忽略：取消子运行时失败不应阻断状态更新
-                let _ = self.runtime.agent_control.cancel(sub_run_id).await;
-                Ok(())
-            },
-            CancelSubRunResolution::AlreadyFinalized => {
-                // 已经结束的子会话视为幂等取消成功，避免前端在状态边缘切换时收到无意义错误。
-                Ok(())
-            },
-            CancelSubRunResolution::Missing => Err(ServiceError::NotFound(format!(
-                "sub-run '{}' was not found in session '{}'",
-                sub_run_id, session_id
-            ))),
-        }
     }
 }
 
