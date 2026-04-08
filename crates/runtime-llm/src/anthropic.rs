@@ -27,7 +27,7 @@ use std::fmt;
 
 use astrcode_core::{
     AstrError, CancelToken, LlmMessage, ReasoningContent, Result, SystemPromptBlock,
-    ToolCallRequest, ToolDefinition,
+    SystemPromptLayer, ToolCallRequest, ToolDefinition,
 };
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -112,8 +112,8 @@ impl AnthropicProvider {
         stream: bool,
     ) -> AnthropicRequest {
         let mut anthropic_messages = to_anthropic_messages(messages);
-        // 预留大部分 breakpoint 给 system 分层前缀；对消息尾部只保留最后 1 个。
-        enable_message_caching(&mut anthropic_messages, 1);
+        // 增加消息缓存深度到 3 条，提高长对话的缓存命中率
+        enable_message_caching(&mut anthropic_messages, 3);
 
         AnthropicRequest {
             model: self.model.clone(),
@@ -454,10 +454,21 @@ fn enable_message_caching(messages: &mut [AnthropicMessage], cache_depth: usize)
 fn to_anthropic_tools(tools: &[ToolDefinition]) -> Vec<AnthropicTool> {
     tools
         .iter()
-        .map(|tool| AnthropicTool {
-            name: tool.name.clone(),
-            description: tool.description.clone(),
-            input_schema: tool.parameters.clone(),
+        .enumerate()
+        .map(|(index, tool)| {
+            // 只在最后一个工具上标记缓存，减少缓存边界数量
+            let cache_control = if index == tools.len() - 1 {
+                Some(AnthropicCacheControl::ephemeral())
+            } else {
+                None
+            };
+
+            AnthropicTool {
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                input_schema: tool.parameters.clone(),
+                cache_control,
+            }
         })
         .collect()
 }
@@ -470,14 +481,35 @@ fn to_anthropic_system(
         return Some(AnthropicSystemPrompt::Blocks(
             system_prompt_blocks
                 .iter()
-                .map(|block| AnthropicSystemBlock {
-                    type_: "text".to_string(),
-                    text: block.render(),
-                    cache_control: if block.cache_boundary {
-                        Some(AnthropicCacheControl::ephemeral())
+                .map(|block| {
+                    // 根据层级选择缓存策略
+                    let cache_control = if block.cache_boundary {
+                        match block.layer {
+                            SystemPromptLayer::Stable => {
+                                // Stable 层使用 1h TTL，减少过期失效
+                                Some(AnthropicCacheControl::with_ttl("1h"))
+                            },
+                            SystemPromptLayer::SemiStable => {
+                                // SemiStable 层使用默认 5m TTL
+                                Some(AnthropicCacheControl::ephemeral())
+                            },
+                            SystemPromptLayer::Dynamic => {
+                                // Dynamic 层不缓存，避免浪费
+                                None
+                            },
+                            SystemPromptLayer::Unspecified => {
+                                Some(AnthropicCacheControl::ephemeral())
+                            },
+                        }
                     } else {
                         None
-                    },
+                    };
+
+                    AnthropicSystemBlock {
+                        type_: "text".to_string(),
+                        text: block.render(),
+                        cache_control,
+                    }
                 })
                 .collect(),
         ));
@@ -1005,10 +1037,20 @@ enum AnthropicContentBlock {
 ///
 /// `type: "ephemeral"` 告诉 Anthropic 后端该块可作为缓存前缀的一部分。
 /// 缓存是临时的（ephemeral），不保证长期有效，但在短时间内重复请求可以显著减少延迟。
+///
+/// 支持可选的 `scope` 和 `ttl` 字段：
+/// - `scope`: "global" | "org" - 缓存作用域
+/// - `ttl`: "5m" | "1h" - 缓存生存时间
 #[derive(Debug, Clone, Serialize)]
 struct AnthropicCacheControl {
     #[serde(rename = "type")]
     type_: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ttl: Option<String>,
 }
 
 impl AnthropicCacheControl {
@@ -1016,6 +1058,37 @@ impl AnthropicCacheControl {
     fn ephemeral() -> Self {
         Self {
             type_: "ephemeral".to_string(),
+            scope: None,
+            ttl: None,
+        }
+    }
+
+    /// 创建带 TTL 的缓存控制标记。
+    fn with_ttl(ttl: &str) -> Self {
+        Self {
+            type_: "ephemeral".to_string(),
+            scope: None,
+            ttl: Some(ttl.to_string()),
+        }
+    }
+
+    /// 创建带 scope 的缓存控制标记。
+    #[allow(dead_code)]
+    fn with_scope(scope: &str) -> Self {
+        Self {
+            type_: "ephemeral".to_string(),
+            scope: Some(scope.to_string()),
+            ttl: None,
+        }
+    }
+
+    /// 创建带 scope 和 TTL 的缓存控制标记。
+    #[allow(dead_code)]
+    fn with_scope_and_ttl(scope: &str, ttl: &str) -> Self {
+        Self {
+            type_: "ephemeral".to_string(),
+            scope: Some(scope.to_string()),
+            ttl: Some(ttl.to_string()),
         }
     }
 }
@@ -1049,6 +1122,9 @@ struct AnthropicTool {
     name: String,
     description: String,
     input_schema: Value,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<AnthropicCacheControl>,
 }
 
 /// Anthropic Messages API 非流式响应体。
@@ -1490,11 +1566,11 @@ mod tests {
             "semi2 should have cache_control"
         );
 
-        // Dynamic 层的最后一个 block 应该有 cache_control
-        assert_eq!(
-            body["system"][5]["cache_control"]["type"],
-            json!("ephemeral"),
-            "dynamic1 should have cache_control"
+        // Dynamic 层不缓存（避免浪费，因为内容变化频繁）
+        // TODO: 更好的做法？实现更好的kv缓存？
+        assert!(
+            body["system"][5].get("cache_control").is_none(),
+            "dynamic1 should not have cache_control (Dynamic layer is not cached)"
         );
     }
 
