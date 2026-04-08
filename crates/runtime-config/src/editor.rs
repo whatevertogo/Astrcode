@@ -14,6 +14,7 @@ use crate::loader::{config_path, load_config};
 /// 先执行一次 `load_config()` 确保配置文件已初始化（首次启动时会自动创建），
 /// 然后使用平台相关的命令打开文件。
 pub fn open_config_in_editor() -> Result<()> {
+    // 故意忽略：仅需确保配置文件已初始化，不使用返回值
     let _ = load_config()?;
     let path = config_path()?;
     let open_command = platform_open_command(std::env::consts::OS, &path)?;

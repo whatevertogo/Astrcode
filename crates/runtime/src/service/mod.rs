@@ -4,7 +4,7 @@
 
 use std::{
     path::PathBuf,
-    sync::{Arc, RwLock as StdRwLock, atomic::AtomicBool},
+    sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock, atomic::AtomicBool},
 };
 
 use astrcode_core::{
@@ -167,6 +167,14 @@ pub struct RuntimeService {
     config_watch_started: AtomicBool,
     /// 防止重复启动 agent watcher。
     agent_watch_started: AtomicBool,
+    /// 配置热重载 watcher 的 JoinHandle，shutdown 时 abort。
+    config_watch_handle: StdMutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Agent 定义热重载 watcher 的 JoinHandle，shutdown 时 abort。
+    agent_watch_handle: StdMutex<Option<tokio::task::JoinHandle<()>>>,
+    /// 活跃的子 Agent 后台执行任务的 JoinHandle，shutdown 时批量 abort。
+    active_subagent_handles: StdMutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// 活跃的 turn 执行任务的 JoinHandle，shutdown 时批量 abort。
+    active_turn_handles: StdMutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl RuntimeService {
@@ -296,6 +304,10 @@ impl RuntimeService {
             rebuild_lock: Mutex::new(()),
             config_watch_started: AtomicBool::new(false),
             agent_watch_started: AtomicBool::new(false),
+            config_watch_handle: StdMutex::new(None),
+            agent_watch_handle: StdMutex::new(None),
+            active_subagent_handles: StdMutex::new(Vec::new()),
+            active_turn_handles: StdMutex::new(Vec::new()),
         })
     }
 
@@ -406,6 +418,7 @@ impl RuntimeService {
     }
 
     pub(super) fn emit_session_catalog_event(&self, event: SessionCatalogEvent) {
+        // 故意忽略：通道关闭表示服务已关闭，无需处理
         let _ = self.session_catalog_events.send(event);
     }
 
@@ -415,6 +428,31 @@ impl RuntimeService {
     /// 3. Returns when all sessions are idle or timeout elapsed
     pub async fn shutdown(&self, timeout_secs: u64) {
         log::info!("Initiating graceful shutdown...");
+
+        // 中止后台 watcher 任务
+        watch_manager::WatchManager::shutdown(self);
+
+        // 中止所有活跃的子 Agent 后台执行任务
+        let subagent_handles = std::mem::take(
+            &mut *self
+                .active_subagent_handles
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        for handle in subagent_handles {
+            handle.abort();
+        }
+
+        // 中止所有活跃的 turn 执行任务
+        let turn_handles = std::mem::take(
+            &mut *self
+                .active_turn_handles
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        for handle in turn_handles {
+            handle.abort();
+        }
 
         // Signal shutdown to all handlers
         self.shutdown_token.cancel();
@@ -429,9 +467,10 @@ impl RuntimeService {
                 let active_turn_id = session
                     .active_turn_id
                     .lock()
-                    .ok()
+                    .ok() // 故意忽略：mutex 中毒表示关闭期竞争，安全地跳过
                     .and_then(|guard| guard.clone());
                 if let Some(active_turn_id) = active_turn_id {
+                    // 故意忽略：取消子运行时失败不应阻断关闭流程
                     let _ = self
                         .agent_control
                         .cancel_for_parent_turn(&active_turn_id)

@@ -218,7 +218,7 @@ async fn main() -> AnyhowResult<()> {
             .to_ready_line()
             .map_err(|error| anyhow!("failed to encode sidecar ready payload: {error}"))?
     );
-    println!(
+    log::info!(
         "Ready: http://localhost:{}/ (API routes live under /api)",
         address.port()
     );

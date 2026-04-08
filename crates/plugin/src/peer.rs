@@ -297,7 +297,11 @@ impl Peer {
         // Using std::sync::Mutex is safe here: the write happens synchronously
         // during Peer::new, and abort() reads it from an async context with
         // negligible contention.
-        *self.inner.read_loop_handle.lock().unwrap() = Some(handle);
+        astrcode_core::support::with_lock_recovery(
+            &self.inner.read_loop_handle,
+            "peer.read_loop_handle",
+            |guard| *guard = Some(handle),
+        );
     }
 
     /// 中止读循环和所有活跃的入站 invoke 处理器。
@@ -735,6 +739,7 @@ impl PeerInner {
     /// 如果没有匹配的 sender（可能是重复消息或已超时），则静默忽略。
     async fn handle_result(&self, message: ResultMessage) -> Result<()> {
         if let Some(sender) = self.pending_results.lock().await.remove(&message.id) {
+            // 故意忽略：接收端已关闭表示请求已被取消/超时
             let _ = sender.send(message);
         }
         Ok(())
@@ -750,6 +755,7 @@ impl PeerInner {
         let request_id = message.id.clone();
         let mut streams = self.pending_streams.lock().await;
         if let Some(sender) = streams.get(&request_id) {
+            // 故意忽略：流已关闭表示订阅者已离开
             let _ = sender.send(message);
         }
         if is_terminal {
@@ -824,11 +830,13 @@ impl PeerInner {
 
         let pending_results = std::mem::take(&mut *self.pending_results.lock().await);
         for (request_id, sender) in pending_results {
+            // 故意忽略：发送失败响应时接收端可能已关闭
             let _ = sender.send(ResultMessage::failure(request_id, error.clone()));
         }
 
         let pending_streams = std::mem::take(&mut *self.pending_streams.lock().await);
         for (request_id, sender) in pending_streams {
+            // 故意忽略：广播关闭事件时接收端可能已关闭
             let _ = sender.send(EventMessage {
                 id: request_id,
                 phase: EventPhase::Failed,

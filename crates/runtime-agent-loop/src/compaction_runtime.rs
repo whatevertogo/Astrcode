@@ -908,6 +908,7 @@ mod tests {
                 timestamp: Some(Utc::now()),
             },
         }]));
+        // 故意忽略：catch_unwind 用于测试中注入 panic，结果不需要检查
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe({
             let live = Arc::clone(&live);
             move || {

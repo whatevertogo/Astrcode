@@ -24,3 +24,6 @@ pub const ANTHROPIC_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
 
 /// Maximum number of concurrency-safe tools that may execute in parallel within a single step.
 pub const ASTRCODE_MAX_TOOL_CONCURRENCY_ENV: &str = "ASTRCODE_MAX_TOOL_CONCURRENCY";
+
+/// 本地 sidecar 服务器的默认端口号。
+pub const DEFAULT_LOCAL_SERVER_PORT: u16 = 62000;

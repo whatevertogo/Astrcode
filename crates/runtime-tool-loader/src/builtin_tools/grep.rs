@@ -38,6 +38,11 @@ use crate::builtin_tools::fs_common::{
 /// 超过此长度的行被截断并追加 `...`，避免 minified JS/CSS 污染 context window。
 const MAX_LINE_DISPLAY: usize = 500;
 
+/// 默认最大匹配数量。
+/// 未指定 max_matches 时使用此默认值，防止返回数千条结果污染 context window。
+/// 用户可以通过 offset 参数分页获取更多结果。
+const DEFAULT_MAX_MATCHES: usize = 250;
+
 /// Grep 工具实现。
 ///
 /// 在指定路径下搜索包含正则表达式匹配的文件内容。
@@ -256,7 +261,7 @@ impl Tool for GrepTool {
             })?;
 
         let output_mode = args.output_mode.unwrap_or_default();
-        let max_matches = args.max_matches.unwrap_or(250);
+        let max_matches = args.max_matches.unwrap_or(DEFAULT_MAX_MATCHES);
         let offset = args.offset.unwrap_or(0);
         let glob_matcher = build_glob_matcher(args.glob.as_deref())?;
         let type_extensions = args.file_type.as_deref().and_then(extensions_for_file_type);

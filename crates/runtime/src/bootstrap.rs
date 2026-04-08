@@ -59,6 +59,8 @@ pub struct RuntimeBootstrap {
     pub governance: Arc<RuntimeGovernance>,
     /// 后台插件加载任务句柄
     pub plugin_load_handle: PluginLoadHandle,
+    /// 后台插件初始化 spawn 的 JoinHandle，shutdown 时 abort。
+    pub plugin_init_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 /// 插件加载状态。
@@ -219,6 +221,7 @@ where
             coordinator,
             governance,
             plugin_load_handle,
+            plugin_init_handle: std::sync::Mutex::new(None),
         });
     }
 
@@ -235,7 +238,7 @@ where
     let subagent_executor_for_bg = subagent_executor;
     let total_plugin_count = manifests.len();
 
-    tokio::spawn(async move {
+    let plugin_init_task = tokio::spawn(async move {
         let result = assemble_plugins_only(
             manifests,
             &initializer_for_bg,
@@ -341,6 +344,7 @@ where
         coordinator,
         governance,
         plugin_load_handle,
+        plugin_init_handle: std::sync::Mutex::new(Some(plugin_init_task)),
     })
 }
 

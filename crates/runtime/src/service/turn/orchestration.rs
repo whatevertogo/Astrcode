@@ -61,6 +61,7 @@ pub async fn complete_session_execution(
     turn_id: &str,
     phase: Phase,
 ) {
+    // 故意忽略：取消子运行失败不应阻断会话清理
     let _ = agent_control.cancel_for_parent_turn(turn_id).await;
     complete_session_execution_state(session, phase);
 }
@@ -107,6 +108,7 @@ pub async fn run_session_turn(
             message: error.to_string(),
             timestamp: Some(Utc::now()),
         };
+        // 故意忽略：广播错误事件失败时已在处理更重要的错误
         let _ = append_and_broadcast_from_turn_callback(session, &error_event, &mut translator);
         let turn_done = StorageEvent::TurnDone {
             turn_id: Some(turn_id.to_string()),
@@ -114,6 +116,7 @@ pub async fn run_session_turn(
             timestamp: Utc::now(),
             reason: Some("error".to_string()),
         };
+        // 故意忽略：广播 TurnDone 失败时已在处理更重要的错误
         let _ = append_and_broadcast_from_turn_callback(session, &turn_done, &mut translator);
     }
 

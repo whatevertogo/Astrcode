@@ -22,15 +22,14 @@ use chrono::Utc;
 use tokio::sync::broadcast;
 
 use super::{
-    ReplayPath, RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent,
-    SessionHistorySnapshot, SessionReplay, SessionReplaySource,
+    RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent, SessionHistorySnapshot,
     blocking_bridge::{lock_anyhow, spawn_blocking_service},
 };
 
 /// `runtime-session` 的唯一 owner handle。
 #[derive(Clone)]
 pub struct SessionServiceHandle {
-    runtime: Arc<RuntimeService>,
+    pub(crate) runtime: Arc<RuntimeService>,
 }
 
 impl SessionServiceHandle {
@@ -121,64 +120,6 @@ impl SessionServiceHandle {
             cursor,
             phase,
         })
-    }
-
-    pub async fn replay(
-        &self,
-        session_id: &str,
-        last_event_id: Option<&str>,
-    ) -> ServiceResult<SessionReplay> {
-        let session_id = normalize_session_id(session_id);
-        let state = self.runtime.ensure_session_loaded(&session_id).await?;
-
-        let receiver = state.broadcaster.subscribe();
-        let started_at = Instant::now();
-        let replay_result = match state.recent_records_after(last_event_id)? {
-            Some(history) => Ok((history, ReplayPath::Cache)),
-            None => load_events(Arc::clone(&self.runtime.session_manager), &session_id)
-                .await
-                .map(|events| {
-                    (
-                        replay_records(&events, last_event_id),
-                        ReplayPath::DiskFallback,
-                    )
-                }),
-        };
-        let elapsed = started_at.elapsed();
-        match &replay_result {
-            Ok((history, path)) => {
-                self.runtime.observability.record_sse_catch_up(
-                    elapsed,
-                    true,
-                    path.clone(),
-                    history.len(),
-                );
-                if matches!(path, ReplayPath::DiskFallback) {
-                    log::warn!(
-                        "session '{}' replay used durable fallback and recovered {} events in {}ms",
-                        session_id,
-                        history.len(),
-                        elapsed.as_millis()
-                    );
-                }
-            },
-            Err(error) => {
-                self.runtime.observability.record_sse_catch_up(
-                    elapsed,
-                    false,
-                    ReplayPath::DiskFallback,
-                    0,
-                );
-                log::error!(
-                    "failed to replay session '{}' after {}ms: {}",
-                    session_id,
-                    elapsed.as_millis(),
-                    error
-                );
-            },
-        }
-        let (history, _) = replay_result?;
-        Ok(SessionReplay { history, receiver })
     }
 
     pub async fn compact(&self, session_id: &str) -> ServiceResult<()> {
@@ -276,6 +217,7 @@ impl SessionServiceHandle {
 
         let execution = self.runtime.execution();
         for session_id in &targets {
+            // 故意忽略：删除会话时中断失败不应阻断清理流程
             let _ = execution.interrupt_session(session_id).await;
             self.runtime.sessions.remove(session_id);
         }
@@ -321,17 +263,6 @@ impl astrcode_core::SessionTruthBoundary for SessionServiceHandle {
             .await
             .map(|snapshot| snapshot.history)
             .map_err(service_error_to_astr)
-    }
-}
-
-#[async_trait]
-impl SessionReplaySource for SessionServiceHandle {
-    async fn replay(
-        &self,
-        session_id: &str,
-        last_event_id: Option<&str>,
-    ) -> ServiceResult<SessionReplay> {
-        SessionServiceHandle::replay(self, session_id, last_event_id).await
     }
 }
 

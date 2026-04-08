@@ -126,6 +126,7 @@ where
         _session_id: &str,
         sub_run_id: &str,
     ) -> std::result::Result<(), AstrError> {
+        // 故意忽略：取消子运行时的错误不应阻断父级流程
         let _ = self.control.cancel(sub_run_id).await;
         Ok(())
     }
@@ -463,6 +464,7 @@ fn cancel_tree(
     // 先取消当前节点，再取消子节点，确保父级状态先可见。
     let handle = update_status_locked(state, agent_id, AgentStatus::Cancelled, next_finalized_seq)?;
     for child_id in children {
+        // 故意忽略：递归取消子节点，单个失败不阻断其余节点
         let _ = cancel_tree(state, &child_id, visited, next_finalized_seq);
     }
     Some(handle)

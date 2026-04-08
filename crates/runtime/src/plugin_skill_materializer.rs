@@ -234,6 +234,7 @@ fn is_safe_relative_asset_path(relative_path: &str) -> bool {
 }
 
 fn write_asset_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
+    // 故意忽略：读取失败表示文件不存在或不可读，需要重写
     if fs::read_to_string(path).ok().as_deref() == Some(content) {
         return Ok(());
     }

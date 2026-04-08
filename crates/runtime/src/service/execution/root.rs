@@ -40,13 +40,13 @@ pub struct ToolSummary {
 /// Agent 执行服务句柄。
 #[derive(Clone)]
 pub struct AgentExecutionServiceHandle {
-    pub(super) runtime: Arc<RuntimeService>,
+    pub(crate) runtime: Arc<RuntimeService>,
 }
 
 /// Tool 执行服务句柄。
 #[derive(Clone)]
 pub struct ToolExecutionServiceHandle {
-    pub(super) runtime: Arc<RuntimeService>,
+    pub(crate) runtime: Arc<RuntimeService>,
 }
 
 impl AgentExecutionServiceHandle {
@@ -165,7 +165,7 @@ impl AgentExecutionServiceHandle {
                 .composed_task
                 .clone(),
         );
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let turn_started_at = Instant::now();
             let task_result = run_session_turn(
                 &session_state_for_task,
@@ -189,6 +189,12 @@ impl AgentExecutionServiceHandle {
             let elapsed = turn_started_at.elapsed();
             observability.record_turn_execution(elapsed, task_result.succeeded);
         });
+        // 保存 root execution 的 JoinHandle 以便 shutdown 时 abort。
+        astrcode_core::support::with_lock_recovery(
+            &self.runtime.active_turn_handles,
+            "RuntimeService.active_turn_handles",
+            |guard| guard.push(handle),
+        );
 
         Ok(AgentExecutionAccepted {
             session_id: session_meta.session_id,

@@ -47,6 +47,7 @@ enum SortBy {
     #[default]
     Name,
     Modified,
+    Size,
 }
 
 /// 目录条目信息。
@@ -84,8 +85,8 @@ impl Tool for ListDirTool {
                     },
                     "sortBy": {
                         "type": "string",
-                        "enum": ["name", "modified"],
-                        "description": "Sort order: 'name' (alphabetical, default) or 'modified' (newest first)."
+                        "enum": ["name", "modified", "size"],
+                        "description": "Sort order: 'name' (alphabetical, default), 'modified' (newest first), or 'size' (largest first)."
                     }
                 },
                 "additionalProperties": false
@@ -189,6 +190,14 @@ impl Tool for ListDirTool {
                     },
                 });
             },
+            SortBy::Size => {
+                // 按文件大小降序（最大优先），目录优先
+                entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => b.size.cmp(&a.size),
+                });
+            },
         }
 
         // 转换为 JSON
@@ -229,6 +238,7 @@ impl Tool for ListDirTool {
                 "sortBy": match sort_by {
                     SortBy::Name => "name",
                     SortBy::Modified => "modified",
+                    SortBy::Size => "size",
                 },
             })),
             duration_ms: started_at.elapsed().as_millis() as u64,

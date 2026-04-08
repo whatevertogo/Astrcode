@@ -87,9 +87,8 @@ pub fn load_config_from_path(path: &Path) -> Result<Config> {
             ))
         })?;
 
-        // 首次启动时输出提示到 stdout，引导用户填写 API key。
-        // 这是 load_config 唯一的 stdout 副作用，仅在配置文件不存在时触发一次。
-        println!("Config created at {}，请填写 apiKey", path.display());
+        // 首次启动时通过日志提示用户填写 API key。
+        log::warn!("Config created at {}，请填写 apiKey", path.display());
         return normalize_config(default_cfg);
     }
 
@@ -188,10 +187,12 @@ pub(crate) fn write_json_atomic(path: &Path, config: &Config) -> Result<()> {
         {
             if err.kind() == std::io::ErrorKind::AlreadyExists {
                 let backup_path = path.with_extension("json.bak");
+                // 故意忽略：清理备份文件失败不影响后续操作
                 let _ = fs::remove_file(&backup_path);
 
                 // Move old config out of the way before placing the new file.
                 if let Err(backup_err) = fs::rename(path, &backup_path) {
+                    // 故意忽略：清理临时文件失败，已返回更重要的错误
                     let _ = fs::remove_file(&tmp_path);
                     return Err(AstrError::Internal(format!(
                         "failed to move existing config {} to backup {} before replace: {}",
@@ -227,8 +228,10 @@ pub(crate) fn write_json_atomic(path: &Path, config: &Config) -> Result<()> {
                     }
                 }
 
+                // 故意忽略：清理备份文件失败不影响主流程
                 let _ = fs::remove_file(&backup_path);
             } else {
+                // 故意忽略：清理临时文件失败，已返回更重要的错误
                 let _ = fs::remove_file(&tmp_path);
                 return Err(AstrError::Internal(format!(
                     "failed to replace config {} with temp file {}: {}",
@@ -240,6 +243,7 @@ pub(crate) fn write_json_atomic(path: &Path, config: &Config) -> Result<()> {
         }
         #[cfg(not(windows))]
         {
+            // 故意忽略：清理临时文件失败，已返回更重要的错误
             let _ = fs::remove_file(&tmp_path);
             return Err(AstrError::Internal(format!(
                 "failed to replace config {} with temp file {}: {}",

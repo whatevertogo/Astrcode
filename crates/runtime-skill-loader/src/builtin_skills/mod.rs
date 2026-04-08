@@ -189,6 +189,7 @@ fn is_safe_relative_asset_path(relative_path: &str) -> bool {
 /// 先读取现有文件内容对比，相同则跳过写入。
 /// 这减少了不必要的磁盘 I/O，特别是在多次启动场景中。
 fn write_asset_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
+    // 故意忽略：读取失败表示文件不存在或不可读，需要重写
     if fs::read_to_string(path).ok().as_deref() == Some(content) {
         return Ok(());
     }

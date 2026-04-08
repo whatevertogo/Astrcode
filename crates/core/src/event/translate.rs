@@ -500,6 +500,7 @@ mod tests {
             },
         };
 
+        // 故意忽略：翻译失败不应影响处理流程
         let _ = translator.translate(&tool_call);
         let delta_records = translator.translate(&tool_delta);
         let result_records = translator.translate(&tool_result);
