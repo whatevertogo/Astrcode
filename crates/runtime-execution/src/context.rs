@@ -10,8 +10,8 @@
 use std::collections::{HashMap, HashSet};
 
 use astrcode_core::{
-    AgentEvent, AgentState, LlmMessage, SessionEventRecord, StorageEvent, StoredEvent,
-    SubRunDescriptor, UserMessageOrigin,
+    AgentEvent, AgentState, ForkMode, LlmMessage, SessionEventRecord, StorageEvent, StoredEvent,
+    SubRunDescriptor, UserMessageOrigin, parse_compact_summary_message,
 };
 
 use crate::AgentExecutionRequest;
@@ -28,7 +28,7 @@ pub fn resolve_context_snapshot(
     };
     let inherited_recent_tail = if overrides.include_recent_tail {
         parent_state
-            .map(|state| recent_tail_lines(state, 4))
+            .map(|state| inherited_recent_tail_lines(state, overrides))
             .unwrap_or_default()
     } else {
         Vec::new()
@@ -77,9 +77,28 @@ pub fn latest_compact_summary(parent_state: &AgentState) -> Option<String> {
             LlmMessage::User {
                 content,
                 origin: UserMessageOrigin::CompactSummary,
-            } => Some(content.clone()),
+            } => Some(
+                parse_compact_summary_message(content)
+                    .map(|parsed| parsed.summary)
+                    .unwrap_or_else(|| content.clone()),
+            ),
             _ => None,
         })
+}
+
+fn inherited_recent_tail_lines(
+    parent_state: &AgentState,
+    overrides: &astrcode_core::ResolvedSubagentContextOverrides,
+) -> Vec<String> {
+    match overrides.fork_mode.as_ref() {
+        Some(ForkMode::FullHistory) => parent_state
+            .messages
+            .iter()
+            .filter_map(message_tail_line)
+            .collect(),
+        Some(ForkMode::LastNTurns(turns)) => recent_tail_lines_for_turns(parent_state, *turns),
+        None => recent_tail_lines(parent_state, 4),
+    }
 }
 
 pub fn recent_tail_lines(parent_state: &AgentState, limit: usize) -> Vec<String> {
@@ -87,22 +106,69 @@ pub fn recent_tail_lines(parent_state: &AgentState, limit: usize) -> Vec<String>
         .messages
         .iter()
         .rev()
-        .filter_map(|message| match message {
-            LlmMessage::User { content, .. } => Some(format!("- user: {}", single_line(content))),
-            LlmMessage::Assistant { content, .. } if !content.trim().is_empty() => {
-                Some(format!("- assistant: {}", single_line(content)))
-            },
-            LlmMessage::Tool {
-                tool_call_id,
-                content,
-            } => Some(format!("- tool[{tool_call_id}]: {}", single_line(content))),
-            _ => None,
-        })
+        .filter_map(message_tail_line)
         .take(limit)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
         .collect()
+}
+
+fn recent_tail_lines_for_turns(parent_state: &AgentState, turns: usize) -> Vec<String> {
+    if turns == 0 {
+        return Vec::new();
+    }
+
+    let Some(start_index) = last_n_turn_start_index(&parent_state.messages, turns) else {
+        return parent_state
+            .messages
+            .iter()
+            .filter_map(message_tail_line)
+            .collect();
+    };
+
+    parent_state.messages[start_index..]
+        .iter()
+        .filter_map(message_tail_line)
+        .collect()
+}
+
+fn last_n_turn_start_index(messages: &[LlmMessage], turns: usize) -> Option<usize> {
+    let mut seen_turns = 0usize;
+
+    for (index, message) in messages.iter().enumerate().rev() {
+        if matches!(
+            message,
+            LlmMessage::User {
+                origin: UserMessageOrigin::User,
+                ..
+            }
+        ) {
+            seen_turns += 1;
+            if seen_turns >= turns {
+                return Some(index);
+            }
+        }
+    }
+
+    None
+}
+
+fn message_tail_line(message: &LlmMessage) -> Option<String> {
+    match message {
+        LlmMessage::User {
+            content,
+            origin: UserMessageOrigin::User,
+        } => Some(format!("- user: {}", single_line(content))),
+        LlmMessage::Assistant { content, .. } if !content.trim().is_empty() => {
+            Some(format!("- assistant: {}", single_line(content)))
+        },
+        LlmMessage::Tool {
+            tool_call_id,
+            content,
+        } => Some(format!("- tool[{tool_call_id}]: {}", single_line(content))),
+        _ => None,
+    }
 }
 
 pub fn single_line(content: &str) -> String {
@@ -325,8 +391,9 @@ impl ExecutionLineageIndex {
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        AgentEvent, AgentEventContext, AgentState, LlmMessage, ResolvedExecutionLimitsSnapshot,
-        ResolvedSubagentContextOverrides, SessionEventRecord, SubRunDescriptor, UserMessageOrigin,
+        AgentEvent, AgentEventContext, AgentState, ForkMode, LlmMessage,
+        ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SessionEventRecord,
+        SubRunDescriptor, UserMessageOrigin, format_compact_summary,
     };
 
     use super::{
@@ -386,7 +453,11 @@ mod tests {
             snapshot.inherited_compact_summary.as_deref(),
             Some("summary one")
         );
-        assert_eq!(snapshot.inherited_recent_tail.len(), 3);
+        assert_eq!(snapshot.inherited_recent_tail.len(), 2);
+        assert_eq!(
+            snapshot.inherited_recent_tail,
+            vec!["- user: user question", "- assistant: assistant answer"]
+        );
     }
 
     #[test]
@@ -424,11 +495,11 @@ mod tests {
         let parent_state = AgentState {
             messages: vec![
                 LlmMessage::User {
-                    content: "old summary".to_string(),
+                    content: format_compact_summary("old summary"),
                     origin: UserMessageOrigin::CompactSummary,
                 },
                 LlmMessage::User {
-                    content: "new summary".to_string(),
+                    content: format_compact_summary("new summary"),
                     origin: UserMessageOrigin::CompactSummary,
                 },
             ],
@@ -466,6 +537,96 @@ mod tests {
         let lines = recent_tail_lines(&parent_state, 4);
 
         assert_eq!(lines, vec!["- user: a", "- assistant: b"]);
+    }
+
+    #[test]
+    fn recent_tail_lines_skips_internal_user_protocol_messages() {
+        let parent_state = AgentState {
+            messages: vec![
+                LlmMessage::User {
+                    content: format_compact_summary("summary"),
+                    origin: UserMessageOrigin::CompactSummary,
+                },
+                LlmMessage::User {
+                    content: "Continue from where you left off.".to_string(),
+                    origin: UserMessageOrigin::AutoContinueNudge,
+                },
+                LlmMessage::User {
+                    content: "actual user".to_string(),
+                    origin: UserMessageOrigin::User,
+                },
+                LlmMessage::Assistant {
+                    content: "answer".to_string(),
+                    tool_calls: Vec::new(),
+                    reasoning: None,
+                },
+            ],
+            ..AgentState::default()
+        };
+
+        let lines = recent_tail_lines(&parent_state, 8);
+
+        assert_eq!(lines, vec!["- user: actual user", "- assistant: answer"]);
+    }
+
+    #[test]
+    fn resolve_context_snapshot_honors_fork_mode_last_n_turns() {
+        let parent_state = AgentState {
+            messages: vec![
+                LlmMessage::User {
+                    content: "turn-1 user".to_string(),
+                    origin: UserMessageOrigin::User,
+                },
+                LlmMessage::Assistant {
+                    content: "turn-1 answer".to_string(),
+                    tool_calls: Vec::new(),
+                    reasoning: None,
+                },
+                LlmMessage::User {
+                    content: "turn-2 user".to_string(),
+                    origin: UserMessageOrigin::User,
+                },
+                LlmMessage::Assistant {
+                    content: "turn-2 answer".to_string(),
+                    tool_calls: Vec::new(),
+                    reasoning: None,
+                },
+                LlmMessage::User {
+                    content: "turn-3 user".to_string(),
+                    origin: UserMessageOrigin::User,
+                },
+                LlmMessage::Assistant {
+                    content: "turn-3 answer".to_string(),
+                    tool_calls: Vec::new(),
+                    reasoning: None,
+                },
+            ],
+            ..AgentState::default()
+        };
+        let request = AgentExecutionRequest {
+            subagent_type: Some("explore".to_string()),
+            description: "investigate issue".to_string(),
+            prompt: "investigate issue".to_string(),
+            context: None,
+            context_overrides: None,
+        };
+        let overrides = ResolvedSubagentContextOverrides {
+            include_recent_tail: true,
+            fork_mode: Some(ForkMode::LastNTurns(2)),
+            ..ResolvedSubagentContextOverrides::default()
+        };
+
+        let snapshot = resolve_context_snapshot(&request, Some(&parent_state), &overrides);
+
+        assert_eq!(
+            snapshot.inherited_recent_tail,
+            vec![
+                "- user: turn-2 user",
+                "- assistant: turn-2 answer",
+                "- user: turn-3 user",
+                "- assistant: turn-3 answer",
+            ]
+        );
     }
 
     #[test]

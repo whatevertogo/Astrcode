@@ -20,8 +20,8 @@
 use std::path::PathBuf;
 
 use crate::{
-    InvocationKind, LlmMessage, Phase, ReasoningContent, ToolCallRequest, UserMessageOrigin,
-    event::StorageEvent, format_compact_summary, split_assistant_content,
+    InvocationKind, LlmMessage, Phase, ReasoningContent, SubRunStorageMode, ToolCallRequest,
+    UserMessageOrigin, event::StorageEvent, format_compact_summary, split_assistant_content,
 };
 
 /// Agent 的当前状态快照。
@@ -247,7 +247,16 @@ impl AgentStateProjector {
 fn should_project_into_session_state(event: &StorageEvent) -> bool {
     match event.agent_context() {
         None => true,
-        Some(agent) => agent.invocation_kind != Some(InvocationKind::SubRun),
+        Some(agent) => {
+            if agent.invocation_kind != Some(InvocationKind::SubRun) {
+                return true;
+            }
+
+            matches!(
+                agent.storage_mode,
+                Some(SubRunStorageMode::IndependentSession)
+            )
+        },
     }
 }
 
@@ -457,6 +466,61 @@ mod tests {
         assert!(matches!(
             &state.messages[1],
             LlmMessage::Assistant { content, .. } if content == "root answer"
+        ));
+    }
+
+    #[test]
+    fn independent_sub_run_events_still_project_into_child_session_state() {
+        let child_agent = AgentEventContext::sub_run(
+            "agent-child",
+            "turn-parent",
+            "explore",
+            "subrun-independent",
+            crate::SubRunStorageMode::IndependentSession,
+            Some("session-child".to_string()),
+        );
+        let events = vec![
+            StorageEvent::SessionStart {
+                session_id: "session-child".into(),
+                timestamp: ts(),
+                working_dir: "/tmp".into(),
+                parent_session_id: Some("session-parent".into()),
+                parent_storage_seq: Some(12),
+            },
+            StorageEvent::UserMessage {
+                turn_id: Some("turn-child".into()),
+                agent: child_agent.clone(),
+                content: "child task".into(),
+                origin: UserMessageOrigin::User,
+                timestamp: ts(),
+            },
+            StorageEvent::AssistantFinal {
+                turn_id: Some("turn-child".into()),
+                agent: child_agent.clone(),
+                content: "child answer".into(),
+                reasoning_content: None,
+                reasoning_signature: None,
+                timestamp: None,
+            },
+            StorageEvent::TurnDone {
+                turn_id: Some("turn-child".into()),
+                agent: child_agent,
+                timestamp: ts(),
+                reason: Some("completed".into()),
+            },
+        ];
+
+        let state = project(&events);
+
+        assert_eq!(state.turn_count, 1);
+        assert_eq!(state.messages.len(), 2);
+        assert!(matches!(
+            &state.messages[0],
+            LlmMessage::User { content, .. } if content == "child task"
+        ));
+        assert!(matches!(
+            &state.messages[1],
+            LlmMessage::Assistant { content, .. } if content == "child answer"
         ));
     }
 
