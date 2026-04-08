@@ -323,3 +323,150 @@ fn parse_event_id(raw: &str) -> Option<(u64, u32)> {
     let (storage_seq, subindex) = raw.split_once('.')?;
     Some((storage_seq.parse().ok()?, subindex.parse().ok()?))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use astrcode_core::{
+        AgentEventContext, AgentStateProjector, EventLogWriter, InvocationKind, Phase,
+        StorageEvent, StoreResult, StoredEvent, UserMessageOrigin,
+    };
+    use chrono::Utc;
+
+    use super::{SessionState, SessionWriter};
+
+    struct NoopEventLogWriter;
+
+    impl EventLogWriter for NoopEventLogWriter {
+        fn append(&mut self, _event: &StorageEvent) -> StoreResult<StoredEvent> {
+            unreachable!("session_state tests do not persist through the writer")
+        }
+    }
+
+    fn root_agent() -> AgentEventContext {
+        AgentEventContext::default()
+    }
+
+    fn sub_run_agent() -> AgentEventContext {
+        AgentEventContext {
+            agent_id: Some("agent-child".to_string()),
+            parent_turn_id: Some("turn-root".to_string()),
+            agent_profile: Some("explore".to_string()),
+            sub_run_id: Some("subrun-1".to_string()),
+            invocation_kind: Some(InvocationKind::SubRun),
+            storage_mode: Some(astrcode_core::SubRunStorageMode::SharedSession),
+            child_session_id: None,
+        }
+    }
+
+    fn stored(storage_seq: u64, event: StorageEvent) -> StoredEvent {
+        StoredEvent { storage_seq, event }
+    }
+
+    #[test]
+    fn translate_store_and_cache_keeps_sub_run_events_out_of_parent_snapshot() {
+        let session = SessionState::new(
+            Phase::Idle,
+            Arc::new(SessionWriter::new(Box::new(NoopEventLogWriter))),
+            AgentStateProjector::default(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let mut translator = astrcode_core::EventTranslator::new(Phase::Idle);
+
+        let events = vec![
+            stored(
+                1,
+                StorageEvent::SessionStart {
+                    session_id: "session-1".into(),
+                    timestamp: Utc::now(),
+                    working_dir: "/tmp".into(),
+                    parent_session_id: None,
+                    parent_storage_seq: None,
+                },
+            ),
+            stored(
+                2,
+                StorageEvent::UserMessage {
+                    turn_id: Some("turn-root".into()),
+                    agent: root_agent(),
+                    content: "root task".into(),
+                    origin: UserMessageOrigin::User,
+                    timestamp: Utc::now(),
+                },
+            ),
+            stored(
+                3,
+                StorageEvent::AssistantFinal {
+                    turn_id: Some("turn-root".into()),
+                    agent: root_agent(),
+                    content: "root answer".into(),
+                    reasoning_content: None,
+                    reasoning_signature: None,
+                    timestamp: None,
+                },
+            ),
+            stored(
+                4,
+                StorageEvent::TurnDone {
+                    turn_id: Some("turn-root".into()),
+                    agent: root_agent(),
+                    timestamp: Utc::now(),
+                    reason: Some("completed".into()),
+                },
+            ),
+            stored(
+                5,
+                StorageEvent::UserMessage {
+                    turn_id: Some("turn-child".into()),
+                    agent: sub_run_agent(),
+                    content: "child task".into(),
+                    origin: UserMessageOrigin::User,
+                    timestamp: Utc::now(),
+                },
+            ),
+            stored(
+                6,
+                StorageEvent::AssistantFinal {
+                    turn_id: Some("turn-child".into()),
+                    agent: sub_run_agent(),
+                    content: "child answer".into(),
+                    reasoning_content: None,
+                    reasoning_signature: None,
+                    timestamp: None,
+                },
+            ),
+            stored(
+                7,
+                StorageEvent::TurnDone {
+                    turn_id: Some("turn-child".into()),
+                    agent: sub_run_agent(),
+                    timestamp: Utc::now(),
+                    reason: Some("completed".into()),
+                },
+            ),
+        ];
+
+        for stored in &events {
+            session
+                .translate_store_and_cache(stored, &mut translator)
+                .expect("event should translate into session cache");
+        }
+
+        let projected = session
+            .snapshot_projected_state()
+            .expect("snapshot should be available");
+
+        assert_eq!(projected.turn_count, 1);
+        assert_eq!(projected.messages.len(), 2);
+        assert!(matches!(
+            &projected.messages[0],
+            astrcode_core::LlmMessage::User { content, .. } if content == "root task"
+        ));
+        assert!(matches!(
+            &projected.messages[1],
+            astrcode_core::LlmMessage::Assistant { content, .. } if content == "root answer"
+        ));
+    }
+}

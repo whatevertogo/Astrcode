@@ -422,6 +422,16 @@ where
             )?;
         }
 
+        if is_empty_completion(&output) {
+            return report_error(
+                turn_id,
+                "provider returned an empty completion without content, reasoning, or tool calls",
+                &agent,
+                on_event,
+                emit_turn_done,
+            );
+        }
+
         if !output.content.is_empty() || !output.tool_calls.is_empty() || output.reasoning.is_some()
         {
             emit_event_with_file_tracking(
@@ -554,6 +564,10 @@ fn complete_turn(
     } else {
         Ok(outcome)
     }
+}
+
+fn is_empty_completion(output: &astrcode_runtime_llm::LlmOutput) -> bool {
+    output.content.trim().is_empty() && output.tool_calls.is_empty() && output.reasoning.is_none()
 }
 
 fn report_error(
