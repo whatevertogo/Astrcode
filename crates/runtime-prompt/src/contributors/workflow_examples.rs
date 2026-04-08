@@ -57,11 +57,12 @@ impl PromptContributor for WorkflowExamplesContributor {
                      keep the child: - Treat the `agentId` returned by tool results as an exact \
                      opaque identifier. Copy it byte-for-byte in later `waitAgent`, `sendAgent`, \
                      `closeAgent`, and `resumeAgent` calls. Never renumber it, never zero-pad it, \
-                     - Use `closeAgent` if the child's task is fully complete and no further work \
-                     is needed. Set `cascade: true` to close the entire subtree, or `cascade: \
-                     false` to close only the target agent. - Use `sendAgent` if you need the \
-                     child to continue with follow-up work or revisions based on the delivery. - \
-                     Use `waitAgent` if you want to wait for the child's next delivery before \
+                     and never invent `agent-01` when the tool result says `agent-1`. - Use \
+                     `closeAgent` if the child's task is fully complete and no further work is \
+                     needed. Set `cascade: true` to close the entire subtree, or `cascade: false` \
+                     to close only the target agent. - Use `sendAgent` if you need the child to \
+                     continue with follow-up work or revisions based on the delivery. - Use \
+                     `waitAgent` if you want to wait for the child's next delivery before \
                      proceeding. Example: if the tool result contains `Child agent reference` \
                      with `agentId: agent-7`, the next collaboration call must use exactly \
                      `agent-7`. Default: close the child if the delivery satisfies the original \
