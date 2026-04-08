@@ -370,6 +370,16 @@ impl AgentExecutionServiceHandle {
                     .agent_control
                     .mark_completed(&execution.child.agent_id)
                     .await;
+                let completion_fallback = if tracker.step_count() > 0 {
+                    format!(
+                        "子 Agent 已完成 {} \
+                         步执行，但没有返回最终总结。请展开子执行查看工具和思考流。",
+                        tracker.step_count()
+                    )
+                } else {
+                    "子 Agent 已完成，但没有返回最终总结。请展开子执行查看工具和思考流。"
+                        .to_string()
+                };
                 SubRunResult {
                     status: if tracker.token_limit_hit() || tracker.step_limit_hit() {
                         SubRunOutcome::TokenExceeded
@@ -382,7 +392,7 @@ impl AgentExecutionServiceHandle {
                         tracker.token_limit_hit(),
                         tracker.step_limit_hit(),
                         started_at.elapsed().as_millis() as u64,
-                        "子 Agent 已完成任务。",
+                        &completion_fallback,
                     )),
                     failure: None,
                 }
@@ -399,6 +409,8 @@ impl AgentExecutionServiceHandle {
                 } else {
                     SubRunOutcome::Aborted
                 };
+                let cancelled_fallback =
+                    "子 Agent 已中止。请展开子执行查看已产生的工具和思考流。".to_string();
                 SubRunResult {
                     status,
                     handoff: Some(build_subrun_handoff(
@@ -407,7 +419,7 @@ impl AgentExecutionServiceHandle {
                         tracker.token_limit_hit(),
                         tracker.step_limit_hit(),
                         started_at.elapsed().as_millis() as u64,
-                        "子 Agent 被中止。",
+                        &cancelled_fallback,
                     )),
                     failure: None,
                 }

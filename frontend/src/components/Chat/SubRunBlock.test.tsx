@@ -31,8 +31,9 @@ describe('SubRunBlock result rendering', () => {
       />
     );
 
-    expect(html).toContain('后台子会话已启动，可点击查看实时流。');
+    expect(html).toContain('后台运行中，展开后会继续实时刷新。');
     expect(html).toContain('取消子会话');
+    expect(html).toContain('思考与工具');
   });
 
   it('renders failure details without parent handoff section for failed sub-runs', () => {
@@ -68,10 +69,10 @@ describe('SubRunBlock result rendering', () => {
       />
     );
 
-    expect(html).toContain('子会话失败');
+    expect(html).toContain('执行失败');
     expect(html).toContain('子 Agent 调用模型时网络连接中断，未完成任务。');
     expect(html).toContain('HTTP request error: failed to read anthropic response stream');
-    expect(html).not.toContain('传递给主会话');
+    expect(html).not.toContain('调用参数');
   });
 
   it('renders focused-view entry for shared-session sub-runs', () => {
@@ -114,6 +115,7 @@ describe('SubRunBlock result rendering', () => {
     );
 
     expect(html).toContain('查看子执行');
+    expect(html).not.toContain('调用参数');
   });
 
   it('renders child-session navigation entry for independent sub-runs', () => {
@@ -157,6 +159,7 @@ describe('SubRunBlock result rendering', () => {
     );
 
     expect(html).toContain('打开独立会话');
+    expect(html).not.toContain('Object (');
   });
 
   it('renders directory-mode summary without nested stream copy', () => {
@@ -195,6 +198,6 @@ describe('SubRunBlock result rendering', () => {
 
     expect(html).toContain('进入子执行');
     expect(html).toContain('完成了静态分析并整理出两个风险点。');
-    expect(html).not.toContain('子会话流');
+    expect(html).not.toContain('思考与工具');
   });
 });

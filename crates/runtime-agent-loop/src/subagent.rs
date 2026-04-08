@@ -12,7 +12,7 @@
 //! 放在此 crate 而非 `runtime`，是为了让执行约束靠近执行引擎，
 //! 避免 service 层同时承担“编排 + 执行细节”两类职责。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use astrcode_core::{
     CancelToken, CapabilityCall, PolicyContext, PolicyEngine, PolicyVerdict, Result, StorageEvent,
@@ -92,50 +92,63 @@ impl PolicyEngine for SubAgentPolicyEngine {
 /// TODO: 未来可能需要重新添加 max_steps 和 token_budget 限制功能
 #[derive(Debug, Clone)]
 pub struct ChildExecutionTracker {
-    // max_steps 和 token_budget 已被移除
+    max_steps: Option<u32>,
+    token_budget: Option<u64>,
     token_limit_hit: bool,
     step_limit_hit: bool,
-    /// 已观察到的最大 step index。
-    /// 使用 `max` 而非”最后看到的”语义，因为事件流可能乱序或重放。
-    peak_step_index: u32,
-    estimated_tokens: u64,
+    /// 记录每个 step 的最新 prompt 估算，避免重放/覆盖时重复累计。
+    prompt_tokens_by_step: HashMap<u32, u64>,
+    assistant_tokens: u64,
     last_summary: Option<String>,
 }
 
 impl ChildExecutionTracker {
-    pub fn new(_max_steps: Option<u32>, _token_budget: Option<u64>) -> Self {
-        // TODO: 未来可能需要使用 max_steps 和 token_budget 参数
+    pub fn new(max_steps: Option<u32>, token_budget: Option<u64>) -> Self {
         Self {
+            max_steps,
+            token_budget,
             token_limit_hit: false,
             step_limit_hit: false,
-            peak_step_index: 0,
-            estimated_tokens: 0,
+            prompt_tokens_by_step: HashMap::new(),
+            assistant_tokens: 0,
             last_summary: None,
         }
     }
 
-    pub fn observe(&mut self, event: &StorageEvent, _cancel: &CancelToken) {
+    pub fn observe(&mut self, event: &StorageEvent, cancel: &CancelToken) {
         match event {
             StorageEvent::PromptMetrics {
                 step_index,
                 estimated_tokens,
-                provider_input_tokens: None,
                 ..
             } => {
-                self.peak_step_index = self.peak_step_index.max(*step_index);
-                self.estimated_tokens = self
-                    .estimated_tokens
-                    .saturating_add(*estimated_tokens as u64);
-                // TODO: 未来可能需要检查 max_steps 限制
+                self.prompt_tokens_by_step
+                    .entry(*step_index)
+                    .and_modify(|current| {
+                        *current = (*current).max(*estimated_tokens as u64);
+                    })
+                    .or_insert(*estimated_tokens as u64);
+
+                if self
+                    .max_steps
+                    .is_some_and(|max_steps| self.step_count() >= max_steps)
+                {
+                    self.step_limit_hit = true;
+                    cancel.cancel();
+                }
             },
             StorageEvent::AssistantFinal {
                 content,
                 reasoning_content,
                 ..
             } => {
-                self.last_summary = Some(content.clone());
-                self.estimated_tokens = self
-                    .estimated_tokens
+                let trimmed_content = content.trim();
+                if !trimmed_content.is_empty() {
+                    self.last_summary = Some(trimmed_content.to_string());
+                }
+
+                self.assistant_tokens = self
+                    .assistant_tokens
                     .saturating_add(estimate_text_tokens(content) as u64)
                     .saturating_add(
                         reasoning_content
@@ -147,7 +160,13 @@ impl ChildExecutionTracker {
             _ => {},
         }
 
-        // TODO: 未来可能需要检查 token_budget 限制
+        if self
+            .token_budget
+            .is_some_and(|token_budget| self.estimated_tokens_used() >= token_budget)
+        {
+            self.token_limit_hit = true;
+            cancel.cancel();
+        }
     }
 
     pub fn token_limit_hit(&self) -> bool {
@@ -163,10 +182,106 @@ impl ChildExecutionTracker {
     }
 
     pub fn estimated_tokens_used(&self) -> u64 {
-        self.estimated_tokens
+        self.prompt_tokens_by_step
+            .values()
+            .copied()
+            .sum::<u64>()
+            .saturating_add(self.assistant_tokens)
     }
 
     pub fn step_count(&self) -> u32 {
-        self.peak_step_index
+        self.prompt_tokens_by_step.len() as u32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use astrcode_core::{AgentEventContext, StorageEvent};
+
+    use super::ChildExecutionTracker;
+
+    fn prompt_metrics(step_index: u32, estimated_tokens: u32) -> StorageEvent {
+        StorageEvent::PromptMetrics {
+            turn_id: Some("turn-1".to_string()),
+            agent: AgentEventContext::default(),
+            step_index,
+            estimated_tokens,
+            context_window: 200_000,
+            effective_window: 200_000,
+            threshold_tokens: 180_000,
+            truncated_tool_results: 0,
+            provider_input_tokens: Some(estimated_tokens),
+            provider_output_tokens: None,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        }
+    }
+
+    fn assistant_final(content: &str, reasoning_content: Option<&str>) -> StorageEvent {
+        StorageEvent::AssistantFinal {
+            turn_id: Some("turn-1".to_string()),
+            agent: AgentEventContext::default(),
+            content: content.to_string(),
+            reasoning_content: reasoning_content.map(ToString::to_string),
+            reasoning_signature: None,
+            timestamp: None,
+        }
+    }
+
+    #[test]
+    fn child_execution_tracker_counts_zero_based_steps() {
+        let cancel = astrcode_core::CancelToken::new();
+        let mut tracker = ChildExecutionTracker::new(None, None);
+
+        tracker.observe(&prompt_metrics(0, 120), &cancel);
+        tracker.observe(&prompt_metrics(1, 180), &cancel);
+
+        assert_eq!(tracker.step_count(), 2);
+        assert_eq!(tracker.estimated_tokens_used(), 300);
+    }
+
+    #[test]
+    fn child_execution_tracker_cancels_when_step_limit_is_hit() {
+        let cancel = astrcode_core::CancelToken::new();
+        let mut tracker = ChildExecutionTracker::new(Some(2), None);
+
+        tracker.observe(&prompt_metrics(0, 120), &cancel);
+        assert!(!tracker.step_limit_hit());
+        assert!(!cancel.is_cancelled());
+
+        tracker.observe(&prompt_metrics(1, 180), &cancel);
+        assert!(tracker.step_limit_hit());
+        assert!(cancel.is_cancelled());
+    }
+
+    #[test]
+    fn child_execution_tracker_cancels_when_token_budget_is_hit() {
+        let cancel = astrcode_core::CancelToken::new();
+        let mut tracker = ChildExecutionTracker::new(None, Some(20));
+
+        tracker.observe(&prompt_metrics(0, 5), &cancel);
+        assert!(!tracker.token_limit_hit());
+        assert!(!cancel.is_cancelled());
+
+        tracker.observe(
+            &assistant_final(
+                "final answer with enough text to exceed the remaining budget",
+                Some("reasoning text"),
+            ),
+            &cancel,
+        );
+        assert!(tracker.token_limit_hit());
+        assert!(cancel.is_cancelled());
+    }
+
+    #[test]
+    fn child_execution_tracker_keeps_last_non_empty_summary() {
+        let cancel = astrcode_core::CancelToken::new();
+        let mut tracker = ChildExecutionTracker::new(None, None);
+
+        tracker.observe(&assistant_final("first summary", None), &cancel);
+        tracker.observe(&assistant_final("   ", Some("internal reasoning")), &cancel);
+
+        assert_eq!(tracker.last_summary(), Some("first summary"));
     }
 }
