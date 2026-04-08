@@ -276,6 +276,7 @@ impl SessionServiceHandle {
 
         let execution = self.runtime.execution();
         for session_id in &targets {
+            // 故意忽略：删除会话时中断失败不应阻断清理流程
             let _ = execution.interrupt_session(session_id).await;
             self.runtime.sessions.remove(session_id);
         }

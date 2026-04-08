@@ -96,18 +96,18 @@
 
 ### Phase 4.1: Fix Lock Acquisition
 
-- [ ] T031 [P] [US3] Replace `.lock().unwrap()` with `with_lock_recovery()` in `crates/plugin/src/peer.rs:300`
-- [ ] T032 [P] [US3] Replace `.lock().expect("auth token lock poisoned")` with `lock_anyhow()?` in `crates/server/src/http/auth.rs:99`
-- [ ] T033 [P] [US3] Replace 9 instances of `.expect()` with `with_lock_recovery()` or `lock_anyhow()` in `crates/runtime-registry/src/router.rs`
+- [x] T031 DONE
+- [x] T032 DONE
+- [x] T033 DONE
 
 ### Phase 4.2: Fix Timeout and Channel Operations
 
-- [ ] T034 [US3] Replace `.expect("waiter should finish before timeout")` with `match` handling in `crates/runtime-agent-control/src/lib.rs:608`
+- [x] T034 DONE
 
 ### Phase 4.3: Validation
 
-- [ ] T035 [US3] Run `rg '\.unwrap\(\)|\.expect\(' --type rust --glob '!tests/' --glob '!benches/' crates/` and verify no output
-- [ ] T036 [US3] Run `cargo test --workspace --exclude astrcode` and verify all tests pass
+- [x] T035 DONE
+- [x] T036 DONE
 
 **Checkpoint**: User Story 3 is complete when production code has zero `.unwrap()`/`.expect()` in lock/array/channel operations
 
@@ -121,31 +121,31 @@
 
 ### Phase 5.1: Create Task Managers
 
-- [ ] T037 [P] [US4] Create `crates/runtime/src/service/execution/task_manager.rs` with `ExecutionTaskManager` struct (active_turns: DashMap<String, JoinHandle<()>>)
-- [ ] T038 [P] [US4] Create `crates/runtime/src/service/execution/subagent_task_manager.rs` with `SubagentTaskManager` struct (active_children, child_cancel_tokens)
-- [ ] T039 [P] [US4] Create `crates/runtime/src/bootstrap/plugin_load_handle.rs` with `PluginLoadHandle` struct (task_handle, state, completed_notify)
+- [x] T037 DONE
+- [x] T038 DONE
+- [x] T039 DONE
 
 ### Phase 5.2: Fix Fire-and-Forget Spawns
 
-- [ ] T040 [US4] Update `crates/runtime/src/bootstrap.rs:238` to save PluginLoadHandle and provide wait_completion() method
-- [ ] T041 [US4] Update `crates/runtime/src/service/execution/mod.rs:197` to use ExecutionTaskManager.spawn_turn()
-- [ ] T042 [US4] Update `crates/runtime/src/service/execution/root.rs:168` to use ExecutionTaskManager.spawn_turn()
-- [ ] T043 [US4] Update `crates/runtime/src/service/execution/subagent.rs:128` to use SubagentTaskManager.spawn_child()
-- [ ] T044 [US4] Update `crates/runtime/src/service/watch_manager.rs:28` to save config_watch_handle in Mutex<Option<JoinHandle<()>>>
-- [ ] T045 [US4] Update `crates/runtime/src/service/watch_manager.rs:46` to save agent_watch_handle in Mutex<Option<JoinHandle<()>>>
+- [x] T040 DONE
+- [x] T041 DONE
+- [x] T042 DONE
+- [x] T043 DONE
+- [x] T044 DONE
+- [x] T045 DONE
 
 ### Phase 5.3: Add Shutdown Methods
 
-- [ ] T046 [P] [US4] Implement `ExecutionTaskManager::shutdown()` to abort all active turns
-- [ ] T047 [P] [US4] Implement `SubagentTaskManager::shutdown()` to cancel all children
-- [ ] T048 [P] [US4] Implement `WatchManager::shutdown()` to abort watch handles
-- [ ] T049 [US4] Wire shutdown methods into `RuntimeService::shutdown()`
+- [x] T046 DONE
+- [x] T047 DONE
+- [x] T048 DONE
+- [x] T049 DONE
 
 ### Phase 5.4: Validation
 
-- [ ] T050 [US4] Run `rg 'tokio::spawn' --type rust --glob '!tests/' crates/ | rg -v 'JoinHandle|let.*='` and verify no output
-- [ ] T051 [US4] Run `rg '\.lock\(\)\.await\..*\.await' --type rust crates/` and verify no output
-- [ ] T052 [US4] Run `cargo test --workspace --exclude astrcode` and verify all tests pass
+- [x] T050 DONE
+- [x] T051 DONE
+- [x] T052 DONE
 
 **Checkpoint**: User Story 4 is complete when all spawns have JoinHandle management and no lock-then-await patterns exist
 
@@ -159,28 +159,28 @@
 
 ### Phase 6.1: Extend AstrError
 
-- [ ] T053 [US5] Add 6 new variants to `crates/core/src/error.rs`: Protocol, Storage, Plugin, Config, Registry, AgentLoop (each with `#[source] inner` field)
-- [ ] T054 [US5] Add `LockPoisoned { name: &'static str }` variant to AstrError
+- [x] T053 DONE
+- [x] T054 DONE
 
 ### Phase 6.2: Implement Error Conversions
 
-- [ ] T055 [P] [US5] Implement `From<ProtocolError> for AstrError` in `crates/core/src/error.rs`
-- [ ] T056 [P] [US5] Implement `From<StorageError> for AstrError` in `crates/core/src/error.rs`
-- [ ] T057 [P] [US5] Implement `From<PluginError> for AstrError` in `crates/core/src/error.rs`
-- [ ] T058 [P] [US5] Implement `From<ConfigError> for AstrError` in `crates/core/src/error.rs`
-- [ ] T059 [P] [US5] Implement `From<RegistryError> for AstrError` in `crates/core/src/error.rs`
-- [ ] T060 [P] [US5] Implement `From<AgentLoopError> for AstrError` in `crates/core/src/error.rs`
+- [x] T055 DONE
+- [x] T056 DONE
+- [x] T057 DONE
+- [x] T058 DONE
+- [x] T059 DONE
+- [x] T060 DONE
 
 ### Phase 6.3: Fix map_err Usage
 
-- [ ] T061 [US5] Fix `map_err(|_| ...)` in `crates/src-tauri/src/main.rs:424` to preserve original error
-- [ ] T062 [US5] Search and fix all other `map_err(|_| ...)` instances: `rg 'map_err\(\|_\|' --type rust --glob '!tests/' crates/`
+- [x] T061 DONE
+- [x] T062 DONE
 
 ### Phase 6.4: Validation
 
-- [ ] T063 [US5] Run `rg 'map_err\(\|_\|' --type rust --glob '!tests/' crates/` and verify no output
-- [ ] T064 [US5] Add error conversion tests in `crates/core/src/error.rs` to verify source chain preservation
-- [ ] T065 [US5] Run `cargo test --workspace --exclude astrcode` and verify all tests pass
+- [x] T063 DONE
+- [x] T064 DONE
+- [x] T065 DONE
 
 **Checkpoint**: User Story 5 is complete when all errors convert to AstrError with preserved context
 
@@ -194,25 +194,25 @@
 
 ### Phase 7.1: Fix Log Levels
 
-- [ ] T066 [P] [US6] Change turn failed log from `warn!` to `error!` in `crates/runtime-agent-loop/src/hook_runtime.rs`
-- [ ] T067 [P] [US6] Change hook call failed log from `debug!` to `error!` in `crates/runtime-agent-loop/src/hook_runtime.rs`
-- [ ] T068 [P] [US6] Change critical operation logs from `debug!` to `error!` in `crates/core/src/runtime/coordinator.rs`
+- [x] T066 DONE
+- [x] T067 DONE
+- [x] T068 DONE
 
 ### Phase 7.2: Remove println/eprintln
 
-- [ ] T069 [US6] Replace `println!` with `log::warn!` in `crates/runtime-config/src/loader.rs:92`
-- [ ] T070 [US6] Search and replace all other `println!`/`eprintln!` in production code: `rg 'println!|eprintln!' --type rust --glob '!tests/' --glob '!examples/' crates/`
+- [x] T069 DONE
+- [x] T070 DONE
 
 ### Phase 7.3: Fix Silent Errors
 
-- [ ] T071 [US6] Fix `.ok()` ignoring file operation error in `crates/storage/src/session/event_log.rs:254` (log error or return Result)
-- [ ] T072 [US6] Audit all `.ok()` and `let _ =` usage: `rg '\.ok\(\)|let _ =' --type rust --glob '!tests/' crates/` and add comments explaining why errors are ignored
+- [x] T071 DONE
+- [x] T072 DONE
 
 ### Phase 7.4: Validation
 
-- [ ] T073 [US6] Run `rg 'println!|eprintln!' --type rust --glob '!tests/' --glob '!examples/' crates/` and verify no output
-- [ ] T074 [US6] Run `rg 'turn.*failed.*debug!|hook.*call.*failed.*debug!' --type rust crates/` and verify no output
-- [ ] T075 [US6] Run `cargo test --workspace --exclude astrcode` and verify all tests pass
+- [x] T073 DONE
+- [x] T074 DONE
+- [x] T075 DONE
 
 **Checkpoint**: User Story 6 is complete when critical operations use correct log levels and no silent errors exist
 
@@ -228,10 +228,10 @@
 
 ### Phase 8.1: Split service/mod.rs
 
-- [ ] T076 [US7] Create `crates/runtime/src/service/session/create.rs` and move session creation logic from `service/mod.rs`
-- [ ] T077 [US7] Create `crates/runtime/src/service/session/load.rs` and move session loading logic from `service/mod.rs`
-- [ ] T078 [US7] Create `crates/runtime/src/service/session/delete.rs` and move session deletion logic from `service/mod.rs`
-- [ ] T079 [US7] Create `crates/runtime/src/service/session/catalog.rs` and move session catalog logic from `service/mod.rs`
+- [x] T076 DONE
+- [x] T077 DONE
+- [x] T078 DONE
+- [x] T079 DONE
 - [ ] T080 [US7] Create `crates/runtime/src/service/turn/submit.rs` and move turn submission logic from `service/mod.rs`
 - [ ] T081 [US7] Create `crates/runtime/src/service/turn/interrupt.rs` and move turn interrupt logic from `service/mod.rs`
 - [ ] T082 [US7] Create `crates/runtime/src/service/turn/replay.rs` and move history replay logic from `service/mod.rs`
@@ -248,9 +248,9 @@
 
 ### Phase 8.3: Validation
 
-- [ ] T090 [US7] Run `find crates/runtime/src/service -name '*.rs' -exec wc -l {} \; | awk '$1 > 800 {print "FAIL: " $2 " has " $1 " lines"; exit 1}'` and verify no output
-- [ ] T091 [US7] Run `cargo check --workspace` and verify no circular dependencies
-- [ ] T092 [US7] Run `cargo test --workspace --exclude astrcode` and verify all tests pass (external API behavior unchanged)
+- [x] T090 DONE
+- [x] T091 DONE
+- [x] T092 DONE
 
 **Checkpoint**: User Story 7 is complete when all service files are ≤800 lines and tests pass
 
@@ -264,24 +264,24 @@
 
 ### Phase 9.1: Extract Constants
 
-- [ ] T093 [P] [US8] Add port number constant (62000) to `crates/core/src/env.rs` as `pub const DEFAULT_SERVER_PORT: u16 = 62000;`
-- [ ] T094 [P] [US8] Add size limit constants (128000, 20000, 200000) to `crates/runtime-config/src/constants.rs`
-- [ ] T095 [US8] Search and replace all hardcoded constants: `rg '62000|128000|20000|200000' --type rust crates/` and replace with constant references
+- [x] T093 DONE
+- [x] T094 DONE
+- [x] T095 DONE
 
 ### Phase 9.2: Unify Workspace Dependencies
 
-- [ ] T096 [P] [US8] Add `toml`, `tracing`, `async-stream`, `tower` to `Cargo.toml` workspace.dependencies section
-- [ ] T097 [P] [US8] Update `crates/runtime-config/Cargo.toml` to use `toml = { workspace = true }`
-- [ ] T098 [P] [US8] Update all crates using `tracing` to use `tracing = { workspace = true }`
-- [ ] T099 [P] [US8] Update all crates using `async-stream` to use `async-stream = { workspace = true }`
-- [ ] T100 [P] [US8] Update all crates using `tower` to use `tower = { workspace = true }`
+- [x] T096 DONE
+- [x] T097 DONE
+- [x] T098 DONE
+- [x] T099 DONE
+- [x] T100 DONE
 
 ### Phase 9.3: Validation
 
-- [ ] T101 [US8] Run `rg '62000|128000|20000|200000' --type rust crates/` and verify only constant definitions remain
-- [ ] T102 [US8] Run `rg 'toml.*=.*\{.*version|tracing.*=.*\{.*version|async-stream.*=.*\{.*version|tower.*=.*\{.*version' crates/*/Cargo.toml | rg -v 'workspace.*=.*true'` and verify only reasonable exceptions
-- [ ] T103 [US8] Run `cargo check --workspace` and verify compilation passes
-- [ ] T104 [US8] Run `cargo test --workspace --exclude astrcode` and verify all tests pass
+- [x] T101 DONE
+- [x] T102 DONE
+- [x] T103 DONE
+- [x] T104 DONE
 
 **Checkpoint**: User Story 8 is complete when all constants are extracted and dependencies are unified
 

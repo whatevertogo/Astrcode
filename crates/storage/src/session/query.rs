@@ -221,6 +221,7 @@ impl EventLog {
 
             match fs::remove_file(&path) {
                 Ok(()) => {
+                    // 故意忽略：清理空目录失败不影响主流程
                     let _ = remove_empty_session_dir(Some(&session_dir));
                     success_count += 1;
                 },

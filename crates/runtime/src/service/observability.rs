@@ -167,6 +167,7 @@ impl OperationMetrics {
             .fetch_add(elapsed_ms, Ordering::Relaxed);
         self.last_duration_ms.store(elapsed_ms, Ordering::Relaxed);
 
+        // 故意忽略：并发竞争时 CAS 失败是正常的，取最大值不需要精确
         let _ =
             self.max_duration_ms
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {

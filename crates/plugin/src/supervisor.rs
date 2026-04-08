@@ -57,7 +57,7 @@ pub struct SupervisorHealthReport {
 /// 调用方只需与 `Supervisor` 交互，无需直接操作 `PluginProcess` 或 `Peer`。
 pub struct Supervisor {
     manifest_name: String,
-    process: Mutex<PluginProcess>,
+    process: Mutex<Option<PluginProcess>>,
     peer: Peer,
     remote_initialize: InitializeResultData,
 }
@@ -112,7 +112,7 @@ impl Supervisor {
         };
         Ok(Self {
             manifest_name,
-            process: Mutex::new(process),
+            process: Mutex::new(Some(process)),
             peer,
             remote_initialize,
         })
@@ -197,7 +197,13 @@ impl Supervisor {
         // tasks don't linger after the process exits (which could cause the
         // transport to hang if stdin/stdout pipes don't close promptly).
         self.peer.abort().await;
-        self.process.lock().await.shutdown().await
+        // 持锁 await 修复：先 take() 出 PluginProcess 再 await shutdown，
+        // 避免在 MutexGuard 跨越 .await 期间持锁。
+        if let Some(mut process) = self.process.lock().await.take() {
+            process.shutdown().await
+        } else {
+            Ok(())
+        }
     }
 
     /// 检查插件健康状态。
@@ -219,7 +225,15 @@ impl Supervisor {
             });
         }
 
-        let status = self.process.lock().await.status()?;
+        // process 为 None 表示已 shutdown，直接返回 Unavailable。
+        let mut guard = self.process.lock().await;
+        let Some(process) = guard.as_mut() else {
+            return Ok(SupervisorHealthReport {
+                health: SupervisorHealth::Unavailable,
+                message: Some("plugin process has been shut down".to_string()),
+            });
+        };
+        let status = process.status()?;
         if status.running {
             Ok(SupervisorHealthReport {
                 health: SupervisorHealth::Healthy,

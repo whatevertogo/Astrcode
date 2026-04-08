@@ -69,6 +69,7 @@ pub(crate) async fn generate_response(
     // 若使用 bounded channel，反压逻辑会不必要地复杂化代码。
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<LlmEvent>();
     let sink: EventSink = Arc::new(move |event| {
+        // 故意忽略：通道关闭表示 LLM 调用已终止，无需处理
         let _ = event_tx.send(event);
     });
     let request = LlmRequest::from_model_request(request, cancel);

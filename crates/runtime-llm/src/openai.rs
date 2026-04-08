@@ -551,6 +551,7 @@ fn flush_sse_buffer(
             *finish_reason_out = Some(r);
         }
         // 如果 flush 时遇到 [DONE]，忽略（正常流结束）
+        // 故意忽略：消费 done 标志以避免未使用变量警告
         let _ = done;
     }
     Ok(())
@@ -894,11 +895,13 @@ mod tests {
         let handle = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.expect("accept should work");
             let mut buf = [0_u8; 4096];
+            // 故意忽略：读取残余数据仅用于清理，失败无影响
             let _ = socket.read(&mut buf).await;
             socket
                 .write_all(response.as_bytes())
                 .await
                 .expect("response should be written");
+            // 故意忽略：关闭 socket 时连接可能已断开
             let _ = socket.shutdown().await;
         });
 

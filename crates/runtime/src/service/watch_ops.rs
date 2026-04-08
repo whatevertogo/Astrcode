@@ -24,6 +24,7 @@ pub(super) async fn run_config_watch_loop(service: Arc<RuntimeService>) -> Servi
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut watcher = RecommendedWatcher::new(
         move |result| {
+            // 故意忽略：watcher 关闭后 channel 发送失败是正常的
             let _ = tx.send(result);
         },
         NotifyConfig::default(),
@@ -88,6 +89,7 @@ pub(super) async fn run_agent_watch_loop(service: Arc<RuntimeService>) -> Servic
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut watcher = RecommendedWatcher::new(
         move |result| {
+            // 故意忽略：watcher 关闭后 channel 发送失败是正常的
             let _ = tx.send(result);
         },
         NotifyConfig::default(),

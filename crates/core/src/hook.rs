@@ -175,6 +175,7 @@ pub trait HookHandler: Send + Sync {
 
     /// 可选匹配器，用于做 tool name / source 等更细粒度筛选。
     fn matches(&self, input: &HookInput) -> bool {
+        // 故意忽略：trait 默认实现不使用 input，只是消除未使用变量警告
         let _ = input;
         true
     }

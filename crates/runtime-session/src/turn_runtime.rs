@@ -49,6 +49,7 @@ pub async fn append_and_broadcast(
     let stored = session.writer.clone().append(event.clone()).await?;
     let records = session.translate_store_and_cache(&stored, translator)?;
     for record in records {
+        // 故意忽略：broadcast channel 关闭表示 session 已终止，无需处理
         let _ = session.broadcaster.send(record);
     }
     Ok(stored)

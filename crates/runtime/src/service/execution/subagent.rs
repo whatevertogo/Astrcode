@@ -125,13 +125,20 @@ impl AgentExecutionServiceHandle {
         };
 
         let service = self.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let started_at = Instant::now();
             let (outcome, tracker) = service.run_child_loop(&spawned).await;
+            // 故意忽略：spawned task 中无法传播错误，失败已通过内部日志记录
             let _ = service
                 .finalize_child_execution(spawned, tracker, started_at, outcome)
                 .await;
         });
+        // 保存 JoinHandle 以便 shutdown 时 abort。
+        astrcode_core::support::with_lock_recovery(
+            &self.runtime.active_subagent_handles,
+            "RuntimeService.active_subagent_handles",
+            |guard| guard.push(handle),
+        );
 
         Ok(running_result)
     }
@@ -204,6 +211,7 @@ impl AgentExecutionServiceHandle {
             )
             .await
             .map_err(|error| ServiceError::Conflict(error.to_string()))?;
+        // 故意忽略：子代理状态标记失败不应阻断启动流程
         let _ = self
             .runtime
             .agent_control
@@ -312,6 +320,7 @@ impl AgentExecutionServiceHandle {
         execution: &SpawnedSubagentExecution,
     ) -> ServiceResult<()> {
         if let Err(error) = self.emit_child_started(execution) {
+            // 故意忽略：标记失败时已在处理另一个错误，不能覆盖
             let _ = self
                 .runtime
                 .agent_control
@@ -357,6 +366,7 @@ impl AgentExecutionServiceHandle {
     ) -> ServiceResult<SubRunResult> {
         let result = match outcome {
             Ok(TurnOutcome::Completed) => {
+                // 故意忽略：子代理状态更新失败不应覆盖执行结果
                 let _ = self
                     .runtime
                     .agent_control
@@ -380,6 +390,7 @@ impl AgentExecutionServiceHandle {
                 }
             },
             Ok(TurnOutcome::Cancelled) => {
+                // 故意忽略：取消子代理失败不应阻断结果处理
                 let _ = self
                     .runtime
                     .agent_control
@@ -404,6 +415,7 @@ impl AgentExecutionServiceHandle {
                 }
             },
             Ok(TurnOutcome::Error { message }) => {
+                // 故意忽略：子代理状态更新失败不应覆盖执行结果
                 let _ = self
                     .runtime
                     .agent_control

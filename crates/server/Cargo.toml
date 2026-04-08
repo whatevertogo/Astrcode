@@ -11,7 +11,7 @@ astrcode-protocol = { path = "../protocol" }
 astrcode-runtime = { path = "../runtime" }
 astrcode-runtime-execution = { path = "../runtime-execution" }
 astrcode-runtime-registry = { path = "../runtime-registry" }
-async-stream = "0.3"
+async-stream.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 axum-extra.workspace = true
@@ -24,7 +24,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tower = "0.5"
+tower.workspace = true
 tower-http.workspace = true
 
 [dev-dependencies]

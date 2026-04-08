@@ -55,6 +55,7 @@ impl AgentExecutionServiceHandle {
             normalize_session_id,
         ) {
             CancelSubRunResolution::CancelLive => {
+                // 故意忽略：取消子运行时失败不应阻断状态更新
                 let _ = self.runtime.agent_control.cancel(sub_run_id).await;
                 Ok(())
             },

@@ -235,7 +235,7 @@ impl AgentExecutionServiceHandle {
                     );
                 },
                 Err(_) => {
-                    log::warn!("turn '{}' failed in {}ms", turn_id, elapsed.as_millis());
+                    log::error!("turn '{}' failed in {}ms", turn_id, elapsed.as_millis());
                 },
             }
         });
@@ -262,6 +262,7 @@ impl AgentExecutionServiceHandle {
                 cancel.cancel();
             }
             if let Some(active_turn_id) = interrupt_plan.active_turn_id.as_deref() {
+                // 故意忽略：取消子运行时失败不应阻断中断流程
                 let _ = self
                     .runtime
                     .agent_control

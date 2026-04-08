@@ -250,10 +250,16 @@ impl EventLog {
             if trimmed.is_empty() {
                 continue;
             }
-            if let Some(seq) = serde_json::from_str::<serde_json::Value>(trimmed)
-                .ok()
-                .and_then(|v| v.get("storage_seq").and_then(|s| s.as_u64()))
-            {
+            if let Some(seq) = (|| {
+                let v = match serde_json::from_str::<serde_json::Value>(trimmed) {
+                    Ok(v) => v,
+                    Err(err) => {
+                        log::warn!("failed to parse event line while scanning tail: {err}");
+                        return None;
+                    },
+                };
+                v.get("storage_seq").and_then(|s| s.as_u64())
+            })() {
                 return Ok(seq);
             }
         }
