@@ -5,8 +5,6 @@
 - [Subrun Durable Lineage Protocol](subrun_durable_lineage.md) — Durable history = 已完成 subrun 唯一真相、descriptor/tool_call_id 强制写入、legacy 不伪造
 - [Execution Lineage Index](execution_lineage_index.md) — 从 descriptor 构建索引、三条路径一致、不推断 ancestry
 - [Working-Dir Execution Context](working_dir_execution_context.md) — Agent 解析绑定执行上下文 working directory、不回退进程默认
-
-## 003-subagent-child-sessions
 - [子 Agent 独立会话架构](child_session_architecture.md) — ChildSessionNode/ChildAgentRef/Notification 数据模型、所有权边界、durable 真相原则
 - [子 Agent 协作工具契约](collaboration_tools.md) — 六工具族（spawn/send/wait/close/resume/deliver）、约束与 runtime inbox 映射、幂等去重
 - [父子会话双层投影视图](parent_child_projection.md) — 父侧摘要卡片 + 子侧直开完整 session、SubRunThreadTree 降级 legacy、三层交互规则
