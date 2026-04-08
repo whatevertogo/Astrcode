@@ -261,7 +261,7 @@ where
                 },
                 Ok(None) => {},
                 Err(error) => {
-                    return if cancel.is_cancelled() {
+                    return if error.is_cancelled() {
                         report_interrupted(turn_id, &agent, on_event, emit_turn_done)
                     } else {
                         report_error(turn_id, error.to_string(), &agent, on_event, emit_turn_done)
@@ -360,7 +360,7 @@ where
                             );
                         },
                         Err(compact_error) => {
-                            if cancel.is_cancelled() {
+                            if compact_error.is_cancelled() {
                                 return report_interrupted(
                                     turn_id,
                                     &agent,
