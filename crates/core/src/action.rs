@@ -182,6 +182,8 @@ pub enum UserMessageOrigin {
     User,
     /// 自动继续提示（上下文窗口满时自动触发继续）
     AutoContinueNudge,
+    /// 子会话交付后用于唤醒父会话继续决策的内部提示。
+    ReactivationPrompt,
     /// 压缩摘要（上下文压缩后插入的摘要消息）
     CompactSummary,
 }

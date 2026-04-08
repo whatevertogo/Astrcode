@@ -5,6 +5,11 @@ interface IndexedMessage {
   message: Message;
 }
 
+interface SpawnedAgentRef {
+  subRunId: string;
+  agentId?: string;
+}
+
 interface SubRunRecord {
   subRunId: string;
   startMessage?: SubRunStartMessage;
@@ -158,6 +163,43 @@ function getOrCreateRecord(
   return created;
 }
 
+function pickStringField(value: unknown, ...keys: string[]): string | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    const candidate = (value as Record<string, unknown>)[key];
+    if (typeof candidate === 'string' && candidate.length > 0) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+function pickSpawnedAgentRef(message: Message): SpawnedAgentRef | null {
+  if (message.kind !== 'toolCall' || message.toolName !== 'spawnAgent' || message.status !== 'ok') {
+    return null;
+  }
+
+  const metadata =
+    typeof message.metadata === 'object' && message.metadata !== null ? message.metadata : null;
+  const agentRef = metadata
+    ? ((metadata as Record<string, unknown>).agentRef ??
+      (metadata as Record<string, unknown>).agent_ref)
+    : null;
+  const subRunId = pickStringField(agentRef, 'subRunId', 'sub_run_id');
+  if (!subRunId) {
+    return null;
+  }
+
+  return {
+    subRunId,
+    agentId: pickStringField(agentRef, 'agentId', 'agent_id'),
+  };
+}
+
 function buildSubRunIndex(messages: Message[]): SubRunIndex {
   const records = new Map<string, SubRunRecord>();
   const rootEntries: IndexedMessage[] = [];
@@ -195,6 +237,21 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
     record.ownBodyEntries.push({ index, message });
   });
 
+  rootEntries.forEach(({ index, message }) => {
+    const spawnedAgentRef = pickSpawnedAgentRef(message);
+    if (!spawnedAgentRef) {
+      return;
+    }
+
+    // Why: 历史回放偶发缺少 subRun lifecycle 时，spawnAgent 的 agentRef 仍然能稳定标识子执行；
+    // 用它补建占位记录，避免父会话把已启动的子 Agent 直接“吃掉”。
+    const record = getOrCreateRecord(records, spawnedAgentRef.subRunId, index);
+    record.startIndex = Math.min(record.startIndex, index);
+    if (!record.agentId && spawnedAgentRef.agentId) {
+      record.agentId = spawnedAgentRef.agentId;
+    }
+  });
+
   const orderedRecords = [...records.values()].sort(
     (left, right) => left.firstMessageIndex - right.firstMessageIndex
   );
@@ -209,6 +266,9 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
       record.finishMessage,
       record.ownBodyEntries.map((entry) => entry.message)
     );
+    if (record.title === record.subRunId && record.agentId) {
+      record.title = record.agentId;
+    }
 
     if (record.agentId && !agentOwnerMap.has(record.agentId)) {
       agentOwnerMap.set(record.agentId, record.subRunId);

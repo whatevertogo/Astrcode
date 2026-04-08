@@ -3,7 +3,6 @@
 //! Model discovery and connection testing.
 
 import type { CurrentModelInfo, ModelOption, TestResult } from '../../types';
-import { asRecord, pickNumber, pickOptionalString, pickString } from '../shared';
 import { requestJson } from './client';
 
 export async function getCurrentModel(): Promise<CurrentModelInfo> {

@@ -335,9 +335,9 @@ mod tests {
             .expect("watch targets should resolve");
 
         // Windows 上路径可能带 \\?\ UNC 前缀，用后缀匹配避免前缀不一致
-        let agents_suffix = std::path::MAIN_SEPARATOR.to_string()
+        let agents_suffix = std::path::MAIN_SEPARATOR_STR.to_string()
             + ".astrcode"
-            + &std::path::MAIN_SEPARATOR.to_string()
+            + std::path::MAIN_SEPARATOR_STR
             + "agents";
         let agents_suffix_alt = "/.astrcode/agents";
         let repo_agents = watch_targets.iter().find(|target| {

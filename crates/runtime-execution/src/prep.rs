@@ -236,13 +236,29 @@ pub fn prepare_prompt_submission(
     text: String,
     _token_budget: Option<u64>, // TODO: 未来可能需要使用 token_budget 参数
 ) -> PreparedPromptSubmission {
+    prepare_prompt_submission_with_origin(
+        session_id,
+        turn_id,
+        text,
+        _token_budget,
+        UserMessageOrigin::User,
+    )
+}
+
+pub fn prepare_prompt_submission_with_origin(
+    session_id: &str,
+    turn_id: &str,
+    text: String,
+    _token_budget: Option<u64>, // TODO: 未来可能需要使用 token_budget 参数
+    origin: UserMessageOrigin,
+) -> PreparedPromptSubmission {
     PreparedPromptSubmission {
         user_event: StorageEvent::UserMessage {
             turn_id: Some(turn_id.to_string()),
             agent: AgentEventContext::default(),
             content: text.clone(),
             timestamp: chrono::Utc::now(),
-            origin: UserMessageOrigin::User,
+            origin,
         },
         execution_owner: ExecutionOwner::root(
             session_id.to_string(),
@@ -574,7 +590,8 @@ mod tests {
     use super::{
         AgentExecutionRequest, build_background_subrun_handoff, build_execution_spec,
         build_root_spawn_params, build_subrun_failure, build_subrun_handoff,
-        prepare_prompt_submission, prepare_root_execution_launch, resolve_interrupt_session_plan,
+        prepare_prompt_submission, prepare_prompt_submission_with_origin,
+        prepare_root_execution_launch, resolve_interrupt_session_plan,
         summarize_execution_description, validate_root_execution_storage_mode,
     };
 
@@ -732,6 +749,25 @@ mod tests {
         assert!(matches!(
             prepared.user_event,
             astrcode_core::StorageEvent::UserMessage { .. }
+        ));
+    }
+
+    #[test]
+    fn prepare_prompt_submission_with_origin_keeps_internal_origin() {
+        let prepared = prepare_prompt_submission_with_origin(
+            "session-1",
+            "turn-2",
+            "internal".to_string(),
+            None,
+            astrcode_core::UserMessageOrigin::ReactivationPrompt,
+        );
+
+        assert!(matches!(
+            prepared.user_event,
+            astrcode_core::StorageEvent::UserMessage {
+                origin: astrcode_core::UserMessageOrigin::ReactivationPrompt,
+                ..
+            }
         ));
     }
 

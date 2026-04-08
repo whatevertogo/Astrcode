@@ -21,6 +21,7 @@ use std::sync::Arc;
 use astrcode_core::{
     AgentProfile, AgentProfileCatalog, AstrError, ExecutionOrchestrationBoundary,
     LiveSubRunControlBoundary, Result, SpawnAgentParams, SubRunHandle, SubRunResult, ToolContext,
+    UserMessageOrigin,
 };
 use astrcode_runtime_agent_tool::SubAgentExecutor;
 use async_trait::async_trait;
@@ -172,7 +173,11 @@ impl AgentExecutionServiceHandle {
         let followup_prompt =
             astrcode_runtime_agent_loop::child_delivery_reactivation_prompt(notification);
         match self
-            .submit_prompt(&parent_session_id, followup_prompt)
+            .submit_prompt_with_origin(
+                &parent_session_id,
+                followup_prompt,
+                UserMessageOrigin::ReactivationPrompt,
+            )
             .await
         {
             Ok(_) => {

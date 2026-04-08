@@ -966,4 +966,103 @@ describe('buildSubRunView', () => {
     // 独立子会话应包含 childSessionId，前端可据此直接打开子会话
     expect(view?.childSessionId).toBe('session-child-ind');
   });
+
+  it('recovers root sub-runs from spawnAgent tool metadata when lifecycle events are missing', () => {
+    const messages: Message[] = [
+      {
+        id: 'spawn-tool-call-a',
+        kind: 'toolCall',
+        turnId: 'turn-root',
+        toolCallId: 'call-a',
+        toolName: 'spawnAgent',
+        status: 'ok',
+        args: { prompt: 'task-a' },
+        output: 'spawnAgent 已在后台启动。',
+        metadata: {
+          agentRef: {
+            agentId: 'agent-1',
+            subRunId: 'subrun-1',
+          },
+        },
+        durationMs: 12,
+        timestamp: 1,
+      },
+      {
+        id: 'spawn-tool-call-b',
+        kind: 'toolCall',
+        turnId: 'turn-root',
+        toolCallId: 'call-b',
+        toolName: 'spawnAgent',
+        status: 'ok',
+        args: { prompt: 'task-b' },
+        output: 'spawnAgent 已在后台启动。',
+        metadata: {
+          agentRef: {
+            agentId: 'agent-2',
+            subRunId: 'subrun-2',
+          },
+        },
+        durationMs: 15,
+        timestamp: 2,
+      },
+    ];
+
+    const tree = buildSubRunThreadTree(messages);
+    const rootViews = listRootSubRunViews(tree);
+
+    expect(rootViews.map((view) => view.subRunId)).toEqual(['subrun-1', 'subrun-2']);
+    expect(rootViews.map((view) => view.title)).toEqual(['agent-1', 'agent-2']);
+  });
+
+  it('merges spawnAgent fallback refs with real lifecycle records without duplication', () => {
+    const messages: Message[] = [
+      {
+        id: 'spawn-tool-call-a',
+        kind: 'toolCall',
+        turnId: 'turn-root',
+        toolCallId: 'call-a',
+        toolName: 'spawnAgent',
+        status: 'ok',
+        args: { prompt: 'task-a' },
+        output: 'spawnAgent 已在后台启动。',
+        metadata: {
+          agentRef: {
+            agentId: 'agent-1',
+            subRunId: 'subrun-1',
+          },
+        },
+        durationMs: 12,
+        timestamp: 1,
+      },
+      {
+        ...makeSubRunStartFixture({
+          id: 'subrun-a-start',
+          turnId: 'turn-root',
+          parentTurnId: 'turn-root',
+          agentId: 'agent-1',
+          subRunId: 'subrun-1',
+          agentProfile: 'planner',
+          depth: 1,
+          timestamp: 2,
+        }),
+      },
+      {
+        id: 'subrun-a-assistant',
+        kind: 'assistant',
+        turnId: 'turn-a',
+        parentTurnId: 'turn-root',
+        subRunId: 'subrun-1',
+        agentProfile: 'planner',
+        text: 'done',
+        streaming: false,
+        timestamp: 3,
+      },
+    ];
+
+    const rootViews = listRootSubRunViews(messages);
+
+    expect(rootViews).toHaveLength(1);
+    expect(rootViews[0]?.subRunId).toBe('subrun-1');
+    expect(rootViews[0]?.title).toBe('planner');
+  });
 });

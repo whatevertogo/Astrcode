@@ -9,7 +9,8 @@ use astrcode_core::{
     ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SpawnAgentParams,
     StorageEvent, SubRunFailure, SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunOutcome,
     SubRunResult, SubRunStorageMode, SubagentContextOverrides, Tool, ToolCapabilityMetadata,
-    ToolContext, ToolDefinition, ToolEventSink, ToolExecutionResult, test_support::TestEnvGuard,
+    ToolContext, ToolDefinition, ToolEventSink, ToolExecutionResult, UserMessageOrigin,
+    test_support::TestEnvGuard,
 };
 use astrcode_runtime_agent_tool::{SpawnAgentTool, SubAgentExecutor};
 use astrcode_runtime_config::DEFAULT_MAX_CONCURRENT_AGENTS;
@@ -1624,6 +1625,60 @@ async fn reactivate_parent_skips_when_active_turn_matches_current_turn() {
         .expect("active turn lock")
         .clone();
     assert_eq!(active_turn.as_deref(), Some("turn-parent"));
+}
+
+#[tokio::test]
+async fn reactivate_parent_persists_internal_reactivation_prompt_origin() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(empty_capabilities())
+            .expect("runtime service should build"),
+    );
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("session should be created");
+
+    let notification = make_test_notification("child-reactivate-origin", "turn-child");
+    service
+        .execution()
+        .reactivate_parent_agent_if_idle(&session.session_id, "turn-parent", &notification)
+        .await;
+
+    let stored = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let events = crate::service::session::load_events(
+                Arc::clone(&service.session_manager),
+                &session.session_id,
+            )
+            .await
+            .expect("session events should load");
+            if let Some(event) = events.into_iter().find(|stored| {
+                matches!(
+                    stored.event,
+                    StorageEvent::UserMessage {
+                        origin: UserMessageOrigin::ReactivationPrompt,
+                        ..
+                    }
+                )
+            }) {
+                break event;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("reactivation prompt should be persisted");
+
+    assert!(matches!(
+        stored.event,
+        StorageEvent::UserMessage {
+            origin: UserMessageOrigin::ReactivationPrompt,
+            ..
+        }
+    ));
 }
 
 /// 构造用于重激活测试的 ChildSessionNotification。

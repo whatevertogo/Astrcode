@@ -20,8 +20,9 @@ pub use prep::{
     build_background_subrun_handoff, build_child_agent_state, build_result_artifacts,
     build_root_spawn_params, build_subrun_failure, build_subrun_handoff,
     derive_child_execution_owner, ensure_root_execution_mode, ensure_subagent_mode,
-    prepare_prompt_submission, prepare_root_execution_launch, prepare_scoped_agent_execution,
-    resolve_interrupt_session_plan, resolve_profile_tool_names, summarize_execution_description,
+    prepare_prompt_submission, prepare_prompt_submission_with_origin,
+    prepare_root_execution_launch, prepare_scoped_agent_execution, resolve_interrupt_session_plan,
+    resolve_profile_tool_names, summarize_execution_description,
     validate_root_execution_storage_mode,
 };
 pub use subrun::{

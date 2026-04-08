@@ -471,6 +471,32 @@ mod tests {
     }
 
     #[test]
+    fn reactivation_prompt_does_not_replay_as_user_visible_message() {
+        let records = replay_records(
+            &[StoredEvent {
+                storage_seq: 2,
+                event: StorageEvent::UserMessage {
+                    turn_id: Some("turn-2".to_string()),
+                    agent: AgentEventContext::default(),
+                    content: "# Child Session Delivery".to_string(),
+                    origin: UserMessageOrigin::ReactivationPrompt,
+                    timestamp: chrono::Utc::now(),
+                },
+            }],
+            None,
+        );
+
+        assert_eq!(records.len(), 1);
+        assert!(matches!(
+            records[0].event,
+            AgentEvent::PhaseChanged {
+                phase: Phase::Thinking,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn tool_call_delta_replays_with_cached_tool_name() {
         let mut translator = EventTranslator::new(Phase::Idle);
         let tool_call = StoredEvent {
