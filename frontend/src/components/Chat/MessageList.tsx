@@ -267,18 +267,49 @@ export default function MessageList({
             return null;
           }
 
-          // 如果当前是 assistant 消息，查找后面的 promptMetrics（跳过中间的其他消息）
+          // 如果当前是 assistant 消息，只在 turn 的最后一个 assistant 消息上显示 metrics
           let metricsToAttach: Message | undefined = undefined;
           if (item.message.kind === 'assistant') {
+            // 检查后面是否还有同一个 turn 的 assistant 消息
+            let hasMoreAssistantInTurn = false;
+            const currentTurnId = item.message.turnId;
+
             for (let j = index + 1; j < items.length; j++) {
               const nextItem = items[j];
               if (nextItem.kind === 'message') {
-                if (nextItem.message.kind === 'promptMetrics') {
-                  metricsToAttach = nextItem.message;
+                if (
+                  nextItem.message.kind === 'assistant' &&
+                  nextItem.message.turnId === currentTurnId
+                ) {
+                  // 同一个 turn 还有后续 assistant 消息，当前不显示 metrics
+                  hasMoreAssistantInTurn = true;
                   break;
-                } else if (nextItem.message.kind === 'assistant') {
-                  // 遇到下一个 assistant，停止查找
+                } else if (
+                  nextItem.message.kind === 'user' ||
+                  (nextItem.message.kind === 'assistant' &&
+                    nextItem.message.turnId !== currentTurnId)
+                ) {
+                  // 遇到新的 turn，停止查找
                   break;
+                }
+              }
+            }
+
+            // 只有当这是 turn 的最后一个 assistant 消息时，才查找并附加 metrics
+            if (!hasMoreAssistantInTurn) {
+              for (let j = index + 1; j < items.length; j++) {
+                const nextItem = items[j];
+                if (nextItem.kind === 'message') {
+                  if (nextItem.message.kind === 'promptMetrics') {
+                    metricsToAttach = nextItem.message;
+                    break;
+                  } else if (
+                    nextItem.message.kind === 'assistant' ||
+                    nextItem.message.kind === 'user'
+                  ) {
+                    // 遇到下一个消息，停止查找
+                    break;
+                  }
                 }
               }
             }
