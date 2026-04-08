@@ -20,8 +20,8 @@
 use std::path::PathBuf;
 
 use crate::{
-    LlmMessage, Phase, ReasoningContent, ToolCallRequest, UserMessageOrigin, event::StorageEvent,
-    format_compact_summary, split_assistant_content,
+    InvocationKind, LlmMessage, Phase, ReasoningContent, ToolCallRequest, UserMessageOrigin,
+    event::StorageEvent, format_compact_summary, split_assistant_content,
 };
 
 /// Agent 的当前状态快照。
@@ -89,6 +89,10 @@ impl AgentStateProjector {
     }
 
     pub fn apply(&mut self, event: &StorageEvent) {
+        if !should_project_into_session_state(event) {
+            return;
+        }
+
         match event {
             StorageEvent::SessionStart {
                 session_id,
@@ -240,6 +244,13 @@ impl AgentStateProjector {
     }
 }
 
+fn should_project_into_session_state(event: &StorageEvent) -> bool {
+    match event.agent_context() {
+        None => true,
+        Some(agent) => agent.invocation_kind != Some(InvocationKind::SubRun),
+    }
+}
+
 fn recent_turn_start_index(
     messages: &[LlmMessage],
     preserved_recent_turns: usize,
@@ -285,6 +296,17 @@ mod tests {
 
     fn root_agent() -> AgentEventContext {
         AgentEventContext::default()
+    }
+
+    fn sub_run_agent() -> AgentEventContext {
+        AgentEventContext::sub_run(
+            "agent-child",
+            "turn-parent",
+            "explore",
+            "subrun-1",
+            crate::SubRunStorageMode::SharedSession,
+            None,
+        )
     }
 
     #[test]
@@ -360,6 +382,82 @@ mod tests {
         assert_eq!(state.phase, Phase::Idle);
         assert_eq!(state.turn_count, 1);
         assert_eq!(state.messages.len(), 2); // User + Assistant
+    }
+
+    #[test]
+    fn sub_run_events_do_not_pollute_parent_projected_messages_or_turn_count() {
+        let events = vec![
+            StorageEvent::SessionStart {
+                session_id: "s1".into(),
+                timestamp: ts(),
+                working_dir: "/tmp".into(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
+            StorageEvent::UserMessage {
+                turn_id: Some("turn-root".into()),
+                agent: root_agent(),
+                content: "root task".into(),
+                origin: UserMessageOrigin::User,
+                timestamp: ts(),
+            },
+            StorageEvent::AssistantFinal {
+                turn_id: Some("turn-root".into()),
+                agent: root_agent(),
+                content: "root answer".into(),
+                reasoning_content: None,
+                reasoning_signature: None,
+                timestamp: None,
+            },
+            StorageEvent::TurnDone {
+                turn_id: Some("turn-root".into()),
+                agent: root_agent(),
+                timestamp: ts(),
+                reason: Some("completed".into()),
+            },
+            StorageEvent::UserMessage {
+                turn_id: Some("turn-child".into()),
+                agent: sub_run_agent(),
+                content: "child task".into(),
+                origin: UserMessageOrigin::User,
+                timestamp: ts(),
+            },
+            StorageEvent::AssistantFinal {
+                turn_id: Some("turn-child".into()),
+                agent: sub_run_agent(),
+                content: "child answer".into(),
+                reasoning_content: None,
+                reasoning_signature: None,
+                timestamp: None,
+            },
+            StorageEvent::TurnDone {
+                turn_id: Some("turn-child".into()),
+                agent: sub_run_agent(),
+                timestamp: ts(),
+                reason: Some("completed".into()),
+            },
+        ];
+
+        let state = project(&events);
+
+        assert_eq!(
+            state.turn_count, 1,
+            "sub-run turn must not increment parent turn count"
+        );
+        assert_eq!(state.phase, Phase::Idle);
+        assert_eq!(
+            state.messages.len(),
+            2,
+            "sub-run messages must stay out of parent context"
+        );
+        assert!(matches!(
+            &state.messages[0],
+            LlmMessage::User { content, .. } if content == "root task"
+        ));
+        assert!(matches!(
+            &state.messages[1],
+            LlmMessage::Assistant { content, .. } if content == "root answer"
+        ));
     }
 
     #[test]
