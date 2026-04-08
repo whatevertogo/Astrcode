@@ -365,7 +365,9 @@ fn to_anthropic_messages(messages: &[LlmMessage]) -> Vec<AnthropicMessage> {
                         cache_control: None,
                     });
                 }
-                if !content.is_empty() {
+                // Anthropic API 要求：如果有 tool_use，必须至少有一个 text 块（即使为空）
+                // 否则会报错：insufficient tool messages following tool_calls message
+                if !content.is_empty() || !tool_calls.is_empty() {
                     blocks.push(AnthropicContentBlock::Text {
                         text: content.clone(),
                         cache_control: None,
@@ -1095,6 +1097,43 @@ mod tests {
 
     use super::*;
     use crate::sink_collector;
+
+    #[test]
+    fn to_anthropic_messages_includes_empty_text_block_when_tool_calls_present() {
+        let messages = vec![LlmMessage::Assistant {
+            content: "".to_string(),
+            tool_calls: vec![ToolCallRequest {
+                id: "call_123".to_string(),
+                name: "test_tool".to_string(),
+                args: json!({"arg": "value"}),
+            }],
+            reasoning: None,
+        }];
+
+        let anthropic_messages = to_anthropic_messages(&messages);
+        assert_eq!(anthropic_messages.len(), 1);
+
+        let msg = &anthropic_messages[0];
+        assert_eq!(msg.role, "assistant");
+        assert_eq!(msg.content.len(), 2); // text + tool_use
+
+        // 验证第一个块是空文本块
+        match &msg.content[0] {
+            AnthropicContentBlock::Text { text, .. } => {
+                assert_eq!(text, "");
+            },
+            _ => panic!("Expected Text block as first content block"),
+        }
+
+        // 验证第二个块是 tool_use
+        match &msg.content[1] {
+            AnthropicContentBlock::ToolUse { id, name, .. } => {
+                assert_eq!(id, "call_123");
+                assert_eq!(name, "test_tool");
+            },
+            _ => panic!("Expected ToolUse block as second content block"),
+        }
+    }
 
     #[test]
     fn response_to_output_parses_text_tool_use_and_thinking() {
