@@ -38,7 +38,7 @@ const VALID_INVOCATION_KINDS: InvocationKind[] = ['subRun', 'rootExecution'];
 const VALID_SUBRUN_STORAGE_MODES: SubRunStorageMode[] = ['sharedSession', 'independentSession'];
 const VALID_CHILD_NOTIFICATION_KINDS: ChildSessionNotificationKind[] = [
   'started',
-  'progressSummary',
+  'progress_summary',
   'delivered',
   'waiting',
   'resumed',

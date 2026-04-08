@@ -272,7 +272,7 @@ impl SessionState {
 
     /// 收集指定 agent 子树的所有节点（含自身）。
     ///
-    /// 从 root_agent_id 出发递归查找所有后代，
+    /// 从 root_agent_id 出发递归查找所有后代（不含自身），
     /// 用于级联关闭时确定影响范围。
     pub fn subtree_nodes(&self, root_agent_id: &str) -> Result<Vec<ChildSessionNode>> {
         let nodes = lock_anyhow(&self.child_nodes, "session child nodes")?;

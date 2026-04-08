@@ -16,12 +16,14 @@ use astrcode_runtime_config::DEFAULT_MAX_CONCURRENT_AGENTS;
 use astrcode_runtime_execution::{
     derive_child_execution_owner, resolve_profile_tool_names, resolve_subagent_overrides,
 };
-use astrcode_runtime_registry::ToolRegistry;
 use async_trait::async_trait;
 use serde_json::json;
 
 use super::DeferredSubAgentExecutor;
-use crate::{service::RuntimeService, test_support::capabilities_from_tools};
+use crate::{
+    service::RuntimeService,
+    test_support::{capabilities_from_tools, empty_capabilities},
+};
 
 struct RecordingEventSink {
     events: Mutex<Vec<StorageEvent>>,
@@ -83,12 +85,10 @@ fn append_storage_event(service: &RuntimeService, session_id: &str, event: &Stor
 
 #[test]
 fn resolve_profile_tool_names_rejects_legacy_aliases() {
-    let capabilities = capabilities_from_tools(
-        ToolRegistry::builder()
-            .register(Box::new(DemoTool { name: "readFile" }))
-            .register(Box::new(DemoTool { name: "shell" }))
-            .build(),
-    );
+    let capabilities = capabilities_from_tools(vec![
+        Box::new(DemoTool { name: "readFile" }),
+        Box::new(DemoTool { name: "shell" }),
+    ]);
 
     let error = resolve_profile_tool_names(
         &capabilities,
@@ -138,7 +138,7 @@ async fn deferred_executor_fails_before_runtime_binding() {
 async fn scoped_agent_profile_cache_reuses_loaded_registry_until_reload() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
-        RuntimeService::from_capabilities(capabilities_from_tools(ToolRegistry::builder().build()))
+        RuntimeService::from_capabilities(empty_capabilities())
             .expect("runtime service should build"),
     );
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
@@ -224,12 +224,10 @@ tools: [readFile, grep]
 async fn spawn_agent_tool_emits_child_events_with_agent_context() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
-        RuntimeService::from_capabilities(capabilities_from_tools(
-            ToolRegistry::builder()
-                .register(Box::new(DemoTool { name: "readFile" }))
-                .register(Box::new(DemoTool { name: "grep" }))
-                .build(),
-        ))
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![
+            Box::new(DemoTool { name: "readFile" }),
+            Box::new(DemoTool { name: "grep" }),
+        ]))
         .expect("runtime service should build"),
     );
     let executor = Arc::new(DeferredSubAgentExecutor::default());
@@ -280,12 +278,10 @@ async fn spawn_agent_tool_emits_child_events_with_agent_context() {
 async fn spawn_agent_background_cancellation_releases_concurrency_slots() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
-        RuntimeService::from_capabilities(capabilities_from_tools(
-            ToolRegistry::builder()
-                .register(Box::new(DemoTool { name: "readFile" }))
-                .register(Box::new(DemoTool { name: "grep" }))
-                .build(),
-        ))
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![
+            Box::new(DemoTool { name: "readFile" }),
+            Box::new(DemoTool { name: "grep" }),
+        ]))
         .expect("runtime service should build"),
     );
     let executor = Arc::new(DeferredSubAgentExecutor::default());
@@ -355,12 +351,10 @@ async fn spawn_agent_background_cancellation_releases_concurrency_slots() {
 async fn spawn_agent_lifecycle_events_persist_parent_tool_call_id() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
-        RuntimeService::from_capabilities(capabilities_from_tools(
-            ToolRegistry::builder()
-                .register(Box::new(DemoTool { name: "readFile" }))
-                .register(Box::new(DemoTool { name: "grep" }))
-                .build(),
-        ))
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![
+            Box::new(DemoTool { name: "readFile" }),
+            Box::new(DemoTool { name: "grep" }),
+        ]))
         .expect("runtime service should build"),
     );
     let executor = Arc::new(DeferredSubAgentExecutor::default());
@@ -479,12 +473,10 @@ async fn spawn_agent_lifecycle_events_persist_parent_tool_call_id() {
 async fn get_subrun_status_reconstructs_durable_snapshot_without_live_handle() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
-        RuntimeService::from_capabilities(capabilities_from_tools(
-            ToolRegistry::builder()
-                .register(Box::new(DemoTool { name: "readFile" }))
-                .register(Box::new(DemoTool { name: "grep" }))
-                .build(),
-        ))
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![
+            Box::new(DemoTool { name: "readFile" }),
+            Box::new(DemoTool { name: "grep" }),
+        ]))
         .expect("runtime service should build"),
     );
 
@@ -567,12 +559,10 @@ async fn get_subrun_status_reconstructs_durable_snapshot_without_live_handle() {
 async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
-        RuntimeService::from_capabilities(capabilities_from_tools(
-            ToolRegistry::builder()
-                .register(Box::new(DemoTool { name: "readFile" }))
-                .register(Box::new(DemoTool { name: "grep" }))
-                .build(),
-        ))
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![
+            Box::new(DemoTool { name: "readFile" }),
+            Box::new(DemoTool { name: "grep" }),
+        ]))
         .expect("runtime service should build"),
     );
 
@@ -655,12 +645,10 @@ async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
 async fn get_subrun_status_keeps_storage_mode_parity_for_parent_aborted_subruns() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
-        RuntimeService::from_capabilities(capabilities_from_tools(
-            ToolRegistry::builder()
-                .register(Box::new(DemoTool { name: "readFile" }))
-                .register(Box::new(DemoTool { name: "grep" }))
-                .build(),
-        ))
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![
+            Box::new(DemoTool { name: "readFile" }),
+            Box::new(DemoTool { name: "grep" }),
+        ]))
         .expect("runtime service should build"),
     );
 
@@ -743,12 +731,10 @@ async fn get_subrun_status_keeps_storage_mode_parity_for_parent_aborted_subruns(
 async fn get_subrun_status_rejects_live_handle_from_other_session() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
-        RuntimeService::from_capabilities(capabilities_from_tools(
-            ToolRegistry::builder()
-                .register(Box::new(DemoTool { name: "readFile" }))
-                .register(Box::new(DemoTool { name: "grep" }))
-                .build(),
-        ))
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![
+            Box::new(DemoTool { name: "readFile" }),
+            Box::new(DemoTool { name: "grep" }),
+        ]))
         .expect("runtime service should build"),
     );
 
@@ -801,11 +787,9 @@ async fn get_subrun_status_rejects_live_handle_from_other_session() {
 async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_exists() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
-        RuntimeService::from_capabilities(capabilities_from_tools(
-            ToolRegistry::builder()
-                .register(Box::new(DemoTool { name: "readFile" }))
-                .build(),
-        ))
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![Box::new(DemoTool {
+            name: "readFile",
+        })]))
         .expect("runtime service should build"),
     );
 
@@ -917,11 +901,9 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
 async fn get_subrun_status_uses_live_overlay_for_independent_subrun_in_parent_session() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
-        RuntimeService::from_capabilities(capabilities_from_tools(
-            ToolRegistry::builder()
-                .register(Box::new(DemoTool { name: "readFile" }))
-                .build(),
-        ))
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![Box::new(DemoTool {
+            name: "readFile",
+        })]))
         .expect("runtime service should build"),
     );
 
@@ -1103,12 +1085,10 @@ fn runtime_owner_graph_exposes_execution_surface_owner() {
 async fn tool_execution_surface_lists_registered_tools() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
-        RuntimeService::from_capabilities(capabilities_from_tools(
-            ToolRegistry::builder()
-                .register(Box::new(DemoTool { name: "readFile" }))
-                .register(Box::new(DemoTool { name: "grep" }))
-                .build(),
-        ))
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![
+            Box::new(DemoTool { name: "readFile" }),
+            Box::new(DemoTool { name: "grep" }),
+        ]))
         .expect("runtime service should build"),
     );
 
@@ -1122,7 +1102,7 @@ async fn tool_execution_surface_lists_registered_tools() {
 async fn parent_turn_completion_does_not_cancel_running_child_session() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
-        RuntimeService::from_capabilities(capabilities_from_tools(ToolRegistry::builder().build()))
+        RuntimeService::from_capabilities(empty_capabilities())
             .expect("runtime service should build"),
     );
 
@@ -1199,12 +1179,10 @@ async fn parent_turn_completion_does_not_cancel_running_child_session() {
 async fn spawn_agent_terminal_delivery_notification_is_emitted_once() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
-        RuntimeService::from_capabilities(capabilities_from_tools(
-            ToolRegistry::builder()
-                .register(Box::new(DemoTool { name: "readFile" }))
-                .register(Box::new(DemoTool { name: "grep" }))
-                .build(),
-        ))
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![
+            Box::new(DemoTool { name: "readFile" }),
+            Box::new(DemoTool { name: "grep" }),
+        ]))
         .expect("runtime service should build"),
     );
     let executor = Arc::new(DeferredSubAgentExecutor::default());
@@ -1570,7 +1548,7 @@ fn project_child_terminal_delivery_returns_default_summary_when_no_handoff_or_fa
 async fn reactivate_parent_skips_when_parent_is_running() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
-        RuntimeService::from_capabilities(capabilities_from_tools(ToolRegistry::builder().build()))
+        RuntimeService::from_capabilities(empty_capabilities())
             .expect("runtime service should build"),
     );
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
@@ -1607,7 +1585,7 @@ async fn reactivate_parent_skips_when_parent_is_running() {
 async fn reactivate_parent_skips_when_active_turn_matches_current_turn() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
-        RuntimeService::from_capabilities(capabilities_from_tools(ToolRegistry::builder().build()))
+        RuntimeService::from_capabilities(empty_capabilities())
             .expect("runtime service should build"),
     );
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");

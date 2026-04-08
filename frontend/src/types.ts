@@ -11,7 +11,7 @@ export type SubRunStatusSource = 'live' | 'durable' | 'legacyDurable';
 export type SessionEventScope = 'self' | 'subtree' | 'directChildren';
 export type ChildSessionNotificationKind =
   | 'started'
-  | 'progressSummary'
+  | 'progress_summary'
   | 'delivered'
   | 'waiting'
   | 'resumed'

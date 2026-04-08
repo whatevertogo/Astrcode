@@ -434,7 +434,7 @@ export function buildParentSummaryProjection(messages: Message[]): ParentSummary
       status,
       summary:
         failure?.displayMessage ??
-        handoff?.summary.trim() ??
+        (handoff?.summary.trim() || undefined) ??
         (status === 'running' ? '后台运行中' : ''),
       openSessionId: record.childSessionId ?? null,
       hasFinalReply: handoff !== undefined,

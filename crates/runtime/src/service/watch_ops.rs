@@ -345,10 +345,13 @@ mod tests {
             }),
             "watch targets: {watch_targets:?}"
         );
+        let process_cwd = std::env::current_dir().expect("cwd should be available");
         assert!(
             watch_targets
                 .iter()
-                .all(|target| target.path != std::env::temp_dir())
+                .all(|target| target.path != process_cwd),
+            "watch targets should not include process cwd; cwd={process_cwd:?}, \
+             targets={watch_targets:?}"
         );
     }
 }

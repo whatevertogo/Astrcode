@@ -27,7 +27,7 @@ use serde_json::json;
 
 use super::{
     fixtures::*,
-    test_support::{capabilities_from_tools, empty_capabilities},
+    test_support::{boxed_tool, capabilities_from_tools, empty_capabilities},
 };
 use crate::{AgentLoop, agent_loop::TurnOutcome};
 
@@ -94,11 +94,7 @@ async fn phase0_behavior_regression_matrix_keeps_core_turn_outcomes_stable() {
                     ])),
                     delay: std::time::Duration::from_millis(0),
                 }) as Arc<dyn astrcode_runtime_llm::LlmProvider>,
-                capabilities_from_tools(
-                    astrcode_runtime_registry::ToolRegistry::builder()
-                        .register(Box::new(QuickTool))
-                        .build(),
-                ),
+                capabilities_from_tools(vec![boxed_tool(QuickTool)]),
                 CancelToken::new(),
             ),
             Scenario::Cancelled => {
@@ -328,11 +324,9 @@ async fn phase0_behavior_regression_covers_compaction_and_policy_edges() {
             ])),
             delay: std::time::Duration::from_millis(0),
         });
-        let tools = astrcode_runtime_registry::ToolRegistry::builder()
-            .register(Box::new(CountingTool {
-                executions: Arc::clone(&executions),
-            }))
-            .build();
+        let tools = vec![boxed_tool(CountingTool {
+            executions: executions.clone(),
+        })];
         let loop_runner = AgentLoop::from_capabilities(
             Arc::new(StaticProviderFactory { provider }),
             capabilities_from_tools(tools),
@@ -401,11 +395,9 @@ async fn phase0_behavior_regression_covers_compaction_and_policy_edges() {
             requests: Arc::clone(&approval_requests),
             resolutions: Mutex::new(VecDeque::from([ApprovalResolution::approved()])),
         });
-        let tools = astrcode_runtime_registry::ToolRegistry::builder()
-            .register(Box::new(CountingTool {
-                executions: Arc::clone(&executions),
-            }))
-            .build();
+        let tools = vec![boxed_tool(CountingTool {
+            executions: executions.clone(),
+        })];
         let loop_runner = AgentLoop::from_capabilities(
             Arc::new(StaticProviderFactory { provider }),
             capabilities_from_tools(tools),
@@ -485,9 +477,7 @@ async fn parent_turn_completes_after_deciding_to_close_child() {
         delay: std::time::Duration::from_millis(0),
     });
 
-    let tools = astrcode_runtime_registry::ToolRegistry::builder()
-        .register(Box::new(QuickTool))
-        .build();
+    let tools = vec![];
     let loop_runner = AgentLoop::from_capabilities(
         Arc::new(StaticProviderFactory { provider }),
         capabilities_from_tools(tools),
@@ -555,9 +545,7 @@ async fn parent_turn_completes_after_deciding_to_keep_child() {
         delay: std::time::Duration::from_millis(0),
     });
 
-    let tools = astrcode_runtime_registry::ToolRegistry::builder()
-        .register(Box::new(QuickTool))
-        .build();
+    let tools = vec![];
     let loop_runner = AgentLoop::from_capabilities(
         Arc::new(StaticProviderFactory { provider }),
         capabilities_from_tools(tools),

@@ -19,13 +19,12 @@ use astrcode_core::{
 };
 use astrcode_protocol::capability::SideEffectLevel;
 use astrcode_runtime_llm::{EventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
-use astrcode_runtime_registry::ToolRegistry;
 use async_trait::async_trait;
 use serde_json::json;
 
 use super::{
     fixtures::*,
-    test_support::{capabilities_from_tools, empty_capabilities},
+    test_support::{boxed_tool, capabilities_from_tools, empty_capabilities},
 };
 use crate::{
     AgentLoop,
@@ -284,12 +283,7 @@ async fn auto_compact_with_keep_recent_turns_two_keeps_second_latest_turn_tool_r
         ])),
         requests: Arc::clone(&requests),
     });
-    let tools = ToolRegistry::builder()
-        .register(Box::new(ReadFileMetadataTool {
-            path: PathBuf::from("src/protected.rs"),
-            output: protected_tool_result.clone(),
-        }))
-        .build();
+    let tools = vec![];
     let loop_runner = AgentLoop::from_capabilities(
         Arc::new(StaticProviderFactory { provider }),
         capabilities_from_tools(tools),
@@ -421,12 +415,10 @@ async fn reactive_compact_restores_recent_file_context_after_current_turn_file_a
         ])),
         requests: Arc::clone(&requests),
     });
-    let tools = ToolRegistry::builder()
-        .register(Box::new(ReadFileMetadataTool {
-            path: file_path.clone(),
-            output: file_contents.clone(),
-        }))
-        .build();
+    let tools = vec![boxed_tool(ReadFileMetadataTool {
+        path: file_path.clone(),
+        output: file_contents.clone(),
+    })];
     let loop_runner = AgentLoop::from_capabilities(
         Arc::new(StaticProviderFactory { provider }),
         capabilities_from_tools(tools),

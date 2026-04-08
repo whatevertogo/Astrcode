@@ -18,7 +18,10 @@ use astrcode_core::{CancelToken, StorageEvent, ToolCallRequest};
 use astrcode_runtime_llm::LlmOutput;
 use serde_json::json;
 
-use super::{fixtures::*, test_support::capabilities_from_tools};
+use super::{
+    fixtures::*,
+    test_support::{boxed_tool, capabilities_from_tools},
+};
 use crate::{AgentLoop, agent_loop::TurnOutcome};
 
 #[tokio::test]
@@ -47,9 +50,7 @@ async fn tool_events_are_ordered_and_turn_finishes() {
         delay: std::time::Duration::from_millis(0),
     });
 
-    let tools = astrcode_runtime_registry::ToolRegistry::builder()
-        .register(Box::new(QuickTool))
-        .build();
+    let tools = vec![boxed_tool(QuickTool)];
     let factory = Arc::new(StaticProviderFactory { provider });
     let loop_runner = AgentLoop::from_capabilities(factory, capabilities_from_tools(tools));
     let state = make_state("list files");
@@ -110,9 +111,7 @@ async fn streaming_tool_emits_deltas_before_tool_result() {
         delay: std::time::Duration::from_millis(0),
     });
 
-    let tools = astrcode_runtime_registry::ToolRegistry::builder()
-        .register(Box::new(StreamingTool))
-        .build();
+    let tools = vec![boxed_tool(StreamingTool)];
     let factory = Arc::new(StaticProviderFactory { provider });
     let loop_runner = AgentLoop::from_capabilities(factory, capabilities_from_tools(tools));
     let state = make_state("stream tool");
@@ -192,13 +191,11 @@ async fn concurrency_safe_tools_run_in_parallel() {
         ])),
         delay: std::time::Duration::from_millis(0),
     });
-    let tools = astrcode_runtime_registry::ToolRegistry::builder()
-        .register(Box::new(ConcurrencyTrackingTool {
-            name: "parallelSafeTool",
-            concurrency_safe: true,
-            tracker: Arc::clone(&tracker),
-        }))
-        .build();
+    let tools = vec![boxed_tool(ConcurrencyTrackingTool {
+        name: "parallelSafeTool",
+        concurrency_safe: true,
+        tracker: tracker.clone(),
+    })];
     let loop_runner = AgentLoop::from_capabilities(
         Arc::new(StaticProviderFactory { provider }),
         capabilities_from_tools(tools),
@@ -254,13 +251,11 @@ async fn unsafe_tools_remain_sequential() {
         ])),
         delay: std::time::Duration::from_millis(0),
     });
-    let tools = astrcode_runtime_registry::ToolRegistry::builder()
-        .register(Box::new(ConcurrencyTrackingTool {
-            name: "sequentialUnsafeTool",
-            concurrency_safe: false,
-            tracker: Arc::clone(&tracker),
-        }))
-        .build();
+    let tools = vec![boxed_tool(ConcurrencyTrackingTool {
+        name: "sequentialUnsafeTool",
+        concurrency_safe: false,
+        tracker: tracker.clone(),
+    })];
     let loop_runner = AgentLoop::from_capabilities(
         Arc::new(StaticProviderFactory { provider }),
         capabilities_from_tools(tools),
@@ -317,13 +312,11 @@ async fn max_tool_concurrency_limits_safe_parallelism() {
         ])),
         delay: std::time::Duration::from_millis(0),
     });
-    let tools = astrcode_runtime_registry::ToolRegistry::builder()
-        .register(Box::new(ConcurrencyTrackingTool {
-            name: "limitedSafeTool",
-            concurrency_safe: true,
-            tracker: Arc::clone(&tracker),
-        }))
-        .build();
+    let tools = vec![boxed_tool(ConcurrencyTrackingTool {
+        name: "limitedSafeTool",
+        concurrency_safe: true,
+        tracker: tracker.clone(),
+    })];
     let loop_runner = AgentLoop::from_capabilities(
         Arc::new(StaticProviderFactory { provider }),
         capabilities_from_tools(tools),
@@ -381,13 +374,11 @@ async fn parallel_safe_tool_results_preserve_original_request_order() {
         ])),
         requests: Arc::clone(&requests),
     });
-    let tools = astrcode_runtime_registry::ToolRegistry::builder()
-        .register(Box::new(ConcurrencyTrackingTool {
-            name: "orderedSafeTool",
-            concurrency_safe: true,
-            tracker,
-        }))
-        .build();
+    let tools = vec![boxed_tool(ConcurrencyTrackingTool {
+        name: "orderedSafeTool",
+        concurrency_safe: true,
+        tracker: tracker.clone(),
+    })];
     let loop_runner = AgentLoop::from_capabilities(
         Arc::new(StaticProviderFactory { provider }),
         capabilities_from_tools(tools),
@@ -455,13 +446,11 @@ async fn parallel_safe_tool_results_stream_before_slower_peers_finish() {
         ])),
         delay: std::time::Duration::from_millis(0),
     });
-    let tools = astrcode_runtime_registry::ToolRegistry::builder()
-        .register(Box::new(ConcurrencyTrackingTool {
-            name: "liveSafeTool",
-            concurrency_safe: true,
-            tracker,
-        }))
-        .build();
+    let tools = vec![boxed_tool(ConcurrencyTrackingTool {
+        name: "liveSafeTool",
+        concurrency_safe: true,
+        tracker: tracker.clone(),
+    })];
     let loop_runner = AgentLoop::from_capabilities(
         Arc::new(StaticProviderFactory { provider }),
         capabilities_from_tools(tools),
@@ -540,9 +529,7 @@ async fn long_tool_chains_complete_without_a_step_cap() {
         delay: std::time::Duration::from_millis(0),
     });
 
-    let tools = astrcode_runtime_registry::ToolRegistry::builder()
-        .register(Box::new(QuickTool))
-        .build();
+    let tools = vec![boxed_tool(QuickTool)];
 
     let factory = Arc::new(StaticProviderFactory { provider });
     let loop_runner = AgentLoop::from_capabilities(factory, capabilities_from_tools(tools));
@@ -612,9 +599,7 @@ async fn turn_done_event_is_emitted_once_for_multi_step_tool_turn() {
         delay: std::time::Duration::from_millis(0),
     });
 
-    let tools = astrcode_runtime_registry::ToolRegistry::builder()
-        .register(Box::new(QuickTool))
-        .build();
+    let tools = vec![boxed_tool(QuickTool)];
     let loop_runner = AgentLoop::from_capabilities(
         Arc::new(StaticProviderFactory { provider }),
         capabilities_from_tools(tools),

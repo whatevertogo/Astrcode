@@ -39,7 +39,7 @@ export interface LineageSnapshot {
 export interface ChildSessionNotification {
   notificationId: string;
   childRef: ChildAgentRef;
-  kind: 'started' | 'progressSummary' | 'delivered' | 'waiting' | 'resumed' | 'closed' | 'failed';
+  kind: 'started' | 'progress_summary' | 'delivered' | 'waiting' | 'resumed' | 'closed' | 'failed';
   summary: string;
   status: string;
   openSessionId: string;

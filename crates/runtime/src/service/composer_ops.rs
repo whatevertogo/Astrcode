@@ -214,7 +214,6 @@ mod tests {
         Result, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
         ToolPromptMetadata,
     };
-    use astrcode_runtime_registry::ToolRegistry;
     use astrcode_runtime_skill_loader::{SkillCatalog, SkillSource, SkillSpec};
     use serde_json::json;
 
@@ -282,7 +281,7 @@ mod tests {
     async fn list_composer_options_keeps_skill_distinct_from_capability_surface() {
         let _guard = TestEnvGuard::new();
         let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-        let tools = ToolRegistry::builder().register(Box::new(DemoTool)).build();
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(DemoTool)];
 
         let service = Arc::new(
             RuntimeService::from_capabilities_with_prompt_inputs(
@@ -322,7 +321,7 @@ mod tests {
     async fn list_composer_options_filters_by_kind_and_query() {
         let _guard = TestEnvGuard::new();
         let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-        let tools = ToolRegistry::builder().register(Box::new(DemoTool)).build();
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(DemoTool)];
 
         let service = Arc::new(
             RuntimeService::from_capabilities_with_prompt_inputs(
@@ -359,7 +358,7 @@ mod tests {
     async fn list_composer_options_exposes_compact_command_for_command_filter() {
         let _guard = TestEnvGuard::new();
         let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-        let tools = ToolRegistry::builder().register(Box::new(DemoTool)).build();
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(DemoTool)];
 
         let service = Arc::new(
             RuntimeService::from_capabilities_with_prompt_inputs(
