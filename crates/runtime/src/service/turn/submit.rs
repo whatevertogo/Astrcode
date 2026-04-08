@@ -68,7 +68,6 @@ impl AgentExecutionServiceHandle {
         let loop_ = self.runtime.current_loop().await;
         let accepted_turn_id = turn_id.clone();
         let observability = self.runtime.observability.clone();
-        let agent_control = self.runtime.agent_control.clone();
         let accepted_session_id = session_id.clone();
         let user_event = prepared_submission.user_event.clone();
         let execution_owner = prepared_submission.execution_owner.clone();
@@ -85,7 +84,7 @@ impl AgentExecutionServiceHandle {
                 budget_settings,
             )
             .await;
-            complete_session_execution(&state, &agent_control, &turn_id, result.phase).await;
+            complete_session_execution(&state, result.phase).await;
 
             let elapsed = turn_started_at.elapsed();
             observability.record_turn_execution(elapsed, result.succeeded);

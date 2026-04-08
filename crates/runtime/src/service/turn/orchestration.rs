@@ -5,7 +5,6 @@ use astrcode_core::{
     AgentEventContext, AstrError, CancelToken, EventTranslator, ExecutionOwner, Phase,
     StorageEvent, UserMessageOrigin,
 };
-use astrcode_runtime_agent_control::AgentControl;
 use astrcode_runtime_agent_loop::{
     AgentLoop, CompactionTailSnapshot, TokenBudgetDecision, TurnOutcome, build_auto_continue_nudge,
     check_token_budget, estimate_text_tokens,
@@ -55,14 +54,10 @@ pub struct SessionTurnRunResult {
     pub succeeded: bool,
 }
 
-pub async fn complete_session_execution(
-    session: &SessionState,
-    agent_control: &AgentControl,
-    turn_id: &str,
-    phase: Phase,
-) {
-    // 故意忽略：取消子运行失败不应阻断会话清理
-    let _ = agent_control.cancel_for_parent_turn(turn_id).await;
+pub async fn complete_session_execution(session: &SessionState, phase: Phase) {
+    // 后台子执行的生命周期由 agent_control / subrun API 单独管理。
+    // 父 turn 正常结束时这里只清理 session 自己的活跃状态，不能顺手把后台 subrun 一起取消，
+    // 否则 shared-session 子执行会在父回复刚结束时被错误中断。
     complete_session_execution_state(session, phase);
 }
 

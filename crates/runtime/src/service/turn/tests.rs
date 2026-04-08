@@ -17,7 +17,7 @@ use serde_json::json;
 use super::{
     BudgetSettings,
     branch::{ensure_branch_depth_within_limit, stable_events_before_active_turn},
-    orchestration::execute_turn_chain,
+    orchestration::{complete_session_execution, execute_turn_chain},
 };
 use crate::{
     llm::{EventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits},
@@ -532,6 +532,55 @@ async fn interrupt_cascades_to_registered_child_agents() {
         .await
         .expect("child should still exist");
     assert_eq!(child_handle.status, astrcode_core::AgentStatus::Cancelled);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn complete_session_execution_keeps_background_child_agents_alive() {
+    let _guard = TestEnvGuard::new();
+    let (temp_dir, state, mut translator) = build_test_state();
+    let control = astrcode_runtime_agent_control::AgentControl::new();
+
+    append_and_broadcast(
+        &state,
+        &StorageEvent::SessionStart {
+            session_id: "test-session".to_string(),
+            timestamp: Utc::now(),
+            working_dir: temp_dir.path().to_string_lossy().to_string(),
+            parent_session_id: None,
+            parent_storage_seq: None,
+        },
+        &mut translator,
+    )
+    .await
+    .expect("session start should persist");
+
+    let child = control
+        .spawn(
+            &astrcode_core::AgentProfile {
+                id: "explore".to_string(),
+                name: "Explore".to_string(),
+                description: "explore".to_string(),
+                mode: AgentMode::SubAgent,
+                system_prompt: None,
+                allowed_tools: vec!["readFile".to_string()],
+                disallowed_tools: Vec::new(),
+                model_preference: None,
+            },
+            "test-session",
+            Some("turn-parent".to_string()),
+            None,
+        )
+        .await
+        .expect("child spawn should succeed");
+    let _ = control.mark_running(&child.agent_id).await;
+
+    complete_session_execution(&state, Phase::Idle).await;
+
+    let child_handle = control
+        .get(&child.agent_id)
+        .await
+        .expect("child should remain registered");
+    assert_eq!(child_handle.status, astrcode_core::AgentStatus::Running);
 }
 
 #[tokio::test(flavor = "current_thread")]

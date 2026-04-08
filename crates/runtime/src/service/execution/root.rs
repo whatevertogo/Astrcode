@@ -147,7 +147,6 @@ impl AgentExecutionServiceHandle {
         .map_err(ServiceError::from)?;
 
         let observability = runtime.observability.clone();
-        let agent_control = runtime.agent_control.clone();
         let session_state_for_task = Arc::clone(&session_state);
         let accepted_turn_id = turn_id.clone();
         let launch = prepare_root_execution_launch(
@@ -174,13 +173,7 @@ impl AgentExecutionServiceHandle {
                 budget_settings,
             )
             .await;
-            complete_session_execution(
-                &session_state_for_task,
-                &agent_control,
-                &turn_id,
-                task_result.phase,
-            )
-            .await;
+            complete_session_execution(&session_state_for_task, task_result.phase).await;
 
             let elapsed = turn_started_at.elapsed();
             observability.record_turn_execution(elapsed, task_result.succeeded);

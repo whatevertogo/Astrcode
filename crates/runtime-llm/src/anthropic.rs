@@ -755,18 +755,19 @@ fn process_sse_block(
     }
 }
 
-/// 为 Claude 模型生成 extended thinking 配置。
+/// 为模型生成 extended thinking 配置。
 ///
-/// 当模型名称以 `claude-` 开头且 max_tokens >= 2 时启用 thinking 模式，
-/// 预算 token 数为 max_tokens 的 75%（向下取整）。
+/// 当 max_tokens >= 2 时启用 thinking 模式，预算 token 数为 max_tokens 的 75%（向下取整）。
 ///
 /// ## 设计动机
 ///
-/// Extended thinking 让 Claude 在输出前进行深度推理，提升复杂任务的回答质量。
+/// Extended thinking 让模型在输出前进行深度推理，提升复杂任务的回答质量。
 /// 预算设为 75% 是为了保留至少 25% 的 token 给实际输出内容。
 /// 如果预算为 0 或等于 max_tokens，则不启用（避免无意义配置）。
-fn thinking_config_for_model(model: &str, max_tokens: u32) -> Option<AnthropicThinking> {
-    if !model.starts_with("claude-") || max_tokens < 2 {
+///
+/// 默认为所有模型启用此功能。如果模型不支持，API 会忽略此参数。
+fn thinking_config_for_model(_model: &str, max_tokens: u32) -> Option<AnthropicThinking> {
+    if max_tokens < 2 {
         return None;
     }
 
