@@ -21,7 +21,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use astrcode_core::{CapabilityDescriptor, LlmMessage, UserMessageOrigin};
+use astrcode_core::{LlmMessage, UserMessageOrigin};
+use astrcode_protocol::capability::CapabilityDescriptor;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PruneStats {
@@ -147,7 +148,8 @@ fn recent_turn_start_index(messages: &[LlmMessage], requested_recent_turns: usiz
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{CapabilityKind, ToolCallRequest};
+    use astrcode_core::ToolCallRequest;
+    use astrcode_protocol::capability::CapabilityKind;
     use serde_json::json;
 
     use super::*;

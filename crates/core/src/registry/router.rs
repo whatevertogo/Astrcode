@@ -4,14 +4,15 @@
 
 use std::{fmt, path::PathBuf, sync::Arc};
 
+use astrcode_protocol::capability::CapabilityDescriptor;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    AgentEventContext, CancelToken, CapabilityDescriptor, ExecutionOwner, Result, ToolContext,
-    ToolEventSink, ToolExecutionResult, ToolOutputDelta,
+    AgentEventContext, CancelToken, ExecutionOwner, Result, ToolEventSink, ToolExecutionResult,
+    ToolOutputDelta,
 };
 
 /// 能力调用的上下文信息。
@@ -68,33 +69,6 @@ impl fmt::Debug for CapabilityContext {
                 &self.event_sink.as_ref().map(|_| "<attached>"),
             )
             .finish()
-    }
-}
-
-impl CapabilityContext {
-    pub fn from_tool_context(ctx: &ToolContext, request_id: impl Into<Option<String>>) -> Self {
-        // 只分配一次：先获取 PathBuf，再从中提取字符串用于 profile_context
-        let working_dir = ctx.working_dir().to_path_buf();
-        let working_dir_str = working_dir.to_string_lossy().into_owned();
-        Self {
-            request_id: request_id.into(),
-            trace_id: None,
-            session_id: ctx.session_id().to_string(),
-            working_dir,
-            cancel: ctx.cancel().clone(),
-            turn_id: ctx.turn_id().map(ToString::to_string),
-            agent: ctx.agent_context().clone(),
-            execution_owner: ctx.execution_owner().cloned(),
-            profile: "coding".to_string(),
-            profile_context: json!({
-                "workingDir": working_dir_str,
-                "repoRoot": working_dir_str,
-                "approvalMode": "inherit"
-            }),
-            metadata: Value::Null,
-            tool_output_sender: ctx.tool_output_sender(),
-            event_sink: ctx.event_sink(),
-        }
     }
 }
 

@@ -1,12 +1,13 @@
 import React, { Component, memo, useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { AssistantMessage as AssistantMessageType } from '../../types';
+import type { AssistantMessage as AssistantMessageType, PromptMetricsMessage } from '../../types';
 import styles from './AssistantMessage.module.css';
 
 interface AssistantMessageProps {
   message: AssistantMessageType;
   hideAvatar?: boolean;
+  metrics?: PromptMetricsMessage;
 }
 
 interface MarkdownGuardProps {
@@ -175,12 +176,29 @@ const MarkdownContent = memo(function MarkdownContent({
   );
 });
 
-function AssistantMessage({ message, hideAvatar }: AssistantMessageProps) {
+function formatTokenCount(value?: number): string {
+  if (value === undefined) {
+    return '—';
+  }
+  if (value >= 1000) {
+    return `${Math.round(value / 1000)}k`;
+  }
+  return value.toLocaleString();
+}
+
+function AssistantMessage({ message, hideAvatar, metrics }: AssistantMessageProps) {
   const { visibleText, thinkingBlocks } = React.useMemo(
     () => extractThinkingBlocks(message.text, message.reasoningText),
     [message.text, message.reasoningText]
   );
   const streaming = message.streaming;
+
+  // 调试：打印 metrics 数据
+  React.useEffect(() => {
+    if (metrics) {
+      console.log('[AssistantMessage] metrics:', metrics);
+    }
+  }, [metrics]);
 
   return (
     <div className={styles.wrapper}>
@@ -267,6 +285,15 @@ function AssistantMessage({ message, hideAvatar }: AssistantMessageProps) {
           {visibleText ? <MarkdownContent text={visibleText} defer={streaming} /> : null}
           {message.streaming && <span className={styles.cursor}>▋</span>}
         </div>
+        {metrics && !message.streaming && (
+          <div className={styles.metricsInline}>
+            📊 {formatTokenCount(metrics.estimatedTokens)} tokens ·{' '}
+            {formatTokenCount(metrics.effectiveWindow ?? 0)}/
+            {formatTokenCount(metrics.contextWindow ?? 0)} context · Cache:{' '}
+            {formatTokenCount(metrics.cacheReadInputTokens)}/
+            {formatTokenCount(metrics.cacheCreationInputTokens)}
+          </div>
+        )}
       </div>
     </div>
   );

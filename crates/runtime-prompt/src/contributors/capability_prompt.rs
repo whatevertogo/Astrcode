@@ -9,7 +9,8 @@
 //! - 超过 4 个工具时，仅展开标记为 `always_include` 的工具
 //! - 同时处理 [`PromptDeclaration`]（插件/MCP 注入的指南）
 
-use astrcode_core::{CapabilityDescriptor, ToolPromptMetadata};
+use astrcode_core::ToolPromptMetadata;
+use astrcode_protocol::capability::CapabilityDescriptor;
 use async_trait::async_trait;
 
 use crate::{
@@ -209,9 +210,8 @@ fn build_prompt_declaration_block(declaration: &PromptDeclaration) -> BlockSpec 
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{
-        CapabilityDescriptor, CapabilityKind, ToolPromptMetadata, test_support::TestEnvGuard,
-    };
+    use astrcode_core::{ToolPromptMetadata, test_support::TestEnvGuard};
+    use astrcode_protocol::capability::{CapabilityDescriptor, CapabilityKind};
     use serde_json::json;
 
     use super::*;

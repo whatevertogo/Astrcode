@@ -7,10 +7,10 @@ authors.workspace = true
 
 [dependencies]
 astrcode-core = { path = "../core" }
+astrcode-protocol = { path = "../protocol" }
 astrcode-runtime-config = { path = "../runtime-config" }
 astrcode-runtime-llm = { path = "../runtime-llm" }
 astrcode-runtime-prompt = { path = "../runtime-prompt" }
-astrcode-runtime-agent-tool = { path = "../runtime-agent-tool" }
 astrcode-runtime-skill-loader = { path = "../runtime-skill-loader" }
 astrcode-runtime-registry = { path = "../runtime-registry" }
 async-trait.workspace = true

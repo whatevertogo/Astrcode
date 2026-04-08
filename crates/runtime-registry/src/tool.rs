@@ -3,12 +3,12 @@
 use std::{collections::HashMap, sync::Arc};
 
 use astrcode_core::{
-    AstrError, CapabilityContext, CapabilityDescriptor, CapabilityExecutionResult,
-    CapabilityInvoker, Result, Tool, ToolCallRequest, ToolContext, ToolDefinition,
-    ToolExecutionResult,
+    AstrError, CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, Result, Tool,
+    ToolContext,
 };
+use astrcode_protocol::capability::CapabilityDescriptor;
 use async_trait::async_trait;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 pub struct ToolRegistryBuilder {
     tools: HashMap<String, Box<dyn Tool>>,
@@ -57,54 +57,24 @@ impl ToolRegistry {
         ToolRegistryBuilder::new()
     }
 
-    pub fn definitions(&self) -> Vec<ToolDefinition> {
-        self.order
-            .iter()
-            .filter_map(|name| self.tools.get(name))
-            .map(|tool| tool.definition())
-            .collect()
-    }
-
-    pub fn names(&self) -> &[String] {
-        &self.order
-    }
-
-    pub async fn execute(&self, call: &ToolCallRequest, ctx: &ToolContext) -> ToolExecutionResult {
-        let Some(tool) = self.tools.get(&call.name) else {
-            return ToolExecutionResult {
-                tool_call_id: call.id.clone(),
-                tool_name: call.name.clone(),
-                ok: false,
-                output: String::new(),
-                error: Some(format!("unknown tool '{}'", call.name)),
-                metadata: None,
-                duration_ms: 0,
-                truncated: false,
-            };
-        };
-
-        match tool.execute(call.id.clone(), call.args.clone(), ctx).await {
-            Ok(result) => result,
-            Err(error) => ToolExecutionResult {
-                tool_call_id: call.id.clone(),
-                tool_name: call.name.clone(),
-                ok: false,
-                output: String::new(),
-                error: Some(error.to_string()),
-                metadata: None,
-                duration_ms: 0,
-                truncated: false,
-            },
-        }
-    }
-
     pub fn into_capability_invokers(mut self) -> Result<Vec<Arc<dyn CapabilityInvoker>>> {
-        self.order
+        let tools = self
+            .order
             .into_iter()
             .filter_map(|name| self.tools.remove(&name))
-            .map(ToolCapabilityInvoker::boxed)
-            .collect()
+            .collect::<Vec<_>>();
+        tools_into_capability_invokers(tools)
     }
+}
+
+pub fn tools_into_capability_invokers<I>(tools: I) -> Result<Vec<Arc<dyn CapabilityInvoker>>>
+where
+    I: IntoIterator<Item = Box<dyn Tool>>,
+{
+    tools
+        .into_iter()
+        .map(ToolCapabilityInvoker::boxed)
+        .collect()
 }
 
 pub struct ToolCapabilityInvoker {
@@ -148,27 +118,7 @@ impl CapabilityInvoker for ToolCapabilityInvoker {
         payload: Value,
         ctx: &CapabilityContext,
     ) -> Result<CapabilityExecutionResult> {
-        let mut tool_ctx = ToolContext::new(
-            ctx.session_id.clone(),
-            ctx.working_dir.clone(),
-            ctx.cancel.clone(),
-        );
-        if let Some(turn_id) = &ctx.turn_id {
-            tool_ctx = tool_ctx.with_turn_id(turn_id.clone());
-        }
-        if let Some(tool_call_id) = &ctx.request_id {
-            tool_ctx = tool_ctx.with_tool_call_id(tool_call_id.clone());
-        }
-        tool_ctx = tool_ctx.with_agent_context(ctx.agent.clone());
-        if let Some(sender) = ctx.tool_output_sender.clone() {
-            tool_ctx = tool_ctx.with_tool_output_sender(sender);
-        }
-        if let Some(event_sink) = ctx.event_sink.clone() {
-            tool_ctx = tool_ctx.with_event_sink(event_sink);
-        }
-        if let Some(owner) = ctx.execution_owner.clone() {
-            tool_ctx = tool_ctx.with_execution_owner(owner);
-        }
+        let tool_ctx = tool_context_from_capability_context(ctx);
         let result = self
             .tool
             .execute(
@@ -197,6 +147,61 @@ impl CapabilityInvoker for ToolCapabilityInvoker {
             )),
         }
     }
+}
+
+pub(crate) fn capability_context_from_tool_context(
+    ctx: &ToolContext,
+    request_id: Option<String>,
+) -> CapabilityContext {
+    // 运行时默认 profile / approval 继承策略属于 runtime 装配决策，
+    // 不应该固化在 core DTO 转换里。
+    let working_dir = ctx.working_dir().to_path_buf();
+    let working_dir_str = working_dir.to_string_lossy().into_owned();
+
+    CapabilityContext {
+        request_id,
+        trace_id: None,
+        session_id: ctx.session_id().to_string(),
+        working_dir,
+        cancel: ctx.cancel().clone(),
+        turn_id: ctx.turn_id().map(ToString::to_string),
+        agent: ctx.agent_context().clone(),
+        execution_owner: ctx.execution_owner().cloned(),
+        profile: "coding".to_string(),
+        profile_context: json!({
+            "workingDir": working_dir_str,
+            "repoRoot": working_dir_str,
+            "approvalMode": "inherit"
+        }),
+        metadata: Value::Null,
+        tool_output_sender: ctx.tool_output_sender(),
+        event_sink: ctx.event_sink(),
+    }
+}
+
+fn tool_context_from_capability_context(ctx: &CapabilityContext) -> ToolContext {
+    let mut tool_ctx = ToolContext::new(
+        ctx.session_id.clone(),
+        ctx.working_dir.clone(),
+        ctx.cancel.clone(),
+    );
+    if let Some(turn_id) = &ctx.turn_id {
+        tool_ctx = tool_ctx.with_turn_id(turn_id.clone());
+    }
+    if let Some(tool_call_id) = &ctx.request_id {
+        tool_ctx = tool_ctx.with_tool_call_id(tool_call_id.clone());
+    }
+    tool_ctx = tool_ctx.with_agent_context(ctx.agent.clone());
+    if let Some(sender) = ctx.tool_output_sender.clone() {
+        tool_ctx = tool_ctx.with_tool_output_sender(sender);
+    }
+    if let Some(event_sink) = ctx.event_sink.clone() {
+        tool_ctx = tool_ctx.with_event_sink(event_sink);
+    }
+    if let Some(owner) = ctx.execution_owner.clone() {
+        tool_ctx = tool_ctx.with_execution_owner(owner);
+    }
+    tool_ctx
 }
 
 fn display_tool_label(name: &str) -> &str {

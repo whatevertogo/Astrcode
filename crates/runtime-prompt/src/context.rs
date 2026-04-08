@@ -13,7 +13,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use astrcode_core::CapabilityDescriptor;
+use astrcode_protocol::capability::CapabilityDescriptor;
 use serde::{Deserialize, Serialize};
 
 use crate::PromptDeclaration;

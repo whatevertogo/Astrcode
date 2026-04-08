@@ -15,7 +15,6 @@
 //! 插件通过 stdio 与 host 通信，消息以换行符分隔的 JSON 行格式传输。
 //! 传输层由 `transport` 模块的 `Transport` trait 抽象。
 
-mod descriptors;
 mod error;
 mod handshake;
 mod messages;
@@ -23,15 +22,17 @@ mod skill_descriptor;
 #[cfg(test)]
 mod tests;
 
-pub use descriptors::{
-    BudgetHint, CallerRef, CapabilityDescriptor, CapabilityDescriptorBuilder, CapabilityKind,
-    DescriptorBuildError, FilterDescriptor, HandlerDescriptor, InvocationContext, PeerDescriptor,
-    PeerRole, PermissionHint, ProfileDescriptor, SideEffectLevel, StabilityLevel,
-    TriggerDescriptor, WorkspaceRef,
-};
+// Re-export capability types from the capability module
 pub use error::{ErrorPayload, ProtocolError};
 pub use handshake::{InitializeMessage, InitializeResultData, PROTOCOL_VERSION};
 pub use messages::{
     CancelMessage, EventMessage, EventPhase, InvokeMessage, PluginMessage, ResultMessage,
 };
 pub use skill_descriptor::{SkillAssetDescriptor, SkillDescriptor};
+
+pub use crate::capability::{
+    BudgetHint, CallerRef, CapabilityDescriptor, CapabilityDescriptorBuilder, CapabilityKind,
+    DescriptorBuildError, FilterDescriptor, HandlerDescriptor, InvocationContext, PeerDescriptor,
+    PeerRole, PermissionHint, ProfileDescriptor, SideEffectLevel, StabilityLevel,
+    TriggerDescriptor, WorkspaceRef,
+};

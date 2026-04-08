@@ -4,9 +4,10 @@
 //!
 //! 插件清单从 `Plugin.toml` 文件解析而来，描述插件的名称、版本、能力声明和启动方式。
 
+use astrcode_protocol::capability::CapabilityDescriptor;
 use serde::{Deserialize, Serialize};
 
-use crate::{AstrError, CapabilityDescriptor};
+use crate::AstrError;
 
 /// 插件类型。
 ///

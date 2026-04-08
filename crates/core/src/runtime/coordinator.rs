@@ -12,9 +12,10 @@
 
 use std::sync::{Arc, RwLock};
 
+use astrcode_protocol::capability::CapabilityDescriptor;
+
 use crate::{
-    AstrError, CapabilityDescriptor, ManagedRuntimeComponent, PluginRegistry, Result,
-    RuntimeHandle, plugin::PluginEntry,
+    AstrError, ManagedRuntimeComponent, PluginRegistry, Result, RuntimeHandle, plugin::PluginEntry,
 };
 
 /// 运行时协调器。
@@ -165,13 +166,15 @@ impl RuntimeCoordinator {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use astrcode_protocol::capability::{
+        CapabilityDescriptor, CapabilityKind, SideEffectLevel, StabilityLevel,
+    };
     use async_trait::async_trait;
     use serde_json::json;
 
     use super::RuntimeCoordinator;
     use crate::{
-        AstrError, CapabilityDescriptor, CapabilityKind, ManagedRuntimeComponent, PluginRegistry,
-        Result, RuntimeHandle, SideEffectLevel, StabilityLevel,
+        AstrError, ManagedRuntimeComponent, PluginRegistry, Result, RuntimeHandle,
         plugin::{PluginEntry, PluginHealth},
     };
 

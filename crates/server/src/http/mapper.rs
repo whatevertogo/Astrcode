@@ -20,24 +20,28 @@
 //! - **SSE 工具**：事件 ID 解析/格式化（`{storage_seq}.{subindex}` 格式）
 
 use astrcode_core::{
-    AgentEvent, AgentEventContext, ArtifactRef, AstrError, CapabilityDescriptor, ForkMode, Phase,
-    PluginHealth, PluginState, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
+    AgentEvent, AgentEventContext, ArtifactRef, AstrError, ForkMode, Phase, PluginHealth,
+    PluginState, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
     SessionEventRecord, SessionMeta, SubRunDescriptor, SubRunFailure, SubRunFailureCode,
     SubRunHandoff, SubRunOutcome, SubRunResult, SubRunStorageMode, SubagentContextOverrides,
     format_local_rfc3339, plugin::PluginEntry,
 };
-use astrcode_protocol::http::{
-    AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentProfileDto, ArtifactRefDto,
-    CompactTriggerDto, ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto,
-    ConfigView, CurrentModelInfoDto, ForkModeDto, InvocationKindDto, ModelOptionDto,
-    OperationMetricsDto, PROTOCOL_VERSION, PhaseDto, PluginHealthDto, PluginRuntimeStateDto,
-    ProfileView, ReplayMetricsDto, ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto,
-    RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto,
-    SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem, SubRunDescriptorDto,
-    SubRunExecutionMetricsDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
-    SubRunOutcomeDto, SubRunResultDto, SubRunStatusDto, SubRunStatusSourceDto,
-    SubRunStorageModeDto, SubagentContextOverridesDto, ToolCallResultDto, ToolDescriptorDto,
-    ToolOutputStreamDto,
+use astrcode_protocol::{
+    capability::CapabilityDescriptor,
+    http::{
+        AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentProfileDto, ArtifactRefDto,
+        CompactTriggerDto, ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto,
+        ConfigView, CurrentModelInfoDto, ForkModeDto, InvocationKindDto, ModelOptionDto,
+        OperationMetricsDto, PROTOCOL_VERSION, PhaseDto, PluginHealthDto, PluginRuntimeStateDto,
+        ProfileView, ReplayMetricsDto, ResolvedExecutionLimitsDto,
+        ResolvedSubagentContextOverridesDto, RuntimeCapabilityDto, RuntimeMetricsDto,
+        RuntimePluginDto, RuntimeStatusDto, SessionCatalogEventEnvelope,
+        SessionCatalogEventPayload, SessionListItem, SubRunDescriptorDto,
+        SubRunExecutionMetricsDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
+        SubRunOutcomeDto, SubRunResultDto, SubRunStatusDto, SubRunStatusSourceDto,
+        SubRunStorageModeDto, SubagentContextOverridesDto, ToolCallResultDto, ToolDescriptorDto,
+        ToolOutputStreamDto,
+    },
 };
 use astrcode_runtime::{
     AgentProfileSummary, ComposerOption, ComposerOptionKind, Config, OperationMetricsSnapshot,

@@ -10,15 +10,18 @@
 
 use std::{fmt, path::PathBuf, sync::Arc};
 
+use astrcode_protocol::capability::{
+    CapabilityDescriptor, CapabilityKind, DescriptorBuildError, PermissionHint, SideEffectLevel,
+    StabilityLevel,
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    AgentEventContext, CancelToken, CapabilityDescriptor, CapabilityKind, DescriptorBuildError,
-    InvocationKind, PermissionHint, Result, SideEffectLevel, StabilityLevel, StorageEvent,
-    ToolDefinition, ToolExecutionResult, ToolOutputDelta, ToolOutputStream,
+    AgentEventContext, CancelToken, InvocationKind, Result, StorageEvent, ToolDefinition,
+    ToolExecutionResult, ToolOutputDelta, ToolOutputStream,
 };
 
 /// Unique identifier for a session.

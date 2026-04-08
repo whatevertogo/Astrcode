@@ -14,9 +14,10 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentEventContext, AstrError, CancelToken, LlmMessage, Phase, SideEffectLevel, StorageEvent,
-    Tool, ToolCapabilityMetadata, ToolDefinition, ToolExecutionResult, UserMessageOrigin,
+    AgentEventContext, AstrError, CancelToken, LlmMessage, Phase, StorageEvent, Tool,
+    ToolCapabilityMetadata, ToolDefinition, ToolExecutionResult, UserMessageOrigin,
 };
+use astrcode_protocol::capability::SideEffectLevel;
 use astrcode_runtime_llm::{EventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
 use astrcode_runtime_registry::ToolRegistry;
 use async_trait::async_trait;

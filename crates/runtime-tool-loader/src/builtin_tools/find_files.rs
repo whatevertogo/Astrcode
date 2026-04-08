@@ -16,9 +16,10 @@ use std::{
 };
 
 use astrcode_core::{
-    AstrError, CancelToken, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext,
-    ToolDefinition, ToolExecutionResult, ToolPromptMetadata,
+    AstrError, CancelToken, Result, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
+    ToolExecutionResult, ToolPromptMetadata,
 };
+use astrcode_protocol::capability::SideEffectLevel;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;

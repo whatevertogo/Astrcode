@@ -91,6 +91,7 @@ dependencies = [
 name = "astrcode-core"
 version = "0.1.0"
 dependencies = [
+ "astrcode-protocol",
  "async-trait",
  "chrono",
  "dirs",
@@ -137,7 +138,6 @@ dependencies = [
 name = "astrcode-protocol"
 version = "0.1.0"
 dependencies = [
- "astrcode-core",
  "async-trait",
  "serde",
  "serde_json",
@@ -212,7 +212,6 @@ dependencies = [
  "astrcode-core",
  "astrcode-plugin",
  "astrcode-protocol",
- "astrcode-runtime-agent-tool",
  "astrcode-runtime-config",
  "astrcode-runtime-llm",
  "astrcode-runtime-prompt",
@@ -288,6 +287,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "astrcode-core",
+ "astrcode-protocol",
  "async-trait",
  "chrono",
  "dirs",
@@ -304,6 +304,7 @@ name = "astrcode-runtime-registry"
 version = "0.1.0"
 dependencies = [
  "astrcode-core",
+ "astrcode-protocol",
  "async-trait",
  "serde",
  "serde_json",
@@ -339,6 +340,7 @@ name = "astrcode-runtime-tool-loader"
 version = "0.1.0"
 dependencies = [
  "astrcode-core",
+ "astrcode-protocol",
  "async-trait",
  "base64 0.22.1",
  "chrono",

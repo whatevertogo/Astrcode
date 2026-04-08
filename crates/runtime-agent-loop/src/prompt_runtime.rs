@@ -30,8 +30,8 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use astrcode_core::{AgentState, AstrError, CapabilityDescriptor, Result};
-use astrcode_runtime_agent_tool::AgentProfileCatalog;
+use astrcode_core::{AgentProfileCatalog, AgentState, AstrError, Result};
+use astrcode_protocol::capability::CapabilityDescriptor;
 use astrcode_runtime_prompt::{
     LayeredPromptBuilder, PromptAgentProfileSummary, PromptBuildOutput, PromptComposer,
     PromptContext, PromptDeclaration, PromptSkillSummary,

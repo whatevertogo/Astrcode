@@ -15,6 +15,7 @@ use astrcode_core::{
     StorageEvent, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
     ToolHookContext, ToolHookResultContext, UserMessageOrigin,
 };
+use astrcode_protocol::capability::SideEffectLevel;
 use astrcode_runtime_llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
 use astrcode_runtime_prompt::{
     BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor,
@@ -460,9 +461,9 @@ impl Tool for ConcurrencyTrackingTool {
     fn capability_metadata(&self) -> ToolCapabilityMetadata {
         ToolCapabilityMetadata::builtin()
             .side_effect(if self.concurrency_safe {
-                astrcode_core::SideEffectLevel::None
+                SideEffectLevel::None
             } else {
-                astrcode_core::SideEffectLevel::Workspace
+                SideEffectLevel::Workspace
             })
             .concurrency_safe(self.concurrency_safe)
     }

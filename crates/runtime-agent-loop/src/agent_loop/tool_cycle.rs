@@ -25,6 +25,7 @@ use astrcode_core::{
     CapabilityCall, ExecutionOwner, LlmMessage, PolicyVerdict, Result, StorageEvent,
     ToolCallRequest, ToolEventSink, ToolExecutionResult, ToolHookResultContext,
 };
+use astrcode_protocol::capability::CapabilityDescriptor;
 use astrcode_runtime_registry::CapabilityRouter;
 use futures_util::stream::{self, StreamExt};
 use tokio::sync::mpsc;
@@ -239,7 +240,7 @@ where
 }
 
 fn push_prepared_call(
-    descriptor: &astrcode_core::CapabilityDescriptor,
+    descriptor: &CapabilityDescriptor,
     pending: PendingToolCall,
     safe_calls: &mut Vec<PendingToolCall>,
     unsafe_calls: &mut Vec<PendingToolCall>,

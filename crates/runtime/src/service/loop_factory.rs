@@ -5,9 +5,8 @@
 
 use std::sync::Arc;
 
-use astrcode_core::{HookHandler, PolicyEngine};
+use astrcode_core::{AgentProfileCatalog, HookHandler, PolicyEngine};
 use astrcode_runtime_agent_loop::{AgentLoop, ApprovalBroker, SubAgentPolicyEngine};
-use astrcode_runtime_agent_tool::AgentProfileCatalog;
 use astrcode_runtime_prompt::PromptDeclaration;
 use astrcode_runtime_registry::CapabilityRouter;
 use astrcode_runtime_skill_loader::SkillCatalog;

@@ -13,11 +13,12 @@
 //! 每次能力调用都会经过 `check_capability_call`，返回三种裁决之一：
 //! `Allow`（直接执行）、`Deny`（拒绝并说明原因）、`Ask`（等待用户审批）。
 
+use astrcode_protocol::capability::CapabilityDescriptor;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{CapabilityDescriptor, LlmMessage, Result, ToolDefinition};
+use crate::{LlmMessage, Result, ToolDefinition};
 
 /// 系统提示词块所属层级。
 ///
@@ -357,15 +358,16 @@ impl PolicyEngine for AllowAllPolicyEngine {
 
 #[cfg(test)]
 mod tests {
+    use astrcode_protocol::capability::{
+        CapabilityDescriptor, CapabilityKind, SideEffectLevel, StabilityLevel,
+    };
     use serde_json::{Value, json};
 
     use super::{
         AllowAllPolicyEngine, ApprovalDefault, ApprovalRequest, ContextDecisionInput,
         ContextStrategy, PolicyContext, PolicyEngine, PolicyVerdict,
     };
-    use crate::{
-        CapabilityDescriptor, CapabilityKind, ModelRequest, SideEffectLevel, StabilityLevel,
-    };
+    use crate::ModelRequest;
 
     fn descriptor(name: &str) -> CapabilityDescriptor {
         CapabilityDescriptor {

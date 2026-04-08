@@ -24,9 +24,9 @@
 use std::{path::PathBuf, sync::Arc};
 
 use astrcode_core::{
-    CapabilityDescriptor, PluginHealth, PluginManifest, RuntimeCoordinator, format_local_rfc3339,
-    plugin::PluginEntry,
+    PluginHealth, PluginManifest, RuntimeCoordinator, format_local_rfc3339, plugin::PluginEntry,
 };
+use astrcode_protocol::capability::CapabilityDescriptor;
 use chrono::{DateTime, Utc};
 use tokio::sync::{Mutex, RwLock};
 

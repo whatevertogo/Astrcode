@@ -4,7 +4,6 @@ import type { SubRunViewData, ThreadItem } from '../../lib/subRunView';
 import UserMessage from './UserMessage';
 import AssistantMessage from './AssistantMessage';
 import ToolCallBlock from './ToolCallBlock';
-import PromptMetricsMessage from './PromptMetricsMessage';
 import CompactMessage from './CompactMessage';
 import SubRunBlock from './SubRunBlock';
 import styles from './MessageList.module.css';
@@ -185,32 +184,37 @@ export default function MessageList({
     return () => window.cancelAnimationFrame(rafId);
   }, [contentFingerprint, stickToBottom, updateStickiness]);
 
-  const renderMessageContent = useCallback((msg: Message, hideAvatar: boolean) => {
-    if (msg.kind === 'user') {
-      return <UserMessage message={msg} />;
-    }
-    if (msg.kind === 'assistant') {
-      return <AssistantMessage message={msg} hideAvatar={hideAvatar} />;
-    }
-    if (msg.kind === 'toolCall') {
-      return <ToolCallBlock message={msg} />;
-    }
-    if (msg.kind === 'promptMetrics') {
-      return <PromptMetricsMessage message={msg} />;
-    }
-    if (msg.kind === 'compact') {
-      return <CompactMessage message={msg} />;
-    }
-    if (msg.kind === 'subRunStart' || msg.kind === 'subRunFinish') {
+  const renderMessageContent = useCallback(
+    (msg: Message, hideAvatar: boolean, metrics?: Message) => {
+      if (msg.kind === 'user') {
+        return <UserMessage message={msg} />;
+      }
+      if (msg.kind === 'assistant') {
+        const promptMetrics = metrics?.kind === 'promptMetrics' ? metrics : undefined;
+        return <AssistantMessage message={msg} hideAvatar={hideAvatar} metrics={promptMetrics} />;
+      }
+      if (msg.kind === 'toolCall') {
+        return <ToolCallBlock message={msg} />;
+      }
+      if (msg.kind === 'promptMetrics') {
+        return null; // 不再单独渲染，而是附加到 assistant 消息
+      }
+      if (msg.kind === 'compact') {
+        return <CompactMessage message={msg} />;
+      }
+      if (msg.kind === 'subRunStart' || msg.kind === 'subRunFinish') {
+        return null;
+      }
       return null;
-    }
-    return null;
-  }, []);
+    },
+    []
+  );
 
   const renderMessageRow = useCallback(
     (
       msg: Message,
       previousMessage: Message | null,
+      nextMessage: Message | null,
       options?: {
         key?: string;
         nested?: boolean;
@@ -225,10 +229,22 @@ export default function MessageList({
         .filter(Boolean)
         .join(' ');
 
+      // 如果下一条消息是 promptMetrics，将其附加到当前 assistant 消息
+      const metricsToAttach =
+        msg.kind === 'assistant' && nextMessage?.kind === 'promptMetrics' ? nextMessage : undefined;
+
+      // 调试：打印附加的 metrics
+      if (metricsToAttach) {
+        console.log('[MessageList] Attaching metrics to assistant message:', {
+          messageId: msg.id,
+          metrics: metricsToAttach,
+        });
+      }
+
       return (
         <div key={options?.key ?? msg.id} className={rowClass}>
           <MessageBoundary message={msg}>
-            {renderMessageContent(msg, isContinuation)}
+            {renderMessageContent(msg, isContinuation, metricsToAttach)}
           </MessageBoundary>
         </div>
       );
@@ -246,8 +262,16 @@ export default function MessageList({
       items.map((item, index) => {
         if (item.kind === 'message') {
           const previousItem = items[index - 1];
+          const nextItem = items[index + 1];
           const previousMessage = previousItem?.kind === 'message' ? previousItem.message : null;
-          return renderMessageRow(item.message, previousMessage, {
+          const nextMessage = nextItem?.kind === 'message' ? nextItem.message : null;
+
+          // 跳过 promptMetrics 消息，因为它们会被附加到前一个 assistant 消息
+          if (item.message.kind === 'promptMetrics') {
+            return null;
+          }
+
+          return renderMessageRow(item.message, previousMessage, nextMessage, {
             key: item.message.id,
             nested: options?.nested,
           });

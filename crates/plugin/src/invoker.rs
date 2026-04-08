@@ -12,10 +12,12 @@
 use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AstrError, CapabilityContext, CapabilityDescriptor, CapabilityExecutionResult,
-    CapabilityInvoker, Result,
+    AstrError, CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, Result,
 };
-use astrcode_protocol::plugin::{EventPhase, InvocationContext, WorkspaceRef};
+use astrcode_protocol::{
+    capability::CapabilityDescriptor,
+    plugin::{EventPhase, InvocationContext, WorkspaceRef},
+};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use uuid::Uuid;

@@ -11,6 +11,7 @@ authors.workspace = true
 test-support = ["dep:tempfile"]
 
 [dependencies]
+astrcode-protocol = { path = "../protocol" }
 async-trait.workspace = true
 chrono.workspace = true
 dirs.workspace = true

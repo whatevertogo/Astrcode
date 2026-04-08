@@ -15,9 +15,10 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult, ToolPromptMetadata,
+    Result, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
+    ToolPromptMetadata,
 };
+use astrcode_protocol::capability::SideEffectLevel;
 use astrcode_runtime_skill_loader::{
     SKILL_TOOL_NAME, SkillCatalog, SkillSpec, normalize_skill_name,
 };

@@ -57,12 +57,12 @@ mod turn_runner;
 use std::{path::PathBuf, sync::Arc};
 
 use astrcode_core::{
-    AgentEventContext, AgentState, AllowAllPolicyEngine, AstrError, CancelToken,
-    CapabilityDescriptor, CompactionHookContext, ExecutionOwner, HookCompactionReason, HookHandler,
+    AgentEventContext, AgentProfileCatalog, AgentState, AllowAllPolicyEngine, AstrError,
+    CancelToken, CompactionHookContext, ExecutionOwner, HookCompactionReason, HookHandler,
     InvocationKind, LlmMessage, PolicyContext, PolicyEngine, Result, StorageEvent, StoredEvent,
     ToolContext, ToolHookContext, UserMessageOrigin,
 };
-use astrcode_runtime_agent_tool::AgentProfileCatalog;
+use astrcode_protocol::capability::CapabilityDescriptor;
 use astrcode_runtime_config::{
     DEFAULT_AUTO_COMPACT_ENABLED, DEFAULT_COMPACT_KEEP_RECENT_TURNS,
     DEFAULT_COMPACT_THRESHOLD_PERCENT, DEFAULT_TOOL_RESULT_MAX_BYTES, max_tool_concurrency,

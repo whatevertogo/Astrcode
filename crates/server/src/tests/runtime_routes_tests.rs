@@ -1,13 +1,15 @@
 use astrcode_core::{
-    AgentEventContext, AgentMode, AgentProfile, CapabilityDescriptor, CapabilityKind,
-    EventLogWriter, PluginHealth, PluginState, Result, SideEffectLevel, StabilityLevel,
+    AgentEventContext, AgentMode, AgentProfile, EventLogWriter, PluginHealth, PluginState, Result,
     StorageEvent, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
     UserMessageOrigin, plugin::PluginEntry,
 };
-use astrcode_protocol::http::{
-    AgentExecuteResponseDto, AgentProfileDto, ConfigReloadResponse, PromptAcceptedResponse,
-    PromptRequest, RuntimeStatusDto, SessionHistoryResponseDto, SubRunStatusDto,
-    SubRunStatusSourceDto, SubRunStorageModeDto, ToolDescriptorDto, ToolExecuteResponseDto,
+use astrcode_protocol::{
+    capability::{CapabilityDescriptor, CapabilityKind, SideEffectLevel, StabilityLevel},
+    http::{
+        AgentExecuteResponseDto, AgentProfileDto, ConfigReloadResponse, PromptAcceptedResponse,
+        PromptRequest, RuntimeStatusDto, SessionHistoryResponseDto, SubRunStatusDto,
+        SubRunStatusSourceDto, SubRunStorageModeDto, ToolDescriptorDto, ToolExecuteResponseDto,
+    },
 };
 use astrcode_runtime::{Config, ModelConfig, Profile, RuntimeConfig, config, save_config};
 use astrcode_runtime_registry::{CapabilityRouter, ToolRegistry};

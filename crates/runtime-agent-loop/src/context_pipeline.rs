@@ -39,7 +39,8 @@
 
 use std::path::Path;
 
-use astrcode_core::{AgentState, CapabilityDescriptor, LlmMessage, Result};
+use astrcode_core::{AgentState, LlmMessage, Result};
+use astrcode_protocol::capability::CapabilityDescriptor;
 
 use crate::context_window::{PruneStats, apply_prune_pass, effective_context_window};
 
@@ -363,7 +364,8 @@ impl ContextStage for BudgetTrimStage {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use astrcode_core::{CapabilityKind, LlmMessage, UserMessageOrigin};
+    use astrcode_core::{LlmMessage, UserMessageOrigin};
+    use astrcode_protocol::capability::{CapabilityDescriptor, CapabilityKind};
     use serde_json::json;
 
     use super::*;
@@ -607,7 +609,7 @@ mod tests {
             },
         ]);
         let descriptors = vec![
-            astrcode_core::CapabilityDescriptor::builder("readFile", CapabilityKind::tool())
+            CapabilityDescriptor::builder("readFile", CapabilityKind::tool())
                 .description("test")
                 .schema(json!({"type":"object"}), json!({"type":"string"}))
                 .compact_clearable(true)

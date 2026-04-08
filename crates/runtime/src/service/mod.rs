@@ -8,13 +8,12 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentProfile, AllowAllPolicyEngine, AstrError, HookHandler, PolicyEngine, RuntimeHandle,
-    SessionManager,
+    AgentProfile, AgentProfileCatalog, AllowAllPolicyEngine, AstrError, HookHandler, PolicyEngine,
+    RuntimeHandle, SessionManager,
 };
 use astrcode_runtime_agent_control::AgentControl;
 use astrcode_runtime_agent_loader::{AgentProfileLoader, AgentProfileRegistry};
 use astrcode_runtime_agent_loop::{AgentLoop, ApprovalBroker, DefaultApprovalBroker};
-use astrcode_runtime_agent_tool::AgentProfileCatalog;
 use astrcode_runtime_prompt::PromptDeclaration;
 use astrcode_runtime_registry::CapabilityRouter;
 use astrcode_runtime_session::SessionState;

@@ -18,10 +18,10 @@ mod surface;
 use std::sync::Arc;
 
 use astrcode_core::{
-    AgentProfile, AstrError, ExecutionOrchestrationBoundary, LiveSubRunControlBoundary, Result,
-    SpawnAgentParams, SubRunHandle, SubRunResult, ToolContext,
+    AgentProfile, AgentProfileCatalog, AstrError, ExecutionOrchestrationBoundary,
+    LiveSubRunControlBoundary, Result, SpawnAgentParams, SubRunHandle, SubRunResult, ToolContext,
 };
-use astrcode_runtime_agent_tool::{AgentProfileCatalog, SubAgentExecutor};
+use astrcode_runtime_agent_tool::SubAgentExecutor;
 use async_trait::async_trait;
 pub(crate) use context::{DeferredSubAgentExecutor, service_error_to_astr};
 pub use root::{

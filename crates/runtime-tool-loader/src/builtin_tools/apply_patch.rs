@@ -18,9 +18,10 @@
 use std::time::Instant;
 
 use astrcode_core::{
-    AstrError, Result, SideEffectLevel, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
+    AstrError, Result, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
     ToolExecutionResult, ToolPromptMetadata,
 };
+use astrcode_protocol::capability::SideEffectLevel;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;

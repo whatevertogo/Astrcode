@@ -7,4 +7,6 @@ pub mod router;
 pub mod tool;
 
 pub use router::{CapabilityRouter, CapabilityRouterBuilder};
-pub use tool::{ToolCapabilityInvoker, ToolRegistry, ToolRegistryBuilder};
+pub use tool::{
+    ToolCapabilityInvoker, ToolRegistry, ToolRegistryBuilder, tools_into_capability_invokers,
+};

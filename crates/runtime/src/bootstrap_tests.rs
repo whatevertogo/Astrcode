@@ -18,9 +18,11 @@ use std::{
 };
 
 use astrcode_core::{
-    CapabilityContext, CapabilityDescriptor, CapabilityExecutionResult, CapabilityInvoker,
-    CapabilityKind, HookEvent, HookHandler, HookInput, HookOutcome, ManagedRuntimeComponent,
-    PluginHealth, PluginState, PluginType, Result, SideEffectLevel, StabilityLevel,
+    CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, HookEvent, HookHandler,
+    HookInput, HookOutcome, ManagedRuntimeComponent, PluginHealth, PluginState, PluginType, Result,
+};
+use astrcode_protocol::capability::{
+    CapabilityDescriptor, CapabilityKind, SideEffectLevel, StabilityLevel,
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};

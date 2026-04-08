@@ -7,18 +7,18 @@
 //! - [`event`][]: 事件存储与回放系统（JSONL append-only 日志）
 //! - [`session`][]: 会话管理与持久化
 //! - [`tool`][]: Tool trait 定义（插件系统的基础抽象）
-//! - [`capability`][]: 能力描述符（用于策略引擎和 UI 展示）
 //! - [`policy`][]: 策略引擎 trait（审批与模型/工具请求检查）
 //! - [`plugin`][]: 插件清单与注册表
 //! - [`registry`][]: 能力路由器（将能力调用分派到具体的 invoker）
 //! - [`runtime`][]: 运行时协调器接口
 //! - [`projection`][]: Agent 状态投影（从事件流推导状态）
 //! - `action`: LLM 消息与工具调用相关的数据结构
+//!
+//! 注意：能力描述符（capability）定义在 `astrcode-protocol` crate 中。
 
 mod action;
 pub mod agent;
 mod cancel;
-pub mod capability;
 mod compact_summary;
 pub mod env;
 mod error;
@@ -49,18 +49,12 @@ pub use action::{
     split_assistant_content,
 };
 pub use agent::{
-    AgentEventContext, AgentMode, AgentProfile, AgentStatus, ArtifactRef, ForkMode, InvocationKind,
-    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SpawnAgentParams,
-    SubRunDescriptor, SubRunFailure, SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunOutcome,
-    SubRunResult, SubRunStorageMode, SubagentContextOverrides,
+    AgentEventContext, AgentMode, AgentProfile, AgentProfileCatalog, AgentStatus, ArtifactRef,
+    ForkMode, InvocationKind, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
+    SpawnAgentParams, SubRunDescriptor, SubRunFailure, SubRunFailureCode, SubRunHandle,
+    SubRunHandoff, SubRunOutcome, SubRunResult, SubRunStorageMode, SubagentContextOverrides,
 };
 pub use cancel::CancelToken;
-pub use capability::{
-    BudgetHint, CallerRef, CapabilityDescriptor, CapabilityDescriptorBuilder, CapabilityKind,
-    DescriptorBuildError, FilterDescriptor, HandlerDescriptor, InvocationContext, PeerDescriptor,
-    PeerRole, PermissionHint, ProfileDescriptor, SideEffectLevel, StabilityLevel,
-    TriggerDescriptor, WorkspaceRef,
-};
 pub use compact_summary::{
     COMPACT_SUMMARY_CONTINUATION, COMPACT_SUMMARY_PREFIX, CompactSummaryEnvelope,
     format_compact_summary, parse_compact_summary_message,

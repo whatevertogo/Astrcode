@@ -8,7 +8,8 @@
 //! UI 需要的不是 capability/router 的原始结构，而是一个已经投影好的候选列表，
 //! 因此前端候选查询应该在 service 层统一组装，而不是让前端自行拼接多套来源。
 
-use astrcode_core::{CapabilityDescriptor, ToolPromptMetadata};
+use astrcode_core::ToolPromptMetadata;
+use astrcode_protocol::capability::CapabilityDescriptor;
 use astrcode_runtime_session::normalize_session_id;
 use astrcode_runtime_skill_loader::{SkillSource, SkillSpec};
 

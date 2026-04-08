@@ -359,6 +359,14 @@ pub struct AgentProfile {
     pub model_preference: Option<String>,
 }
 
+/// 子 Agent profile 目录抽象。
+///
+/// prompt 组装和执行装配都需要读取当前运行时可见的子 Agent 列表，
+/// 因此该 discovery 契约应属于 core 边界，而不是某个具体 tool crate。
+pub trait AgentProfileCatalog: Send + Sync {
+    fn list_subagent_profiles(&self) -> Vec<AgentProfile>;
+}
+
 /// 受控子会话的轻量运行句柄。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

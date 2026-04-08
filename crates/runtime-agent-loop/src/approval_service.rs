@@ -59,9 +59,9 @@ impl ApprovalBroker for DefaultApprovalBroker {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{
-        ApprovalDefault, ApprovalRequest, CancelToken, CapabilityDescriptor, CapabilityKind,
-        SideEffectLevel, StabilityLevel,
+    use astrcode_core::{ApprovalDefault, ApprovalRequest, CancelToken};
+    use astrcode_protocol::capability::{
+        CapabilityDescriptor, CapabilityKind, SideEffectLevel, StabilityLevel,
     };
     use serde_json::json;
 

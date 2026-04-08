@@ -11,7 +11,9 @@
 
 use std::{collections::BTreeMap, sync::RwLock};
 
-use crate::{CapabilityDescriptor, PluginManifest};
+use astrcode_protocol::capability::CapabilityDescriptor;
+
+use crate::PluginManifest;
 
 /// 插件生命周期状态。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,14 +259,14 @@ impl PluginRegistry {
 
 #[cfg(test)]
 mod tests {
+    use astrcode_protocol::capability::{
+        CapabilityDescriptor, CapabilityKind, SideEffectLevel, StabilityLevel,
+    };
     use chrono::Utc;
     use serde_json::json;
 
     use super::{PluginHealth, PluginRegistry, PluginState};
-    use crate::{
-        CapabilityDescriptor, CapabilityKind, PluginManifest, PluginType, SideEffectLevel,
-        StabilityLevel,
-    };
+    use crate::{PluginManifest, PluginType};
 
     fn manifest(name: &str) -> PluginManifest {
         PluginManifest {

@@ -6,10 +6,13 @@ use std::{
 };
 
 use astrcode_core::{
-    AstrError, CapabilityContext, CapabilityDescriptor, CapabilityInvoker, Result, ToolCallRequest,
-    ToolContext, ToolDefinition, ToolExecutionResult,
+    AstrError, CapabilityInvoker, Result, ToolCallRequest, ToolContext, ToolDefinition,
+    ToolExecutionResult,
     support::{self},
 };
+use astrcode_protocol::capability::CapabilityDescriptor;
+
+use crate::tool::capability_context_from_tool_context;
 
 pub struct CapabilityRouterBuilder {
     invokers: Vec<Arc<dyn CapabilityInvoker>>,
@@ -258,13 +261,9 @@ impl CapabilityRouter {
             };
         }
 
-        match invoker
-            .invoke(
-                call.args.clone(),
-                &CapabilityContext::from_tool_context(ctx, Some(call.id.clone())),
-            )
-            .await
-        {
+        let capability_ctx = capability_context_from_tool_context(ctx, Some(call.id.clone()));
+
+        match invoker.invoke(call.args.clone(), &capability_ctx).await {
             Ok(result) => result.into_tool_execution_result(call.id.clone()),
             Err(error) => ToolExecutionResult {
                 tool_call_id: call.id.clone(),
