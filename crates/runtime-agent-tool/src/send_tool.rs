@@ -31,7 +31,8 @@ impl SendAgentTool {
 
 1. **指定 agentId**: 填入目标子 Agent ID
 2. **填写 message**: 追加给子 Agent 的消息内容
-3. **补充 context**: 可选的补充上下文信息
+3. **精确复用 ID**: `agentId` 必须逐字复制自之前 tool result 的 `Child agent reference`，不能补零、改写或猜测
+4. **补充 context**: 可选的补充上下文信息
 
 ## 何时使用
 
@@ -84,9 +85,12 @@ impl Tool for SendAgentTool {
                 ToolPromptMetadata::new(
                     "向已有子 Agent 追加消息",
                     "使用 sendAgent 向正在运行或已完成的子 Agent 追加要求或返工请求。目标通过稳定 \
-                     agentId 指定，该 ID 来自 spawnAgent 的返回结果。",
+                     agentId 指定，该 ID 来自之前协作 tool result 的 `Child agent \
+                     reference`，必须逐字复用原值。",
                 )
-                .caveat("只能向自己 spawn 的子 Agent 发送消息")
+                .caveat(
+                    "只能向自己 spawn 的子 Agent 发送消息，且不要把 `agent-1` 改写成 `agent-01`",
+                )
                 .prompt_tag("collaboration"),
             )
     }

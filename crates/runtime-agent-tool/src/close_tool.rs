@@ -30,8 +30,9 @@ impl CloseAgentTool {
 ## 使用指南
 
 1. **指定 agentId**: 填入要关闭的子 Agent ID
-2. **级联控制**: 默认会级联关闭该 Agent 的所有子 Agent；设 `cascade: false` 仅关闭目标本身
-3. **终态检查**: 已终态的 Agent 会被幂等处理，不会报错
+2. **精确复用 ID**: `agentId` 必须逐字复制自之前 tool result 的 `Child agent reference`，不能补零、改写或猜测
+3. **级联控制**: 默认会级联关闭该 Agent 的所有子 Agent；设 `cascade: false` 仅关闭目标本身
+4. **终态检查**: 已终态的 Agent 会被幂等处理，不会报错
 
 ## 何时使用
 
@@ -79,9 +80,11 @@ impl Tool for CloseAgentTool {
             .prompt(
                 ToolPromptMetadata::new(
                     "关闭子 Agent",
-                    "使用 closeAgent 关闭不再需要的子 Agent。默认级联关闭子 Agent 的所有子 Agent。",
+                    "使用 closeAgent 关闭不再需要的子 Agent。默认级联关闭子 Agent 的所有子 \
+                     Agent。`agentId` 必须来自之前协作 tool result 的 `Child agent \
+                     reference`，并逐字复用。",
                 )
-                .caveat("已终态的子 Agent 会被幂等处理")
+                .caveat("已终态的子 Agent 会被幂等处理；不要把 `agent-1` 改写成 `agent-01`")
                 .prompt_tag("collaboration"),
             )
     }

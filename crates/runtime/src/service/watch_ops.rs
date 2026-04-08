@@ -345,13 +345,12 @@ mod tests {
             }),
             "watch targets: {watch_targets:?}"
         );
-        let process_cwd = std::env::current_dir().expect("cwd should be available");
+        // 验证 watch target 是 repo 内的 .astrcode/agents 而非某个不相关的根路径
         assert!(
             watch_targets
                 .iter()
-                .all(|target| target.path != process_cwd),
-            "watch targets should not include process cwd; cwd={process_cwd:?}, \
-             targets={watch_targets:?}"
+                .all(|target| target.path != workspace.path()),
+            "watch targets should not include workspace root; targets={watch_targets:?}"
         );
     }
 }

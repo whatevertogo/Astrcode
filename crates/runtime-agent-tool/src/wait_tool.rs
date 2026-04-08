@@ -30,7 +30,8 @@ impl WaitAgentTool {
 ## 使用指南
 
 1. **指定 agentId**: 填入目标子 Agent ID
-2. **等待条件**: 默认 `final` 等待终态；设为 `next_delivery` 可等待下一次交付
+2. **精确复用 ID**: `agentId` 必须逐字复制自之前 tool result 的 `Child agent reference`，不能补零、改写或猜测
+3. **等待条件**: 默认 `final` 等待终态；设为 `next_delivery` 可等待下一次交付
 
 ## 何时使用
 
@@ -81,9 +82,10 @@ impl Tool for WaitAgentTool {
                 ToolPromptMetadata::new(
                     "等待子 Agent 到达可消费状态",
                     "使用 waitAgent 阻塞等待子 Agent 完成（final）或产出下一次交付（next_delivery）。\
-                    默认等待终态，适合需要子 Agent 完整结果后再继续的场景。",
+                    默认等待终态，适合需要子 Agent 完整结果后再继续的场景。`agentId` 必须来自\
+                    前一个协作 tool result 的 `Child agent reference`，并逐字复用。",
                 )
-                .caveat("只等待指定的子 Agent，不影响其他子 Agent")
+                .caveat("只等待指定的子 Agent，不影响其他子 Agent；不要把 `agent-1` 改写成 `agent-01`")
                 .prompt_tag("collaboration"),
             )
     }

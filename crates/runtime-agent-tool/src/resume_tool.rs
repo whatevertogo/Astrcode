@@ -30,8 +30,9 @@ impl ResumeAgentTool {
 ## 使用指南
 
 1. **指定 agentId**: 填入要恢复的子 Agent ID
-2. **追加消息**: 可在 `message` 中说明恢复原因或新需求
-3. **复用会话**: 恢复会复用同一 child session，不创建新会话
+2. **精确复用 ID**: `agentId` 必须逐字复制自之前 tool result 的 `Child agent reference`，不能补零、改写或猜测
+3. **追加消息**: 可在 `message` 中说明恢复原因或新需求
+4. **复用会话**: 恢复会复用同一 child session，不创建新会话
 
 ## 何时使用
 
@@ -80,9 +81,12 @@ impl Tool for ResumeAgentTool {
                 ToolPromptMetadata::new(
                     "恢复已完成的子 Agent",
                     "使用 resumeAgent 恢复已完成的子 Agent 继续协作。恢复复用同一 child \
-                     session，不创建新会话。适合需要追加返工或修改的场景。",
+                     session，不创建新会话。适合需要追加返工或修改的场景。`agentId` \
+                     必须来自之前协作 tool result 的 `Child agent reference`，并逐字复用。",
                 )
-                .caveat("只能恢复已完成、已失败或已取消的子 Agent")
+                .caveat(
+                    "只能恢复已完成、已失败或已取消的子 Agent；不要把 `agent-1` 改写成 `agent-01`",
+                )
                 .prompt_tag("collaboration"),
             )
     }

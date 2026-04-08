@@ -33,8 +33,9 @@ impl SpawnAgentTool {
 2. **写清楚任务**: `prompt` 参数要具体、明确，说明要做什么、找什么、分析什么
 3. **补充上下文**: 如果任务涉及特定背景，在 `context` 中说明（如"关注安全问题"、"只看 frontend 目录"）
 4. **默认异步**: `spawnAgent` 统一用后台子会话方式启动，通过子会话流持续回传进度
-5. **并行执行**: 需要并行时，直接在同一轮对话中发起多个 `spawnAgent` 调用即可
-6. **链式执行**: 需要链式时，你可以等待每个 agent 的工作，读取前一步的 `summary`，然后在下一步的 `context` 中显式传入
+5. **记住原始 agentId**: 后续 `waitAgent` / `sendAgent` / `closeAgent` / `resumeAgent` 必须逐字复用 tool result 里的 `agentId`，不能补零、改写或猜测
+6. **并行执行**: 需要并行时，直接在同一轮对话中发起多个 `spawnAgent` 调用即可
+7. **链式执行**: 需要链式时，你可以等待每个 agent 的工作，读取前一步的 `summary`，然后在下一步的 `context` 中显式传入
 
 ## 何时使用
 
