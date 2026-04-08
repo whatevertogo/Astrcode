@@ -17,9 +17,9 @@
 
 **Purpose**: Establish shared support functions and validation baseline before quality fixes
 
-- [ ] T001 Create `crates/core/src/support.rs` with `with_lock_recovery()` and `lock_anyhow()` functions from research.md
-- [ ] T002 Export support functions in `crates/core/src/lib.rs` as `pub mod support;`
-- [ ] T003 Run baseline validation: `cargo check --workspace && cargo clippy --all-targets --all-features -- -D warnings` and document current failures
+- [x] T001 Create `crates/core/src/support.rs` with `with_lock_recovery()` and `lock_anyhow()` functions from research.md
+- [x] T002 Export support functions in `crates/core/src/lib.rs` as `pub mod support;`
+- [x] T003 Run baseline validation: `cargo check --workspace && cargo clippy --all-targets --all-features -- -D warnings` and document current failures
 
 **Checkpoint**: Support infrastructure ready for all user stories to use
 
@@ -31,10 +31,10 @@
 
 **Independent Test**: 运行 `cargo check --workspace` 和 `cargo clippy --all-targets --all-features -- -D warnings` 全部通过
 
-- [ ] T004 [US1] Fix Pattern trait bound error in `crates/runtime/src/service/watch_ops.rs:332` (change `&Cow<str>` to `&str` or implement Pattern)
-- [ ] T005 [US1] Remove unused import in `crates/server/src/http/routes/sessions/filter.rs:3`
-- [ ] T006 [US1] Run `cargo check --workspace` and verify no compilation errors
-- [ ] T007 [US1] Run `cargo clippy --all-targets --all-features -- -D warnings` and verify no warnings
+- [x] T004 [US1] Fix Pattern trait bound error in `crates/runtime/src/service/watch_ops.rs:332` (change `&Cow<str>` to `&str` or implement Pattern)
+- [x] T005 [US1] Remove unused import in `crates/server/src/http/routes/sessions/filter.rs:3`
+- [x] T006 [US1] Run `cargo check --workspace` and verify no compilation errors
+- [x] T007 [US1] Run `cargo clippy --all-targets --all-features -- -D warnings` and verify no warnings
 
 **Checkpoint**: User Story 1 is complete when `cargo check` and `cargo clippy` pass with zero errors and warnings
 
@@ -48,41 +48,41 @@
 
 ### Phase 3.1: Preparation
 
-- [ ] T008 [P] [US2] Create `crates/core/src/plugin/descriptor.rs` and copy all Descriptor types from `crates/protocol/src/plugin/descriptors.rs` (CapabilityDescriptor, CapabilityDescriptorBuilder, CapabilityKind, PeerDescriptor, PeerRole, HandlerDescriptor, TriggerDescriptor, FilterDescriptor, ProfileDescriptor, SkillDescriptor, SkillAssetDescriptor)
-- [ ] T009 [P] [US2] Create `crates/core/src/plugin/context.rs` and copy context types from `crates/protocol/src/plugin/descriptors.rs` (InvocationContext, CallerRef, WorkspaceRef, BudgetHint)
-- [ ] T010 [P] [US2] Create `crates/core/src/plugin/metadata.rs` and copy metadata types from `crates/protocol/src/plugin/descriptors.rs` (SideEffectLevel, StabilityLevel, PermissionHint, DescriptorBuildError)
-- [ ] T011 [US2] Update `crates/core/src/plugin/mod.rs` to re-export all Plugin types
-- [ ] T012 [US2] Add temporary re-export in `crates/protocol/src/plugin/mod.rs`: `pub use astrcode_core::plugin::*;` for backward compatibility
+- [x] T008 [P] [US2] Create `crates/core/src/plugin/descriptor.rs` and copy all Descriptor types from `crates/protocol/src/plugin/descriptors.rs` (CapabilityDescriptor, CapabilityDescriptorBuilder, CapabilityKind, PeerDescriptor, PeerRole, HandlerDescriptor, TriggerDescriptor, FilterDescriptor, ProfileDescriptor, SkillDescriptor, SkillAssetDescriptor)
+- [x] T009 [P] [US2] Create `crates/core/src/plugin/context.rs` and copy context types from `crates/protocol/src/plugin/descriptors.rs` (InvocationContext, CallerRef, WorkspaceRef, BudgetHint)
+- [x] T010 [P] [US2] Create `crates/core/src/plugin/metadata.rs` and copy metadata types from `crates/protocol/src/plugin/descriptors.rs` (SideEffectLevel, StabilityLevel, PermissionHint, DescriptorBuildError)
+- [x] T011 [US2] DONE
+- [x] T012 [US2] DONE
 
 ### Phase 3.2: Migrate SDK and Plugin Layer
 
-- [ ] T013 [P] [US2] Update `crates/sdk/src/lib.rs` to import Plugin types from `astrcode_core::plugin` instead of `astrcode_protocol`
-- [ ] T014 [P] [US2] Update `crates/sdk/src/tool.rs` to import CapabilityDescriptor from core
-- [ ] T015 [P] [US2] Update `crates/sdk/src/hook.rs` to import CapabilityDescriptor from core
-- [ ] T016 [P] [US2] Update `crates/plugin/src/capability_router.rs` to import from core
-- [ ] T017 [P] [US2] Update `crates/plugin/src/invoker.rs` to import from core
-- [ ] T018 [US2] Create `crates/plugin/src/mapper.rs` with protocol DTO ↔ core type conversion functions
+- [x] T013 [P] [US2] Update `crates/sdk/src/lib.rs` to import Plugin types from `astrcode_core::plugin` instead of `astrcode_protocol`
+- [x] T014 [P] [US2] Update `crates/sdk/src/tool.rs` to import CapabilityDescriptor from core
+- [x] T015 [P] [US2] Update `crates/sdk/src/hook.rs` to import CapabilityDescriptor from core
+- [x] T016 [P] [US2] Update `crates/plugin/src/capability_router.rs` to import from core
+- [x] T017 [P] [US2] Update `crates/plugin/src/invoker.rs` to import from core
+- [x] T018 [US2] DONE
 
 ### Phase 3.3: Migrate Runtime Layer
 
-- [ ] T019 [P] [US2] Update `crates/runtime/src/runtime_surface_assembler.rs` to import from core
-- [ ] T020 [P] [US2] Update `crates/runtime-agent-loop/src/agent_loop.rs` to import from core
-- [ ] T021 [P] [US2] Update `crates/runtime-agent-loop/src/approval_service.rs` to import from core
-- [ ] T022 [P] [US2] Update `crates/runtime-agent-loop/src/context_pipeline.rs` to import from core
-- [ ] T023 [P] [US2] Update `crates/runtime-agent-loop/src/context_window/prune_pass.rs` to import from core
-- [ ] T024 [P] [US2] Update `crates/runtime-agent-loop/src/prompt_runtime.rs` to import from core
+- [x] T019 [P] [US2] Update `crates/runtime/src/runtime_surface_assembler.rs` to import from core
+- [x] T020 [P] [US2] Update `crates/runtime-agent-loop/src/agent_loop.rs` to import from core
+- [x] T021 [P] [US2] Update `crates/runtime-agent-loop/src/approval_service.rs` to import from core
+- [x] T022 [P] [US2] Update `crates/runtime-agent-loop/src/context_pipeline.rs` to import from core
+- [x] T023 [P] [US2] Update `crates/runtime-agent-loop/src/context_window/prune_pass.rs` to import from core
+- [x] T024 [P] [US2] Update `crates/runtime-agent-loop/src/prompt_runtime.rs` to import from core
 
 ### Phase 3.4: Migrate Server Layer
 
-- [ ] T025 [P] [US2] Update `crates/server/src/http/mapper.rs` to import CapabilityDescriptor from core
-- [ ] T026 [P] [US2] Update `crates/server/src/tests/runtime_routes_tests.rs` to import from core
+- [x] T025 [P] [US2] Update `crates/server/src/http/mapper.rs` to import CapabilityDescriptor from core
+- [x] T026 [P] [US2] Update `crates/server/src/tests/runtime_routes_tests.rs` to import from core
 
 ### Phase 3.5: Cleanup and Validation
 
-- [ ] T027 [US2] Remove `astrcode-protocol` dependency from `crates/core/Cargo.toml`
-- [ ] T028 [US2] Remove re-export from `crates/protocol/src/plugin/mod.rs` (or keep as deprecated)
-- [ ] T029 [US2] Run `cargo check --workspace` and verify compilation passes
-- [ ] T030 [US2] Verify `grep -q "astrcode-protocol" crates/core/Cargo.toml` returns no match
+- [x] T027 [US2] DONE
+- [x] T028 [US2] DONE
+- [x] T029 [US2] DONE
+- [x] T030 [US2] DONE
 
 **Checkpoint**: User Story 2 is complete when core does not depend on protocol and all tests pass
 

@@ -38,6 +38,7 @@ mod time;
 // test_support 通过 feature gate "test-support" 守卫。
 // 其他 crate 在 dev-dependencies 中启用此 feature：astrcode-core = { features = ["test-support"]
 // }。 发布构建默认不启用，tempfile 不会被编译进产物。
+pub mod support;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 mod tool;
@@ -55,8 +56,10 @@ pub use agent::{
 };
 pub use cancel::CancelToken;
 pub use capability::{
-    CapabilityDescriptor, CapabilityDescriptorBuilder, CapabilityKind, DescriptorBuildError,
-    PermissionHint, SideEffectLevel, StabilityLevel,
+    BudgetHint, CallerRef, CapabilityDescriptor, CapabilityDescriptorBuilder, CapabilityKind,
+    DescriptorBuildError, FilterDescriptor, HandlerDescriptor, InvocationContext, PeerDescriptor,
+    PeerRole, PermissionHint, ProfileDescriptor, SideEffectLevel, StabilityLevel,
+    TriggerDescriptor, WorkspaceRef,
 };
 pub use compact_summary::{
     COMPACT_SUMMARY_CONTINUATION, COMPACT_SUMMARY_PREFIX, CompactSummaryEnvelope,

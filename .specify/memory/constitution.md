@@ -22,6 +22,8 @@ Sync Impact Report
 -->
 # Astrcode Constitution
 
+所有文档都需要用中文来生成和书写,方便用户观看
+
 ## Core Principles
 
 ### I. Durable Truth First

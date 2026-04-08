@@ -91,7 +91,6 @@ dependencies = [
 name = "astrcode-core"
 version = "0.1.0"
 dependencies = [
- "astrcode-protocol",
  "async-trait",
  "chrono",
  "dirs",
@@ -138,6 +137,7 @@ dependencies = [
 name = "astrcode-protocol"
 version = "0.1.0"
 dependencies = [
+ "astrcode-core",
  "async-trait",
  "serde",
  "serde_json",

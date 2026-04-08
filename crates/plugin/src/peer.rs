@@ -297,7 +297,11 @@ impl Peer {
         // Using std::sync::Mutex is safe here: the write happens synchronously
         // during Peer::new, and abort() reads it from an async context with
         // negligible contention.
-        *self.inner.read_loop_handle.lock().unwrap() = Some(handle);
+        astrcode_core::support::with_lock_recovery(
+            &self.inner.read_loop_handle,
+            "peer.read_loop_handle",
+            |guard| *guard = Some(handle),
+        );
     }
 
     /// 中止读循环和所有活跃的入站 invoke 处理器。

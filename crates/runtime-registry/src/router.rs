@@ -8,6 +8,7 @@ use std::{
 use astrcode_core::{
     AstrError, CapabilityContext, CapabilityDescriptor, CapabilityInvoker, Result, ToolCallRequest,
     ToolContext, ToolDefinition, ToolExecutionResult,
+    support::{self},
 };
 
 pub struct CapabilityRouterBuilder {
@@ -111,68 +112,73 @@ impl CapabilityRouter {
             ))
         })?;
 
-        let mut inner = self.inner.write().expect("capability router write lock");
-        if inner.invokers_by_name.contains_key(&descriptor.name) {
-            return Err(AstrError::Validation(format!(
-                "duplicate capability '{}' registered",
-                descriptor.name
-            )));
-        }
-
-        if descriptor.kind.is_tool() {
-            inner.tool_order.push(descriptor.name.clone());
-        }
-        inner.order.push(descriptor.name.clone());
-        inner.invokers_by_name.insert(descriptor.name, invoker);
-        Ok(())
-    }
-
-    pub fn register_invokers(&self, invokers: Vec<Arc<dyn CapabilityInvoker>>) -> Result<()> {
-        let mut inner = self.inner.write().expect("capability router write lock");
-
-        for invoker in &invokers {
-            let descriptor = invoker.descriptor();
-            descriptor.validate().map_err(|error| {
-                AstrError::Validation(format!(
-                    "invalid capability descriptor '{}': {}",
-                    descriptor.name, error
-                ))
-            })?;
+        support::with_write_lock_recovery(&self.inner, "capability_router", |inner| {
             if inner.invokers_by_name.contains_key(&descriptor.name) {
                 return Err(AstrError::Validation(format!(
                     "duplicate capability '{}' registered",
                     descriptor.name
                 )));
             }
-        }
 
-        for invoker in invokers {
-            let descriptor = invoker.descriptor();
             if descriptor.kind.is_tool() {
                 inner.tool_order.push(descriptor.name.clone());
             }
             inner.order.push(descriptor.name.clone());
-            inner.invokers_by_name.insert(descriptor.name, invoker);
-        }
-        Ok(())
+            inner
+                .invokers_by_name
+                .insert(descriptor.name.clone(), invoker);
+            Ok(())
+        })
+    }
+
+    pub fn register_invokers(&self, invokers: Vec<Arc<dyn CapabilityInvoker>>) -> Result<()> {
+        support::with_write_lock_recovery(&self.inner, "capability_router", |inner| {
+            for invoker in &invokers {
+                let descriptor = invoker.descriptor();
+                descriptor.validate().map_err(|error| {
+                    AstrError::Validation(format!(
+                        "invalid capability descriptor '{}': {}",
+                        descriptor.name, error
+                    ))
+                })?;
+                if inner.invokers_by_name.contains_key(&descriptor.name) {
+                    return Err(AstrError::Validation(format!(
+                        "duplicate capability '{}' registered",
+                        descriptor.name
+                    )));
+                }
+            }
+
+            for invoker in invokers {
+                let descriptor = invoker.descriptor();
+                if descriptor.kind.is_tool() {
+                    inner.tool_order.push(descriptor.name.clone());
+                }
+                inner.order.push(descriptor.name.clone());
+                inner.invokers_by_name.insert(descriptor.name, invoker);
+            }
+            Ok(())
+        })
     }
 
     pub fn descriptors(&self) -> Vec<CapabilityDescriptor> {
-        let inner = self.inner.read().expect("capability router read lock");
-        inner
-            .order
-            .iter()
-            .filter_map(|name| inner.invokers_by_name.get(name))
-            .map(|invoker| invoker.descriptor())
-            .collect()
+        support::with_read_lock_recovery(&self.inner, "capability_router", |inner| {
+            inner
+                .order
+                .iter()
+                .filter_map(|name| inner.invokers_by_name.get(name))
+                .map(|invoker| invoker.descriptor())
+                .collect()
+        })
     }
 
     pub fn descriptor(&self, name: &str) -> Option<CapabilityDescriptor> {
-        let inner = self.inner.read().expect("capability router read lock");
-        inner
-            .invokers_by_name
-            .get(name)
-            .map(|invoker| invoker.descriptor())
+        support::with_read_lock_recovery(&self.inner, "capability_router", |inner| {
+            inner
+                .invokers_by_name
+                .get(name)
+                .map(|invoker| invoker.descriptor())
+        })
     }
 
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
@@ -188,8 +194,9 @@ impl CapabilityRouter {
     }
 
     pub fn tool_names(&self) -> Vec<String> {
-        let inner = self.inner.read().expect("capability router read lock");
-        inner.tool_order.clone()
+        support::with_read_lock_recovery(&self.inner, "capability_router", |inner| {
+            inner.tool_order.clone()
+        })
     }
 
     pub fn subset_for_tools(&self, allowed_tool_names: &[String]) -> Result<Self> {
@@ -197,21 +204,22 @@ impl CapabilityRouter {
             .iter()
             .map(|name| name.as_str())
             .collect::<HashSet<_>>();
-        let inner = self.inner.read().expect("capability router read lock");
-        let mut builder = CapabilityRouter::builder();
+        support::with_read_lock_recovery(&self.inner, "capability_router", |inner| {
+            let mut builder = CapabilityRouter::builder();
 
-        for name in &inner.order {
-            let Some(invoker) = inner.invokers_by_name.get(name) else {
-                continue;
-            };
-            let descriptor = invoker.descriptor();
-            if descriptor.kind.is_tool() && !allowed.contains(descriptor.name.as_str()) {
-                continue;
+            for name in &inner.order {
+                let Some(invoker) = inner.invokers_by_name.get(name) else {
+                    continue;
+                };
+                let descriptor = invoker.descriptor();
+                if descriptor.kind.is_tool() && !allowed.contains(descriptor.name.as_str()) {
+                    continue;
+                }
+                builder = builder.register_invoker(Arc::clone(invoker));
             }
-            builder = builder.register_invoker(Arc::clone(invoker));
-        }
 
-        builder.build()
+            builder.build()
+        })
     }
 
     pub async fn execute_tool(
@@ -219,10 +227,9 @@ impl CapabilityRouter {
         call: &ToolCallRequest,
         ctx: &ToolContext,
     ) -> ToolExecutionResult {
-        let invoker = {
-            let inner = self.inner.read().expect("capability router read lock");
+        let invoker = support::with_read_lock_recovery(&self.inner, "capability_router", |inner| {
             inner.invokers_by_name.get(&call.name).cloned()
-        };
+        });
 
         let Some(invoker) = invoker else {
             return ToolExecutionResult {
@@ -273,12 +280,14 @@ impl CapabilityRouter {
     }
 
     pub fn has_capability(&self, name: &str) -> bool {
-        let inner = self.inner.read().expect("capability router read lock");
-        inner.invokers_by_name.contains_key(name)
+        support::with_read_lock_recovery(&self.inner, "capability_router", |inner| {
+            inner.invokers_by_name.contains_key(name)
+        })
     }
 
     pub fn capability_count(&self) -> usize {
-        let inner = self.inner.read().expect("capability router read lock");
-        inner.invokers_by_name.len()
+        support::with_read_lock_recovery(&self.inner, "capability_router", |inner| {
+            inner.invokers_by_name.len()
+        })
     }
 }

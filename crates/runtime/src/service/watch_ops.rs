@@ -338,7 +338,7 @@ mod tests {
                 target
                     .path
                     .to_string_lossy()
-                    .ends_with(&*expected_repo_agents.to_string_lossy())
+                    .ends_with(expected_repo_agents.to_string_lossy().as_ref())
                     && target.recursive
             }),
             "watch targets: {watch_targets:?}"
