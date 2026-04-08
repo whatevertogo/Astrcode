@@ -423,23 +423,72 @@ pub fn derive_child_execution_owner(
 }
 
 pub fn build_result_artifacts(child: &astrcode_core::SubRunHandle) -> Vec<ArtifactRef> {
-    child
+    let open_session_id = child
         .child_session_id
         .as_ref()
-        .map_or_else(Vec::new, |session_id| {
-            vec![ArtifactRef {
-                kind: "session".to_string(),
-                id: session_id.clone(),
-                label: "Independent child session".to_string(),
-                session_id: Some(session_id.clone()),
-                storage_seq: None,
-                uri: None,
-            }]
-        })
+        .cloned()
+        .unwrap_or_else(|| child.session_id.clone());
+
+    vec![ArtifactRef {
+        kind: "session".to_string(),
+        id: open_session_id.clone(),
+        label: if child.child_session_id.is_some() {
+            "Independent child session".to_string()
+        } else {
+            "Shared parent session".to_string()
+        },
+        session_id: Some(open_session_id),
+        storage_seq: None,
+        uri: None,
+    }]
+}
+
+fn build_identity_artifacts(
+    child: &astrcode_core::SubRunHandle,
+    parent_session_id: &str,
+) -> Vec<ArtifactRef> {
+    let mut artifacts = vec![
+        ArtifactRef {
+            kind: "subRun".to_string(),
+            id: child.sub_run_id.clone(),
+            label: "Background sub-run".to_string(),
+            session_id: None,
+            storage_seq: None,
+            uri: None,
+        },
+        ArtifactRef {
+            kind: "agent".to_string(),
+            id: child.agent_id.clone(),
+            label: "Child agent id".to_string(),
+            session_id: None,
+            storage_seq: None,
+            uri: None,
+        },
+        ArtifactRef {
+            kind: "parentSession".to_string(),
+            id: parent_session_id.to_string(),
+            label: "Parent session".to_string(),
+            session_id: Some(parent_session_id.to_string()),
+            storage_seq: None,
+            uri: None,
+        },
+    ];
+    if let Some(parent_agent_id) = child.parent_agent_id.as_ref() {
+        artifacts.push(ArtifactRef {
+            kind: "parentAgent".to_string(),
+            id: parent_agent_id.clone(),
+            label: "Parent agent id".to_string(),
+            session_id: None,
+            storage_seq: None,
+            uri: None,
+        });
+    }
+    artifacts
 }
 
 pub fn build_subrun_handoff(
     child: &astrcode_core::SubRunHandle,
+    parent_session_id: &str,
     last_summary: Option<&str>,
     token_limit_hit: bool,
     step_limit_hit: bool,
@@ -464,20 +513,19 @@ pub fn build_subrun_handoff(
         summary,
         // `findings` 应只承载对子任务有业务价值的发现，不能再混入内部执行诊断。
         findings: Vec::new(),
-        artifacts: build_result_artifacts(child),
+        artifacts: {
+            let mut artifacts = build_identity_artifacts(child, parent_session_id);
+            artifacts.extend(build_result_artifacts(child));
+            artifacts
+        },
     }
 }
 
-pub fn build_background_subrun_handoff(child: &astrcode_core::SubRunHandle) -> SubRunHandoff {
-    let mut artifacts = vec![ArtifactRef {
-        // `subRun` artifact 把后台句柄结构化暴露给上层，避免再把 sub_run_id 塞进 summary/findings。
-        kind: "subRun".to_string(),
-        id: child.sub_run_id.clone(),
-        label: "Background sub-run".to_string(),
-        session_id: None,
-        storage_seq: None,
-        uri: None,
-    }];
+pub fn build_background_subrun_handoff(
+    child: &astrcode_core::SubRunHandle,
+    parent_session_id: &str,
+) -> SubRunHandoff {
+    let mut artifacts = build_identity_artifacts(child, parent_session_id);
     artifacts.extend(build_result_artifacts(child));
 
     SubRunHandoff {
@@ -545,6 +593,7 @@ mod tests {
                 storage_mode: SubRunStorageMode::SharedSession,
                 status: AgentStatus::Completed,
             },
+            "session-parent-1",
             Some("done"),
             true,
             false,
@@ -571,6 +620,7 @@ mod tests {
                 storage_mode: SubRunStorageMode::SharedSession,
                 status: AgentStatus::Completed,
             },
+            "session-parent-1",
             None,
             false,
             false,
@@ -591,23 +641,28 @@ mod tests {
 
     #[test]
     fn build_background_subrun_handoff_exposes_subrun_artifact() {
-        let handoff = build_background_subrun_handoff(&astrcode_core::SubRunHandle {
-            sub_run_id: "subrun-1".to_string(),
-            agent_id: "agent-1".to_string(),
-            session_id: "session-1".to_string(),
-            child_session_id: Some("child-1".to_string()),
-            depth: 1,
-            parent_turn_id: Some("turn-1".to_string()),
-            parent_agent_id: None,
-            agent_profile: "plan".to_string(),
-            storage_mode: SubRunStorageMode::IndependentSession,
-            status: AgentStatus::Running,
-        });
+        let handoff = build_background_subrun_handoff(
+            &astrcode_core::SubRunHandle {
+                sub_run_id: "subrun-1".to_string(),
+                agent_id: "agent-1".to_string(),
+                session_id: "session-1".to_string(),
+                child_session_id: Some("child-1".to_string()),
+                depth: 1,
+                parent_turn_id: Some("turn-1".to_string()),
+                parent_agent_id: None,
+                agent_profile: "plan".to_string(),
+                storage_mode: SubRunStorageMode::IndependentSession,
+                status: AgentStatus::Running,
+            },
+            "session-parent-1",
+        );
 
         assert_eq!(handoff.summary, "spawnAgent 已在后台启动。");
         assert_eq!(handoff.artifacts[0].kind, "subRun");
         assert_eq!(handoff.artifacts[0].id, "subrun-1");
-        assert_eq!(handoff.artifacts[1].kind, "session");
+        assert_eq!(handoff.artifacts[1].kind, "agent");
+        assert_eq!(handoff.artifacts[2].kind, "parentSession");
+        assert_eq!(handoff.artifacts[3].kind, "session");
     }
 
     #[test]

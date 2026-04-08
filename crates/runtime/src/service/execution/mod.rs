@@ -129,6 +129,60 @@ impl AgentExecutionServiceHandle {
                     || child_session_id.as_deref() == Some(normalized_session_id.as_str())
             }))
     }
+
+    pub(super) async fn reactivate_parent_agent_if_idle(
+        &self,
+        parent_session_id: &str,
+        parent_turn_id: &str,
+        notification: &astrcode_core::ChildSessionNotification,
+    ) {
+        let parent_session_id = astrcode_runtime_session::normalize_session_id(parent_session_id);
+
+        let should_reactivate =
+            self.runtime
+                .sessions
+                .get(&parent_session_id)
+                .is_some_and(|state| {
+                    let is_running = state.running.load(std::sync::atomic::Ordering::SeqCst);
+                    let active_turn_id = state
+                        .active_turn_id
+                        .lock()
+                        .ok()
+                        .and_then(|guard| guard.clone());
+                    !is_running && active_turn_id.as_deref() != Some(parent_turn_id)
+                });
+
+        if !should_reactivate {
+            return;
+        }
+
+        let followup_prompt =
+            astrcode_runtime_agent_loop::child_delivery_reactivation_prompt(notification);
+        match self
+            .submit_prompt(&parent_session_id, followup_prompt)
+            .await
+        {
+            Ok(_) => {
+                log::info!(
+                    "reactivated parent agent from child delivery: parentSession='{}', \
+                     childAgent='{}', subRunId='{}'",
+                    parent_session_id,
+                    notification.child_ref.agent_id,
+                    notification.child_ref.sub_run_id
+                );
+            },
+            Err(error) => {
+                log::warn!(
+                    "failed to reactivate parent agent from child delivery: parentSession='{}', \
+                     childAgent='{}', subRunId='{}', error='{}'",
+                    parent_session_id,
+                    notification.child_ref.agent_id,
+                    notification.child_ref.sub_run_id,
+                    error
+                );
+            },
+        }
+    }
 }
 
 #[async_trait]

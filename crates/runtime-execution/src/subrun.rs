@@ -8,9 +8,10 @@
 //! 设计目的：让 runtime façade 不需要了解事件拼装细节。
 
 use astrcode_core::{
-    AgentEventContext, AgentStatus, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, StorageEvent, StoredEvent, SubRunDescriptor, SubRunHandle,
-    SubRunOutcome, SubRunResult, SubRunStorageMode,
+    AgentEventContext, AgentStatus, ChildSessionLineageKind, ChildSessionNode,
+    ChildSessionNotification, ChildSessionNotificationKind, ChildSessionStatusSource,
+    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, StorageEvent, StoredEvent,
+    SubRunDescriptor, SubRunHandle, SubRunOutcome, SubRunResult, SubRunStorageMode,
 };
 
 use crate::ExecutionLineageIndex;
@@ -62,6 +63,52 @@ pub fn build_subrun_descriptor(child: &SubRunHandle, parent_turn_id: &str) -> Su
         parent_turn_id: parent_turn_id.to_string(),
         parent_agent_id: child.parent_agent_id.clone(),
         depth: child.depth,
+    }
+}
+
+pub fn build_child_session_node(
+    child: &SubRunHandle,
+    parent_session_id: &str,
+    parent_turn_id: &str,
+    created_by_tool_call_id: Option<String>,
+) -> ChildSessionNode {
+    let child_session_id = child
+        .child_session_id
+        .clone()
+        .unwrap_or_else(|| child.session_id.clone());
+
+    ChildSessionNode {
+        agent_id: child.agent_id.clone(),
+        session_id: parent_session_id.to_string(),
+        child_session_id,
+        sub_run_id: child.sub_run_id.clone(),
+        parent_session_id: parent_session_id.to_string(),
+        parent_agent_id: child.parent_agent_id.clone(),
+        parent_turn_id: parent_turn_id.to_string(),
+        lineage_kind: ChildSessionLineageKind::Spawn,
+        status: child.status,
+        status_source: ChildSessionStatusSource::Durable,
+        created_by_tool_call_id,
+    }
+}
+
+pub fn build_child_session_notification(
+    node: &ChildSessionNode,
+    notification_id: impl Into<String>,
+    kind: ChildSessionNotificationKind,
+    summary: impl Into<String>,
+    status: AgentStatus,
+    final_reply_excerpt: Option<String>,
+) -> ChildSessionNotification {
+    ChildSessionNotification {
+        notification_id: notification_id.into(),
+        child_ref: node.child_ref(),
+        kind,
+        summary: summary.into(),
+        status,
+        open_session_id: node.child_session_id.clone(),
+        source_tool_call_id: node.created_by_tool_call_id.clone(),
+        final_reply_excerpt,
     }
 }
 
@@ -375,16 +422,18 @@ fn status_from_result(result: &SubRunResult) -> AgentStatus {
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        AgentEventContext, AgentStatus, ResolvedExecutionLimitsSnapshot,
-        ResolvedSubagentContextOverrides, StorageEvent, StoredEvent, SubRunDescriptor,
-        SubRunHandle, SubRunHandoff, SubRunOutcome, SubRunResult, SubRunStorageMode,
+        AgentEventContext, AgentStatus, ChildSessionNotificationKind,
+        ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, StorageEvent,
+        StoredEvent, SubRunDescriptor, SubRunHandle, SubRunHandoff, SubRunOutcome, SubRunResult,
+        SubRunStorageMode,
     };
 
     use super::{
         CancelSubRunResolution, ParsedSubRunStatus, ParsedSubRunStatusSource,
-        build_subrun_finished_event, build_subrun_started_event, find_subrun_status_in_events,
-        overlay_live_snapshot_on_durable, resolve_cancel_subrun_resolution,
-        resolve_subrun_status_snapshot, snapshot_from_active_handle,
+        build_child_session_node, build_child_session_notification, build_subrun_finished_event,
+        build_subrun_started_event, find_subrun_status_in_events, overlay_live_snapshot_on_durable,
+        resolve_cancel_subrun_resolution, resolve_subrun_status_snapshot,
+        snapshot_from_active_handle,
     };
 
     #[test]
@@ -972,5 +1021,73 @@ mod tests {
             resolve_cancel_subrun_resolution("session-2", None, None, str::to_string,),
             CancelSubRunResolution::Missing
         );
+    }
+
+    #[test]
+    fn build_child_session_node_uses_stable_parent_and_open_session_identity() {
+        let child = SubRunHandle {
+            sub_run_id: "subrun-11".to_string(),
+            agent_id: "agent-11".to_string(),
+            session_id: "session-child-11".to_string(),
+            child_session_id: Some("session-child-11".to_string()),
+            depth: 1,
+            parent_turn_id: Some("turn-parent-11".to_string()),
+            parent_agent_id: Some("agent-parent-11".to_string()),
+            agent_profile: "review".to_string(),
+            storage_mode: SubRunStorageMode::IndependentSession,
+            status: AgentStatus::Running,
+        };
+
+        let node = build_child_session_node(
+            &child,
+            "session-parent-11",
+            "turn-parent-11",
+            Some("call-11".to_string()),
+        );
+
+        assert_eq!(node.session_id, "session-parent-11");
+        assert_eq!(node.parent_session_id, "session-parent-11");
+        assert_eq!(node.child_session_id, "session-child-11");
+        assert_eq!(node.sub_run_id, "subrun-11");
+        assert_eq!(node.parent_agent_id.as_deref(), Some("agent-parent-11"));
+        assert_eq!(node.created_by_tool_call_id.as_deref(), Some("call-11"));
+    }
+
+    #[test]
+    fn build_child_session_notification_reuses_child_ref_and_open_session_id() {
+        let child = SubRunHandle {
+            sub_run_id: "subrun-12".to_string(),
+            agent_id: "agent-12".to_string(),
+            session_id: "session-parent-12".to_string(),
+            child_session_id: None,
+            depth: 1,
+            parent_turn_id: Some("turn-parent-12".to_string()),
+            parent_agent_id: Some("agent-parent-12".to_string()),
+            agent_profile: "review".to_string(),
+            storage_mode: SubRunStorageMode::SharedSession,
+            status: AgentStatus::Running,
+        };
+        let node = build_child_session_node(
+            &child,
+            "session-parent-12",
+            "turn-parent-12",
+            Some("call-12".to_string()),
+        );
+
+        let notification = build_child_session_notification(
+            &node,
+            "child-started:subrun-12",
+            ChildSessionNotificationKind::Started,
+            "child started",
+            AgentStatus::Running,
+            None,
+        );
+
+        assert_eq!(notification.notification_id, "child-started:subrun-12");
+        assert_eq!(notification.child_ref.agent_id, "agent-12");
+        assert_eq!(notification.child_ref.sub_run_id, "subrun-12");
+        assert_eq!(notification.child_ref.open_session_id, "session-parent-12");
+        assert_eq!(notification.open_session_id, "session-parent-12");
+        assert_eq!(notification.source_tool_call_id.as_deref(), Some("call-12"));
     }
 }

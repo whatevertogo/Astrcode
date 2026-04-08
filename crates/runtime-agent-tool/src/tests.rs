@@ -229,14 +229,40 @@ async fn spawn_agent_tool_background_returns_subrun_artifact() {
                 handoff: Some(SubRunHandoff {
                     summary: "spawnAgent 已在后台启动。".to_string(),
                     findings: Vec::new(),
-                    artifacts: vec![ArtifactRef {
-                        kind: "subRun".to_string(),
-                        id: "subrun-42".to_string(),
-                        label: "Background sub-run".to_string(),
-                        session_id: None,
-                        storage_seq: None,
-                        uri: None,
-                    }],
+                    artifacts: vec![
+                        ArtifactRef {
+                            kind: "subRun".to_string(),
+                            id: "subrun-42".to_string(),
+                            label: "Background sub-run".to_string(),
+                            session_id: None,
+                            storage_seq: None,
+                            uri: None,
+                        },
+                        ArtifactRef {
+                            kind: "agent".to_string(),
+                            id: "agent-42".to_string(),
+                            label: "Child agent id".to_string(),
+                            session_id: None,
+                            storage_seq: None,
+                            uri: None,
+                        },
+                        ArtifactRef {
+                            kind: "parentSession".to_string(),
+                            id: "session-parent-42".to_string(),
+                            label: "Parent session".to_string(),
+                            session_id: Some("session-parent-42".to_string()),
+                            storage_seq: None,
+                            uri: None,
+                        },
+                        ArtifactRef {
+                            kind: "session".to_string(),
+                            id: "session-child-42".to_string(),
+                            label: "Independent child session".to_string(),
+                            session_id: Some("session-child-42".to_string()),
+                            storage_seq: None,
+                            uri: None,
+                        },
+                    ],
                 }),
                 failure: None,
             })
@@ -268,4 +294,21 @@ async fn spawn_agent_tool_background_returns_subrun_artifact() {
         .and_then(|artifact| artifact.get("kind"))
         .and_then(|value| value.as_str());
     assert_eq!(artifact_kind, Some("subRun"));
+    assert_eq!(
+        result
+            .metadata
+            .as_ref()
+            .and_then(|value| value.get("openSessionId"))
+            .and_then(|value| value.as_str()),
+        Some("session-child-42")
+    );
+    assert_eq!(
+        result
+            .metadata
+            .as_ref()
+            .and_then(|value| value.get("agentRef"))
+            .and_then(|value| value.get("agentId"))
+            .and_then(|value| value.as_str()),
+        Some("agent-42")
+    );
 }

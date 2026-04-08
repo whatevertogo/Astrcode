@@ -5,7 +5,8 @@ use astrcode_core::{
     StorageEvent,
 };
 use astrcode_protocol::http::{
-    PromptAcceptedResponse, PromptRequest, SubRunStatusDto, SubRunStatusSourceDto,
+    AgentEventPayload, ChildSessionNotificationKindDto, PromptAcceptedResponse, PromptRequest,
+    SessionHistoryResponseDto, SubRunStatusDto, SubRunStatusSourceDto,
 };
 use astrcode_runtime::{
     Config, ModelConfig, Profile, RuntimeConfig, RuntimeGovernance, RuntimeService,
@@ -857,4 +858,165 @@ async fn scope_parameter_without_subrun_id_is_rejected() {
         "scope without subRunId should be rejected, got: {}",
         response.status()
     );
+}
+
+fn seed_child_delivery_contract_session(session_id: &str, working_dir: &std::path::Path) {
+    let mut log =
+        EventLog::create(session_id, working_dir).expect("session file should be created");
+    let descriptor = astrcode_core::SubRunDescriptor {
+        sub_run_id: "subrun-delivery-contract".to_string(),
+        parent_turn_id: "turn-delivery-contract".to_string(),
+        parent_agent_id: Some("agent-parent".to_string()),
+        depth: 1,
+    };
+    let agent = AgentEventContext::sub_run(
+        "agent-child-contract",
+        "turn-delivery-contract",
+        "review",
+        "subrun-delivery-contract",
+        astrcode_core::SubRunStorageMode::IndependentSession,
+        Some("session-child-contract".to_string()),
+    );
+    let child_ref = astrcode_core::ChildAgentRef {
+        agent_id: "agent-child-contract".to_string(),
+        session_id: session_id.to_string(),
+        sub_run_id: "subrun-delivery-contract".to_string(),
+        parent_agent_id: Some("agent-parent".to_string()),
+        lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
+        status: astrcode_core::AgentStatus::Completed,
+        openable: true,
+        open_session_id: "session-child-contract".to_string(),
+    };
+
+    for event in [
+        StorageEvent::SessionStart {
+            session_id: session_id.to_string(),
+            timestamp: Utc::now(),
+            working_dir: working_dir.display().to_string(),
+            parent_session_id: None,
+            parent_storage_seq: None,
+        },
+        StorageEvent::SubRunStarted {
+            turn_id: Some("turn-delivery-contract".to_string()),
+            agent: agent.clone(),
+            descriptor: Some(descriptor.clone()),
+            tool_call_id: Some("call-delivery-contract".to_string()),
+            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides {
+                storage_mode: astrcode_core::SubRunStorageMode::IndependentSession,
+                ..Default::default()
+            },
+            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+            timestamp: Some(Utc::now()),
+        },
+        StorageEvent::SubRunFinished {
+            turn_id: Some("turn-delivery-contract".to_string()),
+            agent: agent.clone(),
+            descriptor: Some(descriptor),
+            tool_call_id: Some("call-delivery-contract".to_string()),
+            result: astrcode_core::SubRunResult {
+                status: astrcode_core::SubRunOutcome::Completed,
+                handoff: Some(astrcode_core::SubRunHandoff {
+                    summary: "child final reply summary".to_string(),
+                    findings: Vec::new(),
+                    artifacts: Vec::new(),
+                }),
+                failure: None,
+            },
+            step_count: 2,
+            estimated_tokens: 88,
+            timestamp: Some(Utc::now()),
+        },
+        StorageEvent::ChildSessionNotification {
+            turn_id: Some("turn-delivery-contract".to_string()),
+            agent,
+            notification: astrcode_core::ChildSessionNotification {
+                notification_id: "child-terminal:subrun-delivery-contract:completed".to_string(),
+                child_ref,
+                kind: astrcode_core::ChildSessionNotificationKind::Delivered,
+                summary: "child final reply summary".to_string(),
+                status: astrcode_core::AgentStatus::Completed,
+                open_session_id: "session-child-contract".to_string(),
+                source_tool_call_id: Some("call-delivery-contract".to_string()),
+                final_reply_excerpt: Some("final answer excerpt".to_string()),
+            },
+            timestamp: Some(Utc::now()),
+        },
+    ] {
+        log.append(&event).expect("event should append");
+    }
+}
+
+#[tokio::test]
+async fn child_delivery_projection_contract_exposes_status_source_and_final_excerpt() {
+    let (state, _guard) = test_state(None);
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    seed_child_delivery_contract_session("child-delivery-contract-session", temp_dir.path());
+    let app = build_api_router().with_state(state);
+
+    let status_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(
+                    "/api/v1/sessions/child-delivery-contract-session/subruns/\
+                     subrun-delivery-contract",
+                )
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+    assert_eq!(status_response.status(), StatusCode::OK);
+    let status_payload: SubRunStatusDto = serde_json::from_slice(
+        &to_bytes(status_response.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable"),
+    )
+    .expect("payload should deserialize");
+    assert_eq!(status_payload.source, SubRunStatusSourceDto::Durable);
+    assert_eq!(status_payload.status, "completed");
+
+    let history_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/sessions/child-delivery-contract-session/history")
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+    assert_eq!(history_response.status(), StatusCode::OK);
+    let history_payload: SessionHistoryResponseDto = serde_json::from_slice(
+        &to_bytes(history_response.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable"),
+    )
+    .expect("history payload should deserialize");
+
+    let delivery_event = history_payload
+        .events
+        .iter()
+        .find_map(|envelope| match &envelope.event {
+            AgentEventPayload::ChildSessionNotification {
+                kind,
+                status,
+                open_session_id,
+                final_reply_excerpt,
+                ..
+            } => Some((
+                kind.clone(),
+                status.clone(),
+                open_session_id.clone(),
+                final_reply_excerpt.clone(),
+            )),
+            _ => None,
+        })
+        .expect("child delivery notification event should exist");
+
+    assert_eq!(delivery_event.0, ChildSessionNotificationKindDto::Delivered);
+    assert_eq!(delivery_event.1, "completed");
+    assert_eq!(delivery_event.2, "session-child-contract");
+    assert_eq!(delivery_event.3.as_deref(), Some("final answer excerpt"));
 }

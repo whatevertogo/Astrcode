@@ -109,6 +109,13 @@ impl TurnOutcome {
     }
 }
 
+/// 构建父 agent 重激活时可直接消费的 child-session 交付输入。
+pub fn child_delivery_reactivation_prompt(
+    notification: &astrcode_core::ChildSessionNotification,
+) -> String {
+    crate::subagent::build_parent_reactivation_prompt(notification)
+}
+
 /// Agent 循环
 ///
 /// 负责执行单个 Agent Turn，包含：

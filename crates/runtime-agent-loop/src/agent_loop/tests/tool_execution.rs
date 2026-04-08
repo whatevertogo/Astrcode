@@ -574,3 +574,69 @@ async fn long_tool_chains_complete_without_a_step_cap() {
         "completed turns should carry the completed reason"
     );
 }
+
+#[tokio::test]
+async fn turn_done_event_is_emitted_once_for_multi_step_tool_turn() {
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([
+            LlmOutput {
+                content: "step-1".to_string(),
+                tool_calls: vec![ToolCallRequest {
+                    id: "call-once-1".to_string(),
+                    name: "quickTool".to_string(),
+                    args: json!({}),
+                }],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            },
+            LlmOutput {
+                content: "step-2".to_string(),
+                tool_calls: vec![ToolCallRequest {
+                    id: "call-once-2".to_string(),
+                    name: "quickTool".to_string(),
+                    args: json!({}),
+                }],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            },
+            LlmOutput {
+                content: "done".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            },
+        ])),
+        delay: std::time::Duration::from_millis(0),
+    });
+
+    let tools = astrcode_runtime_registry::ToolRegistry::builder()
+        .register(Box::new(QuickTool))
+        .build();
+    let loop_runner = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory { provider }),
+        capabilities_from_tools(tools),
+    );
+    let (events, mut on_event) = collect_events();
+
+    let outcome = loop_runner
+        .run_turn(
+            &make_state("emit turn done once"),
+            "turn-once",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+
+    assert_eq!(outcome, TurnOutcome::Completed);
+
+    let events = events.lock().expect("events lock").clone();
+    let turn_done_count = events
+        .iter()
+        .filter(|event| matches!(event, StorageEvent::TurnDone { .. }))
+        .count();
+    assert_eq!(turn_done_count, 1, "turn done must be emitted exactly once");
+}

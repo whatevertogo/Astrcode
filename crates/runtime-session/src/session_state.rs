@@ -1,12 +1,13 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     sync::{Arc, Mutex as StdMutex, atomic::AtomicBool},
 };
 
 use anyhow::Result;
 use astrcode_core::{
-    AgentState, AgentStateProjector, CancelToken, EventLogWriter, EventTranslator, Phase,
-    SessionEventRecord, SessionTurnLease, StorageEvent, StoredEvent, ToolEventSink,
+    AgentState, AgentStateProjector, CancelToken, ChildSessionNode, EventLogWriter,
+    EventTranslator, Phase, SessionEventRecord, SessionTurnLease, StorageEvent, StoredEvent,
+    ToolEventSink,
 };
 use tokio::sync::broadcast;
 
@@ -137,6 +138,7 @@ pub struct SessionState {
     projector: StdMutex<AgentStateProjector>,
     recent_records: StdMutex<RecentSessionEvents>,
     recent_stored: StdMutex<RecentStoredEvents>,
+    child_nodes: StdMutex<HashMap<String, ChildSessionNode>>,
 }
 
 impl SessionState {
@@ -165,6 +167,7 @@ impl SessionState {
             projector: StdMutex::new(projector),
             recent_records: StdMutex::new(cached_records),
             recent_stored: StdMutex::new(cached_stored),
+            child_nodes: StdMutex::new(HashMap::new()),
         }
     }
 
@@ -225,6 +228,22 @@ impl SessionState {
 
     pub fn snapshot_recent_stored_events(&self) -> Result<Vec<StoredEvent>> {
         Ok(lock_anyhow(&self.recent_stored, "session recent stored events")?.snapshot())
+    }
+
+    /// 写入或覆盖一个 child-session durable 节点。
+    ///
+    /// 节点按 `sub_run_id` 去重，便于同一 child 在终态更新时保持稳定身份。
+    pub fn upsert_child_session_node(&self, node: ChildSessionNode) -> Result<()> {
+        lock_anyhow(&self.child_nodes, "session child nodes")?
+            .insert(node.sub_run_id.clone(), node);
+        Ok(())
+    }
+
+    /// 查询某个 sub-run 对应的 child-session 节点快照。
+    pub fn child_session_node(&self, sub_run_id: &str) -> Result<Option<ChildSessionNode>> {
+        Ok(lock_anyhow(&self.child_nodes, "session child nodes")?
+            .get(sub_run_id)
+            .cloned())
     }
 }
 

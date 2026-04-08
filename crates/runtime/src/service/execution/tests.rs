@@ -5,11 +5,11 @@ use std::{
 
 use astrcode_core::{
     AgentEventContext, AgentMode, AgentProfile, AgentStatus, AstrError, CancelToken,
-    ExecutionOwner, InvocationKind, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, SpawnAgentParams, StorageEvent, SubRunHandle, SubRunHandoff,
-    SubRunOutcome, SubRunResult, SubRunStorageMode, SubagentContextOverrides, Tool,
-    ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolEventSink, ToolExecutionResult,
-    test_support::TestEnvGuard,
+    ChildSessionNotificationKind, ExecutionOwner, InvocationKind, Phase,
+    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SpawnAgentParams,
+    StorageEvent, SubRunHandle, SubRunHandoff, SubRunOutcome, SubRunResult, SubRunStorageMode,
+    SubagentContextOverrides, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
+    ToolEventSink, ToolExecutionResult, test_support::TestEnvGuard,
 };
 use astrcode_runtime_agent_tool::{SpawnAgentTool, SubAgentExecutor};
 use astrcode_runtime_config::DEFAULT_MAX_CONCURRENT_AGENTS;
@@ -482,6 +482,7 @@ async fn get_subrun_status_reconstructs_durable_snapshot_without_live_handle() {
         RuntimeService::from_capabilities(capabilities_from_tools(
             ToolRegistry::builder()
                 .register(Box::new(DemoTool { name: "readFile" }))
+                .register(Box::new(DemoTool { name: "grep" }))
                 .build(),
         ))
         .expect("runtime service should build"),
@@ -569,6 +570,7 @@ async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
         RuntimeService::from_capabilities(capabilities_from_tools(
             ToolRegistry::builder()
                 .register(Box::new(DemoTool { name: "readFile" }))
+                .register(Box::new(DemoTool { name: "grep" }))
                 .build(),
         ))
         .expect("runtime service should build"),
@@ -656,6 +658,7 @@ async fn get_subrun_status_keeps_storage_mode_parity_for_parent_aborted_subruns(
         RuntimeService::from_capabilities(capabilities_from_tools(
             ToolRegistry::builder()
                 .register(Box::new(DemoTool { name: "readFile" }))
+                .register(Box::new(DemoTool { name: "grep" }))
                 .build(),
         ))
         .expect("runtime service should build"),
@@ -743,6 +746,7 @@ async fn get_subrun_status_rejects_live_handle_from_other_session() {
         RuntimeService::from_capabilities(capabilities_from_tools(
             ToolRegistry::builder()
                 .register(Box::new(DemoTool { name: "readFile" }))
+                .register(Box::new(DemoTool { name: "grep" }))
                 .build(),
         ))
         .expect("runtime service should build"),
@@ -1112,4 +1116,176 @@ async fn tool_execution_surface_lists_registered_tools() {
     let tool_names = tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>();
 
     assert_eq!(tool_names, vec!["grep".to_string(), "readFile".to_string()]);
+}
+
+#[tokio::test]
+async fn parent_turn_completion_does_not_cancel_running_child_session() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(capabilities_from_tools(ToolRegistry::builder().build()))
+            .expect("runtime service should build"),
+    );
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("session should be created");
+    let session_state = service
+        .ensure_session_loaded(&session.session_id)
+        .await
+        .expect("session state should load");
+
+    let profile = AgentProfile {
+        id: "review".to_string(),
+        name: "Review".to_string(),
+        description: "review".to_string(),
+        mode: AgentMode::SubAgent,
+        system_prompt: None,
+        allowed_tools: vec!["readFile".to_string()],
+        disallowed_tools: Vec::new(),
+        model_preference: None,
+    };
+    let child = service
+        .agent_control()
+        .spawn(
+            &profile,
+            &session.session_id,
+            Some("turn-parent".to_string()),
+            None,
+        )
+        .await
+        .expect("child sub-run should spawn");
+    let _ = service
+        .agent_control()
+        .mark_running(&child.agent_id)
+        .await
+        .expect("child should transition to running");
+    let child_cancel = service
+        .agent_control()
+        .cancel_token(&child.agent_id)
+        .await
+        .expect("child cancel token should exist");
+
+    session_state
+        .running
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    {
+        let mut active_turn = session_state
+            .active_turn_id
+            .lock()
+            .expect("active turn lock");
+        *active_turn = Some("turn-parent".to_string());
+    }
+
+    crate::service::turn::complete_session_execution(&session_state, Phase::Idle).await;
+
+    let refreshed = service
+        .agent_control()
+        .get(&child.agent_id)
+        .await
+        .expect("child should remain in registry");
+    assert_eq!(refreshed.status, AgentStatus::Running);
+    assert!(!child_cancel.is_cancelled());
+}
+
+#[tokio::test]
+async fn spawn_agent_terminal_delivery_notification_is_emitted_once() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(capabilities_from_tools(
+            ToolRegistry::builder()
+                .register(Box::new(DemoTool { name: "readFile" }))
+                .register(Box::new(DemoTool { name: "grep" }))
+                .build(),
+        ))
+        .expect("runtime service should build"),
+    );
+    let executor = Arc::new(DeferredSubAgentExecutor::default());
+    executor.bind(&service);
+    let tool = SpawnAgentTool::new(executor);
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("session should be created");
+    let context = ToolContext::new(
+        session.session_id.clone(),
+        temp_dir.path().to_path_buf(),
+        CancelToken::new(),
+    )
+    .with_turn_id("turn-parent");
+
+    let launched = tool
+        .execute(
+            "call-terminal-once".to_string(),
+            json!({
+                "type": "plan",
+                "description": "verify terminal delivery once",
+                "prompt": "return quickly"
+            }),
+            &context,
+        )
+        .await
+        .expect("spawnAgent launch should succeed");
+
+    let sub_run_id = launched
+        .metadata
+        .as_ref()
+        .and_then(|value| value.get("handoff"))
+        .and_then(|value| value.get("artifacts"))
+        .and_then(|value| value.as_array())
+        .and_then(|artifacts| {
+            artifacts
+                .iter()
+                .find(|artifact| artifact.get("kind") == Some(&json!("subRun")))
+        })
+        .and_then(|artifact| artifact.get("id"))
+        .and_then(|value| value.as_str())
+        .expect("sub-run id should be exposed")
+        .to_string();
+
+    let _ = service
+        .agent_control()
+        .wait(&sub_run_id)
+        .await
+        .expect("child sub-run should reach a terminal state");
+
+    let terminal_count = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let events = crate::service::session::load_events(
+                Arc::clone(&service.session_manager),
+                &session.session_id,
+            )
+            .await
+            .expect("session events should load");
+            let count = events
+                .iter()
+                .filter(|stored| {
+                    matches!(
+                        &stored.event,
+                        StorageEvent::ChildSessionNotification { notification, .. }
+                            if notification.child_ref.sub_run_id == sub_run_id
+                                && matches!(
+                                    notification.kind,
+                                    ChildSessionNotificationKind::Delivered
+                                        | ChildSessionNotificationKind::Failed
+                                        | ChildSessionNotificationKind::Closed
+                                )
+                    )
+                })
+                .count();
+            if count > 0 {
+                break count;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("terminal notification should appear in time");
+
+    assert_eq!(terminal_count, 1, "terminal delivery must be emitted once");
 }

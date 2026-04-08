@@ -124,6 +124,8 @@ impl Tool for SpawnAgentTool {
 
         let launch_ctx = ctx.clone().with_tool_call_id(tool_call_id.clone());
         let result = self.launcher.launch(params, &launch_ctx).await?;
+        // 结果映射会统一注入稳定 child ref/openSessionId 元数据，
+        // 让后续 send/wait/resume/close 可以直接复用同一 identity。
         Ok(map_subrun_result(tool_call_id, result))
     }
 }

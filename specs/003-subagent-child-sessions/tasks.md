@@ -61,17 +61,17 @@ description: "Task list for 子 Agent Child Session 与协作工具重构"
 
 ### Tests for User Story 1
 
-- [ ] T011 [P] [US1] Add regression tests for parent-turn completion and single terminal delivery in `crates/runtime/src/service/execution/tests.rs` and `crates/runtime-agent-loop/src/agent_loop/tests/tool_execution.rs`
-- [ ] T012 [P] [US1] Add server contract tests for child-session status source and final delivery projection in `crates/server/src/tests/session_contract_tests.rs`
+- [X] T011 [P] [US1] Add regression tests for parent-turn completion and single terminal delivery in `crates/runtime/src/service/execution/tests.rs` and `crates/runtime-agent-loop/src/agent_loop/tests/tool_execution.rs`
+- [X] T012 [P] [US1] Add server contract tests for child-session status source and final delivery projection in `crates/server/src/tests/session_contract_tests.rs`
 
 ### Implementation for User Story 1
 
-- [ ] T013 [US1] Persist `ChildSessionNode` and execution boundary data on spawn in `crates/runtime/src/service/execution/subagent.rs` and `crates/runtime-session/src/session_state.rs`
-- [ ] T014 [US1] Stop parent-turn cleanup from cancelling durable child sessions in `crates/runtime/src/service/turn/orchestration.rs` and `crates/runtime-agent-control/src/lib.rs`
-- [ ] T015 [US1] Build durable child delivery notifications with final-reply and failure fallback in `crates/runtime-execution/src/subrun.rs` and `crates/runtime/src/service/execution/status.rs`
-- [ ] T016 [US1] Reactivate the parent agent when child delivery arrives after the parent turn ended in `crates/runtime-agent-loop/src/agent_loop.rs`, `crates/runtime-agent-loop/src/subagent.rs`, and `crates/runtime/src/service/execution/mod.rs`
-- [ ] T017 [US1] Return stable `ChildAgentRef` and `openSessionId` metadata from `spawnAgent` in `crates/runtime-agent-tool/src/spawn_tool.rs` and `crates/runtime-agent-tool/src/result_mapping.rs`
-- [ ] T018 [US1] Add structured error context and observability for child-session creation and terminal delivery in `crates/runtime/src/service/execution/subagent.rs` and `crates/runtime-execution/src/lib.rs`
+- [X] T013 [US1] Persist `ChildSessionNode` and execution boundary data on spawn in `crates/runtime/src/service/execution/subagent.rs` and `crates/runtime-session/src/session_state.rs`
+- [X] T014 [US1] Stop parent-turn cleanup from cancelling durable child sessions in `crates/runtime/src/service/turn/orchestration.rs` and `crates/runtime-agent-control/src/lib.rs`
+- [X] T015 [US1] Build durable child delivery notifications with final-reply and failure fallback in `crates/runtime-execution/src/subrun.rs` and `crates/runtime/src/service/execution/status.rs`
+- [X] T016 [US1] Reactivate the parent agent when child delivery arrives after the parent turn ended in `crates/runtime-agent-loop/src/agent_loop.rs`, `crates/runtime-agent-loop/src/subagent.rs`, and `crates/runtime/src/service/execution/mod.rs`
+- [X] T017 [US1] Return stable `ChildAgentRef` and `openSessionId` metadata from `spawnAgent` in `crates/runtime-agent-tool/src/spawn_tool.rs` and `crates/runtime-agent-tool/src/result_mapping.rs`
+- [X] T018 [US1] Add structured error context and observability for child-session creation and terminal delivery in `crates/runtime/src/service/execution/subagent.rs` and `crates/runtime-execution/src/lib.rs`
 
 **Checkpoint**: Child sessions survive parent-turn completion and produce one durable, consumable delivery to the parent.
 

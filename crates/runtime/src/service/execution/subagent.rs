@@ -1,23 +1,26 @@
 use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, AgentProfile, AgentState, AstrError, CancelToken, ExecutionOwner,
-    InvocationKind, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    SpawnAgentParams, StorageEvent, SubRunHandle, SubRunOutcome, SubRunResult, SubRunStorageMode,
-    ToolContext, ToolEventSink, UserMessageOrigin,
+    AgentEventContext, AgentProfile, AgentState, AstrError, CancelToken,
+    ChildSessionNotificationKind, ChildSessionStatusSource, ExecutionOwner, InvocationKind,
+    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SpawnAgentParams,
+    StorageEvent, SubRunHandle, SubRunOutcome, SubRunResult, SubRunStorageMode, ToolContext,
+    ToolEventSink, UserMessageOrigin,
 };
 use astrcode_runtime_agent_loop::{AgentLoop, ChildExecutionTracker, TurnOutcome};
 use astrcode_runtime_execution::{
     PreparedAgentExecution, build_background_subrun_handoff, build_child_agent_state,
-    build_subrun_failure, build_subrun_finished_event, build_subrun_handoff,
-    build_subrun_started_event, derive_child_execution_owner, ensure_subagent_mode,
+    build_child_session_node, build_child_session_notification, build_subrun_failure,
+    build_subrun_finished_event, build_subrun_handoff, build_subrun_started_event,
+    child_delivery_outcome_label, derive_child_execution_owner, ensure_subagent_mode,
 };
 use astrcode_runtime_session::{SessionState, SessionStateEventSink};
 
-use super::root::AgentExecutionServiceHandle;
+use super::{root::AgentExecutionServiceHandle, status::project_child_terminal_delivery};
 use crate::service::{ServiceError, ServiceResult};
 
 struct ParentExecutionContext {
+    parent_session_id: String,
     parent_turn_id: String,
     parent_state: Arc<SessionState>,
     parent_snapshot: AgentState,
@@ -33,6 +36,7 @@ struct PreparedSubagentExecution {
 
 struct SpawnedSubagentExecution {
     child: SubRunHandle,
+    child_node: astrcode_core::ChildSessionNode,
     child_agent: AgentEventContext,
     child_turn_id: String,
     child_task: String,
@@ -41,7 +45,9 @@ struct SpawnedSubagentExecution {
     child_loop: Arc<AgentLoop>,
     child_cancel: CancelToken,
     child_storage_mode: SubRunStorageMode,
+    parent_session_id: String,
     parent_turn_id: String,
+    parent_state: Arc<SessionState>,
     parent_tool_call_id: Option<String>,
     parent_event_sink: Arc<dyn ToolEventSink>,
     active_sink: Arc<dyn ToolEventSink>,
@@ -100,6 +106,7 @@ impl AgentExecutionServiceHandle {
         };
 
         Ok(ParentExecutionContext {
+            parent_session_id: ctx.session_id().to_string(),
             parent_turn_id: parent_turn_id.to_string(),
             parent_state,
             parent_snapshot,
@@ -120,7 +127,10 @@ impl AgentExecutionServiceHandle {
 
         let running_result = SubRunResult {
             status: SubRunOutcome::Running,
-            handoff: Some(build_background_subrun_handoff(&spawned.child)),
+            handoff: Some(build_background_subrun_handoff(
+                &spawned.child,
+                &spawned.parent_session_id,
+            )),
             failure: None,
         };
 
@@ -128,10 +138,12 @@ impl AgentExecutionServiceHandle {
         let handle = tokio::spawn(async move {
             let started_at = Instant::now();
             let (outcome, tracker) = service.run_child_loop(&spawned).await;
-            // 故意忽略：spawned task 中无法传播错误，失败已通过内部日志记录
-            let _ = service
+            if let Err(error) = service
                 .finalize_child_execution(spawned, tracker, started_at, outcome)
-                .await;
+                .await
+            {
+                log::error!("failed to finalize child execution: {}", error);
+            }
         });
         // 保存 JoinHandle 以便 shutdown 时 abort。
         astrcode_core::support::with_lock_recovery(
@@ -187,7 +199,12 @@ impl AgentExecutionServiceHandle {
                     .sessions()
                     .create(ctx.working_dir())
                     .await
-                    .map_err(|error| ServiceError::Conflict(error.to_string()))?,
+                    .map_err(|error| {
+                        ServiceError::Conflict(format!(
+                            "failed to create independent child session for parentTurn='{}': {}",
+                            parent.parent_turn_id, error
+                        ))
+                    })?,
             ),
         };
         let target_session_id = child_session_meta
@@ -234,6 +251,16 @@ impl AgentExecutionServiceHandle {
             child.storage_mode,
             child.child_session_id.clone(),
         );
+        let child_node = build_child_session_node(
+            &child,
+            &parent.parent_session_id,
+            &parent.parent_turn_id,
+            ctx.tool_call_id().map(ToString::to_string),
+        );
+        parent
+            .parent_state
+            .upsert_child_session_node(child_node.clone())
+            .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
         let child_state = build_child_agent_state(
             &target_session_id,
             ctx.working_dir().to_path_buf(),
@@ -245,6 +272,7 @@ impl AgentExecutionServiceHandle {
 
         Ok(SpawnedSubagentExecution {
             child,
+            child_node,
             child_agent,
             child_turn_id,
             child_task: prepared.child_task,
@@ -253,7 +281,9 @@ impl AgentExecutionServiceHandle {
             child_loop: Arc::clone(&prepared.prepared_execution.loop_),
             child_cancel,
             child_storage_mode: prepared.child_storage_mode,
+            parent_session_id: parent.parent_session_id.clone(),
             parent_turn_id: parent.parent_turn_id.clone(),
+            parent_state: Arc::clone(&parent.parent_state),
             parent_tool_call_id: ctx.tool_call_id().map(ToString::to_string),
             parent_event_sink,
             active_sink,
@@ -299,7 +329,34 @@ impl AgentExecutionServiceHandle {
             execution.resolved_overrides.clone(),
             execution.resolved_limits.clone(),
         )) {
-            return Err(ServiceError::Internal(error));
+            return Err(ServiceError::Internal(AstrError::Internal(format!(
+                "failed to persist SubRunStarted for child agent '{}' (subRunId='{}'): {}",
+                execution.child.agent_id, execution.child.sub_run_id, error
+            ))));
+        }
+
+        let started_notification = build_child_session_notification(
+            &execution.child_node,
+            format!("child-started:{}", execution.child.sub_run_id),
+            ChildSessionNotificationKind::Started,
+            format!("子 Agent {} 已启动。", execution.child.agent_id),
+            execution.child_node.status,
+            None,
+        );
+        if let Err(error) =
+            execution
+                .parent_event_sink
+                .emit(StorageEvent::ChildSessionNotification {
+                    turn_id: Some(execution.parent_turn_id.clone()),
+                    agent: execution.child_agent.clone(),
+                    notification: started_notification,
+                    timestamp: Some(chrono::Utc::now()),
+                })
+        {
+            return Err(ServiceError::Internal(AstrError::Internal(format!(
+                "failed to persist child-started notification for subRunId='{}': {}",
+                execution.child.sub_run_id, error
+            ))));
         }
 
         if let Err(error) = execution.active_sink.emit(StorageEvent::UserMessage {
@@ -309,8 +366,21 @@ impl AgentExecutionServiceHandle {
             timestamp: chrono::Utc::now(),
             origin: UserMessageOrigin::User,
         }) {
-            return Err(ServiceError::Internal(error));
+            return Err(ServiceError::Internal(AstrError::Internal(format!(
+                "failed to persist child bootstrap user message for subRunId='{}': {}",
+                execution.child.sub_run_id, error
+            ))));
         }
+
+        log::info!(
+            "spawned child session: parentSession='{}', parentTurn='{}', childAgent='{}', \
+             subRunId='{}', openSession='{}'",
+            execution.parent_session_id,
+            execution.parent_turn_id,
+            execution.child.agent_id,
+            execution.child.sub_run_id,
+            execution.child_node.child_session_id
+        );
 
         Ok(())
     }
@@ -388,6 +458,7 @@ impl AgentExecutionServiceHandle {
                     },
                     handoff: Some(build_subrun_handoff(
                         &execution.child,
+                        &execution.parent_session_id,
                         tracker.last_summary(),
                         tracker.token_limit_hit(),
                         tracker.step_limit_hit(),
@@ -415,6 +486,7 @@ impl AgentExecutionServiceHandle {
                     status,
                     handoff: Some(build_subrun_handoff(
                         &execution.child,
+                        &execution.parent_session_id,
                         tracker.last_summary(),
                         tracker.token_limit_hit(),
                         tracker.step_limit_hit(),
@@ -465,13 +537,64 @@ impl AgentExecutionServiceHandle {
             .parent_event_sink
             .emit(build_subrun_finished_event(
                 &execution.parent_turn_id,
-                execution.child_agent,
+                execution.child_agent.clone(),
                 &execution.child,
                 execution.parent_tool_call_id,
                 result.clone(),
                 tracker.step_count(),
                 tracker.estimated_tokens_used(),
             ))?;
+
+        let delivery = project_child_terminal_delivery(&result);
+        let mut terminal_node = execution.child_node.clone();
+        terminal_node.status = delivery.status;
+        terminal_node.status_source = ChildSessionStatusSource::Durable;
+        execution
+            .parent_state
+            .upsert_child_session_node(terminal_node.clone())
+            .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
+        let terminal_notification = build_child_session_notification(
+            &terminal_node,
+            format!(
+                "child-terminal:{}:{}",
+                execution.child.sub_run_id,
+                result.status.as_str()
+            ),
+            delivery.kind,
+            delivery.summary,
+            delivery.status,
+            delivery.final_reply_excerpt,
+        );
+        execution
+            .parent_event_sink
+            .emit(StorageEvent::ChildSessionNotification {
+                turn_id: Some(execution.parent_turn_id.clone()),
+                agent: execution.child_agent.clone(),
+                notification: terminal_notification.clone(),
+                timestamp: Some(chrono::Utc::now()),
+            })
+            .map_err(|error| {
+                ServiceError::Internal(AstrError::Internal(format!(
+                    "failed to persist child terminal notification for subRunId='{}': {}",
+                    execution.child.sub_run_id, error
+                )))
+            })?;
+
+        self.reactivate_parent_agent_if_idle(
+            &execution.parent_session_id,
+            &execution.parent_turn_id,
+            &terminal_notification,
+        )
+        .await;
+
+        log::info!(
+            "child session terminal delivery persisted: parentSession='{}', childAgent='{}', \
+             subRunId='{}', outcome='{}'",
+            execution.parent_session_id,
+            execution.child.agent_id,
+            execution.child.sub_run_id,
+            child_delivery_outcome_label(&result)
+        );
 
         Ok(result)
     }

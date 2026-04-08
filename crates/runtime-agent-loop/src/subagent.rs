@@ -15,7 +15,8 @@
 use std::collections::{HashMap, HashSet};
 
 use astrcode_core::{
-    CancelToken, CapabilityCall, PolicyContext, PolicyEngine, PolicyVerdict, Result, StorageEvent,
+    CancelToken, CapabilityCall, ChildSessionNotification, PolicyContext, PolicyEngine,
+    PolicyVerdict, Result, StorageEvent,
 };
 use async_trait::async_trait;
 
@@ -194,9 +195,48 @@ impl ChildExecutionTracker {
     }
 }
 
+/// 将 child-session 终态通知转成父 agent 可直接消费的输入文本。
+///
+/// 该文本用于父 turn 已结束后的重激活场景，避免把内部事件流直接暴露给父会话。
+pub fn build_parent_reactivation_prompt(notification: &ChildSessionNotification) -> String {
+    let mut lines = vec![
+        "# Child Session Delivery".to_string(),
+        format!("- childAgentId: {}", notification.child_ref.agent_id),
+        format!("- subRunId: {}", notification.child_ref.sub_run_id),
+        format!("- status: {}", status_label(notification.status)),
+        format!("- openSessionId: {}", notification.open_session_id),
+        format!("- summary: {}", notification.summary.trim()),
+    ];
+    if let Some(final_reply_excerpt) = notification
+        .final_reply_excerpt
+        .as_deref()
+        .filter(|excerpt| !excerpt.trim().is_empty())
+    {
+        lines.push(format!(
+            "- finalReplyExcerpt: {}",
+            final_reply_excerpt.trim()
+        ));
+    }
+    lines.push("请基于以上子会话交付继续决策，并在必要时明确是否关闭该子会话。".to_string());
+    lines.join("\n")
+}
+
+fn status_label(status: astrcode_core::AgentStatus) -> &'static str {
+    match status {
+        astrcode_core::AgentStatus::Pending => "pending",
+        astrcode_core::AgentStatus::Running => "running",
+        astrcode_core::AgentStatus::Completed => "completed",
+        astrcode_core::AgentStatus::Cancelled => "cancelled",
+        astrcode_core::AgentStatus::Failed => "failed",
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{AgentEventContext, StorageEvent};
+    use astrcode_core::{
+        AgentEventContext, AgentStatus, ChildSessionLineageKind, ChildSessionNotification,
+        ChildSessionNotificationKind, StorageEvent,
+    };
 
     use super::ChildExecutionTracker;
 
@@ -283,5 +323,35 @@ mod tests {
         tracker.observe(&assistant_final("   ", Some("internal reasoning")), &cancel);
 
         assert_eq!(tracker.last_summary(), Some("first summary"));
+    }
+
+    #[test]
+    fn parent_reactivation_prompt_contains_delivery_identity_and_summary() {
+        let prompt = super::build_parent_reactivation_prompt(&ChildSessionNotification {
+            notification_id: "note-1".to_string(),
+            child_ref: astrcode_core::ChildAgentRef {
+                agent_id: "agent-child".to_string(),
+                session_id: "session-parent".to_string(),
+                sub_run_id: "subrun-1".to_string(),
+                parent_agent_id: Some("agent-parent".to_string()),
+                lineage_kind: ChildSessionLineageKind::Spawn,
+                status: AgentStatus::Completed,
+                openable: true,
+                open_session_id: "session-child".to_string(),
+            },
+            kind: ChildSessionNotificationKind::Delivered,
+            summary: "child completed".to_string(),
+            status: AgentStatus::Completed,
+            open_session_id: "session-child".to_string(),
+            source_tool_call_id: Some("call-1".to_string()),
+            final_reply_excerpt: Some("final answer".to_string()),
+        });
+
+        assert!(prompt.contains("childAgentId: agent-child"));
+        assert!(prompt.contains("subRunId: subrun-1"));
+        assert!(prompt.contains("status: completed"));
+        assert!(prompt.contains("openSessionId: session-child"));
+        assert!(prompt.contains("summary: child completed"));
+        assert!(prompt.contains("finalReplyExcerpt: final answer"));
     }
 }
