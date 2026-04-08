@@ -154,5 +154,3 @@ cargo test -p astrcode-runtime-tool-loader --lib
 - [x] 引号规范化（edit_file.rs）
 - [x] Grep 默认限制（grep.rs）
 - [x] ListDir 按大小排序（list_dir.rs）
-- [ ] Zsh 危险命令检测（未实现）
-- [ ] Dry-run 模式（未实现）
