@@ -26,8 +26,10 @@ mod session_event;
 mod tool;
 
 pub use agent::{
-    AgentExecuteRequestDto, AgentExecuteResponseDto, AgentProfileDto, SubRunStatusDto,
-    SubRunStatusSourceDto, SubagentContextOverridesDto,
+    AgentExecuteRequestDto, AgentExecuteResponseDto, AgentProfileDto, ChildAgentRefDto,
+    ChildSessionLineageKindDto, ChildSessionNotificationDto, ChildSessionNotificationKindDto,
+    ChildSessionViewProjectionDto, SubRunStatusDto, SubRunStatusSourceDto,
+    SubagentContextOverridesDto,
 };
 pub use auth::{AuthExchangeRequest, AuthExchangeResponse};
 pub use composer::{ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto};
@@ -49,7 +51,8 @@ pub use runtime::{
     RuntimeStatusDto, SubRunExecutionMetricsDto,
 };
 pub use session::{
-    CreateSessionRequest, DeleteProjectResultDto, PromptAcceptedResponse, PromptRequest,
+    ChildSessionViewResponseDto, CreateSessionRequest, DeleteProjectResultDto,
+    ParentChildSummaryListResponseDto, PromptAcceptedResponse, PromptRequest,
     SessionHistoryResponseDto, SessionListItem,
 };
 pub use session_event::{SessionCatalogEventEnvelope, SessionCatalogEventPayload};

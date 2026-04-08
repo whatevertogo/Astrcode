@@ -117,3 +117,67 @@ pub struct SubRunStatusDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_limits: Option<crate::http::ResolvedExecutionLimitsDto>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChildSessionLineageKindDto {
+    Spawn,
+    Fork,
+    Resume,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildAgentRefDto {
+    pub agent_id: String,
+    pub session_id: String,
+    pub sub_run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<String>,
+    pub lineage_kind: ChildSessionLineageKindDto,
+    pub status: String,
+    pub openable: bool,
+    pub open_session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChildSessionNotificationKindDto {
+    Started,
+    ProgressSummary,
+    Delivered,
+    Waiting,
+    Resumed,
+    Closed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildSessionNotificationDto {
+    pub notification_id: String,
+    pub child_ref: ChildAgentRefDto,
+    pub kind: ChildSessionNotificationKindDto,
+    pub summary: String,
+    pub status: String,
+    pub open_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_reply_excerpt: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildSessionViewProjectionDto {
+    pub child_ref: ChildAgentRefDto,
+    pub title: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub summary_items: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub latest_tool_activity: Vec<String>,
+    pub has_final_reply: bool,
+    pub child_session_id: String,
+    pub has_descriptor_lineage: bool,
+}

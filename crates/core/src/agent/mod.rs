@@ -405,6 +405,74 @@ impl SubRunHandle {
     }
 }
 
+/// 子会话 lineage 来源。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChildSessionLineageKind {
+    Spawn,
+    Fork,
+    Resume,
+}
+
+/// 子会话状态来源。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ChildSessionStatusSource {
+    Live,
+    Durable,
+    LegacyDurable,
+}
+
+/// 父/子协作面暴露的稳定子会话引用。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildAgentRef {
+    pub agent_id: String,
+    pub session_id: String,
+    pub sub_run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<String>,
+    pub lineage_kind: ChildSessionLineageKind,
+    pub status: AgentStatus,
+    pub openable: bool,
+    pub open_session_id: String,
+}
+
+/// durable 子会话节点。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildSessionNode {
+    pub agent_id: String,
+    pub session_id: String,
+    pub child_session_id: String,
+    pub sub_run_id: String,
+    pub parent_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<String>,
+    pub parent_turn_id: String,
+    pub lineage_kind: ChildSessionLineageKind,
+    pub status: AgentStatus,
+    pub status_source: ChildSessionStatusSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by_tool_call_id: Option<String>,
+}
+
+impl ChildSessionNode {
+    /// 将 durable 节点转换为可返回给调用方的稳定 child ref。
+    pub fn child_ref(&self) -> ChildAgentRef {
+        ChildAgentRef {
+            agent_id: self.agent_id.clone(),
+            session_id: self.session_id.clone(),
+            sub_run_id: self.sub_run_id.clone(),
+            parent_agent_id: self.parent_agent_id.clone(),
+            lineage_kind: self.lineage_kind,
+            status: self.status,
+            openable: true,
+            open_session_id: self.child_session_id.clone(),
+        }
+    }
+}
+
 /// turn 级事件的 Agent 元数据。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -480,7 +548,10 @@ impl AgentEventContext {
 
 #[cfg(test)]
 mod tests {
-    use super::SpawnAgentParams;
+    use super::{
+        AgentStatus, ChildSessionLineageKind, ChildSessionNode, ChildSessionStatusSource,
+        SpawnAgentParams,
+    };
 
     #[test]
     fn spawn_agent_params_reject_empty_prompt() {
@@ -508,5 +579,30 @@ mod tests {
         .expect_err("whitespace-only description should be rejected");
 
         assert!(error.to_string().contains("description 不能为纯空白"));
+    }
+
+    #[test]
+    fn child_session_node_can_build_stable_child_ref() {
+        let node = ChildSessionNode {
+            agent_id: "agent-child".to_string(),
+            session_id: "session-parent".to_string(),
+            child_session_id: "session-child".to_string(),
+            sub_run_id: "subrun-1".to_string(),
+            parent_session_id: "session-parent".to_string(),
+            parent_agent_id: Some("agent-parent".to_string()),
+            parent_turn_id: "turn-parent".to_string(),
+            lineage_kind: ChildSessionLineageKind::Spawn,
+            status: AgentStatus::Running,
+            status_source: ChildSessionStatusSource::Durable,
+            created_by_tool_call_id: Some("call-1".to_string()),
+        };
+
+        let child_ref = node.child_ref();
+
+        assert_eq!(child_ref.agent_id, "agent-child");
+        assert_eq!(child_ref.sub_run_id, "subrun-1");
+        assert_eq!(child_ref.open_session_id, "session-child");
+        assert_eq!(child_ref.parent_agent_id.as_deref(), Some("agent-parent"));
+        assert!(child_ref.openable);
     }
 }

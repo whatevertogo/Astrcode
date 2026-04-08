@@ -288,6 +288,33 @@ impl LlmProvider for AnthropicProvider {
                             output.finish_reason = FinishReason::from_api_value(reason);
                         }
                         output.usage = stream_usage.into_llm_usage();
+
+                        // 记录流式响应的缓存状态
+                        if let Some(ref u) = output.usage {
+                            let input = u.input_tokens;
+                            let cache_read = u.cache_read_input_tokens;
+                            let cache_creation = u.cache_creation_input_tokens;
+
+                            if cache_read == 0 && cache_creation > 0 {
+                                debug!(
+                                    "Cache miss (streaming): writing {} tokens to cache (total \
+                                     input: {})",
+                                    cache_creation, input
+                                );
+                            } else if cache_read > 0 {
+                                let hit_rate = (cache_read as f32 / input as f32) * 100.0;
+                                debug!(
+                                    "Cache hit (streaming): {:.1}% ({} / {} tokens, creation: {})",
+                                    hit_rate, cache_read, input, cache_creation
+                                );
+                            } else {
+                                debug!(
+                                    "Cache disabled or unavailable (streaming, input: {} tokens)",
+                                    input
+                                );
+                            }
+                        }
+
                         return Ok(output);
                     }
                 }
@@ -475,6 +502,28 @@ fn to_anthropic_system(
 /// - `stop_sequence` → Stop
 fn response_to_output(response: AnthropicResponse) -> LlmOutput {
     let usage = response.usage.and_then(AnthropicUsage::into_llm_usage);
+
+    // 记录缓存状态
+    if let Some(ref u) = usage {
+        let input = u.input_tokens;
+        let cache_read = u.cache_read_input_tokens;
+        let cache_creation = u.cache_creation_input_tokens;
+
+        if cache_read == 0 && cache_creation > 0 {
+            debug!(
+                "Cache miss: writing {} tokens to cache (total input: {})",
+                cache_creation, input
+            );
+        } else if cache_read > 0 {
+            let hit_rate = (cache_read as f32 / input as f32) * 100.0;
+            debug!(
+                "Cache hit: {:.1}% ({} / {} tokens, creation: {})",
+                hit_rate, cache_read, input, cache_creation
+            );
+        } else {
+            debug!("Cache disabled or unavailable (input: {} tokens)", input);
+        }
+    }
 
     let mut content = String::new();
     let mut tool_calls = Vec::new();

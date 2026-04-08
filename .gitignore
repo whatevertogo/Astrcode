@@ -1,6 +1,10 @@
 # Rust
 /target/
+debug/
+release/
 **/*.rs.bk
+*.rlib
+*.prof*
 Cargo.lock
 
 # Tauri
@@ -30,6 +34,7 @@ build/
 .DS_Store
 Thumbs.db
 Desktop.ini
+*.tmp
 
 # Logs
 *.log
@@ -38,6 +43,7 @@ logs/
 
 # Environment
 .env
+.env*
 .env.local
 .env.*.local
 

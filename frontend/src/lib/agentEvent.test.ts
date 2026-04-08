@@ -2,6 +2,38 @@ import { describe, expect, it } from 'vitest';
 
 import { normalizeAgentEvent } from './agentEvent';
 
+function makeChildSessionSubRunStartedFixture() {
+  return {
+    protocolVersion: 1,
+    event: 'subRunStarted',
+    data: {
+      turn_id: 'turn-parent',
+      descriptor: {
+        sub_run_id: 'sub-1',
+        parent_turn_id: 'turn-parent',
+        parent_agent_id: 'agent-parent',
+        depth: 2,
+      },
+      tool_call_id: 'call-1',
+      resolved_overrides: {
+        storage_mode: 'independentSession',
+        inherit_system_instructions: true,
+        inherit_project_instructions: true,
+        inherit_working_dir: true,
+        inherit_policy_upper_bound: true,
+        inherit_cancel_token: true,
+        include_compact_summary: true,
+        include_recent_tail: true,
+        include_recovery_refs: false,
+        include_parent_findings: false,
+      },
+      resolved_limits: {
+        allowed_tools: ['readFile', 'grep'],
+      },
+    },
+  };
+}
+
 describe('normalizeAgentEvent protocol gate', () => {
   it('rejects payload when protocolVersion is missing', () => {
     const normalized = normalizeAgentEvent({
@@ -239,35 +271,7 @@ describe('normalizeAgentEvent protocol gate', () => {
   });
 
   it('normalizes subRunStarted payloads with descriptor/toolCallId and snake_case overrides', () => {
-    const normalized = normalizeAgentEvent({
-      protocolVersion: 1,
-      event: 'subRunStarted',
-      data: {
-        turn_id: 'turn-parent',
-        descriptor: {
-          sub_run_id: 'sub-1',
-          parent_turn_id: 'turn-parent',
-          parent_agent_id: 'agent-parent',
-          depth: 2,
-        },
-        tool_call_id: 'call-1',
-        resolved_overrides: {
-          storage_mode: 'independentSession',
-          inherit_system_instructions: true,
-          inherit_project_instructions: true,
-          inherit_working_dir: true,
-          inherit_policy_upper_bound: true,
-          inherit_cancel_token: true,
-          include_compact_summary: true,
-          include_recent_tail: true,
-          include_recovery_refs: false,
-          include_parent_findings: false,
-        },
-        resolved_limits: {
-          allowed_tools: ['readFile', 'grep'],
-        },
-      },
-    });
+    const normalized = normalizeAgentEvent(makeChildSessionSubRunStartedFixture());
 
     expect(normalized).toEqual({
       event: 'subRunStarted',

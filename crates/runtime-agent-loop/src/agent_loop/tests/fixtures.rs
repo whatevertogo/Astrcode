@@ -10,10 +10,10 @@ use std::{
 
 use astrcode_core::{
     AgentState, ApprovalDefault, ApprovalRequest, ApprovalResolution, AstrError, CancelToken,
-    CapabilityCall, CompactionHookResultContext, HookEvent, HookHandler, HookInput, HookOutcome,
-    LlmMessage, ModelRequest, Phase, PolicyContext, PolicyEngine, PolicyVerdict, Result,
-    StorageEvent, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
-    ToolHookContext, ToolHookResultContext, UserMessageOrigin,
+    CapabilityCall, ChildAgentRef, ChildSessionNode, CompactionHookResultContext, HookEvent,
+    HookHandler, HookInput, HookOutcome, LlmMessage, ModelRequest, Phase, PolicyContext,
+    PolicyEngine, PolicyVerdict, Result, StorageEvent, Tool, ToolCapabilityMetadata, ToolContext,
+    ToolDefinition, ToolExecutionResult, ToolHookContext, ToolHookResultContext, UserMessageOrigin,
 };
 use astrcode_protocol::capability::SideEffectLevel;
 use astrcode_runtime_llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
@@ -40,6 +40,16 @@ pub fn make_state(user_text: &str) -> AgentState {
         phase: Phase::Thinking,
         turn_count: 0,
     }
+}
+
+#[allow(dead_code)]
+pub fn child_session_fixture(seed: &str) -> ChildSessionNode {
+    astrcode_core::test_support::child_session_node_fixture(seed)
+}
+
+#[allow(dead_code)]
+pub fn child_agent_ref_fixture(seed: &str) -> ChildAgentRef {
+    child_session_fixture(seed).child_ref()
 }
 
 // ---------------------------------------------------------------------------

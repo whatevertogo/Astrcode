@@ -8,6 +8,52 @@ import {
   listRootSubRunViews,
 } from './subRunView';
 
+const DEFAULT_RESOLVED_OVERRIDES = {
+  storageMode: 'sharedSession' as const,
+  inheritSystemInstructions: true,
+  inheritProjectInstructions: true,
+  inheritWorkingDir: true,
+  inheritPolicyUpperBound: true,
+  inheritCancelToken: true,
+  includeCompactSummary: false,
+  includeRecentTail: true,
+  includeRecoveryRefs: false,
+  includeParentFindings: false,
+};
+
+function makeSubRunStartFixture(input: {
+  id: string;
+  turnId: string;
+  parentTurnId: string;
+  agentId: string;
+  subRunId: string;
+  agentProfile: string;
+  depth: number;
+  timestamp: number;
+  parentAgentId?: string;
+}): Message {
+  return {
+    id: input.id,
+    kind: 'subRunStart',
+    turnId: input.turnId,
+    parentTurnId: input.parentTurnId,
+    agentId: input.agentId,
+    subRunId: input.subRunId,
+    descriptor: {
+      subRunId: input.subRunId,
+      parentTurnId: input.parentTurnId,
+      ...(input.parentAgentId ? { parentAgentId: input.parentAgentId } : {}),
+      depth: input.depth,
+    },
+    agentProfile: input.agentProfile,
+    resolvedOverrides: { ...DEFAULT_RESOLVED_OVERRIDES },
+    resolvedLimits: {
+      allowedTools: ['readFile'],
+    },
+    timestamp: input.timestamp,
+  };
+}
+
 describe('buildSubRunView', () => {
   it('extracts lifecycle and direct-child messages for a nested sub-run view', () => {
     const messages: Message[] = [
@@ -19,34 +65,16 @@ describe('buildSubRunView', () => {
         timestamp: 1,
       },
       {
-        id: 'subrun-a-start',
-        kind: 'subRunStart',
-        turnId: 'turn-root',
-        parentTurnId: 'turn-root',
-        agentId: 'agent-a',
-        subRunId: 'subrun-a',
-        descriptor: {
-          subRunId: 'subrun-a',
+        ...makeSubRunStartFixture({
+          id: 'subrun-a-start',
+          turnId: 'turn-root',
           parentTurnId: 'turn-root',
+          agentId: 'agent-a',
+          subRunId: 'subrun-a',
+          agentProfile: 'planner',
           depth: 1,
-        },
-        agentProfile: 'planner',
-        resolvedOverrides: {
-          storageMode: 'sharedSession',
-          inheritSystemInstructions: true,
-          inheritProjectInstructions: true,
-          inheritWorkingDir: true,
-          inheritPolicyUpperBound: true,
-          inheritCancelToken: true,
-          includeCompactSummary: false,
-          includeRecentTail: true,
-          includeRecoveryRefs: false,
-          includeParentFindings: false,
-        },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
-        timestamp: 2,
+          timestamp: 2,
+        }),
       },
       {
         id: 'subrun-a-assistant-1',
@@ -60,35 +88,17 @@ describe('buildSubRunView', () => {
         timestamp: 3,
       },
       {
-        id: 'subrun-b-start',
-        kind: 'subRunStart',
-        turnId: 'turn-a',
-        parentTurnId: 'turn-a',
-        agentId: 'agent-b',
-        subRunId: 'subrun-b',
-        descriptor: {
-          subRunId: 'subrun-b',
+        ...makeSubRunStartFixture({
+          id: 'subrun-b-start',
+          turnId: 'turn-a',
           parentTurnId: 'turn-a',
+          agentId: 'agent-b',
+          subRunId: 'subrun-b',
           parentAgentId: 'agent-a',
+          agentProfile: 'coder',
           depth: 2,
-        },
-        agentProfile: 'coder',
-        resolvedOverrides: {
-          storageMode: 'sharedSession',
-          inheritSystemInstructions: true,
-          inheritProjectInstructions: true,
-          inheritWorkingDir: true,
-          inheritPolicyUpperBound: true,
-          inheritCancelToken: true,
-          includeCompactSummary: false,
-          includeRecentTail: true,
-          includeRecoveryRefs: false,
-          includeParentFindings: false,
-        },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
-        timestamp: 4,
+          timestamp: 4,
+        }),
       },
       {
         id: 'subrun-b-assistant-1',
@@ -102,35 +112,17 @@ describe('buildSubRunView', () => {
         timestamp: 5,
       },
       {
-        id: 'subrun-c-start',
-        kind: 'subRunStart',
-        turnId: 'turn-b',
-        parentTurnId: 'turn-b',
-        agentId: 'agent-c',
-        subRunId: 'subrun-c',
-        descriptor: {
-          subRunId: 'subrun-c',
+        ...makeSubRunStartFixture({
+          id: 'subrun-c-start',
+          turnId: 'turn-b',
           parentTurnId: 'turn-b',
+          agentId: 'agent-c',
+          subRunId: 'subrun-c',
           parentAgentId: 'agent-b',
+          agentProfile: 'reviewer',
           depth: 3,
-        },
-        agentProfile: 'reviewer',
-        resolvedOverrides: {
-          storageMode: 'sharedSession',
-          inheritSystemInstructions: true,
-          inheritProjectInstructions: true,
-          inheritWorkingDir: true,
-          inheritPolicyUpperBound: true,
-          inheritCancelToken: true,
-          includeCompactSummary: false,
-          includeRecentTail: true,
-          includeRecoveryRefs: false,
-          includeParentFindings: false,
-        },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
-        timestamp: 6,
+          timestamp: 6,
+        }),
       },
       {
         id: 'subrun-c-assistant-1',

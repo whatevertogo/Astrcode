@@ -186,6 +186,26 @@ function formatTokenCount(value?: number): string {
   return value.toLocaleString();
 }
 
+function getCacheIndicator(metrics?: PromptMetricsMessage): React.ReactNode {
+  if (!metrics?.providerInputTokens || metrics.providerInputTokens === 0) {
+    return null;
+  }
+
+  const cacheRead = metrics.cacheReadInputTokens ?? 0;
+  const hitRate = Math.round((cacheRead / metrics.providerInputTokens) * 100);
+
+  // 缓存命中率分级
+  if (hitRate >= 80) {
+    return <span className={styles.cacheHigh}>🟢 缓存 {hitRate}%</span>;
+  } else if (hitRate >= 30) {
+    return <span className={styles.cacheMedium}>🟡 缓存 {hitRate}%</span>;
+  } else if (hitRate > 0) {
+    return <span className={styles.cacheLow}>🟠 缓存 {hitRate}%</span>;
+  } else {
+    return <span className={styles.cacheMiss}>🔴 无缓存</span>;
+  }
+}
+
 function AssistantMessage({ message, hideAvatar, metrics }: AssistantMessageProps) {
   const { visibleText, thinkingBlocks } = React.useMemo(
     () => extractThinkingBlocks(message.text, message.reasoningText),
@@ -280,8 +300,8 @@ function AssistantMessage({ message, hideAvatar, metrics }: AssistantMessageProp
         </div>
         {metrics && (
           <div className={styles.metricsInline}>
-            📊 {formatTokenCount(metrics.estimatedTokens)} tokens · 缓存{' '}
-            {formatTokenCount(metrics.cacheReadInputTokens)} tokens
+            📊 {formatTokenCount(metrics.estimatedTokens)} tokens
+            {getCacheIndicator(metrics)}
           </div>
         )}
       </div>

@@ -50,7 +50,8 @@ pub use action::{
 };
 pub use agent::{
     AgentEventContext, AgentMode, AgentProfile, AgentProfileCatalog, AgentStatus, ArtifactRef,
-    ForkMode, InvocationKind, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
+    ChildAgentRef, ChildSessionLineageKind, ChildSessionNode, ChildSessionStatusSource, ForkMode,
+    InvocationKind, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
     SpawnAgentParams, SubRunDescriptor, SubRunFailure, SubRunFailureCode, SubRunHandle,
     SubRunHandoff, SubRunOutcome, SubRunResult, SubRunStorageMode, SubagentContextOverrides,
 };
