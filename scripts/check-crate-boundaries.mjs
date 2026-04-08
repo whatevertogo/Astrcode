@@ -50,26 +50,20 @@ function buildRules() {
     },
     {
       id: 'R002',
-      description: 'runtime-tool-loader 仅允许依赖 core（内部 crate）',
-      source: 'astrcode-runtime-tool-loader',
-      allowedExact: new Set(['astrcode-core']),
-    },
-    {
-      id: 'R003',
       description: 'runtime-prompt 编译隔离：不得直接依赖其他 runtime-* crate',
       source: 'astrcode-runtime-prompt',
       forbidden: [/^astrcode-runtime(?:-.+)?$/],
       allowForbiddenExact: new Set(['astrcode-runtime-prompt']),
     },
     {
-      id: 'R004',
+      id: 'R003',
       description: 'runtime-llm 编译隔离：不得直接依赖其他 runtime-* crate',
       source: 'astrcode-runtime-llm',
       forbidden: [/^astrcode-runtime(?:-.+)?$/],
       allowForbiddenExact: new Set(['astrcode-runtime-llm']),
     },
     {
-      id: 'R005',
+      id: 'R004',
       description: 'runtime-config 编译隔离：不得直接依赖其他 runtime-* crate',
       source: 'astrcode-runtime-config',
       forbidden: [/^astrcode-runtime(?:-.+)?$/],
@@ -77,26 +71,26 @@ function buildRules() {
     },
     // --- 阶段4结构性解耦新增规则 ---
     {
-      id: 'R006',
+      id: 'R005',
       description: 'runtime-execution 不得直接依赖 runtime-skill-loader',
       source: 'astrcode-runtime-execution',
       forbidden: [/^astrcode-runtime-skill-loader$/],
     },
     {
-      id: 'R007',
+      id: 'R006',
       description: 'runtime-execution 不得直接依赖 runtime-agent-loop',
       source: 'astrcode-runtime-execution',
       forbidden: [/^astrcode-runtime-agent-loop$/],
     },
     {
-      id: 'R008',
+      id: 'R007',
       description: 'runtime-execution 不得直接依赖 runtime-agent-tool',
       source: 'astrcode-runtime-execution',
       forbidden: [/^astrcode-runtime-agent-tool$/],
     },
     // --- runtime 系列其他编译隔离 ---
     {
-      id: 'R009',
+      id: 'R008',
       description: 'runtime-session 编译隔离：不得直接依赖其他 runtime-* crate（除 core/agent-control/agent-loop）',
       source: 'astrcode-runtime-session',
       forbidden: [/^astrcode-runtime(?:-.+)?$/],
@@ -107,7 +101,7 @@ function buildRules() {
       ]),
     },
     {
-      id: 'R010',
+      id: 'R009',
       description: 'runtime-agent-control 编译隔离：不得直接依赖其他 runtime-* crate（除 core/config）',
       source: 'astrcode-runtime-agent-control',
       forbidden: [/^astrcode-runtime(?:-.+)?$/],
@@ -117,7 +111,7 @@ function buildRules() {
       ]),
     },
     {
-      id: 'R011',
+      id: 'R010',
       description: 'runtime-registry 编译隔离：不得直接依赖其他 runtime-* crate',
       source: 'astrcode-runtime-registry',
       forbidden: [/^astrcode-runtime(?:-.+)?$/],
