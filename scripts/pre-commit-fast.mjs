@@ -27,6 +27,17 @@ if (stagedFiles.length === 0) {
   process.exit(0);
 }
 
+// Auto-generate crate dependency graph if Cargo.toml or Cargo.lock changed
+const hasCargoChanges = stagedFiles.some(
+  (file) => file === 'Cargo.toml' || file === 'Cargo.lock' || file.startsWith('crates/') && file.endsWith('Cargo.toml')
+);
+
+if (hasCargoChanges) {
+  console.log('pre-commit: detected Cargo changes, regenerating dependency graph.');
+  runWithInheritedOutput('node', ['scripts/generate-crate-deps-graph.mjs'], { cwd: repoRoot });
+  runWithInheritedOutput('git', ['add', 'docs/architecture/crates-dependency-graph.md'], { cwd: repoRoot });
+}
+
 const stagedRustFiles = stagedFiles.filter((file) => file.endsWith('.rs'));
 const stagedFrontendFormatFiles = stagedFiles.filter((file) =>
   /^frontend\/src\/.+\.(ts|tsx|css)$/u.test(file),
