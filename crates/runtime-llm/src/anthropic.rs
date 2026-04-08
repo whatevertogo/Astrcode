@@ -23,7 +23,10 @@
 //! - `message_start / message_delta`: 提取 usage / stop_reason 等元数据
 //! - `content_block_stop / ping`: 元数据事件，静默忽略
 
-use std::fmt;
+use std::{
+    fmt,
+    sync::{Arc, Mutex},
+};
 
 use astrcode_core::{
     AstrError, CancelToken, LlmMessage, ReasoningContent, Result, SystemPromptBlock,
@@ -38,8 +41,9 @@ use tokio::select;
 
 use crate::{
     EventSink, FinishReason, LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest,
-    LlmUsage, MAX_RETRIES, ModelLimits, Utf8StreamDecoder, build_http_client, classify_http_error,
-    emit_event, is_retryable_status, wait_retry_delay,
+    LlmUsage, MAX_RETRIES, ModelLimits, Utf8StreamDecoder, build_http_client,
+    cache_tracker::CacheTracker, classify_http_error, emit_event, is_retryable_status,
+    wait_retry_delay,
 };
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -62,6 +66,8 @@ pub struct AnthropicProvider {
     ///
     /// Anthropic 的上下文窗口来自 Models API，不应该继续在 provider 内写死。
     limits: ModelLimits,
+    /// 缓存失效检测跟踪器
+    cache_tracker: Arc<Mutex<CacheTracker>>,
 }
 
 impl fmt::Debug for AnthropicProvider {
@@ -72,6 +78,7 @@ impl fmt::Debug for AnthropicProvider {
             .field("api_key", &"<redacted>")
             .field("model", &self.model)
             .field("limits", &self.limits)
+            .field("cache_tracker", &"<internal>")
             .finish()
     }
 }
@@ -94,6 +101,7 @@ impl AnthropicProvider {
             api_key,
             model,
             limits,
+            cache_tracker: Arc::new(Mutex::new(CacheTracker::new())),
         })
     }
 
@@ -227,6 +235,20 @@ impl AnthropicProvider {
 impl LlmProvider for AnthropicProvider {
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         let cancel = request.cancel;
+
+        // 检测缓存失效并记录原因
+        let system_prompt_text = request.system_prompt.as_deref().unwrap_or("");
+        let tool_names: Vec<String> = request.tools.iter().map(|t| t.name.clone()).collect();
+
+        if let Ok(mut tracker) = self.cache_tracker.lock() {
+            let break_reasons =
+                tracker.check_and_update(system_prompt_text, &tool_names, &self.model, "anthropic");
+
+            if !break_reasons.is_empty() {
+                debug!("[CACHE] Cache break detected: {:?}", break_reasons);
+            }
+        }
+
         let body = self.build_request(
             &request.messages,
             &request.tools,

@@ -21,7 +21,8 @@ pub fn target_phase(event: &StorageEvent) -> Phase {
         StorageEvent::PromptMetrics { .. }
         | StorageEvent::CompactApplied { .. }
         | StorageEvent::SubRunStarted { .. }
-        | StorageEvent::SubRunFinished { .. } => Phase::Idle,
+        | StorageEvent::SubRunFinished { .. }
+        | StorageEvent::ChildSessionNotification { .. } => Phase::Idle,
         StorageEvent::AssistantDelta { .. }
         | StorageEvent::ThinkingDelta { .. }
         | StorageEvent::AssistantFinal { .. } => Phase::Streaming,
@@ -62,6 +63,7 @@ impl PhaseTracker {
                 | StorageEvent::CompactApplied { .. }
                 | StorageEvent::SubRunStarted { .. }
                 | StorageEvent::SubRunFinished { .. }
+                | StorageEvent::ChildSessionNotification { .. }
         ) {
             return None;
         }

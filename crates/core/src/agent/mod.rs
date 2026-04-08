@@ -473,6 +473,35 @@ impl ChildSessionNode {
     }
 }
 
+/// 父会话可消费的 child-session 通知类型。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChildSessionNotificationKind {
+    Started,
+    ProgressSummary,
+    Delivered,
+    Waiting,
+    Resumed,
+    Closed,
+    Failed,
+}
+
+/// durable 子会话通知。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildSessionNotification {
+    pub notification_id: String,
+    pub child_ref: ChildAgentRef,
+    pub kind: ChildSessionNotificationKind,
+    pub summary: String,
+    pub status: AgentStatus,
+    pub open_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_reply_excerpt: Option<String>,
+}
+
 /// turn 级事件的 Agent 元数据。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

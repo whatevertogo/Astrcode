@@ -30,6 +30,7 @@ use astrcode_protocol::{
     capability::CapabilityDescriptor,
     http::{
         AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentProfileDto, ArtifactRefDto,
+        ChildAgentRefDto, ChildSessionLineageKindDto, ChildSessionNotificationKindDto,
         CompactTriggerDto, ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto,
         ConfigView, CurrentModelInfoDto, ForkModeDto, InvocationKindDto, ModelOptionDto,
         OperationMetricsDto, PROTOCOL_VERSION, PhaseDto, PluginHealthDto, PluginRuntimeStateDto,
@@ -371,6 +372,63 @@ fn to_subrun_result_dto(result: SubRunResult) -> SubRunResultDto {
     }
 }
 
+fn to_child_agent_ref_dto(child_ref: astrcode_core::ChildAgentRef) -> ChildAgentRefDto {
+    ChildAgentRefDto {
+        agent_id: child_ref.agent_id,
+        session_id: child_ref.session_id,
+        sub_run_id: child_ref.sub_run_id,
+        parent_agent_id: child_ref.parent_agent_id,
+        lineage_kind: to_child_lineage_kind_dto(child_ref.lineage_kind),
+        status: match child_ref.status {
+            astrcode_core::AgentStatus::Pending => "pending".to_string(),
+            astrcode_core::AgentStatus::Running => "running".to_string(),
+            astrcode_core::AgentStatus::Completed => "completed".to_string(),
+            astrcode_core::AgentStatus::Cancelled => "cancelled".to_string(),
+            astrcode_core::AgentStatus::Failed => "failed".to_string(),
+        },
+        openable: child_ref.openable,
+        open_session_id: child_ref.open_session_id,
+    }
+}
+
+fn to_child_lineage_kind_dto(
+    kind: astrcode_core::ChildSessionLineageKind,
+) -> ChildSessionLineageKindDto {
+    match kind {
+        astrcode_core::ChildSessionLineageKind::Spawn => ChildSessionLineageKindDto::Spawn,
+        astrcode_core::ChildSessionLineageKind::Fork => ChildSessionLineageKindDto::Fork,
+        astrcode_core::ChildSessionLineageKind::Resume => ChildSessionLineageKindDto::Resume,
+    }
+}
+
+fn to_child_notification_kind_dto(
+    kind: astrcode_core::ChildSessionNotificationKind,
+) -> ChildSessionNotificationKindDto {
+    match kind {
+        astrcode_core::ChildSessionNotificationKind::Started => {
+            ChildSessionNotificationKindDto::Started
+        },
+        astrcode_core::ChildSessionNotificationKind::ProgressSummary => {
+            ChildSessionNotificationKindDto::ProgressSummary
+        },
+        astrcode_core::ChildSessionNotificationKind::Delivered => {
+            ChildSessionNotificationKindDto::Delivered
+        },
+        astrcode_core::ChildSessionNotificationKind::Waiting => {
+            ChildSessionNotificationKindDto::Waiting
+        },
+        astrcode_core::ChildSessionNotificationKind::Resumed => {
+            ChildSessionNotificationKindDto::Resumed
+        },
+        astrcode_core::ChildSessionNotificationKind::Closed => {
+            ChildSessionNotificationKindDto::Closed
+        },
+        astrcode_core::ChildSessionNotificationKind::Failed => {
+            ChildSessionNotificationKindDto::Failed
+        },
+    }
+}
+
 fn to_subrun_handoff_dto(handoff: SubRunHandoff) -> SubRunHandoffDto {
     SubRunHandoffDto {
         summary: handoff.summary,
@@ -691,6 +749,27 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
             result: to_subrun_result_dto(result),
             step_count,
             estimated_tokens,
+        },
+        AgentEvent::ChildSessionNotification {
+            turn_id,
+            agent,
+            notification,
+        } => AgentEventPayload::ChildSessionNotification {
+            turn_id,
+            agent: to_agent_context_dto(agent),
+            child_ref: to_child_agent_ref_dto(notification.child_ref),
+            kind: to_child_notification_kind_dto(notification.kind),
+            summary: notification.summary,
+            status: match notification.status {
+                astrcode_core::AgentStatus::Pending => "pending".to_string(),
+                astrcode_core::AgentStatus::Running => "running".to_string(),
+                astrcode_core::AgentStatus::Completed => "completed".to_string(),
+                astrcode_core::AgentStatus::Cancelled => "cancelled".to_string(),
+                astrcode_core::AgentStatus::Failed => "failed".to_string(),
+            },
+            open_session_id: notification.open_session_id,
+            source_tool_call_id: notification.source_tool_call_id,
+            final_reply_excerpt: notification.final_reply_excerpt,
         },
         AgentEvent::TurnDone { turn_id, agent } => AgentEventPayload::TurnDone {
             turn_id,

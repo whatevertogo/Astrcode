@@ -191,6 +191,7 @@ impl AgentStateProjector {
             | StorageEvent::ThinkingDelta { .. }
             | StorageEvent::SubRunStarted { .. }
             | StorageEvent::SubRunFinished { .. }
+            | StorageEvent::ChildSessionNotification { .. }
             | StorageEvent::Error { .. } => {},
         }
     }

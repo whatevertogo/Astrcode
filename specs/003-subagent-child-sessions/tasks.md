@@ -42,8 +42,8 @@ description: "Task list for 子 Agent Child Session 与协作工具重构"
 **⚠️ CRITICAL**: No user story work should start until this phase is complete
 
 - [X] T004 Define core child-session domain types and exports in `crates/core/src/agent/mod.rs` and `crates/core/src/lib.rs`
-- [ ] T005 [P] Add durable child-session storage events and translation support in `crates/core/src/event/domain.rs`, `crates/core/src/event/types.rs`, and `crates/core/src/event/translate.rs`
-- [ ] T006 [P] Add protocol DTOs and serialization for child-session status, notifications, and view projections in `crates/protocol/src/http/agent.rs`, `crates/protocol/src/http/event.rs`, `crates/protocol/src/http/session.rs`, and `crates/protocol/src/http/mod.rs`
+- [X] T005 [P] Add durable child-session storage events and translation support in `crates/core/src/event/domain.rs`, `crates/core/src/event/types.rs`, and `crates/core/src/event/translate.rs`
+- [X] T006 [P] Add protocol DTOs and serialization for child-session status, notifications, and view projections in `crates/protocol/src/http/agent.rs`, `crates/protocol/src/http/event.rs`, `crates/protocol/src/http/session.rs`, and `crates/protocol/src/http/mod.rs`
 - [X] T007 [P] Move runtime-only capability/tool context defaults into `crates/runtime-registry/src/tool.rs` and `crates/runtime-registry/src/router.rs`
 - [X] T008 Refactor `ToolRegistry` into test/build helper while `CapabilityRouter` remains the only production entry in `crates/runtime-registry/src/tool.rs`, `crates/runtime-registry/src/router.rs`, and `crates/core/src/registry/router.rs`
 - [X] T009 [P] Remove `runtime-agent-tool` as the semantic source of `AgentProfileCatalog` in `crates/runtime-agent-loop/src/prompt_runtime.rs`, `crates/runtime-prompt/src/contributors/agent_profile_summary.rs`, and `crates/runtime-agent-tool/src/lib.rs`

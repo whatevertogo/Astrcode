@@ -50,10 +50,11 @@ pub use action::{
 };
 pub use agent::{
     AgentEventContext, AgentMode, AgentProfile, AgentProfileCatalog, AgentStatus, ArtifactRef,
-    ChildAgentRef, ChildSessionLineageKind, ChildSessionNode, ChildSessionStatusSource, ForkMode,
-    InvocationKind, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    SpawnAgentParams, SubRunDescriptor, SubRunFailure, SubRunFailureCode, SubRunHandle,
-    SubRunHandoff, SubRunOutcome, SubRunResult, SubRunStorageMode, SubagentContextOverrides,
+    ChildAgentRef, ChildSessionLineageKind, ChildSessionNode, ChildSessionNotification,
+    ChildSessionNotificationKind, ChildSessionStatusSource, ForkMode, InvocationKind,
+    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SpawnAgentParams,
+    SubRunDescriptor, SubRunFailure, SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunOutcome,
+    SubRunResult, SubRunStorageMode, SubagentContextOverrides,
 };
 pub use cancel::CancelToken;
 pub use compact_summary::{

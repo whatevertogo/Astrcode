@@ -405,3 +405,40 @@ fn child_session_summary_and_view_response_roundtrip() {
     assert_eq!(view_back.view.child_session_id, "session-child");
     assert!(view_back.view.has_final_reply);
 }
+
+#[test]
+fn child_session_notification_event_payload_roundtrip() {
+    let payload = AgentEventPayload::ChildSessionNotification {
+        turn_id: Some("turn-parent".to_string()),
+        agent: AgentContextDto {
+            agent_id: Some("agent-parent".to_string()),
+            parent_turn_id: Some("turn-parent".to_string()),
+            agent_profile: Some("planner".to_string()),
+            sub_run_id: Some("subrun-parent".to_string()),
+            invocation_kind: Some(InvocationKindDto::SubRun),
+            storage_mode: Some(SubRunStorageModeDto::SharedSession),
+            child_session_id: None,
+        },
+        child_ref: ChildAgentRefDto {
+            agent_id: "agent-child".to_string(),
+            session_id: "session-parent".to_string(),
+            sub_run_id: "subrun-1".to_string(),
+            parent_agent_id: Some("agent-parent".to_string()),
+            lineage_kind: ChildSessionLineageKindDto::Spawn,
+            status: "running".to_string(),
+            openable: true,
+            open_session_id: "session-child".to_string(),
+        },
+        kind: ChildSessionNotificationKindDto::Started,
+        summary: "child started".to_string(),
+        status: "running".to_string(),
+        open_session_id: "session-child".to_string(),
+        source_tool_call_id: Some("call-1".to_string()),
+        final_reply_excerpt: None,
+    };
+
+    let encoded =
+        serde_json::to_value(AgentEventEnvelope::new(payload.clone())).expect("serialize");
+    let decoded: AgentEventEnvelope = serde_json::from_value(encoded).expect("deserialize");
+    assert_eq!(decoded.event, payload);
+}

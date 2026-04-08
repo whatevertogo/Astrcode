@@ -53,6 +53,7 @@ use serde_json::Value;
 use tokio::{select, time::sleep};
 
 pub mod anthropic;
+pub mod cache_tracker;
 pub mod openai;
 
 // ---------------------------------------------------------------------------

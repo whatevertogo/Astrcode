@@ -13,8 +13,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AgentEventContext, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    SubRunDescriptor, SubRunResult, ToolOutputStream, UserMessageOrigin,
+    AgentEventContext, ChildSessionNotification, ResolvedExecutionLimitsSnapshot,
+    ResolvedSubagentContextOverrides, SubRunDescriptor, SubRunResult, ToolOutputStream,
+    UserMessageOrigin,
 };
 
 /// 上下文压缩的触发方式。
@@ -213,6 +214,20 @@ pub enum StorageEvent {
         )]
         timestamp: Option<DateTime<Utc>>,
     },
+    /// 子会话通知事件（父会话摘要投影的 durable 来源）。
+    ChildSessionNotification {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
+        agent: AgentEventContext,
+        notification: ChildSessionNotification,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "crate::local_rfc3339_option"
+        )]
+        timestamp: Option<DateTime<Utc>>,
+    },
     /// Turn 完成（一轮 Agent 循环结束）。
     TurnDone {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -257,6 +272,7 @@ impl StorageEvent {
             | Self::CompactApplied { turn_id, .. }
             | Self::SubRunStarted { turn_id, .. }
             | Self::SubRunFinished { turn_id, .. }
+            | Self::ChildSessionNotification { turn_id, .. }
             | Self::TurnDone { turn_id, .. }
             | Self::Error { turn_id, .. } => turn_id.as_deref(),
             Self::SessionStart { .. } => None,
@@ -277,6 +293,7 @@ impl StorageEvent {
             | Self::CompactApplied { agent, .. }
             | Self::SubRunStarted { agent, .. }
             | Self::SubRunFinished { agent, .. }
+            | Self::ChildSessionNotification { agent, .. }
             | Self::TurnDone { agent, .. }
             | Self::Error { agent, .. } => Some(agent),
             Self::SessionStart { .. } => None,
@@ -340,8 +357,10 @@ mod tests {
 
     use super::{CompactTrigger, StorageEvent};
     use crate::{
-        AgentEventContext, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-        SubRunDescriptor, SubRunOutcome, SubRunResult, SubRunStorageMode, format_local_rfc3339,
+        AgentEventContext, AgentStatus, ChildSessionLineageKind, ChildSessionNotification,
+        ChildSessionNotificationKind, ResolvedExecutionLimitsSnapshot,
+        ResolvedSubagentContextOverrides, SubRunDescriptor, SubRunOutcome, SubRunResult,
+        SubRunStorageMode, format_local_rfc3339,
     };
 
     #[test]
@@ -609,5 +628,59 @@ mod tests {
                 Value::String("turn-parent".to_string())
             );
         }
+    }
+
+    #[test]
+    fn child_session_notification_roundtrip_preserves_projection_payload() {
+        let notification = ChildSessionNotification {
+            notification_id: "note-1".to_string(),
+            child_ref: crate::ChildAgentRef {
+                agent_id: "agent-child".to_string(),
+                session_id: "session-parent".to_string(),
+                sub_run_id: "subrun-1".to_string(),
+                parent_agent_id: Some("agent-parent".to_string()),
+                lineage_kind: ChildSessionLineageKind::Spawn,
+                status: AgentStatus::Running,
+                openable: true,
+                open_session_id: "session-child".to_string(),
+            },
+            kind: ChildSessionNotificationKind::Started,
+            summary: "child started".to_string(),
+            status: AgentStatus::Running,
+            open_session_id: "session-child".to_string(),
+            source_tool_call_id: Some("call-1".to_string()),
+            final_reply_excerpt: None,
+        };
+
+        let event = StorageEvent::ChildSessionNotification {
+            turn_id: Some("turn-parent".to_string()),
+            agent: AgentEventContext::sub_run(
+                "agent-parent",
+                "turn-parent",
+                "planner",
+                "subrun-parent",
+                SubRunStorageMode::SharedSession,
+                None,
+            ),
+            notification,
+            timestamp: None,
+        };
+
+        let encoded = serde_json::to_value(&event).expect("serialize");
+        let decoded: StorageEvent = serde_json::from_value(encoded.clone()).expect("deserialize");
+
+        match decoded {
+            StorageEvent::ChildSessionNotification { notification, .. } => {
+                assert_eq!(notification.notification_id, "note-1");
+                assert_eq!(notification.child_ref.agent_id, "agent-child");
+                assert_eq!(notification.child_ref.open_session_id, "session-child");
+            },
+            other => panic!("expected child session notification, got {other:?}"),
+        }
+
+        assert_eq!(
+            encoded["notification"]["notificationId"],
+            Value::String("note-1".to_string())
+        );
     }
 }
