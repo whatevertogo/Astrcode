@@ -181,6 +181,10 @@ impl SessionState {
     }
 
     pub fn complete_execution_state(&self, phase: Phase) {
+        // Why: 先清除 running 标志再设置 phase，避免外部观察者看到 phase=Idle
+        // 但 running 仍为 true 的竞态窗口（如 compact 在 turn 完成后立即被调用）。
+        self.running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         with_lock_recovery(&self.phase, "session phase", |phase_guard| {
             *phase_guard = phase;
         });
@@ -200,8 +204,6 @@ impl SessionState {
         with_lock_recovery(&self.cancel, "session cancel", |cancel_guard| {
             *cancel_guard = CancelToken::new();
         });
-        self.running
-            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn translate_store_and_cache(
