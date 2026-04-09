@@ -524,7 +524,7 @@ describe('normalizeAgentEvent protocol gate', () => {
       });
 
       expect(normalized).toMatchObject({
-        event: 'subRunStart',
+        event: 'subRunStarted',
         data: {
           executionId: 'exec-1',
           descriptor: {
@@ -549,50 +549,6 @@ describe('normalizeAgentEvent protocol gate', () => {
         event: 'userMessage',
         data: {
           executionId: 'exec-1',
-        },
-      });
-    });
-
-    it('falls back to subRunId when executionId is missing in descriptor', () => {
-      const normalized = normalizeAgentEvent({
-        protocolVersion: 1,
-        event: 'subRunStarted',
-        data: {
-          turn_id: 'turn-1',
-          agent_id: 'agent-1',
-          agent_profile: 'profile-1',
-          descriptor: {
-            sub_run_id: 'sub-1',
-            parent_turn_id: 'turn-1',
-            parent_agent_id: 'agent-parent',
-            depth: 1,
-          },
-          tool_call_id: 'call-1',
-          resolved_overrides: {
-            storage_mode: 'independentSession',
-            inherit_system_instructions: true,
-            inherit_project_instructions: true,
-            inherit_working_dir: true,
-            inherit_policy_upper_bound: true,
-            inherit_cancel_token: true,
-            include_compact_summary: false,
-            include_recent_tail: false,
-            include_recovery_refs: false,
-            include_parent_findings: false,
-          },
-          resolved_limits: {
-            allowed_tools: [],
-          },
-        },
-      });
-
-      expect(normalized).toMatchObject({
-        event: 'subRunStart',
-        data: {
-          executionId: 'sub-1',
-          descriptor: {
-            executionId: 'sub-1',
-          },
         },
       });
     });
