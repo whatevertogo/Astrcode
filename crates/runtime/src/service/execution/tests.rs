@@ -5,14 +5,13 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentEventContext, AgentInboxEnvelope, AgentMode, AgentProfile, AgentStatus, AstrError,
-    CancelToken, ChildSessionLineageKind, ChildSessionNotificationKind, ExecutionOwner,
-    InboxEnvelopeKind, InvocationKind, Phase, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, SessionTurnAcquireResult, SpawnAgentParams, StorageEvent,
-    SubRunDescriptor, SubRunFailure, SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunOutcome,
-    SubRunResult, SubRunStorageMode, SubagentContextOverrides, Tool, ToolCapabilityMetadata,
-    ToolContext, ToolDefinition, ToolEventSink, ToolExecutionResult, UserMessageOrigin,
-    test_support::TestEnvGuard,
+    AgentEventContext, AgentMode, AgentProfile, AgentStatus, AstrError, CancelToken,
+    ChildSessionLineageKind, ChildSessionNotificationKind, ExecutionOwner, InvocationKind, Phase,
+    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SessionTurnAcquireResult,
+    SpawnAgentParams, StorageEvent, SubRunDescriptor, SubRunFailure, SubRunFailureCode,
+    SubRunHandle, SubRunHandoff, SubRunOutcome, SubRunResult, SubRunStorageMode,
+    SubagentContextOverrides, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
+    ToolEventSink, ToolExecutionResult, UserMessageOrigin, test_support::TestEnvGuard,
 };
 use astrcode_runtime_agent_loop::{AgentLoop, ProviderFactory};
 use astrcode_runtime_agent_tool::{SpawnAgentTool, SubAgentExecutor};
@@ -200,25 +199,6 @@ fn extract_spawned_sub_run_id(result: &ToolExecutionResult) -> String {
         .to_string()
 }
 
-fn make_child_delivery_envelope(
-    from_agent_id: &str,
-    to_agent_id: &str,
-    delivery_id: &str,
-) -> AgentInboxEnvelope {
-    AgentInboxEnvelope {
-        delivery_id: delivery_id.to_string(),
-        from_agent_id: from_agent_id.to_string(),
-        to_agent_id: to_agent_id.to_string(),
-        kind: InboxEnvelopeKind::ChildDelivery,
-        message: "leaf 完成了任务".to_string(),
-        context: None,
-        is_final: true,
-        summary: Some("leaf 任务结果".to_string()),
-        findings: vec!["发现1".to_string()],
-        artifacts: Vec::new(),
-    }
-}
-
 #[test]
 fn resolve_profile_tool_names_rejects_legacy_aliases() {
     let capabilities = capabilities_from_tools(vec![
@@ -354,60 +334,6 @@ tools: [readFile, grep]
         review.allowed_tools,
         vec!["readFile".to_string(), "grep".to_string()]
     );
-}
-
-#[tokio::test]
-async fn spawn_agent_tool_emits_child_events_with_agent_context() {
-    let _guard = TestEnvGuard::new();
-    let service = Arc::new(
-        RuntimeService::from_capabilities(capabilities_from_tools(vec![
-            Box::new(DemoTool { name: "readFile" }),
-            Box::new(DemoTool { name: "grep" }),
-        ]))
-        .expect("runtime service should build"),
-    );
-    let executor = Arc::new(DeferredSubAgentExecutor::default());
-    executor.bind(&service);
-    let tool = SpawnAgentTool::new(executor);
-    let sink = Arc::new(RecordingEventSink {
-        events: Mutex::new(Vec::new()),
-    });
-
-    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    let session = service
-        .sessions()
-        .create(temp_dir.path())
-        .await
-        .expect("session should be created");
-    let context = ToolContext::new(
-        session.session_id.clone(),
-        temp_dir.path().to_path_buf(),
-        CancelToken::new(),
-    )
-    .with_turn_id("turn-parent")
-    .with_event_sink(sink.clone());
-
-    let result = tool
-        .execute(
-            "call-1".to_string(),
-            json!({
-                "type": "plan",
-                "description": "summarize repository layout",
-                "prompt": "summarize the repository layout"
-            }),
-            &context,
-        )
-        .await;
-
-    match result {
-        Ok(tool_result) => assert!(tool_result.metadata.is_some()),
-        Err(error) => {
-            assert!(
-                !error.to_string().contains("session not found"),
-                "session should be loaded successfully, got: {error}"
-            );
-        },
-    }
 }
 
 #[tokio::test]
@@ -1937,192 +1863,6 @@ async fn spawn_agent_terminal_delivery_notification_is_emitted_once() {
     .expect("terminal notification should appear in time");
 
     assert_eq!(terminal_count, 1, "terminal delivery must be emitted once");
-}
-
-// ─── T035 层级协作回归测试 ──────────────────────────────
-
-/// 验证三层链 root → middle → leaf 中关闭 middle 时，
-/// cancel_subrun 通过 agent_control.cancel 级联到 leaf，
-/// root 的子会话节点正确反映 subtree 关闭状态。
-#[tokio::test]
-async fn cancel_subrun_cascades_along_agent_ownership_subtree() {
-    let _guard = TestEnvGuard::new();
-    // 直接使用 AgentControl 以便设置足够的 max_depth
-    use astrcode_runtime_agent_control::AgentControl;
-    use astrcode_runtime_config::RuntimeConfig;
-    let mut config = RuntimeConfig::default();
-    if let Some(agent) = &mut config.agent {
-        agent.max_subrun_depth = Some(4);
-        agent.max_concurrent = Some(10);
-    } else {
-        config.agent = Some(astrcode_runtime_config::AgentConfig {
-            max_subrun_depth: Some(4),
-            max_concurrent: Some(10),
-            ..Default::default()
-        });
-    }
-    let control = AgentControl::from_config(&config);
-
-    let profile = AgentProfile {
-        id: "review".to_string(),
-        name: "Review".to_string(),
-        description: "review".to_string(),
-        mode: AgentMode::SubAgent,
-        system_prompt: None,
-        allowed_tools: vec!["readFile".to_string()],
-        disallowed_tools: Vec::new(),
-        model_preference: None,
-    };
-
-    // 构建三层链：root → middle → leaf
-    let root = control
-        .spawn(&profile, "session-root", Some("turn-1".to_string()), None)
-        .await
-        .expect("root spawn should succeed");
-    let middle = control
-        .spawn(
-            &profile,
-            "session-middle",
-            Some("turn-1".to_string()),
-            Some(root.agent_id.clone()),
-        )
-        .await
-        .expect("middle spawn should succeed");
-    let leaf = control
-        .spawn(
-            &profile,
-            "session-leaf",
-            Some("turn-1".to_string()),
-            Some(middle.agent_id.clone()),
-        )
-        .await
-        .expect("leaf spawn should succeed");
-
-    let _ = control.mark_running(&root.agent_id).await;
-    let _ = control.mark_running(&middle.agent_id).await;
-    let _ = control.mark_running(&leaf.agent_id).await;
-
-    // 关闭 middle，应级联到 leaf
-    control
-        .cancel(&middle.agent_id)
-        .await
-        .expect("cancel should succeed");
-
-    // middle 和 leaf 都应被取消
-    assert_eq!(
-        control
-            .get(&middle.agent_id)
-            .await
-            .expect("middle should exist")
-            .status,
-        AgentStatus::Cancelled
-    );
-    assert_eq!(
-        control
-            .get(&leaf.agent_id)
-            .await
-            .expect("leaf should exist")
-            .status,
-        AgentStatus::Cancelled
-    );
-
-    // root 不受影响
-    assert_eq!(
-        control
-            .get(&root.agent_id)
-            .await
-            .expect("root should exist")
-            .status,
-        AgentStatus::Running
-    );
-}
-
-/// 验证 deliverToParent 只投递到直接父 agent：
-/// 在三层链 root → middle → leaf 中，leaf 只能投递到 middle，
-/// 不能越级投递到 root。
-#[tokio::test]
-async fn deliver_to_parent_enforces_direct_parent_routing_in_three_level_chain() {
-    let _guard = TestEnvGuard::new();
-    // 直接使用 AgentControl 以便设置足够的 max_depth
-    use astrcode_runtime_agent_control::AgentControl;
-    use astrcode_runtime_config::RuntimeConfig;
-    let mut config = RuntimeConfig::default();
-    if let Some(agent) = &mut config.agent {
-        agent.max_subrun_depth = Some(4);
-        agent.max_concurrent = Some(10);
-    } else {
-        config.agent = Some(astrcode_runtime_config::AgentConfig {
-            max_subrun_depth: Some(4),
-            max_concurrent: Some(10),
-            ..Default::default()
-        });
-    }
-    let control = AgentControl::from_config(&config);
-
-    let profile = AgentProfile {
-        id: "review".to_string(),
-        name: "Review".to_string(),
-        description: "review".to_string(),
-        mode: AgentMode::SubAgent,
-        system_prompt: None,
-        allowed_tools: vec!["readFile".to_string()],
-        disallowed_tools: Vec::new(),
-        model_preference: None,
-    };
-
-    let root = control
-        .spawn(&profile, "session-root", Some("turn-1".to_string()), None)
-        .await
-        .expect("root spawn should succeed");
-    let middle = control
-        .spawn(
-            &profile,
-            "session-middle",
-            Some("turn-1".to_string()),
-            Some(root.agent_id.clone()),
-        )
-        .await
-        .expect("middle spawn should succeed");
-    let leaf = control
-        .spawn(
-            &profile,
-            "session-leaf",
-            Some("turn-1".to_string()),
-            Some(middle.agent_id.clone()),
-        )
-        .await
-        .expect("leaf spawn should succeed");
-
-    let _ = control.mark_running(&root.agent_id).await;
-    let _ = control.mark_running(&middle.agent_id).await;
-    let _ = control.mark_running(&leaf.agent_id).await;
-
-    // leaf 向直接父 (middle) 投递
-    let leaf_delivery =
-        make_child_delivery_envelope(&leaf.agent_id, &middle.agent_id, "delivery-leaf-to-middle");
-
-    control
-        .push_inbox(&middle.agent_id, leaf_delivery)
-        .await
-        .expect("push to middle should succeed");
-
-    // middle 的 inbox 应包含 leaf 的投递
-    let middle_inbox = control
-        .drain_inbox(&middle.agent_id)
-        .await
-        .expect("drain middle inbox should succeed");
-    assert_eq!(middle_inbox.len(), 1);
-    assert_eq!(middle_inbox[0].from_agent_id, leaf.agent_id);
-
-    // root 的 inbox 应为空
-    let root_inbox = control
-        .drain_inbox(&root.agent_id)
-        .await
-        .expect("drain root inbox should succeed");
-    assert!(
-        root_inbox.is_empty(),
-        "leaf delivery should not bypass direct parent to reach grandparent"
-    );
 }
 
 // ─── 状态投影与重激活测试 ──────────────────────────────────

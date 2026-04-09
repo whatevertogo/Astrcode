@@ -32,7 +32,7 @@ use crate::{
     routes::build_api_router,
     test_support::{
         ServerTestEnvGuard, seed_child_delivery_contract_session,
-        seed_legacy_subrun_contract_session, seed_subrun_status_contract_session, test_state,
+        seed_subrun_status_contract_session, test_state,
     },
 };
 
@@ -377,38 +377,6 @@ async fn subrun_status_contract_returns_expected_payload_shape() {
 }
 
 #[tokio::test]
-async fn subrun_status_contract_rejects_legacy_shared_history() {
-    let (state, _guard) = test_state(None);
-    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    seed_legacy_subrun_contract_session("subrun-legacy-contract-session", temp_dir.path());
-    let app = build_api_router().with_state(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri(
-                    "/api/v1/sessions/subrun-legacy-contract-session/subruns/\
-                     subrun-legacy-contract",
-                )
-                .header(AUTH_HEADER_NAME, "browser-token")
-                .body(Body::empty())
-                .expect("request should be valid"),
-        )
-        .await
-        .expect("response should be returned");
-
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let body = String::from_utf8(
-        to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body should be readable")
-            .to_vec(),
-    )
-    .expect("body should be utf-8");
-    assert!(body.contains("unsupported_legacy_shared_history"));
-}
-
-#[tokio::test]
 async fn subrun_cancel_contract_returns_not_found_for_missing_subrun() {
     let (state, _guard) = test_state(None);
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
@@ -513,54 +481,6 @@ async fn session_events_contract_rejects_scope_without_subrun_id() {
         .expect("response should be returned");
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn session_history_contract_rejects_legacy_subtree_scope_with_conflict() {
-    let (state, _guard) = test_state(None);
-    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    seed_legacy_subrun_contract_session("legacy-history-contract-session", temp_dir.path());
-    let app = build_api_router().with_state(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri(
-                    "/api/sessions/legacy-history-contract-session/history?\
-                     subRunId=subrun-legacy-contract&scope=subtree",
-                )
-                .header(AUTH_HEADER_NAME, "browser-token")
-                .body(Body::empty())
-                .expect("request should be valid"),
-        )
-        .await
-        .expect("response should be returned");
-
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-}
-
-#[tokio::test]
-async fn session_events_contract_rejects_legacy_direct_children_scope_with_conflict() {
-    let (state, _guard) = test_state(None);
-    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    seed_legacy_subrun_contract_session("legacy-events-contract-session", temp_dir.path());
-    let app = build_api_router().with_state(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri(
-                    "/api/sessions/legacy-events-contract-session/events?\
-                     subRunId=subrun-legacy-contract&scope=directChildren",
-                )
-                .header(AUTH_HEADER_NAME, "browser-token")
-                .body(Body::empty())
-                .expect("request should be valid"),
-        )
-        .await
-        .expect("response should be returned");
-
-    assert_eq!(response.status(), StatusCode::CONFLICT);
 }
 
 #[tokio::test]

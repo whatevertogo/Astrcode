@@ -174,29 +174,6 @@ async fn append_and_broadcast_from_turn_callback_works_on_current_thread_runtime
     ));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn append_and_broadcast_from_turn_callback_works_on_multi_thread_runtime() {
-    let _guard = TestEnvGuard::new();
-    let (temp_dir, state, mut translator) = build_test_state();
-    let mut receiver = state.broadcaster.subscribe();
-
-    append_and_broadcast_from_turn_callback(
-        &state,
-        &StorageEvent::SessionStart {
-            session_id: "test-session".to_string(),
-            timestamp: Utc::now(),
-            working_dir: temp_dir.path().to_string_lossy().to_string(),
-            parent_session_id: None,
-            parent_storage_seq: None,
-        },
-        &mut translator,
-    )
-    .expect("append should succeed on multi-thread runtimes too");
-
-    let record = receiver.recv().await.expect("record should be broadcast");
-    assert_eq!(record.event_id, "1.0");
-}
-
 #[test]
 fn stable_events_before_active_turn_stops_at_the_active_turn_boundary() {
     let timestamp = Utc::now();

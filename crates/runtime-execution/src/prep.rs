@@ -233,10 +233,14 @@ fn build_inherited_context_prompt_declarations(
     let mut declarations = Vec::new();
 
     if let Some(summary) = resolved_context_snapshot.inherited_compact_summary.as_ref() {
+        let trimmed = summary.trim();
+        if trimmed.is_empty() {
+            return declarations;
+        }
         declarations.push(PromptDeclaration {
             block_id: CHILD_INHERITED_COMPACT_SUMMARY_BLOCK_ID.to_string(),
             title: "Inherited Compact Summary".to_string(),
-            content: summary.trim().to_string(),
+            content: trimmed.to_string(),
             render_target: astrcode_runtime_prompt::PromptDeclarationRenderTarget::System,
             layer: astrcode_runtime_prompt::PromptLayer::Inherited,
             kind: astrcode_runtime_prompt::PromptDeclarationKind::ExtensionInstruction,
@@ -249,10 +253,20 @@ fn build_inherited_context_prompt_declarations(
     }
 
     if !resolved_context_snapshot.inherited_recent_tail.is_empty() {
+        let joined: String = resolved_context_snapshot
+            .inherited_recent_tail
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if joined.is_empty() {
+            return declarations;
+        }
         declarations.push(PromptDeclaration {
             block_id: CHILD_INHERITED_RECENT_TAIL_BLOCK_ID.to_string(),
             title: "Inherited Recent Tail".to_string(),
-            content: resolved_context_snapshot.inherited_recent_tail.join("\n"),
+            content: joined,
             render_target: astrcode_runtime_prompt::PromptDeclarationRenderTarget::System,
             layer: astrcode_runtime_prompt::PromptLayer::Inherited,
             kind: astrcode_runtime_prompt::PromptDeclarationKind::ExtensionInstruction,

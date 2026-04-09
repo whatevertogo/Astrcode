@@ -169,54 +169,6 @@ pub(crate) fn seed_subrun_status_contract_session(session_id: &str, working_dir:
     );
 }
 
-pub(crate) fn seed_legacy_subrun_contract_session(session_id: &str, working_dir: &Path) {
-    let sub = AgentEventContext::sub_run(
-        "agent-legacy-contract",
-        "turn-legacy-contract",
-        "review",
-        "subrun-legacy-contract",
-        astrcode_core::SubRunStorageMode::SharedSession,
-        None,
-    );
-
-    append_session_events(
-        session_id,
-        working_dir,
-        [
-            StorageEvent::SessionStart {
-                session_id: session_id.to_string(),
-                timestamp: Utc::now(),
-                working_dir: working_dir.display().to_string(),
-                parent_session_id: None,
-                parent_storage_seq: None,
-            },
-            StorageEvent::SubRunStarted {
-                turn_id: Some("turn-legacy-contract".to_string()),
-                agent: sub.clone(),
-                descriptor: None,
-                tool_call_id: Some("call-legacy-contract".to_string()),
-                resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
-                resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
-                timestamp: Some(Utc::now()),
-            },
-            StorageEvent::SubRunFinished {
-                turn_id: Some("turn-legacy-contract".to_string()),
-                agent: sub,
-                descriptor: None,
-                tool_call_id: Some("call-legacy-contract".to_string()),
-                result: astrcode_core::SubRunResult {
-                    status: astrcode_core::SubRunOutcome::Completed,
-                    handoff: None,
-                    failure: None,
-                },
-                step_count: 1,
-                estimated_tokens: 21,
-                timestamp: Some(Utc::now()),
-            },
-        ],
-    );
-}
-
 pub(crate) fn seed_child_delivery_contract_session(session_id: &str, working_dir: &Path) {
     let descriptor = astrcode_core::SubRunDescriptor {
         sub_run_id: "subrun-delivery-contract".to_string(),

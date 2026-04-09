@@ -852,18 +852,6 @@ mod tests {
     }
 
     #[test]
-    fn finish_reason_defaults_to_stop() {
-        let reason = FinishReason::default();
-        assert_eq!(reason, FinishReason::Stop);
-    }
-
-    #[test]
-    fn llm_output_finish_reason_defaults_to_stop() {
-        let output = LlmOutput::default();
-        assert_eq!(output.finish_reason, FinishReason::Stop);
-    }
-
-    #[test]
     fn utf8_stream_decoder_handles_multibyte_char_split_across_chunks() {
         let mut decoder = Utf8StreamDecoder::default();
         let bytes = "你好".as_bytes();

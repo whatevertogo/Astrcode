@@ -6,10 +6,43 @@ import {
   unique,
 } from './hook-utils.mjs';
 
+import { readStagedBlob, isProbablyBinary, textDecoder } from './hook-utils.mjs';
+
 const stagedFiles = listStagedFiles();
 if (stagedFiles.length === 0) {
   console.log('pre-commit: no staged files to inspect.');
   process.exit(0);
+}
+
+// ── 安全守卫：冲突标记 & 常见密钥模式 ──────────────────────────
+const CONFLICT_RE = /^(<{7}|={7}|>{7})/mu;
+const SECRET_RE =
+  /(?:(?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}|-----BEGIN (?:RSA |EC )?PRIVATE KEY-----|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}|sk_live_[0-9a-zA-Z]{24,})/u;
+
+let safetyBlocked = false;
+for (const file of stagedFiles) {
+  let blob;
+  try {
+    blob = readStagedBlob(file);
+  } catch {
+    // 新增的空文件或已删除文件，跳过
+    continue;
+  }
+  if (isProbablyBinary(blob)) continue;
+
+  const content = textDecoder.decode(blob);
+  if (CONFLICT_RE.test(content)) {
+    console.error(`pre-commit: ${file} contains unresolved merge conflict markers.`);
+    safetyBlocked = true;
+  }
+  if (SECRET_RE.test(content)) {
+    console.error(`pre-commit: ${file} may contain a secret (API key / private key).`);
+    safetyBlocked = true;
+  }
+}
+if (safetyBlocked) {
+  console.error('pre-commit: resolve the above issues before committing.');
+  process.exit(1);
 }
 
 // Cargo 文件或 crate 源码变更时自动重新生成依赖图

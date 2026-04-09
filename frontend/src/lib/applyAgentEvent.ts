@@ -316,7 +316,7 @@ export function applyAgentEvent(
           kind: 'childSessionNotification',
           turnId: event.data.turnId ?? null,
           ...agentFields,
-          childSessionId: event.data.openSessionId,
+          childSessionId: event.data.openSessionId ?? event.data.childRef?.sessionId,
           childRef: event.data.childRef,
           notificationKind: event.data.kind,
           status: event.data.status,
