@@ -8,10 +8,10 @@ use astrcode_core::{
     AgentEventContext, AgentInboxEnvelope, AgentMode, AgentProfile, AgentStatus, AstrError,
     CancelToken, ChildSessionLineageKind, ChildSessionNotificationKind, ExecutionOwner,
     InboxEnvelopeKind, InvocationKind, Phase, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, SpawnAgentParams, StorageEvent, SubRunDescriptor,
-    SubRunFailure, SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunOutcome, SubRunResult,
-    SubRunStorageMode, SubagentContextOverrides, Tool, ToolCapabilityMetadata, ToolContext,
-    ToolDefinition, ToolEventSink, ToolExecutionResult, UserMessageOrigin,
+    ResolvedSubagentContextOverrides, SessionTurnAcquireResult, SpawnAgentParams, StorageEvent,
+    SubRunDescriptor, SubRunFailure, SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunOutcome,
+    SubRunResult, SubRunStorageMode, SubagentContextOverrides, Tool, ToolCapabilityMetadata,
+    ToolContext, ToolDefinition, ToolEventSink, ToolExecutionResult, UserMessageOrigin,
     test_support::TestEnvGuard,
 };
 use astrcode_runtime_agent_loop::{AgentLoop, ProviderFactory};
@@ -125,13 +125,42 @@ fn append_storage_event(service: &RuntimeService, session_id: &str, event: &Stor
         .expect("storage event should append successfully");
 }
 
-async fn install_test_loop(service: &Arc<RuntimeService>, output: LlmOutput) {
-    let provider: Arc<dyn LlmProvider> = Arc::new(StaticProvider { output });
+async fn install_provider_loop(service: &Arc<RuntimeService>, provider: Arc<dyn LlmProvider>) {
     let loop_ = AgentLoop::from_capabilities(
         Arc::new(StaticProviderFactory { provider }),
         empty_capabilities(),
     );
     *service.loop_.write().await = Arc::new(loop_);
+}
+
+async fn install_test_loop(service: &Arc<RuntimeService>, output: LlmOutput) {
+    install_provider_loop(service, Arc::new(StaticProvider { output })).await;
+}
+
+async fn occupy_parent_turn(service: &Arc<RuntimeService>, session_id: &str, turn_id: &str) {
+    let session_state = service
+        .ensure_session_loaded(session_id)
+        .await
+        .expect("session state should load");
+    let turn_lease = match service
+        .session_manager
+        .try_acquire_turn(session_id, turn_id)
+        .expect("turn lease acquisition should succeed")
+    {
+        SessionTurnAcquireResult::Acquired(turn_lease) => turn_lease,
+        SessionTurnAcquireResult::Busy(_) => {
+            panic!("fresh session should not already be busy")
+        },
+    };
+    prepare_session_execution(
+        &session_state,
+        session_id,
+        turn_id,
+        CancelToken::new(),
+        turn_lease,
+        None,
+    )
+    .expect("parent turn should be marked busy");
 }
 
 fn write_test_agent_profile(working_dir: &std::path::Path, profile_id: &str) {
@@ -404,6 +433,7 @@ async fn spawn_agent_background_cancellation_releases_concurrency_slots() {
         .create(temp_dir.path())
         .await
         .expect("session should be created");
+    occupy_parent_turn(&service, &session.session_id, "turn-parent").await;
     let context = ToolContext::new(
         session.session_id.clone(),
         temp_dir.path().to_path_buf(),
@@ -467,6 +497,7 @@ async fn spawn_agent_lifecycle_events_persist_parent_tool_call_id() {
         .create(temp_dir.path())
         .await
         .expect("session should be created");
+    occupy_parent_turn(&service, &session.session_id, "turn-parent").await;
     let context = ToolContext::new(
         session.session_id.clone(),
         temp_dir.path().to_path_buf(),
@@ -1826,6 +1857,14 @@ async fn spawn_agent_terminal_delivery_notification_is_emitted_once() {
         ]))
         .expect("runtime service should build"),
     );
+    install_test_loop(
+        &service,
+        LlmOutput {
+            content: "terminal delivery".to_string(),
+            ..LlmOutput::default()
+        },
+    )
+    .await;
     let executor = Arc::new(DeferredSubAgentExecutor::default());
     executor.bind(&service);
     let tool = SpawnAgentTool::new(executor);
@@ -2225,6 +2264,15 @@ async fn reactivate_parent_drains_buffer_after_busy_parent_turn_completes() {
         RuntimeService::from_capabilities(empty_capabilities())
             .expect("runtime service should build"),
     );
+    // 需要 LLM loop 才能让 wake turn 成功执行并消费 delivery
+    install_test_loop(
+        &service,
+        LlmOutput {
+            content: "drain consumed".to_string(),
+            ..LlmOutput::default()
+        },
+    )
+    .await;
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let session = service
         .sessions()
@@ -2306,6 +2354,15 @@ async fn reactivate_parent_idle_wake_turn_uses_runtime_only_delivery_input() {
         RuntimeService::from_capabilities(empty_capabilities())
             .expect("runtime service should build"),
     );
+    // 需要 LLM loop 才能让 wake turn 成功执行并消费 delivery
+    install_test_loop(
+        &service,
+        LlmOutput {
+            content: "delivery consumed".to_string(),
+            ..LlmOutput::default()
+        },
+    )
+    .await;
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let session = service
         .sessions()

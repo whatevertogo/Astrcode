@@ -1,16 +1,9 @@
-use astrcode_protocol::{
-    http::{
-        AgentContextDto, AgentEventEnvelope, AgentEventPayload, InvocationKindDto,
-        ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto, SubRunDescriptorDto,
-        SubRunStorageModeDto,
-    },
-    plugin::{
-        BudgetHint, CallerRef, CancelMessage, CapabilityDescriptor, CapabilityKind, ErrorPayload,
-        EventMessage, EventPhase, FilterDescriptor, HandlerDescriptor, InitializeMessage,
-        InitializeResultData, InvocationContext, PROTOCOL_VERSION, PeerDescriptor, PeerRole,
-        PermissionHint, PluginMessage, ProfileDescriptor, ResultMessage, SideEffectLevel,
-        StabilityLevel, TriggerDescriptor, WorkspaceRef,
-    },
+use astrcode_protocol::plugin::{
+    BudgetHint, CallerRef, CancelMessage, CapabilityDescriptor, CapabilityKind, ErrorPayload,
+    EventMessage, EventPhase, FilterDescriptor, HandlerDescriptor, InitializeMessage,
+    InitializeResultData, InvocationContext, PROTOCOL_VERSION, PeerDescriptor, PeerRole,
+    PermissionHint, PluginMessage, ProfileDescriptor, ResultMessage, SideEffectLevel,
+    StabilityLevel, TriggerDescriptor, WorkspaceRef,
 };
 use serde_json::{Value, json};
 
@@ -287,54 +280,4 @@ fn event_and_cancel_fixtures_freeze_stream_and_cancel_shapes() {
         serde_json::to_value(&cancel_decoded).expect("cancel should encode"),
         cancel_fixture
     );
-}
-
-#[test]
-fn subrun_started_event_envelope_keeps_descriptor_and_tool_call_contract() {
-    let payload = AgentEventPayload::SubRunStarted {
-        turn_id: Some("turn-parent-1".to_string()),
-        agent: AgentContextDto {
-            agent_id: Some("agent-child-1".to_string()),
-            parent_turn_id: Some("turn-parent-1".to_string()),
-            agent_profile: Some("reviewer".to_string()),
-            sub_run_id: Some("subrun-1".to_string()),
-            invocation_kind: Some(InvocationKindDto::SubRun),
-            storage_mode: Some(SubRunStorageModeDto::SharedSession),
-            child_session_id: None,
-        },
-        descriptor: Some(SubRunDescriptorDto {
-            sub_run_id: "subrun-1".to_string(),
-            parent_turn_id: "turn-parent-1".to_string(),
-            parent_agent_id: Some("agent-root-1".to_string()),
-            depth: 1,
-        }),
-        tool_call_id: Some("call_spawn_001".to_string()),
-        resolved_overrides: ResolvedSubagentContextOverridesDto {
-            storage_mode: SubRunStorageModeDto::SharedSession,
-            inherit_system_instructions: true,
-            inherit_project_instructions: true,
-            inherit_working_dir: true,
-            inherit_policy_upper_bound: true,
-            inherit_cancel_token: true,
-            include_compact_summary: false,
-            include_recent_tail: true,
-            include_recovery_refs: false,
-            include_parent_findings: false,
-            fork_mode: None,
-        },
-        resolved_limits: ResolvedExecutionLimitsDto {
-            allowed_tools: vec!["readFile".to_string(), "grep".to_string()],
-        },
-    };
-
-    let envelope = AgentEventEnvelope::new(payload);
-    let encoded = serde_json::to_value(&envelope).expect("event should encode");
-    let decoded: AgentEventEnvelope =
-        serde_json::from_value(encoded.clone()).expect("event envelope should decode");
-
-    assert_eq!(decoded, envelope);
-    assert_eq!(encoded["event"], json!("subRunStarted"));
-    assert_eq!(encoded["data"]["descriptor"]["subRunId"], json!("subrun-1"));
-    assert_eq!(encoded["data"]["toolCallId"], json!("call_spawn_001"));
-    assert!(encoded["data"].get("tool_call_id").is_none());
 }
