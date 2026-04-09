@@ -1,7 +1,7 @@
-# Specification Quality Checklist: 子 Agent 独立子会话模型
+# Specification Quality Checklist: 子 Agent 子会话边界与缓存优化
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning  
-**Created**: 2026-04-08  
+**Created**: 2026-04-09  
 **Feature**: [spec.md](../spec.md)
 
 ## Content Quality
@@ -32,4 +32,5 @@
 ## Notes
 
 - 本轮校验未发现 `NEEDS CLARIFICATION` 标记。
-- 规格明确将“完整 fork agent 入口”划为后续能力，仅要求本次模型为该能力提供统一底座。
+- 规格已将讨论重点收敛为四个边界：Session 身份、durable 存储、缓存契约、resume/唤醒语义。
+- 规格明确区分了父侧 durable 真相与运行时实时观测，避免把 SSE/内存态误写成持久化契约。
