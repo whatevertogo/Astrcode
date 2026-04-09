@@ -13,6 +13,7 @@ interface IndexedMessage {
 interface SpawnedAgentRef {
   subRunId: string;
   agentId?: string;
+  childSessionId?: string;
 }
 
 interface SubRunRecord {
@@ -211,7 +212,32 @@ function pickSpawnedAgentRef(message: Message): SpawnedAgentRef | null {
   return {
     subRunId,
     agentId: pickStringField(agentRef, 'agentId', 'agent_id'),
+    childSessionId:
+      pickStringField(agentRef, 'openSessionId', 'open_session_id') ??
+      pickStringField(metadata, 'openSessionId', 'open_session_id'),
   };
+}
+
+function pickOpenableChildSessionId(message: Message): string | undefined {
+  if (message.kind === 'childSessionNotification') {
+    if (!message.childRef.openable) {
+      return undefined;
+    }
+    return message.openSessionId || message.childSessionId;
+  }
+
+  return message.childSessionId;
+}
+
+function pickChildSessionIdFromEntries(entries: IndexedMessage[]): string | undefined {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const childSessionId = pickOpenableChildSessionId(entries[index].message);
+    if (childSessionId) {
+      return childSessionId;
+    }
+  }
+
+  return undefined;
 }
 
 function buildSubRunIndex(messages: Message[]): SubRunIndex {
@@ -264,6 +290,9 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
     if (!record.agentId && spawnedAgentRef.agentId) {
       record.agentId = spawnedAgentRef.agentId;
     }
+    if (!record.childSessionId && spawnedAgentRef.childSessionId) {
+      record.childSessionId = spawnedAgentRef.childSessionId;
+    }
   });
 
   const orderedRecords = [...records.values()].sort(
@@ -273,7 +302,10 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
 
   orderedRecords.forEach((record) => {
     record.childSessionId =
-      record.startMessage?.childSessionId ?? record.finishMessage?.childSessionId;
+      record.startMessage?.childSessionId ??
+      record.finishMessage?.childSessionId ??
+      pickChildSessionIdFromEntries(record.ownBodyEntries) ??
+      record.childSessionId;
     record.title = deriveSubRunTitle(
       record.subRunId,
       record.startMessage,

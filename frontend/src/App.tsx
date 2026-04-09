@@ -11,6 +11,7 @@ import { useAgentEventHandler } from './hooks/useAgentEventHandler';
 import { useSessionCatalogEvents } from './hooks/useSessionCatalogEvents';
 import { useSidebarResize } from './hooks/useSidebarResize';
 import { replaySessionHistory } from './lib/sessionHistory';
+import { findMatchingSessionId, normalizeSessionIdForCompare } from './lib/sessionId';
 import { buildSubRunThreadTree, listRootSubRunViews } from './lib/subRunView';
 import {
   buildFocusedSubRunFilter,
@@ -200,18 +201,29 @@ export default function App() {
       const previousSessionId = activeSessionIdRef.current;
       const sessionMetas = await listSessionsWithMeta();
       const projects = groupSessionsByProject(sessionMetas);
-      const availableSessionIds = new Set(sessionMetas.map((meta) => meta.sessionId));
+      const availableSessionIds = sessionMetas.map((meta) => meta.sessionId);
       const preferredSessionId = options?.preferredSessionId;
+      const matchedPreferredSessionId = findMatchingSessionId(
+        availableSessionIds,
+        preferredSessionId
+      );
+      const matchedActiveSessionId = findMatchingSessionId(
+        availableSessionIds,
+        activeSessionIdRef.current
+      );
       const nextSessionId =
-        preferredSessionId && availableSessionIds.has(preferredSessionId)
-          ? preferredSessionId
-          : activeSessionIdRef.current && availableSessionIds.has(activeSessionIdRef.current)
-            ? activeSessionIdRef.current
-            : (projects[0]?.sessions[0]?.id ?? null);
+        matchedPreferredSessionId ?? matchedActiveSessionId ?? projects[0]?.sessions[0]?.id ?? null;
       const nextActiveSubRunPath =
-        nextSessionId === preferredSessionId
+        nextSessionId !== null &&
+        preferredSessionId !== null &&
+        preferredSessionId !== undefined &&
+        normalizeSessionIdForCompare(nextSessionId) ===
+          normalizeSessionIdForCompare(preferredSessionId)
           ? (options?.preferredSubRunPath ?? [])
-          : nextSessionId === activeSessionIdRef.current
+          : nextSessionId !== null &&
+              activeSessionIdRef.current !== null &&
+              normalizeSessionIdForCompare(nextSessionId) ===
+                normalizeSessionIdForCompare(activeSessionIdRef.current)
             ? activeSubRunPathRef.current
             : [];
       const nextProjectId =
@@ -430,11 +442,18 @@ export default function App() {
 
   const handleOpenChildSession = useCallback(
     async (childSessionId: string) => {
-      const project = state.projects.find((item) =>
-        item.sessions.some((session) => session.id === childSessionId)
-      );
-      if (project) {
-        await loadAndActivateSession(project.id, childSessionId, []);
+      const canonicalChildSessionId = normalizeSessionIdForCompare(childSessionId);
+      const matchingEntry = state.projects
+        .flatMap((project) =>
+          project.sessions.map((session) => ({
+            projectId: project.id,
+            sessionId: session.id,
+          }))
+        )
+        .find((entry) => normalizeSessionIdForCompare(entry.sessionId) === canonicalChildSessionId);
+
+      if (matchingEntry) {
+        await loadAndActivateSession(matchingEntry.projectId, matchingEntry.sessionId, []);
         return;
       }
       await refreshSessions({ preferredSessionId: childSessionId });

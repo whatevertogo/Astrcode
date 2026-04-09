@@ -983,6 +983,7 @@ describe('buildSubRunView', () => {
           agentRef: {
             agentId: 'agent-1',
             subRunId: 'subrun-1',
+            openSessionId: 'session-child-1',
           },
         },
         durationMs: 12,
@@ -1001,6 +1002,7 @@ describe('buildSubRunView', () => {
           agentRef: {
             agentId: 'agent-2',
             subRunId: 'subrun-2',
+            openSessionId: 'session-child-2',
           },
         },
         durationMs: 15,
@@ -1013,6 +1015,45 @@ describe('buildSubRunView', () => {
 
     expect(rootViews.map((view) => view.subRunId)).toEqual(['subrun-1', 'subrun-2']);
     expect(rootViews.map((view) => view.title)).toEqual(['agent-1', 'agent-2']);
+    expect(rootViews.map((view) => view.childSessionId)).toEqual([
+      'session-child-1',
+      'session-child-2',
+    ]);
+  });
+
+  it('recovers child-session entry ids from child notifications when lifecycle is hidden', () => {
+    const messages: Message[] = [
+      {
+        id: 'child-notify-running',
+        kind: 'childSessionNotification',
+        turnId: 'turn-root',
+        agentId: 'agent-child',
+        parentTurnId: 'turn-root',
+        agentProfile: 'explore',
+        subRunId: 'subrun-child',
+        childSessionId: 'session-child-hidden',
+        childRef: {
+          agentId: 'agent-child',
+          sessionId: 'session-parent',
+          subRunId: 'subrun-child',
+          parentAgentId: 'agent-parent',
+          lineageKind: 'spawn',
+          status: 'running',
+          openable: true,
+          openSessionId: 'session-child-hidden',
+        },
+        notificationKind: 'started',
+        status: 'running',
+        summary: '子会话已启动',
+        openSessionId: 'session-child-hidden',
+        timestamp: 1,
+      },
+    ];
+
+    const view = buildSubRunView(messages, 'subrun-child');
+
+    expect(view?.childSessionId).toBe('session-child-hidden');
+    expect(view?.title).toBe('explore');
   });
 
   it('merges spawnAgent fallback refs with real lifecycle records without duplication', () => {

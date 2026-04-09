@@ -362,6 +362,7 @@ export default function MessageList({
           <SubRunBlock
             subRunId={subRunView.subRunId}
             sessionId={sessionId}
+            childSessionId={subRunView.childSessionId}
             title={subRunView.title}
             startMessage={subRunView.startMessage}
             finishMessage={subRunView.finishMessage}
@@ -397,6 +398,7 @@ export default function MessageList({
       <SubRunBlock
         subRunId={subRunView.subRunId}
         sessionId={sessionId}
+        childSessionId={subRunView.childSessionId}
         title={subRunView.title}
         startMessage={subRunView.startMessage}
         finishMessage={subRunView.finishMessage}
