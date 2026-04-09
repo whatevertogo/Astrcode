@@ -220,6 +220,7 @@ export function reducer(state: AppState, action: Action): AppState {
       };
 
     case 'SET_ACTIVE':
+      // Why: 切换会话后默认回到父摘要入口，不能把上一会话的子线程浏览路径继续沿用过来。
       return {
         ...state,
         activeProjectId: action.projectId,
@@ -294,25 +295,24 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'UPSERT_USER_MESSAGE':
       return mapSession(state, action.sessionId, (session) => {
         const targetIndex = findUserMessageIndex(session.messages, action.turnId);
+        const existingUserMessage =
+          targetIndex >= 0 && session.messages[targetIndex]?.kind === 'user'
+            ? session.messages[targetIndex]
+            : null;
         const userMessage = {
-          id:
-            targetIndex >= 0 && session.messages[targetIndex]?.kind === 'user'
-              ? session.messages[targetIndex].id
-              : uuid(),
+          id: existingUserMessage?.id ?? uuid(),
           kind: 'user' as const,
           turnId: action.turnId,
-          agentId: action.agentId,
-          parentTurnId: action.parentTurnId,
-          agentProfile: action.agentProfile,
-          subRunId: action.subRunId,
-          invocationKind: action.invocationKind,
-          storageMode: action.storageMode,
-          childSessionId: action.childSessionId,
+          agentId: action.agentId ?? existingUserMessage?.agentId,
+          parentTurnId: action.parentTurnId ?? existingUserMessage?.parentTurnId,
+          agentProfile: action.agentProfile ?? existingUserMessage?.agentProfile,
+          subRunId: action.subRunId ?? existingUserMessage?.subRunId,
+          executionId: action.executionId ?? existingUserMessage?.executionId,
+          invocationKind: action.invocationKind ?? existingUserMessage?.invocationKind,
+          storageMode: action.storageMode ?? existingUserMessage?.storageMode,
+          childSessionId: action.childSessionId ?? existingUserMessage?.childSessionId,
           text: action.content,
-          timestamp:
-            targetIndex >= 0 && session.messages[targetIndex]?.kind === 'user'
-              ? session.messages[targetIndex].timestamp
-              : Date.now(),
+          timestamp: existingUserMessage?.timestamp ?? Date.now(),
         };
 
         let title = session.title;
@@ -350,6 +350,7 @@ export function reducer(state: AppState, action: Action): AppState {
               parentTurnId: action.parentTurnId,
               agentProfile: action.agentProfile,
               subRunId: action.subRunId,
+              executionId: action.executionId,
               invocationKind: action.invocationKind,
               storageMode: action.storageMode,
               childSessionId: action.childSessionId,
@@ -365,6 +366,7 @@ export function reducer(state: AppState, action: Action): AppState {
               parentTurnId: action.parentTurnId ?? message.parentTurnId,
               agentProfile: action.agentProfile ?? message.agentProfile,
               subRunId: action.subRunId ?? message.subRunId,
+              executionId: action.executionId ?? message.executionId,
               invocationKind: action.invocationKind ?? message.invocationKind,
               storageMode: action.storageMode ?? message.storageMode,
               childSessionId: action.childSessionId ?? message.childSessionId,
@@ -390,6 +392,7 @@ export function reducer(state: AppState, action: Action): AppState {
               parentTurnId: action.parentTurnId,
               agentProfile: action.agentProfile,
               subRunId: action.subRunId,
+              executionId: action.executionId,
               invocationKind: action.invocationKind,
               storageMode: action.storageMode,
               childSessionId: action.childSessionId,
@@ -405,6 +408,7 @@ export function reducer(state: AppState, action: Action): AppState {
               parentTurnId: action.parentTurnId ?? message.parentTurnId,
               agentProfile: action.agentProfile ?? message.agentProfile,
               subRunId: action.subRunId ?? message.subRunId,
+              executionId: action.executionId ?? message.executionId,
               invocationKind: action.invocationKind ?? message.invocationKind,
               storageMode: action.storageMode ?? message.storageMode,
               childSessionId: action.childSessionId ?? message.childSessionId,
@@ -430,6 +434,7 @@ export function reducer(state: AppState, action: Action): AppState {
               parentTurnId: action.parentTurnId,
               agentProfile: action.agentProfile,
               subRunId: action.subRunId,
+              executionId: action.executionId,
               invocationKind: action.invocationKind,
               storageMode: action.storageMode,
               childSessionId: action.childSessionId,
@@ -445,6 +450,7 @@ export function reducer(state: AppState, action: Action): AppState {
               parentTurnId: action.parentTurnId ?? message.parentTurnId,
               agentProfile: action.agentProfile ?? message.agentProfile,
               subRunId: action.subRunId ?? message.subRunId,
+              executionId: action.executionId ?? message.executionId,
               invocationKind: action.invocationKind ?? message.invocationKind,
               storageMode: action.storageMode ?? message.storageMode,
               childSessionId: action.childSessionId ?? message.childSessionId,
@@ -500,6 +506,7 @@ export function reducer(state: AppState, action: Action): AppState {
                 parentTurnId: action.parentTurnId,
                 agentProfile: action.agentProfile,
                 subRunId: action.subRunId,
+                executionId: action.executionId,
                 invocationKind: action.invocationKind,
                 storageMode: action.storageMode,
                 childSessionId: action.childSessionId,
@@ -534,6 +541,7 @@ export function reducer(state: AppState, action: Action): AppState {
               parentTurnId: action.parentTurnId ?? message.parentTurnId,
               agentProfile: action.agentProfile ?? message.agentProfile,
               subRunId: action.subRunId ?? message.subRunId,
+              executionId: action.executionId ?? message.executionId,
               invocationKind: action.invocationKind ?? message.invocationKind,
               storageMode: action.storageMode ?? message.storageMode,
               childSessionId: action.childSessionId ?? message.childSessionId,
@@ -575,6 +583,7 @@ export function reducer(state: AppState, action: Action): AppState {
                 parentTurnId: action.parentTurnId,
                 agentProfile: action.agentProfile,
                 subRunId: action.subRunId,
+                executionId: action.executionId,
                 invocationKind: action.invocationKind,
                 storageMode: action.storageMode,
                 childSessionId: action.childSessionId,
@@ -607,6 +616,7 @@ export function reducer(state: AppState, action: Action): AppState {
               parentTurnId: action.parentTurnId ?? message.parentTurnId,
               agentProfile: action.agentProfile ?? message.agentProfile,
               subRunId: action.subRunId ?? message.subRunId,
+              executionId: action.executionId ?? message.executionId,
               invocationKind: action.invocationKind ?? message.invocationKind,
               storageMode: action.storageMode ?? message.storageMode,
               childSessionId: action.childSessionId ?? message.childSessionId,
@@ -630,20 +640,22 @@ export function reducer(state: AppState, action: Action): AppState {
           action.stepIndex,
           action.turnId
         );
+        const existingPromptMetrics =
+          targetIndex >= 0 && session.messages[targetIndex]?.kind === 'promptMetrics'
+            ? session.messages[targetIndex]
+            : null;
         const nextMessage = {
-          id:
-            targetIndex >= 0 && session.messages[targetIndex]?.kind === 'promptMetrics'
-              ? session.messages[targetIndex].id
-              : uuid(),
+          id: existingPromptMetrics?.id ?? uuid(),
           kind: 'promptMetrics' as const,
           turnId: action.turnId ?? null,
-          agentId: action.agentId,
-          parentTurnId: action.parentTurnId,
-          agentProfile: action.agentProfile,
-          subRunId: action.subRunId,
-          invocationKind: action.invocationKind,
-          storageMode: action.storageMode,
-          childSessionId: action.childSessionId,
+          agentId: action.agentId ?? existingPromptMetrics?.agentId,
+          parentTurnId: action.parentTurnId ?? existingPromptMetrics?.parentTurnId,
+          agentProfile: action.agentProfile ?? existingPromptMetrics?.agentProfile,
+          subRunId: action.subRunId ?? existingPromptMetrics?.subRunId,
+          executionId: action.executionId ?? existingPromptMetrics?.executionId,
+          invocationKind: action.invocationKind ?? existingPromptMetrics?.invocationKind,
+          storageMode: action.storageMode ?? existingPromptMetrics?.storageMode,
+          childSessionId: action.childSessionId ?? existingPromptMetrics?.childSessionId,
           stepIndex: action.stepIndex,
           estimatedTokens: action.estimatedTokens,
           contextWindow: action.contextWindow,
@@ -654,10 +666,10 @@ export function reducer(state: AppState, action: Action): AppState {
           providerOutputTokens: action.providerOutputTokens,
           cacheCreationInputTokens: action.cacheCreationInputTokens,
           cacheReadInputTokens: action.cacheReadInputTokens,
-          timestamp:
-            targetIndex >= 0 && session.messages[targetIndex]?.kind === 'promptMetrics'
-              ? session.messages[targetIndex].timestamp
-              : Date.now(),
+          providerCacheMetricsSupported: action.providerCacheMetricsSupported,
+          promptCacheReuseHits: action.promptCacheReuseHits,
+          promptCacheReuseMisses: action.promptCacheReuseMisses,
+          timestamp: existingPromptMetrics?.timestamp ?? Date.now(),
         };
 
         if (targetIndex < 0) {

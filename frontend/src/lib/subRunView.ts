@@ -1,4 +1,9 @@
-import type { Message, SubRunFinishMessage, SubRunStartMessage } from '../types';
+import type {
+  ChildSessionNotificationMessage,
+  Message,
+  SubRunFinishMessage,
+  SubRunStartMessage,
+} from '../types';
 
 interface IndexedMessage {
   index: number;
@@ -96,6 +101,12 @@ function isSubRunFinishMessage(message: Message): message is SubRunFinishMessage
   return message.kind === 'subRunFinish';
 }
 
+function isChildSessionNotificationMessage(
+  message: Message
+): message is ChildSessionNotificationMessage {
+  return message.kind === 'childSessionNotification';
+}
+
 function deriveSubRunTitle(
   subRunId: string,
   startMessage: SubRunStartMessage | undefined,
@@ -135,6 +146,9 @@ function buildMessageFingerprint(message: Message): string {
   }
   if (message.kind === 'subRunStart') {
     return `${message.id}:subRunStart:${message.subRunId ?? 'unknown'}`;
+  }
+  if (message.kind === 'childSessionNotification') {
+    return `${message.id}:childNotification:${message.childRef.subRunId}:${message.notificationKind}:${message.status}`;
   }
   return `${message.id}:subRunFinish:${message.subRunId ?? 'unknown'}:${message.result.status}`;
 }
@@ -340,9 +354,9 @@ function buildThreadItems(
   );
 }
 
-/// [Legacy] 构建混合会话线程树。
-/// 此函数将父消息和子执行消息混合构造成线程树，仅用于旧版 UI 渲染。
-/// 新的 child session 模型使用 buildParentSummaryProjection 获取摘要卡片。
+/// 构建子线程详情浏览所需的混合线程树。
+/// 默认父视图已经改为 child summary projection，但子线程详情页和测试夹具
+/// 仍需要一棵可导航的局部线程树来浏览 sub-run 内部消息。
 export function buildSubRunThreadTree(messages: Message[]): SubRunThreadTree {
   const index = buildSubRunIndex(messages);
   const subRuns = new Map<string, SubRunViewData>();
@@ -471,37 +485,29 @@ export function listRootSubRunViews(
 }
 
 /// 从消息列表构建父视图摘要投影。
-/// 直接使用 subrun 索引构建摘要卡片，不依赖 legacy 线程树构建器。
+/// 直接消费 childSessionNotification，避免再从 mixed-thread 生命周期反推父摘要。
 /// 父视图只消费摘要，不消费子会话原始事件流，不暴露 raw JSON。
 export function buildParentSummaryProjection(messages: Message[]): ParentSummaryProjection {
-  const index = buildSubRunIndex(messages);
+  const orderedNotifications = messages
+    .filter(isChildSessionNotificationMessage)
+    .sort((left, right) => left.timestamp - right.timestamp);
+  const latestBySubRunId = new Map<string, ChildSessionNotificationMessage>();
 
-  // 只提取 root-level subruns（无父 subrun 嵌套）
-  const rootRecords = [...index.records.values()]
-    .filter((record) => record.parentSubRunId === null)
-    .sort((a, b) => a.startIndex - b.startIndex);
-
-  const cards: ChildSummaryCard[] = rootRecords.map((record) => {
-    const handoff = record.finishMessage?.result.handoff;
-    const failure = record.finishMessage?.result.failure;
-    const status = record.finishMessage?.result.status ?? 'running';
-
-    return {
-      agentId:
-        record.agentId ?? record.startMessage?.agentId ?? record.finishMessage?.agentId ?? '',
-      subRunId: record.subRunId,
-      title: record.title,
-      status,
-      summary:
-        failure?.displayMessage ??
-        (handoff?.summary.trim() || undefined) ??
-        (status === 'running' ? '后台运行中' : ''),
-      openSessionId: record.childSessionId ?? null,
-      hasFinalReply: handoff !== undefined,
-      finalReplyExcerpt: handoff?.summary ?? null,
-      hasDescriptorLineage: record.hasDescriptorLineage,
-    };
+  orderedNotifications.forEach((message) => {
+    latestBySubRunId.set(message.childRef.subRunId, message);
   });
+
+  const cards: ChildSummaryCard[] = [...latestBySubRunId.values()].map((message) => ({
+    agentId: message.childRef.agentId,
+    subRunId: message.childRef.subRunId,
+    title: message.agentProfile ?? message.childRef.agentId,
+    status: message.status,
+    summary: message.summary,
+    openSessionId: message.childRef.openable ? message.openSessionId : null,
+    hasFinalReply: message.finalReplyExcerpt !== undefined,
+    finalReplyExcerpt: message.finalReplyExcerpt ?? null,
+    hasDescriptorLineage: true,
+  }));
 
   return { cards };
 }

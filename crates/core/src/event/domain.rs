@@ -122,6 +122,12 @@ pub enum AgentEvent {
         cache_creation_input_tokens: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_read_input_tokens: Option<u32>,
+        #[serde(default)]
+        provider_cache_metrics_supported: bool,
+        #[serde(default)]
+        prompt_cache_reuse_hits: u32,
+        #[serde(default)]
+        prompt_cache_reuse_misses: u32,
     },
     /// 上下文压缩已应用。
     ///

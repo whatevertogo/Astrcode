@@ -7,16 +7,13 @@
 //!
 //! - 当工具数量 ≤ 4 时，展开所有工具的详细指南
 //! - 超过 4 个工具时，仅展开标记为 `always_include` 的工具
-//! - 同时处理 [`PromptDeclaration`]（插件/MCP 注入的指南）
+//! - 只负责工具指南；外部 `PromptDeclaration` 由独立 contributor 承接
 
 use astrcode_core::ToolPromptMetadata;
 use astrcode_protocol::capability::CapabilityDescriptor;
 use async_trait::async_trait;
 
-use crate::{
-    BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor, PromptDeclaration,
-    PromptDeclarationKind,
-};
+use crate::{BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor};
 
 pub struct CapabilityPromptContributor;
 
@@ -50,12 +47,6 @@ impl PromptContributor for CapabilityPromptContributor {
                     guide.prompt.always_include || should_expand_tool_guides(tool_guides.len())
                 })
                 .map(build_detailed_tool_block),
-        );
-
-        blocks.extend(
-            ctx.prompt_declarations
-                .iter()
-                .map(build_prompt_declaration_block),
         );
 
         PromptContribution {
@@ -182,32 +173,6 @@ fn build_detailed_tool_block(guide: &ToolGuideEntry) -> BlockSpec {
     block
 }
 
-fn build_prompt_declaration_block(declaration: &PromptDeclaration) -> BlockSpec {
-    let mut block = BlockSpec::message_text(
-        declaration.block_id.clone(),
-        declaration.kind.as_block_kind(),
-        declaration.title.clone(),
-        declaration.content.clone(),
-        declaration.render_target.as_render_target(),
-    )
-    .with_category(match declaration.kind {
-        PromptDeclarationKind::ToolGuide => "capabilities",
-        PromptDeclarationKind::ExtensionInstruction => "extensions",
-    })
-    .with_tag(declaration.source.as_tag());
-
-    if let Some(priority_hint) = declaration.priority_hint {
-        block = block.with_priority(priority_hint);
-    }
-    if let Some(capability_name) = &declaration.capability_name {
-        block = block.with_tag(format!("capability:{capability_name}"));
-    }
-    if let Some(origin) = &declaration.origin {
-        block = block.with_origin(origin.clone());
-    }
-    block
-}
-
 #[cfg(test)]
 mod tests {
     use astrcode_core::{ToolPromptMetadata, test_support::TestEnvGuard};
@@ -241,18 +206,7 @@ mod tests {
                 tool_descriptor("shell", false),
                 tool_descriptor("grep", false),
             ],
-            prompt_declarations: vec![PromptDeclaration {
-                block_id: "plugin-guide".to_string(),
-                title: "Plugin Guide".to_string(),
-                content: "Use the plugin carefully".to_string(),
-                render_target: crate::PromptDeclarationRenderTarget::System,
-                kind: PromptDeclarationKind::ExtensionInstruction,
-                priority_hint: Some(581),
-                always_include: false,
-                source: crate::PromptDeclarationSource::Plugin,
-                capability_name: Some("plugin.search".to_string()),
-                origin: Some("example-plugin".to_string()),
-            }],
+            prompt_declarations: Vec::new(),
             agent_profiles: Vec::new(),
             skills: Vec::new(),
             step_index: 0,
@@ -262,7 +216,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn contributes_tool_summary_and_extension_instruction_blocks() {
+    async fn contributes_tool_summary_and_detailed_guides() {
         let contribution = CapabilityPromptContributor.contribute(&context()).await;
 
         assert!(
@@ -271,9 +225,12 @@ mod tests {
                 .iter()
                 .any(|block| block.id == "tool-summary" && block.kind == BlockKind::ToolGuide)
         );
-        assert!(contribution.blocks.iter().any(|block| {
-            block.id == "plugin-guide" && block.kind == BlockKind::ExtensionInstruction
-        }));
+        assert!(
+            contribution
+                .blocks
+                .iter()
+                .any(|block| block.id == "tool-guide-grep" && block.kind == BlockKind::ToolGuide)
+        );
     }
 
     #[tokio::test]

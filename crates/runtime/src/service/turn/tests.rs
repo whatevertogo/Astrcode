@@ -15,9 +15,9 @@ use chrono::Utc;
 use serde_json::json;
 
 use super::{
-    BudgetSettings,
+    BudgetSettings, RuntimeTurnInput,
     branch::{ensure_branch_depth_within_limit, stable_events_before_active_turn},
-    orchestration::{complete_session_execution, execute_turn_chain},
+    orchestration::{complete_session_execution, execute_turn_chain, run_session_turn},
 };
 use crate::{
     llm::{EventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits},
@@ -334,6 +334,9 @@ fn recent_turn_event_tail_keeps_real_stored_tail_for_latest_turns() {
                 provider_output_tokens: None,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                prompt_cache_reuse_hits: 0,
+                prompt_cache_reuse_misses: 0,
+                provider_cache_metrics_supported: false,
             },
         },
     ];
@@ -378,6 +381,9 @@ fn prompt_metrics_only_charge_budget_after_a_real_model_response() {
             provider_output_tokens: None,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            prompt_cache_reuse_hits: 0,
+            prompt_cache_reuse_misses: 0,
+            provider_cache_metrics_supported: false,
         },
     );
     assert_eq!(stats.estimated_tokens_used, 0);
@@ -464,11 +470,72 @@ async fn execute_turn_chain_appends_a_single_auto_continue_nudge_before_stopping
             continuation_min_delta_tokens: 1,
             max_continuations: 1,
         },
+        None,
+        Vec::new(),
     )
     .await
     .expect("turn chain should complete");
 
     assert!(matches!(outcome, TurnOutcome::Completed));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn repeated_turns_record_prompt_cache_hits_and_misses_in_observability() {
+    let _guard = TestEnvGuard::new();
+    let (temp_dir, state, _translator) = build_test_state();
+    let provider: Arc<dyn LlmProvider> = Arc::new(ScriptedProvider {
+        responses: std::sync::Mutex::new(VecDeque::from([
+            LlmOutput {
+                content: "first".to_string(),
+                ..LlmOutput::default()
+            },
+            LlmOutput {
+                content: "second".to_string(),
+                ..LlmOutput::default()
+            },
+        ])),
+    });
+    let loop_ = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory { provider }),
+        crate::test_support::empty_capabilities(),
+    );
+    let service = Arc::new(
+        RuntimeService::from_capabilities(crate::test_support::empty_capabilities())
+            .expect("service should build"),
+    );
+
+    for turn_id in ["turn-cache-1", "turn-cache-2"] {
+        let result = run_session_turn(
+            &state,
+            &loop_,
+            turn_id,
+            CancelToken::new(),
+            RuntimeTurnInput::from_user_event(StorageEvent::UserMessage {
+                turn_id: Some(turn_id.to_string()),
+                agent: AgentEventContext::default(),
+                content: "repeat cache probe".to_string(),
+                origin: UserMessageOrigin::User,
+                timestamp: Utc::now(),
+            }),
+            AgentEventContext::default(),
+            ExecutionOwner::root("test-session", turn_id, InvocationKind::RootExecution),
+            BudgetSettings {
+                continuation_min_delta_tokens: 1,
+                max_continuations: 1,
+            },
+            Some(service.observability.clone()),
+        )
+        .await;
+
+        assert!(matches!(result.outcome, Ok(TurnOutcome::Completed)));
+    }
+
+    let diagnostics = service.observability_snapshot().execution_diagnostics;
+    assert!(diagnostics.cache_reuse_misses > 0);
+    assert!(diagnostics.cache_reuse_hits > 0);
+
+    // 防止 tempdir 在 test 结束前被提前释放
+    let _ = temp_dir.path();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -22,6 +22,27 @@ use crate::{
 };
 
 #[derive(Clone)]
+pub(super) struct LoopSurfaceInputs {
+    pub(super) capabilities: CapabilityRouter,
+    pub(super) prompt_declarations: Vec<PromptDeclaration>,
+    pub(super) skill_catalog: Arc<SkillCatalog>,
+    pub(super) hook_handlers: Vec<Arc<dyn HookHandler>>,
+    pub(super) prompt_builder: astrcode_runtime_prompt::LayeredPromptBuilder,
+}
+
+impl LoopSurfaceInputs {
+    fn from_runtime_surface(surface: &RuntimeSurfaceState) -> Self {
+        Self {
+            capabilities: surface.capabilities.clone(),
+            prompt_declarations: surface.prompt_declarations.clone(),
+            skill_catalog: Arc::clone(&surface.skill_catalog),
+            hook_handlers: surface.hook_handlers.clone(),
+            prompt_builder: surface.prompt_builder.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub(super) struct LoopRuntimeDeps {
     policy: Arc<dyn PolicyEngine>,
     approval: Arc<dyn ApprovalBroker>,
@@ -49,10 +70,7 @@ pub(super) fn build_agent_loop(
     deps: LoopRuntimeDeps,
 ) -> Arc<AgentLoop> {
     build_agent_loop_from_parts(
-        surface.capabilities.clone(),
-        surface.prompt_declarations.clone(),
-        Arc::clone(&surface.skill_catalog),
-        surface.hook_handlers.clone(),
+        LoopSurfaceInputs::from_runtime_surface(surface),
         active_profile,
         runtime_config,
         deps,
@@ -60,10 +78,7 @@ pub(super) fn build_agent_loop(
 }
 
 pub(super) fn build_agent_loop_from_parts(
-    capabilities: CapabilityRouter,
-    prompt_declarations: Vec<PromptDeclaration>,
-    skill_catalog: Arc<SkillCatalog>,
-    hook_handlers: Vec<Arc<dyn HookHandler>>,
+    surface: LoopSurfaceInputs,
     active_profile: &str,
     runtime_config: &crate::config::RuntimeConfig,
     deps: LoopRuntimeDeps,
@@ -74,6 +89,13 @@ pub(super) fn build_agent_loop_from_parts(
         agent_profile_catalog,
     } = deps;
     let max_tool_concurrency = resolve_max_tool_concurrency(runtime_config);
+    let LoopSurfaceInputs {
+        capabilities,
+        prompt_declarations,
+        skill_catalog,
+        hook_handlers,
+        prompt_builder,
+    } = surface;
     Arc::new(
         AgentLoop::from_capabilities_with_prompt_inputs(
             Arc::new(ConfigFileProviderFactory),
@@ -81,6 +103,7 @@ pub(super) fn build_agent_loop_from_parts(
             prompt_declarations,
             skill_catalog,
             agent_profile_catalog,
+            prompt_builder,
         )
         .with_policy_profile(active_profile)
         .with_hook_handlers(hook_handlers)
@@ -95,10 +118,7 @@ pub(super) fn build_agent_loop_from_parts(
 }
 
 pub(super) fn build_scoped_agent_loop(
-    capabilities: CapabilityRouter,
-    prompt_declarations: Vec<PromptDeclaration>,
-    skill_catalog: Arc<SkillCatalog>,
-    hook_handlers: Vec<Arc<dyn HookHandler>>,
+    surface: LoopSurfaceInputs,
     active_profile: &str,
     runtime_config: &crate::config::RuntimeConfig,
     deps: LoopRuntimeDeps,
@@ -110,13 +130,10 @@ pub(super) fn build_scoped_agent_loop(
     } = deps;
     let scoped_policy = Arc::new(SubAgentPolicyEngine::new(
         policy,
-        capabilities.tool_names().into_iter().collect(),
+        surface.capabilities.tool_names().into_iter().collect(),
     ));
     build_agent_loop_from_parts(
-        capabilities,
-        prompt_declarations,
-        skill_catalog,
-        hook_handlers,
+        surface,
         active_profile,
         runtime_config,
         LoopRuntimeDeps::new(scoped_policy, approval, agent_profile_catalog),

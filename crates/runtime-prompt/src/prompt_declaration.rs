@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{BlockKind, RenderTarget};
+use crate::{BlockKind, PromptLayer, RenderTarget};
 
 /// Prompt 声明的来源。
 ///
@@ -95,6 +95,8 @@ pub struct PromptDeclaration {
     pub content: String,
     #[serde(default)]
     pub render_target: PromptDeclarationRenderTarget,
+    #[serde(default, skip_serializing_if = "is_unspecified_prompt_layer")]
+    pub layer: PromptLayer,
     #[serde(default)]
     pub kind: PromptDeclarationKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -107,4 +109,7 @@ pub struct PromptDeclaration {
     pub capability_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+}
+fn is_unspecified_prompt_layer(layer: &PromptLayer) -> bool {
+    matches!(layer, PromptLayer::Unspecified)
 }

@@ -153,7 +153,8 @@ impl SessionState {
         let mut cached_records = RecentSessionEvents::default();
         cached_records.replace(recent_records);
         let mut cached_stored = RecentStoredEvents::default();
-        cached_stored.replace(recent_stored);
+        cached_stored.replace(recent_stored.clone());
+        let child_nodes = rebuild_child_nodes(&recent_stored);
         Self {
             phase: StdMutex::new(phase),
             running: AtomicBool::new(false),
@@ -167,7 +168,7 @@ impl SessionState {
             projector: StdMutex::new(projector),
             recent_records: StdMutex::new(cached_records),
             recent_stored: StdMutex::new(cached_stored),
-            child_nodes: StdMutex::new(HashMap::new()),
+            child_nodes: StdMutex::new(child_nodes),
         }
     }
 
@@ -215,6 +216,9 @@ impl SessionState {
         let records = translator.translate(stored);
         lock_anyhow(&self.recent_records, "session recent records")?.push_batch(&records);
         lock_anyhow(&self.recent_stored, "session recent stored events")?.push(stored.clone());
+        if let Some(node) = child_node_from_stored_event(stored) {
+            self.upsert_child_session_node(node)?;
+        }
         Ok(records)
     }
 
@@ -292,6 +296,40 @@ impl SessionState {
     }
 }
 
+fn rebuild_child_nodes(events: &[StoredEvent]) -> HashMap<String, ChildSessionNode> {
+    let mut nodes = HashMap::new();
+    for stored in events {
+        if let Some(node) = child_node_from_stored_event(stored) {
+            nodes.insert(node.sub_run_id.clone(), node);
+        }
+    }
+    nodes
+}
+
+fn child_node_from_stored_event(stored: &StoredEvent) -> Option<ChildSessionNode> {
+    match &stored.event {
+        StorageEvent::ChildSessionNotification {
+            turn_id,
+            notification,
+            ..
+        } => Some(ChildSessionNode {
+            agent_id: notification.child_ref.agent_id.clone(),
+            session_id: notification.child_ref.session_id.clone(),
+            child_session_id: notification.open_session_id.clone(),
+            sub_run_id: notification.child_ref.sub_run_id.clone(),
+            parent_session_id: notification.child_ref.session_id.clone(),
+            parent_agent_id: notification.child_ref.parent_agent_id.clone(),
+            parent_turn_id: turn_id.clone().unwrap_or_default(),
+            lineage_kind: notification.child_ref.lineage_kind,
+            status: notification.status,
+            status_source: astrcode_core::ChildSessionStatusSource::Durable,
+            created_by_tool_call_id: notification.source_tool_call_id.clone(),
+            lineage_snapshot: None,
+        }),
+        _ => None,
+    }
+}
+
 pub struct SessionStateEventSink {
     session: Arc<SessionState>,
     translator: StdMutex<EventTranslator>,
@@ -329,8 +367,10 @@ mod tests {
     use std::sync::Arc;
 
     use astrcode_core::{
-        AgentEventContext, AgentStateProjector, EventLogWriter, InvocationKind, Phase,
-        StorageEvent, StoreResult, StoredEvent, UserMessageOrigin,
+        AgentEventContext, AgentStateProjector, AgentStatus, ChildAgentRef,
+        ChildSessionLineageKind, ChildSessionNotification, ChildSessionNotificationKind,
+        EventLogWriter, InvocationKind, Phase, StorageEvent, StoreResult, StoredEvent,
+        UserMessageOrigin,
     };
     use chrono::Utc;
 
@@ -348,7 +388,9 @@ mod tests {
         AgentEventContext::default()
     }
 
-    fn sub_run_agent() -> AgentEventContext {
+    // Why: 这里故意保留 SharedSession 夹具，用于验证 legacy shared-history 子事件
+    // 不会重新污染父级投影；它不代表新的 child session 写入路径。
+    fn legacy_shared_sub_run_agent() -> AgentEventContext {
         AgentEventContext {
             agent_id: Some("agent-child".to_string()),
             parent_turn_id: Some("turn-root".to_string()),
@@ -362,6 +404,36 @@ mod tests {
 
     fn stored(storage_seq: u64, event: StorageEvent) -> StoredEvent {
         StoredEvent { storage_seq, event }
+    }
+
+    fn child_notification_event(
+        kind: ChildSessionNotificationKind,
+        status: AgentStatus,
+    ) -> StorageEvent {
+        StorageEvent::ChildSessionNotification {
+            turn_id: Some("turn-root".into()),
+            agent: legacy_shared_sub_run_agent(),
+            notification: ChildSessionNotification {
+                notification_id: format!("child:{kind:?}"),
+                child_ref: ChildAgentRef {
+                    agent_id: "agent-child".into(),
+                    session_id: "session-parent".into(),
+                    sub_run_id: "subrun-1".into(),
+                    parent_agent_id: Some("agent-parent".into()),
+                    lineage_kind: ChildSessionLineageKind::Spawn,
+                    status,
+                    openable: true,
+                    open_session_id: "session-child".into(),
+                },
+                kind,
+                summary: "child summary".into(),
+                status,
+                open_session_id: "session-child".into(),
+                source_tool_call_id: Some("call-1".into()),
+                final_reply_excerpt: None,
+            },
+            timestamp: Some(Utc::now()),
+        }
     }
 
     #[test]
@@ -420,7 +492,7 @@ mod tests {
                 5,
                 StorageEvent::UserMessage {
                     turn_id: Some("turn-child".into()),
-                    agent: sub_run_agent(),
+                    agent: legacy_shared_sub_run_agent(),
                     content: "child task".into(),
                     origin: UserMessageOrigin::User,
                     timestamp: Utc::now(),
@@ -430,7 +502,7 @@ mod tests {
                 6,
                 StorageEvent::AssistantFinal {
                     turn_id: Some("turn-child".into()),
-                    agent: sub_run_agent(),
+                    agent: legacy_shared_sub_run_agent(),
                     content: "child answer".into(),
                     reasoning_content: None,
                     reasoning_signature: None,
@@ -441,7 +513,7 @@ mod tests {
                 7,
                 StorageEvent::TurnDone {
                     turn_id: Some("turn-child".into()),
-                    agent: sub_run_agent(),
+                    agent: legacy_shared_sub_run_agent(),
                     timestamp: Utc::now(),
                     reason: Some("completed".into()),
                 },
@@ -468,5 +540,86 @@ mod tests {
             &projected.messages[1],
             astrcode_core::LlmMessage::Assistant { content, .. } if content == "root answer"
         ));
+    }
+
+    #[test]
+    fn session_state_rehydrates_child_nodes_from_stored_notifications() {
+        let session = SessionState::new(
+            Phase::Idle,
+            Arc::new(SessionWriter::new(Box::new(NoopEventLogWriter))),
+            AgentStateProjector::default(),
+            Vec::new(),
+            vec![
+                stored(
+                    1,
+                    child_notification_event(
+                        ChildSessionNotificationKind::Started,
+                        AgentStatus::Running,
+                    ),
+                ),
+                stored(
+                    2,
+                    child_notification_event(
+                        ChildSessionNotificationKind::Delivered,
+                        AgentStatus::Completed,
+                    ),
+                ),
+            ],
+        );
+
+        let node = session
+            .child_session_node("subrun-1")
+            .expect("child node lookup should succeed")
+            .expect("child node should exist");
+
+        assert_eq!(node.child_session_id, "session-child");
+        assert_eq!(node.parent_session_id, "session-parent");
+        assert_eq!(node.status, AgentStatus::Completed);
+        assert_eq!(node.created_by_tool_call_id.as_deref(), Some("call-1"));
+    }
+
+    #[test]
+    fn translate_store_and_cache_updates_child_nodes_from_notifications() {
+        let session = SessionState::new(
+            Phase::Idle,
+            Arc::new(SessionWriter::new(Box::new(NoopEventLogWriter))),
+            AgentStateProjector::default(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let mut translator = astrcode_core::EventTranslator::new(Phase::Idle);
+
+        session
+            .translate_store_and_cache(
+                &stored(
+                    1,
+                    child_notification_event(
+                        ChildSessionNotificationKind::Started,
+                        AgentStatus::Running,
+                    ),
+                ),
+                &mut translator,
+            )
+            .expect("started notification should translate");
+        session
+            .translate_store_and_cache(
+                &stored(
+                    2,
+                    child_notification_event(
+                        ChildSessionNotificationKind::Failed,
+                        AgentStatus::Failed,
+                    ),
+                ),
+                &mut translator,
+            )
+            .expect("terminal notification should translate");
+
+        let node = session
+            .child_session_node("subrun-1")
+            .expect("child node lookup should succeed")
+            .expect("child node should exist");
+
+        assert_eq!(node.status, AgentStatus::Failed);
+        assert_eq!(node.parent_turn_id, "turn-root");
     }
 }

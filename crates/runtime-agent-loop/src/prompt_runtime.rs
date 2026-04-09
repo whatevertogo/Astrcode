@@ -35,11 +35,6 @@ use astrcode_protocol::capability::CapabilityDescriptor;
 use astrcode_runtime_prompt::{
     LayeredPromptBuilder, PromptAgentProfileSummary, PromptBuildOutput, PromptComposer,
     PromptContext, PromptDeclaration, PromptSkillSummary,
-    contributors::{
-        AgentProfileSummaryContributor, AgentsMdContributor, CapabilityPromptContributor,
-        EnvironmentContributor, IdentityContributor, SkillSummaryContributor,
-        WorkflowExamplesContributor,
-    },
 };
 use astrcode_runtime_skill_loader::SkillCatalog;
 
@@ -69,9 +64,10 @@ impl PromptRuntime {
         prompt_declarations: Vec<PromptDeclaration>,
         skill_catalog: Arc<SkillCatalog>,
         agent_profile_catalog: Option<Arc<dyn AgentProfileCatalog>>,
+        layered_builder: LayeredPromptBuilder,
     ) -> Self {
         Self {
-            backend: PromptBackend::Layered(default_layered_builder()),
+            backend: PromptBackend::Layered(layered_builder),
             tool_names,
             capability_descriptors,
             prompt_declarations,
@@ -99,6 +95,7 @@ impl PromptRuntime {
         &self,
         state: &AgentState,
         conversation: &ConversationView,
+        additional_prompt_declarations: &[PromptDeclaration],
         step_index: usize,
     ) -> Result<PromptBuildOutput> {
         let mut vars = HashMap::new();
@@ -108,11 +105,13 @@ impl PromptRuntime {
                 latest_user_message.to_string(),
             );
         }
+        let mut prompt_declarations = self.prompt_declarations.clone();
+        prompt_declarations.extend_from_slice(additional_prompt_declarations);
         let ctx = PromptContext {
             working_dir: state.working_dir.to_string_lossy().into_owned(),
             tool_names: self.tool_names.clone(),
             capability_descriptors: self.capability_descriptors.clone(),
-            prompt_declarations: self.prompt_declarations.clone(),
+            prompt_declarations,
             agent_profiles: self
                 .agent_profile_catalog
                 .as_ref()
@@ -142,21 +141,6 @@ impl PromptRuntime {
         }
         .map_err(|error| AstrError::Internal(error.to_string()))
     }
-}
-
-fn default_layered_builder() -> LayeredPromptBuilder {
-    LayeredPromptBuilder::new()
-        .with_stable_layer(vec![
-            Arc::new(IdentityContributor),
-            Arc::new(EnvironmentContributor),
-        ])
-        .with_semi_stable_layer(vec![
-            Arc::new(AgentsMdContributor),
-            Arc::new(CapabilityPromptContributor),
-            Arc::new(AgentProfileSummaryContributor),
-            Arc::new(SkillSummaryContributor),
-        ])
-        .with_dynamic_layer(vec![Arc::new(WorkflowExamplesContributor)])
 }
 
 fn latest_user_message(messages: &[astrcode_core::LlmMessage]) -> Option<&str> {

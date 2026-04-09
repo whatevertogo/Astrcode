@@ -34,28 +34,8 @@ pub fn resolve_context_snapshot(
         Vec::new()
     };
 
-    let mut sections = Vec::new();
-    // 从扁平字段读取：prompt 是任务主体，context 是可选补充
-    sections.push(format!("# Task\n{}", params.prompt.trim()));
-    if let Some(ctx) = params.context.as_deref().filter(|s| !s.trim().is_empty()) {
-        sections.push(format!("# Context\n{}", ctx.trim()));
-    }
-    if let Some(summary) = inherited_compact_summary.as_ref() {
-        sections.push(format!("# Parent Compact Summary\n{}", summary.trim()));
-    }
-    if !inherited_recent_tail.is_empty() {
-        sections.push(format!(
-            "# Recent Tail\n{}",
-            inherited_recent_tail.join("\n")
-        ));
-    }
-
     ResolvedContextSnapshot {
-        composed_task: if sections.is_empty() {
-            "# Task\n(无任务描述)".to_string()
-        } else {
-            sections.join("\n\n")
-        },
+        task_payload: build_task_payload(params),
         inherited_compact_summary,
         inherited_recent_tail,
     }
@@ -63,9 +43,33 @@ pub fn resolve_context_snapshot(
 
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedContextSnapshot {
-    pub composed_task: String,
+    pub task_payload: String,
     pub inherited_compact_summary: Option<String>,
     pub inherited_recent_tail: Vec<String>,
+}
+
+const DEFAULT_RECENT_TAIL_LIMIT: usize = 4;
+const MAX_RECENT_TAIL_ITEMS: usize = 6;
+const MAX_RECENT_TAIL_CHARS: usize = 640;
+
+fn build_task_payload(params: &AgentExecutionRequest) -> String {
+    let task = params.prompt.trim();
+    let mut sections = vec![format!(
+        "# Task\n{}",
+        if task.is_empty() {
+            "(无任务描述)"
+        } else {
+            task
+        }
+    )];
+    if let Some(ctx) = params
+        .context
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        sections.push(format!("# Context\n{}", ctx.trim()));
+    }
+    sections.join("\n\n")
 }
 
 pub fn latest_compact_summary(parent_state: &AgentState) -> Option<String> {
@@ -90,31 +94,44 @@ fn inherited_recent_tail_lines(
     parent_state: &AgentState,
     overrides: &astrcode_core::ResolvedSubagentContextOverrides,
 ) -> Vec<String> {
-    match overrides.fork_mode.as_ref() {
+    let entries = match overrides.fork_mode.as_ref() {
         Some(ForkMode::FullHistory) => parent_state
             .messages
             .iter()
-            .filter_map(message_tail_line)
+            .filter_map(message_tail_entry)
             .collect(),
         Some(ForkMode::LastNTurns(turns)) => recent_tail_lines_for_turns(parent_state, *turns),
-        None => recent_tail_lines(parent_state, 4),
-    }
+        None => parent_state
+            .messages
+            .iter()
+            .rev()
+            .filter_map(message_tail_entry)
+            .take(DEFAULT_RECENT_TAIL_LIMIT)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect(),
+    };
+
+    finalize_recent_tail_entries(entries)
 }
 
 pub fn recent_tail_lines(parent_state: &AgentState, limit: usize) -> Vec<String> {
-    parent_state
+    let entries = parent_state
         .messages
         .iter()
         .rev()
-        .filter_map(message_tail_line)
+        .filter_map(message_tail_entry)
         .take(limit)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
-        .collect()
+        .collect::<Vec<_>>();
+
+    finalize_recent_tail_entries(entries)
 }
 
-fn recent_tail_lines_for_turns(parent_state: &AgentState, turns: usize) -> Vec<String> {
+fn recent_tail_lines_for_turns(parent_state: &AgentState, turns: usize) -> Vec<TailEntry> {
     if turns == 0 {
         return Vec::new();
     }
@@ -123,13 +140,13 @@ fn recent_tail_lines_for_turns(parent_state: &AgentState, turns: usize) -> Vec<S
         return parent_state
             .messages
             .iter()
-            .filter_map(message_tail_line)
+            .filter_map(message_tail_entry)
             .collect();
     };
 
     parent_state.messages[start_index..]
         .iter()
-        .filter_map(message_tail_line)
+        .filter_map(message_tail_entry)
         .collect()
 }
 
@@ -154,21 +171,117 @@ fn last_n_turn_start_index(messages: &[LlmMessage], turns: usize) -> Option<usiz
     None
 }
 
-fn message_tail_line(message: &LlmMessage) -> Option<String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TailRole {
+    User,
+    Assistant,
+    Tool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TailEntry {
+    role: TailRole,
+    line: String,
+}
+
+fn message_tail_entry(message: &LlmMessage) -> Option<TailEntry> {
     match message {
         LlmMessage::User {
             content,
             origin: UserMessageOrigin::User,
-        } => Some(format!("- user: {}", single_line(content))),
-        LlmMessage::Assistant { content, .. } if !content.trim().is_empty() => {
-            Some(format!("- assistant: {}", single_line(content)))
-        },
+        } => Some(TailEntry {
+            role: TailRole::User,
+            line: format!("- user: {}", single_line(content)),
+        }),
+        LlmMessage::Assistant { content, .. } if !content.trim().is_empty() => Some(TailEntry {
+            role: TailRole::Assistant,
+            line: format!("- assistant: {}", single_line(content)),
+        }),
         LlmMessage::Tool {
             tool_call_id,
             content,
-        } => Some(format!("- tool[{tool_call_id}]: {}", single_line(content))),
+        } => Some(TailEntry {
+            role: TailRole::Tool,
+            line: summarize_tool_tail(tool_call_id, content),
+        }),
         _ => None,
     }
+}
+
+fn finalize_recent_tail_entries(entries: Vec<TailEntry>) -> Vec<String> {
+    let mut deduped = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if deduped
+            .last()
+            .is_some_and(|previous: &TailEntry| previous.line == entry.line)
+        {
+            continue;
+        }
+        deduped.push(entry);
+    }
+
+    trim_recent_tail_budget(&mut deduped);
+    deduped.into_iter().map(|entry| entry.line).collect()
+}
+
+fn trim_recent_tail_budget(entries: &mut Vec<TailEntry>) {
+    while entries.len() > MAX_RECENT_TAIL_ITEMS || total_tail_chars(entries) > MAX_RECENT_TAIL_CHARS
+    {
+        if remove_oldest_entry_by_role(entries, TailRole::Tool)
+            || remove_oldest_entry_by_role(entries, TailRole::Assistant)
+            || remove_oldest_entry_by_role(entries, TailRole::User)
+        {
+            continue;
+        }
+        break;
+    }
+}
+
+fn remove_oldest_entry_by_role(entries: &mut Vec<TailEntry>, role: TailRole) -> bool {
+    let Some(index) = entries.iter().position(|entry| entry.role == role) else {
+        return false;
+    };
+    entries.remove(index);
+    true
+}
+
+fn total_tail_chars(entries: &[TailEntry]) -> usize {
+    entries.iter().map(|entry| entry.line.len()).sum()
+}
+
+fn summarize_tool_tail(tool_call_id: &str, content: &str) -> String {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return format!("- tool[{tool_call_id}]: (empty output)");
+    }
+
+    let line_count = trimmed
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count()
+        .max(1);
+    let excerpt = truncate_with_ellipsis(&single_line(trimmed), 96);
+    if trimmed.len() > 120 || line_count > 3 {
+        format!(
+            "- tool[{tool_call_id}]: summary: {excerpt} ({} chars / {} lines)",
+            trimmed.len(),
+            line_count
+        )
+    } else {
+        format!("- tool[{tool_call_id}]: {excerpt}")
+    }
+}
+
+fn truncate_with_ellipsis(content: &str, max_chars: usize) -> String {
+    if content.chars().count() <= max_chars {
+        return content.to_string();
+    }
+
+    let mut end = content.len();
+    for (index, _) in content.char_indices().take(max_chars) {
+        end = index;
+    }
+    format!("{}...", &content[..end])
 }
 
 pub fn single_line(content: &str) -> String {
@@ -191,6 +304,8 @@ pub fn single_line(content: &str) -> String {
 
 pub const LINEAGE_METADATA_UNAVAILABLE_MESSAGE: &str =
     "lineage metadata unavailable for requested scope";
+pub const CHILD_INHERITED_COMPACT_SUMMARY_BLOCK_ID: &str = "child.inherited.compact_summary";
+pub const CHILD_INHERITED_RECENT_TAIL_BLOCK_ID: &str = "child.inherited.recent_tail";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionLineageScope {
@@ -437,18 +552,14 @@ mod tests {
 
         let snapshot = resolve_context_snapshot(&request, Some(&parent_state), &overrides);
 
-        assert!(snapshot.composed_task.contains("# Task\ninvestigate issue"));
+        assert!(snapshot.task_payload.contains("# Task\ninvestigate issue"));
         assert!(
             snapshot
-                .composed_task
+                .task_payload
                 .contains("# Context\nfocus on regressions")
         );
-        assert!(
-            snapshot
-                .composed_task
-                .contains("# Parent Compact Summary\nsummary one")
-        );
-        assert!(snapshot.composed_task.contains("# Recent Tail\n"));
+        assert!(!snapshot.task_payload.contains("Parent Compact Summary"));
+        assert!(!snapshot.task_payload.contains("Recent Tail"));
         assert_eq!(
             snapshot.inherited_compact_summary.as_deref(),
             Some("summary one")
@@ -484,8 +595,8 @@ mod tests {
 
         let snapshot = resolve_context_snapshot(&request, Some(&parent_state), &overrides);
 
-        assert!(!snapshot.composed_task.contains("Parent Compact Summary"));
-        assert!(!snapshot.composed_task.contains("Recent Tail"));
+        assert!(!snapshot.task_payload.contains("Parent Compact Summary"));
+        assert!(!snapshot.task_payload.contains("Recent Tail"));
         assert!(snapshot.inherited_compact_summary.is_none());
         assert!(snapshot.inherited_recent_tail.is_empty());
     }
@@ -567,6 +678,88 @@ mod tests {
         let lines = recent_tail_lines(&parent_state, 8);
 
         assert_eq!(lines, vec!["- user: actual user", "- assistant: answer"]);
+    }
+
+    #[test]
+    fn recent_tail_lines_summarizes_large_tool_output_and_keeps_latest_human_context() {
+        let parent_state = AgentState {
+            messages: vec![
+                LlmMessage::User {
+                    content: "older request".to_string(),
+                    origin: UserMessageOrigin::User,
+                },
+                LlmMessage::Tool {
+                    tool_call_id: "call-old".to_string(),
+                    content: "x".repeat(400),
+                },
+                LlmMessage::Assistant {
+                    content: "older answer".to_string(),
+                    tool_calls: Vec::new(),
+                    reasoning: None,
+                },
+                LlmMessage::User {
+                    content: "latest request".to_string(),
+                    origin: UserMessageOrigin::User,
+                },
+                LlmMessage::Tool {
+                    tool_call_id: "call-new".to_string(),
+                    content: "line1\nline2\nline3\nline4\nline5".to_string(),
+                },
+                LlmMessage::Assistant {
+                    content: "latest answer".to_string(),
+                    tool_calls: Vec::new(),
+                    reasoning: None,
+                },
+            ],
+            ..AgentState::default()
+        };
+
+        let lines = recent_tail_lines(&parent_state, 8);
+
+        assert!(lines.iter().all(|line| line.len() <= 160));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("tool[call-new]: summary:"))
+        );
+        assert!(lines.iter().any(|line| line.contains("chars /")));
+        assert!(lines.iter().any(|line| line == "- user: latest request"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "- assistant: latest answer")
+        );
+    }
+
+    #[test]
+    fn recent_tail_lines_deduplicates_adjacent_repeated_entries() {
+        let parent_state = AgentState {
+            messages: vec![
+                LlmMessage::User {
+                    content: "same".to_string(),
+                    origin: UserMessageOrigin::User,
+                },
+                LlmMessage::User {
+                    content: "same".to_string(),
+                    origin: UserMessageOrigin::User,
+                },
+                LlmMessage::Assistant {
+                    content: "repeat".to_string(),
+                    tool_calls: Vec::new(),
+                    reasoning: None,
+                },
+                LlmMessage::Assistant {
+                    content: "repeat".to_string(),
+                    tool_calls: Vec::new(),
+                    reasoning: None,
+                },
+            ],
+            ..AgentState::default()
+        };
+
+        let lines = recent_tail_lines(&parent_state, 8);
+
+        assert_eq!(lines, vec!["- user: same", "- assistant: repeat"]);
     }
 
     #[test]

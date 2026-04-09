@@ -52,7 +52,7 @@ impl PromptContributor for AgentsMdContributor {
     }
 
     fn cache_version(&self) -> u64 {
-        2
+        3
     }
 
     fn cache_fingerprint(&self, ctx: &PromptContext) -> String {

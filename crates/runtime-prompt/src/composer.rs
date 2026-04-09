@@ -105,7 +105,7 @@ pub struct PromptComposer {
 /// Prompt 构建的输出结果。
 ///
 /// 包含组装好的 [`PromptPlan`] 和构建过程中收集的 [`PromptDiagnostics`]。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptBuildOutput {
     pub plan: PromptPlan,
     pub diagnostics: PromptDiagnostics,
@@ -239,23 +239,14 @@ impl PromptComposer {
         );
 
         if let Some(hit) = self.lookup_cache(contributor.contributor_id(), &fingerprint) {
-            self.push_diagnostic(
-                diagnostics,
-                DiagnosticLevel::Info,
-                None,
-                Some(contributor.contributor_id().to_string()),
-                DiagnosticReason::ContributorCacheHit,
-                None,
-            );
+            diagnostics
+                .push_cache_reuse_hit(contributor.contributor_id(), Some(fingerprint.clone()));
             return Ok(hit);
         }
 
-        self.push_diagnostic(
-            diagnostics,
-            DiagnosticLevel::Info,
-            None,
-            Some(contributor.contributor_id().to_string()),
-            DiagnosticReason::ContributorCacheMiss,
+        diagnostics.push_cache_reuse_miss(
+            contributor.contributor_id(),
+            Some(fingerprint.clone()),
             None,
         );
 
@@ -577,15 +568,18 @@ impl PromptComposer {
 
     fn push_rendered(&self, plan: &mut PromptPlan, rendered: String, candidate: &CandidateBlock) {
         match candidate.spec.render_target {
-            RenderTarget::System => plan.system_blocks.push(PromptBlock::new(
-                candidate.spec.id.to_string(),
-                candidate.spec.kind,
-                candidate.spec.title.to_string(),
-                rendered,
-                candidate.spec.effective_priority(),
-                candidate.spec.metadata.clone(),
-                candidate.insertion_order,
-            )),
+            RenderTarget::System => plan.system_blocks.push(
+                PromptBlock::new(
+                    candidate.spec.id.to_string(),
+                    candidate.spec.kind,
+                    candidate.spec.title.to_string(),
+                    rendered,
+                    candidate.spec.effective_priority(),
+                    candidate.spec.metadata.clone(),
+                    candidate.insertion_order,
+                )
+                .with_layer(candidate.spec.layer),
+            ),
             RenderTarget::PrependUser => plan.prepend_messages.push(LlmMessage::User {
                 content: rendered,
                 origin: UserMessageOrigin::User,

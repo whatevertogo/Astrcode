@@ -809,6 +809,9 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
             provider_output_tokens,
             cache_creation_input_tokens,
             cache_read_input_tokens,
+            provider_cache_metrics_supported,
+            prompt_cache_reuse_hits,
+            prompt_cache_reuse_misses,
         } => AgentEventPayload::PromptMetrics {
             turn_id,
             agent: to_agent_context_dto(agent),
@@ -822,6 +825,9 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
             provider_output_tokens,
             cache_creation_input_tokens,
             cache_read_input_tokens,
+            provider_cache_metrics_supported,
+            prompt_cache_reuse_hits,
+            prompt_cache_reuse_misses,
         },
     }
 }

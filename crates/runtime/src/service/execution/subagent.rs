@@ -9,10 +9,11 @@ use astrcode_core::{
 };
 use astrcode_runtime_agent_loop::{AgentLoop, ChildExecutionTracker, TurnOutcome};
 use astrcode_runtime_execution::{
-    PreparedAgentExecution, build_background_subrun_handoff, build_child_agent_state,
-    build_child_session_node, build_child_session_notification, build_subrun_failure,
-    build_subrun_finished_event, build_subrun_handoff, build_subrun_started_event,
-    child_delivery_outcome_label, derive_child_execution_owner, ensure_subagent_mode,
+    ChildLifecycleStage, PreparedAgentExecution, build_background_subrun_handoff,
+    build_child_agent_state, build_child_session_node, build_child_session_notification,
+    build_subrun_failure, build_subrun_finished_event, build_subrun_handoff,
+    build_subrun_started_event, child_delivery_outcome_label, derive_child_execution_owner,
+    ensure_subagent_mode,
 };
 use astrcode_runtime_session::{SessionState, SessionStateEventSink};
 
@@ -175,7 +176,7 @@ impl AgentExecutionServiceHandle {
         let child_task = prepared_execution
             .execution_spec
             .resolved_context_snapshot
-            .composed_task
+            .task_payload
             .clone();
 
         Ok(PreparedSubagentExecution {
@@ -261,6 +262,9 @@ impl AgentExecutionServiceHandle {
             .parent_state
             .upsert_child_session_node(child_node.clone())
             .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
+        self.runtime
+            .observability
+            .record_child_lifecycle(ChildLifecycleStage::Spawned);
         let child_state = build_child_agent_state(
             &target_session_id,
             ctx.working_dir().to_path_buf(),
@@ -381,6 +385,9 @@ impl AgentExecutionServiceHandle {
             execution.child.sub_run_id,
             execution.child_node.child_session_id
         );
+        self.runtime
+            .observability
+            .record_child_lifecycle(ChildLifecycleStage::StartedPersisted);
 
         Ok(())
     }
@@ -579,6 +586,9 @@ impl AgentExecutionServiceHandle {
                     execution.child.sub_run_id, error
                 )))
             })?;
+        self.runtime
+            .observability
+            .record_child_lifecycle(ChildLifecycleStage::TerminalPersisted);
 
         self.reactivate_parent_agent_if_idle(
             &execution.parent_session_id,

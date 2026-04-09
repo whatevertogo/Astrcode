@@ -70,14 +70,28 @@ fn filter_history(
     filter_spec: Option<SessionEventFilterSpec>,
 ) -> Result<Vec<astrcode_core::SessionEventRecord>, ApiError> {
     let Some(filter_spec) = filter_spec else {
-        return Ok(history);
+        return Ok(history
+            .into_iter()
+            .filter(parent_timeline_event_visible)
+            .collect());
     };
 
     let mut filter = SessionEventFilter::new(filter_spec, &history)?;
     Ok(history
         .into_iter()
         .filter(|record| filter.matches(record))
+        .filter(parent_timeline_event_visible)
         .collect())
+}
+
+/// 父时间线只保留 child boundary facts，不再直接暴露独立 child session 的内部 lifecycle。
+fn parent_timeline_event_visible(record: &astrcode_core::SessionEventRecord) -> bool {
+    match &record.event {
+        AgentEvent::SubRunStarted { agent, .. } | AgentEvent::SubRunFinished { agent, .. } => {
+            agent.storage_mode != Some(astrcode_core::SubRunStorageMode::IndependentSession)
+        },
+        _ => true,
+    }
 }
 
 /// 从父会话历史中提取所有 `ChildSessionNotification` 事件，

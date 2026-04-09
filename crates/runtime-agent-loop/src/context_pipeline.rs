@@ -41,6 +41,10 @@ use std::path::Path;
 
 use astrcode_core::{AgentState, LlmMessage, Result};
 use astrcode_protocol::capability::CapabilityDescriptor;
+use astrcode_runtime_prompt::{
+    PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
+    PromptDeclarationSource, PromptLayer,
+};
 
 use crate::context_window::{PruneStats, apply_prune_pass, effective_context_window};
 
@@ -111,6 +115,59 @@ pub(crate) struct ContextBundle {
     pub budget_state: TokenBudgetState,
     pub truncated_tool_results: usize,
     pub prune_stats: PruneStats,
+}
+
+const MAX_RUNTIME_MEMORY_PROMPT_BLOCKS: usize = 4;
+
+impl ContextBundle {
+    /// 将运行时 memory 槽位转换成 prompt declaration。
+    ///
+    /// memory 块属于瞬时恢复材料，应该进入 system prompt，而不是污染消息流或 durable transcript。
+    pub(crate) fn prompt_declarations(&self) -> Vec<PromptDeclaration> {
+        let _reserved_runtime_slots = (&self.workset, &self.diagnostics, &self.budget_state);
+        let mut declarations = self
+            .memory
+            .iter()
+            .enumerate()
+            .filter_map(|(index, block)| {
+                let content = block.content.trim();
+                if content.is_empty() {
+                    return None;
+                }
+                Some(PromptDeclaration {
+                    block_id: format!("runtime.memory.{index}"),
+                    title: "Recovered Context".to_string(),
+                    content: format!("Source: {}\n{}", block.id, content),
+                    render_target: PromptDeclarationRenderTarget::System,
+                    layer: PromptLayer::Dynamic,
+                    kind: PromptDeclarationKind::ExtensionInstruction,
+                    priority_hint: Some(880),
+                    always_include: true,
+                    source: PromptDeclarationSource::Builtin,
+                    capability_name: None,
+                    origin: Some(format!("runtime-memory:{}", block.id)),
+                })
+            })
+            .fold(Vec::new(), |mut declarations, declaration| {
+                if declarations
+                    .last()
+                    .is_some_and(|previous: &PromptDeclaration| {
+                        previous.origin == declaration.origin
+                            && previous.content == declaration.content
+                    })
+                {
+                    return declarations;
+                }
+                declarations.push(declaration);
+                declarations
+            });
+
+        while declarations.len() > MAX_RUNTIME_MEMORY_PROMPT_BLOCKS {
+            declarations.remove(0);
+        }
+
+        declarations
+    }
 }
 
 /// Stage 的只读输入快照。
@@ -637,5 +694,63 @@ mod tests {
             &bundle.conversation.messages[2],
             LlmMessage::Tool { content, .. } if content.contains("[cleared older tool result")
         ));
+    }
+
+    #[test]
+    fn context_bundle_exports_memory_as_dynamic_prompt_declarations() {
+        let bundle = ContextBundle {
+            memory: vec![ContextBlock {
+                id: "recovered-file:src/lib.rs".to_string(),
+                content: "fn recovered() {}".to_string(),
+            }],
+            ..ContextBundle::default()
+        };
+
+        let declarations = bundle.prompt_declarations();
+
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations[0].layer, PromptLayer::Dynamic);
+        assert_eq!(
+            declarations[0].render_target,
+            PromptDeclarationRenderTarget::System
+        );
+        assert!(
+            declarations[0]
+                .content
+                .contains("recovered-file:src/lib.rs")
+        );
+        assert!(declarations[0].content.contains("fn recovered() {}"));
+    }
+
+    #[test]
+    fn context_bundle_clips_runtime_memory_prompt_declarations_deterministically() {
+        let bundle = ContextBundle {
+            memory: (0..6)
+                .map(|index| ContextBlock {
+                    id: format!("recovered-file:file-{index}.rs"),
+                    content: format!("content-{index}-{}", "x".repeat(4_000)),
+                })
+                .collect(),
+            ..ContextBundle::default()
+        };
+
+        let declarations = bundle.prompt_declarations();
+
+        assert_eq!(declarations.len(), MAX_RUNTIME_MEMORY_PROMPT_BLOCKS);
+        assert!(
+            declarations
+                .iter()
+                .all(|declaration| !declaration.content.contains("file-0.rs")),
+            "oldest runtime memory blocks should be trimmed first when prompt budget is exceeded"
+        );
+        assert!(
+            declarations.iter().all(|declaration| {
+                declaration.content.contains("file-2.rs")
+                    || declaration.content.contains("file-3.rs")
+                    || declaration.content.contains("file-4.rs")
+                    || declaration.content.contains("file-5.rs")
+            }),
+            "deterministic trimming should keep the newest runtime memory blocks under budget"
+        );
     }
 }

@@ -48,6 +48,7 @@
 //! - LLM Provider 通过 `ProviderFactory` 抽象，支持热替换
 //! - 工具执行通过 `CapabilityRouter` 路由，支持策略检查和审批
 //! - Prompt 组装通过 `PromptComposer` 独立实现，保持关注点分离
+//! - `AgentLoop` 本身不创建脱管后台任务；所有后台唤醒/句柄管理由上层 runtime service 负责
 
 mod llm_cycle;
 pub mod token_budget;
@@ -68,7 +69,9 @@ use astrcode_runtime_config::{
     DEFAULT_COMPACT_THRESHOLD_PERCENT, DEFAULT_TOOL_RESULT_MAX_BYTES, max_tool_concurrency,
 };
 use astrcode_runtime_llm::LlmProvider;
-use astrcode_runtime_prompt::{PromptComposer, PromptDeclaration};
+use astrcode_runtime_prompt::{
+    LayeredPromptBuilder, PromptComposer, PromptDeclaration, default_layered_prompt_builder,
+};
 use astrcode_runtime_registry::CapabilityRouter;
 use astrcode_runtime_skill_loader::{SkillCatalog, load_builtin_skills};
 use chrono::Utc;
@@ -109,11 +112,11 @@ impl TurnOutcome {
     }
 }
 
-/// 构建父 agent 重激活时可直接消费的 child-session 交付输入。
-pub fn child_delivery_reactivation_prompt(
+/// 构建父 agent 下一轮通过 system prompt 消费的 child-session 交付声明。
+pub fn child_delivery_prompt_declaration(
     notification: &astrcode_core::ChildSessionNotification,
 ) -> String {
-    crate::subagent::build_parent_reactivation_prompt(notification)
+    crate::subagent::build_parent_delivery_declaration(notification)
 }
 
 /// Agent 循环
@@ -167,6 +170,7 @@ impl AgentLoop {
             Vec::new(),
             Arc::new(SkillCatalog::new(load_builtin_skills())),
             None,
+            default_layered_prompt_builder(),
         )
     }
 
@@ -180,6 +184,7 @@ impl AgentLoop {
         prompt_declarations: Vec<PromptDeclaration>,
         skill_catalog: Arc<SkillCatalog>,
         agent_profile_catalog: Option<Arc<dyn AgentProfileCatalog>>,
+        layered_builder: LayeredPromptBuilder,
     ) -> Self {
         let tool_names = capabilities.tool_names().to_vec();
         let prompt_capability_descriptors = capabilities.descriptors();
@@ -195,6 +200,7 @@ impl AgentLoop {
                 prompt_declarations,
                 skill_catalog,
                 agent_profile_catalog,
+                layered_builder,
             ),
             context: ContextRuntime::new(DEFAULT_TOOL_RESULT_MAX_BYTES),
             compaction: CompactionRuntime::with_truncate_bytes(
@@ -478,6 +484,7 @@ impl AgentLoop {
             agent,
             execution_owner,
             compaction_tail,
+            runtime_prompt_declarations: &[],
         })
         .await
     }
@@ -494,6 +501,32 @@ impl AgentLoop {
         execution_owner: ExecutionOwner,
         compaction_tail: CompactionTailSnapshot,
     ) -> Result<TurnOutcome> {
+        self.run_turn_without_finish_with_compaction_tail_and_prompt_declarations(
+            state,
+            turn_id,
+            on_event,
+            cancel,
+            agent,
+            execution_owner,
+            compaction_tail,
+            &[],
+        )
+        .await
+    }
+
+    /// Internal turn execution variant that also carries runtime-only prompt declarations.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_turn_without_finish_with_compaction_tail_and_prompt_declarations(
+        &self,
+        state: &AgentState,
+        turn_id: &str,
+        on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
+        cancel: CancelToken,
+        agent: AgentEventContext,
+        execution_owner: ExecutionOwner,
+        compaction_tail: CompactionTailSnapshot,
+        runtime_prompt_declarations: &[PromptDeclaration],
+    ) -> Result<TurnOutcome> {
         turn_runner::run_turn(turn_runner::TurnRunContext {
             agent_loop: self,
             state,
@@ -504,6 +537,7 @@ impl AgentLoop {
             agent,
             execution_owner,
             compaction_tail,
+            runtime_prompt_declarations,
         })
         .await
     }

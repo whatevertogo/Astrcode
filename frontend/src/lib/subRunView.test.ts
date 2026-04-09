@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { Message } from '../types';
 import {
+  buildParentSummaryProjection,
   buildSubRunPathView,
   buildSubRunThreadTree,
   buildSubRunView,
@@ -1064,5 +1065,151 @@ describe('buildSubRunView', () => {
     expect(rootViews).toHaveLength(1);
     expect(rootViews[0]?.subRunId).toBe('subrun-1');
     expect(rootViews[0]?.title).toBe('planner');
+  });
+
+  it('builds parent summary cards directly from child session notifications', () => {
+    const messages: Message[] = [
+      {
+        id: 'child-notify-started',
+        kind: 'childSessionNotification',
+        turnId: 'turn-root',
+        agentId: 'agent-child',
+        parentTurnId: 'turn-root',
+        agentProfile: 'reviewer',
+        subRunId: 'subrun-child',
+        childSessionId: 'session-child-1',
+        childRef: {
+          agentId: 'agent-child',
+          sessionId: 'session-parent',
+          subRunId: 'subrun-child',
+          parentAgentId: 'agent-parent',
+          lineageKind: 'spawn',
+          status: 'running',
+          openable: true,
+          openSessionId: 'session-child-1',
+        },
+        notificationKind: 'started',
+        status: 'running',
+        summary: '子会话已启动',
+        openSessionId: 'session-child-1',
+        timestamp: 1,
+      },
+      {
+        id: 'child-notify-delivered',
+        kind: 'childSessionNotification',
+        turnId: 'turn-root',
+        agentId: 'agent-child',
+        parentTurnId: 'turn-root',
+        agentProfile: 'reviewer',
+        subRunId: 'subrun-child',
+        childSessionId: 'session-child-1',
+        childRef: {
+          agentId: 'agent-child',
+          sessionId: 'session-parent',
+          subRunId: 'subrun-child',
+          parentAgentId: 'agent-parent',
+          lineageKind: 'spawn',
+          status: 'completed',
+          openable: true,
+          openSessionId: 'session-child-1',
+        },
+        notificationKind: 'delivered',
+        status: 'completed',
+        summary: '子会话已完成摘要',
+        openSessionId: 'session-child-1',
+        finalReplyExcerpt: '最终结论',
+        timestamp: 2,
+      },
+    ];
+
+    const projection = buildParentSummaryProjection(messages);
+
+    expect(projection.cards).toEqual([
+      {
+        agentId: 'agent-child',
+        subRunId: 'subrun-child',
+        title: 'reviewer',
+        status: 'completed',
+        summary: '子会话已完成摘要',
+        openSessionId: 'session-child-1',
+        hasFinalReply: true,
+        finalReplyExcerpt: '最终结论',
+        hasDescriptorLineage: true,
+      },
+    ]);
+  });
+
+  it('keeps cancelled child summaries visible even without final reply excerpts', () => {
+    const messages: Message[] = [
+      {
+        id: 'child-notify-closed',
+        kind: 'childSessionNotification',
+        turnId: 'turn-root',
+        agentId: 'agent-child',
+        parentTurnId: 'turn-root',
+        agentProfile: 'reviewer',
+        subRunId: 'subrun-child',
+        childSessionId: 'session-child-closed',
+        childRef: {
+          agentId: 'agent-child',
+          sessionId: 'session-parent',
+          subRunId: 'subrun-child',
+          parentAgentId: 'agent-parent',
+          lineageKind: 'spawn',
+          status: 'cancelled',
+          openable: true,
+          openSessionId: 'session-child-closed',
+        },
+        notificationKind: 'closed',
+        status: 'cancelled',
+        summary: '子 Agent 已关闭。',
+        openSessionId: 'session-child-closed',
+        timestamp: 3,
+      },
+    ];
+
+    expect(buildParentSummaryProjection(messages).cards).toEqual([
+      {
+        agentId: 'agent-child',
+        subRunId: 'subrun-child',
+        title: 'reviewer',
+        status: 'cancelled',
+        summary: '子 Agent 已关闭。',
+        openSessionId: 'session-child-closed',
+        hasFinalReply: false,
+        finalReplyExcerpt: null,
+        hasDescriptorLineage: true,
+      },
+    ]);
+  });
+
+  it('ignores legacy sub-run lifecycle records when building parent summary cards', () => {
+    const messages: Message[] = [
+      {
+        ...makeSubRunStartFixture({
+          id: 'legacy-subrun-start',
+          turnId: 'turn-root',
+          parentTurnId: 'turn-root',
+          agentId: 'agent-legacy',
+          subRunId: 'subrun-legacy',
+          agentProfile: 'legacy',
+          depth: 1,
+          timestamp: 1,
+        }),
+      },
+      {
+        id: 'legacy-subrun-finish',
+        kind: 'subRunFinish',
+        turnId: 'turn-root',
+        parentTurnId: 'turn-root',
+        subRunId: 'subrun-legacy',
+        result: { status: 'completed' },
+        stepCount: 1,
+        estimatedTokens: 10,
+        timestamp: 2,
+      },
+    ];
+
+    expect(buildParentSummaryProjection(messages).cards).toEqual([]);
   });
 });

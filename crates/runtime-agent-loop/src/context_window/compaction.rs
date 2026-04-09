@@ -521,6 +521,55 @@ mod tests {
     }
 
     #[test]
+    fn split_for_compaction_ignores_internal_user_messages_when_preserving_recent_tail() {
+        let messages = vec![
+            LlmMessage::User {
+                content: format_compact_summary("older summary"),
+                origin: UserMessageOrigin::CompactSummary,
+            },
+            LlmMessage::User {
+                content: "The conversation was compacted. Continue from where you left off."
+                    .to_string(),
+                origin: UserMessageOrigin::AutoContinueNudge,
+            },
+            LlmMessage::User {
+                content: "real older turn".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "older answer".to_string(),
+                tool_calls: Vec::new(),
+                reasoning: None,
+            },
+            LlmMessage::User {
+                content: "latest real turn".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ];
+
+        let split = split_for_compaction(&messages, 1).expect("split should exist");
+
+        assert_eq!(
+            split.keep_start, 4,
+            "only durable real-user turns should count toward the preserved recent tail"
+        );
+        assert!(matches!(
+            &split.prefix[0],
+            LlmMessage::User {
+                origin: UserMessageOrigin::CompactSummary,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &split.suffix[0],
+            LlmMessage::User {
+                content,
+                origin: UserMessageOrigin::User,
+            } if content == "latest real turn"
+        ));
+    }
+
+    #[test]
     fn split_for_compaction_falls_back_to_assistant_boundary_for_single_turn() {
         let messages = vec![
             LlmMessage::User {

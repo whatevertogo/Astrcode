@@ -1,27 +1,33 @@
 use std::{
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use astrcode_core::{
-    AgentEventContext, AgentMode, AgentProfile, AgentStatus, AstrError, CancelToken,
-    ChildSessionNotificationKind, ExecutionOwner, InvocationKind, Phase,
-    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SpawnAgentParams,
-    StorageEvent, SubRunFailure, SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunOutcome,
-    SubRunResult, SubRunStorageMode, SubagentContextOverrides, Tool, ToolCapabilityMetadata,
-    ToolContext, ToolDefinition, ToolEventSink, ToolExecutionResult, UserMessageOrigin,
+    AgentEventContext, AgentInboxEnvelope, AgentMode, AgentProfile, AgentStatus, AstrError,
+    CancelToken, ChildSessionLineageKind, ChildSessionNotificationKind, ExecutionOwner,
+    InboxEnvelopeKind, InvocationKind, Phase, ResolvedExecutionLimitsSnapshot,
+    ResolvedSubagentContextOverrides, SpawnAgentParams, StorageEvent, SubRunDescriptor,
+    SubRunFailure, SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunOutcome, SubRunResult,
+    SubRunStorageMode, SubagentContextOverrides, Tool, ToolCapabilityMetadata, ToolContext,
+    ToolDefinition, ToolEventSink, ToolExecutionResult, UserMessageOrigin,
     test_support::TestEnvGuard,
 };
+use astrcode_runtime_agent_loop::{AgentLoop, ProviderFactory};
 use astrcode_runtime_agent_tool::{SpawnAgentTool, SubAgentExecutor};
 use astrcode_runtime_config::DEFAULT_MAX_CONCURRENT_AGENTS;
 use astrcode_runtime_execution::{
-    derive_child_execution_owner, resolve_profile_tool_names, resolve_subagent_overrides,
+    AgentExecutionRequest, build_child_agent_state, derive_child_execution_owner,
+    resolve_context_snapshot, resolve_profile_tool_names, resolve_subagent_overrides,
 };
+use astrcode_runtime_session::prepare_session_execution;
 use async_trait::async_trait;
 use serde_json::json;
 
 use super::DeferredSubAgentExecutor;
 use crate::{
+    llm::{EventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits},
     service::RuntimeService,
     test_support::{capabilities_from_tools, empty_capabilities},
 };
@@ -74,6 +80,41 @@ impl Tool for DemoTool {
     }
 }
 
+struct StaticProvider {
+    output: LlmOutput,
+}
+
+#[async_trait]
+impl LlmProvider for StaticProvider {
+    fn model_limits(&self) -> ModelLimits {
+        ModelLimits {
+            context_window: 200_000,
+            max_output_tokens: 4_096,
+        }
+    }
+
+    async fn generate(
+        &self,
+        _request: LlmRequest,
+        _sink: Option<EventSink>,
+    ) -> astrcode_core::Result<LlmOutput> {
+        Ok(self.output.clone())
+    }
+}
+
+struct StaticProviderFactory {
+    provider: Arc<dyn LlmProvider>,
+}
+
+impl ProviderFactory for StaticProviderFactory {
+    fn build_for_working_dir(
+        &self,
+        _working_dir: Option<PathBuf>,
+    ) -> astrcode_core::Result<Arc<dyn LlmProvider>> {
+        Ok(Arc::clone(&self.provider))
+    }
+}
+
 fn append_storage_event(service: &RuntimeService, session_id: &str, event: &StorageEvent) {
     let mut writer = service
         .session_manager
@@ -82,6 +123,71 @@ fn append_storage_event(service: &RuntimeService, session_id: &str, event: &Stor
     writer
         .append(event)
         .expect("storage event should append successfully");
+}
+
+async fn install_test_loop(service: &Arc<RuntimeService>, output: LlmOutput) {
+    let provider: Arc<dyn LlmProvider> = Arc::new(StaticProvider { output });
+    let loop_ = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory { provider }),
+        empty_capabilities(),
+    );
+    *service.loop_.write().await = Arc::new(loop_);
+}
+
+fn write_test_agent_profile(working_dir: &std::path::Path, profile_id: &str) {
+    let project_agents_dir = working_dir.join(".astrcode").join("agents");
+    std::fs::create_dir_all(&project_agents_dir).expect("project agents dir should exist");
+    std::fs::write(
+        project_agents_dir.join(format!("{profile_id}.md")),
+        format!(
+            r#"---
+name: {profile_id}
+description: Resume regression profile
+tools: [readFile]
+---
+恢复时继续沿用 durable 历史。
+"#
+        ),
+    )
+    .expect("agent definition should be written");
+}
+
+fn extract_spawned_sub_run_id(result: &ToolExecutionResult) -> String {
+    result
+        .metadata
+        .as_ref()
+        .and_then(|value| value.get("handoff"))
+        .and_then(|value| value.get("artifacts"))
+        .and_then(|value| value.as_array())
+        .and_then(|artifacts| {
+            artifacts
+                .iter()
+                .find(|artifact| artifact.get("kind") == Some(&json!("subRun")))
+                .or_else(|| artifacts.first())
+        })
+        .and_then(|artifact| artifact.get("id"))
+        .and_then(|value| value.as_str())
+        .expect("spawnAgent launch should expose sub-run artifact")
+        .to_string()
+}
+
+fn make_child_delivery_envelope(
+    from_agent_id: &str,
+    to_agent_id: &str,
+    delivery_id: &str,
+) -> AgentInboxEnvelope {
+    AgentInboxEnvelope {
+        delivery_id: delivery_id.to_string(),
+        from_agent_id: from_agent_id.to_string(),
+        to_agent_id: to_agent_id.to_string(),
+        kind: InboxEnvelopeKind::ChildDelivery,
+        message: "leaf 完成了任务".to_string(),
+        context: None,
+        is_final: true,
+        summary: Some("leaf 任务结果".to_string()),
+        findings: vec!["发现1".to_string()],
+        artifacts: Vec::new(),
+    }
 }
 
 #[test]
@@ -320,17 +426,7 @@ async fn spawn_agent_background_cancellation_releases_concurrency_slots() {
             )
             .await
             .expect("background launch should succeed");
-        let sub_run_id = result
-            .metadata
-            .as_ref()
-            .and_then(|value| value.get("handoff"))
-            .and_then(|value| value.get("artifacts"))
-            .and_then(|value| value.as_array())
-            .and_then(|artifacts| artifacts.first())
-            .and_then(|artifact| artifact.get("id"))
-            .and_then(|value| value.as_str())
-            .expect("background launch should expose sub-run artifact")
-            .to_string();
+        let sub_run_id = extract_spawned_sub_run_id(&result);
         service
             .execution()
             .cancel_subrun(&session.session_id, &sub_run_id)
@@ -342,8 +438,8 @@ async fn spawn_agent_background_cancellation_releases_concurrency_slots() {
             .await
             .expect("cancelled sub-run should still be observable");
         assert!(
-            matches!(handle.status, AgentStatus::Cancelled | AgentStatus::Failed),
-            "background sub-run should reach a final state after explicit cancel"
+            handle.status.is_final(),
+            "background sub-run should eventually release its concurrency slot via any final state"
         );
     }
 }
@@ -391,17 +487,7 @@ async fn spawn_agent_lifecycle_events_persist_parent_tool_call_id() {
         )
         .await
         .expect("background launch should succeed");
-    let sub_run_id = result
-        .metadata
-        .as_ref()
-        .and_then(|value| value.get("handoff"))
-        .and_then(|value| value.get("artifacts"))
-        .and_then(|value| value.as_array())
-        .and_then(|artifacts| artifacts.first())
-        .and_then(|artifact| artifact.get("id"))
-        .and_then(|value| value.as_str())
-        .expect("sub-run id should be exposed")
-        .to_string();
+    let sub_run_id = extract_spawned_sub_run_id(&result);
 
     service
         .execution()
@@ -502,6 +588,12 @@ async fn get_subrun_status_reconstructs_durable_snapshot_without_live_handle() {
     let limits = ResolvedExecutionLimitsSnapshot {
         allowed_tools: vec!["readFile".to_string()],
     };
+    let descriptor = SubRunDescriptor {
+        sub_run_id: "subrun-durable".to_string(),
+        parent_turn_id: "turn-parent".to_string(),
+        parent_agent_id: None,
+        depth: 0,
+    };
     let result = SubRunResult {
         status: SubRunOutcome::Completed,
         handoff: Some(SubRunHandoff {
@@ -518,7 +610,7 @@ async fn get_subrun_status_reconstructs_durable_snapshot_without_live_handle() {
         &StorageEvent::SubRunStarted {
             turn_id: Some("turn-parent".to_string()),
             agent: agent.clone(),
-            descriptor: None,
+            descriptor: Some(descriptor.clone()),
             tool_call_id: None,
             resolved_overrides: overrides.clone(),
             resolved_limits: limits.clone(),
@@ -531,7 +623,7 @@ async fn get_subrun_status_reconstructs_durable_snapshot_without_live_handle() {
         &StorageEvent::SubRunFinished {
             turn_id: Some("turn-parent".to_string()),
             agent,
-            descriptor: None,
+            descriptor: Some(descriptor),
             tool_call_id: None,
             result: result.clone(),
             step_count: 3,
@@ -643,7 +735,7 @@ async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
 }
 
 #[tokio::test]
-async fn get_subrun_status_keeps_storage_mode_parity_for_parent_aborted_subruns() {
+async fn get_subrun_status_keeps_storage_mode_parity_for_parent_aborted_independent_subruns() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
         RuntimeService::from_capabilities(capabilities_from_tools(vec![
@@ -660,72 +752,71 @@ async fn get_subrun_status_keeps_storage_mode_parity_for_parent_aborted_subruns(
         .await
         .expect("session should be created");
 
-    let cases = [
-        ("subrun-shared", SubRunStorageMode::SharedSession, None),
-        (
-            "subrun-independent",
-            SubRunStorageMode::IndependentSession,
-            Some("child-independent".to_string()),
-        ),
-    ];
-
-    for (sub_run_id, storage_mode, child_session_id) in &cases {
-        let agent = AgentEventContext::sub_run(
-            format!("agent-{sub_run_id}"),
-            "turn-parent".to_string(),
-            "review".to_string(),
-            (*sub_run_id).to_string(),
-            *storage_mode,
-            child_session_id.clone(),
-        );
-        append_storage_event(
-            service.as_ref(),
-            &session.session_id,
-            &StorageEvent::SubRunStarted {
-                turn_id: Some("turn-parent".to_string()),
-                agent: agent.clone(),
-                descriptor: None,
-                tool_call_id: None,
-                resolved_overrides: ResolvedSubagentContextOverrides {
-                    storage_mode: *storage_mode,
-                    ..Default::default()
-                },
-                resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
-                timestamp: None,
+    let sub_run_id = "subrun-independent";
+    let descriptor = SubRunDescriptor {
+        sub_run_id: sub_run_id.to_string(),
+        parent_turn_id: "turn-parent".to_string(),
+        parent_agent_id: None,
+        depth: 0,
+    };
+    let agent = AgentEventContext::sub_run(
+        format!("agent-{sub_run_id}"),
+        "turn-parent".to_string(),
+        "review".to_string(),
+        sub_run_id.to_string(),
+        SubRunStorageMode::IndependentSession,
+        Some("child-independent".to_string()),
+    );
+    append_storage_event(
+        service.as_ref(),
+        &session.session_id,
+        &StorageEvent::SubRunStarted {
+            turn_id: Some("turn-parent".to_string()),
+            agent: agent.clone(),
+            descriptor: Some(descriptor.clone()),
+            tool_call_id: None,
+            resolved_overrides: ResolvedSubagentContextOverrides {
+                storage_mode: SubRunStorageMode::IndependentSession,
+                ..Default::default()
             },
-        );
-        append_storage_event(
-            service.as_ref(),
-            &session.session_id,
-            &StorageEvent::SubRunFinished {
-                turn_id: Some("turn-parent".to_string()),
-                agent,
-                descriptor: None,
-                tool_call_id: None,
-                result: SubRunResult {
-                    status: SubRunOutcome::Aborted,
-                    handoff: None,
-                    failure: None,
-                },
-                step_count: 1,
-                estimated_tokens: 33,
-                timestamp: None,
+            resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+            timestamp: None,
+        },
+    );
+    append_storage_event(
+        service.as_ref(),
+        &session.session_id,
+        &StorageEvent::SubRunFinished {
+            turn_id: Some("turn-parent".to_string()),
+            agent,
+            descriptor: Some(descriptor),
+            tool_call_id: None,
+            result: SubRunResult {
+                status: SubRunOutcome::Aborted,
+                handoff: None,
+                failure: None,
             },
-        );
+            step_count: 1,
+            estimated_tokens: 33,
+            timestamp: None,
+        },
+    );
 
-        let snapshot = service
-            .execution()
-            .get_subrun_status(&session.session_id, sub_run_id)
-            .await
-            .expect("durable snapshot should be reconstructed");
+    let snapshot = service
+        .execution()
+        .get_subrun_status(&session.session_id, sub_run_id)
+        .await
+        .expect("durable snapshot should be reconstructed");
 
-        assert_eq!(snapshot.handle.storage_mode, *storage_mode);
-        assert_eq!(snapshot.handle.status, AgentStatus::Cancelled);
-        assert_eq!(
-            snapshot.result.as_ref().map(|item| item.status.clone()),
-            Some(SubRunOutcome::Aborted)
-        );
-    }
+    assert_eq!(
+        snapshot.handle.storage_mode,
+        SubRunStorageMode::IndependentSession
+    );
+    assert_eq!(snapshot.handle.status, AgentStatus::Cancelled);
+    assert_eq!(
+        snapshot.result.as_ref().map(|item| item.status.clone()),
+        Some(SubRunOutcome::Aborted)
+    );
 }
 
 #[tokio::test]
@@ -995,6 +1086,511 @@ async fn get_subrun_status_uses_live_overlay_for_independent_subrun_in_parent_se
     assert!(snapshot.result.is_none());
 }
 
+#[tokio::test]
+async fn get_subrun_status_rejects_legacy_shared_history_snapshots() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(empty_capabilities())
+            .expect("runtime service should build"),
+    );
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("session should be created");
+
+    let legacy_agent = AgentEventContext::sub_run(
+        "agent-legacy".to_string(),
+        "turn-legacy".to_string(),
+        "review".to_string(),
+        "subrun-legacy".to_string(),
+        SubRunStorageMode::SharedSession,
+        None,
+    );
+    append_storage_event(
+        service.as_ref(),
+        &session.session_id,
+        &StorageEvent::SubRunStarted {
+            turn_id: Some("turn-legacy".to_string()),
+            agent: legacy_agent.clone(),
+            descriptor: None,
+            tool_call_id: Some("call-legacy".to_string()),
+            resolved_overrides: ResolvedSubagentContextOverrides::default(),
+            resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+            timestamp: None,
+        },
+    );
+    append_storage_event(
+        service.as_ref(),
+        &session.session_id,
+        &StorageEvent::SubRunFinished {
+            turn_id: Some("turn-legacy".to_string()),
+            agent: legacy_agent,
+            descriptor: None,
+            tool_call_id: Some("call-legacy".to_string()),
+            result: SubRunResult {
+                status: SubRunOutcome::Completed,
+                handoff: None,
+                failure: None,
+            },
+            step_count: 1,
+            estimated_tokens: 21,
+            timestamp: None,
+        },
+    );
+
+    let error = service
+        .execution()
+        .get_subrun_status(&session.session_id, "subrun-legacy")
+        .await
+        .expect_err("legacy shared-history subrun should be rejected");
+
+    assert!(matches!(error, crate::service::ServiceError::Conflict(_)));
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported_legacy_shared_history"),
+        "unexpected legacy rejection error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn resume_child_session_replays_existing_child_history_and_mints_new_subrun_id() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![Box::new(DemoTool {
+            name: "readFile",
+        })]))
+        .expect("runtime service should build"),
+    );
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    write_test_agent_profile(temp_dir.path(), "review");
+
+    let parent_session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("parent session should be created");
+    let child_session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("child session should be created");
+    let child_state = service
+        .ensure_session_loaded(&child_session.session_id)
+        .await
+        .expect("child session state should load");
+    let child_sink = astrcode_runtime_session::SessionStateEventSink::new(Arc::clone(&child_state))
+        .expect("child event sink should build");
+    child_sink
+        .emit(StorageEvent::UserMessage {
+            turn_id: Some("turn-child-old".to_string()),
+            agent: AgentEventContext::root_execution("agent-child", "review"),
+            content: "先完成第一轮分析".to_string(),
+            origin: UserMessageOrigin::User,
+            timestamp: chrono::Utc::now(),
+        })
+        .expect("old child user message should persist");
+    child_sink
+        .emit(StorageEvent::AssistantFinal {
+            turn_id: Some("turn-child-old".to_string()),
+            agent: AgentEventContext::root_execution("agent-child", "review"),
+            content: "已经整理出第一版结论".to_string(),
+            reasoning_content: None,
+            reasoning_signature: None,
+            timestamp: Some(chrono::Utc::now()),
+        })
+        .expect("old child assistant message should persist");
+    child_sink
+        .emit(StorageEvent::TurnDone {
+            turn_id: Some("turn-child-old".to_string()),
+            agent: AgentEventContext::root_execution("agent-child", "review"),
+            timestamp: chrono::Utc::now(),
+            reason: Some("completed".to_string()),
+        })
+        .expect("old child turn done should persist");
+
+    let profile = AgentProfile {
+        id: "review".to_string(),
+        name: "Review".to_string(),
+        description: "review".to_string(),
+        mode: AgentMode::SubAgent,
+        system_prompt: None,
+        allowed_tools: vec!["readFile".to_string()],
+        disallowed_tools: Vec::new(),
+        model_preference: None,
+    };
+    let original_handle = service
+        .agent_control()
+        .spawn_with_storage(
+            &profile,
+            child_session.session_id.clone(),
+            Some(child_session.session_id.clone()),
+            Some("turn-parent".to_string()),
+            None,
+            SubRunStorageMode::IndependentSession,
+        )
+        .await
+        .expect("child execution should spawn");
+    let _ = service
+        .agent_control()
+        .mark_running(&original_handle.agent_id)
+        .await
+        .expect("child execution should become running");
+    let _ = service
+        .agent_control()
+        .mark_completed(&original_handle.agent_id)
+        .await
+        .expect("child execution should complete");
+
+    let parent_state = service
+        .ensure_session_loaded(&parent_session.session_id)
+        .await
+        .expect("parent session state should load");
+    parent_state
+        .upsert_child_session_node(astrcode_runtime_execution::build_child_session_node(
+            &original_handle,
+            &parent_session.session_id,
+            "turn-parent",
+            Some("call-resume".to_string()),
+        ))
+        .expect("child node should be persisted");
+
+    let context = ToolContext::new(
+        parent_session.session_id.clone(),
+        temp_dir.path().to_path_buf(),
+        CancelToken::new(),
+    )
+    .with_turn_id("turn-parent")
+    .with_tool_call_id("call-resume");
+
+    let (resumed_handle, running_result) = service
+        .execution()
+        .resume_child_session(
+            &original_handle.agent_id,
+            Some("继续补完遗漏检查".to_string()),
+            &context,
+        )
+        .await
+        .expect("resume should succeed");
+
+    assert_eq!(running_result.status, SubRunOutcome::Running);
+    assert_eq!(resumed_handle.agent_id, original_handle.agent_id);
+    assert_ne!(resumed_handle.sub_run_id, original_handle.sub_run_id);
+    assert_eq!(
+        resumed_handle.child_session_id.as_deref(),
+        Some(child_session.session_id.as_str())
+    );
+
+    let live_handle = service
+        .agent_control()
+        .get(&original_handle.agent_id)
+        .await
+        .expect("latest execution should be accessible via stable agent id");
+    assert_eq!(live_handle.sub_run_id, resumed_handle.sub_run_id);
+    let historical = service
+        .agent_control()
+        .get(&original_handle.sub_run_id)
+        .await
+        .expect("historical execution should remain queryable by old sub-run id");
+    assert_eq!(historical.status, AgentStatus::Completed);
+
+    let child_snapshot = service
+        .ensure_session_loaded(&child_session.session_id)
+        .await
+        .expect("child session should stay loaded")
+        .snapshot_projected_state()
+        .expect("child snapshot should rebuild");
+    assert_eq!(child_snapshot.session_id, child_session.session_id);
+    assert!(
+        child_snapshot.messages.iter().any(|message| {
+            matches!(
+                message,
+                astrcode_core::LlmMessage::Assistant { content, .. }
+                    if content == "已经整理出第一版结论"
+            )
+        }),
+        "replayed history should be preserved before the new resume message"
+    );
+    assert!(
+        child_snapshot.messages.iter().any(|message| {
+            matches!(
+                message,
+                astrcode_core::LlmMessage::User { content, .. }
+                    if content == "继续补完遗漏检查"
+            )
+        }),
+        "resume message should be appended on top of the replayed history"
+    );
+
+    let resumed_node = parent_state
+        .child_session_node(&resumed_handle.sub_run_id)
+        .expect("child node lookup should succeed")
+        .expect("resumed child node should exist");
+    assert_eq!(resumed_node.child_session_id, child_session.session_id);
+    assert_eq!(resumed_node.lineage_kind, ChildSessionLineageKind::Resume);
+
+    let parent_events = crate::service::session::load_events(
+        Arc::clone(&service.session_manager),
+        &parent_session.session_id,
+    )
+    .await
+    .expect("parent session events should load");
+    assert!(parent_events.iter().any(|stored| {
+        matches!(
+            &stored.event,
+            StorageEvent::SubRunStarted { descriptor: Some(descriptor), .. }
+                if descriptor.sub_run_id == resumed_handle.sub_run_id
+        )
+    }));
+    assert!(parent_events.iter().any(|stored| {
+        matches!(
+            &stored.event,
+            StorageEvent::ChildSessionNotification { notification, .. }
+                if notification.kind == ChildSessionNotificationKind::Resumed
+                    && notification.child_ref.sub_run_id == resumed_handle.sub_run_id
+                    && notification.open_session_id == child_session.session_id
+        )
+    }));
+}
+
+#[tokio::test]
+async fn resume_child_session_rejects_lineage_mismatch_before_minting_new_execution() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![Box::new(DemoTool {
+            name: "readFile",
+        })]))
+        .expect("runtime service should build"),
+    );
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    write_test_agent_profile(temp_dir.path(), "review");
+
+    let parent_session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("parent session should be created");
+    let other_parent_session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("other parent session should be created");
+    let child_session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("child session should be created");
+
+    append_storage_event(
+        service.as_ref(),
+        &child_session.session_id,
+        &StorageEvent::UserMessage {
+            turn_id: Some("turn-child-old".to_string()),
+            agent: AgentEventContext::root_execution("agent-child", "review"),
+            content: "旧历史".to_string(),
+            origin: UserMessageOrigin::User,
+            timestamp: chrono::Utc::now(),
+        },
+    );
+
+    let profile = AgentProfile {
+        id: "review".to_string(),
+        name: "Review".to_string(),
+        description: "review".to_string(),
+        mode: AgentMode::SubAgent,
+        system_prompt: None,
+        allowed_tools: vec!["readFile".to_string()],
+        disallowed_tools: Vec::new(),
+        model_preference: None,
+    };
+    let original_handle = service
+        .agent_control()
+        .spawn_with_storage(
+            &profile,
+            child_session.session_id.clone(),
+            Some(child_session.session_id.clone()),
+            Some("turn-parent".to_string()),
+            None,
+            SubRunStorageMode::IndependentSession,
+        )
+        .await
+        .expect("child execution should spawn");
+    let _ = service
+        .agent_control()
+        .mark_running(&original_handle.agent_id)
+        .await
+        .expect("child execution should become running");
+    let _ = service
+        .agent_control()
+        .mark_completed(&original_handle.agent_id)
+        .await
+        .expect("child execution should complete");
+
+    let parent_state = service
+        .ensure_session_loaded(&parent_session.session_id)
+        .await
+        .expect("parent session state should load");
+    parent_state
+        .upsert_child_session_node(astrcode_runtime_execution::build_child_session_node(
+            &original_handle,
+            &other_parent_session.session_id,
+            "turn-parent",
+            Some("call-resume".to_string()),
+        ))
+        .expect("mismatched child node should be persisted");
+
+    let context = ToolContext::new(
+        parent_session.session_id.clone(),
+        temp_dir.path().to_path_buf(),
+        CancelToken::new(),
+    )
+    .with_turn_id("turn-parent")
+    .with_tool_call_id("call-resume");
+
+    let error = service
+        .execution()
+        .resume_child_session(
+            &original_handle.agent_id,
+            Some("继续执行".to_string()),
+            &context,
+        )
+        .await
+        .expect_err("lineage mismatch should reject resume");
+
+    assert!(matches!(error, crate::service::ServiceError::Conflict(_)));
+    assert!(
+        error
+            .to_string()
+            .contains("lineage_mismatch_parent_session"),
+        "unexpected error: {error}"
+    );
+
+    let latest_handle = service
+        .agent_control()
+        .get(&original_handle.agent_id)
+        .await
+        .expect("agent should still resolve to the previous execution");
+    assert_eq!(latest_handle.sub_run_id, original_handle.sub_run_id);
+    assert_eq!(latest_handle.status, AgentStatus::Completed);
+
+    let diagnostics = service.observability.snapshot().execution_diagnostics;
+    assert_eq!(diagnostics.lineage_mismatch_parent_session, 1);
+
+    let parent_events = crate::service::session::load_events(
+        Arc::clone(&service.session_manager),
+        &parent_session.session_id,
+    )
+    .await
+    .expect("parent session events should load");
+    assert!(parent_events.iter().any(|stored| {
+        matches!(
+            &stored.event,
+            StorageEvent::Error { message, .. }
+                if message.contains("lineage_mismatch_parent_session")
+        )
+    }));
+}
+
+#[tokio::test]
+async fn resume_child_session_rejects_empty_child_history_as_unsafe_resume() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![Box::new(DemoTool {
+            name: "readFile",
+        })]))
+        .expect("runtime service should build"),
+    );
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    write_test_agent_profile(temp_dir.path(), "review");
+
+    let parent_session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("parent session should be created");
+    let child_session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("child session should be created");
+
+    let profile = AgentProfile {
+        id: "review".to_string(),
+        name: "Review".to_string(),
+        description: "review".to_string(),
+        mode: AgentMode::SubAgent,
+        system_prompt: None,
+        allowed_tools: vec!["readFile".to_string()],
+        disallowed_tools: Vec::new(),
+        model_preference: None,
+    };
+    let original_handle = service
+        .agent_control()
+        .spawn_with_storage(
+            &profile,
+            child_session.session_id.clone(),
+            Some(child_session.session_id.clone()),
+            Some("turn-parent".to_string()),
+            None,
+            SubRunStorageMode::IndependentSession,
+        )
+        .await
+        .expect("child execution should spawn");
+    let _ = service
+        .agent_control()
+        .mark_running(&original_handle.agent_id)
+        .await
+        .expect("child execution should become running");
+    let _ = service
+        .agent_control()
+        .mark_completed(&original_handle.agent_id)
+        .await
+        .expect("child execution should complete");
+
+    let parent_state = service
+        .ensure_session_loaded(&parent_session.session_id)
+        .await
+        .expect("parent session state should load");
+    parent_state
+        .upsert_child_session_node(astrcode_runtime_execution::build_child_session_node(
+            &original_handle,
+            &parent_session.session_id,
+            "turn-parent",
+            Some("call-resume".to_string()),
+        ))
+        .expect("child node should be persisted");
+
+    let context = ToolContext::new(
+        parent_session.session_id.clone(),
+        temp_dir.path().to_path_buf(),
+        CancelToken::new(),
+    )
+    .with_turn_id("turn-parent")
+    .with_tool_call_id("call-resume");
+
+    let error = service
+        .execution()
+        .resume_child_session(
+            &original_handle.agent_id,
+            Some("继续执行".to_string()),
+            &context,
+        )
+        .await
+        .expect_err("empty child history should be rejected");
+
+    assert!(matches!(error, crate::service::ServiceError::Conflict(_)));
+    assert!(
+        error.to_string().contains("unsafe_resume_rejected"),
+        "unexpected error: {error}"
+    );
+}
+
 #[test]
 fn resolve_subagent_overrides_rejects_mixed_instruction_inheritance() {
     let error = resolve_subagent_overrides(
@@ -1035,6 +1631,67 @@ fn resolve_subagent_overrides_rejects_unsupported_context_flags() {
                 .expect_err("unsupported override should be rejected");
         assert!(error.to_string().contains("not supported yet"));
     }
+}
+
+#[test]
+fn child_task_payload_stays_task_only_while_parent_context_moves_to_inherited_blocks() {
+    let parent_state = astrcode_core::AgentState {
+        session_id: "session-parent".to_string(),
+        working_dir: std::env::temp_dir(),
+        messages: vec![
+            astrcode_core::LlmMessage::User {
+                content: astrcode_core::format_compact_summary("父会话摘要").to_string(),
+                origin: astrcode_core::UserMessageOrigin::CompactSummary,
+            },
+            astrcode_core::LlmMessage::User {
+                content: "检查 auth 缓存".to_string(),
+                origin: astrcode_core::UserMessageOrigin::User,
+            },
+            astrcode_core::LlmMessage::Assistant {
+                content: "先看登录链路".to_string(),
+                tool_calls: Vec::new(),
+                reasoning: None,
+            },
+        ],
+        phase: astrcode_core::Phase::Idle,
+        turn_count: 3,
+    };
+    let request = AgentExecutionRequest {
+        subagent_type: Some("review".to_string()),
+        description: "检查缓存".to_string(),
+        prompt: "排查 auth 模块".to_string(),
+        context: Some("重点看命中率".to_string()),
+        context_overrides: None,
+    };
+    let overrides = ResolvedSubagentContextOverrides {
+        include_compact_summary: true,
+        include_recent_tail: true,
+        ..ResolvedSubagentContextOverrides::default()
+    };
+
+    let snapshot = resolve_context_snapshot(&request, Some(&parent_state), &overrides);
+    let child_state = build_child_agent_state(
+        "session-child",
+        std::env::temp_dir(),
+        &snapshot.task_payload,
+    );
+
+    assert_eq!(
+        snapshot.inherited_compact_summary.as_deref(),
+        Some("父会话摘要")
+    );
+    assert_eq!(
+        snapshot.inherited_recent_tail,
+        vec!["- user: 检查 auth 缓存", "- assistant: 先看登录链路"]
+    );
+    assert!(matches!(
+        &child_state.messages[0],
+        astrcode_core::LlmMessage::User { content, .. }
+            if content.contains("# Task\n排查 auth 模块")
+                && content.contains("# Context\n重点看命中率")
+                && !content.contains("父会话摘要")
+                && !content.contains("检查 auth 缓存")
+    ));
 }
 
 #[test]
@@ -1080,23 +1737,6 @@ fn runtime_owner_graph_exposes_execution_surface_owner() {
     assert_eq!(owner_graph.session_owner, "runtime-session");
     assert_eq!(owner_graph.execution_owner, "runtime-execution");
     assert_eq!(owner_graph.tool_owner, "runtime-execution");
-}
-
-#[tokio::test]
-async fn tool_execution_surface_lists_registered_tools() {
-    let _guard = TestEnvGuard::new();
-    let service = Arc::new(
-        RuntimeService::from_capabilities(capabilities_from_tools(vec![
-            Box::new(DemoTool { name: "readFile" }),
-            Box::new(DemoTool { name: "grep" }),
-        ]))
-        .expect("runtime service should build"),
-    );
-
-    let tools = service.tools().list_tools().await;
-    let tool_names = tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>();
-
-    assert_eq!(tool_names, vec!["grep".to_string(), "readFile".to_string()]);
 }
 
 #[tokio::test]
@@ -1216,21 +1856,7 @@ async fn spawn_agent_terminal_delivery_notification_is_emitted_once() {
         .await
         .expect("spawnAgent launch should succeed");
 
-    let sub_run_id = launched
-        .metadata
-        .as_ref()
-        .and_then(|value| value.get("handoff"))
-        .and_then(|value| value.get("artifacts"))
-        .and_then(|value| value.as_array())
-        .and_then(|artifacts| {
-            artifacts
-                .iter()
-                .find(|artifact| artifact.get("kind") == Some(&json!("subRun")))
-        })
-        .and_then(|artifact| artifact.get("id"))
-        .and_then(|value| value.as_str())
-        .expect("sub-run id should be exposed")
-        .to_string();
+    let sub_run_id = extract_spawned_sub_run_id(&launched);
 
     let _ = service
         .agent_control()
@@ -1433,18 +2059,8 @@ async fn deliver_to_parent_enforces_direct_parent_routing_in_three_level_chain()
     let _ = control.mark_running(&leaf.agent_id).await;
 
     // leaf 向直接父 (middle) 投递
-    let leaf_delivery = astrcode_core::AgentInboxEnvelope {
-        delivery_id: "delivery-leaf-to-middle".to_string(),
-        from_agent_id: leaf.agent_id.clone(),
-        to_agent_id: middle.agent_id.clone(),
-        kind: astrcode_core::InboxEnvelopeKind::ChildDelivery,
-        message: "leaf 完成了任务".to_string(),
-        context: None,
-        is_final: true,
-        summary: Some("leaf 任务结果".to_string()),
-        findings: vec!["发现1".to_string()],
-        artifacts: Vec::new(),
-    };
+    let leaf_delivery =
+        make_child_delivery_envelope(&leaf.agent_id, &middle.agent_id, "delivery-leaf-to-middle");
 
     control
         .push_inbox(&middle.agent_id, leaf_delivery)
@@ -1546,7 +2162,7 @@ fn project_child_terminal_delivery_returns_default_summary_when_no_handoff_or_fa
 }
 
 #[tokio::test]
-async fn reactivate_parent_skips_when_parent_is_running() {
+async fn reactivate_parent_buffers_delivery_while_parent_turn_is_busy() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
         RuntimeService::from_capabilities(empty_capabilities())
@@ -1563,72 +2179,128 @@ async fn reactivate_parent_skips_when_parent_is_running() {
         .await
         .expect("session state should load");
 
-    // 父 agent 正在运行 → 应跳过重激活
-    session_state
-        .running
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-
-    let notification = make_test_notification("child-reactivate-running", "turn-child");
-    service
-        .execution()
-        .reactivate_parent_agent_if_idle(&session.session_id, "turn-parent", &notification)
-        .await;
-
-    // running 标志保持 true，说明没有进入 submit_prompt
-    assert!(
-        session_state
-            .running
-            .load(std::sync::atomic::Ordering::SeqCst)
-    );
-}
-
-#[tokio::test]
-async fn reactivate_parent_skips_when_active_turn_matches_current_turn() {
-    let _guard = TestEnvGuard::new();
-    let service = Arc::new(
-        RuntimeService::from_capabilities(empty_capabilities())
-            .expect("runtime service should build"),
-    );
-    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    let session = service
-        .sessions()
-        .create(temp_dir.path())
-        .await
-        .expect("session should be created");
-    let session_state = service
-        .ensure_session_loaded(&session.session_id)
-        .await
-        .expect("session state should load");
-
-    // 父 agent 未运行，但 active_turn_id 与当前通知来源的 turn 一致 → 跳过
-    session_state
-        .running
-        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let turn_lease = match service
+        .session_manager
+        .try_acquire_turn(&session.session_id, "turn-busy")
+        .expect("turn lease acquisition should succeed")
     {
-        let mut active_turn = session_state
-            .active_turn_id
-            .lock()
-            .expect("active turn lock");
-        *active_turn = Some("turn-parent".to_string());
-    }
+        astrcode_core::SessionTurnAcquireResult::Acquired(turn_lease) => turn_lease,
+        astrcode_core::SessionTurnAcquireResult::Busy(_) => {
+            panic!("fresh session should not already be busy")
+        },
+    };
+    prepare_session_execution(
+        &session_state,
+        &session.session_id,
+        "turn-busy",
+        CancelToken::new(),
+        turn_lease,
+        None,
+    )
+    .expect("busy turn should be prepared");
 
-    let notification = make_test_notification("child-reactivate-same-turn", "turn-parent");
+    let notification = make_test_notification("child-reactivate-busy", "turn-child");
     service
         .execution()
         .reactivate_parent_agent_if_idle(&session.session_id, "turn-parent", &notification)
         .await;
 
-    // active_turn_id 保持不变
-    let active_turn = session_state
-        .active_turn_id
-        .lock()
-        .expect("active turn lock")
-        .clone();
-    assert_eq!(active_turn.as_deref(), Some("turn-parent"));
+    assert_eq!(
+        service
+            .agent_control
+            .pending_parent_delivery_count(&session.session_id)
+            .await,
+        1
+    );
+    assert!(
+        !session_contains_reactivation_prompt(&service, &session.session_id).await,
+        "busy-parent buffering must not persist mechanism user messages"
+    );
 }
 
 #[tokio::test]
-async fn reactivate_parent_persists_internal_reactivation_prompt_origin() {
+async fn reactivate_parent_drains_buffer_after_busy_parent_turn_completes() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(empty_capabilities())
+            .expect("runtime service should build"),
+    );
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("session should be created");
+    let session_state = service
+        .ensure_session_loaded(&session.session_id)
+        .await
+        .expect("session state should load");
+
+    let turn_lease = match service
+        .session_manager
+        .try_acquire_turn(&session.session_id, "turn-busy")
+        .expect("turn lease acquisition should succeed")
+    {
+        astrcode_core::SessionTurnAcquireResult::Acquired(turn_lease) => turn_lease,
+        astrcode_core::SessionTurnAcquireResult::Busy(_) => {
+            panic!("fresh session should not already be busy")
+        },
+    };
+    prepare_session_execution(
+        &session_state,
+        &session.session_id,
+        "turn-busy",
+        CancelToken::new(),
+        turn_lease,
+        None,
+    )
+    .expect("busy turn should be prepared");
+
+    let notification = make_test_notification("child-reactivate-drain", "turn-child");
+    service
+        .execution()
+        .reactivate_parent_agent_if_idle(&session.session_id, "turn-parent", &notification)
+        .await;
+    assert_eq!(
+        service
+            .agent_control
+            .pending_parent_delivery_count(&session.session_id)
+            .await,
+        1
+    );
+
+    crate::service::turn::complete_session_execution(
+        &session_state,
+        Phase::Idle,
+        &service.agent_control(),
+    )
+    .await;
+    service
+        .execution()
+        .try_start_parent_delivery_turn(&session.session_id)
+        .await
+        .expect("wake turn scheduling should succeed");
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while service
+            .agent_control
+            .pending_parent_delivery_count(&session.session_id)
+            .await
+            > 0
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("buffered delivery should be consumed by wake turn");
+    assert!(
+        !session_contains_reactivation_prompt(&service, &session.session_id).await,
+        "wake turn must consume runtime-only delivery input"
+    );
+}
+
+#[tokio::test]
+async fn reactivate_parent_idle_wake_turn_uses_runtime_only_delivery_input() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(
         RuntimeService::from_capabilities(empty_capabilities())
@@ -1647,38 +2319,122 @@ async fn reactivate_parent_persists_internal_reactivation_prompt_origin() {
         .reactivate_parent_agent_if_idle(&session.session_id, "turn-parent", &notification)
         .await;
 
-    let stored = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let events = crate::service::session::load_events(
-                Arc::clone(&service.session_manager),
-                &session.session_id,
-            )
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while service
+            .agent_control
+            .pending_parent_delivery_count(&session.session_id)
             .await
-            .expect("session events should load");
-            if let Some(event) = events.into_iter().find(|stored| {
-                matches!(
-                    stored.event,
-                    StorageEvent::UserMessage {
-                        origin: UserMessageOrigin::ReactivationPrompt,
-                        ..
-                    }
-                )
-            }) {
-                break event;
-            }
+            > 0
+        {
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("reactivation prompt should be persisted");
+    .expect("idle wake turn should consume queued delivery");
 
-    assert!(matches!(
-        stored.event,
-        StorageEvent::UserMessage {
-            origin: UserMessageOrigin::ReactivationPrompt,
-            ..
+    assert!(
+        !session_contains_reactivation_prompt(&service, &session.session_id).await,
+        "idle wake turn must not persist reactivationPrompt user messages"
+    );
+}
+
+#[tokio::test]
+async fn reactivate_parent_failed_wake_turn_requeues_delivery_for_retry() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(empty_capabilities())
+            .expect("runtime service should build"),
+    );
+    install_test_loop(
+        &service,
+        LlmOutput {
+            content: String::new(),
+            ..LlmOutput::default()
+        },
+    )
+    .await;
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("session should be created");
+
+    let notification = make_test_notification("child-reactivate-failed", "turn-child");
+    service
+        .execution()
+        .reactivate_parent_agent_if_idle(&session.session_id, "turn-parent", &notification)
+        .await;
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while service.running_session_ids().contains(&session.session_id) {
+            tokio::task::yield_now().await;
         }
-    ));
+    })
+    .await
+    .expect("failed wake turn should release parent session running state");
+    assert_eq!(
+        service
+            .agent_control
+            .pending_parent_delivery_count(&session.session_id)
+            .await,
+        1,
+        "failed wake turn must keep the delivery queued for retry"
+    );
+    assert!(
+        !session_contains_reactivation_prompt(&service, &session.session_id).await,
+        "failed wake turn must not fall back to durable reactivationPrompt messages"
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !service.running_session_ids().contains(&session.session_id),
+        "failed wake turn must stop draining instead of hot-looping on the same queued delivery"
+    );
+
+    install_test_loop(
+        &service,
+        LlmOutput {
+            content: "delivery consumed".to_string(),
+            ..LlmOutput::default()
+        },
+    )
+    .await;
+    service
+        .execution()
+        .try_start_parent_delivery_turn(&session.session_id)
+        .await
+        .expect("retry wake turn should schedule successfully");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while service
+            .agent_control
+            .pending_parent_delivery_count(&session.session_id)
+            .await
+            > 0
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("successful retry should eventually consume the queued delivery");
+}
+
+async fn session_contains_reactivation_prompt(
+    service: &Arc<RuntimeService>,
+    session_id: &str,
+) -> bool {
+    crate::service::session::load_events(Arc::clone(&service.session_manager), session_id)
+        .await
+        .expect("session events should load")
+        .into_iter()
+        .any(|stored| {
+            matches!(
+                stored.event,
+                StorageEvent::UserMessage {
+                    origin: UserMessageOrigin::ReactivationPrompt,
+                    ..
+                }
+            )
+        })
 }
 
 /// 构造用于重激活测试的 ChildSessionNotification。

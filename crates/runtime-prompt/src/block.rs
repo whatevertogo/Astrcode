@@ -14,16 +14,20 @@
 
 use std::{borrow::Cow, collections::HashMap};
 
+use serde::{Deserialize, Serialize};
+
 use super::template::PromptTemplate;
 
 /// Prompt 块所属的缓存层级。
 ///
 /// 分层构建器会在最终 `PromptPlan` 中标记 system block 的层级，
 /// 让 provider 在序列化时可以把稳定前缀拆成多个 cache breakpoint。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PromptLayer {
     Stable,
     SemiStable,
+    Inherited,
     Dynamic,
     #[default]
     Unspecified,
@@ -181,6 +185,7 @@ pub struct BlockSpec {
     pub render_target: RenderTarget,
     pub metadata: BlockMetadata,
     pub vars: HashMap<String, String>,
+    pub layer: PromptLayer,
 }
 
 impl BlockSpec {
@@ -202,6 +207,7 @@ impl BlockSpec {
             render_target: RenderTarget::System,
             metadata: BlockMetadata::default(),
             vars: HashMap::new(),
+            layer: PromptLayer::Unspecified,
         }
     }
 
@@ -223,6 +229,7 @@ impl BlockSpec {
             render_target: RenderTarget::System,
             metadata: BlockMetadata::default(),
             vars: HashMap::new(),
+            layer: PromptLayer::Unspecified,
         }
     }
 
@@ -245,6 +252,7 @@ impl BlockSpec {
             render_target,
             metadata: BlockMetadata::default(),
             vars: HashMap::new(),
+            layer: PromptLayer::Unspecified,
         }
     }
 
@@ -280,6 +288,11 @@ impl BlockSpec {
 
     pub fn with_var(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.vars.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn with_layer(mut self, layer: PromptLayer) -> Self {
+        self.layer = layer;
         self
     }
 

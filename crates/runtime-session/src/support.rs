@@ -7,9 +7,10 @@ pub fn lock_anyhow<'a, T>(
     mutex: &'a StdMutex<T>,
     name: &'static str,
 ) -> Result<StdMutexGuard<'a, T>> {
-    Ok(mutex
-        .lock()
-        .map_err(|_| AstrError::LockPoisoned(name.to_string()))?)
+    mutex.lock().map_err(|_| {
+        log::error!("mutex '{name}' is poisoned; refusing to continue with stale session state");
+        AstrError::LockPoisoned(name.to_string()).into()
+    })
 }
 
 pub fn with_lock_recovery<T, R>(
@@ -34,7 +35,8 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T> + Send + 'static,
 {
-    tokio::task::spawn_blocking(work)
-        .await
-        .map_err(|error| AstrError::Internal(format!("blocking task '{label}' failed: {error}")))?
+    tokio::task::spawn_blocking(work).await.map_err(|error| {
+        log::error!("blocking task '{label}' failed before returning a session result: {error}");
+        AstrError::Internal(format!("blocking task '{label}' failed: {error}"))
+    })?
 }

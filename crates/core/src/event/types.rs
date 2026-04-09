@@ -158,6 +158,12 @@ pub enum StorageEvent {
         cache_creation_input_tokens: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_read_input_tokens: Option<u32>,
+        #[serde(default)]
+        provider_cache_metrics_supported: bool,
+        #[serde(default)]
+        prompt_cache_reuse_hits: u32,
+        #[serde(default)]
+        prompt_cache_reuse_misses: u32,
     },
     /// 上下文压缩已应用。
     CompactApplied {
@@ -411,6 +417,9 @@ mod tests {
             provider_output_tokens: Some(120),
             cache_creation_input_tokens: Some(600),
             cache_read_input_tokens: Some(500),
+            provider_cache_metrics_supported: true,
+            prompt_cache_reuse_hits: 2,
+            prompt_cache_reuse_misses: 1,
         };
 
         let encoded = serde_json::to_value(&event).expect("event should serialize");
@@ -431,6 +440,9 @@ mod tests {
                 provider_output_tokens,
                 cache_creation_input_tokens,
                 cache_read_input_tokens,
+                provider_cache_metrics_supported,
+                prompt_cache_reuse_hits,
+                prompt_cache_reuse_misses,
             } => {
                 assert_eq!(turn_id.as_deref(), Some("turn-1"));
                 assert_eq!(step_index, 2);
@@ -443,6 +455,9 @@ mod tests {
                 assert_eq!(provider_output_tokens, Some(120));
                 assert_eq!(cache_creation_input_tokens, Some(600));
                 assert_eq!(cache_read_input_tokens, Some(500));
+                assert!(provider_cache_metrics_supported);
+                assert_eq!(prompt_cache_reuse_hits, 2);
+                assert_eq!(prompt_cache_reuse_misses, 1);
             },
             other => panic!("expected prompt metrics, got {other:?}"),
         }
@@ -460,6 +475,9 @@ mod tests {
             "provider_output_tokens": 120,
             "cache_creation_input_tokens": 600,
             "cache_read_input_tokens": 500,
+            "provider_cache_metrics_supported": true,
+            "prompt_cache_reuse_hits": 2,
+            "prompt_cache_reuse_misses": 1,
         });
         assert_eq!(encoded, expected);
     }

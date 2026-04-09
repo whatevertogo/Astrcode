@@ -708,6 +708,62 @@ mod tests {
     }
 
     #[test]
+    fn find_subrun_status_in_events_marks_descriptorless_records_as_legacy_even_with_tool_call() {
+        let events = vec![
+            StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent::SubRunStarted {
+                    turn_id: Some("turn-legacy".to_string()),
+                    agent: AgentEventContext::sub_run(
+                        "agent-legacy".to_string(),
+                        "turn-legacy".to_string(),
+                        "review".to_string(),
+                        "subrun-legacy".to_string(),
+                        SubRunStorageMode::SharedSession,
+                        None,
+                    ),
+                    descriptor: None,
+                    tool_call_id: Some("call-legacy".to_string()),
+                    resolved_overrides: ResolvedSubagentContextOverrides::default(),
+                    resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+                    timestamp: None,
+                },
+            },
+            StoredEvent {
+                storage_seq: 2,
+                event: StorageEvent::SubRunFinished {
+                    turn_id: Some("turn-legacy".to_string()),
+                    agent: AgentEventContext::sub_run(
+                        "agent-legacy".to_string(),
+                        "turn-legacy".to_string(),
+                        "review".to_string(),
+                        "subrun-legacy".to_string(),
+                        SubRunStorageMode::SharedSession,
+                        None,
+                    ),
+                    descriptor: None,
+                    tool_call_id: Some("call-legacy".to_string()),
+                    result: SubRunResult {
+                        status: SubRunOutcome::Completed,
+                        handoff: None,
+                        failure: None,
+                    },
+                    step_count: 1,
+                    estimated_tokens: 8,
+                    timestamp: None,
+                },
+            },
+        ];
+
+        let snapshot = find_subrun_status_in_events(&events, "session-legacy", "subrun-legacy")
+            .expect("snapshot should exist");
+
+        assert_eq!(snapshot.source, ParsedSubRunStatusSource::LegacyDurable);
+        assert!(snapshot.descriptor.is_none());
+        assert_eq!(snapshot.tool_call_id.as_deref(), Some("call-legacy"));
+    }
+
+    #[test]
     fn find_subrun_status_in_events_uses_durable_descriptor_and_tool_call_id() {
         let descriptor = astrcode_core::SubRunDescriptor {
             sub_run_id: "subrun-3".to_string(),

@@ -1,8 +1,16 @@
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
+};
 
-use astrcode_core::{PluginRegistry, RuntimeCoordinator, RuntimeHandle};
+use astrcode_core::{
+    AgentEventContext, EventLogWriter, PluginRegistry, RuntimeCoordinator, RuntimeHandle,
+    StorageEvent,
+};
 use astrcode_runtime::{RuntimeGovernance, RuntimeService};
 use astrcode_runtime_registry::CapabilityRouter;
+use astrcode_storage::session::EventLog;
+use chrono::Utc;
 
 use crate::{
     AppState, FrontendBuild,
@@ -93,4 +101,205 @@ pub(crate) fn test_state_with_capabilities(
         },
         guard,
     )
+}
+
+pub(crate) fn append_session_events(
+    session_id: &str,
+    working_dir: &Path,
+    events: impl IntoIterator<Item = StorageEvent>,
+) {
+    let mut log =
+        EventLog::create(session_id, working_dir).expect("session file should be created");
+    for event in events {
+        log.append(&event).expect("event should append");
+    }
+}
+
+pub(crate) fn seed_subrun_status_contract_session(session_id: &str, working_dir: &Path) {
+    let descriptor = astrcode_core::SubRunDescriptor {
+        sub_run_id: "subrun-contract".to_string(),
+        parent_turn_id: "turn-contract".to_string(),
+        parent_agent_id: Some("agent-parent".to_string()),
+        depth: 1,
+    };
+    let sub = AgentEventContext::sub_run(
+        "agent-contract",
+        "turn-contract",
+        "review",
+        "subrun-contract",
+        astrcode_core::SubRunStorageMode::SharedSession,
+        None,
+    );
+
+    append_session_events(
+        session_id,
+        working_dir,
+        [
+            StorageEvent::SessionStart {
+                session_id: session_id.to_string(),
+                timestamp: Utc::now(),
+                working_dir: working_dir.display().to_string(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
+            StorageEvent::SubRunStarted {
+                turn_id: Some("turn-contract".to_string()),
+                agent: sub.clone(),
+                descriptor: Some(descriptor.clone()),
+                tool_call_id: Some("call-contract".to_string()),
+                resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+                resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: Some(Utc::now()),
+            },
+            StorageEvent::SubRunFinished {
+                turn_id: Some("turn-contract".to_string()),
+                agent: sub,
+                descriptor: Some(descriptor),
+                tool_call_id: Some("call-contract".to_string()),
+                result: astrcode_core::SubRunResult {
+                    status: astrcode_core::SubRunOutcome::Completed,
+                    handoff: None,
+                    failure: None,
+                },
+                step_count: 1,
+                estimated_tokens: 42,
+                timestamp: Some(Utc::now()),
+            },
+        ],
+    );
+}
+
+pub(crate) fn seed_legacy_subrun_contract_session(session_id: &str, working_dir: &Path) {
+    let sub = AgentEventContext::sub_run(
+        "agent-legacy-contract",
+        "turn-legacy-contract",
+        "review",
+        "subrun-legacy-contract",
+        astrcode_core::SubRunStorageMode::SharedSession,
+        None,
+    );
+
+    append_session_events(
+        session_id,
+        working_dir,
+        [
+            StorageEvent::SessionStart {
+                session_id: session_id.to_string(),
+                timestamp: Utc::now(),
+                working_dir: working_dir.display().to_string(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
+            StorageEvent::SubRunStarted {
+                turn_id: Some("turn-legacy-contract".to_string()),
+                agent: sub.clone(),
+                descriptor: None,
+                tool_call_id: Some("call-legacy-contract".to_string()),
+                resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+                resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: Some(Utc::now()),
+            },
+            StorageEvent::SubRunFinished {
+                turn_id: Some("turn-legacy-contract".to_string()),
+                agent: sub,
+                descriptor: None,
+                tool_call_id: Some("call-legacy-contract".to_string()),
+                result: astrcode_core::SubRunResult {
+                    status: astrcode_core::SubRunOutcome::Completed,
+                    handoff: None,
+                    failure: None,
+                },
+                step_count: 1,
+                estimated_tokens: 21,
+                timestamp: Some(Utc::now()),
+            },
+        ],
+    );
+}
+
+pub(crate) fn seed_child_delivery_contract_session(session_id: &str, working_dir: &Path) {
+    let descriptor = astrcode_core::SubRunDescriptor {
+        sub_run_id: "subrun-delivery-contract".to_string(),
+        parent_turn_id: "turn-delivery-contract".to_string(),
+        parent_agent_id: Some("agent-parent".to_string()),
+        depth: 1,
+    };
+    let agent = AgentEventContext::sub_run(
+        "agent-child-contract",
+        "turn-delivery-contract",
+        "review",
+        "subrun-delivery-contract",
+        astrcode_core::SubRunStorageMode::IndependentSession,
+        Some("session-child-contract".to_string()),
+    );
+    let child_ref = astrcode_core::ChildAgentRef {
+        agent_id: "agent-child-contract".to_string(),
+        session_id: session_id.to_string(),
+        sub_run_id: "subrun-delivery-contract".to_string(),
+        parent_agent_id: Some("agent-parent".to_string()),
+        lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
+        status: astrcode_core::AgentStatus::Completed,
+        openable: true,
+        open_session_id: "session-child-contract".to_string(),
+    };
+
+    append_session_events(
+        session_id,
+        working_dir,
+        [
+            StorageEvent::SessionStart {
+                session_id: session_id.to_string(),
+                timestamp: Utc::now(),
+                working_dir: working_dir.display().to_string(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
+            StorageEvent::SubRunStarted {
+                turn_id: Some("turn-delivery-contract".to_string()),
+                agent: agent.clone(),
+                descriptor: Some(descriptor.clone()),
+                tool_call_id: Some("call-delivery-contract".to_string()),
+                resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides {
+                    storage_mode: astrcode_core::SubRunStorageMode::IndependentSession,
+                    ..Default::default()
+                },
+                resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: Some(Utc::now()),
+            },
+            StorageEvent::SubRunFinished {
+                turn_id: Some("turn-delivery-contract".to_string()),
+                agent: agent.clone(),
+                descriptor: Some(descriptor),
+                tool_call_id: Some("call-delivery-contract".to_string()),
+                result: astrcode_core::SubRunResult {
+                    status: astrcode_core::SubRunOutcome::Completed,
+                    handoff: Some(astrcode_core::SubRunHandoff {
+                        summary: "child final reply summary".to_string(),
+                        findings: Vec::new(),
+                        artifacts: Vec::new(),
+                    }),
+                    failure: None,
+                },
+                step_count: 2,
+                estimated_tokens: 88,
+                timestamp: Some(Utc::now()),
+            },
+            StorageEvent::ChildSessionNotification {
+                turn_id: Some("turn-delivery-contract".to_string()),
+                agent,
+                notification: astrcode_core::ChildSessionNotification {
+                    notification_id: "child-terminal:subrun-delivery-contract:completed"
+                        .to_string(),
+                    child_ref,
+                    kind: astrcode_core::ChildSessionNotificationKind::Delivered,
+                    summary: "child final reply summary".to_string(),
+                    status: astrcode_core::AgentStatus::Completed,
+                    open_session_id: "session-child-contract".to_string(),
+                    source_tool_call_id: Some("call-delivery-contract".to_string()),
+                    final_reply_excerpt: Some("final answer excerpt".to_string()),
+                },
+                timestamp: Some(Utc::now()),
+            },
+        ],
+    );
 }

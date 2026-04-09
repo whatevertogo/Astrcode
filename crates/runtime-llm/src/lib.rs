@@ -574,6 +574,15 @@ pub trait LlmProvider: Send + Sync {
     /// 取消令牌通过 `request.cancel` 传递，任何时刻取消都会立即中断请求。
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput>;
 
+    /// 当前 provider 是否原生暴露缓存 token 指标。
+    ///
+    /// OpenAI 兼容接口目前只依赖自动前缀缓存，缺少稳定的 token 统计；Anthropic 则会明确
+    /// 返回 cache creation/read 字段。上层通过这个开关决定是否把 0 值解释成“真实指标”
+    /// 还是“provider 不支持”。
+    fn supports_cache_metrics(&self) -> bool {
+        false
+    }
+
     /// 返回模型的上下文窗口估算。
     ///
     /// 用于调用方判断当前消息历史是否接近上下文限制，触发压缩或截断。

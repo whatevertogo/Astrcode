@@ -10,7 +10,7 @@ use astrcode_runtime_execution::{
 use super::root::AgentExecutionServiceHandle;
 use crate::service::{
     ServiceResult,
-    loop_factory::{LoopRuntimeDeps, build_scoped_agent_loop},
+    loop_factory::{LoopRuntimeDeps, LoopSurfaceInputs, build_scoped_agent_loop},
 };
 
 impl AgentExecutionServiceHandle {
@@ -24,6 +24,7 @@ impl AgentExecutionServiceHandle {
             prompt_declarations: surface.prompt_declarations.clone(),
             skill_catalog: Arc::clone(&surface.skill_catalog),
             hook_handlers: surface.hook_handlers.clone(),
+            prompt_builder: surface.prompt_builder.clone(),
             active_profile: config.active_profile,
             runtime_config: config.runtime,
         }
@@ -65,13 +66,17 @@ impl AgentExecutionServiceHandle {
              prompt_declarations,
              skill_catalog,
              hook_handlers,
+             prompt_builder,
              active_profile,
              runtime_config| {
                 build_scoped_agent_loop(
-                    capabilities,
-                    prompt_declarations,
-                    skill_catalog,
-                    hook_handlers,
+                    LoopSurfaceInputs {
+                        capabilities,
+                        prompt_declarations,
+                        skill_catalog,
+                        hook_handlers,
+                        prompt_builder,
+                    },
                     active_profile,
                     runtime_config,
                     LoopRuntimeDeps::new(

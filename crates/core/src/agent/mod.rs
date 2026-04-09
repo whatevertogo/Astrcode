@@ -284,7 +284,8 @@ pub struct ResolvedSubagentContextOverrides {
 impl Default for ResolvedSubagentContextOverrides {
     fn default() -> Self {
         Self {
-            storage_mode: SubRunStorageMode::SharedSession,
+            // 默认使用独立子会话模式，旧共享写入模式仅保留读取兼容。
+            storage_mode: SubRunStorageMode::IndependentSession,
             inherit_system_instructions: true,
             inherit_project_instructions: true,
             inherit_working_dir: true,

@@ -10,6 +10,7 @@ use astrcode_runtime_agent_loop::{
     AgentLoop, CompactionTailSnapshot, TokenBudgetDecision, TurnOutcome, build_auto_continue_nudge,
     check_token_budget, estimate_text_tokens,
 };
+use astrcode_runtime_prompt::PromptDeclaration;
 use astrcode_runtime_session::{
     SessionState, append_and_broadcast, append_and_broadcast_from_turn_callback,
     complete_session_execution as complete_session_execution_state, recent_turn_event_tail,
@@ -17,6 +18,7 @@ use astrcode_runtime_session::{
 use chrono::Utc;
 
 use super::BudgetSettings;
+use crate::service::observability::RuntimeObservability;
 
 #[derive(Debug, Default, Clone, Copy)]
 struct TurnExecutionStats {
@@ -53,6 +55,21 @@ pub struct SessionTurnRunResult {
     pub outcome: std::result::Result<TurnOutcome, AstrError>,
     pub phase: Phase,
     pub succeeded: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeTurnInput {
+    pub user_event: Option<StorageEvent>,
+    pub prompt_declarations: Vec<PromptDeclaration>,
+}
+
+impl RuntimeTurnInput {
+    pub fn from_user_event(user_event: StorageEvent) -> Self {
+        Self {
+            user_event: Some(user_event),
+            prompt_declarations: Vec::new(),
+        }
+    }
 }
 
 pub async fn complete_session_execution(
@@ -97,30 +114,51 @@ pub async fn run_session_turn(
     loop_: &AgentLoop,
     turn_id: &str,
     cancel: CancelToken,
-    user_event: StorageEvent,
+    runtime_input: RuntimeTurnInput,
     agent: AgentEventContext,
     execution_owner: ExecutionOwner,
     budget_settings: BudgetSettings,
+    observability: Option<Arc<RuntimeObservability>>,
 ) -> SessionTurnRunResult {
     let initial_phase = session.current_phase().unwrap_or(Phase::Idle);
     let mut translator = EventTranslator::new(initial_phase);
-    let outcome =
-        match append_and_broadcast_from_turn_callback(session, &user_event, &mut translator) {
-            Ok(_) => {
-                execute_turn_chain(
-                    session,
-                    loop_,
-                    turn_id,
-                    cancel,
-                    &mut translator,
-                    agent.clone(),
-                    execution_owner,
-                    budget_settings,
-                )
-                .await
-            },
-            Err(error) => Err(AstrError::Internal(error.to_string())),
-        };
+    let outcome = match runtime_input.user_event.as_ref() {
+        Some(user_event) => {
+            match append_and_broadcast_from_turn_callback(session, user_event, &mut translator) {
+                Ok(_) => {
+                    execute_turn_chain(
+                        session,
+                        loop_,
+                        turn_id,
+                        cancel,
+                        &mut translator,
+                        agent.clone(),
+                        execution_owner,
+                        budget_settings,
+                        observability.clone(),
+                        runtime_input.prompt_declarations,
+                    )
+                    .await
+                },
+                Err(error) => Err(AstrError::Internal(error.to_string())),
+            }
+        },
+        None => {
+            execute_turn_chain(
+                session,
+                loop_,
+                turn_id,
+                cancel,
+                &mut translator,
+                agent.clone(),
+                execution_owner,
+                budget_settings,
+                observability.clone(),
+                runtime_input.prompt_declarations,
+            )
+            .await
+        },
+    };
     let succeeded = matches!(
         outcome.as_ref(),
         Ok(TurnOutcome::Completed) | Ok(TurnOutcome::Cancelled)
@@ -162,6 +200,8 @@ pub async fn execute_turn_chain(
     agent: AgentEventContext,
     execution_owner: ExecutionOwner,
     budget_settings: BudgetSettings,
+    observability: Option<Arc<RuntimeObservability>>,
+    runtime_prompt_declarations: Vec<PromptDeclaration>,
 ) -> std::result::Result<TurnOutcome, AstrError> {
     loop {
         let projected = state
@@ -176,11 +216,12 @@ pub async fn execute_turn_chain(
         let live_tail = Arc::new(StdMutex::new(Vec::new()));
         let mut stats = TurnExecutionStats::default();
         let outcome = loop_
-            .run_turn_without_finish_with_compaction_tail(
+            .run_turn_without_finish_with_compaction_tail_and_prompt_declarations(
                 &projected,
                 turn_id,
                 &mut |event| {
                     observe_turn_event(&mut stats, &event);
+                    observe_runtime_prompt_metrics(observability.as_deref(), &event);
                     let stored = append_and_broadcast_from_turn_callback(state, &event, translator)
                         .map_err(|error| AstrError::Internal(error.to_string()))?;
                     if astrcode_runtime_session::should_record_compaction_tail_event(&event) {
@@ -196,6 +237,7 @@ pub async fn execute_turn_chain(
                 execution_owner.clone(),
                 CompactionTailSnapshot::from_seed(tail_seed)
                     .with_live_recorder(Arc::clone(&live_tail)),
+                &runtime_prompt_declarations,
             )
             .await?;
 
@@ -227,6 +269,32 @@ pub async fn execute_turn_chain(
         .await
         .map_err(|error| AstrError::Internal(error.to_string()))?;
         return Ok(outcome);
+    }
+}
+
+fn observe_runtime_prompt_metrics(
+    observability: Option<&RuntimeObservability>,
+    event: &StorageEvent,
+) {
+    let Some(observability) = observability else {
+        return;
+    };
+
+    let StorageEvent::PromptMetrics {
+        provider_input_tokens: None,
+        prompt_cache_reuse_hits,
+        prompt_cache_reuse_misses,
+        ..
+    } = event
+    else {
+        return;
+    };
+
+    if *prompt_cache_reuse_hits > 0 {
+        observability.record_cache_reuse_hits(u64::from(*prompt_cache_reuse_hits));
+    }
+    if *prompt_cache_reuse_misses > 0 {
+        observability.record_cache_reuse_misses(u64::from(*prompt_cache_reuse_misses));
     }
 }
 

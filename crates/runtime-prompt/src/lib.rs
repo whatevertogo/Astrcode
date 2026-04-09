@@ -43,7 +43,9 @@ pub use context::{PromptAgentProfileSummary, PromptContext, PromptSkillSummary};
 pub use contribution::{PromptContribution, append_unique_tools};
 pub use contributor::PromptContributor;
 pub use diagnostics::{DiagnosticLevel, PromptDiagnostics};
-pub use layered_builder::{LayeredBuilderOptions, LayeredPromptBuilder};
+pub use layered_builder::{
+    LayeredBuilderOptions, LayeredPromptBuilder, default_layered_prompt_builder,
+};
 pub use plan::PromptPlan;
 pub use prompt_declaration::{
     PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,

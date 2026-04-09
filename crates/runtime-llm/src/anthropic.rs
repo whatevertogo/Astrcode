@@ -233,6 +233,10 @@ impl AnthropicProvider {
 
 #[async_trait]
 impl LlmProvider for AnthropicProvider {
+    fn supports_cache_metrics(&self) -> bool {
+        true
+    }
+
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         let cancel = request.cancel;
 
@@ -513,6 +517,10 @@ fn to_anthropic_system(
                             },
                             SystemPromptLayer::SemiStable => {
                                 // SemiStable 层使用默认 5m TTL
+                                Some(AnthropicCacheControl::ephemeral())
+                            },
+                            SystemPromptLayer::Inherited => {
+                                // 继承层和父背景相关，允许独立缓存但不和动态层混用。
                                 Some(AnthropicCacheControl::ephemeral())
                             },
                             SystemPromptLayer::Dynamic => {
@@ -1504,6 +1512,12 @@ mod tests {
                     layer: astrcode_core::SystemPromptLayer::SemiStable,
                 },
                 SystemPromptBlock {
+                    title: "Inherited 1".to_string(),
+                    content: "inherited content 1".to_string(),
+                    cache_boundary: true,
+                    layer: astrcode_core::SystemPromptLayer::Inherited,
+                },
+                SystemPromptBlock {
                     title: "Dynamic 1".to_string(),
                     content: "dynamic content 1".to_string(),
                     cache_boundary: true,
@@ -1515,7 +1529,7 @@ mod tests {
         let body = serde_json::to_value(&request).expect("request should serialize");
 
         assert!(body.get("system").is_some_and(Value::is_array));
-        assert_eq!(body["system"].as_array().unwrap().len(), 6);
+        assert_eq!(body["system"].as_array().unwrap().len(), 7);
 
         // Stable 层内的前两个 block 不应该有 cache_control
         assert!(
@@ -1547,10 +1561,17 @@ mod tests {
             "semi2 should have cache_control"
         );
 
+        // Inherited 层允许独立缓存
+        assert_eq!(
+            body["system"][5]["cache_control"]["type"],
+            json!("ephemeral"),
+            "inherited1 should have cache_control"
+        );
+
         // Dynamic 层不缓存（避免浪费，因为内容变化频繁）
         // TODO: 更好的做法？实现更好的kv缓存？
         assert!(
-            body["system"][5].get("cache_control").is_none(),
+            body["system"][6].get("cache_control").is_none(),
             "dynamic1 should not have cache_control (Dynamic layer is not cached)"
         );
     }
@@ -1577,6 +1598,22 @@ mod tests {
                 cache_read_input_tokens: 60,
             })
         );
+    }
+
+    #[test]
+    fn anthropic_provider_reports_cache_metrics_support() {
+        let provider = AnthropicProvider::new(
+            "https://api.anthropic.com/v1/messages".to_string(),
+            "sk-ant-test".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            ModelLimits {
+                context_window: 200_000,
+                max_output_tokens: 8096,
+            },
+        )
+        .expect("provider should build");
+
+        assert!(provider.supports_cache_metrics());
     }
 
     #[test]

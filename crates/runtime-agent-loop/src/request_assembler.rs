@@ -36,20 +36,11 @@ use astrcode_core::{
 use astrcode_runtime_prompt::{PromptLayer, PromptPlan, append_unique_tools};
 
 use crate::{
-    context_pipeline::{ContextBlock, ContextBundle},
+    context_pipeline::ContextBundle,
     context_window::{PromptTokenSnapshot, TokenUsageTracker, build_prompt_snapshot},
 };
 
 pub(crate) struct RequestAssembler;
-
-#[derive(Debug, Clone)]
-enum AssembledContextMessage {
-    Conversation(LlmMessage),
-    StructuredContext {
-        slot: &'static str,
-        block: ContextBlock,
-    },
-}
 
 /// Prepared request plus request-shape diagnostics needed by the loop.
 pub(crate) struct PreparedRequest {
@@ -96,14 +87,6 @@ impl RequestAssembler {
         context: &ContextBundle,
         mut tools: Vec<ToolDefinition>,
     ) -> Result<ModelRequest> {
-        // These slots are intentionally carried through the bundle even before they affect request
-        // encoding, so future workset/memory stages can plug in without changing loop signatures.
-        let _structured_context_slots = (
-            &context.workset,
-            &context.memory,
-            &context.diagnostics,
-            &context.budget_state,
-        );
         append_unique_tools(&mut tools, prompt.extra_tools.clone());
         Ok(ModelRequest {
             messages: self.compose_messages(prompt, context),
@@ -139,43 +122,10 @@ impl RequestAssembler {
     }
 
     fn compose_messages(&self, prompt: &PromptPlan, context: &ContextBundle) -> Vec<LlmMessage> {
-        let mut assembled = prompt
-            .prepend_messages
-            .iter()
-            .cloned()
-            .map(AssembledContextMessage::Conversation)
-            .collect::<Vec<_>>();
-        assembled.extend(self.assemble_structured_context("workset", &context.workset));
-        assembled.extend(self.assemble_structured_context("memory", &context.memory));
-        assembled.extend(
-            context
-                .conversation
-                .messages
-                .iter()
-                .cloned()
-                .map(AssembledContextMessage::Conversation),
-        );
-        assembled.extend(
-            prompt
-                .append_messages
-                .iter()
-                .cloned()
-                .map(AssembledContextMessage::Conversation),
-        );
-
-        assembled.into_iter().map(lower_assembled_message).collect()
-    }
-
-    fn assemble_structured_context(
-        &self,
-        slot: &'static str,
-        blocks: &[ContextBlock],
-    ) -> Vec<AssembledContextMessage> {
-        blocks
-            .iter()
-            .cloned()
-            .map(|block| AssembledContextMessage::StructuredContext { slot, block })
-            .collect()
+        let mut messages = prompt.prepend_messages.to_vec();
+        messages.extend(context.conversation.messages.iter().cloned());
+        messages.extend(prompt.append_messages.iter().cloned());
+        messages
     }
 }
 
@@ -201,30 +151,13 @@ fn build_system_prompt_blocks(prompt: &PromptPlan) -> Vec<SystemPromptBlock> {
                 layer: match block.layer {
                     PromptLayer::Stable => SystemPromptLayer::Stable,
                     PromptLayer::SemiStable => SystemPromptLayer::SemiStable,
+                    PromptLayer::Inherited => SystemPromptLayer::Inherited,
                     PromptLayer::Dynamic => SystemPromptLayer::Dynamic,
                     PromptLayer::Unspecified => SystemPromptLayer::Unspecified,
                 },
             }
         })
         .collect()
-}
-
-fn lower_assembled_message(message: AssembledContextMessage) -> LlmMessage {
-    match message {
-        AssembledContextMessage::Conversation(message) => message,
-        AssembledContextMessage::StructuredContext { slot, block } => {
-            // structured context 只存在于请求装配边界，不进入持久化消息模型。
-            // 到 provider wire 层前统一降级为普通 user role 文本，保证下游协议不扩面。
-            LlmMessage::User {
-                content: format!(
-                    "[Structured {slot}: {}]\n{}",
-                    block.id,
-                    block.content.trim()
-                ),
-                origin: astrcode_core::UserMessageOrigin::User,
-            }
-        },
-    }
 }
 
 #[cfg(test)]
@@ -354,6 +287,16 @@ mod tests {
                     1,
                 )
                 .with_layer(astrcode_runtime_prompt::PromptLayer::SemiStable),
+                astrcode_runtime_prompt::PromptBlock::new(
+                    "inherited",
+                    astrcode_runtime_prompt::BlockKind::ExtensionInstruction,
+                    "Inherited",
+                    "inherited",
+                    300,
+                    astrcode_runtime_prompt::block::BlockMetadata::default(),
+                    2,
+                )
+                .with_layer(astrcode_runtime_prompt::PromptLayer::Inherited),
             ],
             ..PromptPlan::default()
         };
@@ -374,9 +317,10 @@ mod tests {
             )
             .expect("request should assemble");
 
-        assert_eq!(request.system_prompt_blocks.len(), 2);
+        assert_eq!(request.system_prompt_blocks.len(), 3);
         assert!(request.system_prompt_blocks[0].cache_boundary);
         assert!(request.system_prompt_blocks[1].cache_boundary);
+        assert!(request.system_prompt_blocks[2].cache_boundary);
     }
 
     #[test]
@@ -434,13 +378,23 @@ mod tests {
                 )
                 .with_layer(astrcode_runtime_prompt::PromptLayer::SemiStable),
                 astrcode_runtime_prompt::PromptBlock::new(
+                    "inherited1",
+                    astrcode_runtime_prompt::BlockKind::ExtensionInstruction,
+                    "Inherited 1",
+                    "inherited content 1",
+                    550,
+                    astrcode_runtime_prompt::block::BlockMetadata::default(),
+                    5,
+                )
+                .with_layer(astrcode_runtime_prompt::PromptLayer::Inherited),
+                astrcode_runtime_prompt::PromptBlock::new(
                     "dynamic1",
                     astrcode_runtime_prompt::BlockKind::Skill,
                     "Dynamic 1",
                     "dynamic content 1",
                     600,
                     astrcode_runtime_prompt::block::BlockMetadata::default(),
-                    5,
+                    6,
                 )
                 .with_layer(astrcode_runtime_prompt::PromptLayer::Dynamic),
             ],
@@ -463,7 +417,7 @@ mod tests {
             )
             .expect("request should assemble");
 
-        assert_eq!(request.system_prompt_blocks.len(), 6);
+        assert_eq!(request.system_prompt_blocks.len(), 7);
 
         // Stable 层内的前两个 block 不应该有 cache_boundary
         assert!(
@@ -493,15 +447,21 @@ mod tests {
             "semi2 should have cache_boundary (layer transition)"
         );
 
-        // Dynamic 层的最后一个 block 应该有 cache_boundary（整个 prompt 结束）
+        // Inherited 层的最后一个 block 应该有 cache_boundary（层切换点）
         assert!(
             request.system_prompt_blocks[5].cache_boundary,
+            "inherited1 should have cache_boundary (layer transition)"
+        );
+
+        // Dynamic 层的最后一个 block 应该有 cache_boundary（整个 prompt 结束）
+        assert!(
+            request.system_prompt_blocks[6].cache_boundary,
             "dynamic1 should have cache_boundary (end of prompt)"
         );
     }
 
     #[test]
-    fn assemble_encodes_structured_context_before_conversation_messages() {
+    fn assemble_keeps_runtime_structured_context_out_of_message_history() {
         let request = RequestAssembler
             .assemble(
                 &plan(),
@@ -527,14 +487,10 @@ mod tests {
             )
             .expect("request should assemble");
 
-        assert_eq!(request.messages.len(), 5);
+        assert_eq!(request.messages.len(), 3);
         assert!(matches!(
             &request.messages[1],
-            LlmMessage::User { content, .. } if content.contains("[Structured workset: working-dir]")
-        ));
-        assert!(matches!(
-            &request.messages[2],
-            LlmMessage::User { content, .. } if content.contains("[Structured memory: recover]")
+            LlmMessage::User { content, .. } if content == "body"
         ));
     }
 }

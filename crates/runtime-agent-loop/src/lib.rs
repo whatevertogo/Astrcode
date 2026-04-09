@@ -12,7 +12,7 @@ mod request_assembler;
 mod subagent;
 
 pub use agent_loop::{
-    AgentLoop, TurnOutcome, TurnRunner, TurnRunnerRuntime, child_delivery_reactivation_prompt,
+    AgentLoop, TurnOutcome, TurnRunner, TurnRunnerRuntime, child_delivery_prompt_declaration,
     token_budget::{
         TokenBudgetDecision, build_auto_continue_nudge, check_token_budget,
         strip_token_budget_marker,
