@@ -1,81 +1,16 @@
-//! 工具注册表具体实现（runtime 侧）。
+//! 工具到能力调用器的桥接。
+//!
+//! `ToolCapabilityInvoker` 将 `Tool` trait 适配为 `CapabilityInvoker`，
+//! 是生产路径中工具注册的唯一入口。
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use astrcode_core::{
-    AstrError, CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, Result, Tool,
-    ToolContext,
+    AstrError, CapabilityExecutionResult, CapabilityInvoker, Result, Tool, ToolContext,
 };
 use astrcode_protocol::capability::CapabilityDescriptor;
 use async_trait::async_trait;
-use serde_json::{Value, json};
-
-pub struct ToolRegistryBuilder {
-    tools: HashMap<String, Box<dyn Tool>>,
-    order: Vec<String>,
-}
-
-impl Default for ToolRegistryBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ToolRegistryBuilder {
-    pub fn new() -> Self {
-        Self {
-            tools: HashMap::new(),
-            order: Vec::new(),
-        }
-    }
-
-    pub fn register(mut self, tool: Box<dyn Tool>) -> Self {
-        let name = tool.definition().name;
-        if let Some(index) = self.order.iter().position(|existing| existing == &name) {
-            self.order.remove(index);
-        }
-        self.order.push(name.clone());
-        self.tools.insert(name, tool);
-        self
-    }
-
-    pub fn build(self) -> ToolRegistry {
-        ToolRegistry {
-            tools: self.tools,
-            order: self.order,
-        }
-    }
-}
-
-pub struct ToolRegistry {
-    tools: HashMap<String, Box<dyn Tool>>,
-    order: Vec<String>,
-}
-
-impl ToolRegistry {
-    pub fn builder() -> ToolRegistryBuilder {
-        ToolRegistryBuilder::new()
-    }
-
-    pub fn into_capability_invokers(mut self) -> Result<Vec<Arc<dyn CapabilityInvoker>>> {
-        let tools = self
-            .order
-            .into_iter()
-            .filter_map(|name| self.tools.remove(&name))
-            .collect::<Vec<_>>();
-        tools_into_capability_invokers(tools)
-    }
-}
-
-pub fn tools_into_capability_invokers<I>(tools: I) -> Result<Vec<Arc<dyn CapabilityInvoker>>>
-where
-    I: IntoIterator<Item = Box<dyn Tool>>,
-{
-    tools
-        .into_iter()
-        .map(ToolCapabilityInvoker::boxed)
-        .collect()
-}
+use serde_json::Value;
 
 pub struct ToolCapabilityInvoker {
     tool: Arc<dyn Tool>,
@@ -116,7 +51,7 @@ impl CapabilityInvoker for ToolCapabilityInvoker {
     async fn invoke(
         &self,
         payload: Value,
-        ctx: &CapabilityContext,
+        ctx: &astrcode_core::CapabilityContext,
     ) -> Result<CapabilityExecutionResult> {
         let tool_ctx = tool_context_from_capability_context(ctx);
         let result = self
@@ -152,13 +87,11 @@ impl CapabilityInvoker for ToolCapabilityInvoker {
 pub(crate) fn capability_context_from_tool_context(
     ctx: &ToolContext,
     request_id: Option<String>,
-) -> CapabilityContext {
-    // 运行时默认 profile / approval 继承策略属于 runtime 装配决策，
-    // 不应该固化在 core DTO 转换里。
+) -> astrcode_core::CapabilityContext {
     let working_dir = ctx.working_dir().to_path_buf();
     let working_dir_str = working_dir.to_string_lossy().into_owned();
 
-    CapabilityContext {
+    astrcode_core::CapabilityContext {
         request_id,
         trace_id: None,
         session_id: ctx.session_id().to_string(),
@@ -168,7 +101,7 @@ pub(crate) fn capability_context_from_tool_context(
         agent: ctx.agent_context().clone(),
         execution_owner: ctx.execution_owner().cloned(),
         profile: "coding".to_string(),
-        profile_context: json!({
+        profile_context: serde_json::json!({
             "workingDir": working_dir_str,
             "repoRoot": working_dir_str,
             "approvalMode": "inherit"
@@ -179,7 +112,7 @@ pub(crate) fn capability_context_from_tool_context(
     }
 }
 
-fn tool_context_from_capability_context(ctx: &CapabilityContext) -> ToolContext {
+fn tool_context_from_capability_context(ctx: &astrcode_core::CapabilityContext) -> ToolContext {
     let mut tool_ctx = ToolContext::new(
         ctx.session_id.clone(),
         ctx.working_dir.clone(),

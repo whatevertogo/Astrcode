@@ -49,10 +49,14 @@ pub use action::{
     split_assistant_content,
 };
 pub use agent::{
-    AgentEventContext, AgentMode, AgentProfile, AgentProfileCatalog, AgentStatus, ArtifactRef,
-    ForkMode, InvocationKind, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    SpawnAgentParams, SubRunDescriptor, SubRunFailure, SubRunFailureCode, SubRunHandle,
-    SubRunHandoff, SubRunOutcome, SubRunResult, SubRunStorageMode, SubagentContextOverrides,
+    AgentEventContext, AgentInboxEnvelope, AgentMode, AgentProfile, AgentProfileCatalog,
+    AgentStatus, ArtifactRef, ChildAgentRef, ChildSessionLineageKind, ChildSessionNode,
+    ChildSessionNotification, ChildSessionNotificationKind, ChildSessionStatusSource,
+    CloseAgentParams, CollaborationResult, CollaborationResultKind, DeliverToParentParams,
+    ForkMode, InboxEnvelopeKind, InvocationKind, LineageSnapshot, ResolvedExecutionLimitsSnapshot,
+    ResolvedSubagentContextOverrides, ResumeAgentParams, SendAgentParams, SpawnAgentParams,
+    SubRunDescriptor, SubRunFailure, SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunOutcome,
+    SubRunResult, SubRunStorageMode, SubagentContextOverrides, WaitAgentParams, WaitUntil,
 };
 pub use cancel::CancelToken;
 pub use compact_summary::{

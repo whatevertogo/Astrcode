@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use astrcode_core::{AgentStatus, ChildSessionNotificationKind, SubRunOutcome, SubRunResult};
 use astrcode_runtime_execution::{
     ParsedSubRunStatus, ParsedSubRunStatusSource, find_subrun_status_in_events,
     resolve_subrun_status_snapshot,
@@ -60,5 +61,79 @@ fn map_subrun_status_source(source: ParsedSubRunStatusSource) -> SubRunStatusSou
         ParsedSubRunStatusSource::Live => SubRunStatusSource::Live,
         ParsedSubRunStatusSource::Durable => SubRunStatusSource::Durable,
         ParsedSubRunStatusSource::LegacyDurable => SubRunStatusSource::LegacyDurable,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ChildTerminalDeliveryProjection {
+    pub kind: ChildSessionNotificationKind,
+    pub status: AgentStatus,
+    pub summary: String,
+    pub final_reply_excerpt: Option<String>,
+}
+
+pub(super) fn project_child_terminal_delivery(
+    result: &SubRunResult,
+) -> ChildTerminalDeliveryProjection {
+    let (kind, status) = match result.status {
+        SubRunOutcome::Running => (
+            ChildSessionNotificationKind::ProgressSummary,
+            AgentStatus::Running,
+        ),
+        SubRunOutcome::Completed | SubRunOutcome::TokenExceeded => (
+            ChildSessionNotificationKind::Delivered,
+            AgentStatus::Completed,
+        ),
+        SubRunOutcome::Failed => (ChildSessionNotificationKind::Failed, AgentStatus::Failed),
+        SubRunOutcome::Aborted => (ChildSessionNotificationKind::Closed, AgentStatus::Cancelled),
+    };
+
+    let summary = terminal_summary_or_fallback(result, status);
+    let final_reply_excerpt = if matches!(
+        result.status,
+        SubRunOutcome::Completed | SubRunOutcome::TokenExceeded
+    ) {
+        result
+            .handoff
+            .as_ref()
+            .map(|handoff| handoff.summary.trim().to_string())
+            .filter(|summary| !summary.is_empty())
+    } else {
+        None
+    };
+
+    ChildTerminalDeliveryProjection {
+        kind,
+        status,
+        summary,
+        final_reply_excerpt,
+    }
+}
+
+fn terminal_summary_or_fallback(result: &SubRunResult, status: AgentStatus) -> String {
+    if let Some(summary) = result
+        .handoff
+        .as_ref()
+        .map(|handoff| handoff.summary.trim())
+        .filter(|summary| !summary.is_empty())
+    {
+        return summary.to_string();
+    }
+
+    if let Some(display_message) = result
+        .failure
+        .as_ref()
+        .map(|failure| failure.display_message.trim())
+        .filter(|message| !message.is_empty())
+    {
+        return display_message.to_string();
+    }
+
+    match status {
+        AgentStatus::Completed => "子 Agent 已完成，但没有返回可读总结。".to_string(),
+        AgentStatus::Failed => "子 Agent 失败，且没有返回可读错误信息。".to_string(),
+        AgentStatus::Cancelled => "子 Agent 已关闭。".to_string(),
+        AgentStatus::Running => "子 Agent 正在运行。".to_string(),
+        AgentStatus::Pending => "子 Agent 已创建，等待运行。".to_string(),
     }
 }

@@ -9,6 +9,7 @@
 //! - `context`：bootstrap 阶段的延迟执行器桥与错误转换工具
 
 mod cancel;
+mod collaboration;
 mod context;
 pub(super) mod root;
 mod status;
@@ -20,10 +21,13 @@ use std::sync::Arc;
 use astrcode_core::{
     AgentProfile, AgentProfileCatalog, AstrError, ExecutionOrchestrationBoundary,
     LiveSubRunControlBoundary, Result, SpawnAgentParams, SubRunHandle, SubRunResult, ToolContext,
+    UserMessageOrigin,
 };
 use astrcode_runtime_agent_tool::SubAgentExecutor;
 use async_trait::async_trait;
-pub(crate) use context::{DeferredSubAgentExecutor, service_error_to_astr};
+pub(crate) use context::{
+    DeferredCollaborationExecutor, DeferredSubAgentExecutor, service_error_to_astr,
+};
 pub use root::{
     AgentExecutionServiceHandle, AgentProfileSummary, ToolExecutionServiceHandle, ToolSummary,
 };
@@ -128,6 +132,82 @@ impl AgentExecutionServiceHandle {
                 handle_session_id == normalized_session_id
                     || child_session_id.as_deref() == Some(normalized_session_id.as_str())
             }))
+    }
+
+    pub(super) async fn reactivate_parent_agent_if_idle(
+        &self,
+        parent_session_id: &str,
+        parent_turn_id: &str,
+        notification: &astrcode_core::ChildSessionNotification,
+    ) {
+        let parent_session_id = astrcode_runtime_session::normalize_session_id(parent_session_id);
+
+        // 在同一锁守卫内完成检查和标记，原子地防止 TOCTOU 竞态。
+        // 使用 parent_turn_id 作为哨兵值：submit_prompt → prepare_session_execution
+        // 会用新 turn_id 覆盖 active_turn_id，不影响后续正常流程。
+        // 不能用 running 做哨兵：prepare_session_execution 会检查 running 并拒绝。
+        let should_reactivate =
+            self.runtime
+                .sessions
+                .get(&parent_session_id)
+                .is_some_and(|state| {
+                    let is_running = state.running.load(std::sync::atomic::Ordering::SeqCst);
+                    if is_running {
+                        return false;
+                    }
+                    let Ok(mut active_turn_guard) = state.active_turn_id.lock() else {
+                        return false;
+                    };
+                    if active_turn_guard.as_deref() == Some(parent_turn_id) {
+                        return false;
+                    }
+                    // CAS 成功：设置 parent_turn_id 作为重激活哨兵
+                    *active_turn_guard = Some(parent_turn_id.to_string());
+                    true
+                });
+
+        if !should_reactivate {
+            return;
+        }
+
+        let followup_prompt =
+            astrcode_runtime_agent_loop::child_delivery_reactivation_prompt(notification);
+        match self
+            .submit_prompt_with_origin(
+                &parent_session_id,
+                followup_prompt,
+                UserMessageOrigin::ReactivationPrompt,
+            )
+            .await
+        {
+            Ok(_) => {
+                log::info!(
+                    "reactivated parent agent from child delivery: parentSession='{}', \
+                     childAgent='{}', subRunId='{}'",
+                    parent_session_id,
+                    notification.child_ref.agent_id,
+                    notification.child_ref.sub_run_id
+                );
+            },
+            Err(error) => {
+                log::warn!(
+                    "failed to reactivate parent agent from child delivery: parentSession='{}', \
+                     childAgent='{}', subRunId='{}', error='{}'",
+                    parent_session_id,
+                    notification.child_ref.agent_id,
+                    notification.child_ref.sub_run_id,
+                    error
+                );
+                // 重激活失败时清除哨兵值，允许后续重试
+                if let Some(state) = self.runtime.sessions.get(&parent_session_id) {
+                    if let Ok(mut guard) = state.active_turn_id.lock() {
+                        if guard.as_deref() == Some(parent_turn_id) {
+                            *guard = None;
+                        }
+                    }
+                }
+            },
+        }
     }
 }
 

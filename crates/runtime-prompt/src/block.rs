@@ -62,6 +62,8 @@ pub enum BlockKind {
     SkillGuide,
     /// 插件或 MCP 注入的 prompt 指令。优先级 580。
     ExtensionInstruction,
+    /// 子 Agent 协作决策指南（close-or-keep）。优先级 590。
+    CollaborationGuide,
     /// Skill 摘要块（仅工具名列表）。优先级 600。
     Skill,
     /// Few-shot 示例消息对。优先级 700。
@@ -80,6 +82,7 @@ impl BlockKind {
             Self::ToolGuide => 550,
             Self::SkillGuide => 560,
             Self::ExtensionInstruction => 580,
+            Self::CollaborationGuide => 590,
             Self::Skill => 600,
             Self::FewShotExamples => 700,
         }

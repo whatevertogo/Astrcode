@@ -1,8 +1,10 @@
 use astrcode_protocol::http::{
-    AgentContextDto, AgentEventEnvelope, AgentEventPayload, InvocationKindDto,
-    ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto, SubRunDescriptorDto,
-    SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto,
-    SubRunStorageModeDto,
+    AgentContextDto, AgentEventEnvelope, AgentEventPayload, ChildAgentRefDto,
+    ChildSessionLineageKindDto, ChildSessionNotificationDto, ChildSessionNotificationKindDto,
+    ChildSessionViewProjectionDto, ChildSessionViewResponseDto, InvocationKindDto,
+    ParentChildSummaryListResponseDto, ResolvedExecutionLimitsDto,
+    ResolvedSubagentContextOverridesDto, SubRunDescriptorDto, SubRunFailureCodeDto,
+    SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto,
 };
 
 #[test]
@@ -315,4 +317,199 @@ fn sub_run_finished_omits_descriptor_field_when_none() {
         !data.as_object().unwrap().contains_key("toolCallId"),
         "toolCallId field should be omitted when None, not serialized as null"
     );
+}
+
+#[test]
+fn child_session_notification_roundtrip_keeps_projection_fields() {
+    let notification = ChildSessionNotificationDto {
+        notification_id: "note-1".to_string(),
+        child_ref: ChildAgentRefDto {
+            agent_id: "agent-child".to_string(),
+            session_id: "session-parent".to_string(),
+            sub_run_id: "subrun-1".to_string(),
+            parent_agent_id: Some("agent-parent".to_string()),
+            lineage_kind: ChildSessionLineageKindDto::Spawn,
+            status: "running".to_string(),
+            openable: true,
+            open_session_id: "session-child".to_string(),
+        },
+        kind: ChildSessionNotificationKindDto::Started,
+        summary: "child started".to_string(),
+        status: "running".to_string(),
+        open_session_id: "session-child".to_string(),
+        source_tool_call_id: Some("call-1".to_string()),
+        final_reply_excerpt: None,
+    };
+
+    let encoded = serde_json::to_value(&notification).expect("serialize notification");
+    let decoded: ChildSessionNotificationDto =
+        serde_json::from_value(encoded.clone()).expect("deserialize notification");
+
+    assert_eq!(decoded, notification);
+    assert_eq!(
+        encoded.get("notificationId"),
+        Some(&serde_json::json!("note-1"))
+    );
+    assert_eq!(
+        encoded.get("openSessionId"),
+        Some(&serde_json::json!("session-child"))
+    );
+}
+
+#[test]
+fn child_session_summary_and_view_response_roundtrip() {
+    let child_ref = ChildAgentRefDto {
+        agent_id: "agent-child".to_string(),
+        session_id: "session-parent".to_string(),
+        sub_run_id: "subrun-1".to_string(),
+        parent_agent_id: Some("agent-parent".to_string()),
+        lineage_kind: ChildSessionLineageKindDto::Resume,
+        status: "completed".to_string(),
+        openable: true,
+        open_session_id: "session-child".to_string(),
+    };
+
+    let summary = ParentChildSummaryListResponseDto {
+        items: vec![ChildSessionNotificationDto {
+            notification_id: "note-2".to_string(),
+            child_ref: child_ref.clone(),
+            kind: ChildSessionNotificationKindDto::Delivered,
+            summary: "child delivered".to_string(),
+            status: "completed".to_string(),
+            open_session_id: "session-child".to_string(),
+            source_tool_call_id: Some("call-2".to_string()),
+            final_reply_excerpt: Some("done".to_string()),
+        }],
+    };
+    let summary_json = serde_json::to_value(&summary).expect("serialize summary");
+    let summary_back: ParentChildSummaryListResponseDto =
+        serde_json::from_value(summary_json).expect("deserialize summary");
+    assert_eq!(summary_back.items.len(), 1);
+    assert_eq!(summary_back.items[0].child_ref.agent_id, "agent-child");
+
+    let view = ChildSessionViewResponseDto {
+        view: ChildSessionViewProjectionDto {
+            child_ref,
+            title: "reviewer".to_string(),
+            status: "completed".to_string(),
+            summary_items: vec!["summary".to_string()],
+            latest_tool_activity: vec!["readFile".to_string()],
+            has_final_reply: true,
+            child_session_id: "session-child".to_string(),
+            has_descriptor_lineage: true,
+        },
+    };
+    let view_json = serde_json::to_value(&view).expect("serialize view");
+    let view_back: ChildSessionViewResponseDto =
+        serde_json::from_value(view_json).expect("deserialize view");
+    assert_eq!(view_back.view.child_session_id, "session-child");
+    assert!(view_back.view.has_final_reply);
+}
+
+#[test]
+fn child_session_notification_event_payload_roundtrip() {
+    let payload = AgentEventPayload::ChildSessionNotification {
+        turn_id: Some("turn-parent".to_string()),
+        agent: AgentContextDto {
+            agent_id: Some("agent-parent".to_string()),
+            parent_turn_id: Some("turn-parent".to_string()),
+            agent_profile: Some("planner".to_string()),
+            sub_run_id: Some("subrun-parent".to_string()),
+            invocation_kind: Some(InvocationKindDto::SubRun),
+            storage_mode: Some(SubRunStorageModeDto::SharedSession),
+            child_session_id: None,
+        },
+        child_ref: ChildAgentRefDto {
+            agent_id: "agent-child".to_string(),
+            session_id: "session-parent".to_string(),
+            sub_run_id: "subrun-1".to_string(),
+            parent_agent_id: Some("agent-parent".to_string()),
+            lineage_kind: ChildSessionLineageKindDto::Spawn,
+            status: "running".to_string(),
+            openable: true,
+            open_session_id: "session-child".to_string(),
+        },
+        kind: ChildSessionNotificationKindDto::Started,
+        summary: "child started".to_string(),
+        status: "running".to_string(),
+        open_session_id: "session-child".to_string(),
+        source_tool_call_id: Some("call-1".to_string()),
+        final_reply_excerpt: None,
+    };
+
+    let encoded =
+        serde_json::to_value(AgentEventEnvelope::new(payload.clone())).expect("serialize");
+    let decoded: AgentEventEnvelope = serde_json::from_value(encoded).expect("deserialize");
+    assert_eq!(decoded.event, payload);
+}
+
+// ─── T041 谱系兼容性测试 ──────────────────────────────
+
+/// 验证 spawn/fork/resume 三种 lineage kind 在 ChildAgentRefDto 中均可序列化和反序列化，
+/// 且 JSON 输出使用 snake_case 值（"spawn"/"fork"/"resume"）。
+#[test]
+fn lineage_kind_spawn_fork_resume_all_roundtrip_through_child_ref() {
+    for (label, kind) in [
+        ("spawn", ChildSessionLineageKindDto::Spawn),
+        ("fork", ChildSessionLineageKindDto::Fork),
+        ("resume", ChildSessionLineageKindDto::Resume),
+    ] {
+        let child_ref = ChildAgentRefDto {
+            agent_id: "agent-child".to_string(),
+            session_id: "session-parent".to_string(),
+            sub_run_id: "subrun-1".to_string(),
+            parent_agent_id: Some("agent-parent".to_string()),
+            lineage_kind: kind.clone(),
+            status: "running".to_string(),
+            openable: true,
+            open_session_id: "session-child".to_string(),
+        };
+
+        let json = serde_json::to_value(&child_ref).expect("serialize child ref");
+        // 验证 JSON 中 lineageKind 值为 snake_case 字符串
+        assert_eq!(
+            json.get("lineageKind"),
+            Some(&serde_json::json!(label)),
+            "lineage_kind {label} should serialize as snake_case"
+        );
+
+        let back: ChildAgentRefDto = serde_json::from_value(json).expect("deserialize child ref");
+        assert_eq!(
+            back.lineage_kind, kind,
+            "roundtrip for {label} should match"
+        );
+    }
+}
+
+/// 验证 ChildSessionNotification 携带 fork 和 resume lineage 时能完整序列化/反序列化。
+#[test]
+fn child_session_notification_roundtrip_with_fork_and_resume_lineage() {
+    for kind in [
+        ChildSessionLineageKindDto::Fork,
+        ChildSessionLineageKindDto::Resume,
+    ] {
+        let notification = ChildSessionNotificationDto {
+            notification_id: "note-lineage".to_string(),
+            child_ref: ChildAgentRefDto {
+                agent_id: "agent-child".to_string(),
+                session_id: "session-parent".to_string(),
+                sub_run_id: "subrun-1".to_string(),
+                parent_agent_id: Some("agent-parent".to_string()),
+                lineage_kind: kind.clone(),
+                status: "completed".to_string(),
+                openable: true,
+                open_session_id: "session-child".to_string(),
+            },
+            kind: ChildSessionNotificationKindDto::Delivered,
+            summary: "child delivered with fork lineage".to_string(),
+            status: "completed".to_string(),
+            open_session_id: "session-child".to_string(),
+            source_tool_call_id: None,
+            final_reply_excerpt: Some("result".to_string()),
+        };
+
+        let json = serde_json::to_value(&notification).expect("serialize");
+        let back: ChildSessionNotificationDto = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back.child_ref.lineage_kind, kind);
+    }
 }

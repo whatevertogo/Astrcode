@@ -14,7 +14,7 @@
 use std::{
     fs,
     io::{BufRead, BufReader, Read as _},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Instant,
 };
 
@@ -280,10 +280,11 @@ impl Tool for ReadFileTool {
         let args: ReadFileArgs = serde_json::from_value(args)
             .map_err(|e| AstrError::parse("invalid args for readFile", e))?;
         let started_at = Instant::now();
-        let path = resolve_read_path(ctx, &args.path)?;
+        let raw_path = Path::new(&args.path);
 
-        // 设备文件检查：防止读取会导致进程挂起或阻塞的设备文件
-        if is_blocked_device_path(&path) {
+        // 设备文件检查：在路径解析之前检查，避免对不存在的设备路径执行 canonicalize 失败
+        // 这些路径（/dev/zero, /proc/self/fd/0 等）在 Windows 上不存在，需要先于 resolve 拦截
+        if is_blocked_device_path(raw_path) {
             return Ok(ToolExecutionResult {
                 tool_call_id,
                 tool_name: "readFile".to_string(),
@@ -292,16 +293,18 @@ impl Tool for ReadFileTool {
                 error: Some(format!(
                     "reading from device files is not supported (path: '{}'). Device files like \
                      /dev/zero, /dev/random, or /dev/stdin can cause the process to hang or block.",
-                    path.display()
+                    raw_path.display()
                 )),
                 metadata: Some(json!({
-                    "path": path.to_string_lossy(),
+                    "path": raw_path.to_string_lossy(),
                     "deviceFile": true,
                 })),
                 duration_ms: started_at.elapsed().as_millis() as u64,
                 truncated: false,
             });
         }
+
+        let path = resolve_read_path(ctx, &args.path)?;
 
         // 图片文件处理：返回 base64 编码
         if is_image_file(&path) {

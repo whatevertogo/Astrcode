@@ -17,7 +17,7 @@ use tokio::time::{Duration, sleep};
 
 use super::{
     fixtures::*,
-    test_support::{capabilities_from_tools, empty_capabilities},
+    test_support::{boxed_tool, capabilities_from_tools, empty_capabilities},
 };
 use crate::{AgentLoop, agent_loop::TurnOutcome};
 
@@ -38,9 +38,7 @@ async fn interrupt_emits_error_and_turn_done() {
         delay: std::time::Duration::from_millis(0),
     });
 
-    let tools = astrcode_runtime_registry::ToolRegistry::builder()
-        .register(Box::new(SlowTool))
-        .build();
+    let tools = vec![boxed_tool(SlowTool)];
 
     let factory = Arc::new(StaticProviderFactory { provider });
     let loop_runner = AgentLoop::from_capabilities(factory, capabilities_from_tools(tools));
@@ -106,13 +104,11 @@ async fn cancellation_propagates_to_parallel_safe_tools() {
         }])),
         delay: std::time::Duration::from_millis(0),
     });
-    let tools = astrcode_runtime_registry::ToolRegistry::builder()
-        .register(Box::new(ConcurrencyTrackingTool {
-            name: "cancelSafeTool",
-            concurrency_safe: true,
-            tracker: Arc::clone(&tracker),
-        }))
-        .build();
+    let tools = vec![boxed_tool(ConcurrencyTrackingTool {
+        name: "cancelSafeTool",
+        concurrency_safe: true,
+        tracker: tracker.clone(),
+    })];
     let loop_runner = AgentLoop::from_capabilities(
         Arc::new(StaticProviderFactory { provider }),
         capabilities_from_tools(tools),

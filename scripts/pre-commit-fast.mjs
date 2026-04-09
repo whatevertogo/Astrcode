@@ -27,9 +27,12 @@ if (stagedFiles.length === 0) {
   process.exit(0);
 }
 
-// Auto-generate crate dependency graph if Cargo.toml or Cargo.lock changed
+// Auto-generate crate dependency graph if Cargo files or crate source changed
 const hasCargoChanges = stagedFiles.some(
-  (file) => file === 'Cargo.toml' || file === 'Cargo.lock' || file.startsWith('crates/') && file.endsWith('Cargo.toml')
+  (file) =>
+    file === 'Cargo.toml' ||
+    file === 'Cargo.lock' ||
+    (file.startsWith('crates/') && (file.endsWith('Cargo.toml') || file.endsWith('.rs'))),
 );
 
 if (hasCargoChanges) {

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AgentEventContext, CompactTrigger, ResolvedExecutionLimitsSnapshot,
+    AgentEventContext, ChildSessionNotification, CompactTrigger, ResolvedExecutionLimitsSnapshot,
     ResolvedSubagentContextOverrides, SubRunDescriptor, SubRunResult, ToolExecutionResult,
     ToolOutputStream,
 };
@@ -152,6 +152,12 @@ pub enum AgentEvent {
         result: SubRunResult,
         step_count: u32,
         estimated_tokens: u64,
+    },
+    /// 子会话通知（供父会话摘要投影消费）。
+    ChildSessionNotification {
+        turn_id: Option<String>,
+        agent: AgentEventContext,
+        notification: ChildSessionNotification,
     },
     /// Turn 完成
     TurnDone {

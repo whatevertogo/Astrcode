@@ -7,7 +7,7 @@ use std::{collections::HashSet, net::TcpListener, path::Path, sync::Arc, time::D
 
 use astrcode_core::{PluginRegistry, RuntimeCoordinator, RuntimeHandle, project::project_dir_name};
 use astrcode_protocol::http::{
-    AgentEventPayload, CreateSessionRequest, PromptAcceptedResponse, PromptRequest,
+    AgentEventPayload, CreateSessionRequest, PhaseDto, PromptAcceptedResponse, PromptRequest,
     SaveActiveSelectionRequest, SessionHistoryResponseDto, SessionListItem,
 };
 use astrcode_runtime::{
@@ -87,22 +87,26 @@ fn count_user_messages(history: &SessionHistoryResponseDto) -> usize {
         .count()
 }
 
-/// Wait until the background prompt task has persisted the expected number of visible messages.
+/// Wait until the background prompt task has persisted the expected number of visible messages
+/// **and** the session has returned to idle (phase == Idle).
 async fn wait_for_total_message_count(
     app: axum::Router,
     session_id: &str,
     expected_count: usize,
 ) -> SessionHistoryResponseDto {
-    for _ in 0..40 {
+    for _ in 0..80 {
         let history = load_session_history(app.clone(), session_id).await;
-        if count_visible_messages(&history) == expected_count {
+        if count_visible_messages(&history) == expected_count && history.phase == PhaseDto::Idle {
             return history;
         }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
     }
 
-    panic!("timed out waiting for {expected_count} total messages in session {session_id}");
+    panic!(
+        "timed out waiting for {expected_count} total messages and idle phase in session \
+         {session_id}"
+    );
 }
 
 /// Wait until the background prompt task has persisted the expected number of user messages.

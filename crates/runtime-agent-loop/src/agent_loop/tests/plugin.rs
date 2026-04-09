@@ -105,14 +105,12 @@ async fn unified_capability_router_executes_builtin_and_plugin_tools() {
     .expect("supervisor should start");
 
     let mut capability_builder = astrcode_runtime_registry::CapabilityRouter::builder();
-    for invoker in astrcode_runtime_registry::ToolRegistry::builder()
-        .register(Box::new(QuickTool))
-        .build()
-        .into_capability_invokers()
-        .expect("tool descriptors should build")
-    {
-        capability_builder = capability_builder.register_invoker(invoker);
-    }
+    capability_builder = capability_builder.register_invoker(
+        astrcode_runtime_registry::ToolCapabilityInvoker::boxed(
+            Box::new(QuickTool) as Box<dyn astrcode_core::Tool>
+        )
+        .expect("QuickTool should build"),
+    );
     for invoker in supervisor.capability_invokers() {
         capability_builder = capability_builder.register_invoker(invoker);
     }

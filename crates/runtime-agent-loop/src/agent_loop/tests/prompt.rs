@@ -24,7 +24,7 @@ use tokio::time::Duration;
 
 use super::{
     fixtures::*,
-    test_support::{capabilities_from_tools, empty_capabilities},
+    test_support::{boxed_tool, capabilities_from_tools, empty_capabilities},
 };
 use crate::AgentLoop;
 
@@ -64,9 +64,7 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
         requests: requests.clone(),
     });
 
-    let tools = astrcode_runtime_registry::ToolRegistry::builder()
-        .register(Box::new(QuickTool))
-        .build();
+    let tools = vec![boxed_tool(QuickTool)];
 
     let factory = Arc::new(StaticProviderFactory { provider });
     let loop_runner = AgentLoop::from_capabilities(factory, capabilities_from_tools(tools));
@@ -198,9 +196,7 @@ async fn reuses_prompt_contributor_cache_across_llm_steps() {
         ])),
         delay: std::time::Duration::from_millis(0),
     });
-    let tools = astrcode_runtime_registry::ToolRegistry::builder()
-        .register(Box::new(QuickTool))
-        .build();
+    let tools = vec![boxed_tool(QuickTool)];
     let factory = Arc::new(StaticProviderFactory { provider });
     let loop_runner = AgentLoop::from_capabilities(factory, capabilities_from_tools(tools))
         .with_prompt_composer(composer);

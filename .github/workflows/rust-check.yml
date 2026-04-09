@@ -3,20 +3,28 @@ name: Rust Check
 on:
   push:
     branches: [master]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'scripts/**'
+      - '.github/workflows/rust-check.yml'
   pull_request:
     branches: [master]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'scripts/**'
+      - '.github/workflows/rust-check.yml'
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  rust-check:
-    name: Rust Check (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-      fail-fast: false
+  lint:
+    name: Lint & Scripts
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
@@ -32,16 +40,15 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Install system dependencies (Ubuntu only)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "rust-check-${{ matrix.os }}"
+          shared-key: "rust-check-ubuntu"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -53,10 +60,38 @@ jobs:
         run: node scripts/generate-crate-deps-graph.mjs --check
 
       - name: Check crate boundaries (soft mode)
-        run: node scripts/check-crate-boundaries.mjs
+        run: node scripts/check-crate-boundaries.mjs --soft
 
       - name: Run targeted regression
         run: node scripts/regressions.mjs
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+      fail-fast: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "rust-check-${{ matrix.os }}"
+
+      - name: Install system dependencies (Ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Run tests
         run: cargo test --workspace --exclude astrcode

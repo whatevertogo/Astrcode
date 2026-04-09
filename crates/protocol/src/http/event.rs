@@ -12,6 +12,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::{ChildAgentRefDto, ChildSessionNotificationKindDto};
+
 /// 协议版本号，用于事件格式的版本控制。
 ///
 /// 每个 `AgentEventEnvelope` 都携带此版本号，前端可根据版本号决定如何解析事件。
@@ -377,6 +379,22 @@ pub enum AgentEventPayload {
         result: SubRunResultDto,
         step_count: u32,
         estimated_tokens: u64,
+    },
+    /// 父会话可消费的子会话摘要通知。
+    ChildSessionNotification {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
+        agent: AgentContextDto,
+        child_ref: ChildAgentRefDto,
+        kind: ChildSessionNotificationKindDto,
+        summary: String,
+        status: String,
+        open_session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_tool_call_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        final_reply_excerpt: Option<String>,
     },
     /// 当前 turn 完成事件。
     TurnDone {

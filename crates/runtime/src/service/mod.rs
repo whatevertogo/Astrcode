@@ -42,10 +42,10 @@ mod turn;
 mod watch_manager;
 mod watch_ops;
 
-pub(crate) use execution::DeferredSubAgentExecutor;
 pub use execution::{
     AgentExecutionServiceHandle, AgentProfileSummary, ToolExecutionServiceHandle, ToolSummary,
 };
+pub(crate) use execution::{DeferredCollaborationExecutor, DeferredSubAgentExecutor};
 use observability::RuntimeObservability;
 pub use observability::{
     OperationMetricsSnapshot, ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot,
@@ -180,6 +180,8 @@ pub struct RuntimeService {
     active_subagent_handles: StdMutex<Vec<tokio::task::JoinHandle<()>>>,
     /// 活跃的 turn 执行任务的 JoinHandle，shutdown 时批量 abort。
     active_turn_handles: StdMutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// 协作工具的延迟执行器桥（runtime surface 热重载时复用）。
+    collaboration_executor: Arc<DeferredCollaborationExecutor>,
 }
 
 impl RuntimeService {
@@ -207,6 +209,11 @@ impl RuntimeService {
         Arc::new(RuntimeAgentProfileCatalog::new(Arc::clone(
             &self.agent_profiles,
         )))
+    }
+
+    /// 获取协作工具执行器的引用（用于 surface 热重载）。
+    pub(crate) fn collaboration_executor(&self) -> Arc<DeferredCollaborationExecutor> {
+        Arc::clone(&self.collaboration_executor)
     }
 
     pub fn from_capabilities(capabilities: CapabilityRouter) -> ServiceResult<Self> {
@@ -314,6 +321,7 @@ impl RuntimeService {
             agent_watch_handle: StdMutex::new(None),
             active_subagent_handles: StdMutex::new(Vec::new()),
             active_turn_handles: StdMutex::new(Vec::new()),
+            collaboration_executor: Arc::new(DeferredCollaborationExecutor::default()),
         })
     }
 

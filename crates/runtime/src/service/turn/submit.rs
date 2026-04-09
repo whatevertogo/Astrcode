@@ -2,9 +2,11 @@
 
 use std::time::Instant;
 
-use astrcode_core::CancelToken;
+use astrcode_core::{CancelToken, UserMessageOrigin};
 use astrcode_runtime_agent_loop::{TurnOutcome, strip_token_budget_marker};
-use astrcode_runtime_execution::prepare_prompt_submission;
+use astrcode_runtime_execution::{
+    prepare_prompt_submission, prepare_prompt_submission_with_origin,
+};
 use astrcode_runtime_session::prepare_session_execution;
 use uuid::Uuid;
 
@@ -27,6 +29,16 @@ impl AgentExecutionServiceHandle {
         &self,
         session_id: &str,
         text: String,
+    ) -> ServiceResult<PromptAccepted> {
+        self.submit_prompt_with_origin(session_id, text, UserMessageOrigin::User)
+            .await
+    }
+
+    pub(crate) async fn submit_prompt_with_origin(
+        &self,
+        session_id: &str,
+        text: String,
+        origin: UserMessageOrigin,
     ) -> ServiceResult<PromptAccepted> {
         let runtime_config = { self.runtime.config.lock().await.runtime.clone() };
         let parsed_budget = strip_token_budget_marker(&text);
@@ -53,8 +65,11 @@ impl AgentExecutionServiceHandle {
         let session = submit_target.session;
         let turn_lease = submit_target.turn_lease;
         let cancel = CancelToken::new();
-        let prepared_submission =
-            prepare_prompt_submission(&session_id, &turn_id, text, token_budget);
+        let prepared_submission = if matches!(origin, UserMessageOrigin::User) {
+            prepare_prompt_submission(&session_id, &turn_id, text, token_budget)
+        } else {
+            prepare_prompt_submission_with_origin(&session_id, &turn_id, text, token_budget, origin)
+        };
         prepare_session_execution(
             &session,
             &session_id,
@@ -68,10 +83,11 @@ impl AgentExecutionServiceHandle {
         let loop_ = self.runtime.current_loop().await;
         let accepted_turn_id = turn_id.clone();
         let observability = self.runtime.observability.clone();
-        let agent_control = self.runtime.agent_control.clone();
         let accepted_session_id = session_id.clone();
         let user_event = prepared_submission.user_event.clone();
         let execution_owner = prepared_submission.execution_owner.clone();
+        // 在 spawn 前克隆 agent_control，避免借用 `self` 逃逸到 'static 闭包
+        let agent_control = self.runtime.agent_control();
         tokio::spawn(async move {
             let turn_started_at = Instant::now();
             let result = run_session_turn(
@@ -85,7 +101,7 @@ impl AgentExecutionServiceHandle {
                 budget_settings,
             )
             .await;
-            complete_session_execution(&state, &agent_control, &turn_id, result.phase).await;
+            complete_session_execution(&state, result.phase, &agent_control).await;
 
             let elapsed = turn_started_at.elapsed();
             observability.record_turn_execution(elapsed, result.succeeded);

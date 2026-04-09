@@ -167,3 +167,64 @@ async fn p4_2_max_tokens_stops_after_continuation_limit() {
         "should stop after consuming exactly 4 truncated outputs (3 retries + final stop)"
     );
 }
+
+/// provider 返回空 completion 时不能静默标记 turn 成功。
+///
+/// 这个场景会让上层看到只有 promptMetrics 和 turnDone(completed)，
+/// 既没有 assistantFinal，也没有错误信息，最终把真实异常伪装成“卡住后正常完成”。
+#[tokio::test]
+async fn empty_completion_is_reported_as_error_instead_of_completed() {
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([LlmOutput {
+            content: String::new(),
+            tool_calls: vec![],
+            reasoning: None,
+            usage: None,
+            finish_reason: FinishReason::Stop,
+        }])),
+        delay: std::time::Duration::from_millis(0),
+    });
+
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::from_capabilities(factory, empty_capabilities());
+    let state = make_state("trigger empty completion");
+    let (events, mut on_event) = collect_events();
+
+    let outcome = loop_runner
+        .run_turn(
+            &state,
+            "turn-empty-completion",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should surface empty completion as an error outcome");
+
+    assert!(
+        matches!(outcome, TurnOutcome::Error { .. }),
+        "empty completion must not be treated as completed"
+    );
+
+    let events = events.lock().expect("events lock");
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            StorageEvent::Error { message, .. }
+                if message.contains("empty completion")
+        )),
+        "runtime should emit an explicit error event for empty completions"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            StorageEvent::TurnDone { reason, .. } if reason.as_deref() == Some("error")
+        )),
+        "turn should finish with error reason instead of completed"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, StorageEvent::AssistantFinal { .. })),
+        "empty completion must not fabricate an assistant final event"
+    );
+}

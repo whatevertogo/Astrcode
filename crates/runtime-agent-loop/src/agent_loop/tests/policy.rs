@@ -22,7 +22,7 @@ use serde_json::json;
 
 use super::{
     fixtures::*,
-    test_support::{capabilities_from_tools, empty_capabilities},
+    test_support::{boxed_tool, capabilities_from_tools, empty_capabilities},
 };
 use crate::AgentLoop;
 
@@ -104,11 +104,9 @@ async fn denied_tool_calls_emit_failure_without_executing_tool() {
         ])),
         delay: std::time::Duration::from_millis(0),
     });
-    let tools = astrcode_runtime_registry::ToolRegistry::builder()
-        .register(Box::new(CountingTool {
-            executions: Arc::clone(&executions),
-        }))
-        .build();
+    let tools = vec![boxed_tool(CountingTool {
+        executions: executions.clone(),
+    })];
     let factory = Arc::new(StaticProviderFactory { provider });
     let loop_runner = AgentLoop::from_capabilities(factory, capabilities_from_tools(tools))
         .with_policy_engine(Arc::new(DenyCapabilityPolicy {
@@ -174,11 +172,9 @@ async fn ask_policy_uses_approval_broker_before_tool_execution() {
         requests: Arc::clone(&approval_requests),
         resolutions: Mutex::new(VecDeque::from([ApprovalResolution::approved()])),
     });
-    let tools = astrcode_runtime_registry::ToolRegistry::builder()
-        .register(Box::new(CountingTool {
-            executions: Arc::clone(&executions),
-        }))
-        .build();
+    let tools = vec![boxed_tool(CountingTool {
+        executions: executions.clone(),
+    })];
     let factory = Arc::new(StaticProviderFactory { provider });
     let loop_runner = AgentLoop::from_capabilities(factory, capabilities_from_tools(tools))
         .with_policy_engine(Arc::new(AskCapabilityPolicy {
@@ -238,11 +234,9 @@ async fn denied_approval_returns_failed_tool_result_without_execution() {
             "approval rejected in test",
         )])),
     });
-    let tools = astrcode_runtime_registry::ToolRegistry::builder()
-        .register(Box::new(CountingTool {
-            executions: Arc::clone(&executions),
-        }))
-        .build();
+    let tools = vec![boxed_tool(CountingTool {
+        executions: executions.clone(),
+    })];
     let factory = Arc::new(StaticProviderFactory { provider });
     let loop_runner = AgentLoop::from_capabilities(factory, capabilities_from_tools(tools))
         .with_policy_engine(Arc::new(AskCapabilityPolicy {

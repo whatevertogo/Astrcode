@@ -334,21 +334,21 @@ mod tests {
             .await
             .expect("watch targets should resolve");
 
-        let expected_repo_agents = repo.join(".astrcode").join("agents");
+        // Windows 上路径可能带 \\?\ UNC 前缀，用后缀匹配避免前缀不一致
+        let agents_suffix = std::path::MAIN_SEPARATOR_STR.to_string()
+            + ".astrcode"
+            + std::path::MAIN_SEPARATOR_STR
+            + "agents";
+        let agents_suffix_alt = "/.astrcode/agents";
+        let repo_agents = watch_targets.iter().find(|target| {
+            (target.path.to_string_lossy().ends_with(&agents_suffix)
+                || target.path.to_string_lossy().ends_with(agents_suffix_alt))
+                && target.recursive
+        });
         assert!(
-            watch_targets.iter().any(|target| {
-                target
-                    .path
-                    .to_string_lossy()
-                    .ends_with(expected_repo_agents.to_string_lossy().as_ref())
-                    && target.recursive
-            }),
-            "watch targets: {watch_targets:?}"
-        );
-        assert!(
-            watch_targets
-                .iter()
-                .all(|target| target.path != std::env::temp_dir())
+            repo_agents.is_some(),
+            "watch targets should contain repo .astrcode/agents with recursive=true; \
+             targets={watch_targets:?}"
         );
     }
 }

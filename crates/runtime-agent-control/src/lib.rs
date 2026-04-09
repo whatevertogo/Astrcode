@@ -11,7 +11,7 @@
 //! `runtime-agent-control` 专注多 Agent 生命周期如何被编排和取消。
 
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -19,8 +19,8 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentProfile, AgentStatus, AstrError, CancelToken, LiveSubRunControlBoundary, SubRunHandle,
-    SubRunStorageMode,
+    AgentInboxEnvelope, AgentProfile, AgentStatus, AstrError, CancelToken,
+    LiveSubRunControlBoundary, SubRunHandle, SubRunStorageMode,
 };
 use astrcode_runtime_config::{
     RuntimeConfig, resolve_agent_finalized_retain_limit, resolve_agent_max_concurrent,
@@ -44,6 +44,10 @@ struct AgentEntry {
     parent_agent_id: Option<String>,
     children: BTreeSet<String>,
     finalized_seq: Option<u64>,
+    /// 协作消息收件箱。sendAgent / deliverToParent 产出信封存放在此。
+    inbox: VecDeque<AgentInboxEnvelope>,
+    /// 收件箱版本号，每次 push_inbox 递增，用于 wait_for_inbox 的变化检测。
+    inbox_version: watch::Sender<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -259,6 +263,8 @@ impl AgentControl {
                 parent_agent_id: parent_agent_id.clone(),
                 children: BTreeSet::new(),
                 finalized_seq: None,
+                inbox: VecDeque::new(),
+                inbox_version: watch::channel(0).0,
             },
         );
         state.agent_index.insert(agent_id, sub_run_id.clone());
@@ -316,6 +322,32 @@ impl AgentControl {
     pub async fn mark_failed(&self, sub_run_or_agent_id: &str) -> Option<SubRunHandle> {
         self.update_status(sub_run_or_agent_id, AgentStatus::Failed)
             .await
+    }
+
+    /// 恢复已完成的 Agent 到 Running 状态。
+    ///
+    /// 只有 Completed/Failed/Cancelled 状态的 Agent 可以被恢复。
+    /// 恢复后 Agent 会重新占用并发槽位，父 Agent 的 children 集合也会重新关联。
+    pub async fn resume(&self, sub_run_or_agent_id: &str) -> Option<SubRunHandle> {
+        let mut state = self.state.write().await;
+        let key = resolve_entry_key(&state, sub_run_or_agent_id)?.to_string();
+
+        // 先检查状态是否可恢复
+        if !state
+            .entries
+            .get(&key)
+            .is_some_and(|entry| entry.handle.status.is_final())
+        {
+            return None;
+        }
+
+        // 恢复并占用并发槽位
+        state.active_count += 1;
+        let entry = state.entries.get_mut(&key)?;
+        entry.finalized_seq = None;
+        entry.handle.status = AgentStatus::Running;
+        entry.status_tx.send_replace(AgentStatus::Running);
+        Some(entry.handle.clone())
     }
 
     /// 取消指定 Agent，并级联取消其子树。
@@ -390,6 +422,69 @@ impl AgentControl {
         }
     }
 
+    /// 向 Agent 收件箱推送一封信封。
+    ///
+    /// 若目标 agent 不存在则返回 None。
+    /// 推送后会递增收件箱版本号，唤醒正在 wait_for_inbox 的调用方。
+    pub async fn push_inbox(
+        &self,
+        sub_run_or_agent_id: &str,
+        envelope: AgentInboxEnvelope,
+    ) -> Option<()> {
+        let mut state = self.state.write().await;
+        let key = resolve_entry_key(&state, sub_run_or_agent_id)?.to_string();
+        let entry = state.entries.get_mut(&key)?;
+        entry.inbox.push_back(envelope);
+        // 递增版本号唤醒 wait_for_inbox
+        let current = *entry.inbox_version.borrow();
+        entry.inbox_version.send_replace(current + 1);
+        Some(())
+    }
+
+    /// 排空 Agent 收件箱，返回所有待处理信封。
+    pub async fn drain_inbox(&self, sub_run_or_agent_id: &str) -> Option<Vec<AgentInboxEnvelope>> {
+        let mut state = self.state.write().await;
+        let key = resolve_entry_key(&state, sub_run_or_agent_id)?.to_string();
+        let entry = state.entries.get_mut(&key)?;
+        let envelopes: Vec<_> = entry.inbox.drain(..).collect();
+        Some(envelopes)
+    }
+
+    /// 等待 Agent 收件箱收到新信封。
+    ///
+    /// 若目标不存在或 agent 已到达终态则立即返回 None。
+    /// 否则阻塞直到收件箱版本号变化（即有新信封到达）。
+    pub async fn wait_for_inbox(&self, sub_run_or_agent_id: &str) -> Option<SubRunHandle> {
+        let mut inbox_rx = {
+            let state = self.state.read().await;
+            let key = resolve_entry_key(&state, sub_run_or_agent_id)?;
+            state.entries.get(key)?.inbox_version.subscribe()
+        };
+
+        loop {
+            let handle = self.get(sub_run_or_agent_id).await?;
+            // 如果 agent 已终态，直接返回当前 handle
+            if handle.status.is_final() {
+                return Some(handle);
+            }
+            // 如果收件箱非空，返回当前 handle
+            {
+                let state = self.state.read().await;
+                if let Some(key) = resolve_entry_key(&state, sub_run_or_agent_id) {
+                    if let Some(entry) = state.entries.get(key) {
+                        if !entry.inbox.is_empty() {
+                            return Some(handle);
+                        }
+                    }
+                }
+            }
+            // 等待收件箱版本号变化
+            if inbox_rx.changed().await.is_err() {
+                return self.get(sub_run_or_agent_id).await;
+            }
+        }
+    }
+
     async fn update_status(
         &self,
         sub_run_or_agent_id: &str,
@@ -400,6 +495,68 @@ impl AgentControl {
         let handle = update_status_locked(&mut state, &key, next_status, &self.next_finalized_seq);
         prune_finalized_agents_locked(&mut state, self.finalized_retain_limit);
         handle
+    }
+
+    /// 收集指定 agent 子树的所有 agent handle（不含自身）。
+    ///
+    /// 从给定 agent 出发，递归查找其所有后代 agent，
+    /// 用于层级协作场景下的子树隔离和级联关闭范围确认。
+    pub async fn collect_subtree_handles(&self, sub_run_or_agent_id: &str) -> Vec<SubRunHandle> {
+        let state = self.state.read().await;
+        let mut result = Vec::new();
+        let mut queue = std::collections::VecDeque::new();
+
+        // 从直接子节点开始，不包含自身
+        if let Some(key) = resolve_entry_key(&state, sub_run_or_agent_id) {
+            if let Some(entry) = state.entries.get(key) {
+                for child_sub_run_id in &entry.children {
+                    queue.push_back(child_sub_run_id.clone());
+                }
+            }
+        }
+
+        while let Some(child_key) = queue.pop_front() {
+            if let Some(entry) = state.entries.get(&child_key) {
+                result.push(entry.handle.clone());
+                for grandchild in &entry.children {
+                    queue.push_back(grandchild.clone());
+                }
+            }
+        }
+
+        result
+    }
+
+    /// 获取指定 agent 的祖先链（从自身到根节点的路径）。
+    ///
+    /// 返回从自身开始向上到根的所有 agent handle，
+    /// 用于 deliverToParent 验证直接父路由。
+    pub async fn ancestor_chain(&self, sub_run_or_agent_id: &str) -> Vec<SubRunHandle> {
+        let state = self.state.read().await;
+        let mut chain = Vec::new();
+
+        // 先加入自身
+        if let Some(key) = resolve_entry_key(&state, sub_run_or_agent_id) {
+            if let Some(entry) = state.entries.get(key) {
+                chain.push(entry.handle.clone());
+                // 向上遍历父节点
+                let mut current_parent = entry.parent_agent_id.clone();
+                while let Some(parent_agent_id) = current_parent {
+                    if let Some(parent_key) = state.agent_index.get(&parent_agent_id) {
+                        if let Some(parent_entry) = state.entries.get(parent_key) {
+                            chain.push(parent_entry.handle.clone());
+                            current_parent = parent_entry.parent_agent_id.clone();
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        chain
     }
 }
 
@@ -549,7 +706,9 @@ fn prune_finalized_agents_locked(state: &mut AgentRegistryState, finalized_retai
 mod tests {
     use std::time::Duration;
 
-    use astrcode_core::{AgentMode, AgentProfile, AgentStatus, LiveSubRunControlBoundary};
+    use astrcode_core::{
+        AgentInboxEnvelope, AgentMode, AgentProfile, AgentStatus, LiveSubRunControlBoundary,
+    };
     use astrcode_runtime_config::{DEFAULT_MAX_AGENT_DEPTH, DEFAULT_MAX_CONCURRENT_AGENTS};
 
     use super::{AgentControl, AgentControlError, LiveSubRunControl, StaticAgentProfileSource};
@@ -984,6 +1143,681 @@ mod tests {
                 .expect("handle should remain visible")
                 .status,
             AgentStatus::Cancelled
+        );
+    }
+
+    // ─── T028 协作操作运行时测试 ───────────────────────────
+
+    #[tokio::test]
+    async fn targeted_wait_resolves_only_specific_agent_not_siblings() {
+        let control = AgentControl::with_limits(3, 10, 256);
+        let agent_a = control
+            .spawn(
+                &explore_profile(),
+                "session-1",
+                Some("turn-1".to_string()),
+                None,
+            )
+            .await
+            .expect("agent A spawn should succeed");
+        let agent_b = control
+            .spawn(
+                &explore_profile(),
+                "session-1",
+                Some("turn-1".to_string()),
+                None,
+            )
+            .await
+            .expect("agent B spawn should succeed");
+        let _ = control.mark_running(&agent_a.agent_id).await;
+        let _ = control.mark_running(&agent_b.agent_id).await;
+
+        // 只完成 agent_a，agent_b 仍运行中
+        let _ = control.mark_completed(&agent_a.agent_id).await;
+
+        // wait 应该立即返回已终态的 agent_a
+        let waited = control
+            .wait(&agent_a.agent_id)
+            .await
+            .expect("wait should resolve");
+        assert_eq!(waited.status, AgentStatus::Completed);
+
+        // agent_b 仍然处于 Running 状态，不受影响
+        let b_handle = control
+            .get(&agent_b.agent_id)
+            .await
+            .expect("agent B should exist");
+        assert_eq!(b_handle.status, AgentStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn resume_transitions_completed_agent_back_to_running() {
+        let control = AgentControl::with_limits(3, 10, 256);
+        let handle = control
+            .spawn(
+                &explore_profile(),
+                "session-1",
+                Some("turn-1".to_string()),
+                None,
+            )
+            .await
+            .expect("spawn should succeed");
+        let _ = control.mark_running(&handle.agent_id).await;
+        let _ = control.mark_completed(&handle.agent_id).await;
+
+        // 恢复已完成的 agent
+        let resumed = control
+            .resume(&handle.agent_id)
+            .await
+            .expect("resume should succeed");
+        assert_eq!(resumed.status, AgentStatus::Running);
+
+        // 验证恢复后能再次正常到达终态
+        let _ = control.mark_completed(&handle.agent_id).await;
+        let final_handle = control
+            .get(&handle.agent_id)
+            .await
+            .expect("agent should exist");
+        assert_eq!(final_handle.status, AgentStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn resume_rejects_non_final_agent() {
+        let control = AgentControl::with_limits(3, 10, 256);
+        let handle = control
+            .spawn(
+                &explore_profile(),
+                "session-1",
+                Some("turn-1".to_string()),
+                None,
+            )
+            .await
+            .expect("spawn should succeed");
+        let _ = control.mark_running(&handle.agent_id).await;
+
+        // Running 状态的 agent 不能被恢复
+        let result = control.resume(&handle.agent_id).await;
+        assert!(result.is_none(), "running agent should not be resumable");
+    }
+
+    #[tokio::test]
+    async fn close_cascades_to_entire_subtree_but_not_siblings() {
+        let control = AgentControl::with_limits(4, 10, 256);
+
+        // 构建两棵独立子树
+        let tree_a_parent = control
+            .spawn(
+                &explore_profile(),
+                "session-1",
+                Some("turn-1".to_string()),
+                None,
+            )
+            .await
+            .expect("tree A parent spawn should succeed");
+        let tree_a_child = control
+            .spawn(
+                &explore_profile(),
+                "session-1",
+                Some("turn-1".to_string()),
+                Some(tree_a_parent.agent_id.clone()),
+            )
+            .await
+            .expect("tree A child spawn should succeed");
+
+        let tree_b_parent = control
+            .spawn(
+                &explore_profile(),
+                "session-1",
+                Some("turn-1".to_string()),
+                None,
+            )
+            .await
+            .expect("tree B parent spawn should succeed");
+        let _tree_b_child = control
+            .spawn(
+                &explore_profile(),
+                "session-1",
+                Some("turn-1".to_string()),
+                Some(tree_b_parent.agent_id.clone()),
+            )
+            .await
+            .expect("tree B child spawn should succeed");
+
+        let _ = control.mark_running(&tree_a_parent.agent_id).await;
+        let _ = control.mark_running(&tree_a_child.agent_id).await;
+        let _ = control.mark_running(&tree_b_parent.agent_id).await;
+
+        // 关闭 tree A 的根，应级联到 tree A 的 child
+        let cancelled = control
+            .cancel(&tree_a_parent.agent_id)
+            .await
+            .expect("cancel should succeed");
+        assert_eq!(cancelled.status, AgentStatus::Cancelled);
+
+        // tree A 的 parent 和 child 都被取消
+        assert_eq!(
+            control
+                .get(&tree_a_parent.agent_id)
+                .await
+                .expect("should exist")
+                .status,
+            AgentStatus::Cancelled
+        );
+        assert_eq!(
+            control
+                .get(&tree_a_child.agent_id)
+                .await
+                .expect("should exist")
+                .status,
+            AgentStatus::Cancelled
+        );
+
+        // tree B 不受影响
+        assert_eq!(
+            control
+                .get(&tree_b_parent.agent_id)
+                .await
+                .expect("should exist")
+                .status,
+            AgentStatus::Running
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_reoccupies_concurrency_slot() {
+        let control = AgentControl::with_limits(8, 2, usize::MAX);
+        let first = control
+            .spawn(
+                &explore_profile(),
+                "session-1",
+                Some("turn-1".to_string()),
+                None,
+            )
+            .await
+            .expect("first spawn should succeed");
+        let _second = control
+            .spawn(
+                &explore_profile(),
+                "session-2",
+                Some("turn-2".to_string()),
+                None,
+            )
+            .await
+            .expect("second spawn should succeed");
+
+        let _ = control.mark_running(&first.agent_id).await;
+        let _ = control.mark_completed(&first.agent_id).await;
+
+        // first 完成后释放了槽位，可以创建第三个
+        let _third = control
+            .spawn(
+                &explore_profile(),
+                "session-3",
+                Some("turn-3".to_string()),
+                None,
+            )
+            .await
+            .expect("third spawn should succeed after first completed");
+
+        // 恢复 first 会重新占用槽位，此时已有 3 个活跃（first resumed + second + third）
+        let _ = control.resume(&first.agent_id).await;
+
+        let error = control
+            .spawn(
+                &explore_profile(),
+                "session-4",
+                Some("turn-4".to_string()),
+                None,
+            )
+            .await
+            .expect_err("should exceed concurrent limit after resume");
+        assert_eq!(
+            error,
+            AgentControlError::MaxConcurrentExceeded { current: 3, max: 2 }
+        );
+    }
+
+    // ─── 收件箱测试 ──────────────────────────────────────
+
+    fn sample_envelope(id: &str, from: &str, to: &str, message: &str) -> AgentInboxEnvelope {
+        AgentInboxEnvelope {
+            delivery_id: id.to_string(),
+            from_agent_id: from.to_string(),
+            to_agent_id: to.to_string(),
+            kind: astrcode_core::InboxEnvelopeKind::ParentMessage,
+            message: message.to_string(),
+            context: None,
+            is_final: false,
+            summary: None,
+            findings: Vec::new(),
+            artifacts: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn push_and_drain_inbox_enqueues_and_consumes_envelopes() {
+        let control = AgentControl::new();
+        let handle = control
+            .spawn(
+                &explore_profile(),
+                "session-1",
+                Some("turn-1".to_string()),
+                None,
+            )
+            .await
+            .expect("spawn should succeed");
+        let _ = control.mark_running(&handle.agent_id).await;
+
+        // 推送两封信封
+        control
+            .push_inbox(
+                &handle.agent_id,
+                sample_envelope("d-1", "agent-parent", &handle.agent_id, "请修改"),
+            )
+            .await
+            .expect("push should succeed");
+        control
+            .push_inbox(
+                &handle.agent_id,
+                sample_envelope("d-2", "agent-parent", &handle.agent_id, "补充说明"),
+            )
+            .await
+            .expect("push should succeed");
+
+        // 排空收件箱
+        let envelopes = control
+            .drain_inbox(&handle.agent_id)
+            .await
+            .expect("drain should succeed");
+        assert_eq!(envelopes.len(), 2);
+        assert_eq!(envelopes[0].delivery_id, "d-1");
+        assert_eq!(envelopes[1].delivery_id, "d-2");
+
+        // 二次排空为空
+        let empty = control
+            .drain_inbox(&handle.agent_id)
+            .await
+            .expect("drain should succeed");
+        assert!(empty.is_empty());
+    }
+
+    #[tokio::test]
+    async fn push_inbox_deduplication_by_delivery_id() {
+        let control = AgentControl::new();
+        let handle = control
+            .spawn(
+                &explore_profile(),
+                "session-1",
+                Some("turn-1".to_string()),
+                None,
+            )
+            .await
+            .expect("spawn should succeed");
+
+        // 推送相同 delivery_id 的信封两次
+        control
+            .push_inbox(
+                &handle.agent_id,
+                sample_envelope("d-dup", "agent-parent", &handle.agent_id, "消息"),
+            )
+            .await
+            .expect("push should succeed");
+        control
+            .push_inbox(
+                &handle.agent_id,
+                sample_envelope("d-dup", "agent-parent", &handle.agent_id, "消息"),
+            )
+            .await
+            .expect("push should succeed");
+
+        // 当前实现不内置去重，由调用方保证幂等；
+        // 验证两封信封都入队（调用方负责 dedupe 语义）
+        let envelopes = control
+            .drain_inbox(&handle.agent_id)
+            .await
+            .expect("drain should succeed");
+        assert_eq!(envelopes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn wait_for_inbox_resolves_on_new_envelope() {
+        let control = AgentControl::new();
+        let handle = control
+            .spawn(
+                &explore_profile(),
+                "session-1",
+                Some("turn-1".to_string()),
+                None,
+            )
+            .await
+            .expect("spawn should succeed");
+        let _ = control.mark_running(&handle.agent_id).await;
+
+        let agent_id = handle.agent_id.clone();
+        let control_clone = control.clone();
+        let waiter = tokio::spawn(async move { control_clone.wait_for_inbox(&agent_id).await });
+
+        // 让 waiter 完成订阅
+        tokio::task::yield_now().await;
+
+        // 推送信封唤醒 waiter
+        control
+            .push_inbox(
+                &handle.agent_id,
+                sample_envelope("d-wait", "agent-parent", &handle.agent_id, "唤醒"),
+            )
+            .await
+            .expect("push should succeed");
+
+        let result = tokio::time::timeout(Duration::from_secs(3), waiter)
+            .await
+            .expect("waiter should finish before timeout")
+            .expect("waiter should join");
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn wait_for_inbox_returns_immediately_for_final_agent() {
+        let control = AgentControl::new();
+        let handle = control
+            .spawn(
+                &explore_profile(),
+                "session-1",
+                Some("turn-1".to_string()),
+                None,
+            )
+            .await
+            .expect("spawn should succeed");
+        let _ = control.mark_running(&handle.agent_id).await;
+        let _ = control.mark_completed(&handle.agent_id).await;
+
+        let result = control
+            .wait_for_inbox(&handle.agent_id)
+            .await
+            .expect("should resolve immediately");
+        assert_eq!(result.status, AgentStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn push_inbox_returns_none_for_nonexistent_agent() {
+        let control = AgentControl::new();
+        let result = control
+            .push_inbox(
+                "missing-agent",
+                sample_envelope("d-1", "agent-parent", "missing-agent", "消息"),
+            )
+            .await;
+        assert!(result.is_none());
+    }
+
+    // ─── T035 层级协作回归测试 ──────────────────────────────
+
+    /// 验证级联关闭是 leaf-first 语义：
+    /// 三层链 root → middle → leaf，关闭 middle 时，
+    /// leaf 先被取消（子树从叶子向上传播），root 不受影响。
+    #[tokio::test]
+    async fn leaf_first_cascade_cancels_deepest_child_before_parent() {
+        let control = AgentControl::with_limits(4, 10, 256);
+
+        let root = control
+            .spawn(
+                &explore_profile(),
+                "session-root",
+                Some("turn-1".to_string()),
+                None,
+            )
+            .await
+            .expect("root spawn should succeed");
+        let middle = control
+            .spawn(
+                &explore_profile(),
+                "session-middle",
+                Some("turn-1".to_string()),
+                Some(root.agent_id.clone()),
+            )
+            .await
+            .expect("middle spawn should succeed");
+        let leaf = control
+            .spawn(
+                &explore_profile(),
+                "session-leaf",
+                Some("turn-1".to_string()),
+                Some(middle.agent_id.clone()),
+            )
+            .await
+            .expect("leaf spawn should succeed");
+        let _ = control.mark_running(&root.agent_id).await;
+        let _ = control.mark_running(&middle.agent_id).await;
+        let _ = control.mark_running(&leaf.agent_id).await;
+
+        // 关闭 middle，应级联到 leaf，但不影响 root
+        let cancelled = control
+            .cancel(&middle.agent_id)
+            .await
+            .expect("cancel should succeed");
+        assert_eq!(cancelled.status, AgentStatus::Cancelled);
+
+        // middle 和 leaf 都被取消
+        assert_eq!(
+            control
+                .get(&middle.agent_id)
+                .await
+                .expect("middle should exist")
+                .status,
+            AgentStatus::Cancelled
+        );
+        assert_eq!(
+            control
+                .get(&leaf.agent_id)
+                .await
+                .expect("leaf should exist")
+                .status,
+            AgentStatus::Cancelled
+        );
+
+        // root 不受影响
+        assert_eq!(
+            control
+                .get(&root.agent_id)
+                .await
+                .expect("root should exist")
+                .status,
+            AgentStatus::Running
+        );
+    }
+
+    /// 验证子树隔离：关闭一个分支的中间节点不会影响兄弟分支。
+    /// root → middle_a → leaf_a
+    /// root → middle_b → leaf_b
+    /// 关闭 middle_a 只影响 middle_a + leaf_a，middle_b + leaf_b 不受影响。
+    #[tokio::test]
+    async fn subtree_isolation_closing_one_branch_does_not_affect_sibling_branch() {
+        let control = AgentControl::with_limits(4, 10, 256);
+
+        let root = control
+            .spawn(
+                &explore_profile(),
+                "session-root",
+                Some("turn-1".to_string()),
+                None,
+            )
+            .await
+            .expect("root spawn should succeed");
+        let middle_a = control
+            .spawn(
+                &explore_profile(),
+                "session-middle-a",
+                Some("turn-1".to_string()),
+                Some(root.agent_id.clone()),
+            )
+            .await
+            .expect("middle_a spawn should succeed");
+        let leaf_a = control
+            .spawn(
+                &explore_profile(),
+                "session-leaf-a",
+                Some("turn-1".to_string()),
+                Some(middle_a.agent_id.clone()),
+            )
+            .await
+            .expect("leaf_a spawn should succeed");
+        let middle_b = control
+            .spawn(
+                &explore_profile(),
+                "session-middle-b",
+                Some("turn-1".to_string()),
+                Some(root.agent_id.clone()),
+            )
+            .await
+            .expect("middle_b spawn should succeed");
+        let leaf_b = control
+            .spawn(
+                &explore_profile(),
+                "session-leaf-b",
+                Some("turn-1".to_string()),
+                Some(middle_b.agent_id.clone()),
+            )
+            .await
+            .expect("leaf_b spawn should succeed");
+
+        let _ = control.mark_running(&root.agent_id).await;
+        let _ = control.mark_running(&middle_a.agent_id).await;
+        let _ = control.mark_running(&leaf_a.agent_id).await;
+        let _ = control.mark_running(&middle_b.agent_id).await;
+        let _ = control.mark_running(&leaf_b.agent_id).await;
+
+        // 关闭 middle_a 分支
+        let _ = control
+            .cancel(&middle_a.agent_id)
+            .await
+            .expect("cancel should succeed");
+
+        // branch A 全部被取消
+        assert_eq!(
+            control
+                .get(&middle_a.agent_id)
+                .await
+                .expect("middle_a should exist")
+                .status,
+            AgentStatus::Cancelled
+        );
+        assert_eq!(
+            control
+                .get(&leaf_a.agent_id)
+                .await
+                .expect("leaf_a should exist")
+                .status,
+            AgentStatus::Cancelled
+        );
+
+        // branch B 完全不受影响
+        assert_eq!(
+            control
+                .get(&middle_b.agent_id)
+                .await
+                .expect("middle_b should exist")
+                .status,
+            AgentStatus::Running
+        );
+        assert_eq!(
+            control
+                .get(&leaf_b.agent_id)
+                .await
+                .expect("leaf_b should exist")
+                .status,
+            AgentStatus::Running
+        );
+
+        // root 也不受影响
+        assert_eq!(
+            control
+                .get(&root.agent_id)
+                .await
+                .expect("root should exist")
+                .status,
+            AgentStatus::Running
+        );
+    }
+
+    /// 验证 deliverToParent 只投递给直接父 agent，不越级投递到祖父 agent。
+    /// root → middle → leaf
+    /// leaf 通过 deliverToParent 只能投递到 middle 的 inbox，
+    /// root 的 inbox 不应收到 leaf 的投递。
+    #[tokio::test]
+    async fn deliver_to_parent_only_reaches_direct_parent_not_grandparent() {
+        let control = AgentControl::with_limits(4, 10, 256);
+
+        let root = control
+            .spawn(
+                &explore_profile(),
+                "session-root",
+                Some("turn-1".to_string()),
+                None,
+            )
+            .await
+            .expect("root spawn should succeed");
+        let middle = control
+            .spawn(
+                &explore_profile(),
+                "session-middle",
+                Some("turn-1".to_string()),
+                Some(root.agent_id.clone()),
+            )
+            .await
+            .expect("middle spawn should succeed");
+        let leaf = control
+            .spawn(
+                &explore_profile(),
+                "session-leaf",
+                Some("turn-1".to_string()),
+                Some(middle.agent_id.clone()),
+            )
+            .await
+            .expect("leaf spawn should succeed");
+        let _ = control.mark_running(&root.agent_id).await;
+        let _ = control.mark_running(&middle.agent_id).await;
+        let _ = control.mark_running(&leaf.agent_id).await;
+
+        // leaf 向直接父 (middle) 投递
+        let leaf_delivery = AgentInboxEnvelope {
+            delivery_id: "delivery-leaf-to-middle".to_string(),
+            from_agent_id: leaf.agent_id.clone(),
+            to_agent_id: middle.agent_id.clone(),
+            kind: astrcode_core::InboxEnvelopeKind::ChildDelivery,
+            message: "leaf 的结果".to_string(),
+            context: None,
+            is_final: true,
+            summary: Some("leaf 完成了任务".to_string()),
+            findings: vec!["发现1".to_string()],
+            artifacts: Vec::new(),
+        };
+
+        control
+            .push_inbox(&middle.agent_id, leaf_delivery)
+            .await
+            .expect("push to middle should succeed");
+
+        // middle 的 inbox 应该有 leaf 的投递
+        let middle_inbox = control
+            .drain_inbox(&middle.agent_id)
+            .await
+            .expect("drain middle inbox should succeed");
+        assert_eq!(middle_inbox.len(), 1);
+        assert_eq!(middle_inbox[0].from_agent_id, leaf.agent_id);
+        assert_eq!(
+            middle_inbox[0].kind,
+            astrcode_core::InboxEnvelopeKind::ChildDelivery
+        );
+        assert!(middle_inbox[0].is_final);
+
+        // root 的 inbox 应该为空（leaf 不能越级投递）
+        let root_inbox = control
+            .drain_inbox(&root.agent_id)
+            .await
+            .expect("drain root inbox should succeed");
+        assert!(
+            root_inbox.is_empty(),
+            "leaf delivery should not reach grandparent inbox"
         );
     }
 }

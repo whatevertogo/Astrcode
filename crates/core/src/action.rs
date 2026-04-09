@@ -115,15 +115,58 @@ impl ToolExecutionResult {
     /// 成功时直接返回输出；失败时拼接错误信息和输出，
     /// 确保 LLM 能理解工具执行的结果。
     pub fn model_content(&self) -> String {
-        if self.ok {
-            return self.output.clone();
+        let base = if self.ok {
+            self.output.clone()
+        } else {
+            match self.error.as_deref() {
+                Some(error) if self.output.is_empty() => format!("tool execution failed: {error}"),
+                Some(error) => format!("tool execution failed: {error}\n{}", self.output),
+                None => self.output.clone(),
+            }
+        };
+
+        let Some(child_ref_hint) = self.child_agent_reference_hint() else {
+            return base;
+        };
+
+        if base.trim().is_empty() {
+            child_ref_hint
+        } else {
+            format!("{base}\n\n{child_ref_hint}")
+        }
+    }
+
+    fn child_agent_reference_hint(&self) -> Option<String> {
+        let metadata = self.metadata.as_ref()?.as_object()?;
+        let agent_ref = metadata.get("agentRef")?.as_object()?;
+        let agent_id = agent_ref.get("agentId")?.as_str()?;
+
+        let mut lines = vec![
+            "Child agent reference:".to_string(),
+            format!("- agentId: {agent_id}"),
+        ];
+
+        if let Some(sub_run_id) = agent_ref.get("subRunId").and_then(Value::as_str) {
+            lines.push(format!("- subRunId: {sub_run_id}"));
+        }
+        if let Some(session_id) = agent_ref.get("sessionId").and_then(Value::as_str) {
+            lines.push(format!("- sessionId: {session_id}"));
+        }
+        if let Some(open_session_id) = agent_ref.get("openSessionId").and_then(Value::as_str) {
+            lines.push(format!("- openSessionId: {open_session_id}"));
+        }
+        if let Some(status) = agent_ref.get("status").and_then(Value::as_str) {
+            lines.push(format!("- status: {status}"));
         }
 
-        match self.error.as_deref() {
-            Some(error) if self.output.is_empty() => format!("tool execution failed: {error}"),
-            Some(error) => format!("tool execution failed: {error}\n{}", self.output),
-            None => self.output.clone(),
-        }
+        // 这里显式强调“精确复用原值”，避免模型把 `agent-1` 自作主张改写成
+        // `agent-01` 之类的展示型编号，导致后续协作工具命中不存在的 agent。
+        lines.push(
+            "Use this exact `agentId` value in later sendAgent/waitAgent/closeAgent/resumeAgent \
+             calls."
+                .to_string(),
+        );
+        Some(lines.join("\n"))
     }
 }
 
@@ -139,6 +182,8 @@ pub enum UserMessageOrigin {
     User,
     /// 自动继续提示（上下文窗口满时自动触发继续）
     AutoContinueNudge,
+    /// 子会话交付后用于唤醒父会话继续决策的内部提示。
+    ReactivationPrompt,
     /// 压缩摘要（上下文压缩后插入的摘要消息）
     CompactSummary,
 }
@@ -292,7 +337,9 @@ fn collapse_extra_blank_lines(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::split_assistant_content;
+    use serde_json::json;
+
+    use super::{ToolExecutionResult, split_assistant_content};
 
     #[test]
     fn split_assistant_content_extracts_inline_thinking_blocks() {
@@ -328,5 +375,33 @@ mod tests {
 
         assert_eq!(parts.visible_content, "<think>   </think>\n\nvisible");
         assert_eq!(parts.reasoning_content, None);
+    }
+
+    #[test]
+    fn model_content_appends_exact_child_agent_reference_from_metadata() {
+        let result = ToolExecutionResult {
+            tool_call_id: "call-1".to_string(),
+            tool_name: "spawnAgent".to_string(),
+            ok: true,
+            output: "spawnAgent 已在后台启动。".to_string(),
+            error: None,
+            metadata: Some(json!({
+                "agentRef": {
+                    "agentId": "agent-1",
+                    "subRunId": "subrun-1",
+                    "sessionId": "session-parent",
+                    "openSessionId": "session-parent",
+                    "status": "running"
+                }
+            })),
+            duration_ms: 0,
+            truncated: false,
+        };
+
+        let content = result.model_content();
+        assert!(content.contains("spawnAgent 已在后台启动。"));
+        assert!(content.contains("- agentId: agent-1"));
+        assert!(content.contains("- subRunId: subrun-1"));
+        assert!(content.contains("Use this exact `agentId` value"));
     }
 }

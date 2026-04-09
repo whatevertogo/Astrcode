@@ -4,6 +4,7 @@
 
 import type {
   AgentEventPayload,
+  ChildSessionNotificationKind,
   CompactTrigger,
   InvocationKind,
   Phase,
@@ -35,6 +36,15 @@ const VALID_PHASES: Phase[] = [
 const VALID_TOOL_OUTPUT_STREAMS: ToolOutputStream[] = ['stdout', 'stderr'];
 const VALID_INVOCATION_KINDS: InvocationKind[] = ['subRun', 'rootExecution'];
 const VALID_SUBRUN_STORAGE_MODES: SubRunStorageMode[] = ['sharedSession', 'independentSession'];
+const VALID_CHILD_NOTIFICATION_KINDS: ChildSessionNotificationKind[] = [
+  'started',
+  'progress_summary',
+  'delivered',
+  'waiting',
+  'resumed',
+  'closed',
+  'failed',
+];
 
 function toPhase(value: unknown): Phase | null {
   if (typeof value !== 'string') {
@@ -540,6 +550,57 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
         },
         stepCount: pickNumber(data, 'stepCount', 'step_count') ?? 0,
         estimatedTokens: pickNumber(data, 'estimatedTokens', 'estimated_tokens') ?? 0,
+      },
+    };
+  }
+
+  if (event === 'childSessionNotification') {
+    const childRefRaw = asRecord(data.childRef ?? data.child_ref);
+    if (!childRefRaw) {
+      return invalidEvent('childSessionNotification requires childRef', raw);
+    }
+    const agentId = pickString(childRefRaw, 'agentId', 'agent_id');
+    const sessionId = pickString(childRefRaw, 'sessionId', 'session_id');
+    const subRunId = pickString(childRefRaw, 'subRunId', 'sub_run_id');
+    if (!agentId || !sessionId || !subRunId) {
+      return invalidEvent('childSessionNotification childRef missing required fields', raw);
+    }
+    const lineageKind = pickString(childRefRaw, 'lineageKind', 'lineage_kind');
+    if (lineageKind !== 'spawn' && lineageKind !== 'fork' && lineageKind !== 'resume') {
+      return invalidEvent(`childSessionNotification invalid lineageKind: ${lineageKind}`, raw);
+    }
+    const kindRaw = pickString(data, 'kind');
+    const kind: ChildSessionNotificationKind =
+      kindRaw && (VALID_CHILD_NOTIFICATION_KINDS as string[]).includes(kindRaw)
+        ? (kindRaw as ChildSessionNotificationKind)
+        : 'failed';
+    const summary = pickString(data, 'summary') ?? '';
+    const status = pickString(data, 'status') ?? 'unknown';
+    const openSessionId = pickString(data, 'openSessionId', 'open_session_id') ?? sessionId;
+    return {
+      event: 'childSessionNotification',
+      data: {
+        turnId: pickOptionalString(data, 'turnId', 'turn_id') ?? null,
+        childRef: {
+          agentId,
+          sessionId,
+          subRunId,
+          parentAgentId:
+            pickOptionalString(childRefRaw, 'parentAgentId', 'parent_agent_id') ?? undefined,
+          lineageKind,
+          status: pickString(childRefRaw, 'status') ?? 'unknown',
+          openable: childRefRaw.openable === true,
+          openSessionId: pickString(childRefRaw, 'openSessionId', 'open_session_id') ?? sessionId,
+        },
+        kind,
+        summary,
+        status,
+        openSessionId,
+        sourceToolCallId:
+          pickOptionalString(data, 'sourceToolCallId', 'source_tool_call_id') ?? undefined,
+        finalReplyExcerpt:
+          pickOptionalString(data, 'finalReplyExcerpt', 'final_reply_excerpt') ?? undefined,
+        ...pickAgentContext(data),
       },
     };
   }

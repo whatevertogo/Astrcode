@@ -8,6 +8,52 @@ import {
   listRootSubRunViews,
 } from './subRunView';
 
+const DEFAULT_RESOLVED_OVERRIDES = {
+  storageMode: 'sharedSession' as const,
+  inheritSystemInstructions: true,
+  inheritProjectInstructions: true,
+  inheritWorkingDir: true,
+  inheritPolicyUpperBound: true,
+  inheritCancelToken: true,
+  includeCompactSummary: false,
+  includeRecentTail: true,
+  includeRecoveryRefs: false,
+  includeParentFindings: false,
+};
+
+function makeSubRunStartFixture(input: {
+  id: string;
+  turnId: string;
+  parentTurnId: string;
+  agentId: string;
+  subRunId: string;
+  agentProfile: string;
+  depth: number;
+  timestamp: number;
+  parentAgentId?: string;
+}): Message {
+  return {
+    id: input.id,
+    kind: 'subRunStart',
+    turnId: input.turnId,
+    parentTurnId: input.parentTurnId,
+    agentId: input.agentId,
+    subRunId: input.subRunId,
+    descriptor: {
+      subRunId: input.subRunId,
+      parentTurnId: input.parentTurnId,
+      ...(input.parentAgentId ? { parentAgentId: input.parentAgentId } : {}),
+      depth: input.depth,
+    },
+    agentProfile: input.agentProfile,
+    resolvedOverrides: { ...DEFAULT_RESOLVED_OVERRIDES },
+    resolvedLimits: {
+      allowedTools: ['readFile'],
+    },
+    timestamp: input.timestamp,
+  };
+}
+
 describe('buildSubRunView', () => {
   it('extracts lifecycle and direct-child messages for a nested sub-run view', () => {
     const messages: Message[] = [
@@ -19,34 +65,16 @@ describe('buildSubRunView', () => {
         timestamp: 1,
       },
       {
-        id: 'subrun-a-start',
-        kind: 'subRunStart',
-        turnId: 'turn-root',
-        parentTurnId: 'turn-root',
-        agentId: 'agent-a',
-        subRunId: 'subrun-a',
-        descriptor: {
-          subRunId: 'subrun-a',
+        ...makeSubRunStartFixture({
+          id: 'subrun-a-start',
+          turnId: 'turn-root',
           parentTurnId: 'turn-root',
+          agentId: 'agent-a',
+          subRunId: 'subrun-a',
+          agentProfile: 'planner',
           depth: 1,
-        },
-        agentProfile: 'planner',
-        resolvedOverrides: {
-          storageMode: 'sharedSession',
-          inheritSystemInstructions: true,
-          inheritProjectInstructions: true,
-          inheritWorkingDir: true,
-          inheritPolicyUpperBound: true,
-          inheritCancelToken: true,
-          includeCompactSummary: false,
-          includeRecentTail: true,
-          includeRecoveryRefs: false,
-          includeParentFindings: false,
-        },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
-        timestamp: 2,
+          timestamp: 2,
+        }),
       },
       {
         id: 'subrun-a-assistant-1',
@@ -60,35 +88,17 @@ describe('buildSubRunView', () => {
         timestamp: 3,
       },
       {
-        id: 'subrun-b-start',
-        kind: 'subRunStart',
-        turnId: 'turn-a',
-        parentTurnId: 'turn-a',
-        agentId: 'agent-b',
-        subRunId: 'subrun-b',
-        descriptor: {
-          subRunId: 'subrun-b',
+        ...makeSubRunStartFixture({
+          id: 'subrun-b-start',
+          turnId: 'turn-a',
           parentTurnId: 'turn-a',
+          agentId: 'agent-b',
+          subRunId: 'subrun-b',
           parentAgentId: 'agent-a',
+          agentProfile: 'coder',
           depth: 2,
-        },
-        agentProfile: 'coder',
-        resolvedOverrides: {
-          storageMode: 'sharedSession',
-          inheritSystemInstructions: true,
-          inheritProjectInstructions: true,
-          inheritWorkingDir: true,
-          inheritPolicyUpperBound: true,
-          inheritCancelToken: true,
-          includeCompactSummary: false,
-          includeRecentTail: true,
-          includeRecoveryRefs: false,
-          includeParentFindings: false,
-        },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
-        timestamp: 4,
+          timestamp: 4,
+        }),
       },
       {
         id: 'subrun-b-assistant-1',
@@ -102,35 +112,17 @@ describe('buildSubRunView', () => {
         timestamp: 5,
       },
       {
-        id: 'subrun-c-start',
-        kind: 'subRunStart',
-        turnId: 'turn-b',
-        parentTurnId: 'turn-b',
-        agentId: 'agent-c',
-        subRunId: 'subrun-c',
-        descriptor: {
-          subRunId: 'subrun-c',
+        ...makeSubRunStartFixture({
+          id: 'subrun-c-start',
+          turnId: 'turn-b',
           parentTurnId: 'turn-b',
+          agentId: 'agent-c',
+          subRunId: 'subrun-c',
           parentAgentId: 'agent-b',
+          agentProfile: 'reviewer',
           depth: 3,
-        },
-        agentProfile: 'reviewer',
-        resolvedOverrides: {
-          storageMode: 'sharedSession',
-          inheritSystemInstructions: true,
-          inheritProjectInstructions: true,
-          inheritWorkingDir: true,
-          inheritPolicyUpperBound: true,
-          inheritCancelToken: true,
-          includeCompactSummary: false,
-          includeRecentTail: true,
-          includeRecoveryRefs: false,
-          includeParentFindings: false,
-        },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
-        timestamp: 6,
+          timestamp: 6,
+        }),
       },
       {
         id: 'subrun-c-assistant-1',
@@ -807,5 +799,270 @@ describe('buildSubRunView', () => {
 
     const orphanView = buildSubRunView(tree, 'subrun-orphan');
     expect(orphanView?.parentSubRunId).toBeNull();
+  });
+
+  // 父摘要投影测试 — 确保根级子执行可作为父视图摘要卡片使用
+  it('projects root sub-runs as parent summary cards with title and status', () => {
+    const messages: Message[] = [
+      {
+        id: 'root-user',
+        kind: 'user',
+        turnId: 'turn-root',
+        text: 'start',
+        timestamp: 1,
+      },
+      {
+        ...makeSubRunStartFixture({
+          id: 'subrun-a-start',
+          turnId: 'turn-root',
+          parentTurnId: 'turn-root',
+          agentId: 'agent-a',
+          subRunId: 'subrun-a',
+          agentProfile: 'explorer',
+          depth: 1,
+          timestamp: 2,
+        }),
+      },
+      {
+        id: 'subrun-a-assistant',
+        kind: 'assistant',
+        turnId: 'turn-a',
+        parentTurnId: 'turn-root',
+        subRunId: 'subrun-a',
+        agentProfile: 'explorer',
+        text: 'result a',
+        streaming: false,
+        timestamp: 3,
+      },
+      {
+        id: 'subrun-a-finish',
+        kind: 'subRunFinish',
+        turnId: 'turn-root',
+        parentTurnId: 'turn-root',
+        subRunId: 'subrun-a',
+        result: {
+          status: 'completed',
+          handoff: {
+            summary: '完成了文件探索',
+            findings: ['发现三个风险点'],
+            artifacts: [],
+          },
+        },
+        stepCount: 2,
+        estimatedTokens: 50,
+        timestamp: 4,
+      },
+      {
+        ...makeSubRunStartFixture({
+          id: 'subrun-b-start',
+          turnId: 'turn-root',
+          parentTurnId: 'turn-root',
+          agentId: 'agent-b',
+          subRunId: 'subrun-b',
+          agentProfile: 'reviewer',
+          depth: 1,
+          timestamp: 5,
+        }),
+      },
+      {
+        id: 'subrun-b-finish',
+        kind: 'subRunFinish',
+        turnId: 'turn-root',
+        parentTurnId: 'turn-root',
+        subRunId: 'subrun-b',
+        result: {
+          status: 'failed',
+          failure: {
+            code: 'transport',
+            displayMessage: '连接中断',
+            technicalMessage: 'HTTP timeout',
+            retryable: true,
+          },
+        },
+        stepCount: 1,
+        estimatedTokens: 20,
+        timestamp: 6,
+      },
+    ];
+
+    const tree = buildSubRunThreadTree(messages);
+    const summaryCards = listRootSubRunViews(tree);
+
+    // 两个根级子执行都应出现在摘要列表中
+    expect(summaryCards.length).toBe(2);
+    expect(summaryCards.map((card) => card.subRunId)).toEqual(['subrun-a', 'subrun-b']);
+
+    // 第一个：成功完成，摘要应可获取
+    const cardOk = summaryCards[0];
+    expect(cardOk.title).toBe('explorer');
+    expect(cardOk.finishMessage?.result.status).toBe('completed');
+    expect(cardOk.finishMessage?.result.handoff?.summary).toBe('完成了文件探索');
+
+    // 第二个：失败，错误信息应可获取
+    const cardFail = summaryCards[1];
+    expect(cardFail.title).toBe('reviewer');
+    expect(cardFail.finishMessage?.result.status).toBe('failed');
+    expect(cardFail.finishMessage?.result.failure?.displayMessage).toBe('连接中断');
+  });
+
+  // T020: 子会话独立可查看 — 具有 childSessionId 的子执行应标记为可独立打开
+  it('marks independent-session sub-runs as openable via childSessionId', () => {
+    const messages: Message[] = [
+      {
+        id: 'root-user',
+        kind: 'user',
+        turnId: 'turn-root',
+        text: 'start',
+        timestamp: 1,
+      },
+      {
+        id: 'subrun-independent-start',
+        kind: 'subRunStart',
+        turnId: 'turn-root',
+        parentTurnId: 'turn-root',
+        agentId: 'agent-ind',
+        subRunId: 'subrun-ind',
+        descriptor: {
+          subRunId: 'subrun-ind',
+          parentTurnId: 'turn-root',
+          depth: 1,
+        },
+        agentProfile: 'independent-explorer',
+        childSessionId: 'session-child-ind',
+        resolvedOverrides: {
+          storageMode: 'independentSession',
+          inheritSystemInstructions: true,
+          inheritProjectInstructions: true,
+          inheritWorkingDir: true,
+          inheritPolicyUpperBound: true,
+          inheritCancelToken: true,
+          includeCompactSummary: false,
+          includeRecentTail: true,
+          includeRecoveryRefs: false,
+          includeParentFindings: false,
+        },
+        resolvedLimits: {
+          allowedTools: ['readFile'],
+        },
+        timestamp: 2,
+      },
+      {
+        id: 'subrun-ind-finish',
+        kind: 'subRunFinish',
+        turnId: 'turn-root',
+        parentTurnId: 'turn-root',
+        subRunId: 'subrun-ind',
+        childSessionId: 'session-child-ind',
+        result: { status: 'completed' },
+        stepCount: 1,
+        estimatedTokens: 30,
+        timestamp: 3,
+      },
+    ];
+
+    const tree = buildSubRunThreadTree(messages);
+    const view = buildSubRunView(tree, 'subrun-ind');
+
+    // 独立子会话应包含 childSessionId，前端可据此直接打开子会话
+    expect(view?.childSessionId).toBe('session-child-ind');
+  });
+
+  it('recovers root sub-runs from spawnAgent tool metadata when lifecycle events are missing', () => {
+    const messages: Message[] = [
+      {
+        id: 'spawn-tool-call-a',
+        kind: 'toolCall',
+        turnId: 'turn-root',
+        toolCallId: 'call-a',
+        toolName: 'spawnAgent',
+        status: 'ok',
+        args: { prompt: 'task-a' },
+        output: 'spawnAgent 已在后台启动。',
+        metadata: {
+          agentRef: {
+            agentId: 'agent-1',
+            subRunId: 'subrun-1',
+          },
+        },
+        durationMs: 12,
+        timestamp: 1,
+      },
+      {
+        id: 'spawn-tool-call-b',
+        kind: 'toolCall',
+        turnId: 'turn-root',
+        toolCallId: 'call-b',
+        toolName: 'spawnAgent',
+        status: 'ok',
+        args: { prompt: 'task-b' },
+        output: 'spawnAgent 已在后台启动。',
+        metadata: {
+          agentRef: {
+            agentId: 'agent-2',
+            subRunId: 'subrun-2',
+          },
+        },
+        durationMs: 15,
+        timestamp: 2,
+      },
+    ];
+
+    const tree = buildSubRunThreadTree(messages);
+    const rootViews = listRootSubRunViews(tree);
+
+    expect(rootViews.map((view) => view.subRunId)).toEqual(['subrun-1', 'subrun-2']);
+    expect(rootViews.map((view) => view.title)).toEqual(['agent-1', 'agent-2']);
+  });
+
+  it('merges spawnAgent fallback refs with real lifecycle records without duplication', () => {
+    const messages: Message[] = [
+      {
+        id: 'spawn-tool-call-a',
+        kind: 'toolCall',
+        turnId: 'turn-root',
+        toolCallId: 'call-a',
+        toolName: 'spawnAgent',
+        status: 'ok',
+        args: { prompt: 'task-a' },
+        output: 'spawnAgent 已在后台启动。',
+        metadata: {
+          agentRef: {
+            agentId: 'agent-1',
+            subRunId: 'subrun-1',
+          },
+        },
+        durationMs: 12,
+        timestamp: 1,
+      },
+      {
+        ...makeSubRunStartFixture({
+          id: 'subrun-a-start',
+          turnId: 'turn-root',
+          parentTurnId: 'turn-root',
+          agentId: 'agent-1',
+          subRunId: 'subrun-1',
+          agentProfile: 'planner',
+          depth: 1,
+          timestamp: 2,
+        }),
+      },
+      {
+        id: 'subrun-a-assistant',
+        kind: 'assistant',
+        turnId: 'turn-a',
+        parentTurnId: 'turn-root',
+        subRunId: 'subrun-1',
+        agentProfile: 'planner',
+        text: 'done',
+        streaming: false,
+        timestamp: 3,
+      },
+    ];
+
+    const rootViews = listRootSubRunViews(messages);
+
+    expect(rootViews).toHaveLength(1);
+    expect(rootViews[0]?.subRunId).toBe('subrun-1');
+    expect(rootViews[0]?.title).toBe('planner');
   });
 });

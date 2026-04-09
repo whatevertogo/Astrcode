@@ -261,7 +261,7 @@ where
                 },
                 Ok(None) => {},
                 Err(error) => {
-                    return if cancel.is_cancelled() {
+                    return if error.is_cancelled() {
                         report_interrupted(turn_id, &agent, on_event, emit_turn_done)
                     } else {
                         report_error(turn_id, error.to_string(), &agent, on_event, emit_turn_done)
@@ -360,7 +360,7 @@ where
                             );
                         },
                         Err(compact_error) => {
-                            if cancel.is_cancelled() {
+                            if compact_error.is_cancelled() {
                                 return report_interrupted(
                                     turn_id,
                                     &agent,
@@ -420,6 +420,16 @@ where
                     ),
                 },
             )?;
+        }
+
+        if is_empty_completion(&output) {
+            return report_error(
+                turn_id,
+                "provider returned an empty completion without content, reasoning, or tool calls",
+                &agent,
+                on_event,
+                emit_turn_done,
+            );
         }
 
         if !output.content.is_empty() || !output.tool_calls.is_empty() || output.reasoning.is_some()
@@ -554,6 +564,10 @@ fn complete_turn(
     } else {
         Ok(outcome)
     }
+}
+
+fn is_empty_completion(output: &astrcode_runtime_llm::LlmOutput) -> bool {
+    output.content.trim().is_empty() && output.tool_calls.is_empty() && output.reasoning.is_none()
 }
 
 fn report_error(

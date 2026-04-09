@@ -9,6 +9,14 @@ export type InvocationKind = 'subRun' | 'rootExecution';
 export type SubRunStorageMode = 'sharedSession' | 'independentSession';
 export type SubRunStatusSource = 'live' | 'durable' | 'legacyDurable';
 export type SessionEventScope = 'self' | 'subtree' | 'directChildren';
+export type ChildSessionNotificationKind =
+  | 'started'
+  | 'progress_summary'
+  | 'delivered'
+  | 'waiting'
+  | 'resumed'
+  | 'closed'
+  | 'failed';
 export type SubRunOutcome = 'running' | 'completed' | 'failed' | 'aborted' | 'token_exceeded';
 export type SubRunFailureCode =
   | 'transport'
@@ -192,6 +200,28 @@ export type AgentEventPayload =
         result: SubRunResult;
         stepCount: number;
         estimatedTokens: number;
+      }>;
+    }
+  | {
+      event: 'childSessionNotification';
+      data: AgentScoped<{
+        turnId?: string | null;
+        childRef: {
+          agentId: string;
+          sessionId: string;
+          subRunId: string;
+          parentAgentId?: string;
+          lineageKind: 'spawn' | 'fork' | 'resume';
+          status: string;
+          openable: boolean;
+          openSessionId: string;
+        };
+        kind: ChildSessionNotificationKind;
+        summary: string;
+        status: string;
+        openSessionId: string;
+        sourceToolCallId?: string;
+        finalReplyExcerpt?: string;
       }>;
     }
   | { event: 'turnDone'; data: AgentScoped<{ turnId: string }> }

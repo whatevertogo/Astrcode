@@ -237,6 +237,13 @@ impl EventTranslator {
                     estimated_tokens: *estimated_tokens,
                 });
             },
+            StorageEvent::ChildSessionNotification { notification, .. } => {
+                push(AgentEvent::ChildSessionNotification {
+                    turn_id: turn_id.clone(),
+                    agent: agent.clone(),
+                    notification: notification.clone(),
+                });
+            },
             StorageEvent::AssistantDelta { token, .. } => {
                 if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::ModelDelta {
@@ -421,8 +428,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        AgentEvent, AgentEventContext, StoredEvent, SubRunDescriptor, SubRunOutcome, SubRunResult,
-        SubRunStorageMode, ToolOutputStream, UserMessageOrigin, phase_of_storage_event,
+        AgentEvent, AgentEventContext, AgentStatus, ChildSessionLineageKind,
+        ChildSessionNotification, ChildSessionNotificationKind, StoredEvent, SubRunDescriptor,
+        SubRunOutcome, SubRunResult, SubRunStorageMode, ToolOutputStream, UserMessageOrigin,
+        phase_of_storage_event,
     };
 
     #[test]
@@ -459,6 +468,32 @@ mod tests {
         ));
         assert_eq!(records[0].event_id, "1.0");
         assert_eq!(records[1].event_id, "1.1");
+    }
+
+    #[test]
+    fn reactivation_prompt_does_not_replay_as_user_visible_message() {
+        let records = replay_records(
+            &[StoredEvent {
+                storage_seq: 2,
+                event: StorageEvent::UserMessage {
+                    turn_id: Some("turn-2".to_string()),
+                    agent: AgentEventContext::default(),
+                    content: "# Child Session Delivery".to_string(),
+                    origin: UserMessageOrigin::ReactivationPrompt,
+                    timestamp: chrono::Utc::now(),
+                },
+            }],
+            None,
+        );
+
+        assert_eq!(records.len(), 1);
+        assert!(matches!(
+            records[0].event,
+            AgentEvent::PhaseChanged {
+                phase: Phase::Thinking,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -738,5 +773,54 @@ mod tests {
                 .map(|(_, _, result)| result.status.clone()),
             Some(SubRunOutcome::Completed)
         );
+    }
+
+    #[test]
+    fn child_session_notification_translates_into_domain_event() {
+        let records = replay_records(
+            &[StoredEvent {
+                storage_seq: 12,
+                event: StorageEvent::ChildSessionNotification {
+                    turn_id: Some("turn-parent".to_string()),
+                    agent: AgentEventContext::sub_run(
+                        "agent-parent",
+                        "turn-parent",
+                        "planner",
+                        "subrun-parent",
+                        SubRunStorageMode::SharedSession,
+                        None,
+                    ),
+                    notification: ChildSessionNotification {
+                        notification_id: "note-1".to_string(),
+                        child_ref: crate::ChildAgentRef {
+                            agent_id: "agent-child".to_string(),
+                            session_id: "session-parent".to_string(),
+                            sub_run_id: "subrun-1".to_string(),
+                            parent_agent_id: Some("agent-parent".to_string()),
+                            lineage_kind: ChildSessionLineageKind::Spawn,
+                            status: AgentStatus::Running,
+                            openable: true,
+                            open_session_id: "session-child".to_string(),
+                        },
+                        kind: ChildSessionNotificationKind::Started,
+                        summary: "child started".to_string(),
+                        status: AgentStatus::Running,
+                        open_session_id: "session-child".to_string(),
+                        source_tool_call_id: Some("call-1".to_string()),
+                        final_reply_excerpt: None,
+                    },
+                    timestamp: None,
+                },
+            }],
+            None,
+        );
+
+        assert_eq!(records.len(), 1);
+        assert!(matches!(
+            &records[0].event,
+            AgentEvent::ChildSessionNotification { notification, .. }
+                if notification.notification_id == "note-1"
+                    && notification.child_ref.agent_id == "agent-child"
+        ));
     }
 }

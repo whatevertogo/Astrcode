@@ -236,13 +236,29 @@ pub fn prepare_prompt_submission(
     text: String,
     _token_budget: Option<u64>, // TODO: 未来可能需要使用 token_budget 参数
 ) -> PreparedPromptSubmission {
+    prepare_prompt_submission_with_origin(
+        session_id,
+        turn_id,
+        text,
+        _token_budget,
+        UserMessageOrigin::User,
+    )
+}
+
+pub fn prepare_prompt_submission_with_origin(
+    session_id: &str,
+    turn_id: &str,
+    text: String,
+    _token_budget: Option<u64>, // TODO: 未来可能需要使用 token_budget 参数
+    origin: UserMessageOrigin,
+) -> PreparedPromptSubmission {
     PreparedPromptSubmission {
         user_event: StorageEvent::UserMessage {
             turn_id: Some(turn_id.to_string()),
             agent: AgentEventContext::default(),
             content: text.clone(),
             timestamp: chrono::Utc::now(),
-            origin: UserMessageOrigin::User,
+            origin,
         },
         execution_owner: ExecutionOwner::root(
             session_id.to_string(),
@@ -423,23 +439,72 @@ pub fn derive_child_execution_owner(
 }
 
 pub fn build_result_artifacts(child: &astrcode_core::SubRunHandle) -> Vec<ArtifactRef> {
-    child
+    let open_session_id = child
         .child_session_id
         .as_ref()
-        .map_or_else(Vec::new, |session_id| {
-            vec![ArtifactRef {
-                kind: "session".to_string(),
-                id: session_id.clone(),
-                label: "Independent child session".to_string(),
-                session_id: Some(session_id.clone()),
-                storage_seq: None,
-                uri: None,
-            }]
-        })
+        .cloned()
+        .unwrap_or_else(|| child.session_id.clone());
+
+    vec![ArtifactRef {
+        kind: "session".to_string(),
+        id: open_session_id.clone(),
+        label: if child.child_session_id.is_some() {
+            "Independent child session".to_string()
+        } else {
+            "Shared parent session".to_string()
+        },
+        session_id: Some(open_session_id),
+        storage_seq: None,
+        uri: None,
+    }]
+}
+
+fn build_identity_artifacts(
+    child: &astrcode_core::SubRunHandle,
+    parent_session_id: &str,
+) -> Vec<ArtifactRef> {
+    let mut artifacts = vec![
+        ArtifactRef {
+            kind: "subRun".to_string(),
+            id: child.sub_run_id.clone(),
+            label: "Background sub-run".to_string(),
+            session_id: None,
+            storage_seq: None,
+            uri: None,
+        },
+        ArtifactRef {
+            kind: "agent".to_string(),
+            id: child.agent_id.clone(),
+            label: "Child agent id".to_string(),
+            session_id: None,
+            storage_seq: None,
+            uri: None,
+        },
+        ArtifactRef {
+            kind: "parentSession".to_string(),
+            id: parent_session_id.to_string(),
+            label: "Parent session".to_string(),
+            session_id: Some(parent_session_id.to_string()),
+            storage_seq: None,
+            uri: None,
+        },
+    ];
+    if let Some(parent_agent_id) = child.parent_agent_id.as_ref() {
+        artifacts.push(ArtifactRef {
+            kind: "parentAgent".to_string(),
+            id: parent_agent_id.clone(),
+            label: "Parent agent id".to_string(),
+            session_id: None,
+            storage_seq: None,
+            uri: None,
+        });
+    }
+    artifacts
 }
 
 pub fn build_subrun_handoff(
     child: &astrcode_core::SubRunHandle,
+    parent_session_id: &str,
     last_summary: Option<&str>,
     token_limit_hit: bool,
     step_limit_hit: bool,
@@ -464,20 +529,19 @@ pub fn build_subrun_handoff(
         summary,
         // `findings` 应只承载对子任务有业务价值的发现，不能再混入内部执行诊断。
         findings: Vec::new(),
-        artifacts: build_result_artifacts(child),
+        artifacts: {
+            let mut artifacts = build_identity_artifacts(child, parent_session_id);
+            artifacts.extend(build_result_artifacts(child));
+            artifacts
+        },
     }
 }
 
-pub fn build_background_subrun_handoff(child: &astrcode_core::SubRunHandle) -> SubRunHandoff {
-    let mut artifacts = vec![ArtifactRef {
-        // `subRun` artifact 把后台句柄结构化暴露给上层，避免再把 sub_run_id 塞进 summary/findings。
-        kind: "subRun".to_string(),
-        id: child.sub_run_id.clone(),
-        label: "Background sub-run".to_string(),
-        session_id: None,
-        storage_seq: None,
-        uri: None,
-    }];
+pub fn build_background_subrun_handoff(
+    child: &astrcode_core::SubRunHandle,
+    parent_session_id: &str,
+) -> SubRunHandoff {
+    let mut artifacts = build_identity_artifacts(child, parent_session_id);
     artifacts.extend(build_result_artifacts(child));
 
     SubRunHandoff {
@@ -526,7 +590,8 @@ mod tests {
     use super::{
         AgentExecutionRequest, build_background_subrun_handoff, build_execution_spec,
         build_root_spawn_params, build_subrun_failure, build_subrun_handoff,
-        prepare_prompt_submission, prepare_root_execution_launch, resolve_interrupt_session_plan,
+        prepare_prompt_submission, prepare_prompt_submission_with_origin,
+        prepare_root_execution_launch, resolve_interrupt_session_plan,
         summarize_execution_description, validate_root_execution_storage_mode,
     };
 
@@ -545,6 +610,7 @@ mod tests {
                 storage_mode: SubRunStorageMode::SharedSession,
                 status: AgentStatus::Completed,
             },
+            "session-parent-1",
             Some("done"),
             true,
             false,
@@ -571,6 +637,7 @@ mod tests {
                 storage_mode: SubRunStorageMode::SharedSession,
                 status: AgentStatus::Completed,
             },
+            "session-parent-1",
             None,
             false,
             false,
@@ -591,23 +658,28 @@ mod tests {
 
     #[test]
     fn build_background_subrun_handoff_exposes_subrun_artifact() {
-        let handoff = build_background_subrun_handoff(&astrcode_core::SubRunHandle {
-            sub_run_id: "subrun-1".to_string(),
-            agent_id: "agent-1".to_string(),
-            session_id: "session-1".to_string(),
-            child_session_id: Some("child-1".to_string()),
-            depth: 1,
-            parent_turn_id: Some("turn-1".to_string()),
-            parent_agent_id: None,
-            agent_profile: "plan".to_string(),
-            storage_mode: SubRunStorageMode::IndependentSession,
-            status: AgentStatus::Running,
-        });
+        let handoff = build_background_subrun_handoff(
+            &astrcode_core::SubRunHandle {
+                sub_run_id: "subrun-1".to_string(),
+                agent_id: "agent-1".to_string(),
+                session_id: "session-1".to_string(),
+                child_session_id: Some("child-1".to_string()),
+                depth: 1,
+                parent_turn_id: Some("turn-1".to_string()),
+                parent_agent_id: None,
+                agent_profile: "plan".to_string(),
+                storage_mode: SubRunStorageMode::IndependentSession,
+                status: AgentStatus::Running,
+            },
+            "session-parent-1",
+        );
 
         assert_eq!(handoff.summary, "spawnAgent 已在后台启动。");
         assert_eq!(handoff.artifacts[0].kind, "subRun");
         assert_eq!(handoff.artifacts[0].id, "subrun-1");
-        assert_eq!(handoff.artifacts[1].kind, "session");
+        assert_eq!(handoff.artifacts[1].kind, "agent");
+        assert_eq!(handoff.artifacts[2].kind, "parentSession");
+        assert_eq!(handoff.artifacts[3].kind, "session");
     }
 
     #[test]
@@ -677,6 +749,25 @@ mod tests {
         assert!(matches!(
             prepared.user_event,
             astrcode_core::StorageEvent::UserMessage { .. }
+        ));
+    }
+
+    #[test]
+    fn prepare_prompt_submission_with_origin_keeps_internal_origin() {
+        let prepared = prepare_prompt_submission_with_origin(
+            "session-1",
+            "turn-2",
+            "internal".to_string(),
+            None,
+            astrcode_core::UserMessageOrigin::ReactivationPrompt,
+        );
+
+        assert!(matches!(
+            prepared.user_event,
+            astrcode_core::StorageEvent::UserMessage {
+                origin: astrcode_core::UserMessageOrigin::ReactivationPrompt,
+                ..
+            }
         ));
     }
 

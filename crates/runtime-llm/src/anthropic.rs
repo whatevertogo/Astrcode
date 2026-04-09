@@ -23,11 +23,14 @@
 //! - `message_start / message_delta`: 提取 usage / stop_reason 等元数据
 //! - `content_block_stop / ping`: 元数据事件，静默忽略
 
-use std::fmt;
+use std::{
+    fmt,
+    sync::{Arc, Mutex},
+};
 
 use astrcode_core::{
     AstrError, CancelToken, LlmMessage, ReasoningContent, Result, SystemPromptBlock,
-    ToolCallRequest, ToolDefinition,
+    SystemPromptLayer, ToolCallRequest, ToolDefinition,
 };
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -38,8 +41,9 @@ use tokio::select;
 
 use crate::{
     EventSink, FinishReason, LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest,
-    LlmUsage, MAX_RETRIES, ModelLimits, Utf8StreamDecoder, build_http_client, classify_http_error,
-    emit_event, is_retryable_status, wait_retry_delay,
+    LlmUsage, MAX_RETRIES, ModelLimits, Utf8StreamDecoder, build_http_client,
+    cache_tracker::CacheTracker, classify_http_error, emit_event, is_retryable_status,
+    wait_retry_delay,
 };
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -62,6 +66,8 @@ pub struct AnthropicProvider {
     ///
     /// Anthropic 的上下文窗口来自 Models API，不应该继续在 provider 内写死。
     limits: ModelLimits,
+    /// 缓存失效检测跟踪器
+    cache_tracker: Arc<Mutex<CacheTracker>>,
 }
 
 impl fmt::Debug for AnthropicProvider {
@@ -72,6 +78,7 @@ impl fmt::Debug for AnthropicProvider {
             .field("api_key", &"<redacted>")
             .field("model", &self.model)
             .field("limits", &self.limits)
+            .field("cache_tracker", &"<internal>")
             .finish()
     }
 }
@@ -94,6 +101,7 @@ impl AnthropicProvider {
             api_key,
             model,
             limits,
+            cache_tracker: Arc::new(Mutex::new(CacheTracker::new())),
         })
     }
 
@@ -112,8 +120,8 @@ impl AnthropicProvider {
         stream: bool,
     ) -> AnthropicRequest {
         let mut anthropic_messages = to_anthropic_messages(messages);
-        // 预留大部分 breakpoint 给 system 分层前缀；对消息尾部只保留最后 1 个。
-        enable_message_caching(&mut anthropic_messages, 1);
+        // 增加消息缓存深度到 3 条，提高长对话的缓存命中率
+        enable_message_caching(&mut anthropic_messages, 3);
 
         AnthropicRequest {
             model: self.model.clone(),
@@ -227,6 +235,20 @@ impl AnthropicProvider {
 impl LlmProvider for AnthropicProvider {
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         let cancel = request.cancel;
+
+        // 检测缓存失效并记录原因
+        let system_prompt_text = request.system_prompt.as_deref().unwrap_or("");
+        let tool_names: Vec<String> = request.tools.iter().map(|t| t.name.clone()).collect();
+
+        if let Ok(mut tracker) = self.cache_tracker.lock() {
+            let break_reasons =
+                tracker.check_and_update(system_prompt_text, &tool_names, &self.model, "anthropic");
+
+            if !break_reasons.is_empty() {
+                debug!("[CACHE] Cache break detected: {:?}", break_reasons);
+            }
+        }
+
         let body = self.build_request(
             &request.messages,
             &request.tools,
@@ -288,6 +310,33 @@ impl LlmProvider for AnthropicProvider {
                             output.finish_reason = FinishReason::from_api_value(reason);
                         }
                         output.usage = stream_usage.into_llm_usage();
+
+                        // 记录流式响应的缓存状态
+                        if let Some(ref u) = output.usage {
+                            let input = u.input_tokens;
+                            let cache_read = u.cache_read_input_tokens;
+                            let cache_creation = u.cache_creation_input_tokens;
+
+                            if cache_read == 0 && cache_creation > 0 {
+                                debug!(
+                                    "Cache miss (streaming): writing {} tokens to cache (total \
+                                     input: {})",
+                                    cache_creation, input
+                                );
+                            } else if cache_read > 0 {
+                                let hit_rate = (cache_read as f32 / input as f32) * 100.0;
+                                debug!(
+                                    "Cache hit (streaming): {:.1}% ({} / {} tokens, creation: {})",
+                                    hit_rate, cache_read, input, cache_creation
+                                );
+                            } else {
+                                debug!(
+                                    "Cache disabled or unavailable (streaming, input: {} tokens)",
+                                    input
+                                );
+                            }
+                        }
+
                         return Ok(output);
                     }
                 }
@@ -427,10 +476,21 @@ fn enable_message_caching(messages: &mut [AnthropicMessage], cache_depth: usize)
 fn to_anthropic_tools(tools: &[ToolDefinition]) -> Vec<AnthropicTool> {
     tools
         .iter()
-        .map(|tool| AnthropicTool {
-            name: tool.name.clone(),
-            description: tool.description.clone(),
-            input_schema: tool.parameters.clone(),
+        .enumerate()
+        .map(|(index, tool)| {
+            // 只在最后一个工具上标记缓存，减少缓存边界数量
+            let cache_control = if index == tools.len() - 1 {
+                Some(AnthropicCacheControl::ephemeral())
+            } else {
+                None
+            };
+
+            AnthropicTool {
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                input_schema: tool.parameters.clone(),
+                cache_control,
+            }
         })
         .collect()
 }
@@ -443,14 +503,35 @@ fn to_anthropic_system(
         return Some(AnthropicSystemPrompt::Blocks(
             system_prompt_blocks
                 .iter()
-                .map(|block| AnthropicSystemBlock {
-                    type_: "text".to_string(),
-                    text: block.render(),
-                    cache_control: if block.cache_boundary {
-                        Some(AnthropicCacheControl::ephemeral())
+                .map(|block| {
+                    // 根据层级选择缓存策略
+                    let cache_control = if block.cache_boundary {
+                        match block.layer {
+                            SystemPromptLayer::Stable => {
+                                // Stable 层使用 ephemeral 缓存标记
+                                Some(AnthropicCacheControl::ephemeral())
+                            },
+                            SystemPromptLayer::SemiStable => {
+                                // SemiStable 层使用默认 5m TTL
+                                Some(AnthropicCacheControl::ephemeral())
+                            },
+                            SystemPromptLayer::Dynamic => {
+                                // Dynamic 层不缓存，避免浪费
+                                None
+                            },
+                            SystemPromptLayer::Unspecified => {
+                                Some(AnthropicCacheControl::ephemeral())
+                            },
+                        }
                     } else {
                         None
-                    },
+                    };
+
+                    AnthropicSystemBlock {
+                        type_: "text".to_string(),
+                        text: block.render(),
+                        cache_control,
+                    }
                 })
                 .collect(),
         ));
@@ -475,6 +556,28 @@ fn to_anthropic_system(
 /// - `stop_sequence` → Stop
 fn response_to_output(response: AnthropicResponse) -> LlmOutput {
     let usage = response.usage.and_then(AnthropicUsage::into_llm_usage);
+
+    // 记录缓存状态
+    if let Some(ref u) = usage {
+        let input = u.input_tokens;
+        let cache_read = u.cache_read_input_tokens;
+        let cache_creation = u.cache_creation_input_tokens;
+
+        if cache_read == 0 && cache_creation > 0 {
+            debug!(
+                "Cache miss: writing {} tokens to cache (total input: {})",
+                cache_creation, input
+            );
+        } else if cache_read > 0 {
+            let hit_rate = (cache_read as f32 / input as f32) * 100.0;
+            debug!(
+                "Cache hit: {:.1}% ({} / {} tokens, creation: {})",
+                hit_rate, cache_read, input, cache_creation
+            );
+        } else {
+            debug!("Cache disabled or unavailable (input: {} tokens)", input);
+        }
+    }
 
     let mut content = String::new();
     let mut tool_calls = Vec::new();
@@ -755,18 +858,19 @@ fn process_sse_block(
     }
 }
 
-/// 为 Claude 模型生成 extended thinking 配置。
+/// 为模型生成 extended thinking 配置。
 ///
-/// 当模型名称以 `claude-` 开头且 max_tokens >= 2 时启用 thinking 模式，
-/// 预算 token 数为 max_tokens 的 75%（向下取整）。
+/// 当 max_tokens >= 2 时启用 thinking 模式，预算 token 数为 max_tokens 的 75%（向下取整）。
 ///
 /// ## 设计动机
 ///
-/// Extended thinking 让 Claude 在输出前进行深度推理，提升复杂任务的回答质量。
+/// Extended thinking 让模型在输出前进行深度推理，提升复杂任务的回答质量。
 /// 预算设为 75% 是为了保留至少 25% 的 token 给实际输出内容。
 /// 如果预算为 0 或等于 max_tokens，则不启用（避免无意义配置）。
-fn thinking_config_for_model(model: &str, max_tokens: u32) -> Option<AnthropicThinking> {
-    if !model.starts_with("claude-") || max_tokens < 2 {
+///
+/// 默认为所有模型启用此功能。如果模型不支持，API 会忽略此参数。
+fn thinking_config_for_model(_model: &str, max_tokens: u32) -> Option<AnthropicThinking> {
+    if max_tokens < 2 {
         return None;
     }
 
@@ -999,6 +1103,9 @@ struct AnthropicTool {
     name: String,
     description: String,
     input_schema: Value,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<AnthropicCacheControl>,
 }
 
 /// Anthropic Messages API 非流式响应体。
@@ -1440,11 +1547,11 @@ mod tests {
             "semi2 should have cache_control"
         );
 
-        // Dynamic 层的最后一个 block 应该有 cache_control
-        assert_eq!(
-            body["system"][5]["cache_control"]["type"],
-            json!("ephemeral"),
-            "dynamic1 should have cache_control"
+        // Dynamic 层不缓存（避免浪费，因为内容变化频繁）
+        // TODO: 更好的做法？实现更好的kv缓存？
+        assert!(
+            body["system"][5].get("cache_control").is_none(),
+            "dynamic1 should not have cache_control (Dynamic layer is not cached)"
         );
     }
 

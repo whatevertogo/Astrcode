@@ -34,6 +34,7 @@ use std::{
 use tempfile::TempDir;
 
 pub use crate::env::ASTRCODE_TEST_HOME_ENV as TEST_HOME_ENV;
+use crate::{AgentStatus, ChildSessionLineageKind, ChildSessionNode, ChildSessionStatusSource};
 
 /// 全局环境变量互斥锁
 ///
@@ -47,6 +48,32 @@ pub fn env_lock() -> &'static Mutex<()> {
 /// 获取当前测试 home 目录（如果已设置）
 pub fn test_home_dir() -> Option<PathBuf> {
     std::env::var_os(TEST_HOME_ENV).map(PathBuf::from)
+}
+
+/// 构造稳定的 child-session durable 节点夹具。
+///
+/// 为什么放在 core：多个 runtime/server 测试都需要同一套 identity 语义，
+/// 若各自手写字符串容易在 parent/child/session/subrun 关系上出现漂移。
+pub fn child_session_node_fixture(seed: &str) -> ChildSessionNode {
+    let normalized = if seed.trim().is_empty() {
+        "fixture"
+    } else {
+        seed
+    };
+    ChildSessionNode {
+        agent_id: format!("agent-{normalized}"),
+        session_id: format!("session-parent-{normalized}"),
+        child_session_id: format!("session-child-{normalized}"),
+        sub_run_id: format!("subrun-{normalized}"),
+        parent_session_id: format!("session-parent-{normalized}"),
+        parent_agent_id: Some(format!("agent-parent-{normalized}")),
+        parent_turn_id: format!("turn-parent-{normalized}"),
+        lineage_kind: ChildSessionLineageKind::Spawn,
+        status: AgentStatus::Running,
+        status_source: ChildSessionStatusSource::Durable,
+        created_by_tool_call_id: Some(format!("tool-call-{normalized}")),
+        lineage_snapshot: None,
+    }
 }
 
 /// 测试环境守卫

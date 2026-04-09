@@ -2,8 +2,8 @@ use std::{collections::VecDeque, sync::atomic::Ordering};
 
 use anyhow::Result;
 use astrcode_core::{
-    AstrError, CancelToken, EventTranslator, Phase, SessionTurnLease, StorageEvent, StoredEvent,
-    UserMessageOrigin,
+    AstrError, CancelToken, EventTranslator, InvocationKind, Phase, SessionTurnLease, StorageEvent,
+    StoredEvent, SubRunStorageMode, UserMessageOrigin,
 };
 
 use crate::{SessionState, SessionTokenBudgetState, support::lock_anyhow};
@@ -125,6 +125,21 @@ pub fn should_record_compaction_tail_event(event: &StorageEvent) -> bool {
             | StorageEvent::AssistantFinal { .. }
             | StorageEvent::ToolCall { .. }
             | StorageEvent::ToolResult { .. }
+    ) && should_include_in_compaction_tail(event)
+}
+
+fn should_include_in_compaction_tail(event: &StorageEvent) -> bool {
+    let Some(agent) = event.agent_context() else {
+        return true;
+    };
+
+    if agent.invocation_kind != Some(InvocationKind::SubRun) {
+        return true;
+    }
+
+    matches!(
+        agent.storage_mode,
+        Some(SubRunStorageMode::IndependentSession)
     )
 }
 
@@ -137,7 +152,7 @@ mod tests {
 
     use astrcode_core::{
         AgentEventContext, AgentStateProjector, EventLogWriter, Phase, SessionTurnLease,
-        StoreResult, StoredEvent, UserMessageOrigin,
+        StoreResult, StoredEvent, SubRunStorageMode, UserMessageOrigin,
     };
     use chrono::Utc;
 
@@ -340,6 +355,109 @@ mod tests {
         assert_eq!(tail.len(), 2);
         assert_eq!(tail[0].storage_seq, 3);
         assert_eq!(tail[1].storage_seq, 4);
+    }
+
+    #[test]
+    fn recent_turn_event_tail_excludes_shared_session_subrun_events() {
+        let shared_child_agent = AgentEventContext::sub_run(
+            "agent-child",
+            "turn-root",
+            "explore",
+            "subrun-shared",
+            SubRunStorageMode::SharedSession,
+            None,
+        );
+        let events = vec![
+            StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent::UserMessage {
+                    turn_id: Some("turn-root".to_string()),
+                    agent: AgentEventContext::default(),
+                    content: "root".to_string(),
+                    origin: UserMessageOrigin::User,
+                    timestamp: Utc::now(),
+                },
+            },
+            StoredEvent {
+                storage_seq: 2,
+                event: StorageEvent::AssistantFinal {
+                    turn_id: Some("turn-root".to_string()),
+                    agent: AgentEventContext::default(),
+                    content: "root-answer".to_string(),
+                    reasoning_content: None,
+                    reasoning_signature: None,
+                    timestamp: Some(Utc::now()),
+                },
+            },
+            StoredEvent {
+                storage_seq: 3,
+                event: StorageEvent::UserMessage {
+                    turn_id: Some("turn-child".to_string()),
+                    agent: shared_child_agent.clone(),
+                    content: "child".to_string(),
+                    origin: UserMessageOrigin::User,
+                    timestamp: Utc::now(),
+                },
+            },
+            StoredEvent {
+                storage_seq: 4,
+                event: StorageEvent::AssistantFinal {
+                    turn_id: Some("turn-child".to_string()),
+                    agent: shared_child_agent,
+                    content: "child-answer".to_string(),
+                    reasoning_content: None,
+                    reasoning_signature: None,
+                    timestamp: Some(Utc::now()),
+                },
+            },
+        ];
+
+        let tail = recent_turn_event_tail(&events, 1);
+
+        assert_eq!(tail.len(), 2);
+        assert_eq!(tail[0].storage_seq, 1);
+        assert_eq!(tail[1].storage_seq, 2);
+    }
+
+    #[test]
+    fn recent_turn_event_tail_keeps_independent_session_subrun_events() {
+        let child_agent = AgentEventContext::sub_run(
+            "agent-child",
+            "turn-root",
+            "explore",
+            "subrun-independent",
+            SubRunStorageMode::IndependentSession,
+            Some("session-child".to_string()),
+        );
+        let events = vec![
+            StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent::UserMessage {
+                    turn_id: Some("turn-child".to_string()),
+                    agent: child_agent.clone(),
+                    content: "child".to_string(),
+                    origin: UserMessageOrigin::User,
+                    timestamp: Utc::now(),
+                },
+            },
+            StoredEvent {
+                storage_seq: 2,
+                event: StorageEvent::AssistantFinal {
+                    turn_id: Some("turn-child".to_string()),
+                    agent: child_agent,
+                    content: "child-answer".to_string(),
+                    reasoning_content: None,
+                    reasoning_signature: None,
+                    timestamp: Some(Utc::now()),
+                },
+            },
+        ];
+
+        let tail = recent_turn_event_tail(&events, 1);
+
+        assert_eq!(tail.len(), 2);
+        assert_eq!(tail[0].storage_seq, 1);
+        assert_eq!(tail[1].storage_seq, 2);
     }
 
     #[test]

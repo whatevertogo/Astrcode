@@ -34,7 +34,7 @@ use crate::{
     runtime_surface_assembler::{
         PluginInitializer, SupervisorPluginInitializer, assemble_plugins_only,
     },
-    service::DeferredSubAgentExecutor,
+    service::{DeferredCollaborationExecutor, DeferredSubAgentExecutor},
 };
 
 /// 运行时引导完成后的结果容器。
@@ -155,9 +155,11 @@ where
     // 后台加载完成后会整体替换为新 surface，避免把半更新状态暴露给新 turn。
     let builtin_skill_catalog = Arc::new(SkillCatalog::new(builtin_skills.clone()));
     let subagent_executor = Arc::new(DeferredSubAgentExecutor::default());
+    let collaboration_executor = Arc::new(DeferredCollaborationExecutor::default());
     let router = create_builtin_router(
         Arc::clone(&builtin_skill_catalog),
         subagent_executor.clone(),
+        collaboration_executor.clone(),
     )?;
 
     // 获取内置能力名称集合（用于冲突检测）
@@ -179,6 +181,7 @@ where
         .map_err(service_error_to_astr)?,
     );
     subagent_executor.bind(&service);
+    collaboration_executor.bind(&service);
     // 配置热重载需要尽早挂载 watcher，确保用户在应用启动后直接编辑 config.json
     // 时，后续新 turn 就能看到最新的 runtime 参数和默认模型选择。
     service.start_config_auto_reload();
@@ -236,6 +239,7 @@ where
     let coordinator_for_bg = Arc::clone(&coordinator);
     let builtin_skills_for_bg = builtin_skills;
     let subagent_executor_for_bg = subagent_executor;
+    let collaboration_executor_for_bg = collaboration_executor;
     let total_plugin_count = manifests.len();
 
     let plugin_init_task = tokio::spawn(async move {
@@ -257,6 +261,7 @@ where
                     Arc::clone(&updated_skill_catalog),
                     assembled.invokers,
                     subagent_executor_for_bg.clone(),
+                    collaboration_executor_for_bg.clone(),
                 ) {
                     Ok(router) => router,
                     Err(error) => {
@@ -352,10 +357,12 @@ where
 fn create_builtin_router(
     skill_catalog: Arc<SkillCatalog>,
     subagent_executor: Arc<dyn astrcode_runtime_agent_tool::SubAgentExecutor>,
+    collaboration_executor: Arc<dyn astrcode_runtime_agent_tool::CollaborationExecutor>,
 ) -> std::result::Result<CapabilityRouter, AstrError> {
     let invokers = crate::builtin_capabilities::built_in_capability_invokers(
         skill_catalog,
         subagent_executor,
+        collaboration_executor,
     )?;
 
     let mut builder = CapabilityRouter::builder();
@@ -373,8 +380,9 @@ fn build_runtime_router(
     skill_catalog: Arc<SkillCatalog>,
     plugin_invokers: Vec<Arc<dyn astrcode_core::CapabilityInvoker>>,
     subagent_executor: Arc<dyn astrcode_runtime_agent_tool::SubAgentExecutor>,
+    collaboration_executor: Arc<dyn astrcode_runtime_agent_tool::CollaborationExecutor>,
 ) -> std::result::Result<CapabilityRouter, AstrError> {
-    let router = create_builtin_router(skill_catalog, subagent_executor)?;
+    let router = create_builtin_router(skill_catalog, subagent_executor, collaboration_executor)?;
     router.register_invokers(plugin_invokers)?;
     Ok(router)
 }

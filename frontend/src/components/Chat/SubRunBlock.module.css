@@ -273,6 +273,14 @@
   overflow-wrap: anywhere;
 }
 
+.findingsList {
+  margin: 4px 0 0 16px;
+  padding: 0;
+  list-style: disc;
+  color: var(--text-secondary, #888);
+  font-size: 0.85em;
+}
+
 @keyframes blockEnter {
   from {
     opacity: 0;

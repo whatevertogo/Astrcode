@@ -17,6 +17,51 @@ export interface PromptSubmission {
   branchedFromSessionId?: string;
 }
 
+export interface ChildAgentRef {
+  agentId: string;
+  sessionId: string;
+  subRunId: string;
+  parentAgentId?: string;
+  lineageKind: 'spawn' | 'fork' | 'resume';
+  lineageSnapshot?: LineageSnapshot;
+  status: string;
+  openable: boolean;
+  openSessionId: string;
+}
+
+/** 谱系来源快照，fork/resume 时记录来源上下文。 */
+export interface LineageSnapshot {
+  sourceAgentId: string;
+  sourceSessionId: string;
+  sourceSubRunId?: string;
+}
+
+export interface ChildSessionNotification {
+  notificationId: string;
+  childRef: ChildAgentRef;
+  kind: 'started' | 'progress_summary' | 'delivered' | 'waiting' | 'resumed' | 'closed' | 'failed';
+  summary: string;
+  status: string;
+  openSessionId: string;
+  sourceToolCallId?: string;
+  finalReplyExcerpt?: string;
+}
+
+export interface ParentChildSummaryList {
+  items: ChildSessionNotification[];
+}
+
+export interface ChildSessionViewProjection {
+  childRef: ChildAgentRef;
+  title: string;
+  status: string;
+  summaryItems: string[];
+  latestToolActivity: string[];
+  hasFinalReply: boolean;
+  childSessionId: string;
+  hasDescriptorLineage: boolean;
+}
+
 export async function createSession(workingDir: string): Promise<SessionMeta> {
   return requestJson<SessionMeta>('/api/sessions', {
     method: 'POST',
@@ -83,6 +128,9 @@ export async function interruptSession(sessionId: string): Promise<void> {
   });
 }
 
+/// [Legacy] 旧的 subrun-only 取消路径。
+/// 新的 child session 模型使用 closeAgent 协作工具通过 CapabilityRouter 执行关闭。
+/// 保留此端点用于向后兼容旧客户端。
 export async function cancelSubRun(sessionId: string, subRunId: string): Promise<void> {
   await request(
     `/api/v1/sessions/${encodeURIComponent(sessionId)}/subruns/${encodeURIComponent(subRunId)}/cancel`,
@@ -118,4 +166,27 @@ export async function deleteProject(workingDir: string): Promise<DeleteProjectRe
       method: 'DELETE',
     }
   );
+}
+
+/// 获取父会话的子会话摘要列表。
+/// 父视图只消费摘要，不消费子会话原始事件流。
+export async function loadParentChildSummaryList(
+  sessionId: string
+): Promise<ParentChildSummaryList> {
+  const payload = await requestJson<ParentChildSummaryList>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/children/summary`
+  );
+  return payload;
+}
+
+/// 获取指定子会话的可读视图投影。
+/// 投影只包含可消费的摘要信息，不含 raw JSON 或内部 inbox envelope。
+export async function loadChildSessionView(
+  parentSessionId: string,
+  childSessionId: string
+): Promise<ChildSessionViewProjection> {
+  const payload = await requestJson<{ view: ChildSessionViewProjection }>(
+    `/api/sessions/${encodeURIComponent(parentSessionId)}/children/${encodeURIComponent(childSessionId)}/view`
+  );
+  return payload.view;
 }

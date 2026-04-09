@@ -5,6 +5,11 @@ interface IndexedMessage {
   message: Message;
 }
 
+interface SpawnedAgentRef {
+  subRunId: string;
+  agentId?: string;
+}
+
 interface SubRunRecord {
   subRunId: string;
   startMessage?: SubRunStartMessage;
@@ -62,6 +67,25 @@ export interface SubRunPathView {
   validPath: string[];
   views: SubRunViewData[];
   activeView: SubRunViewData | null;
+}
+
+/// 父视图摘要卡片——从 childSessionNotification 消息中提取的只读投影。
+/// 不包含 child 原始事件流或 raw JSON。
+export interface ChildSummaryCard {
+  agentId: string;
+  subRunId: string;
+  title: string;
+  status: string;
+  summary: string;
+  openSessionId: string | null;
+  hasFinalReply: boolean;
+  finalReplyExcerpt: string | null;
+  hasDescriptorLineage: boolean;
+}
+
+/// 父视图摘要投影——替代混合会话线程树的只读摘要。
+export interface ParentSummaryProjection {
+  cards: ChildSummaryCard[];
 }
 
 function isSubRunStartMessage(message: Message): message is SubRunStartMessage {
@@ -139,6 +163,43 @@ function getOrCreateRecord(
   return created;
 }
 
+function pickStringField(value: unknown, ...keys: string[]): string | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    const candidate = (value as Record<string, unknown>)[key];
+    if (typeof candidate === 'string' && candidate.length > 0) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+function pickSpawnedAgentRef(message: Message): SpawnedAgentRef | null {
+  if (message.kind !== 'toolCall' || message.toolName !== 'spawnAgent' || message.status !== 'ok') {
+    return null;
+  }
+
+  const metadata =
+    typeof message.metadata === 'object' && message.metadata !== null ? message.metadata : null;
+  const agentRef = metadata
+    ? ((metadata as Record<string, unknown>).agentRef ??
+      (metadata as Record<string, unknown>).agent_ref)
+    : null;
+  const subRunId = pickStringField(agentRef, 'subRunId', 'sub_run_id');
+  if (!subRunId) {
+    return null;
+  }
+
+  return {
+    subRunId,
+    agentId: pickStringField(agentRef, 'agentId', 'agent_id'),
+  };
+}
+
 function buildSubRunIndex(messages: Message[]): SubRunIndex {
   const records = new Map<string, SubRunRecord>();
   const rootEntries: IndexedMessage[] = [];
@@ -176,6 +237,21 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
     record.ownBodyEntries.push({ index, message });
   });
 
+  rootEntries.forEach(({ index, message }) => {
+    const spawnedAgentRef = pickSpawnedAgentRef(message);
+    if (!spawnedAgentRef) {
+      return;
+    }
+
+    // Why: 历史回放偶发缺少 subRun lifecycle 时，spawnAgent 的 agentRef 仍然能稳定标识子执行；
+    // 用它补建占位记录，避免父会话把已启动的子 Agent 直接“吃掉”。
+    const record = getOrCreateRecord(records, spawnedAgentRef.subRunId, index);
+    record.startIndex = Math.min(record.startIndex, index);
+    if (!record.agentId && spawnedAgentRef.agentId) {
+      record.agentId = spawnedAgentRef.agentId;
+    }
+  });
+
   const orderedRecords = [...records.values()].sort(
     (left, right) => left.firstMessageIndex - right.firstMessageIndex
   );
@@ -190,6 +266,9 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
       record.finishMessage,
       record.ownBodyEntries.map((entry) => entry.message)
     );
+    if (record.title === record.subRunId && record.agentId) {
+      record.title = record.agentId;
+    }
 
     if (record.agentId && !agentOwnerMap.has(record.agentId)) {
       agentOwnerMap.set(record.agentId, record.subRunId);
@@ -261,6 +340,9 @@ function buildThreadItems(
   );
 }
 
+/// [Legacy] 构建混合会话线程树。
+/// 此函数将父消息和子执行消息混合构造成线程树，仅用于旧版 UI 渲染。
+/// 新的 child session 模型使用 buildParentSummaryProjection 获取摘要卡片。
 export function buildSubRunThreadTree(messages: Message[]): SubRunThreadTree {
   const index = buildSubRunIndex(messages);
   const subRuns = new Map<string, SubRunViewData>();
@@ -386,4 +468,40 @@ export function listRootSubRunViews(
     .filter((item): item is ThreadSubRunItem => item.kind === 'subRun')
     .map((item) => tree.subRuns.get(item.subRunId))
     .filter((view): view is SubRunViewData => view !== undefined);
+}
+
+/// 从消息列表构建父视图摘要投影。
+/// 直接使用 subrun 索引构建摘要卡片，不依赖 legacy 线程树构建器。
+/// 父视图只消费摘要，不消费子会话原始事件流，不暴露 raw JSON。
+export function buildParentSummaryProjection(messages: Message[]): ParentSummaryProjection {
+  const index = buildSubRunIndex(messages);
+
+  // 只提取 root-level subruns（无父 subrun 嵌套）
+  const rootRecords = [...index.records.values()]
+    .filter((record) => record.parentSubRunId === null)
+    .sort((a, b) => a.startIndex - b.startIndex);
+
+  const cards: ChildSummaryCard[] = rootRecords.map((record) => {
+    const handoff = record.finishMessage?.result.handoff;
+    const failure = record.finishMessage?.result.failure;
+    const status = record.finishMessage?.result.status ?? 'running';
+
+    return {
+      agentId:
+        record.agentId ?? record.startMessage?.agentId ?? record.finishMessage?.agentId ?? '',
+      subRunId: record.subRunId,
+      title: record.title,
+      status,
+      summary:
+        failure?.displayMessage ??
+        (handoff?.summary.trim() || undefined) ??
+        (status === 'running' ? '后台运行中' : ''),
+      openSessionId: record.childSessionId ?? null,
+      hasFinalReply: handoff !== undefined,
+      finalReplyExcerpt: handoff?.summary ?? null,
+      hasDescriptorLineage: record.hasDescriptorLineage,
+    };
+  });
+
+  return { cards };
 }

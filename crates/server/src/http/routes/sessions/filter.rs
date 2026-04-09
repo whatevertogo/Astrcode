@@ -128,6 +128,7 @@ fn event_agent_context(event: &AgentEvent) -> Option<&astrcode_core::AgentEventC
         | AgentEvent::CompactApplied { agent, .. }
         | AgentEvent::SubRunStarted { agent, .. }
         | AgentEvent::SubRunFinished { agent, .. }
+        | AgentEvent::ChildSessionNotification { agent, .. }
         | AgentEvent::PromptMetrics { agent, .. }
         | AgentEvent::TurnDone { agent, .. }
         | AgentEvent::Error { agent, .. } => Some(agent),

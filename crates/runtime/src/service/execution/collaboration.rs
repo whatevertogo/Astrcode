@@ -1,0 +1,726 @@
+//! 协作工具方法：send / wait / close / resume / deliver / fork。
+//!
+//! 这些方法实现父子 agent 之间的协作协议，
+//! 均挂载在 `AgentExecutionServiceHandle` 上作为工具调用的后端处理。
+
+use std::{sync::Arc, time::Instant};
+
+use astrcode_core::{
+    AgentEventContext, AgentStatus, AstrError, CancelToken, ChildAgentRef, ChildSessionLineageKind,
+    ChildSessionNotificationKind, CloseAgentParams, CollaborationResult, CollaborationResultKind,
+    DeliverToParentParams, InboxEnvelopeKind, InvocationKind, ResolvedExecutionLimitsSnapshot,
+    ResolvedSubagentContextOverrides, ResumeAgentParams, SendAgentParams, SpawnAgentParams,
+    StorageEvent, SubRunHandle, SubRunOutcome, SubRunResult, SubRunStorageMode, ToolContext,
+    ToolEventSink, UserMessageOrigin, WaitAgentParams, WaitUntil,
+};
+use astrcode_runtime_execution::{
+    build_background_subrun_handoff, build_child_agent_state, build_child_session_node,
+    build_child_session_notification, derive_child_execution_owner,
+};
+use astrcode_runtime_session::SessionStateEventSink;
+
+use super::{root::AgentExecutionServiceHandle, subagent::SpawnedSubagentExecution};
+use crate::service::{ServiceError, ServiceResult};
+
+impl AgentExecutionServiceHandle {
+    // ─── resumeChildSession ─────────────────────────────────
+
+    /// 恢复已完成的子会话，复用同一 child session 继续协作。
+    ///
+    /// 与 `launch_subagent` 不同，resume 不创建新 session 或新 SubRunHandle，
+    /// 而是把已终态的 agent 通过 `agent_control.resume()` 恢复到 Running 状态，
+    /// 然后追加一条 UserMessage 到同一个 child session 并重新运行 loop。
+    pub async fn resume_child_session(
+        &self,
+        agent_id: &str,
+        message: Option<String>,
+        ctx: &ToolContext,
+    ) -> ServiceResult<SubRunResult> {
+        let parent = self.resolve_parent_execution(ctx).await?;
+
+        // 查找现有的 child handle
+        let child = self
+            .runtime
+            .agent_control
+            .get(agent_id)
+            .await
+            .ok_or_else(|| ServiceError::InvalidInput(format!("agent '{agent_id}' not found")))?;
+
+        // 只有终态 agent 可以被恢复
+        if !child.status.is_final() {
+            return Err(ServiceError::InvalidInput(format!(
+                "agent '{}' is not in a final state (current: {:?})",
+                agent_id, child.status
+            )));
+        }
+
+        // 通过 agent_control 恢复到 Running
+        let resumed = self
+            .runtime
+            .agent_control
+            .resume(agent_id)
+            .await
+            .ok_or_else(|| {
+                ServiceError::InvalidInput(format!(
+                    "agent '{}' cannot be resumed (not in a final state)",
+                    agent_id
+                ))
+            })?;
+
+        // 复用已有的 child session（不创建新 session）
+        let target_session_id = resumed
+            .child_session_id
+            .clone()
+            .unwrap_or_else(|| ctx.session_id().to_string());
+
+        let child_cancel = self
+            .runtime
+            .agent_control
+            .cancel_token(&resumed.agent_id)
+            .await
+            .unwrap_or_else(CancelToken::new);
+
+        let child_turn_id = format!("{}-child-{}", parent.parent_turn_id, uuid::Uuid::new_v4());
+        let child_agent = AgentEventContext::sub_run(
+            resumed.agent_id.clone(),
+            parent.parent_turn_id.clone(),
+            resumed.agent_profile.clone(),
+            resumed.sub_run_id.clone(),
+            resumed.storage_mode,
+            resumed.child_session_id.clone(),
+        );
+
+        let parent_event_sink: Arc<dyn ToolEventSink> = Arc::new(
+            SessionStateEventSink::new(Arc::clone(&parent.parent_state))
+                .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?,
+        );
+        let active_sink: Arc<dyn ToolEventSink> =
+            if matches!(resumed.storage_mode, SubRunStorageMode::IndependentSession) {
+                let child_state = self
+                    .runtime
+                    .ensure_session_loaded(&target_session_id)
+                    .await?;
+                Arc::new(SessionStateEventSink::new(child_state).map_err(|error| {
+                    ServiceError::Internal(AstrError::Internal(error.to_string()))
+                })?)
+            } else {
+                parent_event_sink.clone()
+            };
+
+        // 查找现有 child_node 以复用
+        let child_node = parent
+            .parent_state
+            .child_session_node(&resumed.sub_run_id)
+            .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?
+            .unwrap_or_else(|| {
+                let mut node = build_child_session_node(
+                    &resumed,
+                    &parent.parent_session_id,
+                    &parent.parent_turn_id,
+                    ctx.tool_call_id().map(ToString::to_string),
+                );
+                node.lineage_kind = ChildSessionLineageKind::Resume;
+                node
+            });
+
+        let resumed_notification = build_child_session_notification(
+            &child_node,
+            format!("child-resumed:{}", resumed.sub_run_id),
+            ChildSessionNotificationKind::Resumed,
+            format!("子 Agent {} 已恢复。", resumed.agent_id),
+            AgentStatus::Running,
+            None,
+        );
+        let _ = parent_event_sink.emit(StorageEvent::ChildSessionNotification {
+            turn_id: Some(parent.parent_turn_id.clone()),
+            agent: child_agent.clone(),
+            notification: resumed_notification,
+            timestamp: Some(chrono::Utc::now()),
+        });
+
+        let resume_message = message.unwrap_or_else(|| "继续执行".to_string());
+        let _ = active_sink.emit(StorageEvent::UserMessage {
+            turn_id: Some(child_turn_id.clone()),
+            agent: child_agent.clone(),
+            content: resume_message.clone(),
+            timestamp: chrono::Utc::now(),
+            origin: UserMessageOrigin::User,
+        });
+
+        let child_state = build_child_agent_state(
+            &target_session_id,
+            ctx.working_dir().to_path_buf(),
+            &resume_message,
+        );
+
+        let child_loop = {
+            let profile = self
+                .load_profiles_for_working_dir(ctx.working_dir())
+                .await?
+                .get(&resumed.agent_profile)
+                .cloned()
+                .ok_or_else(|| {
+                    ServiceError::InvalidInput(format!(
+                        "agent profile '{}' not found for resume",
+                        resumed.agent_profile
+                    ))
+                })?;
+            let request =
+                astrcode_runtime_execution::AgentExecutionRequest::from_spawn_agent_params(
+                    &SpawnAgentParams {
+                        r#type: Some(profile.id.clone()),
+                        description: "resume".to_string(),
+                        prompt: resume_message.clone(),
+                        context: None,
+                    },
+                    None,
+                );
+            self.prepare_scoped_execution_request(
+                InvocationKind::SubRun,
+                &profile,
+                request,
+                self.snapshot_execution_surface().await,
+                Some(&parent.parent_snapshot),
+            )?
+            .loop_
+        };
+
+        let execution = SpawnedSubagentExecution {
+            child: resumed,
+            child_node,
+            child_agent,
+            child_turn_id,
+            child_task: resume_message,
+            child_execution_owner: derive_child_execution_owner(
+                ctx,
+                &parent.parent_turn_id,
+                &child,
+            ),
+            child_state,
+            child_loop,
+            child_cancel,
+            child_storage_mode: child.storage_mode,
+            parent_session_id: parent.parent_session_id.clone(),
+            parent_turn_id: parent.parent_turn_id.clone(),
+            parent_state: Arc::clone(&parent.parent_state),
+            parent_tool_call_id: ctx.tool_call_id().map(ToString::to_string),
+            parent_event_sink,
+            active_sink,
+            resolved_overrides: ResolvedSubagentContextOverrides::default(),
+            resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+        };
+
+        let running_result = SubRunResult {
+            status: SubRunOutcome::Running,
+            handoff: Some(build_background_subrun_handoff(
+                &execution.child,
+                &execution.parent_session_id,
+            )),
+            failure: None,
+        };
+
+        let service = self.clone();
+        let handle = tokio::spawn(async move {
+            let started_at = Instant::now();
+            let (outcome, tracker) = service.run_child_loop(&execution).await;
+            if let Err(error) = service
+                .finalize_child_execution(execution, tracker, started_at, outcome)
+                .await
+            {
+                log::error!("failed to finalize resumed child execution: {}", error);
+            }
+        });
+        astrcode_core::support::with_lock_recovery(
+            &self.runtime.active_subagent_handles,
+            "RuntimeService.active_subagent_handles",
+            |guard| guard.push(handle),
+        );
+
+        Ok(running_result)
+    }
+
+    // ─── 所有权验证 ──────────────────────────────────────────
+
+    /// 验证调用者是否为目标子 agent 的直接父级。
+    ///
+    /// 协作工具必须验证所有权，防止任意 agent 操作非子级 agent。
+    pub(super) fn verify_caller_owns_child(
+        &self,
+        ctx: &ToolContext,
+        child_handle: &SubRunHandle,
+    ) -> ServiceResult<()> {
+        let caller_agent_id = ctx.agent_context().agent_id.as_deref();
+        let child_parent_id = child_handle.parent_agent_id.as_deref();
+
+        match (caller_agent_id, child_parent_id) {
+            // 调用者有 agent_id，必须匹配子 agent 的 parent_agent_id
+            (Some(caller), Some(parent)) if caller == parent => Ok(()),
+            // 子 agent 没有父（顶层），只有根执行可以操作
+            (None, None) => Ok(()),
+            // 所有权不匹配
+            _ => Err(ServiceError::InvalidInput(format!(
+                "caller '{}' does not own agent '{}' (parent: {})",
+                caller_agent_id.unwrap_or("<root>"),
+                child_handle.agent_id,
+                child_parent_id.unwrap_or("<none>")
+            ))),
+        }
+    }
+
+    // ─── sendAgent ──────────────────────────────────────────
+
+    /// 向子 Agent 追加消息。
+    pub async fn send_to_child(
+        &self,
+        params: SendAgentParams,
+        ctx: &ToolContext,
+    ) -> ServiceResult<CollaborationResult> {
+        params.validate().map_err(ServiceError::from)?;
+
+        let child = self
+            .runtime
+            .agent_control
+            .get(&params.agent_id)
+            .await
+            .ok_or_else(|| {
+                ServiceError::NotFound(format!("agent '{}' not found", params.agent_id))
+            })?;
+
+        self.verify_caller_owns_child(ctx, &child)?;
+
+        let envelope = astrcode_core::AgentInboxEnvelope {
+            delivery_id: format!("delivery-{}", uuid::Uuid::new_v4()),
+            from_agent_id: ctx.agent_context().agent_id.clone().unwrap_or_default(),
+            to_agent_id: params.agent_id.clone(),
+            kind: InboxEnvelopeKind::ParentMessage,
+            message: params.message.clone(),
+            context: params.context.clone(),
+            is_final: false,
+            summary: None,
+            findings: Vec::new(),
+            artifacts: Vec::new(),
+        };
+
+        self.runtime
+            .agent_control
+            .push_inbox(&child.agent_id, envelope)
+            .await
+            .ok_or_else(|| {
+                ServiceError::NotFound(format!("agent '{}' inbox not available", params.agent_id))
+            })?;
+
+        let child_ref = self.build_child_ref_from_handle(&child).await;
+
+        log::info!(
+            "sendAgent: message sent to child agent '{}' (subRunId='{}')",
+            params.agent_id,
+            child.sub_run_id
+        );
+
+        Ok(CollaborationResult {
+            accepted: true,
+            kind: CollaborationResultKind::Sent,
+            agent_ref: Some(child_ref),
+            delivery_id: Some(format!("delivery-{}", uuid::Uuid::new_v4())),
+            summary: Some(format!("消息已发送到子 Agent {}", params.agent_id)),
+            parent_agent_id: None,
+            cascade: None,
+            closed_root_agent_id: None,
+            failure: None,
+        })
+    }
+
+    // ─── waitAgent ──────────────────────────────────────────
+
+    /// 等待子 Agent 到达可消费状态。
+    pub async fn wait_for_child(
+        &self,
+        params: WaitAgentParams,
+        ctx: &ToolContext,
+    ) -> ServiceResult<CollaborationResult> {
+        params.validate().map_err(ServiceError::from)?;
+
+        let handle = match params.until {
+            WaitUntil::Final => self
+                .runtime
+                .agent_control
+                .wait(&params.agent_id)
+                .await
+                .ok_or_else(|| {
+                    ServiceError::NotFound(format!(
+                        "agent '{}' not found or already finalized",
+                        params.agent_id
+                    ))
+                })?,
+            WaitUntil::NextDelivery => self
+                .runtime
+                .agent_control
+                .wait_for_inbox(&params.agent_id)
+                .await
+                .ok_or_else(|| {
+                    ServiceError::NotFound(format!(
+                        "agent '{}' not found for inbox wait",
+                        params.agent_id
+                    ))
+                })?,
+        };
+
+        self.verify_caller_owns_child(ctx, &handle)?;
+
+        let child_ref = self.build_child_ref_from_handle(&handle).await;
+        let summary = match handle.status {
+            AgentStatus::Completed => "子 Agent 已完成".to_string(),
+            AgentStatus::Failed => "子 Agent 执行失败".to_string(),
+            AgentStatus::Cancelled => "子 Agent 已取消".to_string(),
+            _ => format!("子 Agent 状态: {:?}", handle.status),
+        };
+
+        log::info!(
+            "waitAgent: wait resolved for child agent '{}' (subRunId='{}', status={:?})",
+            params.agent_id,
+            handle.sub_run_id,
+            handle.status
+        );
+
+        Ok(CollaborationResult {
+            accepted: true,
+            kind: CollaborationResultKind::WaitResolved,
+            agent_ref: Some(child_ref),
+            delivery_id: None,
+            summary: Some(summary),
+            parent_agent_id: None,
+            cascade: None,
+            closed_root_agent_id: None,
+            failure: None,
+        })
+    }
+
+    // ─── closeAgent ─────────────────────────────────────────
+
+    /// 关闭子 Agent。
+    ///
+    /// 使用 agent ownership subtree 语义执行级联关闭，
+    /// 而不是按 parent turn 分组关闭。
+    pub async fn close_child(
+        &self,
+        params: CloseAgentParams,
+        ctx: &ToolContext,
+    ) -> ServiceResult<CollaborationResult> {
+        params.validate().map_err(ServiceError::from)?;
+
+        // 先获取 handle 验证所有权，再执行关闭
+        let target = self
+            .runtime
+            .agent_control
+            .get(&params.agent_id)
+            .await
+            .ok_or_else(|| {
+                ServiceError::NotFound(format!("agent '{}' not found", params.agent_id))
+            })?;
+        self.verify_caller_owns_child(ctx, &target)?;
+
+        // 使用 subtree 语义关闭，而非 agent_control.cancel
+        let closed_ids = self
+            .close_agent_subtree(ctx.session_id(), &params.agent_id, params.cascade)
+            .await?;
+
+        let cancelled = self
+            .runtime
+            .agent_control
+            .get(&params.agent_id)
+            .await
+            .ok_or_else(|| {
+                ServiceError::NotFound(format!("agent '{}' not found", params.agent_id))
+            })?;
+
+        let subtree_count = closed_ids.len().saturating_sub(1);
+        let summary = if subtree_count > 0 {
+            format!(
+                "子 Agent {} 已关闭（含 {} 个后代）",
+                params.agent_id, subtree_count
+            )
+        } else {
+            format!("子 Agent {} 已关闭", params.agent_id)
+        };
+
+        log::info!(
+            "closeAgent: child agent '{}' closed (cascade={}, subtree_size={})",
+            params.agent_id,
+            params.cascade,
+            closed_ids.len()
+        );
+
+        Ok(CollaborationResult {
+            accepted: true,
+            kind: CollaborationResultKind::Closed,
+            agent_ref: None,
+            delivery_id: None,
+            summary: Some(summary),
+            parent_agent_id: cancelled.parent_agent_id,
+            cascade: Some(params.cascade),
+            closed_root_agent_id: Some(cancelled.agent_id.clone()),
+            failure: None,
+        })
+    }
+
+    // ─── resumeAgent ────────────────────────────────────────
+
+    /// 恢复子 Agent。
+    pub async fn resume_child(
+        &self,
+        params: ResumeAgentParams,
+        ctx: &ToolContext,
+    ) -> ServiceResult<CollaborationResult> {
+        params.validate().map_err(ServiceError::from)?;
+
+        // 验证调用者所有权
+        let target = self
+            .runtime
+            .agent_control
+            .get(&params.agent_id)
+            .await
+            .ok_or_else(|| {
+                ServiceError::NotFound(format!("agent '{}' not found", params.agent_id))
+            })?;
+        self.verify_caller_owns_child(ctx, &target)?;
+
+        // 使用已有的 resume_child_session 方法
+        let result = self
+            .resume_child_session(&params.agent_id, params.message.clone(), ctx)
+            .await?;
+
+        log::info!(
+            "resumeAgent: child agent '{}' resumed with message_len={}",
+            params.agent_id,
+            params.message.as_ref().map(|m| m.len()).unwrap_or(0)
+        );
+
+        let child_ref = self
+            .runtime
+            .agent_control
+            .get(&params.agent_id)
+            .await
+            .map(|handle| ChildAgentRef {
+                agent_id: handle.agent_id.clone(),
+                session_id: handle.session_id.clone(),
+                sub_run_id: handle.sub_run_id.clone(),
+                parent_agent_id: handle.parent_agent_id.clone(),
+                lineage_kind: ChildSessionLineageKind::Resume,
+                status: AgentStatus::Running,
+                openable: true,
+                open_session_id: handle
+                    .child_session_id
+                    .clone()
+                    .unwrap_or_else(|| handle.session_id.clone()),
+            });
+
+        Ok(CollaborationResult {
+            accepted: true,
+            kind: CollaborationResultKind::Resumed,
+            agent_ref: child_ref,
+            delivery_id: None,
+            summary: Some(result.handoff.map(|h| h.summary).unwrap_or_default()),
+            parent_agent_id: None,
+            cascade: None,
+            closed_root_agent_id: None,
+            failure: None,
+        })
+    }
+
+    // ─── deliverToParent ────────────────────────────────────
+
+    /// 向直接父 Agent 交付结果。
+    ///
+    /// 强制直接父路由：只投递到 handle 中记录的 parent_agent_id，
+    /// 不允许越级投递到祖父或更上层 agent。
+    /// 交付是一次性的：drain_inbox 消费后不再可重复消费。
+    pub async fn deliver_to_parent(
+        &self,
+        params: DeliverToParentParams,
+        ctx: &ToolContext,
+    ) -> ServiceResult<CollaborationResult> {
+        params.validate().map_err(ServiceError::from)?;
+
+        // 查找当前 agent 的父 agent ID：从 agent_control 获取 handle 的 parent_agent_id
+        let current_agent_id = ctx.agent_context().agent_id.clone().ok_or_else(|| {
+            ServiceError::InvalidInput("deliverToParent requires an agent context".to_string())
+        })?;
+
+        let current_handle = self
+            .runtime
+            .agent_control
+            .get(&current_agent_id)
+            .await
+            .ok_or_else(|| {
+                ServiceError::NotFound(format!("agent '{}' not found", current_agent_id))
+            })?;
+
+        // 直接父路由：只能向 handle 中记录的直接 parent 投递
+        let parent_agent_id = current_handle.parent_agent_id.clone().ok_or_else(|| {
+            ServiceError::InvalidInput(
+                "deliverToParent can only be called by a child agent".to_string(),
+            )
+        })?;
+
+        // 验证父 agent 确实存在于当前注册表中，防止向已移除的 agent 投递
+        let parent_handle = self
+            .runtime
+            .agent_control
+            .get(&parent_agent_id)
+            .await
+            .ok_or_else(|| {
+                ServiceError::NotFound(format!(
+                    "direct parent agent '{}' not found — delivery rejected",
+                    parent_agent_id
+                ))
+            })?;
+
+        // 验证路由一致性：parent 的 children 应包含当前 agent
+        // 使用 ancestor_chain 确认当前 agent 确实是 parent 的直接子节点
+        let ancestor_chain = self
+            .runtime
+            .agent_control
+            .ancestor_chain(&current_agent_id)
+            .await;
+        if ancestor_chain.len() < 2 {
+            return Err(ServiceError::InvalidInput(
+                "deliverToParent requires at least a two-level agent chain".to_string(),
+            ));
+        }
+        // 祖先链的第一个是自身，第二个应是直接父
+        if ancestor_chain[1].agent_id != parent_agent_id {
+            return Err(ServiceError::InvalidInput(format!(
+                "direct parent routing mismatch: expected '{}', found '{}' in ancestor chain",
+                parent_agent_id, ancestor_chain[1].agent_id
+            )));
+        }
+
+        let delivery_id = format!("delivery-{}", uuid::Uuid::new_v4());
+
+        let envelope = astrcode_core::AgentInboxEnvelope {
+            delivery_id: delivery_id.clone(),
+            from_agent_id: current_agent_id.clone(),
+            to_agent_id: parent_agent_id.clone(),
+            kind: InboxEnvelopeKind::ChildDelivery,
+            message: params
+                .final_reply
+                .clone()
+                .unwrap_or_else(|| params.summary.clone()),
+            context: None,
+            is_final: params.final_reply.is_some(),
+            summary: Some(params.summary.clone()),
+            findings: params.findings.clone(),
+            artifacts: params.artifacts.clone(),
+        };
+
+        self.runtime
+            .agent_control
+            .push_inbox(&parent_agent_id, envelope)
+            .await
+            .ok_or_else(|| {
+                ServiceError::NotFound(format!(
+                    "parent agent '{}' inbox not available for delivery",
+                    parent_agent_id
+                ))
+            })?;
+
+        let _ = parent_handle; // 父 handle 已用于验证，释放借用
+
+        log::info!(
+            "deliverToParent: child '{}' delivered to direct parent '{}' (deliveryId='{}', \
+             isFinal={})",
+            current_agent_id,
+            parent_agent_id,
+            delivery_id,
+            params.final_reply.is_some()
+        );
+
+        Ok(CollaborationResult {
+            accepted: true,
+            kind: CollaborationResultKind::Delivered,
+            agent_ref: None,
+            delivery_id: Some(delivery_id),
+            summary: Some(format!(
+                "结果已交付给直接父 Agent {}（一次性消费）",
+                parent_agent_id
+            )),
+            parent_agent_id: Some(parent_agent_id),
+            cascade: None,
+            closed_root_agent_id: None,
+            failure: None,
+        })
+    }
+
+    // ─── 辅助方法 ───────────────────────────────────────────
+
+    /// 从 SubRunHandle 构建稳定 ChildAgentRef。
+    pub(super) async fn build_child_ref_from_handle(&self, handle: &SubRunHandle) -> ChildAgentRef {
+        self.build_child_ref_with_lineage(handle, ChildSessionLineageKind::Spawn)
+            .await
+    }
+
+    /// 从 SubRunHandle 构建带指定 lineage kind 的稳定 ChildAgentRef。
+    pub(super) async fn build_child_ref_with_lineage(
+        &self,
+        handle: &SubRunHandle,
+        lineage_kind: ChildSessionLineageKind,
+    ) -> ChildAgentRef {
+        ChildAgentRef {
+            agent_id: handle.agent_id.clone(),
+            session_id: handle.session_id.clone(),
+            sub_run_id: handle.sub_run_id.clone(),
+            parent_agent_id: handle.parent_agent_id.clone(),
+            lineage_kind,
+            status: handle.status,
+            openable: true,
+            open_session_id: handle
+                .child_session_id
+                .clone()
+                .unwrap_or_else(|| handle.session_id.clone()),
+        }
+    }
+
+    // ─── forkChildSession ───────────────────────────────────
+
+    /// Fork 一个子会话，复用现有的 `launch_subagent` 基础设施。
+    ///
+    /// 与 `launch_subagent` 共享相同的 session 创建和事件持久化路径，
+    /// 但在 `ChildSessionNode` 中设置 `lineage_kind: Fork` 并填充 `lineage_snapshot`，
+    /// 以标记来源上下文而非创建第二套生命周期系统。
+    pub async fn fork_child_session(
+        &self,
+        params: SpawnAgentParams,
+        source_agent_id: String,
+        source_session_id: String,
+        source_sub_run_id: Option<String>,
+        ctx: &ToolContext,
+    ) -> ServiceResult<SubRunResult> {
+        params.validate().map_err(ServiceError::from)?;
+        let profile = self.resolve_profile(&params, ctx.working_dir()).await?;
+        let parent = self.resolve_parent_execution(ctx).await?;
+        let result = self.launch_background(params, profile, parent, ctx).await?;
+
+        // 找到刚创建的 child，更新其 ChildSessionNode 的 lineage 信息
+        if let Some(ref handoff) = result.handoff {
+            if let Some(sub_run_id) = handoff.artifacts.first().map(|a| a.id.as_str()) {
+                let session_state = self.runtime.ensure_session_loaded(ctx.session_id()).await?;
+                if let Some(mut node) = session_state
+                    .child_session_node(sub_run_id)
+                    .map_err(|e| ServiceError::Internal(AstrError::Internal(e.to_string())))?
+                {
+                    node.lineage_kind = ChildSessionLineageKind::Fork;
+                    node.lineage_snapshot = Some(astrcode_core::LineageSnapshot {
+                        source_agent_id,
+                        source_session_id,
+                        source_sub_run_id,
+                    });
+                    session_state
+                        .upsert_child_session_node(node)
+                        .map_err(|e| ServiceError::Internal(AstrError::Internal(e.to_string())))?;
+                }
+            }
+        }
+
+        Ok(result)
+    }
+}

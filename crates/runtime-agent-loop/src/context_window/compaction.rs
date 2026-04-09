@@ -195,6 +195,10 @@ fn compact_input_messages(messages: &[LlmMessage]) -> Vec<LlmMessage> {
                 ..
             }
             | LlmMessage::User {
+                origin: UserMessageOrigin::ReactivationPrompt,
+                ..
+            }
+            | LlmMessage::User {
                 origin: UserMessageOrigin::User,
                 ..
             } => filtered.push(message.clone()),
@@ -562,6 +566,26 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn compact_input_messages_keeps_reactivation_prompts_but_not_as_real_turns() {
+        let messages = vec![
+            LlmMessage::User {
+                content: "# Child Session Delivery".to_string(),
+                origin: UserMessageOrigin::ReactivationPrompt,
+            },
+            LlmMessage::User {
+                content: "real user".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ];
+
+        let filtered = compact_input_messages(&messages);
+        let split = split_for_compaction(&messages, 1).expect("split should exist");
+
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(split.keep_start, 1);
     }
 
     #[test]

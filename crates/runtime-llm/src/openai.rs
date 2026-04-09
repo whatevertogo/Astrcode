@@ -9,7 +9,12 @@
 //! - SSE 流式解析（`data: {...}` 行协议）
 //! - 指数退避重试（瞬态故障自动恢复）
 //! - 取消令牌支持（`select!` 分支中断）
-//! - Prompt Caching（标记最后 N 条消息以复用 KV cache）
+//!
+//! ## 缓存策略
+//!
+//! OpenAI 的 prompt caching 是**自动的**：API 自动缓存 >= 1024 tokens 的 prompt 前缀，
+//! 无需像 Anthropic 那样显式标记 `cache_control`。分层 system blocks（Stable →
+//! SemiStable → Dynamic）的排列顺序天然提供稳定前缀，对 OpenAI 的 prefix matching 最友好。
 //!
 //! ## 协议差异处理
 //!
@@ -91,7 +96,13 @@ impl OpenAiProvider {
     /// - 如果没有系统提示块但有 system_prompt，使用单一 system 消息
     /// - 将 `LlmMessage` 转换为 OpenAI 格式的消息结构
     /// - 如果启用了工具，附加工具定义和 `tool_choice: "auto"`
-    /// - 对 system 消息的层边界和最后 2 条对话消息启用 prompt caching
+    ///
+    /// ## 缓存策略
+    ///
+    /// 与 Anthropic 不同，OpenAI 的 prompt caching 是**自动的**：
+    /// 不需要显式标记 `cache_control`，API 自动缓存 >= 1024 tokens 的 prompt 前缀。
+    /// 分层 system blocks 的排列顺序（Stable → SemiStable → Dynamic）天然提供稳定的
+    /// 前缀，对 OpenAI 的自动 prefix matching 最友好。
     fn build_request<'a>(
         &'a self,
         messages: &'a [LlmMessage],
@@ -109,7 +120,7 @@ impl OpenAiProvider {
         };
         let mut request_messages = Vec::with_capacity(messages.len() + system_count);
 
-        // 优先使用 system_prompt_blocks（支持分层缓存）
+        // 优先使用 system_prompt_blocks（分层排列，为自动缓存提供稳定前缀）
         if !system_prompt_blocks.is_empty() {
             for block in system_prompt_blocks {
                 request_messages.push(OpenAiRequestMessage {
@@ -117,14 +128,6 @@ impl OpenAiProvider {
                     content: Some(block.render()),
                     tool_call_id: None,
                     tool_calls: None,
-                    // 在层边界标记缓存点，与 Anthropic 保持一致
-                    cache_control: if block.cache_boundary {
-                        Some(OpenAiCacheControl {
-                            type_: "content".to_string(),
-                        })
-                    } else {
-                        None
-                    },
                 });
             }
         } else if let Some(text) = system_prompt {
@@ -134,15 +137,10 @@ impl OpenAiProvider {
                 content: Some(text.to_string()),
                 tool_call_id: None,
                 tool_calls: None,
-                cache_control: None,
             });
         }
 
         request_messages.extend(messages.iter().map(to_openai_message));
-
-        // 对最后 2 条对话消息启用 prompt caching，以便 OpenAI 复用 KV cache
-        // 注意：system 消息的缓存已经在上面通过 cache_boundary 标记了
-        enable_message_caching(&mut request_messages, 2);
 
         OpenAiChatRequest {
             model: &self.model,
@@ -619,7 +617,6 @@ fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
             content: Some(content.clone()),
             tool_call_id: None,
             tool_calls: None,
-            cache_control: None,
         },
         LlmMessage::Assistant {
             content,
@@ -650,7 +647,6 @@ fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
                         .collect(),
                 )
             },
-            cache_control: None,
         },
         LlmMessage::Tool {
             tool_call_id,
@@ -660,40 +656,7 @@ fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
             content: Some(content.clone()),
             tool_call_id: Some(tool_call_id.clone()),
             tool_calls: None,
-            cache_control: None,
         },
-    }
-}
-
-/// 对最后 `cache_depth` 条消息启用 prompt caching。
-///
-/// OpenAI 的 prompt caching 通过复用缓存上下文来减少延迟和成本，
-/// 当请求前缀匹配时生效。标记尾部消息可以在多轮对话中有效复用历史 KV cache。
-///
-/// ## 与 Anthropic 的差异
-///
-/// OpenAI 使用 `prediction: { type: "content" }` 标记可缓存内容，
-/// 而 Anthropic 使用 `cache_control: { type: "ephemeral" }`。
-///
-/// ## 注意
-///
-/// 此函数会跳过已经有 cache_control 的消息（如 system blocks 的层边界），
-/// 避免重复标记。
-fn enable_message_caching(messages: &mut [OpenAiRequestMessage], cache_depth: usize) {
-    if messages.is_empty() || cache_depth == 0 {
-        return;
-    }
-
-    let cache_count = cache_depth.min(messages.len());
-    let start_idx = messages.len() - cache_count;
-
-    for msg in &mut messages[start_idx..] {
-        // 跳过已经有 cache_control 的消息（如 system blocks 的层边界）
-        if msg.cache_control.is_none() {
-            msg.cache_control = Some(OpenAiCacheControl {
-                type_: "content".to_string(),
-            });
-        }
     }
 }
 
@@ -724,7 +687,9 @@ struct OpenAiChatRequest<'a> {
 /// - `content`: 纯文本内容（assistant 消息可为空）
 /// - `tool_calls`: 工具调用列表（仅 assistant 消息使用）
 /// - `tool_call_id`: 关联的工具调用 ID（仅 tool 消息使用）
-/// - `cache_control`: prompt caching 标记（可选）
+///
+/// OpenAI 的 prompt caching 是自动的（无需显式标记），基于 prompt 前缀匹配。
+/// 因此不需要 Anthropic 风格的 `cache_control` 字段。
 #[derive(Debug, Serialize)]
 struct OpenAiRequestMessage {
     role: String,
@@ -734,18 +699,6 @@ struct OpenAiRequestMessage {
     tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OpenAiToolCall>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_control: Option<OpenAiCacheControl>,
-}
-
-/// OpenAI prompt caching 控制标记。
-///
-/// `type: "content"` 告诉 OpenAI 后端该消息的内容可作为缓存前缀的一部分。
-/// 与 Anthropic 的 `ephemeral` 不同，OpenAI 使用 `content` 作为 prediction type。
-#[derive(Debug, Clone, Serialize)]
-struct OpenAiCacheControl {
-    #[serde(rename = "type")]
-    type_: String,
 }
 
 /// OpenAI 工具定义（用于请求体中的 `tools` 字段）。
@@ -994,7 +947,9 @@ mod tests {
     }
 
     #[test]
-    fn build_request_uses_system_blocks_with_layer_boundaries() {
+    fn build_request_uses_system_blocks_without_explicit_cache_control() {
+        // OpenAI 的 prompt caching 是自动的（基于 prefix matching），
+        // 不需要显式 cache_control 标记。分层排列的 system blocks 天然提供稳定前缀。
         let provider = OpenAiProvider::new(
             "http://127.0.0.1:12345".to_string(),
             "sk-test".to_string(),
@@ -1032,27 +987,25 @@ mod tests {
         let request = provider.build_request(&messages, &[], None, &system_blocks, false);
         let body = serde_json::to_value(&request).expect("request should serialize");
 
-        // 应该有 3 个 system 消息 + 1 个 user 消息
+        // 应该有 3 个 system 消息 + 1 个 user 消息，无 cache_control 字段
         assert_eq!(request.messages.len(), 4);
         assert_eq!(request.messages[0].role, "system");
         assert_eq!(request.messages[1].role, "system");
         assert_eq!(request.messages[2].role, "system");
         assert_eq!(request.messages[3].role, "user");
 
-        // 检查缓存边界标记
+        // OpenAI 不发送 cache_control：分层 system blocks 的稳定排列顺序
+        // 自然构成自动缓存的最优前缀
+        for i in 0..3 {
+            assert!(
+                body["messages"][i].get("cache_control").is_none(),
+                "system block {} should not have cache_control (OpenAI uses automatic caching)",
+                i
+            );
+        }
         assert!(
-            body["messages"][0].get("cache_control").is_none(),
-            "stable1 should not have cache_control"
-        );
-        assert_eq!(
-            body["messages"][1]["cache_control"]["type"],
-            json!("content"),
-            "stable2 should have cache_control"
-        );
-        assert_eq!(
-            body["messages"][2]["cache_control"]["type"],
-            json!("content"),
-            "semi1 should have cache_control"
+            body["messages"][3].get("cache_control").is_none(),
+            "user message should not have cache_control"
         );
     }
 

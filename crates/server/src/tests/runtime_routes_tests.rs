@@ -12,7 +12,7 @@ use astrcode_protocol::{
     },
 };
 use astrcode_runtime::{Config, ModelConfig, Profile, RuntimeConfig, config, save_config};
-use astrcode_runtime_registry::{CapabilityRouter, ToolRegistry};
+use astrcode_runtime_registry::{CapabilityRouter, ToolCapabilityInvoker};
 use astrcode_storage::session::EventLog;
 use async_trait::async_trait;
 use axum::{
@@ -877,12 +877,13 @@ async fn tools_list_endpoint_returns_runtime_tool_surface() {
 async fn direct_agent_execute_endpoint_accepts_root_execution() {
     // Plan agent requires both readFile and grep tools.
     // Register both to satisfy the agent's tool requirements.
-    let invokers = ToolRegistry::builder()
-        .register(Box::new(DemoReadTool))
-        .register(Box::new(DemoGrepTool))
-        .build()
-        .into_capability_invokers()
-        .expect("demo tool descriptors should build");
+    let invokers: Vec<std::sync::Arc<dyn astrcode_core::CapabilityInvoker>> = [
+        Box::new(DemoReadTool) as Box<dyn astrcode_core::Tool>,
+        Box::new(DemoGrepTool) as Box<dyn astrcode_core::Tool>,
+    ]
+    .into_iter()
+    .map(|t| ToolCapabilityInvoker::boxed(t).expect("demo tool should wrap"))
+    .collect();
     let mut builder = CapabilityRouter::builder();
     for invoker in invokers {
         builder = builder.register_invoker(invoker);
@@ -927,11 +928,11 @@ async fn direct_agent_execute_endpoint_accepts_root_execution() {
 
 #[tokio::test]
 async fn direct_agent_execute_endpoint_requires_working_dir() {
-    let invokers = ToolRegistry::builder()
-        .register(Box::new(DemoReadTool))
-        .build()
-        .into_capability_invokers()
-        .expect("demo tool descriptors should build");
+    let invokers: Vec<std::sync::Arc<dyn astrcode_core::CapabilityInvoker>> =
+        [Box::new(DemoReadTool) as Box<dyn astrcode_core::Tool>]
+            .into_iter()
+            .map(|t| ToolCapabilityInvoker::boxed(t).expect("demo tool should wrap"))
+            .collect();
     let mut builder = CapabilityRouter::builder();
     for invoker in invokers {
         builder = builder.register_invoker(invoker);
@@ -965,11 +966,11 @@ async fn direct_agent_execute_endpoint_requires_working_dir() {
 
 #[tokio::test]
 async fn direct_agent_execute_endpoint_resolves_project_agent_from_request_working_dir() {
-    let invokers = ToolRegistry::builder()
-        .register(Box::new(DemoReadTool))
-        .build()
-        .into_capability_invokers()
-        .expect("demo tool descriptors should build");
+    let invokers: Vec<std::sync::Arc<dyn astrcode_core::CapabilityInvoker>> =
+        [Box::new(DemoReadTool) as Box<dyn astrcode_core::Tool>]
+            .into_iter()
+            .map(|t| ToolCapabilityInvoker::boxed(t).expect("demo tool should wrap"))
+            .collect();
     let mut builder = CapabilityRouter::builder();
     for invoker in invokers {
         builder = builder.register_invoker(invoker);
