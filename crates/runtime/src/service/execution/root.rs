@@ -50,6 +50,18 @@ pub struct ToolExecutionServiceHandle {
 }
 
 impl AgentExecutionServiceHandle {
+    pub fn control(&self) -> astrcode_runtime_agent_control::AgentControl {
+        self.runtime.agent_control.clone()
+    }
+
+    pub(crate) async fn current_loop(&self) -> Arc<astrcode_runtime_agent_loop::AgentLoop> {
+        self.runtime.loop_surface().current_loop().await
+    }
+
+    pub(crate) fn collaboration_executor(&self) -> Arc<super::DeferredCollaborationExecutor> {
+        Arc::clone(&self.runtime.collaboration_executor)
+    }
+
     pub fn list_profiles(&self) -> Vec<AgentProfileSummary> {
         let mut profiles = self
             .runtime
@@ -165,7 +177,7 @@ impl AgentExecutionServiceHandle {
         let session_state_for_task = Arc::clone(&session_state);
         let accepted_turn_id = turn_id.clone();
         // 在 spawn 前克隆 agent_control，避免借用 `self` 逃逸到 'static 闭包
-        let agent_control = self.runtime.agent_control();
+        let agent_control = self.control();
         let execution_service = self.clone();
         let drain_session_id = session_meta.session_id.clone();
         let launch = prepare_root_execution_launch(
@@ -210,11 +222,7 @@ impl AgentExecutionServiceHandle {
             observability.record_turn_execution(elapsed, task_result.succeeded);
         });
         // 保存 root execution 的 JoinHandle 以便 shutdown 时 abort。
-        astrcode_core::support::with_lock_recovery(
-            &self.runtime.active_turn_handles,
-            "RuntimeService.active_turn_handles",
-            |guard| guard.push(handle),
-        );
+        self.runtime.lifecycle().register_turn_task(handle);
 
         Ok(ExecutionAccepted {
             session_id: session_meta.session_id,

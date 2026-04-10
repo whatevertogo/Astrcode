@@ -101,7 +101,7 @@ pub(crate) async fn delete_session(
     let session_id = validate_session_path_id(&session_id)?;
     state
         .service
-        .sessions()
+        .execution()
         .delete_session(&session_id)
         .await
         .map_err(ApiError::from)?;
@@ -116,7 +116,7 @@ pub(crate) async fn delete_project(
     require_auth(&state, &headers, None)?;
     let result = state
         .service
-        .sessions()
+        .execution()
         .delete_project(&query.working_dir)
         .await
         .map_err(ApiError::from)?;

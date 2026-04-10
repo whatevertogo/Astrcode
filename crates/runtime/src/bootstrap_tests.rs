@@ -534,6 +534,7 @@ async fn bootstrap_integrates_plugin_declared_skills_into_runtime_catalog() {
 
     let items = bootstrap
         .service
+        .composer()
         .list_composer_options(
             &session.session_id,
             ComposerOptionsRequest {
@@ -727,7 +728,7 @@ async fn bootstrap_background_load_propagates_plugin_hook_handlers_into_agent_lo
         .expect("bootstrap should succeed");
     bootstrap.plugin_load_handle.wait_completed().await;
 
-    let loop_ = bootstrap.service.current_loop().await;
+    let loop_ = bootstrap.service.loop_surface().current_loop().await;
     let state = astrcode_core::AgentState {
         session_id: "hook-session".to_string(),
         working_dir: std::env::temp_dir(),

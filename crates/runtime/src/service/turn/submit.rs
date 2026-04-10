@@ -80,17 +80,17 @@ impl AgentExecutionServiceHandle {
         )?;
 
         let state = session.clone();
-        let loop_ = self.runtime.current_loop().await;
+        let loop_ = self.current_loop().await;
         let accepted_turn_id = turn_id.clone();
         let observability = self.runtime.observability.clone();
         let accepted_session_id = session_id.clone();
         let user_event = prepared_submission.user_event.clone();
         let execution_owner = prepared_submission.execution_owner.clone();
         // 在 spawn 前克隆 agent_control，避免借用 `self` 逃逸到 'static 闭包
-        let agent_control = self.runtime.agent_control();
+        let agent_control = self.control();
         let execution_service = self.clone();
         let drain_session_id = accepted_session_id.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let turn_started_at = Instant::now();
             let result = run_session_turn(
                 &state,
@@ -146,6 +146,7 @@ impl AgentExecutionServiceHandle {
                 },
             }
         });
+        self.runtime.lifecycle().register_turn_task(handle);
 
         Ok(ExecutionAccepted {
             session_id: accepted_session_id,

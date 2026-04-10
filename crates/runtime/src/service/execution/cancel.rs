@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use astrcode_core::{AgentStatus, StorageEvent, StorageEventPayload, ToolEventSink};
+use astrcode_core::{
+    AgentStatus, DeleteProjectResult, StorageEvent, StorageEventPayload, ToolEventSink,
+};
 use astrcode_runtime_execution::{
     CancelSubRunResolution, build_child_session_notification, find_subrun_status_in_events,
     resolve_cancel_subrun_resolution,
@@ -13,6 +15,43 @@ use super::root::AgentExecutionServiceHandle;
 use crate::service::{ServiceError, ServiceResult};
 
 impl AgentExecutionServiceHandle {
+    pub async fn delete_session(&self, session_id: &str) -> ServiceResult<()> {
+        let session_id = normalize_session_id(session_id);
+        self.interrupt_session(&session_id).await?;
+        self.runtime
+            .sessions()
+            .purge_session_durable(&session_id)
+            .await
+    }
+
+    pub async fn delete_project(&self, working_dir: &str) -> ServiceResult<DeleteProjectResult> {
+        let session_manager = Arc::clone(&self.runtime.session_manager);
+        let working_dir_owned = working_dir.to_string();
+        let metas = crate::service::blocking_bridge::spawn_blocking_service(
+            "list project sessions before execution delete",
+            move || {
+                session_manager
+                    .list_sessions_with_meta()
+                    .map_err(ServiceError::from)
+            },
+        )
+        .await?;
+        let targets = metas
+            .into_iter()
+            .filter(|meta| meta.working_dir == working_dir_owned)
+            .map(|meta| meta.session_id)
+            .collect::<Vec<_>>();
+
+        for session_id in &targets {
+            let _ = self.interrupt_session(session_id).await;
+        }
+
+        self.runtime
+            .sessions()
+            .purge_project_durable(working_dir)
+            .await
+    }
+
     /// 取消指定 sub-run。
     ///
     /// 根据 live handle 和 durable 事件的快照决定取消策略：

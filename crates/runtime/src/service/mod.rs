@@ -4,7 +4,7 @@
 
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock, atomic::AtomicBool},
+    sync::{Arc, RwLock as StdRwLock},
 };
 
 use astrcode_core::{
@@ -31,31 +31,35 @@ use crate::config::load_config;
 #[cfg(test)]
 mod baselines;
 mod blocking_bridge;
-mod capability_manager;
-mod composer_ops;
-mod config_manager;
-mod config_ops;
+mod composer;
+mod config;
 mod execution;
-mod loop_factory;
+mod lifecycle;
+mod loop_surface;
 mod observability;
 mod service_contract;
 mod session;
 mod turn;
-mod watch_manager;
-mod watch_ops;
+mod watch;
 
+pub use composer::ComposerServiceHandle;
+pub use config::ConfigServiceHandle;
 pub use execution::{
     AgentExecutionServiceHandle, AgentProfileSummary, ToolExecutionServiceHandle, ToolSummary,
 };
 pub(crate) use execution::{DeferredCollaborationExecutor, DeferredSubAgentExecutor};
+pub use lifecycle::LifecycleServiceHandle;
+pub use loop_surface::LoopSurfaceServiceHandle;
 use observability::RuntimeObservability;
 pub use observability::{
-    ExecutionDiagnosticsSnapshot, OperationMetricsSnapshot, ReplayMetricsSnapshot, ReplayPath,
-    RuntimeObservabilitySnapshot, SubRunExecutionMetricsSnapshot,
+    ExecutionDiagnosticsSnapshot, ObservabilityServiceHandle, OperationMetricsSnapshot,
+    ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot,
+    SubRunExecutionMetricsSnapshot,
 };
 pub use session::SessionServiceHandle;
+pub use watch::WatchServiceHandle;
 
-use self::loop_factory::{LoopRuntimeDeps, build_agent_loop};
+use self::loop_surface::{LoopRuntimeDeps, build_agent_loop};
 pub use self::service_contract::{
     ComposerOption, ComposerOptionKind, ComposerOptionsRequest, ServiceError, ServiceResult,
     SessionCatalogEvent, SessionEventRecord, SessionHistorySnapshot, SessionReplay,
@@ -170,18 +174,10 @@ pub struct RuntimeService {
     shutdown_token: CancellationToken,
     /// 序列化 capability reload 与 config reload，避免交错替换 loop。
     rebuild_lock: Mutex<()>,
-    /// 防止重复启动配置 watcher。
-    config_watch_started: AtomicBool,
-    /// 防止重复启动 agent watcher。
-    agent_watch_started: AtomicBool,
-    /// 配置热重载 watcher 的 JoinHandle，shutdown 时 abort。
-    config_watch_handle: StdMutex<Option<tokio::task::JoinHandle<()>>>,
-    /// Agent 定义热重载 watcher 的 JoinHandle，shutdown 时 abort。
-    agent_watch_handle: StdMutex<Option<tokio::task::JoinHandle<()>>>,
-    /// 活跃的子 Agent 后台执行任务的 JoinHandle，shutdown 时批量 abort。
-    active_subagent_handles: StdMutex<Vec<tokio::task::JoinHandle<()>>>,
-    /// 活跃的 turn 执行任务的 JoinHandle，shutdown 时批量 abort。
-    active_turn_handles: StdMutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// watch 子边界的内部状态（AtomicBool + JoinHandle）。
+    watch_state: watch::WatchState,
+    /// lifecycle 子边界的任务注册表（turn + subagent JoinHandle）。
+    task_registry: lifecycle::TaskRegistry,
     /// 协作工具的延迟执行器桥（runtime surface 热重载时复用）。
     collaboration_executor: Arc<DeferredCollaborationExecutor>,
 }
@@ -195,27 +191,34 @@ impl RuntimeService {
         }
     }
 
-    fn capability_manager(&self) -> capability_manager::CapabilityManager<'_> {
-        capability_manager::CapabilityManager::new(self)
+    pub fn composer(self: &Arc<Self>) -> ComposerServiceHandle {
+        ComposerServiceHandle::new(Arc::clone(self))
     }
 
-    fn config_manager(&self) -> config_manager::ConfigManager<'_> {
-        config_manager::ConfigManager::new(self)
+    pub fn config(self: &Arc<Self>) -> ConfigServiceHandle {
+        ConfigServiceHandle::new(Arc::clone(self))
     }
 
-    fn watch_manager(self: &Arc<Self>) -> watch_manager::WatchManager {
-        watch_manager::WatchManager::new(Arc::clone(self))
+    pub fn watch(self: &Arc<Self>) -> WatchServiceHandle {
+        WatchServiceHandle::new(Arc::clone(self))
+    }
+
+    pub fn loop_surface(self: &Arc<Self>) -> LoopSurfaceServiceHandle {
+        LoopSurfaceServiceHandle::new(Arc::clone(self))
+    }
+
+    pub fn lifecycle(self: &Arc<Self>) -> LifecycleServiceHandle {
+        LifecycleServiceHandle::new(Arc::clone(self))
+    }
+
+    pub fn observability(self: &Arc<Self>) -> ObservabilityServiceHandle {
+        ObservabilityServiceHandle::new(Arc::clone(self))
     }
 
     fn agent_profile_catalog(&self) -> Arc<dyn AgentProfileCatalog> {
         Arc::new(RuntimeAgentProfileCatalog::new(Arc::clone(
             &self.agent_profiles,
         )))
-    }
-
-    /// 获取协作工具执行器的引用（用于 surface 热重载）。
-    pub(crate) fn collaboration_executor(&self) -> Arc<DeferredCollaborationExecutor> {
-        Arc::clone(&self.collaboration_executor)
     }
 
     pub fn from_capabilities(capabilities: CapabilityRouter) -> ServiceResult<Self> {
@@ -318,62 +321,10 @@ impl RuntimeService {
             session_catalog_events,
             shutdown_token: CancellationToken::new(),
             rebuild_lock: Mutex::new(()),
-            config_watch_started: AtomicBool::new(false),
-            agent_watch_started: AtomicBool::new(false),
-            config_watch_handle: StdMutex::new(None),
-            agent_watch_handle: StdMutex::new(None),
-            active_subagent_handles: StdMutex::new(Vec::new()),
-            active_turn_handles: StdMutex::new(Vec::new()),
+            watch_state: watch::WatchState::new(),
+            task_registry: lifecycle::TaskRegistry::new(),
             collaboration_executor: Arc::new(DeferredCollaborationExecutor::default()),
         })
-    }
-
-    pub async fn current_loop(&self) -> Arc<AgentLoop> {
-        self.capability_manager().current_loop().await
-    }
-
-    #[deprecated(
-        note = "会清空 hook_handlers，导致插件 hook 在热替换时静默丢失。请使用 \
-                `replace_capabilities_with_prompt_inputs_and_hooks`。"
-    )]
-    pub async fn replace_capabilities_with_prompt_inputs(
-        &self,
-        capabilities: CapabilityRouter,
-        prompt_declarations: Vec<PromptDeclaration>,
-        skill_catalog: Arc<SkillCatalog>,
-    ) -> ServiceResult<()> {
-        self.replace_capabilities_with_prompt_inputs_and_hooks(
-            capabilities,
-            prompt_declarations,
-            skill_catalog,
-            Vec::new(),
-        )
-        .await
-    }
-
-    pub async fn replace_capabilities_with_prompt_inputs_and_hooks(
-        &self,
-        capabilities: CapabilityRouter,
-        prompt_declarations: Vec<PromptDeclaration>,
-        skill_catalog: Arc<SkillCatalog>,
-        hook_handlers: Vec<Arc<dyn HookHandler>>,
-    ) -> ServiceResult<()> {
-        self.capability_manager()
-            .replace_surface(
-                capabilities,
-                prompt_declarations,
-                skill_catalog,
-                hook_handlers,
-            )
-            .await
-    }
-
-    pub fn start_config_auto_reload(self: &Arc<Self>) {
-        self.watch_manager().start_config_auto_reload();
-    }
-
-    pub fn start_agent_auto_reload(self: &Arc<Self>) {
-        self.watch_manager().start_agent_auto_reload();
     }
 
     pub fn loaded_session_count(&self) -> usize {
@@ -396,14 +347,6 @@ impl RuntimeService {
         running_sessions
     }
 
-    pub fn observability_snapshot(&self) -> RuntimeObservabilitySnapshot {
-        self.observability.snapshot()
-    }
-
-    pub fn agent_control(&self) -> AgentControl {
-        self.agent_control.clone()
-    }
-
     pub fn agent_loader(&self) -> Arc<AgentProfileLoader> {
         Arc::clone(&self.agent_loader)
     }
@@ -413,123 +356,6 @@ impl RuntimeService {
             .read()
             .expect("agent profile registry lock should not be poisoned")
             .clone()
-    }
-
-    pub(super) async fn known_agent_working_dirs(&self) -> ServiceResult<Vec<PathBuf>> {
-        let session_manager = Arc::clone(&self.session_manager);
-        blocking_bridge::spawn_blocking_service("list agent working dirs", move || {
-            session_manager
-                .list_sessions_with_meta()
-                .map(|metas| {
-                    let mut working_dirs = metas
-                        .into_iter()
-                        .map(|meta| PathBuf::from(meta.working_dir))
-                        .collect::<Vec<_>>();
-                    working_dirs.sort();
-                    working_dirs.dedup();
-                    working_dirs
-                })
-                .map_err(ServiceError::from)
-        })
-        .await
-    }
-
-    pub(super) fn emit_session_catalog_event(&self, event: SessionCatalogEvent) {
-        // 故意忽略：通道关闭表示服务已关闭，无需处理
-        let _ = self.session_catalog_events.send(event);
-    }
-
-    /// Initiates graceful shutdown:
-    /// 1. Signals all running turns to cancel
-    /// 2. Waits for all turns to complete (with timeout)
-    /// 3. Returns when all sessions are idle or timeout elapsed
-    pub async fn shutdown(&self, timeout_secs: u64) {
-        log::info!("Initiating graceful shutdown...");
-
-        // 中止后台 watcher 任务
-        watch_manager::WatchManager::shutdown(self);
-
-        // 中止所有活跃的子 Agent 后台执行任务
-        let subagent_handles = std::mem::take(
-            &mut *self
-                .active_subagent_handles
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        );
-        for handle in subagent_handles {
-            handle.abort();
-        }
-
-        // 中止所有活跃的 turn 执行任务
-        let turn_handles = std::mem::take(
-            &mut *self
-                .active_turn_handles
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        );
-        for handle in turn_handles {
-            handle.abort();
-        }
-
-        // Signal shutdown to all handlers
-        self.shutdown_token.cancel();
-
-        // Cancel all running sessions
-        for entry in self.sessions.iter() {
-            let session = entry.value();
-            if session.running.load(std::sync::atomic::Ordering::SeqCst) {
-                if let Ok(cancel) = session.cancel.lock().map(|g| g.clone()) {
-                    cancel.cancel();
-                }
-                let active_turn_id = session
-                    .active_turn_id
-                    .lock()
-                    .ok() // 故意忽略：mutex 中毒表示关闭期竞争，安全地跳过
-                    .and_then(|guard| guard.clone());
-                if let Some(active_turn_id) = active_turn_id {
-                    // 故意忽略：取消子运行时失败不应阻断关闭流程
-                    let _ = self
-                        .agent_control
-                        .cancel_for_parent_turn(&active_turn_id)
-                        .await;
-                }
-            }
-        }
-
-        // Wait for all sessions to become idle
-        let start = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(timeout_secs);
-
-        loop {
-            let running_count = self
-                .sessions
-                .iter()
-                .filter(|entry| {
-                    entry
-                        .value()
-                        .running
-                        .load(std::sync::atomic::Ordering::SeqCst)
-                })
-                .count();
-
-            if running_count == 0 {
-                log::info!("All sessions are idle, shutdown complete");
-                return;
-            }
-
-            if start.elapsed() >= timeout {
-                log::warn!(
-                    "Shutdown timeout elapsed, {} sessions still running",
-                    running_count
-                );
-                return;
-            }
-
-            // 100ms 轮询检查所有会话是否空闲。使用轮询而非 push-based 通知
-            // （如 watch channel / Notify）是因为 shutdown 是低频操作，添加通知
-            // 机制需要在每个 turn 完成路径中增加额外的唤醒逻辑，收益不大。
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
     }
 }
 
@@ -544,7 +370,9 @@ impl RuntimeHandle for RuntimeService {
     }
 
     async fn shutdown(&self, timeout_secs: u64) -> std::result::Result<(), AstrError> {
-        RuntimeService::shutdown(self, timeout_secs).await;
+        lifecycle::LifecycleService::new(self)
+            .shutdown(timeout_secs)
+            .await;
         Ok(())
     }
 }

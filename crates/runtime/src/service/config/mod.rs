@@ -1,93 +1,62 @@
-//! # 配置操作 (Configuration Operations)
-//!
-//! 提供运行时配置的读取、修改和验证能力，包括：
-//! - 获取当前配置快照
-//! - 保存活跃配置选择（profile 和 model）
-//! - 在编辑器中打开配置文件
-//! - 测试 LLM 连接
-//!
-//! ## 设计
-//!
-//! 配置操作通过 `RuntimeService` 的 impl 块实现，直接操作内部的 `config` 锁。
-//! 涉及磁盘 I/O 的操作（如解析配置路径、打开编辑器）通过 `spawn_blocking_service`
-//! 桥接到阻塞线程池，避免阻塞异步运行时。
-
 use std::{path::PathBuf, sync::Arc};
 
-use super::{RuntimeService, ServiceResult};
+use crate::service::{RuntimeService, ServiceResult};
 
-impl RuntimeService {
-    /// 获取当前运行时配置的完整快照。
-    ///
-    /// 返回配置的克隆副本，调用方可以安全地读取而不持有锁。
+mod service;
+
+/// `runtime-config` 的唯一 surface handle。
+#[derive(Clone)]
+pub struct ConfigServiceHandle {
+    runtime: Arc<RuntimeService>,
+}
+
+impl ConfigServiceHandle {
+    pub(super) fn new(runtime: Arc<RuntimeService>) -> Self {
+        Self { runtime }
+    }
+
+    fn service(&self) -> service::ConfigService<'_> {
+        service::ConfigService::new(self.runtime.as_ref())
+    }
+
     pub async fn get_config(&self) -> crate::config::Config {
-        self.config_manager().get_config().await
+        self.service().get_config().await
     }
 
-    /// 从磁盘重新加载用户级配置，并原子替换当前运行时的配置快照与 loop。
-    ///
-    /// 这条路径只更新运行时“配置维度”的行为参数，例如默认 profile/model、
-    /// max tool concurrency、自动压缩阈值等；当前 capability surface 保持不变。
     pub async fn reload_config_from_disk(&self) -> ServiceResult<crate::config::Config> {
-        self.config_manager().reload_config_from_disk().await
+        self.service().reload_config_from_disk().await
     }
 
-    /// 从磁盘重新加载 agent 定义，并原子替换当前 profile 快照。
-    ///
-    /// 这条路径不重建 agent loop，因为 agent 定义当前只影响子 Agent 的选择与约束，
-    /// 不影响主 loop 的 capability surface。
     pub async fn reload_agent_profiles_from_disk(
         &self,
     ) -> ServiceResult<Arc<crate::AgentProfileRegistry>> {
-        self.config_manager()
-            .reload_agent_profiles_from_disk()
-            .await
+        self.service().reload_agent_profiles_from_disk().await
     }
 
-    /// 保存活跃的配置选择（profile 和 model）。
-    ///
-    /// 验证指定的 profile 和 model 是否存在于当前配置中，
-    /// 验证通过后更新活跃选择并持久化到磁盘。
-    ///
-    /// # 错误
-    ///
-    /// - 如果 profile 不存在，返回 `InvalidInput`
-    /// - 如果 model 不属于指定的 profile，返回 `InvalidInput`
     pub async fn save_active_selection(
         &self,
         active_profile: String,
         active_model: String,
     ) -> ServiceResult<()> {
-        self.config_manager()
+        self.service()
             .save_active_selection(active_profile, active_model)
             .await
     }
 
-    /// 解析并返回当前配置文件的绝对路径。
-    ///
-    /// 此操作涉及文件系统查询，通过阻塞线程池执行。
     pub async fn current_config_path(&self) -> ServiceResult<PathBuf> {
-        self.config_manager().current_config_path().await
+        self.service().current_config_path().await
     }
 
-    /// 在系统默认编辑器中打开配置文件。
-    ///
-    /// 此操作涉及进程启动，通过阻塞线程池执行。
     pub async fn open_config_in_editor(&self) -> ServiceResult<()> {
-        self.config_manager().open_config_in_editor().await
+        self.service().open_config_in_editor().await
     }
 
-    /// 测试指定 profile 和 model 的 LLM 连接。
-    ///
-    /// 克隆当前配置以避免长时间持有锁，然后执行连接测试。
     pub async fn test_connection(
         &self,
         profile_name: &str,
         model: &str,
     ) -> ServiceResult<crate::config::TestResult> {
-        self.config_manager()
-            .test_connection(profile_name, model)
-            .await
+        self.service().test_connection(profile_name, model).await
     }
 }
 
@@ -100,13 +69,14 @@ mod tests {
         test_support::{TestEnvGuard, empty_capabilities},
     };
 
-    /// 验证保存活跃选择时，不存在的 profile 会被拒绝。
     #[tokio::test]
     async fn save_active_selection_rejects_missing_profile() {
         let _guard = TestEnvGuard::new();
-        let service = RuntimeService::from_capabilities(empty_capabilities()).expect("service");
+        let service =
+            Arc::new(RuntimeService::from_capabilities(empty_capabilities()).expect("service"));
 
         let err = service
+            .config()
             .save_active_selection("missing".to_string(), "model-a".to_string())
             .await
             .expect_err("missing profile should fail");
@@ -115,11 +85,11 @@ mod tests {
         assert!(err.to_string().contains("does not exist"));
     }
 
-    /// 验证保存活跃选择时，不属于指定 profile 的 model 会被拒绝。
     #[tokio::test]
     async fn save_active_selection_rejects_missing_model() {
         let _guard = TestEnvGuard::new();
-        let service = RuntimeService::from_capabilities(empty_capabilities()).expect("service");
+        let service =
+            Arc::new(RuntimeService::from_capabilities(empty_capabilities()).expect("service"));
         {
             let mut config = service.config.lock().await;
             *config = Config {
@@ -140,6 +110,7 @@ mod tests {
         }
 
         let err = service
+            .config()
             .save_active_selection("custom".to_string(), "missing-model".to_string())
             .await
             .expect_err("missing model should fail");
@@ -148,7 +119,6 @@ mod tests {
         assert!(err.to_string().contains("does not exist in profile"));
     }
 
-    /// 验证运行时从配置文件读取 `max_tool_concurrency` 并应用到 agent loop。
     #[tokio::test]
     async fn service_uses_runtime_max_tool_concurrency_from_config_file() {
         let _guard = TestEnvGuard::new();
@@ -161,13 +131,13 @@ mod tests {
         })
         .expect("config should save");
 
-        let service = RuntimeService::from_capabilities(empty_capabilities()).expect("service");
-        let loop_ = service.current_loop().await;
+        let service =
+            Arc::new(RuntimeService::from_capabilities(empty_capabilities()).expect("service"));
+        let loop_ = service.loop_surface().current_loop().await;
 
         assert_eq!(loop_.max_tool_concurrency(), 6);
     }
 
-    /// 验证运行时从配置文件读取 `compact_keep_recent_turns` 并应用到 agent loop。
     #[tokio::test]
     async fn service_uses_runtime_compact_keep_recent_turns_from_config_file() {
         let _guard = TestEnvGuard::new();
@@ -180,13 +150,13 @@ mod tests {
         })
         .expect("config should save");
 
-        let service = RuntimeService::from_capabilities(empty_capabilities()).expect("service");
-        let loop_ = service.current_loop().await;
+        let service =
+            Arc::new(RuntimeService::from_capabilities(empty_capabilities()).expect("service"));
+        let loop_ = service.loop_surface().current_loop().await;
 
         assert_eq!(loop_.compact_keep_recent_turns(), 2);
     }
 
-    /// 验证未配置 `compact_keep_recent_turns` 时，agent loop 使用 runtime-config 默认值。
     #[tokio::test]
     async fn service_uses_default_compact_keep_recent_turns_when_runtime_value_is_missing() {
         let _guard = TestEnvGuard::new();
@@ -196,8 +166,9 @@ mod tests {
         })
         .expect("config should save");
 
-        let service = RuntimeService::from_capabilities(empty_capabilities()).expect("service");
-        let loop_ = service.current_loop().await;
+        let service =
+            Arc::new(RuntimeService::from_capabilities(empty_capabilities()).expect("service"));
+        let loop_ = service.loop_surface().current_loop().await;
 
         assert_eq!(
             loop_.compact_keep_recent_turns(),
@@ -217,8 +188,16 @@ mod tests {
         })
         .expect("initial config should save");
 
-        let service = RuntimeService::from_capabilities(empty_capabilities()).expect("service");
-        assert_eq!(service.current_loop().await.max_tool_concurrency(), 2);
+        let service =
+            Arc::new(RuntimeService::from_capabilities(empty_capabilities()).expect("service"));
+        assert_eq!(
+            service
+                .loop_surface()
+                .current_loop()
+                .await
+                .max_tool_concurrency(),
+            2
+        );
 
         save_config(&Config {
             active_profile: "deepseek".to_string(),
@@ -232,13 +211,24 @@ mod tests {
         .expect("updated config should save");
 
         let reloaded = service
+            .config()
             .reload_config_from_disk()
             .await
             .expect("reload should succeed");
 
         assert_eq!(reloaded.active_model, "deepseek-reasoner");
-        assert_eq!(service.get_config().await.active_model, "deepseek-reasoner");
-        assert_eq!(service.current_loop().await.max_tool_concurrency(), 7);
+        assert_eq!(
+            service.config().get_config().await.active_model,
+            "deepseek-reasoner"
+        );
+        assert_eq!(
+            service
+                .loop_surface()
+                .current_loop()
+                .await
+                .max_tool_concurrency(),
+            7
+        );
     }
 
     #[tokio::test]
@@ -258,8 +248,10 @@ tools: [readFile]
         )
         .expect("initial agent should be written");
 
-        let service = RuntimeService::from_capabilities(empty_capabilities()).expect("service");
+        let service =
+            Arc::new(RuntimeService::from_capabilities(empty_capabilities()).expect("service"));
         let initial = service
+            .config()
             .reload_agent_profiles_from_disk()
             .await
             .expect("initial reload should succeed");
@@ -284,6 +276,7 @@ tools: [readFile, grep]
         .expect("updated agent should be written");
 
         let reloaded = service
+            .config()
             .reload_agent_profiles_from_disk()
             .await
             .expect("reload should succeed");

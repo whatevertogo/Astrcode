@@ -317,6 +317,7 @@ tools: [readFile, grep]
     );
 
     service
+        .config()
         .reload_agent_profiles_from_disk()
         .await
         .expect("agent profile reload should succeed");
@@ -389,7 +390,8 @@ async fn spawn_agent_background_cancellation_releases_concurrency_slots() {
             .await
             .expect("sub-run cancel should succeed");
         let handle = service
-            .agent_control()
+            .execution()
+            .control()
             .wait(&sub_run_id)
             .await
             .expect("cancelled sub-run should still be observable");
@@ -452,7 +454,8 @@ async fn spawn_agent_lifecycle_events_persist_parent_tool_call_id() {
         .await
         .expect("cancel should succeed");
     let _ = service
-        .agent_control()
+        .execution()
+        .control()
         .wait(&sub_run_id)
         .await
         .expect("cancelled sub-run should be observable");
@@ -618,7 +621,7 @@ async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
         .create(temp_dir.path())
         .await
         .expect("session should be created");
-    let control = service.agent_control();
+    let control = service.execution().control();
     let profile = AgentProfile {
         id: "review".to_string(),
         name: "Review".to_string(),
@@ -795,7 +798,7 @@ async fn get_subrun_status_rejects_live_handle_from_other_session() {
         .create(temp_dir.path())
         .await
         .expect("session B should be created");
-    let control = service.agent_control();
+    let control = service.execution().control();
     let profile = AgentProfile {
         id: "review".to_string(),
         name: "Review".to_string(),
@@ -845,7 +848,7 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
         .create(temp_dir.path())
         .await
         .expect("session B should be created");
-    let control = service.agent_control();
+    let control = service.execution().control();
     let profile = AgentProfile {
         id: "review".to_string(),
         name: "Review".to_string(),
@@ -960,7 +963,7 @@ async fn get_subrun_status_uses_live_overlay_for_independent_subrun_in_parent_se
         disallowed_tools: Vec::new(),
         model_preference: None,
     };
-    let control = service.agent_control();
+    let control = service.execution().control();
     let handle = control
         .spawn_with_storage(
             &profile,
@@ -1168,7 +1171,8 @@ async fn resume_child_session_replays_existing_child_history_and_mints_new_subru
         model_preference: None,
     };
     let original_handle = service
-        .agent_control()
+        .execution()
+        .control()
         .spawn_with_storage(
             &profile,
             child_session.session_id.clone(),
@@ -1180,12 +1184,14 @@ async fn resume_child_session_replays_existing_child_history_and_mints_new_subru
         .await
         .expect("child execution should spawn");
     let _ = service
-        .agent_control()
+        .execution()
+        .control()
         .mark_running(&original_handle.agent_id)
         .await
         .expect("child execution should become running");
     let _ = service
-        .agent_control()
+        .execution()
+        .control()
         .mark_completed(&original_handle.agent_id)
         .await
         .expect("child execution should complete");
@@ -1230,13 +1236,15 @@ async fn resume_child_session_replays_existing_child_history_and_mints_new_subru
     );
 
     let live_handle = service
-        .agent_control()
+        .execution()
+        .control()
         .get(&original_handle.agent_id)
         .await
         .expect("latest execution should be accessible via stable agent id");
     assert_eq!(live_handle.sub_run_id, resumed_handle.sub_run_id);
     let historical = service
-        .agent_control()
+        .execution()
+        .control()
         .get(&original_handle.sub_run_id)
         .await
         .expect("historical execution should remain queryable by old sub-run id");
@@ -1360,7 +1368,8 @@ async fn resume_child_session_rejects_lineage_mismatch_before_minting_new_execut
         model_preference: None,
     };
     let original_handle = service
-        .agent_control()
+        .execution()
+        .control()
         .spawn_with_storage(
             &profile,
             child_session.session_id.clone(),
@@ -1372,12 +1381,14 @@ async fn resume_child_session_rejects_lineage_mismatch_before_minting_new_execut
         .await
         .expect("child execution should spawn");
     let _ = service
-        .agent_control()
+        .execution()
+        .control()
         .mark_running(&original_handle.agent_id)
         .await
         .expect("child execution should become running");
     let _ = service
-        .agent_control()
+        .execution()
+        .control()
         .mark_completed(&original_handle.agent_id)
         .await
         .expect("child execution should complete");
@@ -1422,7 +1433,8 @@ async fn resume_child_session_rejects_lineage_mismatch_before_minting_new_execut
     );
 
     let latest_handle = service
-        .agent_control()
+        .execution()
+        .control()
         .get(&original_handle.agent_id)
         .await
         .expect("agent should still resolve to the previous execution");
@@ -1484,7 +1496,8 @@ async fn resume_child_session_rejects_empty_child_history_as_unsafe_resume() {
         model_preference: None,
     };
     let original_handle = service
-        .agent_control()
+        .execution()
+        .control()
         .spawn_with_storage(
             &profile,
             child_session.session_id.clone(),
@@ -1496,12 +1509,14 @@ async fn resume_child_session_rejects_empty_child_history_as_unsafe_resume() {
         .await
         .expect("child execution should spawn");
     let _ = service
-        .agent_control()
+        .execution()
+        .control()
         .mark_running(&original_handle.agent_id)
         .await
         .expect("child execution should become running");
     let _ = service
-        .agent_control()
+        .execution()
+        .control()
         .mark_completed(&original_handle.agent_id)
         .await
         .expect("child execution should complete");
@@ -1722,7 +1737,8 @@ async fn parent_turn_completion_does_not_cancel_running_child_session() {
         model_preference: None,
     };
     let child = service
-        .agent_control()
+        .execution()
+        .control()
         .spawn(
             &profile,
             &session.session_id,
@@ -1732,12 +1748,14 @@ async fn parent_turn_completion_does_not_cancel_running_child_session() {
         .await
         .expect("child sub-run should spawn");
     let _ = service
-        .agent_control()
+        .execution()
+        .control()
         .mark_running(&child.agent_id)
         .await
         .expect("child should transition to running");
     let child_cancel = service
-        .agent_control()
+        .execution()
+        .control()
         .cancel_token(&child.agent_id)
         .await
         .expect("child cancel token should exist");
@@ -1756,12 +1774,13 @@ async fn parent_turn_completion_does_not_cancel_running_child_session() {
     crate::service::turn::complete_session_execution(
         &session_state,
         Phase::Idle,
-        &service.agent_control(),
+        &service.execution().control(),
     )
     .await;
 
     let refreshed = service
-        .agent_control()
+        .execution()
+        .control()
         .get(&child.agent_id)
         .await
         .expect("child should remain in registry");
@@ -1820,7 +1839,8 @@ async fn spawn_agent_terminal_delivery_notification_is_emitted_once() {
     let sub_run_id = extract_spawned_sub_run_id(&launched);
 
     let _ = service
-        .agent_control()
+        .execution()
+        .control()
         .wait(&sub_run_id)
         .await
         .expect("child sub-run should reach a terminal state");
@@ -2064,7 +2084,7 @@ async fn reactivate_parent_drains_buffer_after_busy_parent_turn_completes() {
     crate::service::turn::complete_session_execution(
         &session_state,
         Phase::Idle,
-        &service.agent_control(),
+        &service.execution().control(),
     )
     .await;
     service

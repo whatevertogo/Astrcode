@@ -10,7 +10,7 @@ use astrcode_runtime_execution::{
 use super::root::AgentExecutionServiceHandle;
 use crate::service::{
     ServiceResult,
-    loop_factory::{LoopRuntimeDeps, LoopSurfaceInputs, build_scoped_agent_loop},
+    loop_surface::{LoopRuntimeDeps, LoopSurfaceInputs, build_scoped_agent_loop},
 };
 
 impl AgentExecutionServiceHandle {

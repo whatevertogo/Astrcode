@@ -369,11 +369,7 @@ impl AgentExecutionServiceHandle {
                 log::error!("failed to finalize resumed child execution: {}", error);
             }
         });
-        astrcode_core::support::with_lock_recovery(
-            &self.runtime.active_subagent_handles,
-            "RuntimeService.active_subagent_handles",
-            |guard| guard.push(handle),
-        );
+        self.runtime.lifecycle().register_subagent_task(handle);
 
         Ok((resumed, running_result))
     }

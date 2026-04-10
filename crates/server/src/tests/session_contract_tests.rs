@@ -561,7 +561,8 @@ async fn close_agent_route_closes_target_agent_and_returns_closed_ids() {
     };
     let handle = state
         .service
-        .agent_control()
+        .execution()
+        .control()
         .spawn(
             &profile,
             &created.session_id,
@@ -627,7 +628,8 @@ async fn close_agent_route_defaults_cascade_to_true_when_body_is_empty() {
     };
     let handle = state
         .service
-        .agent_control()
+        .execution()
+        .control()
         .spawn(
             &profile,
             &created.session_id,

@@ -1,29 +1,32 @@
 use std::{path::PathBuf, sync::Arc};
 
-use super::{
-    RuntimeService, ServiceError, ServiceResult, blocking_bridge::spawn_blocking_service,
-    loop_factory::LoopRuntimeDeps,
+use crate::{
+    config::{config_path, open_config_in_editor, save_config, test_connection},
+    service::{
+        RuntimeService, ServiceError, ServiceResult,
+        blocking_bridge::spawn_blocking_service,
+        loop_surface::{LoopRuntimeDeps, build_agent_loop},
+    },
 };
-use crate::config::{config_path, open_config_in_editor, save_config, test_connection};
 
-/// 配置管理器：负责配置快照读写与磁盘重载。
+/// 配置服务：负责配置快照读写与磁盘重载。
 ///
 /// 该组件把“配置语义”从 RuntimeService 门面中分离，
 /// 后续如果接入远端配置源或多租户配置，可以在这里演进而不污染主服务。
-pub(super) struct ConfigManager<'a> {
+pub(crate) struct ConfigService<'a> {
     runtime: &'a RuntimeService,
 }
 
-impl<'a> ConfigManager<'a> {
-    pub(super) fn new(runtime: &'a RuntimeService) -> Self {
+impl<'a> ConfigService<'a> {
+    pub(crate) fn new(runtime: &'a RuntimeService) -> Self {
         Self { runtime }
     }
 
-    pub(super) async fn get_config(&self) -> crate::config::Config {
+    pub(crate) async fn get_config(&self) -> crate::config::Config {
         self.runtime.config.lock().await.clone()
     }
 
-    pub(super) async fn reload_config_from_disk(&self) -> ServiceResult<crate::config::Config> {
+    pub(crate) async fn reload_config_from_disk(&self) -> ServiceResult<crate::config::Config> {
         let next_config = spawn_blocking_service("reload config from disk", || {
             crate::config::load_config().map_err(ServiceError::from)
         })
@@ -31,7 +34,7 @@ impl<'a> ConfigManager<'a> {
 
         let _guard = self.runtime.rebuild_lock.lock().await;
         let surface = self.runtime.surface.read().await.clone();
-        let next_loop = super::build_agent_loop(
+        let next_loop = build_agent_loop(
             &surface,
             &next_config.active_profile,
             &next_config.runtime,
@@ -47,11 +50,26 @@ impl<'a> ConfigManager<'a> {
         Ok(next_config)
     }
 
-    pub(super) async fn reload_agent_profiles_from_disk(
+    pub(crate) async fn reload_agent_profiles_from_disk(
         &self,
     ) -> ServiceResult<Arc<crate::AgentProfileRegistry>> {
         let loader = self.runtime.agent_loader();
-        let working_dirs = self.runtime.known_agent_working_dirs().await?;
+        let session_manager = Arc::clone(&self.runtime.session_manager);
+        let working_dirs = spawn_blocking_service("list agent working dirs", move || {
+            session_manager
+                .list_sessions_with_meta()
+                .map(|metas| {
+                    let mut working_dirs = metas
+                        .into_iter()
+                        .map(|meta| PathBuf::from(meta.working_dir))
+                        .collect::<Vec<_>>();
+                    working_dirs.sort();
+                    working_dirs.dedup();
+                    working_dirs
+                })
+                .map_err(ServiceError::from)
+        })
+        .await?;
         let next_registry = spawn_blocking_service("reload agent profiles from disk", move || {
             let working_dir_refs = working_dirs
                 .iter()
@@ -76,7 +94,7 @@ impl<'a> ConfigManager<'a> {
         Ok(next_registry)
     }
 
-    pub(super) async fn save_active_selection(
+    pub(crate) async fn save_active_selection(
         &self,
         active_profile: String,
         active_model: String,
@@ -102,21 +120,21 @@ impl<'a> ConfigManager<'a> {
         save_config(&config).map_err(ServiceError::from)
     }
 
-    pub(super) async fn current_config_path(&self) -> ServiceResult<PathBuf> {
+    pub(crate) async fn current_config_path(&self) -> ServiceResult<PathBuf> {
         spawn_blocking_service("resolve config path", || {
             config_path().map_err(ServiceError::from)
         })
         .await
     }
 
-    pub(super) async fn open_config_in_editor(&self) -> ServiceResult<()> {
+    pub(crate) async fn open_config_in_editor(&self) -> ServiceResult<()> {
         spawn_blocking_service("open config in editor", || {
             open_config_in_editor().map_err(ServiceError::from)
         })
         .await
     }
 
-    pub(super) async fn test_connection(
+    pub(crate) async fn test_connection(
         &self,
         profile_name: &str,
         model: &str,

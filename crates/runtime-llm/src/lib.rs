@@ -32,9 +32,9 @@
 //!
 //! ## Prompt Caching
 //!
-//! 两个提供者均支持 prompt caching 优化：对最后 N 条消息标记缓存控制，
+//! Anthropic 支持显式 prompt caching：对选定消息标记 `ephemeral` 类型缓存控制，
 //! 使后端可以复用 KV cache，减少重复上下文的延迟和成本。
-//! Anthropic 使用 `ephemeral` 类型，OpenAI 兼容 API 使用 `content` 类型。
+//! OpenAI 兼容 API 目前依赖自动前缀缓存（prefix caching），不发送显式缓存控制头。
 //!
 //! ## 模块结构
 //!

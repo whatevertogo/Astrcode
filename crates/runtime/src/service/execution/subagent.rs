@@ -147,11 +147,7 @@ impl AgentExecutionServiceHandle {
             }
         });
         // 保存 JoinHandle 以便 shutdown 时 abort。
-        astrcode_core::support::with_lock_recovery(
-            &self.runtime.active_subagent_handles,
-            "RuntimeService.active_subagent_handles",
-            |guard| guard.push(handle),
-        );
+        self.runtime.lifecycle().register_subagent_task(handle);
 
         Ok(running_result)
     }

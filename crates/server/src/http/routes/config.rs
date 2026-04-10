@@ -23,9 +23,10 @@ pub(crate) async fn get_config(
     headers: HeaderMap,
 ) -> Result<Json<ConfigView>, ApiError> {
     require_auth(&state, &headers, None)?;
-    let config = state.service.get_config().await;
+    let config = state.service.config().get_config().await;
     let config_path = state
         .service
+        .config()
         .current_config_path()
         .await
         .map_err(ApiError::from)?
@@ -47,6 +48,7 @@ pub(crate) async fn save_active_selection(
     require_auth(&state, &headers, None)?;
     state
         .service
+        .config()
         .save_active_selection(request.active_profile, request.active_model)
         .await
         .map_err(ApiError::from)?;
@@ -64,11 +66,13 @@ pub(crate) async fn reload_config(
     require_auth(&state, &headers, None)?;
     let config = state
         .service
+        .config()
         .reload_config_from_disk()
         .await
         .map_err(ApiError::from)?;
     let config_path = state
         .service
+        .config()
         .current_config_path()
         .await
         .map_err(ApiError::from)?

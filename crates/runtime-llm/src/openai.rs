@@ -12,10 +12,10 @@
 //!
 //! ## 缓存策略
 //!
-//! OpenAI 的 prompt caching 是**自动的**：API 自动缓存 >= 1024 tokens 的 prompt 前缀，
-//! 无需像 Anthropic 那样显式标记 `cache_control`。分层 system blocks（Stable →
-//! SemiStable → Inherited → Dynamic）的排列顺序天然提供稳定前缀，对 OpenAI 的
-//! prefix matching 最友好。
+//! OpenAI 的 prompt caching 以自动前缀缓存为主：API 自动缓存 >= 1024 tokens 的 prompt
+//! 前缀，无需像 Anthropic 那样显式标记 `cache_control`。官方 OpenAI endpoint 额外发送
+//! `prompt_cache_key` 来提高相似请求的路由稳定性；第三方 OpenAI-compatible endpoint
+//! 默认不发送该字段，避免因未知参数破坏兼容性。
 //!
 //! ## 协议差异处理
 //!
@@ -23,7 +23,10 @@
 //! 与 Anthropic 的多行 SSE 块（`event: ...\ndata: {...}\n\n`）不同，
 //! 因此本模块有独立的 SSE 解析逻辑。
 
-use std::fmt;
+use std::{
+    fmt,
+    hash::{DefaultHasher, Hash, Hasher},
+};
 
 use astrcode_core::{
     AstrError, CancelToken, LlmMessage, ReasoningContent, Result, ToolCallRequest, ToolDefinition,
@@ -147,6 +150,10 @@ impl OpenAiProvider {
             model: &self.model,
             max_tokens: self.limits.max_output_tokens.min(u32::MAX as usize) as u32,
             messages: request_messages,
+            prompt_cache_key: self.should_send_prompt_cache_key().then(|| {
+                build_prompt_cache_key(&self.model, system_prompt, system_prompt_blocks, tools)
+            }),
+            prompt_cache_retention: None,
             tools: if tools.is_empty() {
                 None
             } else {
@@ -155,6 +162,10 @@ impl OpenAiProvider {
             tool_choice: if tools.is_empty() { None } else { Some("auto") },
             stream,
         }
+    }
+
+    fn should_send_prompt_cache_key(&self) -> bool {
+        is_official_openai_api_url(&self.chat_completions_api_url)
     }
 
     /// 发送 HTTP 请求并处理响应。
@@ -220,8 +231,53 @@ impl OpenAiProvider {
     }
 }
 
+fn is_official_openai_api_url(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| host.eq_ignore_ascii_case("api.openai.com"))
+        })
+        .unwrap_or(false)
+}
+
+fn build_prompt_cache_key(
+    model: &str,
+    system_prompt: Option<&str>,
+    system_prompt_blocks: &[astrcode_core::SystemPromptBlock],
+    tools: &[ToolDefinition],
+) -> String {
+    let mut hasher = DefaultHasher::new();
+    "astrcode-openai-prompt-cache-v1".hash(&mut hasher);
+    model.hash(&mut hasher);
+
+    if !system_prompt_blocks.is_empty() {
+        for block in system_prompt_blocks {
+            format!("{:?}", block.layer).hash(&mut hasher);
+            block.title.hash(&mut hasher);
+            block.content.hash(&mut hasher);
+        }
+    } else if let Some(prompt) = system_prompt {
+        prompt.hash(&mut hasher);
+    }
+
+    for tool in tools {
+        tool.name.hash(&mut hasher);
+        tool.description.hash(&mut hasher);
+        if let Ok(parameters) = serde_json::to_string(&tool.parameters) {
+            parameters.hash(&mut hasher);
+        }
+    }
+
+    format!("astrcode-{:016x}", hasher.finish())
+}
+
 #[async_trait]
 impl LlmProvider for OpenAiProvider {
+    fn supports_cache_metrics(&self) -> bool {
+        self.should_send_prompt_cache_key()
+    }
+
     /// 执行一次模型调用。
     ///
     /// 根据 `sink` 是否存在选择流式或非流式路径：
@@ -248,7 +304,7 @@ impl LlmProvider for OpenAiProvider {
                     input_tokens: usage.prompt_tokens.unwrap_or_default() as usize,
                     output_tokens: usage.completion_tokens.unwrap_or_default() as usize,
                     cache_creation_input_tokens: 0,
-                    cache_read_input_tokens: 0,
+                    cache_read_input_tokens: usage.cached_tokens() as usize,
                 });
                 let first_choice = parsed.choices.into_iter().next().ok_or_else(|| {
                     AstrError::LlmStreamError(
@@ -676,6 +732,10 @@ struct OpenAiChatRequest<'a> {
     max_tokens: u32,
     messages: Vec<OpenAiRequestMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_retention: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OpenAiTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<&'a str>,
@@ -787,6 +847,23 @@ struct OpenAiUsage {
     prompt_tokens: Option<u64>,
     #[serde(default)]
     completion_tokens: Option<u64>,
+    #[serde(default)]
+    prompt_tokens_details: Option<OpenAiPromptTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiPromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u64>,
+}
+
+impl OpenAiUsage {
+    fn cached_tokens(&self) -> u64 {
+        self.prompt_tokens_details
+            .as_ref()
+            .and_then(|details| details.cached_tokens)
+            .unwrap_or_default()
+    }
 }
 
 /// OpenAI 响应中的工具调用（响应体中）。
@@ -1017,6 +1094,60 @@ mod tests {
         );
     }
 
+    #[test]
+    fn build_request_sends_prompt_cache_key_only_for_official_openai_endpoint() {
+        let messages = [LlmMessage::User {
+            content: "hi".to_string(),
+            origin: UserMessageOrigin::User,
+        }];
+        let official = OpenAiProvider::new(
+            "https://api.openai.com/v1/chat/completions".to_string(),
+            "sk-test".to_string(),
+            "gpt-4.1".to_string(),
+            ModelLimits {
+                context_window: 128_000,
+                max_output_tokens: 2048,
+            },
+        )
+        .expect("provider should build");
+        let compatible = OpenAiProvider::new(
+            "https://gateway.example.com/v1/chat/completions".to_string(),
+            "sk-test".to_string(),
+            "model-a".to_string(),
+            ModelLimits {
+                context_window: 128_000,
+                max_output_tokens: 2048,
+            },
+        )
+        .expect("provider should build");
+
+        let official_body = serde_json::to_value(official.build_request(
+            &messages,
+            &[],
+            Some("Follow the rules"),
+            &[],
+            false,
+        ))
+        .expect("request should serialize");
+        let compatible_body = serde_json::to_value(compatible.build_request(
+            &messages,
+            &[],
+            Some("Follow the rules"),
+            &[],
+            false,
+        ))
+        .expect("request should serialize");
+
+        assert!(
+            official_body
+                .get("prompt_cache_key")
+                .and_then(Value::as_str)
+                .is_some()
+        );
+        assert!(official_body.get("prompt_cache_retention").is_none());
+        assert!(compatible_body.get("prompt_cache_key").is_none());
+    }
+
     #[tokio::test]
     async fn generate_non_streaming_parses_text_and_tool_calls() {
         let body = json!({
@@ -1031,7 +1162,14 @@ mod tests {
                         }
                     }]
                 }
-            }]
+            }],
+            "usage": {
+                "prompt_tokens": 1200,
+                "completion_tokens": 20,
+                "prompt_tokens_details": {
+                    "cached_tokens": 1024
+                }
+            }
         })
         .to_string();
         let response = format!(
@@ -1071,6 +1209,15 @@ mod tests {
         assert_eq!(output.content, "hello");
         assert_eq!(output.tool_calls.len(), 1);
         assert_eq!(output.tool_calls[0].name, "search");
+        assert_eq!(
+            output.usage,
+            Some(LlmUsage {
+                input_tokens: 1200,
+                output_tokens: 20,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 1024,
+            })
+        );
     }
 
     #[tokio::test]
@@ -1246,5 +1393,21 @@ mod tests {
         .expect("provider should build");
 
         assert!(!provider.supports_cache_metrics());
+    }
+
+    #[test]
+    fn official_openai_provider_reports_cache_metrics_support() {
+        let provider = OpenAiProvider::new(
+            "https://api.openai.com/v1/chat/completions".to_string(),
+            "sk-test".to_string(),
+            "gpt-4.1".to_string(),
+            ModelLimits {
+                context_window: 128_000,
+                max_output_tokens: 2048,
+            },
+        )
+        .expect("provider should build");
+
+        assert!(provider.supports_cache_metrics());
     }
 }

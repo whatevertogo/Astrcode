@@ -103,8 +103,11 @@ impl SessionServiceHandle {
             phase: Phase::Idle,
         };
 
-        self.runtime
-            .emit_session_catalog_event(SessionCatalogEvent::SessionCreated {
+        // 故意忽略：通道关闭表示服务已关闭，无需处理
+        let _ = self
+            .runtime
+            .session_catalog_events
+            .send(SessionCatalogEvent::SessionCreated {
                 session_id: meta.session_id.clone(),
             });
 
@@ -136,7 +139,7 @@ impl SessionServiceHandle {
             )));
         }
 
-        let loop_ = self.runtime.current_loop().await;
+        let loop_ = self.runtime.loop_surface().current_loop().await;
         let projected = session
             .snapshot_projected_state()
             .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
@@ -181,13 +184,9 @@ impl SessionServiceHandle {
         Ok(())
     }
 
-    pub async fn delete_session(&self, session_id: &str) -> ServiceResult<()> {
+    pub(crate) async fn purge_session_durable(&self, session_id: &str) -> ServiceResult<()> {
         let normalized = normalize_session_id(session_id);
         let _guard = self.runtime.session_load_lock.lock().await;
-        self.runtime
-            .execution()
-            .interrupt_session(&normalized)
-            .await?;
         self.runtime.sessions.remove(&normalized);
         let session_manager = Arc::clone(&self.runtime.session_manager);
         let delete_session_id = normalized.clone();
@@ -197,14 +196,20 @@ impl SessionServiceHandle {
                 .map_err(ServiceError::from)
         })
         .await?;
-        self.runtime
-            .emit_session_catalog_event(SessionCatalogEvent::SessionDeleted {
+        // 故意忽略：通道关闭表示服务已关闭，无需处理
+        let _ = self
+            .runtime
+            .session_catalog_events
+            .send(SessionCatalogEvent::SessionDeleted {
                 session_id: normalized,
             });
         Ok(())
     }
 
-    pub async fn delete_project(&self, working_dir: &str) -> ServiceResult<DeleteProjectResult> {
+    pub(crate) async fn purge_project_durable(
+        &self,
+        working_dir: &str,
+    ) -> ServiceResult<DeleteProjectResult> {
         let working_dir = working_dir.to_string();
         let session_manager = Arc::clone(&self.runtime.session_manager);
         let metas = spawn_blocking_service("list project sessions", move || {
@@ -219,10 +224,7 @@ impl SessionServiceHandle {
             .map(|meta| meta.session_id)
             .collect::<Vec<_>>();
 
-        let execution = self.runtime.execution();
         for session_id in &targets {
-            // 故意忽略：删除会话时中断失败不应阻断清理流程
-            let _ = execution.interrupt_session(session_id).await;
             self.runtime.sessions.remove(session_id);
         }
 
@@ -234,8 +236,11 @@ impl SessionServiceHandle {
                 .map_err(ServiceError::from)
         })
         .await?;
-        self.runtime
-            .emit_session_catalog_event(SessionCatalogEvent::ProjectDeleted { working_dir });
+        // 故意忽略：通道关闭表示服务已关闭，无需处理
+        let _ = self
+            .runtime
+            .session_catalog_events
+            .send(SessionCatalogEvent::ProjectDeleted { working_dir });
         Ok(result)
     }
 

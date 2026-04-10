@@ -13,24 +13,42 @@ use astrcode_protocol::capability::CapabilityDescriptor;
 use astrcode_runtime_session::normalize_session_id;
 use astrcode_runtime_skill_loader::{SkillSource, SkillSpec};
 
-use super::{
+use crate::service::{
     ComposerOption, ComposerOptionKind, ComposerOptionsRequest, RuntimeService, ServiceResult,
 };
 
-impl RuntimeService {
+/// Composer 子边界的内部服务实现。
+///
+/// 通过 borrow 持有 `RuntimeService` 引用，不延长生命周期。
+pub(super) struct ComposerService<'a> {
+    runtime: &'a RuntimeService,
+}
+
+impl<'a> ComposerService<'a> {
+    pub(crate) fn new(runtime: &'a RuntimeService) -> Self {
+        Self { runtime }
+    }
+}
+
+impl ComposerService<'_> {
     /// 列出某个会话上下文下的输入候选项。
     ///
     /// 会话维度能保证 skill 解析使用正确的 working directory，
     /// 同时也能拿到当前运行时已装配的 capability / prompt surface，
     /// 避免前端重复理解 runtime 内部装配细节。
-    pub async fn list_composer_options(
+    pub(crate) async fn list_composer_options(
         &self,
         session_id: &str,
         request: ComposerOptionsRequest,
     ) -> ServiceResult<Vec<ComposerOption>> {
         let normalized_session_id = normalize_session_id(session_id);
-        let session = self.ensure_session_loaded(&normalized_session_id).await?;
-        let current_loop = self.current_loop().await;
+        let session = self
+            .runtime
+            .ensure_session_loaded(&normalized_session_id)
+            .await?;
+        let current_loop = crate::service::loop_surface::LoopSurfaceService::new(self.runtime)
+            .current_loop()
+            .await;
         let working_dir = session
             .snapshot_projected_state()?
             .working_dir
@@ -217,9 +235,9 @@ mod tests {
     use astrcode_runtime_skill_loader::{SkillCatalog, SkillSource, SkillSpec};
     use serde_json::json;
 
-    use super::ComposerOptionKind;
     use crate::{
         ComposerOptionsRequest, RuntimeService,
+        service::ComposerOptionKind,
         test_support::{TestEnvGuard, capabilities_from_tools},
     };
 
@@ -298,6 +316,7 @@ mod tests {
             .expect("session should be created");
 
         let items = service
+            .composer()
             .list_composer_options(&session.session_id, ComposerOptionsRequest::default())
             .await
             .expect("composer options should load");
@@ -338,6 +357,7 @@ mod tests {
             .expect("session should be created");
 
         let items = service
+            .composer()
             .list_composer_options(
                 &session.session_id,
                 ComposerOptionsRequest {
@@ -375,6 +395,7 @@ mod tests {
             .expect("session should be created");
 
         let items = service
+            .composer()
             .list_composer_options(
                 &session.session_id,
                 ComposerOptionsRequest {

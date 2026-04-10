@@ -46,6 +46,7 @@ use crate::{
     wait_retry_delay,
 };
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+const ANTHROPIC_CACHE_BREAKPOINT_LIMIT: usize = 4;
 
 /// Anthropic Claude API 提供者实现。
 ///
@@ -119,20 +120,38 @@ impl AnthropicProvider {
         system_prompt_blocks: &[SystemPromptBlock],
         stream: bool,
     ) -> AnthropicRequest {
+        let use_automatic_cache = is_official_anthropic_api_url(&self.messages_api_url);
+        let mut remaining_cache_breakpoints = ANTHROPIC_CACHE_BREAKPOINT_LIMIT;
+        let request_cache_control = if use_automatic_cache {
+            remaining_cache_breakpoints = remaining_cache_breakpoints.saturating_sub(1);
+            Some(AnthropicCacheControl::ephemeral())
+        } else {
+            None
+        };
+
         let mut anthropic_messages = to_anthropic_messages(messages);
-        // 增加消息缓存深度到 3 条，提高长对话的缓存命中率
-        enable_message_caching(&mut anthropic_messages, 3);
+        let tools = if tools.is_empty() {
+            None
+        } else {
+            Some(to_anthropic_tools(tools, &mut remaining_cache_breakpoints))
+        };
+        let system = to_anthropic_system(
+            system_prompt,
+            system_prompt_blocks,
+            &mut remaining_cache_breakpoints,
+        );
+
+        if !use_automatic_cache {
+            enable_message_caching(&mut anthropic_messages, remaining_cache_breakpoints);
+        }
 
         AnthropicRequest {
             model: self.model.clone(),
             max_tokens: self.limits.max_output_tokens.min(u32::MAX as usize) as u32,
+            cache_control: request_cache_control,
             messages: anthropic_messages,
-            system: to_anthropic_system(system_prompt, system_prompt_blocks),
-            tools: if tools.is_empty() {
-                None
-            } else {
-                Some(to_anthropic_tools(tools))
-            },
+            system,
+            tools,
             stream: stream.then_some(true),
             thinking: thinking_config_for_model(
                 &self.model,
@@ -457,34 +476,88 @@ fn to_anthropic_messages(messages: &[LlmMessage]) -> Vec<AnthropicMessage> {
         .collect()
 }
 
-/// Enable prompt caching on the last `cache_depth` message content blocks.
-/// Anthropic caches the last marked block and all preceding blocks up to
-/// the previous cache marker, so marking the final N blocks effectively
-/// caches the tail of the conversation for KV cache reuse.
-fn enable_message_caching(messages: &mut [AnthropicMessage], cache_depth: usize) {
-    if messages.is_empty() || cache_depth == 0 {
-        return;
+/// 在最近的消息内容块上启用显式 prompt caching。
+///
+/// 只有在自定义 Anthropic 网关上才需要这条兜底路径。官方 Anthropic endpoint 使用顶层
+/// 自动缓存来追踪不断增长的对话尾部，避免显式断点超过 4 个 slot。
+fn enable_message_caching(messages: &mut [AnthropicMessage], max_breakpoints: usize) -> usize {
+    if messages.is_empty() || max_breakpoints == 0 {
+        return 0;
     }
 
-    let cache_count = cache_depth.min(messages.len());
-    let start_idx = messages.len() - cache_count;
+    let mut used = 0;
+    for msg in messages.iter_mut().rev() {
+        if used >= max_breakpoints {
+            break;
+        }
 
-    for msg in &mut messages[start_idx..] {
-        if let Some(last_block) = msg.content.last_mut() {
-            last_block.set_cache_control(true);
+        let Some(block) = msg
+            .content
+            .iter_mut()
+            .rev()
+            .find(|block| block.can_use_explicit_cache_control())
+        else {
+            continue;
+        };
+
+        if block.set_cache_control_if_allowed(true) {
+            used += 1;
         }
     }
+
+    used
+}
+
+fn consume_cache_breakpoint(remaining: &mut usize) -> bool {
+    if *remaining == 0 {
+        return false;
+    }
+
+    *remaining -= 1;
+    true
+}
+
+fn is_official_anthropic_api_url(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| host.eq_ignore_ascii_case("api.anthropic.com"))
+        })
+        .unwrap_or(false)
+}
+
+fn cache_control_if_allowed(remaining: &mut usize) -> Option<AnthropicCacheControl> {
+    consume_cache_breakpoint(remaining).then(AnthropicCacheControl::ephemeral)
+}
+
+fn cacheable_system_layer(layer: SystemPromptLayer) -> bool {
+    !matches!(layer, SystemPromptLayer::Dynamic)
+}
+
+fn cacheable_text(text: &str) -> bool {
+    !text.is_empty()
 }
 
 /// 将 `ToolDefinition` 转换为 Anthropic 工具定义格式。
-fn to_anthropic_tools(tools: &[ToolDefinition]) -> Vec<AnthropicTool> {
+fn to_anthropic_tools(
+    tools: &[ToolDefinition],
+    remaining_cache_breakpoints: &mut usize,
+) -> Vec<AnthropicTool> {
+    if tools.is_empty() {
+        return Vec::new();
+    }
+
+    let last_cacheable_index = tools
+        .iter()
+        .rposition(|tool| cacheable_text(&tool.name) || cacheable_text(&tool.description));
+
     tools
         .iter()
         .enumerate()
         .map(|(index, tool)| {
-            // 只在最后一个工具上标记缓存，减少缓存边界数量
-            let cache_control = if index == tools.len() - 1 {
-                Some(AnthropicCacheControl::ephemeral())
+            let cache_control = if Some(index) == last_cacheable_index {
+                cache_control_if_allowed(remaining_cache_breakpoints)
             } else {
                 None
             };
@@ -502,42 +575,26 @@ fn to_anthropic_tools(tools: &[ToolDefinition]) -> Vec<AnthropicTool> {
 fn to_anthropic_system(
     system_prompt: Option<&str>,
     system_prompt_blocks: &[SystemPromptBlock],
+    remaining_cache_breakpoints: &mut usize,
 ) -> Option<AnthropicSystemPrompt> {
     if !system_prompt_blocks.is_empty() {
         return Some(AnthropicSystemPrompt::Blocks(
             system_prompt_blocks
                 .iter()
                 .map(|block| {
-                    // 根据层级选择缓存策略
-                    let cache_control = if block.cache_boundary {
-                        match block.layer {
-                            SystemPromptLayer::Stable => {
-                                // Stable 层使用 ephemeral 缓存标记
-                                Some(AnthropicCacheControl::ephemeral())
-                            },
-                            SystemPromptLayer::SemiStable => {
-                                // SemiStable 层使用默认 5m TTL
-                                Some(AnthropicCacheControl::ephemeral())
-                            },
-                            SystemPromptLayer::Inherited => {
-                                // 继承层和父背景相关，允许独立缓存但不和动态层混用。
-                                Some(AnthropicCacheControl::ephemeral())
-                            },
-                            SystemPromptLayer::Dynamic => {
-                                // Dynamic 层不缓存，避免浪费
-                                None
-                            },
-                            SystemPromptLayer::Unspecified => {
-                                Some(AnthropicCacheControl::ephemeral())
-                            },
-                        }
+                    let text = block.render();
+                    let cache_control = if block.cache_boundary
+                        && cacheable_system_layer(block.layer)
+                        && cacheable_text(&text)
+                    {
+                        cache_control_if_allowed(remaining_cache_breakpoints)
                     } else {
                         None
                     };
 
                     AnthropicSystemBlock {
                         type_: "text".to_string(),
-                        text: block.render(),
+                        text,
                         cache_control,
                     }
                 })
@@ -971,6 +1028,8 @@ fn flush_sse_buffer(
 struct AnthropicRequest {
     model: String,
     max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<AnthropicCacheControl>,
     messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<AnthropicSystemPrompt>,
@@ -1083,11 +1142,26 @@ impl AnthropicCacheControl {
 }
 
 impl AnthropicContentBlock {
-    /// 为内容块设置或清除 cache_control 标记。
+    /// 判断内容块是否适合显式 `cache_control`。
     ///
-    /// 通过模式匹配更新所有变体的 `cache_control` 字段，
-    /// 保持枚举变体间的修改逻辑集中。
-    fn set_cache_control(&mut self, enabled: bool) {
+    /// Anthropic 不允许在 thinking block 上直接设置缓存标记；空文本块也没有缓存价值。
+    fn can_use_explicit_cache_control(&self) -> bool {
+        match self {
+            AnthropicContentBlock::Text { text, .. } => cacheable_text(text),
+            AnthropicContentBlock::Thinking { .. } => false,
+            AnthropicContentBlock::ToolUse { id, name, .. } => {
+                cacheable_text(id) || cacheable_text(name)
+            },
+            AnthropicContentBlock::ToolResult { content, .. } => cacheable_text(content),
+        }
+    }
+
+    /// 为允许显式缓存的内容块设置或清除 `cache_control` 标记。
+    fn set_cache_control_if_allowed(&mut self, enabled: bool) -> bool {
+        if enabled && !self.can_use_explicit_cache_control() {
+            return false;
+        }
+
         let control = if enabled {
             Some(AnthropicCacheControl::ephemeral())
         } else {
@@ -1095,10 +1169,11 @@ impl AnthropicContentBlock {
         };
         match self {
             AnthropicContentBlock::Text { cache_control, .. } => *cache_control = control,
-            AnthropicContentBlock::Thinking { cache_control, .. } => *cache_control = control,
+            AnthropicContentBlock::Thinking { .. } => return false,
             AnthropicContentBlock::ToolUse { cache_control, .. } => *cache_control = control,
             AnthropicContentBlock::ToolResult { cache_control, .. } => *cache_control = control,
         }
+        true
     }
 }
 
@@ -1144,6 +1219,16 @@ struct AnthropicUsage {
     cache_creation_input_tokens: Option<u64>,
     #[serde(default)]
     cache_read_input_tokens: Option<u64>,
+    #[serde(default)]
+    cache_creation: Option<AnthropicCacheCreationUsage>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+struct AnthropicCacheCreationUsage {
+    #[serde(default)]
+    ephemeral_5m_input_tokens: Option<u64>,
+    #[serde(default)]
+    ephemeral_1h_input_tokens: Option<u64>,
 }
 
 impl AnthropicUsage {
@@ -1155,14 +1240,21 @@ impl AnthropicUsage {
         self.cache_read_input_tokens = other
             .cache_read_input_tokens
             .or(self.cache_read_input_tokens);
+        self.cache_creation = other.cache_creation.or_else(|| self.cache_creation.take());
         // output_tokens 在流式事件里通常是累计值，优先保留最新的非空值。
         self.output_tokens = other.output_tokens.or(self.output_tokens);
     }
 
     fn into_llm_usage(self) -> Option<LlmUsage> {
+        let cache_creation_input_tokens = self.cache_creation_input_tokens.or_else(|| {
+            self.cache_creation
+                .as_ref()
+                .map(AnthropicCacheCreationUsage::total_input_tokens)
+        });
+
         if self.input_tokens.is_none()
             && self.output_tokens.is_none()
-            && self.cache_creation_input_tokens.is_none()
+            && cache_creation_input_tokens.is_none()
             && self.cache_read_input_tokens.is_none()
         {
             return None;
@@ -1171,10 +1263,17 @@ impl AnthropicUsage {
         Some(LlmUsage {
             input_tokens: self.input_tokens.unwrap_or_default() as usize,
             output_tokens: self.output_tokens.unwrap_or_default() as usize,
-            cache_creation_input_tokens: self.cache_creation_input_tokens.unwrap_or_default()
-                as usize,
+            cache_creation_input_tokens: cache_creation_input_tokens.unwrap_or_default() as usize,
             cache_read_input_tokens: self.cache_read_input_tokens.unwrap_or_default() as usize,
         })
+    }
+}
+
+impl AnthropicCacheCreationUsage {
+    fn total_input_tokens(&self) -> u64 {
+        self.ephemeral_5m_input_tokens
+            .unwrap_or_default()
+            .saturating_add(self.ephemeral_1h_input_tokens.unwrap_or_default())
     }
 }
 
@@ -1394,6 +1493,7 @@ mod tests {
         );
         let body = serde_json::to_value(&request).expect("request should serialize");
 
+        assert_eq!(body["cache_control"]["type"], json!("ephemeral"));
         assert_eq!(
             body.get("system").and_then(Value::as_str),
             Some("Follow the rules")
@@ -1403,6 +1503,145 @@ mod tests {
                 .and_then(|value| value.get("type"))
                 .and_then(Value::as_str),
             Some("enabled")
+        );
+    }
+
+    fn count_cache_control_fields(value: &Value) -> usize {
+        match value {
+            Value::Object(map) => {
+                usize::from(map.contains_key("cache_control"))
+                    + map.values().map(count_cache_control_fields).sum::<usize>()
+            },
+            Value::Array(values) => values.iter().map(count_cache_control_fields).sum(),
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn official_anthropic_uses_automatic_cache_and_caps_explicit_breakpoints() {
+        let provider = AnthropicProvider::new(
+            "https://api.anthropic.com/v1/messages".to_string(),
+            "sk-ant-test".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            ModelLimits {
+                context_window: 200_000,
+                max_output_tokens: 8096,
+            },
+        )
+        .expect("provider should build");
+        let system_blocks = (0..5)
+            .map(|index| SystemPromptBlock {
+                title: format!("Stable {index}"),
+                content: format!("stable content {index}"),
+                cache_boundary: true,
+                layer: SystemPromptLayer::Stable,
+            })
+            .collect::<Vec<_>>();
+        let tools = vec![ToolDefinition {
+            name: "search".to_string(),
+            description: "Search indexed data.".to_string(),
+            parameters: json!({ "type": "object" }),
+        }];
+        let request = provider.build_request(
+            &[LlmMessage::User {
+                content: "hi".to_string(),
+                origin: UserMessageOrigin::User,
+            }],
+            &tools,
+            None,
+            &system_blocks,
+            false,
+        );
+        let body = serde_json::to_value(&request).expect("request should serialize");
+
+        assert_eq!(body["cache_control"]["type"], json!("ephemeral"));
+        assert!(
+            count_cache_control_fields(&body) <= ANTHROPIC_CACHE_BREAKPOINT_LIMIT,
+            "official request should keep automatic + explicit cache controls within the provider \
+             limit"
+        );
+        assert!(
+            body["messages"][0]["content"][0]
+                .get("cache_control")
+                .is_none(),
+            "official endpoint uses top-level automatic cache for the message tail"
+        );
+    }
+
+    #[test]
+    fn custom_anthropic_gateway_uses_explicit_message_tail_without_top_level_cache() {
+        let provider = AnthropicProvider::new(
+            "https://gateway.example.com/anthropic/v1/messages".to_string(),
+            "sk-ant-test".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            ModelLimits {
+                context_window: 200_000,
+                max_output_tokens: 8096,
+            },
+        )
+        .expect("provider should build");
+        let request = provider.build_request(
+            &[
+                LlmMessage::User {
+                    content: "first".to_string(),
+                    origin: UserMessageOrigin::User,
+                },
+                LlmMessage::User {
+                    content: "second".to_string(),
+                    origin: UserMessageOrigin::User,
+                },
+            ],
+            &[],
+            None,
+            &[],
+            false,
+        );
+        let body = serde_json::to_value(&request).expect("request should serialize");
+
+        assert!(body.get("cache_control").is_none());
+        assert_eq!(
+            body["messages"][1]["content"][0]["cache_control"]["type"],
+            json!("ephemeral")
+        );
+        assert!(
+            count_cache_control_fields(&body) <= ANTHROPIC_CACHE_BREAKPOINT_LIMIT,
+            "custom gateways only receive explicit cache controls within the provider limit"
+        );
+    }
+
+    #[test]
+    fn explicit_message_caching_skips_thinking_blocks() {
+        let provider = AnthropicProvider::new(
+            "https://gateway.example.com/anthropic/v1/messages".to_string(),
+            "sk-ant-test".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            ModelLimits {
+                context_window: 200_000,
+                max_output_tokens: 8096,
+            },
+        )
+        .expect("provider should build");
+        let request = provider.build_request(
+            &[LlmMessage::Assistant {
+                content: "".to_string(),
+                tool_calls: vec![],
+                reasoning: Some(ReasoningContent {
+                    content: "thinking".to_string(),
+                    signature: Some("sig".to_string()),
+                }),
+            }],
+            &[],
+            None,
+            &[],
+            false,
+        );
+        let body = serde_json::to_value(&request).expect("request should serialize");
+
+        assert_eq!(body["messages"][0]["content"][0]["type"], json!("thinking"));
+        assert!(
+            body["messages"][0]["content"][0]
+                .get("cache_control")
+                .is_none()
         );
     }
 
@@ -1586,6 +1825,35 @@ mod tests {
                 output_tokens: Some(20),
                 cache_creation_input_tokens: Some(80),
                 cache_read_input_tokens: Some(60),
+                cache_creation: None,
+            }),
+        });
+
+        assert_eq!(
+            output.usage,
+            Some(LlmUsage {
+                input_tokens: 100,
+                output_tokens: 20,
+                cache_creation_input_tokens: 80,
+                cache_read_input_tokens: 60,
+            })
+        );
+    }
+
+    #[test]
+    fn response_to_output_parses_nested_cache_creation_usage_fields() {
+        let output = response_to_output(AnthropicResponse {
+            content: vec![json!({ "type": "text", "text": "ok" })],
+            stop_reason: Some("end_turn".to_string()),
+            usage: Some(AnthropicUsage {
+                input_tokens: Some(100),
+                output_tokens: Some(20),
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: Some(60),
+                cache_creation: Some(AnthropicCacheCreationUsage {
+                    ephemeral_5m_input_tokens: Some(30),
+                    ephemeral_1h_input_tokens: Some(50),
+                }),
             }),
         });
 

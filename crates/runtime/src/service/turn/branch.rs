@@ -60,10 +60,13 @@ impl RuntimeService {
                     target_session_id = self
                         .branch_session_from_busy_turn(&source_session_id, &active_turn.turn_id)
                         .await?;
-                    self.emit_session_catalog_event(SessionCatalogEvent::SessionBranched {
-                        session_id: target_session_id.clone(),
-                        source_session_id: source_session_id.clone(),
-                    });
+                    // 故意忽略：通道关闭表示服务已关闭，无需处理
+                    let _ =
+                        self.session_catalog_events
+                            .send(SessionCatalogEvent::SessionBranched {
+                                session_id: target_session_id.clone(),
+                                source_session_id: source_session_id.clone(),
+                            });
                     branched_from_session_id = Some(source_session_id);
                     branch_depth += 1;
                 },

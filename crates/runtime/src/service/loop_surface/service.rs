@@ -6,29 +6,29 @@ use astrcode_runtime_prompt::PromptDeclaration;
 use astrcode_runtime_registry::CapabilityRouter;
 use astrcode_runtime_skill_loader::SkillCatalog;
 
-use super::{
+use crate::service::{
     RuntimeService, RuntimeSurfaceState, ServiceResult,
-    loop_factory::{LoopRuntimeDeps, build_agent_loop},
+    loop_surface::factory::{LoopRuntimeDeps, build_agent_loop},
 };
 
-/// 能力面管理器：集中处理 capability surface 与 loop 热替换。
+/// Loop surface 服务：集中处理 runtime surface 与 loop 热替换。
 ///
 /// 之所以抽成独立组件，是为了把 RuntimeService 从“状态容器 + 业务细节”
 /// 收敛为“门面 + 编排”，降低后续扩展热重载策略时的修改面。
-pub(super) struct CapabilityManager<'a> {
+pub(crate) struct LoopSurfaceService<'a> {
     runtime: &'a RuntimeService,
 }
 
-impl<'a> CapabilityManager<'a> {
-    pub(super) fn new(runtime: &'a RuntimeService) -> Self {
+impl<'a> LoopSurfaceService<'a> {
+    pub(crate) fn new(runtime: &'a RuntimeService) -> Self {
         Self { runtime }
     }
 
-    pub(super) async fn current_loop(&self) -> Arc<AgentLoop> {
+    pub(crate) async fn current_loop(&self) -> Arc<AgentLoop> {
         self.runtime.loop_.read().await.clone()
     }
 
-    pub(super) async fn replace_surface(
+    pub(crate) async fn replace_surface(
         &self,
         capabilities: CapabilityRouter,
         prompt_declarations: Vec<PromptDeclaration>,

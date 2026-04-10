@@ -11,7 +11,6 @@ use astrcode_runtime_prompt::PromptDeclaration;
 use astrcode_runtime_registry::CapabilityRouter;
 use astrcode_runtime_skill_loader::SkillCatalog;
 
-use super::RuntimeSurfaceState;
 use crate::{
     config::{
         resolve_auto_compact_enabled, resolve_compact_keep_recent_turns,
@@ -19,15 +18,16 @@ use crate::{
         resolve_tool_result_max_bytes,
     },
     provider_factory::ConfigFileProviderFactory,
+    service::RuntimeSurfaceState,
 };
 
 #[derive(Clone)]
-pub(super) struct LoopSurfaceInputs {
-    pub(super) capabilities: CapabilityRouter,
-    pub(super) prompt_declarations: Vec<PromptDeclaration>,
-    pub(super) skill_catalog: Arc<SkillCatalog>,
-    pub(super) hook_handlers: Vec<Arc<dyn HookHandler>>,
-    pub(super) prompt_builder: astrcode_runtime_prompt::LayeredPromptBuilder,
+pub(in crate::service) struct LoopSurfaceInputs {
+    pub(in crate::service) capabilities: CapabilityRouter,
+    pub(in crate::service) prompt_declarations: Vec<PromptDeclaration>,
+    pub(in crate::service) skill_catalog: Arc<SkillCatalog>,
+    pub(in crate::service) hook_handlers: Vec<Arc<dyn HookHandler>>,
+    pub(in crate::service) prompt_builder: astrcode_runtime_prompt::LayeredPromptBuilder,
 }
 
 impl LoopSurfaceInputs {
@@ -43,14 +43,14 @@ impl LoopSurfaceInputs {
 }
 
 #[derive(Clone)]
-pub(super) struct LoopRuntimeDeps {
+pub(in crate::service) struct LoopRuntimeDeps {
     policy: Arc<dyn PolicyEngine>,
     approval: Arc<dyn ApprovalBroker>,
     agent_profile_catalog: Option<Arc<dyn AgentProfileCatalog>>,
 }
 
 impl LoopRuntimeDeps {
-    pub(super) fn new(
+    pub(in crate::service) fn new(
         policy: Arc<dyn PolicyEngine>,
         approval: Arc<dyn ApprovalBroker>,
         agent_profile_catalog: Option<Arc<dyn AgentProfileCatalog>>,
@@ -63,7 +63,7 @@ impl LoopRuntimeDeps {
     }
 }
 
-pub(super) fn build_agent_loop(
+pub(in crate::service) fn build_agent_loop(
     surface: &RuntimeSurfaceState,
     active_profile: &str,
     runtime_config: &crate::config::RuntimeConfig,
@@ -77,7 +77,7 @@ pub(super) fn build_agent_loop(
     )
 }
 
-pub(super) fn build_agent_loop_from_parts(
+pub(in crate::service) fn build_agent_loop_from_parts(
     surface: LoopSurfaceInputs,
     active_profile: &str,
     runtime_config: &crate::config::RuntimeConfig,
@@ -117,7 +117,7 @@ pub(super) fn build_agent_loop_from_parts(
     )
 }
 
-pub(super) fn build_scoped_agent_loop(
+pub(in crate::service) fn build_scoped_agent_loop(
     surface: LoopSurfaceInputs,
     active_profile: &str,
     runtime_config: &crate::config::RuntimeConfig,

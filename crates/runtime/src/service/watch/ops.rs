@@ -1,12 +1,31 @@
+//! 文件系统监视操作：配置热加载与 Agent Profile 热加载
+//!
+//! 本模块负责监听磁盘文件变更并在检测到变化时触发热加载，包含两个独立的监视循环：
+//!
+//! - **配置热加载**（`run_config_watch_loop`）：监听全局配置文件（如 `config.json`），
+//!   当文件内容发生变化时自动重新加载，使配置变更即时生效而无需重启服务。
+//!
+//! - **Agent Profile 热加载**（`run_agent_watch_loop`）：监听所有已知会话工作目录下 的
+//!   `.astrcode/agents/` 目录，当 Agent 定义文件变更时自动重新加载。
+//!   支持动态增删监听目标——当会话工作目录集合发生变化时，会自动调整监视范围。
+//!
+//! 两个循环都使用 `notify` crate 的 `RecommendedWatcher`（平台原生文件系统通知），
+//! 并通过 300ms 防抖机制合并短时间内的大量文件变更事件，避免重复加载。
+
 use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 use astrcode_runtime_agent_loader::AgentWatchPath;
 use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
 
-use super::{RuntimeService, ServiceError, ServiceResult, blocking_bridge::spawn_blocking_service};
-use crate::config::config_path;
+use crate::{
+    config::config_path,
+    service::{
+        RuntimeService, ServiceError, ServiceResult, blocking_bridge::spawn_blocking_service,
+    },
+};
 
 pub(super) async fn run_config_watch_loop(service: Arc<RuntimeService>) -> ServiceResult<()> {
+    let shutdown = service.lifecycle().shutdown_signal();
     let watched_config_path = spawn_blocking_service("resolve config watch path", || {
         config_path().map_err(ServiceError::from)
     })
@@ -46,7 +65,7 @@ pub(super) async fn run_config_watch_loop(service: Arc<RuntimeService>) -> Servi
 
     loop {
         tokio::select! {
-            _ = service.shutdown_token.cancelled() => return Ok(()),
+            _ = shutdown.cancelled() => return Ok(()),
             maybe_event = rx.recv() => {
                 let Some(result) = maybe_event else {
                     return Ok(());
@@ -66,7 +85,7 @@ pub(super) async fn run_config_watch_loop(service: Arc<RuntimeService>) -> Servi
 
                 drain_watch_events_with_debounce(&service, &mut rx, "config").await?;
 
-                match service.reload_config_from_disk().await {
+                match service.config().reload_config_from_disk().await {
                     Ok(config) => {
                         log::info!(
                             "reloaded config from disk: active_profile='{}', active_model='{}'",
@@ -84,6 +103,7 @@ pub(super) async fn run_config_watch_loop(service: Arc<RuntimeService>) -> Servi
 }
 
 pub(super) async fn run_agent_watch_loop(service: Arc<RuntimeService>) -> ServiceResult<()> {
+    let shutdown = service.lifecycle().shutdown_signal();
     let mut watch_targets = resolve_agent_watch_targets(&service).await?;
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -104,7 +124,7 @@ pub(super) async fn run_agent_watch_loop(service: Arc<RuntimeService>) -> Servic
 
     loop {
         tokio::select! {
-            _ = service.shutdown_token.cancelled() => return Ok(()),
+            _ = shutdown.cancelled() => return Ok(()),
             maybe_event = rx.recv() => {
                 let Some(result) = maybe_event else {
                     return Ok(());
@@ -134,7 +154,7 @@ pub(super) async fn run_agent_watch_loop(service: Arc<RuntimeService>) -> Servic
                     watch_targets = next_watch_targets;
                 }
 
-                match service.reload_agent_profiles_from_disk().await {
+                match service.config().reload_agent_profiles_from_disk().await {
                     Ok(registry) => {
                         log::info!(
                             "reloaded agent profiles from disk: {} agents",
@@ -176,11 +196,12 @@ async fn drain_watch_events_with_debounce(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<notify::Result<Event>>,
     watcher_name: &str,
 ) -> ServiceResult<()> {
+    let shutdown = service.shutdown_token.clone();
     let debounce = tokio::time::sleep(Duration::from_millis(300));
     tokio::pin!(debounce);
     loop {
         tokio::select! {
-            _ = service.shutdown_token.cancelled() => return Ok(()),
+            _ = shutdown.cancelled() => return Ok(()),
             _ = &mut debounce => return Ok(()),
             maybe_next = rx.recv() => {
                 let Some(next) = maybe_next else {
@@ -244,7 +265,22 @@ fn apply_agent_watch_targets(
 async fn resolve_agent_watch_targets(
     service: &RuntimeService,
 ) -> ServiceResult<Vec<AgentWatchPath>> {
-    let working_dirs = service.known_agent_working_dirs().await?;
+    let session_manager = Arc::clone(&service.session_manager);
+    let working_dirs = spawn_blocking_service("list agent working dirs", move || {
+        session_manager
+            .list_sessions_with_meta()
+            .map(|metas| {
+                let mut working_dirs = metas
+                    .into_iter()
+                    .map(|meta| PathBuf::from(meta.working_dir))
+                    .collect::<Vec<_>>();
+                working_dirs.sort();
+                working_dirs.dedup();
+                working_dirs
+            })
+            .map_err(ServiceError::from)
+    })
+    .await?;
     let working_dir_refs = working_dirs
         .iter()
         .map(|path| path.as_path())

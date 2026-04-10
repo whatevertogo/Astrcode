@@ -40,6 +40,7 @@ pub(crate) async fn session_composer_options(
     let requested_kinds = parse_composer_option_kinds(query.kinds.as_deref())?;
     let items = state
         .service
+        .composer()
         .list_composer_options(
             &session_id,
             ComposerOptionsRequest {

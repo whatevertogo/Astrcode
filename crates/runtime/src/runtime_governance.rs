@@ -138,13 +138,14 @@ impl RuntimeGovernance {
             self.coordinator.plugin_registry(),
             astrcode_runtime_skill_loader::load_builtin_skills(),
             Arc::new(self.service.execution()),
-            self.service.collaboration_executor(),
+            self.service.execution().collaboration_executor(),
         )
         .await
         .map_err(ServiceError::Internal)?;
         let capability_surface = assembled.router.descriptors();
         self.service
-            .replace_capabilities_with_prompt_inputs_and_hooks(
+            .loop_surface()
+            .replace_surface(
                 assembled.router,
                 assembled.prompt_declarations,
                 assembled.skill_catalog,
@@ -189,7 +190,7 @@ impl RuntimeGovernance {
             loaded_session_count: self.service.loaded_session_count(),
             running_session_ids: self.service.running_session_ids(),
             plugin_search_paths,
-            metrics: self.service.observability_snapshot(),
+            metrics: self.service.observability().snapshot(),
             capabilities: self.coordinator.capabilities(),
             plugins: self.coordinator.plugin_registry().snapshot(),
         }

@@ -576,10 +576,18 @@ async fn config_reload_endpoint_refreshes_runtime_config_from_disk() {
     assert_eq!(payload.config.active_profile, "local-openai");
     assert_eq!(payload.config.active_model, "gpt-4.1-mini");
     assert_eq!(
-        state.service.get_config().await.active_model,
+        state.service.config().get_config().await.active_model,
         "gpt-4.1-mini"
     );
-    assert_eq!(state.service.current_loop().await.max_tool_concurrency(), 9);
+    assert_eq!(
+        state
+            .service
+            .loop_surface()
+            .current_loop()
+            .await
+            .max_tool_concurrency(),
+        9
+    );
 }
 
 #[tokio::test]
@@ -1170,7 +1178,7 @@ async fn subrun_status_endpoint_reports_live_for_independent_subrun_owned_by_par
         disallowed_tools: Vec::new(),
         model_preference: None,
     };
-    let control = state.service.agent_control();
+    let control = state.service.execution().control();
     let handle = control
         .spawn_with_storage(
             &profile,

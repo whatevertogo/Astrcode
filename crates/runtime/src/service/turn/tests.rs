@@ -565,7 +565,7 @@ async fn repeated_turns_record_prompt_cache_hits_and_misses_in_observability() {
         assert!(matches!(result.outcome, Ok(TurnOutcome::Completed)));
     }
 
-    let diagnostics = service.observability_snapshot().execution_diagnostics;
+    let diagnostics = service.observability().snapshot().execution_diagnostics;
     assert!(diagnostics.cache_reuse_misses > 0);
     assert!(diagnostics.cache_reuse_hits > 0);
 
@@ -602,7 +602,7 @@ async fn interrupt_cascades_to_registered_child_agents() {
         .await
         .expect("prompt should be accepted");
 
-    let control = service.agent_control();
+    let control = service.execution().control();
     let child = control
         .spawn(
             &astrcode_core::AgentProfile {

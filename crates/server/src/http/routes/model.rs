@@ -24,7 +24,7 @@ pub(crate) async fn get_current_model(
     headers: HeaderMap,
 ) -> Result<Json<CurrentModelInfoDto>, ApiError> {
     require_auth(&state, &headers, None)?;
-    let config = state.service.get_config().await;
+    let config = state.service.config().get_config().await;
     Ok(Json(resolve_current_model(&config)?))
 }
 
@@ -37,7 +37,7 @@ pub(crate) async fn list_models(
     headers: HeaderMap,
 ) -> Result<Json<Vec<ModelOptionDto>>, ApiError> {
     require_auth(&state, &headers, None)?;
-    let config = state.service.get_config().await;
+    let config = state.service.config().get_config().await;
     Ok(Json(list_model_options(&config)))
 }
 
@@ -53,6 +53,7 @@ pub(crate) async fn test_model_connection(
     require_auth(&state, &headers, None)?;
     let result = state
         .service
+        .config()
         .test_connection(&request.profile_name, &request.model)
         .await
         .map_err(ApiError::from)?;

@@ -249,7 +249,7 @@ async fn long_loaded_session_submit_avoids_extra_rehydrate_and_records_turn_metr
         .ensure_session_loaded("baseline-long-submit")
         .await
         .expect("long session should load");
-    let before = service.observability_snapshot();
+    let before = service.observability().snapshot();
     assert_eq!(before.session_rehydrate.total, 1);
 
     service
@@ -259,7 +259,7 @@ async fn long_loaded_session_submit_avoids_extra_rehydrate_and_records_turn_metr
         .expect("prompt should be accepted");
     wait_until_idle(&service).await;
 
-    let after = service.observability_snapshot();
+    let after = service.observability().snapshot();
     assert_eq!(
         after.session_rehydrate.total, before.session_rehydrate.total,
         "loaded sessions must not be rehydrated again during prompt submission"
@@ -291,7 +291,7 @@ async fn reconnect_with_recent_cursor_uses_cached_tail_and_updates_metrics() {
         .expect("session should load");
 
     let cursor = latest_cursor(&service, "baseline-replay-cache").await;
-    let before = service.observability_snapshot();
+    let before = service.observability().snapshot();
     let replay = service
         .sessions()
         .replay("baseline-replay-cache", Some(&cursor))
@@ -303,7 +303,7 @@ async fn reconnect_with_recent_cursor_uses_cached_tail_and_updates_metrics() {
         "reconnecting from the latest cursor should not need disk replay"
     );
 
-    let after = service.observability_snapshot();
+    let after = service.observability().snapshot();
     assert_eq!(
         after.sse_catch_up.cache_hits,
         before.sse_catch_up.cache_hits + 1
@@ -333,7 +333,7 @@ async fn reconnect_with_stale_cursor_falls_back_to_disk_and_records_it() {
         .await
         .expect("session should load");
 
-    let before = service.observability_snapshot();
+    let before = service.observability().snapshot();
     let replay = service
         .sessions()
         .replay("baseline-replay-disk", Some("1.0"))
@@ -345,7 +345,7 @@ async fn reconnect_with_stale_cursor_falls_back_to_disk_and_records_it() {
         "stale cursors must recover history from durable storage"
     );
 
-    let after = service.observability_snapshot();
+    let after = service.observability().snapshot();
     assert_eq!(
         after.sse_catch_up.disk_fallbacks,
         before.sse_catch_up.disk_fallbacks + 1
@@ -411,7 +411,7 @@ async fn concurrent_submit_branches_second_prompt_and_records_two_turns() {
     assert_eq!(original_user_messages, vec!["first"]);
     assert_eq!(branched_user_messages, vec!["second"]);
 
-    let metrics = service.observability_snapshot();
+    let metrics = service.observability().snapshot();
     assert_eq!(metrics.turn_execution.total, 2);
     assert_eq!(metrics.turn_execution.failures, 0);
 }

@@ -263,9 +263,9 @@ impl AgentExecutionServiceHandle {
             )));
         }
 
-        let loop_ = self.runtime.current_loop().await;
+        let loop_ = self.current_loop().await;
         let observability = self.runtime.observability.clone();
-        let agent_control = self.runtime.agent_control();
+        let agent_control = self.control();
         let service = self.clone();
         let wake_session_id = parent_session_id.clone();
         let wake_turn_id = turn_id.clone();
@@ -383,11 +383,7 @@ impl AgentExecutionServiceHandle {
         });
         // Why: wake turn 是运行时桥接任务，必须把 JoinHandle 收进统一注册表，
         // 避免 detached task 在关闭/测试场景里悄悄丢失。
-        astrcode_core::support::with_lock_recovery(
-            &self.runtime.active_turn_handles,
-            "RuntimeService.active_turn_handles",
-            |guard| guard.push(handle),
-        );
+        self.runtime.lifecycle().register_turn_task(handle);
 
         Ok(true)
     }

@@ -184,10 +184,10 @@ where
     collaboration_executor.bind(&service);
     // 配置热重载需要尽早挂载 watcher，确保用户在应用启动后直接编辑 config.json
     // 时，后续新 turn 就能看到最新的 runtime 参数和默认模型选择。
-    service.start_config_auto_reload();
+    service.watch().start_config_auto_reload();
     // Agent 定义属于独立的文件系统输入面，需要单独 watch，避免用户编辑 agents
     // 后必须重启 runtime 才能生效。
-    service.start_agent_auto_reload();
+    service.watch().start_agent_auto_reload();
 
     // 创建后台加载句柄
     let plugin_load_handle = PluginLoadHandle::new();
@@ -279,7 +279,8 @@ where
 
                 // 先切换 service，让新 turn 能看到完整的新 surface；若失败则不推进后续状态。
                 if let Err(error) = service_for_bg
-                    .replace_capabilities_with_prompt_inputs_and_hooks(
+                    .loop_surface()
+                    .replace_surface(
                         updated_router,
                         assembled.prompt_declarations,
                         updated_skill_catalog,
