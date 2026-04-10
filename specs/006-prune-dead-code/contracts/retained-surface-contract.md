@@ -18,6 +18,7 @@
 
 - 无消费者的 parent-child summary projection
 - 仅为 legacy downgrade 展示保留的类型和 helper
+- duplicated child open flag（如 `openable`）
 
 ## 2. Server HTTP
 
@@ -38,20 +39,32 @@
 - `/api/config/reload`
 - legacy cancel route（迁移完成后）
 
-## 3. Runtime / Protocol
+## 3. Runtime / Core / Protocol
 
 ### 保留
 
 - 当前会话与子会话历史主线
 - 当前 handoff summary / child notification summary
-- 当前 `closeAgent` 协作能力
+- `AgentStatus` 作为唯一 subrun 状态模型
+- protocol 强类型状态枚举作为唯一 child/subrun 状态 DTO
+- `ExecutionAccepted` 作为唯一内部 execution receipt
+- `SubRunHandle` 作为唯一 lineage owner
+- `child_ref.open_session_id` 作为唯一 child open target
+- `PromptMetricsPayload` 作为唯一共享指标字段集合
+- `closeAgent` 作为唯一 child close/cancel 主线
 
 ### 不保留
 
-- 只为 legacy downgrade 展示服务的公开状态语义
+- `SubRunOutcome`
+- `SubRunDescriptor`
+- `PromptAccepted` / `RootExecutionAccepted` / runtime duplicate receipt
+- protocol `status: String`
+- notification / DTO 外层重复 `open_session_id`
+- duplicated `openable`
+- `legacyDurable` 与 descriptorless downgrade source
 - 没有当前消费者的 operator / skeleton surface
 
 ## 4. Enforcement
 
-- 任一保留 surface 都必须能指向当前真实消费者。
-- 任何新增 surface 若没有 owner 和消费者，不得作为“以后也许会用”被引入。
+- 任一保留 surface 都必须能指向当前真实消费者与 owner boundary。
+- 任何新增 surface 若没有 owner 和消费者，不得以“以后也许会用”为理由进入主线。

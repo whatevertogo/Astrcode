@@ -10,17 +10,17 @@
 对于旧共享历史、descriptor 缺失 legacy subrun 或其他已决定不再支持的旧输入：
 
 - 系统必须明确失败
-- 不再返回 downgrade status
+- 不再返回 `legacyDurable`
 - 不再构建 legacy tree
 - 不再伪造 lineage、child 结构或“部分可用”视图
 
 如需要稳定错误信息，可保留清晰错误码；但错误码不应再伴随一整套 downgrade 公开模型存在。
 
-## 2. Cancel Control Cutover
+## 2. Cancel / Close Control Cutover
 
 ### 当前正式入口
 
-清理完成后，“取消子会话/关闭子 agent”只允许通过 `closeAgent` 协作能力完成。
+清理完成后，“取消子会话 / 关闭子 agent”只允许通过 `closeAgent` 完成。
 
 ### 删除入口
 
@@ -35,8 +35,15 @@
 - 不允许新增一个新的临时兼容 route
 - 当前 UI 按钮行为必须保持可用
 
-## 3. Validation
+## 3. Child Navigation Cutover
+
+- `ChildAgentRef` 保留 canonical `open_session_id`，但不再自带 `openable`
+- `ChildSessionNotification` / protocol DTO 外层不再重复 `open_session_id`
+- 前端改为消费 `child_ref.open_session_id` 或 durable child session fact
+- 不再通过 legacy summary/view route 补 child navigation 信息
+
+## 4. Validation
 
 - legacy 输入进入当前主线时表现为明确失败
-- 当前 UI 的取消按钮仍然可用
+- 当前 UI 的关闭按钮仍然可用
 - 删除入口在代码、测试、文档中不再出现
