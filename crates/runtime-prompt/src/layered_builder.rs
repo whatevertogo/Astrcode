@@ -4,6 +4,7 @@
 //! `PromptPlan.system_blocks` 的层级元数据中，供 Anthropic prompt caching 使用。
 
 use std::{
+    collections::HashMap,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -17,11 +18,13 @@ use super::{
 
 /// 分层 Prompt 构建器。
 ///
-/// 采用三层架构：稳定层 → 半稳定层 → 动态层。
+/// 采用四层架构：稳定层 → 半稳定层 → 继承层 → 动态层。
 /// 每层单独执行完整的 `PromptComposer` 管线，再按层级合并结果。
+#[derive(Clone)]
 pub struct LayeredPromptBuilder {
     stable_contributors: Vec<Arc<dyn PromptContributor>>,
     semi_stable_contributors: Vec<Arc<dyn PromptContributor>>,
+    inherited_contributors: Vec<Arc<dyn PromptContributor>>,
     dynamic_contributors: Vec<Arc<dyn PromptContributor>>,
     cache: Arc<Mutex<LayerCache>>,
     options: LayeredBuilderOptions,
@@ -42,6 +45,8 @@ pub struct LayeredBuilderOptions {
     pub stable_cache_ttl: Duration,
     /// 半稳定层缓存 TTL（默认 5 分钟）。
     pub semi_stable_cache_ttl: Duration,
+    /// 继承层缓存 TTL（默认 5 分钟）。
+    pub inherited_cache_ttl: Duration,
     /// 渲染/验证失败时的处理级别。
     pub validation_level: ValidationLevel,
 }
@@ -52,6 +57,7 @@ impl Default for LayeredBuilderOptions {
             enable_diagnostics: true,
             stable_cache_ttl: Duration::ZERO,
             semi_stable_cache_ttl: Duration::from_secs(300),
+            inherited_cache_ttl: Duration::from_secs(300),
             validation_level: ValidationLevel::Warn,
         }
     }
@@ -66,8 +72,15 @@ struct LayerCacheEntry {
 
 #[derive(Debug, Default)]
 struct LayerCache {
-    stable: Option<LayerCacheEntry>,
-    semi_stable: Option<LayerCacheEntry>,
+    stable: HashMap<String, LayerCacheEntry>,
+    semi_stable: HashMap<String, LayerCacheEntry>,
+    inherited: HashMap<String, LayerCacheEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CacheLookupResult {
+    Hit(PromptBuildOutput),
+    Miss { invalidation_reason: String },
 }
 
 impl LayeredPromptBuilder {
@@ -76,11 +89,16 @@ impl LayeredPromptBuilder {
     }
 
     pub fn with_options(options: LayeredBuilderOptions) -> Self {
+        Self::with_cache(options, Arc::new(Mutex::new(LayerCache::default())))
+    }
+
+    fn with_cache(options: LayeredBuilderOptions, cache: Arc<Mutex<LayerCache>>) -> Self {
         Self {
             stable_contributors: Vec::new(),
             semi_stable_contributors: Vec::new(),
+            inherited_contributors: Vec::new(),
             dynamic_contributors: Vec::new(),
-            cache: Arc::new(Mutex::new(LayerCache::default())),
+            cache,
             options,
         }
     }
@@ -92,6 +110,11 @@ impl LayeredPromptBuilder {
 
     pub fn with_semi_stable_layer(mut self, contributors: Vec<Arc<dyn PromptContributor>>) -> Self {
         self.semi_stable_contributors = contributors;
+        self
+    }
+
+    pub fn with_inherited_layer(mut self, contributors: Vec<Arc<dyn PromptContributor>>) -> Self {
+        self.inherited_contributors = contributors;
         self
     }
 
@@ -111,6 +134,7 @@ impl LayeredPromptBuilder {
         for (layer_type, contributors) in [
             (LayerType::Stable, &self.stable_contributors),
             (LayerType::SemiStable, &self.semi_stable_contributors),
+            (LayerType::Inherited, &self.inherited_contributors),
             (LayerType::Dynamic, &self.dynamic_contributors),
         ] {
             let output = self.build_layer(contributors, ctx, layer_type).await?;
@@ -138,14 +162,51 @@ impl LayeredPromptBuilder {
             return self.render_layer(contributors, ctx).await;
         }
 
-        let fingerprint = compute_layer_fingerprint(contributors, ctx);
-        if let Some(output) = self.lookup_cache(layer_type, &fingerprint) {
-            return Ok(output);
+        let mut combined = PromptBuildOutput {
+            plan: PromptPlan::default(),
+            diagnostics: PromptDiagnostics::default(),
+        };
+
+        for contributor in contributors {
+            let contributor_id = contributor.contributor_id();
+            let cache_key = format!("{}:{contributor_id}", layer_type.cache_namespace());
+            let fingerprint = compute_layer_fingerprint(&[Arc::clone(contributor)], ctx);
+
+            match self.lookup_cache(layer_type, &cache_key, &fingerprint) {
+                CacheLookupResult::Hit(output) => {
+                    combined
+                        .diagnostics
+                        .push_cache_reuse_hit(cache_key.clone(), Some(fingerprint.clone()));
+                    combined
+                        .diagnostics
+                        .items
+                        .extend(output.diagnostics.items.clone());
+                    combined
+                        .plan
+                        .extend_with_layer(output.plan, layer_type.prompt_layer());
+                },
+                CacheLookupResult::Miss {
+                    invalidation_reason,
+                } => {
+                    combined.diagnostics.push_cache_reuse_miss(
+                        cache_key.clone(),
+                        Some(fingerprint.clone()),
+                        Some(invalidation_reason),
+                    );
+                    let output = self.render_layer(&[Arc::clone(contributor)], ctx).await?;
+                    combined
+                        .diagnostics
+                        .items
+                        .extend(output.diagnostics.items.clone());
+                    combined
+                        .plan
+                        .extend_with_layer(output.plan.clone(), layer_type.prompt_layer());
+                    self.store_cache(layer_type, cache_key, fingerprint, output);
+                },
+            }
         }
 
-        let output = self.render_layer(contributors, ctx).await?;
-        self.store_cache(layer_type, fingerprint, output.clone());
-        Ok(output)
+        Ok(combined)
     }
 
     async fn render_layer(
@@ -166,25 +227,43 @@ impl LayeredPromptBuilder {
         composer.build(ctx).await
     }
 
-    fn lookup_cache(&self, layer_type: LayerType, fingerprint: &str) -> Option<PromptBuildOutput> {
+    fn lookup_cache(
+        &self,
+        layer_type: LayerType,
+        cache_key: &str,
+        fingerprint: &str,
+    ) -> CacheLookupResult {
         let cache = self
             .cache
             .lock()
             .expect("layer cache lock should not be poisoned");
-        let entry = match layer_type {
-            LayerType::Stable => cache.stable.as_ref(),
-            LayerType::SemiStable => cache.semi_stable.as_ref(),
-            LayerType::Dynamic => None,
-        }?;
+        let entry = layer_type.cache_entries(&cache).get(cache_key);
+        let Some(entry) = entry else {
+            return CacheLookupResult::Miss {
+                invalidation_reason: "cold_start".to_string(),
+            };
+        };
 
         if entry.fingerprint == fingerprint && !is_cache_expired(entry, &self.options, layer_type) {
-            Some(entry.output.clone())
+            CacheLookupResult::Hit(entry.output.clone())
+        } else if is_cache_expired(entry, &self.options, layer_type) {
+            CacheLookupResult::Miss {
+                invalidation_reason: "ttl_expired".to_string(),
+            }
         } else {
-            None
+            CacheLookupResult::Miss {
+                invalidation_reason: "fingerprint_changed".to_string(),
+            }
         }
     }
 
-    fn store_cache(&self, layer_type: LayerType, fingerprint: String, output: PromptBuildOutput) {
+    fn store_cache(
+        &self,
+        layer_type: LayerType,
+        cache_key: String,
+        fingerprint: String,
+        output: PromptBuildOutput,
+    ) {
         let mut cache = self
             .cache
             .lock()
@@ -196,8 +275,15 @@ impl LayeredPromptBuilder {
         };
 
         match layer_type {
-            LayerType::Stable => cache.stable = Some(entry),
-            LayerType::SemiStable => cache.semi_stable = Some(entry),
+            LayerType::Stable => {
+                cache.stable.insert(cache_key, entry);
+            },
+            LayerType::SemiStable => {
+                cache.semi_stable.insert(cache_key, entry);
+            },
+            LayerType::Inherited => {
+                cache.inherited.insert(cache_key, entry);
+            },
             LayerType::Dynamic => {},
         }
     }
@@ -207,17 +293,59 @@ impl LayeredPromptBuilder {
 enum LayerType {
     Stable,
     SemiStable,
+    Inherited,
     Dynamic,
 }
 
 impl LayerType {
+    fn cache_entries<'a>(&self, cache: &'a LayerCache) -> &'a HashMap<String, LayerCacheEntry> {
+        match self {
+            Self::Stable => &cache.stable,
+            Self::SemiStable => &cache.semi_stable,
+            Self::Inherited => &cache.inherited,
+            Self::Dynamic => unreachable!("dynamic layer never reads cache entries"),
+        }
+    }
+
+    fn cache_namespace(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::SemiStable => "semi-stable",
+            Self::Inherited => "inherited",
+            Self::Dynamic => "dynamic",
+        }
+    }
+
     fn prompt_layer(self) -> PromptLayer {
         match self {
             Self::Stable => PromptLayer::Stable,
             Self::SemiStable => PromptLayer::SemiStable,
+            Self::Inherited => PromptLayer::Inherited,
             Self::Dynamic => PromptLayer::Dynamic,
         }
     }
+}
+
+pub fn default_layered_prompt_builder() -> LayeredPromptBuilder {
+    LayeredPromptBuilder::new()
+        .with_stable_layer(vec![
+            Arc::new(crate::contributors::IdentityContributor),
+            Arc::new(crate::contributors::EnvironmentContributor),
+        ])
+        .with_semi_stable_layer(vec![
+            Arc::new(crate::contributors::AgentsMdContributor),
+            Arc::new(crate::contributors::CapabilityPromptContributor),
+            Arc::new(crate::contributors::AgentProfileSummaryContributor),
+            Arc::new(crate::contributors::SkillSummaryContributor),
+        ])
+        .with_inherited_layer(vec![
+            Arc::new(crate::contributors::PromptDeclarationContributor::compact_summary()),
+            Arc::new(crate::contributors::PromptDeclarationContributor::recent_tail()),
+            Arc::new(crate::contributors::PromptDeclarationContributor::other()),
+        ])
+        .with_dynamic_layer(vec![Arc::new(
+            crate::contributors::WorkflowExamplesContributor,
+        )])
 }
 
 fn compute_layer_fingerprint(
@@ -246,6 +374,7 @@ fn is_cache_expired(
     let ttl = match layer_type {
         LayerType::Stable => options.stable_cache_ttl,
         LayerType::SemiStable => options.semi_stable_cache_ttl,
+        LayerType::Inherited => options.inherited_cache_ttl,
         LayerType::Dynamic => Duration::ZERO,
     };
 
@@ -320,6 +449,12 @@ mod tests {
                 title: "Semi",
                 content: "semi content",
             })])
+            .with_inherited_layer(vec![Arc::new(StaticContributor {
+                id: "inherited",
+                block_id: "inherited-block",
+                title: "Inherited",
+                content: "inherited content",
+            })])
             .with_dynamic_layer(vec![Arc::new(StaticContributor {
                 id: "dynamic",
                 block_id: "dynamic-block",
@@ -332,7 +467,7 @@ mod tests {
             .await
             .expect("layered build should succeed");
 
-        assert_eq!(output.plan.system_blocks.len(), 3);
+        assert_eq!(output.plan.system_blocks.len(), 4);
         assert_eq!(
             output
                 .plan
@@ -343,6 +478,7 @@ mod tests {
             vec![
                 PromptLayer::Stable,
                 PromptLayer::SemiStable,
+                PromptLayer::Inherited,
                 PromptLayer::Dynamic
             ]
         );
@@ -364,5 +500,88 @@ mod tests {
         };
 
         assert!(!is_cache_expired(&entry, &options, LayerType::Stable));
+    }
+
+    #[tokio::test]
+    async fn inherited_cache_reuses_compact_summary_without_reusing_recent_tail() {
+        let builder = default_layered_prompt_builder();
+        let ctx = PromptContext {
+            prompt_declarations: vec![
+                crate::PromptDeclaration {
+                    block_id: "child.inherited.compact_summary".to_string(),
+                    title: "Inherited Compact Summary".to_string(),
+                    content: "summary".to_string(),
+                    render_target: crate::PromptDeclarationRenderTarget::System,
+                    layer: PromptLayer::Inherited,
+                    kind: crate::PromptDeclarationKind::ExtensionInstruction,
+                    priority_hint: None,
+                    always_include: true,
+                    source: crate::PromptDeclarationSource::Builtin,
+                    capability_name: None,
+                    origin: Some("child-context:compact-summary".to_string()),
+                },
+                crate::PromptDeclaration {
+                    block_id: "child.inherited.recent_tail".to_string(),
+                    title: "Inherited Recent Tail".to_string(),
+                    content: "- user: first".to_string(),
+                    render_target: crate::PromptDeclarationRenderTarget::System,
+                    layer: PromptLayer::Inherited,
+                    kind: crate::PromptDeclarationKind::ExtensionInstruction,
+                    priority_hint: None,
+                    always_include: true,
+                    source: crate::PromptDeclarationSource::Builtin,
+                    capability_name: None,
+                    origin: Some("child-context:recent-tail".to_string()),
+                },
+            ],
+            ..test_context()
+        };
+
+        let _ = builder
+            .build(&ctx)
+            .await
+            .expect("first build should succeed");
+
+        let changed_tail = PromptContext {
+            prompt_declarations: vec![
+                ctx.prompt_declarations[0].clone(),
+                crate::PromptDeclaration {
+                    content: "- user: second".to_string(),
+                    ..ctx.prompt_declarations[1].clone()
+                },
+            ],
+            ..test_context()
+        };
+
+        let output = builder
+            .build(&changed_tail)
+            .await
+            .expect("second build should succeed");
+        let reasons = output
+            .diagnostics
+            .items
+            .into_iter()
+            .filter_map(|item| match item.reason {
+                crate::diagnostics::DiagnosticReason::CacheReuseHit { contributor_id, .. } => {
+                    Some((contributor_id, "hit".to_string()))
+                },
+                crate::diagnostics::DiagnosticReason::CacheReuseMiss {
+                    contributor_id,
+                    invalidation_reason,
+                    ..
+                } => Some((
+                    contributor_id,
+                    invalidation_reason.unwrap_or_else(|| "missing".to_string()),
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(reasons.iter().any(|(id, reason)| {
+            id == "inherited:prompt-declaration-compact-summary" && reason == "hit"
+        }));
+        assert!(reasons.iter().any(|(id, reason)| {
+            id == "inherited:prompt-declaration-recent-tail" && reason == "fingerprint_changed"
+        }));
     }
 }

@@ -1129,7 +1129,7 @@ async fn subrun_status_endpoint_keeps_storage_mode_parity_for_parent_aborted_sub
 }
 
 #[tokio::test]
-async fn subrun_status_endpoint_downgrades_legacy_durable_lineage_fields() {
+async fn subrun_status_endpoint_rejects_legacy_shared_history() {
     let (state, _guard) = test_state(None);
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     seed_legacy_subrun_session("subrun-legacy-session", temp_dir.path());
@@ -1146,19 +1146,15 @@ async fn subrun_status_endpoint_downgrades_legacy_durable_lineage_fields() {
         .await
         .expect("response should be returned");
 
-    assert_eq!(response.status(), StatusCode::OK);
-    let bytes = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body should be readable");
-    let payload: SubRunStatusDto =
-        serde_json::from_slice(&bytes).expect("status payload should deserialize");
-
-    assert_eq!(payload.source, SubRunStatusSourceDto::LegacyDurable);
-    assert_eq!(payload.status, "completed");
-    assert_eq!(payload.depth, 0);
-    assert!(payload.descriptor.is_none());
-    assert!(payload.tool_call_id.is_none());
-    assert!(payload.parent_agent_id.is_none());
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = String::from_utf8(
+        to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable")
+            .to_vec(),
+    )
+    .expect("body should be utf-8");
+    assert!(body.contains("unsupported_legacy_shared_history"));
 }
 
 #[tokio::test]

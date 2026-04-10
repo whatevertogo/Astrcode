@@ -280,7 +280,7 @@ impl RuntimeService {
             return Ok(existing.clone());
         }
 
-        let _guard = self.session_load_lock.lock().await;
+        let _guard = Arc::clone(&self.session_load_lock).lock_owned().await;
         if let Some(existing) = self.sessions.get(session_id) {
             return Ok(existing.clone());
         }

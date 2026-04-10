@@ -28,6 +28,7 @@ use crate::{LlmMessage, Result, ToolDefinition};
 pub enum SystemPromptLayer {
     Stable,
     SemiStable,
+    Inherited,
     Dynamic,
     #[default]
     Unspecified,

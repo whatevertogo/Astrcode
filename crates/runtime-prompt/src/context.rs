@@ -80,6 +80,33 @@ impl PromptSkillSummary {
 }
 
 impl PromptContext {
+    pub fn compact_summary_prompt_declarations(&self) -> Vec<PromptDeclaration> {
+        self.prompt_declarations
+            .iter()
+            .filter(|declaration| declaration.block_id == "child.inherited.compact_summary")
+            .cloned()
+            .collect()
+    }
+
+    pub fn recent_tail_prompt_declarations(&self) -> Vec<PromptDeclaration> {
+        self.prompt_declarations
+            .iter()
+            .filter(|declaration| declaration.block_id == "child.inherited.recent_tail")
+            .cloned()
+            .collect()
+    }
+
+    pub fn other_prompt_declarations(&self) -> Vec<PromptDeclaration> {
+        self.prompt_declarations
+            .iter()
+            .filter(|declaration| {
+                declaration.block_id != "child.inherited.compact_summary"
+                    && declaration.block_id != "child.inherited.recent_tail"
+            })
+            .cloned()
+            .collect()
+    }
+
     /// 解析全局变量。
     ///
     /// 支持内建映射（如 `project.working_dir`、`tools.names`）和自定义 `vars` 字典。

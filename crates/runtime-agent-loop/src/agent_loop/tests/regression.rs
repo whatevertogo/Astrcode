@@ -575,3 +575,61 @@ async fn parent_turn_completes_after_deciding_to_keep_child() {
         StorageEvent::TurnDone { reason, .. } if reason.as_deref() == Some("completed")
     )));
 }
+
+#[tokio::test]
+async fn replayed_child_state_is_consumed_as_resume_history_instead_of_empty_spawn_state() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(RecordingProvider {
+        responses: Mutex::new(VecDeque::from([LlmOutput {
+            content: "继续完成".to_string(),
+            tool_calls: vec![],
+            reasoning: None,
+            usage: None,
+            finish_reason: Default::default(),
+        }])),
+        requests: Arc::clone(&requests),
+    });
+    let loop_runner = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory { provider }),
+        empty_capabilities(),
+    );
+    let state = replayed_child_state_fixture("resume");
+
+    let outcome = loop_runner
+        .run_turn(
+            &state,
+            "turn-resume-replayed-state",
+            &mut |_event| Ok(()),
+            CancelToken::new(),
+        )
+        .await
+        .expect("resume turn should complete");
+
+    assert_eq!(outcome, TurnOutcome::Completed);
+    let requests = requests.lock().expect("requests lock");
+    let request = requests
+        .first()
+        .expect("provider should receive one request");
+    assert!(
+        request.messages.len() >= 3,
+        "replayed resume history should contribute multiple prior messages"
+    );
+    assert!(request.messages.iter().any(|message| {
+        matches!(
+            message,
+            astrcode_core::LlmMessage::User { content, .. } if content == "任务 resume"
+        )
+    }));
+    assert!(request.messages.iter().any(|message| {
+        matches!(
+            message,
+            astrcode_core::LlmMessage::Assistant { content, .. } if content == "阶段性总结 resume"
+        )
+    }));
+    assert!(request.messages.iter().any(|message| {
+        matches!(
+            message,
+            astrcode_core::LlmMessage::User { content, .. } if content == "继续处理 resume"
+        )
+    }));
+}

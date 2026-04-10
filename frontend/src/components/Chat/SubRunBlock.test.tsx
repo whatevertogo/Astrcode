@@ -159,7 +159,29 @@ describe('SubRunBlock result rendering', () => {
     );
 
     expect(html).toContain('打开独立会话');
+    expect(html).toContain('independent session');
     expect(html).not.toContain('Object (');
+  });
+
+  it('uses projected child-session ids when lifecycle records are unavailable', () => {
+    const html = renderToStaticMarkup(
+      <SubRunBlock
+        subRunId="subrun-projected"
+        sessionId="session-1"
+        childSessionId="session-child-projected"
+        title="explore"
+        threadItems={[]}
+        streamFingerprint=""
+        hasDescriptorLineage={true}
+        renderThreadItems={renderThreadItems}
+        onCancelSubRun={async () => {}}
+        onOpenChildSession={async () => {}}
+      />
+    );
+
+    expect(html).toContain('打开独立会话');
+    expect(html).toContain('independent session');
+    expect(html).toContain('独立子会话正在后台运行，请打开会话查看实时输出。');
   });
 
   it('renders directory-mode summary without nested stream copy', () => {

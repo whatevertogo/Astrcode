@@ -195,10 +195,10 @@ impl ChildExecutionTracker {
     }
 }
 
-/// 将 child-session 终态通知转成父 agent 可直接消费的输入文本。
+/// 将 child-session 终态通知转成父 agent 下一轮可消费的一次性交付声明。
 ///
-/// 该文本用于父 turn 已结束后的重激活场景，避免把内部事件流直接暴露给父会话。
-pub fn build_parent_reactivation_prompt(notification: &ChildSessionNotification) -> String {
+/// 该内容只应通过 runtime prompt block 注入 system prompt，不能再持久化为 durable 用户消息。
+pub fn build_parent_delivery_declaration(notification: &ChildSessionNotification) -> String {
     let mut lines = vec![
         "# Child Session Delivery".to_string(),
         format!("- childAgentId: {}", notification.child_ref.agent_id),
@@ -254,6 +254,9 @@ mod tests {
             provider_output_tokens: None,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            prompt_cache_reuse_hits: 0,
+            prompt_cache_reuse_misses: 0,
+            provider_cache_metrics_supported: false,
         }
     }
 
@@ -326,8 +329,8 @@ mod tests {
     }
 
     #[test]
-    fn parent_reactivation_prompt_contains_delivery_identity_and_summary() {
-        let prompt = super::build_parent_reactivation_prompt(&ChildSessionNotification {
+    fn parent_delivery_declaration_contains_delivery_identity_and_summary() {
+        let prompt = super::build_parent_delivery_declaration(&ChildSessionNotification {
             notification_id: "note-1".to_string(),
             child_ref: astrcode_core::ChildAgentRef {
                 agent_id: "agent-child".to_string(),

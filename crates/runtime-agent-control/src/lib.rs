@@ -35,6 +35,7 @@ struct AgentRegistryState {
     entries: HashMap<String, AgentEntry>,
     agent_index: HashMap<String, String>,
     active_count: usize,
+    parent_delivery_queues: HashMap<String, ParentDeliveryQueue>,
 }
 
 struct AgentEntry {
@@ -48,6 +49,32 @@ struct AgentEntry {
     inbox: VecDeque<AgentInboxEnvelope>,
     /// 收件箱版本号，每次 push_inbox 递增，用于 wait_for_inbox 的变化检测。
     inbox_version: watch::Sender<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingParentDelivery {
+    pub delivery_id: String,
+    pub parent_session_id: String,
+    pub parent_turn_id: String,
+    pub notification: astrcode_core::ChildSessionNotification,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingParentDeliveryState {
+    Queued,
+    WakingParent,
+}
+
+#[derive(Debug, Clone)]
+struct PendingParentDeliveryEntry {
+    delivery: PendingParentDelivery,
+    state: PendingParentDeliveryState,
+}
+
+#[derive(Default)]
+struct ParentDeliveryQueue {
+    deliveries: VecDeque<PendingParentDeliveryEntry>,
+    known_delivery_ids: HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -324,10 +351,11 @@ impl AgentControl {
             .await
     }
 
-    /// 恢复已完成的 Agent 到 Running 状态。
+    /// 为已终态的 Agent 创建新的执行实例。
     ///
     /// 只有 Completed/Failed/Cancelled 状态的 Agent 可以被恢复。
-    /// 恢复后 Agent 会重新占用并发槽位，父 Agent 的 children 集合也会重新关联。
+    /// 恢复不会篡改旧执行实例，而是为同一个 agent mint 一个新的 `sub_run_id`，
+    /// 这样 child session 可以沿用稳定身份，同时把新的执行实例显式暴露出来。
     pub async fn resume(&self, sub_run_or_agent_id: &str) -> Option<SubRunHandle> {
         let mut state = self.state.write().await;
         let key = resolve_entry_key(&state, sub_run_or_agent_id)?.to_string();
@@ -341,13 +369,49 @@ impl AgentControl {
             return None;
         }
 
-        // 恢复并占用并发槽位
+        let old_entry = state.entries.get(&key)?;
+        let old_handle = old_entry.handle.clone();
+        let parent_agent_id = old_entry.parent_agent_id.clone();
+        let children = old_entry.children.clone();
+
+        let next_id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
+        let new_sub_run_id = format!("subrun-{next_id}");
+        let mut new_handle = old_handle.clone();
+        new_handle.sub_run_id = new_sub_run_id.clone();
+        new_handle.status = AgentStatus::Running;
+
+        let cancel = CancelToken::new();
+        let (status_tx, _status_rx) = watch::channel(new_handle.status);
+        let inbox_version = watch::channel(0).0;
+
         state.active_count += 1;
-        let entry = state.entries.get_mut(&key)?;
-        entry.finalized_seq = None;
-        entry.handle.status = AgentStatus::Running;
-        entry.status_tx.send_replace(AgentStatus::Running);
-        Some(entry.handle.clone())
+        state.entries.insert(
+            new_sub_run_id.clone(),
+            AgentEntry {
+                handle: new_handle.clone(),
+                cancel,
+                status_tx,
+                parent_agent_id: parent_agent_id.clone(),
+                children: children.clone(),
+                finalized_seq: None,
+                inbox: VecDeque::new(),
+                inbox_version,
+            },
+        );
+        state
+            .agent_index
+            .insert(new_handle.agent_id.clone(), new_sub_run_id.clone());
+
+        if let Some(parent_agent_id) = parent_agent_id {
+            if let Some(parent_sub_run_id) = state.agent_index.get(&parent_agent_id).cloned() {
+                if let Some(parent) = state.entries.get_mut(&parent_sub_run_id) {
+                    parent.children.remove(&key);
+                    parent.children.insert(new_sub_run_id);
+                }
+            }
+        }
+
+        Some(new_handle)
     }
 
     /// 取消指定 Agent，并级联取消其子树。
@@ -483,6 +547,114 @@ impl AgentControl {
                 return self.get(sub_run_or_agent_id).await;
             }
         }
+    }
+
+    /// 向父会话排入一个待消费的 child terminal delivery。
+    ///
+    /// 以 `delivery_id` 做幂等去重；重复交付会被忽略，保持原队列顺序不变。
+    /// 队列变更全部限制在单个写锁临界区内完成，避免把异步工作带进锁作用域。
+    pub async fn enqueue_parent_delivery(
+        &self,
+        parent_session_id: impl Into<String>,
+        parent_turn_id: impl Into<String>,
+        notification: astrcode_core::ChildSessionNotification,
+    ) -> bool {
+        let parent_session_id = parent_session_id.into();
+        let delivery_id = notification.notification_id.clone();
+        let mut state = self.state.write().await;
+        let queue = state
+            .parent_delivery_queues
+            .entry(parent_session_id.clone())
+            .or_default();
+        if !queue.known_delivery_ids.insert(delivery_id.clone()) {
+            return false;
+        }
+        queue.deliveries.push_back(PendingParentDeliveryEntry {
+            delivery: PendingParentDelivery {
+                delivery_id,
+                parent_session_id,
+                parent_turn_id: parent_turn_id.into(),
+                notification,
+            },
+            state: PendingParentDeliveryState::Queued,
+        });
+        true
+    }
+
+    /// 查看并锁定当前父会话最前面的待消费交付。
+    ///
+    /// 只有队头处于 `Queued` 状态时才会返回，并原子地标记为 `WakingParent`，
+    /// 避免并发唤醒时重复消费同一条交付。
+    pub async fn checkout_parent_delivery(
+        &self,
+        parent_session_id: &str,
+    ) -> Option<PendingParentDelivery> {
+        let mut state = self.state.write().await;
+        let queue = state.parent_delivery_queues.get_mut(parent_session_id)?;
+        let entry = queue.deliveries.front_mut()?;
+        if !matches!(entry.state, PendingParentDeliveryState::Queued) {
+            return None;
+        }
+        entry.state = PendingParentDeliveryState::WakingParent;
+        Some(entry.delivery.clone())
+    }
+
+    /// 将正在唤醒中的交付标记回 `Queued`，用于父会话繁忙或启动失败后的重试。
+    pub async fn requeue_parent_delivery(
+        &self,
+        parent_session_id: &str,
+        delivery_id: &str,
+    ) -> bool {
+        let mut state = self.state.write().await;
+        let Some(queue) = state.parent_delivery_queues.get_mut(parent_session_id) else {
+            return false;
+        };
+        let Some(entry) = queue
+            .deliveries
+            .iter_mut()
+            .find(|entry| entry.delivery.delivery_id == delivery_id)
+        else {
+            return false;
+        };
+        entry.state = PendingParentDeliveryState::Queued;
+        true
+    }
+
+    /// 确认最前面的交付已经被父 turn 消费，并将其从缓冲中移除。
+    pub async fn consume_parent_delivery(
+        &self,
+        parent_session_id: &str,
+        delivery_id: &str,
+    ) -> bool {
+        let mut state = self.state.write().await;
+        let Some(queue) = state.parent_delivery_queues.get_mut(parent_session_id) else {
+            return false;
+        };
+        let Some(front) = queue.deliveries.front() else {
+            return false;
+        };
+        if front.delivery.delivery_id != delivery_id {
+            return false;
+        }
+        let removed = queue.deliveries.pop_front();
+        if let Some(removed) = removed {
+            queue
+                .known_delivery_ids
+                .remove(&removed.delivery.delivery_id);
+        }
+        if queue.deliveries.is_empty() {
+            state.parent_delivery_queues.remove(parent_session_id);
+        }
+        true
+    }
+
+    pub async fn pending_parent_delivery_count(&self, parent_session_id: &str) -> usize {
+        let state = self.state.read().await;
+        state
+            .parent_delivery_queues
+            .get(parent_session_id)
+            .map(|queue| queue.deliveries.len())
+            .unwrap_or(0)
     }
 
     async fn update_status(
@@ -707,7 +879,9 @@ mod tests {
     use std::time::Duration;
 
     use astrcode_core::{
-        AgentInboxEnvelope, AgentMode, AgentProfile, AgentStatus, LiveSubRunControlBoundary,
+        AgentInboxEnvelope, AgentMode, AgentProfile, AgentStatus, ChildAgentRef,
+        ChildSessionLineageKind, ChildSessionNotification, ChildSessionNotificationKind,
+        LiveSubRunControlBoundary,
     };
     use astrcode_runtime_config::{DEFAULT_MAX_AGENT_DEPTH, DEFAULT_MAX_CONCURRENT_AGENTS};
 
@@ -725,6 +899,36 @@ mod tests {
             // TODO: 未来可能需要添加 max_steps 和 token_budget
             model_preference: Some("fast".to_string()),
         }
+    }
+
+    fn sample_parent_delivery(
+        notification_id: &str,
+        parent_session_id: &str,
+        parent_turn_id: &str,
+    ) -> (String, String, ChildSessionNotification) {
+        (
+            parent_session_id.to_string(),
+            parent_turn_id.to_string(),
+            ChildSessionNotification {
+                notification_id: notification_id.to_string(),
+                child_ref: ChildAgentRef {
+                    agent_id: format!("agent-{notification_id}"),
+                    session_id: parent_session_id.to_string(),
+                    sub_run_id: format!("subrun-{notification_id}"),
+                    parent_agent_id: None,
+                    lineage_kind: ChildSessionLineageKind::Spawn,
+                    status: AgentStatus::Completed,
+                    openable: true,
+                    open_session_id: format!("child-session-{notification_id}"),
+                },
+                kind: ChildSessionNotificationKind::Delivered,
+                summary: format!("summary-{notification_id}"),
+                status: AgentStatus::Completed,
+                open_session_id: format!("child-session-{notification_id}"),
+                source_tool_call_id: None,
+                final_reply_excerpt: Some(format!("final-{notification_id}")),
+            },
+        )
     }
 
     #[tokio::test]
@@ -1191,7 +1395,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_transitions_completed_agent_back_to_running() {
+    async fn resume_mints_new_execution_for_completed_agent() {
         let control = AgentControl::with_limits(3, 10, 256);
         let handle = control
             .spawn(
@@ -1211,6 +1415,17 @@ mod tests {
             .await
             .expect("resume should succeed");
         assert_eq!(resumed.status, AgentStatus::Running);
+        assert_eq!(resumed.agent_id, handle.agent_id);
+        assert_ne!(
+            resumed.sub_run_id, handle.sub_run_id,
+            "resume should mint a new execution id"
+        );
+
+        let historical = control
+            .get(&handle.sub_run_id)
+            .await
+            .expect("historical execution should remain queryable by old sub-run id");
+        assert_eq!(historical.status, AgentStatus::Completed);
 
         // 验证恢复后能再次正常到达终态
         let _ = control.mark_completed(&handle.agent_id).await;
@@ -1548,6 +1763,93 @@ mod tests {
             )
             .await;
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn parent_delivery_queue_deduplicates_and_preserves_fifo_order() {
+        let control = AgentControl::new();
+        let (session_id, turn_id, first) =
+            sample_parent_delivery("delivery-1", "session-parent", "turn-parent");
+        let (_, _, duplicate) =
+            sample_parent_delivery("delivery-1", "session-parent", "turn-parent");
+        let (_, _, second) = sample_parent_delivery("delivery-2", "session-parent", "turn-parent");
+
+        assert!(
+            control
+                .enqueue_parent_delivery(session_id.clone(), turn_id.clone(), first)
+                .await
+        );
+        assert!(
+            !control
+                .enqueue_parent_delivery(session_id.clone(), turn_id.clone(), duplicate)
+                .await
+        );
+        assert!(
+            control
+                .enqueue_parent_delivery(session_id.clone(), turn_id, second)
+                .await
+        );
+
+        let first_checked_out = control
+            .checkout_parent_delivery(&session_id)
+            .await
+            .expect("first queued delivery should be available");
+        assert_eq!(first_checked_out.delivery_id, "delivery-1");
+        assert!(
+            control
+                .consume_parent_delivery(&session_id, &first_checked_out.delivery_id)
+                .await
+        );
+
+        let second_checked_out = control
+            .checkout_parent_delivery(&session_id)
+            .await
+            .expect("second queued delivery should be available");
+        assert_eq!(second_checked_out.delivery_id, "delivery-2");
+        assert_eq!(control.pending_parent_delivery_count(&session_id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn parent_delivery_queue_can_requeue_busy_head_without_losing_it() {
+        let control = AgentControl::new();
+        let (session_id, turn_id, delivery) =
+            sample_parent_delivery("delivery-busy", "session-parent", "turn-parent");
+
+        assert!(
+            control
+                .enqueue_parent_delivery(session_id.clone(), turn_id, delivery)
+                .await
+        );
+
+        let checked_out = control
+            .checkout_parent_delivery(&session_id)
+            .await
+            .expect("delivery should be checked out");
+        assert!(
+            control
+                .checkout_parent_delivery(&session_id)
+                .await
+                .is_none(),
+            "waking delivery should block duplicate checkout"
+        );
+
+        assert!(
+            control
+                .requeue_parent_delivery(&session_id, &checked_out.delivery_id)
+                .await
+        );
+
+        let retried = control
+            .checkout_parent_delivery(&session_id)
+            .await
+            .expect("requeued delivery should become available again");
+        assert_eq!(retried.delivery_id, checked_out.delivery_id);
+        assert!(
+            control
+                .consume_parent_delivery(&session_id, &retried.delivery_id)
+                .await
+        );
+        assert_eq!(control.pending_parent_delivery_count(&session_id).await, 0);
     }
 
     // ─── T035 层级协作回归测试 ──────────────────────────────

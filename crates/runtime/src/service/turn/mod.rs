@@ -19,7 +19,7 @@ pub(super) struct BudgetSettings {
     pub max_continuations: u8,
 }
 
-pub(super) use orchestration::{complete_session_execution, run_session_turn};
+pub(super) use orchestration::{RuntimeTurnInput, complete_session_execution, run_session_turn};
 
 #[cfg(test)]
 mod tests;

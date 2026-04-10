@@ -18,9 +18,9 @@ pub use prep::{
     AgentExecutionRequest, AgentExecutionSpec, InterruptSessionPlan, PreparedAgentExecution,
     PreparedPromptSubmission, RootExecutionLaunch, ScopedExecutionSurface,
     build_background_subrun_handoff, build_child_agent_state, build_result_artifacts,
-    build_root_spawn_params, build_subrun_failure, build_subrun_handoff,
-    derive_child_execution_owner, ensure_root_execution_mode, ensure_subagent_mode,
-    prepare_prompt_submission, prepare_prompt_submission_with_origin,
+    build_resumed_child_agent_state, build_root_spawn_params, build_subrun_failure,
+    build_subrun_handoff, derive_child_execution_owner, ensure_root_execution_mode,
+    ensure_subagent_mode, prepare_prompt_submission, prepare_prompt_submission_with_origin,
     prepare_root_execution_launch, prepare_scoped_agent_execution, resolve_interrupt_session_plan,
     resolve_profile_tool_names, summarize_execution_description,
     validate_root_execution_storage_mode,
@@ -32,6 +32,108 @@ pub use subrun::{
     live_handle_owned_by_session, overlay_live_snapshot_on_durable,
     resolve_cancel_subrun_resolution, resolve_subrun_status_snapshot, snapshot_from_active_handle,
 };
+
+/// 子会话生命周期观测阶段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildLifecycleStage {
+    Spawned,
+    StartedPersisted,
+    TerminalPersisted,
+    ReactivationRequested,
+    ReactivationSucceeded,
+    ReactivationFailed,
+}
+
+impl ChildLifecycleStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Spawned => "spawned",
+            Self::StartedPersisted => "started_persisted",
+            Self::TerminalPersisted => "terminal_persisted",
+            Self::ReactivationRequested => "reactivation_requested",
+            Self::ReactivationSucceeded => "reactivation_succeeded",
+            Self::ReactivationFailed => "reactivation_failed",
+        }
+    }
+}
+
+/// 谱系不一致的稳定分类。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineageMismatchKind {
+    ParentAgent,
+    ParentSession,
+    ChildSession,
+    DescriptorMissing,
+}
+
+impl LineageMismatchKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ParentAgent => "parent_agent",
+            Self::ParentSession => "parent_session",
+            Self::ChildSession => "child_session",
+            Self::DescriptorMissing => "descriptor_missing",
+        }
+    }
+}
+
+/// 交付缓冲/唤醒链路的稳定动作标签。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryBufferStage {
+    Queued,
+    Dequeued,
+    WakeRequested,
+    WakeSucceeded,
+    WakeFailed,
+}
+
+impl DeliveryBufferStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Dequeued => "dequeued",
+            Self::WakeRequested => "wake_requested",
+            Self::WakeSucceeded => "wake_succeeded",
+            Self::WakeFailed => "wake_failed",
+        }
+    }
+}
+
+/// legacy cutover 的稳定拒绝原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyRejectionKind {
+    SharedHistoryUnsupported,
+}
+
+impl LegacyRejectionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SharedHistoryUnsupported => "unsupported_legacy_shared_history",
+        }
+    }
+}
+
+/// 统一 legacy shared-history 拒绝文案，避免 runtime/server 各自拼接出不一致错误。
+pub fn legacy_shared_history_rejection_message(
+    session_id: &str,
+    sub_run_id: Option<&str>,
+) -> String {
+    match sub_run_id.filter(|value| !value.is_empty()) {
+        Some(sub_run_id) => format!(
+            "{}: session '{}' contains legacy shared-history data for sub-run '{}'; open the \
+             migrated child session durable history before continuing",
+            LegacyRejectionKind::SharedHistoryUnsupported.as_str(),
+            session_id,
+            sub_run_id
+        ),
+        None => format!(
+            "{}: session '{}' contains legacy shared-history data; open the migrated child \
+             session durable history before continuing",
+            LegacyRejectionKind::SharedHistoryUnsupported.as_str(),
+            session_id
+        ),
+    }
+}
 
 /// Child terminal delivery 的统一结果标签。
 ///

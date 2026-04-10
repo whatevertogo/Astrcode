@@ -21,6 +21,7 @@ export interface ChildAgentRef {
   agentId: string;
   sessionId: string;
   subRunId: string;
+  executionId?: string;
   parentAgentId?: string;
   lineageKind: 'spawn' | 'fork' | 'resume';
   lineageSnapshot?: LineageSnapshot;

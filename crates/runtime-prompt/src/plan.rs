@@ -16,7 +16,7 @@ use super::{PromptBlock, append_unique_tools, block::PromptLayer};
 ///
 /// 由 composer 经过收集、去重、条件过滤、依赖解析、模板渲染后生成。
 /// 调用方（通常是 `runtime` crate）将此计划转换为实际的 LLM API 请求。
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct PromptPlan {
     pub system_blocks: Vec<PromptBlock>,
     pub prepend_messages: Vec<LlmMessage>,
@@ -28,7 +28,13 @@ impl PromptPlan {
     /// 以最终渲染顺序返回 system blocks。
     pub fn ordered_system_blocks(&self) -> Vec<&PromptBlock> {
         let mut blocks: Vec<&PromptBlock> = self.system_blocks.iter().collect();
-        blocks.sort_by_key(|block| (block.priority, block.insertion_order));
+        blocks.sort_by_key(|block| {
+            (
+                prompt_layer_rank(block.layer),
+                block.priority,
+                block.insertion_order,
+            )
+        });
         blocks
     }
 
@@ -66,11 +72,25 @@ impl PromptPlan {
         self.system_blocks
             .extend(other.system_blocks.into_iter().map(|block| {
                 let order = block.insertion_order + insertion_offset;
+                let layer = match block.layer {
+                    PromptLayer::Unspecified => layer,
+                    explicit => explicit,
+                };
                 block.with_insertion_order(order).with_layer(layer)
             }));
         self.prepend_messages.extend(other.prepend_messages);
         self.append_messages.extend(other.append_messages);
         append_unique_tools(&mut self.extra_tools, other.extra_tools);
+    }
+}
+
+fn prompt_layer_rank(layer: PromptLayer) -> u8 {
+    match layer {
+        PromptLayer::Stable => 0,
+        PromptLayer::SemiStable => 1,
+        PromptLayer::Inherited => 2,
+        PromptLayer::Dynamic => 3,
+        PromptLayer::Unspecified => 255,
     }
 }
 

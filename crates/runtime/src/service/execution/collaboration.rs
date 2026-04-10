@@ -8,14 +8,15 @@ use std::{sync::Arc, time::Instant};
 use astrcode_core::{
     AgentEventContext, AgentStatus, AstrError, CancelToken, ChildAgentRef, ChildSessionLineageKind,
     ChildSessionNotificationKind, CloseAgentParams, CollaborationResult, CollaborationResultKind,
-    DeliverToParentParams, InboxEnvelopeKind, InvocationKind, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, ResumeAgentParams, SendAgentParams, SpawnAgentParams,
-    StorageEvent, SubRunHandle, SubRunOutcome, SubRunResult, SubRunStorageMode, ToolContext,
-    ToolEventSink, UserMessageOrigin, WaitAgentParams, WaitUntil,
+    DeliverToParentParams, InboxEnvelopeKind, InvocationKind, LineageSnapshot,
+    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, ResumeAgentParams,
+    SendAgentParams, SpawnAgentParams, StorageEvent, SubRunHandle, SubRunOutcome, SubRunResult,
+    SubRunStorageMode, ToolContext, ToolEventSink, UserMessageOrigin, WaitAgentParams, WaitUntil,
 };
 use astrcode_runtime_execution::{
-    build_background_subrun_handoff, build_child_agent_state, build_child_session_node,
-    build_child_session_notification, derive_child_execution_owner,
+    DeliveryBufferStage, LineageMismatchKind, build_background_subrun_handoff,
+    build_child_session_notification, build_resumed_child_agent_state, build_subrun_started_event,
+    derive_child_execution_owner,
 };
 use astrcode_runtime_session::SessionStateEventSink;
 
@@ -27,16 +28,19 @@ impl AgentExecutionServiceHandle {
 
     /// 恢复已完成的子会话，复用同一 child session 继续协作。
     ///
-    /// 与 `launch_subagent` 不同，resume 不创建新 session 或新 SubRunHandle，
-    /// 而是把已终态的 agent 通过 `agent_control.resume()` 恢复到 Running 状态，
-    /// 然后追加一条 UserMessage 到同一个 child session 并重新运行 loop。
+    /// 与 `launch_subagent` 不同，resume 必须基于 child session durable replay 恢复，
+    /// 并为同一个 child session mint 新的执行实例，而不是从空状态重新 spawn。
     pub async fn resume_child_session(
         &self,
         agent_id: &str,
         message: Option<String>,
         ctx: &ToolContext,
-    ) -> ServiceResult<SubRunResult> {
+    ) -> ServiceResult<(SubRunHandle, SubRunResult)> {
         let parent = self.resolve_parent_execution(ctx).await?;
+        let parent_event_sink: Arc<dyn ToolEventSink> = Arc::new(
+            SessionStateEventSink::new(Arc::clone(&parent.parent_state))
+                .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?,
+        );
 
         // 查找现有的 child handle
         let child = self
@@ -54,7 +58,146 @@ impl AgentExecutionServiceHandle {
             )));
         }
 
-        // 通过 agent_control 恢复到 Running
+        let existing_node = parent
+            .parent_state
+            .child_session_node(&child.sub_run_id)
+            .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?
+            .ok_or_else(|| {
+                self.emit_resume_failure(
+                    &parent_event_sink,
+                    &parent.parent_turn_id,
+                    self.resume_agent_context(&parent.parent_turn_id, &child),
+                    "lineage_mismatch_descriptor_missing",
+                    format!(
+                        "resume rejected: child agent '{}' is missing durable child-session \
+                         lineage in parent session '{}'",
+                        child.agent_id, parent.parent_session_id
+                    ),
+                )
+            })?;
+
+        if !matches!(child.storage_mode, SubRunStorageMode::IndependentSession) {
+            return Err(self.emit_resume_failure(
+                &parent_event_sink,
+                &parent.parent_turn_id,
+                self.resume_agent_context(&parent.parent_turn_id, &child),
+                "unsafe_resume_rejected",
+                format!(
+                    "resume rejected: child agent '{}' does not have an independent child session \
+                     durable history",
+                    child.agent_id
+                ),
+            ));
+        }
+
+        let Some(target_session_id) = child.child_session_id.clone() else {
+            return Err(self.emit_lineage_mismatch(
+                &parent_event_sink,
+                &parent.parent_turn_id,
+                self.resume_agent_context(&parent.parent_turn_id, &child),
+                LineageMismatchKind::ChildSession,
+                "lineage_mismatch_child_session",
+                format!(
+                    "resume rejected: child agent '{}' is missing child_session_id for durable \
+                     replay",
+                    child.agent_id
+                ),
+            ));
+        };
+
+        if existing_node.parent_session_id != parent.parent_session_id {
+            return Err(self.emit_lineage_mismatch(
+                &parent_event_sink,
+                &parent.parent_turn_id,
+                self.resume_agent_context(&parent.parent_turn_id, &child),
+                LineageMismatchKind::ParentSession,
+                "lineage_mismatch_parent_session",
+                format!(
+                    "resume rejected: child agent '{}' belongs to parent session '{}', not '{}'",
+                    child.agent_id, existing_node.parent_session_id, parent.parent_session_id
+                ),
+            ));
+        }
+
+        if existing_node.parent_agent_id != parent.parent_agent_id_for_control {
+            return Err(self.emit_lineage_mismatch(
+                &parent_event_sink,
+                &parent.parent_turn_id,
+                self.resume_agent_context(&parent.parent_turn_id, &child),
+                LineageMismatchKind::ParentAgent,
+                "lineage_mismatch_parent_agent",
+                format!(
+                    "resume rejected: child agent '{}' parent ownership does not match current \
+                     caller",
+                    child.agent_id
+                ),
+            ));
+        }
+
+        if existing_node.child_session_id != target_session_id {
+            return Err(self.emit_lineage_mismatch(
+                &parent_event_sink,
+                &parent.parent_turn_id,
+                self.resume_agent_context(&parent.parent_turn_id, &child),
+                LineageMismatchKind::ChildSession,
+                "lineage_mismatch_child_session",
+                format!(
+                    "resume rejected: child agent '{}' points to child session '{}' but durable \
+                     node expects '{}'",
+                    child.agent_id, target_session_id, existing_node.child_session_id
+                ),
+            ));
+        }
+
+        let child_session_state = self
+            .runtime
+            .ensure_session_loaded(&target_session_id)
+            .await
+            .map_err(|error| {
+                self.emit_resume_failure(
+                    &parent_event_sink,
+                    &parent.parent_turn_id,
+                    self.resume_agent_context(&parent.parent_turn_id, &child),
+                    "damaged_child_history",
+                    format!(
+                        "resume rejected: failed to load child session '{}' durable history: {}",
+                        target_session_id, error
+                    ),
+                )
+            })?;
+        let replayed_state = child_session_state
+            .snapshot_projected_state()
+            .map_err(|error| {
+                self.emit_resume_failure(
+                    &parent_event_sink,
+                    &parent.parent_turn_id,
+                    self.resume_agent_context(&parent.parent_turn_id, &child),
+                    "damaged_child_history",
+                    format!(
+                        "resume rejected: failed to rebuild child session '{}' visible state: {}",
+                        target_session_id, error
+                    ),
+                )
+            })?;
+        if replayed_state.session_id.is_empty()
+            || astrcode_runtime_session::normalize_session_id(&replayed_state.session_id)
+                != astrcode_runtime_session::normalize_session_id(&target_session_id)
+            || replayed_state.messages.is_empty()
+        {
+            return Err(self.emit_resume_failure(
+                &parent_event_sink,
+                &parent.parent_turn_id,
+                self.resume_agent_context(&parent.parent_turn_id, &child),
+                "unsafe_resume_rejected",
+                format!(
+                    "resume rejected: child session '{}' does not contain enough durable replay \
+                     state",
+                    target_session_id
+                ),
+            ));
+        }
+
+        // 通过 agent_control 恢复为新的执行实例。
         let resumed = self
             .runtime
             .agent_control
@@ -66,12 +209,6 @@ impl AgentExecutionServiceHandle {
                     agent_id
                 ))
             })?;
-
-        // 复用已有的 child session（不创建新 session）
-        let target_session_id = resumed
-            .child_session_id
-            .clone()
-            .unwrap_or_else(|| ctx.session_id().to_string());
 
         let child_cancel = self
             .runtime
@@ -89,39 +226,40 @@ impl AgentExecutionServiceHandle {
             resumed.storage_mode,
             resumed.child_session_id.clone(),
         );
-
-        let parent_event_sink: Arc<dyn ToolEventSink> = Arc::new(
-            SessionStateEventSink::new(Arc::clone(&parent.parent_state))
+        let active_sink: Arc<dyn ToolEventSink> = Arc::new(
+            SessionStateEventSink::new(Arc::clone(&child_session_state))
                 .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?,
         );
-        let active_sink: Arc<dyn ToolEventSink> =
-            if matches!(resumed.storage_mode, SubRunStorageMode::IndependentSession) {
-                let child_state = self
-                    .runtime
-                    .ensure_session_loaded(&target_session_id)
-                    .await?;
-                Arc::new(SessionStateEventSink::new(child_state).map_err(|error| {
-                    ServiceError::Internal(AstrError::Internal(error.to_string()))
-                })?)
-            } else {
-                parent_event_sink.clone()
-            };
 
-        // 查找现有 child_node 以复用
-        let child_node = parent
+        let mut child_node = existing_node.clone();
+        child_node.agent_id = resumed.agent_id.clone();
+        child_node.sub_run_id = resumed.sub_run_id.clone();
+        child_node.lineage_kind = ChildSessionLineageKind::Resume;
+        child_node.status = AgentStatus::Running;
+        child_node.created_by_tool_call_id = ctx.tool_call_id().map(ToString::to_string);
+        child_node.lineage_snapshot = Some(LineageSnapshot {
+            source_agent_id: child.agent_id.clone(),
+            source_session_id: target_session_id.clone(),
+            source_sub_run_id: Some(child.sub_run_id.clone()),
+        });
+        parent
             .parent_state
-            .child_session_node(&resumed.sub_run_id)
-            .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?
-            .unwrap_or_else(|| {
-                let mut node = build_child_session_node(
-                    &resumed,
-                    &parent.parent_session_id,
-                    &parent.parent_turn_id,
-                    ctx.tool_call_id().map(ToString::to_string),
-                );
-                node.lineage_kind = ChildSessionLineageKind::Resume;
-                node
-            });
+            .upsert_child_session_node(child_node.clone())
+            .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
+
+        if let Err(error) = parent_event_sink.emit(build_subrun_started_event(
+            &parent.parent_turn_id,
+            child_agent.clone(),
+            &resumed,
+            ctx.tool_call_id().map(ToString::to_string),
+            ResolvedSubagentContextOverrides::default(),
+            ResolvedExecutionLimitsSnapshot::default(),
+        )) {
+            return Err(ServiceError::Internal(AstrError::Internal(format!(
+                "failed to persist resumed SubRunStarted for child agent '{}' (subRunId='{}'): {}",
+                resumed.agent_id, resumed.sub_run_id, error
+            ))));
+        }
 
         let resumed_notification = build_child_session_notification(
             &child_node,
@@ -147,11 +285,7 @@ impl AgentExecutionServiceHandle {
             origin: UserMessageOrigin::User,
         });
 
-        let child_state = build_child_agent_state(
-            &target_session_id,
-            ctx.working_dir().to_path_buf(),
-            &resume_message,
-        );
+        let child_state = build_resumed_child_agent_state(replayed_state, &resume_message);
 
         let child_loop = {
             let profile = self
@@ -186,7 +320,7 @@ impl AgentExecutionServiceHandle {
         };
 
         let execution = SpawnedSubagentExecution {
-            child: resumed,
+            child: resumed.clone(),
             child_node,
             child_agent,
             child_turn_id,
@@ -194,7 +328,7 @@ impl AgentExecutionServiceHandle {
             child_execution_owner: derive_child_execution_owner(
                 ctx,
                 &parent.parent_turn_id,
-                &child,
+                &resumed,
             ),
             child_state,
             child_loop,
@@ -236,7 +370,57 @@ impl AgentExecutionServiceHandle {
             |guard| guard.push(handle),
         );
 
-        Ok(running_result)
+        Ok((resumed, running_result))
+    }
+
+    fn resume_agent_context(
+        &self,
+        parent_turn_id: &str,
+        child: &SubRunHandle,
+    ) -> AgentEventContext {
+        AgentEventContext::sub_run(
+            child.agent_id.clone(),
+            parent_turn_id.to_string(),
+            child.agent_profile.clone(),
+            child.sub_run_id.clone(),
+            child.storage_mode,
+            child.child_session_id.clone(),
+        )
+    }
+
+    fn emit_lineage_mismatch(
+        &self,
+        parent_event_sink: &Arc<dyn ToolEventSink>,
+        parent_turn_id: &str,
+        agent: AgentEventContext,
+        kind: LineageMismatchKind,
+        code: &str,
+        message: String,
+    ) -> ServiceError {
+        self.runtime.observability.record_lineage_mismatch(kind);
+        log::warn!(
+            "resume lineage mismatch detected: kind='{}', {}",
+            kind.as_str(),
+            message
+        );
+        self.emit_resume_failure(parent_event_sink, parent_turn_id, agent, code, message)
+    }
+
+    fn emit_resume_failure(
+        &self,
+        parent_event_sink: &Arc<dyn ToolEventSink>,
+        parent_turn_id: &str,
+        agent: AgentEventContext,
+        code: &str,
+        message: String,
+    ) -> ServiceError {
+        let _ = parent_event_sink.emit(StorageEvent::Error {
+            turn_id: Some(parent_turn_id.to_string()),
+            agent,
+            message: format!("{code}: {message}"),
+            timestamp: Some(chrono::Utc::now()),
+        });
+        ServiceError::Conflict(format!("{code}: {message}"))
     }
 
     // ─── 所有权验证 ──────────────────────────────────────────
@@ -485,7 +669,7 @@ impl AgentExecutionServiceHandle {
         self.verify_caller_owns_child(ctx, &target)?;
 
         // 使用已有的 resume_child_session 方法
-        let result = self
+        let (resumed_handle, result) = self
             .resume_child_session(&params.agent_id, params.message.clone(), ctx)
             .await?;
 
@@ -495,24 +679,19 @@ impl AgentExecutionServiceHandle {
             params.message.as_ref().map(|m| m.len()).unwrap_or(0)
         );
 
-        let child_ref = self
-            .runtime
-            .agent_control
-            .get(&params.agent_id)
-            .await
-            .map(|handle| ChildAgentRef {
-                agent_id: handle.agent_id.clone(),
-                session_id: handle.session_id.clone(),
-                sub_run_id: handle.sub_run_id.clone(),
-                parent_agent_id: handle.parent_agent_id.clone(),
-                lineage_kind: ChildSessionLineageKind::Resume,
-                status: AgentStatus::Running,
-                openable: true,
-                open_session_id: handle
-                    .child_session_id
-                    .clone()
-                    .unwrap_or_else(|| handle.session_id.clone()),
-            });
+        let child_ref = Some(ChildAgentRef {
+            agent_id: resumed_handle.agent_id.clone(),
+            session_id: resumed_handle.session_id.clone(),
+            sub_run_id: resumed_handle.sub_run_id.clone(),
+            parent_agent_id: resumed_handle.parent_agent_id.clone(),
+            lineage_kind: ChildSessionLineageKind::Resume,
+            status: AgentStatus::Running,
+            openable: true,
+            open_session_id: resumed_handle
+                .child_session_id
+                .clone()
+                .unwrap_or_else(|| resumed_handle.session_id.clone()),
+        });
 
         Ok(CollaborationResult {
             accepted: true,
@@ -623,6 +802,9 @@ impl AgentExecutionServiceHandle {
                     parent_agent_id
                 ))
             })?;
+        self.runtime
+            .observability
+            .record_delivery_buffer(DeliveryBufferStage::Queued);
 
         let _ = parent_handle; // 父 handle 已用于验证，释放借用
 

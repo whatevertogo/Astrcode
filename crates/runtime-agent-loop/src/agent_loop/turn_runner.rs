@@ -30,7 +30,7 @@ use astrcode_core::{
     AgentEventContext, AgentState, AstrError, CancelToken, ContextStrategy, ExecutionOwner,
     LoopRunnerBoundary, Result, StorageEvent,
 };
-use astrcode_runtime_prompt::{DiagnosticLevel, PromptDiagnostics};
+use astrcode_runtime_prompt::{DiagnosticLevel, PromptDeclaration, PromptDiagnostics};
 use async_trait::async_trait;
 
 use super::{
@@ -64,6 +64,12 @@ const MAX_REACTIVE_COMPACT_ATTEMPTS: usize = 3;
 /// TODO: 更好的数字和可能的可配置化
 const MAX_OUTPUT_CONTINUATION_ATTEMPTS: usize = 3;
 
+#[derive(Debug, Clone, Copy, Default)]
+struct PromptCacheReuseSummary {
+    hits: u32,
+    misses: u32,
+}
+
 /// 执行一个完整的 agent turn（从用户提示到最终响应）。
 ///
 /// ## Turn 内部的 step 循环
@@ -96,6 +102,7 @@ where
     pub(crate) agent: AgentEventContext,
     pub(crate) execution_owner: ExecutionOwner,
     pub(crate) compaction_tail: CompactionTailSnapshot,
+    pub(crate) runtime_prompt_declarations: &'a [PromptDeclaration],
 }
 
 pub(crate) async fn run_turn<F>(ctx: TurnRunContext<'_, F>) -> Result<TurnOutcome>
@@ -112,6 +119,7 @@ where
         agent,
         execution_owner,
         compaction_tail,
+        runtime_prompt_declarations,
     } = ctx;
     let provider =
         llm_cycle::build_provider(agent_loop.factory.clone(), Some(state.working_dir.clone()))
@@ -168,9 +176,16 @@ where
             },
         };
 
+        let mut prompt_declarations = bundle.prompt_declarations();
+        prompt_declarations.extend_from_slice(runtime_prompt_declarations);
         let build_output = match agent_loop
             .prompt
-            .build_plan(state, &bundle.conversation, step_index)
+            .build_plan(
+                state,
+                &bundle.conversation,
+                &prompt_declarations,
+                step_index,
+            )
             .await
         {
             Ok(output) => output,
@@ -178,6 +193,7 @@ where
                 return report_error(turn_id, error.to_string(), &agent, on_event, emit_turn_done);
             },
         };
+        let prompt_cache_reuse = summarize_prompt_cache_reuse(&build_output.diagnostics);
         log_prompt_diagnostics(&build_output.diagnostics);
         let plan = build_output.plan;
         let PreparedRequest {
@@ -215,6 +231,9 @@ where
                 provider_output_tokens: None,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                provider_cache_metrics_supported: provider.supports_cache_metrics(),
+                prompt_cache_reuse_hits: prompt_cache_reuse.hits,
+                prompt_cache_reuse_misses: prompt_cache_reuse.misses,
             },
         )?;
         let decision_input = agent_loop
@@ -412,12 +431,15 @@ where
                     truncated_tool_results: truncated_tool_results.min(u32::MAX as usize) as u32,
                     provider_input_tokens: Some(usage.input_tokens.min(u32::MAX as usize) as u32),
                     provider_output_tokens: Some(usage.output_tokens.min(u32::MAX as usize) as u32),
-                    cache_creation_input_tokens: Some(
-                        usage.cache_creation_input_tokens.min(u32::MAX as usize) as u32,
-                    ),
-                    cache_read_input_tokens: Some(
-                        usage.cache_read_input_tokens.min(u32::MAX as usize) as u32,
-                    ),
+                    cache_creation_input_tokens: provider
+                        .supports_cache_metrics()
+                        .then_some(usage.cache_creation_input_tokens.min(u32::MAX as usize) as u32),
+                    cache_read_input_tokens: provider
+                        .supports_cache_metrics()
+                        .then_some(usage.cache_read_input_tokens.min(u32::MAX as usize) as u32),
+                    provider_cache_metrics_supported: provider.supports_cache_metrics(),
+                    prompt_cache_reuse_hits: prompt_cache_reuse.hits,
+                    prompt_cache_reuse_misses: prompt_cache_reuse.misses,
                 },
             )?;
         }
@@ -627,6 +649,28 @@ fn log_prompt_diagnostics(diagnostics: &PromptDiagnostics) {
             DiagnosticLevel::Error => log::error!("{message}"),
         }
     }
+}
+
+fn summarize_prompt_cache_reuse(diagnostics: &PromptDiagnostics) -> PromptCacheReuseSummary {
+    diagnostics.items.iter().fold(
+        PromptCacheReuseSummary::default(),
+        |mut summary, diagnostic| {
+            match diagnostic.reason {
+                astrcode_runtime_prompt::diagnostics::DiagnosticReason::CacheReuseHit {
+                    ..
+                } => {
+                    summary.hits = summary.hits.saturating_add(1);
+                },
+                astrcode_runtime_prompt::diagnostics::DiagnosticReason::CacheReuseMiss {
+                    ..
+                } => {
+                    summary.misses = summary.misses.saturating_add(1);
+                },
+                _ => {},
+            }
+            summary
+        },
+    )
 }
 
 /// Parameters needed for a single compact-and-rebuild cycle.

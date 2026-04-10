@@ -10,10 +10,11 @@ use std::{
 
 use astrcode_core::{
     AgentState, ApprovalDefault, ApprovalRequest, ApprovalResolution, AstrError, CancelToken,
-    CapabilityCall, ChildAgentRef, ChildSessionNode, CompactionHookResultContext, HookEvent,
-    HookHandler, HookInput, HookOutcome, LlmMessage, ModelRequest, Phase, PolicyContext,
-    PolicyEngine, PolicyVerdict, Result, StorageEvent, Tool, ToolCapabilityMetadata, ToolContext,
-    ToolDefinition, ToolExecutionResult, ToolHookContext, ToolHookResultContext, UserMessageOrigin,
+    CapabilityCall, ChildAgentRef, ChildSessionNode, ChildSessionNotification,
+    ChildSessionNotificationKind, CompactionHookResultContext, HookEvent, HookHandler, HookInput,
+    HookOutcome, LlmMessage, ModelRequest, Phase, PolicyContext, PolicyEngine, PolicyVerdict,
+    Result, StorageEvent, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
+    ToolExecutionResult, ToolHookContext, ToolHookResultContext, UserMessageOrigin,
 };
 use astrcode_protocol::capability::SideEffectLevel;
 use astrcode_runtime_llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
@@ -50,6 +51,68 @@ pub fn child_session_fixture(seed: &str) -> ChildSessionNode {
 #[allow(dead_code)]
 pub fn child_agent_ref_fixture(seed: &str) -> ChildAgentRef {
     child_session_fixture(seed).child_ref()
+}
+
+#[allow(dead_code)]
+pub fn replayed_child_state_fixture(seed: &str) -> AgentState {
+    AgentState {
+        session_id: format!("session-child-{seed}"),
+        working_dir: std::env::temp_dir(),
+        messages: vec![
+            LlmMessage::User {
+                content: format!("任务 {seed}"),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: format!("阶段性总结 {seed}"),
+                tool_calls: Vec::new(),
+                reasoning: None,
+            },
+            LlmMessage::User {
+                content: format!("继续处理 {seed}"),
+                origin: UserMessageOrigin::User,
+            },
+        ],
+        phase: Phase::CallingTool,
+        turn_count: 3,
+    }
+}
+
+#[allow(dead_code)]
+pub fn child_delivery_notification_fixture(seed: &str) -> ChildSessionNotification {
+    let child_ref = child_agent_ref_fixture(seed);
+    ChildSessionNotification {
+        notification_id: format!("child-terminal:{seed}:completed"),
+        open_session_id: child_ref.open_session_id.clone(),
+        child_ref,
+        kind: ChildSessionNotificationKind::Delivered,
+        summary: format!("子会话 {seed} 已完成"),
+        status: astrcode_core::AgentStatus::Completed,
+        source_tool_call_id: Some(format!("call-{seed}")),
+        final_reply_excerpt: Some(format!("最终摘要 {seed}")),
+    }
+}
+
+#[allow(dead_code)]
+pub fn child_delivery_storage_event_fixture(seed: &str) -> StorageEvent {
+    StorageEvent::ChildSessionNotification {
+        turn_id: Some(format!("turn-parent-{seed}")),
+        agent: astrcode_core::AgentEventContext::sub_run(
+            format!("agent-{seed}"),
+            format!("turn-parent-{seed}"),
+            "review".to_string(),
+            format!("subrun-{seed}"),
+            astrcode_core::SubRunStorageMode::IndependentSession,
+            Some(format!("session-child-{seed}")),
+        ),
+        notification: child_delivery_notification_fixture(seed),
+        timestamp: Some(chrono::Utc::now()),
+    }
+}
+
+#[allow(dead_code)]
+pub fn legacy_shared_history_error_fixture() -> AstrError {
+    AstrError::Validation("unsupported_legacy_shared_history".to_string())
 }
 
 // ---------------------------------------------------------------------------

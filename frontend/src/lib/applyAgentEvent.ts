@@ -43,6 +43,7 @@ export function applyAgentEvent(
           parentTurnId: 'parentTurnId' in event.data ? event.data.parentTurnId : undefined,
           agentProfile: 'agentProfile' in event.data ? event.data.agentProfile : undefined,
           subRunId: 'subRunId' in event.data ? event.data.subRunId : undefined,
+          executionId: 'executionId' in event.data ? event.data.executionId : undefined,
           invocationKind: 'invocationKind' in event.data ? event.data.invocationKind : undefined,
           storageMode: 'storageMode' in event.data ? event.data.storageMode : undefined,
           childSessionId: 'childSessionId' in event.data ? event.data.childSessionId : undefined,
@@ -52,6 +53,7 @@ export function applyAgentEvent(
           parentTurnId: undefined,
           agentProfile: undefined,
           subRunId: undefined,
+          executionId: undefined,
           invocationKind: undefined,
           storageMode: undefined,
           childSessionId: undefined,
@@ -219,6 +221,9 @@ export function applyAgentEvent(
         providerOutputTokens: event.data.providerOutputTokens,
         cacheCreationInputTokens: event.data.cacheCreationInputTokens,
         cacheReadInputTokens: event.data.cacheReadInputTokens,
+        providerCacheMetricsSupported: event.data.providerCacheMetricsSupported,
+        promptCacheReuseHits: event.data.promptCacheReuseHits,
+        promptCacheReuseMisses: event.data.promptCacheReuseMisses,
       });
       break;
     }
@@ -292,6 +297,35 @@ export function applyAgentEvent(
           result: event.data.result,
           stepCount: event.data.stepCount,
           estimatedTokens: event.data.estimatedTokens,
+          timestamp: Date.now(),
+        },
+      });
+      break;
+    }
+
+    case 'childSessionNotification': {
+      const sessionId = context.activeSessionIdRef.current;
+      if (!sessionId) {
+        break;
+      }
+      context.dispatch({
+        type: 'ADD_MESSAGE',
+        sessionId,
+        message: {
+          id: uuid(),
+          kind: 'childSessionNotification',
+          turnId: event.data.turnId ?? null,
+          ...agentFields,
+          childSessionId: event.data.openSessionId ?? event.data.childRef?.sessionId,
+          childRef: event.data.childRef,
+          notificationKind: event.data.kind,
+          status: event.data.status,
+          summary: event.data.summary,
+          openSessionId: event.data.openSessionId,
+          ...(event.data.sourceToolCallId ? { sourceToolCallId: event.data.sourceToolCallId } : {}),
+          ...(event.data.finalReplyExcerpt
+            ? { finalReplyExcerpt: event.data.finalReplyExcerpt }
+            : {}),
           timestamp: Date.now(),
         },
       });

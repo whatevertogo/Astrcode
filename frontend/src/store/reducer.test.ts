@@ -132,6 +132,7 @@ describe('app reducer user message sync', () => {
       sessionId: 'session-1',
       turnId: 'turn-1',
       stepIndex: 0,
+      executionId: 'execution-1',
       estimatedTokens: 1400,
       contextWindow: 200000,
       effectiveWindow: 180000,
@@ -149,6 +150,7 @@ describe('app reducer user message sync', () => {
       id: 'metrics-1',
       kind: 'promptMetrics',
       turnId: 'turn-1',
+      executionId: 'execution-1',
       stepIndex: 0,
       estimatedTokens: 1400,
       truncatedToolResults: 1,
@@ -158,5 +160,70 @@ describe('app reducer user message sync', () => {
       cacheReadInputTokens: 800,
       timestamp: 123,
     });
+  });
+
+  it('preserves executionId across assistant and tool-call message updates', () => {
+    const initial = {
+      ...makeInitialState(),
+      projects: [
+        {
+          id: 'project-1',
+          name: 'Project',
+          workingDir: 'D:/repo',
+          isExpanded: true,
+          sessions: [
+            {
+              id: 'session-1',
+              projectId: 'project-1',
+              title: '新会话',
+              createdAt: Date.now(),
+              messages: [],
+            },
+          ],
+        },
+      ],
+      activeProjectId: 'project-1',
+      activeSessionId: 'session-1',
+    };
+
+    const withAssistant = reducer(initial, {
+      type: 'APPEND_DELTA',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      delta: 'hello',
+      subRunId: 'subrun-1',
+      executionId: 'execution-1',
+    });
+    const withToolResult = reducer(withAssistant, {
+      type: 'UPDATE_TOOL_CALL',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      toolCallId: 'call-1',
+      toolName: 'readFile',
+      status: 'ok',
+      output: 'done',
+      durationMs: 10,
+      subRunId: 'subrun-1',
+      executionId: 'execution-1',
+    });
+
+    const messages = withToolResult.projects[0].sessions[0].messages;
+    expect(messages).toEqual([
+      expect.objectContaining({
+        kind: 'assistant',
+        turnId: 'turn-1',
+        subRunId: 'subrun-1',
+        executionId: 'execution-1',
+        text: 'hello',
+      }),
+      expect.objectContaining({
+        kind: 'toolCall',
+        turnId: 'turn-1',
+        subRunId: 'subrun-1',
+        executionId: 'execution-1',
+        toolCallId: 'call-1',
+        toolName: 'readFile',
+      }),
+    ]);
   });
 });

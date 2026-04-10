@@ -6,6 +6,7 @@
 //! - [`EnvironmentContributor`]：工作环境信息
 //! - [`AgentsMdContributor`]：用户和项目级 AGENTS.md 规则
 //! - [`CapabilityPromptContributor`]：工具使用指南
+//! - [`PromptDeclarationContributor`]：外部注入的 PromptDeclaration system blocks
 //! - [`SkillSummaryContributor`]：Skill 索引摘要
 //! - [`WorkflowExamplesContributor`]：Few-shot 示例对话
 
@@ -14,6 +15,7 @@ pub mod agents_md;
 pub mod capability_prompt;
 pub mod environment;
 pub mod identity;
+pub mod prompt_declaration;
 pub mod shared;
 pub mod skill_summary;
 pub mod workflow_examples;
@@ -23,6 +25,7 @@ pub use agents_md::AgentsMdContributor;
 pub use capability_prompt::CapabilityPromptContributor;
 pub use environment::EnvironmentContributor;
 pub use identity::{IdentityContributor, load_identity_md, user_identity_md_path};
+pub use prompt_declaration::PromptDeclarationContributor;
 pub use shared::{cache_marker_for_path, user_astrcode_file_path};
 pub use skill_summary::SkillSummaryContributor;
 pub use workflow_examples::WorkflowExamplesContributor;

@@ -119,6 +119,8 @@ function pickAgentContext(
   const parentTurnId = pickOptionalString(data, 'parentTurnId', 'parent_turn_id') ?? undefined;
   const agentProfile = pickOptionalString(data, 'agentProfile', 'agent_profile') ?? undefined;
   const subRunId = pickOptionalString(data, 'subRunId', 'sub_run_id') ?? undefined;
+  const executionId =
+    pickOptionalString(data, 'executionId', 'execution_id') ?? subRunId ?? undefined;
   const childSessionId =
     pickOptionalString(data, 'childSessionId', 'child_session_id') ?? undefined;
   const invocationKind = toInvocationKind(data.invocationKind ?? data.invocation_kind) ?? undefined;
@@ -127,6 +129,7 @@ function pickAgentContext(
     ...(agentId ? { agentId } : {}),
     ...(agentProfile ? { agentProfile } : {}),
     ...(subRunId ? { subRunId } : {}),
+    ...(executionId ? { executionId } : {}),
     ...(childSessionId ? { childSessionId } : {}),
     ...(invocationKind ? { invocationKind } : {}),
     ...(storageMode ? { storageMode } : {}),
@@ -148,13 +151,15 @@ function pickSubRunDescriptor(data: Record<string, unknown>): SubRunDescriptor |
     return undefined;
   }
   const subRunId = pickString(raw, 'subRunId', 'sub_run_id');
+  const executionId = pickString(raw, 'executionId', 'execution_id') ?? subRunId;
   const parentTurnId = pickString(raw, 'parentTurnId', 'parent_turn_id');
   const depth = pickNumber(raw, 'depth');
-  if (!subRunId || !parentTurnId || depth === null) {
+  if (!subRunId || !executionId || !parentTurnId || depth === null) {
     return undefined;
   }
   return {
     subRunId,
+    executionId,
     parentTurnId,
     depth,
     parentAgentId: pickOptionalString(raw, 'parentAgentId', 'parent_agent_id') ?? undefined,
@@ -168,6 +173,18 @@ function pickBooleanFlag(
 ): boolean {
   const value = data[camelCaseKey] ?? data[snakeCaseKey];
   return value === true;
+}
+
+function pickOptionalBoolean(
+  data: Record<string, unknown>,
+  camelCaseKey: string,
+  snakeCaseKey: string
+): boolean | undefined {
+  const value = data[camelCaseKey] ?? data[snakeCaseKey];
+  if (value === true || value === false) {
+    return value;
+  }
+  return undefined;
 }
 
 export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
@@ -377,6 +394,16 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
           pickNumber(data, 'cacheCreationInputTokens', 'cache_creation_input_tokens') ?? undefined,
         cacheReadInputTokens:
           pickNumber(data, 'cacheReadInputTokens', 'cache_read_input_tokens') ?? undefined,
+        providerCacheMetricsSupported:
+          pickOptionalBoolean(
+            data,
+            'providerCacheMetricsSupported',
+            'provider_cache_metrics_supported'
+          ) ?? undefined,
+        promptCacheReuseHits:
+          pickNumber(data, 'promptCacheReuseHits', 'prompt_cache_reuse_hits') ?? undefined,
+        promptCacheReuseMisses:
+          pickNumber(data, 'promptCacheReuseMisses', 'prompt_cache_reuse_misses') ?? undefined,
         ...pickAgentContext(data),
       },
     };
@@ -562,7 +589,8 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
     const agentId = pickString(childRefRaw, 'agentId', 'agent_id');
     const sessionId = pickString(childRefRaw, 'sessionId', 'session_id');
     const subRunId = pickString(childRefRaw, 'subRunId', 'sub_run_id');
-    if (!agentId || !sessionId || !subRunId) {
+    const executionId = pickString(childRefRaw, 'executionId', 'execution_id') ?? subRunId;
+    if (!agentId || !sessionId || !subRunId || !executionId) {
       return invalidEvent('childSessionNotification childRef missing required fields', raw);
     }
     const lineageKind = pickString(childRefRaw, 'lineageKind', 'lineage_kind');
@@ -585,6 +613,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
           agentId,
           sessionId,
           subRunId,
+          executionId,
           parentAgentId:
             pickOptionalString(childRefRaw, 'parentAgentId', 'parent_agent_id') ?? undefined,
           lineageKind,

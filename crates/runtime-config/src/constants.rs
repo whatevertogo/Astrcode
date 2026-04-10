@@ -438,7 +438,9 @@ pub const DEFAULT_MAX_CONCURRENT_AGENTS: usize = 8;
 pub const DEFAULT_FINALIZED_AGENT_RETAIN_LIMIT: usize = 256;
 
 /// 是否默认启用独立子会话实验特性。
-pub const DEFAULT_EXPERIMENTAL_INDEPENDENT_SESSION: bool = false;
+/// 独立子会话模式已从实验特性升级为默认行为，
+/// 旧的共享写入模式仅保留读取兼容。
+pub const DEFAULT_EXPERIMENTAL_INDEPENDENT_SESSION: bool = true;
 
 // ============================================================================
 // 压缩恢复与熔断配置

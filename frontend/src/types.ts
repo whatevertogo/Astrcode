@@ -6,9 +6,15 @@ export type Phase = 'idle' | 'thinking' | 'callingTool' | 'streaming' | 'interru
 export type ToolOutputStream = 'stdout' | 'stderr';
 export type CompactTrigger = 'auto' | 'manual';
 export type InvocationKind = 'subRun' | 'rootExecution';
+// Why: `sharedSession` 仍保留在读侧协议里，用于 legacy 样本识别和显式拒绝展示；
+// 新写入路径已经全部切到 `independentSession`。
 export type SubRunStorageMode = 'sharedSession' | 'independentSession';
+// Why: `legacyDurable` 仍承担“旧数据可识别但不受支持”的投影语义，
+// 前端需要它来渲染稳定错误，而不是把样本误当成正常 durable child。
 export type SubRunStatusSource = 'live' | 'durable' | 'legacyDurable';
 export type SessionEventScope = 'self' | 'subtree' | 'directChildren';
+export type UnsupportedLegacyErrorCode = 'unsupported_legacy_shared_history';
+// Why: `waiting` 仍保留给 durable child 通知读侧，避免旧事件样本在前端反序列化失败。
 export type ChildSessionNotificationKind =
   | 'started'
   | 'progress_summary'
@@ -30,6 +36,7 @@ export interface AgentContext {
   parentTurnId?: string;
   agentProfile?: string;
   subRunId?: string;
+  executionId?: string;
   invocationKind?: InvocationKind;
   storageMode?: SubRunStorageMode;
   childSessionId?: string;
@@ -59,10 +66,14 @@ export interface PromptMetricsSnapshot {
   providerOutputTokens?: number;
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
+  providerCacheMetricsSupported?: boolean;
+  promptCacheReuseHits?: number;
+  promptCacheReuseMisses?: number;
 }
 
 export interface SubRunDescriptor {
   subRunId: string;
+  executionId?: string;
   parentTurnId: string;
   parentAgentId?: string;
   depth: number;
@@ -112,6 +123,7 @@ export interface SubRunResult {
 
 export interface SubRunStatusSnapshot {
   subRunId: string;
+  executionId?: string;
   descriptor?: SubRunDescriptor;
   toolCallId?: string;
   source: SubRunStatusSource;
@@ -210,6 +222,7 @@ export type AgentEventPayload =
           agentId: string;
           sessionId: string;
           subRunId: string;
+          executionId?: string;
           parentAgentId?: string;
           lineageKind: 'spawn' | 'fork' | 'resume';
           status: string;
@@ -251,6 +264,7 @@ export interface UserMessage {
   parentTurnId?: string;
   agentProfile?: string;
   subRunId?: string;
+  executionId?: string;
   invocationKind?: InvocationKind;
   storageMode?: SubRunStorageMode;
   childSessionId?: string;
@@ -266,6 +280,7 @@ export interface AssistantMessage {
   parentTurnId?: string;
   agentProfile?: string;
   subRunId?: string;
+  executionId?: string;
   invocationKind?: InvocationKind;
   storageMode?: SubRunStorageMode;
   childSessionId?: string;
@@ -285,6 +300,7 @@ export interface ToolCallMessage {
   parentTurnId?: string;
   agentProfile?: string;
   subRunId?: string;
+  executionId?: string;
   invocationKind?: InvocationKind;
   storageMode?: SubRunStorageMode;
   childSessionId?: string;
@@ -308,6 +324,7 @@ export interface CompactMessage {
   parentTurnId?: string;
   agentProfile?: string;
   subRunId?: string;
+  executionId?: string;
   invocationKind?: InvocationKind;
   storageMode?: SubRunStorageMode;
   childSessionId?: string;
@@ -325,6 +342,7 @@ export interface PromptMetricsMessage {
   parentTurnId?: string;
   agentProfile?: string;
   subRunId?: string;
+  executionId?: string;
   invocationKind?: InvocationKind;
   storageMode?: SubRunStorageMode;
   childSessionId?: string;
@@ -338,6 +356,9 @@ export interface PromptMetricsMessage {
   providerOutputTokens?: number;
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
+  providerCacheMetricsSupported?: boolean;
+  promptCacheReuseHits?: number;
+  promptCacheReuseMisses?: number;
   timestamp: number;
 }
 
@@ -349,6 +370,7 @@ export interface SubRunStartMessage {
   parentTurnId?: string;
   agentProfile?: string;
   subRunId?: string;
+  executionId?: string;
   invocationKind?: InvocationKind;
   storageMode?: SubRunStorageMode;
   childSessionId?: string;
@@ -367,6 +389,7 @@ export interface SubRunFinishMessage {
   parentTurnId?: string;
   agentProfile?: string;
   subRunId?: string;
+  executionId?: string;
   invocationKind?: InvocationKind;
   storageMode?: SubRunStorageMode;
   childSessionId?: string;
@@ -378,6 +401,38 @@ export interface SubRunFinishMessage {
   timestamp: number;
 }
 
+export interface ChildSessionNotificationMessage {
+  id: string;
+  kind: 'childSessionNotification';
+  turnId?: string | null;
+  agentId?: string;
+  parentTurnId?: string;
+  agentProfile?: string;
+  subRunId?: string;
+  executionId?: string;
+  invocationKind?: InvocationKind;
+  storageMode?: SubRunStorageMode;
+  childSessionId?: string;
+  childRef: {
+    agentId: string;
+    sessionId: string;
+    subRunId: string;
+    executionId?: string;
+    parentAgentId?: string;
+    lineageKind: 'spawn' | 'fork' | 'resume';
+    status: string;
+    openable: boolean;
+    openSessionId: string;
+  };
+  notificationKind: ChildSessionNotificationKind;
+  status: string;
+  summary: string;
+  openSessionId: string;
+  sourceToolCallId?: string;
+  finalReplyExcerpt?: string;
+  timestamp: number;
+}
+
 export type Message =
   | UserMessage
   | AssistantMessage
@@ -385,7 +440,8 @@ export type Message =
   | PromptMetricsMessage
   | CompactMessage
   | SubRunStartMessage
-  | SubRunFinishMessage;
+  | SubRunFinishMessage
+  | ChildSessionNotificationMessage;
 
 export interface Session {
   id: string;
@@ -480,6 +536,7 @@ type AgentActionContext = {
   parentTurnId?: string;
   agentProfile?: string;
   subRunId?: string;
+  executionId?: string;
   invocationKind?: InvocationKind;
   storageMode?: SubRunStorageMode;
   childSessionId?: string;

@@ -34,6 +34,46 @@ function makeChildSessionSubRunStartedFixture() {
   };
 }
 
+function makeChildSessionNotificationFixture() {
+  return {
+    protocolVersion: 1,
+    event: 'childSessionNotification',
+    data: {
+      turn_id: 'turn-parent',
+      agent_id: 'agent-parent',
+      child_session_id: 'session-child-1',
+      child_ref: {
+        agent_id: 'agent-child',
+        session_id: 'session-parent',
+        sub_run_id: 'subrun-child',
+        lineage_kind: 'spawn',
+        status: 'completed',
+        openable: true,
+        open_session_id: 'session-child-1',
+      },
+      kind: 'delivered',
+      summary: '子会话已完成',
+      status: 'completed',
+      open_session_id: 'session-child-1',
+      source_tool_call_id: 'call-child',
+      final_reply_excerpt: '最终摘要',
+    },
+  };
+}
+
+function makeLegacyUnsupportedErrorFixture() {
+  return {
+    protocolVersion: 1,
+    event: 'error',
+    data: {
+      turn_id: 'turn-legacy',
+      code: 'unsupported_legacy_shared_history',
+      message: '该会话使用旧共享历史结构，必须升级后才能继续查看。',
+      child_session_id: 'session-child-legacy',
+    },
+  };
+}
+
 describe('normalizeAgentEvent protocol gate', () => {
   it('rejects payload when protocolVersion is missing', () => {
     const normalized = normalizeAgentEvent({
@@ -210,6 +250,9 @@ describe('normalizeAgentEvent protocol gate', () => {
         provider_output_tokens: 120,
         cache_creation_input_tokens: 2800,
         cache_read_input_tokens: 2500,
+        provider_cache_metrics_supported: true,
+        prompt_cache_reuse_hits: 3,
+        prompt_cache_reuse_misses: 1,
       },
     });
 
@@ -227,6 +270,52 @@ describe('normalizeAgentEvent protocol gate', () => {
         providerOutputTokens: 120,
         cacheCreationInputTokens: 2800,
         cacheReadInputTokens: 2500,
+        providerCacheMetricsSupported: true,
+        promptCacheReuseHits: 3,
+        promptCacheReuseMisses: 1,
+      },
+    });
+  });
+
+  it('accepts childSessionNotification payloads with stable child-session entry fields', () => {
+    const normalized = normalizeAgentEvent(makeChildSessionNotificationFixture());
+
+    expect(normalized).toEqual({
+      event: 'childSessionNotification',
+      data: {
+        turnId: 'turn-parent',
+        agentId: 'agent-parent',
+        childSessionId: 'session-child-1',
+        childRef: {
+          agentId: 'agent-child',
+          sessionId: 'session-parent',
+          subRunId: 'subrun-child',
+          executionId: 'subrun-child',
+          lineageKind: 'spawn',
+          status: 'completed',
+          openable: true,
+          openSessionId: 'session-child-1',
+        },
+        kind: 'delivered',
+        summary: '子会话已完成',
+        status: 'completed',
+        openSessionId: 'session-child-1',
+        sourceToolCallId: 'call-child',
+        finalReplyExcerpt: '最终摘要',
+      },
+    });
+  });
+
+  it('accepts unsupported legacy error payloads for explicit UI display', () => {
+    const normalized = normalizeAgentEvent(makeLegacyUnsupportedErrorFixture());
+
+    expect(normalized).toEqual({
+      event: 'error',
+      data: {
+        turnId: 'turn-legacy',
+        code: 'unsupported_legacy_shared_history',
+        message: '该会话使用旧共享历史结构，必须升级后才能继续查看。',
+        childSessionId: 'session-child-legacy',
       },
     });
   });
@@ -279,6 +368,7 @@ describe('normalizeAgentEvent protocol gate', () => {
         turnId: 'turn-parent',
         descriptor: {
           subRunId: 'sub-1',
+          executionId: 'sub-1',
           parentTurnId: 'turn-parent',
           parentAgentId: 'agent-parent',
           depth: 2,
@@ -334,6 +424,7 @@ describe('normalizeAgentEvent protocol gate', () => {
       data: {
         turnId: 'turn-legacy',
         subRunId: 'sub-legacy',
+        executionId: 'sub-legacy',
         resolvedOverrides: {
           storageMode: 'sharedSession',
           inheritSystemInstructions: true,
@@ -379,6 +470,7 @@ describe('normalizeAgentEvent protocol gate', () => {
       data: {
         turnId: 'turn-legacy',
         subRunId: 'sub-legacy',
+        executionId: 'sub-legacy',
         result: {
           status: 'completed',
           handoff: undefined,
@@ -393,5 +485,72 @@ describe('normalizeAgentEvent protocol gate', () => {
       expect('parentTurnId' in normalized.data).toBe(false);
       expect('descriptor' in normalized.data).toBe(false);
     }
+  });
+
+  describe('executionId preservation', () => {
+    it('preserves executionId from subRunStarted event', () => {
+      const normalized = normalizeAgentEvent({
+        protocolVersion: 1,
+        event: 'subRunStarted',
+        data: {
+          turn_id: 'turn-1',
+          agent_id: 'agent-1',
+          agent_profile: 'profile-1',
+          execution_id: 'exec-1',
+          descriptor: {
+            sub_run_id: 'sub-1',
+            execution_id: 'exec-1',
+            parent_turn_id: 'turn-1',
+            parent_agent_id: 'agent-parent',
+            depth: 1,
+          },
+          tool_call_id: 'call-1',
+          resolved_overrides: {
+            storage_mode: 'independentSession',
+            inherit_system_instructions: true,
+            inherit_project_instructions: true,
+            inherit_working_dir: true,
+            inherit_policy_upper_bound: true,
+            inherit_cancel_token: true,
+            include_compact_summary: false,
+            include_recent_tail: false,
+            include_recovery_refs: false,
+            include_parent_findings: false,
+          },
+          resolved_limits: {
+            allowed_tools: [],
+          },
+        },
+      });
+
+      expect(normalized).toMatchObject({
+        event: 'subRunStarted',
+        data: {
+          executionId: 'exec-1',
+          descriptor: {
+            executionId: 'exec-1',
+          },
+        },
+      });
+    });
+
+    it('preserves executionId from userMessage event', () => {
+      const normalized = normalizeAgentEvent({
+        protocolVersion: 1,
+        event: 'userMessage',
+        data: {
+          turn_id: 'turn-1',
+          content: 'hello',
+          execution_id: 'exec-1',
+        },
+      });
+
+      expect(normalized).toMatchObject({
+        event: 'userMessage',
+        data: {
+          executionId: 'exec-1',
+        },
+      });
+    });
   });
 });

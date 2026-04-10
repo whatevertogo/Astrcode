@@ -465,31 +465,32 @@ async fn reactive_compact_restores_recent_file_context_after_current_turn_file_a
         requests.len() >= 4,
         "reactive compact path should issue tool, failing prompt, compact, and final requests"
     );
-    let final_request_messages = &requests
-        .last()
-        .expect("final request should exist")
-        .messages;
-    let recovery_message = final_request_messages
+    let final_request = requests.last().expect("final request should exist");
+    let recovery_block = final_request
+        .system_prompt_blocks
         .iter()
-        .find_map(|message| match message {
-            LlmMessage::User {
-                content,
-                origin: UserMessageOrigin::User,
-            } if content.contains("[Structured memory: recovered-file:")
-                && content.contains("[Post-compact file recovery:") =>
-            {
-                Some(content.as_str())
-            },
-            _ => None,
+        .find(|block| {
+            block.title == "Recovered Context"
+                && block.content.contains("recovered-file:")
+                && block.content.contains("[Post-compact file recovery:")
         })
-        .expect("rebuilt request should include a structured memory recovery message");
+        .expect("rebuilt request should include a recovered context prompt block");
     assert!(
-        recovery_message.contains("recent.rs"),
-        "recovery message should name the recently accessed file"
+        recovery_block.content.contains("recent.rs"),
+        "recovery block should name the recently accessed file"
     );
     assert!(
-        recovery_message.contains("recovered_context"),
-        "recovery message should embed the file contents so the model keeps local code context"
+        recovery_block.content.contains("recovered_context"),
+        "recovery block should embed the file contents so the model keeps local code context"
+    );
+    assert!(
+        final_request.messages.iter().all(|message| {
+            !matches!(
+                message,
+                LlmMessage::User { content, .. } if content.contains("[Structured memory:")
+            )
+        }),
+        "recovered context should stay out of the message history"
     );
 }
 

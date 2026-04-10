@@ -3,10 +3,7 @@
 //! 负责解析和验证 `SubagentContextOverrides`，确保子会话的行为符合当前
 //! runtime 配置约束。该模块独立于执行装配逻辑，方便后续扩展策略规则。
 
-use astrcode_core::{
-    AstrError, ResolvedSubagentContextOverrides, SubRunStorageMode, SubagentContextOverrides,
-};
-use astrcode_runtime_config::resolve_agent_experimental_independent_session;
+use astrcode_core::{AstrError, ResolvedSubagentContextOverrides, SubagentContextOverrides};
 
 /// 解析并校验子会话上下文覆盖。
 ///
@@ -61,17 +58,8 @@ pub fn resolve_subagent_overrides(
 /// 统一校验已解析的 override 快照是否符合当前 runtime 约束。
 fn validate_resolved_overrides(
     resolved: &ResolvedSubagentContextOverrides,
-    runtime_config: &astrcode_runtime_config::RuntimeConfig,
+    _runtime_config: &astrcode_runtime_config::RuntimeConfig,
 ) -> Result<(), AstrError> {
-    if matches!(resolved.storage_mode, SubRunStorageMode::IndependentSession)
-        && !resolve_agent_experimental_independent_session(runtime_config.agent.as_ref())
-    {
-        return Err(AstrError::Validation(
-            "independent_session is experimental and currently disabled by \
-             runtime.agent.experimentalIndependentSession"
-                .to_string(),
-        ));
-    }
     if resolved.inherit_system_instructions != resolved.inherit_project_instructions {
         return Err(AstrError::Validation(
             "inheritSystemInstructions and inheritProjectInstructions must currently resolve to \
@@ -114,47 +102,37 @@ fn validate_resolved_overrides(
 #[cfg(test)]
 mod tests {
     use astrcode_core::{ForkMode, SubRunStorageMode, SubagentContextOverrides};
-    use astrcode_runtime_config::{AgentConfig, RuntimeConfig};
+    use astrcode_runtime_config::RuntimeConfig;
 
     use super::resolve_subagent_overrides;
 
-    fn runtime_config_with_independent_session(enabled: bool) -> RuntimeConfig {
-        RuntimeConfig {
-            agent: Some(AgentConfig {
-                experimental_independent_session: Some(enabled),
-                ..AgentConfig::default()
-            }),
-            ..RuntimeConfig::default()
-        }
-    }
-
+    /// 独立子会话模式已从实验特性升级为默认行为，不再受 experimental 开关约束。
     #[test]
-    fn resolve_subagent_overrides_rejects_independent_session_when_experimental_disabled() {
+    fn resolve_subagent_overrides_accepts_independent_session_by_default() {
         let overrides = SubagentContextOverrides {
             storage_mode: Some(SubRunStorageMode::IndependentSession),
             ..SubagentContextOverrides::default()
         };
-        let runtime_config = runtime_config_with_independent_session(false);
 
-        let result = resolve_subagent_overrides(Some(&overrides), &runtime_config);
-
-        assert!(result.is_err());
-        let message = result.expect_err("must fail").to_string();
-        assert!(message.contains("independent_session is experimental"));
-    }
-
-    #[test]
-    fn resolve_subagent_overrides_accepts_independent_session_when_experimental_enabled() {
-        let overrides = SubagentContextOverrides {
-            storage_mode: Some(SubRunStorageMode::IndependentSession),
-            ..SubagentContextOverrides::default()
-        };
-        let runtime_config = runtime_config_with_independent_session(true);
-
-        let resolved = resolve_subagent_overrides(Some(&overrides), &runtime_config)
-            .expect("independent session should be allowed when experimental switch is enabled");
+        let resolved = resolve_subagent_overrides(Some(&overrides), &RuntimeConfig::default())
+            .expect("independent session should be accepted by default");
 
         assert_eq!(resolved.storage_mode, SubRunStorageMode::IndependentSession);
+    }
+
+    /// 显式选择 SharedSession 仍保留为可解析输入，
+    /// 便于 legacy 样本、协议 round-trip 和读侧拒绝路径继续表达旧数据形态。
+    #[test]
+    fn resolve_subagent_overrides_preserves_explicit_shared_session_for_legacy_inputs() {
+        let overrides = SubagentContextOverrides {
+            storage_mode: Some(SubRunStorageMode::SharedSession),
+            ..SubagentContextOverrides::default()
+        };
+
+        let resolved = resolve_subagent_overrides(Some(&overrides), &RuntimeConfig::default())
+            .expect("explicit shared session should remain representable for legacy inputs");
+
+        assert_eq!(resolved.storage_mode, SubRunStorageMode::SharedSession);
     }
 
     #[test]

@@ -107,6 +107,19 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
                 2
               )}
             </pre>
+          ) : message.kind === 'childSessionNotification' ? (
+            <pre className={styles.renderErrorBody}>
+              {JSON.stringify(
+                {
+                  subRunId: message.childRef.subRunId,
+                  kind: message.notificationKind,
+                  status: message.status,
+                  openSessionId: message.openSessionId,
+                },
+                null,
+                2
+              )}
+            </pre>
           ) : (
             <pre className={styles.renderErrorBody}>{message.text}</pre>
           )}
@@ -349,6 +362,7 @@ export default function MessageList({
           <SubRunBlock
             subRunId={subRunView.subRunId}
             sessionId={sessionId}
+            childSessionId={subRunView.childSessionId}
             title={subRunView.title}
             startMessage={subRunView.startMessage}
             finishMessage={subRunView.finishMessage}
@@ -384,6 +398,7 @@ export default function MessageList({
       <SubRunBlock
         subRunId={subRunView.subRunId}
         sessionId={sessionId}
+        childSessionId={subRunView.childSessionId}
         title={subRunView.title}
         startMessage={subRunView.startMessage}
         finishMessage={subRunView.finishMessage}

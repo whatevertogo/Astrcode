@@ -14,7 +14,8 @@
 //!
 //! OpenAI 的 prompt caching 是**自动的**：API 自动缓存 >= 1024 tokens 的 prompt 前缀，
 //! 无需像 Anthropic 那样显式标记 `cache_control`。分层 system blocks（Stable →
-//! SemiStable → Dynamic）的排列顺序天然提供稳定前缀，对 OpenAI 的 prefix matching 最友好。
+//! SemiStable → Inherited → Dynamic）的排列顺序天然提供稳定前缀，对 OpenAI 的
+//! prefix matching 最友好。
 //!
 //! ## 协议差异处理
 //!
@@ -101,7 +102,7 @@ impl OpenAiProvider {
     ///
     /// 与 Anthropic 不同，OpenAI 的 prompt caching 是**自动的**：
     /// 不需要显式标记 `cache_control`，API 自动缓存 >= 1024 tokens 的 prompt 前缀。
-    /// 分层 system blocks 的排列顺序（Stable → SemiStable → Dynamic）天然提供稳定的
+    /// 分层 system blocks 的排列顺序（Stable → SemiStable → Inherited → Dynamic）天然提供稳定的
     /// 前缀，对 OpenAI 的自动 prefix matching 最友好。
     fn build_request<'a>(
         &'a self,
@@ -983,20 +984,27 @@ mod tests {
                 cache_boundary: true,
                 layer: astrcode_core::SystemPromptLayer::SemiStable,
             },
+            astrcode_core::SystemPromptBlock {
+                title: "Inherited 1".to_string(),
+                content: "inherited content 1".to_string(),
+                cache_boundary: true,
+                layer: astrcode_core::SystemPromptLayer::Inherited,
+            },
         ];
         let request = provider.build_request(&messages, &[], None, &system_blocks, false);
         let body = serde_json::to_value(&request).expect("request should serialize");
 
-        // 应该有 3 个 system 消息 + 1 个 user 消息，无 cache_control 字段
-        assert_eq!(request.messages.len(), 4);
+        // 应该有 4 个 system 消息 + 1 个 user 消息，无 cache_control 字段
+        assert_eq!(request.messages.len(), 5);
         assert_eq!(request.messages[0].role, "system");
         assert_eq!(request.messages[1].role, "system");
         assert_eq!(request.messages[2].role, "system");
-        assert_eq!(request.messages[3].role, "user");
+        assert_eq!(request.messages[3].role, "system");
+        assert_eq!(request.messages[4].role, "user");
 
         // OpenAI 不发送 cache_control：分层 system blocks 的稳定排列顺序
         // 自然构成自动缓存的最优前缀
-        for i in 0..3 {
+        for i in 0..4 {
             assert!(
                 body["messages"][i].get("cache_control").is_none(),
                 "system block {} should not have cache_control (OpenAI uses automatic caching)",
@@ -1004,7 +1012,7 @@ mod tests {
             );
         }
         assert!(
-            body["messages"][3].get("cache_control").is_none(),
+            body["messages"][4].get("cache_control").is_none(),
             "user message should not have cache_control"
         );
     }
@@ -1222,5 +1230,21 @@ mod tests {
                 .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "你好"))
         );
         assert_eq!(output.content, "你好");
+    }
+
+    #[test]
+    fn openai_provider_reports_cache_metrics_as_unsupported() {
+        let provider = OpenAiProvider::new(
+            "http://127.0.0.1:12345".to_string(),
+            "sk-test".to_string(),
+            "model-a".to_string(),
+            ModelLimits {
+                context_window: 128_000,
+                max_output_tokens: 2048,
+            },
+        )
+        .expect("provider should build");
+
+        assert!(!provider.supports_cache_metrics());
     }
 }

@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::service::{
     AgentExecutionAccepted, RuntimeService, ServiceError, ServiceResult,
     blocking_bridge::spawn_blocking_service,
-    turn::{BudgetSettings, complete_session_execution, run_session_turn},
+    turn::{BudgetSettings, RuntimeTurnInput, complete_session_execution, run_session_turn},
 };
 
 /// 面向 API / Tool 的 Agent Profile 摘要。
@@ -85,10 +85,24 @@ impl AgentExecutionServiceHandle {
             ServiceError::InvalidInput(format!("unknown agent profile '{profile_id}'"))
         })?;
         astrcode_runtime_execution::ensure_root_execution_mode(&profile)?;
-        let request = astrcode_runtime_execution::AgentExecutionRequest::from_spawn_agent_params(
-            &params,
-            context_overrides,
-        );
+        let mut request =
+            astrcode_runtime_execution::AgentExecutionRequest::from_spawn_agent_params(
+                &params,
+                context_overrides,
+            );
+        match request.context_overrides.as_mut() {
+            Some(overrides) => {
+                if overrides.storage_mode.is_none() {
+                    overrides.storage_mode = Some(astrcode_core::SubRunStorageMode::SharedSession);
+                }
+            },
+            None => {
+                request.context_overrides = Some(SubagentContextOverrides {
+                    storage_mode: Some(astrcode_core::SubRunStorageMode::SharedSession),
+                    ..SubagentContextOverrides::default()
+                });
+            },
+        }
         let prepared_execution = self.prepare_scoped_execution_request(
             InvocationKind::RootExecution,
             &profile,
@@ -151,6 +165,8 @@ impl AgentExecutionServiceHandle {
         let accepted_turn_id = turn_id.clone();
         // 在 spawn 前克隆 agent_control，避免借用 `self` 逃逸到 'static 闭包
         let agent_control = self.runtime.agent_control();
+        let execution_service = self.clone();
+        let drain_session_id = session_meta.session_id.clone();
         let launch = prepare_root_execution_launch(
             &session_meta.session_id,
             &turn_id,
@@ -159,7 +175,7 @@ impl AgentExecutionServiceHandle {
             prepared_execution
                 .execution_spec
                 .resolved_context_snapshot
-                .composed_task
+                .task_payload
                 .clone(),
         );
         let handle = tokio::spawn(async move {
@@ -169,14 +185,25 @@ impl AgentExecutionServiceHandle {
                 &prepared_execution.loop_,
                 &turn_id,
                 session_cancel.clone(),
-                launch.user_event,
+                RuntimeTurnInput::from_user_event(launch.user_event),
                 launch.agent,
                 launch.execution_owner,
                 budget_settings,
+                Some(observability.clone()),
             )
             .await;
             complete_session_execution(&session_state_for_task, task_result.phase, &agent_control)
                 .await;
+            if let Err(error) = execution_service
+                .try_start_parent_delivery_turn(&drain_session_id)
+                .await
+            {
+                log::warn!(
+                    "failed to drain parent delivery queue after root turn '{}' completed: {}",
+                    turn_id,
+                    error
+                );
+            }
 
             let elapsed = turn_started_at.elapsed();
             observability.record_turn_execution(elapsed, task_result.succeeded);

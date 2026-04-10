@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use astrcode_core::{AgentStatus, ChildSessionNotificationKind, SubRunOutcome, SubRunResult};
 use astrcode_runtime_execution::{
-    ParsedSubRunStatus, ParsedSubRunStatusSource, find_subrun_status_in_events,
+    LegacyRejectionKind, ParsedSubRunStatus, ParsedSubRunStatusSource,
+    find_subrun_status_in_events, legacy_shared_history_rejection_message,
     resolve_subrun_status_snapshot,
 };
 use astrcode_runtime_session::normalize_session_id;
@@ -38,6 +39,19 @@ impl AgentExecutionServiceHandle {
                 sub_run_id, session_id
             )));
         };
+        if matches!(snapshot.source, ParsedSubRunStatusSource::LegacyDurable) {
+            let message = legacy_shared_history_rejection_message(&session_id, Some(sub_run_id));
+            self.runtime
+                .observability
+                .record_legacy_rejection(LegacyRejectionKind::SharedHistoryUnsupported);
+            log::warn!(
+                "rejecting legacy shared-history sub-run status lookup: session='{}', \
+                 subRunId='{}'",
+                session_id,
+                sub_run_id
+            );
+            return Err(ServiceError::Conflict(message));
+        }
         Ok(to_service_subrun_snapshot(snapshot))
     }
 }

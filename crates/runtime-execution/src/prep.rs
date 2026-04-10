@@ -7,6 +7,8 @@
 //! - 执行结果构建（handoff/failure/artifacts）
 //!
 //! 设计原则：纯函数无状态，让 runtime façade 专注于编排。
+//! 本文件刻意不持有运行时锁、也不启动后台任务，便于持续审查
+//! lock-held-await 和 unmanaged spawn 风险。
 
 use std::{collections::HashSet, sync::Arc};
 
@@ -21,7 +23,10 @@ use astrcode_runtime_prompt::PromptDeclaration;
 use astrcode_runtime_registry::CapabilityRouter;
 
 use crate::{
-    ResolvedContextSnapshot, policy::resolve_subagent_overrides, resolve_context_snapshot,
+    ResolvedContextSnapshot,
+    context::{CHILD_INHERITED_COMPACT_SUMMARY_BLOCK_ID, CHILD_INHERITED_RECENT_TAIL_BLOCK_ID},
+    policy::resolve_subagent_overrides,
+    resolve_context_snapshot,
 };
 
 #[derive(Debug, Clone)]
@@ -77,6 +82,7 @@ pub struct ScopedExecutionSurface<TSkillCatalog> {
     pub prompt_declarations: Vec<PromptDeclaration>,
     pub skill_catalog: TSkillCatalog,
     pub hook_handlers: Vec<Arc<dyn HookHandler>>,
+    pub prompt_builder: astrcode_runtime_prompt::LayeredPromptBuilder,
     pub active_profile: String,
     pub runtime_config: astrcode_runtime_config::RuntimeConfig,
 }
@@ -142,6 +148,7 @@ where
         Vec<PromptDeclaration>,
         TSkillCatalog,
         Vec<Arc<dyn HookHandler>>,
+        astrcode_runtime_prompt::LayeredPromptBuilder,
         &str,
         &astrcode_runtime_config::RuntimeConfig,
     ) -> TLoop,
@@ -166,6 +173,7 @@ where
         &surface.prompt_declarations,
         profile,
         &execution_spec.resolved_overrides,
+        &execution_spec.resolved_context_snapshot,
     );
     let scoped_capabilities = surface.capabilities.subset_for_tools(&final_tool_names)?;
     let loop_ = build_loop(
@@ -173,6 +181,7 @@ where
         prompt_declarations.clone(),
         surface.skill_catalog.clone(),
         surface.hook_handlers.clone(),
+        surface.prompt_builder.clone(),
         &surface.active_profile,
         &surface.runtime_config,
     );
@@ -189,6 +198,7 @@ fn build_child_prompt_declarations(
     parent: &[PromptDeclaration],
     profile: &AgentProfile,
     overrides: &ResolvedSubagentContextOverrides,
+    resolved_context_snapshot: &ResolvedContextSnapshot,
 ) -> Vec<PromptDeclaration> {
     let mut declarations =
         if overrides.inherit_system_instructions || overrides.inherit_project_instructions {
@@ -196,12 +206,16 @@ fn build_child_prompt_declarations(
         } else {
             Vec::new()
         };
+    declarations.extend(build_inherited_context_prompt_declarations(
+        resolved_context_snapshot,
+    ));
     if let Some(system_prompt) = profile.system_prompt.as_ref() {
         declarations.push(PromptDeclaration {
             block_id: format!("subagent.profile.{}", profile.id),
             title: format!("Sub-Agent Profile: {}", profile.name),
             content: system_prompt.clone(),
             render_target: astrcode_runtime_prompt::PromptDeclarationRenderTarget::System,
+            layer: astrcode_runtime_prompt::PromptLayer::SemiStable,
             kind: astrcode_runtime_prompt::PromptDeclarationKind::ExtensionInstruction,
             priority_hint: Some(100),
             always_include: true,
@@ -213,21 +227,91 @@ fn build_child_prompt_declarations(
     declarations
 }
 
+fn build_inherited_context_prompt_declarations(
+    resolved_context_snapshot: &ResolvedContextSnapshot,
+) -> Vec<PromptDeclaration> {
+    let mut declarations = Vec::new();
+
+    if let Some(summary) = resolved_context_snapshot.inherited_compact_summary.as_ref() {
+        let trimmed = summary.trim();
+        if trimmed.is_empty() {
+            return declarations;
+        }
+        declarations.push(PromptDeclaration {
+            block_id: CHILD_INHERITED_COMPACT_SUMMARY_BLOCK_ID.to_string(),
+            title: "Inherited Compact Summary".to_string(),
+            content: trimmed.to_string(),
+            render_target: astrcode_runtime_prompt::PromptDeclarationRenderTarget::System,
+            layer: astrcode_runtime_prompt::PromptLayer::Inherited,
+            kind: astrcode_runtime_prompt::PromptDeclarationKind::ExtensionInstruction,
+            priority_hint: Some(540),
+            always_include: true,
+            source: astrcode_runtime_prompt::PromptDeclarationSource::Builtin,
+            capability_name: Some("spawnAgent".to_string()),
+            origin: Some("child-context:compact-summary".to_string()),
+        });
+    }
+
+    if !resolved_context_snapshot.inherited_recent_tail.is_empty() {
+        let joined: String = resolved_context_snapshot
+            .inherited_recent_tail
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if joined.is_empty() {
+            return declarations;
+        }
+        declarations.push(PromptDeclaration {
+            block_id: CHILD_INHERITED_RECENT_TAIL_BLOCK_ID.to_string(),
+            title: "Inherited Recent Tail".to_string(),
+            content: joined,
+            render_target: astrcode_runtime_prompt::PromptDeclarationRenderTarget::System,
+            layer: astrcode_runtime_prompt::PromptLayer::Inherited,
+            kind: astrcode_runtime_prompt::PromptDeclarationKind::ExtensionInstruction,
+            priority_hint: Some(550),
+            always_include: true,
+            source: astrcode_runtime_prompt::PromptDeclarationSource::Builtin,
+            capability_name: Some("spawnAgent".to_string()),
+            origin: Some("child-context:recent-tail".to_string()),
+        });
+    }
+
+    declarations
+}
+
 pub fn build_child_agent_state(
     session_id: &str,
     working_dir: std::path::PathBuf,
-    task: &str,
+    task_payload: &str,
 ) -> AgentState {
     AgentState {
         session_id: session_id.to_string(),
         working_dir,
         messages: vec![LlmMessage::User {
-            content: task.to_string(),
+            content: task_payload.to_string(),
             origin: UserMessageOrigin::User,
         }],
         phase: astrcode_core::Phase::Thinking,
         turn_count: 0,
     }
+}
+
+/// 在 durable replay 的基础上为 child session 追加一条新的恢复任务。
+///
+/// 为什么不直接从空状态重建：
+/// resume 的语义是继续同一个 child session，而不是伪造一个看起来相似的新 spawn。
+pub fn build_resumed_child_agent_state(
+    mut replayed_state: AgentState,
+    resume_message: &str,
+) -> AgentState {
+    replayed_state.messages.push(LlmMessage::User {
+        content: resume_message.to_string(),
+        origin: UserMessageOrigin::User,
+    });
+    replayed_state.phase = astrcode_core::Phase::Thinking;
+    replayed_state
 }
 
 pub fn prepare_prompt_submission(
@@ -318,14 +402,14 @@ pub fn prepare_root_execution_launch(
     turn_id: &str,
     root_agent_id: String,
     profile_id: String,
-    composed_task: String,
+    task_payload: String,
 ) -> RootExecutionLaunch {
     let agent = AgentEventContext::root_execution(root_agent_id, profile_id);
     RootExecutionLaunch {
         user_event: StorageEvent::UserMessage {
             turn_id: Some(turn_id.to_string()),
             agent: agent.clone(),
-            content: composed_task,
+            content: task_payload,
             timestamp: chrono::Utc::now(),
             origin: UserMessageOrigin::User,
         },
@@ -583,17 +667,21 @@ fn classify_subrun_failure(error: &AstrError) -> SubRunFailureCode {
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        AgentMode, AgentProfile, AgentStatus, AstrError, InvocationKind, SpawnAgentParams,
-        SubRunFailureCode, SubRunStorageMode, SubagentContextOverrides,
+        AgentMode, AgentProfile, AgentStatus, AstrError, InvocationKind,
+        ResolvedSubagentContextOverrides, SpawnAgentParams, SubRunFailureCode, SubRunStorageMode,
+        SubagentContextOverrides,
     };
+    use astrcode_runtime_prompt::PromptLayer;
 
     use super::{
-        AgentExecutionRequest, build_background_subrun_handoff, build_execution_spec,
+        AgentExecutionRequest, build_background_subrun_handoff, build_child_agent_state,
+        build_child_prompt_declarations, build_execution_spec, build_resumed_child_agent_state,
         build_root_spawn_params, build_subrun_failure, build_subrun_handoff,
         prepare_prompt_submission, prepare_prompt_submission_with_origin,
         prepare_root_execution_launch, resolve_interrupt_session_plan,
         summarize_execution_description, validate_root_execution_storage_mode,
     };
+    use crate::ResolvedContextSnapshot;
 
     #[test]
     fn build_subrun_handoff_appends_budget_limit_note() {
@@ -735,6 +823,107 @@ mod tests {
         assert_eq!(request.prompt, "review the latest diff");
         assert_eq!(request.context.as_deref(), Some("focus on correctness"));
         assert!(request.context_overrides.is_some());
+    }
+
+    #[test]
+    fn child_prompt_declarations_add_inherited_summary_and_tail_blocks() {
+        let profile = AgentProfile {
+            id: "review".to_string(),
+            name: "Review".to_string(),
+            description: "review".to_string(),
+            mode: AgentMode::SubAgent,
+            system_prompt: Some("profile guidance".to_string()),
+            allowed_tools: Vec::new(),
+            disallowed_tools: Vec::new(),
+            model_preference: None,
+        };
+
+        let declarations = build_child_prompt_declarations(
+            &[],
+            &profile,
+            &ResolvedSubagentContextOverrides {
+                inherit_system_instructions: true,
+                inherit_project_instructions: true,
+                ..ResolvedSubagentContextOverrides::default()
+            },
+            &ResolvedContextSnapshot {
+                task_payload: "# Task\ninspect auth flow".to_string(),
+                inherited_compact_summary: Some("parent summary".to_string()),
+                inherited_recent_tail: vec![
+                    "- user: inspect auth".to_string(),
+                    "- assistant: checking".to_string(),
+                ],
+            },
+        );
+
+        assert_eq!(declarations.len(), 3);
+        assert!(declarations.iter().any(|declaration| {
+            declaration.block_id == "child.inherited.compact_summary"
+                && declaration.layer == PromptLayer::Inherited
+                && declaration.content == "parent summary"
+        }));
+        assert!(declarations.iter().any(|declaration| {
+            declaration.block_id == "child.inherited.recent_tail"
+                && declaration.layer == PromptLayer::Inherited
+                && declaration.content.contains("- user: inspect auth")
+        }));
+        assert!(declarations.iter().any(|declaration| {
+            declaration.block_id == "subagent.profile.review"
+                && declaration.layer == PromptLayer::SemiStable
+        }));
+    }
+
+    #[test]
+    fn build_child_agent_state_keeps_only_task_payload_in_messages() {
+        let child_state = build_child_agent_state(
+            "session-child",
+            std::env::temp_dir(),
+            "# Task\ninspect auth module\n\n# Context\nfocus on cache misses",
+        );
+
+        assert_eq!(child_state.messages.len(), 1);
+        assert!(matches!(
+            &child_state.messages[0],
+            astrcode_core::LlmMessage::User { content, .. }
+                if content.contains("# Task\ninspect auth module")
+                    && !content.contains("Parent Compact Summary")
+                    && !content.contains("Recent Tail")
+        ));
+    }
+
+    #[test]
+    fn build_resumed_child_agent_state_keeps_replayed_history_and_appends_resume_message() {
+        let replayed = astrcode_core::AgentState {
+            session_id: "session-child".to_string(),
+            working_dir: std::env::temp_dir(),
+            messages: vec![
+                astrcode_core::LlmMessage::User {
+                    content: "旧任务".to_string(),
+                    origin: astrcode_core::UserMessageOrigin::User,
+                },
+                astrcode_core::LlmMessage::Assistant {
+                    content: "已有分析".to_string(),
+                    tool_calls: Vec::new(),
+                    reasoning: None,
+                },
+            ],
+            phase: astrcode_core::Phase::Idle,
+            turn_count: 2,
+        };
+
+        let resumed = build_resumed_child_agent_state(replayed, "继续完成剩余检查");
+
+        assert_eq!(resumed.messages.len(), 3);
+        assert_eq!(resumed.turn_count, 2);
+        assert_eq!(resumed.phase, astrcode_core::Phase::Thinking);
+        assert!(matches!(
+            &resumed.messages[1],
+            astrcode_core::LlmMessage::Assistant { content, .. } if content == "已有分析"
+        ));
+        assert!(matches!(
+            &resumed.messages[2],
+            astrcode_core::LlmMessage::User { content, .. } if content == "继续完成剩余检查"
+        ));
     }
 
     #[test]

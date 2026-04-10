@@ -19,7 +19,7 @@ use crate::{
     service::{
         PromptAccepted, ServiceResult,
         execution::AgentExecutionServiceHandle,
-        turn::{complete_session_execution, run_session_turn},
+        turn::{RuntimeTurnInput, complete_session_execution, run_session_turn},
     },
 };
 
@@ -88,6 +88,8 @@ impl AgentExecutionServiceHandle {
         let execution_owner = prepared_submission.execution_owner.clone();
         // 在 spawn 前克隆 agent_control，避免借用 `self` 逃逸到 'static 闭包
         let agent_control = self.runtime.agent_control();
+        let execution_service = self.clone();
+        let drain_session_id = accepted_session_id.clone();
         tokio::spawn(async move {
             let turn_started_at = Instant::now();
             let result = run_session_turn(
@@ -95,13 +97,24 @@ impl AgentExecutionServiceHandle {
                 &loop_,
                 &turn_id,
                 cancel.clone(),
-                user_event,
+                RuntimeTurnInput::from_user_event(user_event),
                 astrcode_core::AgentEventContext::default(),
                 execution_owner,
                 budget_settings,
+                Some(observability.clone()),
             )
             .await;
             complete_session_execution(&state, result.phase, &agent_control).await;
+            if let Err(error) = execution_service
+                .try_start_parent_delivery_turn(&drain_session_id)
+                .await
+            {
+                log::warn!(
+                    "failed to drain parent delivery queue after prompt turn '{}' completed: {}",
+                    turn_id,
+                    error
+                );
+            }
 
             let elapsed = turn_started_at.elapsed();
             observability.record_turn_execution(elapsed, result.succeeded);

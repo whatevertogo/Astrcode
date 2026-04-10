@@ -14,7 +14,9 @@ use astrcode_core::{
 use astrcode_runtime_agent_control::AgentControl;
 use astrcode_runtime_agent_loader::{AgentProfileLoader, AgentProfileRegistry};
 use astrcode_runtime_agent_loop::{AgentLoop, ApprovalBroker, DefaultApprovalBroker};
-use astrcode_runtime_prompt::PromptDeclaration;
+use astrcode_runtime_prompt::{
+    LayeredPromptBuilder, PromptDeclaration, default_layered_prompt_builder,
+};
 use astrcode_runtime_registry::CapabilityRouter;
 use astrcode_runtime_session::SessionState;
 use astrcode_runtime_skill_loader::SkillCatalog;
@@ -48,8 +50,8 @@ pub use execution::{
 pub(crate) use execution::{DeferredCollaborationExecutor, DeferredSubAgentExecutor};
 use observability::RuntimeObservability;
 pub use observability::{
-    OperationMetricsSnapshot, ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot,
-    SubRunExecutionMetricsSnapshot,
+    ExecutionDiagnosticsSnapshot, OperationMetricsSnapshot, ReplayMetricsSnapshot, ReplayPath,
+    RuntimeObservabilitySnapshot, SubRunExecutionMetricsSnapshot,
 };
 pub use session::SessionServiceHandle;
 
@@ -76,6 +78,7 @@ struct RuntimeSurfaceState {
     prompt_declarations: Vec<PromptDeclaration>,
     skill_catalog: Arc<SkillCatalog>,
     hook_handlers: Vec<Arc<dyn HookHandler>>,
+    prompt_builder: LayeredPromptBuilder,
 }
 
 pub(crate) struct RuntimeServiceDeps {
@@ -138,7 +141,7 @@ pub struct RuntimeService {
     /// `Mutex<()>` 是 Tokio 中常见的"旋转门"模式——guard 不持有任何数据，
     /// 仅用于确保互斥。相比使用专门的 AtomicBool + Notify 机制，
     /// 这种方式更简洁且编译器能更好地优化。
-    session_load_lock: Mutex<()>,
+    session_load_lock: Arc<Mutex<()>>,
     /// 可观测性（指标收集）
     observability: Arc<RuntimeObservability>,
     /// 子 Agent 控制平面。
@@ -283,6 +286,7 @@ impl RuntimeService {
             prompt_declarations,
             skill_catalog,
             hook_handlers: Vec::new(),
+            prompt_builder: default_layered_prompt_builder(),
         };
         let loop_ = build_agent_loop(
             &surface,
@@ -306,7 +310,7 @@ impl RuntimeService {
             approval,
             config: Mutex::new(config),
             session_manager,
-            session_load_lock: Mutex::new(()),
+            session_load_lock: Arc::new(Mutex::new(())),
             observability: Arc::new(RuntimeObservability::default()),
             agent_control,
             agent_loader,

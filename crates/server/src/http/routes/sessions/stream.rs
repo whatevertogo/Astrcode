@@ -139,8 +139,9 @@ async fn unfiltered_session_events(
                         }
                         Err(error) => {
                             log::warn!(
-                                "SSE replay recovery failed for session '{}': {}",
+                                "SSE replay recovery failed for session '{}': cursor='{}', error={}",
                                 session_id_for_stream,
+                                cursor.as_deref().unwrap_or("<start>"),
                                 error
                             );
                             yield Ok::<Event, Infallible>(stream_error_event(
@@ -272,8 +273,10 @@ async fn filtered_session_events(
                         }
                         Err(error) => {
                             log::warn!(
-                                "SSE filtered replay recovery failed for session '{}': {}",
+                                "SSE filtered replay recovery failed for session '{}': cursor='{}', filter={:?}, error={}",
                                 session_id_for_stream,
+                                cursor.as_deref().unwrap_or("<start>"),
+                                filter.spec(),
                                 error
                             );
                             yield Ok::<Event, Infallible>(stream_error_event(

@@ -6,6 +6,7 @@ import styles from './SubRunBlock.module.css';
 interface SubRunBlockProps {
   subRunId: string;
   sessionId: string | null;
+  childSessionId?: string;
   title: string;
   startMessage?: SubRunStartMessage;
   finishMessage?: SubRunFinishMessage;
@@ -46,13 +47,12 @@ function getStatusLabel(status: SubRunStatus): string {
   }
 }
 
-function getStorageModeLabel(startMessage?: SubRunStartMessage): string {
-  if (!startMessage) {
-    return 'shared session';
+function getStorageModeLabel(startMessage?: SubRunStartMessage, childSessionId?: string): string {
+  const storageMode = startMessage?.resolvedOverrides.storageMode ?? startMessage?.storageMode;
+  if (storageMode === 'independentSession' || childSessionId) {
+    return 'independent session';
   }
-  return startMessage.storageMode === 'independentSession'
-    ? 'independent session'
-    : 'shared session';
+  return 'shared session';
 }
 
 function getStatusClassName(status: SubRunStatus): string {
@@ -82,6 +82,7 @@ function isVisibleActivityItem(item: ThreadItem): boolean {
 function SubRunBlock({
   subRunId,
   sessionId,
+  childSessionId: projectedChildSessionId,
   title,
   startMessage,
   finishMessage,
@@ -104,14 +105,18 @@ function SubRunBlock({
 
   const status = toSubRunStatus(finishMessage);
   const statusLabel = getStatusLabel(status);
+  const childSessionId =
+    projectedChildSessionId ?? startMessage?.childSessionId ?? finishMessage?.childSessionId;
+  const isIndependentSession =
+    (startMessage?.resolvedOverrides.storageMode ?? startMessage?.storageMode) ===
+      'independentSession' || childSessionId !== undefined;
   const metrics =
     finishMessage !== undefined
       ? `${finishMessage.stepCount} steps · ${finishMessage.estimatedTokens} tokens`
-      : getStorageModeLabel(startMessage);
+      : getStorageModeLabel(startMessage, childSessionId);
   const resultHandoff = finishMessage?.result.handoff;
   const resultFailure = finishMessage?.result.failure;
   const isBackgroundRunning = status === 'running';
-  const childSessionId = startMessage?.childSessionId ?? finishMessage?.childSessionId;
   const navigationLabel =
     childSessionId !== undefined
       ? '打开独立会话'
@@ -122,7 +127,13 @@ function SubRunBlock({
   const activitySummary =
     resultFailure?.displayMessage ||
     resultHandoff?.summary.trim() ||
-    (isBackgroundRunning ? '后台运行中，展开后会继续实时刷新。' : '展开查看子执行的思考和工具流。');
+    (isBackgroundRunning
+      ? isIndependentSession
+        ? '独立子会话正在后台运行，请打开会话查看实时输出。'
+        : '后台运行中，展开后会继续实时刷新。'
+      : isIndependentSession
+        ? '这是独立子会话，请打开会话查看思考和工具流。'
+        : '展开查看子执行的思考和工具流。');
   const shouldAutoOpen = !userInteracted && isBackgroundRunning;
 
   const updateStreamStickiness = useCallback(() => {
@@ -263,9 +274,13 @@ function SubRunBlock({
       <div ref={streamRef} className={styles.activityBody} onScroll={updateStreamStickiness}>
         {activityItems.length === 0 ? (
           <div className={styles.activityEmpty}>
-            {isBackgroundRunning
-              ? '等待子 Agent 输出思考或工具调用...'
-              : '该子执行没有产生可展示的思考或工具调用。'}
+            {isIndependentSession
+              ? isBackgroundRunning
+                ? '该子 Agent 运行在独立会话中；请点击“打开独立会话”查看实时输出。'
+                : '该子 Agent 的思考和工具流保存在独立会话中；请点击“打开独立会话”查看。'
+              : isBackgroundRunning
+                ? '等待子 Agent 输出思考或工具调用...'
+                : '该子执行没有产生可展示的思考或工具调用。'}
           </div>
         ) : (
           renderThreadItems(activityItems, { nested: true })

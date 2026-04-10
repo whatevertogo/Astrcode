@@ -18,7 +18,12 @@ use astrcode_core::{
     AstrError, CancelToken, LlmMessage, Phase, ToolCallRequest, UserMessageOrigin,
 };
 use astrcode_runtime_llm::LlmOutput;
-use astrcode_runtime_prompt::{PromptComposer, PromptComposerOptions};
+use astrcode_runtime_prompt::{
+    PromptComposer, PromptComposerOptions, PromptDeclaration, PromptDeclarationKind,
+    PromptDeclarationRenderTarget, PromptDeclarationSource, PromptLayer,
+    default_layered_prompt_builder,
+};
+use astrcode_runtime_skill_loader::SkillCatalog;
 use serde_json::json;
 use tokio::time::Duration;
 
@@ -109,11 +114,8 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
         assert!(request.tools.iter().any(|tool| tool.name == "quickTool"));
     }
 
-    // RequestAssembler 现在会在真实会话消息前编码 structured workset，所以消息数比
-    // 旧基线多 1。第二轮仍沿用历史基线：只保留继续执行所需的 assistant/tool 记录，
-    // 不再重复首轮用户消息。
-    assert_eq!(requests[0].messages.len(), 4);
-    assert_eq!(requests[1].messages.len(), 4);
+    // 真实会话消息只保留 workflow prepend + task payload，不再把运行时上下文伪装成 user message。
+    assert_eq!(requests[0].messages.len(), 3);
     assert!(matches!(
         &requests[0].messages[0],
         LlmMessage::User { content, .. } if content.starts_with("Before changing code, inspect the relevant files and gather context first.")
@@ -124,12 +126,21 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
     ));
     assert!(matches!(
         &requests[0].messages[2],
-        LlmMessage::User { content, .. } if content.contains("[Structured workset: working-dir]")
-    ));
-    assert!(matches!(
-        &requests[0].messages[3],
         LlmMessage::User { content, .. } if content == "run quick tool"
     ));
+    assert!(
+        requests
+            .iter()
+            .flat_map(|request| request.messages.iter())
+            .all(|message| {
+                !matches!(
+                    message,
+                    LlmMessage::User { content, .. } if content.contains("[Structured ")
+                )
+            }),
+        "runtime structured context should stay in prompt metadata instead of leaking into \
+         messages"
+    );
     assert!(
         requests[1].messages.iter().any(|message| {
             matches!(
@@ -139,16 +150,6 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
             )
         }),
         "assistant tool call should remain visible on later steps"
-    );
-    assert!(
-        requests[1].messages.iter().any(|message| {
-            matches!(
-                message,
-                LlmMessage::User { content, .. }
-                    if content.contains("[Structured workset: working-dir]")
-            )
-        }),
-        "structured workset should remain present on later steps"
     );
     assert!(
         requests[1].messages.iter().any(|message| {
@@ -213,6 +214,99 @@ async fn reuses_prompt_contributor_cache_across_llm_steps() {
         .expect("turn should complete");
 
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn inherited_prompt_declarations_render_between_semi_stable_and_dynamic_layers() {
+    let _guard = super::test_support::TestEnvGuard::new();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(RecordingProvider {
+        responses: Mutex::new(VecDeque::from([LlmOutput {
+            content: "done".to_string(),
+            tool_calls: vec![],
+            reasoning: None,
+            usage: None,
+            finish_reason: Default::default(),
+        }])),
+        requests: requests.clone(),
+    });
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::from_capabilities_with_prompt_inputs(
+        factory,
+        empty_capabilities(),
+        vec![PromptDeclaration {
+            block_id: "child.inherited.compact_summary".to_string(),
+            title: "Inherited Compact Summary".to_string(),
+            content: "compact summary".to_string(),
+            render_target: PromptDeclarationRenderTarget::System,
+            layer: PromptLayer::Inherited,
+            kind: PromptDeclarationKind::ExtensionInstruction,
+            priority_hint: Some(581),
+            always_include: true,
+            source: PromptDeclarationSource::Builtin,
+            capability_name: None,
+            origin: Some("child-context:compact-summary".to_string()),
+        }],
+        Arc::new(SkillCatalog::new(Vec::new())),
+        None,
+        default_layered_prompt_builder(),
+    );
+    let state = make_state("inspect inherited blocks");
+
+    loop_runner
+        .run_turn(
+            &state,
+            "turn-inherited",
+            &mut |_event| Ok(()),
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+
+    let requests = requests.lock().expect("lock should work");
+    let request = requests.first().expect("request should be captured");
+    let layers = request
+        .system_prompt_blocks
+        .iter()
+        .map(|block| block.layer)
+        .collect::<Vec<_>>();
+
+    let inherited_index = layers
+        .iter()
+        .position(|layer| *layer == astrcode_core::SystemPromptLayer::Inherited)
+        .expect("inherited layer should exist");
+    let dynamic_index = layers
+        .iter()
+        .position(|layer| *layer == astrcode_core::SystemPromptLayer::Dynamic)
+        .expect("dynamic layer should exist");
+
+    assert!(
+        inherited_index < dynamic_index,
+        "Inherited layer should appear before Dynamic layer"
+    );
+    assert!(
+        layers[..inherited_index].iter().all(|layer| matches!(
+            layer,
+            astrcode_core::SystemPromptLayer::Stable | astrcode_core::SystemPromptLayer::SemiStable
+        )),
+        "Inherited layer should be inserted after Stable/SemiStable layers"
+    );
+    assert!(
+        request.messages.iter().all(|message| {
+            !matches!(
+                message,
+                LlmMessage::User { content, .. } if content.contains("compact summary")
+            )
+        }),
+        "inherited prompt declarations must stay out of message history"
+    );
+    assert!(
+        request
+            .system_prompt_blocks
+            .iter()
+            .any(|block| block.content.contains("compact summary")),
+        "inherited summary should be rendered as a system prompt block"
+    );
 }
 
 #[tokio::test]

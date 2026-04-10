@@ -57,9 +57,10 @@ pub use bootstrap::{PluginLoadHandle, PluginLoadState, RuntimeBootstrap, bootstr
 pub use runtime_governance::{RuntimeGovernance, RuntimeGovernanceSnapshot, RuntimeReloadResult};
 pub use service::{
     AgentExecutionAccepted, AgentExecutionServiceHandle, AgentProfileSummary, ComposerOption,
-    ComposerOptionKind, ComposerOptionsRequest, OperationMetricsSnapshot, PromptAccepted,
-    ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot, RuntimeService, ServiceError,
-    ServiceResult, SessionCatalogEvent, SessionEventRecord, SessionHistorySnapshot, SessionReplay,
-    SessionReplaySource, SessionServiceHandle, SubRunExecutionMetricsSnapshot,
-    SubRunStatusSnapshot, SubRunStatusSource, ToolExecutionServiceHandle, ToolSummary,
+    ComposerOptionKind, ComposerOptionsRequest, ExecutionDiagnosticsSnapshot,
+    OperationMetricsSnapshot, PromptAccepted, ReplayMetricsSnapshot, ReplayPath,
+    RuntimeObservabilitySnapshot, RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent,
+    SessionEventRecord, SessionHistorySnapshot, SessionReplay, SessionReplaySource,
+    SessionServiceHandle, SubRunExecutionMetricsSnapshot, SubRunStatusSnapshot, SubRunStatusSource,
+    ToolExecutionServiceHandle, ToolSummary,
 };

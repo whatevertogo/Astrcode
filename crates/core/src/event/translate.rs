@@ -172,6 +172,9 @@ impl EventTranslator {
                 provider_output_tokens,
                 cache_creation_input_tokens,
                 cache_read_input_tokens,
+                provider_cache_metrics_supported,
+                prompt_cache_reuse_hits,
+                prompt_cache_reuse_misses,
                 ..
             } => {
                 push(AgentEvent::PromptMetrics {
@@ -187,6 +190,9 @@ impl EventTranslator {
                     provider_output_tokens: *provider_output_tokens,
                     cache_creation_input_tokens: *cache_creation_input_tokens,
                     cache_read_input_tokens: *cache_read_input_tokens,
+                    provider_cache_metrics_supported: *provider_cache_metrics_supported,
+                    prompt_cache_reuse_hits: *prompt_cache_reuse_hits,
+                    prompt_cache_reuse_misses: *prompt_cache_reuse_misses,
                 });
             },
             StorageEvent::CompactApplied {
@@ -431,7 +437,7 @@ mod tests {
         AgentEvent, AgentEventContext, AgentStatus, ChildSessionLineageKind,
         ChildSessionNotification, ChildSessionNotificationKind, StoredEvent, SubRunDescriptor,
         SubRunOutcome, SubRunResult, SubRunStorageMode, ToolOutputStream, UserMessageOrigin,
-        phase_of_storage_event,
+        format_compact_summary, phase_of_storage_event,
     };
 
     #[test]
@@ -494,6 +500,44 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn internal_user_origins_do_not_replay_as_user_visible_messages() {
+        let records = replay_records(
+            &[
+                StoredEvent {
+                    storage_seq: 3,
+                    event: StorageEvent::UserMessage {
+                        turn_id: Some("turn-3".to_string()),
+                        agent: AgentEventContext::default(),
+                        content: "The conversation was compacted. Continue from where you left \
+                                  off."
+                            .to_string(),
+                        origin: UserMessageOrigin::AutoContinueNudge,
+                        timestamp: chrono::Utc::now(),
+                    },
+                },
+                StoredEvent {
+                    storage_seq: 4,
+                    event: StorageEvent::UserMessage {
+                        turn_id: Some("turn-3".to_string()),
+                        agent: AgentEventContext::default(),
+                        content: format_compact_summary("summary"),
+                        origin: UserMessageOrigin::CompactSummary,
+                        timestamp: chrono::Utc::now(),
+                    },
+                },
+            ],
+            None,
+        );
+
+        assert!(
+            records
+                .iter()
+                .all(|record| !matches!(record.event, AgentEvent::UserMessage { .. })),
+            "internal prompt-side context must not leak into replayed user-visible history"
+        );
     }
 
     #[test]
@@ -652,6 +696,9 @@ mod tests {
                     provider_output_tokens: Some(120),
                     cache_creation_input_tokens: Some(700),
                     cache_read_input_tokens: Some(650),
+                    provider_cache_metrics_supported: true,
+                    prompt_cache_reuse_hits: 3,
+                    prompt_cache_reuse_misses: 1,
                 },
             }],
             None,
@@ -665,11 +712,17 @@ mod tests {
                 step_index,
                 provider_input_tokens,
                 cache_read_input_tokens,
+                provider_cache_metrics_supported,
+                prompt_cache_reuse_hits,
+                prompt_cache_reuse_misses,
                 ..
             } if turn_id.as_deref() == Some("turn-9")
                 && *step_index == 1
                 && *provider_input_tokens == Some(900)
                 && *cache_read_input_tokens == Some(650)
+                && *provider_cache_metrics_supported
+                && *prompt_cache_reuse_hits == 3
+                && *prompt_cache_reuse_misses == 1
         ));
     }
 

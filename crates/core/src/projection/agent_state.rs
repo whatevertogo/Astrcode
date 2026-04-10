@@ -107,10 +107,12 @@ impl AgentStateProjector {
                 content, origin, ..
             } => {
                 self.flush_pending_assistant();
-                self.state.messages.push(LlmMessage::User {
-                    content: content.clone(),
-                    origin: *origin,
-                });
+                if !matches!(origin, UserMessageOrigin::ReactivationPrompt) {
+                    self.state.messages.push(LlmMessage::User {
+                        content: content.clone(),
+                        origin: *origin,
+                    });
+                }
                 self.state.phase = Phase::Thinking;
             },
 
@@ -352,6 +354,29 @@ mod tests {
         assert!(
             matches!(&state.messages[0], LlmMessage::User { content, .. } if content == "hello")
         );
+        assert_eq!(state.phase, Phase::Thinking);
+    }
+
+    #[test]
+    fn reactivation_prompt_does_not_pollute_projected_messages() {
+        let state = project(&[
+            StorageEvent::SessionStart {
+                session_id: "s1".into(),
+                timestamp: ts(),
+                working_dir: "/tmp".into(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
+            StorageEvent::UserMessage {
+                turn_id: Some("turn-reactivate".into()),
+                agent: root_agent(),
+                content: "# Child Session Delivery".into(),
+                origin: UserMessageOrigin::ReactivationPrompt,
+                timestamp: ts(),
+            },
+        ]);
+
+        assert!(state.messages.is_empty());
         assert_eq!(state.phase, Phase::Thinking);
     }
 

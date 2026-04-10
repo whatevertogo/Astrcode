@@ -30,10 +30,17 @@ pub enum DiagnosticReason {
     RenderFailed { message: String },
     /// Block 内容验证失败（如空标题、空内容）。
     ValidationFailed { message: String },
-    /// Contributor 缓存命中，跳过了重新收集。
-    ContributorCacheHit,
-    /// Contributor 缓存未命中，执行了重新收集。
-    ContributorCacheMiss,
+    /// Contributor / layer cache 命中，跳过了重新收集。
+    CacheReuseHit {
+        contributor_id: String,
+        fingerprint: Option<String>,
+    },
+    /// Contributor / layer cache 未命中，执行了重新收集。
+    CacheReuseMiss {
+        contributor_id: String,
+        fingerprint: Option<String>,
+        invalidation_reason: Option<String>,
+    },
 }
 
 /// 单条诊断信息。
@@ -61,5 +68,45 @@ pub struct PromptDiagnostics {
 impl PromptDiagnostics {
     pub fn push(&mut self, diagnostic: PromptDiagnostic) {
         self.items.push(diagnostic);
+    }
+
+    pub fn push_cache_reuse_hit(
+        &mut self,
+        contributor_id: impl Into<String>,
+        fingerprint: Option<String>,
+    ) {
+        let contributor_id = contributor_id.into();
+        self.push(PromptDiagnostic {
+            level: DiagnosticLevel::Info,
+            block_id: None,
+            contributor_id: Some(contributor_id.clone()),
+            reason: DiagnosticReason::CacheReuseHit {
+                contributor_id,
+                fingerprint,
+            },
+            suggestion: None,
+            timestamp: Utc::now(),
+        });
+    }
+
+    pub fn push_cache_reuse_miss(
+        &mut self,
+        contributor_id: impl Into<String>,
+        fingerprint: Option<String>,
+        invalidation_reason: Option<String>,
+    ) {
+        let contributor_id = contributor_id.into();
+        self.push(PromptDiagnostic {
+            level: DiagnosticLevel::Info,
+            block_id: None,
+            contributor_id: Some(contributor_id.clone()),
+            reason: DiagnosticReason::CacheReuseMiss {
+                contributor_id,
+                fingerprint,
+                invalidation_reason,
+            },
+            suggestion: None,
+            timestamp: Utc::now(),
+        });
     }
 }
