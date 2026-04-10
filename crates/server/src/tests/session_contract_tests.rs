@@ -535,6 +535,175 @@ async fn subrun_cancel_route_returns_not_found_after_removal() {
 }
 
 // ============================================================================
+// Close Agent Route Contract Tests
+// ============================================================================
+
+#[tokio::test]
+async fn close_agent_route_closes_target_agent_and_returns_closed_ids() {
+    let (state, _guard) = test_state(None);
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let created = state
+        .service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("session should be created");
+
+    let profile = astrcode_core::AgentProfile {
+        id: "explore".to_string(),
+        name: "Explore".to_string(),
+        description: "explore agent".to_string(),
+        mode: astrcode_core::AgentMode::SubAgent,
+        system_prompt: None,
+        allowed_tools: Vec::new(),
+        disallowed_tools: Vec::new(),
+        model_preference: None,
+    };
+    let handle = state
+        .service
+        .agent_control()
+        .spawn(
+            &profile,
+            &created.session_id,
+            "turn-parent".to_string(),
+            None,
+        )
+        .await
+        .expect("agent should spawn");
+
+    let app = build_api_router().with_state(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v1/sessions/{}/agents/{}/close",
+                    created.session_id, handle.agent_id
+                ))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"cascade":true}"#))
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body should be readable");
+    let payload: serde_json::Value = serde_json::from_slice(&bytes).expect("should deserialize");
+    let closed_ids = payload["closedAgentIds"]
+        .as_array()
+        .expect("closedAgentIds should be array");
+    assert!(
+        closed_ids
+            .iter()
+            .any(|id| id.as_str() == Some(&handle.agent_id)),
+        "closed list should contain the target agent"
+    );
+}
+
+#[tokio::test]
+async fn close_agent_route_defaults_cascade_to_true_when_body_is_empty() {
+    let (state, _guard) = test_state(None);
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let created = state
+        .service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("session should be created");
+
+    let profile = astrcode_core::AgentProfile {
+        id: "explore".to_string(),
+        name: "Explore".to_string(),
+        description: "explore agent".to_string(),
+        mode: astrcode_core::AgentMode::SubAgent,
+        system_prompt: None,
+        allowed_tools: Vec::new(),
+        disallowed_tools: Vec::new(),
+        model_preference: None,
+    };
+    let handle = state
+        .service
+        .agent_control()
+        .spawn(
+            &profile,
+            &created.session_id,
+            "turn-parent".to_string(),
+            None,
+        )
+        .await
+        .expect("agent should spawn");
+
+    let app = build_api_router().with_state(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v1/sessions/{}/agents/{}/close",
+                    created.session_id, handle.agent_id
+                ))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    // 空 body 默认 cascade=true，应成功关闭
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn close_agent_route_accepts_unknown_agent_id_idempotently() {
+    let (state, _guard) = test_state(None);
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let created = state
+        .service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("session should be created");
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v1/sessions/{}/agents/nonexistent-agent/close",
+                    created.session_id
+                ))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"cascade":true}"#))
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    // close 是幂等操作：不存在的 agent 也返回成功，closedAgentIds 包含目标 ID
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body should be readable");
+    let payload: serde_json::Value = serde_json::from_slice(&bytes).expect("should deserialize");
+    let closed_ids = payload["closedAgentIds"]
+        .as_array()
+        .expect("closedAgentIds should be array");
+    assert!(
+        closed_ids
+            .iter()
+            .any(|id| id.as_str() == Some("nonexistent-agent")),
+        "closed list should contain the requested agent id"
+    );
+}
+
+// ============================================================================
 // Scope Filter Contract Tests (T029 - Additional Coverage)
 // ============================================================================
 

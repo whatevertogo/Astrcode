@@ -596,7 +596,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
         : 'failed';
     const summary = pickString(data, 'summary') ?? '';
     const status = toAgentStatus(data.status) ?? 'failed';
-    const childStatus = toAgentStatus(childRefRaw.status ?? childRefRaw.status) ?? status;
+    const childStatus = toAgentStatus(childRefRaw.status) ?? status;
     const openSessionId = pickString(childRefRaw, 'openSessionId', 'open_session_id') ?? sessionId;
     return {
       event: 'childSessionNotification',

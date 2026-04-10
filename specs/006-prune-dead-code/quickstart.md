@@ -45,7 +45,7 @@ rg -n "legacy_shared_history_error_fixture" crates/runtime-agent-loop
 ## 2. 自动化验证
 
 ```powershell
-cargo fmt --all --check
+cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace --exclude astrcode
 cd frontend

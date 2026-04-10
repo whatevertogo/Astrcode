@@ -143,7 +143,7 @@ pub fn child_delivery_outcome_label(result: &astrcode_core::SubRunResult) -> &'s
         astrcode_core::AgentStatus::Running => "running",
         astrcode_core::AgentStatus::Completed => "completed",
         astrcode_core::AgentStatus::Failed => "failed",
-        astrcode_core::AgentStatus::Cancelled => "aborted",
+        astrcode_core::AgentStatus::Cancelled => "cancelled",
         astrcode_core::AgentStatus::TokenExceeded => "token_exceeded",
         _ => "unknown",
     }
