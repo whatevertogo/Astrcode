@@ -256,6 +256,12 @@ impl LlmProvider for AnthropicProvider {
         true
     }
 
+    fn prompt_metrics_input_tokens(&self, usage: LlmUsage) -> usize {
+        usage
+            .input_tokens
+            .saturating_add(usage.cache_read_input_tokens)
+    }
+
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         let cancel = request.cancel;
 
@@ -339,23 +345,31 @@ impl LlmProvider for AnthropicProvider {
                             let input = u.input_tokens;
                             let cache_read = u.cache_read_input_tokens;
                             let cache_creation = u.cache_creation_input_tokens;
+                            let total_prompt_tokens = input.saturating_add(cache_read);
 
                             if cache_read == 0 && cache_creation > 0 {
                                 debug!(
                                     "Cache miss (streaming): writing {} tokens to cache (total \
-                                     input: {})",
-                                    cache_creation, input
+                                     prompt: {}, uncached input: {})",
+                                    cache_creation, total_prompt_tokens, input
                                 );
                             } else if cache_read > 0 {
-                                let hit_rate = (cache_read as f32 / input as f32) * 100.0;
+                                let hit_rate =
+                                    (cache_read as f32 / total_prompt_tokens as f32) * 100.0;
                                 debug!(
-                                    "Cache hit (streaming): {:.1}% ({} / {} tokens, creation: {})",
-                                    hit_rate, cache_read, input, cache_creation
+                                    "Cache hit (streaming): {:.1}% ({} / {} prompt tokens, \
+                                     creation: {}, uncached input: {})",
+                                    hit_rate,
+                                    cache_read,
+                                    total_prompt_tokens,
+                                    cache_creation,
+                                    input
                                 );
                             } else {
                                 debug!(
-                                    "Cache disabled or unavailable (streaming, input: {} tokens)",
-                                    input
+                                    "Cache disabled or unavailable (streaming, total prompt: {} \
+                                     tokens)",
+                                    total_prompt_tokens
                                 );
                             }
                         }
@@ -627,20 +641,24 @@ fn response_to_output(response: AnthropicResponse) -> LlmOutput {
         let input = u.input_tokens;
         let cache_read = u.cache_read_input_tokens;
         let cache_creation = u.cache_creation_input_tokens;
+        let total_prompt_tokens = input.saturating_add(cache_read);
 
         if cache_read == 0 && cache_creation > 0 {
             debug!(
-                "Cache miss: writing {} tokens to cache (total input: {})",
-                cache_creation, input
+                "Cache miss: writing {} tokens to cache (total prompt: {}, uncached input: {})",
+                cache_creation, total_prompt_tokens, input
             );
         } else if cache_read > 0 {
-            let hit_rate = (cache_read as f32 / input as f32) * 100.0;
+            let hit_rate = (cache_read as f32 / total_prompt_tokens as f32) * 100.0;
             debug!(
-                "Cache hit: {:.1}% ({} / {} tokens, creation: {})",
-                hit_rate, cache_read, input, cache_creation
+                "Cache hit: {:.1}% ({} / {} prompt tokens, creation: {}, uncached input: {})",
+                hit_rate, cache_read, total_prompt_tokens, cache_creation, input
             );
         } else {
-            debug!("Cache disabled or unavailable (input: {} tokens)", input);
+            debug!(
+                "Cache disabled or unavailable (total prompt: {} tokens)",
+                total_prompt_tokens
+            );
         }
     }
 
