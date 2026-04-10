@@ -1,12 +1,12 @@
 import React, { Component, useCallback, useEffect, useRef } from 'react';
 import type { Message } from '../../types';
 import type { SubRunViewData, ThreadItem } from '../../lib/subRunView';
+import { cn } from '../../lib/utils';
 import UserMessage from './UserMessage';
 import AssistantMessage from './AssistantMessage';
 import ToolCallBlock from './ToolCallBlock';
 import CompactMessage from './CompactMessage';
 import SubRunBlock from './SubRunBlock';
-import styles from './MessageList.module.css';
 
 interface MessageListProps {
   sessionId: string | null;
@@ -48,11 +48,11 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
     if (this.state.hasError) {
       const { message } = this.props;
       return (
-        <div className={styles.renderError}>
-          <div className={styles.renderErrorTitle}>消息渲染失败</div>
-          <div className={styles.renderErrorMeta}>kind: {message.kind}</div>
+        <div className="self-stretch border border-[#f0d5d2] bg-[#fff7f6] text-[#915454] rounded-2xl px-4 py-3.5">
+          <div className="text-[13px] font-semibold mb-1.5">消息渲染失败</div>
+          <div className="text-xs text-[#b88585] mb-2">kind: {message.kind}</div>
           {message.kind === 'toolCall' ? (
-            <pre className={styles.renderErrorBody}>
+            <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
               {JSON.stringify(
                 {
                   toolCallId: message.toolCallId,
@@ -66,9 +66,11 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
               )}
             </pre>
           ) : message.kind === 'compact' ? (
-            <pre className={styles.renderErrorBody}>{message.summary}</pre>
+            <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
+              {message.summary}
+            </pre>
           ) : message.kind === 'promptMetrics' ? (
-            <pre className={styles.renderErrorBody}>
+            <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
               {JSON.stringify(
                 {
                   stepIndex: message.stepIndex,
@@ -83,7 +85,7 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
               )}
             </pre>
           ) : message.kind === 'subRunStart' ? (
-            <pre className={styles.renderErrorBody}>
+            <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
               {JSON.stringify(
                 {
                   subRunId: message.subRunId,
@@ -95,7 +97,7 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
               )}
             </pre>
           ) : message.kind === 'subRunFinish' ? (
-            <pre className={styles.renderErrorBody}>
+            <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
               {JSON.stringify(
                 {
                   subRunId: message.subRunId,
@@ -108,7 +110,7 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
               )}
             </pre>
           ) : message.kind === 'childSessionNotification' ? (
-            <pre className={styles.renderErrorBody}>
+            <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
               {JSON.stringify(
                 {
                   subRunId: message.childRef.subRunId,
@@ -121,7 +123,9 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
               )}
             </pre>
           ) : (
-            <pre className={styles.renderErrorBody}>{message.text}</pre>
+            <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
+              {message.text}
+            </pre>
           )}
         </div>
       );
@@ -236,12 +240,6 @@ export default function MessageList({
     ) => {
       const isContinuation =
         previousMessage !== null && isAssistantLike(msg) && isAssistantLike(previousMessage);
-      const rowClass = [
-        isRowNested(options) ? styles.groupMessageRow : styles.messageRow,
-        isContinuation ? styles.messageRowContinuation : '',
-      ]
-        .filter(Boolean)
-        .join(' ');
 
       // 使用传入的 metrics 或检查 nextMessage
       const metricsToAttach =
@@ -251,7 +249,14 @@ export default function MessageList({
           : undefined);
 
       return (
-        <div key={options?.key ?? msg.id} className={rowClass}>
+        <div
+          key={options?.key ?? msg.id}
+          className={cn(
+            isRowNested(options) ? 'w-full' : 'w-[min(100%,var(--chat-content-max-width))] mx-auto',
+            'transition-[margin-top] duration-200 ease-out',
+            isContinuation && '-mt-4'
+          )}
+        >
           <MessageBoundary message={msg}>
             {renderMessageContent(msg, isContinuation, metricsToAttach)}
           </MessageBoundary>
@@ -345,11 +350,15 @@ export default function MessageList({
           return (
             <div
               key={`subrun-missing-${item.subRunId}`}
-              className={isRowNested(options) ? styles.groupMessageRow : styles.messageRow}
+              className={
+                isRowNested(options)
+                  ? 'w-full'
+                  : 'w-[min(100%,var(--chat-content-max-width))] mx-auto'
+              }
             >
-              <div className={styles.renderError}>
-                <div className={styles.renderErrorTitle}>子执行渲染失败</div>
-                <div className={styles.renderErrorMeta}>subRunId: {item.subRunId}</div>
+              <div className="self-stretch border border-[#f0d5d2] bg-[#fff7f6] text-[#915454] rounded-2xl px-4 py-3.5">
+                <div className="text-[13px] font-semibold mb-1.5">子执行渲染失败</div>
+                <div className="text-xs text-[#b88585] mb-2">subRunId: {item.subRunId}</div>
               </div>
             </div>
           );
@@ -357,7 +366,9 @@ export default function MessageList({
 
         const boundaryMessage =
           subRunView.startMessage ?? subRunView.finishMessage ?? subRunView.bodyMessages[0];
-        const rowClass = isRowNested(options) ? styles.groupMessageRow : styles.messageRow;
+        const rowClass = isRowNested(options)
+          ? 'w-full'
+          : 'w-[min(100%,var(--chat-content-max-width))] mx-auto';
         const subRunBlock = (
           <SubRunBlock
             subRunId={subRunView.subRunId}
@@ -414,7 +425,10 @@ export default function MessageList({
     );
 
     return (
-      <div key={`child-subrun-${subRunView.subRunId}`} className={styles.messageRow}>
+      <div
+        key={`child-subrun-${subRunView.subRunId}`}
+        className="w-[min(100%,var(--chat-content-max-width))] mx-auto"
+      >
         {boundaryMessage ? (
           <MessageBoundary message={boundaryMessage}>{subRunBlock}</MessageBoundary>
         ) : (
@@ -425,15 +439,23 @@ export default function MessageList({
   });
 
   return (
-    <div ref={listRef} className={styles.list} onScroll={updateStickiness}>
+    <div
+      ref={listRef}
+      className="flex-1 min-h-0 overflow-y-auto py-7 px-[var(--chat-content-horizontal-padding)] max-sm:px-[var(--chat-content-horizontal-padding-mobile)] flex flex-col gap-[22px] max-sm:gap-[18px] max-sm:pt-[18px] max-sm:pb-2 bg-[var(--panel-bg)]"
+      onScroll={updateStickiness}
+    >
       {threadItems.length === 0 && childSubRuns.length === 0 && (
-        <div className={styles.empty}>{emptyStateText ?? '向 AstrCode 提问，开始对话...'}</div>
+        <div className="w-[min(100%,var(--chat-content-max-width))] mx-auto mt-[90px] max-sm:mt-[54px] text-text-secondary text-sm text-center px-7 py-6 border border-dashed border-border rounded-[18px] bg-[rgba(255,255,255,0.45)]">
+          {emptyStateText ?? '向 AstrCode 提问，开始对话...'}
+        </div>
       )}
       {renderedRows}
       {childSubRuns.length > 0 && (
-        <section className={styles.childSubRunSection}>
-          <div className={styles.childSubRunHeader}>下一级子执行</div>
-          <div className={styles.childSubRunList}>{childSubRunRows}</div>
+        <section className="w-[min(100%,var(--chat-content-max-width))] mx-auto mt-1 flex flex-col gap-3">
+          <div className="text-xs leading-snug text-text-secondary tracking-[0.02em]">
+            下一级子执行
+          </div>
+          <div className="flex flex-col gap-[18px]">{childSubRunRows}</div>
         </section>
       )}
       <div ref={bottomRef} />

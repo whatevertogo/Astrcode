@@ -625,7 +625,7 @@ export default function App() {
   // 使用 h-full 而非 h-dvh，因为 WebView2 对 dvh（动态视口高度）的支持不稳定，
   // 会导致桌面端滚动容器高度计算错误，表现为消息列表无法继续下滑。
   return (
-    <div className="flex h-full min-h-0 overflow-hidden bg-[var(--app-bg)] text-[var(--text-primary)]">
+    <div className="flex h-full min-h-0 overflow-hidden bg-app-bg text-text-primary">
       {isSidebarOpen && (
         <>
           <div className="flex-none min-w-0 min-h-0" style={{ width: `${sidebarWidth}px` }}>
@@ -657,8 +657,8 @@ export default function App() {
           </div>
           <div
             className={cn(
-              'relative w-[10px] flex-none cursor-col-resize bg-transparent outline-none before:absolute before:inset-y-0 before:left-1/2 before:w-[1px] before:-translate-x-1/2 before:bg-[var(--border)] hover:before:w-[2px] hover:before:bg-[var(--border-strong)] focus-visible:before:w-[2px] focus-visible:before:bg-[var(--border-strong)] before:transition-all before:duration-150 before:ease-out',
-              isResizingSidebar && 'before:w-[2px] before:bg-[var(--border-strong)]'
+              'relative w-[10px] flex-none cursor-col-resize bg-transparent outline-none before:absolute before:inset-y-0 before:left-1/2 before:w-[1px] before:-translate-x-1/2 before:bg-border hover:before:w-[2px] hover:before:bg-border-strong focus-visible:before:w-[2px] focus-visible:before:bg-border-strong before:transition-all before:duration-150 before:ease-out',
+              isResizingSidebar && 'before:w-[2px] before:bg-border-strong'
             )}
             role="separator"
             aria-label="调整侧边栏宽度"
