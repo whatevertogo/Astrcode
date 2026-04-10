@@ -3,7 +3,7 @@ use std::{collections::VecDeque, sync::atomic::Ordering};
 use anyhow::Result;
 use astrcode_core::{
     AstrError, CancelToken, EventTranslator, InvocationKind, Phase, SessionTurnLease, StorageEvent,
-    StoredEvent, SubRunStorageMode, UserMessageOrigin,
+    StorageEventPayload, StoredEvent, SubRunStorageMode, UserMessageOrigin,
 };
 
 use crate::{SessionState, SessionTokenBudgetState, support::lock_anyhow};
@@ -98,8 +98,8 @@ pub fn recent_turn_event_tail(
             continue;
         }
         if matches!(
-            &stored.event,
-            StorageEvent::UserMessage {
+            &stored.event.payload,
+            StorageEventPayload::UserMessage {
                 origin: UserMessageOrigin::User,
                 ..
             }
@@ -120,11 +120,11 @@ pub fn recent_turn_event_tail(
 /// 只有用户消息、助手回复、工具调用和工具结果需要保留用于 compaction。
 pub fn should_record_compaction_tail_event(event: &StorageEvent) -> bool {
     matches!(
-        event,
-        StorageEvent::UserMessage { .. }
-            | StorageEvent::AssistantFinal { .. }
-            | StorageEvent::ToolCall { .. }
-            | StorageEvent::ToolResult { .. }
+        &event.payload,
+        StorageEventPayload::UserMessage { .. }
+            | StorageEventPayload::AssistantFinal { .. }
+            | StorageEventPayload::ToolCall { .. }
+            | StorageEventPayload::ToolResult { .. }
     ) && should_include_in_compaction_tail(event)
 }
 
@@ -194,6 +194,22 @@ mod tests {
             let _guard = mutex.lock().expect("mutex should lock");
             panic!("poison mutex for recovery test");
         }));
+    }
+
+    fn stored_event(
+        storage_seq: u64,
+        turn_id: Option<&str>,
+        agent: AgentEventContext,
+        payload: StorageEventPayload,
+    ) -> StoredEvent {
+        StoredEvent {
+            storage_seq,
+            event: StorageEvent {
+                turn_id: turn_id.map(str::to_string),
+                agent,
+                payload,
+            },
+        }
     }
 
     #[test]
@@ -306,48 +322,48 @@ mod tests {
     #[test]
     fn recent_turn_event_tail_keeps_latest_turn_when_keep_recent_turns_is_zero() {
         let events = vec![
-            StoredEvent {
-                storage_seq: 1,
-                event: StorageEvent::UserMessage {
-                    turn_id: Some("turn-1".to_string()),
-                    agent: AgentEventContext::default(),
+            stored_event(
+                1,
+                Some("turn-1"),
+                AgentEventContext::default(),
+                StorageEventPayload::UserMessage {
                     content: "first".to_string(),
                     origin: UserMessageOrigin::User,
                     timestamp: Utc::now(),
                 },
-            },
-            StoredEvent {
-                storage_seq: 2,
-                event: StorageEvent::AssistantFinal {
-                    turn_id: Some("turn-1".to_string()),
-                    agent: AgentEventContext::default(),
+            ),
+            stored_event(
+                2,
+                Some("turn-1"),
+                AgentEventContext::default(),
+                StorageEventPayload::AssistantFinal {
                     content: "reply-1".to_string(),
                     reasoning_content: None,
                     reasoning_signature: None,
                     timestamp: Some(Utc::now()),
                 },
-            },
-            StoredEvent {
-                storage_seq: 3,
-                event: StorageEvent::UserMessage {
-                    turn_id: Some("turn-2".to_string()),
-                    agent: AgentEventContext::default(),
+            ),
+            stored_event(
+                3,
+                Some("turn-2"),
+                AgentEventContext::default(),
+                StorageEventPayload::UserMessage {
                     content: "second".to_string(),
                     origin: UserMessageOrigin::User,
                     timestamp: Utc::now(),
                 },
-            },
-            StoredEvent {
-                storage_seq: 4,
-                event: StorageEvent::AssistantFinal {
-                    turn_id: Some("turn-2".to_string()),
-                    agent: AgentEventContext::default(),
+            ),
+            stored_event(
+                4,
+                Some("turn-2"),
+                AgentEventContext::default(),
+                StorageEventPayload::AssistantFinal {
                     content: "reply-2".to_string(),
                     reasoning_content: None,
                     reasoning_signature: None,
                     timestamp: Some(Utc::now()),
                 },
-            },
+            ),
         ];
 
         let tail = recent_turn_event_tail(&events, 0);
@@ -368,48 +384,48 @@ mod tests {
             None,
         );
         let events = vec![
-            StoredEvent {
-                storage_seq: 1,
-                event: StorageEvent::UserMessage {
-                    turn_id: Some("turn-root".to_string()),
-                    agent: AgentEventContext::default(),
+            stored_event(
+                1,
+                Some("turn-root"),
+                AgentEventContext::default(),
+                StorageEventPayload::UserMessage {
                     content: "root".to_string(),
                     origin: UserMessageOrigin::User,
                     timestamp: Utc::now(),
                 },
-            },
-            StoredEvent {
-                storage_seq: 2,
-                event: StorageEvent::AssistantFinal {
-                    turn_id: Some("turn-root".to_string()),
-                    agent: AgentEventContext::default(),
+            ),
+            stored_event(
+                2,
+                Some("turn-root"),
+                AgentEventContext::default(),
+                StorageEventPayload::AssistantFinal {
                     content: "root-answer".to_string(),
                     reasoning_content: None,
                     reasoning_signature: None,
                     timestamp: Some(Utc::now()),
                 },
-            },
-            StoredEvent {
-                storage_seq: 3,
-                event: StorageEvent::UserMessage {
-                    turn_id: Some("turn-child".to_string()),
-                    agent: shared_child_agent.clone(),
+            ),
+            stored_event(
+                3,
+                Some("turn-child"),
+                shared_child_agent.clone(),
+                StorageEventPayload::UserMessage {
                     content: "child".to_string(),
                     origin: UserMessageOrigin::User,
                     timestamp: Utc::now(),
                 },
-            },
-            StoredEvent {
-                storage_seq: 4,
-                event: StorageEvent::AssistantFinal {
-                    turn_id: Some("turn-child".to_string()),
-                    agent: shared_child_agent,
+            ),
+            stored_event(
+                4,
+                Some("turn-child"),
+                shared_child_agent,
+                StorageEventPayload::AssistantFinal {
                     content: "child-answer".to_string(),
                     reasoning_content: None,
                     reasoning_signature: None,
                     timestamp: Some(Utc::now()),
                 },
-            },
+            ),
         ];
 
         let tail = recent_turn_event_tail(&events, 1);
@@ -430,27 +446,27 @@ mod tests {
             Some("session-child".to_string()),
         );
         let events = vec![
-            StoredEvent {
-                storage_seq: 1,
-                event: StorageEvent::UserMessage {
-                    turn_id: Some("turn-child".to_string()),
-                    agent: child_agent.clone(),
+            stored_event(
+                1,
+                Some("turn-child"),
+                child_agent.clone(),
+                StorageEventPayload::UserMessage {
                     content: "child".to_string(),
                     origin: UserMessageOrigin::User,
                     timestamp: Utc::now(),
                 },
-            },
-            StoredEvent {
-                storage_seq: 2,
-                event: StorageEvent::AssistantFinal {
-                    turn_id: Some("turn-child".to_string()),
-                    agent: child_agent,
+            ),
+            stored_event(
+                2,
+                Some("turn-child"),
+                child_agent,
+                StorageEventPayload::AssistantFinal {
                     content: "child-answer".to_string(),
                     reasoning_content: None,
                     reasoning_signature: None,
                     timestamp: Some(Utc::now()),
                 },
-            },
+            ),
         ];
 
         let tail = recent_turn_event_tail(&events, 1);

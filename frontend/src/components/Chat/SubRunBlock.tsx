@@ -19,7 +19,7 @@ interface SubRunBlockProps {
       nested?: boolean;
     }
   ) => React.ReactNode[];
-  onCancelSubRun: (sessionId: string, subRunId: string) => void | Promise<void>;
+  onCancelSubRun: (sessionId: string, agentId: string) => void | Promise<void>;
   onFocusSubRun?: (subRunId: string) => void;
   onOpenChildSession?: (childSessionId: string) => void | Promise<void>;
   displayMode?: 'thread' | 'directory';
@@ -207,7 +207,8 @@ function SubRunBlock({
     setCancelling(true);
     setCancelError(null);
     try {
-      await onCancelSubRun(sessionId, subRunId);
+      // 使用 agentId 定位，fallback 到 subRunId（旧事件可能缺少 agentId）
+      await onCancelSubRun(sessionId, startMessage?.agentId ?? subRunId);
     } catch (error) {
       setCancelError(error instanceof Error ? error.message : String(error));
     } finally {

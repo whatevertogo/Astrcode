@@ -1,25 +1,24 @@
-# ADR-0008: AgentLoop 内容架构——Prompt/Context/Compaction/Assembler 四层分离
+# ADR-0008: AgentLoop Content Architecture — Separate Prompt / Context / Compaction / Request Assembly
 
 - Status: Accepted
 - Date: 2026-04-03
 
 ## Context
 
-重构前的 `runtime-agent-loop` 把 prompt 组装、上下文选材、历史压缩、请求编码和执行主循环揉在一起，导致替换 compact 策略、开放上下文选材或调整 prompt 结构时都必须修改主执行流程，边界持续模糊。
+`runtime-agent-loop` 中 prompt 组装、上下文选材、历史压缩、请求编码和执行主循环是核心耦合点。为了减少改动时的横向影响，需要把这些内容处理职责显式分离。
 
 ## Decision
 
-在 `runtime-agent-loop` 内部将内容处理拆为四个独立职责，并让 turn runner 只保留执行骨架。
+在 `crates/runtime-agent-loop` 内部把内容处理拆成四个独立模块，让 turn runner 保留执行骨架。
 
-- `PromptRuntime` 只负责说明书和指令结构，不负责历史消息选材或压缩决策。
-- `ContextRuntime` 只负责决定当前向模型提供哪些材料，不负责 policy、compact 或请求装配。
-- `CompactionRuntime` 只负责历史折叠、压缩策略和压缩后视图恢复。
-- `RequestAssembler` 作为唯一请求装配边界，只负责把 prompt、context 和 tool definitions 编码为模型请求。
-- `turn_runner` 只保留状态机式执行流程，协调上述运行时与 LLM/tool cycle。
-- 在抽象稳定前，先维持模块内分层，不急于拆分新 crate。
+- `PromptRuntime` 负责 prompt 组装与 system prompt 构建，不负责消息裁剪、策略审批或 compact 决策。
+- `ContextRuntime` 负责构建当前模型可见的 `ContextBundle`，包括 conversation view、工作集和 memory，不负责 prompt 规则或请求编码。
+- `CompactionRuntime` 负责上下文压缩的触发策略、重建和 recovery，不直接负责 prompt 构建或消息发送。
+- `RequestAssembler` 负责把 `PromptPlan`、`ContextBundle` 和工具定义编码为最终的 `ModelRequest`，并生成 prompt 快照，不修改上下文内容。
+- `turn_runner` 只保留状态机式执行流程，协调上述模块与 LLM/tool cycle。
 
 ## Consequences
 
-- prompt、context、compaction 和请求编码可以分别演进，减少彼此误伤。
-- 替换 compact 策略、上下文阶段或 prompt 结构时，不必再改动整条主循环。
-- 内部会引入更多中间抽象，需要通过清晰边界避免重新长成新的 God Object。
+- prompt、context、compact 和请求编码能够分别演进，减少彼此误伤。
+- 替换 compact 策略、上下文阶段或 prompt 层次时，不必改动 AgentLoop 主循环。
+- 内部仍然需要清晰界面和测试来避免重新长出新的 God Object。

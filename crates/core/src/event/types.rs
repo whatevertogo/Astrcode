@@ -14,9 +14,40 @@ use serde_json::Value;
 
 use crate::{
     AgentEventContext, ChildSessionNotification, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, SubRunDescriptor, SubRunResult, ToolOutputStream,
-    UserMessageOrigin,
+    ResolvedSubagentContextOverrides, SubRunResult, ToolOutputStream, UserMessageOrigin,
 };
+
+/// Prompt/缓存指标共享载荷。
+///
+/// `StorageEvent::PromptMetrics` 和 `AgentEvent::PromptMetrics` 都通过此类型共享指标字段，
+/// 避免三层逐字段复制导致漂移。
+///
+/// 注意：不使用 `rename_all`，因为 `StorageEvent` 的 tagged enum 会原样传递内联字段名，
+/// 而 `AgentEvent` 使用 adjacently tagged 且字段嵌套在 `"data"` 键下。
+/// 各层的 serde 上下文已处理好字段命名。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptMetricsPayload {
+    pub step_index: u32,
+    pub estimated_tokens: u32,
+    pub context_window: u32,
+    pub effective_window: u32,
+    pub threshold_tokens: u32,
+    pub truncated_tool_results: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_input_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_output_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u32>,
+    #[serde(default)]
+    pub provider_cache_metrics_supported: bool,
+    #[serde(default)]
+    pub prompt_cache_reuse_hits: u32,
+    #[serde(default)]
+    pub prompt_cache_reuse_misses: u32,
+}
 
 /// 上下文压缩的触发方式。
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,18 +59,12 @@ pub enum CompactTrigger {
     Manual,
 }
 
-/// 存储事件。
+/// 存储事件载荷。
 ///
-/// 这是 append-only JSONL 日志中的事件格式，每种变体代表 Agent 运行时的一个关键动作。
-/// 与 `AgentEvent` 不同，`StorageEvent` 是持久化格式，不直接面向前端展示。
-///
-/// ## 事件生命周期
-///
-/// 1. 运行时产生事件 → 2. 通过 `EventLogWriter::append` 持久化 →
-/// 3. 通过 `EventTranslator` 转换为 `AgentEvent` → 4. SSE 推送到前端
+/// 只描述事件本体，不包含跨变体共享的头部字段（`turn_id` 与 `agent`）。
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "camelCase")]
-pub enum StorageEvent {
+pub enum StorageEventPayload {
     /// 会话启动事件。
     ///
     /// 包含 `parent_session_id` 和 `parent_storage_seq` 用于支持 session 分叉。
@@ -55,10 +80,6 @@ pub enum StorageEvent {
     },
     /// 用户输入消息。
     UserMessage {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        turn_id: Option<String>,
-        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
-        agent: AgentEventContext,
         content: String,
         #[serde(with = "crate::local_rfc3339")]
         timestamp: DateTime<Utc>,
@@ -66,27 +87,11 @@ pub enum StorageEvent {
         origin: UserMessageOrigin,
     },
     /// LLM 文本输出增量（流式响应片段）。
-    AssistantDelta {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        turn_id: Option<String>,
-        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
-        agent: AgentEventContext,
-        token: String,
-    },
+    AssistantDelta { token: String },
     /// LLM 推理/思考内容增量。
-    ThinkingDelta {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        turn_id: Option<String>,
-        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
-        agent: AgentEventContext,
-        token: String,
-    },
+    ThinkingDelta { token: String },
     /// LLM 助手最终回复（完整内容）。
     AssistantFinal {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        turn_id: Option<String>,
-        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
-        agent: AgentEventContext,
         content: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning_content: Option<String>,
@@ -101,20 +106,12 @@ pub enum StorageEvent {
     },
     /// 工具调用开始。
     ToolCall {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        turn_id: Option<String>,
-        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
-        agent: AgentEventContext,
         tool_call_id: String,
         tool_name: String,
         args: Value,
     },
     /// 工具流式输出增量。
     ToolCallDelta {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        turn_id: Option<String>,
-        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
-        agent: AgentEventContext,
         tool_call_id: String,
         #[serde(default)]
         tool_name: String,
@@ -123,10 +120,6 @@ pub enum StorageEvent {
     },
     /// 工具调用完成结果。
     ToolResult {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        turn_id: Option<String>,
-        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
-        agent: AgentEventContext,
         tool_call_id: String,
         #[serde(default)]
         tool_name: String,
@@ -140,37 +133,11 @@ pub enum StorageEvent {
     },
     /// 上下文窗口指标快照（用于监控和压缩决策）。
     PromptMetrics {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        turn_id: Option<String>,
-        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
-        agent: AgentEventContext,
-        step_index: u32,
-        estimated_tokens: u32,
-        context_window: u32,
-        effective_window: u32,
-        threshold_tokens: u32,
-        truncated_tool_results: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        provider_input_tokens: Option<u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        provider_output_tokens: Option<u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        cache_creation_input_tokens: Option<u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        cache_read_input_tokens: Option<u32>,
-        #[serde(default)]
-        provider_cache_metrics_supported: bool,
-        #[serde(default)]
-        prompt_cache_reuse_hits: u32,
-        #[serde(default)]
-        prompt_cache_reuse_misses: u32,
+        #[serde(flatten)]
+        metrics: PromptMetricsPayload,
     },
     /// 上下文压缩已应用。
     CompactApplied {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        turn_id: Option<String>,
-        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
-        agent: AgentEventContext,
         trigger: CompactTrigger,
         summary: String,
         preserved_recent_turns: u32,
@@ -183,12 +150,6 @@ pub enum StorageEvent {
     },
     /// 受控子会话开始执行。
     SubRunStarted {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        turn_id: Option<String>,
-        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
-        agent: AgentEventContext,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        descriptor: Option<SubRunDescriptor>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_call_id: Option<String>,
         resolved_overrides: ResolvedSubagentContextOverrides,
@@ -203,12 +164,6 @@ pub enum StorageEvent {
     /// 受控子会话执行结束。
     SubRunFinished {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        turn_id: Option<String>,
-        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
-        agent: AgentEventContext,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        descriptor: Option<SubRunDescriptor>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_call_id: Option<String>,
         result: SubRunResult,
         step_count: u32,
@@ -222,10 +177,6 @@ pub enum StorageEvent {
     },
     /// 子会话通知事件（父会话摘要投影的 durable 来源）。
     ChildSessionNotification {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        turn_id: Option<String>,
-        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
-        agent: AgentEventContext,
         notification: ChildSessionNotification,
         #[serde(
             default,
@@ -236,10 +187,6 @@ pub enum StorageEvent {
     },
     /// Turn 完成（一轮 Agent 循环结束）。
     TurnDone {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        turn_id: Option<String>,
-        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
-        agent: AgentEventContext,
         #[serde(with = "crate::local_rfc3339")]
         timestamp: DateTime<Utc>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -247,10 +194,6 @@ pub enum StorageEvent {
     },
     /// 错误事件。
     Error {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        turn_id: Option<String>,
-        #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
-        agent: AgentEventContext,
         message: String,
         #[serde(
             default,
@@ -261,49 +204,51 @@ pub enum StorageEvent {
     },
 }
 
+/// 存储事件。
+///
+/// 这是 append-only JSONL 日志中的事件格式，每种 payload 代表 Agent 运行时的一个关键动作。
+/// 与 `AgentEvent` 不同，`StorageEvent` 是持久化格式，不直接面向前端展示。
+///
+/// ## 事件生命周期
+///
+/// 1. 运行时产生事件 → 2. 通过 `EventLogWriter::append` 持久化 →
+/// 3. 通过 `EventTranslator` 转换为 `AgentEvent` → 4. SSE 推送到前端
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct StorageEvent {
+    /// turn 级别关联 ID。SessionStart 没有该字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    /// Agent 谱系上下文。SessionStart 默认为空且不序列化。
+    #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
+    pub agent: AgentEventContext,
+    /// 事件具体载荷。
+    #[serde(flatten)]
+    pub payload: StorageEventPayload,
+}
+
 impl StorageEvent {
     /// 提取事件关联的 turn ID（如果存在）。
     ///
     /// `SessionStart` 没有 turn_id，返回 `None`。
     pub fn turn_id(&self) -> Option<&str> {
-        match self {
-            Self::UserMessage { turn_id, .. }
-            | Self::AssistantDelta { turn_id, .. }
-            | Self::ThinkingDelta { turn_id, .. }
-            | Self::AssistantFinal { turn_id, .. }
-            | Self::ToolCall { turn_id, .. }
-            | Self::ToolCallDelta { turn_id, .. }
-            | Self::ToolResult { turn_id, .. }
-            | Self::PromptMetrics { turn_id, .. }
-            | Self::CompactApplied { turn_id, .. }
-            | Self::SubRunStarted { turn_id, .. }
-            | Self::SubRunFinished { turn_id, .. }
-            | Self::ChildSessionNotification { turn_id, .. }
-            | Self::TurnDone { turn_id, .. }
-            | Self::Error { turn_id, .. } => turn_id.as_deref(),
-            Self::SessionStart { .. } => None,
+        if self.is_session_start() {
+            None
+        } else {
+            self.turn_id.as_deref()
         }
     }
 
     /// 提取 turn 事件附带的 Agent 元数据。
     pub fn agent_context(&self) -> Option<&AgentEventContext> {
-        match self {
-            Self::UserMessage { agent, .. }
-            | Self::AssistantDelta { agent, .. }
-            | Self::ThinkingDelta { agent, .. }
-            | Self::AssistantFinal { agent, .. }
-            | Self::ToolCall { agent, .. }
-            | Self::ToolCallDelta { agent, .. }
-            | Self::ToolResult { agent, .. }
-            | Self::PromptMetrics { agent, .. }
-            | Self::CompactApplied { agent, .. }
-            | Self::SubRunStarted { agent, .. }
-            | Self::SubRunFinished { agent, .. }
-            | Self::ChildSessionNotification { agent, .. }
-            | Self::TurnDone { agent, .. }
-            | Self::Error { agent, .. } => Some(agent),
-            Self::SessionStart { .. } => None,
+        if self.is_session_start() {
+            None
+        } else {
+            Some(&self.agent)
         }
+    }
+
+    fn is_session_start(&self) -> bool {
+        matches!(self.payload, StorageEventPayload::SessionStart { .. })
     }
 }
 
@@ -336,8 +281,12 @@ pub struct StoredEvent {
 #[serde(untagged)]
 pub enum StoredEventLine {
     /// 新格式（包含 storage_seq）
+    /// untagged 的匹配顺序是"先 Stored 后 Legacy"，依赖 storage_seq 字段是否存在来区分。
+    /// Fixme:这在目前是对的，但如果未来 StorageEvent 里某个变体恰好也有 storage_seq
+    /// 字段，会静默匹配错误
     Stored(StoredEvent),
-    /// 旧格式（没有 storage_seq）
+    /// 旧格式（没有 storage_seq）、
+    /// TODO:需要去除旧兼容
     Legacy(StorageEvent),
 }
 
@@ -361,12 +310,11 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use serde_json::Value;
 
-    use super::{CompactTrigger, StorageEvent};
+    use super::{CompactTrigger, PromptMetricsPayload, StorageEvent, StorageEventPayload};
     use crate::{
         AgentEventContext, AgentStatus, ChildSessionLineageKind, ChildSessionNotification,
         ChildSessionNotificationKind, ResolvedExecutionLimitsSnapshot,
-        ResolvedSubagentContextOverrides, SubRunDescriptor, SubRunOutcome, SubRunResult,
-        SubRunStorageMode, format_local_rfc3339,
+        ResolvedSubagentContextOverrides, SubRunResult, SubRunStorageMode, format_local_rfc3339,
     };
 
     #[test]
@@ -377,8 +325,12 @@ mod tests {
         .expect("legacy tool result should deserialize");
 
         match event {
-            StorageEvent::ToolResult {
-                error, metadata, ..
+            StorageEvent {
+                payload:
+                    StorageEventPayload::ToolResult {
+                        error, metadata, ..
+                    },
+                ..
             } => {
                 assert_eq!(error, None);
                 assert_eq!(metadata, None);
@@ -395,7 +347,10 @@ mod tests {
         .expect("legacy turn done should deserialize");
 
         match event {
-            StorageEvent::TurnDone { reason, .. } => {
+            StorageEvent {
+                payload: StorageEventPayload::TurnDone { reason, .. },
+                ..
+            } => {
                 assert_eq!(reason, None);
             },
             other => panic!("expected turn done, got {other:?}"),
@@ -404,22 +359,26 @@ mod tests {
 
     #[test]
     fn prompt_metrics_round_trip_preserves_all_fields() {
-        let event = StorageEvent::PromptMetrics {
+        let event = StorageEvent {
             turn_id: Some("turn-1".to_string()),
             agent: AgentEventContext::default(),
-            step_index: 2,
-            estimated_tokens: 1_234,
-            context_window: 128_000,
-            effective_window: 108_000,
-            threshold_tokens: 97_200,
-            truncated_tool_results: 3,
-            provider_input_tokens: Some(800),
-            provider_output_tokens: Some(120),
-            cache_creation_input_tokens: Some(600),
-            cache_read_input_tokens: Some(500),
-            provider_cache_metrics_supported: true,
-            prompt_cache_reuse_hits: 2,
-            prompt_cache_reuse_misses: 1,
+            payload: StorageEventPayload::PromptMetrics {
+                metrics: PromptMetricsPayload {
+                    step_index: 2,
+                    estimated_tokens: 1_234,
+                    context_window: 128_000,
+                    effective_window: 108_000,
+                    threshold_tokens: 97_200,
+                    truncated_tool_results: 3,
+                    provider_input_tokens: Some(800),
+                    provider_output_tokens: Some(120),
+                    cache_creation_input_tokens: Some(600),
+                    cache_read_input_tokens: Some(500),
+                    provider_cache_metrics_supported: true,
+                    prompt_cache_reuse_hits: 2,
+                    prompt_cache_reuse_misses: 1,
+                },
+            },
         };
 
         let encoded = serde_json::to_value(&event).expect("event should serialize");
@@ -427,37 +386,25 @@ mod tests {
             serde_json::from_value(encoded.clone()).expect("event should deserialize");
 
         match decoded {
-            StorageEvent::PromptMetrics {
+            StorageEvent {
                 turn_id,
-                agent: _,
-                step_index,
-                estimated_tokens,
-                context_window,
-                effective_window,
-                threshold_tokens,
-                truncated_tool_results,
-                provider_input_tokens,
-                provider_output_tokens,
-                cache_creation_input_tokens,
-                cache_read_input_tokens,
-                provider_cache_metrics_supported,
-                prompt_cache_reuse_hits,
-                prompt_cache_reuse_misses,
+                payload: StorageEventPayload::PromptMetrics { metrics },
+                ..
             } => {
                 assert_eq!(turn_id.as_deref(), Some("turn-1"));
-                assert_eq!(step_index, 2);
-                assert_eq!(estimated_tokens, 1_234);
-                assert_eq!(context_window, 128_000);
-                assert_eq!(effective_window, 108_000);
-                assert_eq!(threshold_tokens, 97_200);
-                assert_eq!(truncated_tool_results, 3);
-                assert_eq!(provider_input_tokens, Some(800));
-                assert_eq!(provider_output_tokens, Some(120));
-                assert_eq!(cache_creation_input_tokens, Some(600));
-                assert_eq!(cache_read_input_tokens, Some(500));
-                assert!(provider_cache_metrics_supported);
-                assert_eq!(prompt_cache_reuse_hits, 2);
-                assert_eq!(prompt_cache_reuse_misses, 1);
+                assert_eq!(metrics.step_index, 2);
+                assert_eq!(metrics.estimated_tokens, 1_234);
+                assert_eq!(metrics.context_window, 128_000);
+                assert_eq!(metrics.effective_window, 108_000);
+                assert_eq!(metrics.threshold_tokens, 97_200);
+                assert_eq!(metrics.truncated_tool_results, 3);
+                assert_eq!(metrics.provider_input_tokens, Some(800));
+                assert_eq!(metrics.provider_output_tokens, Some(120));
+                assert_eq!(metrics.cache_creation_input_tokens, Some(600));
+                assert_eq!(metrics.cache_read_input_tokens, Some(500));
+                assert!(metrics.provider_cache_metrics_supported);
+                assert_eq!(metrics.prompt_cache_reuse_hits, 2);
+                assert_eq!(metrics.prompt_cache_reuse_misses, 1);
             },
             other => panic!("expected prompt metrics, got {other:?}"),
         }
@@ -488,17 +435,19 @@ mod tests {
             .with_ymd_and_hms(2026, 1, 2, 3, 4, 5)
             .single()
             .expect("timestamp should build");
-        let event = StorageEvent::CompactApplied {
+        let event = StorageEvent {
             turn_id: Some("turn-2".to_string()),
             agent: AgentEventContext::default(),
-            trigger: CompactTrigger::Manual,
-            summary: "condensed work".to_string(),
-            preserved_recent_turns: 2,
-            pre_tokens: 2_000,
-            post_tokens_estimate: 600,
-            messages_removed: 5,
-            tokens_freed: 1_400,
-            timestamp,
+            payload: StorageEventPayload::CompactApplied {
+                trigger: CompactTrigger::Manual,
+                summary: "condensed work".to_string(),
+                preserved_recent_turns: 2,
+                pre_tokens: 2_000,
+                post_tokens_estimate: 600,
+                messages_removed: 5,
+                tokens_freed: 1_400,
+                timestamp,
+            },
         };
 
         let encoded = serde_json::to_value(&event).expect("event should serialize");
@@ -506,17 +455,20 @@ mod tests {
             serde_json::from_value(encoded.clone()).expect("event should deserialize");
 
         match decoded {
-            StorageEvent::CompactApplied {
+            StorageEvent {
                 turn_id,
-                agent: _,
-                trigger,
-                summary,
-                preserved_recent_turns,
-                pre_tokens,
-                post_tokens_estimate,
-                messages_removed,
-                tokens_freed,
-                timestamp: decoded_timestamp,
+                payload:
+                    StorageEventPayload::CompactApplied {
+                        trigger,
+                        summary,
+                        preserved_recent_turns,
+                        pre_tokens,
+                        post_tokens_estimate,
+                        messages_removed,
+                        tokens_freed,
+                        timestamp: decoded_timestamp,
+                    },
+                ..
             } => {
                 assert_eq!(turn_id.as_deref(), Some("turn-2"));
                 assert_eq!(trigger, CompactTrigger::Manual);
@@ -554,12 +506,16 @@ mod tests {
             .with_ymd_and_hms(2026, 1, 2, 3, 4, 5)
             .single()
             .expect("timestamp should build");
-        let encoded = serde_json::to_value(StorageEvent::SessionStart {
-            session_id: "session-1".to_string(),
-            timestamp,
-            working_dir: "/tmp/project".to_string(),
-            parent_session_id: None,
-            parent_storage_seq: None,
+        let encoded = serde_json::to_value(StorageEvent {
+            turn_id: None,
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::SessionStart {
+                session_id: "session-1".to_string(),
+                timestamp,
+                working_dir: "/tmp/project".to_string(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
         })
         .expect("event should serialize");
 
@@ -570,14 +526,8 @@ mod tests {
     }
 
     #[test]
-    fn subrun_lifecycle_round_trip_preserves_descriptor_and_tool_call_id() {
-        let descriptor = SubRunDescriptor {
-            sub_run_id: "subrun-1".to_string(),
-            parent_turn_id: "turn-parent".to_string(),
-            parent_agent_id: Some("agent-parent".to_string()),
-            depth: 2,
-        };
-        let started = StorageEvent::SubRunStarted {
+    fn subrun_lifecycle_round_trip_preserves_tool_call_id() {
+        let started = StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent: AgentEventContext::sub_run(
                 "agent-child",
@@ -587,32 +537,34 @@ mod tests {
                 SubRunStorageMode::IndependentSession,
                 Some("child-session".to_string()),
             ),
-            descriptor: Some(descriptor.clone()),
-            tool_call_id: Some("call-1".to_string()),
-            resolved_overrides: ResolvedSubagentContextOverrides::default(),
-            resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
-            timestamp: None,
-        };
-        let finished = StorageEvent::SubRunFinished {
-            turn_id: Some("turn-parent".to_string()),
-            agent: AgentEventContext::sub_run(
-                "agent-child",
-                "turn-parent",
-                "review",
-                "subrun-1",
-                SubRunStorageMode::IndependentSession,
-                Some("child-session".to_string()),
-            ),
-            descriptor: Some(descriptor),
-            tool_call_id: Some("call-1".to_string()),
-            result: SubRunResult {
-                status: SubRunOutcome::Completed,
-                handoff: None,
-                failure: None,
+            payload: StorageEventPayload::SubRunStarted {
+                tool_call_id: Some("call-1".to_string()),
+                resolved_overrides: ResolvedSubagentContextOverrides::default(),
+                resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: None,
             },
-            step_count: 3,
-            estimated_tokens: 99,
-            timestamp: None,
+        };
+        let finished = StorageEvent {
+            turn_id: Some("turn-parent".to_string()),
+            agent: AgentEventContext::sub_run(
+                "agent-child",
+                "turn-parent",
+                "review",
+                "subrun-1",
+                SubRunStorageMode::IndependentSession,
+                Some("child-session".to_string()),
+            ),
+            payload: StorageEventPayload::SubRunFinished {
+                tool_call_id: Some("call-1".to_string()),
+                result: SubRunResult {
+                    status: AgentStatus::Completed,
+                    handoff: None,
+                    failure: None,
+                },
+                step_count: 3,
+                estimated_tokens: 99,
+                timestamp: None,
+            },
         };
 
         for event in [started, finished] {
@@ -621,30 +573,20 @@ mod tests {
                 serde_json::from_value(encoded.clone()).expect("event should deserialize");
 
             match decoded {
-                StorageEvent::SubRunStarted {
-                    descriptor,
-                    tool_call_id,
+                StorageEvent {
+                    payload: StorageEventPayload::SubRunStarted { tool_call_id, .. },
                     ..
                 }
-                | StorageEvent::SubRunFinished {
-                    descriptor,
-                    tool_call_id,
+                | StorageEvent {
+                    payload: StorageEventPayload::SubRunFinished { tool_call_id, .. },
                     ..
                 } => {
                     assert_eq!(tool_call_id.as_deref(), Some("call-1"));
-                    assert_eq!(
-                        descriptor.map(|item| item.parent_turn_id),
-                        Some("turn-parent".to_string())
-                    );
                 },
                 other => panic!("expected subrun lifecycle event, got {other:?}"),
             }
 
             assert_eq!(encoded["tool_call_id"], Value::String("call-1".to_string()));
-            assert_eq!(
-                encoded["descriptor"]["parentTurnId"],
-                Value::String("turn-parent".to_string())
-            );
         }
     }
 
@@ -659,18 +601,16 @@ mod tests {
                 parent_agent_id: Some("agent-parent".to_string()),
                 lineage_kind: ChildSessionLineageKind::Spawn,
                 status: AgentStatus::Running,
-                openable: true,
                 open_session_id: "session-child".to_string(),
             },
             kind: ChildSessionNotificationKind::Started,
             summary: "child started".to_string(),
             status: AgentStatus::Running,
-            open_session_id: "session-child".to_string(),
             source_tool_call_id: Some("call-1".to_string()),
             final_reply_excerpt: None,
         };
 
-        let event = StorageEvent::ChildSessionNotification {
+        let event = StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent: AgentEventContext::sub_run(
                 "agent-parent",
@@ -680,15 +620,20 @@ mod tests {
                 SubRunStorageMode::SharedSession,
                 None,
             ),
-            notification,
-            timestamp: None,
+            payload: StorageEventPayload::ChildSessionNotification {
+                notification,
+                timestamp: None,
+            },
         };
 
         let encoded = serde_json::to_value(&event).expect("serialize");
         let decoded: StorageEvent = serde_json::from_value(encoded.clone()).expect("deserialize");
 
         match decoded {
-            StorageEvent::ChildSessionNotification { notification, .. } => {
+            StorageEvent {
+                payload: StorageEventPayload::ChildSessionNotification { notification, .. },
+                ..
+            } => {
                 assert_eq!(notification.notification_id, "note-1");
                 assert_eq!(notification.child_ref.agent_id, "agent-child");
                 assert_eq!(notification.child_ref.open_session_id, "session-child");
@@ -720,7 +665,6 @@ mod tests {
                 parent_agent_id: Some("agent-parent".to_string()),
                 lineage_kind: kind,
                 status: crate::AgentStatus::Running,
-                openable: true,
                 open_session_id: "session-child".to_string(),
             };
 

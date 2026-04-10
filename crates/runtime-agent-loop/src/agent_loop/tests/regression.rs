@@ -19,7 +19,7 @@ use std::{
 };
 
 use astrcode_core::{
-    ApprovalDefault, ApprovalResolution, CancelToken, LlmMessage, Phase, StorageEvent,
+    ApprovalDefault, ApprovalResolution, CancelToken, LlmMessage, Phase, StorageEventPayload,
     ToolCallRequest, UserMessageOrigin,
 };
 use astrcode_runtime_llm::LlmOutput;
@@ -135,7 +135,7 @@ async fn phase0_behavior_regression_matrix_keeps_core_turn_outcomes_stable() {
                 .lock()
                 .expect("events lock")
                 .iter()
-                .any(|event| matches!(event, StorageEvent::TurnDone { .. })),
+                .any(|event| matches!(&event.payload, StorageEventPayload::TurnDone { .. })),
             "scenario {name} should still emit TurnDone"
         );
     }
@@ -214,8 +214,8 @@ async fn phase0_behavior_regression_covers_compaction_and_policy_edges() {
         assert!(matches!(outcome, TurnOutcome::Completed));
         assert!(events.lock().expect("events lock").iter().any(|event| {
             matches!(
-                event,
-                StorageEvent::CompactApplied { summary, .. } if summary == "condensed history"
+                &event.payload,
+                StorageEventPayload::CompactApplied { summary, .. } if summary == "condensed history"
             )
         }));
     }
@@ -288,12 +288,12 @@ async fn phase0_behavior_regression_covers_compaction_and_policy_edges() {
         assert!(
             events
                 .iter()
-                .any(|event| matches!(event, StorageEvent::CompactApplied { .. }))
+                .any(|event| matches!(&event.payload, StorageEventPayload::CompactApplied { .. }))
         );
         assert!(events.iter().any(|event| {
             matches!(
-                event,
-                StorageEvent::AssistantFinal { content, .. } if content == "recovered answer"
+                &event.payload,
+                StorageEventPayload::AssistantFinal { content, .. } if content == "recovered answer"
             )
         }));
     }
@@ -351,8 +351,8 @@ async fn phase0_behavior_regression_covers_compaction_and_policy_edges() {
         assert_eq!(executions.load(Ordering::SeqCst), 0);
         assert!(events.lock().expect("events lock").iter().any(|event| {
             matches!(
-                event,
-                StorageEvent::ToolResult {
+                &event.payload,
+                StorageEventPayload::ToolResult {
                     tool_name,
                     success,
                     error,
@@ -500,14 +500,14 @@ async fn parent_turn_completes_after_deciding_to_close_child() {
     // 验证事件序列中包含 ToolCall、ToolResult 和 TurnDone
     let events = events.lock().expect("events lock").clone();
     assert!(events.iter().any(
-        |e| matches!(e, StorageEvent::ToolCall { tool_name, .. } if tool_name == "closeAgent")
+        |e| matches!(&e.payload, StorageEventPayload::ToolCall { tool_name, .. } if tool_name == "closeAgent")
     ));
     assert!(events.iter().any(
-        |e| matches!(e, StorageEvent::ToolResult { tool_name, .. } if tool_name == "closeAgent")
+        |e| matches!(&e.payload, StorageEventPayload::ToolResult { tool_name, .. } if tool_name == "closeAgent")
     ));
     assert!(events.iter().any(|e| matches!(
-        e,
-        StorageEvent::TurnDone { reason, .. } if reason.as_deref() == Some("completed")
+        &e.payload,
+        StorageEventPayload::TurnDone { reason, .. } if reason.as_deref() == Some("completed")
     )));
 }
 
@@ -568,11 +568,11 @@ async fn parent_turn_completes_after_deciding_to_keep_child() {
     // 验证事件序列中包含 sendAgent 工具调用
     let events = events.lock().expect("events lock").clone();
     assert!(events.iter().any(
-        |e| matches!(e, StorageEvent::ToolCall { tool_name, .. } if tool_name == "sendAgent")
+        |e| matches!(&e.payload, StorageEventPayload::ToolCall { tool_name, .. } if tool_name == "sendAgent")
     ));
     assert!(events.iter().any(|e| matches!(
-        e,
-        StorageEvent::TurnDone { reason, .. } if reason.as_deref() == Some("completed")
+        &e.payload,
+        StorageEventPayload::TurnDone { reason, .. } if reason.as_deref() == Some("completed")
     )));
 }
 

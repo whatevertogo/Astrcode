@@ -5,9 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{
-    AgentEventEnvelope, ChildSessionNotificationDto, ChildSessionViewProjectionDto, PhaseDto,
-};
+use super::{AgentEventEnvelope, PhaseDto};
 
 /// `POST /api/sessions` 请求体——创建新会话。
 ///
@@ -86,20 +84,6 @@ pub struct SessionHistoryResponseDto {
     pub phase: PhaseDto,
 }
 
-/// `GET /api/sessions/:id/children/summary` 响应体。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ParentChildSummaryListResponseDto {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub items: Vec<ChildSessionNotificationDto>,
-}
-
-/// `GET /api/sessions/:id/children/:child_session_id/view` 响应体。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ChildSessionViewResponseDto {
-    pub view: ChildSessionViewProjectionDto,
-}
 
 /// `DELETE /api/projects/:working_dir` 响应体——项目删除结果。
 ///

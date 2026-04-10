@@ -420,14 +420,9 @@ impl ExecutionOrchestrationBoundary for AgentExecutionServiceHandle {
         &self,
         session_id: &str,
         text: String,
-    ) -> std::result::Result<astrcode_core::PromptAccepted, AstrError> {
+    ) -> std::result::Result<astrcode_core::ExecutionAccepted, AstrError> {
         AgentExecutionServiceHandle::submit_prompt(self, session_id, text)
             .await
-            .map(|accepted| astrcode_core::PromptAccepted {
-                turn_id: accepted.turn_id,
-                session_id: accepted.session_id,
-                branched_from_session_id: accepted.branched_from_session_id,
-            })
             .map_err(service_error_to_astr)
     }
 
@@ -444,7 +439,7 @@ impl ExecutionOrchestrationBoundary for AgentExecutionServiceHandle {
         context: Option<String>,
         context_overrides: Option<astrcode_core::SubagentContextOverrides>,
         working_dir: std::path::PathBuf,
-    ) -> std::result::Result<astrcode_core::RootExecutionAccepted, AstrError> {
+    ) -> std::result::Result<astrcode_core::ExecutionAccepted, AstrError> {
         AgentExecutionServiceHandle::execute_root_agent(
             self,
             agent_id,
@@ -454,22 +449,7 @@ impl ExecutionOrchestrationBoundary for AgentExecutionServiceHandle {
             working_dir,
         )
         .await
-        .map(|accepted| astrcode_core::RootExecutionAccepted {
-            session_id: accepted.session_id,
-            turn_id: accepted.turn_id,
-            agent_id: accepted.agent_id,
-        })
         .map_err(service_error_to_astr)
-    }
-
-    async fn launch_subagent(
-        &self,
-        params: SpawnAgentParams,
-        ctx: &ToolContext,
-    ) -> std::result::Result<SubRunResult, AstrError> {
-        AgentExecutionServiceHandle::launch_subagent(self, params, ctx)
-            .await
-            .map_err(service_error_to_astr)
     }
 }
 
@@ -491,6 +471,16 @@ impl LiveSubRunControlBoundary for AgentExecutionServiceHandle {
         sub_run_id: &str,
     ) -> std::result::Result<(), AstrError> {
         AgentExecutionServiceHandle::cancel_subrun(self, session_id, sub_run_id)
+            .await
+            .map_err(service_error_to_astr)
+    }
+
+    async fn launch_subagent(
+        &self,
+        params: SpawnAgentParams,
+        ctx: &ToolContext,
+    ) -> std::result::Result<SubRunResult, AstrError> {
+        AgentExecutionServiceHandle::launch_subagent(self, params, ctx)
             .await
             .map_err(service_error_to_astr)
     }

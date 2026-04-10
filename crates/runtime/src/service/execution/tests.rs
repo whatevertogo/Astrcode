@@ -8,10 +8,10 @@ use astrcode_core::{
     AgentEventContext, AgentMode, AgentProfile, AgentStatus, AstrError, CancelToken,
     ChildSessionLineageKind, ChildSessionNotificationKind, ExecutionOwner, InvocationKind, Phase,
     ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SessionTurnAcquireResult,
-    SpawnAgentParams, StorageEvent, SubRunDescriptor, SubRunFailure, SubRunFailureCode,
-    SubRunHandle, SubRunHandoff, SubRunOutcome, SubRunResult, SubRunStorageMode,
-    SubagentContextOverrides, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolEventSink, ToolExecutionResult, UserMessageOrigin, test_support::TestEnvGuard,
+    SpawnAgentParams, StorageEvent, StorageEventPayload, SubRunFailure, SubRunFailureCode,
+    SubRunHandle, SubRunHandoff, SubRunResult, SubRunStorageMode, SubagentContextOverrides, Tool,
+    ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolEventSink, ToolExecutionResult,
+    UserMessageOrigin, test_support::TestEnvGuard,
 };
 use astrcode_runtime_agent_loop::{AgentLoop, ProviderFactory};
 use astrcode_runtime_agent_tool::{SpawnAgentTool, SubAgentExecutor};
@@ -465,11 +465,11 @@ async fn spawn_agent_lifecycle_events_persist_parent_tool_call_id() {
     .expect("session events should load")
     .iter()
     .find_map(|stored| match &stored.event {
-        StorageEvent::SubRunStarted {
-            tool_call_id,
-            descriptor,
+        StorageEvent {
+            agent,
+            payload: StorageEventPayload::SubRunStarted { tool_call_id, .. },
             ..
-        } => Some((tool_call_id.clone(), descriptor.clone())),
+        } => Some((tool_call_id.clone(), agent.sub_run_id.clone())),
         _ => None,
     });
 
@@ -483,11 +483,11 @@ async fn spawn_agent_lifecycle_events_persist_parent_tool_call_id() {
             .expect("session events should load")
             .iter()
             .find_map(|stored| match &stored.event {
-                StorageEvent::SubRunFinished {
-                    tool_call_id,
-                    descriptor,
+                StorageEvent {
+                    agent,
+                    payload: StorageEventPayload::SubRunFinished { tool_call_id, .. },
                     ..
-                } => Some((tool_call_id.clone(), descriptor.clone())),
+                } => Some((tool_call_id.clone(), agent.sub_run_id.clone())),
                 _ => None,
             }) {
                 break found;
@@ -545,14 +545,8 @@ async fn get_subrun_status_reconstructs_durable_snapshot_without_live_handle() {
     let limits = ResolvedExecutionLimitsSnapshot {
         allowed_tools: vec!["readFile".to_string()],
     };
-    let descriptor = SubRunDescriptor {
-        sub_run_id: "subrun-durable".to_string(),
-        parent_turn_id: "turn-parent".to_string(),
-        parent_agent_id: None,
-        depth: 0,
-    };
     let result = SubRunResult {
-        status: SubRunOutcome::Completed,
+        status: AgentStatus::Completed,
         handoff: Some(SubRunHandoff {
             summary: "done".to_string(),
             findings: vec!["ok".to_string()],
@@ -564,28 +558,30 @@ async fn get_subrun_status_reconstructs_durable_snapshot_without_live_handle() {
     append_storage_event(
         service.as_ref(),
         &session.session_id,
-        &StorageEvent::SubRunStarted {
+        &StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent: agent.clone(),
-            descriptor: Some(descriptor.clone()),
-            tool_call_id: None,
-            resolved_overrides: overrides.clone(),
-            resolved_limits: limits.clone(),
-            timestamp: None,
+            payload: StorageEventPayload::SubRunStarted {
+                tool_call_id: None,
+                resolved_overrides: overrides.clone(),
+                resolved_limits: limits.clone(),
+                timestamp: None,
+            },
         },
     );
     append_storage_event(
         service.as_ref(),
         &session.session_id,
-        &StorageEvent::SubRunFinished {
+        &StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent,
-            descriptor: Some(descriptor),
-            tool_call_id: None,
-            result: result.clone(),
-            step_count: 3,
-            estimated_tokens: 222,
-            timestamp: None,
+            payload: StorageEventPayload::SubRunFinished {
+                tool_call_id: None,
+                result: result.clone(),
+                step_count: 3,
+                estimated_tokens: 222,
+                timestamp: None,
+            },
         },
     );
 
@@ -637,7 +633,7 @@ async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
         .spawn(
             &profile,
             &session.session_id,
-            Some("turn-parent".to_string()),
+            "turn-parent".to_string(),
             None,
         )
         .await
@@ -650,7 +646,7 @@ async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
     append_storage_event(
         service.as_ref(),
         &session.session_id,
-        &StorageEvent::SubRunFinished {
+        &StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent: AgentEventContext::sub_run(
                 handle.agent_id.clone(),
@@ -660,16 +656,21 @@ async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
                 SubRunStorageMode::SharedSession,
                 None,
             ),
-            descriptor: None,
-            tool_call_id: None,
-            result: SubRunResult {
-                status: SubRunOutcome::Completed,
-                handoff: None,
-                failure: None,
+            payload: StorageEventPayload::SubRunFinished {
+                tool_call_id: None,
+                result: SubRunResult {
+                    status: AgentStatus::Completed,
+                    handoff: Some(SubRunHandoff {
+                        summary: "durable completed".to_string(),
+                        findings: Vec::new(),
+                        artifacts: Vec::new(),
+                    }),
+                    failure: None,
+                },
+                step_count: 9,
+                estimated_tokens: 999,
+                timestamp: None,
             },
-            step_count: 9,
-            estimated_tokens: 999,
-            timestamp: None,
         },
     );
 
@@ -684,8 +685,8 @@ async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
     assert_eq!(snapshot.handle.status, AgentStatus::Running);
     assert_eq!(snapshot.source, crate::service::SubRunStatusSource::Live);
     assert_eq!(
-        snapshot.result.as_ref().map(|item| item.status.clone()),
-        Some(SubRunOutcome::Completed)
+        snapshot.result.as_ref().map(|item| item.status),
+        Some(AgentStatus::Completed)
     );
     assert_eq!(snapshot.step_count, Some(9));
     assert_eq!(snapshot.estimated_tokens, Some(999));
@@ -710,12 +711,6 @@ async fn get_subrun_status_keeps_storage_mode_parity_for_parent_aborted_independ
         .expect("session should be created");
 
     let sub_run_id = "subrun-independent";
-    let descriptor = SubRunDescriptor {
-        sub_run_id: sub_run_id.to_string(),
-        parent_turn_id: "turn-parent".to_string(),
-        parent_agent_id: None,
-        depth: 0,
-    };
     let agent = AgentEventContext::sub_run(
         format!("agent-{sub_run_id}"),
         "turn-parent".to_string(),
@@ -727,35 +722,37 @@ async fn get_subrun_status_keeps_storage_mode_parity_for_parent_aborted_independ
     append_storage_event(
         service.as_ref(),
         &session.session_id,
-        &StorageEvent::SubRunStarted {
+        &StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent: agent.clone(),
-            descriptor: Some(descriptor.clone()),
-            tool_call_id: None,
-            resolved_overrides: ResolvedSubagentContextOverrides {
-                storage_mode: SubRunStorageMode::IndependentSession,
-                ..Default::default()
+            payload: StorageEventPayload::SubRunStarted {
+                tool_call_id: None,
+                resolved_overrides: ResolvedSubagentContextOverrides {
+                    storage_mode: SubRunStorageMode::IndependentSession,
+                    ..Default::default()
+                },
+                resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: None,
             },
-            resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
-            timestamp: None,
         },
     );
     append_storage_event(
         service.as_ref(),
         &session.session_id,
-        &StorageEvent::SubRunFinished {
+        &StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent,
-            descriptor: Some(descriptor),
-            tool_call_id: None,
-            result: SubRunResult {
-                status: SubRunOutcome::Aborted,
-                handoff: None,
-                failure: None,
+            payload: StorageEventPayload::SubRunFinished {
+                tool_call_id: None,
+                result: SubRunResult {
+                    status: AgentStatus::Cancelled,
+                    handoff: None,
+                    failure: None,
+                },
+                step_count: 1,
+                estimated_tokens: 33,
+                timestamp: None,
             },
-            step_count: 1,
-            estimated_tokens: 33,
-            timestamp: None,
         },
     );
 
@@ -771,8 +768,8 @@ async fn get_subrun_status_keeps_storage_mode_parity_for_parent_aborted_independ
     );
     assert_eq!(snapshot.handle.status, AgentStatus::Cancelled);
     assert_eq!(
-        snapshot.result.as_ref().map(|item| item.status.clone()),
-        Some(SubRunOutcome::Aborted)
+        snapshot.result.as_ref().map(|item| item.status),
+        Some(AgentStatus::Cancelled)
     );
 }
 
@@ -810,12 +807,7 @@ async fn get_subrun_status_rejects_live_handle_from_other_session() {
         model_preference: None,
     };
     let handle = control
-        .spawn(
-            &profile,
-            &session_a.session_id,
-            Some("turn-a".to_string()),
-            None,
-        )
+        .spawn(&profile, &session_a.session_id, "turn-a".to_string(), None)
         .await
         .expect("live sub-run should spawn");
     let _ = control
@@ -865,12 +857,7 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
         model_preference: None,
     };
     let live_handle = control
-        .spawn(
-            &profile,
-            &session_a.session_id,
-            Some("turn-a".to_string()),
-            None,
-        )
+        .spawn(&profile, &session_a.session_id, "turn-a".to_string(), None)
         .await
         .expect("live sub-run should spawn");
     let _ = control
@@ -881,7 +868,7 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
     append_storage_event(
         service.as_ref(),
         &session_b.session_id,
-        &StorageEvent::SubRunStarted {
+        &StorageEvent {
             turn_id: Some("turn-b".to_string()),
             agent: AgentEventContext::sub_run(
                 "agent-b".to_string(),
@@ -891,22 +878,18 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
                 SubRunStorageMode::SharedSession,
                 None,
             ),
-            descriptor: Some(astrcode_core::SubRunDescriptor {
-                sub_run_id: live_handle.sub_run_id.clone(),
-                parent_turn_id: "turn-b".to_string(),
-                parent_agent_id: Some("agent-parent-b".to_string()),
-                depth: 1,
-            }),
-            tool_call_id: Some("call-b".to_string()),
-            resolved_overrides: ResolvedSubagentContextOverrides::default(),
-            resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
-            timestamp: None,
+            payload: StorageEventPayload::SubRunStarted {
+                tool_call_id: Some("call-b".to_string()),
+                resolved_overrides: ResolvedSubagentContextOverrides::default(),
+                resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: None,
+            },
         },
     );
     append_storage_event(
         service.as_ref(),
         &session_b.session_id,
-        &StorageEvent::SubRunFinished {
+        &StorageEvent {
             turn_id: Some("turn-b".to_string()),
             agent: AgentEventContext::sub_run(
                 "agent-b".to_string(),
@@ -916,21 +899,21 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
                 SubRunStorageMode::SharedSession,
                 None,
             ),
-            descriptor: Some(astrcode_core::SubRunDescriptor {
-                sub_run_id: live_handle.sub_run_id.clone(),
-                parent_turn_id: "turn-b".to_string(),
-                parent_agent_id: Some("agent-parent-b".to_string()),
-                depth: 1,
-            }),
-            tool_call_id: Some("call-b".to_string()),
-            result: SubRunResult {
-                status: SubRunOutcome::Completed,
-                handoff: None,
-                failure: None,
+            payload: StorageEventPayload::SubRunFinished {
+                tool_call_id: Some("call-b".to_string()),
+                result: SubRunResult {
+                    status: AgentStatus::Completed,
+                    handoff: Some(SubRunHandoff {
+                        summary: "durable completed".to_string(),
+                        findings: Vec::new(),
+                        artifacts: Vec::new(),
+                    }),
+                    failure: None,
+                },
+                step_count: 2,
+                estimated_tokens: 77,
+                timestamp: None,
             },
-            step_count: 2,
-            estimated_tokens: 77,
-            timestamp: None,
         },
     );
 
@@ -983,7 +966,7 @@ async fn get_subrun_status_uses_live_overlay_for_independent_subrun_in_parent_se
             &profile,
             child_session.session_id.clone(),
             Some(child_session.session_id.clone()),
-            Some("turn-parent".to_string()),
+            "turn-parent".to_string(),
             None,
             SubRunStorageMode::IndependentSession,
         )
@@ -997,7 +980,7 @@ async fn get_subrun_status_uses_live_overlay_for_independent_subrun_in_parent_se
     append_storage_event(
         service.as_ref(),
         &parent_session.session_id,
-        &StorageEvent::SubRunStarted {
+        &StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent: AgentEventContext::sub_run(
                 handle.agent_id.clone(),
@@ -1007,19 +990,15 @@ async fn get_subrun_status_uses_live_overlay_for_independent_subrun_in_parent_se
                 SubRunStorageMode::IndependentSession,
                 Some(child_session.session_id.clone()),
             ),
-            descriptor: Some(astrcode_core::SubRunDescriptor {
-                sub_run_id: handle.sub_run_id.clone(),
-                parent_turn_id: "turn-parent".to_string(),
-                parent_agent_id: None,
-                depth: 1,
-            }),
-            tool_call_id: Some("call-independent".to_string()),
-            resolved_overrides: ResolvedSubagentContextOverrides {
-                storage_mode: SubRunStorageMode::IndependentSession,
-                ..Default::default()
+            payload: StorageEventPayload::SubRunStarted {
+                tool_call_id: Some("call-independent".to_string()),
+                resolved_overrides: ResolvedSubagentContextOverrides {
+                    storage_mode: SubRunStorageMode::IndependentSession,
+                    ..Default::default()
+                },
+                resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: None,
             },
-            resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
-            timestamp: None,
         },
     );
 
@@ -1069,32 +1048,34 @@ async fn get_subrun_status_rejects_legacy_shared_history_snapshots() {
     append_storage_event(
         service.as_ref(),
         &session.session_id,
-        &StorageEvent::SubRunStarted {
+        &StorageEvent {
             turn_id: Some("turn-legacy".to_string()),
             agent: legacy_agent.clone(),
-            descriptor: None,
-            tool_call_id: Some("call-legacy".to_string()),
-            resolved_overrides: ResolvedSubagentContextOverrides::default(),
-            resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
-            timestamp: None,
+            payload: StorageEventPayload::SubRunStarted {
+                tool_call_id: Some("call-legacy".to_string()),
+                resolved_overrides: ResolvedSubagentContextOverrides::default(),
+                resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: None,
+            },
         },
     );
     append_storage_event(
         service.as_ref(),
         &session.session_id,
-        &StorageEvent::SubRunFinished {
+        &StorageEvent {
             turn_id: Some("turn-legacy".to_string()),
             agent: legacy_agent,
-            descriptor: None,
-            tool_call_id: Some("call-legacy".to_string()),
-            result: SubRunResult {
-                status: SubRunOutcome::Completed,
-                handoff: None,
-                failure: None,
+            payload: StorageEventPayload::SubRunFinished {
+                tool_call_id: Some("call-legacy".to_string()),
+                result: SubRunResult {
+                    status: AgentStatus::Completed,
+                    handoff: None,
+                    failure: None,
+                },
+                step_count: 1,
+                estimated_tokens: 21,
+                timestamp: None,
             },
-            step_count: 1,
-            estimated_tokens: 21,
-            timestamp: None,
         },
     );
 
@@ -1143,30 +1124,36 @@ async fn resume_child_session_replays_existing_child_history_and_mints_new_subru
     let child_sink = astrcode_runtime_session::SessionStateEventSink::new(Arc::clone(&child_state))
         .expect("child event sink should build");
     child_sink
-        .emit(StorageEvent::UserMessage {
+        .emit(StorageEvent {
             turn_id: Some("turn-child-old".to_string()),
             agent: AgentEventContext::root_execution("agent-child", "review"),
-            content: "先完成第一轮分析".to_string(),
-            origin: UserMessageOrigin::User,
-            timestamp: chrono::Utc::now(),
+            payload: StorageEventPayload::UserMessage {
+                content: "先完成第一轮分析".to_string(),
+                origin: UserMessageOrigin::User,
+                timestamp: chrono::Utc::now(),
+            },
         })
         .expect("old child user message should persist");
     child_sink
-        .emit(StorageEvent::AssistantFinal {
+        .emit(StorageEvent {
             turn_id: Some("turn-child-old".to_string()),
             agent: AgentEventContext::root_execution("agent-child", "review"),
-            content: "已经整理出第一版结论".to_string(),
-            reasoning_content: None,
-            reasoning_signature: None,
-            timestamp: Some(chrono::Utc::now()),
+            payload: StorageEventPayload::AssistantFinal {
+                content: "已经整理出第一版结论".to_string(),
+                reasoning_content: None,
+                reasoning_signature: None,
+                timestamp: Some(chrono::Utc::now()),
+            },
         })
         .expect("old child assistant message should persist");
     child_sink
-        .emit(StorageEvent::TurnDone {
+        .emit(StorageEvent {
             turn_id: Some("turn-child-old".to_string()),
             agent: AgentEventContext::root_execution("agent-child", "review"),
-            timestamp: chrono::Utc::now(),
-            reason: Some("completed".to_string()),
+            payload: StorageEventPayload::TurnDone {
+                timestamp: chrono::Utc::now(),
+                reason: Some("completed".to_string()),
+            },
         })
         .expect("old child turn done should persist");
 
@@ -1186,7 +1173,7 @@ async fn resume_child_session_replays_existing_child_history_and_mints_new_subru
             &profile,
             child_session.session_id.clone(),
             Some(child_session.session_id.clone()),
-            Some("turn-parent".to_string()),
+            "turn-parent".to_string(),
             None,
             SubRunStorageMode::IndependentSession,
         )
@@ -1234,7 +1221,7 @@ async fn resume_child_session_replays_existing_child_history_and_mints_new_subru
         .await
         .expect("resume should succeed");
 
-    assert_eq!(running_result.status, SubRunOutcome::Running);
+    assert_eq!(running_result.status, AgentStatus::Running);
     assert_eq!(resumed_handle.agent_id, original_handle.agent_id);
     assert_ne!(resumed_handle.sub_run_id, original_handle.sub_run_id);
     assert_eq!(
@@ -1299,17 +1286,22 @@ async fn resume_child_session_replays_existing_child_history_and_mints_new_subru
     assert!(parent_events.iter().any(|stored| {
         matches!(
             &stored.event,
-            StorageEvent::SubRunStarted { descriptor: Some(descriptor), .. }
-                if descriptor.sub_run_id == resumed_handle.sub_run_id
+            StorageEvent {
+                agent,
+                payload: StorageEventPayload::SubRunStarted { .. },
+                ..
+            } if agent.sub_run_id.as_deref() == Some(resumed_handle.sub_run_id.as_str())
         )
     }));
     assert!(parent_events.iter().any(|stored| {
         matches!(
             &stored.event,
-            StorageEvent::ChildSessionNotification { notification, .. }
-                if notification.kind == ChildSessionNotificationKind::Resumed
-                    && notification.child_ref.sub_run_id == resumed_handle.sub_run_id
-                    && notification.open_session_id == child_session.session_id
+            StorageEvent {
+                payload: StorageEventPayload::ChildSessionNotification { notification, .. },
+                ..
+            } if notification.kind == ChildSessionNotificationKind::Resumed
+                && notification.child_ref.sub_run_id == resumed_handle.sub_run_id
+                && notification.child_ref.open_session_id == child_session.session_id
         )
     }));
 }
@@ -1346,12 +1338,14 @@ async fn resume_child_session_rejects_lineage_mismatch_before_minting_new_execut
     append_storage_event(
         service.as_ref(),
         &child_session.session_id,
-        &StorageEvent::UserMessage {
+        &StorageEvent {
             turn_id: Some("turn-child-old".to_string()),
             agent: AgentEventContext::root_execution("agent-child", "review"),
-            content: "旧历史".to_string(),
-            origin: UserMessageOrigin::User,
-            timestamp: chrono::Utc::now(),
+            payload: StorageEventPayload::UserMessage {
+                content: "旧历史".to_string(),
+                origin: UserMessageOrigin::User,
+                timestamp: chrono::Utc::now(),
+            },
         },
     );
 
@@ -1371,7 +1365,7 @@ async fn resume_child_session_rejects_lineage_mismatch_before_minting_new_execut
             &profile,
             child_session.session_id.clone(),
             Some(child_session.session_id.clone()),
-            Some("turn-parent".to_string()),
+            "turn-parent".to_string(),
             None,
             SubRunStorageMode::IndependentSession,
         )
@@ -1447,8 +1441,10 @@ async fn resume_child_session_rejects_lineage_mismatch_before_minting_new_execut
     assert!(parent_events.iter().any(|stored| {
         matches!(
             &stored.event,
-            StorageEvent::Error { message, .. }
-                if message.contains("lineage_mismatch_parent_session")
+            StorageEvent {
+                payload: StorageEventPayload::Error { message, .. },
+                ..
+            } if message.contains("lineage_mismatch_parent_session")
         )
     }));
 }
@@ -1493,7 +1489,7 @@ async fn resume_child_session_rejects_empty_child_history_as_unsafe_resume() {
             &profile,
             child_session.session_id.clone(),
             Some(child_session.session_id.clone()),
-            Some("turn-parent".to_string()),
+            "turn-parent".to_string(),
             None,
             SubRunStorageMode::IndependentSession,
         )
@@ -1670,7 +1666,7 @@ fn derive_child_execution_owner_keeps_root_identity() {
         session_id: "session-child".to_string(),
         child_session_id: Some("session-child".to_string()),
         depth: 1,
-        parent_turn_id: Some("turn-root".to_string()),
+        parent_turn_id: "turn-root".to_string(),
         parent_agent_id: None,
         agent_profile: "plan".to_string(),
         storage_mode: SubRunStorageMode::IndependentSession,
@@ -1730,7 +1726,7 @@ async fn parent_turn_completion_does_not_cancel_running_child_session() {
         .spawn(
             &profile,
             &session.session_id,
-            Some("turn-parent".to_string()),
+            "turn-parent".to_string(),
             None,
         )
         .await
@@ -1842,14 +1838,19 @@ async fn spawn_agent_terminal_delivery_notification_is_emitted_once() {
                 .filter(|stored| {
                     matches!(
                         &stored.event,
-                        StorageEvent::ChildSessionNotification { notification, .. }
-                            if notification.child_ref.sub_run_id == sub_run_id
-                                && matches!(
-                                    notification.kind,
-                                    ChildSessionNotificationKind::Delivered
-                                        | ChildSessionNotificationKind::Failed
-                                        | ChildSessionNotificationKind::Closed
-                                )
+                        StorageEvent {
+                            payload: StorageEventPayload::ChildSessionNotification {
+                                notification,
+                                ..
+                            },
+                            ..
+                        } if notification.child_ref.sub_run_id == sub_run_id
+                            && matches!(
+                                notification.kind,
+                                ChildSessionNotificationKind::Delivered
+                                    | ChildSessionNotificationKind::Failed
+                                    | ChildSessionNotificationKind::Closed
+                            )
                     )
                 })
                 .count();
@@ -1868,11 +1869,11 @@ async fn spawn_agent_terminal_delivery_notification_is_emitted_once() {
 // ─── 状态投影与重激活测试 ──────────────────────────────────
 
 #[test]
-fn project_child_terminal_delivery_maps_token_exceeded_to_delivered_completed() {
-    // TokenExceeded 语义上视为成功交付：虽然因 token 上限截断，
-    // 但已收集到部分结果，应映射为 Delivered/Completed。
+fn project_child_terminal_delivery_keeps_token_exceeded_terminal_status_with_handoff() {
+    // TokenExceeded 仍然是 Delivered，但终态保持 TokenExceeded，
+    // 避免把资源约束结束误投影成普通 Completed。
     let result = SubRunResult {
-        status: SubRunOutcome::TokenExceeded,
+        status: AgentStatus::TokenExceeded,
         handoff: Some(SubRunHandoff {
             summary: "达到 token 上限，已收集部分结果".to_string(),
             findings: vec!["中间发现1".to_string()],
@@ -1882,7 +1883,7 @@ fn project_child_terminal_delivery_maps_token_exceeded_to_delivered_completed() 
     };
     let projection = super::status::project_child_terminal_delivery(&result);
     assert_eq!(projection.kind, ChildSessionNotificationKind::Delivered);
-    assert_eq!(projection.status, AgentStatus::Completed);
+    assert_eq!(projection.status, AgentStatus::TokenExceeded);
     assert_eq!(projection.summary, "达到 token 上限，已收集部分结果");
     assert_eq!(
         projection.final_reply_excerpt.as_deref(),
@@ -1891,17 +1892,20 @@ fn project_child_terminal_delivery_maps_token_exceeded_to_delivered_completed() 
 }
 
 #[test]
-fn project_child_terminal_delivery_maps_token_exceeded_without_handoff() {
+fn project_child_terminal_delivery_keeps_token_exceeded_terminal_status_without_handoff() {
     // TokenExceeded + 无 handoff 时，summary 应走默认回退。
     let result = SubRunResult {
-        status: SubRunOutcome::TokenExceeded,
+        status: AgentStatus::TokenExceeded,
         handoff: None,
         failure: None,
     };
     let projection = super::status::project_child_terminal_delivery(&result);
     assert_eq!(projection.kind, ChildSessionNotificationKind::Delivered);
-    assert_eq!(projection.status, AgentStatus::Completed);
-    assert_eq!(projection.summary, "子 Agent 已完成，但没有返回可读总结。");
+    assert_eq!(projection.status, AgentStatus::TokenExceeded);
+    assert_eq!(
+        projection.summary,
+        "子 Agent 因 token 限额结束，但没有返回可读总结。"
+    );
     assert!(projection.final_reply_excerpt.is_none());
 }
 
@@ -1909,7 +1913,7 @@ fn project_child_terminal_delivery_maps_token_exceeded_without_handoff() {
 fn project_child_terminal_delivery_uses_failure_display_message_as_summary_fallback() {
     // handoff 为空但 failure 有 display_message 时，summary 应使用 display_message。
     let result = SubRunResult {
-        status: SubRunOutcome::Failed,
+        status: AgentStatus::Failed,
         handoff: None,
         failure: Some(SubRunFailure {
             code: SubRunFailureCode::Internal,
@@ -1929,7 +1933,7 @@ fn project_child_terminal_delivery_uses_failure_display_message_as_summary_fallb
 fn project_child_terminal_delivery_returns_default_summary_when_no_handoff_or_failure() {
     // 既无 handoff 也无 failure 时，使用状态对应的中文默认文案。
     let result = SubRunResult {
-        status: SubRunOutcome::Completed,
+        status: AgentStatus::Completed,
         handoff: None,
         failure: None,
     };
@@ -2226,8 +2230,11 @@ async fn session_contains_reactivation_prompt(
         .any(|stored| {
             matches!(
                 stored.event,
-                StorageEvent::UserMessage {
-                    origin: UserMessageOrigin::ReactivationPrompt,
+                StorageEvent {
+                    payload: StorageEventPayload::UserMessage {
+                        origin: UserMessageOrigin::ReactivationPrompt,
+                        ..
+                    },
                     ..
                 }
             )
@@ -2248,13 +2255,11 @@ fn make_test_notification(
             parent_agent_id: None,
             lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
             status: AgentStatus::Completed,
-            openable: true,
             open_session_id: "session-child".to_string(),
         },
         kind: ChildSessionNotificationKind::Delivered,
         summary: "子 agent 完成".to_string(),
         status: AgentStatus::Completed,
-        open_session_id: "session-child".to_string(),
         source_tool_call_id: None,
         final_reply_excerpt: None,
     }

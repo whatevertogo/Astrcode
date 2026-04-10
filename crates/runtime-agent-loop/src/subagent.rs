@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 
 use astrcode_core::{
     CancelToken, CapabilityCall, ChildSessionNotification, PolicyContext, PolicyEngine,
-    PolicyVerdict, Result, StorageEvent,
+    PolicyVerdict, PromptMetricsPayload, Result, StorageEvent, StorageEventPayload,
 };
 use async_trait::async_trait;
 
@@ -117,10 +117,14 @@ impl ChildExecutionTracker {
     }
 
     pub fn observe(&mut self, event: &StorageEvent, cancel: &CancelToken) {
-        match event {
-            StorageEvent::PromptMetrics {
-                step_index,
-                estimated_tokens,
+        match &event.payload {
+            StorageEventPayload::PromptMetrics {
+                metrics:
+                    PromptMetricsPayload {
+                        step_index,
+                        estimated_tokens,
+                        ..
+                    },
                 ..
             } => {
                 self.prompt_tokens_by_step
@@ -138,7 +142,7 @@ impl ChildExecutionTracker {
                     cancel.cancel();
                 }
             },
-            StorageEvent::AssistantFinal {
+            StorageEventPayload::AssistantFinal {
                 content,
                 reasoning_content,
                 ..
@@ -204,7 +208,10 @@ pub fn build_parent_delivery_declaration(notification: &ChildSessionNotification
         format!("- childAgentId: {}", notification.child_ref.agent_id),
         format!("- subRunId: {}", notification.child_ref.sub_run_id),
         format!("- status: {}", status_label(notification.status)),
-        format!("- openSessionId: {}", notification.open_session_id),
+        format!(
+            "- openSessionId: {}",
+            notification.child_ref.open_session_id
+        ),
         format!("- summary: {}", notification.summary.trim()),
     ];
     if let Some(final_reply_excerpt) = notification
@@ -228,6 +235,7 @@ fn status_label(status: astrcode_core::AgentStatus) -> &'static str {
         astrcode_core::AgentStatus::Completed => "completed",
         astrcode_core::AgentStatus::Cancelled => "cancelled",
         astrcode_core::AgentStatus::Failed => "failed",
+        astrcode_core::AgentStatus::TokenExceeded => "token_exceeded",
     }
 }
 
@@ -235,39 +243,45 @@ fn status_label(status: astrcode_core::AgentStatus) -> &'static str {
 mod tests {
     use astrcode_core::{
         AgentEventContext, AgentStatus, ChildSessionLineageKind, ChildSessionNotification,
-        ChildSessionNotificationKind, StorageEvent,
+        ChildSessionNotificationKind, PromptMetricsPayload, StorageEvent, StorageEventPayload,
     };
 
     use super::ChildExecutionTracker;
 
     fn prompt_metrics(step_index: u32, estimated_tokens: u32) -> StorageEvent {
-        StorageEvent::PromptMetrics {
+        StorageEvent {
             turn_id: Some("turn-1".to_string()),
             agent: AgentEventContext::default(),
-            step_index,
-            estimated_tokens,
-            context_window: 200_000,
-            effective_window: 200_000,
-            threshold_tokens: 180_000,
-            truncated_tool_results: 0,
-            provider_input_tokens: Some(estimated_tokens),
-            provider_output_tokens: None,
-            cache_creation_input_tokens: None,
-            cache_read_input_tokens: None,
-            prompt_cache_reuse_hits: 0,
-            prompt_cache_reuse_misses: 0,
-            provider_cache_metrics_supported: false,
+            payload: StorageEventPayload::PromptMetrics {
+                metrics: PromptMetricsPayload {
+                    step_index,
+                    estimated_tokens,
+                    context_window: 200_000,
+                    effective_window: 200_000,
+                    threshold_tokens: 180_000,
+                    truncated_tool_results: 0,
+                    provider_input_tokens: Some(estimated_tokens),
+                    provider_output_tokens: None,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
+                    prompt_cache_reuse_hits: 0,
+                    prompt_cache_reuse_misses: 0,
+                    provider_cache_metrics_supported: false,
+                },
+            },
         }
     }
 
     fn assistant_final(content: &str, reasoning_content: Option<&str>) -> StorageEvent {
-        StorageEvent::AssistantFinal {
+        StorageEvent {
             turn_id: Some("turn-1".to_string()),
             agent: AgentEventContext::default(),
-            content: content.to_string(),
-            reasoning_content: reasoning_content.map(ToString::to_string),
-            reasoning_signature: None,
-            timestamp: None,
+            payload: StorageEventPayload::AssistantFinal {
+                content: content.to_string(),
+                reasoning_content: reasoning_content.map(ToString::to_string),
+                reasoning_signature: None,
+                timestamp: None,
+            },
         }
     }
 
@@ -339,13 +353,11 @@ mod tests {
                 parent_agent_id: Some("agent-parent".to_string()),
                 lineage_kind: ChildSessionLineageKind::Spawn,
                 status: AgentStatus::Completed,
-                openable: true,
                 open_session_id: "session-child".to_string(),
             },
             kind: ChildSessionNotificationKind::Delivered,
             summary: "child completed".to_string(),
             status: AgentStatus::Completed,
-            open_session_id: "session-child".to_string(),
             source_tool_call_id: Some("call-1".to_string()),
             final_reply_excerpt: Some("final answer".to_string()),
         });

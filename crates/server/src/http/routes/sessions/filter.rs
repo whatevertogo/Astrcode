@@ -139,7 +139,7 @@ fn event_agent_context(event: &AgentEvent) -> Option<&astrcode_core::AgentEventC
 mod tests {
     use astrcode_core::{
         AgentEventContext, Phase, ResolvedExecutionLimitsSnapshot,
-        ResolvedSubagentContextOverrides, SessionEventRecord, SubRunDescriptor, SubRunStorageMode,
+        ResolvedSubagentContextOverrides, SessionEventRecord, SubRunStorageMode,
     };
     use astrcode_runtime_execution::LINEAGE_METADATA_UNAVAILABLE_MESSAGE;
 
@@ -187,12 +187,6 @@ mod tests {
                 AgentEvent::SubRunStarted {
                     turn_id: Some("turn-root".to_string()),
                     agent: sub_context("sub-a", "turn-root", "agent-a"),
-                    descriptor: Some(SubRunDescriptor {
-                        sub_run_id: "sub-a".to_string(),
-                        parent_turn_id: "turn-root".to_string(),
-                        parent_agent_id: None,
-                        depth: 1,
-                    }),
                     tool_call_id: None,
                     resolved_overrides: ResolvedSubagentContextOverrides::default(),
                     resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
@@ -211,12 +205,6 @@ mod tests {
                 AgentEvent::SubRunStarted {
                     turn_id: Some("turn-a".to_string()),
                     agent: sub_context("sub-b", "turn-a", "agent-b"),
-                    descriptor: Some(SubRunDescriptor {
-                        sub_run_id: "sub-b".to_string(),
-                        parent_turn_id: "turn-a".to_string(),
-                        parent_agent_id: Some("agent-a".to_string()),
-                        depth: 2,
-                    }),
                     tool_call_id: None,
                     resolved_overrides: ResolvedSubagentContextOverrides::default(),
                     resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
@@ -235,12 +223,6 @@ mod tests {
                 AgentEvent::SubRunStarted {
                     turn_id: Some("turn-b".to_string()),
                     agent: sub_context("sub-c", "turn-b", "agent-c"),
-                    descriptor: Some(SubRunDescriptor {
-                        sub_run_id: "sub-c".to_string(),
-                        parent_turn_id: "turn-b".to_string(),
-                        parent_agent_id: Some("agent-b".to_string()),
-                        depth: 3,
-                    }),
                     tool_call_id: None,
                     resolved_overrides: ResolvedSubagentContextOverrides::default(),
                     resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
@@ -269,7 +251,6 @@ mod tests {
             AgentEvent::SubRunStarted {
                 turn_id: Some("turn-legacy".to_string()),
                 agent: sub_context("sub-legacy", "turn-legacy", "agent-legacy"),
-                descriptor: None,
                 tool_call_id: None,
                 resolved_overrides: ResolvedSubagentContextOverrides::default(),
                 resolved_limits: ResolvedExecutionLimitsSnapshot::default(),

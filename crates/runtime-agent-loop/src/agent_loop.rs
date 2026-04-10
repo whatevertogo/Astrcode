@@ -59,8 +59,8 @@ use std::{path::PathBuf, sync::Arc};
 
 use astrcode_core::{
     AgentEventContext, AgentProfileCatalog, AgentState, AllowAllPolicyEngine, AstrError,
-    CancelToken, CompactionHookContext, ExecutionOwner, HookCompactionReason, HookHandler,
-    InvocationKind, LlmMessage, PolicyContext, PolicyEngine, Result, StorageEvent, StoredEvent,
+    CancelToken, CompactionHookContext, ExecutionOwner, HookHandler, InvocationKind, LlmMessage,
+    PolicyContext, PolicyEngine, Result, StorageEvent, StorageEventPayload, StoredEvent,
     ToolContext, ToolHookContext, UserMessageOrigin,
 };
 use astrcode_protocol::capability::CapabilityDescriptor;
@@ -584,13 +584,7 @@ impl AgentLoop {
         CompactionHookContext {
             session_id: state.session_id.clone(),
             working_dir: state.working_dir.clone(),
-            reason: match reason {
-                crate::compaction_runtime::CompactionReason::Auto => HookCompactionReason::Auto,
-                crate::compaction_runtime::CompactionReason::Reactive => {
-                    HookCompactionReason::Reactive
-                },
-                crate::compaction_runtime::CompactionReason::Manual => HookCompactionReason::Manual,
-            },
+            reason: reason.as_hook_reason(),
             keep_recent_turns,
             message_count: conversation.messages.len(),
             messages: Vec::new(),
@@ -614,13 +608,7 @@ impl AgentLoop {
         CompactionHookContext {
             session_id: state.session_id.clone(),
             working_dir: state.working_dir.clone(),
-            reason: match reason {
-                crate::compaction_runtime::CompactionReason::Auto => HookCompactionReason::Auto,
-                crate::compaction_runtime::CompactionReason::Reactive => {
-                    HookCompactionReason::Reactive
-                },
-                crate::compaction_runtime::CompactionReason::Manual => HookCompactionReason::Manual,
-            },
+            reason: reason.as_hook_reason(),
             keep_recent_turns,
             message_count: conversation.messages.len(),
             messages: conversation.messages.clone(),
@@ -795,17 +783,20 @@ impl AgentLoop {
             })
             .await;
 
-        Ok(Some(StorageEvent::CompactApplied {
+        Ok(Some(StorageEvent {
             turn_id: None,
             agent: AgentEventContext::default(),
-            trigger: artifact.trigger.as_trigger(),
-            summary: artifact.summary,
-            preserved_recent_turns: artifact.preserved_recent_turns.min(u32::MAX as usize) as u32,
-            pre_tokens: artifact.pre_tokens.min(u32::MAX as usize) as u32,
-            post_tokens_estimate: artifact.post_tokens_estimate.min(u32::MAX as usize) as u32,
-            messages_removed: artifact.messages_removed.min(u32::MAX as usize) as u32,
-            tokens_freed: artifact.tokens_freed.min(u32::MAX as usize) as u32,
-            timestamp: Utc::now(),
+            payload: StorageEventPayload::CompactApplied {
+                trigger: artifact.trigger.as_trigger(),
+                summary: artifact.summary,
+                preserved_recent_turns: artifact.preserved_recent_turns.min(u32::MAX as usize)
+                    as u32,
+                pre_tokens: artifact.pre_tokens.min(u32::MAX as usize) as u32,
+                post_tokens_estimate: artifact.post_tokens_estimate.min(u32::MAX as usize) as u32,
+                messages_removed: artifact.messages_removed.min(u32::MAX as usize) as u32,
+                tokens_freed: artifact.tokens_freed.min(u32::MAX as usize) as u32,
+                timestamp: Utc::now(),
+            },
         }))
     }
 
@@ -886,11 +877,13 @@ pub(crate) fn finish_turn(
     agent: AgentEventContext,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
 ) -> Result<TurnOutcome> {
-    on_event(StorageEvent::TurnDone {
+    on_event(StorageEvent {
         turn_id: Some(turn_id.to_string()),
         agent,
-        timestamp: Utc::now(),
-        reason: Some(outcome.reason().to_string()),
+        payload: StorageEventPayload::TurnDone {
+            timestamp: Utc::now(),
+            reason: Some(outcome.reason().to_string()),
+        },
     })?;
     Ok(outcome)
 }
@@ -903,11 +896,13 @@ pub(crate) fn finish_with_error(
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
 ) -> Result<TurnOutcome> {
     let message = message.into();
-    on_event(StorageEvent::Error {
+    on_event(StorageEvent {
         turn_id: Some(turn_id.to_string()),
         agent: agent.clone(),
-        message: message.clone(),
-        timestamp: Some(Utc::now()),
+        payload: StorageEventPayload::Error {
+            message: message.clone(),
+            timestamp: Some(Utc::now()),
+        },
     })?;
     finish_turn(turn_id, TurnOutcome::Error { message }, agent, on_event)
 }
@@ -918,11 +913,13 @@ pub(crate) fn finish_interrupted(
     agent: AgentEventContext,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
 ) -> Result<TurnOutcome> {
-    on_event(StorageEvent::Error {
+    on_event(StorageEvent {
         turn_id: Some(turn_id.to_string()),
         agent: agent.clone(),
-        message: "interrupted".to_string(),
-        timestamp: Some(Utc::now()),
+        payload: StorageEventPayload::Error {
+            message: "interrupted".to_string(),
+            timestamp: Some(Utc::now()),
+        },
     })?;
     finish_turn(turn_id, TurnOutcome::Cancelled, agent, on_event)
 }

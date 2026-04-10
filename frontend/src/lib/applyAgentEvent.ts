@@ -257,7 +257,6 @@ export function applyAgentEvent(
       if (!sessionId) {
         break;
       }
-      const descriptor = event.data.descriptor;
       const toolCallId = event.data.toolCallId;
       context.dispatch({
         type: 'ADD_MESSAGE',
@@ -267,7 +266,6 @@ export function applyAgentEvent(
           kind: 'subRunStart',
           turnId: event.data.turnId ?? null,
           ...agentFields,
-          ...(descriptor ? { descriptor } : {}),
           ...(toolCallId ? { toolCallId } : {}),
           resolvedOverrides: event.data.resolvedOverrides,
           resolvedLimits: event.data.resolvedLimits,
@@ -282,7 +280,6 @@ export function applyAgentEvent(
       if (!sessionId) {
         break;
       }
-      const descriptor = event.data.descriptor;
       const toolCallId = event.data.toolCallId;
       context.dispatch({
         type: 'ADD_MESSAGE',
@@ -292,7 +289,6 @@ export function applyAgentEvent(
           kind: 'subRunFinish',
           turnId: event.data.turnId ?? null,
           ...agentFields,
-          ...(descriptor ? { descriptor } : {}),
           ...(toolCallId ? { toolCallId } : {}),
           result: event.data.result,
           stepCount: event.data.stepCount,
@@ -308,6 +304,7 @@ export function applyAgentEvent(
       if (!sessionId) {
         break;
       }
+      const openSessionId = event.data.childRef.openSessionId;
       context.dispatch({
         type: 'ADD_MESSAGE',
         sessionId,
@@ -316,12 +313,11 @@ export function applyAgentEvent(
           kind: 'childSessionNotification',
           turnId: event.data.turnId ?? null,
           ...agentFields,
-          childSessionId: event.data.openSessionId ?? event.data.childRef?.sessionId,
+          childSessionId: openSessionId,
           childRef: event.data.childRef,
           notificationKind: event.data.kind,
           status: event.data.status,
           summary: event.data.summary,
-          openSessionId: event.data.openSessionId,
           ...(event.data.sourceToolCallId ? { sourceToolCallId: event.data.sourceToolCallId } : {}),
           ...(event.data.finalReplyExcerpt
             ? { finalReplyExcerpt: event.data.finalReplyExcerpt }

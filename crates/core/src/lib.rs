@@ -55,8 +55,8 @@ pub use agent::{
     CloseAgentParams, CollaborationResult, CollaborationResultKind, DeliverToParentParams,
     ForkMode, InboxEnvelopeKind, InvocationKind, LineageSnapshot, ResolvedExecutionLimitsSnapshot,
     ResolvedSubagentContextOverrides, ResumeAgentParams, SendAgentParams, SpawnAgentParams,
-    SubRunDescriptor, SubRunFailure, SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunOutcome,
-    SubRunResult, SubRunStorageMode, SubagentContextOverrides, WaitAgentParams, WaitUntil,
+    SubRunFailure, SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunResult, SubRunStorageMode,
+    SubagentContextOverrides, WaitAgentParams, WaitUntil,
 };
 pub use cancel::CancelToken;
 pub use compact_summary::{
@@ -65,8 +65,9 @@ pub use compact_summary::{
 };
 pub use error::{AstrError, Result, ResultExt};
 pub use event::{
-    AgentEvent, CompactTrigger, EventTranslator, Phase, StorageEvent, StoredEvent, StoredEventLine,
-    generate_session_id, phase_of_storage_event, replay_records,
+    AgentEvent, CompactTrigger, EventTranslator, Phase, PromptMetricsPayload, StorageEvent,
+    StorageEventPayload, StoredEvent, StoredEventLine, generate_session_id, phase_of_storage_event,
+    replay_records,
 };
 pub use hook::{
     CompactionHookContext, CompactionHookResultContext, HookCompactionReason, HookEvent,
@@ -82,9 +83,9 @@ pub use policy::{
 pub use projection::{AgentState, AgentStateProjector, project};
 pub use registry::{CapabilityContext, CapabilityExecutionResult, CapabilityInvoker};
 pub use runtime::{
-    ExecutionOrchestrationBoundary, LiveSubRunControlBoundary, LoopRunnerBoundary,
-    ManagedRuntimeComponent, PromptAccepted, RootExecutionAccepted, RuntimeCoordinator,
-    RuntimeHandle, SessionTruthBoundary,
+    ExecutionAccepted, ExecutionOrchestrationBoundary, LiveSubRunControlBoundary,
+    LoopRunnerBoundary, ManagedRuntimeComponent, RuntimeCoordinator, RuntimeHandle,
+    SessionTruthBoundary,
 };
 pub use session::{DeleteProjectResult, SessionEventRecord, SessionMeta};
 pub use store::{

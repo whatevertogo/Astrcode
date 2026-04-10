@@ -8,7 +8,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use astrcode_core::{CancelToken, StorageEvent};
+use astrcode_core::{CancelToken, StorageEventPayload};
 use astrcode_runtime_llm::{FinishReason, LlmOutput};
 
 use super::{fixtures::*, test_support::empty_capabilities};
@@ -73,7 +73,7 @@ async fn p4_2_max_tokens_triggers_auto_continue() {
     let assistant_finals: Vec<_> = events
         .iter()
         .filter_map(|event| {
-            if let StorageEvent::AssistantFinal { content, .. } = event {
+            if let StorageEventPayload::AssistantFinal { content, .. } = &event.payload {
                 Some(content.clone())
             } else {
                 None
@@ -159,7 +159,7 @@ async fn p4_2_max_tokens_stops_after_continuation_limit() {
     let events = events.lock().expect("events lock");
     let assistant_finals = events
         .iter()
-        .filter(|event| matches!(event, StorageEvent::AssistantFinal { .. }))
+        .filter(|event| matches!(&event.payload, StorageEventPayload::AssistantFinal { .. }))
         .count();
 
     assert_eq!(
@@ -208,23 +208,23 @@ async fn empty_completion_is_reported_as_error_instead_of_completed() {
     let events = events.lock().expect("events lock");
     assert!(
         events.iter().any(|event| matches!(
-            event,
-            StorageEvent::Error { message, .. }
+            &event.payload,
+            StorageEventPayload::Error { message, .. }
                 if message.contains("empty completion")
         )),
         "runtime should emit an explicit error event for empty completions"
     );
     assert!(
         events.iter().any(|event| matches!(
-            event,
-            StorageEvent::TurnDone { reason, .. } if reason.as_deref() == Some("error")
+            &event.payload,
+            StorageEventPayload::TurnDone { reason, .. } if reason.as_deref() == Some("error")
         )),
         "turn should finish with error reason instead of completed"
     );
     assert!(
         !events
             .iter()
-            .any(|event| matches!(event, StorageEvent::AssistantFinal { .. })),
+            .any(|event| matches!(&event.payload, StorageEventPayload::AssistantFinal { .. })),
         "empty completion must not fabricate an assistant final event"
     );
 }

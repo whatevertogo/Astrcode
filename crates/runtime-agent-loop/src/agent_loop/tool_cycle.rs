@@ -23,7 +23,8 @@ use std::{sync::Arc, time::Instant};
 use astrcode_core::{
     AgentEventContext, AgentState, ApprovalPending, ApprovalResolution, CancelToken,
     CapabilityCall, ExecutionOwner, LlmMessage, PolicyVerdict, Result, StorageEvent,
-    ToolCallRequest, ToolEventSink, ToolExecutionResult, ToolHookResultContext,
+    StorageEventPayload, ToolCallRequest, ToolEventSink, ToolExecutionResult,
+    ToolHookResultContext,
 };
 use astrcode_protocol::capability::CapabilityDescriptor;
 use astrcode_runtime_registry::CapabilityRouter;
@@ -404,12 +405,14 @@ where
         },
     };
 
-    on_event(StorageEvent::ToolCall {
+    on_event(StorageEvent {
         turn_id: Some(turn_id.to_string()),
         agent: agent.clone(),
-        tool_call_id: tool_call.id.clone(),
-        tool_name: tool_call.name.clone(),
-        args: tool_call.args.clone(),
+        payload: StorageEventPayload::ToolCall {
+            tool_call_id: tool_call.id.clone(),
+            tool_name: tool_call.name.clone(),
+            args: tool_call.args.clone(),
+        },
     })?;
 
     let start = Instant::now();
@@ -456,13 +459,15 @@ where
                 maybe_delta = tool_output_rx.recv(), if output_stream_open => {
                     match maybe_delta {
                         Some(delta) => {
-                            if let Err(error) = on_event(StorageEvent::ToolCallDelta {
+                            if let Err(error) = on_event(StorageEvent {
                                 turn_id: Some(turn_id.to_string()),
                                 agent: agent.clone(),
-                                tool_call_id: delta.tool_call_id,
-                                tool_name: delta.tool_name,
-                                stream: delta.stream,
-                                delta: delta.delta,
+                                payload: StorageEventPayload::ToolCallDelta {
+                                    tool_call_id: delta.tool_call_id,
+                                    tool_name: delta.tool_name,
+                                    stream: delta.stream,
+                                    delta: delta.delta,
+                                },
                             }) {
                                 tool_ctx.cancel().cancel();
                                 return Err(error);
@@ -494,13 +499,15 @@ where
             maybe_delta = tool_output_rx.recv(), if output_stream_open => {
                 match maybe_delta {
                     Some(delta) => {
-                        if let Err(error) = on_event(StorageEvent::ToolCallDelta {
+                        if let Err(error) = on_event(StorageEvent {
                             turn_id: Some(turn_id.to_string()),
                             agent: agent.clone(),
-                            tool_call_id: delta.tool_call_id,
-                            tool_name: delta.tool_name,
-                            stream: delta.stream,
-                            delta: delta.delta,
+                            payload: StorageEventPayload::ToolCallDelta {
+                                tool_call_id: delta.tool_call_id,
+                                tool_name: delta.tool_name,
+                                stream: delta.stream,
+                                delta: delta.delta,
+                            },
                         }) {
                             tool_ctx.cancel().cancel();
                             return Err(error);
@@ -544,16 +551,18 @@ where
             .run_post_tool_failure_best_effort(hook_result)
             .await;
     }
-    on_event(StorageEvent::ToolResult {
+    on_event(StorageEvent {
         turn_id: Some(turn_id.to_string()),
         agent: agent.clone(),
-        tool_call_id: tool_call.id.clone(),
-        tool_name: tool_call.name.clone(),
-        output: result.output.clone(),
-        success: result.ok,
-        error: result.error.clone(),
-        metadata: result.metadata.clone(),
-        duration_ms: result.duration_ms,
+        payload: StorageEventPayload::ToolResult {
+            tool_call_id: tool_call.id.clone(),
+            tool_name: tool_call.name.clone(),
+            output: result.output.clone(),
+            success: result.ok,
+            error: result.error.clone(),
+            metadata: result.metadata.clone(),
+            duration_ms: result.duration_ms,
+        },
     })?;
 
     Ok(result)
@@ -566,23 +575,27 @@ fn denied_tool_result(
     reason: &str,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
 ) -> Result<()> {
-    on_event(StorageEvent::ToolCall {
+    on_event(StorageEvent {
         turn_id: Some(turn_id.to_string()),
         agent: agent.clone(),
-        tool_call_id: call.id.clone(),
-        tool_name: call.name.clone(),
-        args: call.args.clone(),
+        payload: StorageEventPayload::ToolCall {
+            tool_call_id: call.id.clone(),
+            tool_name: call.name.clone(),
+            args: call.args.clone(),
+        },
     })?;
-    on_event(StorageEvent::ToolResult {
+    on_event(StorageEvent {
         turn_id: Some(turn_id.to_string()),
         agent: agent.clone(),
-        tool_call_id: call.id.clone(),
-        tool_name: call.name.clone(),
-        output: String::new(),
-        success: false,
-        error: Some(reason.to_string()),
-        metadata: None,
-        duration_ms: 0,
+        payload: StorageEventPayload::ToolResult {
+            tool_call_id: call.id.clone(),
+            tool_name: call.name.clone(),
+            output: String::new(),
+            success: false,
+            error: Some(reason.to_string()),
+            metadata: None,
+            duration_ms: 0,
+        },
     })
 }
 

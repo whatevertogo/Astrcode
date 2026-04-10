@@ -11,27 +11,29 @@
 //! - `CallingTool`: 正在调用工具
 //! - `Interrupted`: 被用户中断
 
-use crate::{AgentEvent, AgentEventContext, Phase, StorageEvent};
+use crate::{AgentEvent, AgentEventContext, Phase, StorageEvent, StorageEventPayload};
 
 /// Determines the target phase for a storage event.
 pub fn target_phase(event: &StorageEvent) -> Phase {
-    match event {
-        StorageEvent::SessionStart { .. } => Phase::Idle,
-        StorageEvent::UserMessage { .. } => Phase::Thinking,
-        StorageEvent::PromptMetrics { .. }
-        | StorageEvent::CompactApplied { .. }
-        | StorageEvent::SubRunStarted { .. }
-        | StorageEvent::SubRunFinished { .. }
-        | StorageEvent::ChildSessionNotification { .. } => Phase::Idle,
-        StorageEvent::AssistantDelta { .. }
-        | StorageEvent::ThinkingDelta { .. }
-        | StorageEvent::AssistantFinal { .. } => Phase::Streaming,
-        StorageEvent::ToolCall { .. }
-        | StorageEvent::ToolCallDelta { .. }
-        | StorageEvent::ToolResult { .. } => Phase::CallingTool,
-        StorageEvent::TurnDone { .. } => Phase::Idle,
-        StorageEvent::Error { message, .. } if message == "interrupted" => Phase::Interrupted,
-        StorageEvent::Error { .. } => Phase::Idle,
+    match &event.payload {
+        StorageEventPayload::SessionStart { .. } => Phase::Idle,
+        StorageEventPayload::UserMessage { .. } => Phase::Thinking,
+        StorageEventPayload::PromptMetrics { .. }
+        | StorageEventPayload::CompactApplied { .. }
+        | StorageEventPayload::SubRunStarted { .. }
+        | StorageEventPayload::SubRunFinished { .. }
+        | StorageEventPayload::ChildSessionNotification { .. } => Phase::Idle,
+        StorageEventPayload::AssistantDelta { .. }
+        | StorageEventPayload::ThinkingDelta { .. }
+        | StorageEventPayload::AssistantFinal { .. } => Phase::Streaming,
+        StorageEventPayload::ToolCall { .. }
+        | StorageEventPayload::ToolCallDelta { .. }
+        | StorageEventPayload::ToolResult { .. } => Phase::CallingTool,
+        StorageEventPayload::TurnDone { .. } => Phase::Idle,
+        StorageEventPayload::Error { message, .. } if message == "interrupted" => {
+            Phase::Interrupted
+        },
+        StorageEventPayload::Error { .. } => Phase::Idle,
     }
 }
 
@@ -58,12 +60,12 @@ impl PhaseTracker {
         agent: AgentEventContext,
     ) -> Option<AgentEvent> {
         if matches!(
-            event,
-            StorageEvent::PromptMetrics { .. }
-                | StorageEvent::CompactApplied { .. }
-                | StorageEvent::SubRunStarted { .. }
-                | StorageEvent::SubRunFinished { .. }
-                | StorageEvent::ChildSessionNotification { .. }
+            &event.payload,
+            StorageEventPayload::PromptMetrics { .. }
+                | StorageEventPayload::CompactApplied { .. }
+                | StorageEventPayload::SubRunStarted { .. }
+                | StorageEventPayload::SubRunFinished { .. }
+                | StorageEventPayload::ChildSessionNotification { .. }
         ) {
             return None;
         }

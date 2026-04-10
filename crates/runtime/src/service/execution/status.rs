@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use astrcode_core::{AgentStatus, ChildSessionNotificationKind, SubRunOutcome, SubRunResult};
+use astrcode_core::{AgentStatus, ChildSessionNotificationKind, SubRunResult, SubRunStorageMode};
 use astrcode_runtime_execution::{
     LegacyRejectionKind, ParsedSubRunStatus, ParsedSubRunStatusSource,
     find_subrun_status_in_events, legacy_shared_history_rejection_message,
@@ -39,27 +39,41 @@ impl AgentExecutionServiceHandle {
                 sub_run_id, session_id
             )));
         };
-        if matches!(snapshot.source, ParsedSubRunStatusSource::LegacyDurable) {
-            let message = legacy_shared_history_rejection_message(&session_id, Some(sub_run_id));
+        if is_legacy_shared_history_snapshot(&snapshot) {
             self.runtime
                 .observability
                 .record_legacy_rejection(LegacyRejectionKind::SharedHistoryUnsupported);
-            log::warn!(
-                "rejecting legacy shared-history sub-run status lookup: session='{}', \
-                 subRunId='{}'",
-                session_id,
-                sub_run_id
-            );
-            return Err(ServiceError::Conflict(message));
+            return Err(ServiceError::Conflict(
+                legacy_shared_history_rejection_message(&session_id, Some(sub_run_id)),
+            ));
         }
         Ok(to_service_subrun_snapshot(snapshot))
     }
 }
 
+fn is_legacy_shared_history_snapshot(snapshot: &ParsedSubRunStatus) -> bool {
+    if snapshot.source != ParsedSubRunStatusSource::Durable {
+        return false;
+    }
+    if snapshot.handle.storage_mode != SubRunStorageMode::SharedSession {
+        return false;
+    }
+    if snapshot.handle.child_session_id.is_some() {
+        return false;
+    }
+    let Some(result) = snapshot.result.as_ref() else {
+        return false;
+    };
+    matches!(
+        result.status,
+        AgentStatus::Completed | AgentStatus::TokenExceeded
+    ) && result.handoff.is_none()
+        && result.failure.is_none()
+}
+
 fn to_service_subrun_snapshot(snapshot: ParsedSubRunStatus) -> SubRunStatusSnapshot {
     SubRunStatusSnapshot {
         handle: snapshot.handle,
-        descriptor: snapshot.descriptor,
         tool_call_id: snapshot.tool_call_id,
         source: map_subrun_status_source(snapshot.source),
         result: snapshot.result,
@@ -74,7 +88,6 @@ fn map_subrun_status_source(source: ParsedSubRunStatusSource) -> SubRunStatusSou
     match source {
         ParsedSubRunStatusSource::Live => SubRunStatusSource::Live,
         ParsedSubRunStatusSource::Durable => SubRunStatusSource::Durable,
-        ParsedSubRunStatusSource::LegacyDurable => SubRunStatusSource::LegacyDurable,
     }
 }
 
@@ -90,22 +103,30 @@ pub(super) fn project_child_terminal_delivery(
     result: &SubRunResult,
 ) -> ChildTerminalDeliveryProjection {
     let (kind, status) = match result.status {
-        SubRunOutcome::Running => (
+        AgentStatus::Pending => (
+            ChildSessionNotificationKind::ProgressSummary,
+            AgentStatus::Pending,
+        ),
+        AgentStatus::Running => (
             ChildSessionNotificationKind::ProgressSummary,
             AgentStatus::Running,
         ),
-        SubRunOutcome::Completed | SubRunOutcome::TokenExceeded => (
+        AgentStatus::Completed => (
             ChildSessionNotificationKind::Delivered,
             AgentStatus::Completed,
         ),
-        SubRunOutcome::Failed => (ChildSessionNotificationKind::Failed, AgentStatus::Failed),
-        SubRunOutcome::Aborted => (ChildSessionNotificationKind::Closed, AgentStatus::Cancelled),
+        AgentStatus::TokenExceeded => (
+            ChildSessionNotificationKind::Delivered,
+            AgentStatus::TokenExceeded,
+        ),
+        AgentStatus::Failed => (ChildSessionNotificationKind::Failed, AgentStatus::Failed),
+        AgentStatus::Cancelled => (ChildSessionNotificationKind::Closed, AgentStatus::Cancelled),
     };
 
     let summary = terminal_summary_or_fallback(result, status);
     let final_reply_excerpt = if matches!(
         result.status,
-        SubRunOutcome::Completed | SubRunOutcome::TokenExceeded
+        AgentStatus::Completed | AgentStatus::TokenExceeded
     ) {
         result
             .handoff
@@ -145,6 +166,9 @@ fn terminal_summary_or_fallback(result: &SubRunResult, status: AgentStatus) -> S
 
     match status {
         AgentStatus::Completed => "子 Agent 已完成，但没有返回可读总结。".to_string(),
+        AgentStatus::TokenExceeded => {
+            "子 Agent 因 token 限额结束，但没有返回可读总结。".to_string()
+        },
         AgentStatus::Failed => "子 Agent 失败，且没有返回可读错误信息。".to_string(),
         AgentStatus::Cancelled => "子 Agent 已关闭。".to_string(),
         AgentStatus::Running => "子 Agent 正在运行。".to_string(),

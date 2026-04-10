@@ -11,7 +11,7 @@ use std::{
 };
 
 use astrcode_core::{
-    CancelToken, Phase, PluginManifest, PluginType, StorageEvent, ToolCallRequest,
+    CancelToken, Phase, PluginManifest, PluginType, StorageEventPayload, ToolCallRequest,
     UserMessageOrigin,
 };
 use astrcode_plugin::Supervisor;
@@ -143,8 +143,8 @@ async fn unified_capability_router_executes_builtin_and_plugin_tools() {
         let events = events.lock().expect("lock");
         let saw_quick_tool = events.iter().any(|event| {
             matches!(
-                event,
-                StorageEvent::ToolResult {
+                &event.payload,
+                StorageEventPayload::ToolResult {
                     tool_name,
                     output,
                     ..
@@ -153,8 +153,8 @@ async fn unified_capability_router_executes_builtin_and_plugin_tools() {
         });
         let saw_workspace_summary = events.iter().any(|event| {
             matches!(
-                event,
-                StorageEvent::ToolResult {
+                &event.payload,
+                StorageEventPayload::ToolResult {
                     tool_name,
                     output,
                     ..

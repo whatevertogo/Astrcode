@@ -12,6 +12,7 @@ use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{
     ApiError, AppState,
@@ -68,7 +69,7 @@ pub(crate) async fn execute_agent(
             ),
             session_id: Some(accepted.session_id),
             turn_id: Some(accepted.turn_id),
-            agent_id: Some(accepted.agent_id),
+            agent_id: accepted.agent_id,
         }),
     ))
 }
@@ -89,23 +90,39 @@ pub(crate) async fn get_subrun_status(
     Ok(Json(to_subrun_status_dto(snapshot)))
 }
 
-pub(crate) async fn cancel_subrun(
+/// 关闭指定 agent 及其子树。
+///
+/// 替代旧的 `cancel_subrun` 路由。新路由按 agent_id 而非 sub_run_id 定位，
+/// 并支持级联关闭子树。`cascade` 默认为 `true`。
+pub(crate) async fn close_agent(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((session_id, sub_run_id)): Path<(String, String)>,
-) -> Result<StatusCode, ApiError> {
+    Path((session_id, agent_id)): Path<(String, String)>,
+    Json(body): Json<CloseAgentRequest>,
+) -> Result<Json<CloseAgentResponse>, ApiError> {
     require_auth(&state, &headers, None)?;
     let session_id = sessions::validate_session_path_id(&session_id)?;
-    let sub_run_id = validate_subrun_path_id(&sub_run_id)?;
-    state
+    let cascade = body.cascade.unwrap_or(true);
+    let closed_ids = state
         .service
         .execution()
-        .cancel_subrun(&session_id, &sub_run_id)
+        .close_agent_subtree(&session_id, &agent_id, cascade)
         .await
         .map_err(ApiError::from)?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(CloseAgentResponse {
+        closed_agent_ids: closed_ids,
+    }))
 }
 
-fn validate_subrun_path_id(raw_sub_run_id: &str) -> Result<String, ApiError> {
-    sessions::validate_path_id(raw_sub_run_id, None, false, "sub-run")
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CloseAgentRequest {
+    #[serde(default)]
+    cascade: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CloseAgentResponse {
+    closed_agent_ids: Vec<String>,
 }

@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AgentEventContext, ChildSessionNotification, CompactTrigger, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, SubRunDescriptor, SubRunResult, ToolExecutionResult,
-    ToolOutputStream,
+    AgentEventContext, ChildSessionNotification, CompactTrigger, PromptMetricsPayload,
+    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SubRunResult,
+    ToolExecutionResult, ToolOutputStream,
 };
 
 /// 会话阶段
@@ -108,26 +108,8 @@ pub enum AgentEvent {
     PromptMetrics {
         turn_id: Option<String>,
         agent: AgentEventContext,
-        step_index: u32,
-        estimated_tokens: u32,
-        context_window: u32,
-        effective_window: u32,
-        threshold_tokens: u32,
-        truncated_tool_results: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        provider_input_tokens: Option<u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        provider_output_tokens: Option<u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        cache_creation_input_tokens: Option<u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        cache_read_input_tokens: Option<u32>,
-        #[serde(default)]
-        provider_cache_metrics_supported: bool,
-        #[serde(default)]
-        prompt_cache_reuse_hits: u32,
-        #[serde(default)]
-        prompt_cache_reuse_misses: u32,
+        #[serde(flatten)]
+        metrics: PromptMetricsPayload,
     },
     /// 上下文压缩已应用。
     ///
@@ -144,7 +126,6 @@ pub enum AgentEvent {
     SubRunStarted {
         turn_id: Option<String>,
         agent: AgentEventContext,
-        descriptor: Option<SubRunDescriptor>,
         tool_call_id: Option<String>,
         resolved_overrides: ResolvedSubagentContextOverrides,
         resolved_limits: ResolvedExecutionLimitsSnapshot,
@@ -153,7 +134,6 @@ pub enum AgentEvent {
     SubRunFinished {
         turn_id: Option<String>,
         agent: AgentEventContext,
-        descriptor: Option<SubRunDescriptor>,
         tool_call_id: Option<String>,
         result: SubRunResult,
         step_count: u32,

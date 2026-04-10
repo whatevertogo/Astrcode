@@ -2,11 +2,10 @@ use std::{net::TcpListener, sync::Arc, time::Duration};
 
 use astrcode_core::{
     AgentEventContext, EventLogWriter, PluginRegistry, RuntimeCoordinator, RuntimeHandle,
-    StorageEvent,
+    StorageEvent, StorageEventPayload,
 };
 use astrcode_protocol::http::{
-    AgentEventPayload, ChildSessionLineageKindDto, ChildSessionNotificationKindDto,
-    ParentChildSummaryListResponseDto, PromptAcceptedResponse, PromptRequest,
+    AgentEventPayload, ChildSessionNotificationKindDto, PromptAcceptedResponse, PromptRequest,
     SessionHistoryResponseDto, SubRunStatusDto, SubRunStatusSourceDto,
 };
 use astrcode_runtime::{
@@ -369,10 +368,12 @@ async fn subrun_status_contract_returns_expected_payload_shape() {
     .expect("payload should deserialize");
     assert_eq!(payload.sub_run_id, "subrun-contract");
     assert_eq!(payload.source, SubRunStatusSourceDto::Durable);
-    assert_eq!(payload.status, "completed");
+    assert_eq!(
+        payload.status,
+        astrcode_protocol::http::AgentStatusDto::Completed
+    );
     assert_eq!(payload.step_count, Some(1));
     assert_eq!(payload.estimated_tokens, Some(42));
-    assert!(payload.descriptor.is_some());
     assert_eq!(payload.tool_call_id.as_deref(), Some("call-contract"));
 }
 
@@ -569,82 +570,82 @@ fn seed_nested_subrun_hierarchy(session_id: &str, working_dir: &std::path::Path)
     );
 
     for event in [
-        StorageEvent::SessionStart {
-            session_id: session_id.to_string(),
-            timestamp: Utc::now(),
-            working_dir: working_dir.display().to_string(),
-            parent_session_id: None,
-            parent_storage_seq: None,
+        StorageEvent {
+            turn_id: None,
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::SessionStart {
+                session_id: session_id.to_string(),
+                timestamp: Utc::now(),
+                working_dir: working_dir.display().to_string(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
         },
-        StorageEvent::UserMessage {
+        StorageEvent {
             turn_id: Some("turn-root".to_string()),
             agent: root,
-            content: "root message".to_string(),
-            origin: astrcode_core::UserMessageOrigin::User,
-            timestamp: Utc::now(),
+            payload: StorageEventPayload::UserMessage {
+                content: "root message".to_string(),
+                origin: astrcode_core::UserMessageOrigin::User,
+                timestamp: Utc::now(),
+            },
         },
-        StorageEvent::SubRunStarted {
+        StorageEvent {
             turn_id: Some("turn-root".to_string()),
             agent: sub1.clone(),
-            descriptor: Some(astrcode_core::SubRunDescriptor {
-                sub_run_id: "sub-level1".to_string(),
-                parent_turn_id: "turn-root".to_string(),
-                parent_agent_id: Some("agent-root".to_string()),
-                depth: 1,
-            }),
-            tool_call_id: Some("call-1".to_string()),
-            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
-            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
-            timestamp: Some(Utc::now()),
+            payload: StorageEventPayload::SubRunStarted {
+                tool_call_id: Some("call-1".to_string()),
+                resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+                resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: Some(Utc::now()),
+            },
         },
-        StorageEvent::UserMessage {
+        StorageEvent {
             turn_id: Some("turn-level1".to_string()),
             agent: sub1,
-            content: "level1 message".to_string(),
-            origin: astrcode_core::UserMessageOrigin::User,
-            timestamp: Utc::now(),
+            payload: StorageEventPayload::UserMessage {
+                content: "level1 message".to_string(),
+                origin: astrcode_core::UserMessageOrigin::User,
+                timestamp: Utc::now(),
+            },
         },
-        StorageEvent::SubRunStarted {
+        StorageEvent {
             turn_id: Some("turn-level1".to_string()),
             agent: sub2.clone(),
-            descriptor: Some(astrcode_core::SubRunDescriptor {
-                sub_run_id: "sub-level2".to_string(),
-                parent_turn_id: "turn-level1".to_string(),
-                parent_agent_id: Some("agent-level1".to_string()),
-                depth: 2,
-            }),
-            tool_call_id: Some("call-2".to_string()),
-            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
-            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
-            timestamp: Some(Utc::now()),
+            payload: StorageEventPayload::SubRunStarted {
+                tool_call_id: Some("call-2".to_string()),
+                resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+                resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: Some(Utc::now()),
+            },
         },
-        StorageEvent::UserMessage {
+        StorageEvent {
             turn_id: Some("turn-level2".to_string()),
             agent: sub2,
-            content: "level2 message".to_string(),
-            origin: astrcode_core::UserMessageOrigin::User,
-            timestamp: Utc::now(),
+            payload: StorageEventPayload::UserMessage {
+                content: "level2 message".to_string(),
+                origin: astrcode_core::UserMessageOrigin::User,
+                timestamp: Utc::now(),
+            },
         },
-        StorageEvent::SubRunStarted {
+        StorageEvent {
             turn_id: Some("turn-level2".to_string()),
             agent: sub3.clone(),
-            descriptor: Some(astrcode_core::SubRunDescriptor {
-                sub_run_id: "sub-level3".to_string(),
-                parent_turn_id: "turn-level2".to_string(),
-                parent_agent_id: Some("agent-level2".to_string()),
-                depth: 3,
-            }),
-            tool_call_id: Some("call-3".to_string()),
-            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
-            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
-            timestamp: Some(Utc::now()),
+            payload: StorageEventPayload::SubRunStarted {
+                tool_call_id: Some("call-3".to_string()),
+                resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+                resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: Some(Utc::now()),
+            },
         },
-        StorageEvent::UserMessage {
+        StorageEvent {
             turn_id: Some("turn-level3".to_string()),
             agent: sub3,
-            content: "level3 message".to_string(),
-            origin: astrcode_core::UserMessageOrigin::User,
-            timestamp: Utc::now(),
+            payload: StorageEventPayload::UserMessage {
+                content: "level3 message".to_string(),
+                origin: astrcode_core::UserMessageOrigin::User,
+                timestamp: Utc::now(),
+            },
         },
     ] {
         log.append(&event).expect("event should append");
@@ -706,7 +707,10 @@ async fn child_delivery_projection_contract_exposes_status_source_and_final_exce
     )
     .expect("payload should deserialize");
     assert_eq!(status_payload.source, SubRunStatusSourceDto::Durable);
-    assert_eq!(status_payload.status, "completed");
+    assert_eq!(
+        status_payload.status,
+        astrcode_protocol::http::AgentStatusDto::Completed
+    );
 
     let history_response = app
         .oneshot(
@@ -733,13 +737,13 @@ async fn child_delivery_projection_contract_exposes_status_source_and_final_exce
             AgentEventPayload::ChildSessionNotification {
                 kind,
                 status,
-                open_session_id,
+                child_ref,
                 final_reply_excerpt,
                 ..
             } => Some((
                 kind.clone(),
-                status.clone(),
-                open_session_id.clone(),
+                *status,
+                child_ref.open_session_id.clone(),
                 final_reply_excerpt.clone(),
             )),
             _ => None,
@@ -747,7 +751,10 @@ async fn child_delivery_projection_contract_exposes_status_source_and_final_exce
         .expect("child delivery notification event should exist");
 
     assert_eq!(delivery_event.0, ChildSessionNotificationKindDto::Delivered);
-    assert_eq!(delivery_event.1, "completed");
+    assert_eq!(
+        delivery_event.1,
+        astrcode_protocol::http::AgentStatusDto::Completed
+    );
     assert_eq!(delivery_event.2, "session-child-contract");
     assert_eq!(delivery_event.3.as_deref(), Some("final answer excerpt"));
 }
@@ -769,7 +776,6 @@ fn seed_parent_summary_list_session(session_id: &str, working_dir: &std::path::P
         parent_agent_id: Some("agent-parent".to_string()),
         lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
         status: astrcode_core::AgentStatus::Completed,
-        openable: true,
         open_session_id: "session-child-ok".to_string(),
     };
     let child_ref_fail = astrcode_core::ChildAgentRef {
@@ -779,7 +785,6 @@ fn seed_parent_summary_list_session(session_id: &str, working_dir: &std::path::P
         parent_agent_id: Some("agent-parent".to_string()),
         lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
         status: astrcode_core::AgentStatus::Failed,
-        openable: true,
         open_session_id: "session-child-fail".to_string(),
     };
 
@@ -799,110 +804,108 @@ fn seed_parent_summary_list_session(session_id: &str, working_dir: &std::path::P
         astrcode_core::SubRunStorageMode::IndependentSession,
         Some("session-child-fail".to_string()),
     );
-    let descriptor_ok = astrcode_core::SubRunDescriptor {
-        sub_run_id: "subrun-ok".to_string(),
-        parent_turn_id: "turn-parent".to_string(),
-        parent_agent_id: Some("agent-parent".to_string()),
-        depth: 1,
-    };
-    let descriptor_fail = astrcode_core::SubRunDescriptor {
-        sub_run_id: "subrun-fail".to_string(),
-        parent_turn_id: "turn-parent".to_string(),
-        parent_agent_id: Some("agent-parent".to_string()),
-        depth: 1,
-    };
 
     for event in [
-        StorageEvent::SessionStart {
-            session_id: session_id.to_string(),
-            timestamp: Utc::now(),
-            working_dir: working_dir.display().to_string(),
-            parent_session_id: None,
-            parent_storage_seq: None,
+        StorageEvent {
+            turn_id: None,
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::SessionStart {
+                session_id: session_id.to_string(),
+                timestamp: Utc::now(),
+                working_dir: working_dir.display().to_string(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
         },
-        StorageEvent::SubRunStarted {
+        StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent: agent_ok.clone(),
-            descriptor: Some(descriptor_ok.clone()),
-            tool_call_id: Some("call-ok".to_string()),
-            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides {
-                storage_mode: astrcode_core::SubRunStorageMode::IndependentSession,
-                ..Default::default()
+            payload: StorageEventPayload::SubRunStarted {
+                tool_call_id: Some("call-ok".to_string()),
+                resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides {
+                    storage_mode: astrcode_core::SubRunStorageMode::IndependentSession,
+                    ..Default::default()
+                },
+                resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: Some(Utc::now()),
             },
-            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
-            timestamp: Some(Utc::now()),
         },
-        StorageEvent::SubRunFinished {
+        StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent: agent_ok.clone(),
-            descriptor: Some(descriptor_ok),
-            tool_call_id: Some("call-ok".to_string()),
-            result: astrcode_core::SubRunResult {
-                status: astrcode_core::SubRunOutcome::Completed,
-                handoff: None,
-                failure: None,
+            payload: StorageEventPayload::SubRunFinished {
+                tool_call_id: Some("call-ok".to_string()),
+                result: astrcode_core::SubRunResult {
+                    status: astrcode_core::AgentStatus::Completed,
+                    handoff: None,
+                    failure: None,
+                },
+                step_count: 2,
+                estimated_tokens: 16,
+                timestamp: Some(Utc::now()),
             },
-            step_count: 2,
-            estimated_tokens: 16,
-            timestamp: Some(Utc::now()),
         },
         // 第一个 child：成功交付
-        StorageEvent::ChildSessionNotification {
+        StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent: agent_ok.clone(),
-            notification: astrcode_core::ChildSessionNotification {
-                notification_id: "child-terminal:subrun-ok:delivered".to_string(),
-                child_ref: child_ref_ok,
-                kind: astrcode_core::ChildSessionNotificationKind::Delivered,
-                summary: "成功完成代码审查".to_string(),
-                status: astrcode_core::AgentStatus::Completed,
-                open_session_id: "session-child-ok".to_string(),
-                source_tool_call_id: Some("call-ok".to_string()),
-                final_reply_excerpt: Some("审查结果：代码质量良好".to_string()),
+            payload: StorageEventPayload::ChildSessionNotification {
+                notification: astrcode_core::ChildSessionNotification {
+                    notification_id: "child-terminal:subrun-ok:delivered".to_string(),
+                    child_ref: child_ref_ok,
+                    kind: astrcode_core::ChildSessionNotificationKind::Delivered,
+                    summary: "成功完成代码审查".to_string(),
+                    status: astrcode_core::AgentStatus::Completed,
+                    source_tool_call_id: Some("call-ok".to_string()),
+                    final_reply_excerpt: Some("审查结果：代码质量良好".to_string()),
+                },
+                timestamp: Some(Utc::now()),
             },
-            timestamp: Some(Utc::now()),
         },
-        StorageEvent::SubRunStarted {
+        StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent: agent_fail.clone(),
-            descriptor: Some(descriptor_fail.clone()),
-            tool_call_id: Some("call-fail".to_string()),
-            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides {
-                storage_mode: astrcode_core::SubRunStorageMode::IndependentSession,
-                ..Default::default()
+            payload: StorageEventPayload::SubRunStarted {
+                tool_call_id: Some("call-fail".to_string()),
+                resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides {
+                    storage_mode: astrcode_core::SubRunStorageMode::IndependentSession,
+                    ..Default::default()
+                },
+                resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: Some(Utc::now()),
             },
-            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
-            timestamp: Some(Utc::now()),
         },
-        StorageEvent::SubRunFinished {
+        StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent: agent_fail.clone(),
-            descriptor: Some(descriptor_fail),
-            tool_call_id: Some("call-fail".to_string()),
-            result: astrcode_core::SubRunResult {
-                status: astrcode_core::SubRunOutcome::Failed,
-                handoff: None,
-                failure: None,
+            payload: StorageEventPayload::SubRunFinished {
+                tool_call_id: Some("call-fail".to_string()),
+                result: astrcode_core::SubRunResult {
+                    status: astrcode_core::AgentStatus::Failed,
+                    handoff: None,
+                    failure: None,
+                },
+                step_count: 1,
+                estimated_tokens: 9,
+                timestamp: Some(Utc::now()),
             },
-            step_count: 1,
-            estimated_tokens: 9,
-            timestamp: Some(Utc::now()),
         },
         // 第二个 child：失败通知
-        StorageEvent::ChildSessionNotification {
+        StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent: agent_fail,
-            notification: astrcode_core::ChildSessionNotification {
-                notification_id: "child-terminal:subrun-fail:failed".to_string(),
-                child_ref: child_ref_fail,
-                kind: astrcode_core::ChildSessionNotificationKind::Failed,
-                summary: "子 Agent 执行失败".to_string(),
-                status: astrcode_core::AgentStatus::Failed,
-                open_session_id: "session-child-fail".to_string(),
-                source_tool_call_id: Some("call-fail".to_string()),
-                final_reply_excerpt: None,
+            payload: StorageEventPayload::ChildSessionNotification {
+                notification: astrcode_core::ChildSessionNotification {
+                    notification_id: "child-terminal:subrun-fail:failed".to_string(),
+                    child_ref: child_ref_fail,
+                    kind: astrcode_core::ChildSessionNotificationKind::Failed,
+                    summary: "子 Agent 执行失败".to_string(),
+                    status: astrcode_core::AgentStatus::Failed,
+                    source_tool_call_id: Some("call-fail".to_string()),
+                    final_reply_excerpt: None,
+                },
+                timestamp: Some(Utc::now()),
             },
-            timestamp: Some(Utc::now()),
         },
     ] {
         log.append(&event).expect("event should append");
@@ -916,177 +919,46 @@ fn seed_child_session_with_full_transcript(session_id: &str, working_dir: &std::
     let root = AgentEventContext::root_execution("agent-child-ok", "explore");
 
     for event in [
-        StorageEvent::SessionStart {
-            session_id: session_id.to_string(),
-            timestamp: Utc::now(),
-            working_dir: working_dir.display().to_string(),
-            parent_session_id: Some("session-parent-direct".to_string()),
-            parent_storage_seq: Some(2),
+        StorageEvent {
+            turn_id: None,
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::SessionStart {
+                session_id: session_id.to_string(),
+                timestamp: Utc::now(),
+                working_dir: working_dir.display().to_string(),
+                parent_session_id: Some("session-parent-direct".to_string()),
+                parent_storage_seq: Some(2),
+            },
         },
-        StorageEvent::UserMessage {
+        StorageEvent {
             turn_id: Some("turn-child".to_string()),
             agent: root.clone(),
-            content: "审查 src/main.rs 文件".to_string(),
-            origin: astrcode_core::UserMessageOrigin::User,
-            timestamp: Utc::now(),
+            payload: StorageEventPayload::UserMessage {
+                content: "审查 src/main.rs 文件".to_string(),
+                origin: astrcode_core::UserMessageOrigin::User,
+                timestamp: Utc::now(),
+            },
         },
-        StorageEvent::ThinkingDelta {
+        StorageEvent {
             turn_id: Some("turn-child".to_string()),
             agent: root.clone(),
-            token: "分析文件结构...".to_string(),
+            payload: StorageEventPayload::ThinkingDelta {
+                token: "分析文件结构...".to_string(),
+            },
         },
-        StorageEvent::AssistantFinal {
+        StorageEvent {
             turn_id: Some("turn-child".to_string()),
             agent: root,
-            content: "审查结果：代码质量良好，无需修改。".to_string(),
-            reasoning_content: None,
-            reasoning_signature: None,
-            timestamp: Some(Utc::now()),
+            payload: StorageEventPayload::AssistantFinal {
+                content: "审查结果：代码质量良好，无需修改。".to_string(),
+                reasoning_content: None,
+                reasoning_signature: None,
+                timestamp: Some(Utc::now()),
+            },
         },
     ] {
         log.append(&event).expect("event should append");
     }
-}
-
-/// 植入同一 child session 的 spawn + resume 边界事实。
-/// 最新的 resumed 通知应该覆盖旧 execution 的 child_ref，但继续沿用原 open_session_id。
-fn seed_parent_resume_projection_session(session_id: &str, working_dir: &std::path::Path) {
-    let mut log =
-        EventLog::create(session_id, working_dir).expect("session file should be created");
-    let parent_agent = Some("agent-parent".to_string());
-
-    let started_ref = astrcode_core::ChildAgentRef {
-        agent_id: "agent-child".to_string(),
-        session_id: session_id.to_string(),
-        sub_run_id: "subrun-old".to_string(),
-        parent_agent_id: parent_agent.clone(),
-        lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
-        status: astrcode_core::AgentStatus::Completed,
-        openable: true,
-        open_session_id: "session-child-stable".to_string(),
-    };
-    let resumed_ref = astrcode_core::ChildAgentRef {
-        agent_id: "agent-child".to_string(),
-        session_id: session_id.to_string(),
-        sub_run_id: "subrun-new".to_string(),
-        parent_agent_id: parent_agent,
-        lineage_kind: astrcode_core::ChildSessionLineageKind::Resume,
-        status: astrcode_core::AgentStatus::Running,
-        openable: true,
-        open_session_id: "session-child-stable".to_string(),
-    };
-    let child_agent = AgentEventContext::sub_run(
-        "agent-child",
-        "turn-parent",
-        "explore",
-        "subrun-new",
-        astrcode_core::SubRunStorageMode::IndependentSession,
-        Some("session-child-stable".to_string()),
-    );
-
-    for event in [
-        StorageEvent::SessionStart {
-            session_id: session_id.to_string(),
-            timestamp: Utc::now(),
-            working_dir: working_dir.display().to_string(),
-            parent_session_id: None,
-            parent_storage_seq: None,
-        },
-        StorageEvent::ChildSessionNotification {
-            turn_id: Some("turn-parent".to_string()),
-            agent: child_agent.clone(),
-            notification: astrcode_core::ChildSessionNotification {
-                notification_id: "child-started:subrun-old".to_string(),
-                child_ref: started_ref,
-                kind: astrcode_core::ChildSessionNotificationKind::Started,
-                summary: "第一次执行完成".to_string(),
-                status: astrcode_core::AgentStatus::Completed,
-                open_session_id: "session-child-stable".to_string(),
-                source_tool_call_id: Some("call-old".to_string()),
-                final_reply_excerpt: Some("旧执行摘要".to_string()),
-            },
-            timestamp: Some(Utc::now()),
-        },
-        StorageEvent::ChildSessionNotification {
-            turn_id: Some("turn-parent".to_string()),
-            agent: child_agent,
-            notification: astrcode_core::ChildSessionNotification {
-                notification_id: "child-resumed:subrun-new".to_string(),
-                child_ref: resumed_ref,
-                kind: astrcode_core::ChildSessionNotificationKind::Resumed,
-                summary: "恢复后继续执行".to_string(),
-                status: astrcode_core::AgentStatus::Running,
-                open_session_id: "session-child-stable".to_string(),
-                source_tool_call_id: Some("call-new".to_string()),
-                final_reply_excerpt: None,
-            },
-            timestamp: Some(Utc::now()),
-        },
-    ] {
-        log.append(&event).expect("event should append");
-    }
-}
-
-#[tokio::test]
-async fn parent_summary_list_contract_returns_child_notifications_from_history() {
-    // Why: 父会话的 /children/summary 必须返回所有可消费的 child notification，
-    // 而不是 child 原始事件流，保证父视图只展示摘要
-    let (state, _guard) = test_state(None);
-    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    seed_parent_summary_list_session("parent-summary-session", temp_dir.path());
-    let app = build_api_router().with_state(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/sessions/parent-summary-session/children/summary")
-                .header(AUTH_HEADER_NAME, "browser-token")
-                .body(Body::empty())
-                .expect("request should be valid"),
-        )
-        .await
-        .expect("response should be returned");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let payload: ParentChildSummaryListResponseDto = serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body should be readable"),
-    )
-    .expect("payload should deserialize");
-
-    assert_eq!(payload.items.len(), 2);
-
-    // 验证第一个 child 通知：成功交付
-    let ok_notification = payload
-        .items
-        .iter()
-        .find(|item| item.child_ref.agent_id == "agent-child-ok")
-        .expect("should find completed child notification");
-    assert_eq!(
-        ok_notification.kind,
-        ChildSessionNotificationKindDto::Delivered
-    );
-    assert_eq!(ok_notification.status, "completed");
-    assert_eq!(ok_notification.open_session_id, "session-child-ok");
-    assert_eq!(
-        ok_notification.final_reply_excerpt.as_deref(),
-        Some("审查结果：代码质量良好")
-    );
-
-    // 验证第二个 child 通知：失败
-    let fail_notification = payload
-        .items
-        .iter()
-        .find(|item| item.child_ref.agent_id == "agent-child-fail")
-        .expect("should find failed child notification");
-    assert_eq!(
-        fail_notification.kind,
-        ChildSessionNotificationKindDto::Failed
-    );
-    assert_eq!(fail_notification.status, "failed");
-    assert_eq!(fail_notification.open_session_id, "session-child-fail");
-    assert!(fail_notification.final_reply_excerpt.is_none());
 }
 
 #[tokio::test]
@@ -1144,48 +1016,6 @@ async fn parent_history_contract_hides_independent_subrun_lifecycle_and_keeps_no
             .all(|envelope| !matches!(envelope.event, AgentEventPayload::UserMessage { .. })),
         "parent history should not require mechanism user messages to expose child delivery facts"
     );
-}
-
-#[tokio::test]
-async fn parent_summary_list_contract_notification_contains_stable_child_ref() {
-    // Why: child_ref 是前端定位和打开子会话的唯一 stable 引用，
-    // 必须包含 agentId、sessionId、subRunId、lineageKind、openSessionId
-    let (state, _guard) = test_state(None);
-    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    seed_parent_summary_list_session("parent-ref-session", temp_dir.path());
-    let app = build_api_router().with_state(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/sessions/parent-ref-session/children/summary")
-                .header(AUTH_HEADER_NAME, "browser-token")
-                .body(Body::empty())
-                .expect("request should be valid"),
-        )
-        .await
-        .expect("response should be returned");
-
-    let payload: ParentChildSummaryListResponseDto = serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body should be readable"),
-    )
-    .expect("payload should deserialize");
-
-    let child_ref = &payload
-        .items
-        .into_iter()
-        .find(|item| item.child_ref.agent_id == "agent-child-ok")
-        .expect("should find ok child")
-        .child_ref;
-
-    assert_eq!(child_ref.agent_id, "agent-child-ok");
-    assert_eq!(child_ref.sub_run_id, "subrun-ok");
-    assert_eq!(child_ref.lineage_kind, ChildSessionLineageKindDto::Spawn);
-    assert!(child_ref.openable);
-    assert_eq!(child_ref.open_session_id, "session-child-ok");
-    assert_eq!(child_ref.parent_agent_id.as_deref(), Some("agent-parent"));
 }
 
 #[tokio::test]
@@ -1247,99 +1077,4 @@ async fn child_session_direct_loading_contract_returns_full_transcript() {
         !has_parent_notification,
         "child session should not contain parent summary notifications"
     );
-}
-
-#[tokio::test]
-async fn child_session_view_projection_contract_returns_readable_summary() {
-    // Why: GET /api/sessions/:id/children/:child_session_id/view 必须返回
-    // 可读的 child-session view projection，不含 raw JSON
-    let (state, _guard) = test_state(None);
-    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    seed_parent_summary_list_session("parent-view-session", temp_dir.path());
-    let app = build_api_router().with_state(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/sessions/parent-view-session/children/session-child-ok/view")
-                .header(AUTH_HEADER_NAME, "browser-token")
-                .body(Body::empty())
-                .expect("request should be valid"),
-        )
-        .await
-        .expect("response should be returned");
-
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body_bytes = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body should be readable");
-    let body_str = String::from_utf8(body_bytes.to_vec()).expect("body should be utf8");
-
-    // 反序列化为 ChildSessionViewProjectionDto 验证结构
-    let payload: serde_json::Value =
-        serde_json::from_str(&body_str).expect("payload should be valid json");
-    let view = payload
-        .get("view")
-        .expect("payload should have 'view' field");
-
-    // 验证 child_ref 字段
-    let child_ref = view
-        .get("childRef")
-        .expect("view should have childRef field");
-    assert_eq!(child_ref["agentId"].as_str(), Some("agent-child-ok"));
-    assert_eq!(
-        child_ref["openSessionId"].as_str(),
-        Some("session-child-ok")
-    );
-
-    // 验证 status 和 hasFinalReply 字段
-    assert_eq!(view["status"].as_str(), Some("completed"));
-    assert_eq!(view["hasFinalReply"].as_bool(), Some(true));
-
-    // 验证不含 raw JSON 字段（如 inboxEnvelope、payload 等）
-    assert!(
-        view.get("inboxEnvelope").is_none(),
-        "view projection must not contain inbox envelope"
-    );
-    assert!(
-        view.get("rawPayload").is_none(),
-        "view projection must not contain raw payload"
-    );
-}
-
-#[tokio::test]
-async fn child_session_view_projection_prefers_latest_resumed_execution_for_same_child_session() {
-    let (state, _guard) = test_state(None);
-    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    seed_parent_resume_projection_session("parent-resume-view-session", temp_dir.path());
-    let app = build_api_router().with_state(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/sessions/parent-resume-view-session/children/session-child-stable/view")
-                .header(AUTH_HEADER_NAME, "browser-token")
-                .body(Body::empty())
-                .expect("request should be valid"),
-        )
-        .await
-        .expect("response should be returned");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let payload: serde_json::Value = serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body should be readable"),
-    )
-    .expect("payload should deserialize");
-    let view = payload.get("view").expect("payload should contain view");
-
-    assert_eq!(view["childRef"]["subRunId"].as_str(), Some("subrun-new"));
-    assert_eq!(view["childRef"]["lineageKind"].as_str(), Some("resume"));
-    assert_eq!(
-        view["childRef"]["openSessionId"].as_str(),
-        Some("session-child-stable")
-    );
-    assert_eq!(view["status"].as_str(), Some("running"));
 }

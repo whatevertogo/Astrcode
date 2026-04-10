@@ -14,8 +14,9 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentEventContext, AstrError, CancelToken, LlmMessage, Phase, StorageEvent, Tool,
-    ToolCapabilityMetadata, ToolDefinition, ToolExecutionResult, UserMessageOrigin,
+    AgentEventContext, AstrError, CancelToken, LlmMessage, Phase, StorageEvent,
+    StorageEventPayload, Tool, ToolCapabilityMetadata, ToolDefinition, ToolExecutionResult,
+    UserMessageOrigin,
 };
 use astrcode_protocol::capability::SideEffectLevel;
 use astrcode_runtime_llm::{EventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
@@ -242,18 +243,21 @@ async fn auto_compact_emits_compact_applied_before_retrying_the_turn() {
     let events = events.lock().expect("events lock");
     assert!(matches!(
         events.first(),
-        Some(StorageEvent::PromptMetrics { .. })
+        Some(StorageEvent {
+            payload: StorageEventPayload::PromptMetrics { .. },
+            ..
+        })
     ));
     assert!(events.iter().any(|event| {
         matches!(
-            event,
-            StorageEvent::CompactApplied { summary, .. } if summary == "condensed history"
+            &event.payload,
+            StorageEventPayload::CompactApplied { summary, .. } if summary == "condensed history"
         )
     }));
     assert!(events.iter().any(|event| {
         matches!(
-            event,
-            StorageEvent::AssistantFinal { content, .. } if content == "final answer"
+            &event.payload,
+            StorageEventPayload::AssistantFinal { content, .. } if content == "final answer"
         )
     }));
 }
@@ -542,9 +546,13 @@ async fn manual_compact_event_uses_manual_trigger_via_compaction_runtime() {
 
     assert!(matches!(
         event,
-        StorageEvent::CompactApplied {
-            trigger: astrcode_core::CompactTrigger::Manual,
-            ref summary,
+        StorageEvent {
+            payload:
+                StorageEventPayload::CompactApplied {
+                    trigger: astrcode_core::CompactTrigger::Manual,
+                    summary,
+                    ..
+                },
             ..
         } if summary == "manual summary"
     ));
@@ -607,9 +615,13 @@ async fn manual_compact_event_caps_keep_recent_turns_so_manual_requests_do_real_
 
     assert!(matches!(
         event,
-        StorageEvent::CompactApplied {
-            trigger: astrcode_core::CompactTrigger::Manual,
-            ref summary,
+        StorageEvent {
+            payload:
+                StorageEventPayload::CompactApplied {
+                    trigger: astrcode_core::CompactTrigger::Manual,
+                    summary,
+                    ..
+                },
             ..
         } if summary == "manual summary"
     ));
@@ -690,9 +702,13 @@ async fn manual_compact_event_allows_single_real_turn_when_assistant_step_bounda
 
     assert!(matches!(
         event,
-        StorageEvent::CompactApplied {
-            trigger: astrcode_core::CompactTrigger::Manual,
-            ref summary,
+        StorageEvent {
+            payload:
+                StorageEventPayload::CompactApplied {
+                    trigger: astrcode_core::CompactTrigger::Manual,
+                    summary,
+                    ..
+                },
             ..
         } if summary == "manual summary"
     ));
@@ -748,16 +764,18 @@ async fn manual_compact_event_recovers_files_from_recent_stored_events_not_only_
     };
     let recent_stored_events = vec![astrcode_core::StoredEvent {
         storage_seq: 10,
-        event: StorageEvent::ToolResult {
+        event: StorageEvent {
             turn_id: Some("turn-2".to_string()),
             agent: AgentEventContext::default(),
-            tool_call_id: "call-read".to_string(),
-            tool_name: "readFile".to_string(),
-            output: file_contents.clone(),
-            success: true,
-            error: None,
-            metadata: Some(json!({ "path": file_path.display().to_string() })),
-            duration_ms: 1,
+            payload: StorageEventPayload::ToolResult {
+                tool_call_id: "call-read".to_string(),
+                tool_name: "readFile".to_string(),
+                output: file_contents.clone(),
+                success: true,
+                error: None,
+                metadata: Some(json!({ "path": file_path.display().to_string() })),
+                duration_ms: 1,
+            },
         },
     }];
 
@@ -771,7 +789,13 @@ async fn manual_compact_event_recovers_files_from_recent_stored_events_not_only_
         .expect("manual compact should succeed")
         .expect("manual compact should emit an event");
 
-    assert!(matches!(event, StorageEvent::CompactApplied { .. }));
+    assert!(matches!(
+        event,
+        StorageEvent {
+            payload: StorageEventPayload::CompactApplied { .. },
+            ..
+        }
+    ));
     let recovered_files = recovered_files.lock().expect("recovered files lock");
     assert_eq!(recovered_files.len(), 1);
     assert_eq!(recovered_files[0].0, file_path);
@@ -874,14 +898,14 @@ async fn p4_1_reactive_compact_recovers_from_413_error() {
     assert!(
         events
             .iter()
-            .any(|event| { matches!(event, StorageEvent::CompactApplied { .. }) }),
+            .any(|event| { matches!(&event.payload, StorageEventPayload::CompactApplied { .. }) }),
         "should have emitted CompactApplied event during reactive compact"
     );
     assert!(
         events.iter().any(|event| {
             matches!(
-                event,
-                StorageEvent::AssistantFinal { content, .. } if content == "recovered answer"
+                &event.payload,
+                StorageEventPayload::AssistantFinal { content, .. } if content == "recovered answer"
             )
         }),
         "should have emitted AssistantFinal with recovered answer"
@@ -1019,7 +1043,7 @@ async fn compaction_event_is_not_emitted_when_rebuild_fails() {
     assert!(
         !events
             .iter()
-            .any(|event| matches!(event, StorageEvent::CompactApplied { .. })),
+            .any(|event| matches!(&event.payload, StorageEventPayload::CompactApplied { .. })),
         "compaction should not be emitted before the rebuilt conversation is proven valid"
     );
 }
@@ -1155,7 +1179,7 @@ async fn p4_1_reactive_compact_stops_after_max_attempts() {
         .lock()
         .expect("events lock")
         .iter()
-        .filter(|event| matches!(event, StorageEvent::CompactApplied { .. }))
+        .filter(|event| matches!(&event.payload, StorageEventPayload::CompactApplied { .. }))
         .count();
     assert_eq!(
         compact_count, 3,
@@ -1217,7 +1241,7 @@ async fn p4_1_non_recoverable_error_does_not_trigger_compact() {
     assert!(
         !events
             .iter()
-            .any(|event| { matches!(event, StorageEvent::CompactApplied { .. }) }),
+            .any(|event| { matches!(&event.payload, StorageEventPayload::CompactApplied { .. }) }),
         "should NOT have emitted CompactApplied for non-recoverable error"
     );
 }

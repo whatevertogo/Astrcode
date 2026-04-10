@@ -19,7 +19,8 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentEventContext, AstrError, Result, StorageEvent, StoredEvent, UserMessageOrigin,
+    AgentEventContext, AstrError, Result, StorageEvent, StorageEventPayload, StoredEvent,
+    UserMessageOrigin,
 };
 use astrcode_runtime_agent_loop::{AgentLoop, ProviderFactory};
 use astrcode_storage::session::EventLog;
@@ -133,12 +134,16 @@ fn seed_session_log(session_id: &str, working_dir: &Path, turns: usize) {
     write_stored_event(
         &mut writer,
         &mut storage_seq,
-        StorageEvent::SessionStart {
-            session_id: session_id.to_string(),
-            timestamp: started_at,
-            working_dir: working_dir.display().to_string(),
-            parent_session_id: None,
-            parent_storage_seq: None,
+        StorageEvent {
+            turn_id: None,
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::SessionStart {
+                session_id: session_id.to_string(),
+                timestamp: started_at,
+                working_dir: working_dir.display().to_string(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
         },
     );
 
@@ -149,34 +154,40 @@ fn seed_session_log(session_id: &str, working_dir: &Path, turns: usize) {
         write_stored_event(
             &mut writer,
             &mut storage_seq,
-            StorageEvent::UserMessage {
+            StorageEvent {
                 turn_id: Some(turn_id.clone()),
                 agent: AgentEventContext::default(),
-                content: format!("prompt {turn_index}"),
-                origin: UserMessageOrigin::User,
-                timestamp,
+                payload: StorageEventPayload::UserMessage {
+                    content: format!("prompt {turn_index}"),
+                    origin: UserMessageOrigin::User,
+                    timestamp,
+                },
             },
         );
         write_stored_event(
             &mut writer,
             &mut storage_seq,
-            StorageEvent::AssistantFinal {
+            StorageEvent {
                 turn_id: Some(turn_id.clone()),
                 agent: AgentEventContext::default(),
-                content: format!("response {turn_index}"),
-                reasoning_content: None,
-                reasoning_signature: None,
-                timestamp: Some(timestamp),
+                payload: StorageEventPayload::AssistantFinal {
+                    content: format!("response {turn_index}"),
+                    reasoning_content: None,
+                    reasoning_signature: None,
+                    timestamp: Some(timestamp),
+                },
             },
         );
         write_stored_event(
             &mut writer,
             &mut storage_seq,
-            StorageEvent::TurnDone {
+            StorageEvent {
                 turn_id: Some(turn_id),
                 agent: AgentEventContext::default(),
-                timestamp,
-                reason: Some("completed".to_string()),
+                payload: StorageEventPayload::TurnDone {
+                    timestamp,
+                    reason: Some("completed".to_string()),
+                },
             },
         );
     }

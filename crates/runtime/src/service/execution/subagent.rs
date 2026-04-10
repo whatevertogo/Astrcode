@@ -1,10 +1,10 @@
 use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, AgentProfile, AgentState, AstrError, CancelToken,
+    AgentEventContext, AgentProfile, AgentState, AgentStatus, AstrError, CancelToken,
     ChildSessionNotificationKind, ChildSessionStatusSource, ExecutionOwner, InvocationKind,
     ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SpawnAgentParams,
-    StorageEvent, SubRunHandle, SubRunOutcome, SubRunResult, SubRunStorageMode, ToolContext,
+    StorageEvent, StorageEventPayload, SubRunHandle, SubRunResult, SubRunStorageMode, ToolContext,
     ToolEventSink, UserMessageOrigin,
 };
 use astrcode_runtime_agent_loop::{AgentLoop, ChildExecutionTracker, TurnOutcome};
@@ -127,7 +127,7 @@ impl AgentExecutionServiceHandle {
         self.emit_child_started_or_fail(&spawned).await?;
 
         let running_result = SubRunResult {
-            status: SubRunOutcome::Running,
+            status: AgentStatus::Running,
             handoff: Some(build_background_subrun_handoff(
                 &spawned.child,
                 &spawned.parent_session_id,
@@ -223,7 +223,7 @@ impl AgentExecutionServiceHandle {
                 &prepared.profile,
                 target_session_id.clone(),
                 child_session_id.clone(),
-                Some(parent.parent_turn_id.clone()),
+                parent.parent_turn_id.clone(),
                 parent.parent_agent_id_for_control.clone(),
                 prepared.child_storage_mode,
             )
@@ -347,28 +347,28 @@ impl AgentExecutionServiceHandle {
             execution.child_node.status,
             None,
         );
-        if let Err(error) =
-            execution
-                .parent_event_sink
-                .emit(StorageEvent::ChildSessionNotification {
-                    turn_id: Some(execution.parent_turn_id.clone()),
-                    agent: execution.child_agent.clone(),
-                    notification: started_notification,
-                    timestamp: Some(chrono::Utc::now()),
-                })
-        {
+        if let Err(error) = execution.parent_event_sink.emit(StorageEvent {
+            turn_id: Some(execution.parent_turn_id.clone()),
+            agent: execution.child_agent.clone(),
+            payload: StorageEventPayload::ChildSessionNotification {
+                notification: started_notification,
+                timestamp: Some(chrono::Utc::now()),
+            },
+        }) {
             return Err(ServiceError::Internal(AstrError::Internal(format!(
                 "failed to persist child-started notification for subRunId='{}': {}",
                 execution.child.sub_run_id, error
             ))));
         }
 
-        if let Err(error) = execution.active_sink.emit(StorageEvent::UserMessage {
+        if let Err(error) = execution.active_sink.emit(StorageEvent {
             turn_id: Some(execution.child_turn_id.clone()),
             agent: execution.child_agent.clone(),
-            content: execution.child_task.clone(),
-            timestamp: chrono::Utc::now(),
-            origin: UserMessageOrigin::User,
+            payload: StorageEventPayload::UserMessage {
+                content: execution.child_task.clone(),
+                timestamp: chrono::Utc::now(),
+                origin: UserMessageOrigin::User,
+            },
         }) {
             return Err(ServiceError::Internal(AstrError::Internal(format!(
                 "failed to persist child bootstrap user message for subRunId='{}': {}",
@@ -459,9 +459,9 @@ impl AgentExecutionServiceHandle {
                 };
                 SubRunResult {
                     status: if tracker.token_limit_hit() || tracker.step_limit_hit() {
-                        SubRunOutcome::TokenExceeded
+                        AgentStatus::TokenExceeded
                     } else {
-                        SubRunOutcome::Completed
+                        AgentStatus::Completed
                     },
                     handoff: Some(build_subrun_handoff(
                         &execution.child,
@@ -483,9 +483,9 @@ impl AgentExecutionServiceHandle {
                     .cancel(&execution.child.agent_id)
                     .await;
                 let status = if tracker.token_limit_hit() || tracker.step_limit_hit() {
-                    SubRunOutcome::TokenExceeded
+                    AgentStatus::TokenExceeded
                 } else {
-                    SubRunOutcome::Aborted
+                    AgentStatus::Cancelled
                 };
                 let cancelled_fallback =
                     "子 Agent 已中止。请展开子执行查看已产生的工具和思考流。".to_string();
@@ -512,7 +512,7 @@ impl AgentExecutionServiceHandle {
                     .await;
                 let error = AstrError::Internal(message);
                 SubRunResult {
-                    status: SubRunOutcome::Failed,
+                    status: AgentStatus::Failed,
                     handoff: None,
                     failure: Some(build_subrun_failure(&error)),
                 }
@@ -524,7 +524,7 @@ impl AgentExecutionServiceHandle {
                     .mark_failed(&execution.child.agent_id)
                     .await;
                 SubRunResult {
-                    status: SubRunOutcome::Failed,
+                    status: AgentStatus::Failed,
                     handoff: None,
                     failure: Some(build_subrun_failure(&error)),
                 }
@@ -565,7 +565,7 @@ impl AgentExecutionServiceHandle {
             format!(
                 "child-terminal:{}:{}",
                 execution.child.sub_run_id,
-                result.status.as_str()
+                status_label(result.status)
             ),
             delivery.kind,
             delivery.summary,
@@ -574,11 +574,13 @@ impl AgentExecutionServiceHandle {
         );
         execution
             .parent_event_sink
-            .emit(StorageEvent::ChildSessionNotification {
+            .emit(StorageEvent {
                 turn_id: Some(execution.parent_turn_id.clone()),
                 agent: execution.child_agent.clone(),
-                notification: terminal_notification.clone(),
-                timestamp: Some(chrono::Utc::now()),
+                payload: StorageEventPayload::ChildSessionNotification {
+                    notification: terminal_notification.clone(),
+                    timestamp: Some(chrono::Utc::now()),
+                },
             })
             .map_err(|error| {
                 ServiceError::Internal(AstrError::Internal(format!(
@@ -607,5 +609,16 @@ impl AgentExecutionServiceHandle {
         );
 
         Ok(result)
+    }
+}
+
+fn status_label(status: AgentStatus) -> &'static str {
+    match status {
+        AgentStatus::Pending => "pending",
+        AgentStatus::Running => "running",
+        AgentStatus::Completed => "completed",
+        AgentStatus::Cancelled => "cancelled",
+        AgentStatus::Failed => "failed",
+        AgentStatus::TokenExceeded => "token_exceeded",
     }
 }

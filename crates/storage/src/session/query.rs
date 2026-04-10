@@ -26,7 +26,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use astrcode_core::{DeleteProjectResult, Phase, SessionMeta, StorageEvent, StoredEventLine};
+use astrcode_core::{
+    DeleteProjectResult, Phase, SessionMeta, StorageEvent, StorageEventPayload, StoredEventLine,
+};
 use chrono::{DateTime, Utc};
 
 use super::{
@@ -337,8 +339,8 @@ impl EventLog {
                 .into_stored((i + 1) as u64)
                 .event;
 
-            match event {
-                StorageEvent::SessionStart {
+            match event.payload {
+                StorageEventPayload::SessionStart {
                     timestamp,
                     working_dir: session_working_dir,
                     parent_session_id: source_session_id,
@@ -350,8 +352,8 @@ impl EventLog {
                     parent_session_id = source_session_id;
                     parent_storage_seq = source_storage_seq;
                 },
-                StorageEvent::SessionStart { .. } => {},
-                StorageEvent::UserMessage { content, .. } if title.is_none() => {
+                StorageEventPayload::SessionStart { .. } => {},
+                StorageEventPayload::UserMessage { content, .. } if title.is_none() => {
                     title = Some(title_from_user_message(&content));
                 },
                 _ => {},
@@ -561,12 +563,12 @@ fn remove_empty_session_dir(session_dir: Option<&Path>) -> Result<()> {
 ///
 /// 仅对携带时间戳的事件类型返回 `Some`，用于 `read_last_timestamp` 的 mapper。
 fn timestamp_of_event(event: &StorageEvent) -> Option<DateTime<Utc>> {
-    match event {
-        StorageEvent::SessionStart { timestamp, .. } => Some(*timestamp),
-        StorageEvent::UserMessage { timestamp, .. } => Some(*timestamp),
-        StorageEvent::AssistantFinal { timestamp, .. } => timestamp.as_ref().cloned(),
-        StorageEvent::TurnDone { timestamp, .. } => Some(*timestamp),
-        StorageEvent::Error { timestamp, .. } => timestamp.as_ref().cloned(),
+    match &event.payload {
+        StorageEventPayload::SessionStart { timestamp, .. } => Some(*timestamp),
+        StorageEventPayload::UserMessage { timestamp, .. } => Some(*timestamp),
+        StorageEventPayload::AssistantFinal { timestamp, .. } => timestamp.as_ref().cloned(),
+        StorageEventPayload::TurnDone { timestamp, .. } => Some(*timestamp),
+        StorageEventPayload::Error { timestamp, .. } => timestamp.as_ref().cloned(),
         _ => None,
     }
 }
@@ -599,7 +601,7 @@ fn title_from_user_message(content: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{StoredEvent, project::project_dir_name};
+    use astrcode_core::{StorageEventPayload, StoredEvent, project::project_dir_name};
     use chrono::TimeZone;
 
     use super::*;
@@ -640,22 +642,28 @@ mod tests {
         let lines = [
             serde_json::to_string(&StoredEvent {
                 storage_seq: 1,
-                event: StorageEvent::SessionStart {
-                    session_id: "session-1".to_string(),
-                    timestamp: created_at,
-                    working_dir: "/tmp/project".to_string(),
-                    parent_session_id: None,
-                    parent_storage_seq: None,
+                event: StorageEvent {
+                    turn_id: None,
+                    agent: astrcode_core::AgentEventContext::default(),
+                    payload: StorageEventPayload::SessionStart {
+                        session_id: "session-1".to_string(),
+                        timestamp: created_at,
+                        working_dir: "/tmp/project".to_string(),
+                        parent_session_id: None,
+                        parent_storage_seq: None,
+                    },
                 },
             })
             .expect("session start should serialize"),
             serde_json::to_string(&StoredEvent {
                 storage_seq: 2,
-                event: StorageEvent::Error {
+                event: StorageEvent {
                     turn_id: Some("turn-1".to_string()),
                     agent: astrcode_core::AgentEventContext::default(),
-                    message: "boom".to_string(),
-                    timestamp: Some(failed_at),
+                    payload: StorageEventPayload::Error {
+                        message: "boom".to_string(),
+                        timestamp: Some(failed_at),
+                    },
                 },
             })
             .expect("error event should serialize"),
@@ -743,12 +751,16 @@ mod tests {
             &session_dir(tmp.path(), working_dir, id_a).join(format!("session-{id_a}.jsonl")),
             &[StoredEvent {
                 storage_seq: 1,
-                event: StorageEvent::SessionStart {
-                    session_id: id_a.to_string(),
-                    timestamp,
-                    working_dir: working_dir.to_string(),
-                    parent_session_id: None,
-                    parent_storage_seq: None,
+                event: StorageEvent {
+                    turn_id: None,
+                    agent: astrcode_core::AgentEventContext::default(),
+                    payload: StorageEventPayload::SessionStart {
+                        session_id: id_a.to_string(),
+                        timestamp,
+                        working_dir: working_dir.to_string(),
+                        parent_session_id: None,
+                        parent_storage_seq: None,
+                    },
                 },
             }],
         );
@@ -756,12 +768,16 @@ mod tests {
             &session_dir(tmp.path(), working_dir, id_b).join(format!("session-{id_b}.jsonl")),
             &[StoredEvent {
                 storage_seq: 1,
-                event: StorageEvent::SessionStart {
-                    session_id: id_b.to_string(),
-                    timestamp,
-                    working_dir: working_dir.to_string(),
-                    parent_session_id: None,
-                    parent_storage_seq: None,
+                event: StorageEvent {
+                    turn_id: None,
+                    agent: astrcode_core::AgentEventContext::default(),
+                    payload: StorageEventPayload::SessionStart {
+                        session_id: id_b.to_string(),
+                        timestamp,
+                        working_dir: working_dir.to_string(),
+                        parent_session_id: None,
+                        parent_storage_seq: None,
+                    },
                 },
             }],
         );
@@ -770,12 +786,16 @@ mod tests {
                 .join(format!("session-{id_other}.jsonl")),
             &[StoredEvent {
                 storage_seq: 1,
-                event: StorageEvent::SessionStart {
-                    session_id: id_other.to_string(),
-                    timestamp,
-                    working_dir: other_working_dir.to_string(),
-                    parent_session_id: None,
-                    parent_storage_seq: None,
+                event: StorageEvent {
+                    turn_id: None,
+                    agent: astrcode_core::AgentEventContext::default(),
+                    payload: StorageEventPayload::SessionStart {
+                        session_id: id_other.to_string(),
+                        timestamp,
+                        working_dir: other_working_dir.to_string(),
+                        parent_session_id: None,
+                        parent_storage_seq: None,
+                    },
                 },
             }],
         );

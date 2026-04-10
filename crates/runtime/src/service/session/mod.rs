@@ -10,7 +10,7 @@ use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use astrcode_core::{
     AgentStateProjector, AstrError, DeleteProjectResult, Phase, SessionMeta, StorageEvent,
-    StoredEvent, generate_session_id, phase_of_storage_event, replay_records,
+    StorageEventPayload, StoredEvent, generate_session_id, phase_of_storage_event, replay_records,
 };
 use astrcode_runtime_agent_loop::CompactionTailSnapshot;
 use astrcode_runtime_session::{
@@ -58,12 +58,16 @@ impl SessionServiceHandle {
                     .create_event_log(&session_id, &working_dir)
                     .map_err(ServiceError::from)?;
                 let created_at = Utc::now();
-                let session_start = StorageEvent::SessionStart {
-                    session_id: session_id.clone(),
-                    timestamp: created_at,
-                    working_dir: working_dir.to_string_lossy().to_string(),
-                    parent_session_id: None,
-                    parent_storage_seq: None,
+                let session_start = StorageEvent {
+                    turn_id: None,
+                    agent: astrcode_core::AgentEventContext::default(),
+                    payload: StorageEventPayload::SessionStart {
+                        session_id: session_id.clone(),
+                        timestamp: created_at,
+                        working_dir: working_dir.to_string_lossy().to_string(),
+                        parent_session_id: None,
+                        parent_storage_seq: None,
+                    },
                 };
                 let stored_session_start =
                     log.append(&session_start).map_err(ServiceError::from)?;
@@ -301,8 +305,8 @@ impl RuntimeService {
                 )));
             };
 
-            let working_dir = match &first.event {
-                StorageEvent::SessionStart { working_dir, .. } => PathBuf::from(working_dir),
+            let working_dir = match &first.event.payload {
+                StorageEventPayload::SessionStart { working_dir, .. } => PathBuf::from(working_dir),
                 _ => {
                     return Err(ServiceError::Internal(AstrError::Internal(format!(
                         "session '{}' is missing sessionStart",

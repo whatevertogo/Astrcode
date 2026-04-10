@@ -16,7 +16,7 @@ use std::{
     time::Duration,
 };
 
-use astrcode_core::{SubRunOutcome, SubRunStorageMode};
+use astrcode_core::{AgentStatus, SubRunStorageMode};
 use astrcode_runtime_execution::{
     ChildLifecycleStage, DeliveryBufferStage, LegacyRejectionKind, LineageMismatchKind,
 };
@@ -105,7 +105,7 @@ impl RuntimeObservability {
     pub fn record_subrun_execution(
         &self,
         duration: Duration,
-        outcome: &SubRunOutcome,
+        outcome: &AgentStatus,
         storage_mode: SubRunStorageMode,
         step_count: u32,
         estimated_tokens: u64,
@@ -139,6 +139,7 @@ impl RuntimeObservability {
         self.execution_diagnostics.record_delivery_buffer(stage);
     }
 
+    #[allow(dead_code)]
     pub fn record_legacy_rejection(&self, kind: LegacyRejectionKind) {
         log::warn!(
             "execution diagnostics: legacy rejection recorded ({})",
@@ -307,7 +308,7 @@ impl SubRunExecutionMetrics {
     fn record(
         &self,
         duration: Duration,
-        outcome: &SubRunOutcome,
+        outcome: &AgentStatus,
         storage_mode: SubRunStorageMode,
         step_count: u64,
         estimated_tokens: u64,
@@ -335,17 +336,17 @@ impl SubRunExecutionMetrics {
         }
 
         match outcome {
-            SubRunOutcome::Running => {},
-            SubRunOutcome::Completed => {
+            AgentStatus::Pending | AgentStatus::Running => {},
+            AgentStatus::Completed => {
                 self.completed.fetch_add(1, Ordering::Relaxed);
             },
-            SubRunOutcome::Aborted => {
+            AgentStatus::Cancelled => {
                 self.aborted.fetch_add(1, Ordering::Relaxed);
             },
-            SubRunOutcome::TokenExceeded => {
+            AgentStatus::TokenExceeded => {
                 self.token_exceeded.fetch_add(1, Ordering::Relaxed);
             },
-            SubRunOutcome::Failed => {
+            AgentStatus::Failed => {
                 self.failures.fetch_add(1, Ordering::Relaxed);
             },
         }
@@ -434,6 +435,7 @@ impl ExecutionDiagnosticsMetrics {
         counter.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[allow(dead_code)]
     fn record_legacy_rejection(&self, kind: LegacyRejectionKind) {
         match kind {
             LegacyRejectionKind::SharedHistoryUnsupported => {
@@ -494,14 +496,14 @@ mod tests {
         let metrics = RuntimeObservability::default();
         metrics.record_subrun_execution(
             Duration::from_millis(10),
-            &SubRunOutcome::Completed,
+            &AgentStatus::Completed,
             SubRunStorageMode::SharedSession,
             3,
             120,
         );
         metrics.record_subrun_execution(
             Duration::from_millis(20),
-            &SubRunOutcome::Failed,
+            &AgentStatus::Failed,
             SubRunStorageMode::IndependentSession,
             5,
             240,

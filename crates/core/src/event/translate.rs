@@ -19,8 +19,8 @@ use std::collections::HashMap;
 
 use super::phase::PhaseTracker;
 use crate::{
-    AgentEvent, AgentEventContext, Phase, StorageEvent, StoredEvent, ToolExecutionResult,
-    UserMessageOrigin, session::SessionEventRecord, split_assistant_content,
+    AgentEvent, AgentEventContext, Phase, StorageEvent, StorageEventPayload, StoredEvent,
+    ToolExecutionResult, UserMessageOrigin, session::SessionEventRecord, split_assistant_content,
 };
 
 /// 回放存储事件为会话事件记录
@@ -129,15 +129,15 @@ impl EventTranslator {
     ) {
         let turn_id_ref = turn_id.as_ref();
 
-        match &stored.event {
-            StorageEvent::SessionStart { session_id, .. } => {
+        match &stored.event.payload {
+            StorageEventPayload::SessionStart { session_id, .. } => {
                 push(AgentEvent::SessionStarted {
                     session_id: session_id.clone(),
                 });
                 self.phase_tracker
                     .force_to(Phase::Idle, None, AgentEventContext::default());
             },
-            StorageEvent::UserMessage {
+            StorageEventPayload::UserMessage {
                 content, origin, ..
             } => {
                 if matches!(origin, UserMessageOrigin::User) {
@@ -161,41 +161,14 @@ impl EventTranslator {
                 self.phase_tracker
                     .force_to(Phase::Thinking, turn_id.clone(), agent.clone());
             },
-            StorageEvent::PromptMetrics {
-                step_index,
-                estimated_tokens,
-                context_window,
-                effective_window,
-                threshold_tokens,
-                truncated_tool_results,
-                provider_input_tokens,
-                provider_output_tokens,
-                cache_creation_input_tokens,
-                cache_read_input_tokens,
-                provider_cache_metrics_supported,
-                prompt_cache_reuse_hits,
-                prompt_cache_reuse_misses,
-                ..
-            } => {
+            StorageEventPayload::PromptMetrics { metrics, .. } => {
                 push(AgentEvent::PromptMetrics {
                     turn_id: turn_id.clone(),
                     agent: agent.clone(),
-                    step_index: *step_index,
-                    estimated_tokens: *estimated_tokens,
-                    context_window: *context_window,
-                    effective_window: *effective_window,
-                    threshold_tokens: *threshold_tokens,
-                    truncated_tool_results: *truncated_tool_results,
-                    provider_input_tokens: *provider_input_tokens,
-                    provider_output_tokens: *provider_output_tokens,
-                    cache_creation_input_tokens: *cache_creation_input_tokens,
-                    cache_read_input_tokens: *cache_read_input_tokens,
-                    provider_cache_metrics_supported: *provider_cache_metrics_supported,
-                    prompt_cache_reuse_hits: *prompt_cache_reuse_hits,
-                    prompt_cache_reuse_misses: *prompt_cache_reuse_misses,
+                    metrics: metrics.clone(),
                 });
             },
-            StorageEvent::CompactApplied {
+            StorageEventPayload::CompactApplied {
                 trigger,
                 summary,
                 preserved_recent_turns,
@@ -209,8 +182,7 @@ impl EventTranslator {
                     preserved_recent_turns: *preserved_recent_turns,
                 });
             },
-            StorageEvent::SubRunStarted {
-                descriptor,
+            StorageEventPayload::SubRunStarted {
                 tool_call_id,
                 resolved_overrides,
                 resolved_limits,
@@ -219,14 +191,12 @@ impl EventTranslator {
                 push(AgentEvent::SubRunStarted {
                     turn_id: turn_id.clone(),
                     agent: agent.clone(),
-                    descriptor: descriptor.clone(),
                     tool_call_id: tool_call_id.clone(),
                     resolved_overrides: resolved_overrides.clone(),
                     resolved_limits: resolved_limits.clone(),
                 });
             },
-            StorageEvent::SubRunFinished {
-                descriptor,
+            StorageEventPayload::SubRunFinished {
                 tool_call_id,
                 result,
                 step_count,
@@ -236,21 +206,20 @@ impl EventTranslator {
                 push(AgentEvent::SubRunFinished {
                     turn_id: turn_id.clone(),
                     agent: agent.clone(),
-                    descriptor: descriptor.clone(),
                     tool_call_id: tool_call_id.clone(),
                     result: result.clone(),
                     step_count: *step_count,
                     estimated_tokens: *estimated_tokens,
                 });
             },
-            StorageEvent::ChildSessionNotification { notification, .. } => {
+            StorageEventPayload::ChildSessionNotification { notification, .. } => {
                 push(AgentEvent::ChildSessionNotification {
                     turn_id: turn_id.clone(),
                     agent: agent.clone(),
                     notification: notification.clone(),
                 });
             },
-            StorageEvent::AssistantDelta { token, .. } => {
+            StorageEventPayload::AssistantDelta { token, .. } => {
                 if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::ModelDelta {
                         turn_id: turn_id.clone(),
@@ -261,7 +230,7 @@ impl EventTranslator {
                     warn_missing_turn_id(stored.storage_seq, "modelDelta");
                 }
             },
-            StorageEvent::ThinkingDelta { token, .. } => {
+            StorageEventPayload::ThinkingDelta { token, .. } => {
                 if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::ThinkingDelta {
                         turn_id: turn_id.clone(),
@@ -272,7 +241,7 @@ impl EventTranslator {
                     warn_missing_turn_id(stored.storage_seq, "thinkingDelta");
                 }
             },
-            StorageEvent::AssistantFinal {
+            StorageEventPayload::AssistantFinal {
                 content,
                 reasoning_content,
                 ..
@@ -293,7 +262,7 @@ impl EventTranslator {
                     warn_missing_turn_id(stored.storage_seq, "assistantMessage");
                 }
             },
-            StorageEvent::ToolCall {
+            StorageEventPayload::ToolCall {
                 tool_call_id,
                 tool_name,
                 args,
@@ -313,7 +282,7 @@ impl EventTranslator {
                     warn_missing_turn_id(stored.storage_seq, "toolCallStart");
                 }
             },
-            StorageEvent::ToolCallDelta {
+            StorageEventPayload::ToolCallDelta {
                 tool_call_id,
                 tool_name,
                 stream,
@@ -341,7 +310,7 @@ impl EventTranslator {
                     warn_missing_turn_id(stored.storage_seq, "toolCallDelta");
                 }
             },
-            StorageEvent::ToolResult {
+            StorageEventPayload::ToolResult {
                 tool_call_id,
                 tool_name,
                 output,
@@ -376,7 +345,7 @@ impl EventTranslator {
                     warn_missing_turn_id(stored.storage_seq, "toolCallResult");
                 }
             },
-            StorageEvent::TurnDone { .. } => {
+            StorageEventPayload::TurnDone { .. } => {
                 if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::TurnDone {
                         turn_id: turn_id.clone(),
@@ -389,7 +358,7 @@ impl EventTranslator {
                     .force_to(Phase::Idle, None, AgentEventContext::default());
                 self.current_turn_id = None;
             },
-            StorageEvent::Error { message, .. } => {
+            StorageEventPayload::Error { message, .. } => {
                 push(AgentEvent::Error {
                     turn_id: turn_id.clone(),
                     agent: agent.clone(),
@@ -415,14 +384,14 @@ impl EventTranslator {
             return Some(turn_id);
         }
 
-        match event {
-            StorageEvent::UserMessage { .. } => {
+        match &event.payload {
+            StorageEventPayload::UserMessage { .. } => {
                 self.legacy_turn_index = self.legacy_turn_index.saturating_add(1);
                 let turn_id = format!("legacy-turn-{}", self.legacy_turn_index);
                 self.current_turn_id = Some(turn_id.clone());
                 Some(turn_id)
             },
-            StorageEvent::SessionStart { .. } => None,
+            StorageEventPayload::SessionStart { .. } => None,
             _ => self.current_turn_id.clone(),
         }
     }
@@ -435,8 +404,8 @@ mod tests {
     use super::*;
     use crate::{
         AgentEvent, AgentEventContext, AgentStatus, ChildSessionLineageKind,
-        ChildSessionNotification, ChildSessionNotificationKind, StoredEvent, SubRunDescriptor,
-        SubRunOutcome, SubRunResult, SubRunStorageMode, ToolOutputStream, UserMessageOrigin,
+        ChildSessionNotification, ChildSessionNotificationKind, PromptMetricsPayload, StoredEvent,
+        SubRunResult, SubRunStorageMode, ToolOutputStream, UserMessageOrigin,
         format_compact_summary, phase_of_storage_event,
     };
 
@@ -445,12 +414,14 @@ mod tests {
         let records = replay_records(
             &[StoredEvent {
                 storage_seq: 1,
-                event: StorageEvent::UserMessage {
+                event: StorageEvent {
                     turn_id: Some("turn-1".to_string()),
                     agent: AgentEventContext::default(),
-                    content: "hello".to_string(),
-                    origin: UserMessageOrigin::User,
-                    timestamp: chrono::Utc::now(),
+                    payload: StorageEventPayload::UserMessage {
+                        content: "hello".to_string(),
+                        origin: UserMessageOrigin::User,
+                        timestamp: chrono::Utc::now(),
+                    },
                 },
             }],
             None,
@@ -481,12 +452,14 @@ mod tests {
         let records = replay_records(
             &[StoredEvent {
                 storage_seq: 2,
-                event: StorageEvent::UserMessage {
+                event: StorageEvent {
                     turn_id: Some("turn-2".to_string()),
                     agent: AgentEventContext::default(),
-                    content: "# Child Session Delivery".to_string(),
-                    origin: UserMessageOrigin::ReactivationPrompt,
-                    timestamp: chrono::Utc::now(),
+                    payload: StorageEventPayload::UserMessage {
+                        content: "# Child Session Delivery".to_string(),
+                        origin: UserMessageOrigin::ReactivationPrompt,
+                        timestamp: chrono::Utc::now(),
+                    },
                 },
             }],
             None,
@@ -508,24 +481,28 @@ mod tests {
             &[
                 StoredEvent {
                     storage_seq: 3,
-                    event: StorageEvent::UserMessage {
+                    event: StorageEvent {
                         turn_id: Some("turn-3".to_string()),
                         agent: AgentEventContext::default(),
-                        content: "The conversation was compacted. Continue from where you left \
-                                  off."
-                            .to_string(),
-                        origin: UserMessageOrigin::AutoContinueNudge,
-                        timestamp: chrono::Utc::now(),
+                        payload: StorageEventPayload::UserMessage {
+                            content: "The conversation was compacted. Continue from where you \
+                                      left off."
+                                .to_string(),
+                            origin: UserMessageOrigin::AutoContinueNudge,
+                            timestamp: chrono::Utc::now(),
+                        },
                     },
                 },
                 StoredEvent {
                     storage_seq: 4,
-                    event: StorageEvent::UserMessage {
+                    event: StorageEvent {
                         turn_id: Some("turn-3".to_string()),
                         agent: AgentEventContext::default(),
-                        content: format_compact_summary("summary"),
-                        origin: UserMessageOrigin::CompactSummary,
-                        timestamp: chrono::Utc::now(),
+                        payload: StorageEventPayload::UserMessage {
+                            content: format_compact_summary("summary"),
+                            origin: UserMessageOrigin::CompactSummary,
+                            timestamp: chrono::Utc::now(),
+                        },
                     },
                 },
             ],
@@ -545,37 +522,43 @@ mod tests {
         let mut translator = EventTranslator::new(Phase::Idle);
         let tool_call = StoredEvent {
             storage_seq: 1,
-            event: StorageEvent::ToolCall {
+            event: StorageEvent {
                 turn_id: Some("turn-1".to_string()),
                 agent: AgentEventContext::default(),
-                tool_call_id: "call-1".to_string(),
-                tool_name: "shell".to_string(),
-                args: json!({"command": "echo ok"}),
+                payload: StorageEventPayload::ToolCall {
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: "shell".to_string(),
+                    args: json!({"command": "echo ok"}),
+                },
             },
         };
         let tool_delta = StoredEvent {
             storage_seq: 2,
-            event: StorageEvent::ToolCallDelta {
+            event: StorageEvent {
                 turn_id: Some("turn-1".to_string()),
                 agent: AgentEventContext::default(),
-                tool_call_id: "call-1".to_string(),
-                tool_name: String::new(),
-                stream: ToolOutputStream::Stdout,
-                delta: "ok\n".to_string(),
+                payload: StorageEventPayload::ToolCallDelta {
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: String::new(),
+                    stream: ToolOutputStream::Stdout,
+                    delta: "ok\n".to_string(),
+                },
             },
         };
         let tool_result = StoredEvent {
             storage_seq: 3,
-            event: StorageEvent::ToolResult {
+            event: StorageEvent {
                 turn_id: Some("turn-1".to_string()),
                 agent: AgentEventContext::default(),
-                tool_call_id: "call-1".to_string(),
-                tool_name: String::new(),
-                output: "ok\n".to_string(),
-                success: true,
-                error: None,
-                metadata: None,
-                duration_ms: 12,
+                payload: StorageEventPayload::ToolResult {
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: String::new(),
+                    output: "ok\n".to_string(),
+                    success: true,
+                    error: None,
+                    metadata: None,
+                    duration_ms: 12,
+                },
             },
         };
 
@@ -602,13 +585,15 @@ mod tests {
 
     #[test]
     fn phase_of_tool_call_delta_is_calling_tool() {
-        let phase = phase_of_storage_event(&StorageEvent::ToolCallDelta {
+        let phase = phase_of_storage_event(&StorageEvent {
             turn_id: Some("turn-1".to_string()),
             agent: AgentEventContext::default(),
-            tool_call_id: "call-1".to_string(),
-            tool_name: "shell".to_string(),
-            stream: ToolOutputStream::Stdout,
-            delta: "ok\n".to_string(),
+            payload: StorageEventPayload::ToolCallDelta {
+                tool_call_id: "call-1".to_string(),
+                tool_name: "shell".to_string(),
+                stream: ToolOutputStream::Stdout,
+                delta: "ok\n".to_string(),
+            },
         });
 
         assert_eq!(phase, Phase::CallingTool);
@@ -619,13 +604,15 @@ mod tests {
         let records = replay_records(
             &[StoredEvent {
                 storage_seq: 1,
-                event: StorageEvent::ToolCallDelta {
+                event: StorageEvent {
                     turn_id: Some("turn-1".to_string()),
                     agent: AgentEventContext::default(),
-                    tool_call_id: "call-1".to_string(),
-                    tool_name: "shell".to_string(),
-                    stream: ToolOutputStream::Stderr,
-                    delta: "warn\n".to_string(),
+                    payload: StorageEventPayload::ToolCallDelta {
+                        tool_call_id: "call-1".to_string(),
+                        tool_name: "shell".to_string(),
+                        stream: ToolOutputStream::Stderr,
+                        delta: "warn\n".to_string(),
+                    },
                 },
             }],
             None,
@@ -648,17 +635,19 @@ mod tests {
         let records = replay_records(
             &[StoredEvent {
                 storage_seq: 7,
-                event: StorageEvent::CompactApplied {
+                event: StorageEvent {
                     turn_id: None,
                     agent: AgentEventContext::default(),
-                    trigger: crate::CompactTrigger::Manual,
-                    summary: "保留最近上下文".to_string(),
-                    preserved_recent_turns: 2,
-                    pre_tokens: 200,
-                    post_tokens_estimate: 80,
-                    messages_removed: 5,
-                    tokens_freed: 120,
-                    timestamp: chrono::Utc::now(),
+                    payload: StorageEventPayload::CompactApplied {
+                        trigger: crate::CompactTrigger::Manual,
+                        summary: "保留最近上下文".to_string(),
+                        preserved_recent_turns: 2,
+                        pre_tokens: 200,
+                        post_tokens_estimate: 80,
+                        messages_removed: 5,
+                        tokens_freed: 120,
+                        timestamp: chrono::Utc::now(),
+                    },
                 },
             }],
             None,
@@ -683,22 +672,26 @@ mod tests {
         let records = replay_records(
             &[StoredEvent {
                 storage_seq: 9,
-                event: StorageEvent::PromptMetrics {
+                event: StorageEvent {
                     turn_id: Some("turn-9".to_string()),
                     agent: AgentEventContext::default(),
-                    step_index: 1,
-                    estimated_tokens: 1024,
-                    context_window: 200_000,
-                    effective_window: 180_000,
-                    threshold_tokens: 162_000,
-                    truncated_tool_results: 1,
-                    provider_input_tokens: Some(900),
-                    provider_output_tokens: Some(120),
-                    cache_creation_input_tokens: Some(700),
-                    cache_read_input_tokens: Some(650),
-                    provider_cache_metrics_supported: true,
-                    prompt_cache_reuse_hits: 3,
-                    prompt_cache_reuse_misses: 1,
+                    payload: StorageEventPayload::PromptMetrics {
+                        metrics: PromptMetricsPayload {
+                            step_index: 1,
+                            estimated_tokens: 1024,
+                            context_window: 200_000,
+                            effective_window: 180_000,
+                            threshold_tokens: 162_000,
+                            truncated_tool_results: 1,
+                            provider_input_tokens: Some(900),
+                            provider_output_tokens: Some(120),
+                            cache_creation_input_tokens: Some(700),
+                            cache_read_input_tokens: Some(650),
+                            provider_cache_metrics_supported: true,
+                            prompt_cache_reuse_hits: 3,
+                            prompt_cache_reuse_misses: 1,
+                        },
+                    },
                 },
             }],
             None,
@@ -709,36 +702,25 @@ mod tests {
             &records[0].event,
             AgentEvent::PromptMetrics {
                 turn_id,
-                step_index,
-                provider_input_tokens,
-                cache_read_input_tokens,
-                provider_cache_metrics_supported,
-                prompt_cache_reuse_hits,
-                prompt_cache_reuse_misses,
+                metrics,
                 ..
             } if turn_id.as_deref() == Some("turn-9")
-                && *step_index == 1
-                && *provider_input_tokens == Some(900)
-                && *cache_read_input_tokens == Some(650)
-                && *provider_cache_metrics_supported
-                && *prompt_cache_reuse_hits == 3
-                && *prompt_cache_reuse_misses == 1
+                && metrics.step_index == 1
+                && metrics.provider_input_tokens == Some(900)
+                && metrics.cache_read_input_tokens == Some(650)
+                && metrics.provider_cache_metrics_supported
+                && metrics.prompt_cache_reuse_hits == 3
+                && metrics.prompt_cache_reuse_misses == 1
         ));
     }
 
     #[test]
-    fn subrun_lifecycle_translation_preserves_descriptor_and_tool_call_id() {
-        let descriptor = SubRunDescriptor {
-            sub_run_id: "subrun-1".to_string(),
-            parent_turn_id: "turn-parent".to_string(),
-            parent_agent_id: Some("agent-parent".to_string()),
-            depth: 2,
-        };
+    fn subrun_lifecycle_translation_preserves_tool_call_id() {
         let records = replay_records(
             &[
                 StoredEvent {
                     storage_seq: 10,
-                    event: StorageEvent::SubRunStarted {
+                    event: StorageEvent {
                         turn_id: Some("turn-parent".to_string()),
                         agent: AgentEventContext::sub_run(
                             "agent-child",
@@ -748,16 +730,17 @@ mod tests {
                             SubRunStorageMode::SharedSession,
                             None,
                         ),
-                        descriptor: Some(descriptor.clone()),
-                        tool_call_id: Some("call-1".to_string()),
-                        resolved_overrides: crate::ResolvedSubagentContextOverrides::default(),
-                        resolved_limits: crate::ResolvedExecutionLimitsSnapshot::default(),
-                        timestamp: None,
+                        payload: StorageEventPayload::SubRunStarted {
+                            tool_call_id: Some("call-1".to_string()),
+                            resolved_overrides: crate::ResolvedSubagentContextOverrides::default(),
+                            resolved_limits: crate::ResolvedExecutionLimitsSnapshot::default(),
+                            timestamp: None,
+                        },
                     },
                 },
                 StoredEvent {
                     storage_seq: 11,
-                    event: StorageEvent::SubRunFinished {
+                    event: StorageEvent {
                         turn_id: Some("turn-parent".to_string()),
                         agent: AgentEventContext::sub_run(
                             "agent-child",
@@ -767,16 +750,17 @@ mod tests {
                             SubRunStorageMode::SharedSession,
                             None,
                         ),
-                        descriptor: Some(descriptor.clone()),
-                        tool_call_id: Some("call-1".to_string()),
-                        result: SubRunResult {
-                            status: SubRunOutcome::Completed,
-                            handoff: None,
-                            failure: None,
+                        payload: StorageEventPayload::SubRunFinished {
+                            tool_call_id: Some("call-1".to_string()),
+                            result: SubRunResult {
+                                status: AgentStatus::Completed,
+                                handoff: None,
+                                failure: None,
+                            },
+                            step_count: 4,
+                            estimated_tokens: 88,
+                            timestamp: None,
                         },
-                        step_count: 4,
-                        estimated_tokens: 88,
-                        timestamp: None,
                     },
                 },
             ],
@@ -784,47 +768,28 @@ mod tests {
         );
 
         let started = records.iter().find_map(|record| match &record.event {
-            AgentEvent::SubRunStarted {
-                descriptor,
-                tool_call_id,
-                ..
-            } => Some((descriptor.clone(), tool_call_id.clone())),
+            AgentEvent::SubRunStarted { tool_call_id, .. } => tool_call_id.clone(),
             _ => None,
         });
         let finished = records.iter().find_map(|record| match &record.event {
             AgentEvent::SubRunFinished {
-                descriptor,
                 tool_call_id,
                 result,
                 ..
-            } => Some((descriptor.clone(), tool_call_id.clone(), result.clone())),
+            } => Some((tool_call_id.clone(), result.clone())),
             _ => None,
         });
 
-        assert_eq!(
-            started
-                .as_ref()
-                .and_then(|(descriptor, _)| descriptor.as_ref())
-                .map(|item| item.parent_turn_id.as_str()),
-            Some("turn-parent")
-        );
-        assert_eq!(
-            started
-                .as_ref()
-                .and_then(|(_, tool_call_id)| tool_call_id.as_deref()),
-            Some("call-1")
-        );
+        assert_eq!(started.as_deref(), Some("call-1"));
         assert_eq!(
             finished
                 .as_ref()
-                .and_then(|(_, tool_call_id, _)| tool_call_id.as_deref()),
+                .and_then(|(tool_call_id, _)| tool_call_id.as_deref()),
             Some("call-1")
         );
         assert_eq!(
-            finished
-                .as_ref()
-                .map(|(_, _, result)| result.status.clone()),
-            Some(SubRunOutcome::Completed)
+            finished.as_ref().map(|(_, result)| result.status),
+            Some(AgentStatus::Completed)
         );
     }
 
@@ -833,7 +798,7 @@ mod tests {
         let records = replay_records(
             &[StoredEvent {
                 storage_seq: 12,
-                event: StorageEvent::ChildSessionNotification {
+                event: StorageEvent {
                     turn_id: Some("turn-parent".to_string()),
                     agent: AgentEventContext::sub_run(
                         "agent-parent",
@@ -843,26 +808,26 @@ mod tests {
                         SubRunStorageMode::SharedSession,
                         None,
                     ),
-                    notification: ChildSessionNotification {
-                        notification_id: "note-1".to_string(),
-                        child_ref: crate::ChildAgentRef {
-                            agent_id: "agent-child".to_string(),
-                            session_id: "session-parent".to_string(),
-                            sub_run_id: "subrun-1".to_string(),
-                            parent_agent_id: Some("agent-parent".to_string()),
-                            lineage_kind: ChildSessionLineageKind::Spawn,
+                    payload: StorageEventPayload::ChildSessionNotification {
+                        notification: ChildSessionNotification {
+                            notification_id: "note-1".to_string(),
+                            child_ref: crate::ChildAgentRef {
+                                agent_id: "agent-child".to_string(),
+                                session_id: "session-parent".to_string(),
+                                sub_run_id: "subrun-1".to_string(),
+                                parent_agent_id: Some("agent-parent".to_string()),
+                                lineage_kind: ChildSessionLineageKind::Spawn,
+                                status: AgentStatus::Running,
+                                open_session_id: "session-child".to_string(),
+                            },
+                            kind: ChildSessionNotificationKind::Started,
+                            summary: "child started".to_string(),
                             status: AgentStatus::Running,
-                            openable: true,
-                            open_session_id: "session-child".to_string(),
+                            source_tool_call_id: Some("call-1".to_string()),
+                            final_reply_excerpt: None,
                         },
-                        kind: ChildSessionNotificationKind::Started,
-                        summary: "child started".to_string(),
-                        status: AgentStatus::Running,
-                        open_session_id: "session-child".to_string(),
-                        source_tool_call_id: Some("call-1".to_string()),
-                        final_reply_excerpt: None,
+                        timestamp: None,
                     },
-                    timestamp: None,
                 },
             }],
             None,

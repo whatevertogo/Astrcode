@@ -14,7 +14,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use astrcode_core::{CancelToken, StorageEvent, ToolCallRequest};
+use astrcode_core::{CancelToken, StorageEventPayload, ToolCallRequest};
 use astrcode_runtime_llm::LlmOutput;
 use serde_json::json;
 
@@ -66,22 +66,22 @@ async fn tool_events_are_ordered_and_turn_finishes() {
     let events = events.lock().expect("lock").clone();
     let start_idx = events
         .iter()
-        .position(|e| matches!(e, StorageEvent::ToolCall { .. }))
+        .position(|e| matches!(&e.payload, StorageEventPayload::ToolCall { .. }))
         .expect("ToolCall event expected");
     let result_idx = events
         .iter()
-        .position(|e| matches!(e, StorageEvent::ToolResult { .. }))
+        .position(|e| matches!(&e.payload, StorageEventPayload::ToolResult { .. }))
         .expect("ToolResult event expected");
     let done_idx = events
         .iter()
-        .position(|e| matches!(e, StorageEvent::TurnDone { .. }))
+        .position(|e| matches!(&e.payload, StorageEventPayload::TurnDone { .. }))
         .expect("TurnDone event expected");
 
     assert!(start_idx < result_idx);
     assert!(result_idx < done_idx);
     assert!(matches!(
-        &events[done_idx],
-        StorageEvent::TurnDone { reason, .. } if reason.as_deref() == Some("completed")
+        &events[done_idx].payload,
+        StorageEventPayload::TurnDone { reason, .. } if reason.as_deref() == Some("completed")
     ));
 }
 
@@ -127,15 +127,15 @@ async fn streaming_tool_emits_deltas_before_tool_result() {
     let events = events.lock().expect("lock").clone();
     let call_idx = events
         .iter()
-        .position(|event| matches!(event, StorageEvent::ToolCall { .. }))
+        .position(|event| matches!(&event.payload, StorageEventPayload::ToolCall { .. }))
         .expect("tool call event expected");
     let first_delta_idx = events
         .iter()
-        .position(|event| matches!(event, StorageEvent::ToolCallDelta { .. }))
+        .position(|event| matches!(&event.payload, StorageEventPayload::ToolCallDelta { .. }))
         .expect("tool call delta event expected");
     let result_idx = events
         .iter()
-        .position(|event| matches!(event, StorageEvent::ToolResult { .. }))
+        .position(|event| matches!(&event.payload, StorageEventPayload::ToolResult { .. }))
         .expect("tool result event expected");
 
     assert!(call_idx < first_delta_idx);
@@ -143,14 +143,14 @@ async fn streaming_tool_emits_deltas_before_tool_result() {
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event, StorageEvent::ToolCallDelta { .. }))
+            .filter(|event| { matches!(&event.payload, StorageEventPayload::ToolCallDelta { .. }) })
             .count(),
         2,
         "streaming tool should emit both stdout and stderr deltas"
     );
     assert!(matches!(
-        &events[first_delta_idx],
-        StorageEvent::ToolCallDelta {
+        &events[first_delta_idx].payload,
+        StorageEventPayload::ToolCallDelta {
             tool_name,
             delta,
             ..
@@ -472,8 +472,8 @@ async fn parallel_safe_tool_results_stream_before_slower_peers_finish() {
         .iter()
         .position(|event| {
             matches!(
-                event,
-                StorageEvent::ToolResult {
+                &event.payload,
+                StorageEventPayload::ToolResult {
                     tool_call_id,
                     tool_name,
                     ..
@@ -485,8 +485,8 @@ async fn parallel_safe_tool_results_stream_before_slower_peers_finish() {
         .iter()
         .position(|event| {
             matches!(
-                event,
-                StorageEvent::ToolResult {
+                &event.payload,
+                StorageEventPayload::ToolResult {
                     tool_call_id,
                     tool_name,
                     ..
@@ -546,12 +546,12 @@ async fn long_tool_chains_complete_without_a_step_cap() {
     let events = events.lock().expect("lock").clone();
     let tool_results = events
         .iter()
-        .filter(|event| matches!(event, StorageEvent::ToolResult { .. }))
+        .filter(|event| matches!(&event.payload, StorageEventPayload::ToolResult { .. }))
         .count();
     let has_turn_done = events.iter().any(|event| {
         matches!(
-            event,
-            StorageEvent::TurnDone { reason, .. } if reason.as_deref() == Some("completed")
+            &event.payload,
+            StorageEventPayload::TurnDone { reason, .. } if reason.as_deref() == Some("completed")
         )
     });
 
@@ -621,7 +621,7 @@ async fn turn_done_event_is_emitted_once_for_multi_step_tool_turn() {
     let events = events.lock().expect("events lock").clone();
     let turn_done_count = events
         .iter()
-        .filter(|event| matches!(event, StorageEvent::TurnDone { .. }))
+        .filter(|event| matches!(&event.payload, StorageEventPayload::TurnDone { .. }))
         .count();
     assert_eq!(turn_done_count, 1, "turn done must be emitted exactly once");
 }

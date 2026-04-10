@@ -1,8 +1,8 @@
+use astrcode_core::ExecutionAccepted;
 use astrcode_protocol::http::{
     CreateSessionRequest, DeleteProjectResultDto, PromptAcceptedResponse, PromptRequest,
     SessionListItem,
 };
-use astrcode_runtime::PromptAccepted;
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -44,7 +44,7 @@ pub(crate) async fn submit_prompt(
 ) -> Result<(StatusCode, Json<PromptAcceptedResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     let session_id = validate_session_path_id(&session_id)?;
-    let accepted: PromptAccepted = state
+    let accepted: ExecutionAccepted = state
         .service
         .execution()
         .submit_prompt(&session_id, request.text)

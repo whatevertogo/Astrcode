@@ -5,21 +5,21 @@
 
 ## Context
 
-AstrCode 已从临时插件消息演进为独立协议边界，但此前的 wire shape 不稳定：初始化响应、流式事件、coding 场景字段和多传输兼容基线都缺少清晰约束。平台需要一套可被插件、worker、不同传输和多语言 SDK 共享的稳定消息骨架。
+AstrCode 的插件与 transport 协议已经演进为独立边界。为了避免不同实现对同一消息语义产生分歧，需要把 wire model 统一成稳定的交互骨架。
 
 ## Decision
 
-冻结 AstrCode Protocol V4 的 wire model，作为平台对外通信的唯一协议骨架。
+冻结 AstrCode Protocol V4 的外部 wire model，作为所有插件、SDK、server 和传输实现的共识。
 
-- 顶层消息固定为 `initialize`、`invoke`、`result`、`event`、`cancel` 五类；协议代际升级前不新增其他顶层消息。
-- 初始化响应统一使用 `result(kind="initialize")`，不再使用独立消息类型。
-- 流式执行生命周期固定为 `started`、`delta`、`completed`、`failed`；领域语义通过 `event` 字段表达。
-- `Transport` 只负责原始消息收发；协议状态、请求响应匹配、流式生命周期和业务路由由上层负责。
-- 协议错误统一为结构化 `error` payload，至少包含 `code`、`message`、`details`、`retriable`。
-- 兼容基线以协议 fixture 冻结；变更 fixture 视为 breaking change，必须同步更新 ADR 并明确兼容性影响。
+- 插件宿主/插件之间的顶层消息固定为 `PluginMessage::Initialize`、`PluginMessage::Invoke`、`PluginMessage::Result`、`PluginMessage::Event`、`PluginMessage::Cancel`。
+- 插件协议的 `EventMessage.phase` 固定为 `EventPhase::Started`、`EventPhase::Delta`、`EventPhase::Completed`、`EventPhase::Failed`，并且事件语义通过 `event` 字段承载。
+- 初始化阶段以 `ResultMessage(InitializeResultData)` 结束，不再引入独立的“initialize result”顶层类型。
+- `transport` 仅负责原始 JSON/text 的收发。请求/响应匹配、流式生命周期、错误语义和业务路由应由更高层协议实现来解释。
+- 所有协议错误统一在 `ErrorPayload` 中表达，至少包含 `code`、`message`、`details`、`retriable`。
+- 协议兼容性以协议 fixture 为基线；任何变更都必须同步更新 ADR，将其视为 breaking change。
 
 ## Consequences
 
-- 平台、插件、SDK 和不同传输实现共享同一套协议语义。
-- 后续新增能力应优先扩展 descriptor、context 或 event taxonomy，而不是继续增加顶层消息。
-- 旧实验性消息格式不再兼容；若要调整初始化模型或事件生命周期，需要显式协议升级。
+- 不同插件宿主、浏览器端、桌面端和 SDK 共享同一套消息语义。
+- 插件协议继续优先通过扩展 descriptor、context 或 event taxonomy 来增加能力，而不是增添顶层消息。
+- 旧实验性消息格式不再兼容；协议演进必须明确对外兼容性影响。

@@ -10,24 +10,10 @@ use std::fmt::{Display, Formatter};
 pub use astrcode_core::SessionEventRecord;
 use astrcode_core::{
     AstrError, Phase, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    StoreError, SubRunDescriptor, SubRunHandle, SubRunResult,
+    StoreError, SubRunHandle, SubRunResult,
 };
 use async_trait::async_trait;
 use tokio::sync::broadcast;
-
-#[derive(Debug, Clone)]
-pub struct PromptAccepted {
-    pub turn_id: String,
-    pub session_id: String,
-    pub branched_from_session_id: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct AgentExecutionAccepted {
-    pub session_id: String,
-    pub turn_id: String,
-    pub agent_id: String,
-}
 
 pub struct SessionReplay {
     pub history: Vec<SessionEventRecord>,
@@ -45,13 +31,11 @@ pub struct SessionHistorySnapshot {
 pub enum SubRunStatusSource {
     Live,
     Durable,
-    LegacyDurable,
 }
 
 #[derive(Debug, Clone)]
 pub struct SubRunStatusSnapshot {
     pub handle: SubRunHandle,
-    pub descriptor: Option<SubRunDescriptor>,
     pub tool_call_id: Option<String>,
     pub source: SubRunStatusSource,
     pub result: Option<SubRunResult>,

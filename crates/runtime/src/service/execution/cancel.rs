@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use astrcode_core::{AgentStatus, StorageEvent, ToolEventSink};
+use astrcode_core::{AgentStatus, StorageEvent, StorageEventPayload, ToolEventSink};
 use astrcode_runtime_execution::{
     CancelSubRunResolution, build_child_session_notification, find_subrun_status_in_events,
     resolve_cancel_subrun_resolution,
@@ -136,7 +136,7 @@ impl AgentExecutionServiceHandle {
                     sub_run_id: handle.sub_run_id.clone(),
                     parent_session_id: String::new(),
                     parent_agent_id: handle.parent_agent_id.clone(),
-                    parent_turn_id: handle.parent_turn_id.clone().unwrap_or_default(),
+                    parent_turn_id: handle.parent_turn_id.clone(),
                     lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
                     status: AgentStatus::Cancelled,
                     status_source: astrcode_core::ChildSessionStatusSource::Live,
@@ -160,18 +160,20 @@ impl AgentExecutionServiceHandle {
                 Err(_) => return,
             };
         // 构建关闭事件
-        let closed_event = StorageEvent::ChildSessionNotification {
-            turn_id: handle.parent_turn_id.clone(),
+        let closed_event = StorageEvent {
+            turn_id: Some(handle.parent_turn_id.clone()),
             agent: astrcode_core::AgentEventContext::sub_run(
                 handle.agent_id.clone(),
-                handle.parent_turn_id.clone().unwrap_or_default(),
+                handle.parent_turn_id.clone(),
                 handle.agent_profile.clone(),
                 handle.sub_run_id.clone(),
                 handle.storage_mode,
                 handle.child_session_id.clone(),
             ),
-            notification,
-            timestamp: Some(chrono::Utc::now()),
+            payload: StorageEventPayload::ChildSessionNotification {
+                notification,
+                timestamp: Some(chrono::Utc::now()),
+            },
         };
         // 故意忽略：关闭通知持久化失败不应阻断级联关闭流程
         let _ = event_sink.emit(closed_event);

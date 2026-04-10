@@ -3,12 +3,12 @@
 //! 将 SSE 接收的原始事件规范化为前端可用的格式。
 
 import type {
+  AgentStatus,
   AgentEventPayload,
   ChildSessionNotificationKind,
   CompactTrigger,
   InvocationKind,
   Phase,
-  SubRunDescriptor,
   SubRunResult,
   SubRunStorageMode,
   ToolOutputStream,
@@ -44,6 +44,14 @@ const VALID_CHILD_NOTIFICATION_KINDS: ChildSessionNotificationKind[] = [
   'resumed',
   'closed',
   'failed',
+];
+const VALID_AGENT_STATUSES: AgentStatus[] = [
+  'pending',
+  'running',
+  'completed',
+  'cancelled',
+  'failed',
+  'token_exceeded',
 ];
 
 function toPhase(value: unknown): Phase | null {
@@ -97,6 +105,16 @@ function toSubRunStorageMode(value: unknown): SubRunStorageMode | null {
   return null;
 }
 
+function toAgentStatus(value: unknown): AgentStatus | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  if ((VALID_AGENT_STATUSES as string[]).includes(value)) {
+    return value as AgentStatus;
+  }
+  return null;
+}
+
 function invalidEvent(reason: string, raw: unknown): AgentEventPayload {
   return {
     event: 'error',
@@ -143,27 +161,6 @@ function pickAgentContext(
   }
 
   return context;
-}
-
-function pickSubRunDescriptor(data: Record<string, unknown>): SubRunDescriptor | undefined {
-  const raw = asRecord(data.descriptor);
-  if (!raw) {
-    return undefined;
-  }
-  const subRunId = pickString(raw, 'subRunId', 'sub_run_id');
-  const executionId = pickString(raw, 'executionId', 'execution_id') ?? subRunId;
-  const parentTurnId = pickString(raw, 'parentTurnId', 'parent_turn_id');
-  const depth = pickNumber(raw, 'depth');
-  if (!subRunId || !executionId || !parentTurnId || depth === null) {
-    return undefined;
-  }
-  return {
-    subRunId,
-    executionId,
-    parentTurnId,
-    depth,
-    parentAgentId: pickOptionalString(raw, 'parentAgentId', 'parent_agent_id') ?? undefined,
-  };
 }
 
 function pickBooleanFlag(
@@ -429,7 +426,6 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
   }
 
   if (event === 'subRunStarted') {
-    const descriptor = pickSubRunDescriptor(data);
     const toolCallId = pickOptionalString(data, 'toolCallId', 'tool_call_id') ?? undefined;
     const resolvedOverrides = asRecord(data.resolvedOverrides ?? data.resolved_overrides);
     const resolvedLimits = asRecord(data.resolvedLimits ?? data.resolved_limits);
@@ -446,9 +442,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
       event: 'subRunStarted',
       data: {
         turnId: pickOptionalString(data, 'turnId', 'turn_id') ?? null,
-        // Why: descriptor 缺失意味着 lineage 是 legacy 降级态，不能继续把 parentTurnId 当作稳定事实。
-        ...pickAgentContext(data, { includeParentTurnId: descriptor !== undefined }),
-        ...(descriptor ? { descriptor } : {}),
+        ...pickAgentContext(data, { includeParentTurnId: true }),
         ...(toolCallId ? { toolCallId } : {}),
         resolvedOverrides: {
           storageMode,
@@ -508,7 +502,6 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
   }
 
   if (event === 'subRunFinished') {
-    const descriptor = pickSubRunDescriptor(data);
     const toolCallId = pickOptionalString(data, 'toolCallId', 'tool_call_id') ?? undefined;
     const result = asRecord(data.result);
     if (!result) {
@@ -531,8 +524,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
       event: 'subRunFinished',
       data: {
         turnId: pickOptionalString(data, 'turnId', 'turn_id') ?? null,
-        ...pickAgentContext(data, { includeParentTurnId: descriptor !== undefined }),
-        ...(descriptor ? { descriptor } : {}),
+        ...pickAgentContext(data, { includeParentTurnId: true }),
         ...(toolCallId ? { toolCallId } : {}),
         result: {
           status,
@@ -603,8 +595,9 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
         ? (kindRaw as ChildSessionNotificationKind)
         : 'failed';
     const summary = pickString(data, 'summary') ?? '';
-    const status = pickString(data, 'status') ?? 'unknown';
-    const openSessionId = pickString(data, 'openSessionId', 'open_session_id') ?? sessionId;
+    const status = toAgentStatus(data.status) ?? 'failed';
+    const childStatus = toAgentStatus(childRefRaw.status ?? childRefRaw.status) ?? status;
+    const openSessionId = pickString(childRefRaw, 'openSessionId', 'open_session_id') ?? sessionId;
     return {
       event: 'childSessionNotification',
       data: {
@@ -617,14 +610,12 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
           parentAgentId:
             pickOptionalString(childRefRaw, 'parentAgentId', 'parent_agent_id') ?? undefined,
           lineageKind,
-          status: pickString(childRefRaw, 'status') ?? 'unknown',
-          openable: childRefRaw.openable === true,
-          openSessionId: pickString(childRefRaw, 'openSessionId', 'open_session_id') ?? sessionId,
+          status: childStatus,
+          openSessionId,
         },
         kind,
         summary,
         status,
-        openSessionId,
         sourceToolCallId:
           pickOptionalString(data, 'sourceToolCallId', 'source_tool_call_id') ?? undefined,
         finalReplyExcerpt:

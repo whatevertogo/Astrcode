@@ -21,7 +21,9 @@ use std::path::PathBuf;
 
 use crate::{
     InvocationKind, LlmMessage, Phase, ReasoningContent, SubRunStorageMode, ToolCallRequest,
-    UserMessageOrigin, event::StorageEvent, format_compact_summary, split_assistant_content,
+    UserMessageOrigin,
+    event::{StorageEvent, StorageEventPayload},
+    format_compact_summary, split_assistant_content,
 };
 
 /// Agent 的当前状态快照。
@@ -93,8 +95,8 @@ impl AgentStateProjector {
             return;
         }
 
-        match event {
-            StorageEvent::SessionStart {
+        match &event.payload {
+            StorageEventPayload::SessionStart {
                 session_id,
                 working_dir,
                 ..
@@ -103,7 +105,7 @@ impl AgentStateProjector {
                 self.state.working_dir = PathBuf::from(working_dir);
             },
 
-            StorageEvent::UserMessage {
+            StorageEventPayload::UserMessage {
                 content, origin, ..
             } => {
                 self.flush_pending_assistant();
@@ -116,7 +118,7 @@ impl AgentStateProjector {
                 self.state.phase = Phase::Thinking;
             },
 
-            StorageEvent::AssistantFinal {
+            StorageEventPayload::AssistantFinal {
                 content,
                 reasoning_content,
                 reasoning_signature,
@@ -131,7 +133,7 @@ impl AgentStateProjector {
                 });
             },
 
-            StorageEvent::ToolCall {
+            StorageEventPayload::ToolCall {
                 tool_call_id,
                 tool_name,
                 args,
@@ -144,7 +146,7 @@ impl AgentStateProjector {
                 });
             },
 
-            StorageEvent::ToolResult {
+            StorageEventPayload::ToolResult {
                 tool_call_id,
                 tool_name,
                 output,
@@ -171,7 +173,7 @@ impl AgentStateProjector {
                 });
             },
 
-            StorageEvent::CompactApplied {
+            StorageEventPayload::CompactApplied {
                 summary,
                 preserved_recent_turns,
                 messages_removed,
@@ -185,20 +187,20 @@ impl AgentStateProjector {
                 );
             },
 
-            StorageEvent::TurnDone { .. } => {
+            StorageEventPayload::TurnDone { .. } => {
                 self.flush_pending_assistant();
                 self.state.phase = Phase::Idle;
                 self.state.turn_count += 1;
             },
 
-            StorageEvent::AssistantDelta { .. }
-            | StorageEvent::ToolCallDelta { .. }
-            | StorageEvent::PromptMetrics { .. }
-            | StorageEvent::ThinkingDelta { .. }
-            | StorageEvent::SubRunStarted { .. }
-            | StorageEvent::SubRunFinished { .. }
-            | StorageEvent::ChildSessionNotification { .. }
-            | StorageEvent::Error { .. } => {},
+            StorageEventPayload::AssistantDelta { .. }
+            | StorageEventPayload::ToolCallDelta { .. }
+            | StorageEventPayload::PromptMetrics { .. }
+            | StorageEventPayload::ThinkingDelta { .. }
+            | StorageEventPayload::SubRunStarted { .. }
+            | StorageEventPayload::SubRunFinished { .. }
+            | StorageEventPayload::ChildSessionNotification { .. }
+            | StorageEventPayload::Error { .. } => {},
         }
     }
 
@@ -299,7 +301,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{AgentEventContext, event::StorageEvent};
+    use crate::{AgentEventContext, StorageEvent, StorageEventPayload};
 
     fn ts() -> chrono::DateTime<chrono::Utc> {
         chrono::Utc::now()
@@ -320,6 +322,78 @@ mod tests {
         )
     }
 
+    fn event(
+        turn_id: Option<&str>,
+        agent: AgentEventContext,
+        payload: StorageEventPayload,
+    ) -> StorageEvent {
+        StorageEvent {
+            turn_id: turn_id.map(str::to_string),
+            agent,
+            payload,
+        }
+    }
+
+    fn session_start(session_id: &str, working_dir: &str) -> StorageEvent {
+        event(
+            None,
+            root_agent(),
+            StorageEventPayload::SessionStart {
+                session_id: session_id.into(),
+                timestamp: ts(),
+                working_dir: working_dir.into(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
+        )
+    }
+
+    fn user_message(
+        turn_id: Option<&str>,
+        agent: AgentEventContext,
+        content: &str,
+        origin: UserMessageOrigin,
+    ) -> StorageEvent {
+        event(
+            turn_id,
+            agent,
+            StorageEventPayload::UserMessage {
+                content: content.into(),
+                origin,
+                timestamp: ts(),
+            },
+        )
+    }
+
+    fn assistant_final(
+        turn_id: Option<&str>,
+        agent: AgentEventContext,
+        content: &str,
+        reasoning_content: Option<&str>,
+    ) -> StorageEvent {
+        event(
+            turn_id,
+            agent,
+            StorageEventPayload::AssistantFinal {
+                content: content.into(),
+                reasoning_content: reasoning_content.map(str::to_string),
+                reasoning_signature: None,
+                timestamp: None,
+            },
+        )
+    }
+
+    fn turn_done(turn_id: Option<&str>, agent: AgentEventContext, reason: &str) -> StorageEvent {
+        event(
+            turn_id,
+            agent,
+            StorageEventPayload::TurnDone {
+                timestamp: ts(),
+                reason: Some(reason.into()),
+            },
+        )
+    }
+
     #[test]
     fn empty_events_produce_default_state() {
         let state = project(&[]);
@@ -332,20 +406,8 @@ mod tests {
     #[test]
     fn session_start_and_user_message() {
         let events = vec![
-            StorageEvent::SessionStart {
-                session_id: "s1".into(),
-                timestamp: ts(),
-                working_dir: "/tmp".into(),
-                parent_session_id: None,
-                parent_storage_seq: None,
-            },
-            StorageEvent::UserMessage {
-                turn_id: None,
-                agent: root_agent(),
-                content: "hello".into(),
-                origin: UserMessageOrigin::User,
-                timestamp: ts(),
-            },
+            session_start("s1", "/tmp"),
+            user_message(None, root_agent(), "hello", UserMessageOrigin::User),
         ];
         let state = project(&events);
         assert_eq!(state.session_id, "s1");
@@ -360,20 +422,13 @@ mod tests {
     #[test]
     fn reactivation_prompt_does_not_pollute_projected_messages() {
         let state = project(&[
-            StorageEvent::SessionStart {
-                session_id: "s1".into(),
-                timestamp: ts(),
-                working_dir: "/tmp".into(),
-                parent_session_id: None,
-                parent_storage_seq: None,
-            },
-            StorageEvent::UserMessage {
-                turn_id: Some("turn-reactivate".into()),
-                agent: root_agent(),
-                content: "# Child Session Delivery".into(),
-                origin: UserMessageOrigin::ReactivationPrompt,
-                timestamp: ts(),
-            },
+            session_start("s1", "/tmp"),
+            user_message(
+                Some("turn-reactivate"),
+                root_agent(),
+                "# Child Session Delivery",
+                UserMessageOrigin::ReactivationPrompt,
+            ),
         ]);
 
         assert!(state.messages.is_empty());
@@ -383,34 +438,10 @@ mod tests {
     #[test]
     fn turn_done_sets_idle_and_increments_count() {
         let events = vec![
-            StorageEvent::SessionStart {
-                session_id: "s1".into(),
-                timestamp: ts(),
-                working_dir: "/tmp".into(),
-                parent_session_id: None,
-                parent_storage_seq: None,
-            },
-            StorageEvent::UserMessage {
-                turn_id: None,
-                agent: root_agent(),
-                content: "hi".into(),
-                origin: UserMessageOrigin::User,
-                timestamp: ts(),
-            },
-            StorageEvent::AssistantFinal {
-                turn_id: None,
-                agent: root_agent(),
-                content: "hello!".into(),
-                reasoning_content: None,
-                reasoning_signature: None,
-                timestamp: None,
-            },
-            StorageEvent::TurnDone {
-                turn_id: None,
-                agent: root_agent(),
-                timestamp: ts(),
-                reason: Some("completed".into()),
-            },
+            session_start("s1", "/tmp"),
+            user_message(None, root_agent(), "hi", UserMessageOrigin::User),
+            assistant_final(None, root_agent(), "hello!", None),
+            turn_done(None, root_agent(), "completed"),
         ];
         let state = project(&events);
         assert_eq!(state.phase, Phase::Idle);
@@ -421,55 +452,23 @@ mod tests {
     #[test]
     fn sub_run_events_do_not_pollute_parent_projected_messages_or_turn_count() {
         let events = vec![
-            StorageEvent::SessionStart {
-                session_id: "s1".into(),
-                timestamp: ts(),
-                working_dir: "/tmp".into(),
-                parent_session_id: None,
-                parent_storage_seq: None,
-            },
-            StorageEvent::UserMessage {
-                turn_id: Some("turn-root".into()),
-                agent: root_agent(),
-                content: "root task".into(),
-                origin: UserMessageOrigin::User,
-                timestamp: ts(),
-            },
-            StorageEvent::AssistantFinal {
-                turn_id: Some("turn-root".into()),
-                agent: root_agent(),
-                content: "root answer".into(),
-                reasoning_content: None,
-                reasoning_signature: None,
-                timestamp: None,
-            },
-            StorageEvent::TurnDone {
-                turn_id: Some("turn-root".into()),
-                agent: root_agent(),
-                timestamp: ts(),
-                reason: Some("completed".into()),
-            },
-            StorageEvent::UserMessage {
-                turn_id: Some("turn-child".into()),
-                agent: sub_run_agent(),
-                content: "child task".into(),
-                origin: UserMessageOrigin::User,
-                timestamp: ts(),
-            },
-            StorageEvent::AssistantFinal {
-                turn_id: Some("turn-child".into()),
-                agent: sub_run_agent(),
-                content: "child answer".into(),
-                reasoning_content: None,
-                reasoning_signature: None,
-                timestamp: None,
-            },
-            StorageEvent::TurnDone {
-                turn_id: Some("turn-child".into()),
-                agent: sub_run_agent(),
-                timestamp: ts(),
-                reason: Some("completed".into()),
-            },
+            session_start("s1", "/tmp"),
+            user_message(
+                Some("turn-root"),
+                root_agent(),
+                "root task",
+                UserMessageOrigin::User,
+            ),
+            assistant_final(Some("turn-root"), root_agent(), "root answer", None),
+            turn_done(Some("turn-root"), root_agent(), "completed"),
+            user_message(
+                Some("turn-child"),
+                sub_run_agent(),
+                "child task",
+                UserMessageOrigin::User,
+            ),
+            assistant_final(Some("turn-child"), sub_run_agent(), "child answer", None),
+            turn_done(Some("turn-child"), sub_run_agent(), "completed"),
         ];
 
         let state = project(&events);
@@ -505,34 +504,30 @@ mod tests {
             Some("session-child".to_string()),
         );
         let events = vec![
-            StorageEvent::SessionStart {
-                session_id: "session-child".into(),
-                timestamp: ts(),
-                working_dir: "/tmp".into(),
-                parent_session_id: Some("session-parent".into()),
-                parent_storage_seq: Some(12),
-            },
-            StorageEvent::UserMessage {
-                turn_id: Some("turn-child".into()),
-                agent: child_agent.clone(),
-                content: "child task".into(),
-                origin: UserMessageOrigin::User,
-                timestamp: ts(),
-            },
-            StorageEvent::AssistantFinal {
-                turn_id: Some("turn-child".into()),
-                agent: child_agent.clone(),
-                content: "child answer".into(),
-                reasoning_content: None,
-                reasoning_signature: None,
-                timestamp: None,
-            },
-            StorageEvent::TurnDone {
-                turn_id: Some("turn-child".into()),
-                agent: child_agent,
-                timestamp: ts(),
-                reason: Some("completed".into()),
-            },
+            event(
+                None,
+                root_agent(),
+                StorageEventPayload::SessionStart {
+                    session_id: "session-child".into(),
+                    timestamp: ts(),
+                    working_dir: "/tmp".into(),
+                    parent_session_id: Some("session-parent".into()),
+                    parent_storage_seq: Some(12),
+                },
+            ),
+            user_message(
+                Some("turn-child"),
+                child_agent.clone(),
+                "child task",
+                UserMessageOrigin::User,
+            ),
+            assistant_final(
+                Some("turn-child"),
+                child_agent.clone(),
+                "child answer",
+                None,
+            ),
+            turn_done(Some("turn-child"), child_agent, "completed"),
         ];
 
         let state = project(&events);
@@ -552,83 +547,38 @@ mod tests {
     #[test]
     fn multi_turn_with_tool_calls_rebuilds_correctly() {
         let events = vec![
-            StorageEvent::SessionStart {
-                session_id: "s1".into(),
-                timestamp: ts(),
-                working_dir: "/tmp".into(),
-                parent_session_id: None,
-                parent_storage_seq: None,
-            },
+            session_start("s1", "/tmp"),
             // Turn 1: user → assistant with tool call → tool result → final answer
-            StorageEvent::UserMessage {
-                turn_id: None,
-                agent: root_agent(),
-                content: "list files".into(),
-                origin: UserMessageOrigin::User,
-                timestamp: ts(),
-            },
-            StorageEvent::AssistantFinal {
-                turn_id: None,
-                agent: root_agent(),
-                content: "".into(),
-                reasoning_content: None,
-                reasoning_signature: None,
-                timestamp: None,
-            },
-            StorageEvent::ToolCall {
-                turn_id: None,
-                agent: root_agent(),
-                tool_call_id: "tc1".into(),
-                tool_name: "listDir".into(),
-                args: json!({"path": "."}),
-            },
-            StorageEvent::ToolResult {
-                turn_id: None,
-                agent: root_agent(),
-                tool_call_id: "tc1".into(),
-                tool_name: "listDir".into(),
-                output: "file1.txt\nfile2.txt".into(),
-                success: true,
-                error: None,
-                metadata: None,
-                duration_ms: 10,
-            },
-            StorageEvent::AssistantFinal {
-                turn_id: None,
-                agent: root_agent(),
-                content: "Here are the files".into(),
-                reasoning_content: None,
-                reasoning_signature: None,
-                timestamp: None,
-            },
-            StorageEvent::TurnDone {
-                turn_id: None,
-                agent: root_agent(),
-                timestamp: ts(),
-                reason: Some("completed".into()),
-            },
+            user_message(None, root_agent(), "list files", UserMessageOrigin::User),
+            assistant_final(None, root_agent(), "", None),
+            event(
+                None,
+                root_agent(),
+                StorageEventPayload::ToolCall {
+                    tool_call_id: "tc1".into(),
+                    tool_name: "listDir".into(),
+                    args: json!({"path": "."}),
+                },
+            ),
+            event(
+                None,
+                root_agent(),
+                StorageEventPayload::ToolResult {
+                    tool_call_id: "tc1".into(),
+                    tool_name: "listDir".into(),
+                    output: "file1.txt\nfile2.txt".into(),
+                    success: true,
+                    error: None,
+                    metadata: None,
+                    duration_ms: 10,
+                },
+            ),
+            assistant_final(None, root_agent(), "Here are the files", None),
+            turn_done(None, root_agent(), "completed"),
             // Turn 2: simple user → assistant
-            StorageEvent::UserMessage {
-                turn_id: None,
-                agent: root_agent(),
-                content: "thanks".into(),
-                origin: UserMessageOrigin::User,
-                timestamp: ts(),
-            },
-            StorageEvent::AssistantFinal {
-                turn_id: None,
-                agent: root_agent(),
-                content: "You're welcome!".into(),
-                reasoning_content: None,
-                reasoning_signature: None,
-                timestamp: None,
-            },
-            StorageEvent::TurnDone {
-                turn_id: None,
-                agent: root_agent(),
-                timestamp: ts(),
-                reason: Some("completed".into()),
-            },
+            user_message(None, root_agent(), "thanks", UserMessageOrigin::User),
+            assistant_final(None, root_agent(), "You're welcome!", None),
+            turn_done(None, root_agent(), "completed"),
         ];
         let state = project(&events);
 
@@ -670,50 +620,30 @@ mod tests {
     #[test]
     fn assistant_delta_and_error_are_ignored() {
         let events = vec![
-            StorageEvent::SessionStart {
-                session_id: "s1".into(),
-                timestamp: ts(),
-                working_dir: "/tmp".into(),
-                parent_session_id: None,
-                parent_storage_seq: None,
-            },
-            StorageEvent::UserMessage {
-                turn_id: None,
-                agent: root_agent(),
-                content: "hi".into(),
-                origin: UserMessageOrigin::User,
-                timestamp: ts(),
-            },
-            StorageEvent::AssistantDelta {
-                turn_id: None,
-                agent: root_agent(),
-                token: "hel".into(),
-            },
-            StorageEvent::AssistantDelta {
-                turn_id: None,
-                agent: root_agent(),
-                token: "lo".into(),
-            },
-            StorageEvent::AssistantFinal {
-                turn_id: None,
-                agent: root_agent(),
-                content: "hello".into(),
-                reasoning_content: None,
-                reasoning_signature: None,
-                timestamp: None,
-            },
-            StorageEvent::Error {
-                turn_id: None,
-                agent: root_agent(),
-                message: "some error".into(),
-                timestamp: Some(ts()),
-            },
-            StorageEvent::TurnDone {
-                turn_id: None,
-                agent: root_agent(),
-                timestamp: ts(),
-                reason: Some("completed".into()),
-            },
+            session_start("s1", "/tmp"),
+            user_message(None, root_agent(), "hi", UserMessageOrigin::User),
+            event(
+                None,
+                root_agent(),
+                StorageEventPayload::AssistantDelta {
+                    token: "hel".into(),
+                },
+            ),
+            event(
+                None,
+                root_agent(),
+                StorageEventPayload::AssistantDelta { token: "lo".into() },
+            ),
+            assistant_final(None, root_agent(), "hello", None),
+            event(
+                None,
+                root_agent(),
+                StorageEventPayload::Error {
+                    message: "some error".into(),
+                    timestamp: Some(ts()),
+                },
+            ),
+            turn_done(None, root_agent(), "completed"),
         ];
         let state = project(&events);
         assert_eq!(state.messages.len(), 2); // User + Assistant only
@@ -723,44 +653,31 @@ mod tests {
     #[test]
     fn tool_messages_require_synthetic_assistant_when_content_is_empty() {
         let events = vec![
-            StorageEvent::SessionStart {
-                session_id: "s1".into(),
-                timestamp: ts(),
-                working_dir: "/tmp".into(),
-                parent_session_id: None,
-                parent_storage_seq: None,
-            },
-            StorageEvent::UserMessage {
-                turn_id: None,
-                agent: root_agent(),
-                content: "run tool".into(),
-                origin: UserMessageOrigin::User,
-                timestamp: ts(),
-            },
-            StorageEvent::ToolCall {
-                turn_id: None,
-                agent: root_agent(),
-                tool_call_id: "tc1".into(),
-                tool_name: "listDir".into(),
-                args: json!({"path": "."}),
-            },
-            StorageEvent::ToolResult {
-                turn_id: None,
-                agent: root_agent(),
-                tool_call_id: "tc1".into(),
-                tool_name: "listDir".into(),
-                output: "[]".into(),
-                success: true,
-                error: None,
-                metadata: None,
-                duration_ms: 2,
-            },
-            StorageEvent::TurnDone {
-                turn_id: None,
-                agent: root_agent(),
-                timestamp: ts(),
-                reason: Some("completed".into()),
-            },
+            session_start("s1", "/tmp"),
+            user_message(None, root_agent(), "run tool", UserMessageOrigin::User),
+            event(
+                None,
+                root_agent(),
+                StorageEventPayload::ToolCall {
+                    tool_call_id: "tc1".into(),
+                    tool_name: "listDir".into(),
+                    args: json!({"path": "."}),
+                },
+            ),
+            event(
+                None,
+                root_agent(),
+                StorageEventPayload::ToolResult {
+                    tool_call_id: "tc1".into(),
+                    tool_name: "listDir".into(),
+                    output: "[]".into(),
+                    success: true,
+                    error: None,
+                    metadata: None,
+                    duration_ms: 2,
+                },
+            ),
+            turn_done(None, root_agent(), "completed"),
         ];
 
         let state = project(&events);
@@ -787,34 +704,19 @@ mod tests {
     #[test]
     fn incremental_projector_matches_batch_projection() {
         let events = vec![
-            StorageEvent::SessionStart {
-                session_id: "s1".into(),
-                timestamp: ts(),
-                working_dir: "/tmp".into(),
-                parent_session_id: None,
-                parent_storage_seq: None,
-            },
-            StorageEvent::UserMessage {
-                turn_id: None,
-                agent: root_agent(),
-                content: "hello".into(),
-                origin: UserMessageOrigin::User,
-                timestamp: ts(),
-            },
-            StorageEvent::AssistantFinal {
-                turn_id: None,
-                agent: root_agent(),
-                content: "hi".into(),
-                reasoning_content: Some("thinking".into()),
-                reasoning_signature: Some("sig".into()),
-                timestamp: None,
-            },
-            StorageEvent::TurnDone {
-                turn_id: None,
-                agent: root_agent(),
-                timestamp: ts(),
-                reason: Some("completed".into()),
-            },
+            session_start("s1", "/tmp"),
+            user_message(None, root_agent(), "hello", UserMessageOrigin::User),
+            event(
+                None,
+                root_agent(),
+                StorageEventPayload::AssistantFinal {
+                    content: "hi".into(),
+                    reasoning_content: Some("thinking".into()),
+                    reasoning_signature: Some("sig".into()),
+                    timestamp: None,
+                },
+            ),
+            turn_done(None, root_agent(), "completed"),
         ];
 
         let batch = project(&events);
@@ -834,67 +736,37 @@ mod tests {
     #[test]
     fn compact_applied_replaces_old_prefix_with_a_compact_summary_message() {
         let events = vec![
-            StorageEvent::SessionStart {
-                session_id: "s1".into(),
-                timestamp: ts(),
-                working_dir: "/tmp".into(),
-                parent_session_id: None,
-                parent_storage_seq: None,
-            },
-            StorageEvent::UserMessage {
-                turn_id: Some("turn-1".into()),
-                agent: root_agent(),
-                content: "first".into(),
-                origin: UserMessageOrigin::User,
-                timestamp: ts(),
-            },
-            StorageEvent::AssistantFinal {
-                turn_id: Some("turn-1".into()),
-                agent: root_agent(),
-                content: "first-answer".into(),
-                reasoning_content: None,
-                reasoning_signature: None,
-                timestamp: None,
-            },
-            StorageEvent::TurnDone {
-                turn_id: Some("turn-1".into()),
-                agent: root_agent(),
-                timestamp: ts(),
-                reason: Some("completed".into()),
-            },
-            StorageEvent::UserMessage {
-                turn_id: Some("turn-2".into()),
-                agent: root_agent(),
-                content: "second".into(),
-                origin: UserMessageOrigin::User,
-                timestamp: ts(),
-            },
-            StorageEvent::AssistantFinal {
-                turn_id: Some("turn-2".into()),
-                agent: root_agent(),
-                content: "second-answer".into(),
-                reasoning_content: None,
-                reasoning_signature: None,
-                timestamp: None,
-            },
-            StorageEvent::TurnDone {
-                turn_id: Some("turn-2".into()),
-                agent: root_agent(),
-                timestamp: ts(),
-                reason: Some("completed".into()),
-            },
-            StorageEvent::CompactApplied {
-                turn_id: None,
-                agent: root_agent(),
-                trigger: crate::event::CompactTrigger::Manual,
-                summary: "condensed work".into(),
-                preserved_recent_turns: 1,
-                pre_tokens: 400,
-                post_tokens_estimate: 120,
-                messages_removed: 2,
-                tokens_freed: 280,
-                timestamp: ts(),
-            },
+            session_start("s1", "/tmp"),
+            user_message(
+                Some("turn-1"),
+                root_agent(),
+                "first",
+                UserMessageOrigin::User,
+            ),
+            assistant_final(Some("turn-1"), root_agent(), "first-answer", None),
+            turn_done(Some("turn-1"), root_agent(), "completed"),
+            user_message(
+                Some("turn-2"),
+                root_agent(),
+                "second",
+                UserMessageOrigin::User,
+            ),
+            assistant_final(Some("turn-2"), root_agent(), "second-answer", None),
+            turn_done(Some("turn-2"), root_agent(), "completed"),
+            event(
+                None,
+                root_agent(),
+                StorageEventPayload::CompactApplied {
+                    trigger: crate::event::CompactTrigger::Manual,
+                    summary: "condensed work".into(),
+                    preserved_recent_turns: 1,
+                    pre_tokens: 400,
+                    post_tokens_estimate: 120,
+                    messages_removed: 2,
+                    tokens_freed: 280,
+                    timestamp: ts(),
+                },
+            ),
         ];
 
         let state = project(&events);

@@ -17,9 +17,9 @@
 
 **Purpose**: 固化本次实现的事实输入、验证基线和迁移清单
 
-- [ ] T001 刷新实现前 caller inventory 与保留 surface 基线到 `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/findings.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/migration.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/contracts/retained-surface-contract.md`
-- [ ] T002 [P] 固化本次 grep/手工回归/验证命令到 `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/quickstart.md`
-- [ ] T003 [P] 对齐本次 canonical contract 目标到 `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/plan.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/data-model.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/design-subrun-contract-consolidation.md`
+- [x] T001 刷新实现前 caller inventory 与保留 surface 基线到 `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/findings.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/migration.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/contracts/retained-surface-contract.md`
+- [x] T002 [P] 固化本次 grep/手工回归/验证命令到 `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/quickstart.md`
+- [x] T003 [P] 对齐本次 canonical contract 目标到 `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/plan.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/data-model.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/design-subrun-contract-consolidation.md`
 
 ---
 
@@ -29,12 +29,12 @@
 
 **⚠️ CRITICAL**: 该阶段完成前，不要开始任何用户故事实现
 
-- [ ] T004 建立 canonical execution/status/lineage 合同骨架于 `D:/GitObjectsOwn/Astrcode/crates/core/src/agent/mod.rs`, `D:/GitObjectsOwn/Astrcode/crates/core/src/runtime/traits.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/service_contract.rs`
-- [ ] T005 [P] 引入共享 `PromptMetricsPayload` 与事件层复用入口于 `D:/GitObjectsOwn/Astrcode/crates/core/src/event/types.rs`, `D:/GitObjectsOwn/Astrcode/crates/core/src/event/domain.rs`, `D:/GitObjectsOwn/Astrcode/crates/core/src/event/translate.rs`
-- [ ] T006 [P] 建立 canonical child open target 与重复字段删除策略于 `D:/GitObjectsOwn/Astrcode/crates/core/src/agent/mod.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-execution/src/subrun.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-session/src/session_state.rs`
-- [ ] T007 [P] 建立 protocol 强类型状态 DTO 与 mapper 基础于 `D:/GitObjectsOwn/Astrcode/crates/protocol/src/http/agent.rs`, `D:/GitObjectsOwn/Astrcode/crates/protocol/src/http/event.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/mapper.rs`
-- [ ] T008 集中 compaction 原因到 durable trigger 的映射于 `D:/GitObjectsOwn/Astrcode/crates/core/src/hook.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-agent-loop/src/compaction_runtime.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-agent-loop/src/agent_loop.rs`
-- [ ] T009 更新共享合同基线测试于 `D:/GitObjectsOwn/Astrcode/crates/protocol/tests/subrun_event_serialization.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/tests/session_contract_tests.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/execution/tests.rs`。关键断言：`AgentStatus::TokenExceeded` 序列化正确、`ExecutionAccepted` 字段完整、`PromptMetricsPayload` 三层结构一致
+- [X] T004 建立 canonical execution/status/lineage 合同骨架于 `D:/GitObjectsOwn/Astrcode/crates/core/src/agent/mod.rs`, `D:/GitObjectsOwn/Astrcode/crates/core/src/runtime/traits.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/service_contract.rs`
+- [X] T005 [P] 引入共享 `PromptMetricsPayload` 与事件层复用入口于 `D:/GitObjectsOwn/Astrcode/crates/core/src/event/types.rs`, `D:/GitObjectsOwn/Astrcode/crates/core/src/event/domain.rs`, `D:/GitObjectsOwn/Astrcode/crates/core/src/event/translate.rs`
+- [X] T006 [P] 建立 canonical child open target 与重复字段删除策略于 `D:/GitObjectsOwn/Astrcode/crates/core/src/agent/mod.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-execution/src/subrun.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-session/src/session_state.rs`
+- [X] T007 [P] 建立 protocol 强类型状态 DTO 与 mapper 基础于 `D:/GitObjectsOwn/Astrcode/crates/protocol/src/http/agent.rs`, `D:/GitObjectsOwn/Astrcode/crates/protocol/src/http/event.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/mapper.rs`
+- [x] T008 集中 compaction 原因到 durable trigger 的映射于 `D:/GitObjectsOwn/Astrcode/crates/core/src/hook.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-agent-loop/src/compaction_runtime.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-agent-loop/src/agent_loop.rs`
+- [X] T009 更新共享合同基线测试于 `D:/GitObjectsOwn/Astrcode/crates/protocol/tests/subrun_event_serialization.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/tests/session_contract_tests.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/execution/tests.rs`。关键断言：`AgentStatus::TokenExceeded` 序列化正确、`ExecutionAccepted` 字段完整、`PromptMetricsPayload` 三层结构一致
 
 **Checkpoint**: canonical contract、协议投影和共享验证基线已建立，用户故事可开始并行推进
 
@@ -48,17 +48,17 @@
 
 ### Tests for User Story 1
 
-- [ ] T010 [P] [US1] 删除或改写 orphan frontend surface 覆盖于 `D:/GitObjectsOwn/Astrcode/frontend/src/lib/subRunView.test.ts`, `D:/GitObjectsOwn/Astrcode/frontend/src/lib/sessionHistory.test.ts`
-- [ ] T011 [P] [US1] 删除 orphan route 合同断言并保留现役 surface 覆盖于 `D:/GitObjectsOwn/Astrcode/crates/server/src/tests/session_contract_tests.rs`
+- [X] T010 [P] [US1] 删除或改写 orphan frontend surface 覆盖于 `D:/GitObjectsOwn/Astrcode/frontend/src/lib/subRunView.test.ts`, `D:/GitObjectsOwn/Astrcode/frontend/src/lib/sessionHistory.test.ts`
+- [X] T011 [P] [US1] 删除 orphan route 合同断言并保留现役 surface 覆盖于 `D:/GitObjectsOwn/Astrcode/crates/server/src/tests/session_contract_tests.rs`
 
 ### Implementation for User Story 1
 
-- [ ] T012 [P] [US1] 删除未消费的前端 session summary/view client 于 `D:/GitObjectsOwn/Astrcode/frontend/src/lib/api/sessions.ts`
-- [ ] T013 [P] [US1] 删除未消费的 parent summary projection 与相关类型于 `D:/GitObjectsOwn/Astrcode/frontend/src/lib/subRunView.ts`, `D:/GitObjectsOwn/Astrcode/frontend/src/types.ts`
-- [ ] T014 [US1] 移除 child summary/view HTTP route 与 DTO 导出于 `D:/GitObjectsOwn/Astrcode/crates/server/src/http/routes/sessions/query.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/routes/mod.rs`, `D:/GitObjectsOwn/Astrcode/crates/protocol/src/http/session.rs`, `D:/GitObjectsOwn/Astrcode/crates/protocol/src/http/mod.rs`
-- [ ] T015 [US1] 删除无人消费的 v1/runtime skeleton route 于 `D:/GitObjectsOwn/Astrcode/crates/server/src/http/routes/runtime.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/routes/tools.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/routes/mod.rs`, `D:/GitObjectsOwn/Astrcode/crates/protocol/src/http/mod.rs`
-- [ ] T016 [US1] 清理 retained frontend flow 对已删除 surface 的调用于 `D:/GitObjectsOwn/Astrcode/frontend/src/App.tsx`, `D:/GitObjectsOwn/Astrcode/frontend/src/hooks/useAgent.ts`, `D:/GitObjectsOwn/Astrcode/frontend/src/lib/api/sessions.ts`
-- [ ] T017 [US1] 保持现役 summary 与 child navigation 主线可用并移除重复 open flag 依赖于 `D:/GitObjectsOwn/Astrcode/frontend/src/lib/agentEvent.ts`, `D:/GitObjectsOwn/Astrcode/frontend/src/lib/subRunView.ts`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/routes/sessions/query.rs`
+- [X] T012 [P] [US1] 删除未消费的前端 session summary/view client 于 `D:/GitObjectsOwn/Astrcode/frontend/src/lib/api/sessions.ts`
+- [X] T013 [P] [US1] 删除未消费的 parent summary projection 与相关类型于 `D:/GitObjectsOwn/Astrcode/frontend/src/lib/subRunView.ts`, `D:/GitObjectsOwn/Astrcode/frontend/src/types.ts`
+- [X] T014 [US1] 移除 child summary/view HTTP route 与 DTO 导出于 `D:/GitObjectsOwn/Astrcode/crates/server/src/http/routes/sessions/query.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/routes/mod.rs`, `D:/GitObjectsOwn/Astrcode/crates/protocol/src/http/session.rs`, `D:/GitObjectsOwn/Astrcode/crates/protocol/src/http/mod.rs`
+- [X] T015 [US1] 删除无人消费的 v1/runtime skeleton route 于 `D:/GitObjectsOwn/Astrcode/crates/server/src/http/routes/runtime.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/routes/tools.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/routes/mod.rs`, `D:/GitObjectsOwn/Astrcode/crates/protocol/src/http/mod.rs`
+- [X] T016 [US1] 清理 retained frontend flow 对已删除 surface 的调用于 `D:/GitObjectsOwn/Astrcode/frontend/src/App.tsx`, `D:/GitObjectsOwn/Astrcode/frontend/src/hooks/useAgent.ts`, `D:/GitObjectsOwn/Astrcode/frontend/src/lib/api/sessions.ts`
+- [X] T017 [US1] 保持现役 summary 与 child navigation 主线可用并移除重复 open flag 依赖于 `D:/GitObjectsOwn/Astrcode/frontend/src/lib/agentEvent.ts`, `D:/GitObjectsOwn/Astrcode/frontend/src/lib/subRunView.ts`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/routes/sessions/query.rs`
 
 **Checkpoint**: User Story 1 完成后，正式支持面已明显收口，且主线浏览/提交/child session 直开保持可用
 
@@ -72,20 +72,20 @@
 
 ### Tests for User Story 2
 
-- [ ] T018 [P] [US2] 更新 core/runtime canonical contract 回归测试于 `D:/GitObjectsOwn/Astrcode/crates/core/src/event/types.rs`, `D:/GitObjectsOwn/Astrcode/crates/core/src/event/translate.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/execution/tests.rs`。关键断言：`SubRunOutcome` 变体已映射到 `AgentStatus`、`SubRunDescriptor` 已删除、`parent_turn_id` 必填
-- [ ] T019 [P] [US2] 更新 child ref、protocol DTO 和 compaction 相关序列化测试于 `D:/GitObjectsOwn/Astrcode/crates/protocol/tests/subrun_event_serialization.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/tests/session_contract_tests.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-agent-loop/src/agent_loop/tests/hook.rs`。关键断言：`ChildAgentRef` 不含 `openable`、protocol 状态为强类型枚举非字符串、notification 无外层 `open_session_id`、compaction 映射只有一条路径
+- [X] T018 [P] [US2] 更新 core/runtime canonical contract 回归测试于 `D:/GitObjectsOwn/Astrcode/crates/core/src/event/types.rs`, `D:/GitObjectsOwn/Astrcode/crates/core/src/event/translate.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/execution/tests.rs`。关键断言：`SubRunOutcome` 变体已映射到 `AgentStatus`、`SubRunDescriptor` 已删除、`parent_turn_id` 必填
+- [X] T019 [P] [US2] 更新 child ref、protocol DTO 和 compaction 相关序列化测试于 `D:/GitObjectsOwn/Astrcode/crates/protocol/tests/subrun_event_serialization.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/tests/session_contract_tests.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-agent-loop/src/agent_loop/tests/hook.rs`。关键断言：`ChildAgentRef` 不含 `openable`、protocol 状态为强类型枚举非字符串、notification 无外层 `open_session_id`、compaction 映射只有一条路径
 
 ### Implementation for User Story 2
 
-- [ ] T020 [P] [US2] 将 `SubRunOutcome`、`TokenExceeded` 与必填 `parent_turn_id` 收口到 canonical core 类型，并删除 `SubRunDescriptor` 及其 `descriptor()` accessor 于 `D:/GitObjectsOwn/Astrcode/crates/core/src/agent/mod.rs`, `D:/GitObjectsOwn/Astrcode/crates/core/src/runtime/traits.rs`
-- [ ] T021 [P] [US2] 删除重复 execution receipt 并统一 `ExecutionAccepted` 于 `D:/GitObjectsOwn/Astrcode/crates/core/src/runtime/traits.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/service_contract.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/execution/mod.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/execution/root.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/turn/submit.rs`
-- [ ] T022 [US2] 让 durable/session 写入与 child notification 使用 canonical child ref、共享 metrics payload，并删除 `ChildAgentRef.openable` 字段 于 `D:/GitObjectsOwn/Astrcode/crates/runtime-execution/src/subrun.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-session/src/session_state.rs`, `D:/GitObjectsOwn/Astrcode/crates/core/src/event/types.rs`, `D:/GitObjectsOwn/Astrcode/crates/core/src/event/domain.rs`, `D:/GitObjectsOwn/Astrcode/crates/core/src/event/translate.rs`
-- [ ] T023 [US2] 把 subagent launch 与 live control 收口到正确 owner boundary 于 `D:/GitObjectsOwn/Astrcode/crates/core/src/runtime/traits.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-agent-control/src/lib.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/execution/context.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/execution/subagent.rs`
-- [ ] T024 [US2] 用强类型状态 DTO 替换 protocol `status: String` 并移除外层 `open_session_id` 于 `D:/GitObjectsOwn/Astrcode/crates/protocol/src/http/agent.rs`, `D:/GitObjectsOwn/Astrcode/crates/protocol/src/http/event.rs`, `D:/GitObjectsOwn/Astrcode/crates/protocol/src/http/session.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/mapper.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/routes/sessions/query.rs`
-- [ ] T025 [US2] 集中 compaction reason 映射并保留 `Reactive` 的内部语义于 `D:/GitObjectsOwn/Astrcode/crates/core/src/hook.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-agent-loop/src/compaction_runtime.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-agent-loop/src/agent_loop.rs`
-- [ ] T026 [US2] 为 descriptorless、legacyDurable 与旧共享历史输入构建明确失败路径：runtime/server 层拒绝旧语义并返回结构化错误（含缺失字段与不支持的旧语义标识），不再返回 downgrade 视图或"部分可用"结果 于 `D:/GitObjectsOwn/Astrcode/crates/runtime-execution/src/subrun.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/routes/sessions/query.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/mapper.rs`
-- [ ] T027 [US2] 将前端 cancel 按钮从旧 cancel route 切换到 `closeAgent`，删除旧 cancel route 与 client wrapper 于 `D:/GitObjectsOwn/Astrcode/frontend/src/hooks/useAgent.ts`, `D:/GitObjectsOwn/Astrcode/frontend/src/lib/api/sessions.ts`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/routes/runtime.rs`, `D:/GitObjectsOwn/Astrcode/crates/protocol/src/http/agent.rs`
-- [ ] T028 [US2] 更新 frontend subrun/session read model 以消费强类型状态与嵌套 open target 于 `D:/GitObjectsOwn/Astrcode/frontend/src/types.ts`, `D:/GitObjectsOwn/Astrcode/frontend/src/lib/agentEvent.ts`, `D:/GitObjectsOwn/Astrcode/frontend/src/lib/subRunView.ts`, `D:/GitObjectsOwn/Astrcode/frontend/src/hooks/useAgent.ts`（注意：与 US1 共享 `useAgent.ts`，需在 US1 完成后串行执行）
+- [X] T020 [P] [US2] 将 `SubRunOutcome`、`TokenExceeded` 与必填 `parent_turn_id` 收口到 canonical core 类型，并删除 `SubRunDescriptor` 及其 `descriptor()` accessor 于 `D:/GitObjectsOwn/Astrcode/crates/core/src/agent/mod.rs`, `D:/GitObjectsOwn/Astrcode/crates/core/src/runtime/traits.rs`
+- [X] T021 [P] [US2] 删除重复 execution receipt 并统一 `ExecutionAccepted` 于 `D:/GitObjectsOwn/Astrcode/crates/core/src/runtime/traits.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/service_contract.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/execution/mod.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/execution/root.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/turn/submit.rs`
+- [X] T022 [US2] 让 durable/session 写入与 child notification 使用 canonical child ref、共享 metrics payload，并删除 `ChildAgentRef.openable` 字段 于 `D:/GitObjectsOwn/Astrcode/crates/runtime-execution/src/subrun.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-session/src/session_state.rs`, `D:/GitObjectsOwn/Astrcode/crates/core/src/event/types.rs`, `D:/GitObjectsOwn/Astrcode/crates/core/src/event/domain.rs`, `D:/GitObjectsOwn/Astrcode/crates/core/src/event/translate.rs`
+- [X] T023 [US2] 把 subagent launch 与 live control 收口到正确 owner boundary 于 `D:/GitObjectsOwn/Astrcode/crates/core/src/runtime/traits.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-agent-control/src/lib.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/execution/context.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/execution/subagent.rs`
+- [X] T024 [US2] 用强类型状态 DTO 替换 protocol `status: String` 并移除外层 `open_session_id` 于 `D:/GitObjectsOwn/Astrcode/crates/protocol/src/http/agent.rs`, `D:/GitObjectsOwn/Astrcode/crates/protocol/src/http/event.rs`, `D:/GitObjectsOwn/Astrcode/crates/protocol/src/http/session.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/mapper.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/routes/sessions/query.rs`
+- [X] T025 [US2] 集中 compaction reason 映射并保留 `Reactive` 的内部语义于 `D:/GitObjectsOwn/Astrcode/crates/core/src/hook.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-agent-loop/src/compaction_runtime.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-agent-loop/src/agent_loop.rs`
+- [X] T026 [US2] 为 descriptorless、legacyDurable 与旧共享历史输入构建明确失败路径：runtime/server 层拒绝旧语义并返回结构化错误（含缺失字段与不支持的旧语义标识），不再返回 downgrade 视图或"部分可用"结果 于 `D:/GitObjectsOwn/Astrcode/crates/runtime-execution/src/subrun.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/routes/sessions/query.rs`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/mapper.rs`
+- [X] T027 [US2] 将前端 cancel 按钮从旧 cancel route 切换到 `closeAgent`，删除旧 cancel route 与 client wrapper 于 `D:/GitObjectsOwn/Astrcode/frontend/src/hooks/useAgent.ts`, `D:/GitObjectsOwn/Astrcode/frontend/src/lib/api/sessions.ts`, `D:/GitObjectsOwn/Astrcode/crates/server/src/http/routes/runtime.rs`, `D:/GitObjectsOwn/Astrcode/crates/protocol/src/http/agent.rs`
+- [X] T028 [US2] 更新 frontend subrun/session read model 以消费强类型状态与嵌套 open target 于 `D:/GitObjectsOwn/Astrcode/frontend/src/types.ts`, `D:/GitObjectsOwn/Astrcode/frontend/src/lib/agentEvent.ts`, `D:/GitObjectsOwn/Astrcode/frontend/src/lib/subRunView.ts`, `D:/GitObjectsOwn/Astrcode/frontend/src/hooks/useAgent.ts`（注意：与 US1 共享 `useAgent.ts`，需在 US1 完成后串行执行）
 
 **Checkpoint**: User Story 2 完成后，legacy/duplicate subrun contract 已收口为唯一正式表达，旧 downgrade 输入只剩明确失败
 
@@ -99,14 +99,14 @@
 
 ### Tests for User Story 3
 
-- [ ] T029 [P] [US3] 删除或改写已删除 surface 的前端与运行时夹具测试于 `D:/GitObjectsOwn/Astrcode/frontend/src/lib/subRunView.test.ts`, `D:/GitObjectsOwn/Astrcode/crates/runtime-agent-loop/src/agent_loop/tests/fixtures.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/execution/tests.rs`
-- [ ] T030 [P] [US3] 刷新文档驱动的 grep/回归检查于 `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/quickstart.md`, `D:/GitObjectsOwn/Astrcode/docs/spec/agent-tool-and-api-spec.md`, `D:/GitObjectsOwn/Astrcode/docs/spec/session-and-subrun-spec.md`, `D:/GitObjectsOwn/Astrcode/docs/spec/open-items.md`
+- [X] T029 [P] [US3] 删除或改写已删除 surface 的前端与运行时夹具测试于 `D:/GitObjectsOwn/Astrcode/frontend/src/lib/subRunView.test.ts`, `D:/GitObjectsOwn/Astrcode/crates/runtime-agent-loop/src/agent_loop/tests/fixtures.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/execution/tests.rs`
+- [X] T030 [P] [US3] 刷新文档驱动的 grep/回归检查于 `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/quickstart.md`, `D:/GitObjectsOwn/Astrcode/docs/spec/agent-tool-and-api-spec.md`, `D:/GitObjectsOwn/Astrcode/docs/spec/session-and-subrun-spec.md`, `D:/GitObjectsOwn/Astrcode/docs/spec/open-items.md`
 
 ### Implementation for User Story 3
 
-- [ ] T031 [P] [US3] 更新 live docs 以移除已删除 surface 并记录保留合同于 `D:/GitObjectsOwn/Astrcode/docs/spec/agent-tool-and-api-spec.md`, `D:/GitObjectsOwn/Astrcode/docs/spec/session-and-subrun-spec.md`, `D:/GitObjectsOwn/Astrcode/docs/spec/open-items.md`
-- [ ] T032 [US3] 为 `contracts/retained-surface-contract.md` 中每个保留 surface 补充用途、消费者类型和所属边界说明（FR-014）于 `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/contracts/retained-surface-contract.md`
-- [ ] T033 [US3] 同步 feature 三层文档与最终实现口径于 `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/findings.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/migration.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/quickstart.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/contracts/retained-surface-contract.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/contracts/summary-and-navigation-contract.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/contracts/legacy-failure-and-control-cutover.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/contracts/subrun-canonical-contract.md`
+- [X] T031 [P] [US3] 更新 live docs 以移除已删除 surface 并记录保留合同于 `D:/GitObjectsOwn/Astrcode/docs/spec/agent-tool-and-api-spec.md`, `D:/GitObjectsOwn/Astrcode/docs/spec/session-and-subrun-spec.md`, `D:/GitObjectsOwn/Astrcode/docs/spec/open-items.md`
+- [X] T032 [US3] 为 `contracts/retained-surface-contract.md` 中每个保留 surface 补充用途、消费者类型和所属边界说明（FR-014）于 `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/contracts/retained-surface-contract.md`
+- [X] T033 [US3] 同步 feature 三层文档与最终实现口径于 `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/findings.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/migration.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/quickstart.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/contracts/retained-surface-contract.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/contracts/summary-and-navigation-contract.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/contracts/legacy-failure-and-control-cutover.md`, `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/contracts/subrun-canonical-contract.md`
 
 **Checkpoint**: User Story 3 完成后，文档、夹具和测试只描述保留主线与明确失败边界
 
@@ -116,8 +116,8 @@
 
 **Purpose**: 收尾多故事交叉影响，完成仓库级验证
 
-- [ ] T034 [P] 审计修改过的 runtime 路径的日志级别、错误上下文、锁恢复与异步句柄管理于 `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/execution/mod.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/execution/status.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/session/mod.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-agent-control/src/lib.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-agent-loop/src/agent_loop.rs`
-- [ ] T035 运行仓库级验证命令并记录结果于 `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/quickstart.md`。必须逐项验证以下 6 类主线回归场景：(1) 当前会话浏览——SSE 历史回放与增量订阅一致；(2) 当前子执行聚焦——focused subrun 状态与摘要正确展示；(3) 当前子会话直开——child session 通过 canonical open target 打开；(4) 当前配置读写——模型枚举与连通性测试可用；(5) 当前消息提交——submit prompt 完整流程通过；(6) 当前活跃子执行控制——closeAgent 取消/关闭子 agent 成功
+- [X] T034 [P] 审计修改过的 runtime 路径的日志级别、错误上下文、锁恢复与异步句柄管理于 `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/execution/mod.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/execution/status.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime/src/service/session/mod.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-agent-control/src/lib.rs`, `D:/GitObjectsOwn/Astrcode/crates/runtime-agent-loop/src/agent_loop.rs`
+- [X] T035 运行仓库级验证命令并记录结果于 `D:/GitObjectsOwn/Astrcode/specs/006-prune-dead-code/quickstart.md`。必须逐项验证以下 6 类主线回归场景：(1) 当前会话浏览——SSE 历史回放与增量订阅一致；(2) 当前子执行聚焦——focused subrun 状态与摘要正确展示；(3) 当前子会话直开——child session 通过 canonical open target 打开；(4) 当前配置读写——模型枚举与连通性测试可用；(5) 当前消息提交——submit prompt 完整流程通过；(6) 当前活跃子执行控制——closeAgent 取消/关闭子 agent 成功
 
 ---
 

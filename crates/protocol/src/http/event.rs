@@ -12,7 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{ChildAgentRefDto, ChildSessionNotificationKindDto};
+use super::{AgentStatusDto, ChildAgentRefDto, ChildSessionNotificationKindDto};
 
 /// 协议版本号，用于事件格式的版本控制。
 ///
@@ -146,16 +146,6 @@ pub struct SubRunResultDto {
     pub handoff: Option<SubRunHandoffDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<SubRunFailureDto>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SubRunDescriptorDto {
-    pub sub_run_id: String,
-    pub parent_turn_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_agent_id: Option<String>,
-    pub depth: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -361,8 +351,6 @@ pub enum AgentEventPayload {
         #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
         agent: AgentContextDto,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        descriptor: Option<SubRunDescriptorDto>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_call_id: Option<String>,
         resolved_overrides: ResolvedSubagentContextOverridesDto,
         resolved_limits: ResolvedExecutionLimitsDto,
@@ -372,8 +360,6 @@ pub enum AgentEventPayload {
         turn_id: Option<String>,
         #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
         agent: AgentContextDto,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        descriptor: Option<SubRunDescriptorDto>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_call_id: Option<String>,
         result: SubRunResultDto,
@@ -389,8 +375,7 @@ pub enum AgentEventPayload {
         child_ref: ChildAgentRefDto,
         kind: ChildSessionNotificationKindDto,
         summary: String,
-        status: String,
-        open_session_id: String,
+        status: AgentStatusDto,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_tool_call_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

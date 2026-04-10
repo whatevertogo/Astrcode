@@ -2,7 +2,8 @@ use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use astrcode_core::{
     AgentEvent, AgentEventContext, AgentMode, CancelToken, EventTranslator, ExecutionOwner,
-    InvocationKind, Phase, StorageEvent, StoredEvent, UserMessageOrigin,
+    InvocationKind, Phase, PromptMetricsPayload, StorageEvent, StorageEventPayload, StoredEvent,
+    UserMessageOrigin,
 };
 use astrcode_runtime_agent_loop::{AgentLoop, ProviderFactory, TurnOutcome, estimate_text_tokens};
 use astrcode_runtime_session::{
@@ -50,14 +51,25 @@ impl TestTurnExecutionStats {
 
 fn observe_test_turn_event(stats: &mut TestTurnExecutionStats, event: &StorageEvent) {
     match event {
-        StorageEvent::PromptMetrics {
-            estimated_tokens,
-            provider_input_tokens: None,
+        StorageEvent {
+            payload:
+                StorageEventPayload::PromptMetrics {
+                    metrics:
+                        PromptMetricsPayload {
+                            estimated_tokens,
+                            provider_input_tokens: None,
+                            ..
+                        },
+                },
             ..
         } => stats.record_prompt_metrics(*estimated_tokens),
-        StorageEvent::AssistantFinal {
-            content,
-            reasoning_content,
+        StorageEvent {
+            payload:
+                StorageEventPayload::AssistantFinal {
+                    content,
+                    reasoning_content,
+                    ..
+                },
             ..
         } => stats.record_assistant_output(content, reasoning_content.as_deref()),
         _ => {},
@@ -155,12 +167,16 @@ async fn append_and_broadcast_from_turn_callback_works_on_current_thread_runtime
 
     append_and_broadcast_from_turn_callback(
         &state,
-        &StorageEvent::SessionStart {
-            session_id: "test-session".to_string(),
-            timestamp: Utc::now(),
-            working_dir: temp_dir.path().to_string_lossy().to_string(),
-            parent_session_id: None,
-            parent_storage_seq: None,
+        &StorageEvent {
+            turn_id: None,
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::SessionStart {
+                session_id: "test-session".to_string(),
+                timestamp: Utc::now(),
+                working_dir: temp_dir.path().to_string_lossy().to_string(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
         },
         &mut translator,
     )
@@ -180,51 +196,63 @@ fn stable_events_before_active_turn_stops_at_the_active_turn_boundary() {
     let events = vec![
         StoredEvent {
             storage_seq: 1,
-            event: StorageEvent::SessionStart {
-                session_id: "session-1".to_string(),
-                timestamp,
-                working_dir: "D:/workspace".to_string(),
-                parent_session_id: None,
-                parent_storage_seq: None,
+            event: StorageEvent {
+                turn_id: None,
+                agent: AgentEventContext::default(),
+                payload: StorageEventPayload::SessionStart {
+                    session_id: "session-1".to_string(),
+                    timestamp,
+                    working_dir: "D:/workspace".to_string(),
+                    parent_session_id: None,
+                    parent_storage_seq: None,
+                },
             },
         },
         StoredEvent {
             storage_seq: 2,
-            event: StorageEvent::UserMessage {
+            event: StorageEvent {
                 turn_id: Some("turn-1".to_string()),
                 agent: AgentEventContext::default(),
-                content: "first".to_string(),
-                origin: UserMessageOrigin::User,
-                timestamp,
+                payload: StorageEventPayload::UserMessage {
+                    content: "first".to_string(),
+                    origin: UserMessageOrigin::User,
+                    timestamp,
+                },
             },
         },
         StoredEvent {
             storage_seq: 3,
-            event: StorageEvent::TurnDone {
+            event: StorageEvent {
                 turn_id: Some("turn-1".to_string()),
                 agent: AgentEventContext::default(),
-                timestamp,
-                reason: Some("completed".to_string()),
+                payload: StorageEventPayload::TurnDone {
+                    timestamp,
+                    reason: Some("completed".to_string()),
+                },
             },
         },
         StoredEvent {
             storage_seq: 4,
-            event: StorageEvent::UserMessage {
+            event: StorageEvent {
                 turn_id: Some("turn-2".to_string()),
                 agent: AgentEventContext::default(),
-                content: "second".to_string(),
-                origin: UserMessageOrigin::User,
-                timestamp,
+                payload: StorageEventPayload::UserMessage {
+                    content: "second".to_string(),
+                    origin: UserMessageOrigin::User,
+                    timestamp,
+                },
             },
         },
         StoredEvent {
             storage_seq: 5,
-            event: StorageEvent::ToolCall {
+            event: StorageEvent {
                 turn_id: None,
                 agent: AgentEventContext::default(),
-                tool_call_id: "call-1".to_string(),
-                tool_name: "echo".to_string(),
-                args: json!({"message": "legacy event without turn id"}),
+                payload: StorageEventPayload::ToolCall {
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: "echo".to_string(),
+                    args: json!({"message": "legacy event without turn id"}),
+                },
             },
         },
     ];
@@ -243,77 +271,93 @@ fn recent_turn_event_tail_keeps_real_stored_tail_for_latest_turns() {
     let events = vec![
         StoredEvent {
             storage_seq: 1,
-            event: StorageEvent::SessionStart {
-                session_id: "session-1".to_string(),
-                timestamp,
-                working_dir: "D:/workspace".to_string(),
-                parent_session_id: None,
-                parent_storage_seq: None,
+            event: StorageEvent {
+                turn_id: None,
+                agent: AgentEventContext::default(),
+                payload: StorageEventPayload::SessionStart {
+                    session_id: "session-1".to_string(),
+                    timestamp,
+                    working_dir: "D:/workspace".to_string(),
+                    parent_session_id: None,
+                    parent_storage_seq: None,
+                },
             },
         },
         StoredEvent {
             storage_seq: 2,
-            event: StorageEvent::UserMessage {
+            event: StorageEvent {
                 turn_id: Some("turn-1".to_string()),
                 agent: AgentEventContext::default(),
-                content: "first".to_string(),
-                origin: UserMessageOrigin::User,
-                timestamp,
+                payload: StorageEventPayload::UserMessage {
+                    content: "first".to_string(),
+                    origin: UserMessageOrigin::User,
+                    timestamp,
+                },
             },
         },
         StoredEvent {
             storage_seq: 3,
-            event: StorageEvent::AssistantFinal {
+            event: StorageEvent {
                 turn_id: Some("turn-1".to_string()),
                 agent: AgentEventContext::default(),
-                content: "done".to_string(),
-                reasoning_content: None,
-                reasoning_signature: None,
-                timestamp: Some(timestamp),
+                payload: StorageEventPayload::AssistantFinal {
+                    content: "done".to_string(),
+                    reasoning_content: None,
+                    reasoning_signature: None,
+                    timestamp: Some(timestamp),
+                },
             },
         },
         StoredEvent {
             storage_seq: 4,
-            event: StorageEvent::UserMessage {
+            event: StorageEvent {
                 turn_id: Some("turn-2".to_string()),
                 agent: AgentEventContext::default(),
-                content: "second".to_string(),
-                origin: UserMessageOrigin::User,
-                timestamp,
+                payload: StorageEventPayload::UserMessage {
+                    content: "second".to_string(),
+                    origin: UserMessageOrigin::User,
+                    timestamp,
+                },
             },
         },
         StoredEvent {
             storage_seq: 5,
-            event: StorageEvent::ToolResult {
+            event: StorageEvent {
                 turn_id: Some("turn-2".to_string()),
                 agent: AgentEventContext::default(),
-                tool_call_id: "call-1".to_string(),
-                tool_name: "echo".to_string(),
-                output: "result".to_string(),
-                success: true,
-                error: None,
-                metadata: None,
-                duration_ms: 12,
+                payload: StorageEventPayload::ToolResult {
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: "echo".to_string(),
+                    output: "result".to_string(),
+                    success: true,
+                    error: None,
+                    metadata: None,
+                    duration_ms: 12,
+                },
             },
         },
         StoredEvent {
             storage_seq: 6,
-            event: StorageEvent::PromptMetrics {
+            event: StorageEvent {
                 turn_id: Some("turn-2".to_string()),
                 agent: AgentEventContext::default(),
-                step_index: 0,
-                estimated_tokens: 128,
-                context_window: 4096,
-                effective_window: 4096,
-                threshold_tokens: 3584,
-                truncated_tool_results: 0,
-                provider_input_tokens: None,
-                provider_output_tokens: None,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
-                prompt_cache_reuse_hits: 0,
-                prompt_cache_reuse_misses: 0,
-                provider_cache_metrics_supported: false,
+                payload: StorageEventPayload::PromptMetrics {
+                    metrics: PromptMetricsPayload {
+                        step_index: 0,
+                        estimated_tokens: 128,
+                        context_window: 4096,
+                        effective_window: 4096,
+                        threshold_tokens: 3584,
+                        truncated_tool_results: 0,
+                        provider_input_tokens: None,
+                        provider_output_tokens: None,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
+                        prompt_cache_reuse_hits: 0,
+                        prompt_cache_reuse_misses: 0,
+                        provider_cache_metrics_supported: false,
+                    },
+                },
             },
         },
     ];
@@ -345,35 +389,41 @@ fn prompt_metrics_only_charge_budget_after_a_real_model_response() {
 
     observe_test_turn_event(
         &mut stats,
-        &StorageEvent::PromptMetrics {
+        &StorageEvent {
             turn_id: Some("turn-1".to_string()),
             agent: AgentEventContext::default(),
-            step_index: 0,
-            estimated_tokens: 800,
-            context_window: 100_000,
-            effective_window: 80_000,
-            threshold_tokens: 72_000,
-            truncated_tool_results: 0,
-            provider_input_tokens: None,
-            provider_output_tokens: None,
-            cache_creation_input_tokens: None,
-            cache_read_input_tokens: None,
-            prompt_cache_reuse_hits: 0,
-            prompt_cache_reuse_misses: 0,
-            provider_cache_metrics_supported: false,
+            payload: StorageEventPayload::PromptMetrics {
+                metrics: PromptMetricsPayload {
+                    step_index: 0,
+                    estimated_tokens: 800,
+                    context_window: 100_000,
+                    effective_window: 80_000,
+                    threshold_tokens: 72_000,
+                    truncated_tool_results: 0,
+                    provider_input_tokens: None,
+                    provider_output_tokens: None,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
+                    prompt_cache_reuse_hits: 0,
+                    prompt_cache_reuse_misses: 0,
+                    provider_cache_metrics_supported: false,
+                },
+            },
         },
     );
     assert_eq!(stats.estimated_tokens_used, 0);
 
     observe_test_turn_event(
         &mut stats,
-        &StorageEvent::AssistantFinal {
+        &StorageEvent {
             turn_id: Some("turn-1".to_string()),
             agent: AgentEventContext::default(),
-            content: "done".to_string(),
-            reasoning_content: None,
-            reasoning_signature: None,
-            timestamp: None,
+            payload: StorageEventPayload::AssistantFinal {
+                content: "done".to_string(),
+                reasoning_content: None,
+                reasoning_signature: None,
+                timestamp: None,
+            },
         },
     );
 
@@ -403,12 +453,16 @@ async fn execute_turn_chain_appends_a_single_auto_continue_nudge_before_stopping
 
     append_and_broadcast(
         &state,
-        &StorageEvent::SessionStart {
-            session_id: "test-session".to_string(),
-            timestamp: Utc::now(),
-            working_dir: temp_dir.path().to_string_lossy().to_string(),
-            parent_session_id: None,
-            parent_storage_seq: None,
+        &StorageEvent {
+            turn_id: None,
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::SessionStart {
+                session_id: "test-session".to_string(),
+                timestamp: Utc::now(),
+                working_dir: temp_dir.path().to_string_lossy().to_string(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
         },
         &mut translator,
     )
@@ -416,12 +470,14 @@ async fn execute_turn_chain_appends_a_single_auto_continue_nudge_before_stopping
     .expect("session start should persist");
     append_and_broadcast(
         &state,
-        &StorageEvent::UserMessage {
+        &StorageEvent {
             turn_id: Some("turn-auto".to_string()),
             agent: AgentEventContext::default(),
-            content: "work ".repeat(200),
-            origin: UserMessageOrigin::User,
-            timestamp: Utc::now(),
+            payload: StorageEventPayload::UserMessage {
+                content: "work ".repeat(200),
+                origin: UserMessageOrigin::User,
+                timestamp: Utc::now(),
+            },
         },
         &mut translator,
     )
@@ -487,12 +543,14 @@ async fn repeated_turns_record_prompt_cache_hits_and_misses_in_observability() {
             &loop_,
             turn_id,
             CancelToken::new(),
-            RuntimeTurnInput::from_user_event(StorageEvent::UserMessage {
+            RuntimeTurnInput::from_user_event(StorageEvent {
                 turn_id: Some(turn_id.to_string()),
                 agent: AgentEventContext::default(),
-                content: "repeat cache probe".to_string(),
-                origin: UserMessageOrigin::User,
-                timestamp: Utc::now(),
+                payload: StorageEventPayload::UserMessage {
+                    content: "repeat cache probe".to_string(),
+                    origin: UserMessageOrigin::User,
+                    timestamp: Utc::now(),
+                },
             }),
             AgentEventContext::default(),
             ExecutionOwner::root("test-session", turn_id, InvocationKind::RootExecution),
@@ -558,7 +616,7 @@ async fn interrupt_cascades_to_registered_child_agents() {
                 model_preference: None,
             },
             &session.session_id,
-            Some(accepted.turn_id.clone()),
+            accepted.turn_id.clone(),
             None,
         )
         .await
@@ -586,12 +644,16 @@ async fn complete_session_execution_keeps_background_child_agents_alive() {
 
     append_and_broadcast(
         &state,
-        &StorageEvent::SessionStart {
-            session_id: "test-session".to_string(),
-            timestamp: Utc::now(),
-            working_dir: temp_dir.path().to_string_lossy().to_string(),
-            parent_session_id: None,
-            parent_storage_seq: None,
+        &StorageEvent {
+            turn_id: None,
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::SessionStart {
+                session_id: "test-session".to_string(),
+                timestamp: Utc::now(),
+                working_dir: temp_dir.path().to_string_lossy().to_string(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
         },
         &mut translator,
     )
@@ -611,7 +673,7 @@ async fn complete_session_execution_keeps_background_child_agents_alive() {
                 model_preference: None,
             },
             "test-session",
-            Some("turn-parent".to_string()),
+            "turn-parent".to_string(),
             None,
         )
         .await

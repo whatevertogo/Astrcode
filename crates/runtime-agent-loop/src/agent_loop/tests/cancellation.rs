@@ -10,7 +10,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use astrcode_core::{CancelToken, StorageEvent, ToolCallRequest};
+use astrcode_core::{CancelToken, StorageEvent, StorageEventPayload, ToolCallRequest};
 use astrcode_runtime_llm::LlmOutput;
 use serde_json::json;
 use tokio::time::{Duration, sleep};
@@ -66,13 +66,16 @@ async fn interrupt_emits_error_and_turn_done() {
     cancel_task.await.expect("cancel task should join");
 
     let events = events.lock().expect("lock").clone();
-    let has_error = events
-        .iter()
-        .any(|e| matches!(e, StorageEvent::Error { message, .. } if message == "interrupted"));
+    let has_error = events.iter().any(|e| {
+        matches!(
+            &e.payload,
+            StorageEventPayload::Error { message, .. } if message == "interrupted"
+        )
+    });
     let has_done = events.iter().any(|e| {
         matches!(
-            e,
-            StorageEvent::TurnDone { reason, .. } if reason.as_deref() == Some("cancelled")
+            &e.payload,
+            StorageEventPayload::TurnDone { reason, .. } if reason.as_deref() == Some("cancelled")
         )
     });
 
@@ -178,7 +181,7 @@ async fn deltas_emit_before_stream_completion() {
                 .lock()
                 .expect("lock")
                 .iter()
-                .any(|event| matches!(event, StorageEvent::AssistantDelta { .. }))
+                .any(|event| matches!(&event.payload, StorageEventPayload::AssistantDelta { .. }))
             {
                 break;
             }
@@ -192,12 +195,12 @@ async fn deltas_emit_before_stream_completion() {
     assert!(
         snapshot
             .iter()
-            .any(|event| matches!(event, StorageEvent::AssistantDelta { .. }))
+            .any(|event| matches!(&event.payload, StorageEventPayload::AssistantDelta { .. }))
     );
     assert!(
         !snapshot
             .iter()
-            .any(|event| matches!(event, StorageEvent::TurnDone { .. })),
+            .any(|event| matches!(&event.payload, StorageEventPayload::TurnDone { .. })),
         "turn should still be in progress when first delta arrives"
     );
 
