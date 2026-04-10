@@ -504,7 +504,7 @@ async fn subrun_status_contract_rejects_invalid_session_id_format() {
 }
 
 #[tokio::test]
-async fn subrun_cancel_contract_rejects_invalid_subrun_id_format() {
+async fn subrun_cancel_route_returns_not_found_after_removal() {
     let (state, _guard) = test_state(None);
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
@@ -530,7 +530,8 @@ async fn subrun_cancel_contract_rejects_invalid_subrun_id_format() {
         .await
         .expect("response should be returned");
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    // legacy cancel route 已在 006-prune-dead-code 中删除，统一走 closeAgent
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 // ============================================================================

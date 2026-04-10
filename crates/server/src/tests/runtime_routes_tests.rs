@@ -7,8 +7,8 @@ use astrcode_protocol::{
     capability::{CapabilityDescriptor, CapabilityKind, SideEffectLevel, StabilityLevel},
     http::{
         AgentExecuteResponseDto, AgentProfileDto, ConfigReloadResponse, PromptAcceptedResponse,
-        PromptRequest, RuntimeStatusDto, SessionHistoryResponseDto, SubRunStatusDto,
-        SubRunStatusSourceDto, SubRunStorageModeDto, ToolDescriptorDto, ToolExecuteResponseDto,
+        PromptRequest, SessionHistoryResponseDto, SubRunStatusDto, SubRunStatusSourceDto,
+        SubRunStorageModeDto,
     },
 };
 use astrcode_runtime::{Config, ModelConfig, Profile, RuntimeConfig, config, save_config};
@@ -412,7 +412,7 @@ impl Tool for DemoGrepTool {
 }
 
 #[tokio::test]
-async fn runtime_status_requires_authentication() {
+async fn runtime_status_returns_not_found_when_unauthenticated() {
     let (state, _guard) = test_state(None);
     let app = build_api_router().with_state(state);
 
@@ -426,11 +426,11 @@ async fn runtime_status_requires_authentication() {
         .await
         .expect("response should be returned");
 
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
-async fn runtime_status_exposes_capability_surface() {
+async fn runtime_status_returns_not_found_after_skeleton_removal() {
     let (state, _guard) = test_state(None);
     let app = build_api_router().with_state(state);
 
@@ -445,11 +445,11 @@ async fn runtime_status_exposes_capability_surface() {
         .await
         .expect("response should be returned");
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
-async fn runtime_status_exposes_plugin_warnings() {
+async fn runtime_plugins_endpoint_returns_not_found_after_skeleton_removal() {
     let (state, _guard) = test_state(None);
     state
         .coordinator
@@ -504,23 +504,12 @@ async fn runtime_status_exposes_plugin_warnings() {
         .await
         .expect("response should be returned");
 
-    assert_eq!(response.status(), StatusCode::OK);
-    let bytes = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body should be readable");
-    let payload: RuntimeStatusDto =
-        serde_json::from_slice(&bytes).expect("runtime status should deserialize");
-    assert_eq!(payload.plugins.len(), 1);
-    assert!(
-        payload.plugins[0]
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("missing.tool"))
-    );
+    // skeleton route 已在 006-prune-dead-code 中删除
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
-async fn runtime_reload_endpoint_returns_accepted() {
+async fn runtime_reload_endpoint_returns_not_found_after_skeleton_removal() {
     let (state, _guard) = test_state(None);
     let app = build_api_router().with_state(state);
 
@@ -536,7 +525,8 @@ async fn runtime_reload_endpoint_returns_accepted() {
         .await
         .expect("response should be returned");
 
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    // skeleton route 已在 006-prune-dead-code 中删除
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -850,7 +840,7 @@ async fn agents_list_endpoint_returns_current_profiles() {
 }
 
 #[tokio::test]
-async fn tools_list_endpoint_returns_runtime_tool_surface() {
+async fn tools_list_endpoint_returns_not_found_after_skeleton_removal() {
     let (state, _guard) = test_state(None);
     let app = build_api_router().with_state(state);
 
@@ -865,12 +855,8 @@ async fn tools_list_endpoint_returns_runtime_tool_surface() {
         .await
         .expect("response should be returned");
 
-    assert_eq!(response.status(), StatusCode::OK);
-    let bytes = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body should be readable");
-    let _payload: Vec<ToolDescriptorDto> =
-        serde_json::from_slice(&bytes).expect("tool list should deserialize");
+    // skeleton route 已在 006-prune-dead-code 中删除
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -1259,7 +1245,7 @@ async fn subrun_status_endpoint_reports_live_for_independent_subrun_owned_by_par
 }
 
 #[tokio::test]
-async fn direct_tool_execute_endpoint_returns_not_implemented() {
+async fn direct_tool_execute_endpoint_returns_not_found_after_skeleton_removal() {
     let (state, _guard) = test_state(None);
     let app = build_api_router().with_state(state);
 
@@ -1275,13 +1261,8 @@ async fn direct_tool_execute_endpoint_returns_not_implemented() {
         .await
         .expect("response should be returned");
 
-    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
-    let bytes = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body should be readable");
-    let payload: ToolExecuteResponseDto =
-        serde_json::from_slice(&bytes).expect("response should deserialize");
-    assert!(!payload.accepted);
+    // skeleton route 已在 006-prune-dead-code 中删除
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 // ============================================================================
