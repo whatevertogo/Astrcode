@@ -6,7 +6,7 @@
 //! - **composer**：输入框候选列表
 //! - **config**：配置查看和活跃选择保存
 //! - **model**：模型列表、当前模型、连接测试
-//! - **runtime**：运行时状态、插件重载
+//! - **agents**：Agent profile 查询与子会话执行控制
 //!
 //! ## 路由约定
 //!
@@ -18,9 +18,7 @@ pub(crate) mod agents;
 pub(crate) mod composer;
 pub(crate) mod config;
 pub(crate) mod model;
-pub(crate) mod runtime;
 pub(crate) mod sessions;
-pub(crate) mod tools;
 
 use astrcode_protocol::http::{AuthExchangeRequest, AuthExchangeResponse};
 use axum::{
@@ -67,17 +65,11 @@ use crate::{ApiError, AppState, bootstrap::serve_run_info};
 /// - `GET /api/models` — 列出所有可用模型选项
 /// - `POST /api/models/test` — 测试模型连接
 ///
-/// ### 运行时
-/// - `GET /api/runtime/plugins` — 获取运行时插件状态
-/// - `POST /api/runtime/plugins/reload` — 重载运行时插件
-///
-/// ### 未来 API 骨架
+/// ### Agent 与子会话
 /// - `GET /api/v1/agents` — 列出可用 Agent Profiles
 /// - `POST /api/v1/agents/{id}/execute` — 创建 root execution 并返回 session/turn 标识
 /// - `GET /api/v1/sessions/{id}/subruns/{sub_run_id}` — 查询子会话执行状态
-/// - `POST /api/v1/sessions/{id}/subruns/{sub_run_id}/cancel` — 显式取消后台子会话
-/// - `GET /api/v1/tools` — 列出当前 runtime 可调用工具
-/// - `POST /api/v1/tools/{id}/execute` — 预留的直接工具执行入口
+/// - `POST /api/v1/sessions/{id}/agents/{agent_id}/close` — 关闭 agent 及其子树
 pub(crate) fn build_api_router() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/__astrcode__/run-info", get(serve_run_info))
@@ -102,15 +94,6 @@ pub(crate) fn build_api_router() -> Router<AppState> {
             post(sessions::interrupt_session),
         )
         .route("/api/sessions/{id}/events", get(sessions::session_events))
-        // TODO: 尽量少用路由
-        .route(
-            "/api/sessions/{id}/children/summary",
-            get(sessions::parent_child_summary_list),
-        )
-        .route(
-            "/api/sessions/{id}/children/{child_session_id}/view",
-            get(sessions::child_session_view),
-        )
         .route("/api/sessions/{id}", delete(sessions::delete_session))
         .route("/api/projects", delete(sessions::delete_project))
         .route("/api/config", get(config::get_config))
@@ -122,11 +105,6 @@ pub(crate) fn build_api_router() -> Router<AppState> {
         .route("/api/models/current", get(model::get_current_model))
         .route("/api/models", get(model::list_models))
         .route("/api/models/test", post(model::test_model_connection))
-        .route("/api/runtime/plugins", get(runtime::get_runtime_status))
-        .route(
-            "/api/runtime/plugins/reload",
-            post(runtime::reload_runtime_plugins),
-        )
         .route("/api/v1/agents", get(agents::list_agents))
         .route("/api/v1/agents/{id}/execute", post(agents::execute_agent))
         .route(
@@ -134,11 +112,9 @@ pub(crate) fn build_api_router() -> Router<AppState> {
             get(agents::get_subrun_status),
         )
         .route(
-            "/api/v1/sessions/{id}/subruns/{sub_run_id}/cancel",
-            post(agents::cancel_subrun),
+            "/api/v1/sessions/{id}/agents/{agent_id}/close",
+            post(agents::close_agent),
         )
-        .route("/api/v1/tools", get(tools::list_tools))
-        .route("/api/v1/tools/{id}/execute", post(tools::execute_tool))
 }
 
 async fn exchange_auth(

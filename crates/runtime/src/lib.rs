@@ -56,11 +56,10 @@ pub use astrcode_runtime_skill_loader as skills;
 pub use bootstrap::{PluginLoadHandle, PluginLoadState, RuntimeBootstrap, bootstrap_runtime};
 pub use runtime_governance::{RuntimeGovernance, RuntimeGovernanceSnapshot, RuntimeReloadResult};
 pub use service::{
-    AgentExecutionAccepted, AgentExecutionServiceHandle, AgentProfileSummary, ComposerOption,
-    ComposerOptionKind, ComposerOptionsRequest, ExecutionDiagnosticsSnapshot,
-    OperationMetricsSnapshot, PromptAccepted, ReplayMetricsSnapshot, ReplayPath,
-    RuntimeObservabilitySnapshot, RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent,
-    SessionEventRecord, SessionHistorySnapshot, SessionReplay, SessionReplaySource,
-    SessionServiceHandle, SubRunExecutionMetricsSnapshot, SubRunStatusSnapshot, SubRunStatusSource,
-    ToolExecutionServiceHandle, ToolSummary,
+    AgentExecutionServiceHandle, AgentProfileSummary, ComposerOption, ComposerOptionKind,
+    ComposerOptionsRequest, ExecutionDiagnosticsSnapshot, OperationMetricsSnapshot,
+    ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot, RuntimeService, ServiceError,
+    ServiceResult, SessionCatalogEvent, SessionEventRecord, SessionHistorySnapshot, SessionReplay,
+    SessionReplaySource, SessionServiceHandle, SubRunExecutionMetricsSnapshot,
+    SubRunStatusSnapshot, SubRunStatusSource, ToolExecutionServiceHandle, ToolSummary,
 };

@@ -84,6 +84,8 @@ pub(crate) struct AppState {
     /// 运行时协调器（用于关闭）
     coordinator: Arc<RuntimeCoordinator>,
     /// 运行时治理（重载、配置）
+    /// TODO:治理相关操作未被使用
+    #[allow(dead_code)]
     runtime_governance: Arc<RuntimeGovernance>,
     /// 认证会话管理器
     auth_sessions: Arc<AuthSessionManager>,

@@ -10,8 +10,9 @@ use astrcode_core::{
     ChildSessionNotificationKind, CloseAgentParams, CollaborationResult, CollaborationResultKind,
     DeliverToParentParams, InboxEnvelopeKind, InvocationKind, LineageSnapshot,
     ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, ResumeAgentParams,
-    SendAgentParams, SpawnAgentParams, StorageEvent, SubRunHandle, SubRunOutcome, SubRunResult,
-    SubRunStorageMode, ToolContext, ToolEventSink, UserMessageOrigin, WaitAgentParams, WaitUntil,
+    SendAgentParams, SpawnAgentParams, StorageEvent, StorageEventPayload, SubRunHandle,
+    SubRunResult, SubRunStorageMode, ToolContext, ToolEventSink, UserMessageOrigin,
+    WaitAgentParams, WaitUntil,
 };
 use astrcode_runtime_execution::{
     DeliveryBufferStage, LineageMismatchKind, build_background_subrun_handoff,
@@ -269,20 +270,24 @@ impl AgentExecutionServiceHandle {
             AgentStatus::Running,
             None,
         );
-        let _ = parent_event_sink.emit(StorageEvent::ChildSessionNotification {
+        let _ = parent_event_sink.emit(StorageEvent {
             turn_id: Some(parent.parent_turn_id.clone()),
             agent: child_agent.clone(),
-            notification: resumed_notification,
-            timestamp: Some(chrono::Utc::now()),
+            payload: StorageEventPayload::ChildSessionNotification {
+                notification: resumed_notification,
+                timestamp: Some(chrono::Utc::now()),
+            },
         });
 
         let resume_message = message.unwrap_or_else(|| "继续执行".to_string());
-        let _ = active_sink.emit(StorageEvent::UserMessage {
+        let _ = active_sink.emit(StorageEvent {
             turn_id: Some(child_turn_id.clone()),
             agent: child_agent.clone(),
-            content: resume_message.clone(),
-            timestamp: chrono::Utc::now(),
-            origin: UserMessageOrigin::User,
+            payload: StorageEventPayload::UserMessage {
+                content: resume_message.clone(),
+                timestamp: chrono::Utc::now(),
+                origin: UserMessageOrigin::User,
+            },
         });
 
         let child_state = build_resumed_child_agent_state(replayed_state, &resume_message);
@@ -345,7 +350,7 @@ impl AgentExecutionServiceHandle {
         };
 
         let running_result = SubRunResult {
-            status: SubRunOutcome::Running,
+            status: AgentStatus::Running,
             handoff: Some(build_background_subrun_handoff(
                 &execution.child,
                 &execution.parent_session_id,
@@ -414,11 +419,13 @@ impl AgentExecutionServiceHandle {
         code: &str,
         message: String,
     ) -> ServiceError {
-        let _ = parent_event_sink.emit(StorageEvent::Error {
+        let _ = parent_event_sink.emit(StorageEvent {
             turn_id: Some(parent_turn_id.to_string()),
             agent,
-            message: format!("{code}: {message}"),
-            timestamp: Some(chrono::Utc::now()),
+            payload: StorageEventPayload::Error {
+                message: format!("{code}: {message}"),
+                timestamp: Some(chrono::Utc::now()),
+            },
         });
         ServiceError::Conflict(format!("{code}: {message}"))
     }
@@ -686,7 +693,6 @@ impl AgentExecutionServiceHandle {
             parent_agent_id: resumed_handle.parent_agent_id.clone(),
             lineage_kind: ChildSessionLineageKind::Resume,
             status: AgentStatus::Running,
-            openable: true,
             open_session_id: resumed_handle
                 .child_session_id
                 .clone()
@@ -854,7 +860,6 @@ impl AgentExecutionServiceHandle {
             parent_agent_id: handle.parent_agent_id.clone(),
             lineage_kind,
             status: handle.status,
-            openable: true,
             open_session_id: handle
                 .child_session_id
                 .clone()

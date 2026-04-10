@@ -1,10 +1,9 @@
 use astrcode_protocol::http::{
-    AgentContextDto, AgentEventEnvelope, AgentEventPayload, ChildAgentRefDto,
+    AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentStatusDto, ChildAgentRefDto,
     ChildSessionLineageKindDto, ChildSessionNotificationDto, ChildSessionNotificationKindDto,
-    ChildSessionViewProjectionDto, ChildSessionViewResponseDto, InvocationKindDto,
-    ParentChildSummaryListResponseDto, ResolvedExecutionLimitsDto,
-    ResolvedSubagentContextOverridesDto, SubRunDescriptorDto, SubRunFailureCodeDto,
-    SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto,
+    InvocationKindDto, ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto,
+    SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto,
+    SubRunStorageModeDto,
 };
 
 #[test]
@@ -20,7 +19,6 @@ fn sub_run_started_serializes_contract_fields_in_camel_case() {
             storage_mode: Some(SubRunStorageModeDto::SharedSession),
             child_session_id: None,
         },
-        descriptor: None,
         tool_call_id: None,
         resolved_overrides: ResolvedSubagentContextOverridesDto {
             storage_mode: SubRunStorageModeDto::SharedSession,
@@ -51,6 +49,8 @@ fn sub_run_started_serializes_contract_fields_in_camel_case() {
     assert!(data.get("resolvedLimits").is_some());
     assert!(data.get("resolved_overrides").is_none());
     assert!(data.get("resolved_limits").is_none());
+    // descriptor 不再存在于 DTO 中
+    assert!(data.get("descriptor").is_none());
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn sub_run_started_rejects_snake_case_fields() {
 }
 
 #[test]
-fn sub_run_finished_payload_roundtrip_new_result_shape() {
+fn sub_run_finished_payload_roundtrip_without_descriptor() {
     let original = AgentEventPayload::SubRunFinished {
         turn_id: Some("turn-1".to_string()),
         agent: AgentContextDto {
@@ -101,12 +101,6 @@ fn sub_run_finished_payload_roundtrip_new_result_shape() {
             storage_mode: Some(SubRunStorageModeDto::SharedSession),
             child_session_id: None,
         },
-        descriptor: Some(SubRunDescriptorDto {
-            sub_run_id: "subrun-1".to_string(),
-            parent_turn_id: "parent-turn".to_string(),
-            parent_agent_id: Some("agent-root".to_string()),
-            depth: 2,
-        }),
         tool_call_id: Some("call-1".to_string()),
         result: SubRunResultDto {
             status: SubRunOutcomeDto::Failed,
@@ -135,7 +129,6 @@ fn sub_run_finished_omits_parent_handoff_on_failure() {
     let payload = AgentEventPayload::SubRunFinished {
         turn_id: Some("turn-1".to_string()),
         agent: AgentContextDto::default(),
-        descriptor: None,
         tool_call_id: None,
         result: SubRunResultDto {
             status: SubRunOutcomeDto::Completed,
@@ -168,14 +161,12 @@ fn child_session_notification_roundtrip_keeps_projection_fields() {
             sub_run_id: "subrun-1".to_string(),
             parent_agent_id: Some("agent-parent".to_string()),
             lineage_kind: ChildSessionLineageKindDto::Spawn,
-            status: "running".to_string(),
-            openable: true,
+            status: AgentStatusDto::Running,
             open_session_id: "session-child".to_string(),
         },
         kind: ChildSessionNotificationKindDto::Started,
         summary: "child started".to_string(),
-        status: "running".to_string(),
-        open_session_id: "session-child".to_string(),
+        status: AgentStatusDto::Running,
         source_tool_call_id: Some("call-1".to_string()),
         final_reply_excerpt: None,
     };
@@ -190,60 +181,13 @@ fn child_session_notification_roundtrip_keeps_projection_fields() {
         Some(&serde_json::json!("note-1"))
     );
     assert_eq!(
-        encoded.get("openSessionId"),
+        encoded
+            .get("childRef")
+            .and_then(|value| value.get("openSessionId")),
         Some(&serde_json::json!("session-child"))
     );
 }
 
-#[test]
-fn child_session_summary_and_view_response_roundtrip() {
-    let child_ref = ChildAgentRefDto {
-        agent_id: "agent-child".to_string(),
-        session_id: "session-parent".to_string(),
-        sub_run_id: "subrun-1".to_string(),
-        parent_agent_id: Some("agent-parent".to_string()),
-        lineage_kind: ChildSessionLineageKindDto::Resume,
-        status: "completed".to_string(),
-        openable: true,
-        open_session_id: "session-child".to_string(),
-    };
-
-    let summary = ParentChildSummaryListResponseDto {
-        items: vec![ChildSessionNotificationDto {
-            notification_id: "note-2".to_string(),
-            child_ref: child_ref.clone(),
-            kind: ChildSessionNotificationKindDto::Delivered,
-            summary: "child delivered".to_string(),
-            status: "completed".to_string(),
-            open_session_id: "session-child".to_string(),
-            source_tool_call_id: Some("call-2".to_string()),
-            final_reply_excerpt: Some("done".to_string()),
-        }],
-    };
-    let summary_json = serde_json::to_value(&summary).expect("serialize summary");
-    let summary_back: ParentChildSummaryListResponseDto =
-        serde_json::from_value(summary_json).expect("deserialize summary");
-    assert_eq!(summary_back.items.len(), 1);
-    assert_eq!(summary_back.items[0].child_ref.agent_id, "agent-child");
-
-    let view = ChildSessionViewResponseDto {
-        view: ChildSessionViewProjectionDto {
-            child_ref,
-            title: "reviewer".to_string(),
-            status: "completed".to_string(),
-            summary_items: vec!["summary".to_string()],
-            latest_tool_activity: vec!["readFile".to_string()],
-            has_final_reply: true,
-            child_session_id: "session-child".to_string(),
-            has_descriptor_lineage: true,
-        },
-    };
-    let view_json = serde_json::to_value(&view).expect("serialize view");
-    let view_back: ChildSessionViewResponseDto =
-        serde_json::from_value(view_json).expect("deserialize view");
-    assert_eq!(view_back.view.child_session_id, "session-child");
-    assert!(view_back.view.has_final_reply);
-}
 
 #[test]
 fn child_session_notification_event_payload_roundtrip() {
@@ -264,14 +208,12 @@ fn child_session_notification_event_payload_roundtrip() {
             sub_run_id: "subrun-1".to_string(),
             parent_agent_id: Some("agent-parent".to_string()),
             lineage_kind: ChildSessionLineageKindDto::Spawn,
-            status: "running".to_string(),
-            openable: true,
+            status: AgentStatusDto::Running,
             open_session_id: "session-child".to_string(),
         },
         kind: ChildSessionNotificationKindDto::Started,
         summary: "child started".to_string(),
-        status: "running".to_string(),
-        open_session_id: "session-child".to_string(),
+        status: AgentStatusDto::Running,
         source_tool_call_id: Some("call-1".to_string()),
         final_reply_excerpt: None,
     };
@@ -282,7 +224,7 @@ fn child_session_notification_event_payload_roundtrip() {
     assert_eq!(decoded.event, payload);
 }
 
-// ─── T041 谱系兼容性测试 ──────────────────────────────
+// ─── 谱系兼容性测试 ──────────────────────────────
 
 /// 验证 spawn/fork/resume 三种 lineage kind 在 ChildAgentRefDto 中均可序列化和反序列化，
 /// 且 JSON 输出使用 snake_case 值（"spawn"/"fork"/"resume"）。
@@ -299,8 +241,7 @@ fn lineage_kind_spawn_fork_resume_all_roundtrip_through_child_ref() {
             sub_run_id: "subrun-1".to_string(),
             parent_agent_id: Some("agent-parent".to_string()),
             lineage_kind: kind.clone(),
-            status: "running".to_string(),
-            openable: true,
+            status: AgentStatusDto::Running,
             open_session_id: "session-child".to_string(),
         };
 

@@ -14,6 +14,13 @@ export type SubRunStorageMode = 'sharedSession' | 'independentSession';
 export type SubRunStatusSource = 'live' | 'durable' | 'legacyDurable';
 export type SessionEventScope = 'self' | 'subtree' | 'directChildren';
 export type UnsupportedLegacyErrorCode = 'unsupported_legacy_shared_history';
+export type AgentStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'cancelled'
+  | 'failed'
+  | 'token_exceeded';
 // Why: `waiting` 仍保留给 durable child 通知读侧，避免旧事件样本在前端反序列化失败。
 export type ChildSessionNotificationKind =
   | 'started'
@@ -71,14 +78,6 @@ export interface PromptMetricsSnapshot {
   promptCacheReuseMisses?: number;
 }
 
-export interface SubRunDescriptor {
-  subRunId: string;
-  executionId?: string;
-  parentTurnId: string;
-  parentAgentId?: string;
-  depth: number;
-}
-
 export interface ArtifactRef {
   kind: string;
   id: string;
@@ -124,7 +123,7 @@ export interface SubRunResult {
 export interface SubRunStatusSnapshot {
   subRunId: string;
   executionId?: string;
-  descriptor?: SubRunDescriptor;
+
   toolCallId?: string;
   source: SubRunStatusSource;
   agentId: string;
@@ -135,7 +134,7 @@ export interface SubRunStatusSnapshot {
   parentTurnId?: string;
   parentAgentId?: string;
   storageMode: SubRunStorageMode;
-  status: 'pending' | 'running' | 'completed' | 'cancelled' | 'failed';
+  status: AgentStatus;
   result?: SubRunResult;
   stepCount?: number;
   estimatedTokens?: number;
@@ -197,7 +196,7 @@ export type AgentEventPayload =
       event: 'subRunStarted';
       data: AgentScoped<{
         turnId?: string | null;
-        descriptor?: SubRunDescriptor;
+
         toolCallId?: string;
         resolvedOverrides: ResolvedSubagentContextOverrides;
         resolvedLimits: ResolvedExecutionLimits;
@@ -207,7 +206,7 @@ export type AgentEventPayload =
       event: 'subRunFinished';
       data: AgentScoped<{
         turnId?: string | null;
-        descriptor?: SubRunDescriptor;
+
         toolCallId?: string;
         result: SubRunResult;
         stepCount: number;
@@ -225,14 +224,12 @@ export type AgentEventPayload =
           executionId?: string;
           parentAgentId?: string;
           lineageKind: 'spawn' | 'fork' | 'resume';
-          status: string;
-          openable: boolean;
+          status: AgentStatus;
           openSessionId: string;
         };
         kind: ChildSessionNotificationKind;
         summary: string;
-        status: string;
-        openSessionId: string;
+        status: AgentStatus;
         sourceToolCallId?: string;
         finalReplyExcerpt?: string;
       }>;
@@ -374,7 +371,7 @@ export interface SubRunStartMessage {
   invocationKind?: InvocationKind;
   storageMode?: SubRunStorageMode;
   childSessionId?: string;
-  descriptor?: SubRunDescriptor;
+
   toolCallId?: string;
   resolvedOverrides: ResolvedSubagentContextOverrides;
   resolvedLimits: ResolvedExecutionLimits;
@@ -393,7 +390,7 @@ export interface SubRunFinishMessage {
   invocationKind?: InvocationKind;
   storageMode?: SubRunStorageMode;
   childSessionId?: string;
-  descriptor?: SubRunDescriptor;
+
   toolCallId?: string;
   result: SubRunResult;
   stepCount: number;
@@ -420,14 +417,12 @@ export interface ChildSessionNotificationMessage {
     executionId?: string;
     parentAgentId?: string;
     lineageKind: 'spawn' | 'fork' | 'resume';
-    status: string;
-    openable: boolean;
+    status: AgentStatus;
     openSessionId: string;
   };
   notificationKind: ChildSessionNotificationKind;
-  status: string;
+  status: AgentStatus;
   summary: string;
-  openSessionId: string;
   sourceToolCallId?: string;
   finalReplyExcerpt?: string;
   timestamp: number;

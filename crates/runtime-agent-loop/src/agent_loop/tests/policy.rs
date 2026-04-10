@@ -15,7 +15,7 @@ use std::{
 };
 
 use astrcode_core::{
-    ApprovalDefault, ApprovalResolution, CancelToken, StorageEvent, ToolCallRequest,
+    ApprovalDefault, ApprovalResolution, CancelToken, StorageEventPayload, ToolCallRequest,
 };
 use astrcode_runtime_llm::LlmOutput;
 use serde_json::json;
@@ -113,8 +113,8 @@ async fn denied_tool_calls_emit_failure_without_executing_tool() {
     assert_eq!(executions.load(Ordering::SeqCst), 0);
     assert!(events.lock().expect("events lock").iter().any(|event| {
         matches!(
-            event,
-            StorageEvent::ToolResult {
+            &event.payload,
+            StorageEventPayload::ToolResult {
                 tool_name,
                 success,
                 error,
@@ -252,8 +252,8 @@ async fn denied_approval_returns_failed_tool_result_without_execution() {
     );
     assert!(events.lock().expect("events lock").iter().any(|event| {
         matches!(
-            event,
-            StorageEvent::ToolResult {
+            &event.payload,
+            StorageEventPayload::ToolResult {
                 tool_name,
                 success,
                 error,

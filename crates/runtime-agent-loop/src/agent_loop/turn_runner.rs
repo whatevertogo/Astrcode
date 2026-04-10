@@ -28,7 +28,7 @@
 
 use astrcode_core::{
     AgentEventContext, AgentState, AstrError, CancelToken, ContextStrategy, ExecutionOwner,
-    LoopRunnerBoundary, Result, StorageEvent,
+    LoopRunnerBoundary, PromptMetricsPayload, Result, StorageEvent, StorageEventPayload,
 };
 use astrcode_runtime_prompt::{DiagnosticLevel, PromptDeclaration, PromptDiagnostics};
 use async_trait::async_trait;
@@ -218,22 +218,31 @@ where
         emit_event_with_file_tracking(
             &mut file_access,
             on_event,
-            StorageEvent::PromptMetrics {
+            StorageEvent {
                 turn_id: Some(turn_id.to_string()),
                 agent: agent.clone(),
-                step_index: step_index as u32,
-                estimated_tokens: prompt_snapshot.context_tokens.min(u32::MAX as usize) as u32,
-                context_window: prompt_snapshot.context_window.min(u32::MAX as usize) as u32,
-                effective_window: prompt_snapshot.effective_window.min(u32::MAX as usize) as u32,
-                threshold_tokens: prompt_snapshot.threshold_tokens.min(u32::MAX as usize) as u32,
-                truncated_tool_results: truncated_tool_results.min(u32::MAX as usize) as u32,
-                provider_input_tokens: None,
-                provider_output_tokens: None,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
-                provider_cache_metrics_supported: provider.supports_cache_metrics(),
-                prompt_cache_reuse_hits: prompt_cache_reuse.hits,
-                prompt_cache_reuse_misses: prompt_cache_reuse.misses,
+                payload: StorageEventPayload::PromptMetrics {
+                    metrics: PromptMetricsPayload {
+                        step_index: step_index as u32,
+                        estimated_tokens: prompt_snapshot.context_tokens.min(u32::MAX as usize)
+                            as u32,
+                        context_window: prompt_snapshot.context_window.min(u32::MAX as usize)
+                            as u32,
+                        effective_window: prompt_snapshot.effective_window.min(u32::MAX as usize)
+                            as u32,
+                        threshold_tokens: prompt_snapshot.threshold_tokens.min(u32::MAX as usize)
+                            as u32,
+                        truncated_tool_results: truncated_tool_results.min(u32::MAX as usize)
+                            as u32,
+                        provider_input_tokens: None,
+                        provider_output_tokens: None,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
+                        provider_cache_metrics_supported: provider.supports_cache_metrics(),
+                        prompt_cache_reuse_hits: prompt_cache_reuse.hits,
+                        prompt_cache_reuse_misses: prompt_cache_reuse.misses,
+                    },
+                },
             },
         )?;
         let decision_input = agent_loop
@@ -418,28 +427,45 @@ where
             emit_event_with_file_tracking(
                 &mut file_access,
                 on_event,
-                StorageEvent::PromptMetrics {
+                StorageEvent {
                     turn_id: Some(turn_id.to_string()),
                     agent: agent.clone(),
-                    step_index: step_index as u32,
-                    estimated_tokens: prompt_snapshot.context_tokens.min(u32::MAX as usize) as u32,
-                    context_window: prompt_snapshot.context_window.min(u32::MAX as usize) as u32,
-                    effective_window: prompt_snapshot.effective_window.min(u32::MAX as usize)
-                        as u32,
-                    threshold_tokens: prompt_snapshot.threshold_tokens.min(u32::MAX as usize)
-                        as u32,
-                    truncated_tool_results: truncated_tool_results.min(u32::MAX as usize) as u32,
-                    provider_input_tokens: Some(usage.input_tokens.min(u32::MAX as usize) as u32),
-                    provider_output_tokens: Some(usage.output_tokens.min(u32::MAX as usize) as u32),
-                    cache_creation_input_tokens: provider
-                        .supports_cache_metrics()
-                        .then_some(usage.cache_creation_input_tokens.min(u32::MAX as usize) as u32),
-                    cache_read_input_tokens: provider
-                        .supports_cache_metrics()
-                        .then_some(usage.cache_read_input_tokens.min(u32::MAX as usize) as u32),
-                    provider_cache_metrics_supported: provider.supports_cache_metrics(),
-                    prompt_cache_reuse_hits: prompt_cache_reuse.hits,
-                    prompt_cache_reuse_misses: prompt_cache_reuse.misses,
+                    payload: StorageEventPayload::PromptMetrics {
+                        metrics: PromptMetricsPayload {
+                            step_index: step_index as u32,
+                            estimated_tokens: prompt_snapshot.context_tokens.min(u32::MAX as usize)
+                                as u32,
+                            context_window: prompt_snapshot.context_window.min(u32::MAX as usize)
+                                as u32,
+                            effective_window: prompt_snapshot
+                                .effective_window
+                                .min(u32::MAX as usize)
+                                as u32,
+                            threshold_tokens: prompt_snapshot
+                                .threshold_tokens
+                                .min(u32::MAX as usize)
+                                as u32,
+                            truncated_tool_results: truncated_tool_results.min(u32::MAX as usize)
+                                as u32,
+                            provider_input_tokens: Some(
+                                usage.input_tokens.min(u32::MAX as usize) as u32
+                            ),
+                            provider_output_tokens: Some(
+                                usage.output_tokens.min(u32::MAX as usize) as u32,
+                            ),
+                            cache_creation_input_tokens: provider
+                                .supports_cache_metrics()
+                                .then_some(
+                                    usage.cache_creation_input_tokens.min(u32::MAX as usize) as u32,
+                                ),
+                            cache_read_input_tokens: provider.supports_cache_metrics().then_some(
+                                usage.cache_read_input_tokens.min(u32::MAX as usize) as u32,
+                            ),
+                            provider_cache_metrics_supported: provider.supports_cache_metrics(),
+                            prompt_cache_reuse_hits: prompt_cache_reuse.hits,
+                            prompt_cache_reuse_misses: prompt_cache_reuse.misses,
+                        },
+                    },
                 },
             )?;
         }
@@ -459,16 +485,21 @@ where
             emit_event_with_file_tracking(
                 &mut file_access,
                 on_event,
-                StorageEvent::AssistantFinal {
+                StorageEvent {
                     turn_id: Some(turn_id.to_string()),
                     agent: agent.clone(),
-                    content: output.content.clone(),
-                    reasoning_content: output.reasoning.as_ref().map(|value| value.content.clone()),
-                    reasoning_signature: output
-                        .reasoning
-                        .as_ref()
-                        .and_then(|value| value.signature.clone()),
-                    timestamp: Some(chrono::Utc::now()),
+                    payload: StorageEventPayload::AssistantFinal {
+                        content: output.content.clone(),
+                        reasoning_content: output
+                            .reasoning
+                            .as_ref()
+                            .map(|value| value.content.clone()),
+                        reasoning_signature: output
+                            .reasoning
+                            .as_ref()
+                            .and_then(|value| value.signature.clone()),
+                        timestamp: Some(chrono::Utc::now()),
+                    },
                 },
             )?;
         }
@@ -603,11 +634,13 @@ fn report_error(
     if emit_turn_done {
         finish_with_error(turn_id, message, agent.clone(), on_event)
     } else {
-        on_event(StorageEvent::Error {
+        on_event(StorageEvent {
             turn_id: Some(turn_id.to_string()),
             agent: agent.clone(),
-            message: message.clone(),
-            timestamp: Some(chrono::Utc::now()),
+            payload: StorageEventPayload::Error {
+                message: message.clone(),
+                timestamp: Some(chrono::Utc::now()),
+            },
         })?;
         Ok(TurnOutcome::Error { message })
     }
@@ -622,11 +655,13 @@ fn report_interrupted(
     if emit_turn_done {
         finish_interrupted(turn_id, agent.clone(), on_event)
     } else {
-        on_event(StorageEvent::Error {
+        on_event(StorageEvent {
             turn_id: Some(turn_id.to_string()),
             agent: agent.clone(),
-            message: "interrupted".to_string(),
-            timestamp: Some(chrono::Utc::now()),
+            payload: StorageEventPayload::Error {
+                message: "interrupted".to_string(),
+                timestamp: Some(chrono::Utc::now()),
+            },
         })?;
         Ok(TurnOutcome::Cancelled)
     }
@@ -814,17 +849,19 @@ fn emit_compact_applied(
         artifact.preserved_tail_start,
         artifact.compacted_at_seq
     );
-    on_event(StorageEvent::CompactApplied {
+    on_event(StorageEvent {
         turn_id: Some(turn_id.to_string()),
         agent: agent.clone(),
-        trigger: artifact.trigger.as_trigger(),
-        summary: artifact.summary.clone(),
-        preserved_recent_turns: artifact.preserved_recent_turns.min(u32::MAX as usize) as u32,
-        pre_tokens: artifact.pre_tokens.min(u32::MAX as usize) as u32,
-        post_tokens_estimate: artifact.post_tokens_estimate.min(u32::MAX as usize) as u32,
-        messages_removed: artifact.messages_removed.min(u32::MAX as usize) as u32,
-        tokens_freed: artifact.tokens_freed.min(u32::MAX as usize) as u32,
-        timestamp: chrono::Utc::now(),
+        payload: StorageEventPayload::CompactApplied {
+            trigger: artifact.trigger.as_trigger(),
+            summary: artifact.summary.clone(),
+            preserved_recent_turns: artifact.preserved_recent_turns.min(u32::MAX as usize) as u32,
+            pre_tokens: artifact.pre_tokens.min(u32::MAX as usize) as u32,
+            post_tokens_estimate: artifact.post_tokens_estimate.min(u32::MAX as usize) as u32,
+            messages_removed: artifact.messages_removed.min(u32::MAX as usize) as u32,
+            tokens_freed: artifact.tokens_freed.min(u32::MAX as usize) as u32,
+            timestamp: chrono::Utc::now(),
+        },
     })
 }
 

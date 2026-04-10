@@ -30,9 +30,8 @@ impl CloseAgentTool {
 ## 使用指南
 
 1. **指定 agentId**: 填入要关闭的子 Agent ID
-2. **精确复用 ID**: `agentId` 必须逐字复制自之前 tool result 的 `Child agent reference`，不能补零、改写或猜测
+2. `agentId` 必须逐字复制自之前 tool result 的 `Child agent reference`，不能补零、改写或猜测
 3. **级联控制**: 默认会级联关闭该 Agent 的所有子 Agent；设 `cascade: false` 仅关闭目标本身
-4. **终态检查**: 已终态的 Agent 会被幂等处理，不会报错
 
 ## 何时使用
 

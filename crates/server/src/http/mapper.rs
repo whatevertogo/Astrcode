@@ -22,22 +22,21 @@
 use astrcode_core::{
     AgentEvent, AgentEventContext, ArtifactRef, AstrError, ForkMode, Phase, PluginHealth,
     PluginState, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    SessionEventRecord, SessionMeta, SubRunDescriptor, SubRunFailure, SubRunFailureCode,
-    SubRunHandoff, SubRunOutcome, SubRunResult, SubRunStorageMode, SubagentContextOverrides,
-    format_local_rfc3339, plugin::PluginEntry,
+    SessionEventRecord, SessionMeta, SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult,
+    SubRunStorageMode, SubagentContextOverrides, format_local_rfc3339, plugin::PluginEntry,
 };
 use astrcode_protocol::{
     capability::CapabilityDescriptor,
     http::{
-        AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentProfileDto, ArtifactRefDto,
-        ChildAgentRefDto, ChildSessionLineageKindDto, ChildSessionNotificationKindDto,
-        CompactTriggerDto, ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto,
-        ConfigView, CurrentModelInfoDto, ForkModeDto, InvocationKindDto, LineageSnapshotDto,
-        ModelOptionDto, OperationMetricsDto, PROTOCOL_VERSION, PhaseDto, PluginHealthDto,
-        PluginRuntimeStateDto, ProfileView, ReplayMetricsDto, ResolvedExecutionLimitsDto,
-        ResolvedSubagentContextOverridesDto, RuntimeCapabilityDto, RuntimeMetricsDto,
-        RuntimePluginDto, RuntimeStatusDto, SessionCatalogEventEnvelope,
-        SessionCatalogEventPayload, SessionListItem, SubRunDescriptorDto,
+        AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentProfileDto, AgentStatusDto,
+        ArtifactRefDto, ChildAgentRefDto, ChildSessionLineageKindDto,
+        ChildSessionNotificationKindDto, CompactTriggerDto, ComposerOptionDto,
+        ComposerOptionKindDto, ComposerOptionsResponseDto, ConfigView, CurrentModelInfoDto,
+        ForkModeDto, InvocationKindDto, LineageSnapshotDto, ModelOptionDto, OperationMetricsDto,
+        PROTOCOL_VERSION, PhaseDto, PluginHealthDto, PluginRuntimeStateDto, ProfileView,
+        ReplayMetricsDto, ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto,
+        RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto,
+        SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem,
         SubRunExecutionMetricsDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
         SubRunOutcomeDto, SubRunResultDto, SubRunStatusDto, SubRunStatusSourceDto,
         SubRunStorageModeDto, SubagentContextOverridesDto, ToolCallResultDto, ToolDescriptorDto,
@@ -77,6 +76,7 @@ pub(crate) fn to_session_list_item(meta: SessionMeta) -> SessionListItem {
 ///
 /// 包含运行时名称、类型、已加载会话数、运行中的会话 ID、
 /// 插件搜索路径、运行时指标、能力描述和插件状态。
+#[allow(dead_code)]
 pub(crate) fn to_runtime_status_dto(snapshot: RuntimeGovernanceSnapshot) -> RuntimeStatusDto {
     RuntimeStatusDto {
         runtime_name: snapshot.runtime_name,
@@ -118,6 +118,7 @@ pub(crate) fn to_agent_profile_dto(profile: AgentProfileSummary) -> AgentProfile
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn to_tool_descriptor_dto(tool: ToolSummary) -> ToolDescriptorDto {
     ToolDescriptorDto {
         name: tool.name,
@@ -130,7 +131,6 @@ pub(crate) fn to_tool_descriptor_dto(tool: ToolSummary) -> ToolDescriptorDto {
 pub(crate) fn to_subrun_status_dto(snapshot: SubRunStatusSnapshot) -> SubRunStatusDto {
     let SubRunStatusSnapshot {
         handle,
-        descriptor,
         tool_call_id,
         source,
         result,
@@ -139,19 +139,13 @@ pub(crate) fn to_subrun_status_dto(snapshot: SubRunStatusSnapshot) -> SubRunStat
         resolved_overrides,
         resolved_limits,
     } = snapshot;
-    let is_legacy_source = matches!(source, SubRunStatusSource::LegacyDurable);
     let source = match source {
         SubRunStatusSource::Live => SubRunStatusSourceDto::Live,
         SubRunStatusSource::Durable => SubRunStatusSourceDto::Durable,
-        SubRunStatusSource::LegacyDurable => SubRunStatusSourceDto::LegacyDurable,
     };
-    // Why: legacyDurable 只能表达“可读但 lineage 不完整”，不能把非 durable 事实伪装成完整字段。
-    let descriptor = if is_legacy_source { None } else { descriptor };
-    let tool_call_id = if is_legacy_source { None } else { tool_call_id };
 
     SubRunStatusDto {
         sub_run_id: handle.sub_run_id,
-        descriptor: descriptor.map(to_subrun_descriptor_dto),
         tool_call_id,
         source,
         agent_id: handle.agent_id,
@@ -161,13 +155,7 @@ pub(crate) fn to_subrun_status_dto(snapshot: SubRunStatusSnapshot) -> SubRunStat
         depth: handle.depth,
         parent_agent_id: handle.parent_agent_id,
         storage_mode: to_subrun_storage_mode_dto(handle.storage_mode),
-        status: match handle.status {
-            astrcode_core::AgentStatus::Pending => "pending".to_string(),
-            astrcode_core::AgentStatus::Running => "running".to_string(),
-            astrcode_core::AgentStatus::Completed => "completed".to_string(),
-            astrcode_core::AgentStatus::Cancelled => "cancelled".to_string(),
-            astrcode_core::AgentStatus::Failed => "failed".to_string(),
-        },
+        status: to_agent_status_dto(handle.status),
         result: result.map(to_subrun_result_dto),
         step_count,
         estimated_tokens,
@@ -345,22 +333,15 @@ fn to_subrun_storage_mode_dto(mode: SubRunStorageMode) -> SubRunStorageModeDto {
     }
 }
 
-fn to_subrun_descriptor_dto(descriptor: SubRunDescriptor) -> SubRunDescriptorDto {
-    SubRunDescriptorDto {
-        sub_run_id: descriptor.sub_run_id,
-        parent_turn_id: descriptor.parent_turn_id,
-        parent_agent_id: descriptor.parent_agent_id,
-        depth: descriptor.depth,
-    }
-}
-
-fn to_subrun_outcome_dto(outcome: SubRunOutcome) -> SubRunOutcomeDto {
+fn to_subrun_outcome_dto(outcome: astrcode_core::AgentStatus) -> SubRunOutcomeDto {
     match outcome {
-        SubRunOutcome::Running => SubRunOutcomeDto::Running,
-        SubRunOutcome::Completed => SubRunOutcomeDto::Completed,
-        SubRunOutcome::Failed => SubRunOutcomeDto::Failed,
-        SubRunOutcome::Aborted => SubRunOutcomeDto::Aborted,
-        SubRunOutcome::TokenExceeded => SubRunOutcomeDto::TokenExceeded,
+        astrcode_core::AgentStatus::Pending | astrcode_core::AgentStatus::Running => {
+            SubRunOutcomeDto::Running
+        },
+        astrcode_core::AgentStatus::Completed => SubRunOutcomeDto::Completed,
+        astrcode_core::AgentStatus::Cancelled => SubRunOutcomeDto::Aborted,
+        astrcode_core::AgentStatus::Failed => SubRunOutcomeDto::Failed,
+        astrcode_core::AgentStatus::TokenExceeded => SubRunOutcomeDto::TokenExceeded,
     }
 }
 
@@ -379,15 +360,19 @@ fn to_child_agent_ref_dto(child_ref: astrcode_core::ChildAgentRef) -> ChildAgent
         sub_run_id: child_ref.sub_run_id,
         parent_agent_id: child_ref.parent_agent_id,
         lineage_kind: to_child_lineage_kind_dto(child_ref.lineage_kind),
-        status: match child_ref.status {
-            astrcode_core::AgentStatus::Pending => "pending".to_string(),
-            astrcode_core::AgentStatus::Running => "running".to_string(),
-            astrcode_core::AgentStatus::Completed => "completed".to_string(),
-            astrcode_core::AgentStatus::Cancelled => "cancelled".to_string(),
-            astrcode_core::AgentStatus::Failed => "failed".to_string(),
-        },
-        openable: child_ref.openable,
+        status: to_agent_status_dto(child_ref.status),
         open_session_id: child_ref.open_session_id,
+    }
+}
+
+fn to_agent_status_dto(status: astrcode_core::AgentStatus) -> AgentStatusDto {
+    match status {
+        astrcode_core::AgentStatus::Pending => AgentStatusDto::Pending,
+        astrcode_core::AgentStatus::Running => AgentStatusDto::Running,
+        astrcode_core::AgentStatus::Completed => AgentStatusDto::Completed,
+        astrcode_core::AgentStatus::Cancelled => AgentStatusDto::Cancelled,
+        astrcode_core::AgentStatus::Failed => AgentStatusDto::Failed,
+        astrcode_core::AgentStatus::TokenExceeded => AgentStatusDto::TokenExceeded,
     }
 }
 
@@ -506,6 +491,7 @@ fn to_resolved_limits_dto(limits: ResolvedExecutionLimitsSnapshot) -> ResolvedEx
 ///
 /// `kind` 字段通过 serde_json 序列化后取字符串表示，
 /// 反序列化失败时降级为 "unknown"，避免协议层崩溃。
+#[allow(dead_code)]
 fn to_runtime_capability_dto(descriptor: CapabilityDescriptor) -> RuntimeCapabilityDto {
     RuntimeCapabilityDto {
         name: descriptor.name,
@@ -523,6 +509,7 @@ fn to_runtime_capability_dto(descriptor: CapabilityDescriptor) -> RuntimeCapabil
 ///
 /// 包含插件清单信息（名称、版本、描述）、运行时状态、健康度、
 /// 失败计数和最后检查时间，以及插件暴露的所有能力。
+#[allow(dead_code)]
 fn to_runtime_plugin_dto(entry: PluginEntry) -> RuntimePluginDto {
     RuntimePluginDto {
         name: entry.manifest.name,
@@ -555,6 +542,7 @@ fn to_runtime_plugin_dto(entry: PluginEntry) -> RuntimePluginDto {
 ///
 /// 包含三个维度的指标：会话重连（session_rehydrate）、
 /// SSE 追赶（sse_catch_up）、轮次执行（turn_execution）和子执行域观测（subrun_execution）。
+#[allow(dead_code)]
 fn to_runtime_metrics_dto(snapshot: RuntimeObservabilitySnapshot) -> RuntimeMetricsDto {
     RuntimeMetricsDto {
         session_rehydrate: to_operation_metrics_dto(snapshot.session_rehydrate),
@@ -731,14 +719,12 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
         AgentEvent::SubRunStarted {
             turn_id,
             agent,
-            descriptor,
             tool_call_id,
             resolved_overrides,
             resolved_limits,
         } => AgentEventPayload::SubRunStarted {
             turn_id,
             agent: to_agent_context_dto(agent),
-            descriptor: descriptor.map(to_subrun_descriptor_dto),
             tool_call_id,
             resolved_overrides: to_resolved_overrides_dto(resolved_overrides),
             resolved_limits: to_resolved_limits_dto(resolved_limits),
@@ -746,7 +732,6 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
         AgentEvent::SubRunFinished {
             turn_id,
             agent,
-            descriptor,
             tool_call_id,
             result,
             step_count,
@@ -754,7 +739,6 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
         } => AgentEventPayload::SubRunFinished {
             turn_id,
             agent: to_agent_context_dto(agent),
-            descriptor: descriptor.map(to_subrun_descriptor_dto),
             tool_call_id,
             result: to_subrun_result_dto(result),
             step_count,
@@ -767,17 +751,10 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
         } => AgentEventPayload::ChildSessionNotification {
             turn_id,
             agent: to_agent_context_dto(agent),
-            child_ref: to_child_agent_ref_dto(notification.child_ref),
+            child_ref: to_child_agent_ref_dto(notification.child_ref.clone()),
             kind: to_child_notification_kind_dto(notification.kind),
             summary: notification.summary,
-            status: match notification.status {
-                astrcode_core::AgentStatus::Pending => "pending".to_string(),
-                astrcode_core::AgentStatus::Running => "running".to_string(),
-                astrcode_core::AgentStatus::Completed => "completed".to_string(),
-                astrcode_core::AgentStatus::Cancelled => "cancelled".to_string(),
-                astrcode_core::AgentStatus::Failed => "failed".to_string(),
-            },
-            open_session_id: notification.open_session_id,
+            status: to_agent_status_dto(notification.status),
             source_tool_call_id: notification.source_tool_call_id,
             final_reply_excerpt: notification.final_reply_excerpt,
         },
@@ -799,35 +776,23 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
         AgentEvent::PromptMetrics {
             turn_id,
             agent,
-            step_index,
-            estimated_tokens,
-            context_window,
-            effective_window,
-            threshold_tokens,
-            truncated_tool_results,
-            provider_input_tokens,
-            provider_output_tokens,
-            cache_creation_input_tokens,
-            cache_read_input_tokens,
-            provider_cache_metrics_supported,
-            prompt_cache_reuse_hits,
-            prompt_cache_reuse_misses,
+            metrics,
         } => AgentEventPayload::PromptMetrics {
             turn_id,
             agent: to_agent_context_dto(agent),
-            step_index,
-            estimated_tokens,
-            context_window,
-            effective_window,
-            threshold_tokens,
-            truncated_tool_results,
-            provider_input_tokens,
-            provider_output_tokens,
-            cache_creation_input_tokens,
-            cache_read_input_tokens,
-            provider_cache_metrics_supported,
-            prompt_cache_reuse_hits,
-            prompt_cache_reuse_misses,
+            step_index: metrics.step_index,
+            estimated_tokens: metrics.estimated_tokens,
+            context_window: metrics.context_window,
+            effective_window: metrics.effective_window,
+            threshold_tokens: metrics.threshold_tokens,
+            truncated_tool_results: metrics.truncated_tool_results,
+            provider_input_tokens: metrics.provider_input_tokens,
+            provider_output_tokens: metrics.provider_output_tokens,
+            cache_creation_input_tokens: metrics.cache_creation_input_tokens,
+            cache_read_input_tokens: metrics.cache_read_input_tokens,
+            provider_cache_metrics_supported: metrics.provider_cache_metrics_supported,
+            prompt_cache_reuse_hits: metrics.prompt_cache_reuse_hits,
+            prompt_cache_reuse_misses: metrics.prompt_cache_reuse_misses,
         },
     }
 }

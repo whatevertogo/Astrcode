@@ -1,7 +1,8 @@
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentMode, CancelToken, InvocationKind, SessionTurnAcquireResult, SubagentContextOverrides,
+    AgentMode, CancelToken, ExecutionAccepted, InvocationKind, SessionTurnAcquireResult,
+    SubagentContextOverrides,
 };
 use astrcode_runtime_execution::{
     build_root_spawn_params, prepare_root_execution_launch, validate_root_execution_storage_mode,
@@ -10,7 +11,7 @@ use astrcode_runtime_session::prepare_session_execution;
 use uuid::Uuid;
 
 use crate::service::{
-    AgentExecutionAccepted, RuntimeService, ServiceError, ServiceResult,
+    RuntimeService, ServiceError, ServiceResult,
     blocking_bridge::spawn_blocking_service,
     turn::{BudgetSettings, RuntimeTurnInput, complete_session_execution, run_session_turn},
 };
@@ -76,7 +77,7 @@ impl AgentExecutionServiceHandle {
         context: Option<String>,
         context_overrides: Option<SubagentContextOverrides>,
         working_dir: PathBuf,
-    ) -> ServiceResult<AgentExecutionAccepted> {
+    ) -> ServiceResult<ExecutionAccepted> {
         let params = build_root_spawn_params(agent_id, task, context);
         let runtime = &self.runtime;
         let profiles = self.load_profiles_for_working_dir(&working_dir).await?;
@@ -215,10 +216,11 @@ impl AgentExecutionServiceHandle {
             |guard| guard.push(handle),
         );
 
-        Ok(AgentExecutionAccepted {
+        Ok(ExecutionAccepted {
             session_id: session_meta.session_id,
             turn_id: accepted_turn_id,
-            agent_id: root_agent_id,
+            agent_id: Some(root_agent_id),
+            branched_from_session_id: None,
         })
     }
 }

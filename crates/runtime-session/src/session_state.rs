@@ -6,8 +6,8 @@ use std::{
 use anyhow::Result;
 use astrcode_core::{
     AgentState, AgentStateProjector, CancelToken, ChildSessionNode, EventLogWriter,
-    EventTranslator, Phase, SessionEventRecord, SessionTurnLease, StorageEvent, StoredEvent,
-    ToolEventSink,
+    EventTranslator, Phase, SessionEventRecord, SessionTurnLease, StorageEvent,
+    StorageEventPayload, StoredEvent, ToolEventSink,
 };
 use tokio::sync::broadcast;
 
@@ -309,25 +309,23 @@ fn rebuild_child_nodes(events: &[StoredEvent]) -> HashMap<String, ChildSessionNo
 }
 
 fn child_node_from_stored_event(stored: &StoredEvent) -> Option<ChildSessionNode> {
-    match &stored.event {
-        StorageEvent::ChildSessionNotification {
-            turn_id,
-            notification,
-            ..
-        } => Some(ChildSessionNode {
-            agent_id: notification.child_ref.agent_id.clone(),
-            session_id: notification.child_ref.session_id.clone(),
-            child_session_id: notification.open_session_id.clone(),
-            sub_run_id: notification.child_ref.sub_run_id.clone(),
-            parent_session_id: notification.child_ref.session_id.clone(),
-            parent_agent_id: notification.child_ref.parent_agent_id.clone(),
-            parent_turn_id: turn_id.clone().unwrap_or_default(),
-            lineage_kind: notification.child_ref.lineage_kind,
-            status: notification.status,
-            status_source: astrcode_core::ChildSessionStatusSource::Durable,
-            created_by_tool_call_id: notification.source_tool_call_id.clone(),
-            lineage_snapshot: None,
-        }),
+    match &stored.event.payload {
+        StorageEventPayload::ChildSessionNotification { notification, .. } => {
+            Some(ChildSessionNode {
+                agent_id: notification.child_ref.agent_id.clone(),
+                session_id: notification.child_ref.session_id.clone(),
+                child_session_id: notification.child_ref.open_session_id.clone(),
+                sub_run_id: notification.child_ref.sub_run_id.clone(),
+                parent_session_id: notification.child_ref.session_id.clone(),
+                parent_agent_id: notification.child_ref.parent_agent_id.clone(),
+                parent_turn_id: stored.event.turn_id.clone().unwrap_or_default(),
+                lineage_kind: notification.child_ref.lineage_kind,
+                status: notification.status,
+                status_source: astrcode_core::ChildSessionStatusSource::Durable,
+                created_by_tool_call_id: notification.source_tool_call_id.clone(),
+                lineage_snapshot: None,
+            })
+        },
         _ => None,
     }
 }
@@ -371,8 +369,8 @@ mod tests {
     use astrcode_core::{
         AgentEventContext, AgentStateProjector, AgentStatus, ChildAgentRef,
         ChildSessionLineageKind, ChildSessionNotification, ChildSessionNotificationKind,
-        EventLogWriter, InvocationKind, Phase, StorageEvent, StoreResult, StoredEvent,
-        UserMessageOrigin,
+        EventLogWriter, InvocationKind, Phase, StorageEvent, StorageEventPayload, StoreResult,
+        StoredEvent, UserMessageOrigin,
     };
     use chrono::Utc;
 
@@ -404,6 +402,18 @@ mod tests {
         }
     }
 
+    fn event(
+        turn_id: Option<&str>,
+        agent: AgentEventContext,
+        payload: StorageEventPayload,
+    ) -> StorageEvent {
+        StorageEvent {
+            turn_id: turn_id.map(str::to_string),
+            agent,
+            payload,
+        }
+    }
+
     fn stored(storage_seq: u64, event: StorageEvent) -> StoredEvent {
         StoredEvent { storage_seq, event }
     }
@@ -412,30 +422,30 @@ mod tests {
         kind: ChildSessionNotificationKind,
         status: AgentStatus,
     ) -> StorageEvent {
-        StorageEvent::ChildSessionNotification {
-            turn_id: Some("turn-root".into()),
-            agent: legacy_shared_sub_run_agent(),
-            notification: ChildSessionNotification {
-                notification_id: format!("child:{kind:?}"),
-                child_ref: ChildAgentRef {
-                    agent_id: "agent-child".into(),
-                    session_id: "session-parent".into(),
-                    sub_run_id: "subrun-1".into(),
-                    parent_agent_id: Some("agent-parent".into()),
-                    lineage_kind: ChildSessionLineageKind::Spawn,
+        event(
+            Some("turn-root"),
+            legacy_shared_sub_run_agent(),
+            StorageEventPayload::ChildSessionNotification {
+                notification: ChildSessionNotification {
+                    notification_id: format!("child:{kind:?}"),
+                    child_ref: ChildAgentRef {
+                        agent_id: "agent-child".into(),
+                        session_id: "session-parent".into(),
+                        sub_run_id: "subrun-1".into(),
+                        parent_agent_id: Some("agent-parent".into()),
+                        lineage_kind: ChildSessionLineageKind::Spawn,
+                        status,
+                        open_session_id: "session-child".into(),
+                    },
+                    kind,
+                    summary: "child summary".into(),
                     status,
-                    openable: true,
-                    open_session_id: "session-child".into(),
+                    source_tool_call_id: Some("call-1".into()),
+                    final_reply_excerpt: None,
                 },
-                kind,
-                summary: "child summary".into(),
-                status,
-                open_session_id: "session-child".into(),
-                source_tool_call_id: Some("call-1".into()),
-                final_reply_excerpt: None,
+                timestamp: Some(Utc::now()),
             },
-            timestamp: Some(Utc::now()),
-        }
+        )
     }
 
     #[test]
@@ -452,73 +462,89 @@ mod tests {
         let events = vec![
             stored(
                 1,
-                StorageEvent::SessionStart {
-                    session_id: "session-1".into(),
-                    timestamp: Utc::now(),
-                    working_dir: "/tmp".into(),
-                    parent_session_id: None,
-                    parent_storage_seq: None,
-                },
+                event(
+                    None,
+                    root_agent(),
+                    StorageEventPayload::SessionStart {
+                        session_id: "session-1".into(),
+                        timestamp: Utc::now(),
+                        working_dir: "/tmp".into(),
+                        parent_session_id: None,
+                        parent_storage_seq: None,
+                    },
+                ),
             ),
             stored(
                 2,
-                StorageEvent::UserMessage {
-                    turn_id: Some("turn-root".into()),
-                    agent: root_agent(),
-                    content: "root task".into(),
-                    origin: UserMessageOrigin::User,
-                    timestamp: Utc::now(),
-                },
+                event(
+                    Some("turn-root"),
+                    root_agent(),
+                    StorageEventPayload::UserMessage {
+                        content: "root task".into(),
+                        origin: UserMessageOrigin::User,
+                        timestamp: Utc::now(),
+                    },
+                ),
             ),
             stored(
                 3,
-                StorageEvent::AssistantFinal {
-                    turn_id: Some("turn-root".into()),
-                    agent: root_agent(),
-                    content: "root answer".into(),
-                    reasoning_content: None,
-                    reasoning_signature: None,
-                    timestamp: None,
-                },
+                event(
+                    Some("turn-root"),
+                    root_agent(),
+                    StorageEventPayload::AssistantFinal {
+                        content: "root answer".into(),
+                        reasoning_content: None,
+                        reasoning_signature: None,
+                        timestamp: None,
+                    },
+                ),
             ),
             stored(
                 4,
-                StorageEvent::TurnDone {
-                    turn_id: Some("turn-root".into()),
-                    agent: root_agent(),
-                    timestamp: Utc::now(),
-                    reason: Some("completed".into()),
-                },
+                event(
+                    Some("turn-root"),
+                    root_agent(),
+                    StorageEventPayload::TurnDone {
+                        timestamp: Utc::now(),
+                        reason: Some("completed".into()),
+                    },
+                ),
             ),
             stored(
                 5,
-                StorageEvent::UserMessage {
-                    turn_id: Some("turn-child".into()),
-                    agent: legacy_shared_sub_run_agent(),
-                    content: "child task".into(),
-                    origin: UserMessageOrigin::User,
-                    timestamp: Utc::now(),
-                },
+                event(
+                    Some("turn-child"),
+                    legacy_shared_sub_run_agent(),
+                    StorageEventPayload::UserMessage {
+                        content: "child task".into(),
+                        origin: UserMessageOrigin::User,
+                        timestamp: Utc::now(),
+                    },
+                ),
             ),
             stored(
                 6,
-                StorageEvent::AssistantFinal {
-                    turn_id: Some("turn-child".into()),
-                    agent: legacy_shared_sub_run_agent(),
-                    content: "child answer".into(),
-                    reasoning_content: None,
-                    reasoning_signature: None,
-                    timestamp: None,
-                },
+                event(
+                    Some("turn-child"),
+                    legacy_shared_sub_run_agent(),
+                    StorageEventPayload::AssistantFinal {
+                        content: "child answer".into(),
+                        reasoning_content: None,
+                        reasoning_signature: None,
+                        timestamp: None,
+                    },
+                ),
             ),
             stored(
                 7,
-                StorageEvent::TurnDone {
-                    turn_id: Some("turn-child".into()),
-                    agent: legacy_shared_sub_run_agent(),
-                    timestamp: Utc::now(),
-                    reason: Some("completed".into()),
-                },
+                event(
+                    Some("turn-child"),
+                    legacy_shared_sub_run_agent(),
+                    StorageEventPayload::TurnDone {
+                        timestamp: Utc::now(),
+                        reason: Some("completed".into()),
+                    },
+                ),
             ),
         ];
 

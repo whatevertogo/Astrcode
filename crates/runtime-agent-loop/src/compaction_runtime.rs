@@ -54,8 +54,8 @@ use std::{
 
 use astrcode_core::{
     AgentEventContext, CancelToken, CompactTrigger, ContextDecisionInput, ContextStrategy,
-    LlmMessage, Result, StorageEvent, StoredEvent, UserMessageOrigin, format_compact_summary,
-    project,
+    LlmMessage, Result, StorageEvent, StorageEventPayload, StoredEvent, UserMessageOrigin,
+    format_compact_summary, project,
 };
 use astrcode_runtime_llm::LlmProvider;
 use async_trait::async_trait;
@@ -88,6 +88,17 @@ impl CompactionReason {
     pub(crate) fn as_context_strategy(self) -> ContextStrategy {
         match self {
             Self::Auto | Self::Reactive | Self::Manual => ContextStrategy::Compact,
+        }
+    }
+
+    /// 映射到 hook 层的压缩原因。
+    ///
+    /// `Reactive` 在 hook 层保留独立语义——插件可根据"是否因 413 触发"采取不同策略。
+    pub(crate) fn as_hook_reason(self) -> astrcode_core::HookCompactionReason {
+        match self {
+            Self::Auto => astrcode_core::HookCompactionReason::Auto,
+            Self::Reactive => astrcode_core::HookCompactionReason::Reactive,
+            Self::Manual => astrcode_core::HookCompactionReason::Manual,
         }
     }
 }
@@ -199,38 +210,44 @@ fn tail_snapshot_from_messages(
             };
 
             let event = match message {
-                LlmMessage::User { content, origin } => StorageEvent::UserMessage {
+                LlmMessage::User { content, origin } => StorageEvent {
                     turn_id,
                     agent: AgentEventContext::default(),
-                    content: content.clone(),
-                    origin: *origin,
-                    timestamp,
+                    payload: StorageEventPayload::UserMessage {
+                        content: content.clone(),
+                        origin: *origin,
+                        timestamp,
+                    },
                 },
                 LlmMessage::Assistant {
                     content, reasoning, ..
-                } => StorageEvent::AssistantFinal {
+                } => StorageEvent {
                     turn_id,
                     agent: AgentEventContext::default(),
-                    content: content.clone(),
-                    reasoning_content: reasoning.as_ref().map(|value| value.content.clone()),
-                    reasoning_signature: reasoning
-                        .as_ref()
-                        .and_then(|value| value.signature.clone()),
-                    timestamp: Some(timestamp),
+                    payload: StorageEventPayload::AssistantFinal {
+                        content: content.clone(),
+                        reasoning_content: reasoning.as_ref().map(|value| value.content.clone()),
+                        reasoning_signature: reasoning
+                            .as_ref()
+                            .and_then(|value| value.signature.clone()),
+                        timestamp: Some(timestamp),
+                    },
                 },
                 LlmMessage::Tool {
                     tool_call_id,
                     content,
-                } => StorageEvent::ToolResult {
+                } => StorageEvent {
                     turn_id,
                     agent: AgentEventContext::default(),
-                    tool_call_id: tool_call_id.clone(),
-                    tool_name: "tail.rebuild".to_string(),
-                    success: true,
-                    output: content.clone(),
-                    error: None,
-                    metadata: None,
-                    duration_ms: 0,
+                    payload: StorageEventPayload::ToolResult {
+                        tool_call_id: tool_call_id.clone(),
+                        tool_name: "tail.rebuild".to_string(),
+                        success: true,
+                        output: content.clone(),
+                        error: None,
+                        metadata: None,
+                        duration_ms: 0,
+                    },
                 },
             };
 
@@ -899,13 +916,15 @@ mod tests {
     fn compaction_tail_snapshot_recovers_from_poisoned_live_lock() {
         let live = Arc::new(StdMutex::new(vec![StoredEvent {
             storage_seq: 2,
-            event: StorageEvent::AssistantFinal {
+            event: StorageEvent {
                 turn_id: Some("turn-1".to_string()),
                 agent: AgentEventContext::default(),
-                content: "live".to_string(),
-                reasoning_content: None,
-                reasoning_signature: None,
-                timestamp: Some(Utc::now()),
+                payload: StorageEventPayload::AssistantFinal {
+                    content: "live".to_string(),
+                    reasoning_content: None,
+                    reasoning_signature: None,
+                    timestamp: Some(Utc::now()),
+                },
             },
         }]));
         // 故意忽略：catch_unwind 用于测试中注入 panic，结果不需要检查
@@ -919,12 +938,14 @@ mod tests {
 
         let snapshot = CompactionTailSnapshot::from_seed(vec![StoredEvent {
             storage_seq: 1,
-            event: StorageEvent::UserMessage {
+            event: StorageEvent {
                 turn_id: Some("turn-1".to_string()),
                 agent: AgentEventContext::default(),
-                content: "seed".to_string(),
-                origin: UserMessageOrigin::User,
-                timestamp: Utc::now(),
+                payload: StorageEventPayload::UserMessage {
+                    content: "seed".to_string(),
+                    origin: UserMessageOrigin::User,
+                    timestamp: Utc::now(),
+                },
             },
         }])
         .with_live_recorder(live);
@@ -971,12 +992,14 @@ mod tests {
         };
         let tail = vec![StoredEvent {
             storage_seq: 1,
-            event: StorageEvent::UserMessage {
+            event: StorageEvent {
                 turn_id: Some("turn-1".to_string()),
                 agent: AgentEventContext::default(),
-                content: "current ask".to_string(),
-                origin: UserMessageOrigin::User,
-                timestamp: Utc::now(),
+                payload: StorageEventPayload::UserMessage {
+                    content: "current ask".to_string(),
+                    origin: UserMessageOrigin::User,
+                    timestamp: Utc::now(),
+                },
             },
         }];
 
@@ -1106,23 +1129,27 @@ mod tests {
         let tail = vec![
             StoredEvent {
                 storage_seq: 7,
-                event: StorageEvent::UserMessage {
+                event: StorageEvent {
                     turn_id: Some("turn-1".to_string()),
                     agent: AgentEventContext::default(),
-                    content: "older".to_string(),
-                    origin: UserMessageOrigin::User,
-                    timestamp: Utc::now(),
+                    payload: StorageEventPayload::UserMessage {
+                        content: "older".to_string(),
+                        origin: UserMessageOrigin::User,
+                        timestamp: Utc::now(),
+                    },
                 },
             },
             StoredEvent {
                 storage_seq: 11,
-                event: StorageEvent::AssistantFinal {
+                event: StorageEvent {
                     turn_id: Some("turn-1".to_string()),
                     agent: AgentEventContext::default(),
-                    content: "latest".to_string(),
-                    reasoning_content: None,
-                    reasoning_signature: None,
-                    timestamp: Some(Utc::now()),
+                    payload: StorageEventPayload::AssistantFinal {
+                        content: "latest".to_string(),
+                        reasoning_content: None,
+                        reasoning_signature: None,
+                        timestamp: Some(Utc::now()),
+                    },
                 },
             },
         ];

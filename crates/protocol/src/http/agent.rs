@@ -5,9 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::http::{
-    ResolvedSubagentContextOverridesDto, SubRunDescriptorDto, SubRunResultDto, SubRunStorageModeDto,
-};
+use crate::http::{ResolvedSubagentContextOverridesDto, SubRunResultDto, SubRunStorageModeDto};
 
 /// 对外暴露的 Agent Profile 摘要。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -79,20 +77,28 @@ pub struct SubagentContextOverridesDto {
     pub fork_mode: Option<super::event::ForkModeDto>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentStatusDto {
+    Pending,
+    Running,
+    Completed,
+    Cancelled,
+    Failed,
+    TokenExceeded,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum SubRunStatusSourceDto {
     Live,
     Durable,
-    LegacyDurable,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubRunStatusDto {
     pub sub_run_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub descriptor: Option<SubRunDescriptorDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     pub source: SubRunStatusSourceDto,
@@ -105,7 +111,7 @@ pub struct SubRunStatusDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<String>,
     pub storage_mode: SubRunStorageModeDto,
-    pub status: String,
+    pub status: AgentStatusDto,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<SubRunResultDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -145,8 +151,7 @@ pub struct ChildAgentRefDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<String>,
     pub lineage_kind: ChildSessionLineageKindDto,
-    pub status: String,
-    pub openable: bool,
+    pub status: AgentStatusDto,
     pub open_session_id: String,
 }
 
@@ -169,25 +174,9 @@ pub struct ChildSessionNotificationDto {
     pub child_ref: ChildAgentRefDto,
     pub kind: ChildSessionNotificationKindDto,
     pub summary: String,
-    pub status: String,
-    pub open_session_id: String,
+    pub status: AgentStatusDto,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_reply_excerpt: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ChildSessionViewProjectionDto {
-    pub child_ref: ChildAgentRefDto,
-    pub title: String,
-    pub status: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub summary_items: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub latest_tool_activity: Vec<String>,
-    pub has_final_reply: bool,
-    pub child_session_id: String,
-    pub has_descriptor_lineage: bool,
 }

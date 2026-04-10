@@ -26,9 +26,9 @@ mod session_event;
 mod tool;
 
 pub use agent::{
-    AgentExecuteRequestDto, AgentExecuteResponseDto, AgentProfileDto, ChildAgentRefDto,
-    ChildSessionLineageKindDto, ChildSessionNotificationDto, ChildSessionNotificationKindDto,
-    ChildSessionViewProjectionDto, LineageSnapshotDto, SubRunStatusDto, SubRunStatusSourceDto,
+    AgentExecuteRequestDto, AgentExecuteResponseDto, AgentProfileDto, AgentStatusDto,
+    ChildAgentRefDto, ChildSessionLineageKindDto, ChildSessionNotificationDto,
+    ChildSessionNotificationKindDto, LineageSnapshotDto, SubRunStatusDto, SubRunStatusSourceDto,
     SubagentContextOverridesDto,
 };
 pub use auth::{AuthExchangeRequest, AuthExchangeResponse};
@@ -40,9 +40,9 @@ pub use config::{
 pub use event::{
     AgentContextDto, AgentEventEnvelope, AgentEventPayload, ArtifactRefDto, CompactTriggerDto,
     ForkModeDto, InvocationKindDto, PROTOCOL_VERSION, PhaseDto, ResolvedExecutionLimitsDto,
-    ResolvedSubagentContextOverridesDto, SubRunDescriptorDto, SubRunFailureCodeDto,
-    SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto,
-    ToolCallResultDto, ToolOutputStreamDto,
+    ResolvedSubagentContextOverridesDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
+    SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto, ToolCallResultDto,
+    ToolOutputStreamDto,
 };
 pub use model::{CurrentModelInfoDto, ModelOptionDto};
 pub use runtime::{
@@ -51,8 +51,7 @@ pub use runtime::{
     RuntimeStatusDto, SubRunExecutionMetricsDto,
 };
 pub use session::{
-    ChildSessionViewResponseDto, CreateSessionRequest, DeleteProjectResultDto,
-    ParentChildSummaryListResponseDto, PromptAcceptedResponse, PromptRequest,
+    CreateSessionRequest, DeleteProjectResultDto, PromptAcceptedResponse, PromptRequest,
     SessionHistoryResponseDto, SessionListItem,
 };
 pub use session_event::{SessionCatalogEventEnvelope, SessionCatalogEventPayload};

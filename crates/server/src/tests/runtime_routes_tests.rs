@@ -1,14 +1,14 @@
 use astrcode_core::{
     AgentEventContext, AgentMode, AgentProfile, EventLogWriter, PluginHealth, PluginState, Result,
-    StorageEvent, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
-    UserMessageOrigin, plugin::PluginEntry,
+    StorageEvent, StorageEventPayload, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
+    ToolExecutionResult, UserMessageOrigin, plugin::PluginEntry,
 };
 use astrcode_protocol::{
     capability::{CapabilityDescriptor, CapabilityKind, SideEffectLevel, StabilityLevel},
     http::{
         AgentExecuteResponseDto, AgentProfileDto, ConfigReloadResponse, PromptAcceptedResponse,
-        PromptRequest, RuntimeStatusDto, SessionHistoryResponseDto, SubRunStatusDto,
-        SubRunStatusSourceDto, SubRunStorageModeDto, ToolDescriptorDto, ToolExecuteResponseDto,
+        PromptRequest, SessionHistoryResponseDto, SubRunStatusDto, SubRunStatusSourceDto,
+        SubRunStorageModeDto,
     },
 };
 use astrcode_runtime::{Config, ModelConfig, Profile, RuntimeConfig, config, save_config};
@@ -63,75 +63,73 @@ fn seed_shared_subrun_session(session_id: &str, working_dir: &std::path::Path) {
     );
 
     for event in [
-        StorageEvent::SessionStart {
-            session_id: session_id.to_string(),
-            timestamp: Utc::now(),
-            working_dir: working_dir.display().to_string(),
-            parent_session_id: None,
-            parent_storage_seq: None,
+        StorageEvent {
+            turn_id: None,
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::SessionStart {
+                session_id: session_id.to_string(),
+                timestamp: Utc::now(),
+                working_dir: working_dir.display().to_string(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
         },
-        StorageEvent::UserMessage {
+        StorageEvent {
             turn_id: Some("turn-root".to_string()),
             agent: root,
-            content: "root".to_string(),
-            origin: UserMessageOrigin::User,
-            timestamp: Utc::now(),
+            payload: StorageEventPayload::UserMessage {
+                content: "root".to_string(),
+                origin: UserMessageOrigin::User,
+                timestamp: Utc::now(),
+            },
         },
-        StorageEvent::SubRunStarted {
+        StorageEvent {
             turn_id: Some("turn-root".to_string()),
             agent: sub_a.clone(),
-            descriptor: Some(astrcode_core::SubRunDescriptor {
-                sub_run_id: "sub-a".to_string(),
-                parent_turn_id: "turn-root".to_string(),
-                parent_agent_id: None,
-                depth: 1,
-            }),
-            tool_call_id: None,
-            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
-            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
-            timestamp: Some(Utc::now()),
+            payload: StorageEventPayload::SubRunStarted {
+                tool_call_id: None,
+                resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+                resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: Some(Utc::now()),
+            },
         },
-        StorageEvent::UserMessage {
+        StorageEvent {
             turn_id: Some("turn-a".to_string()),
             agent: sub_a.clone(),
-            content: "sub-a".to_string(),
-            origin: UserMessageOrigin::User,
-            timestamp: Utc::now(),
+            payload: StorageEventPayload::UserMessage {
+                content: "sub-a".to_string(),
+                origin: UserMessageOrigin::User,
+                timestamp: Utc::now(),
+            },
         },
-        StorageEvent::SubRunStarted {
+        StorageEvent {
             turn_id: Some("turn-a".to_string()),
             agent: sub_b.clone(),
-            descriptor: Some(astrcode_core::SubRunDescriptor {
-                sub_run_id: "sub-b".to_string(),
-                parent_turn_id: "turn-a".to_string(),
-                parent_agent_id: Some("agent-a".to_string()),
-                depth: 2,
-            }),
-            tool_call_id: None,
-            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
-            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
-            timestamp: Some(Utc::now()),
+            payload: StorageEventPayload::SubRunStarted {
+                tool_call_id: None,
+                resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+                resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: Some(Utc::now()),
+            },
         },
-        StorageEvent::UserMessage {
+        StorageEvent {
             turn_id: Some("turn-b".to_string()),
             agent: sub_b.clone(),
-            content: "sub-b".to_string(),
-            origin: UserMessageOrigin::User,
-            timestamp: Utc::now(),
+            payload: StorageEventPayload::UserMessage {
+                content: "sub-b".to_string(),
+                origin: UserMessageOrigin::User,
+                timestamp: Utc::now(),
+            },
         },
-        StorageEvent::SubRunStarted {
+        StorageEvent {
             turn_id: Some("turn-b".to_string()),
             agent: sub_c,
-            descriptor: Some(astrcode_core::SubRunDescriptor {
-                sub_run_id: "sub-c".to_string(),
-                parent_turn_id: "turn-b".to_string(),
-                parent_agent_id: Some("agent-b".to_string()),
-                depth: 3,
-            }),
-            tool_call_id: None,
-            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
-            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
-            timestamp: Some(Utc::now()),
+            payload: StorageEventPayload::SubRunStarted {
+                tool_call_id: None,
+                resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+                resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: Some(Utc::now()),
+            },
         },
     ] {
         log.append(&event).expect("event should append");
@@ -141,12 +139,6 @@ fn seed_shared_subrun_session(session_id: &str, working_dir: &std::path::Path) {
 fn seed_finished_subrun_session(session_id: &str, working_dir: &std::path::Path) {
     let mut log =
         EventLog::create(session_id, working_dir).expect("session file should be created");
-    let descriptor = astrcode_core::SubRunDescriptor {
-        sub_run_id: "sub-durable".to_string(),
-        parent_turn_id: "turn-root".to_string(),
-        parent_agent_id: Some("agent-parent".to_string()),
-        depth: 1,
-    };
     let sub = AgentEventContext::sub_run(
         "agent-durable",
         "turn-root",
@@ -157,39 +149,45 @@ fn seed_finished_subrun_session(session_id: &str, working_dir: &std::path::Path)
     );
 
     for event in [
-        StorageEvent::SessionStart {
-            session_id: session_id.to_string(),
-            timestamp: Utc::now(),
-            working_dir: working_dir.display().to_string(),
-            parent_session_id: None,
-            parent_storage_seq: None,
+        StorageEvent {
+            turn_id: None,
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::SessionStart {
+                session_id: session_id.to_string(),
+                timestamp: Utc::now(),
+                working_dir: working_dir.display().to_string(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
         },
-        StorageEvent::SubRunStarted {
+        StorageEvent {
             turn_id: Some("turn-root".to_string()),
             agent: sub.clone(),
-            descriptor: Some(descriptor.clone()),
-            tool_call_id: Some("call-durable".to_string()),
-            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
-            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
-            timestamp: Some(Utc::now()),
+            payload: StorageEventPayload::SubRunStarted {
+                tool_call_id: Some("call-durable".to_string()),
+                resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+                resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: Some(Utc::now()),
+            },
         },
-        StorageEvent::SubRunFinished {
+        StorageEvent {
             turn_id: Some("turn-root".to_string()),
             agent: sub,
-            descriptor: Some(descriptor),
-            tool_call_id: Some("call-durable".to_string()),
-            result: astrcode_core::SubRunResult {
-                status: astrcode_core::SubRunOutcome::Completed,
-                handoff: Some(astrcode_core::SubRunHandoff {
-                    summary: "done".to_string(),
-                    findings: vec!["ok".to_string()],
-                    artifacts: Vec::new(),
-                }),
-                failure: None,
+            payload: StorageEventPayload::SubRunFinished {
+                tool_call_id: Some("call-durable".to_string()),
+                result: astrcode_core::SubRunResult {
+                    status: astrcode_core::AgentStatus::Completed,
+                    handoff: Some(astrcode_core::SubRunHandoff {
+                        summary: "done".to_string(),
+                        findings: vec!["ok".to_string()],
+                        artifacts: Vec::new(),
+                    }),
+                    failure: None,
+                },
+                step_count: 2,
+                estimated_tokens: 120,
+                timestamp: Some(Utc::now()),
             },
-            step_count: 2,
-            estimated_tokens: 120,
-            timestamp: Some(Utc::now()),
         },
     ] {
         log.append(&event).expect("event should append");
@@ -209,35 +207,41 @@ fn seed_legacy_subrun_session(session_id: &str, working_dir: &std::path::Path) {
     );
 
     for event in [
-        StorageEvent::SessionStart {
-            session_id: session_id.to_string(),
-            timestamp: Utc::now(),
-            working_dir: working_dir.display().to_string(),
-            parent_session_id: None,
-            parent_storage_seq: None,
+        StorageEvent {
+            turn_id: None,
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::SessionStart {
+                session_id: session_id.to_string(),
+                timestamp: Utc::now(),
+                working_dir: working_dir.display().to_string(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
         },
-        StorageEvent::SubRunStarted {
+        StorageEvent {
             turn_id: Some("turn-legacy".to_string()),
             agent: sub.clone(),
-            descriptor: None,
-            tool_call_id: Some("call-legacy".to_string()),
-            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
-            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
-            timestamp: Some(Utc::now()),
+            payload: StorageEventPayload::SubRunStarted {
+                tool_call_id: Some("call-legacy".to_string()),
+                resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+                resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: Some(Utc::now()),
+            },
         },
-        StorageEvent::SubRunFinished {
+        StorageEvent {
             turn_id: Some("turn-legacy".to_string()),
             agent: sub,
-            descriptor: None,
-            tool_call_id: Some("call-legacy".to_string()),
-            result: astrcode_core::SubRunResult {
-                status: astrcode_core::SubRunOutcome::Completed,
-                handoff: None,
-                failure: None,
+            payload: StorageEventPayload::SubRunFinished {
+                tool_call_id: Some("call-legacy".to_string()),
+                result: astrcode_core::SubRunResult {
+                    status: astrcode_core::AgentStatus::Completed,
+                    handoff: None,
+                    failure: None,
+                },
+                step_count: 1,
+                estimated_tokens: 24,
+                timestamp: Some(Utc::now()),
             },
-            step_count: 1,
-            estimated_tokens: 24,
-            timestamp: Some(Utc::now()),
         },
     ] {
         log.append(&event).expect("event should append");
@@ -247,18 +251,6 @@ fn seed_legacy_subrun_session(session_id: &str, working_dir: &std::path::Path) {
 fn seed_parent_abort_storage_mode_parity_session(session_id: &str, working_dir: &std::path::Path) {
     let mut log =
         EventLog::create(session_id, working_dir).expect("session file should be created");
-    let shared_descriptor = astrcode_core::SubRunDescriptor {
-        sub_run_id: "sub-shared".to_string(),
-        parent_turn_id: "turn-parent".to_string(),
-        parent_agent_id: Some("agent-parent".to_string()),
-        depth: 1,
-    };
-    let independent_descriptor = astrcode_core::SubRunDescriptor {
-        sub_run_id: "sub-independent".to_string(),
-        parent_turn_id: "turn-parent".to_string(),
-        parent_agent_id: Some("agent-parent".to_string()),
-        depth: 1,
-    };
     let shared = AgentEventContext::sub_run(
         "agent-shared",
         "turn-parent",
@@ -277,58 +269,66 @@ fn seed_parent_abort_storage_mode_parity_session(session_id: &str, working_dir: 
     );
 
     for event in [
-        StorageEvent::SessionStart {
-            session_id: session_id.to_string(),
-            timestamp: Utc::now(),
-            working_dir: working_dir.display().to_string(),
-            parent_session_id: None,
-            parent_storage_seq: None,
+        StorageEvent {
+            turn_id: None,
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::SessionStart {
+                session_id: session_id.to_string(),
+                timestamp: Utc::now(),
+                working_dir: working_dir.display().to_string(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
         },
-        StorageEvent::SubRunStarted {
+        StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent: shared.clone(),
-            descriptor: Some(shared_descriptor.clone()),
-            tool_call_id: Some("call-shared".to_string()),
-            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
-            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
-            timestamp: Some(Utc::now()),
+            payload: StorageEventPayload::SubRunStarted {
+                tool_call_id: Some("call-shared".to_string()),
+                resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+                resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: Some(Utc::now()),
+            },
         },
-        StorageEvent::SubRunFinished {
+        StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent: shared,
-            descriptor: Some(shared_descriptor),
-            tool_call_id: Some("call-shared".to_string()),
-            result: astrcode_core::SubRunResult {
-                status: astrcode_core::SubRunOutcome::Aborted,
-                handoff: None,
-                failure: None,
+            payload: StorageEventPayload::SubRunFinished {
+                tool_call_id: Some("call-shared".to_string()),
+                result: astrcode_core::SubRunResult {
+                    status: astrcode_core::AgentStatus::Cancelled,
+                    handoff: None,
+                    failure: None,
+                },
+                step_count: 1,
+                estimated_tokens: 10,
+                timestamp: Some(Utc::now()),
             },
-            step_count: 1,
-            estimated_tokens: 10,
-            timestamp: Some(Utc::now()),
         },
-        StorageEvent::SubRunStarted {
+        StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent: independent.clone(),
-            descriptor: Some(independent_descriptor.clone()),
-            tool_call_id: Some("call-independent".to_string()),
-            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
-            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
-            timestamp: Some(Utc::now()),
+            payload: StorageEventPayload::SubRunStarted {
+                tool_call_id: Some("call-independent".to_string()),
+                resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides::default(),
+                resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: Some(Utc::now()),
+            },
         },
-        StorageEvent::SubRunFinished {
+        StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent: independent,
-            descriptor: Some(independent_descriptor),
-            tool_call_id: Some("call-independent".to_string()),
-            result: astrcode_core::SubRunResult {
-                status: astrcode_core::SubRunOutcome::Aborted,
-                handoff: None,
-                failure: None,
+            payload: StorageEventPayload::SubRunFinished {
+                tool_call_id: Some("call-independent".to_string()),
+                result: astrcode_core::SubRunResult {
+                    status: astrcode_core::AgentStatus::Cancelled,
+                    handoff: None,
+                    failure: None,
+                },
+                step_count: 2,
+                estimated_tokens: 20,
+                timestamp: Some(Utc::now()),
             },
-            step_count: 2,
-            estimated_tokens: 20,
-            timestamp: Some(Utc::now()),
         },
     ] {
         log.append(&event).expect("event should append");
@@ -412,7 +412,7 @@ impl Tool for DemoGrepTool {
 }
 
 #[tokio::test]
-async fn runtime_status_requires_authentication() {
+async fn runtime_status_returns_not_found_when_unauthenticated() {
     let (state, _guard) = test_state(None);
     let app = build_api_router().with_state(state);
 
@@ -426,11 +426,11 @@ async fn runtime_status_requires_authentication() {
         .await
         .expect("response should be returned");
 
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
-async fn runtime_status_exposes_capability_surface() {
+async fn runtime_status_returns_not_found_after_skeleton_removal() {
     let (state, _guard) = test_state(None);
     let app = build_api_router().with_state(state);
 
@@ -445,11 +445,11 @@ async fn runtime_status_exposes_capability_surface() {
         .await
         .expect("response should be returned");
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
-async fn runtime_status_exposes_plugin_warnings() {
+async fn runtime_plugins_endpoint_returns_not_found_after_skeleton_removal() {
     let (state, _guard) = test_state(None);
     state
         .coordinator
@@ -504,23 +504,12 @@ async fn runtime_status_exposes_plugin_warnings() {
         .await
         .expect("response should be returned");
 
-    assert_eq!(response.status(), StatusCode::OK);
-    let bytes = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body should be readable");
-    let payload: RuntimeStatusDto =
-        serde_json::from_slice(&bytes).expect("runtime status should deserialize");
-    assert_eq!(payload.plugins.len(), 1);
-    assert!(
-        payload.plugins[0]
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("missing.tool"))
-    );
+    // skeleton route 已在 006-prune-dead-code 中删除
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
-async fn runtime_reload_endpoint_returns_accepted() {
+async fn runtime_reload_endpoint_returns_not_found_after_skeleton_removal() {
     let (state, _guard) = test_state(None);
     let app = build_api_router().with_state(state);
 
@@ -536,7 +525,8 @@ async fn runtime_reload_endpoint_returns_accepted() {
         .await
         .expect("response should be returned");
 
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    // skeleton route 已在 006-prune-dead-code 中删除
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -850,7 +840,7 @@ async fn agents_list_endpoint_returns_current_profiles() {
 }
 
 #[tokio::test]
-async fn tools_list_endpoint_returns_runtime_tool_surface() {
+async fn tools_list_endpoint_returns_not_found_after_skeleton_removal() {
     let (state, _guard) = test_state(None);
     let app = build_api_router().with_state(state);
 
@@ -865,12 +855,8 @@ async fn tools_list_endpoint_returns_runtime_tool_surface() {
         .await
         .expect("response should be returned");
 
-    assert_eq!(response.status(), StatusCode::OK);
-    let bytes = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body should be readable");
-    let _payload: Vec<ToolDescriptorDto> =
-        serde_json::from_slice(&bytes).expect("tool list should deserialize");
+    // skeleton route 已在 006-prune-dead-code 中删除
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -1078,10 +1064,12 @@ async fn subrun_status_endpoint_returns_contract_fields_for_durable_snapshot() {
 
     assert_eq!(payload.sub_run_id, "sub-durable");
     assert_eq!(payload.source, SubRunStatusSourceDto::Durable);
-    assert_eq!(payload.status, "completed");
+    assert_eq!(
+        payload.status,
+        astrcode_protocol::http::AgentStatusDto::Completed
+    );
     assert_eq!(payload.step_count, Some(2));
     assert_eq!(payload.estimated_tokens, Some(120));
-    assert!(payload.descriptor.is_some());
     assert_eq!(payload.tool_call_id.as_deref(), Some("call-durable"));
 }
 
@@ -1118,13 +1106,11 @@ async fn subrun_status_endpoint_keeps_storage_mode_parity_for_parent_aborted_sub
             serde_json::from_slice(&bytes).expect("status payload should deserialize");
 
         assert_eq!(payload.source, SubRunStatusSourceDto::Durable);
-        assert_eq!(payload.status, "cancelled");
+        assert_eq!(
+            payload.status,
+            astrcode_protocol::http::AgentStatusDto::Cancelled
+        );
         assert_eq!(payload.storage_mode, expected_mode);
-        let descriptor = payload
-            .descriptor
-            .expect("descriptor should exist for durable aborted subrun");
-        assert_eq!(descriptor.parent_turn_id, "turn-parent");
-        assert_eq!(descriptor.depth, 1);
     }
 }
 
@@ -1190,7 +1176,7 @@ async fn subrun_status_endpoint_reports_live_for_independent_subrun_owned_by_par
             &profile,
             child_session.session_id.clone(),
             Some(child_session.session_id.clone()),
-            Some("turn-parent".to_string()),
+            "turn-parent".to_string(),
             None,
             astrcode_core::SubRunStorageMode::IndependentSession,
         )
@@ -1202,7 +1188,7 @@ async fn subrun_status_endpoint_reports_live_for_independent_subrun_owned_by_par
         .expect("sub-run should be running");
 
     let mut log = EventLog::open(&parent_session.session_id).expect("parent event log should open");
-    log.append(&StorageEvent::SubRunStarted {
+    log.append(&StorageEvent {
         turn_id: Some("turn-parent".to_string()),
         agent: AgentEventContext::sub_run(
             handle.agent_id.clone(),
@@ -1212,19 +1198,15 @@ async fn subrun_status_endpoint_reports_live_for_independent_subrun_owned_by_par
             astrcode_core::SubRunStorageMode::IndependentSession,
             Some(child_session.session_id.clone()),
         ),
-        descriptor: Some(astrcode_core::SubRunDescriptor {
-            sub_run_id: handle.sub_run_id.clone(),
-            parent_turn_id: "turn-parent".to_string(),
-            parent_agent_id: None,
-            depth: 1,
-        }),
-        tool_call_id: Some("call-independent".to_string()),
-        resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides {
-            storage_mode: astrcode_core::SubRunStorageMode::IndependentSession,
-            ..Default::default()
+        payload: StorageEventPayload::SubRunStarted {
+            tool_call_id: Some("call-independent".to_string()),
+            resolved_overrides: astrcode_core::ResolvedSubagentContextOverrides {
+                storage_mode: astrcode_core::SubRunStorageMode::IndependentSession,
+                ..Default::default()
+            },
+            resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
+            timestamp: Some(Utc::now()),
         },
-        resolved_limits: astrcode_core::ResolvedExecutionLimitsSnapshot::default(),
-        timestamp: Some(Utc::now()),
     })
     .expect("sub-run started should append");
 
@@ -1250,7 +1232,10 @@ async fn subrun_status_endpoint_reports_live_for_independent_subrun_owned_by_par
     let payload: SubRunStatusDto =
         serde_json::from_slice(&bytes).expect("status payload should deserialize");
     assert_eq!(payload.source, SubRunStatusSourceDto::Live);
-    assert_eq!(payload.status, "running");
+    assert_eq!(
+        payload.status,
+        astrcode_protocol::http::AgentStatusDto::Running
+    );
     assert_eq!(
         payload.storage_mode,
         SubRunStorageModeDto::IndependentSession
@@ -1260,7 +1245,7 @@ async fn subrun_status_endpoint_reports_live_for_independent_subrun_owned_by_par
 }
 
 #[tokio::test]
-async fn direct_tool_execute_endpoint_returns_not_implemented() {
+async fn direct_tool_execute_endpoint_returns_not_found_after_skeleton_removal() {
     let (state, _guard) = test_state(None);
     let app = build_api_router().with_state(state);
 
@@ -1276,120 +1261,8 @@ async fn direct_tool_execute_endpoint_returns_not_implemented() {
         .await
         .expect("response should be returned");
 
-    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
-    let bytes = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body should be readable");
-    let payload: ToolExecuteResponseDto =
-        serde_json::from_slice(&bytes).expect("response should deserialize");
-    assert!(!payload.accepted);
-}
-
-#[tokio::test]
-async fn subrun_status_strips_descriptor_for_legacy_durable_source() {
-    use astrcode_core::{SubRunDescriptor, SubRunOutcome, SubRunResult};
-    use astrcode_protocol::http::SubRunStatusSourceDto;
-    use astrcode_runtime::{SubRunStatusSnapshot, SubRunStatusSource};
-
-    // 构造一个 legacyDurable 来源的 snapshot，但包含 descriptor 和 tool_call_id
-    let snapshot = SubRunStatusSnapshot {
-        handle: astrcode_core::SubRunHandle {
-            sub_run_id: "sub-legacy".to_string(),
-            agent_id: "agent-legacy".to_string(),
-            agent_profile: "review".to_string(),
-            session_id: "session-legacy".to_string(),
-            child_session_id: None,
-            depth: 1,
-            parent_turn_id: Some("turn-parent".to_string()),
-            parent_agent_id: Some("agent-parent".to_string()),
-            storage_mode: astrcode_core::SubRunStorageMode::SharedSession,
-            status: astrcode_core::AgentStatus::Completed,
-        },
-        descriptor: Some(SubRunDescriptor {
-            sub_run_id: "sub-legacy".to_string(),
-            parent_turn_id: "turn-parent".to_string(),
-            parent_agent_id: Some("agent-parent".to_string()),
-            depth: 1,
-        }),
-        tool_call_id: Some("call-legacy".to_string()),
-        source: SubRunStatusSource::LegacyDurable,
-        result: Some(SubRunResult {
-            status: SubRunOutcome::Completed,
-            handoff: None,
-            failure: None,
-        }),
-        step_count: Some(3),
-        estimated_tokens: Some(100),
-        resolved_overrides: None,
-        resolved_limits: None,
-    };
-
-    let dto = crate::mapper::to_subrun_status_dto(snapshot);
-
-    // Why: legacyDurable 只能表达"可读但 lineage 不完整"，不能把非 durable 事实伪装成完整字段。
-    assert_eq!(dto.source, SubRunStatusSourceDto::LegacyDurable);
-    assert_eq!(
-        dto.descriptor, None,
-        "descriptor must be stripped for legacyDurable"
-    );
-    assert_eq!(
-        dto.tool_call_id, None,
-        "tool_call_id must be stripped for legacyDurable"
-    );
-    assert_eq!(dto.status, "completed");
-    assert_eq!(dto.step_count, Some(3));
-}
-
-#[tokio::test]
-async fn subrun_status_preserves_descriptor_for_durable_source() {
-    use astrcode_core::{SubRunDescriptor, SubRunOutcome, SubRunResult};
-    use astrcode_protocol::http::SubRunStatusSourceDto;
-    use astrcode_runtime::{SubRunStatusSnapshot, SubRunStatusSource};
-
-    let snapshot = SubRunStatusSnapshot {
-        handle: astrcode_core::SubRunHandle {
-            sub_run_id: "sub-modern".to_string(),
-            agent_id: "agent-modern".to_string(),
-            agent_profile: "review".to_string(),
-            session_id: "session-modern".to_string(),
-            child_session_id: None,
-            depth: 1,
-            parent_turn_id: Some("turn-parent".to_string()),
-            parent_agent_id: Some("agent-parent".to_string()),
-            storage_mode: astrcode_core::SubRunStorageMode::SharedSession,
-            status: astrcode_core::AgentStatus::Completed,
-        },
-        descriptor: Some(SubRunDescriptor {
-            sub_run_id: "sub-modern".to_string(),
-            parent_turn_id: "turn-parent".to_string(),
-            parent_agent_id: Some("agent-parent".to_string()),
-            depth: 1,
-        }),
-        tool_call_id: Some("call-modern".to_string()),
-        source: SubRunStatusSource::Durable,
-        result: Some(SubRunResult {
-            status: SubRunOutcome::Completed,
-            handoff: None,
-            failure: None,
-        }),
-        step_count: Some(5),
-        estimated_tokens: Some(200),
-        resolved_overrides: None,
-        resolved_limits: None,
-    };
-
-    let dto = crate::mapper::to_subrun_status_dto(snapshot);
-
-    assert_eq!(dto.source, SubRunStatusSourceDto::Durable);
-    assert!(
-        dto.descriptor.is_some(),
-        "descriptor must be preserved for durable"
-    );
-    assert_eq!(dto.tool_call_id.as_deref(), Some("call-modern"));
-    assert_eq!(
-        dto.descriptor.as_ref().unwrap().parent_turn_id,
-        "turn-parent"
-    );
+    // skeleton route 已在 006-prune-dead-code 中删除
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 // ============================================================================

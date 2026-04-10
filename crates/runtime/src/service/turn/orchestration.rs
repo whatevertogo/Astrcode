@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use anyhow::Result;
 use astrcode_core::{
     AgentEventContext, AstrError, CancelToken, EventTranslator, ExecutionOwner, Phase,
-    StorageEvent, UserMessageOrigin,
+    PromptMetricsPayload, StorageEvent, StorageEventPayload, UserMessageOrigin,
 };
 use astrcode_runtime_agent_control::AgentControl;
 use astrcode_runtime_agent_loop::{
@@ -164,19 +164,23 @@ pub async fn run_session_turn(
         Ok(TurnOutcome::Completed) | Ok(TurnOutcome::Cancelled)
     );
     if let Err(error) = &outcome {
-        let error_event = StorageEvent::Error {
+        let error_event = StorageEvent {
             turn_id: Some(turn_id.to_string()),
             agent: agent.clone(),
-            message: error.to_string(),
-            timestamp: Some(Utc::now()),
+            payload: StorageEventPayload::Error {
+                message: error.to_string(),
+                timestamp: Some(Utc::now()),
+            },
         };
         // 故意忽略：广播错误事件失败时已在处理更重要的错误
         let _ = append_and_broadcast_from_turn_callback(session, &error_event, &mut translator);
-        let turn_done = StorageEvent::TurnDone {
+        let turn_done = StorageEvent {
             turn_id: Some(turn_id.to_string()),
             agent,
-            timestamp: Utc::now(),
-            reason: Some("error".to_string()),
+            payload: StorageEventPayload::TurnDone {
+                timestamp: Utc::now(),
+                reason: Some("error".to_string()),
+            },
         };
         // 故意忽略：广播 TurnDone 失败时已在处理更重要的错误
         let _ = append_and_broadcast_from_turn_callback(session, &turn_done, &mut translator);
@@ -258,11 +262,13 @@ pub async fn execute_turn_chain(
 
         append_and_broadcast(
             state,
-            &StorageEvent::TurnDone {
+            &StorageEvent {
                 turn_id: Some(turn_id.to_string()),
                 agent: agent.clone(),
-                timestamp: Utc::now(),
-                reason: Some(turn_done_reason(&outcome).to_string()),
+                payload: StorageEventPayload::TurnDone {
+                    timestamp: Utc::now(),
+                    reason: Some(turn_done_reason(&outcome).to_string()),
+                },
             },
             translator,
         )
@@ -280,10 +286,17 @@ fn observe_runtime_prompt_metrics(
         return;
     };
 
-    let StorageEvent::PromptMetrics {
-        provider_input_tokens: None,
-        prompt_cache_reuse_hits,
-        prompt_cache_reuse_misses,
+    let StorageEvent {
+        payload:
+            StorageEventPayload::PromptMetrics {
+                metrics:
+                    PromptMetricsPayload {
+                        provider_input_tokens: None,
+                        prompt_cache_reuse_hits,
+                        prompt_cache_reuse_misses,
+                        ..
+                    },
+            },
         ..
     } = event
     else {
@@ -342,12 +355,14 @@ async fn maybe_continue_after_turn(
 
     append_and_broadcast(
         state,
-        &StorageEvent::UserMessage {
+        &StorageEvent {
             turn_id: Some(turn_id.to_string()),
             agent,
-            content: build_auto_continue_nudge(used_tokens, total_budget),
-            timestamp: Utc::now(),
-            origin: UserMessageOrigin::AutoContinueNudge,
+            payload: StorageEventPayload::UserMessage {
+                content: build_auto_continue_nudge(used_tokens, total_budget),
+                timestamp: Utc::now(),
+                origin: UserMessageOrigin::AutoContinueNudge,
+            },
         },
         translator,
     )
@@ -356,15 +371,19 @@ async fn maybe_continue_after_turn(
 }
 
 fn observe_turn_event(stats: &mut TurnExecutionStats, event: &StorageEvent) {
-    match event {
-        StorageEvent::PromptMetrics {
-            estimated_tokens,
-            provider_input_tokens: None,
+    match &event.payload {
+        StorageEventPayload::PromptMetrics {
+            metrics:
+                PromptMetricsPayload {
+                    estimated_tokens,
+                    provider_input_tokens: None,
+                    ..
+                },
             ..
         } => {
             stats.record_prompt_metrics(*estimated_tokens);
         },
-        StorageEvent::AssistantFinal {
+        StorageEventPayload::AssistantFinal {
             content,
             reasoning_content,
             ..

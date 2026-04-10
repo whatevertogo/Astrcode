@@ -4,7 +4,7 @@ use astrcode_core::{
     AgentStatus, ArtifactRef, CancelToken, ChildAgentRef, ChildSessionLineageKind,
     CloseAgentParams, CollaborationResult, CollaborationResultKind, DeliverToParentParams,
     ResumeAgentParams, SendAgentParams, SubRunFailure, SubRunFailureCode, SubRunHandoff,
-    SubRunOutcome, SubRunResult, Tool, ToolContext, WaitAgentParams, WaitUntil,
+    SubRunResult, Tool, ToolContext, WaitAgentParams, WaitUntil,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -27,7 +27,7 @@ impl SubAgentExecutor for RecordingExecutor {
     ) -> astrcode_core::Result<SubRunResult> {
         self.calls.lock().expect("calls lock").push(params);
         Ok(SubRunResult {
-            status: SubRunOutcome::Completed,
+            status: AgentStatus::Completed,
             handoff: Some(SubRunHandoff {
                 summary: "done".to_string(),
                 findings: vec!["checked".to_string()],
@@ -134,7 +134,7 @@ async fn spawn_agent_tool_preserves_running_outcome_in_metadata() {
             _ctx: &ToolContext,
         ) -> astrcode_core::Result<SubRunResult> {
             Ok(SubRunResult {
-                status: SubRunOutcome::Running,
+                status: AgentStatus::Running,
                 handoff: Some(SubRunHandoff {
                     summary: "running".to_string(),
                     findings: vec!["status=running".to_string()],
@@ -180,7 +180,7 @@ async fn spawn_agent_tool_surfaces_failure_display_and_technical_messages_separa
             _ctx: &ToolContext,
         ) -> astrcode_core::Result<SubRunResult> {
             Ok(SubRunResult {
-                status: SubRunOutcome::Failed,
+                status: AgentStatus::Failed,
                 handoff: None,
                 failure: Some(SubRunFailure {
                     code: SubRunFailureCode::Transport,
@@ -230,7 +230,7 @@ async fn spawn_agent_tool_background_returns_subrun_artifact() {
             _ctx: &ToolContext,
         ) -> astrcode_core::Result<SubRunResult> {
             Ok(SubRunResult {
-                status: SubRunOutcome::Running,
+                status: AgentStatus::Running,
                 handoff: Some(SubRunHandoff {
                     summary: "spawnAgent 已在后台启动。".to_string(),
                     findings: Vec::new(),
@@ -349,7 +349,6 @@ fn sample_child_ref() -> ChildAgentRef {
         parent_agent_id: Some("agent-parent".to_string()),
         lineage_kind: ChildSessionLineageKind::Spawn,
         status: AgentStatus::Running,
-        openable: true,
         open_session_id: "session-child-42".to_string(),
     }
 }

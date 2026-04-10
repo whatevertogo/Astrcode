@@ -28,7 +28,10 @@ pub use self::{
     domain::{AgentEvent, Phase},
     phase::{PhaseTracker, target_phase as phase_of_storage_event},
     translate::{EventTranslator, replay_records},
-    types::{CompactTrigger, StorageEvent, StoredEvent, StoredEventLine},
+    types::{
+        CompactTrigger, PromptMetricsPayload, StorageEvent, StorageEventPayload, StoredEvent,
+        StoredEventLine,
+    },
 };
 
 /// 生成全局唯一的会话 ID，格式为 `YYYY-MM-DDTHH-MM-SS-xxxxxxxx`。

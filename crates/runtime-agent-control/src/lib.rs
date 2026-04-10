@@ -20,7 +20,8 @@ use std::{
 
 use astrcode_core::{
     AgentInboxEnvelope, AgentProfile, AgentStatus, AstrError, CancelToken,
-    LiveSubRunControlBoundary, SubRunHandle, SubRunStorageMode,
+    LiveSubRunControlBoundary, SpawnAgentParams, SubRunHandle, SubRunResult, SubRunStorageMode,
+    ToolContext,
 };
 use astrcode_runtime_config::{
     RuntimeConfig, resolve_agent_finalized_retain_limit, resolve_agent_max_concurrent,
@@ -162,6 +163,22 @@ where
         Ok(())
     }
 
+    /// 控制平面本身不持有执行引擎，launch_subagent 应由 runtime service 层实现。
+    ///
+    /// 此 impl 仅满足 trait 约束；实际调用不会到达这里，因为 runtime service
+    /// 会使用自己的 `LiveSubRunControlBoundary` impl 来组合 control + execution。
+    async fn launch_subagent(
+        &self,
+        _params: SpawnAgentParams,
+        _ctx: &ToolContext,
+    ) -> std::result::Result<SubRunResult, AstrError> {
+        Err(AstrError::Internal(
+            "launch_subagent must be called through the runtime service LiveSubRunControlBoundary \
+             impl, not the bare control-plane wrapper"
+                .to_string(),
+        ))
+    }
+
     async fn list_profiles(&self) -> std::result::Result<Vec<AgentProfile>, AstrError> {
         Ok(self.profiles.list_profiles())
     }
@@ -209,7 +226,7 @@ impl AgentControl {
         &self,
         profile: &AgentProfile,
         session_id: impl Into<String>,
-        parent_turn_id: Option<String>,
+        parent_turn_id: String,
         parent_agent_id: Option<String>,
     ) -> Result<SubRunHandle, AgentControlError> {
         self.spawn_with_storage(
@@ -229,7 +246,7 @@ impl AgentControl {
         profile: &AgentProfile,
         session_id: impl Into<String>,
         child_session_id: Option<String>,
-        parent_turn_id: Option<String>,
+        parent_turn_id: String,
         parent_agent_id: Option<String>,
         storage_mode: SubRunStorageMode,
     ) -> Result<SubRunHandle, AgentControlError> {
@@ -433,7 +450,7 @@ impl AgentControl {
         let mut roots = state
             .entries
             .values()
-            .filter(|entry| entry.handle.parent_turn_id.as_deref() == Some(parent_turn_id))
+            .filter(|entry| entry.handle.parent_turn_id == parent_turn_id)
             .filter(|entry| {
                 !entry
                     .parent_agent_id
@@ -443,9 +460,7 @@ impl AgentControl {
                             .agent_index
                             .get(parent_agent_id)
                             .and_then(|parent_sub_run_id| state.entries.get(parent_sub_run_id))
-                            .is_some_and(|parent| {
-                                parent.handle.parent_turn_id.as_deref() == Some(parent_turn_id)
-                            })
+                            .is_some_and(|parent| parent.handle.parent_turn_id == parent_turn_id)
                     })
             })
             .map(|entry| entry.handle.sub_run_id.clone())
@@ -918,13 +933,11 @@ mod tests {
                     parent_agent_id: None,
                     lineage_kind: ChildSessionLineageKind::Spawn,
                     status: AgentStatus::Completed,
-                    openable: true,
                     open_session_id: format!("child-session-{notification_id}"),
                 },
                 kind: ChildSessionNotificationKind::Delivered,
                 summary: format!("summary-{notification_id}"),
                 status: AgentStatus::Completed,
-                open_session_id: format!("child-session-{notification_id}"),
                 source_tool_call_id: None,
                 final_reply_excerpt: Some(format!("final-{notification_id}")),
             },
@@ -935,12 +948,7 @@ mod tests {
     async fn spawn_list_and_wait_track_status() {
         let control = AgentControl::new();
         let handle = control
-            .spawn(
-                &explore_profile(),
-                "session-1",
-                Some("turn-1".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
             .await
             .expect("spawn should succeed");
 
@@ -985,7 +993,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-parent",
-                Some("turn-root".to_string()),
+                "turn-root".to_string(),
                 None,
             )
             .await
@@ -996,7 +1004,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-child",
-                Some("turn-root".to_string()),
+                "turn-root".to_string(),
                 Some(parent.agent_id.clone()),
             )
             .await
@@ -1032,7 +1040,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-1",
-                Some("turn-1".to_string()),
+                "turn-1".to_string(),
                 Some("missing-parent".to_string()),
             )
             .await
@@ -1055,19 +1063,14 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-1",
-                Some("turn-1".to_string()),
+                "turn-1".to_string(),
                 Some("missing-parent".to_string()),
             )
             .await
             .expect_err("spawn should reject unknown parent");
 
         let handle = control
-            .spawn(
-                &explore_profile(),
-                "session-1",
-                Some("turn-1".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
             .await
             .expect("first successful spawn should still get the first id");
 
@@ -1082,7 +1085,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-parent",
-                Some("turn-root".to_string()),
+                "turn-root".to_string(),
                 None,
             )
             .await
@@ -1091,7 +1094,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-child",
-                Some("turn-root".to_string()),
+                "turn-root".to_string(),
                 Some(parent.agent_id.clone()),
             )
             .await
@@ -1100,7 +1103,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-grandchild",
-                Some("turn-root".to_string()),
+                "turn-root".to_string(),
                 Some(child.agent_id.clone()),
             )
             .await
@@ -1128,12 +1131,7 @@ mod tests {
     async fn mark_failed_transitions_agent_to_final_failed_state() {
         let control = AgentControl::new();
         let handle = control
-            .spawn(
-                &explore_profile(),
-                "session-1",
-                Some("turn-1".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
             .await
             .expect("spawn should succeed");
         let _ = control.mark_running(&handle.agent_id).await;
@@ -1157,30 +1155,15 @@ mod tests {
             AgentControl::with_limits(DEFAULT_MAX_AGENT_DEPTH, DEFAULT_MAX_CONCURRENT_AGENTS, 1);
 
         let first = control
-            .spawn(
-                &explore_profile(),
-                "session-1",
-                Some("turn-1".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
             .await
             .expect("first spawn should succeed");
         let second = control
-            .spawn(
-                &explore_profile(),
-                "session-1",
-                Some("turn-2".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-1", "turn-2".to_string(), None)
             .await
             .expect("second spawn should succeed");
         let live = control
-            .spawn(
-                &explore_profile(),
-                "session-1",
-                Some("turn-3".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-1", "turn-3".to_string(), None)
             .await
             .expect("live spawn should succeed");
 
@@ -1219,7 +1202,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-root",
-                Some("turn-root".to_string()),
+                "turn-root".to_string(),
                 None,
             )
             .await
@@ -1228,7 +1211,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-child",
-                Some("turn-root".to_string()),
+                "turn-root".to_string(),
                 Some(root.agent_id.clone()),
             )
             .await
@@ -1240,7 +1223,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-grandchild",
-                Some("turn-root".to_string()),
+                "turn-root".to_string(),
                 Some(child.agent_id.clone()),
             )
             .await
@@ -1255,31 +1238,16 @@ mod tests {
     async fn finalized_agents_release_concurrency_slots() {
         let control = AgentControl::with_limits(8, 2, usize::MAX);
         let first = control
-            .spawn(
-                &explore_profile(),
-                "session-1",
-                Some("turn-1".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
             .await
             .expect("first spawn should succeed");
         let second = control
-            .spawn(
-                &explore_profile(),
-                "session-2",
-                Some("turn-2".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-2", "turn-2".to_string(), None)
             .await
             .expect("second spawn should succeed");
 
         let error = control
-            .spawn(
-                &explore_profile(),
-                "session-3",
-                Some("turn-3".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-3", "turn-3".to_string(), None)
             .await
             .expect_err("third active agent should exceed concurrent limit");
         assert_eq!(
@@ -1289,12 +1257,7 @@ mod tests {
 
         let _ = control.mark_completed(&first.agent_id).await;
         let third = control
-            .spawn(
-                &explore_profile(),
-                "session-3",
-                Some("turn-3".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-3", "turn-3".to_string(), None)
             .await
             .expect("finalizing one agent should release a slot");
         assert_eq!(third.depth, 1);
@@ -1313,7 +1276,7 @@ mod tests {
         let control = AgentControl::new();
         let profile = explore_profile();
         let handle = control
-            .spawn(&profile, "session-1", Some("turn-1".to_string()), None)
+            .spawn(&profile, "session-1", "turn-1".to_string(), None)
             .await
             .expect("spawn should succeed");
         let surface = LiveSubRunControl::new(
@@ -1356,21 +1319,11 @@ mod tests {
     async fn targeted_wait_resolves_only_specific_agent_not_siblings() {
         let control = AgentControl::with_limits(3, 10, 256);
         let agent_a = control
-            .spawn(
-                &explore_profile(),
-                "session-1",
-                Some("turn-1".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
             .await
             .expect("agent A spawn should succeed");
         let agent_b = control
-            .spawn(
-                &explore_profile(),
-                "session-1",
-                Some("turn-1".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
             .await
             .expect("agent B spawn should succeed");
         let _ = control.mark_running(&agent_a.agent_id).await;
@@ -1398,12 +1351,7 @@ mod tests {
     async fn resume_mints_new_execution_for_completed_agent() {
         let control = AgentControl::with_limits(3, 10, 256);
         let handle = control
-            .spawn(
-                &explore_profile(),
-                "session-1",
-                Some("turn-1".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
             .await
             .expect("spawn should succeed");
         let _ = control.mark_running(&handle.agent_id).await;
@@ -1440,12 +1388,7 @@ mod tests {
     async fn resume_rejects_non_final_agent() {
         let control = AgentControl::with_limits(3, 10, 256);
         let handle = control
-            .spawn(
-                &explore_profile(),
-                "session-1",
-                Some("turn-1".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
             .await
             .expect("spawn should succeed");
         let _ = control.mark_running(&handle.agent_id).await;
@@ -1461,38 +1404,28 @@ mod tests {
 
         // 构建两棵独立子树
         let tree_a_parent = control
-            .spawn(
-                &explore_profile(),
-                "session-1",
-                Some("turn-1".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
             .await
             .expect("tree A parent spawn should succeed");
         let tree_a_child = control
             .spawn(
                 &explore_profile(),
                 "session-1",
-                Some("turn-1".to_string()),
+                "turn-1".to_string(),
                 Some(tree_a_parent.agent_id.clone()),
             )
             .await
             .expect("tree A child spawn should succeed");
 
         let tree_b_parent = control
-            .spawn(
-                &explore_profile(),
-                "session-1",
-                Some("turn-1".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
             .await
             .expect("tree B parent spawn should succeed");
         let _tree_b_child = control
             .spawn(
                 &explore_profile(),
                 "session-1",
-                Some("turn-1".to_string()),
+                "turn-1".to_string(),
                 Some(tree_b_parent.agent_id.clone()),
             )
             .await
@@ -1542,21 +1475,11 @@ mod tests {
     async fn resume_reoccupies_concurrency_slot() {
         let control = AgentControl::with_limits(8, 2, usize::MAX);
         let first = control
-            .spawn(
-                &explore_profile(),
-                "session-1",
-                Some("turn-1".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
             .await
             .expect("first spawn should succeed");
         let _second = control
-            .spawn(
-                &explore_profile(),
-                "session-2",
-                Some("turn-2".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-2", "turn-2".to_string(), None)
             .await
             .expect("second spawn should succeed");
 
@@ -1565,12 +1488,7 @@ mod tests {
 
         // first 完成后释放了槽位，可以创建第三个
         let _third = control
-            .spawn(
-                &explore_profile(),
-                "session-3",
-                Some("turn-3".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-3", "turn-3".to_string(), None)
             .await
             .expect("third spawn should succeed after first completed");
 
@@ -1578,12 +1496,7 @@ mod tests {
         let _ = control.resume(&first.agent_id).await;
 
         let error = control
-            .spawn(
-                &explore_profile(),
-                "session-4",
-                Some("turn-4".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-4", "turn-4".to_string(), None)
             .await
             .expect_err("should exceed concurrent limit after resume");
         assert_eq!(
@@ -1613,12 +1526,7 @@ mod tests {
     async fn push_and_drain_inbox_enqueues_and_consumes_envelopes() {
         let control = AgentControl::new();
         let handle = control
-            .spawn(
-                &explore_profile(),
-                "session-1",
-                Some("turn-1".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
             .await
             .expect("spawn should succeed");
         let _ = control.mark_running(&handle.agent_id).await;
@@ -1660,12 +1568,7 @@ mod tests {
     async fn push_inbox_deduplication_by_delivery_id() {
         let control = AgentControl::new();
         let handle = control
-            .spawn(
-                &explore_profile(),
-                "session-1",
-                Some("turn-1".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
             .await
             .expect("spawn should succeed");
 
@@ -1698,12 +1601,7 @@ mod tests {
     async fn wait_for_inbox_resolves_on_new_envelope() {
         let control = AgentControl::new();
         let handle = control
-            .spawn(
-                &explore_profile(),
-                "session-1",
-                Some("turn-1".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
             .await
             .expect("spawn should succeed");
         let _ = control.mark_running(&handle.agent_id).await;
@@ -1735,12 +1633,7 @@ mod tests {
     async fn wait_for_inbox_returns_immediately_for_final_agent() {
         let control = AgentControl::new();
         let handle = control
-            .spawn(
-                &explore_profile(),
-                "session-1",
-                Some("turn-1".to_string()),
-                None,
-            )
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
             .await
             .expect("spawn should succeed");
         let _ = control.mark_running(&handle.agent_id).await;
@@ -1865,7 +1758,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-root",
-                Some("turn-1".to_string()),
+                "turn-1".to_string(),
                 None,
             )
             .await
@@ -1874,7 +1767,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-middle",
-                Some("turn-1".to_string()),
+                "turn-1".to_string(),
                 Some(root.agent_id.clone()),
             )
             .await
@@ -1883,7 +1776,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-leaf",
-                Some("turn-1".to_string()),
+                "turn-1".to_string(),
                 Some(middle.agent_id.clone()),
             )
             .await
@@ -1940,7 +1833,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-root",
-                Some("turn-1".to_string()),
+                "turn-1".to_string(),
                 None,
             )
             .await
@@ -1949,7 +1842,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-middle-a",
-                Some("turn-1".to_string()),
+                "turn-1".to_string(),
                 Some(root.agent_id.clone()),
             )
             .await
@@ -1958,7 +1851,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-leaf-a",
-                Some("turn-1".to_string()),
+                "turn-1".to_string(),
                 Some(middle_a.agent_id.clone()),
             )
             .await
@@ -1967,7 +1860,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-middle-b",
-                Some("turn-1".to_string()),
+                "turn-1".to_string(),
                 Some(root.agent_id.clone()),
             )
             .await
@@ -1976,7 +1869,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-leaf-b",
-                Some("turn-1".to_string()),
+                "turn-1".to_string(),
                 Some(middle_b.agent_id.clone()),
             )
             .await
@@ -2053,7 +1946,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-root",
-                Some("turn-1".to_string()),
+                "turn-1".to_string(),
                 None,
             )
             .await
@@ -2062,7 +1955,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-middle",
-                Some("turn-1".to_string()),
+                "turn-1".to_string(),
                 Some(root.agent_id.clone()),
             )
             .await
@@ -2071,7 +1964,7 @@ mod tests {
             .spawn(
                 &explore_profile(),
                 "session-leaf",
-                Some("turn-1".to_string()),
+                "turn-1".to_string(),
                 Some(middle.agent_id.clone()),
             )
             .await

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    AstrError, SessionTurnAcquireResult, SessionTurnLease, StorageEvent, StoredEvent,
-    generate_session_id,
+    AstrError, SessionTurnAcquireResult, SessionTurnLease, StorageEvent, StorageEventPayload,
+    StoredEvent, generate_session_id,
 };
 use astrcode_runtime_session::SessionState;
 use chrono::Utc;
@@ -91,8 +91,8 @@ impl RuntimeService {
                     source_session_id
                 )));
             };
-            let working_dir = match &first_event.event {
-                StorageEvent::SessionStart { working_dir, .. } => {
+            let working_dir = match &first_event.event.payload {
+                StorageEventPayload::SessionStart { working_dir, .. } => {
                     std::path::PathBuf::from(working_dir)
                 },
                 _ => {
@@ -109,18 +109,25 @@ impl RuntimeService {
             let mut log = session_manager
                 .create_event_log(&branched_session_id, &working_dir)
                 .map_err(ServiceError::from)?;
-            log.append(&StorageEvent::SessionStart {
-                session_id: branched_session_id.clone(),
-                timestamp: Utc::now(),
-                working_dir: working_dir.to_string_lossy().to_string(),
-                parent_session_id: Some(source_session_id.clone()),
-                parent_storage_seq,
+            log.append(&StorageEvent {
+                turn_id: None,
+                agent: astrcode_core::AgentEventContext::default(),
+                payload: StorageEventPayload::SessionStart {
+                    session_id: branched_session_id.clone(),
+                    timestamp: Utc::now(),
+                    working_dir: working_dir.to_string_lossy().to_string(),
+                    parent_session_id: Some(source_session_id.clone()),
+                    parent_storage_seq,
+                },
             })
             .map_err(ServiceError::from)?;
 
             // 分叉只复制已稳定完成的历史，避免把活跃 turn 的半截输出带入新分支。
             for stored in stable_events {
-                if matches!(stored.event, StorageEvent::SessionStart { .. }) {
+                if matches!(
+                    stored.event.payload,
+                    StorageEventPayload::SessionStart { .. }
+                ) {
                     continue;
                 }
                 log.append(&stored.event).map_err(ServiceError::from)?;

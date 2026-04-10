@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use astrcode_core::{StorageEvent, StoredEvent};
+use astrcode_core::{StorageEvent, StorageEventPayload, StoredEvent};
 
 /// 标记为文件访问跟踪的工具名列表，其 `metadata` 中包含 `"path"` 字段。
 const FILE_TOOLS: &[&str] = &["readFile", "editFile", "writeFile"];
@@ -56,11 +56,11 @@ impl FileAccessTracker {
 
     /// Record a storage event if it is a file-access tool result.
     pub(crate) fn record_event(&mut self, event: &StorageEvent) {
-        let StorageEvent::ToolResult {
+        let StorageEventPayload::ToolResult {
             tool_name,
             metadata,
             ..
-        } = event
+        } = &event.payload
         else {
             return;
         };
@@ -121,30 +121,34 @@ mod tests {
     use super::*;
 
     fn tool_result(tool_name: &str, path: &str) -> StorageEvent {
-        StorageEvent::ToolResult {
+        StorageEvent {
             turn_id: Some("turn-1".to_string()),
             agent: AgentEventContext::default(),
-            tool_call_id: "call-1".to_string(),
-            tool_name: tool_name.to_string(),
-            output: "file content".to_string(),
-            success: true,
-            error: None,
-            metadata: Some(json!({"path": path})),
-            duration_ms: 10,
+            payload: StorageEventPayload::ToolResult {
+                tool_call_id: "call-1".to_string(),
+                tool_name: tool_name.to_string(),
+                output: "file content".to_string(),
+                success: true,
+                error: None,
+                metadata: Some(json!({"path": path})),
+                duration_ms: 10,
+            },
         }
     }
 
     fn tool_result_no_metadata(tool_name: &str) -> StorageEvent {
-        StorageEvent::ToolResult {
+        StorageEvent {
             turn_id: Some("turn-1".to_string()),
             agent: AgentEventContext::default(),
-            tool_call_id: "call-1".to_string(),
-            tool_name: tool_name.to_string(),
-            output: "file content".to_string(),
-            success: true,
-            error: None,
-            metadata: None,
-            duration_ms: 10,
+            payload: StorageEventPayload::ToolResult {
+                tool_call_id: "call-1".to_string(),
+                tool_name: tool_name.to_string(),
+                output: "file content".to_string(),
+                success: true,
+                error: None,
+                metadata: None,
+                duration_ms: 10,
+            },
         }
     }
     #[test]
@@ -192,12 +196,14 @@ mod tests {
     #[test]
     fn ignores_non_tool_events() {
         let mut tracker = FileAccessTracker::new();
-        tracker.record_event(&StorageEvent::UserMessage {
+        tracker.record_event(&StorageEvent {
             turn_id: Some("turn-1".to_string()),
             agent: AgentEventContext::default(),
-            content: "hello".to_string(),
-            timestamp: chrono::Utc::now(),
-            origin: astrcode_core::UserMessageOrigin::User,
+            payload: StorageEventPayload::UserMessage {
+                content: "hello".to_string(),
+                timestamp: chrono::Utc::now(),
+                origin: astrcode_core::UserMessageOrigin::User,
+            },
         });
 
         assert!(tracker.recent_files(5).is_empty());

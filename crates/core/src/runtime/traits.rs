@@ -43,20 +43,18 @@ pub trait ManagedRuntimeComponent: Send + Sync {
     async fn shutdown_component(&self) -> std::result::Result<(), AstrError>;
 }
 
-/// 提交 prompt 后返回的稳定回执。
+/// 统一执行回执。
+///
+/// 替代之前的 `PromptAccepted` / `RootExecutionAccepted` / runtime 重复 receipt。
+/// 内部 contract 不再分裂，HTTP 路由可按需做 DTO 投影。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PromptAccepted {
-    pub turn_id: String,
+pub struct ExecutionAccepted {
     pub session_id: String,
+    pub turn_id: String,
+    /// 仅 root execute 等有独立 agent 时存在。
+    pub agent_id: Option<String>,
+    /// 仅 prompt submit 分支场景存在。
     pub branched_from_session_id: Option<String>,
-}
-
-/// 根执行被接收后的稳定回执。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RootExecutionAccepted {
-    pub session_id: String,
-    pub turn_id: String,
-    pub agent_id: String,
 }
 
 /// 会话边界：负责 durable truth 与会话目录语义。
@@ -75,14 +73,18 @@ pub trait SessionTruthBoundary: Send + Sync {
     ) -> std::result::Result<Vec<SessionEventRecord>, AstrError>;
 }
 
-/// 执行边界：负责 submit/interrupt/root-execute/subrun orchestration。
+/// 执行边界：负责 submit/interrupt/root-execute。
+///
+/// `launch_subagent` 已迁入 [`LiveSubRunControlBoundary`]，
+/// 因为它依赖 live child ownership、tool context 和 active control tree，
+/// 而不是纯 root orchestration。
 #[async_trait]
 pub trait ExecutionOrchestrationBoundary: Send + Sync {
     async fn submit_prompt(
         &self,
         session_id: &str,
         text: String,
-    ) -> std::result::Result<PromptAccepted, AstrError>;
+    ) -> std::result::Result<ExecutionAccepted, AstrError>;
 
     async fn interrupt_session(&self, session_id: &str) -> std::result::Result<(), AstrError>;
 
@@ -94,13 +96,7 @@ pub trait ExecutionOrchestrationBoundary: Send + Sync {
         context: Option<String>,
         context_overrides: Option<SubagentContextOverrides>,
         working_dir: std::path::PathBuf,
-    ) -> std::result::Result<RootExecutionAccepted, AstrError>;
-
-    async fn launch_subagent(
-        &self,
-        params: crate::SpawnAgentParams,
-        ctx: &crate::ToolContext,
-    ) -> std::result::Result<SubRunResult, AstrError>;
+    ) -> std::result::Result<ExecutionAccepted, AstrError>;
 }
 
 /// 主循环边界：负责单次 turn 的模型/工具循环。
@@ -114,6 +110,8 @@ pub trait LoopRunnerBoundary: Send + Sync {
 }
 
 /// live 子执行控制平面边界。
+///
+/// 包含 subrun 句柄查询、取消、agent 启动和 profile 枚举。
 #[async_trait]
 pub trait LiveSubRunControlBoundary: Send + Sync {
     async fn get_subrun_handle(
@@ -127,6 +125,16 @@ pub trait LiveSubRunControlBoundary: Send + Sync {
         session_id: &str,
         sub_run_id: &str,
     ) -> std::result::Result<(), AstrError>;
+
+    /// 启动子 agent 执行。
+    ///
+    /// 从 `ExecutionOrchestrationBoundary` 迁入，因为该操作依赖
+    /// live child ownership、tool context 和 active control tree。
+    async fn launch_subagent(
+        &self,
+        params: crate::SpawnAgentParams,
+        ctx: &crate::ToolContext,
+    ) -> std::result::Result<SubRunResult, AstrError>;
 
     async fn list_profiles(&self) -> std::result::Result<Vec<AgentProfile>, AstrError>;
 }

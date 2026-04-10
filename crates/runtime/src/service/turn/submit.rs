@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use astrcode_core::{CancelToken, UserMessageOrigin};
+use astrcode_core::{CancelToken, ExecutionAccepted, UserMessageOrigin};
 use astrcode_runtime_agent_loop::{TurnOutcome, strip_token_budget_marker};
 use astrcode_runtime_execution::{
     prepare_prompt_submission, prepare_prompt_submission_with_origin,
@@ -17,7 +17,7 @@ use crate::{
         resolve_max_continuations,
     },
     service::{
-        PromptAccepted, ServiceResult,
+        ServiceResult,
         execution::AgentExecutionServiceHandle,
         turn::{RuntimeTurnInput, complete_session_execution, run_session_turn},
     },
@@ -29,7 +29,7 @@ impl AgentExecutionServiceHandle {
         &self,
         session_id: &str,
         text: String,
-    ) -> ServiceResult<PromptAccepted> {
+    ) -> ServiceResult<ExecutionAccepted> {
         self.submit_prompt_with_origin(session_id, text, UserMessageOrigin::User)
             .await
     }
@@ -39,7 +39,7 @@ impl AgentExecutionServiceHandle {
         session_id: &str,
         text: String,
         origin: UserMessageOrigin,
-    ) -> ServiceResult<PromptAccepted> {
+    ) -> ServiceResult<ExecutionAccepted> {
         let runtime_config = { self.runtime.config.lock().await.runtime.clone() };
         let parsed_budget = strip_token_budget_marker(&text);
         let default_token_budget = resolve_default_token_budget(&runtime_config);
@@ -147,9 +147,10 @@ impl AgentExecutionServiceHandle {
             }
         });
 
-        Ok(PromptAccepted {
-            turn_id: accepted_turn_id,
+        Ok(ExecutionAccepted {
             session_id: accepted_session_id,
+            turn_id: accepted_turn_id,
+            agent_id: None,
             branched_from_session_id,
         })
     }

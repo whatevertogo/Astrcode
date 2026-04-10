@@ -13,8 +13,8 @@ use astrcode_core::{
     CapabilityCall, ChildAgentRef, ChildSessionNode, ChildSessionNotification,
     ChildSessionNotificationKind, CompactionHookResultContext, HookEvent, HookHandler, HookInput,
     HookOutcome, LlmMessage, ModelRequest, Phase, PolicyContext, PolicyEngine, PolicyVerdict,
-    Result, StorageEvent, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult, ToolHookContext, ToolHookResultContext, UserMessageOrigin,
+    Result, StorageEvent, StorageEventPayload, Tool, ToolCapabilityMetadata, ToolContext,
+    ToolDefinition, ToolExecutionResult, ToolHookContext, ToolHookResultContext, UserMessageOrigin,
 };
 use astrcode_protocol::capability::SideEffectLevel;
 use astrcode_runtime_llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
@@ -83,7 +83,6 @@ pub fn child_delivery_notification_fixture(seed: &str) -> ChildSessionNotificati
     let child_ref = child_agent_ref_fixture(seed);
     ChildSessionNotification {
         notification_id: format!("child-terminal:{seed}:completed"),
-        open_session_id: child_ref.open_session_id.clone(),
         child_ref,
         kind: ChildSessionNotificationKind::Delivered,
         summary: format!("子会话 {seed} 已完成"),
@@ -95,24 +94,23 @@ pub fn child_delivery_notification_fixture(seed: &str) -> ChildSessionNotificati
 
 #[allow(dead_code)]
 pub fn child_delivery_storage_event_fixture(seed: &str) -> StorageEvent {
-    StorageEvent::ChildSessionNotification {
-        turn_id: Some(format!("turn-parent-{seed}")),
+    let turn_id = format!("turn-parent-{seed}");
+
+    StorageEvent {
         agent: astrcode_core::AgentEventContext::sub_run(
             format!("agent-{seed}"),
-            format!("turn-parent-{seed}"),
+            turn_id.clone(),
             "review".to_string(),
             format!("subrun-{seed}"),
             astrcode_core::SubRunStorageMode::IndependentSession,
             Some(format!("session-child-{seed}")),
         ),
-        notification: child_delivery_notification_fixture(seed),
-        timestamp: Some(chrono::Utc::now()),
+        turn_id: Some(turn_id),
+        payload: StorageEventPayload::ChildSessionNotification {
+            notification: child_delivery_notification_fixture(seed),
+            timestamp: Some(chrono::Utc::now()),
+        },
     }
-}
-
-#[allow(dead_code)]
-pub fn legacy_shared_history_error_fixture() -> AstrError {
-    AstrError::Validation("unsupported_legacy_shared_history".to_string())
 }
 
 // ---------------------------------------------------------------------------

@@ -21,7 +21,9 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use astrcode_core::{AgentEventContext, CancelToken, ModelRequest, Result, StorageEvent};
+use astrcode_core::{
+    AgentEventContext, CancelToken, ModelRequest, Result, StorageEvent, StorageEventPayload,
+};
 use astrcode_runtime_llm::{EventSink, LlmEvent, LlmOutput, LlmProvider, LlmRequest};
 use tokio::sync::mpsc;
 
@@ -85,17 +87,17 @@ pub(crate) async fn generate_response(
                 match maybe_event {
                     Some(LlmEvent::TextDelta(text)) => {
                         log::debug!("[delta] {}", text);
-                        on_event(StorageEvent::AssistantDelta {
+                        on_event(StorageEvent {
                             turn_id: Some(turn_id.to_string()),
                             agent: agent.clone(),
-                            token: text,
+                            payload: StorageEventPayload::AssistantDelta { token: text },
                         })?;
                     }
                     Some(LlmEvent::ThinkingDelta(text)) => {
-                        on_event(StorageEvent::ThinkingDelta {
+                        on_event(StorageEvent {
                             turn_id: Some(turn_id.to_string()),
                             agent: agent.clone(),
-                            token: text,
+                            payload: StorageEventPayload::ThinkingDelta { token: text },
                         })?;
                     }
                     // ThinkingSignature 是 Anthropic API 用于计费验证的不透明令牌，
@@ -116,17 +118,17 @@ pub(crate) async fn generate_response(
     while let Ok(event) = event_rx.try_recv() {
         match event {
             LlmEvent::TextDelta(text) => {
-                on_event(StorageEvent::AssistantDelta {
+                on_event(StorageEvent {
                     turn_id: Some(turn_id.to_string()),
                     agent: agent.clone(),
-                    token: text,
+                    payload: StorageEventPayload::AssistantDelta { token: text },
                 })?;
             },
             LlmEvent::ThinkingDelta(text) => {
-                on_event(StorageEvent::ThinkingDelta {
+                on_event(StorageEvent {
                     turn_id: Some(turn_id.to_string()),
                     agent: agent.clone(),
-                    token: text,
+                    payload: StorageEventPayload::ThinkingDelta { token: text },
                 })?;
             },
             LlmEvent::ThinkingSignature(_) | LlmEvent::ToolCallDelta { .. } => {},

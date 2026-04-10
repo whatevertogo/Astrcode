@@ -361,7 +361,7 @@ impl EventLogWriter for EventLog {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{AgentEventContext, StorageEvent};
+    use astrcode_core::{AgentEventContext, StorageEvent, StorageEventPayload};
     use chrono::Utc;
 
     use super::*;
@@ -373,13 +373,15 @@ mod tests {
         let mut log = EventLog::create_at_path(path.clone()).expect("event log");
 
         for index in 0..3 {
-            log.append_stored(&StorageEvent::AssistantFinal {
+            log.append_stored(&StorageEvent {
                 turn_id: Some(format!("turn-{index}")),
                 agent: AgentEventContext::default(),
-                content: "x".repeat(40_000),
-                reasoning_content: None,
-                reasoning_signature: None,
-                timestamp: Some(Utc::now()),
+                payload: StorageEventPayload::AssistantFinal {
+                    content: "x".repeat(40_000),
+                    reasoning_content: None,
+                    reasoning_signature: None,
+                    timestamp: Some(Utc::now()),
+                },
             })
             .expect("append should succeed");
         }

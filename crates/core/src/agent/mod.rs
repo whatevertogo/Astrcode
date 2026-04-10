@@ -21,6 +21,9 @@ pub enum AgentMode {
 }
 
 /// Agent 执行状态。
+///
+/// 这是 subrun / child-agent 唯一的正式状态模型。
+/// protocol 可保留 DTO-only 镜像枚举，但语义和值域必须与此模型一一对应。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentStatus {
@@ -34,12 +37,17 @@ pub enum AgentStatus {
     Cancelled,
     /// 失败结束。
     Failed,
+    /// Token 超限结束。独立终态，不折叠到 Completed 或 Failed。
+    TokenExceeded,
 }
 
 impl AgentStatus {
     /// 判断当前状态是否已经到达终态。
     pub fn is_final(self) -> bool {
-        matches!(self, Self::Completed | Self::Cancelled | Self::Failed)
+        matches!(
+            self,
+            Self::Completed | Self::Cancelled | Self::Failed | Self::TokenExceeded
+        )
     }
 }
 
@@ -139,29 +147,6 @@ pub struct ArtifactRef {
     pub uri: Option<String>,
 }
 
-/// 子执行结果状态。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SubRunOutcome {
-    Running,
-    Completed,
-    Failed,
-    Aborted,
-    TokenExceeded,
-}
-
-impl SubRunOutcome {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Aborted => "aborted",
-            Self::TokenExceeded => "token_exceeded",
-        }
-    }
-}
-
 /// 子执行失败分类。
 ///
 /// 这里使用稳定枚举而不是裸字符串，避免前后端各自维护一套错误码字面量。
@@ -206,7 +191,7 @@ pub struct SubRunFailure {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubRunResult {
-    pub status: SubRunOutcome,
+    pub status: AgentStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff: Option<SubRunHandoff>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -309,19 +294,6 @@ pub struct ResolvedExecutionLimitsSnapshot {
     pub allowed_tools: Vec<String>,
 }
 
-/// 子执行 lineage 的稳定描述。
-///
-/// 与运行态 `SubRunHandle` 区分：该结构只承载 durable 事实，不包含状态字段。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SubRunDescriptor {
-    pub sub_run_id: String,
-    pub parent_turn_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_agent_id: Option<String>,
-    pub depth: usize,
-}
-
 /// Agent 画像定义。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -361,6 +333,9 @@ pub trait AgentProfileCatalog: Send + Sync {
 }
 
 /// 受控子会话的轻量运行句柄。
+///
+/// 这是 subrun 运行时句柄与 lineage 核心事实的唯一 owner。
+/// 所有 lineage 信息直接从此结构读取，不再通过额外的 descriptor 对象。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubRunHandle {
@@ -375,9 +350,8 @@ pub struct SubRunHandle {
     pub child_session_id: Option<String>,
     /// 当前子 Agent 在父子树中的深度。
     pub depth: usize,
-    /// 触发该子会话的父 turn。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_turn_id: Option<String>,
+    /// 触发该子会话的父 turn。必填：lineage 核心事实，不为 downgrade 保持 optional。
+    pub parent_turn_id: String,
     /// 触发该子会话的父 agent。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<String>,
@@ -387,23 +361,6 @@ pub struct SubRunHandle {
     pub storage_mode: SubRunStorageMode,
     /// 当前状态。
     pub status: AgentStatus,
-}
-
-impl SubRunHandle {
-    /// 将运行句柄转换为 lineage descriptor（若 parent turn 可用）。
-    ///
-    /// descriptor 只表达 ownership，不携带运行态 status；
-    /// SharedSession/IndependentSession 的差异不会改变该语义。
-    pub fn descriptor(&self) -> Option<SubRunDescriptor> {
-        self.parent_turn_id
-            .as_ref()
-            .map(|parent_turn_id| SubRunDescriptor {
-                sub_run_id: self.sub_run_id.clone(),
-                parent_turn_id: parent_turn_id.clone(),
-                parent_agent_id: self.parent_agent_id.clone(),
-                depth: self.depth,
-            })
-    }
 }
 
 /// 子会话 lineage 来源。
@@ -421,10 +378,12 @@ pub enum ChildSessionLineageKind {
 pub enum ChildSessionStatusSource {
     Live,
     Durable,
-    LegacyDurable,
 }
 
 /// 父/子协作面暴露的稳定子会话引用。
+///
+/// 只承载 child identity、lineage、status 和唯一 canonical open target。
+/// "是否可打开"由 `open_session_id` 是否存在来判断，不再通过 duplicated bool。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChildAgentRef {
@@ -435,7 +394,7 @@ pub struct ChildAgentRef {
     pub parent_agent_id: Option<String>,
     pub lineage_kind: ChildSessionLineageKind,
     pub status: AgentStatus,
-    pub openable: bool,
+    /// 唯一 canonical child open target。通知、DTO 与其他外层载荷不得重复持有同值字段。
     pub open_session_id: String,
 }
 
@@ -480,6 +439,8 @@ pub struct ChildSessionNode {
 
 impl ChildSessionNode {
     /// 将 durable 节点转换为可返回给调用方的稳定 child ref。
+    ///
+    /// 只返回正式 child 事实，不注入额外 UI 派生值。
     pub fn child_ref(&self) -> ChildAgentRef {
         ChildAgentRef {
             agent_id: self.agent_id.clone(),
@@ -488,7 +449,6 @@ impl ChildSessionNode {
             parent_agent_id: self.parent_agent_id.clone(),
             lineage_kind: self.lineage_kind,
             status: self.status,
-            openable: true,
             open_session_id: self.child_session_id.clone(),
         }
     }
@@ -508,6 +468,8 @@ pub enum ChildSessionNotificationKind {
 }
 
 /// durable 子会话通知。
+///
+/// open target 统一从 `child_ref.open_session_id` 读取，不再在外层重复存放。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChildSessionNotification {
@@ -516,7 +478,6 @@ pub struct ChildSessionNotification {
     pub kind: ChildSessionNotificationKind,
     pub summary: String,
     pub status: AgentStatus,
-    pub open_session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -826,6 +787,21 @@ impl AgentEventContext {
     }
 }
 
+/// 从 SubRunHandle 直接构造事件上下文，替代手工字段拼装。
+impl From<&SubRunHandle> for AgentEventContext {
+    fn from(handle: &SubRunHandle) -> Self {
+        Self {
+            agent_id: Some(handle.agent_id.clone()),
+            parent_turn_id: Some(handle.parent_turn_id.clone()),
+            agent_profile: Some(handle.agent_profile.clone()),
+            sub_run_id: Some(handle.sub_run_id.clone()),
+            invocation_kind: Some(InvocationKind::SubRun),
+            storage_mode: Some(handle.storage_mode),
+            child_session_id: handle.child_session_id.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -884,6 +860,5 @@ mod tests {
         assert_eq!(child_ref.sub_run_id, "subrun-1");
         assert_eq!(child_ref.open_session_id, "session-child");
         assert_eq!(child_ref.parent_agent_id.as_deref(), Some("agent-parent"));
-        assert!(child_ref.openable);
     }
 }

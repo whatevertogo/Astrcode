@@ -5,20 +5,20 @@
 
 ## Context
 
-AstrCode 面向编码场景，但协议层不能退化为只服务代码编辑的专用协议。若把 coding 语义直接写死在顶层消息中，会破坏协议通用性，并让 UI、runtime 和 plugin 的临时字段持续污染公共边界。
+AstrCode 的协议需要面向多 profile 扩展，但不能把 coding-specific 语义直接写入通用顶层字段。否则通用调用上下文会被编码场景特有字段污染，导致插件、runtime、SDK 和 transport 的边界变脏。
 
 ## Decision
 
-冻结调用上下文边界，区分通用上下文与 profile 专属上下文。
+把通用调用上下文与 profile 专属上下文明确分离。
 
-- `InvocationContext` 只承载通用字段，例如 `request_id`、`trace_id`、`session_id`、`caller`、`workspace`、`deadline_ms`、`budget`、`profile`、`metadata`。
-- `profile_context` 承载 profile 专属语义；`coding` 是首个官方 profile。
-- `coding` profile 的编辑器与仓库语义保留在 `profile_context` 中，不提升为通用顶层字段。
-- `workspace` 表达跨 profile 通用的工作区引用；编辑器态与当前编码态信息由 `profile_context` 表达。
-- 未来新增 coding 专属字段，应通过 `coding` profile 自身演进，而不是修改通用顶层结构。
+- `InvocationContext` 只承载通用字段，例如 `request_id`、`trace_id`、`session_id`、`caller`、`workspace`、`deadline_ms`、`budget`、`profile`、`metadata` 等。
+- `InvocationContext.profile_context` 保留给 profile 专属语义。当前 `coding` profile 是首个官方 profile，其他 profile 可并行演进。
+- `coding` profile 的编辑器态、工作区上下文、仓库语义等信息应该放在 `profile_context`，而不是提升为 `InvocationContext` 的通用顶层字段。
+- `WorkspaceRef`、`PeerDescriptor` 等通用引用继续保留在通用 `InvocationContext` 中。
+- profile 专属字段的语义由对应 profile 的实现方定义，而不是由协议层把它们混进通用上下文。
 
 ## Consequences
 
-- 协议保持 coding-first，同时保留扩展到其他 profile 的空间。
-- 通用协议边界更稳定，UI 或运行时特有字段更难渗入公共协议。
-- 插件和 SDK 需要明确区分通用上下文与 `profile_context` 的职责。
+- 协议保持 coding-first，同时为其他 profile 留出干净扩展空间。
+- 通用协议边界更稳定，UI 或运行时特有字段更难渗入公共调用语义。
+- 插件、runtime 和 SDK 需要在处理 `InvocationContext.profile_context` 时明确其 profile 语义责任。

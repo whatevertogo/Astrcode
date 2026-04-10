@@ -6,8 +6,8 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentState, CancelToken, HookEvent, LlmMessage, StorageEvent, ToolCallRequest,
-    UserMessageOrigin,
+    AgentState, CancelToken, HookEvent, LlmMessage, StorageEvent, StorageEventPayload,
+    ToolCallRequest, UserMessageOrigin,
 };
 use astrcode_runtime_llm::LlmOutput;
 use serde_json::json;
@@ -105,14 +105,14 @@ async fn pre_tool_hook_can_rewrite_args_and_post_success_hook_sees_final_payload
     let events = events.lock().expect("events lock");
     assert!(events.iter().any(|event| {
         matches!(
-            event,
-            StorageEvent::ToolCall { args, .. } if args == &json!({ "value": "new" })
+            &event.payload,
+            StorageEventPayload::ToolCall { args, .. } if args == &json!({ "value": "new" })
         )
     }));
     assert!(events.iter().any(|event| {
         matches!(
-            event,
-            StorageEvent::ToolResult { output, .. } if output == "{\"value\":\"new\"}"
+            &event.payload,
+            StorageEventPayload::ToolResult { output, .. } if output == "{\"value\":\"new\"}"
         )
     }));
 
@@ -176,8 +176,8 @@ async fn pre_tool_hook_can_block_tool_execution_without_running_the_tool() {
     let events = events.lock().expect("events lock");
     assert!(events.iter().any(|event| {
         matches!(
-            event,
-            StorageEvent::ToolResult { error, success, .. }
+            &event.payload,
+            StorageEventPayload::ToolResult { error, success, .. }
                 if !success && error.as_deref() == Some("hook 'blocking-tool-hook' blocked tool call: blocked by hook policy")
         )
     }));
@@ -300,7 +300,13 @@ async fn manual_compact_runs_pre_and_post_compact_hooks() {
         .await
         .expect("manual compact should succeed");
 
-    assert!(matches!(event, Some(StorageEvent::CompactApplied { .. })));
+    assert!(matches!(
+        event,
+        Some(StorageEvent {
+            payload: StorageEventPayload::CompactApplied { .. },
+            ..
+        })
+    ));
     let pre_hits = pre_hits.lock().expect("pre hits");
     assert_eq!(pre_hits.len(), 1);
     assert_eq!(

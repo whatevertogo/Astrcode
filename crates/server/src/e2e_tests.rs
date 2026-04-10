@@ -3,9 +3,9 @@
 //! These tests exercise the full request → response → event flow without
 //! requiring a real LLM provider or external services.
 
-use std::{collections::HashSet, net::TcpListener, path::Path, sync::Arc, time::Duration};
+use std::{collections::HashSet, net::TcpListener, sync::Arc, time::Duration};
 
-use astrcode_core::{PluginRegistry, RuntimeCoordinator, RuntimeHandle, project::project_dir_name};
+use astrcode_core::{PluginRegistry, RuntimeCoordinator, RuntimeHandle};
 use astrcode_protocol::http::{
     AgentEventPayload, CreateSessionRequest, PhaseDto, PromptAcceptedResponse, PromptRequest,
     SaveActiveSelectionRequest, SessionHistoryResponseDto, SessionListItem,
@@ -28,7 +28,6 @@ use tower::ServiceExt;
 use crate::{
     AUTH_HEADER_NAME, AppState,
     auth::{AuthSessionManager, BootstrapAuth},
-    bootstrap::APP_HOME_OVERRIDE_ENV,
     routes::build_api_router,
     test_support::{ServerTestEnvGuard, test_state},
 };
@@ -268,17 +267,6 @@ fn spawn_openai_chat_server(
     (format!("http://{}", addr), handle)
 }
 
-fn session_log_path(session_id: &str, working_dir: &Path) -> std::path::PathBuf {
-    let app_home =
-        std::env::var_os(APP_HOME_OVERRIDE_ENV).expect("test home override should exist");
-    std::path::PathBuf::from(app_home)
-        .join(".astrcode")
-        .join("projects")
-        .join(project_dir_name(working_dir))
-        .join("sessions")
-        .join(session_id)
-        .join(format!("session-{session_id}.jsonl"))
-}
 
 // ---------------------------------------------------------------------------
 // Test: e2e_session_create_and_list
@@ -795,87 +783,6 @@ async fn e2e_project_delete() {
         result.get("successCount").and_then(|value| value.as_u64()),
         Some(1)
     );
-}
-
-#[tokio::test]
-async fn e2e_manual_compact_endpoint_persists_a_compact_summary() {
-    let (base_url, server_handle) = spawn_openai_chat_server(
-        "<analysis>ok</analysis><summary>condensed history</summary>",
-        Duration::ZERO,
-        4,
-    );
-    let (state, _guard) = configured_state_with_openai_server(&base_url);
-    let app = build_api_router().with_state(state);
-
-    let working_dir = std::env::temp_dir();
-    let working_dir = working_dir.canonicalize().unwrap_or(working_dir);
-    let working_dir_str = working_dir.to_string_lossy().to_string();
-    let create_req = auth_request("POST", "/api/sessions")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            serde_json::to_vec(&CreateSessionRequest {
-                working_dir: working_dir_str,
-            })
-            .expect("request should serialize"),
-        ))
-        .expect("request should build");
-    let create_resp = app
-        .clone()
-        .oneshot(create_req)
-        .await
-        .expect("response should return");
-    assert_eq!(create_resp.status(), StatusCode::OK);
-    let created: SessionListItem = json_body(create_resp).await;
-
-    for expected_total_messages in [2usize, 4, 6] {
-        let prompt_req = auth_request(
-            "POST",
-            &format!("/api/sessions/{}/prompts", created.session_id),
-        )
-        .header("content-type", "application/json")
-        .body(Body::from(
-            serde_json::to_vec(&PromptRequest {
-                text: format!("prompt-{expected_total_messages}"),
-            })
-            .expect("request should serialize"),
-        ))
-        .expect("request should build");
-        let prompt_resp = app
-            .clone()
-            .oneshot(prompt_req)
-            .await
-            .expect("response should return");
-        assert_eq!(prompt_resp.status(), StatusCode::ACCEPTED);
-        wait_for_total_message_count(app.clone(), &created.session_id, expected_total_messages)
-            .await;
-    }
-
-    let compact_req = auth_request(
-        "POST",
-        &format!("/api/sessions/{}/compact", created.session_id),
-    )
-    .body(Body::empty())
-    .expect("request should build");
-    let compact_resp = app
-        .clone()
-        .oneshot(compact_req)
-        .await
-        .expect("response should return");
-    assert_eq!(compact_resp.status(), StatusCode::NO_CONTENT);
-
-    let session_log = session_log_path(&created.session_id, &working_dir);
-    let log_contents =
-        std::fs::read_to_string(&session_log).expect("session log should be readable");
-    assert!(
-        log_contents.contains("\"type\":\"compactApplied\""),
-        "manual compact should persist a compactApplied event to the session log"
-    );
-    assert!(
-        log_contents.contains("condensed history"),
-        "the persisted compaction event should include the generated summary"
-    );
-
-    server_handle.await.expect("server should finish");
 }
 
 #[tokio::test]

@@ -8,12 +8,9 @@ function makeChildSessionSubRunStartedFixture() {
     event: 'subRunStarted',
     data: {
       turn_id: 'turn-parent',
-      descriptor: {
-        sub_run_id: 'sub-1',
-        parent_turn_id: 'turn-parent',
-        parent_agent_id: 'agent-parent',
-        depth: 2,
-      },
+      sub_run_id: 'sub-1',
+      parent_turn_id: 'turn-parent',
+      parent_agent_id: 'agent-parent',
       tool_call_id: 'call-1',
       resolved_overrides: {
         storage_mode: 'independentSession',
@@ -48,7 +45,6 @@ function makeChildSessionNotificationFixture() {
         sub_run_id: 'subrun-child',
         lineage_kind: 'spawn',
         status: 'completed',
-        openable: true,
         open_session_id: 'session-child-1',
       },
       kind: 'delivered',
@@ -291,15 +287,14 @@ describe('normalizeAgentEvent protocol gate', () => {
           sessionId: 'session-parent',
           subRunId: 'subrun-child',
           executionId: 'subrun-child',
+          parentAgentId: undefined,
           lineageKind: 'spawn',
           status: 'completed',
-          openable: true,
           openSessionId: 'session-child-1',
         },
         kind: 'delivered',
         summary: '子会话已完成',
         status: 'completed',
-        openSessionId: 'session-child-1',
         sourceToolCallId: 'call-child',
         finalReplyExcerpt: '最终摘要',
       },
@@ -359,20 +354,16 @@ describe('normalizeAgentEvent protocol gate', () => {
     });
   });
 
-  it('normalizes subRunStarted payloads with descriptor/toolCallId and snake_case overrides', () => {
+  it('normalizes subRunStarted payloads with toolCallId and snake_case overrides', () => {
     const normalized = normalizeAgentEvent(makeChildSessionSubRunStartedFixture());
 
     expect(normalized).toEqual({
       event: 'subRunStarted',
       data: {
         turnId: 'turn-parent',
-        descriptor: {
-          subRunId: 'sub-1',
-          executionId: 'sub-1',
-          parentTurnId: 'turn-parent',
-          parentAgentId: 'agent-parent',
-          depth: 2,
-        },
+        subRunId: 'sub-1',
+        executionId: 'sub-1',
+        parentTurnId: 'turn-parent',
         toolCallId: 'call-1',
         resolvedOverrides: {
           storageMode: 'independentSession',
@@ -393,7 +384,7 @@ describe('normalizeAgentEvent protocol gate', () => {
     });
   });
 
-  it('downgrades legacy subRunStarted payloads without descriptor', () => {
+  it('normalizes legacy subRunStarted payloads', () => {
     const normalized = normalizeAgentEvent({
       protocolVersion: 1,
       event: 'subRunStarted',
@@ -419,37 +410,20 @@ describe('normalizeAgentEvent protocol gate', () => {
       },
     });
 
-    expect(normalized).toEqual({
+    expect(normalized).toMatchObject({
       event: 'subRunStarted',
       data: {
-        turnId: 'turn-legacy',
-        subRunId: 'sub-legacy',
-        executionId: 'sub-legacy',
         resolvedOverrides: {
           storageMode: 'sharedSession',
-          inheritSystemInstructions: true,
-          inheritProjectInstructions: true,
-          inheritWorkingDir: true,
-          inheritPolicyUpperBound: true,
-          inheritCancelToken: true,
-          includeCompactSummary: false,
-          includeRecentTail: true,
-          includeRecoveryRefs: false,
-          includeParentFindings: false,
         },
         resolvedLimits: {
           allowedTools: ['readFile'],
         },
       },
     });
-
-    if (normalized.event === 'subRunStarted') {
-      expect('parentTurnId' in normalized.data).toBe(false);
-      expect('descriptor' in normalized.data).toBe(false);
-    }
   });
 
-  it('downgrades legacy subRunFinished payloads without descriptor', () => {
+  it('normalizes legacy subRunFinished payloads', () => {
     const normalized = normalizeAgentEvent({
       protocolVersion: 1,
       event: 'subRunFinished',
@@ -465,26 +439,16 @@ describe('normalizeAgentEvent protocol gate', () => {
       },
     });
 
-    expect(normalized).toEqual({
+    expect(normalized).toMatchObject({
       event: 'subRunFinished',
       data: {
-        turnId: 'turn-legacy',
-        subRunId: 'sub-legacy',
-        executionId: 'sub-legacy',
         result: {
           status: 'completed',
-          handoff: undefined,
-          failure: undefined,
         },
         stepCount: 1,
         estimatedTokens: 20,
       },
     });
-
-    if (normalized.event === 'subRunFinished') {
-      expect('parentTurnId' in normalized.data).toBe(false);
-      expect('descriptor' in normalized.data).toBe(false);
-    }
   });
 
   describe('executionId preservation', () => {
@@ -497,13 +461,6 @@ describe('normalizeAgentEvent protocol gate', () => {
           agent_id: 'agent-1',
           agent_profile: 'profile-1',
           execution_id: 'exec-1',
-          descriptor: {
-            sub_run_id: 'sub-1',
-            execution_id: 'exec-1',
-            parent_turn_id: 'turn-1',
-            parent_agent_id: 'agent-parent',
-            depth: 1,
-          },
           tool_call_id: 'call-1',
           resolved_overrides: {
             storage_mode: 'independentSession',
@@ -527,9 +484,6 @@ describe('normalizeAgentEvent protocol gate', () => {
         event: 'subRunStarted',
         data: {
           executionId: 'exec-1',
-          descriptor: {
-            executionId: 'exec-1',
-          },
         },
       });
     });

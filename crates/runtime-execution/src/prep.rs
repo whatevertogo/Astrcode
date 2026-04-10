@@ -15,8 +15,8 @@ use std::{collections::HashSet, sync::Arc};
 use astrcode_core::{
     AgentEventContext, AgentMode, AgentProfile, AgentState, ArtifactRef, AstrError, ExecutionOwner,
     HookHandler, InvocationKind, LlmMessage, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, SpawnAgentParams, StorageEvent, SubRunFailure,
-    SubRunFailureCode, SubRunHandoff, SubRunStorageMode, SubagentContextOverrides,
+    ResolvedSubagentContextOverrides, SpawnAgentParams, StorageEvent, StorageEventPayload,
+    SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunStorageMode, SubagentContextOverrides,
     UserMessageOrigin,
 };
 use astrcode_runtime_prompt::PromptDeclaration;
@@ -337,12 +337,14 @@ pub fn prepare_prompt_submission_with_origin(
     origin: UserMessageOrigin,
 ) -> PreparedPromptSubmission {
     PreparedPromptSubmission {
-        user_event: StorageEvent::UserMessage {
+        user_event: StorageEvent {
             turn_id: Some(turn_id.to_string()),
             agent: AgentEventContext::default(),
-            content: text.clone(),
-            timestamp: chrono::Utc::now(),
-            origin,
+            payload: StorageEventPayload::UserMessage {
+                content: text.clone(),
+                timestamp: chrono::Utc::now(),
+                origin,
+            },
         },
         execution_owner: ExecutionOwner::root(
             session_id.to_string(),
@@ -406,12 +408,14 @@ pub fn prepare_root_execution_launch(
 ) -> RootExecutionLaunch {
     let agent = AgentEventContext::root_execution(root_agent_id, profile_id);
     RootExecutionLaunch {
-        user_event: StorageEvent::UserMessage {
+        user_event: StorageEvent {
             turn_id: Some(turn_id.to_string()),
             agent: agent.clone(),
-            content: task_payload,
-            timestamp: chrono::Utc::now(),
-            origin: UserMessageOrigin::User,
+            payload: StorageEventPayload::UserMessage {
+                content: task_payload,
+                timestamp: chrono::Utc::now(),
+                origin: UserMessageOrigin::User,
+            },
         },
         execution_owner: ExecutionOwner::root(
             session_id.to_string(),
@@ -692,7 +696,7 @@ mod tests {
                 session_id: "session-1".to_string(),
                 child_session_id: None,
                 depth: 1,
-                parent_turn_id: Some("turn-1".to_string()),
+                parent_turn_id: "turn-1".to_string(),
                 parent_agent_id: None,
                 agent_profile: "plan".to_string(),
                 storage_mode: SubRunStorageMode::SharedSession,
@@ -719,7 +723,7 @@ mod tests {
                 session_id: "session-1".to_string(),
                 child_session_id: None,
                 depth: 1,
-                parent_turn_id: Some("turn-1".to_string()),
+                parent_turn_id: "turn-1".to_string(),
                 parent_agent_id: None,
                 agent_profile: "plan".to_string(),
                 storage_mode: SubRunStorageMode::SharedSession,
@@ -753,7 +757,7 @@ mod tests {
                 session_id: "session-1".to_string(),
                 child_session_id: Some("child-1".to_string()),
                 depth: 1,
-                parent_turn_id: Some("turn-1".to_string()),
+                parent_turn_id: "turn-1".to_string(),
                 parent_agent_id: None,
                 agent_profile: "plan".to_string(),
                 storage_mode: SubRunStorageMode::IndependentSession,
@@ -936,8 +940,8 @@ mod tests {
         assert_eq!(prepared.execution_owner.root_session_id, "session-1");
         assert_eq!(prepared.execution_owner.root_turn_id, "turn-1");
         assert!(matches!(
-            prepared.user_event,
-            astrcode_core::StorageEvent::UserMessage { .. }
+            prepared.user_event.payload,
+            astrcode_core::StorageEventPayload::UserMessage { .. }
         ));
     }
 
@@ -952,8 +956,8 @@ mod tests {
         );
 
         assert!(matches!(
-            prepared.user_event,
-            astrcode_core::StorageEvent::UserMessage {
+            prepared.user_event.payload,
+            astrcode_core::StorageEventPayload::UserMessage {
                 origin: astrcode_core::UserMessageOrigin::ReactivationPrompt,
                 ..
             }
@@ -1005,8 +1009,8 @@ mod tests {
         assert_eq!(launch.agent.agent_id.as_deref(), Some("root-agent-1"));
         assert_eq!(launch.execution_owner.root_session_id, "session-1");
         assert!(matches!(
-            launch.user_event,
-            astrcode_core::StorageEvent::UserMessage { .. }
+            launch.user_event.payload,
+            astrcode_core::StorageEventPayload::UserMessage { .. }
         ));
     }
 }

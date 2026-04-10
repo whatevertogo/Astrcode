@@ -114,7 +114,7 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
                   subRunId: message.childRef.subRunId,
                   kind: message.notificationKind,
                   status: message.status,
-                  openSessionId: message.openSessionId,
+                  openSessionId: message.childRef.openSessionId,
                 },
                 null,
                 2
