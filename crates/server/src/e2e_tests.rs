@@ -3,9 +3,9 @@
 //! These tests exercise the full request → response → event flow without
 //! requiring a real LLM provider or external services.
 
-use std::{collections::HashSet, net::TcpListener, path::Path, sync::Arc, time::Duration};
+use std::{collections::HashSet, net::TcpListener, sync::Arc, time::Duration};
 
-use astrcode_core::{PluginRegistry, RuntimeCoordinator, RuntimeHandle, project::project_dir_name};
+use astrcode_core::{PluginRegistry, RuntimeCoordinator, RuntimeHandle};
 use astrcode_protocol::http::{
     AgentEventPayload, CreateSessionRequest, PhaseDto, PromptAcceptedResponse, PromptRequest,
     SaveActiveSelectionRequest, SessionHistoryResponseDto, SessionListItem,
@@ -28,7 +28,6 @@ use tower::ServiceExt;
 use crate::{
     AUTH_HEADER_NAME, AppState,
     auth::{AuthSessionManager, BootstrapAuth},
-    bootstrap::APP_HOME_OVERRIDE_ENV,
     routes::build_api_router,
     test_support::{ServerTestEnvGuard, test_state},
 };
@@ -268,17 +267,6 @@ fn spawn_openai_chat_server(
     (format!("http://{}", addr), handle)
 }
 
-fn session_log_path(session_id: &str, working_dir: &Path) -> std::path::PathBuf {
-    let app_home =
-        std::env::var_os(APP_HOME_OVERRIDE_ENV).expect("test home override should exist");
-    std::path::PathBuf::from(app_home)
-        .join(".astrcode")
-        .join("projects")
-        .join(project_dir_name(working_dir))
-        .join("sessions")
-        .join(session_id)
-        .join(format!("session-{session_id}.jsonl"))
-}
 
 // ---------------------------------------------------------------------------
 // Test: e2e_session_create_and_list
