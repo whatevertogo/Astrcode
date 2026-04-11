@@ -91,15 +91,13 @@ impl AgentExecutionServiceHandle {
         }
     }
 
-    /// 按 agent 所有权子树执行级联关闭，而非按 parent turn 关闭。
+    /// 按 agent 所有权子树执行级联关闭。
     ///
-    /// 与 `cancel_subrun` 不同，此方法：
-    /// 1. 先收集子树中所有后代的 sub_run_id
-    /// 2. 按 leaf-first 顺序取消（先深后浅）
-    /// 3. 为每个被关闭的后代持久化 ChildSessionNotification(Closed)
-    ///
-    /// 这确保关闭传播遵循 agent ownership tree 语义，
-    /// 而不是依赖 parent_turn_id 的隐式分组。
+    /// 使用四工具模型的 `terminate_subtree` 语义：
+    /// 1. 设置 lifecycle = Terminated + 触发 cancel token
+    /// 2. 清理 inbox 和 discard parent deliveries
+    /// 3. 按 leaf-first 顺序收集子树中所有后代
+    /// 4. 为每个被关闭的后代持久化 ChildSessionNotification(Closed)
     pub async fn close_agent_subtree(
         &self,
         session_id: &str,
@@ -111,7 +109,7 @@ impl AgentExecutionServiceHandle {
 
         if !cascade {
             // 非 cascade 模式只关闭目标 agent 自身
-            self.runtime.agent_control.cancel(agent_id).await;
+            self.runtime.agent_control.terminate_subtree(agent_id).await;
             self.emit_closed_notification(&session_state, agent_id)
                 .await;
             return Ok(vec![agent_id.to_string()]);
@@ -132,14 +130,19 @@ impl AgentExecutionServiceHandle {
 
         // 先关闭所有后代
         for handle in &sorted_subtree {
-            let _ = self.runtime.agent_control.cancel(&handle.agent_id).await;
+            // 每个后代单独 terminate，确保各自的 inbox 和 deliveries 被清理
+            let _ = self
+                .runtime
+                .agent_control
+                .terminate_subtree(&handle.agent_id)
+                .await;
             self.emit_closed_notification(&session_state, &handle.agent_id)
                 .await;
             closed_ids.push(handle.agent_id.clone());
         }
 
         // 最后关闭目标 agent 自身
-        let _ = self.runtime.agent_control.cancel(agent_id).await;
+        let _ = self.runtime.agent_control.terminate_subtree(agent_id).await;
         self.emit_closed_notification(&session_state, agent_id)
             .await;
         closed_ids.push(agent_id.to_string());

@@ -938,17 +938,17 @@ describe('buildSubRunView', () => {
     expect(view?.childSessionId).toBe('session-child-ind');
   });
 
-  it('recovers root sub-runs from spawnAgent tool metadata when lifecycle events are missing', () => {
+  it('recovers root sub-runs from spawn tool metadata when lifecycle events are missing', () => {
     const messages: Message[] = [
       {
         id: 'spawn-tool-call-a',
         kind: 'toolCall',
         turnId: 'turn-root',
         toolCallId: 'call-a',
-        toolName: 'spawnAgent',
+        toolName: 'spawn',
         status: 'ok',
         args: { prompt: 'task-a' },
-        output: 'spawnAgent 已在后台启动。',
+        output: 'spawn 已在后台启动。',
         metadata: {
           agentRef: {
             agentId: 'agent-1',
@@ -964,10 +964,10 @@ describe('buildSubRunView', () => {
         kind: 'toolCall',
         turnId: 'turn-root',
         toolCallId: 'call-b',
-        toolName: 'spawnAgent',
+        toolName: 'spawn',
         status: 'ok',
         args: { prompt: 'task-b' },
-        output: 'spawnAgent 已在后台启动。',
+        output: 'spawn 已在后台启动。',
         metadata: {
           agentRef: {
             agentId: 'agent-2',
@@ -1024,17 +1024,17 @@ describe('buildSubRunView', () => {
     expect(view?.title).toBe('explore');
   });
 
-  it('merges spawnAgent fallback refs with real lifecycle records without duplication', () => {
+  it('merges spawn fallback refs with real lifecycle records without duplication', () => {
     const messages: Message[] = [
       {
         id: 'spawn-tool-call-a',
         kind: 'toolCall',
         turnId: 'turn-root',
         toolCallId: 'call-a',
-        toolName: 'spawnAgent',
+        toolName: 'spawn',
         status: 'ok',
         args: { prompt: 'task-a' },
-        output: 'spawnAgent 已在后台启动。',
+        output: 'spawn 已在后台启动。',
         metadata: {
           agentRef: {
             agentId: 'agent-1',

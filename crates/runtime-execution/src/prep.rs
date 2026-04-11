@@ -220,7 +220,7 @@ fn build_child_prompt_declarations(
             priority_hint: Some(100),
             always_include: true,
             source: astrcode_runtime_prompt::PromptDeclarationSource::Builtin,
-            capability_name: Some("spawnAgent".to_string()),
+            capability_name: Some("spawn".to_string()),
             origin: Some(format!("agent-profile:{}", profile.id)),
         });
     }
@@ -247,7 +247,7 @@ fn build_inherited_context_prompt_declarations(
             priority_hint: Some(540),
             always_include: true,
             source: astrcode_runtime_prompt::PromptDeclarationSource::Builtin,
-            capability_name: Some("spawnAgent".to_string()),
+            capability_name: Some("spawn".to_string()),
             origin: Some("child-context:compact-summary".to_string()),
         });
     }
@@ -273,7 +273,7 @@ fn build_inherited_context_prompt_declarations(
             priority_hint: Some(550),
             always_include: true,
             source: astrcode_runtime_prompt::PromptDeclarationSource::Builtin,
-            capability_name: Some("spawnAgent".to_string()),
+            capability_name: Some("spawn".to_string()),
             origin: Some("child-context:recent-tail".to_string()),
         });
     }
@@ -633,7 +633,7 @@ pub fn build_background_subrun_handoff(
     artifacts.extend(build_result_artifacts(child));
 
     SubRunHandoff {
-        summary: "spawnAgent 已在后台启动。".to_string(),
+        summary: "spawn 已在后台启动。".to_string(),
         findings: Vec::new(),
         artifacts,
     }
@@ -766,7 +766,7 @@ mod tests {
             "session-parent-1",
         );
 
-        assert_eq!(handoff.summary, "spawnAgent 已在后台启动。");
+        assert_eq!(handoff.summary, "spawn 已在后台启动。");
         assert_eq!(handoff.artifacts[0].kind, "subRun");
         assert_eq!(handoff.artifacts[0].id, "subrun-1");
         assert_eq!(handoff.artifacts[1].kind, "agent");

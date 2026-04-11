@@ -1,5 +1,7 @@
 # Migration: 四工具协作面切换顺序与调用方清单
 
+> **状态**: 迁移已完成。Phase 1-6 全部落地，旧六工具公开面已彻底删除。
+
 ## 迁移目标
 
 在不保留公开兼容层的前提下，把当前协作系统从旧六工具模型切换到四工具模型，并保证 durable mailbox、Idle 生命周期和调用方命名同步完成。
@@ -8,33 +10,33 @@
 
 ### Core / DTO / 协议
 
-| Path | Current Risk | Required Change |
-|------|--------------|-----------------|
-| `crates/core/src/agent/mod.rs` | 旧 DTO、旧 `AgentStatus`、旧 envelope 结构仍是公开真相 | 拆状态模型，新增四工具 DTO 与 mailbox durable 事件 |
-| `crates/core/src/action.rs` | 仍引用旧工具名 | 改成四工具心智描述 |
+| Path | Status | Change |
+|------|--------|--------|
+| `crates/core/src/agent/mod.rs` | ✓ 完成 | 拆出 lifecycle/outcome 子模块，新增四工具 DTO 与 mailbox durable 事件 |
+| `crates/core/src/action.rs` | ✓ 完成 | 已迁移到四工具心智描述 |
 
 ### Runtime / Control / Tool
 
-| Path | Current Risk | Required Change |
-|------|--------------|-----------------|
-| `crates/runtime-agent-control/src/lib.rs` | root 未注册、live inbox 仅服务旧 send/deliver 模型 | 注册 root、升级 live inbox/wake queue 与 handle 语义 |
-| `crates/runtime-agent-tool/src/*` | 仍注册旧六工具 | 改成四工具工具实现与 schema |
-| `crates/runtime/src/builtin_capabilities.rs` | capability registry 仍暴露旧工具 | 只注册 `spawn/send/observe/close` |
-| `crates/runtime/src/service/execution/collaboration.rs` | 仍按 send/wait/close/resume/deliver 执行 | 按四工具与 mailbox durable 语义重写 |
-| `crates/runtime/src/service/execution/root.rs` | root agent 未进入 control 树 | 接入 `register_root_agent(...)` |
-| `crates/runtime-agent-loop/src/subagent.rs` | 仍按 Child Session Delivery 注入旧上行交付 | 改成 Agent Mailbox Batch 注入 |
-| `crates/runtime-prompt/src/contributors/workflow_examples.rs` | few-shot 仍教授旧工具 | 重写为四工具协作心智 |
-| `crates/runtime-session/src/*` | 只有单事件 append | 接入 mailbox 事件追加与 replay 所需读路径 |
+| Path | Status | Change |
+|------|--------|--------|
+| `crates/runtime-agent-control/src/lib.rs` | ✓ 完成 | root 已注册，lifecycle/outcome 独立管理，inbox 升级 |
+| `crates/runtime-agent-tool/src/*` | ✓ 完成 | 四工具实现（spawn/send/observe/close） |
+| `crates/runtime/src/builtin_capabilities.rs` | ✓ 完成 | 只注册四工具 |
+| `crates/runtime/src/service/execution/collaboration.rs` | ✓ 完成 | 按 mailbox durable 语义重写 |
+| `crates/runtime/src/service/execution/root.rs` | ✓ 完成 | root agent 已接入控制树 |
+| `crates/runtime-agent-loop/src/subagent.rs` | ✓ 完成 | Agent Mailbox Batch 注入 |
+| `crates/runtime-prompt/src/contributors/workflow_examples.rs` | ✓ 完成 | 重写为四工具协作心智 |
+| `crates/runtime-session/src/*` | ✓ 完成 | mailbox 事件追加与 replay |
 
 ### Server / Frontend / Tests
 
-| Path | Current Risk | Required Change |
-|------|--------------|-----------------|
-| `crates/server/src/tests/session_contract_tests.rs` | 仍出现 `closeAgent` 等旧命名 | 改成四工具合同验证 |
-| `frontend/src/hooks/useAgent.ts` | 仍调用 `closeAgent` | 改用新 close 调用面 |
-| `frontend/src/lib/api/sessions.ts` | 仍暴露旧 API 名称 | 改成四工具命名与响应类型 |
-| `crates/runtime-agent-tool/src/tests.rs` | 全量旧工具测试 | 删除或改写成四工具行为测试 |
-| `crates/runtime-agent-loop/src/agent_loop/tests/regression.rs` | regression 仍依赖 `sendAgent/closeAgent` | 迁移到四工具事件序列 |
+| Path | Status | Change |
+|------|--------|--------|
+| `crates/server/src/tests/session_contract_tests.rs` | ✓ 完成 | 四工具合同验证 |
+| `frontend/src/hooks/useAgent.ts` | ✓ 完成 | 使用新 close 调用面 |
+| `frontend/src/lib/api/sessions.ts` | ✓ 完成 | 四工具命名与响应类型 |
+| `crates/runtime-agent-tool/src/tests.rs` | ✓ 完成 | 四工具行为测试 |
+| `crates/runtime-agent-loop/src/agent_loop/tests/regression.rs` | ✓ 完成 | 四工具事件序列 |
 
 ## 建议迁移顺序
 
@@ -97,9 +99,9 @@
 
 ## 明确不做的兼容策略
 
-- 不提供旧工具名到新工具名的转发
-- 不保留 `waitAgent` 的“临时 deprecated”阶段
-- 不让新 child 继续写入 `SharedSession`
+- 不提供旧工具名到新工具名的转发 ✓
+- 不保留 `waitAgent` 的”临时 deprecated”阶段 ✓
+- 不让新 child 继续写入 `SharedSession` ✓
 
 ## 风险与缓解
 

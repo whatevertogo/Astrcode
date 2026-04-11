@@ -98,12 +98,12 @@ pub struct ToolContext {
     cancel: CancelToken,
     /// 当前工具调用所属 turn。
     ///
-    /// 普通工具通常不需要感知 turn_id，但像 spawnAgent 这类复合工具
+    /// 普通工具通常不需要感知 turn_id，但像 spawn 这类复合工具
     /// 需要把子事件重新挂回父 turn。
     turn_id: Option<String>,
     /// 当前工具调用 ID。
     ///
-    /// spawnAgent 等复合工具会把这个值落到 durable lifecycle 事件，
+    /// spawn 等复合工具会把这个值落到 durable lifecycle 事件，
     /// 保证重放后仍然能还原触发链路。
     tool_call_id: Option<String>,
     /// 当前工具调用所属 Agent 元数据。
@@ -128,7 +128,7 @@ pub struct ToolContext {
     tool_output_sender: Option<UnboundedSender<ToolOutputDelta>>,
     /// 工具级 turn 事件发射器。
     ///
-    /// 只有像 spawnAgent 这类会在工具内部再触发 turn/tool 事件的复合工具才会使用。
+    /// 只有像 spawn 这类会在工具内部再触发 turn/tool 事件的复合工具才会使用。
     event_sink: Option<Arc<dyn ToolEventSink>>,
     /// 工具调用链路归属。
     ///

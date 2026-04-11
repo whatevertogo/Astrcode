@@ -530,7 +530,7 @@ async fn subrun_cancel_route_returns_not_found_after_removal() {
         .await
         .expect("response should be returned");
 
-    // legacy cancel route 已在 006-prune-dead-code 中删除，统一走 closeAgent
+    // legacy cancel route 已在 006-prune-dead-code 中删除，统一走 close
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 

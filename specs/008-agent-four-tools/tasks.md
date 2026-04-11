@@ -103,11 +103,11 @@
 
 **Purpose**: 清理残留、同步文档、完成整体验证
 
-- [ ] T027 [P] Synchronize final implementation outcomes and caller removals in `specs/008-agent-four-tools/findings.md`, `specs/008-agent-four-tools/design-collaboration-runtime.md`, and `specs/008-agent-four-tools/migration.md`
-- [ ] T028 Remove leftover old-surface references and dead collaboration code in `crates/runtime-agent-tool/src/lib.rs`, `crates/runtime-agent-tool/src/tests.rs`, `crates/server/src/tests/session_contract_tests.rs`, and `frontend/src/lib/api/sessions.ts`
-- [ ] T029 Run runtime robustness review for locks, wake queues, spawned tasks, and error propagation in `crates/runtime-agent-control/src/lib.rs`, `crates/runtime/src/service/execution/mod.rs`, and `crates/runtime/src/service/execution/collaboration.rs`
-- [ ] T030 Run repository validation commands from `specs/008-agent-four-tools/quickstart.md`: `cargo fmt --all --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cd frontend && npm run typecheck`, `rg -n "waitAgent|sendAgent|closeAgent|deliverToParent|resumeAgent" crates frontend -g '*.rs' -g '*.ts' -g '*.tsx'`, and verify sub-session notification channels remain functional after migration
-- [ ] T031 删除所有老的dto模型、契约、文档片段等，确保没有任何遗留的旧协作工具表面或概念残留在代码库或文档中
+- [x] T027 [P] Synchronize final implementation outcomes and caller removals in `specs/008-agent-four-tools/findings.md`, `specs/008-agent-four-tools/design-collaboration-runtime.md`, and `specs/008-agent-four-tools/migration.md`
+- [x] T028 Remove leftover old-surface references and dead collaboration code in `crates/runtime-agent-tool/src/lib.rs`, `crates/runtime-agent-tool/src/tests.rs`, `crates/server/src/tests/session_contract_tests.rs`, and `frontend/src/lib/api/sessions.ts`
+- [x] T029 Run runtime robustness review for locks, wake queues, spawned tasks, and error propagation in `crates/runtime-agent-control/src/lib.rs`, `crates/runtime/src/service/execution/mod.rs`, and `crates/runtime/src/service/execution/collaboration.rs`
+- [x] T030 Run repository validation commands from `specs/008-agent-four-tools/quickstart.md`: `cargo fmt --all --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cd frontend && npm run typecheck`, `rg -n "waitAgent|sendAgent|closeAgent|deliverToParent|resumeAgent" crates frontend -g '*.rs' -g '*.ts' -g '*.tsx'`, and verify sub-session notification channels remain functional after migration
+- [x] T031 删除所有老的dto模型、契约、文档片段等，确保没有任何遗留的旧协作工具表面或概念残留在代码库或文档中
 
 ---
 

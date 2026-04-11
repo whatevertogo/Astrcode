@@ -216,8 +216,7 @@ pub struct RuntimeConfig {
 ///     "agent": {
 ///       "maxSubrunDepth": 1,
 ///       "maxConcurrent": 5,
-///       "finalizedRetainLimit": 256,
-///       "experimentalIndependentSession": false
+///       "finalizedRetainLimit": 256
 ///     }
 ///   }
 /// }
@@ -229,7 +228,7 @@ pub struct RuntimeConfig {
 pub struct AgentConfig {
     /// 子会话最大嵌套深度。
     ///
-    /// 这是新的受控子会话深度限制，默认值更保守，优先服务 `spawnAgent`
+    /// 这是新的受控子会话深度限制，默认值更保守，优先服务 `spawn`
     /// 和未来的根执行 API，而不是继续沿用早期多 Agent 原型的宽松值。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_subrun_depth: Option<usize>,
@@ -248,11 +247,17 @@ pub struct AgentConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finalized_retain_limit: Option<usize>,
 
-    /// 是否启用独立子会话实验特性。
+    /// 单个 agent 收件箱容量上限。
     ///
-    /// 该开关默认关闭，避免把尚未完全打磨的跨 session 行为暴露给普通会话。
+    /// 超过此限制时 `push_inbox` 会返回错误，防止消费端长时间不运行时内存无限增长。
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub experimental_independent_session: Option<bool>,
+    pub inbox_capacity: Option<usize>,
+
+    /// 单个会话的父级交付队列容量上限。
+    ///
+    /// 超过此限制时 `enqueue_parent_delivery` 会返回 false，防止队列无限增长。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_delivery_capacity: Option<usize>,
 }
 
 impl fmt::Debug for AgentConfig {
@@ -261,10 +266,8 @@ impl fmt::Debug for AgentConfig {
             .field("max_subrun_depth", &self.max_subrun_depth)
             .field("max_concurrent", &self.max_concurrent)
             .field("finalized_retain_limit", &self.finalized_retain_limit)
-            .field(
-                "experimental_independent_session",
-                &self.experimental_independent_session,
-            )
+            .field("inbox_capacity", &self.inbox_capacity)
+            .field("parent_delivery_capacity", &self.parent_delivery_capacity)
             .finish()
     }
 }

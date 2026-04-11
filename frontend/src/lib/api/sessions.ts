@@ -115,7 +115,7 @@ export async function interruptSession(sessionId: string): Promise<void> {
 /// 关闭指定 agent 及其子树。
 ///
 /// 按 agent_id 定位，始终级联关闭。
-export async function closeAgent(
+export async function closeChildAgent(
   sessionId: string,
   agentId: string
 ): Promise<{ closedAgentIds: string[] }> {

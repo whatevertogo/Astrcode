@@ -1,12 +1,14 @@
 # Design: 协作运行时边界与消息流
 
+> **状态**: 设计已全部落地实现。本文档作为最终架构参考保留。
+
 ## 设计目标
 
-- 对外只暴露 `spawn/send/observe/close`
-- root 与 child 使用同一棵控制树
-- child 单轮完成后回到 `Idle`
-- mailbox durable 真相源统一落在 session event log
-- prompt 注入继续是动态的，但不再承担 durable 真相角色
+- 对外只暴露 `spawn/send/observe/close` ✓
+- root 与 child 使用同一棵控制树 ✓
+- child 单轮完成后回到 `Idle` ✓
+- mailbox durable 真相源统一落在 session event log ✓
+- prompt 注入继续是动态的，但不再承担 durable 真相角色 ✓
 
 ## 非目标
 

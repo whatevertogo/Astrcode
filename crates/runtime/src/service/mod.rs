@@ -166,7 +166,7 @@ pub struct RuntimeService {
     agent_profiles: Arc<StdRwLock<Arc<AgentProfileRegistry>>>,
     /// scoped agent profile 缓存。
     ///
-    /// `spawnAgent` 会反复查询同一个 working dir 的 profile 视图；如果每次都重新扫盘，
+    /// `spawn` 会反复查询同一个 working dir 的 profile 视图；如果每次都重新扫盘，
     /// 子 agent 冷启动前的同步 IO 会明显拖慢工具返回。这里缓存“按目录解析后的注册表”，
     /// 并在 agent 热重载后统一失效，保持语义集中在 runtime 层。
     scoped_agent_profiles: DashMap<PathBuf, Arc<AgentProfileRegistry>>,

@@ -9,36 +9,46 @@ use crate::service::RuntimeService;
 ///
 /// 将活跃的 turn/subagent JoinHandle 封装在此，
 /// 避免 RuntimeService 门面上直接暴露这些实现细节。
+///
+/// 每次注册新任务时会清理已完成的旧 handle，防止长期运行进程中内存无限增长。
+/// shutdown 时 `take_all_*` 批量 abort 所有剩余任务。
 pub(crate) struct TaskRegistry {
     /// 活跃的子 Agent 后台执行任务的 JoinHandle，shutdown 时批量 abort。
-    active_subagent_handles: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    subagent_handles: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// 活跃的 turn 执行任务的 JoinHandle，shutdown 时批量 abort。
-    active_turn_handles: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    turn_handles: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+}
+
+/// 清理 Vec 中已完成的 JoinHandle，释放其持有的 Arc<Task> 内存。
+fn prune_completed_handles(handles: &mut Vec<tokio::task::JoinHandle<()>>) {
+    handles.retain(|h| !h.is_finished());
 }
 
 impl TaskRegistry {
     pub(crate) fn new() -> Self {
         Self {
-            active_subagent_handles: std::sync::Mutex::new(Vec::new()),
-            active_turn_handles: std::sync::Mutex::new(Vec::new()),
+            subagent_handles: std::sync::Mutex::new(Vec::new()),
+            turn_handles: std::sync::Mutex::new(Vec::new()),
         }
     }
 
-    /// 注册 turn 任务句柄。
+    /// 注册 turn 任务句柄，同时清理已完成的旧 handle。
     pub(crate) fn register_turn_task(&self, handle: tokio::task::JoinHandle<()>) {
-        with_lock_recovery(
-            &self.active_turn_handles,
-            "TaskRegistry.active_turn_handles",
-            |guard| guard.push(handle),
-        );
+        with_lock_recovery(&self.turn_handles, "TaskRegistry.turn_handles", |guard| {
+            prune_completed_handles(guard);
+            guard.push(handle);
+        });
     }
 
-    /// 注册子 Agent 任务句柄。
+    /// 注册子 Agent 任务句柄，同时清理已完成的旧 handle。
     pub(crate) fn register_subagent_task(&self, handle: tokio::task::JoinHandle<()>) {
         with_lock_recovery(
-            &self.active_subagent_handles,
-            "TaskRegistry.active_subagent_handles",
-            |guard| guard.push(handle),
+            &self.subagent_handles,
+            "TaskRegistry.subagent_handles",
+            |guard| {
+                prune_completed_handles(guard);
+                guard.push(handle);
+            },
         );
     }
 
@@ -46,7 +56,7 @@ impl TaskRegistry {
     pub(crate) fn take_all_turn_handles(&self) -> Vec<tokio::task::JoinHandle<()>> {
         std::mem::take(
             &mut *self
-                .active_turn_handles
+                .turn_handles
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
         )
@@ -56,7 +66,7 @@ impl TaskRegistry {
     pub(crate) fn take_all_subagent_handles(&self) -> Vec<tokio::task::JoinHandle<()>> {
         std::mem::take(
             &mut *self
-                .active_subagent_handles
+                .subagent_handles
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
         )

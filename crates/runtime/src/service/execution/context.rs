@@ -1,6 +1,6 @@
 //! 执行上下文：bootstrap 阶段的延迟执行器桥。
 //!
-//! builtin router 在 `RuntimeService` 创建前就要注册 `spawnAgent`，
+//! builtin router 在 `RuntimeService` 创建前就要注册 `spawn`，
 //! 因此这里先占位，等 service 创建完成后再绑定真实 runtime。
 
 use std::sync::{Arc, RwLock as StdRwLock, Weak};
@@ -13,7 +13,7 @@ use crate::service::{RuntimeService, service_error_to_astr};
 
 /// bootstrap 阶段使用的延迟执行器桥。
 ///
-/// builtin router 在 `RuntimeService` 创建前就要注册 `spawnAgent`，因此这里先占位，
+/// builtin router 在 `RuntimeService` 创建前就要注册 `spawn`，因此这里先占位，
 /// 等 service 创建完成后再绑定真实 runtime。
 #[derive(Default)]
 pub(crate) struct DeferredSubAgentExecutor {
@@ -36,7 +36,7 @@ impl DeferredSubAgentExecutor {
             .expect("sub-agent executor binding lock should not be poisoned");
         let Some(runtime) = guard.as_ref().and_then(Weak::upgrade) else {
             return Err(AstrError::Internal(
-                "spawnAgent executor is not bound to runtime service yet".to_string(),
+                "spawn executor is not bound to runtime service yet".to_string(),
             ));
         };
         Ok(runtime)

@@ -197,7 +197,7 @@ fn extract_spawned_sub_run_id(result: &ToolExecutionResult) -> String {
         })
         .and_then(|artifact| artifact.get("id"))
         .and_then(|value| value.as_str())
-        .expect("spawnAgent launch should expose sub-run artifact")
+        .expect("spawn launch should expose sub-run artifact")
         .to_string()
 }
 
@@ -389,7 +389,7 @@ async fn spawn_agent_background_cancellation_releases_concurrency_slots() {
                 "call-1".to_string(),
                 json!({
                     "type": "plan",
-                    "description": "regression test for spawnAgent slot leak",
+                    "description": "regression test for spawn slot leak",
                     "prompt": "collect quick summary"
                 }),
                 &context,
@@ -1857,7 +1857,7 @@ async fn spawn_agent_terminal_delivery_notification_is_emitted_once() {
             &context,
         )
         .await
-        .expect("spawnAgent launch should succeed");
+        .expect("spawn launch should succeed");
 
     let sub_run_id = extract_spawned_sub_run_id(&launched);
 

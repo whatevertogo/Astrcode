@@ -91,7 +91,7 @@ impl AgentExecutionServiceHandle {
         ctx: &ToolContext,
     ) -> ServiceResult<ParentExecutionContext> {
         let parent_turn_id = ctx.turn_id().ok_or_else(|| {
-            ServiceError::InvalidInput("spawnAgent requires a parent turn id".to_string())
+            ServiceError::InvalidInput("spawn requires a parent turn id".to_string())
         })?;
         let parent_state = self.runtime.ensure_session_loaded(ctx.session_id()).await?;
         let parent_snapshot = parent_state
@@ -216,11 +216,18 @@ impl AgentExecutionServiceHandle {
             .await
             .map_err(|error| ServiceError::Conflict(error.to_string()))?;
         // 故意忽略：子代理状态标记失败不应阻断启动流程
-        let _ = self
+        if self
             .runtime
             .agent_control
             .mark_running(&child.agent_id)
-            .await;
+            .await
+            .is_none()
+        {
+            log::warn!(
+                "mark_running 返回 None，agent {} 可能未注册进控制树",
+                child.agent_id
+            );
+        }
         let child_cancel = self
             .runtime
             .agent_control
@@ -383,7 +390,7 @@ impl AgentExecutionServiceHandle {
         execution: &SpawnedSubagentExecution,
     ) -> ServiceResult<()> {
         if let Err(error) = self.emit_child_started(execution) {
-            // 故意忽略：标记失败时已在处理另一个错误，不能覆盖
+            // 标记失败时已在处理另一个错误，不能覆盖
             let _ = self
                 .runtime
                 .agent_control
@@ -434,12 +441,19 @@ impl AgentExecutionServiceHandle {
                 } else {
                     astrcode_core::AgentTurnOutcome::Completed
                 };
-                // 故意忽略：子代理状态更新失败不应覆盖执行结果
-                let _ = self
+                // complete_turn 失败意味着控制平面与实际执行脱节，记录但不阻断
+                if self
                     .runtime
                     .agent_control
                     .complete_turn(&execution.child.agent_id, turn_outcome)
-                    .await;
+                    .await
+                    .is_none()
+                {
+                    log::warn!(
+                        "complete_turn 返回 None，agent {} 的 lifecycle 可能与实际脱节",
+                        execution.child.agent_id
+                    );
+                }
                 let completion_fallback = if tracker.step_count() > 0 {
                     format!(
                         "子 Agent 已完成 {} \
@@ -476,12 +490,19 @@ impl AgentExecutionServiceHandle {
                 } else {
                     astrcode_core::AgentTurnOutcome::Cancelled
                 };
-                // 故意忽略：子代理状态更新失败不应阻断结果处理
-                let _ = self
+                // complete_turn 失败意味着控制平面与实际执行脱节，记录但不阻断
+                if self
                     .runtime
                     .agent_control
                     .complete_turn(&execution.child.agent_id, turn_outcome)
-                    .await;
+                    .await
+                    .is_none()
+                {
+                    log::warn!(
+                        "complete_turn (cancel) 返回 None，agent {} 的 lifecycle 可能与实际脱节",
+                        execution.child.agent_id
+                    );
+                }
                 let status = if tracker.token_limit_hit() || tracker.step_limit_hit() {
                     AgentStatus::TokenExceeded
                 } else {
@@ -506,15 +527,21 @@ impl AgentExecutionServiceHandle {
             Ok(TurnOutcome::Error { message }) => {
                 // 四工具模型：错误结束后也进入 Idle（带 Failed outcome），
                 // 父 agent 可以选择 send 新指令重试或 close。
-                // 故意忽略：子代理状态更新失败不应覆盖执行结果
-                let _ = self
+                if self
                     .runtime
                     .agent_control
                     .complete_turn(
                         &execution.child.agent_id,
                         astrcode_core::AgentTurnOutcome::Failed,
                     )
-                    .await;
+                    .await
+                    .is_none()
+                {
+                    log::warn!(
+                        "complete_turn (error) 返回 None，agent {} 的 lifecycle 可能与实际脱节",
+                        execution.child.agent_id
+                    );
+                }
                 let error = AstrError::Internal(message);
                 SubRunResult {
                     status: AgentStatus::Failed,
@@ -523,18 +550,26 @@ impl AgentExecutionServiceHandle {
                 }
             },
             Err(error) => {
-                let _ = self
+                if self
                     .runtime
                     .agent_control
                     .complete_turn(
                         &execution.child.agent_id,
                         astrcode_core::AgentTurnOutcome::Failed,
                     )
-                    .await;
+                    .await
+                    .is_none()
+                {
+                    log::warn!(
+                        "complete_turn (fatal) 返回 None，agent {} 的 lifecycle 可能与实际脱节",
+                        execution.child.agent_id
+                    );
+                }
+                let err = AstrError::Internal(error.to_string());
                 SubRunResult {
                     status: AgentStatus::Failed,
                     handoff: None,
-                    failure: Some(build_subrun_failure(&error)),
+                    failure: Some(build_subrun_failure(&err)),
                 }
             },
         };

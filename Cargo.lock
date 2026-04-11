@@ -190,6 +190,7 @@ dependencies = [
  "astrcode-core",
  "astrcode-runtime-config",
  "async-trait",
+ "log",
  "thiserror 2.0.18",
  "tokio",
 ]

@@ -24,8 +24,9 @@ use astrcode_core::{
     SubRunResult, SubRunStorageMode, ToolContext,
 };
 use astrcode_runtime_config::{
-    RuntimeConfig, resolve_agent_finalized_retain_limit, resolve_agent_max_concurrent,
-    resolve_agent_max_subrun_depth,
+    RuntimeConfig, resolve_agent_finalized_retain_limit, resolve_agent_inbox_capacity,
+    resolve_agent_max_concurrent, resolve_agent_max_subrun_depth,
+    resolve_agent_parent_delivery_capacity,
 };
 use async_trait::async_trait;
 use thiserror::Error;
@@ -46,7 +47,7 @@ struct AgentEntry {
     parent_agent_id: Option<String>,
     children: BTreeSet<String>,
     finalized_seq: Option<u64>,
-    /// 协作消息收件箱。sendAgent / deliverToParent 产出信封存放在此。
+    /// 协作消息收件箱。send / child-delivery 产出信封存放在此。
     inbox: VecDeque<AgentInboxEnvelope>,
     /// 收件箱版本号，每次 push_inbox 递增，用于 wait_for_inbox 的变化检测。
     inbox_version: watch::Sender<u64>,
@@ -101,6 +102,8 @@ pub struct AgentControl {
     max_depth: usize,
     max_concurrent: usize,
     finalized_retain_limit: usize,
+    inbox_capacity: usize,
+    parent_delivery_capacity: usize,
     state: Arc<RwLock<AgentRegistryState>>,
 }
 
@@ -206,6 +209,10 @@ impl AgentControl {
             max_depth: resolve_agent_max_subrun_depth(runtime.agent.as_ref()),
             max_concurrent: resolve_agent_max_concurrent(runtime.agent.as_ref()),
             finalized_retain_limit: resolve_agent_finalized_retain_limit(runtime.agent.as_ref()),
+            inbox_capacity: resolve_agent_inbox_capacity(runtime.agent.as_ref()),
+            parent_delivery_capacity: resolve_agent_parent_delivery_capacity(
+                runtime.agent.as_ref(),
+            ),
             state: Arc::new(RwLock::new(AgentRegistryState::default())),
         }
     }
@@ -220,6 +227,8 @@ impl AgentControl {
             max_depth,
             max_concurrent,
             finalized_retain_limit,
+            inbox_capacity: 1024,
+            parent_delivery_capacity: 1024,
             ..Self::default()
         }
     }
@@ -622,6 +631,7 @@ impl AgentControl {
     /// 向 Agent 收件箱推送一封信封。
     ///
     /// 若目标 agent 不存在则返回 None。
+    /// 若收件箱已满（超过 `inbox_capacity`）则返回 None。
     /// 推送后会递增收件箱版本号，唤醒正在 wait_for_inbox 的调用方。
     pub async fn push_inbox(
         &self,
@@ -631,6 +641,16 @@ impl AgentControl {
         let mut state = self.state.write().await;
         let key = resolve_entry_key(&state, sub_run_or_agent_id)?.to_string();
         let entry = state.entries.get_mut(&key)?;
+        if entry.inbox.len() >= self.inbox_capacity {
+            log::warn!(
+                "inbox 已满 ({}/{}), 丢弃来自 {} 的信封 {}",
+                entry.inbox.len(),
+                self.inbox_capacity,
+                envelope.from_agent_id,
+                envelope.delivery_id
+            );
+            return None;
+        }
         entry.inbox.push_back(envelope);
         // 递增版本号唤醒 wait_for_inbox
         let current = *entry.inbox_version.borrow();
@@ -659,21 +679,22 @@ impl AgentControl {
         };
 
         loop {
-            let handle = self.get(sub_run_or_agent_id).await?;
+            // 单次读锁内同时获取 handle 和 inbox 状态，避免两次独立读锁竞争
+            let (handle, inbox_non_empty) = {
+                let state = self.state.read().await;
+                let key = resolve_entry_key(&state, sub_run_or_agent_id)?;
+                let entry = state.entries.get(key)?;
+                let handle = entry.handle.clone();
+                let inbox_non_empty = !entry.inbox.is_empty();
+                (handle, inbox_non_empty)
+            };
             // 如果 agent 已终态，直接返回当前 handle
             if handle.status.is_final() {
                 return Some(handle);
             }
             // 如果收件箱非空，返回当前 handle
-            {
-                let state = self.state.read().await;
-                if let Some(key) = resolve_entry_key(&state, sub_run_or_agent_id) {
-                    if let Some(entry) = state.entries.get(key) {
-                        if !entry.inbox.is_empty() {
-                            return Some(handle);
-                        }
-                    }
-                }
+            if inbox_non_empty {
+                return Some(handle);
             }
             // 等待收件箱版本号变化
             if inbox_rx.changed().await.is_err() {
@@ -686,6 +707,8 @@ impl AgentControl {
     ///
     /// 以 `delivery_id` 做幂等去重；重复交付会被忽略，保持原队列顺序不变。
     /// 队列变更全部限制在单个写锁临界区内完成，避免把异步工作带进锁作用域。
+    ///
+    /// 若队列已满（超过 `parent_delivery_capacity`）则返回 false。
     pub async fn enqueue_parent_delivery(
         &self,
         parent_session_id: impl Into<String>,
@@ -700,6 +723,16 @@ impl AgentControl {
             .entry(parent_session_id.clone())
             .or_default();
         if !queue.known_delivery_ids.insert(delivery_id.clone()) {
+            return false;
+        }
+        if queue.deliveries.len() >= self.parent_delivery_capacity {
+            log::warn!(
+                "parent_delivery_queue 已满 ({}/{}), 丢弃交付 {}",
+                queue.deliveries.len(),
+                self.parent_delivery_capacity,
+                delivery_id
+            );
+            queue.known_delivery_ids.remove(&delivery_id);
             return false;
         }
         queue.deliveries.push_back(PendingParentDeliveryEntry {
@@ -960,7 +993,7 @@ impl AgentControl {
     /// 获取指定 agent 的祖先链（从自身到根节点的路径）。
     ///
     /// 返回从自身开始向上到根的所有 agent handle，
-    /// 用于 deliverToParent 验证直接父路由。
+    /// 用于 send 验证直接父路由。
     pub async fn ancestor_chain(&self, sub_run_or_agent_id: &str) -> Vec<SubRunHandle> {
         let state = self.state.read().await;
         let mut chain = Vec::new();
@@ -2657,9 +2690,9 @@ mod tests {
         );
     }
 
-    /// 验证 deliverToParent 只投递给直接父 agent，不越级投递到祖父 agent。
+    /// 验证子向父 send 只投递给直接父 agent，不越级投递到祖父 agent。
     /// root → middle → leaf
-    /// leaf 通过 deliverToParent 只能投递到 middle 的 inbox，
+    /// leaf 通过 send 只能投递到 middle 的 inbox，
     /// root 的 inbox 不应收到 leaf 的投递。
     #[tokio::test]
     async fn deliver_to_parent_only_reaches_direct_parent_not_grandparent() {
@@ -2736,6 +2769,150 @@ mod tests {
         assert!(
             root_inbox.is_empty(),
             "leaf delivery should not reach grandparent inbox"
+        );
+    }
+
+    /// 验证 wait_for_inbox 在 agent 被 terminate_subtree 后能被正确唤醒，
+    /// 并返回终态 handle 而非永远阻塞。
+    #[tokio::test]
+    async fn wait_for_inbox_resolves_on_terminate_subtree() {
+        let control = AgentControl::with_limits(4, 10, 256);
+        let parent = control
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
+            .await
+            .expect("parent spawn should succeed");
+        let child = control
+            .spawn(
+                &explore_profile(),
+                "session-1",
+                "turn-1".to_string(),
+                Some(parent.agent_id.clone()),
+            )
+            .await
+            .expect("child spawn should succeed");
+        let _ = control.mark_running(&parent.agent_id).await;
+        let _ = control.mark_running(&child.agent_id).await;
+
+        // 在另一个任务中等待 child 的 inbox
+        let child_id = child.agent_id.clone();
+        let control_clone = control.clone();
+        let waiter = tokio::spawn(async move { control_clone.wait_for_inbox(&child_id).await });
+
+        // 让 waiter 完成订阅
+        tokio::task::yield_now().await;
+
+        // terminate parent 的子树，应级联 terminate child 并唤醒 wait_for_inbox
+        control
+            .terminate_subtree(&parent.agent_id)
+            .await
+            .expect("terminate should succeed");
+
+        let result = tokio::time::timeout(Duration::from_secs(3), waiter)
+            .await
+            .expect("waiter should finish before timeout")
+            .expect("waiter should join");
+        assert!(
+            result.is_some(),
+            "wait_for_inbox should return Some after terminate"
+        );
+        let handle = result.unwrap();
+        assert!(
+            handle.status.is_final(),
+            "handle should be in final state after terminate, got {:?}",
+            handle.status
+        );
+    }
+
+    /// 验证 inbox 容量上限生效：超出容量时 push_inbox 返回 None。
+    #[tokio::test]
+    async fn push_inbox_rejects_when_at_capacity() {
+        let control = AgentControl::with_limits(4, 10, 256);
+        // 手动构造小容量 control
+        let control = AgentControl {
+            inbox_capacity: 2,
+            ..control
+        };
+        let handle = control
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
+            .await
+            .expect("spawn should succeed");
+        let _ = control.mark_running(&handle.agent_id).await;
+
+        // 推送到容量上限
+        assert!(
+            control
+                .push_inbox(
+                    &handle.agent_id,
+                    sample_envelope("d-1", "from", &handle.agent_id, "msg-1"),
+                )
+                .await
+                .is_some()
+        );
+        assert!(
+            control
+                .push_inbox(
+                    &handle.agent_id,
+                    sample_envelope("d-2", "from", &handle.agent_id, "msg-2"),
+                )
+                .await
+                .is_some()
+        );
+
+        // 超出容量应被拒绝
+        assert!(
+            control
+                .push_inbox(
+                    &handle.agent_id,
+                    sample_envelope("d-3", "from", &handle.agent_id, "msg-3"),
+                )
+                .await
+                .is_none(),
+            "push beyond capacity should return None"
+        );
+    }
+
+    /// 验证 parent_delivery_queue 容量上限生效：超出容量时 enqueue 返回 false。
+    #[tokio::test]
+    async fn enqueue_parent_delivery_rejects_when_at_capacity() {
+        let control = AgentControl::with_limits(4, 10, 256);
+        let control = AgentControl {
+            parent_delivery_capacity: 2,
+            ..control
+        };
+
+        let session_id = "session-parent".to_string();
+        let turn_id = "turn-parent".to_string();
+
+        // 入队到容量上限
+        assert!(
+            control
+                .enqueue_parent_delivery(
+                    session_id.clone(),
+                    turn_id.clone(),
+                    sample_parent_delivery("d-1", &session_id, &turn_id).2,
+                )
+                .await
+        );
+        assert!(
+            control
+                .enqueue_parent_delivery(
+                    session_id.clone(),
+                    turn_id.clone(),
+                    sample_parent_delivery("d-2", &session_id, &turn_id).2,
+                )
+                .await
+        );
+
+        // 超出容量应被拒绝
+        assert!(
+            !control
+                .enqueue_parent_delivery(
+                    session_id.clone(),
+                    turn_id.clone(),
+                    sample_parent_delivery("d-3", &session_id, &turn_id).2,
+                )
+                .await,
+            "enqueue beyond capacity should return false"
         );
     }
 }

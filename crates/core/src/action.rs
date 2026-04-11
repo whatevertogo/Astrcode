@@ -377,9 +377,9 @@ mod tests {
     fn model_content_appends_exact_child_agent_reference_from_metadata() {
         let result = ToolExecutionResult {
             tool_call_id: "call-1".to_string(),
-            tool_name: "spawnAgent".to_string(),
+            tool_name: "spawn".to_string(),
             ok: true,
-            output: "spawnAgent 已在后台启动。".to_string(),
+            output: "spawn 已在后台启动。".to_string(),
             error: None,
             metadata: Some(json!({
                 "agentRef": {
@@ -395,7 +395,7 @@ mod tests {
         };
 
         let content = result.model_content();
-        assert!(content.contains("spawnAgent 已在后台启动。"));
+        assert!(content.contains("spawn 已在后台启动。"));
         assert!(content.contains("- agentId: agent-1"));
         assert!(content.contains("- subRunId: subrun-1"));
         assert!(content.contains("Use this exact `agentId` value"));

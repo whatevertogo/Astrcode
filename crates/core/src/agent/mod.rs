@@ -85,7 +85,7 @@ pub enum ForkMode {
     LastNTurns(usize),
 }
 
-/// `spawnAgent` 的稳定调用参数。
+/// `spawn` 的稳定调用参数。
 ///
 /// 该 DTO 下沉到 core，是为了让工具层和执行装配层共享同一份参数语义，
 /// 避免 `runtime-execution` 只为了复用字段定义而反向依赖 `runtime-agent-tool`。

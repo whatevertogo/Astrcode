@@ -262,25 +262,35 @@ impl AgentExecutionServiceHandle {
             AgentStatus::Running,
             None,
         );
-        let _ = parent_event_sink.emit(StorageEvent {
-            turn_id: Some(parent.parent_turn_id.clone()),
-            agent: child_agent.clone(),
-            payload: StorageEventPayload::ChildSessionNotification {
-                notification: resumed_notification,
-                timestamp: Some(chrono::Utc::now()),
-            },
-        });
+        let _ = parent_event_sink
+            .emit(StorageEvent {
+                turn_id: Some(parent.parent_turn_id.clone()),
+                agent: child_agent.clone(),
+                payload: StorageEventPayload::ChildSessionNotification {
+                    notification: resumed_notification,
+                    timestamp: Some(chrono::Utc::now()),
+                },
+            })
+            .map_err(|e| {
+                log::warn!("resume resumed_notification emit 失败: {e}");
+                e
+            });
 
         let resume_message = message.unwrap_or_else(|| "继续执行".to_string());
-        let _ = active_sink.emit(StorageEvent {
-            turn_id: Some(child_turn_id.clone()),
-            agent: child_agent.clone(),
-            payload: StorageEventPayload::UserMessage {
-                content: resume_message.clone(),
-                timestamp: chrono::Utc::now(),
-                origin: UserMessageOrigin::User,
-            },
-        });
+        let _ = active_sink
+            .emit(StorageEvent {
+                turn_id: Some(child_turn_id.clone()),
+                agent: child_agent.clone(),
+                payload: StorageEventPayload::UserMessage {
+                    content: resume_message.clone(),
+                    timestamp: chrono::Utc::now(),
+                    origin: UserMessageOrigin::User,
+                },
+            })
+            .map_err(|e| {
+                log::warn!("resume bootstrap user message emit 失败: {e}");
+                e
+            });
 
         let child_state = build_resumed_child_agent_state(replayed_state, &resume_message);
 
@@ -407,14 +417,19 @@ impl AgentExecutionServiceHandle {
         code: &str,
         message: String,
     ) -> ServiceError {
-        let _ = parent_event_sink.emit(StorageEvent {
-            turn_id: Some(parent_turn_id.to_string()),
-            agent,
-            payload: StorageEventPayload::Error {
-                message: format!("{code}: {message}"),
-                timestamp: Some(chrono::Utc::now()),
-            },
-        });
+        let _ = parent_event_sink
+            .emit(StorageEvent {
+                turn_id: Some(parent_turn_id.to_string()),
+                agent,
+                payload: StorageEventPayload::Error {
+                    message: format!("{code}: {message}"),
+                    timestamp: Some(chrono::Utc::now()),
+                },
+            })
+            .map_err(|e| {
+                log::warn!("resume failure event emit 失败: {e}");
+                e
+            });
         ServiceError::Conflict(format!("{code}: {message}"))
     }
 }

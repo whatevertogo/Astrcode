@@ -457,7 +457,7 @@ fn build_parent_delivery_prompt_declaration(delivery: &PendingParentDelivery) ->
         priority_hint: Some(900),
         always_include: true,
         source: PromptDeclarationSource::Builtin,
-        capability_name: Some("spawnAgent".to_string()),
+        capability_name: Some("spawn".to_string()),
         origin: Some(format!(
             "parent-delivery:{}:{}",
             delivery.parent_turn_id, delivery.delivery_id
