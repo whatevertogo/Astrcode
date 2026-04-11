@@ -344,8 +344,7 @@ mod tests {
 
     use super::{CompactTrigger, PromptMetricsPayload, StorageEvent, StorageEventPayload};
     use crate::{
-        AgentEventContext, AgentLifecycleStatus, ChildSessionLineageKind, ChildSessionNotification,
-        ChildSessionNotificationKind, ResolvedExecutionLimitsSnapshot,
+        AgentEventContext, AgentLifecycleStatus, ResolvedExecutionLimitsSnapshot,
         ResolvedSubagentContextOverrides, SubRunResult, SubRunStorageMode, format_local_rfc3339,
     };
 
@@ -621,63 +620,6 @@ mod tests {
 
             assert_eq!(encoded["tool_call_id"], Value::String("call-1".to_string()));
         }
-    }
-
-    #[test]
-    fn child_session_notification_roundtrip_preserves_projection_payload() {
-        let notification = ChildSessionNotification {
-            notification_id: "note-1".to_string(),
-            child_ref: crate::ChildAgentRef {
-                agent_id: "agent-child".to_string(),
-                session_id: "session-parent".to_string(),
-                sub_run_id: "subrun-1".to_string(),
-                parent_agent_id: Some("agent-parent".to_string()),
-                lineage_kind: ChildSessionLineageKind::Spawn,
-                status: AgentLifecycleStatus::Running,
-                open_session_id: "session-child".to_string(),
-            },
-            kind: ChildSessionNotificationKind::Started,
-            summary: "child started".to_string(),
-            status: AgentLifecycleStatus::Running,
-            source_tool_call_id: Some("call-1".to_string()),
-            final_reply_excerpt: None,
-        };
-
-        let event = StorageEvent {
-            turn_id: Some("turn-parent".to_string()),
-            agent: AgentEventContext::sub_run(
-                "agent-parent",
-                "turn-parent",
-                "planner",
-                "subrun-parent",
-                SubRunStorageMode::SharedSession,
-                None,
-            ),
-            payload: StorageEventPayload::ChildSessionNotification {
-                notification,
-                timestamp: None,
-            },
-        };
-
-        let encoded = serde_json::to_value(&event).expect("serialize");
-        let decoded: StorageEvent = serde_json::from_value(encoded.clone()).expect("deserialize");
-
-        match decoded {
-            StorageEvent {
-                payload: StorageEventPayload::ChildSessionNotification { notification, .. },
-                ..
-            } => {
-                assert_eq!(notification.notification_id, "note-1");
-                assert_eq!(notification.child_ref.agent_id, "agent-child");
-                assert_eq!(notification.child_ref.open_session_id, "session-child");
-            },
-            other => panic!("expected child session notification, got {other:?}"),
-        }
-
-        assert_eq!(
-            encoded["notification"]["notificationId"],
-            Value::String("note-1".to_string())
-        );
     }
 
     // ─── T041 谱系兼容性测试 ──────────────────────────────

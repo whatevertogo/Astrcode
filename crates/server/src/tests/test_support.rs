@@ -121,7 +121,7 @@ pub(crate) fn seed_subrun_status_contract_session(session_id: &str, working_dir:
         "turn-contract",
         "review",
         "subrun-contract",
-        astrcode_core::SubRunStorageMode::SharedSession,
+        astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
 

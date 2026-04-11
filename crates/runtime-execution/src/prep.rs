@@ -386,16 +386,10 @@ pub fn build_root_spawn_params(
     }
 }
 
+/// 只有一种存储模式 IndependentSession，无需校验。
 pub fn validate_root_execution_storage_mode(
-    storage_mode: SubRunStorageMode,
+    _storage_mode: SubRunStorageMode,
 ) -> Result<(), AstrError> {
-    if matches!(storage_mode, SubRunStorageMode::IndependentSession) {
-        return Err(AstrError::Validation(
-            "root execution already runs in its own session; \
-             contextOverrides.storageMode=independentSession is not applicable"
-                .to_string(),
-        ));
-    }
     Ok(())
 }
 
@@ -699,7 +693,7 @@ mod tests {
                 parent_turn_id: "turn-1".to_string(),
                 parent_agent_id: None,
                 agent_profile: "plan".to_string(),
-                storage_mode: SubRunStorageMode::SharedSession,
+                storage_mode: SubRunStorageMode::IndependentSession,
                 lifecycle: AgentLifecycleStatus::Idle,
                 last_turn_outcome: None,
             },
@@ -727,7 +721,7 @@ mod tests {
                 parent_turn_id: "turn-1".to_string(),
                 parent_agent_id: None,
                 agent_profile: "plan".to_string(),
-                storage_mode: SubRunStorageMode::SharedSession,
+                storage_mode: SubRunStorageMode::IndependentSession,
                 lifecycle: AgentLifecycleStatus::Idle,
                 last_turn_outcome: None,
             },
@@ -997,9 +991,8 @@ mod tests {
         assert_eq!(params.context.as_deref(), Some("focus on boundaries"));
         assert!(params.description.ends_with("..."));
         assert!(summarize_execution_description("short") == "short");
-        assert!(validate_root_execution_storage_mode(SubRunStorageMode::SharedSession).is_ok());
         assert!(
-            validate_root_execution_storage_mode(SubRunStorageMode::IndependentSession).is_err()
+            validate_root_execution_storage_mode(SubRunStorageMode::IndependentSession).is_ok()
         );
 
         let launch = prepare_root_execution_launch(

@@ -249,7 +249,7 @@ impl AgentControl {
             None,
             parent_turn_id,
             parent_agent_id,
-            SubRunStorageMode::SharedSession,
+            SubRunStorageMode::IndependentSession,
         )
         .await
     }
@@ -372,7 +372,7 @@ impl AgentControl {
             parent_turn_id: String::new(),
             parent_agent_id: None,
             agent_profile: profile_id,
-            storage_mode: SubRunStorageMode::SharedSession,
+            storage_mode: SubRunStorageMode::IndependentSession,
             lifecycle: AgentLifecycleStatus::Running,
             last_turn_outcome: None,
         };

@@ -189,7 +189,7 @@ impl AgentExecutionServiceHandle {
         ctx: &ToolContext,
     ) -> ServiceResult<SpawnedSubagentExecution> {
         // 为什么强制 IndependentSession：四工具模型要求所有新 spawn 的子 agent
-        // 拥有独立的 durable event log，SharedSession 已被废弃。
+        // 拥有独立的 durable event log。
         let child_storage_mode = SubRunStorageMode::IndependentSession;
         let child_session_meta = self
             .runtime
@@ -587,7 +587,6 @@ impl AgentExecutionServiceHandle {
             duration,
             &result.lifecycle,
             &result.last_turn_outcome,
-            execution.child_storage_mode,
             tracker.step_count(),
             tracker.estimated_tokens_used(),
         );

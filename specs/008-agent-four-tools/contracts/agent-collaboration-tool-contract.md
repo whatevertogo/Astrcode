@@ -87,6 +87,8 @@
 | `lastTurnOutcome` | 最近一轮执行结果 |
 | `phase` | 当前对话阶段 |
 | `turnCount` | 当前轮次数 |
+| `activeTask` | 当前正在处理的任务摘要；优先来自 active batch，否则回退到当前 turn 的任务上下文 |
+| `pendingTask` | 下一条待处理任务摘要；来自 pending mailbox 中尚未进入 active batch 的消息 |
 | `pendingMessageCount` | durable replay 为准的待处理消息数量 |
 | `lastOutput` | 最近输出摘要 |
 
@@ -114,6 +116,7 @@
 - durable 丢弃未 acked 的 mailbox 消息
 - 清理 pending wake item
 - 生命周期进入 `Terminated`
+- 重复关闭已不存在或已终止的目标时保持幂等，并返回包含目标 `agentId` 的关闭结果
 
 ### Non-Goals
 

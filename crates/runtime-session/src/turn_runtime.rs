@@ -475,7 +475,7 @@ mod tests {
             "turn-root",
             "explore",
             "subrun-shared",
-            SubRunStorageMode::SharedSession,
+            SubRunStorageMode::IndependentSession,
             None,
         );
         let events = vec![

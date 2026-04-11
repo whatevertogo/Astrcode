@@ -355,7 +355,7 @@ fn build_replayed_handle(
             .unwrap_or_else(|| "unknown-profile".to_string()),
         storage_mode: agent
             .storage_mode
-            .unwrap_or(SubRunStorageMode::SharedSession),
+            .unwrap_or(SubRunStorageMode::IndependentSession),
         lifecycle: finished
             .as_ref()
             .map(|(result, _, _)| result.lifecycle)
@@ -508,7 +508,7 @@ mod tests {
             "turn-1".to_string(),
             "review".to_string(),
             "subrun-1".to_string(),
-            SubRunStorageMode::SharedSession,
+            SubRunStorageMode::IndependentSession,
             None,
         );
         let overrides = ResolvedSubagentContextOverrides::default();
@@ -681,7 +681,7 @@ mod tests {
                         "turn-legacy".to_string(),
                         "review".to_string(),
                         "subrun-legacy".to_string(),
-                        SubRunStorageMode::SharedSession,
+                        SubRunStorageMode::IndependentSession,
                         None,
                     ),
                     payload: StorageEventPayload::SubRunStarted {
@@ -701,7 +701,7 @@ mod tests {
                         "turn-legacy".to_string(),
                         "review".to_string(),
                         "subrun-legacy".to_string(),
-                        SubRunStorageMode::SharedSession,
+                        SubRunStorageMode::IndependentSession,
                         None,
                     ),
                     payload: StorageEventPayload::SubRunFinished {
@@ -738,7 +738,7 @@ mod tests {
                     "turn-parent".to_string(),
                     "review".to_string(),
                     "subrun-3".to_string(),
-                    SubRunStorageMode::SharedSession,
+                    SubRunStorageMode::IndependentSession,
                     None,
                 ),
                 payload: StorageEventPayload::SubRunFinished {
@@ -838,7 +838,7 @@ mod tests {
                     "turn-1".to_string(),
                     "review".to_string(),
                     "subrun-2".to_string(),
-                    SubRunStorageMode::SharedSession,
+                    SubRunStorageMode::IndependentSession,
                     None,
                 ),
                 payload: StorageEventPayload::SubRunStarted {
@@ -941,7 +941,7 @@ mod tests {
             parent_turn_id: "turn-1".to_string(),
             parent_agent_id: None,
             agent_profile: "review".to_string(),
-            storage_mode: SubRunStorageMode::SharedSession,
+            storage_mode: SubRunStorageMode::IndependentSession,
             lifecycle: AgentLifecycleStatus::Running,
             last_turn_outcome: None,
         });
@@ -990,7 +990,7 @@ mod tests {
             parent_turn_id: "turn-1".to_string(),
             parent_agent_id: None,
             agent_profile: "review".to_string(),
-            storage_mode: SubRunStorageMode::SharedSession,
+            storage_mode: SubRunStorageMode::IndependentSession,
             lifecycle: AgentLifecycleStatus::Running,
             last_turn_outcome: None,
         };
@@ -1111,7 +1111,7 @@ mod tests {
             parent_turn_id: "turn-parent-12".to_string(),
             parent_agent_id: Some("agent-parent-12".to_string()),
             agent_profile: "review".to_string(),
-            storage_mode: SubRunStorageMode::SharedSession,
+            storage_mode: SubRunStorageMode::IndependentSession,
             lifecycle: AgentLifecycleStatus::Running,
             last_turn_outcome: None,
         };

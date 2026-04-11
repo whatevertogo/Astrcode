@@ -43,7 +43,7 @@ fn seed_shared_subrun_session(session_id: &str, working_dir: &std::path::Path) {
         "turn-root",
         "review",
         "sub-a",
-        astrcode_core::SubRunStorageMode::SharedSession,
+        astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
     let sub_b = AgentEventContext::sub_run(
@@ -51,7 +51,7 @@ fn seed_shared_subrun_session(session_id: &str, working_dir: &std::path::Path) {
         "turn-a",
         "review",
         "sub-b",
-        astrcode_core::SubRunStorageMode::SharedSession,
+        astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
     let sub_c = AgentEventContext::sub_run(
@@ -59,7 +59,7 @@ fn seed_shared_subrun_session(session_id: &str, working_dir: &std::path::Path) {
         "turn-b",
         "review",
         "sub-c",
-        astrcode_core::SubRunStorageMode::SharedSession,
+        astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
 
@@ -145,7 +145,7 @@ fn seed_finished_subrun_session(session_id: &str, working_dir: &std::path::Path)
         "turn-root",
         "review",
         "sub-durable",
-        astrcode_core::SubRunStorageMode::SharedSession,
+        astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
 
@@ -204,7 +204,7 @@ fn seed_legacy_subrun_session(session_id: &str, working_dir: &std::path::Path) {
         "turn-legacy",
         "review",
         "sub-legacy",
-        astrcode_core::SubRunStorageMode::SharedSession,
+        astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
 
@@ -259,7 +259,7 @@ fn seed_parent_abort_storage_mode_parity_session(session_id: &str, working_dir: 
         "turn-parent",
         "review",
         "sub-shared",
-        astrcode_core::SubRunStorageMode::SharedSession,
+        astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
     let independent = AgentEventContext::sub_run(
@@ -1175,10 +1175,9 @@ async fn subrun_status_endpoint_keeps_storage_mode_parity_for_parent_aborted_sub
     seed_parent_abort_storage_mode_parity_session("subrun-abort-parity", temp_dir.path());
     let app = build_api_router().with_state(state);
 
-    for (sub_run_id, expected_mode) in [
-        ("sub-shared", SubRunStorageModeDto::SharedSession),
-        ("sub-independent", SubRunStorageModeDto::IndependentSession),
-    ] {
+    for (sub_run_id, expected_mode) in
+        [("sub-independent", SubRunStorageModeDto::IndependentSession)]
+    {
         let response = app
             .clone()
             .oneshot(
@@ -1207,35 +1206,6 @@ async fn subrun_status_endpoint_keeps_storage_mode_parity_for_parent_aborted_sub
         );
         assert_eq!(payload.storage_mode, expected_mode);
     }
-}
-
-#[tokio::test]
-async fn subrun_status_endpoint_rejects_legacy_shared_history() {
-    let (state, _guard) = test_state(None);
-    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    seed_legacy_subrun_session("subrun-legacy-session", temp_dir.path());
-    let app = build_api_router().with_state(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/sessions/subrun-legacy-session/subruns/sub-legacy")
-                .header(AUTH_HEADER_NAME, "browser-token")
-                .body(Body::empty())
-                .expect("request should be valid"),
-        )
-        .await
-        .expect("response should be returned");
-
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let body = String::from_utf8(
-        to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body should be readable")
-            .to_vec(),
-    )
-    .expect("body should be utf-8");
-    assert!(body.contains("unsupported_legacy_shared_history"));
 }
 
 #[tokio::test]

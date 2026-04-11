@@ -77,7 +77,7 @@
 1. 校验调用方是否为直接父
 2. 从 live handle 读取 lifecycle/outcome
 3. 从 `AgentStateProjector` 读取 `phase` / `turn_count` / `last_output`
-4. 从 mailbox projector 读取 pending/active batch 派生摘要
+4. 从 mailbox projector 读取 pending/active batch 派生摘要，并组装 `activeTask` / `pendingTask`
 5. 组装 `AgentSnapshot`
 
 ### 7. `close`
@@ -128,6 +128,8 @@
 - `batch_id`
 - `turn_id`
 - `lifecycle_status`
+- `active_task`
+- `pending_task`
 - `pending_message_count`
 
 ## 为什么不采用新 router / 新 WAL

@@ -121,6 +121,8 @@
 | `last_turn_outcome` | `Option<AgentTurnOutcome>` | 最近一轮结果 |
 | `phase` | `AgentPhase` | 来自现有对话投影 |
 | `turn_count` | `u32` | 来自现有对话投影 |
+| `active_task` | `Option<String>` | 当前正在处理的任务摘要；优先来自 active batch，否则回退到当前 turn 的任务上下文 |
+| `pending_task` | `Option<String>` | 下一条待处理任务摘要；来自 pending mailbox 中尚未进入 active batch 的消息 |
 | `pending_message_count` | `usize` | durable replay 为准的待处理数 |
 | `last_output` | `Option<String>` | 最近 assistant 输出摘要 |
 
@@ -146,5 +148,7 @@
 | `last_turn_outcome` | live `AgentInstanceHandle` |
 | `phase` | `AgentStateProjector` |
 | `turn_count` | `AgentStateProjector` |
+| `active_task` | `MailboxProjection.active_delivery_ids` → 对应 `AgentMailboxEnvelope.message`；若当前无 active batch 且 lifecycle 为 `Pending/Running`，回退到当前 turn 最近一条用户任务消息 |
+| `pending_task` | `MailboxProjection.pending_delivery_ids - active_delivery_ids` → 下一条 `AgentMailboxEnvelope.message` |
 | `last_output` | `AgentStateProjector` |
 | `pending_message_count` | `MailboxProjection` |

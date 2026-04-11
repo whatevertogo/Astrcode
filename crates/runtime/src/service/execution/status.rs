@@ -4,11 +4,9 @@ use std::sync::Arc;
 
 use astrcode_core::{
     AgentLifecycleStatus, AgentTurnOutcome, ChildSessionNotificationKind, SubRunResult,
-    SubRunStorageMode,
 };
 use astrcode_runtime_execution::{
-    LegacyRejectionKind, ParsedSubRunStatus, ParsedSubRunStatusSource,
-    find_subrun_status_in_events, legacy_shared_history_rejection_message,
+    ParsedSubRunStatus, ParsedSubRunStatusSource, find_subrun_status_in_events,
     resolve_subrun_status_snapshot,
 };
 use astrcode_runtime_session::normalize_session_id;
@@ -42,37 +40,8 @@ impl AgentExecutionServiceHandle {
                 sub_run_id, session_id
             )));
         };
-        if is_legacy_shared_history_snapshot(&snapshot) {
-            self.runtime
-                .observability
-                .record_legacy_rejection(LegacyRejectionKind::SharedHistoryUnsupported);
-            return Err(ServiceError::Conflict(
-                legacy_shared_history_rejection_message(&session_id, Some(sub_run_id)),
-            ));
-        }
         Ok(to_service_subrun_snapshot(snapshot))
     }
-}
-
-fn is_legacy_shared_history_snapshot(snapshot: &ParsedSubRunStatus) -> bool {
-    if snapshot.source != ParsedSubRunStatusSource::Durable {
-        return false;
-    }
-    if snapshot.handle.storage_mode != SubRunStorageMode::SharedSession {
-        return false;
-    }
-    if snapshot.handle.child_session_id.is_some() {
-        return false;
-    }
-    let Some(result) = snapshot.result.as_ref() else {
-        return false;
-    };
-    // 旧 shared-history 场景：lifecycle=Idle + outcome=Completed/TokenExceeded + 无 handoff/failure
-    let is_legacy_completed = matches!(
-        result.last_turn_outcome,
-        Some(AgentTurnOutcome::Completed | AgentTurnOutcome::TokenExceeded)
-    );
-    is_legacy_completed && result.handoff.is_none() && result.failure.is_none()
 }
 
 fn to_service_subrun_snapshot(snapshot: ParsedSubRunStatus) -> SubRunStatusSnapshot {

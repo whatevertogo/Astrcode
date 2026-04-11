@@ -673,7 +673,7 @@ async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
                 "turn-parent".to_string(),
                 "review".to_string(),
                 handle.sub_run_id.clone(),
-                SubRunStorageMode::SharedSession,
+                SubRunStorageMode::IndependentSession,
                 None,
             ),
             payload: StorageEventPayload::SubRunFinished {
@@ -897,7 +897,7 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
                 "turn-b".to_string(),
                 "review".to_string(),
                 live_handle.sub_run_id.clone(),
-                SubRunStorageMode::SharedSession,
+                SubRunStorageMode::IndependentSession,
                 None,
             ),
             payload: StorageEventPayload::SubRunStarted {
@@ -918,7 +918,7 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
                 "turn-b".to_string(),
                 "review".to_string(),
                 live_handle.sub_run_id.clone(),
-                SubRunStorageMode::SharedSession,
+                SubRunStorageMode::IndependentSession,
                 None,
             ),
             payload: StorageEventPayload::SubRunFinished {
@@ -1075,7 +1075,7 @@ async fn get_subrun_status_rejects_legacy_shared_history_snapshots() {
         "turn-legacy".to_string(),
         "review".to_string(),
         "subrun-legacy".to_string(),
-        SubRunStorageMode::SharedSession,
+        SubRunStorageMode::IndependentSession,
         None,
     );
     append_storage_event(
@@ -2028,6 +2028,8 @@ async fn reusable_child_can_be_observed_restarted_and_closed() {
         snapshot.last_turn_outcome,
         Some(AgentTurnOutcome::Completed)
     );
+    assert!(snapshot.active_task.is_none());
+    assert!(snapshot.pending_task.is_none());
     let child_session_state = service
         .ensure_session_loaded(&child_session_id)
         .await

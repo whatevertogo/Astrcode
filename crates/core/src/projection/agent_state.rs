@@ -321,7 +321,7 @@ mod tests {
             "turn-parent",
             "explore",
             "subrun-1",
-            crate::SubRunStorageMode::SharedSession,
+            crate::SubRunStorageMode::IndependentSession,
             None,
         )
     }

@@ -454,8 +454,7 @@ mod tests {
         AgentEventContext::default()
     }
 
-    // Why: 这里故意保留 SharedSession 夹具，用于验证 legacy shared-history 子事件
-    // 不会重新污染父级投影；它不代表新的 child session 写入路径。
+    // Legacy shared-history 子事件夹具——storage_mode 已统一为 IndependentSession。
     fn legacy_shared_sub_run_agent() -> AgentEventContext {
         AgentEventContext {
             agent_id: Some("agent-child".to_string()),
@@ -463,7 +462,7 @@ mod tests {
             agent_profile: Some("explore".to_string()),
             sub_run_id: Some("subrun-1".to_string()),
             invocation_kind: Some(InvocationKind::SubRun),
-            storage_mode: Some(astrcode_core::SubRunStorageMode::SharedSession),
+            storage_mode: Some(astrcode_core::SubRunStorageMode::IndependentSession),
             child_session_id: None,
         }
     }

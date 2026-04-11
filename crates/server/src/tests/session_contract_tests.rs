@@ -721,7 +721,7 @@ fn seed_nested_subrun_hierarchy(session_id: &str, working_dir: &std::path::Path)
         "turn-root",
         "review",
         "sub-level1",
-        astrcode_core::SubRunStorageMode::SharedSession,
+        astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
     let sub2 = AgentEventContext::sub_run(
@@ -729,7 +729,7 @@ fn seed_nested_subrun_hierarchy(session_id: &str, working_dir: &std::path::Path)
         "turn-level1",
         "review",
         "sub-level2",
-        astrcode_core::SubRunStorageMode::SharedSession,
+        astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
     let sub3 = AgentEventContext::sub_run(
@@ -737,7 +737,7 @@ fn seed_nested_subrun_hierarchy(session_id: &str, working_dir: &std::path::Path)
         "turn-level2",
         "review",
         "sub-level3",
-        astrcode_core::SubRunStorageMode::SharedSession,
+        astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
 

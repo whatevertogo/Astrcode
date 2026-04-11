@@ -166,7 +166,7 @@ mod tests {
             parent_turn_id.to_string(),
             "review",
             sub_run_id.to_string(),
-            SubRunStorageMode::SharedSession,
+            SubRunStorageMode::IndependentSession,
             None,
         )
     }

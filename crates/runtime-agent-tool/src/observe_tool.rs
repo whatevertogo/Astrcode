@@ -22,7 +22,7 @@ const TOOL_NAME: &str = "observe";
 /// 获取目标 child agent 增强快照的观测工具。
 ///
 /// 只返回直接子 agent 的快照，非直接父、兄弟、跨树调用被拒绝。
-/// 快照融合三层数据：live lifecycle、对话投影、mailbox pending count。
+/// 快照融合三层数据：live lifecycle、对话投影、mailbox 派生摘要。
 pub struct ObserveAgentTool {
     executor: Arc<dyn CollaborationExecutor>,
 }
@@ -39,13 +39,15 @@ impl ObserveAgentTool {
 
 1. **指定 agentId**: 填入要观测的子 Agent ID
 2. **精确复用 ID**: `agentId` 必须逐字复制自之前 tool result 的 `Child agent reference`，不能补零、改写或猜测
-3. **快照内容**: 返回包含 lifecycleStatus、lastTurnOutcome、pendingMessageCount 等字段的完整状态快照
+3. **快照内容**: 返回包含 lifecycleStatus、lastTurnOutcome、activeTask、pendingTask、pendingMessageCount 等字段的完整状态快照
 4. **决策依据**: 根据快照决定是继续 `send` 新任务还是 `close` 终止
 
 ## 返回字段
 
 - `lifecycleStatus`: Pending / Running / Idle / Terminated
 - `lastTurnOutcome`: 上一轮执行结果（Completed / Cancelled / Failed / TokenExceeded）
+- `activeTask`: 当前正在处理的任务摘要（若存在）
+- `pendingTask`: 下一条待处理任务摘要（若存在）
 - `pendingMessageCount`: 待处理消息数量（durable replay 为准）
 - `turnCount`: 已完成轮次数
 - `lastOutput`: 最近输出的摘要
@@ -96,7 +98,7 @@ impl Tool for ObserveAgentTool {
                 ToolPromptMetadata::new(
                     "观测子 Agent 状态",
                     "使用 observe 获取直接子 Agent 的增强状态快照。快照包含 lifecycleStatus、\
-                     lastTurnOutcome、pendingMessageCount 等，帮助决定下一步操作。只能观测自己 \
+                     lastTurnOutcome、activeTask、pendingTask、pendingMessageCount 等，帮助决定下一步操作。只能观测自己 \
                      spawn 的直接子 Agent。`agentId` 必须来自之前协作 tool result 的 \
                      `Child agent reference`，并逐字复用。",
                 )

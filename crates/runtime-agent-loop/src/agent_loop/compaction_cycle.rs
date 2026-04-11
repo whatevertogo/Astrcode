@@ -39,10 +39,21 @@ pub(crate) struct CompactContext<'a> {
     pub(crate) file_access: &'a FileAccessTracker,
 }
 
+/// reactive compact 恢复所需的上下文。
+///
+/// 之所以单独建模，是为了避免在 `turn_runner` 和恢复逻辑之间传递一长串松散参数，
+/// 让 clippy `too_many_arguments` 继续掩盖真正的边界问题。
+pub(crate) struct ReactiveCompactContext<'a> {
+    pub(crate) llm_error: AstrError,
+    pub(crate) compact: CompactContext<'a>,
+    pub(crate) reactive_compact_attempts: &'a mut usize,
+    pub(crate) emit_turn_done: bool,
+}
+
 /// 尝试压缩对话历史，返回压缩后的视图；若无内容可压缩则返回 `None`。
 pub(crate) async fn maybe_compact_conversation(
     agent_loop: &AgentLoop,
-    ctx: CompactContext<'_>,
+    ctx: &CompactContext<'_>,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
 ) -> Result<Option<CompactionView>> {
     let decision = agent_loop
@@ -100,7 +111,7 @@ pub(crate) async fn maybe_compact_conversation(
                 compact_prompt_context.as_deref(),
                 keep_turns,
                 ctx.reason,
-                ctx.cancel,
+                ctx.cancel.clone(),
             )
             .await?
     };
@@ -201,24 +212,17 @@ pub(crate) enum ReactiveCompactOutcome {
 ///
 /// 当 LLM 返回 prompt-too-long 错误且 auto_compact 开启时，自动触发上下文压缩并重试。
 /// 这与 `run_turn` 中基于 Policy 的 proactive compact 不同——这里是 LLM 实际拒绝后的被动恢复。
-/// TODO: NOW ALLOW CLIPPY TOO MANY ARGUMENTS, 需要重构 CompactContext 来简化参数传递。
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_llm_error_with_reactive_compact(
-    llm_error: AstrError,
     agent_loop: &AgentLoop,
-    state: &AgentState,
-    provider: &Arc<dyn astrcode_runtime_llm::LlmProvider>,
-    conversation: &ConversationView,
-    file_access: &FileAccessTracker,
-    runtime_system_prompt: Option<&str>,
-    reactive_compact_attempts: &mut usize,
-    turn_id: &str,
-    agent: &AgentEventContext,
-    cancel: &CancelToken,
-    compaction_tail: &CompactionTailSnapshot,
-    emit_turn_done: bool,
+    ctx: ReactiveCompactContext<'_>,
     on_event: &mut impl FnMut(StorageEvent) -> Result<()>,
 ) -> Result<ReactiveCompactOutcome> {
+    let ReactiveCompactContext {
+        llm_error,
+        compact,
+        reactive_compact_attempts,
+        emit_turn_done,
+    } = ctx;
     let is_too_long = is_prompt_too_long(&llm_error);
 
     if is_too_long
@@ -228,29 +232,12 @@ pub(crate) async fn handle_llm_error_with_reactive_compact(
         *reactive_compact_attempts += 1;
         log::warn!(
             "[turn {}] LLM returned prompt too long, attempting reactive compact ({}/{})",
-            turn_id,
+            compact.turn_id,
             *reactive_compact_attempts,
             MAX_REACTIVE_COMPACT_ATTEMPTS
         );
 
-        let outcome = maybe_compact_conversation(
-            agent_loop,
-            CompactContext {
-                state,
-                provider,
-                conversation,
-                runtime_system_prompt,
-                reason: CompactionReason::Reactive,
-                turn_id,
-                agent,
-                cancel: cancel.clone(),
-                tail: compaction_tail.clone(),
-                tools: agent_loop.capabilities.tool_definitions(),
-                file_access,
-            },
-            on_event,
-        )
-        .await;
+        let outcome = maybe_compact_conversation(agent_loop, &compact, on_event).await;
 
         match outcome {
             Ok(Some(compacted_view)) => Ok(ReactiveCompactOutcome::Recovered(compacted_view)),
@@ -260,31 +247,48 @@ pub(crate) async fn handle_llm_error_with_reactive_compact(
                     "prompt too long but no compressible history available after {} attempts",
                     *reactive_compact_attempts
                 );
-                let turn_outcome = report_error(turn_id, &msg, agent, on_event, emit_turn_done)?;
+                let turn_outcome = report_error(
+                    compact.turn_id,
+                    &msg,
+                    compact.agent,
+                    on_event,
+                    emit_turn_done,
+                )?;
                 Ok(ReactiveCompactOutcome::Terminal(turn_outcome))
             },
             Err(compact_error) => {
                 if compact_error.is_cancelled() {
-                    let turn_outcome =
-                        report_interrupted(turn_id, agent, on_event, emit_turn_done)?;
+                    let turn_outcome = report_interrupted(
+                        compact.turn_id,
+                        compact.agent,
+                        on_event,
+                        emit_turn_done,
+                    )?;
                     return Ok(ReactiveCompactOutcome::Terminal(turn_outcome));
                 }
                 let msg = format!(
                     "reactive compact failed after {} attempts: {}",
                     *reactive_compact_attempts, compact_error
                 );
-                let turn_outcome = report_error(turn_id, &msg, agent, on_event, emit_turn_done)?;
+                let turn_outcome = report_error(
+                    compact.turn_id,
+                    &msg,
+                    compact.agent,
+                    on_event,
+                    emit_turn_done,
+                )?;
                 Ok(ReactiveCompactOutcome::Terminal(turn_outcome))
             },
         }
-    } else if cancel.is_cancelled() {
-        let turn_outcome = report_interrupted(turn_id, agent, on_event, emit_turn_done)?;
+    } else if compact.cancel.is_cancelled() {
+        let turn_outcome =
+            report_interrupted(compact.turn_id, compact.agent, on_event, emit_turn_done)?;
         Ok(ReactiveCompactOutcome::Terminal(turn_outcome))
     } else {
         let turn_outcome = report_error(
-            turn_id,
+            compact.turn_id,
             &llm_error.to_string(),
-            agent,
+            compact.agent,
             on_event,
             emit_turn_done,
         )?;

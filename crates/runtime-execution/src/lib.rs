@@ -99,41 +99,6 @@ impl DeliveryBufferStage {
     }
 }
 
-/// legacy cutover 的稳定拒绝原因。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LegacyRejectionKind {
-    SharedHistoryUnsupported,
-}
-
-impl LegacyRejectionKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::SharedHistoryUnsupported => "unsupported_legacy_shared_history",
-        }
-    }
-}
-
-/// 统一 legacy shared-history 拒绝文案，避免 runtime/server 各自拼接出不一致错误。
-pub fn legacy_shared_history_rejection_message(
-    session_id: &str,
-    sub_run_id: Option<&str>,
-) -> String {
-    match sub_run_id.filter(|value| !value.is_empty()) {
-        Some(sub_run_id) => format!(
-            "{}: session '{}' contains legacy shared-history data for sub-run '{}'; open the \
-             migrated child session durable history before continuing",
-            LegacyRejectionKind::SharedHistoryUnsupported.as_str(),
-            session_id,
-            sub_run_id
-        ),
-        None => format!(
-            "{}: session '{}' contains legacy shared-history data; open the migrated child \
-             session durable history before continuing",
-            LegacyRejectionKind::SharedHistoryUnsupported.as_str(),
-            session_id
-        ),
-    }
-}
 
 /// Child terminal delivery 的统一结果标签。
 ///

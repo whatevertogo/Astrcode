@@ -322,14 +322,12 @@ fn to_artifact_ref_dto(artifact: ArtifactRef) -> ArtifactRefDto {
 
 fn from_subrun_storage_mode_dto(mode: SubRunStorageModeDto) -> SubRunStorageMode {
     match mode {
-        SubRunStorageModeDto::SharedSession => SubRunStorageMode::SharedSession,
         SubRunStorageModeDto::IndependentSession => SubRunStorageMode::IndependentSession,
     }
 }
 
 fn to_subrun_storage_mode_dto(mode: SubRunStorageMode) -> SubRunStorageModeDto {
     match mode {
-        SubRunStorageMode::SharedSession => SubRunStorageModeDto::SharedSession,
         SubRunStorageMode::IndependentSession => SubRunStorageModeDto::IndependentSession,
     }
 }
@@ -604,7 +602,6 @@ fn to_subrun_execution_metrics_dto(
         completed: snapshot.completed,
         aborted: snapshot.aborted,
         token_exceeded: snapshot.token_exceeded,
-        shared_session_total: snapshot.shared_session_total,
         independent_session_total: snapshot.independent_session_total,
         total_duration_ms: snapshot.total_duration_ms,
         last_duration_ms: snapshot.last_duration_ms,

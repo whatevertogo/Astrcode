@@ -87,11 +87,11 @@ pub async fn complete_session_execution(
 
     // 后台子执行的生命周期由 agent_control / subrun API 单独管理。
     // 父 turn 正常结束时只清理 session 自己的活跃状态，不取消后台 subrun，
-    // 否则 shared-session 子执行会在父回复刚结束时被错误中断。
+    // 否则子执行会在父回复刚结束时被错误中断。
     complete_session_execution_state(session, phase);
 
     // 仅当父 turn 被中断时，取消该 turn 下所有仍在运行的子 agent，
-    // 防止前台（SharedSession）子 agent 变成孤儿。
+    // 防止子 agent 变成孤儿。
     if matches!(phase, Phase::Interrupted) {
         if let Some(turn_id) = active_turn_id.as_deref() {
             // 故意忽略：清理子运行失败不应阻断 turn 完成流程

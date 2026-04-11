@@ -348,6 +348,10 @@ pub struct ObserveAgentResult {
     pub turn_count: u32,
     /// durable replay 为准的待处理消息数量。
     pub pending_message_count: usize,
+    /// 当前正在处理的任务摘要。
+    pub active_task: Option<String>,
+    /// 下一条待处理任务摘要。
+    pub pending_task: Option<String>,
     /// 最近 assistant 输出摘要。
     pub last_output: Option<String>,
 }

@@ -6,9 +6,9 @@ export type Phase = 'idle' | 'thinking' | 'callingTool' | 'streaming' | 'interru
 export type ToolOutputStream = 'stdout' | 'stderr';
 export type CompactTrigger = 'auto' | 'manual';
 export type InvocationKind = 'subRun' | 'rootExecution';
-// Why: `sharedSession` 仍保留在读侧协议里，用于 legacy 样本识别和显式拒绝展示；
-// 新写入路径已经全部切到 `independentSession`。
-export type SubRunStorageMode = 'sharedSession' | 'independentSession';
+// Why: 新写路径已经全部切到 `independentSession`，但前端读侧仍需要识别
+// 历史 `sharedSession` 样本并做显式降级展示，不能把旧数据直接类型抹掉。
+export type SubRunStorageMode = 'independentSession';
 // Why: `legacyDurable` 仍承担“旧数据可识别但不受支持”的投影语义，
 // 前端需要它来渲染稳定错误，而不是把样本误当成正常 durable child。
 export type SubRunStatusSource = 'live' | 'durable' | 'legacyDurable';

@@ -135,7 +135,7 @@ describe('replaySessionHistory', () => {
         openSessionId: 'session-child-1',
       },
       notificationKind: 'delivered',
-      status: 'completed',
+      status: 'idle',
       summary: '子会话已完成摘要',
       finalReplyExcerpt: '子会话最终回复摘录',
     });

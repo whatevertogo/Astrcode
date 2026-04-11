@@ -5,6 +5,7 @@
 import type {
   AgentLifecycle,
   AgentEventPayload,
+  AgentTurnOutcome,
   ChildSessionNotificationKind,
   CompactTrigger,
   InvocationKind,
@@ -46,6 +47,12 @@ const VALID_CHILD_NOTIFICATION_KINDS: ChildSessionNotificationKind[] = [
   'failed',
 ];
 const VALID_AGENT_LIFECYCLES: AgentLifecycle[] = ['pending', 'running', 'idle', 'terminated'];
+const VALID_AGENT_TURN_OUTCOMES: AgentTurnOutcome[] = [
+  'completed',
+  'failed',
+  'cancelled',
+  'token_exceeded',
+];
 
 function toPhase(value: unknown): Phase | null {
   if (typeof value !== 'string') {
@@ -106,6 +113,34 @@ function toAgentLifecycle(value: unknown): AgentLifecycle | null {
     return value as AgentLifecycle;
   }
   return null;
+}
+
+function toAgentTurnOutcome(value: unknown): AgentTurnOutcome | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  if ((VALID_AGENT_TURN_OUTCOMES as string[]).includes(value)) {
+    return value as AgentTurnOutcome;
+  }
+  return null;
+}
+
+function normalizeChildNotificationStatus(
+  value: unknown,
+  fallback: AgentLifecycle
+): AgentLifecycle {
+  const lifecycle = toAgentLifecycle(value);
+  if (lifecycle) {
+    return lifecycle;
+  }
+
+  // Why: 旧样本里 childSessionNotification 偶发把 terminal outcome 写进 status；
+  // 四工具模型统一把这些终态结果投影为 lifecycle=`idle` + kind/summary 表达细节。
+  if (toAgentTurnOutcome(value)) {
+    return 'idle';
+  }
+
+  return fallback;
 }
 
 function invalidEvent(reason: string, raw: unknown): AgentEventPayload {
@@ -588,8 +623,8 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
         ? (kindRaw as ChildSessionNotificationKind)
         : 'failed';
     const summary = pickString(data, 'summary') ?? '';
-    const status = toAgentLifecycle(data.status) ?? 'terminated';
-    const childStatus = toAgentLifecycle(childRefRaw.status) ?? status;
+    const status = normalizeChildNotificationStatus(data.status, 'terminated');
+    const childStatus = normalizeChildNotificationStatus(childRefRaw.status, status);
     const openSessionId = pickString(childRefRaw, 'openSessionId', 'open_session_id') ?? sessionId;
     return {
       event: 'childSessionNotification',

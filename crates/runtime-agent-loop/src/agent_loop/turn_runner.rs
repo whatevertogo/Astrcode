@@ -37,8 +37,8 @@ use async_trait::async_trait;
 use super::{
     AgentLoop, TurnOutcome,
     compaction_cycle::{
-        CompactContext, ReactiveCompactOutcome, handle_llm_error_with_reactive_compact,
-        maybe_compact_conversation,
+        CompactContext, ReactiveCompactContext, ReactiveCompactOutcome,
+        handle_llm_error_with_reactive_compact, maybe_compact_conversation,
     },
     finish_interrupted, finish_turn, finish_with_error, internal_error, llm_cycle, tool_cycle,
 };
@@ -373,48 +373,11 @@ where
                 return report_error(turn_id, error.to_string(), &agent, on_event, emit_turn_done);
             },
         };
-        // ── ⑥ 执行自动压缩（如果 Policy 决策需要） ─────────────────────
-        // Policy 判定上下文已接近窗口阈值时，在调用 LLM 之前先压缩一次，
-        // 压缩后 continue 回到 step 循环顶部重新组装上下文。
-        if matches!(context_strategy, ContextStrategy::Compact) {
-            let runtime_system_prompt_for_auto_compact = request.system_prompt.clone();
-            let tools = agent_loop.capabilities.tool_definitions();
-            match maybe_compact_conversation(
-                agent_loop,
-                CompactContext {
-                    state,
-                    provider: &provider,
-                    conversation: &step_state.conversation,
-                    runtime_system_prompt: runtime_system_prompt_for_auto_compact.as_deref(),
-                    reason: CompactionReason::Auto,
-                    turn_id,
-                    agent: &agent,
-                    cancel: cancel.clone(),
-                    tail: compaction_tail.clone(),
-                    tools,
-                    file_access: &step_state.file_access,
-                },
-                on_event,
-            )
-            .await
-            {
-                Ok(Some(compacted_view)) => {
-                    step_state.apply_compaction(compacted_view);
-                    continue;
-                },
-                Ok(None) => {},
-                Err(error) => {
-                    return if error.is_cancelled() {
-                        report_interrupted(turn_id, &agent, on_event, emit_turn_done)
-                    } else {
-                        report_error(turn_id, error.to_string(), &agent, on_event, emit_turn_done)
-                    };
-                },
-            }
-        }
-        // ── ⑦ Policy 检查：可能改写 LLM 请求 ──────────────────────────
+        // ── ⑥ Policy 检查：可能改写 LLM 请求 ──────────────────────────
         // policy 引擎可以修改请求（如替换 system prompt），需要检测是否发生了改写，
         // 若改写则清空旧的 system_prompt_blocks 以避免缓存不一致。
+        // 此步骤必须在 compact 之前执行，这样 proactive compact 和 reactive compact
+        // 都能拿到 policy 改写后的完整 system prompt，避免摘要基于过时指令生成。
         let policy_ctx = agent_loop.policy_context(state, turn_id, step_state.step_index);
         let original_system_prompt = request.system_prompt.clone();
         let mut request = match agent_loop
@@ -430,15 +393,47 @@ where
         if request.system_prompt != original_system_prompt {
             request.system_prompt_blocks.clear();
         }
-        // 记录 policy 改写后的 system prompt，供后续 reactive compact 使用。
-        // Reactive compact 必须使用经过 policy 改写后的 system prompt，
-        // 否则压缩会基于过时的指令进行总结，导致内容漂移。
-        let runtime_system_prompt_for_reactive_compact = request.system_prompt.clone();
+        // policy 改写后的 system prompt，同时供 proactive 和 reactive compact 使用。
+        let runtime_system_prompt_for_compact = request.system_prompt.clone();
 
+        // ── ⑦ 执行自动压缩（如果 Policy 决策需要） ─────────────────────
+        // Policy 判定上下文已接近窗口阈值时，在调用 LLM 之前先压缩一次，
+        // 压缩后 continue 回到 step 循环顶部重新组装上下文。
+        // 使用 policy 改写后的 system prompt，确保摘要基于完整指令上下文。
+        if matches!(context_strategy, ContextStrategy::Compact) {
+            let tools = agent_loop.capabilities.tool_definitions();
+            let compact_ctx = CompactContext {
+                state,
+                provider: &provider,
+                conversation: &step_state.conversation,
+                runtime_system_prompt: runtime_system_prompt_for_compact.as_deref(),
+                reason: CompactionReason::Auto,
+                turn_id,
+                agent: &agent,
+                cancel: cancel.clone(),
+                tail: compaction_tail.clone(),
+                tools,
+                file_access: &step_state.file_access,
+            };
+            match maybe_compact_conversation(agent_loop, &compact_ctx, on_event).await {
+                Ok(Some(compacted_view)) => {
+                    step_state.apply_compaction(compacted_view);
+                    continue;
+                },
+                Ok(None) => {},
+                Err(error) => {
+                    return if error.is_cancelled() {
+                        report_interrupted(turn_id, &agent, on_event, emit_turn_done)
+                    } else {
+                        report_error(turn_id, error.to_string(), &agent, on_event, emit_turn_done)
+                    };
+                },
+            }
+        }
         // ── ⑧ 调用 LLM ────────────────────────────────────────────────
         // 将组装好的请求发送给 Provider，流式接收响应。
         // 若返回 prompt too long 错误且 auto_compact 开启，则触发 reactive compact。
-        // 这与步骤⑥的 proactive compact 不同——这里是 LLM 实际拒绝后的被动恢复。
+        // reactive compact 同样使用步骤⑥中 policy 改写后的 system prompt。
         let output = match llm_cycle::generate_response(
             &provider,
             request.clone(),
@@ -452,19 +447,25 @@ where
             Ok(output) => output,
             Err(error) => {
                 match handle_llm_error_with_reactive_compact(
-                    error,
                     agent_loop,
-                    state,
-                    &provider,
-                    &step_state.conversation,
-                    &step_state.file_access,
-                    runtime_system_prompt_for_reactive_compact.as_deref(),
-                    &mut step_state.reactive_compact_attempts,
-                    turn_id,
-                    &agent,
-                    &cancel,
-                    &compaction_tail,
-                    emit_turn_done,
+                    ReactiveCompactContext {
+                        llm_error: error,
+                        compact: CompactContext {
+                            state,
+                            provider: &provider,
+                            conversation: &step_state.conversation,
+                            runtime_system_prompt: runtime_system_prompt_for_compact.as_deref(),
+                            reason: CompactionReason::Reactive,
+                            turn_id,
+                            agent: &agent,
+                            cancel: cancel.clone(),
+                            tail: compaction_tail.clone(),
+                            tools: agent_loop.capabilities.tool_definitions(),
+                            file_access: &step_state.file_access,
+                        },
+                        reactive_compact_attempts: &mut step_state.reactive_compact_attempts,
+                        emit_turn_done,
+                    },
                     on_event,
                 )
                 .await?

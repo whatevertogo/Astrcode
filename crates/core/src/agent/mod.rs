@@ -100,9 +100,7 @@ impl SpawnAgentParams {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum SubRunStorageMode {
-    /// 与父级共享同一个 session event log。
-    SharedSession,
-    /// 使用独立 child session；当前仅作为实验特性启用。
+    /// 使用独立 child session。
     IndependentSession,
 }
 

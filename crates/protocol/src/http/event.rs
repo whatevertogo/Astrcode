@@ -73,7 +73,6 @@ pub enum InvocationKindDto {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum SubRunStorageModeDto {
-    SharedSession,
     IndependentSession,
 }
 
