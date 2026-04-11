@@ -621,7 +621,12 @@ async fn interrupt_cascades_to_registered_child_agents() {
         )
         .await
         .expect("child spawn should succeed");
-    let _ = control.mark_running(&child.agent_id).await;
+    let _ = control
+        .set_lifecycle(
+            &child.agent_id,
+            astrcode_core::AgentLifecycleStatus::Running,
+        )
+        .await;
 
     service
         .execution()
@@ -633,7 +638,10 @@ async fn interrupt_cascades_to_registered_child_agents() {
         .wait(&child.agent_id)
         .await
         .expect("child should still exist");
-    assert_eq!(child_handle.status, astrcode_core::AgentStatus::Cancelled);
+    assert_eq!(
+        child_handle.lifecycle,
+        astrcode_core::AgentLifecycleStatus::Terminated
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -678,7 +686,12 @@ async fn complete_session_execution_keeps_background_child_agents_alive() {
         )
         .await
         .expect("child spawn should succeed");
-    let _ = control.mark_running(&child.agent_id).await;
+    let _ = control
+        .set_lifecycle(
+            &child.agent_id,
+            astrcode_core::AgentLifecycleStatus::Running,
+        )
+        .await;
 
     complete_session_execution(&state, Phase::Idle, &control).await;
 
@@ -686,7 +699,10 @@ async fn complete_session_execution_keeps_background_child_agents_alive() {
         .get(&child.agent_id)
         .await
         .expect("child should remain registered");
-    assert_eq!(child_handle.status, astrcode_core::AgentStatus::Running);
+    assert_eq!(
+        child_handle.lifecycle,
+        astrcode_core::AgentLifecycleStatus::Running
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

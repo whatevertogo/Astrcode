@@ -79,12 +79,19 @@ pub struct SubagentContextOverridesDto {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum AgentStatusDto {
+pub enum AgentLifecycleDto {
     Pending,
     Running,
+    Idle,
+    Terminated,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTurnOutcomeDto {
     Completed,
-    Cancelled,
     Failed,
+    Cancelled,
     TokenExceeded,
 }
 
@@ -111,7 +118,9 @@ pub struct SubRunStatusDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<String>,
     pub storage_mode: SubRunStorageModeDto,
-    pub status: AgentStatusDto,
+    pub lifecycle: AgentLifecycleDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn_outcome: Option<AgentTurnOutcomeDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<SubRunResultDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -151,7 +160,7 @@ pub struct ChildAgentRefDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<String>,
     pub lineage_kind: ChildSessionLineageKindDto,
-    pub status: AgentStatusDto,
+    pub status: AgentLifecycleDto,
     pub open_session_id: String,
 }
 
@@ -174,7 +183,7 @@ pub struct ChildSessionNotificationDto {
     pub child_ref: ChildAgentRefDto,
     pub kind: ChildSessionNotificationKindDto,
     pub summary: String,
-    pub status: AgentStatusDto,
+    pub status: AgentLifecycleDto,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

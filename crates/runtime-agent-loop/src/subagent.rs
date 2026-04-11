@@ -234,21 +234,19 @@ pub fn build_parent_delivery_declaration(notification: &ChildSessionNotification
     lines.join("\n")
 }
 
-fn status_label(status: astrcode_core::AgentStatus) -> &'static str {
+fn status_label(status: astrcode_core::AgentLifecycleStatus) -> &'static str {
     match status {
-        astrcode_core::AgentStatus::Pending => "pending",
-        astrcode_core::AgentStatus::Running => "running",
-        astrcode_core::AgentStatus::Completed => "completed",
-        astrcode_core::AgentStatus::Cancelled => "cancelled",
-        astrcode_core::AgentStatus::Failed => "failed",
-        astrcode_core::AgentStatus::TokenExceeded => "token_exceeded",
+        astrcode_core::AgentLifecycleStatus::Pending => "pending",
+        astrcode_core::AgentLifecycleStatus::Running => "running",
+        astrcode_core::AgentLifecycleStatus::Idle => "idle",
+        astrcode_core::AgentLifecycleStatus::Terminated => "terminated",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        AgentEventContext, AgentStatus, ChildSessionLineageKind, ChildSessionNotification,
+        AgentEventContext, AgentLifecycleStatus, ChildSessionLineageKind, ChildSessionNotification,
         ChildSessionNotificationKind, PromptMetricsPayload, StorageEvent, StorageEventPayload,
     };
 
@@ -358,12 +356,12 @@ mod tests {
                 sub_run_id: "subrun-1".to_string(),
                 parent_agent_id: Some("agent-parent".to_string()),
                 lineage_kind: ChildSessionLineageKind::Spawn,
-                status: AgentStatus::Completed,
+                status: AgentLifecycleStatus::Idle,
                 open_session_id: "session-child".to_string(),
             },
             kind: ChildSessionNotificationKind::Delivered,
             summary: "child completed".to_string(),
-            status: AgentStatus::Completed,
+            status: AgentLifecycleStatus::Idle,
             source_tool_call_id: Some("call-1".to_string()),
             final_reply_excerpt: Some("final answer".to_string()),
         });
@@ -371,7 +369,7 @@ mod tests {
         assert!(prompt.contains("deliveryId: note-1"));
         assert!(prompt.contains("childAgentId: agent-child"));
         assert!(prompt.contains("subRunId: subrun-1"));
-        assert!(prompt.contains("status: completed"));
+        assert!(prompt.contains("status: idle"));
         assert!(prompt.contains("openSessionId: session-child"));
         assert!(prompt.contains("summary: child completed"));
         assert!(prompt.contains("finalReplyExcerpt: final answer"));

@@ -28,9 +28,14 @@ pub enum AgentLifecycleStatus {
 }
 
 impl AgentLifecycleStatus {
-    /// 判断是否已经到达终态。
+    /// 判断是否已经到达终态（不可恢复的已死状态）。
     pub fn is_final(self) -> bool {
         matches!(self, Self::Terminated)
+    }
+
+    /// 是否正在占用并发槽位。Pending/Running 占槽，Idle/Terminated 释放槽。
+    pub fn occupies_slot(self) -> bool {
+        matches!(self, Self::Pending | Self::Running)
     }
 
     /// 判断 agent 当前是否可接收新消息。

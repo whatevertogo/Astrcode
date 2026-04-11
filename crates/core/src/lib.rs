@@ -50,7 +50,7 @@ pub use action::{
 };
 pub use agent::{
     AgentEventContext, AgentInboxEnvelope, AgentMode, AgentProfile, AgentProfileCatalog,
-    AgentStatus, ArtifactRef, ChildAgentRef, ChildSessionLineageKind, ChildSessionNode,
+    ArtifactRef, ChildAgentRef, ChildSessionLineageKind, ChildSessionNode,
     ChildSessionNotification, ChildSessionNotificationKind, ChildSessionStatusSource,
     CloseAgentParams, CollaborationResult, CollaborationResultKind, ForkMode, InboxEnvelopeKind,
     InvocationKind, LineageSnapshot, ResolvedExecutionLimitsSnapshot,

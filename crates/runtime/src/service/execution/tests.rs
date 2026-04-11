@@ -6,7 +6,7 @@ use std::{
 
 use astrcode_core::{
     AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope, AgentMode, AgentProfile,
-    AgentStatus, AgentTurnOutcome, AstrError, CancelToken, ChildSessionLineageKind,
+    AgentTurnOutcome, AstrError, CancelToken, ChildSessionLineageKind,
     ChildSessionNotificationKind, CloseAgentParams, ExecutionOwner, InvocationKind,
     MailboxBatchStartedPayload, MailboxProjection, MailboxQueuedPayload, ObserveAgentResult,
     ObserveParams, Phase, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
@@ -412,7 +412,7 @@ async fn spawn_agent_background_cancellation_releases_concurrency_slots() {
             .await
             .expect("cancelled sub-run should still be observable");
         assert!(
-            handle.status.is_final(),
+            !handle.lifecycle.occupies_slot(),
             "background sub-run should eventually release its concurrency slot via any final state"
         );
     }
@@ -565,7 +565,8 @@ async fn get_subrun_status_reconstructs_durable_snapshot_without_live_handle() {
         allowed_tools: vec!["readFile".to_string()],
     };
     let result = SubRunResult {
-        status: AgentStatus::Completed,
+        lifecycle: AgentLifecycleStatus::Idle,
+        last_turn_outcome: Some(AgentTurnOutcome::Completed),
         handoff: Some(SubRunHandoff {
             summary: "done".to_string(),
             findings: vec!["ok".to_string()],
@@ -610,7 +611,7 @@ async fn get_subrun_status_reconstructs_durable_snapshot_without_live_handle() {
         .await
         .expect("durable snapshot should be reconstructed");
 
-    assert_eq!(snapshot.handle.status, AgentStatus::Completed);
+    assert_eq!(snapshot.handle.lifecycle, AgentLifecycleStatus::Idle);
     assert_eq!(snapshot.handle.agent_id, "agent-durable");
     assert_eq!(snapshot.handle.agent_profile, "review");
     assert_eq!(snapshot.result, Some(result));
@@ -657,8 +658,8 @@ async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
         )
         .await
         .expect("live sub-run should spawn");
-    let _ = control
-        .mark_running(&handle.sub_run_id)
+    control
+        .set_lifecycle(&handle.sub_run_id, AgentLifecycleStatus::Running)
         .await
         .expect("live sub-run should become running");
 
@@ -678,7 +679,8 @@ async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: None,
                 result: SubRunResult {
-                    status: AgentStatus::Completed,
+                    lifecycle: AgentLifecycleStatus::Idle,
+                    last_turn_outcome: Some(AgentTurnOutcome::Completed),
                     handoff: Some(SubRunHandoff {
                         summary: "durable completed".to_string(),
                         findings: Vec::new(),
@@ -701,11 +703,11 @@ async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
 
     assert_eq!(snapshot.handle.sub_run_id, handle.sub_run_id);
     assert_eq!(snapshot.handle.agent_id, handle.agent_id);
-    assert_eq!(snapshot.handle.status, AgentStatus::Running);
+    assert_eq!(snapshot.handle.lifecycle, AgentLifecycleStatus::Running);
     assert_eq!(snapshot.source, crate::service::SubRunStatusSource::Live);
     assert_eq!(
-        snapshot.result.as_ref().map(|item| item.status),
-        Some(AgentStatus::Completed)
+        snapshot.result.as_ref().map(|item| item.lifecycle),
+        Some(AgentLifecycleStatus::Idle)
     );
     assert_eq!(snapshot.step_count, Some(9));
     assert_eq!(snapshot.estimated_tokens, Some(999));
@@ -764,7 +766,8 @@ async fn get_subrun_status_keeps_storage_mode_parity_for_parent_aborted_independ
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: None,
                 result: SubRunResult {
-                    status: AgentStatus::Cancelled,
+                    lifecycle: AgentLifecycleStatus::Idle,
+                    last_turn_outcome: Some(AgentTurnOutcome::Cancelled),
                     handoff: None,
                     failure: None,
                 },
@@ -785,10 +788,10 @@ async fn get_subrun_status_keeps_storage_mode_parity_for_parent_aborted_independ
         snapshot.handle.storage_mode,
         SubRunStorageMode::IndependentSession
     );
-    assert_eq!(snapshot.handle.status, AgentStatus::Cancelled);
+    assert_eq!(snapshot.handle.lifecycle, AgentLifecycleStatus::Idle);
     assert_eq!(
-        snapshot.result.as_ref().map(|item| item.status),
-        Some(AgentStatus::Cancelled)
+        snapshot.result.as_ref().map(|item| item.lifecycle),
+        Some(AgentLifecycleStatus::Idle)
     );
 }
 
@@ -829,8 +832,8 @@ async fn get_subrun_status_rejects_live_handle_from_other_session() {
         .spawn(&profile, &session_a.session_id, "turn-a".to_string(), None)
         .await
         .expect("live sub-run should spawn");
-    let _ = control
-        .mark_running(&handle.sub_run_id)
+    control
+        .set_lifecycle(&handle.sub_run_id, AgentLifecycleStatus::Running)
         .await
         .expect("live sub-run should become running");
 
@@ -879,8 +882,8 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
         .spawn(&profile, &session_a.session_id, "turn-a".to_string(), None)
         .await
         .expect("live sub-run should spawn");
-    let _ = control
-        .mark_running(&live_handle.sub_run_id)
+    control
+        .set_lifecycle(&live_handle.sub_run_id, AgentLifecycleStatus::Running)
         .await
         .expect("live sub-run should become running");
 
@@ -921,7 +924,8 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: Some("call-b".to_string()),
                 result: SubRunResult {
-                    status: AgentStatus::Completed,
+                    lifecycle: AgentLifecycleStatus::Idle,
+                    last_turn_outcome: Some(AgentTurnOutcome::Completed),
                     handoff: Some(SubRunHandoff {
                         summary: "durable completed".to_string(),
                         findings: Vec::new(),
@@ -943,7 +947,7 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
         .expect("durable snapshot should be returned");
 
     assert_eq!(snapshot.source, crate::service::SubRunStatusSource::Durable);
-    assert_eq!(snapshot.handle.status, AgentStatus::Completed);
+    assert_eq!(snapshot.handle.lifecycle, AgentLifecycleStatus::Idle);
     assert_eq!(snapshot.handle.agent_id, "agent-b");
     assert_eq!(snapshot.tool_call_id.as_deref(), Some("call-b"));
 }
@@ -1001,8 +1005,8 @@ async fn get_subrun_status_uses_live_overlay_for_independent_subrun_in_parent_se
         )
         .await
         .expect("independent sub-run should spawn");
-    let _ = control
-        .mark_running(&handle.agent_id)
+    control
+        .set_lifecycle(&handle.agent_id, AgentLifecycleStatus::Running)
         .await
         .expect("sub-run should be running");
 
@@ -1038,7 +1042,7 @@ async fn get_subrun_status_uses_live_overlay_for_independent_subrun_in_parent_se
         .expect("status should resolve through parent ownership");
 
     assert_eq!(snapshot.source, crate::service::SubRunStatusSource::Live);
-    assert_eq!(snapshot.handle.status, AgentStatus::Running);
+    assert_eq!(snapshot.handle.lifecycle, AgentLifecycleStatus::Running);
     assert_eq!(
         snapshot.handle.storage_mode,
         SubRunStorageMode::IndependentSession
@@ -1097,7 +1101,8 @@ async fn get_subrun_status_rejects_legacy_shared_history_snapshots() {
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: Some("call-legacy".to_string()),
                 result: SubRunResult {
-                    status: AgentStatus::Completed,
+                    lifecycle: AgentLifecycleStatus::Idle,
+                    last_turn_outcome: Some(AgentTurnOutcome::Completed),
                     handoff: None,
                     failure: None,
                 },
@@ -1209,16 +1214,16 @@ async fn resume_child_session_replays_existing_child_history_and_mints_new_subru
         )
         .await
         .expect("child execution should spawn");
-    let _ = service
+    service
         .execution()
         .control()
-        .mark_running(&original_handle.agent_id)
+        .set_lifecycle(&original_handle.agent_id, AgentLifecycleStatus::Running)
         .await
         .expect("child execution should become running");
     let _ = service
         .execution()
         .control()
-        .mark_completed(&original_handle.agent_id)
+        .complete_turn(&original_handle.agent_id, AgentTurnOutcome::Completed)
         .await
         .expect("child execution should complete");
 
@@ -1253,7 +1258,7 @@ async fn resume_child_session_replays_existing_child_history_and_mints_new_subru
         .await
         .expect("resume should succeed");
 
-    assert_eq!(running_result.status, AgentStatus::Running);
+    assert_eq!(running_result.lifecycle, AgentLifecycleStatus::Running);
     assert_eq!(resumed_handle.agent_id, original_handle.agent_id);
     assert_ne!(resumed_handle.sub_run_id, original_handle.sub_run_id);
     assert_eq!(
@@ -1274,7 +1279,7 @@ async fn resume_child_session_replays_existing_child_history_and_mints_new_subru
         .get(&original_handle.sub_run_id)
         .await
         .expect("historical execution should remain queryable by old sub-run id");
-    assert_eq!(historical.status, AgentStatus::Completed);
+    assert_eq!(historical.lifecycle, AgentLifecycleStatus::Idle);
 
     let child_snapshot = service
         .ensure_session_loaded(&child_session.session_id)
@@ -1406,16 +1411,16 @@ async fn resume_child_session_rejects_lineage_mismatch_before_minting_new_execut
         )
         .await
         .expect("child execution should spawn");
-    let _ = service
+    service
         .execution()
         .control()
-        .mark_running(&original_handle.agent_id)
+        .set_lifecycle(&original_handle.agent_id, AgentLifecycleStatus::Running)
         .await
         .expect("child execution should become running");
     let _ = service
         .execution()
         .control()
-        .mark_completed(&original_handle.agent_id)
+        .complete_turn(&original_handle.agent_id, AgentTurnOutcome::Completed)
         .await
         .expect("child execution should complete");
 
@@ -1465,7 +1470,7 @@ async fn resume_child_session_rejects_lineage_mismatch_before_minting_new_execut
         .await
         .expect("agent should still resolve to the previous execution");
     assert_eq!(latest_handle.sub_run_id, original_handle.sub_run_id);
-    assert_eq!(latest_handle.status, AgentStatus::Completed);
+    assert_eq!(latest_handle.lifecycle, AgentLifecycleStatus::Idle);
 
     let diagnostics = service.observability.snapshot().execution_diagnostics;
     assert_eq!(diagnostics.lineage_mismatch_parent_session, 1);
@@ -1534,16 +1539,16 @@ async fn resume_child_session_rejects_empty_child_history_as_unsafe_resume() {
         )
         .await
         .expect("child execution should spawn");
-    let _ = service
+    service
         .execution()
         .control()
-        .mark_running(&original_handle.agent_id)
+        .set_lifecycle(&original_handle.agent_id, AgentLifecycleStatus::Running)
         .await
         .expect("child execution should become running");
     let _ = service
         .execution()
         .control()
-        .mark_completed(&original_handle.agent_id)
+        .complete_turn(&original_handle.agent_id, AgentTurnOutcome::Completed)
         .await
         .expect("child execution should complete");
 
@@ -1711,7 +1716,8 @@ fn derive_child_execution_owner_keeps_root_identity() {
         parent_agent_id: None,
         agent_profile: "plan".to_string(),
         storage_mode: SubRunStorageMode::IndependentSession,
-        status: AgentStatus::Pending,
+        lifecycle: AgentLifecycleStatus::Pending,
+        last_turn_outcome: None,
     };
 
     let owner = derive_child_execution_owner(&context, "turn-root", &child);
@@ -1773,10 +1779,10 @@ async fn parent_turn_completion_does_not_cancel_running_child_session() {
         )
         .await
         .expect("child sub-run should spawn");
-    let _ = service
+    service
         .execution()
         .control()
-        .mark_running(&child.agent_id)
+        .set_lifecycle(&child.agent_id, AgentLifecycleStatus::Running)
         .await
         .expect("child should transition to running");
     let child_cancel = service
@@ -1810,7 +1816,7 @@ async fn parent_turn_completion_does_not_cancel_running_child_session() {
         .get(&child.agent_id)
         .await
         .expect("child should remain in registry");
-    assert_eq!(refreshed.status, AgentStatus::Running);
+    assert_eq!(refreshed.lifecycle, AgentLifecycleStatus::Running);
     assert!(!child_cancel.is_cancelled());
 }
 
@@ -2069,7 +2075,7 @@ async fn reusable_child_can_be_observed_restarted_and_closed() {
         .get(&child_agent_id)
         .await
         .expect("restarted child handle should exist");
-    assert_eq!(restarted_handle.status, AgentStatus::Running);
+    assert_eq!(restarted_handle.lifecycle, AgentLifecycleStatus::Running);
     assert_ne!(restarted_handle.sub_run_id, initial_handle.sub_run_id);
 
     let _ = service
@@ -2123,7 +2129,7 @@ async fn reusable_child_can_be_observed_restarted_and_closed() {
             .await,
         Some(astrcode_core::AgentLifecycleStatus::Terminated)
     );
-    assert_eq!(closed_handle.status, AgentStatus::Cancelled);
+    assert_eq!(closed_handle.lifecycle, AgentLifecycleStatus::Terminated);
 
     let send_after_close = service
         .agent()
@@ -2188,10 +2194,10 @@ async fn send_to_running_child_persists_mailbox_queued_event() {
         )
         .await
         .expect("child should spawn");
-    let _ = service
+    service
         .execution()
         .control()
-        .mark_running(&child.agent_id)
+        .set_lifecycle(&child.agent_id, AgentLifecycleStatus::Running)
         .await
         .expect("child should be running");
 
@@ -2282,10 +2288,10 @@ async fn close_child_persists_mailbox_discarded_event_for_pending_messages() {
         )
         .await
         .expect("child should spawn");
-    let _ = service
+    service
         .execution()
         .control()
-        .mark_running(&child.agent_id)
+        .set_lifecycle(&child.agent_id, AgentLifecycleStatus::Running)
         .await
         .expect("child should be running");
 
@@ -2367,12 +2373,12 @@ async fn child_terminal_delivery_triggers_parent_wake_batch_started_and_acked() 
             sub_run_id: "subrun-child-1".to_string(),
             parent_agent_id: Some("agent-parent".to_string()),
             lineage_kind: ChildSessionLineageKind::Spawn,
-            status: AgentStatus::Completed,
+            status: AgentLifecycleStatus::Idle,
             open_session_id: "session-child".to_string(),
         },
         kind: ChildSessionNotificationKind::Delivered,
         summary: "child completed summary".to_string(),
-        status: AgentStatus::Completed,
+        status: AgentLifecycleStatus::Idle,
         source_tool_call_id: None,
         final_reply_excerpt: Some("child final excerpt".to_string()),
     };
@@ -2526,7 +2532,8 @@ fn project_child_terminal_delivery_keeps_token_exceeded_terminal_status_with_han
     // TokenExceeded 仍然是 Delivered，但终态保持 TokenExceeded，
     // 避免把资源约束结束误投影成普通 Completed。
     let result = SubRunResult {
-        status: AgentStatus::TokenExceeded,
+        lifecycle: AgentLifecycleStatus::Idle,
+        last_turn_outcome: Some(AgentTurnOutcome::TokenExceeded),
         handoff: Some(SubRunHandoff {
             summary: "达到 token 上限，已收集部分结果".to_string(),
             findings: vec!["中间发现1".to_string()],
@@ -2536,7 +2543,7 @@ fn project_child_terminal_delivery_keeps_token_exceeded_terminal_status_with_han
     };
     let projection = super::status::project_child_terminal_delivery(&result);
     assert_eq!(projection.kind, ChildSessionNotificationKind::Delivered);
-    assert_eq!(projection.status, AgentStatus::TokenExceeded);
+    assert_eq!(projection.status, AgentLifecycleStatus::Idle);
     assert_eq!(projection.summary, "达到 token 上限，已收集部分结果");
     assert_eq!(
         projection.final_reply_excerpt.as_deref(),
@@ -2548,13 +2555,14 @@ fn project_child_terminal_delivery_keeps_token_exceeded_terminal_status_with_han
 fn project_child_terminal_delivery_keeps_token_exceeded_terminal_status_without_handoff() {
     // TokenExceeded + 无 handoff 时，summary 应走默认回退。
     let result = SubRunResult {
-        status: AgentStatus::TokenExceeded,
+        lifecycle: AgentLifecycleStatus::Idle,
+        last_turn_outcome: Some(AgentTurnOutcome::TokenExceeded),
         handoff: None,
         failure: None,
     };
     let projection = super::status::project_child_terminal_delivery(&result);
     assert_eq!(projection.kind, ChildSessionNotificationKind::Delivered);
-    assert_eq!(projection.status, AgentStatus::TokenExceeded);
+    assert_eq!(projection.status, AgentLifecycleStatus::Idle);
     assert_eq!(
         projection.summary,
         "子 Agent 因 token 限额结束，但没有返回可读总结。"
@@ -2566,7 +2574,8 @@ fn project_child_terminal_delivery_keeps_token_exceeded_terminal_status_without_
 fn project_child_terminal_delivery_uses_failure_display_message_as_summary_fallback() {
     // handoff 为空但 failure 有 display_message 时，summary 应使用 display_message。
     let result = SubRunResult {
-        status: AgentStatus::Failed,
+        lifecycle: AgentLifecycleStatus::Idle,
+        last_turn_outcome: Some(AgentTurnOutcome::Failed),
         handoff: None,
         failure: Some(SubRunFailure {
             code: SubRunFailureCode::Internal,
@@ -2577,7 +2586,7 @@ fn project_child_terminal_delivery_uses_failure_display_message_as_summary_fallb
     };
     let projection = super::status::project_child_terminal_delivery(&result);
     assert_eq!(projection.kind, ChildSessionNotificationKind::Failed);
-    assert_eq!(projection.status, AgentStatus::Failed);
+    assert_eq!(projection.status, AgentLifecycleStatus::Idle);
     assert_eq!(projection.summary, "模型调用失败：配额不足");
     assert!(projection.final_reply_excerpt.is_none());
 }
@@ -2586,13 +2595,14 @@ fn project_child_terminal_delivery_uses_failure_display_message_as_summary_fallb
 fn project_child_terminal_delivery_returns_default_summary_when_no_handoff_or_failure() {
     // 既无 handoff 也无 failure 时，使用状态对应的中文默认文案。
     let result = SubRunResult {
-        status: AgentStatus::Completed,
+        lifecycle: AgentLifecycleStatus::Idle,
+        last_turn_outcome: Some(AgentTurnOutcome::Completed),
         handoff: None,
         failure: None,
     };
     let projection = super::status::project_child_terminal_delivery(&result);
     assert_eq!(projection.kind, ChildSessionNotificationKind::Delivered);
-    assert_eq!(projection.status, AgentStatus::Completed);
+    assert_eq!(projection.status, AgentLifecycleStatus::Idle);
     assert_eq!(projection.summary, "子 Agent 已完成，但没有返回可读总结。");
     assert!(projection.final_reply_excerpt.is_none());
 }
@@ -2909,12 +2919,12 @@ fn make_test_notification(
             // mailbox envelope 需要显式的直接父 agent id，旧测试夹具不能再省略它。
             parent_agent_id: Some("agent-parent".to_string()),
             lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
-            status: AgentStatus::Completed,
+            status: AgentLifecycleStatus::Idle,
             open_session_id: "session-child".to_string(),
         },
         kind: ChildSessionNotificationKind::Delivered,
         summary: "子 agent 完成".to_string(),
-        status: AgentStatus::Completed,
+        status: AgentLifecycleStatus::Idle,
         source_tool_call_id: None,
         final_reply_excerpt: None,
     }

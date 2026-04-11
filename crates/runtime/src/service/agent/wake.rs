@@ -389,11 +389,19 @@ impl AgentServiceHandle {
             .unwrap_or(notification.summary.as_str())
             .to_string();
         let sender_last_turn_outcome = match notification.status {
-            astrcode_core::AgentStatus::Completed => Some(AgentTurnOutcome::Completed),
-            astrcode_core::AgentStatus::Failed => Some(AgentTurnOutcome::Failed),
-            astrcode_core::AgentStatus::Cancelled => Some(AgentTurnOutcome::Cancelled),
-            astrcode_core::AgentStatus::TokenExceeded => Some(AgentTurnOutcome::TokenExceeded),
-            astrcode_core::AgentStatus::Pending | astrcode_core::AgentStatus::Running => None,
+            astrcode_core::AgentLifecycleStatus::Idle => {
+                // 尝试从通知携带的信息推断 outcome
+                match notification.kind {
+                    astrcode_core::ChildSessionNotificationKind::Delivered => {
+                        Some(AgentTurnOutcome::Completed)
+                    },
+                    astrcode_core::ChildSessionNotificationKind::Failed => {
+                        Some(AgentTurnOutcome::Failed)
+                    },
+                    _ => None,
+                }
+            },
+            _ => None,
         };
         let payload = MailboxQueuedPayload {
             envelope: AgentMailboxEnvelope {
@@ -422,20 +430,16 @@ impl AgentServiceHandle {
 }
 
 fn build_parent_delivery_prompt_declaration(delivery: &PendingParentDelivery) -> PromptDeclaration {
-    let sender_lifecycle_status = match delivery.notification.status {
-        astrcode_core::AgentStatus::Pending => AgentLifecycleStatus::Pending,
-        astrcode_core::AgentStatus::Running => AgentLifecycleStatus::Running,
-        astrcode_core::AgentStatus::Completed
-        | astrcode_core::AgentStatus::Failed
-        | astrcode_core::AgentStatus::Cancelled
-        | astrcode_core::AgentStatus::TokenExceeded => AgentLifecycleStatus::Idle,
-    };
+    let sender_lifecycle_status = delivery.notification.status;
     let sender_last_turn_outcome = match delivery.notification.status {
-        astrcode_core::AgentStatus::Completed => Some(AgentTurnOutcome::Completed),
-        astrcode_core::AgentStatus::Failed => Some(AgentTurnOutcome::Failed),
-        astrcode_core::AgentStatus::Cancelled => Some(AgentTurnOutcome::Cancelled),
-        astrcode_core::AgentStatus::TokenExceeded => Some(AgentTurnOutcome::TokenExceeded),
-        astrcode_core::AgentStatus::Pending | astrcode_core::AgentStatus::Running => None,
+        astrcode_core::AgentLifecycleStatus::Idle => match delivery.notification.kind {
+            astrcode_core::ChildSessionNotificationKind::Delivered => {
+                Some(AgentTurnOutcome::Completed)
+            },
+            astrcode_core::ChildSessionNotificationKind::Failed => Some(AgentTurnOutcome::Failed),
+            _ => None,
+        },
+        _ => None,
     };
     PromptDeclaration {
         block_id: format!("runtime.parent_delivery.{}", delivery.delivery_id),

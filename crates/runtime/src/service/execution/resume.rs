@@ -7,7 +7,7 @@
 use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, AgentStatus, AstrError, CancelToken, ChildSessionLineageKind,
+    AgentEventContext, AgentLifecycleStatus, AstrError, CancelToken, ChildSessionLineageKind,
     ChildSessionNotificationKind, InvocationKind, LineageSnapshot, ResolvedExecutionLimitsSnapshot,
     ResolvedSubagentContextOverrides, SpawnAgentParams, StorageEvent, StorageEventPayload,
     SubRunHandle, SubRunResult, SubRunStorageMode, ToolContext, ToolEventSink, UserMessageOrigin,
@@ -45,10 +45,17 @@ impl AgentExecutionServiceHandle {
             .await
             .ok_or_else(|| ServiceError::InvalidInput(format!("agent '{agent_id}' not found")))?;
 
-        if !child.status.is_final() {
+        if !child.lifecycle.occupies_slot() && !child.lifecycle.is_final() {
+            // Idle 但不在 Terminated 状态——可以通过 resume 重新激活
+        } else if child.lifecycle.is_final() {
             return Err(ServiceError::InvalidInput(format!(
-                "agent '{}' is not in a final state (current: {:?})",
-                agent_id, child.status
+                "agent '{}' is terminated and cannot be resumed",
+                agent_id
+            )));
+        } else if child.lifecycle.occupies_slot() {
+            return Err(ServiceError::InvalidInput(format!(
+                "agent '{}' is still occupying a slot (current: {:?})",
+                agent_id, child.lifecycle
             )));
         }
 
@@ -228,7 +235,7 @@ impl AgentExecutionServiceHandle {
         child_node.agent_id = resumed.agent_id.clone();
         child_node.sub_run_id = resumed.sub_run_id.clone();
         child_node.lineage_kind = ChildSessionLineageKind::Resume;
-        child_node.status = AgentStatus::Running;
+        child_node.status = AgentLifecycleStatus::Running;
         child_node.created_by_tool_call_id = ctx.tool_call_id().map(ToString::to_string);
         child_node.lineage_snapshot = Some(LineageSnapshot {
             source_agent_id: child.agent_id.clone(),
@@ -259,7 +266,7 @@ impl AgentExecutionServiceHandle {
             format!("child-resumed:{}", resumed.sub_run_id),
             ChildSessionNotificationKind::Resumed,
             format!("子 Agent {} 已恢复。", resumed.agent_id),
-            AgentStatus::Running,
+            AgentLifecycleStatus::Running,
             None,
         );
         let _ = parent_event_sink
@@ -348,7 +355,8 @@ impl AgentExecutionServiceHandle {
         };
 
         let running_result = SubRunResult {
-            status: AgentStatus::Running,
+            lifecycle: AgentLifecycleStatus::Running,
+            last_turn_outcome: None,
             handoff: Some(build_background_subrun_handoff(
                 &execution.child,
                 &execution.parent_session_id,

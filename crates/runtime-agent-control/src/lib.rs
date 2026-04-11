@@ -19,9 +19,9 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentInboxEnvelope, AgentLifecycleStatus, AgentProfile, AgentStatus, AgentTurnOutcome,
-    AstrError, CancelToken, LiveSubRunControlBoundary, SpawnAgentParams, SubRunHandle,
-    SubRunResult, SubRunStorageMode, ToolContext,
+    AgentInboxEnvelope, AgentLifecycleStatus, AgentProfile, AgentTurnOutcome, AstrError,
+    CancelToken, LiveSubRunControlBoundary, SpawnAgentParams, SubRunHandle, SubRunResult,
+    SubRunStorageMode, ToolContext,
 };
 use astrcode_runtime_config::{
     RuntimeConfig, resolve_agent_finalized_retain_limit, resolve_agent_inbox_capacity,
@@ -43,7 +43,7 @@ struct AgentRegistryState {
 struct AgentEntry {
     handle: SubRunHandle,
     cancel: CancelToken,
-    status_tx: watch::Sender<AgentStatus>,
+    status_tx: watch::Sender<AgentLifecycleStatus>,
     parent_agent_id: Option<String>,
     children: BTreeSet<String>,
     finalized_seq: Option<u64>,
@@ -51,7 +51,7 @@ struct AgentEntry {
     inbox: VecDeque<AgentInboxEnvelope>,
     /// 收件箱版本号，每次 push_inbox 递增，用于 wait_for_inbox 的变化检测。
     inbox_version: watch::Sender<u64>,
-    /// 四工具模型的持久生命周期状态（与旧 AgentStatus 正交）。
+    /// 四工具模型的持久生命周期状态。
     /// Pending → Running → Idle → Terminated，完成单轮后不自动终止。
     lifecycle_status: AgentLifecycleStatus,
     /// 最近一轮执行的结束原因。Running 期间为 None，turn 完成后设为 Some。
@@ -308,10 +308,11 @@ impl AgentControl {
             parent_agent_id: parent_agent_id.clone(),
             agent_profile: profile.id.clone(),
             storage_mode,
-            status: AgentStatus::Pending,
+            lifecycle: AgentLifecycleStatus::Pending,
+            last_turn_outcome: None,
         };
         let cancel = CancelToken::new();
-        let (status_tx, _status_rx) = watch::channel(handle.status);
+        let (status_tx, _status_rx) = watch::channel(handle.lifecycle);
         state.entries.insert(
             sub_run_id.clone(),
             AgentEntry {
@@ -372,10 +373,11 @@ impl AgentControl {
             parent_agent_id: None,
             agent_profile: profile_id,
             storage_mode: SubRunStorageMode::SharedSession,
-            status: AgentStatus::Running,
+            lifecycle: AgentLifecycleStatus::Running,
+            last_turn_outcome: None,
         };
         let cancel = CancelToken::new();
-        let (status_tx, _status_rx) = watch::channel(handle.status);
+        let (status_tx, _status_rx) = watch::channel(handle.lifecycle);
         state.entries.insert(
             sub_run_id.clone(),
             AgentEntry {
@@ -421,10 +423,8 @@ impl AgentControl {
         let key = resolve_entry_key(&state, id)?.to_string();
         let entry = state.entries.get_mut(&key)?;
         entry.lifecycle_status = new_status;
-        let projected_status =
-            lifecycle_to_legacy_status(entry.lifecycle_status, entry.last_turn_outcome)?;
-        entry.handle.status = projected_status;
-        entry.status_tx.send_replace(projected_status);
+        entry.handle.lifecycle = new_status;
+        entry.status_tx.send_replace(new_status);
         Some(())
     }
 
@@ -433,41 +433,33 @@ impl AgentControl {
     /// 在 turn 完成（无论是正常完成还是失败）时调用，
     /// 同时将 lifecycle 从 Running 推进到 Idle。
     ///
-    /// 四工具模型下 Idle 表示"不在执行但仍存活"，legacy status 会被映射为
-    /// Completed/Failed/Cancelled/TokenExceeded（均属终态）。并发槽位在此时释放，
-    /// 后续 resume 会重新占用。
+    /// 四工具模型下 Idle 表示"不在执行但仍存活"，
+    /// 并发槽位在此时释放，后续 resume 会重新占用。
     pub async fn complete_turn(
         &self,
         id: &str,
         outcome: AgentTurnOutcome,
     ) -> Option<AgentLifecycleStatus> {
-        // 在获取写锁前先读取，避免同时借用 self 和 state
         let next_seq = self.next_finalized_seq.fetch_add(1, Ordering::SeqCst);
         let retain_limit = self.finalized_retain_limit;
         let mut state = self.state.write().await;
         let key = resolve_entry_key(&state, id)?.to_string();
-        // 先收集需要的信息，再修改 entry，避免 entry 借用与 state.active_count 冲突
-        let (was_active, new_lifecycle) = {
+        let was_active = {
             let entry = state.entries.get_mut(&key)?;
-            let was_active = !entry.handle.status.is_final();
+            let was_active = entry.handle.lifecycle.occupies_slot();
             entry.last_turn_outcome = Some(outcome);
             entry.lifecycle_status = AgentLifecycleStatus::Idle;
-            let projected_status =
-                lifecycle_to_legacy_status(entry.lifecycle_status, entry.last_turn_outcome)?;
-            entry.handle.status = projected_status;
-            // Idle + any turn outcome 映射到 legacy 终态，需要释放并发槽位
-            // 以便新 spawn 的子 agent 能获取资源；后续 resume 会重新占用。
-            if projected_status.is_final() {
-                entry.finalized_seq = Some(next_seq);
-            }
-            entry.status_tx.send_replace(projected_status);
-            (was_active, entry.lifecycle_status)
+            entry.handle.lifecycle = AgentLifecycleStatus::Idle;
+            entry.handle.last_turn_outcome = Some(outcome);
+            entry.finalized_seq = Some(next_seq);
+            entry.status_tx.send_replace(AgentLifecycleStatus::Idle);
+            was_active
         };
         if was_active {
             state.active_count = state.active_count.saturating_sub(1);
         }
         prune_finalized_agents_locked(&mut state, retain_limit);
-        Some(new_lifecycle)
+        Some(AgentLifecycleStatus::Idle)
     }
 
     /// 列出当前已注册的 Agent。
@@ -496,24 +488,6 @@ impl AgentControl {
         state.entries.get(key).map(|entry| entry.cancel.clone())
     }
 
-    /// 标记 Agent 已开始运行。
-    pub async fn mark_running(&self, sub_run_or_agent_id: &str) -> Option<SubRunHandle> {
-        self.update_status(sub_run_or_agent_id, AgentStatus::Running)
-            .await
-    }
-
-    /// 标记 Agent 正常完成。
-    pub async fn mark_completed(&self, sub_run_or_agent_id: &str) -> Option<SubRunHandle> {
-        self.update_status(sub_run_or_agent_id, AgentStatus::Completed)
-            .await
-    }
-
-    /// 标记 Agent 执行失败。
-    pub async fn mark_failed(&self, sub_run_or_agent_id: &str) -> Option<SubRunHandle> {
-        self.update_status(sub_run_or_agent_id, AgentStatus::Failed)
-            .await
-    }
-
     /// 为已终态的 Agent 创建新的执行实例。
     ///
     /// 只有 Completed/Failed/Cancelled 状态的 Agent 可以被恢复。
@@ -523,11 +497,11 @@ impl AgentControl {
         let mut state = self.state.write().await;
         let key = resolve_entry_key(&state, sub_run_or_agent_id)?.to_string();
 
-        // 先检查状态是否可恢复
-        if !state
+        // 先检查状态是否可恢复：只有 lifecycle 不占槽（Idle/Terminated）才可恢复
+        if state
             .entries
             .get(&key)
-            .is_some_and(|entry| entry.handle.status.is_final())
+            .is_none_or(|entry| entry.handle.lifecycle.occupies_slot())
         {
             return None;
         }
@@ -541,10 +515,11 @@ impl AgentControl {
         let new_sub_run_id = format!("subrun-{next_id}");
         let mut new_handle = old_handle.clone();
         new_handle.sub_run_id = new_sub_run_id.clone();
-        new_handle.status = AgentStatus::Running;
+        new_handle.lifecycle = AgentLifecycleStatus::Running;
+        new_handle.last_turn_outcome = None;
 
         let cancel = CancelToken::new();
-        let (status_tx, _status_rx) = watch::channel(new_handle.status);
+        let (status_tx, _status_rx) = watch::channel(new_handle.lifecycle);
         let inbox_version = watch::channel(0).0;
 
         state.active_count += 1;
@@ -559,7 +534,7 @@ impl AgentControl {
                 finalized_seq: None,
                 inbox: VecDeque::new(),
                 inbox_version,
-                lifecycle_status: AgentLifecycleStatus::Pending,
+                lifecycle_status: AgentLifecycleStatus::Running,
                 last_turn_outcome: None,
             },
         );
@@ -640,7 +615,8 @@ impl AgentControl {
 
         loop {
             let current = *status_rx.borrow_and_update();
-            if current.is_final() {
+            // 等到 agent 不再占槽（turn 完成或已终止）
+            if !current.occupies_slot() {
                 return self.get(sub_run_or_agent_id).await;
             }
             if status_rx.changed().await.is_err() {
@@ -709,8 +685,8 @@ impl AgentControl {
                 let inbox_non_empty = !entry.inbox.is_empty();
                 (handle, inbox_non_empty)
             };
-            // 如果 agent 已终态，直接返回当前 handle
-            if handle.status.is_final() {
+            // 如果 agent 已终态（Terminated），直接返回当前 handle
+            if handle.lifecycle.is_final() {
                 return Some(handle);
             }
             // 如果收件箱非空，返回当前 handle
@@ -944,22 +920,9 @@ impl AgentControl {
             .unwrap_or(0)
     }
 
-    async fn update_status(
-        &self,
-        sub_run_or_agent_id: &str,
-        next_status: AgentStatus,
-    ) -> Option<SubRunHandle> {
-        let mut state = self.state.write().await;
-        let key = resolve_entry_key(&state, sub_run_or_agent_id)?.to_string();
-        let handle = update_status_locked(&mut state, &key, next_status, &self.next_finalized_seq);
-        prune_finalized_agents_locked(&mut state, self.finalized_retain_limit);
-        handle
-    }
-
     /// 终止指定 agent 及其整棵子树（四工具模型 close 语义）。
     ///
-    /// 与 `cancel` 不同，terminate 使用 `AgentLifecycleStatus::Terminated`，
-    /// 而不是旧 `AgentStatus::Cancelled`。四工具模型要求 `close` 后 agent
+    /// 四工具模型要求 `close` 后 agent
     /// 进入 `Terminated` 生命周期，且后续 `send` 被拒绝。
     ///
     /// 终止过程中：
@@ -1057,76 +1020,6 @@ fn resolve_entry_key<'a>(
         .map(String::as_str)
 }
 
-fn lifecycle_to_legacy_status(
-    lifecycle: AgentLifecycleStatus,
-    last_turn_outcome: Option<AgentTurnOutcome>,
-) -> Option<AgentStatus> {
-    match lifecycle {
-        AgentLifecycleStatus::Pending => Some(AgentStatus::Pending),
-        AgentLifecycleStatus::Running => Some(AgentStatus::Running),
-        AgentLifecycleStatus::Idle => match last_turn_outcome {
-            Some(AgentTurnOutcome::Completed) => Some(AgentStatus::Completed),
-            Some(AgentTurnOutcome::Failed) => Some(AgentStatus::Failed),
-            Some(AgentTurnOutcome::Cancelled) => Some(AgentStatus::Cancelled),
-            Some(AgentTurnOutcome::TokenExceeded) => Some(AgentStatus::TokenExceeded),
-            None => None,
-        },
-        AgentLifecycleStatus::Terminated => Some(AgentStatus::Cancelled),
-    }
-}
-
-fn update_status_locked(
-    state: &mut AgentRegistryState,
-    agent_id: &str,
-    next_status: AgentStatus,
-    next_finalized_seq: &AtomicU64,
-) -> Option<SubRunHandle> {
-    let entry = state.entries.get_mut(agent_id)?;
-    if entry.handle.status.is_final() {
-        return Some(entry.handle.clone());
-    }
-    let was_active = !entry.handle.status.is_final();
-    entry.handle.status = next_status;
-    // 为什么同步推进 lifecycle：避免双真相源。旧 AgentStatus 驱动取消/并发槽，
-    // 新 lifecycle 驱动四工具模型的 Idle/终止语义。两者必须在同一写锁内同步，
-    // 否则 observe 看到的 lifecycle 和 cancel 看到的 status 会对不上。
-    match next_status {
-        AgentStatus::Running => {
-            entry.lifecycle_status = AgentLifecycleStatus::Running;
-        },
-        AgentStatus::Completed => {
-            entry.lifecycle_status = AgentLifecycleStatus::Idle;
-            entry.last_turn_outcome = Some(AgentTurnOutcome::Completed);
-        },
-        AgentStatus::Cancelled => {
-            entry.lifecycle_status = AgentLifecycleStatus::Terminated;
-            entry.last_turn_outcome = Some(AgentTurnOutcome::Cancelled);
-        },
-        AgentStatus::Failed => {
-            entry.lifecycle_status = AgentLifecycleStatus::Terminated;
-            entry.last_turn_outcome = Some(AgentTurnOutcome::Failed);
-        },
-        AgentStatus::TokenExceeded => {
-            entry.lifecycle_status = AgentLifecycleStatus::Idle;
-            entry.last_turn_outcome = Some(AgentTurnOutcome::TokenExceeded);
-        },
-        AgentStatus::Pending => {},
-    }
-    if next_status.is_final() {
-        entry.finalized_seq = Some(next_finalized_seq.fetch_add(1, Ordering::SeqCst));
-        // 这里在终态瞬间释放并发槽位，确保新的子 Agent 能及时获取资源；
-        // 同时保留终态 handle 供 UI / replay 查询，不把”是否仍可见”与”是否占并发”混为一谈。
-        if was_active {
-            state.active_count = state.active_count.saturating_sub(1);
-        }
-    }
-    entry.status_tx.send_replace(next_status);
-    if matches!(next_status, AgentStatus::Cancelled) {
-        entry.cancel.cancel();
-    }
-    Some(entry.handle.clone())
-}
-
 fn cancel_tree(
     state: &mut AgentRegistryState,
     agent_id: &str,
@@ -1146,7 +1039,22 @@ fn cancel_tree(
         .map(|entry| entry.children.iter().cloned().collect::<Vec<_>>())?;
 
     // 先取消当前节点，再取消子节点，确保父级状态先可见。
-    let handle = update_status_locked(state, agent_id, AgentStatus::Cancelled, next_finalized_seq)?;
+    let entry = state.entries.get_mut(agent_id)?;
+    let was_active = entry.handle.lifecycle.occupies_slot();
+    entry.lifecycle_status = AgentLifecycleStatus::Terminated;
+    entry.handle.lifecycle = AgentLifecycleStatus::Terminated;
+    entry.handle.last_turn_outcome = Some(AgentTurnOutcome::Cancelled);
+    entry.last_turn_outcome = Some(AgentTurnOutcome::Cancelled);
+    entry.finalized_seq = Some(next_finalized_seq.fetch_add(1, Ordering::SeqCst));
+    if was_active {
+        state.active_count = state.active_count.saturating_sub(1);
+    }
+    entry
+        .status_tx
+        .send_replace(AgentLifecycleStatus::Terminated);
+    entry.cancel.cancel();
+
+    let handle = entry.handle.clone();
     for child_id in children {
         // 故意忽略：递归取消子节点，单个失败不阻断其余节点
         let _ = cancel_tree(state, &child_id, visited, next_finalized_seq);
@@ -1156,7 +1064,6 @@ fn cancel_tree(
 
 /// 四工具模型的 subtree terminate 实现。
 ///
-/// 与 `cancel_tree` 使用旧 `AgentStatus::Cancelled` 不同，
 /// terminate 设置 `lifecycle_status = Terminated` 并触发 cancel token，
 /// 同时释放并发槽位。子 agent 在 Terminated 后拒收任何新 send。
 fn terminate_tree(
@@ -1178,19 +1085,20 @@ fn terminate_tree(
         .map(|entry| entry.children.iter().cloned().collect::<Vec<_>>())?;
 
     let entry = state.entries.get_mut(agent_id)?;
-    let was_active = !entry.handle.status.is_final();
+    let was_active = entry.handle.lifecycle.occupies_slot();
 
-    // 设置四工具生命周期为 Terminated
     entry.lifecycle_status = AgentLifecycleStatus::Terminated;
-    // 同步旧 status 以维持 cancel_token 和并发槽位语义
-    entry.handle.status = AgentStatus::Cancelled;
+    entry.handle.lifecycle = AgentLifecycleStatus::Terminated;
+    entry.handle.last_turn_outcome = Some(AgentTurnOutcome::Cancelled);
     entry.last_turn_outcome = Some(AgentTurnOutcome::Cancelled);
     entry.inbox.clear();
     entry.finalized_seq = Some(next_finalized_seq.fetch_add(1, Ordering::SeqCst));
     if was_active {
         state.active_count = state.active_count.saturating_sub(1);
     }
-    entry.status_tx.send_replace(AgentStatus::Cancelled);
+    entry
+        .status_tx
+        .send_replace(AgentLifecycleStatus::Terminated);
     let current_inbox_version = *entry.inbox_version.borrow();
     entry.inbox_version.send_replace(current_inbox_version + 1);
     // 触发 cancel token 以中断正在运行的 turn
@@ -1222,16 +1130,25 @@ fn cancel_tree_collect(
         return;
     };
 
-    let status_changed = state
+    let was_active = state
         .entries
         .get(agent_id)
-        .is_some_and(|entry| !entry.handle.status.is_final());
-    if let Some(handle) =
-        update_status_locked(state, agent_id, AgentStatus::Cancelled, next_finalized_seq)
-    {
-        // 只有真实发生状态迁移时才对外报告取消，避免把已终态节点误记为“本次被取消”。
-        if status_changed {
-            cancelled.push(handle);
+        .is_some_and(|entry| entry.handle.lifecycle.occupies_slot());
+
+    if let Some(entry) = state.entries.get_mut(agent_id) {
+        if was_active {
+            entry.lifecycle_status = AgentLifecycleStatus::Terminated;
+            entry.handle.lifecycle = AgentLifecycleStatus::Terminated;
+            entry.handle.last_turn_outcome = Some(AgentTurnOutcome::Cancelled);
+            entry.last_turn_outcome = Some(AgentTurnOutcome::Cancelled);
+            entry.finalized_seq = Some(next_finalized_seq.fetch_add(1, Ordering::SeqCst));
+            state.active_count = state.active_count.saturating_sub(1);
+            entry
+                .status_tx
+                .send_replace(AgentLifecycleStatus::Terminated);
+            entry.cancel.cancel();
+            // 只有真实发生状态迁移时才对外报告取消
+            cancelled.push(entry.handle.clone());
         }
     }
     for child_id in children {

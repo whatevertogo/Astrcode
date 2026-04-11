@@ -177,7 +177,8 @@ fn seed_finished_subrun_session(session_id: &str, working_dir: &std::path::Path)
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: Some("call-durable".to_string()),
                 result: astrcode_core::SubRunResult {
-                    status: astrcode_core::AgentStatus::Completed,
+                    lifecycle: astrcode_core::AgentLifecycleStatus::Terminated,
+                    last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Completed),
                     handoff: Some(astrcode_core::SubRunHandoff {
                         summary: "done".to_string(),
                         findings: vec!["ok".to_string()],
@@ -235,7 +236,8 @@ fn seed_legacy_subrun_session(session_id: &str, working_dir: &std::path::Path) {
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: Some("call-legacy".to_string()),
                 result: astrcode_core::SubRunResult {
-                    status: astrcode_core::AgentStatus::Completed,
+                    lifecycle: astrcode_core::AgentLifecycleStatus::Terminated,
+                    last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Completed),
                     handoff: None,
                     failure: None,
                 },
@@ -297,7 +299,8 @@ fn seed_parent_abort_storage_mode_parity_session(session_id: &str, working_dir: 
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: Some("call-shared".to_string()),
                 result: astrcode_core::SubRunResult {
-                    status: astrcode_core::AgentStatus::Cancelled,
+                    lifecycle: astrcode_core::AgentLifecycleStatus::Terminated,
+                    last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Cancelled),
                     handoff: None,
                     failure: None,
                 },
@@ -322,7 +325,8 @@ fn seed_parent_abort_storage_mode_parity_session(session_id: &str, working_dir: 
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: Some("call-independent".to_string()),
                 result: astrcode_core::SubRunResult {
-                    status: astrcode_core::AgentStatus::Cancelled,
+                    lifecycle: astrcode_core::AgentLifecycleStatus::Terminated,
+                    last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Cancelled),
                     handoff: None,
                     failure: None,
                 },
@@ -1156,8 +1160,8 @@ async fn subrun_status_endpoint_returns_contract_fields_for_durable_snapshot() {
     assert_eq!(payload.sub_run_id, "sub-durable");
     assert_eq!(payload.source, SubRunStatusSourceDto::Durable);
     assert_eq!(
-        payload.status,
-        astrcode_protocol::http::AgentStatusDto::Completed
+        payload.lifecycle,
+        astrcode_protocol::http::AgentLifecycleDto::Terminated
     );
     assert_eq!(payload.step_count, Some(2));
     assert_eq!(payload.estimated_tokens, Some(120));
@@ -1198,8 +1202,8 @@ async fn subrun_status_endpoint_keeps_storage_mode_parity_for_parent_aborted_sub
 
         assert_eq!(payload.source, SubRunStatusSourceDto::Durable);
         assert_eq!(
-            payload.status,
-            astrcode_protocol::http::AgentStatusDto::Cancelled
+            payload.lifecycle,
+            astrcode_protocol::http::AgentLifecycleDto::Terminated
         );
         assert_eq!(payload.storage_mode, expected_mode);
     }
@@ -1273,8 +1277,11 @@ async fn subrun_status_endpoint_reports_live_for_independent_subrun_owned_by_par
         )
         .await
         .expect("independent sub-run should spawn");
-    let _ = control
-        .mark_running(&handle.agent_id)
+    control
+        .set_lifecycle(
+            &handle.agent_id,
+            astrcode_core::AgentLifecycleStatus::Running,
+        )
         .await
         .expect("sub-run should be running");
 
@@ -1324,8 +1331,8 @@ async fn subrun_status_endpoint_reports_live_for_independent_subrun_owned_by_par
         serde_json::from_slice(&bytes).expect("status payload should deserialize");
     assert_eq!(payload.source, SubRunStatusSourceDto::Live);
     assert_eq!(
-        payload.status,
-        astrcode_protocol::http::AgentStatusDto::Running
+        payload.lifecycle,
+        astrcode_protocol::http::AgentLifecycleDto::Running
     );
     assert_eq!(
         payload.storage_mode,

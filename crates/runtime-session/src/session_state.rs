@@ -433,7 +433,7 @@ mod tests {
     use std::sync::Arc;
 
     use astrcode_core::{
-        AgentEventContext, AgentStateProjector, AgentStatus, ChildAgentRef,
+        AgentEventContext, AgentLifecycleStatus, AgentStateProjector, ChildAgentRef,
         ChildSessionLineageKind, ChildSessionNotification, ChildSessionNotificationKind,
         EventLogWriter, InvocationKind, Phase, StorageEvent, StorageEventPayload, StoreResult,
         StoredEvent, UserMessageOrigin,
@@ -486,7 +486,7 @@ mod tests {
 
     fn child_notification_event(
         kind: ChildSessionNotificationKind,
-        status: AgentStatus,
+        status: AgentLifecycleStatus,
     ) -> StorageEvent {
         event(
             Some("turn-root"),
@@ -648,14 +648,14 @@ mod tests {
                     1,
                     child_notification_event(
                         ChildSessionNotificationKind::Started,
-                        AgentStatus::Running,
+                        AgentLifecycleStatus::Running,
                     ),
                 ),
                 stored(
                     2,
                     child_notification_event(
                         ChildSessionNotificationKind::Delivered,
-                        AgentStatus::Completed,
+                        AgentLifecycleStatus::Idle,
                     ),
                 ),
             ],
@@ -668,7 +668,7 @@ mod tests {
 
         assert_eq!(node.child_session_id, "session-child");
         assert_eq!(node.parent_session_id, "session-parent");
-        assert_eq!(node.status, AgentStatus::Completed);
+        assert_eq!(node.status, AgentLifecycleStatus::Idle);
         assert_eq!(node.created_by_tool_call_id.as_deref(), Some("call-1"));
     }
 
@@ -689,7 +689,7 @@ mod tests {
                     1,
                     child_notification_event(
                         ChildSessionNotificationKind::Started,
-                        AgentStatus::Running,
+                        AgentLifecycleStatus::Running,
                     ),
                 ),
                 &mut translator,
@@ -701,7 +701,7 @@ mod tests {
                     2,
                     child_notification_event(
                         ChildSessionNotificationKind::Failed,
-                        AgentStatus::Failed,
+                        AgentLifecycleStatus::Idle,
                     ),
                 ),
                 &mut translator,
@@ -713,7 +713,7 @@ mod tests {
             .expect("child node lookup should succeed")
             .expect("child node should exist");
 
-        assert_eq!(node.status, AgentStatus::Failed);
+        assert_eq!(node.status, AgentLifecycleStatus::Idle);
         assert_eq!(node.parent_turn_id, "turn-root");
     }
 }

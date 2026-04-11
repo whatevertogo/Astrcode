@@ -2,7 +2,7 @@
 //!
 //! Session and project CRUD operations.
 
-import type { AgentStatus, DeleteProjectResult, SessionMeta } from '../../types';
+import type { AgentLifecycle, DeleteProjectResult, SessionMeta } from '../../types';
 import { getErrorMessage, request, requestJson, requestRaw } from './client';
 // 共享工具函数，消除与 lib/shared/index.ts 的重复定义
 import { asRecord, pickStringOrUndefined as pickString, pickOptionalString } from '../shared';
@@ -25,7 +25,7 @@ export interface ChildAgentRef {
   parentAgentId?: string;
   lineageKind: 'spawn' | 'fork' | 'resume';
   lineageSnapshot?: LineageSnapshot;
-  status: AgentStatus;
+  status: AgentLifecycle;
   openSessionId: string;
 }
 
@@ -41,7 +41,7 @@ export interface ChildSessionNotification {
   childRef: ChildAgentRef;
   kind: 'started' | 'progress_summary' | 'delivered' | 'waiting' | 'resumed' | 'closed' | 'failed';
   summary: string;
-  status: AgentStatus;
+  status: AgentLifecycle;
   sourceToolCallId?: string;
   finalReplyExcerpt?: string;
 }

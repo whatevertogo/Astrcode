@@ -19,7 +19,7 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentStatus, ApprovalDefault, ApprovalResolution, CancelToken, ChildAgentRef,
+    AgentLifecycleStatus, ApprovalDefault, ApprovalResolution, CancelToken, ChildAgentRef,
     ChildSessionLineageKind, ChildSessionNotification, ChildSessionNotificationKind, LlmMessage,
     Phase, StorageEventPayload, ToolCallRequest, UserMessageOrigin,
 };
@@ -442,12 +442,12 @@ fn child_delivery_prompt_regression_keeps_delivery_identity_and_duplicate_guidan
             sub_run_id: "subrun-child".to_string(),
             parent_agent_id: Some("agent-parent".to_string()),
             lineage_kind: ChildSessionLineageKind::Spawn,
-            status: AgentStatus::Completed,
+            status: AgentLifecycleStatus::Idle,
             open_session_id: "session-child".to_string(),
         },
         kind: ChildSessionNotificationKind::Delivered,
         summary: "child summary".to_string(),
-        status: AgentStatus::Completed,
+        status: AgentLifecycleStatus::Idle,
         source_tool_call_id: None,
         final_reply_excerpt: Some("child final excerpt".to_string()),
     };

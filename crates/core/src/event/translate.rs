@@ -431,7 +431,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        AgentEvent, AgentEventContext, AgentStatus, ChildSessionLineageKind,
+        AgentEvent, AgentEventContext, AgentLifecycleStatus, ChildSessionLineageKind,
         ChildSessionNotification, ChildSessionNotificationKind, PromptMetricsPayload, StoredEvent,
         SubRunResult, SubRunStorageMode, ToolOutputStream, UserMessageOrigin,
         format_compact_summary, phase_of_storage_event,
@@ -781,7 +781,8 @@ mod tests {
                         payload: StorageEventPayload::SubRunFinished {
                             tool_call_id: Some("call-1".to_string()),
                             result: SubRunResult {
-                                status: AgentStatus::Completed,
+                                lifecycle: AgentLifecycleStatus::Idle,
+                                last_turn_outcome: Some(crate::AgentTurnOutcome::Completed),
                                 handoff: None,
                                 failure: None,
                             },
@@ -816,8 +817,8 @@ mod tests {
             Some("call-1")
         );
         assert_eq!(
-            finished.as_ref().map(|(_, result)| result.status),
-            Some(AgentStatus::Completed)
+            finished.as_ref().map(|(_, result)| result.lifecycle),
+            Some(AgentLifecycleStatus::Idle)
         );
     }
 
@@ -845,12 +846,12 @@ mod tests {
                                 sub_run_id: "subrun-1".to_string(),
                                 parent_agent_id: Some("agent-parent".to_string()),
                                 lineage_kind: ChildSessionLineageKind::Spawn,
-                                status: AgentStatus::Running,
+                                status: AgentLifecycleStatus::Running,
                                 open_session_id: "session-child".to_string(),
                             },
                             kind: ChildSessionNotificationKind::Started,
                             summary: "child started".to_string(),
-                            status: AgentStatus::Running,
+                            status: AgentLifecycleStatus::Running,
                             source_tool_call_id: Some("call-1".to_string()),
                             final_reply_excerpt: None,
                         },

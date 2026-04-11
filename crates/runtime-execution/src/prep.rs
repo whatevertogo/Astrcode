@@ -671,7 +671,7 @@ fn classify_subrun_failure(error: &AstrError) -> SubRunFailureCode {
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        AgentMode, AgentProfile, AgentStatus, AstrError, InvocationKind,
+        AgentLifecycleStatus, AgentMode, AgentProfile, AstrError, InvocationKind,
         ResolvedSubagentContextOverrides, SpawnAgentParams, SubRunFailureCode, SubRunStorageMode,
         SubagentContextOverrides,
     };
@@ -700,7 +700,8 @@ mod tests {
                 parent_agent_id: None,
                 agent_profile: "plan".to_string(),
                 storage_mode: SubRunStorageMode::SharedSession,
-                status: AgentStatus::Completed,
+                lifecycle: AgentLifecycleStatus::Idle,
+                last_turn_outcome: None,
             },
             "session-parent-1",
             Some("done"),
@@ -727,7 +728,8 @@ mod tests {
                 parent_agent_id: None,
                 agent_profile: "plan".to_string(),
                 storage_mode: SubRunStorageMode::SharedSession,
-                status: AgentStatus::Completed,
+                lifecycle: AgentLifecycleStatus::Idle,
+                last_turn_outcome: None,
             },
             "session-parent-1",
             None,
@@ -761,7 +763,8 @@ mod tests {
                 parent_agent_id: None,
                 agent_profile: "plan".to_string(),
                 storage_mode: SubRunStorageMode::IndependentSession,
-                status: AgentStatus::Running,
+                lifecycle: AgentLifecycleStatus::Running,
+                last_turn_outcome: None,
             },
             "session-parent-1",
         );

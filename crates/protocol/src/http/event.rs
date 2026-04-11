@@ -12,7 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{AgentStatusDto, ChildAgentRefDto, ChildSessionNotificationKindDto};
+use super::{AgentLifecycleDto, ChildAgentRefDto, ChildSessionNotificationKindDto};
 
 /// 协议版本号，用于事件格式的版本控制。
 ///
@@ -410,7 +410,7 @@ pub enum AgentEventPayload {
         child_ref: ChildAgentRefDto,
         kind: ChildSessionNotificationKindDto,
         summary: String,
-        status: AgentStatusDto,
+        status: AgentLifecycleDto,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_tool_call_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

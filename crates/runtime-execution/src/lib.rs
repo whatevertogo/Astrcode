@@ -139,13 +139,18 @@ pub fn legacy_shared_history_rejection_message(
 ///
 /// 用于 observability 日志，避免不同调用方各自拼接不一致字符串。
 pub fn child_delivery_outcome_label(result: &astrcode_core::SubRunResult) -> &'static str {
-    match result.status {
-        astrcode_core::AgentStatus::Running => "running",
-        astrcode_core::AgentStatus::Completed => "completed",
-        astrcode_core::AgentStatus::Failed => "failed",
-        astrcode_core::AgentStatus::Cancelled => "cancelled",
-        astrcode_core::AgentStatus::TokenExceeded => "token_exceeded",
-        _ => "unknown",
+    match result.last_turn_outcome {
+        None => match result.lifecycle {
+            astrcode_core::AgentLifecycleStatus::Running => "running",
+            astrcode_core::AgentLifecycleStatus::Pending => "pending",
+            _ => "unknown",
+        },
+        Some(outcome) => match outcome {
+            astrcode_core::AgentTurnOutcome::Completed => "completed",
+            astrcode_core::AgentTurnOutcome::Failed => "failed",
+            astrcode_core::AgentTurnOutcome::Cancelled => "cancelled",
+            astrcode_core::AgentTurnOutcome::TokenExceeded => "token_exceeded",
+        },
     }
 }
 

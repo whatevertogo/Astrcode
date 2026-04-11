@@ -26,8 +26,8 @@ mod session_event;
 mod tool;
 
 pub use agent::{
-    AgentExecuteRequestDto, AgentExecuteResponseDto, AgentProfileDto, AgentStatusDto,
-    ChildAgentRefDto, ChildSessionLineageKindDto, ChildSessionNotificationDto,
+    AgentExecuteRequestDto, AgentExecuteResponseDto, AgentLifecycleDto, AgentProfileDto,
+    AgentTurnOutcomeDto, ChildAgentRefDto, ChildSessionLineageKindDto, ChildSessionNotificationDto,
     ChildSessionNotificationKindDto, LineageSnapshotDto, SubRunStatusDto, SubRunStatusSourceDto,
     SubagentContextOverridesDto,
 };

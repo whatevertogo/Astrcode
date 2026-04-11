@@ -16,7 +16,7 @@ use std::{
     time::Duration,
 };
 
-use astrcode_core::{AgentStatus, SubRunStorageMode};
+use astrcode_core::{AgentLifecycleStatus, AgentTurnOutcome, SubRunStorageMode};
 use astrcode_runtime_execution::{
     ChildLifecycleStage, DeliveryBufferStage, LegacyRejectionKind, LineageMismatchKind,
 };
@@ -105,14 +105,16 @@ impl RuntimeObservability {
     pub fn record_subrun_execution(
         &self,
         duration: Duration,
-        outcome: &AgentStatus,
+        lifecycle: &AgentLifecycleStatus,
+        last_turn_outcome: &Option<AgentTurnOutcome>,
         storage_mode: SubRunStorageMode,
         step_count: u32,
         estimated_tokens: u64,
     ) {
         self.subrun_execution.record(
             duration,
-            outcome,
+            lifecycle,
+            last_turn_outcome,
             storage_mode,
             u64::from(step_count),
             estimated_tokens,
@@ -308,7 +310,8 @@ impl SubRunExecutionMetrics {
     fn record(
         &self,
         duration: Duration,
-        outcome: &AgentStatus,
+        lifecycle: &AgentLifecycleStatus,
+        last_turn_outcome: &Option<AgentTurnOutcome>,
         storage_mode: SubRunStorageMode,
         step_count: u64,
         estimated_tokens: u64,
@@ -335,18 +338,26 @@ impl SubRunExecutionMetrics {
             },
         }
 
-        match outcome {
-            AgentStatus::Pending | AgentStatus::Running => {},
-            AgentStatus::Completed => {
+        match last_turn_outcome {
+            None => match lifecycle {
+                AgentLifecycleStatus::Pending | AgentLifecycleStatus::Running => {},
+                AgentLifecycleStatus::Idle => {
+                    // Idle 但无 outcome——不计入具体分类
+                },
+                AgentLifecycleStatus::Terminated => {
+                    self.aborted.fetch_add(1, Ordering::Relaxed);
+                },
+            },
+            Some(AgentTurnOutcome::Completed) => {
                 self.completed.fetch_add(1, Ordering::Relaxed);
             },
-            AgentStatus::Cancelled => {
+            Some(AgentTurnOutcome::Cancelled) => {
                 self.aborted.fetch_add(1, Ordering::Relaxed);
             },
-            AgentStatus::TokenExceeded => {
+            Some(AgentTurnOutcome::TokenExceeded) => {
                 self.token_exceeded.fetch_add(1, Ordering::Relaxed);
             },
-            AgentStatus::Failed => {
+            Some(AgentTurnOutcome::Failed) => {
                 self.failures.fetch_add(1, Ordering::Relaxed);
             },
         }
@@ -496,14 +507,16 @@ mod tests {
         let metrics = RuntimeObservability::default();
         metrics.record_subrun_execution(
             Duration::from_millis(10),
-            &AgentStatus::Completed,
+            &AgentLifecycleStatus::Idle,
+            &Some(AgentTurnOutcome::Completed),
             SubRunStorageMode::SharedSession,
             3,
             120,
         );
         metrics.record_subrun_execution(
             Duration::from_millis(20),
-            &AgentStatus::Failed,
+            &AgentLifecycleStatus::Idle,
+            &Some(AgentTurnOutcome::Failed),
             SubRunStorageMode::IndependentSession,
             5,
             240,

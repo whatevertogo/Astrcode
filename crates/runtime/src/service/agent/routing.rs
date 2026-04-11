@@ -1,7 +1,7 @@
 //! agent 协作路由与权限校验。
 
 use astrcode_core::{
-    AgentLifecycleStatus, AgentStatus, ChildAgentRef, ChildSessionLineageKind, CloseAgentParams,
+    AgentLifecycleStatus, ChildAgentRef, ChildSessionLineageKind, CloseAgentParams,
     CollaborationResult, CollaborationResultKind, InboxEnvelopeKind, SendAgentParams, SubRunHandle,
 };
 
@@ -61,7 +61,8 @@ impl AgentServiceHandle {
             )));
         }
 
-        if matches!(lifecycle, Some(AgentLifecycleStatus::Idle)) && child.status.is_final() {
+        if matches!(lifecycle, Some(AgentLifecycleStatus::Idle)) && !child.lifecycle.occupies_slot()
+        {
             let pending = self
                 .runtime
                 .agent_control
@@ -225,7 +226,7 @@ impl AgentServiceHandle {
             sub_run_id: handle.sub_run_id.clone(),
             parent_agent_id: handle.parent_agent_id.clone(),
             lineage_kind,
-            status: handle.status,
+            status: handle.lifecycle,
             open_session_id: handle
                 .child_session_id
                 .clone()
@@ -250,27 +251,27 @@ impl AgentServiceHandle {
             .flatten();
         if let Some(lifecycle) = lifecycle {
             child_ref.status =
-                project_collaboration_status(lifecycle, last_turn_outcome, child_ref.status);
+                project_collaboration_lifecycle(lifecycle, last_turn_outcome, child_ref.status);
         }
         child_ref
     }
 }
 
-pub(super) fn project_collaboration_status(
+/// 将 live 控制平面的 lifecycle + outcome 投影回 ChildAgentRef 的 lifecycle。
+///
+/// 如果 live 控制平面没有 outcome 信息（如刚 spawn 还没跑完），保留 fallback。
+pub(super) fn project_collaboration_lifecycle(
     lifecycle: AgentLifecycleStatus,
     last_turn_outcome: Option<astrcode_core::AgentTurnOutcome>,
-    fallback: AgentStatus,
-) -> AgentStatus {
+    fallback: AgentLifecycleStatus,
+) -> AgentLifecycleStatus {
     match lifecycle {
-        AgentLifecycleStatus::Pending => AgentStatus::Pending,
-        AgentLifecycleStatus::Running => AgentStatus::Running,
+        AgentLifecycleStatus::Pending => AgentLifecycleStatus::Pending,
+        AgentLifecycleStatus::Running => AgentLifecycleStatus::Running,
         AgentLifecycleStatus::Idle => match last_turn_outcome {
-            Some(astrcode_core::AgentTurnOutcome::Completed) => AgentStatus::Completed,
-            Some(astrcode_core::AgentTurnOutcome::Failed) => AgentStatus::Failed,
-            Some(astrcode_core::AgentTurnOutcome::Cancelled) => AgentStatus::Cancelled,
-            Some(astrcode_core::AgentTurnOutcome::TokenExceeded) => AgentStatus::TokenExceeded,
+            Some(_) => AgentLifecycleStatus::Idle,
             None => fallback,
         },
-        AgentLifecycleStatus::Terminated => AgentStatus::Cancelled,
+        AgentLifecycleStatus::Terminated => AgentLifecycleStatus::Terminated,
     }
 }

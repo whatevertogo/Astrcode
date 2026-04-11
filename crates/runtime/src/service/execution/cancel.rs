@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    AgentStatus, DeleteProjectResult, StorageEvent, StorageEventPayload, ToolEventSink,
+    AgentLifecycleStatus, DeleteProjectResult, StorageEvent, StorageEventPayload, ToolEventSink,
 };
 use astrcode_runtime_execution::{
     CancelSubRunResolution, build_child_session_notification, find_subrun_status_in_events,
@@ -180,7 +180,7 @@ impl AgentExecutionServiceHandle {
                     parent_agent_id: handle.parent_agent_id.clone(),
                     parent_turn_id: handle.parent_turn_id.clone(),
                     lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
-                    status: AgentStatus::Cancelled,
+                    status: AgentLifecycleStatus::Terminated,
                     status_source: astrcode_core::ChildSessionStatusSource::Live,
                     created_by_tool_call_id: None,
                     lineage_snapshot: None,
@@ -192,7 +192,7 @@ impl AgentExecutionServiceHandle {
             format!("child-closed:{}", handle.sub_run_id),
             astrcode_core::ChildSessionNotificationKind::Closed,
             format!("子 Agent {} 已被关闭。", handle.agent_id),
-            AgentStatus::Cancelled,
+            AgentLifecycleStatus::Terminated,
             None,
         );
 

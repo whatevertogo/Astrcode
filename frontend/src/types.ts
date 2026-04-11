@@ -14,13 +14,8 @@ export type SubRunStorageMode = 'sharedSession' | 'independentSession';
 export type SubRunStatusSource = 'live' | 'durable' | 'legacyDurable';
 export type SessionEventScope = 'self' | 'subtree' | 'directChildren';
 export type UnsupportedLegacyErrorCode = 'unsupported_legacy_shared_history';
-export type AgentStatus =
-  | 'pending'
-  | 'running'
-  | 'completed'
-  | 'cancelled'
-  | 'failed'
-  | 'token_exceeded';
+export type AgentLifecycle = 'pending' | 'running' | 'idle' | 'terminated';
+export type AgentTurnOutcome = 'completed' | 'failed' | 'cancelled' | 'token_exceeded';
 // Why: `waiting` 仍保留给 durable child 通知读侧，避免旧事件样本在前端反序列化失败。
 export type ChildSessionNotificationKind =
   | 'started'
@@ -134,7 +129,8 @@ export interface SubRunStatusSnapshot {
   parentTurnId?: string;
   parentAgentId?: string;
   storageMode: SubRunStorageMode;
-  status: AgentStatus;
+  lifecycle: AgentLifecycle;
+  lastTurnOutcome?: AgentTurnOutcome;
   result?: SubRunResult;
   stepCount?: number;
   estimatedTokens?: number;
@@ -224,12 +220,12 @@ export type AgentEventPayload =
           executionId?: string;
           parentAgentId?: string;
           lineageKind: 'spawn' | 'fork' | 'resume';
-          status: AgentStatus;
+          status: AgentLifecycle;
           openSessionId: string;
         };
         kind: ChildSessionNotificationKind;
         summary: string;
-        status: AgentStatus;
+        status: AgentLifecycle;
         sourceToolCallId?: string;
         finalReplyExcerpt?: string;
       }>;
@@ -417,11 +413,11 @@ export interface ChildSessionNotificationMessage {
     executionId?: string;
     parentAgentId?: string;
     lineageKind: 'spawn' | 'fork' | 'resume';
-    status: AgentStatus;
+    status: AgentLifecycle;
     openSessionId: string;
   };
   notificationKind: ChildSessionNotificationKind;
-  status: AgentStatus;
+  status: AgentLifecycle;
   summary: string;
   sourceToolCallId?: string;
   finalReplyExcerpt?: string;

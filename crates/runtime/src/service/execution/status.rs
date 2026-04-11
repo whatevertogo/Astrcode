@@ -2,7 +2,10 @@
 
 use std::sync::Arc;
 
-use astrcode_core::{AgentStatus, ChildSessionNotificationKind, SubRunResult, SubRunStorageMode};
+use astrcode_core::{
+    AgentLifecycleStatus, AgentTurnOutcome, ChildSessionNotificationKind, SubRunResult,
+    SubRunStorageMode,
+};
 use astrcode_runtime_execution::{
     LegacyRejectionKind, ParsedSubRunStatus, ParsedSubRunStatusSource,
     find_subrun_status_in_events, legacy_shared_history_rejection_message,
@@ -64,11 +67,12 @@ fn is_legacy_shared_history_snapshot(snapshot: &ParsedSubRunStatus) -> bool {
     let Some(result) = snapshot.result.as_ref() else {
         return false;
     };
-    matches!(
-        result.status,
-        AgentStatus::Completed | AgentStatus::TokenExceeded
-    ) && result.handoff.is_none()
-        && result.failure.is_none()
+    // 旧 shared-history 场景：lifecycle=Idle + outcome=Completed/TokenExceeded + 无 handoff/failure
+    let is_legacy_completed = matches!(
+        result.last_turn_outcome,
+        Some(AgentTurnOutcome::Completed | AgentTurnOutcome::TokenExceeded)
+    );
+    is_legacy_completed && result.handoff.is_none() && result.failure.is_none()
 }
 
 fn to_service_subrun_snapshot(snapshot: ParsedSubRunStatus) -> SubRunStatusSnapshot {
@@ -94,7 +98,7 @@ fn map_subrun_status_source(source: ParsedSubRunStatusSource) -> SubRunStatusSou
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ChildTerminalDeliveryProjection {
     pub kind: ChildSessionNotificationKind,
-    pub status: AgentStatus,
+    pub status: AgentLifecycleStatus,
     pub summary: String,
     pub final_reply_excerpt: Option<String>,
 }
@@ -102,31 +106,43 @@ pub(super) struct ChildTerminalDeliveryProjection {
 pub(super) fn project_child_terminal_delivery(
     result: &SubRunResult,
 ) -> ChildTerminalDeliveryProjection {
-    let (kind, status) = match result.status {
-        AgentStatus::Pending => (
-            ChildSessionNotificationKind::ProgressSummary,
-            AgentStatus::Pending,
-        ),
-        AgentStatus::Running => (
-            ChildSessionNotificationKind::ProgressSummary,
-            AgentStatus::Running,
-        ),
-        AgentStatus::Completed => (
+    let (kind, status) = match result.last_turn_outcome {
+        None => match result.lifecycle {
+            AgentLifecycleStatus::Pending => (
+                ChildSessionNotificationKind::ProgressSummary,
+                AgentLifecycleStatus::Pending,
+            ),
+            AgentLifecycleStatus::Running => (
+                ChildSessionNotificationKind::ProgressSummary,
+                AgentLifecycleStatus::Running,
+            ),
+            _ => (
+                ChildSessionNotificationKind::ProgressSummary,
+                result.lifecycle,
+            ),
+        },
+        Some(AgentTurnOutcome::Completed) => (
             ChildSessionNotificationKind::Delivered,
-            AgentStatus::Completed,
+            AgentLifecycleStatus::Idle,
         ),
-        AgentStatus::TokenExceeded => (
+        Some(AgentTurnOutcome::TokenExceeded) => (
             ChildSessionNotificationKind::Delivered,
-            AgentStatus::TokenExceeded,
+            AgentLifecycleStatus::Idle,
         ),
-        AgentStatus::Failed => (ChildSessionNotificationKind::Failed, AgentStatus::Failed),
-        AgentStatus::Cancelled => (ChildSessionNotificationKind::Closed, AgentStatus::Cancelled),
+        Some(AgentTurnOutcome::Failed) => (
+            ChildSessionNotificationKind::Failed,
+            AgentLifecycleStatus::Idle,
+        ),
+        Some(AgentTurnOutcome::Cancelled) => (
+            ChildSessionNotificationKind::Closed,
+            AgentLifecycleStatus::Idle,
+        ),
     };
 
     let summary = terminal_summary_or_fallback(result, status);
     let final_reply_excerpt = if matches!(
-        result.status,
-        AgentStatus::Completed | AgentStatus::TokenExceeded
+        result.last_turn_outcome,
+        Some(AgentTurnOutcome::Completed | AgentTurnOutcome::TokenExceeded)
     ) {
         result
             .handoff
@@ -145,7 +161,7 @@ pub(super) fn project_child_terminal_delivery(
     }
 }
 
-fn terminal_summary_or_fallback(result: &SubRunResult, status: AgentStatus) -> String {
+fn terminal_summary_or_fallback(result: &SubRunResult, _status: AgentLifecycleStatus) -> String {
     if let Some(summary) = result
         .handoff
         .as_ref()
@@ -164,14 +180,17 @@ fn terminal_summary_or_fallback(result: &SubRunResult, status: AgentStatus) -> S
         return display_message.to_string();
     }
 
-    match status {
-        AgentStatus::Completed => "子 Agent 已完成，但没有返回可读总结。".to_string(),
-        AgentStatus::TokenExceeded => {
+    match result.last_turn_outcome {
+        Some(AgentTurnOutcome::Completed) => "子 Agent 已完成，但没有返回可读总结。".to_string(),
+        Some(AgentTurnOutcome::TokenExceeded) => {
             "子 Agent 因 token 限额结束，但没有返回可读总结。".to_string()
         },
-        AgentStatus::Failed => "子 Agent 失败，且没有返回可读错误信息。".to_string(),
-        AgentStatus::Cancelled => "子 Agent 已关闭。".to_string(),
-        AgentStatus::Running => "子 Agent 正在运行。".to_string(),
-        AgentStatus::Pending => "子 Agent 已创建，等待运行。".to_string(),
+        Some(AgentTurnOutcome::Failed) => "子 Agent 失败，且没有返回可读错误信息。".to_string(),
+        Some(AgentTurnOutcome::Cancelled) => "子 Agent 已关闭。".to_string(),
+        None => match result.lifecycle {
+            AgentLifecycleStatus::Running => "子 Agent 正在运行。".to_string(),
+            AgentLifecycleStatus::Pending => "子 Agent 已创建，等待运行。".to_string(),
+            _ => "子 Agent 状态未知。".to_string(),
+        },
     }
 }

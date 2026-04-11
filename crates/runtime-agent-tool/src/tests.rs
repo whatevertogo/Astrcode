@@ -1,9 +1,10 @@
 use std::sync::{Arc, Mutex};
 
 use astrcode_core::{
-    AgentStatus, ArtifactRef, CancelToken, ChildAgentRef, ChildSessionLineageKind,
-    CloseAgentParams, CollaborationResult, CollaborationResultKind, ObserveParams, SendAgentParams,
-    SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult, Tool, ToolContext,
+    AgentLifecycleStatus, AgentTurnOutcome, ArtifactRef, CancelToken, ChildAgentRef,
+    ChildSessionLineageKind, CloseAgentParams, CollaborationResult, CollaborationResultKind,
+    ObserveParams, SendAgentParams, SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult,
+    Tool, ToolContext,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -26,7 +27,8 @@ impl SubAgentExecutor for RecordingExecutor {
     ) -> astrcode_core::Result<SubRunResult> {
         self.calls.lock().expect("calls lock").push(params);
         Ok(SubRunResult {
-            status: AgentStatus::Completed,
+            lifecycle: AgentLifecycleStatus::Idle,
+            last_turn_outcome: Some(AgentTurnOutcome::Completed),
             handoff: Some(SubRunHandoff {
                 summary: "done".to_string(),
                 findings: vec!["checked".to_string()],
@@ -133,7 +135,8 @@ async fn spawn_agent_tool_preserves_running_outcome_in_metadata() {
             _ctx: &ToolContext,
         ) -> astrcode_core::Result<SubRunResult> {
             Ok(SubRunResult {
-                status: AgentStatus::Running,
+                lifecycle: AgentLifecycleStatus::Running,
+                last_turn_outcome: None,
                 handoff: Some(SubRunHandoff {
                     summary: "running".to_string(),
                     findings: vec!["status=running".to_string()],
@@ -179,7 +182,8 @@ async fn spawn_agent_tool_surfaces_failure_display_and_technical_messages_separa
             _ctx: &ToolContext,
         ) -> astrcode_core::Result<SubRunResult> {
             Ok(SubRunResult {
-                status: AgentStatus::Failed,
+                lifecycle: AgentLifecycleStatus::Idle,
+                last_turn_outcome: Some(AgentTurnOutcome::Failed),
                 handoff: None,
                 failure: Some(SubRunFailure {
                     code: SubRunFailureCode::Transport,
@@ -229,7 +233,8 @@ async fn spawn_agent_tool_background_returns_subrun_artifact() {
             _ctx: &ToolContext,
         ) -> astrcode_core::Result<SubRunResult> {
             Ok(SubRunResult {
-                status: AgentStatus::Running,
+                lifecycle: AgentLifecycleStatus::Running,
+                last_turn_outcome: None,
                 handoff: Some(SubRunHandoff {
                     summary: "spawn 已在后台启动。".to_string(),
                     findings: Vec::new(),
@@ -329,7 +334,8 @@ async fn tool_flow_reuses_spawned_agent_id_for_send_and_close() {
             _ctx: &ToolContext,
         ) -> astrcode_core::Result<SubRunResult> {
             Ok(SubRunResult {
-                status: AgentStatus::Running,
+                lifecycle: AgentLifecycleStatus::Running,
+                last_turn_outcome: None,
                 handoff: Some(SubRunHandoff {
                     summary: "spawn 已在后台启动。".to_string(),
                     findings: Vec::new(),
@@ -459,7 +465,7 @@ fn sample_child_ref() -> ChildAgentRef {
         sub_run_id: "subrun-42".to_string(),
         parent_agent_id: Some("agent-parent".to_string()),
         lineage_kind: ChildSessionLineageKind::Spawn,
-        status: AgentStatus::Running,
+        status: AgentLifecycleStatus::Running,
         open_session_id: "session-child-42".to_string(),
     }
 }

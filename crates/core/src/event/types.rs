@@ -344,7 +344,7 @@ mod tests {
 
     use super::{CompactTrigger, PromptMetricsPayload, StorageEvent, StorageEventPayload};
     use crate::{
-        AgentEventContext, AgentStatus, ChildSessionLineageKind, ChildSessionNotification,
+        AgentEventContext, AgentLifecycleStatus, ChildSessionLineageKind, ChildSessionNotification,
         ChildSessionNotificationKind, ResolvedExecutionLimitsSnapshot,
         ResolvedSubagentContextOverrides, SubRunResult, SubRunStorageMode, format_local_rfc3339,
     };
@@ -589,7 +589,8 @@ mod tests {
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: Some("call-1".to_string()),
                 result: SubRunResult {
-                    status: AgentStatus::Completed,
+                    lifecycle: AgentLifecycleStatus::Idle,
+                    last_turn_outcome: Some(crate::AgentTurnOutcome::Completed),
                     handoff: None,
                     failure: None,
                 },
@@ -632,12 +633,12 @@ mod tests {
                 sub_run_id: "subrun-1".to_string(),
                 parent_agent_id: Some("agent-parent".to_string()),
                 lineage_kind: ChildSessionLineageKind::Spawn,
-                status: AgentStatus::Running,
+                status: AgentLifecycleStatus::Running,
                 open_session_id: "session-child".to_string(),
             },
             kind: ChildSessionNotificationKind::Started,
             summary: "child started".to_string(),
-            status: AgentStatus::Running,
+            status: AgentLifecycleStatus::Running,
             source_tool_call_id: Some("call-1".to_string()),
             final_reply_excerpt: None,
         };
@@ -696,7 +697,7 @@ mod tests {
                 sub_run_id: "subrun-1".to_string(),
                 parent_agent_id: Some("agent-parent".to_string()),
                 lineage_kind: kind,
-                status: crate::AgentStatus::Running,
+                status: crate::AgentLifecycleStatus::Running,
                 open_session_id: "session-child".to_string(),
             };
 
@@ -732,7 +733,7 @@ mod tests {
                 parent_agent_id: Some("agent-parent".to_string()),
                 parent_turn_id: "turn-1".to_string(),
                 lineage_kind: kind,
-                status: crate::AgentStatus::Completed,
+                status: crate::AgentLifecycleStatus::Idle,
                 status_source: crate::ChildSessionStatusSource::Durable,
                 created_by_tool_call_id: None,
                 lineage_snapshot: None,

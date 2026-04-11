@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use astrcode_core::{
-    AgentInboxEnvelope, AgentLifecycleStatus, AgentMode, AgentProfile, AgentStatus,
-    AgentTurnOutcome, ChildAgentRef, ChildSessionLineageKind, ChildSessionNotification,
-    ChildSessionNotificationKind, LiveSubRunControlBoundary, SubRunHandle,
+    AgentInboxEnvelope, AgentLifecycleStatus, AgentMode, AgentProfile, AgentTurnOutcome,
+    ChildAgentRef, ChildSessionLineageKind, ChildSessionNotification, ChildSessionNotificationKind,
+    LiveSubRunControlBoundary, SubRunHandle,
 };
 use astrcode_runtime_config::{DEFAULT_MAX_AGENT_DEPTH, DEFAULT_MAX_CONCURRENT_AGENTS};
 
@@ -39,12 +39,12 @@ fn sample_parent_delivery(
                 sub_run_id: format!("subrun-{notification_id}"),
                 parent_agent_id: None,
                 lineage_kind: ChildSessionLineageKind::Spawn,
-                status: AgentStatus::Completed,
+                status: AgentLifecycleStatus::Idle,
                 open_session_id: format!("child-session-{notification_id}"),
             },
             kind: ChildSessionNotificationKind::Delivered,
             summary: format!("summary-{notification_id}"),
-            status: AgentStatus::Completed,
+            status: AgentLifecycleStatus::Idle,
             source_tool_call_id: None,
             final_reply_excerpt: Some(format!("final-{notification_id}")),
         },
@@ -65,7 +65,7 @@ fn sample_parent_delivery_for_child(
             sub_run_id: child.sub_run_id.clone(),
             parent_agent_id: child.parent_agent_id.clone(),
             lineage_kind: ChildSessionLineageKind::Spawn,
-            status: child.status,
+            status: child.lifecycle,
             open_session_id: child
                 .child_session_id
                 .clone()
@@ -73,7 +73,7 @@ fn sample_parent_delivery_for_child(
         },
         kind: ChildSessionNotificationKind::Delivered,
         summary: format!("summary-{notification_id}"),
-        status: child.status,
+        status: child.lifecycle,
         source_tool_call_id: None,
         final_reply_excerpt: Some(format!("final-{notification_id}")),
     }
@@ -87,7 +87,7 @@ async fn spawn_list_and_wait_track_status() {
         .await
         .expect("spawn should succeed");
 
-    assert_eq!(handle.status, AgentStatus::Pending);
+    assert_eq!(handle.lifecycle, AgentLifecycleStatus::Pending);
     assert_eq!(control.list().await.len(), 1);
 
     let agent_id = handle.agent_id.clone();
@@ -98,31 +98,39 @@ async fn spawn_list_and_wait_track_status() {
     // 先让 waiter 完成订阅，避免测试依赖调度时序而偶发卡住。
     tokio::task::yield_now().await;
 
+    control
+        .set_lifecycle(&handle.agent_id, AgentLifecycleStatus::Running)
+        .await
+        .expect("agent should exist");
     let running = control
-        .mark_running(&handle.agent_id)
+        .get(&handle.agent_id)
         .await
         .expect("agent should exist");
-    assert_eq!(running.status, AgentStatus::Running);
+    assert_eq!(running.lifecycle, AgentLifecycleStatus::Running);
 
-    let completed = control
-        .mark_completed(&handle.agent_id)
+    control
+        .complete_turn(&handle.agent_id, AgentTurnOutcome::Completed)
         .await
         .expect("agent should exist");
-    assert_eq!(completed.status, AgentStatus::Completed);
+    let completed = control
+        .get(&handle.agent_id)
+        .await
+        .expect("agent should exist");
+    assert_eq!(completed.lifecycle, AgentLifecycleStatus::Idle);
 
     let waited = tokio::time::timeout(Duration::from_secs(5), waiter)
         .await
         .expect("waiter should finish before timeout")
         .expect("waiter should join");
     assert_eq!(
-        waited.expect("wait should resolve").status,
-        AgentStatus::Completed
+        waited.expect("wait should resolve").lifecycle,
+        AgentLifecycleStatus::Idle
     );
 }
 
 #[tokio::test]
 async fn cancelling_parent_turn_cascades_to_children() {
-    // 需要 depth ≥ 2 才能测试 parent → child 嵌套
+    // 需要 depth >= 2 才能测试 parent → child 嵌套
     let control = AgentControl::with_limits(3, 10, 256);
     let parent = control
         .spawn(
@@ -133,7 +141,9 @@ async fn cancelling_parent_turn_cascades_to_children() {
         )
         .await
         .expect("spawn should succeed");
-    let _ = control.mark_running(&parent.agent_id).await;
+    let _ = control
+        .set_lifecycle(&parent.agent_id, AgentLifecycleStatus::Running)
+        .await;
 
     let child = control
         .spawn(
@@ -144,7 +154,9 @@ async fn cancelling_parent_turn_cascades_to_children() {
         )
         .await
         .expect("spawn should succeed");
-    let _ = control.mark_running(&child.agent_id).await;
+    let _ = control
+        .set_lifecycle(&child.agent_id, AgentLifecycleStatus::Running)
+        .await;
 
     let cancelled = control.cancel_for_parent_turn("turn-root").await;
     assert_eq!(cancelled.len(), 2);
@@ -157,8 +169,8 @@ async fn cancelling_parent_turn_cascades_to_children() {
         .get(&child.agent_id)
         .await
         .expect("child should exist");
-    assert_eq!(parent_handle.status, AgentStatus::Cancelled);
-    assert_eq!(child_handle.status, AgentStatus::Cancelled);
+    assert_eq!(parent_handle.lifecycle, AgentLifecycleStatus::Terminated);
+    assert_eq!(child_handle.lifecycle, AgentLifecycleStatus::Terminated);
 
     let child_cancel = control
         .cancel_token(&child.agent_id)
@@ -214,7 +226,7 @@ async fn failed_spawn_does_not_consume_agent_id() {
 
 #[tokio::test]
 async fn cancel_directly_cascades_to_child_tree() {
-    // 需要 depth ≥ 3 才能测试 parent → child → grandchild 嵌套
+    // 需要 depth >= 3 才能测试 parent → child → grandchild 嵌套
     let control = AgentControl::with_limits(3, 10, 256);
     let parent = control
         .spawn(
@@ -243,22 +255,28 @@ async fn cancel_directly_cascades_to_child_tree() {
         )
         .await
         .expect("grandchild spawn should succeed");
-    let _ = control.mark_running(&parent.agent_id).await;
-    let _ = control.mark_running(&child.agent_id).await;
-    let _ = control.mark_running(&grandchild.agent_id).await;
+    let _ = control
+        .set_lifecycle(&parent.agent_id, AgentLifecycleStatus::Running)
+        .await;
+    let _ = control
+        .set_lifecycle(&child.agent_id, AgentLifecycleStatus::Running)
+        .await;
+    let _ = control
+        .set_lifecycle(&grandchild.agent_id, AgentLifecycleStatus::Running)
+        .await;
 
     let cancelled = control
         .cancel(&parent.agent_id)
         .await
         .expect("parent cancel should exist");
-    assert_eq!(cancelled.status, AgentStatus::Cancelled);
+    assert_eq!(cancelled.lifecycle, AgentLifecycleStatus::Terminated);
 
     for agent_id in [&parent.agent_id, &child.agent_id, &grandchild.agent_id] {
         let handle = control
             .get(agent_id)
             .await
             .expect("agent should still exist");
-        assert_eq!(handle.status, AgentStatus::Cancelled);
+        assert_eq!(handle.lifecycle, AgentLifecycleStatus::Terminated);
     }
 }
 
@@ -269,19 +287,25 @@ async fn mark_failed_transitions_agent_to_final_failed_state() {
         .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
         .await
         .expect("spawn should succeed");
-    let _ = control.mark_running(&handle.agent_id).await;
+    let _ = control
+        .set_lifecycle(&handle.agent_id, AgentLifecycleStatus::Running)
+        .await;
 
-    let failed = control
-        .mark_failed(&handle.agent_id)
+    control
+        .complete_turn(&handle.agent_id, AgentTurnOutcome::Failed)
         .await
         .expect("agent should exist");
-    assert_eq!(failed.status, AgentStatus::Failed);
+    let failed = control
+        .get(&handle.agent_id)
+        .await
+        .expect("agent should exist");
+    assert_eq!(failed.lifecycle, AgentLifecycleStatus::Idle);
 
     let waited = control
         .wait(&handle.agent_id)
         .await
         .expect("failed agent should still be queryable");
-    assert_eq!(waited.status, AgentStatus::Failed);
+    assert_eq!(waited.lifecycle, AgentLifecycleStatus::Idle);
 }
 
 #[tokio::test]
@@ -302,8 +326,12 @@ async fn gc_prunes_old_finalized_leaf_agents_but_keeps_recent_and_live_nodes() {
         .await
         .expect("live spawn should succeed");
 
-    let _ = control.mark_completed(&first.agent_id).await;
-    let _ = control.mark_failed(&second.agent_id).await;
+    let _ = control
+        .complete_turn(&first.agent_id, AgentTurnOutcome::Completed)
+        .await;
+    let _ = control
+        .complete_turn(&second.agent_id, AgentTurnOutcome::Failed)
+        .await;
 
     let handles = control.list().await;
     assert_eq!(
@@ -317,16 +345,16 @@ async fn gc_prunes_old_finalized_leaf_agents_but_keeps_recent_and_live_nodes() {
             .get(&second.agent_id)
             .await
             .expect("newer finalized agent")
-            .status,
-        AgentStatus::Failed
+            .lifecycle,
+        AgentLifecycleStatus::Idle
     );
     assert_eq!(
         control
             .get(&live.agent_id)
             .await
             .expect("live agent should remain")
-            .status,
-        AgentStatus::Pending
+            .lifecycle,
+        AgentLifecycleStatus::Pending
     );
 }
 
@@ -390,7 +418,9 @@ async fn finalized_agents_release_concurrency_slots() {
         AgentControlError::MaxConcurrentExceeded { current: 2, max: 2 }
     );
 
-    let _ = control.mark_completed(&first.agent_id).await;
+    let _ = control
+        .complete_turn(&first.agent_id, AgentTurnOutcome::Completed)
+        .await;
     let third = control
         .spawn(&explore_profile(), "session-3", "turn-3".to_string(), None)
         .await
@@ -401,8 +431,8 @@ async fn finalized_agents_release_concurrency_slots() {
             .get(&second.agent_id)
             .await
             .expect("second should still exist")
-            .status,
-        AgentStatus::Pending
+            .lifecycle,
+        AgentLifecycleStatus::Pending
     );
 }
 
@@ -443,8 +473,8 @@ async fn live_subrun_control_surface_delegates_registry_and_profiles() {
             .get(&handle.sub_run_id)
             .await
             .expect("handle should remain visible")
-            .status,
-        AgentStatus::Cancelled
+            .lifecycle,
+        AgentLifecycleStatus::Terminated
     );
 }
 
@@ -461,25 +491,31 @@ async fn targeted_wait_resolves_only_specific_agent_not_siblings() {
         .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
         .await
         .expect("agent B spawn should succeed");
-    let _ = control.mark_running(&agent_a.agent_id).await;
-    let _ = control.mark_running(&agent_b.agent_id).await;
+    let _ = control
+        .set_lifecycle(&agent_a.agent_id, AgentLifecycleStatus::Running)
+        .await;
+    let _ = control
+        .set_lifecycle(&agent_b.agent_id, AgentLifecycleStatus::Running)
+        .await;
 
     // 只完成 agent_a，agent_b 仍运行中
-    let _ = control.mark_completed(&agent_a.agent_id).await;
+    let _ = control
+        .complete_turn(&agent_a.agent_id, AgentTurnOutcome::Completed)
+        .await;
 
     // wait 应该立即返回已终态的 agent_a
     let waited = control
         .wait(&agent_a.agent_id)
         .await
         .expect("wait should resolve");
-    assert_eq!(waited.status, AgentStatus::Completed);
+    assert_eq!(waited.lifecycle, AgentLifecycleStatus::Idle);
 
     // agent_b 仍然处于 Running 状态，不受影响
     let b_handle = control
         .get(&agent_b.agent_id)
         .await
         .expect("agent B should exist");
-    assert_eq!(b_handle.status, AgentStatus::Running);
+    assert_eq!(b_handle.lifecycle, AgentLifecycleStatus::Running);
 }
 
 #[tokio::test]
@@ -489,15 +525,19 @@ async fn resume_mints_new_execution_for_completed_agent() {
         .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
         .await
         .expect("spawn should succeed");
-    let _ = control.mark_running(&handle.agent_id).await;
-    let _ = control.mark_completed(&handle.agent_id).await;
+    let _ = control
+        .set_lifecycle(&handle.agent_id, AgentLifecycleStatus::Running)
+        .await;
+    let _ = control
+        .complete_turn(&handle.agent_id, AgentTurnOutcome::Completed)
+        .await;
 
     // 恢复已完成的 agent
     let resumed = control
         .resume(&handle.agent_id)
         .await
         .expect("resume should succeed");
-    assert_eq!(resumed.status, AgentStatus::Running);
+    assert_eq!(resumed.lifecycle, AgentLifecycleStatus::Running);
     assert_eq!(resumed.agent_id, handle.agent_id);
     assert_ne!(
         resumed.sub_run_id, handle.sub_run_id,
@@ -508,15 +548,17 @@ async fn resume_mints_new_execution_for_completed_agent() {
         .get(&handle.sub_run_id)
         .await
         .expect("historical execution should remain queryable by old sub-run id");
-    assert_eq!(historical.status, AgentStatus::Completed);
+    assert_eq!(historical.lifecycle, AgentLifecycleStatus::Idle);
 
     // 验证恢复后能再次正常到达终态
-    let _ = control.mark_completed(&handle.agent_id).await;
+    let _ = control
+        .complete_turn(&handle.agent_id, AgentTurnOutcome::Completed)
+        .await;
     let final_handle = control
         .get(&handle.agent_id)
         .await
         .expect("agent should exist");
-    assert_eq!(final_handle.status, AgentStatus::Completed);
+    assert_eq!(final_handle.lifecycle, AgentLifecycleStatus::Idle);
 }
 
 #[tokio::test]
@@ -526,7 +568,9 @@ async fn resume_rejects_non_final_agent() {
         .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
         .await
         .expect("spawn should succeed");
-    let _ = control.mark_running(&handle.agent_id).await;
+    let _ = control
+        .set_lifecycle(&handle.agent_id, AgentLifecycleStatus::Running)
+        .await;
 
     // Running 状态的 agent 不能被恢复
     let result = control.resume(&handle.agent_id).await;
@@ -566,16 +610,22 @@ async fn close_cascades_to_entire_subtree_but_not_siblings() {
         .await
         .expect("tree B child spawn should succeed");
 
-    let _ = control.mark_running(&tree_a_parent.agent_id).await;
-    let _ = control.mark_running(&tree_a_child.agent_id).await;
-    let _ = control.mark_running(&tree_b_parent.agent_id).await;
+    let _ = control
+        .set_lifecycle(&tree_a_parent.agent_id, AgentLifecycleStatus::Running)
+        .await;
+    let _ = control
+        .set_lifecycle(&tree_a_child.agent_id, AgentLifecycleStatus::Running)
+        .await;
+    let _ = control
+        .set_lifecycle(&tree_b_parent.agent_id, AgentLifecycleStatus::Running)
+        .await;
 
     // 关闭 tree A 的根，应级联到 tree A 的 child
     let cancelled = control
         .cancel(&tree_a_parent.agent_id)
         .await
         .expect("cancel should succeed");
-    assert_eq!(cancelled.status, AgentStatus::Cancelled);
+    assert_eq!(cancelled.lifecycle, AgentLifecycleStatus::Terminated);
 
     // tree A 的 parent 和 child 都被取消
     assert_eq!(
@@ -583,16 +633,16 @@ async fn close_cascades_to_entire_subtree_but_not_siblings() {
             .get(&tree_a_parent.agent_id)
             .await
             .expect("should exist")
-            .status,
-        AgentStatus::Cancelled
+            .lifecycle,
+        AgentLifecycleStatus::Terminated
     );
     assert_eq!(
         control
             .get(&tree_a_child.agent_id)
             .await
             .expect("should exist")
-            .status,
-        AgentStatus::Cancelled
+            .lifecycle,
+        AgentLifecycleStatus::Terminated
     );
 
     // tree B 不受影响
@@ -601,8 +651,8 @@ async fn close_cascades_to_entire_subtree_but_not_siblings() {
             .get(&tree_b_parent.agent_id)
             .await
             .expect("should exist")
-            .status,
-        AgentStatus::Running
+            .lifecycle,
+        AgentLifecycleStatus::Running
     );
 }
 
@@ -618,8 +668,12 @@ async fn resume_reoccupies_concurrency_slot() {
         .await
         .expect("second spawn should succeed");
 
-    let _ = control.mark_running(&first.agent_id).await;
-    let _ = control.mark_completed(&first.agent_id).await;
+    let _ = control
+        .set_lifecycle(&first.agent_id, AgentLifecycleStatus::Running)
+        .await;
+    let _ = control
+        .complete_turn(&first.agent_id, AgentTurnOutcome::Completed)
+        .await;
 
     // first 完成后释放了槽位，可以创建第三个
     let _third = control
@@ -664,7 +718,9 @@ async fn push_and_drain_inbox_enqueues_and_consumes_envelopes() {
         .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
         .await
         .expect("spawn should succeed");
-    let _ = control.mark_running(&handle.agent_id).await;
+    let _ = control
+        .set_lifecycle(&handle.agent_id, AgentLifecycleStatus::Running)
+        .await;
 
     // 推送两封信封
     control
@@ -707,9 +763,8 @@ async fn complete_turn_moves_agent_into_idle_with_last_outcome() {
         .await
         .expect("spawn should succeed");
     let _ = control
-        .mark_running(&handle.agent_id)
-        .await
-        .expect("mark running should succeed");
+        .set_lifecycle(&handle.agent_id, AgentLifecycleStatus::Running)
+        .await;
 
     let lifecycle = control
         .complete_turn(&handle.agent_id, AgentTurnOutcome::Completed)
@@ -729,8 +784,8 @@ async fn complete_turn_moves_agent_into_idle_with_last_outcome() {
             .get(&handle.agent_id)
             .await
             .expect("completed handle should remain queryable")
-            .status,
-        AgentStatus::Completed
+            .lifecycle,
+        AgentLifecycleStatus::Idle
     );
 }
 
@@ -774,7 +829,9 @@ async fn wait_for_inbox_resolves_on_new_envelope() {
         .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
         .await
         .expect("spawn should succeed");
-    let _ = control.mark_running(&handle.agent_id).await;
+    let _ = control
+        .set_lifecycle(&handle.agent_id, AgentLifecycleStatus::Running)
+        .await;
 
     let agent_id = handle.agent_id.clone();
     let control_clone = control.clone();
@@ -815,8 +872,12 @@ async fn terminate_subtree_clears_pending_inbox_messages() {
         )
         .await
         .expect("child spawn should succeed");
-    let _ = control.mark_running(&parent.agent_id).await;
-    let _ = control.mark_running(&child.agent_id).await;
+    let _ = control
+        .set_lifecycle(&parent.agent_id, AgentLifecycleStatus::Running)
+        .await;
+    let _ = control
+        .set_lifecycle(&child.agent_id, AgentLifecycleStatus::Running)
+        .await;
 
     control
         .push_inbox(
@@ -915,14 +976,28 @@ async fn wait_for_inbox_returns_immediately_for_final_agent() {
         .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
         .await
         .expect("spawn should succeed");
-    let _ = control.mark_running(&handle.agent_id).await;
-    let _ = control.mark_completed(&handle.agent_id).await;
+    let _ = control
+        .set_lifecycle(&handle.agent_id, AgentLifecycleStatus::Running)
+        .await;
+    let _ = control
+        .complete_turn(&handle.agent_id, AgentTurnOutcome::Completed)
+        .await;
+
+    // complete_turn 后 lifecycle 为 Idle（非 Terminated），
+    // wait_for_inbox 需要看到 is_final() 才立即返回。
+    // 但 Idle 不是 final，所以先 terminate 使之成为 Terminated。
+    // 先恢复为 Running 再 terminate
+    let _ = control.resume(&handle.agent_id).await;
+    control
+        .terminate_subtree(&handle.agent_id)
+        .await
+        .expect("terminate should succeed");
 
     let result = control
         .wait_for_inbox(&handle.agent_id)
         .await
         .expect("should resolve immediately");
-    assert_eq!(result.status, AgentStatus::Completed);
+    assert_eq!(result.lifecycle, AgentLifecycleStatus::Terminated);
 }
 
 #[tokio::test]
@@ -1037,12 +1112,12 @@ async fn parent_delivery_batch_checkout_uses_turn_start_snapshot_for_same_parent
                 sub_run_id: format!("subrun-{delivery_id}"),
                 parent_agent_id: Some(parent_agent_id.to_string()),
                 lineage_kind: ChildSessionLineageKind::Spawn,
-                status: AgentStatus::Completed,
+                status: AgentLifecycleStatus::Idle,
                 open_session_id: format!("child-session-{delivery_id}"),
             },
             kind: ChildSessionNotificationKind::Delivered,
             summary: format!("summary-{delivery_id}"),
-            status: AgentStatus::Completed,
+            status: AgentLifecycleStatus::Idle,
             source_tool_call_id: None,
             final_reply_excerpt: Some(format!("final-{delivery_id}")),
         };
@@ -1127,12 +1202,12 @@ async fn parent_delivery_batch_requeue_restores_started_snapshot_for_retry() {
                 sub_run_id: format!("subrun-{delivery_id}"),
                 parent_agent_id: Some(parent_agent_id.to_string()),
                 lineage_kind: ChildSessionLineageKind::Spawn,
-                status: AgentStatus::Completed,
+                status: AgentLifecycleStatus::Idle,
                 open_session_id: format!("child-session-{delivery_id}"),
             },
             kind: ChildSessionNotificationKind::Delivered,
             summary: format!("summary-{delivery_id}"),
-            status: AgentStatus::Completed,
+            status: AgentLifecycleStatus::Idle,
             source_tool_call_id: None,
             final_reply_excerpt: Some(format!("final-{delivery_id}")),
         };
@@ -1225,16 +1300,22 @@ async fn leaf_first_cascade_cancels_deepest_child_before_parent() {
         )
         .await
         .expect("leaf spawn should succeed");
-    let _ = control.mark_running(&root.agent_id).await;
-    let _ = control.mark_running(&middle.agent_id).await;
-    let _ = control.mark_running(&leaf.agent_id).await;
+    let _ = control
+        .set_lifecycle(&root.agent_id, AgentLifecycleStatus::Running)
+        .await;
+    let _ = control
+        .set_lifecycle(&middle.agent_id, AgentLifecycleStatus::Running)
+        .await;
+    let _ = control
+        .set_lifecycle(&leaf.agent_id, AgentLifecycleStatus::Running)
+        .await;
 
     // 关闭 middle，应级联到 leaf，但不影响 root
     let cancelled = control
         .cancel(&middle.agent_id)
         .await
         .expect("cancel should succeed");
-    assert_eq!(cancelled.status, AgentStatus::Cancelled);
+    assert_eq!(cancelled.lifecycle, AgentLifecycleStatus::Terminated);
 
     // middle 和 leaf 都被取消
     assert_eq!(
@@ -1242,16 +1323,16 @@ async fn leaf_first_cascade_cancels_deepest_child_before_parent() {
             .get(&middle.agent_id)
             .await
             .expect("middle should exist")
-            .status,
-        AgentStatus::Cancelled
+            .lifecycle,
+        AgentLifecycleStatus::Terminated
     );
     assert_eq!(
         control
             .get(&leaf.agent_id)
             .await
             .expect("leaf should exist")
-            .status,
-        AgentStatus::Cancelled
+            .lifecycle,
+        AgentLifecycleStatus::Terminated
     );
 
     // root 不受影响
@@ -1260,8 +1341,8 @@ async fn leaf_first_cascade_cancels_deepest_child_before_parent() {
             .get(&root.agent_id)
             .await
             .expect("root should exist")
-            .status,
-        AgentStatus::Running
+            .lifecycle,
+        AgentLifecycleStatus::Running
     );
 }
 
@@ -1319,11 +1400,21 @@ async fn subtree_isolation_closing_one_branch_does_not_affect_sibling_branch() {
         .await
         .expect("leaf_b spawn should succeed");
 
-    let _ = control.mark_running(&root.agent_id).await;
-    let _ = control.mark_running(&middle_a.agent_id).await;
-    let _ = control.mark_running(&leaf_a.agent_id).await;
-    let _ = control.mark_running(&middle_b.agent_id).await;
-    let _ = control.mark_running(&leaf_b.agent_id).await;
+    let _ = control
+        .set_lifecycle(&root.agent_id, AgentLifecycleStatus::Running)
+        .await;
+    let _ = control
+        .set_lifecycle(&middle_a.agent_id, AgentLifecycleStatus::Running)
+        .await;
+    let _ = control
+        .set_lifecycle(&leaf_a.agent_id, AgentLifecycleStatus::Running)
+        .await;
+    let _ = control
+        .set_lifecycle(&middle_b.agent_id, AgentLifecycleStatus::Running)
+        .await;
+    let _ = control
+        .set_lifecycle(&leaf_b.agent_id, AgentLifecycleStatus::Running)
+        .await;
 
     // 关闭 middle_a 分支
     let _ = control
@@ -1337,16 +1428,16 @@ async fn subtree_isolation_closing_one_branch_does_not_affect_sibling_branch() {
             .get(&middle_a.agent_id)
             .await
             .expect("middle_a should exist")
-            .status,
-        AgentStatus::Cancelled
+            .lifecycle,
+        AgentLifecycleStatus::Terminated
     );
     assert_eq!(
         control
             .get(&leaf_a.agent_id)
             .await
             .expect("leaf_a should exist")
-            .status,
-        AgentStatus::Cancelled
+            .lifecycle,
+        AgentLifecycleStatus::Terminated
     );
 
     // branch B 完全不受影响
@@ -1355,16 +1446,16 @@ async fn subtree_isolation_closing_one_branch_does_not_affect_sibling_branch() {
             .get(&middle_b.agent_id)
             .await
             .expect("middle_b should exist")
-            .status,
-        AgentStatus::Running
+            .lifecycle,
+        AgentLifecycleStatus::Running
     );
     assert_eq!(
         control
             .get(&leaf_b.agent_id)
             .await
             .expect("leaf_b should exist")
-            .status,
-        AgentStatus::Running
+            .lifecycle,
+        AgentLifecycleStatus::Running
     );
 
     // root 也不受影响
@@ -1373,8 +1464,8 @@ async fn subtree_isolation_closing_one_branch_does_not_affect_sibling_branch() {
             .get(&root.agent_id)
             .await
             .expect("root should exist")
-            .status,
-        AgentStatus::Running
+            .lifecycle,
+        AgentLifecycleStatus::Running
     );
 }
 
@@ -1413,9 +1504,15 @@ async fn deliver_to_parent_only_reaches_direct_parent_not_grandparent() {
         )
         .await
         .expect("leaf spawn should succeed");
-    let _ = control.mark_running(&root.agent_id).await;
-    let _ = control.mark_running(&middle.agent_id).await;
-    let _ = control.mark_running(&leaf.agent_id).await;
+    let _ = control
+        .set_lifecycle(&root.agent_id, AgentLifecycleStatus::Running)
+        .await;
+    let _ = control
+        .set_lifecycle(&middle.agent_id, AgentLifecycleStatus::Running)
+        .await;
+    let _ = control
+        .set_lifecycle(&leaf.agent_id, AgentLifecycleStatus::Running)
+        .await;
 
     // leaf 向直接父 (middle) 投递
     let leaf_delivery = AgentInboxEnvelope {
@@ -1478,8 +1575,12 @@ async fn wait_for_inbox_resolves_on_terminate_subtree() {
         )
         .await
         .expect("child spawn should succeed");
-    let _ = control.mark_running(&parent.agent_id).await;
-    let _ = control.mark_running(&child.agent_id).await;
+    let _ = control
+        .set_lifecycle(&parent.agent_id, AgentLifecycleStatus::Running)
+        .await;
+    let _ = control
+        .set_lifecycle(&child.agent_id, AgentLifecycleStatus::Running)
+        .await;
 
     // 在另一个任务中等待 child 的 inbox
     let child_id = child.agent_id.clone();
@@ -1505,9 +1606,9 @@ async fn wait_for_inbox_resolves_on_terminate_subtree() {
     );
     let handle = result.unwrap();
     assert!(
-        handle.status.is_final(),
+        handle.lifecycle.is_final(),
         "handle should be in final state after terminate, got {:?}",
-        handle.status
+        handle.lifecycle
     );
 }
 
@@ -1524,7 +1625,9 @@ async fn push_inbox_rejects_when_at_capacity() {
         .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
         .await
         .expect("spawn should succeed");
-    let _ = control.mark_running(&handle.agent_id).await;
+    let _ = control
+        .set_lifecycle(&handle.agent_id, AgentLifecycleStatus::Running)
+        .await;
 
     // 推送到容量上限
     assert!(

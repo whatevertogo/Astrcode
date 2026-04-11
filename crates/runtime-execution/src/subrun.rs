@@ -8,7 +8,7 @@
 //! 设计目的：让 runtime façade 不需要了解事件拼装细节。
 
 use astrcode_core::{
-    AgentEventContext, AgentStatus, ChildSessionLineageKind, ChildSessionNode,
+    AgentEventContext, AgentLifecycleStatus, ChildSessionLineageKind, ChildSessionNode,
     ChildSessionNotification, ChildSessionNotificationKind, ChildSessionStatusSource,
     ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, StorageEvent,
     StorageEventPayload, StoredEvent, SubRunHandle, SubRunResult, SubRunStorageMode,
@@ -74,7 +74,7 @@ pub fn build_child_session_node(
         parent_agent_id: child.parent_agent_id.clone(),
         parent_turn_id: parent_turn_id.to_string(),
         lineage_kind: ChildSessionLineageKind::Spawn,
-        status: child.status,
+        status: child.lifecycle,
         status_source: ChildSessionStatusSource::Durable,
         created_by_tool_call_id,
         lineage_snapshot: None,
@@ -86,7 +86,7 @@ pub fn build_child_session_notification(
     notification_id: impl Into<String>,
     kind: ChildSessionNotificationKind,
     summary: impl Into<String>,
-    status: AgentStatus,
+    lifecycle: AgentLifecycleStatus,
     final_reply_excerpt: Option<String>,
 ) -> ChildSessionNotification {
     ChildSessionNotification {
@@ -94,7 +94,7 @@ pub fn build_child_session_notification(
         child_ref: node.child_ref(),
         kind,
         summary: summary.into(),
-        status,
+        status: lifecycle,
         source_tool_call_id: node.created_by_tool_call_id.clone(),
         final_reply_excerpt,
     }
@@ -155,7 +155,8 @@ pub fn overlay_live_snapshot_on_durable(
     durable_snapshot: ParsedSubRunStatus,
 ) -> ParsedSubRunStatus {
     let mut merged_handle = durable_snapshot.handle;
-    merged_handle.status = live_snapshot.handle.status;
+    merged_handle.lifecycle = live_snapshot.handle.lifecycle;
+    merged_handle.last_turn_outcome = live_snapshot.handle.last_turn_outcome;
 
     ParsedSubRunStatus {
         handle: merged_handle,
@@ -355,16 +356,20 @@ fn build_replayed_handle(
         storage_mode: agent
             .storage_mode
             .unwrap_or(SubRunStorageMode::SharedSession),
-        status: finished
-            .map(|(result, _, _)| result.status)
-            .unwrap_or(AgentStatus::Pending),
+        lifecycle: finished
+            .as_ref()
+            .map(|(result, _, _)| result.lifecycle)
+            .unwrap_or(AgentLifecycleStatus::Pending),
+        last_turn_outcome: finished
+            .as_ref()
+            .and_then(|(result, _, _)| result.last_turn_outcome),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        AgentEventContext, AgentStatus, ChildSessionNotificationKind,
+        AgentEventContext, AgentLifecycleStatus, AgentTurnOutcome, ChildSessionNotificationKind,
         ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, StorageEvent,
         StorageEventPayload, StoredEvent, SubRunHandle, SubRunHandoff, SubRunResult,
         SubRunStorageMode,
@@ -390,7 +395,8 @@ mod tests {
             parent_agent_id: Some("parent-agent".to_string()),
             agent_profile: "review".to_string(),
             storage_mode: SubRunStorageMode::IndependentSession,
-            status: astrcode_core::AgentStatus::Running,
+            lifecycle: AgentLifecycleStatus::Running,
+            last_turn_outcome: None,
         };
 
         let snapshot = snapshot_from_active_handle(handle.clone());
@@ -422,7 +428,8 @@ mod tests {
             allowed_tools: vec!["readFile".to_string()],
         };
         let result = SubRunResult {
-            status: AgentStatus::Completed,
+            lifecycle: AgentLifecycleStatus::Idle,
+            last_turn_outcome: Some(AgentTurnOutcome::Completed),
             handoff: Some(SubRunHandoff {
                 summary: "done".to_string(),
                 findings: vec!["ok".to_string()],
@@ -471,9 +478,10 @@ mod tests {
             snapshot.handle.storage_mode,
             SubRunStorageMode::IndependentSession
         );
+        assert_eq!(snapshot.handle.lifecycle, AgentLifecycleStatus::Idle);
         assert_eq!(
-            snapshot.handle.status,
-            astrcode_core::AgentStatus::Completed
+            snapshot.handle.last_turn_outcome,
+            Some(AgentTurnOutcome::Completed)
         );
         assert_eq!(
             snapshot
@@ -524,7 +532,8 @@ mod tests {
         let snapshot =
             find_subrun_status_in_events(&events, "session-1", "subrun-1").expect("snapshot");
 
-        assert_eq!(snapshot.handle.status, AgentStatus::Pending);
+        assert_eq!(snapshot.handle.lifecycle, AgentLifecycleStatus::Pending);
+        assert_eq!(snapshot.handle.last_turn_outcome, None);
         assert!(snapshot.result.is_none());
         assert!(snapshot.step_count.is_none());
         assert!(snapshot.estimated_tokens.is_none());
@@ -538,7 +547,8 @@ mod tests {
     #[test]
     fn find_subrun_status_in_events_uses_finished_event_without_start() {
         let result = SubRunResult {
-            status: AgentStatus::TokenExceeded,
+            lifecycle: AgentLifecycleStatus::Idle,
+            last_turn_outcome: Some(AgentTurnOutcome::TokenExceeded),
             handoff: None,
             failure: None,
         };
@@ -573,7 +583,11 @@ mod tests {
             snapshot.handle.storage_mode,
             SubRunStorageMode::IndependentSession
         );
-        assert_eq!(snapshot.handle.status, AgentStatus::TokenExceeded);
+        assert_eq!(snapshot.handle.lifecycle, AgentLifecycleStatus::Idle);
+        assert_eq!(
+            snapshot.handle.last_turn_outcome,
+            Some(AgentTurnOutcome::TokenExceeded)
+        );
         assert_eq!(snapshot.result, Some(result));
         assert_eq!(snapshot.step_count, Some(7));
         assert_eq!(snapshot.estimated_tokens, Some(321));
@@ -616,7 +630,8 @@ mod tests {
                     payload: StorageEventPayload::SubRunFinished {
                         tool_call_id: None,
                         result: SubRunResult {
-                            status: AgentStatus::Cancelled,
+                            lifecycle: AgentLifecycleStatus::Terminated,
+                            last_turn_outcome: Some(AgentTurnOutcome::Cancelled),
                             handoff: None,
                             failure: None,
                         },
@@ -631,14 +646,25 @@ mod tests {
         let snapshot = find_subrun_status_in_events(&events, "session-abort", "subrun-abort")
             .expect("snapshot should exist");
 
-        assert_eq!(snapshot.handle.status, AgentStatus::Cancelled);
+        assert_eq!(snapshot.handle.lifecycle, AgentLifecycleStatus::Terminated);
+        assert_eq!(
+            snapshot.handle.last_turn_outcome,
+            Some(AgentTurnOutcome::Cancelled)
+        );
         assert_eq!(
             snapshot.handle.storage_mode,
             SubRunStorageMode::IndependentSession
         );
         assert_eq!(
-            snapshot.result.as_ref().map(|item| item.status),
-            Some(AgentStatus::Cancelled)
+            snapshot.result.as_ref().map(|item| item.lifecycle),
+            Some(AgentLifecycleStatus::Terminated)
+        );
+        assert_eq!(
+            snapshot
+                .result
+                .as_ref()
+                .and_then(|item| item.last_turn_outcome),
+            Some(AgentTurnOutcome::Cancelled)
         );
         assert_eq!(snapshot.source, ParsedSubRunStatusSource::Durable);
     }
@@ -681,7 +707,8 @@ mod tests {
                     payload: StorageEventPayload::SubRunFinished {
                         tool_call_id: Some("call-legacy".to_string()),
                         result: SubRunResult {
-                            status: AgentStatus::Completed,
+                            lifecycle: AgentLifecycleStatus::Idle,
+                            last_turn_outcome: Some(AgentTurnOutcome::Completed),
                             handoff: None,
                             failure: None,
                         },
@@ -717,7 +744,8 @@ mod tests {
                 payload: StorageEventPayload::SubRunFinished {
                     tool_call_id: Some("call-3".to_string()),
                     result: SubRunResult {
-                        status: AgentStatus::Completed,
+                        lifecycle: AgentLifecycleStatus::Idle,
+                        last_turn_outcome: Some(AgentTurnOutcome::Completed),
                         handoff: None,
                         failure: None,
                     },
@@ -749,7 +777,8 @@ mod tests {
                 parent_agent_id: Some("agent-root-live".to_string()),
                 agent_profile: "review".to_string(),
                 storage_mode: SubRunStorageMode::IndependentSession,
-                status: AgentStatus::Running,
+                lifecycle: AgentLifecycleStatus::Running,
+                last_turn_outcome: None,
             },
             tool_call_id: Some("call-live".to_string()),
             source: ParsedSubRunStatusSource::Live,
@@ -770,12 +799,14 @@ mod tests {
                 parent_agent_id: Some("agent-root-durable".to_string()),
                 agent_profile: "review".to_string(),
                 storage_mode: SubRunStorageMode::IndependentSession,
-                status: AgentStatus::Completed,
+                lifecycle: AgentLifecycleStatus::Idle,
+                last_turn_outcome: Some(AgentTurnOutcome::Completed),
             },
             tool_call_id: Some("call-durable".to_string()),
             source: ParsedSubRunStatusSource::Durable,
             result: Some(SubRunResult {
-                status: AgentStatus::Completed,
+                lifecycle: AgentLifecycleStatus::Idle,
+                last_turn_outcome: Some(AgentTurnOutcome::Completed),
                 handoff: None,
                 failure: None,
             }),
@@ -789,7 +820,8 @@ mod tests {
 
         assert_eq!(merged.source, ParsedSubRunStatusSource::Live);
         assert_eq!(merged.handle.session_id, "session-parent");
-        assert_eq!(merged.handle.status, AgentStatus::Running);
+        assert_eq!(merged.handle.lifecycle, AgentLifecycleStatus::Running);
+        assert_eq!(merged.handle.last_turn_outcome, None);
         assert_eq!(merged.tool_call_id.as_deref(), Some("call-live"));
         assert_eq!(merged.step_count, Some(5));
         assert_eq!(merged.estimated_tokens, Some(256));
@@ -835,7 +867,8 @@ mod tests {
             parent_agent_id: Some("agent-parent".to_string()),
             agent_profile: "review".to_string(),
             storage_mode: SubRunStorageMode::IndependentSession,
-            status: AgentStatus::Running,
+            lifecycle: AgentLifecycleStatus::Running,
+            last_turn_outcome: None,
         };
         let agent = AgentEventContext::sub_run(
             "agent-1".to_string(),
@@ -859,7 +892,8 @@ mod tests {
             &handle,
             Some("call-1".to_string()),
             SubRunResult {
-                status: AgentStatus::Completed,
+                lifecycle: AgentLifecycleStatus::Idle,
+                last_turn_outcome: Some(AgentTurnOutcome::Completed),
                 handoff: None,
                 failure: None,
             },
@@ -908,16 +942,19 @@ mod tests {
             parent_agent_id: None,
             agent_profile: "review".to_string(),
             storage_mode: SubRunStorageMode::SharedSession,
-            status: AgentStatus::Running,
+            lifecycle: AgentLifecycleStatus::Running,
+            last_turn_outcome: None,
         });
         let durable = ParsedSubRunStatus {
             handle: SubRunHandle {
-                status: AgentStatus::Completed,
+                lifecycle: AgentLifecycleStatus::Idle,
+                last_turn_outcome: Some(AgentTurnOutcome::Completed),
                 ..live.handle.clone()
             },
             source: ParsedSubRunStatusSource::Durable,
             result: Some(SubRunResult {
-                status: AgentStatus::Completed,
+                lifecycle: AgentLifecycleStatus::Idle,
+                last_turn_outcome: Some(AgentTurnOutcome::Completed),
                 handoff: None,
                 failure: None,
             }),
@@ -937,7 +974,8 @@ mod tests {
         .expect("snapshot should resolve");
 
         assert_eq!(resolved.source, ParsedSubRunStatusSource::Live);
-        assert_eq!(resolved.handle.status, AgentStatus::Running);
+        assert_eq!(resolved.handle.lifecycle, AgentLifecycleStatus::Running);
+        assert_eq!(resolved.handle.last_turn_outcome, None);
         assert_eq!(resolved.step_count, Some(4));
     }
 
@@ -953,11 +991,13 @@ mod tests {
             parent_agent_id: None,
             agent_profile: "review".to_string(),
             storage_mode: SubRunStorageMode::SharedSession,
-            status: AgentStatus::Running,
+            lifecycle: AgentLifecycleStatus::Running,
+            last_turn_outcome: None,
         };
         let durable = ParsedSubRunStatus {
             handle: SubRunHandle {
-                status: AgentStatus::Completed,
+                lifecycle: AgentLifecycleStatus::Idle,
+                last_turn_outcome: Some(AgentTurnOutcome::Completed),
                 ..live.clone()
             },
             source: ParsedSubRunStatusSource::Durable,
@@ -1001,7 +1041,8 @@ mod tests {
             parent_agent_id: None,
             agent_profile: "review".to_string(),
             storage_mode: SubRunStorageMode::IndependentSession,
-            status: AgentStatus::Running,
+            lifecycle: AgentLifecycleStatus::Running,
+            last_turn_outcome: None,
         };
         let durable = ParsedSubRunStatus {
             handle: SubRunHandle {
@@ -1040,7 +1081,8 @@ mod tests {
             parent_agent_id: Some("agent-parent-11".to_string()),
             agent_profile: "review".to_string(),
             storage_mode: SubRunStorageMode::IndependentSession,
-            status: AgentStatus::Running,
+            lifecycle: AgentLifecycleStatus::Running,
+            last_turn_outcome: None,
         };
 
         let node = build_child_session_node(
@@ -1070,7 +1112,8 @@ mod tests {
             parent_agent_id: Some("agent-parent-12".to_string()),
             agent_profile: "review".to_string(),
             storage_mode: SubRunStorageMode::SharedSession,
-            status: AgentStatus::Running,
+            lifecycle: AgentLifecycleStatus::Running,
+            last_turn_outcome: None,
         };
         let node = build_child_session_node(
             &child,
@@ -1084,7 +1127,7 @@ mod tests {
             "child-started:subrun-12",
             ChildSessionNotificationKind::Started,
             "child started",
-            AgentStatus::Running,
+            AgentLifecycleStatus::Running,
             None,
         );
 

@@ -27,36 +27,6 @@ pub enum AgentMode {
     All,
 }
 
-/// Agent 执行状态。
-///
-/// 这是 subrun / child-agent 唯一的正式状态模型。
-/// protocol 可保留 DTO-only 镜像枚举，但语义和值域必须与此模型一一对应。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum AgentStatus {
-    /// 已注册但尚未开始执行。
-    Pending,
-    /// 正在执行中。
-    Running,
-    /// 正常完成。
-    Completed,
-    /// 被取消。
-    Cancelled,
-    /// 失败结束。
-    Failed,
-    /// Token 超限结束。独立终态，不折叠到 Completed 或 Failed。
-    TokenExceeded,
-}
-
-impl AgentStatus {
-    /// 判断当前状态是否已经到达终态。
-    pub fn is_final(self) -> bool {
-        matches!(
-            self,
-            Self::Completed | Self::Cancelled | Self::Failed | Self::TokenExceeded
-        )
-    }
-}
 
 /// 统一执行入口的调用来源。
 ///
@@ -194,11 +164,15 @@ pub struct SubRunFailure {
     pub retryable: bool,
 }
 
+use lifecycle::AgentLifecycleStatus;
+
 /// 子执行结构化结果。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubRunResult {
-    pub status: AgentStatus,
+    pub lifecycle: AgentLifecycleStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn_outcome: Option<lifecycle::AgentTurnOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff: Option<SubRunHandoff>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -366,8 +340,11 @@ pub struct SubRunHandle {
     pub agent_profile: String,
     /// 当前存储模式。
     pub storage_mode: SubRunStorageMode,
-    /// 当前状态。
-    pub status: AgentStatus,
+    /// 当前生命周期状态。
+    pub lifecycle: AgentLifecycleStatus,
+    /// 最近一轮执行的结束原因。Running/Pending 期间为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn_outcome: Option<lifecycle::AgentTurnOutcome>,
 }
 
 /// 子会话 lineage 来源。
@@ -400,7 +377,7 @@ pub struct ChildAgentRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<String>,
     pub lineage_kind: ChildSessionLineageKind,
-    pub status: AgentStatus,
+    pub status: AgentLifecycleStatus,
     /// 唯一 canonical child open target。通知、DTO 与其他外层载荷不得重复持有同值字段。
     pub open_session_id: String,
 }
@@ -435,7 +412,7 @@ pub struct ChildSessionNode {
     pub parent_agent_id: Option<String>,
     pub parent_turn_id: String,
     pub lineage_kind: ChildSessionLineageKind,
-    pub status: AgentStatus,
+    pub status: AgentLifecycleStatus,
     pub status_source: ChildSessionStatusSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by_tool_call_id: Option<String>,
@@ -484,7 +461,7 @@ pub struct ChildSessionNotification {
     pub child_ref: ChildAgentRef,
     pub kind: ChildSessionNotificationKind,
     pub summary: String,
-    pub status: AgentStatus,
+    pub status: AgentLifecycleStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -714,7 +691,7 @@ impl From<&SubRunHandle> for AgentEventContext {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentStatus, ChildSessionLineageKind, ChildSessionNode, ChildSessionStatusSource,
+        AgentLifecycleStatus, ChildSessionLineageKind, ChildSessionNode, ChildSessionStatusSource,
         SpawnAgentParams,
     };
 
@@ -757,7 +734,7 @@ mod tests {
             parent_agent_id: Some("agent-parent".to_string()),
             parent_turn_id: "turn-parent".to_string(),
             lineage_kind: ChildSessionLineageKind::Spawn,
-            status: AgentStatus::Running,
+            status: AgentLifecycleStatus::Running,
             status_source: ChildSessionStatusSource::Durable,
             created_by_tool_call_id: Some("call-1".to_string()),
             lineage_snapshot: None,

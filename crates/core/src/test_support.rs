@@ -34,7 +34,9 @@ use std::{
 use tempfile::TempDir;
 
 pub use crate::env::ASTRCODE_TEST_HOME_ENV as TEST_HOME_ENV;
-use crate::{AgentStatus, ChildSessionLineageKind, ChildSessionNode, ChildSessionStatusSource};
+use crate::{
+    AgentLifecycleStatus, ChildSessionLineageKind, ChildSessionNode, ChildSessionStatusSource,
+};
 
 /// 全局环境变量互斥锁
 ///
@@ -69,7 +71,7 @@ pub fn child_session_node_fixture(seed: &str) -> ChildSessionNode {
         parent_agent_id: Some(format!("agent-parent-{normalized}")),
         parent_turn_id: format!("turn-parent-{normalized}"),
         lineage_kind: ChildSessionLineageKind::Spawn,
-        status: AgentStatus::Running,
+        status: AgentLifecycleStatus::Running,
         status_source: ChildSessionStatusSource::Durable,
         created_by_tool_call_id: Some(format!("tool-call-{normalized}")),
         lineage_snapshot: None,

@@ -1,11 +1,11 @@
 use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, AgentProfile, AgentState, AgentStatus, AstrError, CancelToken,
-    ChildSessionNotificationKind, ChildSessionStatusSource, ExecutionOwner, InvocationKind,
-    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SpawnAgentParams,
-    StorageEvent, StorageEventPayload, SubRunHandle, SubRunResult, SubRunStorageMode, ToolContext,
-    ToolEventSink, UserMessageOrigin,
+    AgentEventContext, AgentLifecycleStatus, AgentProfile, AgentState, AgentTurnOutcome, AstrError,
+    CancelToken, ChildSessionNotificationKind, ChildSessionStatusSource, ExecutionOwner,
+    InvocationKind, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
+    SpawnAgentParams, StorageEvent, StorageEventPayload, SubRunHandle, SubRunResult,
+    SubRunStorageMode, ToolContext, ToolEventSink, UserMessageOrigin,
 };
 use astrcode_runtime_agent_loop::{AgentLoop, ChildExecutionTracker, TurnOutcome};
 use astrcode_runtime_execution::{
@@ -123,7 +123,8 @@ impl AgentExecutionServiceHandle {
         self.emit_child_started_or_fail(&spawned).await?;
 
         let running_result = SubRunResult {
-            status: AgentStatus::Running,
+            lifecycle: AgentLifecycleStatus::Running,
+            last_turn_outcome: None,
             handoff: Some(build_background_subrun_handoff(
                 &spawned.child,
                 &spawned.parent_session_id,
@@ -221,12 +222,12 @@ impl AgentExecutionServiceHandle {
         if self
             .runtime
             .agent_control
-            .mark_running(&child.agent_id)
+            .set_lifecycle(&child.agent_id, AgentLifecycleStatus::Running)
             .await
             .is_none()
         {
             log::warn!(
-                "mark_running 返回 None，agent {} 可能未注册进控制树",
+                "set_lifecycle(Running) 返回 None，agent {} 可能未注册进控制树",
                 child.agent_id
             );
         }
@@ -396,7 +397,7 @@ impl AgentExecutionServiceHandle {
             let _ = self
                 .runtime
                 .agent_control
-                .mark_failed(&execution.child.agent_id)
+                .complete_turn(&execution.child.agent_id, AgentTurnOutcome::Failed)
                 .await;
             return Err(error);
         }
@@ -467,11 +468,14 @@ impl AgentExecutionServiceHandle {
                         .to_string()
                 };
                 SubRunResult {
-                    status: if tracker.token_limit_hit() || tracker.step_limit_hit() {
-                        AgentStatus::TokenExceeded
-                    } else {
-                        AgentStatus::Completed
-                    },
+                    lifecycle: AgentLifecycleStatus::Idle,
+                    last_turn_outcome: Some(
+                        if tracker.token_limit_hit() || tracker.step_limit_hit() {
+                            AgentTurnOutcome::TokenExceeded
+                        } else {
+                            AgentTurnOutcome::Completed
+                        },
+                    ),
                     handoff: Some(build_subrun_handoff(
                         &execution.child,
                         &execution.parent_session_id,
@@ -505,15 +509,15 @@ impl AgentExecutionServiceHandle {
                         execution.child.agent_id
                     );
                 }
-                let status = if tracker.token_limit_hit() || tracker.step_limit_hit() {
-                    AgentStatus::TokenExceeded
-                } else {
-                    AgentStatus::Cancelled
-                };
-                let cancelled_fallback =
-                    "子 Agent 已中止。请展开子执行查看已产生的工具和思考流。".to_string();
                 SubRunResult {
-                    status,
+                    lifecycle: AgentLifecycleStatus::Idle,
+                    last_turn_outcome: Some(
+                        if tracker.token_limit_hit() || tracker.step_limit_hit() {
+                            AgentTurnOutcome::TokenExceeded
+                        } else {
+                            AgentTurnOutcome::Cancelled
+                        },
+                    ),
                     handoff: Some(build_subrun_handoff(
                         &execution.child,
                         &execution.parent_session_id,
@@ -521,7 +525,7 @@ impl AgentExecutionServiceHandle {
                         tracker.token_limit_hit(),
                         tracker.step_limit_hit(),
                         started_at.elapsed().as_millis() as u64,
-                        &cancelled_fallback,
+                        "子 Agent 已中止。请展开子执行查看已产生的工具和思考流。",
                     )),
                     failure: None,
                 }
@@ -546,7 +550,8 @@ impl AgentExecutionServiceHandle {
                 }
                 let error = AstrError::Internal(message);
                 SubRunResult {
-                    status: AgentStatus::Failed,
+                    lifecycle: AgentLifecycleStatus::Idle,
+                    last_turn_outcome: Some(AgentTurnOutcome::Failed),
                     handoff: None,
                     failure: Some(build_subrun_failure(&error)),
                 }
@@ -569,7 +574,8 @@ impl AgentExecutionServiceHandle {
                 }
                 let err = AstrError::Internal(error.to_string());
                 SubRunResult {
-                    status: AgentStatus::Failed,
+                    lifecycle: AgentLifecycleStatus::Idle,
+                    last_turn_outcome: Some(AgentTurnOutcome::Failed),
                     handoff: None,
                     failure: Some(build_subrun_failure(&err)),
                 }
@@ -579,7 +585,8 @@ impl AgentExecutionServiceHandle {
         let duration = started_at.elapsed();
         self.runtime.observability.record_subrun_execution(
             duration,
-            &result.status,
+            &result.lifecycle,
+            &result.last_turn_outcome,
             execution.child_storage_mode,
             tracker.step_count(),
             tracker.estimated_tokens_used(),
@@ -610,7 +617,7 @@ impl AgentExecutionServiceHandle {
             format!(
                 "child-terminal:{}:{}",
                 execution.child.sub_run_id,
-                status_label(result.status)
+                status_label(result.lifecycle, result.last_turn_outcome)
             ),
             delivery.kind,
             delivery.summary,
@@ -659,13 +666,20 @@ impl AgentExecutionServiceHandle {
     }
 }
 
-fn status_label(status: AgentStatus) -> &'static str {
-    match status {
-        AgentStatus::Pending => "pending",
-        AgentStatus::Running => "running",
-        AgentStatus::Completed => "completed",
-        AgentStatus::Cancelled => "cancelled",
-        AgentStatus::Failed => "failed",
-        AgentStatus::TokenExceeded => "token_exceeded",
+fn status_label(
+    lifecycle: AgentLifecycleStatus,
+    outcome: Option<AgentTurnOutcome>,
+) -> &'static str {
+    match outcome {
+        Some(AgentTurnOutcome::Completed) => "completed",
+        Some(AgentTurnOutcome::Cancelled) => "cancelled",
+        Some(AgentTurnOutcome::Failed) => "failed",
+        Some(AgentTurnOutcome::TokenExceeded) => "token_exceeded",
+        None => match lifecycle {
+            AgentLifecycleStatus::Pending => "pending",
+            AgentLifecycleStatus::Running => "running",
+            AgentLifecycleStatus::Idle => "idle",
+            AgentLifecycleStatus::Terminated => "terminated",
+        },
     }
 }

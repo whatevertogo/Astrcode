@@ -369,8 +369,8 @@ async fn subrun_status_contract_returns_expected_payload_shape() {
     assert_eq!(payload.sub_run_id, "subrun-contract");
     assert_eq!(payload.source, SubRunStatusSourceDto::Durable);
     assert_eq!(
-        payload.status,
-        astrcode_protocol::http::AgentStatusDto::Completed
+        payload.lifecycle,
+        astrcode_protocol::http::AgentLifecycleDto::Terminated
     );
     assert_eq!(payload.step_count, Some(1));
     assert_eq!(payload.estimated_tokens, Some(42));
@@ -880,8 +880,8 @@ async fn child_delivery_projection_contract_exposes_status_source_and_final_exce
     .expect("payload should deserialize");
     assert_eq!(status_payload.source, SubRunStatusSourceDto::Durable);
     assert_eq!(
-        status_payload.status,
-        astrcode_protocol::http::AgentStatusDto::Completed
+        status_payload.lifecycle,
+        astrcode_protocol::http::AgentLifecycleDto::Terminated
     );
 
     let history_response = app
@@ -925,7 +925,7 @@ async fn child_delivery_projection_contract_exposes_status_source_and_final_exce
     assert_eq!(delivery_event.0, ChildSessionNotificationKindDto::Delivered);
     assert_eq!(
         delivery_event.1,
-        astrcode_protocol::http::AgentStatusDto::Completed
+        astrcode_protocol::http::AgentLifecycleDto::Terminated
     );
     assert_eq!(delivery_event.2, "session-child-contract");
     assert_eq!(delivery_event.3.as_deref(), Some("final answer excerpt"));
@@ -947,7 +947,7 @@ fn seed_parent_summary_list_session(session_id: &str, working_dir: &std::path::P
         sub_run_id: "subrun-ok".to_string(),
         parent_agent_id: Some("agent-parent".to_string()),
         lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
-        status: astrcode_core::AgentStatus::Completed,
+        status: astrcode_core::AgentLifecycleStatus::Terminated,
         open_session_id: "session-child-ok".to_string(),
     };
     let child_ref_fail = astrcode_core::ChildAgentRef {
@@ -956,7 +956,7 @@ fn seed_parent_summary_list_session(session_id: &str, working_dir: &std::path::P
         sub_run_id: "subrun-fail".to_string(),
         parent_agent_id: Some("agent-parent".to_string()),
         lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
-        status: astrcode_core::AgentStatus::Failed,
+        status: astrcode_core::AgentLifecycleStatus::Terminated,
         open_session_id: "session-child-fail".to_string(),
     };
 
@@ -1008,7 +1008,8 @@ fn seed_parent_summary_list_session(session_id: &str, working_dir: &std::path::P
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: Some("call-ok".to_string()),
                 result: astrcode_core::SubRunResult {
-                    status: astrcode_core::AgentStatus::Completed,
+                    lifecycle: astrcode_core::AgentLifecycleStatus::Terminated,
+                    last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Completed),
                     handoff: None,
                     failure: None,
                 },
@@ -1027,7 +1028,7 @@ fn seed_parent_summary_list_session(session_id: &str, working_dir: &std::path::P
                     child_ref: child_ref_ok,
                     kind: astrcode_core::ChildSessionNotificationKind::Delivered,
                     summary: "成功完成代码审查".to_string(),
-                    status: astrcode_core::AgentStatus::Completed,
+                    status: astrcode_core::AgentLifecycleStatus::Terminated,
                     source_tool_call_id: Some("call-ok".to_string()),
                     final_reply_excerpt: Some("审查结果：代码质量良好".to_string()),
                 },
@@ -1053,7 +1054,8 @@ fn seed_parent_summary_list_session(session_id: &str, working_dir: &std::path::P
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: Some("call-fail".to_string()),
                 result: astrcode_core::SubRunResult {
-                    status: astrcode_core::AgentStatus::Failed,
+                    lifecycle: astrcode_core::AgentLifecycleStatus::Terminated,
+                    last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Failed),
                     handoff: None,
                     failure: None,
                 },
@@ -1072,7 +1074,7 @@ fn seed_parent_summary_list_session(session_id: &str, working_dir: &std::path::P
                     child_ref: child_ref_fail,
                     kind: astrcode_core::ChildSessionNotificationKind::Failed,
                     summary: "子 Agent 执行失败".to_string(),
-                    status: astrcode_core::AgentStatus::Failed,
+                    status: astrcode_core::AgentLifecycleStatus::Terminated,
                     source_tool_call_id: Some("call-fail".to_string()),
                     final_reply_excerpt: None,
                 },

@@ -1,5 +1,5 @@
 use astrcode_protocol::http::{
-    AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentStatusDto, ChildAgentRefDto,
+    AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentLifecycleDto, ChildAgentRefDto,
     ChildSessionLineageKindDto, ChildSessionNotificationDto, ChildSessionNotificationKindDto,
     InvocationKindDto, ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto,
     SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto,
@@ -161,12 +161,12 @@ fn child_session_notification_roundtrip_keeps_projection_fields() {
             sub_run_id: "subrun-1".to_string(),
             parent_agent_id: Some("agent-parent".to_string()),
             lineage_kind: ChildSessionLineageKindDto::Spawn,
-            status: AgentStatusDto::Running,
+            status: AgentLifecycleDto::Running,
             open_session_id: "session-child".to_string(),
         },
         kind: ChildSessionNotificationKindDto::Started,
         summary: "child started".to_string(),
-        status: AgentStatusDto::Running,
+        status: AgentLifecycleDto::Running,
         source_tool_call_id: Some("call-1".to_string()),
         final_reply_excerpt: None,
     };
@@ -208,12 +208,12 @@ fn child_session_notification_event_payload_roundtrip() {
             sub_run_id: "subrun-1".to_string(),
             parent_agent_id: Some("agent-parent".to_string()),
             lineage_kind: ChildSessionLineageKindDto::Spawn,
-            status: AgentStatusDto::Running,
+            status: AgentLifecycleDto::Running,
             open_session_id: "session-child".to_string(),
         },
         kind: ChildSessionNotificationKindDto::Started,
         summary: "child started".to_string(),
-        status: AgentStatusDto::Running,
+        status: AgentLifecycleDto::Running,
         source_tool_call_id: Some("call-1".to_string()),
         final_reply_excerpt: None,
     };
@@ -241,7 +241,7 @@ fn lineage_kind_spawn_fork_resume_all_roundtrip_through_child_ref() {
             sub_run_id: "subrun-1".to_string(),
             parent_agent_id: Some("agent-parent".to_string()),
             lineage_kind: kind.clone(),
-            status: AgentStatusDto::Running,
+            status: AgentLifecycleDto::Running,
             open_session_id: "session-child".to_string(),
         };
 

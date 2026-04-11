@@ -3,7 +3,8 @@
 //! 将 SSE 接收的原始事件规范化为前端可用的格式。
 
 import type {
-  AgentStatus,
+  AgentLifecycle,
+  AgentTurnOutcome,
   AgentEventPayload,
   ChildSessionNotificationKind,
   CompactTrigger,
@@ -45,12 +46,12 @@ const VALID_CHILD_NOTIFICATION_KINDS: ChildSessionNotificationKind[] = [
   'closed',
   'failed',
 ];
-const VALID_AGENT_STATUSES: AgentStatus[] = [
-  'pending',
-  'running',
+const VALID_AGENT_LIFECYCLES: AgentLifecycle[] = ['pending', 'running', 'idle', 'terminated'];
+
+const VALID_AGENT_TURN_OUTCOMES: AgentTurnOutcome[] = [
   'completed',
-  'cancelled',
   'failed',
+  'cancelled',
   'token_exceeded',
 ];
 
@@ -105,12 +106,22 @@ function toSubRunStorageMode(value: unknown): SubRunStorageMode | null {
   return null;
 }
 
-function toAgentStatus(value: unknown): AgentStatus | null {
+function toAgentLifecycle(value: unknown): AgentLifecycle | null {
   if (typeof value !== 'string') {
     return null;
   }
-  if ((VALID_AGENT_STATUSES as string[]).includes(value)) {
-    return value as AgentStatus;
+  if ((VALID_AGENT_LIFECYCLES as string[]).includes(value)) {
+    return value as AgentLifecycle;
+  }
+  return null;
+}
+
+function toAgentTurnOutcome(value: unknown): AgentTurnOutcome | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  if ((VALID_AGENT_TURN_OUTCOMES as string[]).includes(value)) {
+    return value as AgentTurnOutcome;
   }
   return null;
 }
@@ -595,8 +606,8 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
         ? (kindRaw as ChildSessionNotificationKind)
         : 'failed';
     const summary = pickString(data, 'summary') ?? '';
-    const status = toAgentStatus(data.status) ?? 'failed';
-    const childStatus = toAgentStatus(childRefRaw.status) ?? status;
+    const status = toAgentLifecycle(data.status) ?? 'failed';
+    const childStatus = toAgentLifecycle(childRefRaw.status) ?? status;
     const openSessionId = pickString(childRefRaw, 'openSessionId', 'open_session_id') ?? sessionId;
     return {
       event: 'childSessionNotification',
