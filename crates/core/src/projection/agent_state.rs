@@ -91,7 +91,7 @@ impl AgentStateProjector {
     }
 
     pub fn apply(&mut self, event: &StorageEvent) {
-        if !should_project_into_session_state(event) {
+        if !self.should_project(event) {
             return;
         }
 
@@ -250,21 +250,33 @@ impl AgentStateProjector {
         }];
         self.state.messages.extend(preserved);
     }
-}
 
-fn should_project_into_session_state(event: &StorageEvent) -> bool {
-    match event.agent_context() {
-        None => true,
-        Some(agent) => {
-            if agent.invocation_kind != Some(InvocationKind::SubRun) {
-                return true;
-            }
+    /// 判断事件是否应投影到当前会话状态。
+    ///
+    /// - 非 SubRun 事件：始终投影
+    /// - SubRun + IndependentSession：仅在投影子会话自身（child_session_id == 当前
+    ///   session_id）时投影
+    /// - SubRun + 其他模式（Inline）：始终投影到父会话
+    fn should_project(&self, event: &StorageEvent) -> bool {
+        match event.agent_context() {
+            None => true,
+            Some(agent) => {
+                if agent.invocation_kind != Some(InvocationKind::SubRun) {
+                    return true;
+                }
 
-            matches!(
-                agent.storage_mode,
-                Some(SubRunStorageMode::IndependentSession)
-            )
-        },
+                match agent.storage_mode {
+                    Some(SubRunStorageMode::IndependentSession) => {
+                        // 独立子会话：只有投影子会话自身状态时才包含
+                        match &agent.child_session_id {
+                            Some(sid) => sid == &self.state.session_id,
+                            None => false,
+                        }
+                    },
+                    _ => true,
+                }
+            },
+        }
     }
 }
 
@@ -322,7 +334,7 @@ mod tests {
             "explore",
             "subrun-1",
             crate::SubRunStorageMode::IndependentSession,
-            None,
+            Some("session-child".to_string()),
         )
     }
 

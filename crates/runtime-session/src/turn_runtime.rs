@@ -232,10 +232,12 @@ fn should_include_in_compaction_tail(event: &StorageEvent) -> bool {
         return true;
     }
 
+    // 只有带 child_session_id 的 IndependentSession 事件才属于子会话自身，
+    // 应纳入 compaction tail；legacy 无 child_session_id 的共享历史事件不纳入。
     matches!(
         agent.storage_mode,
         Some(SubRunStorageMode::IndependentSession)
-    )
+    ) && agent.child_session_id.is_some()
 }
 
 #[cfg(test)]

@@ -146,7 +146,7 @@ fn seed_finished_subrun_session(session_id: &str, working_dir: &std::path::Path)
         "review",
         "sub-durable",
         astrcode_core::SubRunStorageMode::IndependentSession,
-        None,
+        Some("child-durable".to_string()),
     );
 
     for event in [

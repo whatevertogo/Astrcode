@@ -31,7 +31,6 @@ pub(super) struct ParentExecutionContext {
 struct PreparedSubagentExecution {
     profile: AgentProfile,
     prepared_execution: PreparedAgentExecution<Arc<AgentLoop>>,
-    child_storage_mode: SubRunStorageMode,
     child_task: String,
 }
 
@@ -45,7 +44,6 @@ pub(super) struct SpawnedSubagentExecution {
     pub(super) child_state: AgentState,
     pub(super) child_loop: Arc<AgentLoop>,
     pub(super) child_cancel: CancelToken,
-    pub(super) child_storage_mode: SubRunStorageMode,
     pub(super) parent_session_id: String,
     pub(super) parent_turn_id: String,
     pub(super) parent_state: Arc<SessionState>,
@@ -164,10 +162,6 @@ impl AgentExecutionServiceHandle {
                 Some(&parent.parent_snapshot),
             )
             .await?;
-        let child_storage_mode = prepared_execution
-            .execution_spec
-            .resolved_overrides
-            .storage_mode;
         let child_task = prepared_execution
             .execution_spec
             .resolved_context_snapshot
@@ -177,7 +171,6 @@ impl AgentExecutionServiceHandle {
         Ok(PreparedSubagentExecution {
             profile: profile.clone(),
             prepared_execution,
-            child_storage_mode,
             child_task,
         })
     }
@@ -190,7 +183,6 @@ impl AgentExecutionServiceHandle {
     ) -> ServiceResult<SpawnedSubagentExecution> {
         // 为什么强制 IndependentSession：四工具模型要求所有新 spawn 的子 agent
         // 拥有独立的 durable event log。
-        let child_storage_mode = SubRunStorageMode::IndependentSession;
         let child_session_meta = self
             .runtime
             .sessions()
@@ -214,7 +206,7 @@ impl AgentExecutionServiceHandle {
                 child_session_id.clone(),
                 parent.parent_turn_id.clone(),
                 parent.parent_agent_id_for_control.clone(),
-                child_storage_mode,
+                SubRunStorageMode::IndependentSession,
             )
             .await
             .map_err(|error| ServiceError::Conflict(error.to_string()))?;
@@ -266,9 +258,8 @@ impl AgentExecutionServiceHandle {
             ctx.working_dir().to_path_buf(),
             &prepared.child_task,
         );
-        let (parent_event_sink, active_sink) = self
-            .build_event_sinks(parent, &target_session_id, child_storage_mode)
-            .await?;
+        let (parent_event_sink, active_sink) =
+            self.build_event_sinks(parent, &target_session_id).await?;
 
         Ok(SpawnedSubagentExecution {
             child,
@@ -280,7 +271,6 @@ impl AgentExecutionServiceHandle {
             child_state,
             child_loop: Arc::clone(&prepared.prepared_execution.loop_),
             child_cancel,
-            child_storage_mode: prepared.child_storage_mode,
             parent_session_id: parent.parent_session_id.clone(),
             parent_turn_id: parent.parent_turn_id.clone(),
             parent_state: Arc::clone(&parent.parent_state),
@@ -299,24 +289,19 @@ impl AgentExecutionServiceHandle {
         &self,
         parent: &ParentExecutionContext,
         target_session_id: &str,
-        child_storage_mode: SubRunStorageMode,
     ) -> ServiceResult<(Arc<dyn ToolEventSink>, Arc<dyn ToolEventSink>)> {
         let parent_event_sink: Arc<dyn ToolEventSink> = Arc::new(
             SessionStateEventSink::new(Arc::clone(&parent.parent_state))
                 .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?,
         );
-        let active_sink: Arc<dyn ToolEventSink> =
-            if matches!(child_storage_mode, SubRunStorageMode::IndependentSession) {
-                let child_state = self
-                    .runtime
-                    .ensure_session_loaded(target_session_id)
-                    .await?;
-                Arc::new(SessionStateEventSink::new(child_state).map_err(|error| {
-                    ServiceError::Internal(AstrError::Internal(error.to_string()))
-                })?)
-            } else {
-                parent_event_sink.clone()
-            };
+        let child_state = self
+            .runtime
+            .ensure_session_loaded(target_session_id)
+            .await?;
+        let active_sink: Arc<dyn ToolEventSink> = Arc::new(
+            SessionStateEventSink::new(child_state)
+                .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?,
+        );
         Ok((parent_event_sink, active_sink))
     }
 

@@ -650,11 +650,13 @@ async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
         model_preference: None,
     };
     let handle = control
-        .spawn(
+        .spawn_with_storage(
             &profile,
             &session.session_id,
+            Some("child-live".to_string()),
             "turn-parent".to_string(),
             None,
+            SubRunStorageMode::IndependentSession,
         )
         .await
         .expect("live sub-run should spawn");
@@ -674,7 +676,7 @@ async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
                 "review".to_string(),
                 handle.sub_run_id.clone(),
                 SubRunStorageMode::IndependentSession,
-                None,
+                Some("child-live".to_string()),
             ),
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: None,
@@ -898,7 +900,7 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
                 "review".to_string(),
                 live_handle.sub_run_id.clone(),
                 SubRunStorageMode::IndependentSession,
-                None,
+                Some("child-b".to_string()),
             ),
             payload: StorageEventPayload::SubRunStarted {
                 tool_call_id: Some("call-b".to_string()),
@@ -919,7 +921,7 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
                 "review".to_string(),
                 live_handle.sub_run_id.clone(),
                 SubRunStorageMode::IndependentSession,
-                None,
+                Some("child-b".to_string()),
             ),
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: Some("call-b".to_string()),

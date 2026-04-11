@@ -266,6 +266,8 @@ fn summarize_task_text(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use astrcode_core::{
         AgentLifecycleStatus, AgentMailboxEnvelope, LlmMessage, MailboxProjection, StoredEvent,
         UserMessageOrigin,

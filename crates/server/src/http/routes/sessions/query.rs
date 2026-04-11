@@ -73,10 +73,11 @@ fn filter_history(
     };
 
     let mut filter = SessionEventFilter::new(filter_spec, &history)?;
+    // 用户显式指定 subRunId 时不应用 parent_timeline_event_visible，
+    // 因为用户明确请求了特定子执行的完整事件流，包括 boundary 事件。
     Ok(history
         .into_iter()
         .filter(|record| filter.matches(record))
-        .filter(parent_timeline_event_visible)
         .collect())
 }
 

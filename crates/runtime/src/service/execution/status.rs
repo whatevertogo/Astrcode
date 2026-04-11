@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use astrcode_core::{
     AgentLifecycleStatus, AgentTurnOutcome, ChildSessionNotificationKind, SubRunResult,
+    SubRunStorageMode,
 };
 use astrcode_runtime_execution::{
     ParsedSubRunStatus, ParsedSubRunStatusSource, find_subrun_status_in_events,
@@ -40,6 +41,17 @@ impl AgentExecutionServiceHandle {
                 sub_run_id, session_id
             )));
         };
+        // Legacy shared-history 子会话（IndependentSession + 无 child_session_id）不再受支持
+        if snapshot.handle.storage_mode == SubRunStorageMode::IndependentSession
+            && snapshot.handle.child_session_id.is_none()
+        {
+            return Err(ServiceError::Conflict(
+                "unsupported_legacy_shared_history: sub-run uses IndependentSession storage but \
+                 has no child_session_id; this legacy format is no longer supported"
+                    .to_string(),
+            ));
+        }
+
         Ok(to_service_subrun_snapshot(snapshot))
     }
 }

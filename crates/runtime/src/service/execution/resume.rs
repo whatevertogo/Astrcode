@@ -343,7 +343,6 @@ impl AgentExecutionServiceHandle {
             child_state,
             child_loop,
             child_cancel,
-            child_storage_mode: child.storage_mode,
             parent_session_id: parent.parent_session_id.clone(),
             parent_turn_id: parent.parent_turn_id.clone(),
             parent_state: Arc::clone(&parent.parent_state),

@@ -122,7 +122,7 @@ pub(crate) fn seed_subrun_status_contract_session(session_id: &str, working_dir:
         "review",
         "subrun-contract",
         astrcode_core::SubRunStorageMode::IndependentSession,
-        None,
+        Some("child-contract".to_string()),
     );
 
     append_session_events(
