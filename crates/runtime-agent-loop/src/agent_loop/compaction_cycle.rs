@@ -201,6 +201,8 @@ pub(crate) enum ReactiveCompactOutcome {
 ///
 /// 当 LLM 返回 prompt-too-long 错误且 auto_compact 开启时，自动触发上下文压缩并重试。
 /// 这与 `run_turn` 中基于 Policy 的 proactive compact 不同——这里是 LLM 实际拒绝后的被动恢复。
+/// TODO: NOW ALLOW CLIPPY TOO MANY ARGUMENTS, 需要重构 CompactContext 来简化参数传递。
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_llm_error_with_reactive_compact(
     llm_error: AstrError,
     agent_loop: &AgentLoop,

@@ -4,7 +4,6 @@
 
 import type {
   AgentLifecycle,
-  AgentTurnOutcome,
   AgentEventPayload,
   ChildSessionNotificationKind,
   CompactTrigger,
@@ -47,13 +46,6 @@ const VALID_CHILD_NOTIFICATION_KINDS: ChildSessionNotificationKind[] = [
   'failed',
 ];
 const VALID_AGENT_LIFECYCLES: AgentLifecycle[] = ['pending', 'running', 'idle', 'terminated'];
-
-const VALID_AGENT_TURN_OUTCOMES: AgentTurnOutcome[] = [
-  'completed',
-  'failed',
-  'cancelled',
-  'token_exceeded',
-];
 
 function toPhase(value: unknown): Phase | null {
   if (typeof value !== 'string') {
@@ -112,16 +104,6 @@ function toAgentLifecycle(value: unknown): AgentLifecycle | null {
   }
   if ((VALID_AGENT_LIFECYCLES as string[]).includes(value)) {
     return value as AgentLifecycle;
-  }
-  return null;
-}
-
-function toAgentTurnOutcome(value: unknown): AgentTurnOutcome | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-  if ((VALID_AGENT_TURN_OUTCOMES as string[]).includes(value)) {
-    return value as AgentTurnOutcome;
   }
   return null;
 }
@@ -606,7 +588,7 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
         ? (kindRaw as ChildSessionNotificationKind)
         : 'failed';
     const summary = pickString(data, 'summary') ?? '';
-    const status = toAgentLifecycle(data.status) ?? 'failed';
+    const status = toAgentLifecycle(data.status) ?? 'terminated';
     const childStatus = toAgentLifecycle(childRefRaw.status) ?? status;
     const openSessionId = pickString(childRefRaw, 'openSessionId', 'open_session_id') ?? sessionId;
     return {
