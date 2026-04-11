@@ -393,7 +393,7 @@ describe('normalizeAgentEvent protocol gate', () => {
         parent_turn_id: 'turn-legacy',
         sub_run_id: 'sub-legacy',
         resolved_overrides: {
-          storage_mode: 'sharedSession',
+          storage_mode: 'independentSession',
           inherit_system_instructions: true,
           inherit_project_instructions: true,
           inherit_working_dir: true,
@@ -414,7 +414,7 @@ describe('normalizeAgentEvent protocol gate', () => {
       event: 'subRunStarted',
       data: {
         resolvedOverrides: {
-          storageMode: 'sharedSession',
+          storageMode: 'independentSession',
         },
         resolvedLimits: {
           allowedTools: ['readFile'],

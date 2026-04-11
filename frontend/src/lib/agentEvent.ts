@@ -36,7 +36,7 @@ const VALID_PHASES: Phase[] = [
 ];
 const VALID_TOOL_OUTPUT_STREAMS: ToolOutputStream[] = ['stdout', 'stderr'];
 const VALID_INVOCATION_KINDS: InvocationKind[] = ['subRun', 'rootExecution'];
-const VALID_SUBRUN_STORAGE_MODES: SubRunStorageMode[] = ['sharedSession', 'independentSession'];
+const VALID_SUBRUN_STORAGE_MODES: SubRunStorageMode[] = ['independentSession'];
 const VALID_CHILD_NOTIFICATION_KINDS: ChildSessionNotificationKind[] = [
   'started',
   'progress_summary',
