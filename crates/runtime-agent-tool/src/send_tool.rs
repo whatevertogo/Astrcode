@@ -28,20 +28,20 @@ impl SendAgentTool {
     }
 
     fn build_description() -> String {
-        r#"向既有子 Agent 追加要求或返工请求。
+        r#"Send a follow-up message or rework request to an existing sub-agent.
 
-## 使用指南
+## Usage Guide
 
-1. **指定 agentId**: 填入目标子 Agent ID
-2. **填写 message**: 追加给子 Agent 的消息内容
-3. **精确复用 ID**: `agentId` 必须逐字复制自之前 tool result 的 `Child agent reference`，不能补零、改写或猜测
-4. **补充 context**: 可选的补充上下文信息
+1. **Specify agentId**: The target sub-agent's stable ID.
+2. **Write the message**: The content to send to the sub-agent.
+3. **Copy agentId exactly**: `agentId` must be copied byte-for-byte from a previous tool result's `Child agent reference` — never zero-pad, rewrite, or guess.
+4. **Optional context**: Supplementary context information.
 
-## 何时使用
+## When to Use
 
-- 需要向正在运行的子 Agent 追加信息或修改要求
-- 子 Agent 完成后需要返工或补充
-- 不要用于创建新 Agent（用 `spawn`）"#
+- Append information or modified requirements to a running sub-agent
+- Request rework or additions after a sub-agent completes
+- Do NOT use to create a new agent (use `spawn`)"#
             .to_string()
     }
 
@@ -52,15 +52,15 @@ impl SendAgentTool {
             "properties": {
                 "agentId": {
                     "type": "string",
-                    "description": "目标子 Agent 稳定 ID。"
+                    "description": "Target sub-agent stable ID."
                 },
                 "message": {
                     "type": "string",
-                    "description": "追加给子 Agent 的消息内容。"
+                    "description": "Message content to send to the sub-agent."
                 },
                 "context": {
                     "type": "string",
-                    "description": "可选补充上下文。"
+                    "description": "Optional supplementary context."
                 }
             },
             "required": ["agentId", "message"]
@@ -88,16 +88,19 @@ impl Tool for SendAgentTool {
             .compact_clearable(false)
             .prompt(
                 ToolPromptMetadata::new(
-                    "向已有子 Agent 追加消息",
-                    "使用 send 向正在运行或已完成的子 Agent 追加要求或返工请求。目标通过稳定 \
-                     agentId 指定，该 ID 来自之前协作 tool result 的 `Child agent \
-                     reference`，必须逐字复用原值。",
+                    "Send a follow-up message to an existing sub-agent.",
+                    "Use `send` to append requirements or rework requests to a running or completed \
+                     sub-agent. Target is specified by stable `agentId` from a previous \
+                     collaboration tool result's `Child agent reference` — reuse the exact value \
+                     byte-for-byte.",
                 )
                 .caveat(
-                    "只能向自己 spawn 的子 Agent 发送消息，且不要把 `agent-1` 改写成 `agent-01`",
+                    "Only send to sub-agents you spawned yourself. Never rewrite `agent-1` as \
+                     `agent-01`.",
                 )
                 .caveat(
-                    "消息进入子 Agent 邮箱排队，按发送顺序处理；send 后需 observe 检查结果，不要假设立即处理完毕",
+                    "Messages enter the sub-agent's mailbox and are processed in send order. After \
+                     `send`, use `observe` to check results — do not assume immediate processing.",
                 )
                 .prompt_tag("collaboration"),
             )

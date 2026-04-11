@@ -28,30 +28,30 @@ impl SpawnAgentTool {
     }
 
     fn build_description() -> String {
-        r#"调用专门的子 Agent 执行特定任务，并返回摘要结果。
+        r#"Spawn a dedicated sub-agent to run a specific task and return a summary result.
 
-## 使用指南
+## Usage Guide
 
-1. **选择合适的 Agent**: `type` 填目标 profile 标识；可用 profile 以当前会话提供的 agent 索引或提示信息为准
-2. **写清楚任务**: `prompt` 参数要具体、明确，说明要做什么、找什么、分析什么
-3. **补充上下文**: 如果任务涉及特定背景，在 `context` 中说明（如"关注安全问题"、"只看 frontend 目录"）
-4. **默认异步**: `spawn` 统一用后台子会话方式启动，通过子会话流持续回传进度
-5. **记住原始 agentId**: 后续 `send` / `observe` / `close` 必须逐字复用 tool result 里的 `agentId`，不能补零、改写或猜测
-6. **并行执行**: 需要并行时，直接在同一轮对话中发起多个 `spawn` 调用即可
-7. **链式执行**: 需要链式时，你可以等待每个 agent 的工作，读取前一步的 `summary`，然后在下一步的 `context` 中显式传入
+1. **Choose the right profile**: Set `type` to the target profile identifier. Available profiles are listed in the current session's agent index.
+2. **Be specific in `prompt`**: Clearly state what to do, find, or analyze.
+3. **Add context if needed**: Use `context` for background information (e.g., "focus on security issues", "frontend directory only").
+4. **Async by default**: `spawn` launches a background sub-session; progress is streamed back via the session event channel.
+5. **Preserve the original agentId**: Copy the `agentId` from the tool result byte-for-byte into later `send` / `observe` / `close` calls — never zero-pad, rewrite, or guess.
+6. **Parallel execution**: Issue multiple `spawn` calls in the same turn to run tasks in parallel.
+7. **Chained execution**: Wait for each agent's work, read the `summary`, then pass it explicitly in the next step's `context`.
 
-## 何时使用
+## When to Use
 
-- 需要探索大型代码库或查找特定代码模式
-- 需要制定详细的实现计划
-- 需要对代码变更进行多角度审查
-- 需要执行定向的代码修改任务
+- Exploring a large codebase or finding specific code patterns
+- Creating detailed implementation plans
+- Multi-perspective code review
+- Targeted code modification tasks
 
-## 何时不使用
+## When NOT to Use
 
-- 简单的文件读取或搜索（直接用 `readFile`、`grep` 等工具更快）
-- 已经清楚答案的确认性问题
-- 不需要独立上下文的简单操作"#
+- Simple file reads or searches (use `readFile`, `grep` etc. directly)
+- Questions you already know the answer to
+- Simple operations that don't need an isolated context"#
             .to_string()
     }
 
@@ -62,19 +62,19 @@ impl SpawnAgentTool {
             "properties": {
                 "type": {
                     "type": "string",
-                    "description": "Agent profile 名称。留空默认 'explore'。可用 profile 以当前会话里的 agent 索引或提示信息为准。"
+                    "description": "Agent profile name. Leave empty for default 'explore'. Available profiles are listed in the session's agent index."
                 },
                 "description": {
                     "type": "string",
-                    "description": "3-5 词短摘要，仅供 UI/日志展示。不作为任务指令。"
+                    "description": "3-5 word short summary for UI/logs only. Not used as task instruction."
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "要执行的任务正文。这是子 Agent 收到的指令主体，必须具体明确。"
+                    "description": "The main task instruction for the sub-agent. Must be specific and clear."
                 },
                 "context": {
                     "type": "string",
-                    "description": "可选补充。如'关注安全问题'、'只看 frontend 目录'。"
+                    "description": "Optional supplement. E.g. 'focus on security issues', 'frontend directory only'."
                 }
             },
             "required": ["description", "prompt"]
@@ -103,20 +103,29 @@ impl Tool for SpawnAgentTool {
             .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
-                    "启动一个带独立上下文的子 Agent。只有当并行收益、上下文隔离或职责分离明显时再用。",
-                    "使用 `spawn` 把探索、审查、计划或定向修改委托给子 Agent。优先在这些场景使用：\
-                     任务会占用较多上下文、适合与当前工作并行推进、或需要一个独立责任边界。不要把简单读取、\
-                     一次搜索、或你已经能立即完成的小操作交给子 Agent。调用后记住 tool result 返回的原始 \
-                     `agentId`；后续 `send`、`observe`、`close` 都必须逐字复用。",
+                    "Launch a sub-agent with an isolated context. Only use when parallel benefit, \
+                     context isolation, or responsibility separation is clear.",
+                    "Use `spawn` to delegate exploration, review, planning, or targeted modification \
+                     to a sub-agent. Prefer spawn when: the task would consume significant context, \
+                     benefits from parallel execution, or needs an independent responsibility \
+                     boundary. Do not delegate simple reads, one-off searches, or operations you \
+                     can complete immediately. After calling, remember the original `agentId` from \
+                     the tool result; all subsequent `send`, `observe`, `close` calls must reuse \
+                     it byte-for-byte.",
                 )
                 .caveat(
-                    "如果你的下一步就依赖这个结果，通常直接自己做更快；只有在并行价值或隔离价值明确时再 spawn",
+                    "If your next step depends on the result, doing it yourself is usually faster; \
+                     only spawn when parallel or isolation value is clear.",
                 )
                 .caveat(
-                    "`description` 只用于 UI/日志摘要，真正的任务要求写在 `prompt`；`type` 选最窄 profile，不确定时省略并使用默认 `explore`",
+                    "`description` is for UI/log summary only — put real task requirements in \
+                     `prompt`. Choose the narrowest profile for `type`; omit it to use the default \
+                     `explore`.",
                 )
                 .example(
-                    "并行探索：{ description: \"检查缓存层\", prompt: \"审查 crates/runtime-cache 的并发与失效风险\", type: \"reviewer\" }",
+                    "Parallel exploration: { description: \"check cache layer\", prompt: \"review \
+                     concurrency and invalidation risks in crates/runtime-cache\", type: \
+                     \"reviewer\" }",
                 )
                 .prompt_tag("collaboration"),
             )

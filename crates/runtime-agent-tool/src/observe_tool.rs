@@ -33,31 +33,31 @@ impl ObserveAgentTool {
     }
 
     fn build_description() -> String {
-        r#"获取指定子 Agent 的当前状态快照。
+        r#"Get the current state snapshot of a specified sub-agent.
 
-## 使用指南
+## Usage Guide
 
-1. **指定 agentId**: 填入要观测的子 Agent ID
-2. **精确复用 ID**: `agentId` 必须逐字复制自之前 tool result 的 `Child agent reference`，不能补零、改写或猜测
-3. **快照内容**: 返回包含 lifecycleStatus、lastTurnOutcome、activeTask、pendingTask、pendingMessageCount 等字段的完整状态快照
-4. **决策依据**: 根据快照决定是继续 `send` 新任务还是 `close` 终止
+1. **Specify agentId**: The sub-agent ID to observe.
+2. **Copy agentId exactly**: `agentId` must be copied byte-for-byte from a previous tool result's `Child agent reference` — never zero-pad, rewrite, or guess.
+3. **Snapshot contents**: Returns a full state snapshot including `lifecycleStatus`, `lastTurnOutcome`, `activeTask`, `pendingTask`, `pendingMessageCount`, etc.
+4. **Decision basis**: Use the snapshot to decide whether to `send` a new task or `close` the agent.
 
-## 返回字段
+## Returned Fields
 
 - `lifecycleStatus`: Pending / Running / Idle / Terminated
-- `lastTurnOutcome`: 上一轮执行结果（Completed / Cancelled / Failed / TokenExceeded）
-- `activeTask`: 当前正在处理的任务摘要（若存在）
-- `pendingTask`: 下一条待处理任务摘要（若存在）
-- `pendingMessageCount`: 待处理消息数量（durable replay 为准）
-- `turnCount`: 已完成轮次数
-- `lastOutput`: 最近输出的摘要
+- `lastTurnOutcome`: Previous turn result (Completed / Cancelled / Failed / TokenExceeded)
+- `activeTask`: Summary of the currently processing task (if any)
+- `pendingTask`: Summary of the next pending task (if any)
+- `pendingMessageCount`: Number of pending messages (per durable replay)
+- `turnCount`: Number of completed turns
+- `lastOutput`: Summary of the most recent output
 
-## 何时使用
+## When to Use
 
-- 需要了解子 Agent 当前状态再决定下一步
-- 检查子 Agent 是否已完成上一轮工作（lifecycleStatus = Idle）
-- 查看子 Agent 是否有积压的未处理消息
-- 不要对无关子 Agent 使用"#
+- Need to know the sub-agent's current state before deciding next steps
+- Check if a sub-agent has finished its last turn (lifecycleStatus = Idle)
+- See if a sub-agent has a backlog of unprocessed messages
+- Do NOT use on unrelated sub-agents"#
             .to_string()
     }
 
@@ -68,7 +68,7 @@ impl ObserveAgentTool {
             "properties": {
                 "agentId": {
                     "type": "string",
-                    "description": "被观测的子 Agent 稳定 ID。"
+                    "description": "Stable ID of the sub-agent to observe."
                 }
             },
             "required": ["agentId"]
@@ -96,16 +96,22 @@ impl Tool for ObserveAgentTool {
             .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
-                    "观测子 Agent 状态",
-                    "使用 observe 获取直接子 Agent 的增强状态快照。快照包含 lifecycleStatus、\
-                     lastTurnOutcome、activeTask、pendingTask、pendingMessageCount 等，帮助决定下一步操作。只能观测自己 \
-                     spawn 的直接子 Agent。`agentId` 必须来自之前协作 tool result 的 \
-                     `Child agent reference`，并逐字复用。",
+                    "Observe sub-agent state.",
+                    "Use `observe` to get an enhanced state snapshot of a direct child agent. The \
+                     snapshot includes `lifecycleStatus`, `lastTurnOutcome`, `activeTask`, \
+                     `pendingTask`, `pendingMessageCount`, etc. to help decide the next action. \
+                     Only direct children spawned by you can be observed. The `agentId` must come \
+                     from a previous collaboration tool result's `Child agent reference` and be \
+                     reused byte-for-byte.",
                 )
-                .caveat("只返回直接子 Agent 的快照；不要把 `agent-1` 改写成 `agent-01`")
                 .caveat(
-                    "状态转换：Pending → Running → Idle（等待新任务）或 Terminated（已关闭）。\
-                     observe 是同步查询不阻塞，间隔调用即可，不要密集轮询。",
+                    "Only returns snapshots for direct child agents. Never rewrite `agent-1` as \
+                     `agent-01`.",
+                )
+                .caveat(
+                    "State transitions: Pending → Running → Idle (waiting for new tasks) or \
+                     Terminated (closed). `observe` is a synchronous non-blocking query — call at \
+                     intervals, do not poll aggressively.",
                 )
                 .prompt_tag("collaboration"),
             )

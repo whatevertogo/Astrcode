@@ -27,19 +27,19 @@ impl CloseAgentTool {
     }
 
     fn build_description() -> String {
-        r#"关闭指定子 Agent，级联关闭其子树。
+        r#"Close a sub-agent and cascade-close its subtree.
 
-## 使用指南
+## Usage Guide
 
-1. **指定 agentId**: 填入要关闭的子 Agent ID
-2. `agentId` 必须逐字复制自之前 tool result 的 `Child agent reference`，不能补零、改写或猜测
-3. **级联关闭**: 会同时关闭该 Agent 的所有后代 Agent
+1. **Specify agentId**: The sub-agent ID to close.
+2. **Copy agentId exactly**: `agentId` must be copied byte-for-byte from a previous tool result's `Child agent reference` — never zero-pad, rewrite, or guess.
+3. **Cascade close**: All descendants of the agent are closed together.
 
-## 何时使用
+## When to Use
 
-- 子 Agent 的任务已经不再需要
-- 需要释放资源给其他 Agent
-- 协作完成后主动清理"#
+- The sub-agent's task is no longer needed
+- Need to release resources for other agents
+- Proactive cleanup after collaboration is complete"#
             .to_string()
     }
 
@@ -50,7 +50,7 @@ impl CloseAgentTool {
             "properties": {
                 "agentId": {
                     "type": "string",
-                    "description": "要关闭的子 Agent 稳定 ID。"
+                    "description": "Stable ID of the sub-agent to close."
                 }
             },
             "required": ["agentId"]
@@ -76,14 +76,18 @@ impl Tool for CloseAgentTool {
             .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
-                    "关闭子 Agent",
-                    "使用 close 关闭不再需要的子 Agent，会级联关闭其子树。`agentId` 必须来自 \
-                     之前协作 tool result 的 `Child agent reference`，并逐字复用。",
+                    "Close a sub-agent.",
+                    "Use `close` to shut down a sub-agent that is no longer needed, cascading to \
+                     its entire subtree. The `agentId` must come from a previous collaboration \
+                     tool result's `Child agent reference` and be reused byte-for-byte.",
                 )
-                .caveat("已终态的子 Agent 会被幂等处理；不要把 `agent-1` 改写成 `agent-01`")
                 .caveat(
-                    "关闭后会级联终止所有后代 Agent；close 后不应再对该 agentId 调用 send 或 \
-                     observe",
+                    "Already-terminated sub-agents are handled idempotently. Never rewrite \
+                     `agent-1` as `agent-01`.",
+                )
+                .caveat(
+                    "Closing cascades to all descendant agents. After `close`, do not call `send` \
+                     or `observe` on that agentId.",
                 )
                 .prompt_tag("collaboration"),
             )

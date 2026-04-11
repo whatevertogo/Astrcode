@@ -117,10 +117,10 @@ fn tool_description_is_stable_and_excludes_dynamic_profile_listing() {
 
     assert!(!definition.description.contains("## 可用的子 Agent"));
     assert!(!definition.description.contains("当前没有可用的子 Agent"));
-    assert!(definition.description.contains("何时使用"));
-    assert!(definition.description.contains("写清楚任务"));
-    assert!(definition.description.contains("并行执行"));
-    assert!(definition.description.contains("链式执行"));
+    assert!(definition.description.contains("When to Use"));
+    assert!(definition.description.contains("Be specific"));
+    assert!(definition.description.contains("Parallel execution"));
+    assert!(definition.description.contains("Chained execution"));
 }
 
 #[test]
@@ -135,8 +135,8 @@ fn spawn_tool_exposes_prompt_metadata_for_tool_summary_indexing() {
         .prompt
         .expect("spawn should expose prompt metadata");
 
-    assert!(prompt.summary.contains("独立上下文"));
-    assert!(prompt.guide.contains("并行"));
+    assert!(prompt.summary.contains("isolated context"));
+    assert!(prompt.guide.contains("parallel"));
     assert!(prompt.guide.contains("`agentId`"));
 }
 
