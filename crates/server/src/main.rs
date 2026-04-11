@@ -189,6 +189,9 @@ impl From<ServiceError> for ApiError {
 /// 7. 启动 HTTP 服务器
 #[tokio::main]
 async fn main() -> AnyhowResult<()> {
+    // dev 构建下初始化日志后端，release 构建中所有 log::*! 调用仍为零开销空操作。
+    init_dev_logger();
+
     let runtime = bootstrap_runtime()
         .await
         .map_err(|error| anyhow!(error.to_string()))?;
@@ -295,3 +298,63 @@ async fn shutdown_signal() {
         _ = stdin_closed => {}
     }
 }
+
+/// dev 构建下初始化终端日志。
+///
+/// 只在 `debug_assertions` 启用时编译；release 构建中此函数不存在，
+/// 所有 `log::*!` 调用被编译器完全消除，零运行时开销。
+///
+/// 默认级别：`astrcode` 自身 crate 输出 `info` 及以上，第三方依赖输出 `warn` 及以上。
+/// 可通过 `RUST_LOG` 环境变量覆盖（如 `RUST_LOG=debug`）。
+#[cfg(debug_assertions)]
+fn init_dev_logger() {
+    use std::io::Write;
+
+    use env_logger::Builder;
+
+    let mut builder = Builder::new();
+    // RUST_LOG 已设置时尊重用户意图，否则用项目默认过滤。
+    if std::env::var("RUST_LOG").is_ok() {
+        builder.parse_default_env();
+    } else {
+        // 项目 crate 全部 info 级别，其余依赖 warn
+        for crate_name in [
+            "astrcode",
+            "astrcode_core",
+            "astrcode_runtime",
+            "astrcode_runtime_execution",
+            "astrcode_runtime_agent_control",
+            "astrcode_runtime_agent_loop",
+            "astrcode_runtime_agent_tool",
+            "astrcode_runtime_config",
+            "astrcode_runtime_llm",
+            "astrcode_runtime_prompt",
+            "astrcode_runtime_session",
+            "astrcode_runtime_skill_loader",
+            "astrcode_runtime_tool_loader",
+            "astrcode_runtime_registry",
+            "astrcode_storage",
+            "astrcode_protocol",
+            "astrcode_server",
+            "astrcode_plugin",
+            "astrcode_sdk",
+        ] {
+            builder.filter_module(crate_name, log::LevelFilter::Info);
+        }
+        builder.filter_level(log::LevelFilter::Warn);
+    }
+    builder
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "[{} {:5}] {}",
+                buf.timestamp(),
+                record.level(),
+                record.args()
+            )
+        })
+        .init();
+}
+
+#[cfg(not(debug_assertions))]
+fn init_dev_logger() {}

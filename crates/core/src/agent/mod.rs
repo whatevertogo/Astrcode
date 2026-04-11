@@ -1,8 +1,15 @@
 //! # Agent 基础类型
 //!
 //! 定义 Agent / 子会话控制平面需要复用的稳定 DTO。
-//! 这里刻意把“Agent 实例”和“受控子会话执行域”拆开，
+//! 这里刻意把”Agent 实例”和”受控子会话执行域”拆开，
 //! 这样 runtime、存储事件、SSE 和 UI 都能围绕同一套语义建模。
+//!
+//! 子模块划分：
+//! - `lifecycle`：AgentLifecycleStatus + AgentTurnOutcome（四工具模型的状态拆层）
+//! - `mailbox`：durable mailbox 信封、事件载荷、四工具参数和 observe 快照
+
+pub mod lifecycle;
+pub mod mailbox;
 
 use serde::{Deserialize, Serialize};
 
@@ -20,36 +27,6 @@ pub enum AgentMode {
     All,
 }
 
-/// Agent 执行状态。
-///
-/// 这是 subrun / child-agent 唯一的正式状态模型。
-/// protocol 可保留 DTO-only 镜像枚举，但语义和值域必须与此模型一一对应。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum AgentStatus {
-    /// 已注册但尚未开始执行。
-    Pending,
-    /// 正在执行中。
-    Running,
-    /// 正常完成。
-    Completed,
-    /// 被取消。
-    Cancelled,
-    /// 失败结束。
-    Failed,
-    /// Token 超限结束。独立终态，不折叠到 Completed 或 Failed。
-    TokenExceeded,
-}
-
-impl AgentStatus {
-    /// 判断当前状态是否已经到达终态。
-    pub fn is_final(self) -> bool {
-        matches!(
-            self,
-            Self::Completed | Self::Cancelled | Self::Failed | Self::TokenExceeded
-        )
-    }
-}
 
 /// 统一执行入口的调用来源。
 ///
@@ -78,7 +55,7 @@ pub enum ForkMode {
     LastNTurns(usize),
 }
 
-/// `spawnAgent` 的稳定调用参数。
+/// `spawn` 的稳定调用参数。
 ///
 /// 该 DTO 下沉到 core，是为了让工具层和执行装配层共享同一份参数语义，
 /// 避免 `runtime-execution` 只为了复用字段定义而反向依赖 `runtime-agent-tool`。
@@ -123,9 +100,7 @@ impl SpawnAgentParams {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum SubRunStorageMode {
-    /// 与父级共享同一个 session event log。
-    SharedSession,
-    /// 使用独立 child session；当前仅作为实验特性启用。
+    /// 使用独立 child session。
     IndependentSession,
 }
 
@@ -187,11 +162,15 @@ pub struct SubRunFailure {
     pub retryable: bool,
 }
 
+use lifecycle::AgentLifecycleStatus;
+
 /// 子执行结构化结果。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubRunResult {
-    pub status: AgentStatus,
+    pub lifecycle: AgentLifecycleStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn_outcome: Option<lifecycle::AgentTurnOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff: Option<SubRunHandoff>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -359,8 +338,11 @@ pub struct SubRunHandle {
     pub agent_profile: String,
     /// 当前存储模式。
     pub storage_mode: SubRunStorageMode,
-    /// 当前状态。
-    pub status: AgentStatus,
+    /// 当前生命周期状态。
+    pub lifecycle: AgentLifecycleStatus,
+    /// 最近一轮执行的结束原因。Running/Pending 期间为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn_outcome: Option<lifecycle::AgentTurnOutcome>,
 }
 
 /// 子会话 lineage 来源。
@@ -393,7 +375,7 @@ pub struct ChildAgentRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<String>,
     pub lineage_kind: ChildSessionLineageKind,
-    pub status: AgentStatus,
+    pub status: AgentLifecycleStatus,
     /// 唯一 canonical child open target。通知、DTO 与其他外层载荷不得重复持有同值字段。
     pub open_session_id: String,
 }
@@ -428,7 +410,7 @@ pub struct ChildSessionNode {
     pub parent_agent_id: Option<String>,
     pub parent_turn_id: String,
     pub lineage_kind: ChildSessionLineageKind,
-    pub status: AgentStatus,
+    pub status: AgentLifecycleStatus,
     pub status_source: ChildSessionStatusSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by_tool_call_id: Option<String>,
@@ -477,14 +459,14 @@ pub struct ChildSessionNotification {
     pub child_ref: ChildAgentRef,
     pub kind: ChildSessionNotificationKind,
     pub summary: String,
-    pub status: AgentStatus,
+    pub status: AgentLifecycleStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_reply_excerpt: Option<String>,
 }
 
-/// `sendAgent` 的稳定调用参数。
+/// `send` 的稳定调用参数。
 ///
 /// 向既有 child agent 追加要求或返工请求。
 /// 目标 agent 必须是调用方直接 spawn 的子 agent。
@@ -513,55 +495,14 @@ impl SendAgentParams {
     }
 }
 
-/// `waitAgent` 的等待条件。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum WaitUntil {
-    /// 等待 agent 到达终态（completed/failed/cancelled）。
-    #[default]
-    Final,
-    /// 等待 agent 产出下一次交付。
-    NextDelivery,
-}
-
-/// `waitAgent` 的稳定调用参数。
+/// `close` 的稳定调用参数。
 ///
-/// 等待指定 child agent 到达下一个可消费状态。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct WaitAgentParams {
-    /// 目标子 Agent 的稳定 ID。
-    pub agent_id: String,
-    /// 等待条件，默认 Final。
-    #[serde(default)]
-    pub until: WaitUntil,
-}
-
-impl WaitAgentParams {
-    /// 校验参数合法性。
-    pub fn validate(&self) -> Result<()> {
-        if self.agent_id.trim().is_empty() {
-            return Err(AstrError::Validation("agentId 不能为空".to_string()));
-        }
-        Ok(())
-    }
-}
-
-/// `closeAgent` 的稳定调用参数。
-///
-/// 关闭指定 child agent 或其子树。
+/// 关闭指定 child agent 及其子树。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CloseAgentParams {
     /// 目标子 Agent 的稳定 ID。
     pub agent_id: String,
-    /// 是否级联关闭子树，默认 true。
-    #[serde(default = "default_true")]
-    pub cascade: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 impl CloseAgentParams {
@@ -569,58 +510,6 @@ impl CloseAgentParams {
     pub fn validate(&self) -> Result<()> {
         if self.agent_id.trim().is_empty() {
             return Err(AstrError::Validation("agentId 不能为空".to_string()));
-        }
-        Ok(())
-    }
-}
-
-/// `resumeAgent` 的稳定调用参数。
-///
-/// 恢复一个已完成但仍可继续协作的 child agent。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ResumeAgentParams {
-    /// 目标子 Agent 的稳定 ID。
-    pub agent_id: String,
-    /// 恢复后追加给子 Agent 的消息。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-impl ResumeAgentParams {
-    /// 校验参数合法性。
-    pub fn validate(&self) -> Result<()> {
-        if self.agent_id.trim().is_empty() {
-            return Err(AstrError::Validation("agentId 不能为空".to_string()));
-        }
-        Ok(())
-    }
-}
-
-/// `deliverToParent` 的稳定调用参数。
-///
-/// 仅 child session 可见，用于把阶段性结果或最终交付送回直接父 agent。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct DeliverToParentParams {
-    /// 交付摘要。
-    pub summary: String,
-    /// 发现列表。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub findings: Vec<String>,
-    /// 最终回复内容。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub final_reply: Option<String>,
-    /// 产物引用。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub artifacts: Vec<ArtifactRef>,
-}
-
-impl DeliverToParentParams {
-    /// 校验参数合法性。
-    pub fn validate(&self) -> Result<()> {
-        if self.summary.trim().is_empty() {
-            return Err(AstrError::Validation("summary 不能为空".to_string()));
         }
         Ok(())
     }
@@ -639,19 +528,16 @@ pub struct CollaborationResult {
     /// 目标 agent 的稳定引用（若可用）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_ref: Option<ChildAgentRef>,
-    /// 交付 ID（仅 send/deliver 场景）。
+    /// 交付 ID（仅 send 场景）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_id: Option<String>,
     /// 状态摘要。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
-    /// 父 agent ID（仅 deliverToParent 场景）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_agent_id: Option<String>,
-    /// 是否级联关闭（仅 closeAgent 场景）。
+    /// 是否级联关闭（仅 close 场景）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cascade: Option<bool>,
-    /// 已关闭的根 agent ID（仅 closeAgent 场景）。
+    /// 已关闭的根 agent ID（仅 close 场景）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_root_agent_id: Option<String>,
     /// 失败原因。
@@ -664,15 +550,13 @@ pub struct CollaborationResult {
 #[serde(rename_all = "snake_case")]
 pub enum CollaborationResultKind {
     Sent,
-    WaitResolved,
+    Observed,
     Closed,
-    Resumed,
-    Delivered,
 }
 
 /// Agent 收件箱信封。
 ///
-/// 记录一次协作消息投递（sendAgent / deliverToParent 产出的信封），
+/// 记录一次协作消息投递（send / 父子交付产出的信封），
 /// 包含投递来源、内容和去重标识。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -690,16 +574,16 @@ pub struct AgentInboxEnvelope {
     /// 可选补充上下文。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
-    /// 是否为最终交付（deliverToParent 产出的信封标记为 final）。
+    /// 是否为最终交付（子 agent 交付产出的信封标记为 final）。
     #[serde(default)]
     pub is_final: bool,
-    /// 交付摘要（deliverToParent 场景）。
+    /// 交付摘要（子 agent 交付场景）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
-    /// 交付发现列表（deliverToParent 场景）。
+    /// 交付发现列表（子 agent 交付场景）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub findings: Vec<String>,
-    /// 交付产物引用（deliverToParent 场景）。
+    /// 交付产物引用（子 agent 交付场景）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<ArtifactRef>,
 }
@@ -708,9 +592,9 @@ pub struct AgentInboxEnvelope {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InboxEnvelopeKind {
-    /// 来自父 agent 的追加消息（sendAgent）。
+    /// 来自父 agent 的追加消息（send）。
     ParentMessage,
-    /// 来自子 agent 的向上交付（deliverToParent）。
+    /// 来自子 agent 的向上交付（子 agent 向父 inbox 投递结果）。
     ChildDelivery,
 }
 
@@ -805,7 +689,7 @@ impl From<&SubRunHandle> for AgentEventContext {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentStatus, ChildSessionLineageKind, ChildSessionNode, ChildSessionStatusSource,
+        AgentLifecycleStatus, ChildSessionLineageKind, ChildSessionNode, ChildSessionStatusSource,
         SpawnAgentParams,
     };
 
@@ -848,7 +732,7 @@ mod tests {
             parent_agent_id: Some("agent-parent".to_string()),
             parent_turn_id: "turn-parent".to_string(),
             lineage_kind: ChildSessionLineageKind::Spawn,
-            status: AgentStatus::Running,
+            status: AgentLifecycleStatus::Running,
             status_source: ChildSessionStatusSource::Durable,
             created_by_tool_call_id: Some("call-1".to_string()),
             lineage_snapshot: None,

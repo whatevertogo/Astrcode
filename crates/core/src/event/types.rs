@@ -13,8 +13,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AgentEventContext, ChildSessionNotification, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, SubRunResult, ToolOutputStream, UserMessageOrigin,
+    AgentEventContext, ChildSessionNotification, MailboxBatchAckedPayload,
+    MailboxBatchStartedPayload, MailboxDiscardedPayload, MailboxQueuedPayload,
+    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SubRunResult,
+    ToolOutputStream, UserMessageOrigin,
 };
 
 /// Prompt/缓存指标共享载荷。
@@ -192,6 +194,36 @@ pub enum StorageEventPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+    /// Durable mailbox 消息入队。
+    ///
+    /// 记录一条协作消息成功进入目标 agent 的 mailbox。
+    /// live inbox 只能在该事件 append 成功后更新。
+    AgentMailboxQueued {
+        #[serde(flatten)]
+        payload: MailboxQueuedPayload,
+    },
+    /// Mailbox 批次开始消费。
+    ///
+    /// snapshot drain 时写入，记录本轮接管了哪些 delivery_ids。
+    /// 必须是 mailbox-wake turn 的第一条 durable 事件。
+    AgentMailboxBatchStarted {
+        #[serde(flatten)]
+        payload: MailboxBatchStartedPayload,
+    },
+    /// Mailbox 批次确认完成。
+    ///
+    /// durable turn completion 后写入，标记对应 delivery_ids 已被消费。
+    AgentMailboxBatchAcked {
+        #[serde(flatten)]
+        payload: MailboxBatchAckedPayload,
+    },
+    /// Mailbox 消息丢弃。
+    ///
+    /// close 时写入，记录被主动丢弃的 pending delivery_ids。
+    AgentMailboxDiscarded {
+        #[serde(flatten)]
+        payload: MailboxDiscardedPayload,
+    },
     /// 错误事件。
     Error {
         message: String,
@@ -312,8 +344,7 @@ mod tests {
 
     use super::{CompactTrigger, PromptMetricsPayload, StorageEvent, StorageEventPayload};
     use crate::{
-        AgentEventContext, AgentStatus, ChildSessionLineageKind, ChildSessionNotification,
-        ChildSessionNotificationKind, ResolvedExecutionLimitsSnapshot,
+        AgentEventContext, AgentLifecycleStatus, ResolvedExecutionLimitsSnapshot,
         ResolvedSubagentContextOverrides, SubRunResult, SubRunStorageMode, format_local_rfc3339,
     };
 
@@ -557,7 +588,8 @@ mod tests {
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: Some("call-1".to_string()),
                 result: SubRunResult {
-                    status: AgentStatus::Completed,
+                    lifecycle: AgentLifecycleStatus::Idle,
+                    last_turn_outcome: Some(crate::AgentTurnOutcome::Completed),
                     handoff: None,
                     failure: None,
                 },
@@ -590,63 +622,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn child_session_notification_roundtrip_preserves_projection_payload() {
-        let notification = ChildSessionNotification {
-            notification_id: "note-1".to_string(),
-            child_ref: crate::ChildAgentRef {
-                agent_id: "agent-child".to_string(),
-                session_id: "session-parent".to_string(),
-                sub_run_id: "subrun-1".to_string(),
-                parent_agent_id: Some("agent-parent".to_string()),
-                lineage_kind: ChildSessionLineageKind::Spawn,
-                status: AgentStatus::Running,
-                open_session_id: "session-child".to_string(),
-            },
-            kind: ChildSessionNotificationKind::Started,
-            summary: "child started".to_string(),
-            status: AgentStatus::Running,
-            source_tool_call_id: Some("call-1".to_string()),
-            final_reply_excerpt: None,
-        };
-
-        let event = StorageEvent {
-            turn_id: Some("turn-parent".to_string()),
-            agent: AgentEventContext::sub_run(
-                "agent-parent",
-                "turn-parent",
-                "planner",
-                "subrun-parent",
-                SubRunStorageMode::SharedSession,
-                None,
-            ),
-            payload: StorageEventPayload::ChildSessionNotification {
-                notification,
-                timestamp: None,
-            },
-        };
-
-        let encoded = serde_json::to_value(&event).expect("serialize");
-        let decoded: StorageEvent = serde_json::from_value(encoded.clone()).expect("deserialize");
-
-        match decoded {
-            StorageEvent {
-                payload: StorageEventPayload::ChildSessionNotification { notification, .. },
-                ..
-            } => {
-                assert_eq!(notification.notification_id, "note-1");
-                assert_eq!(notification.child_ref.agent_id, "agent-child");
-                assert_eq!(notification.child_ref.open_session_id, "session-child");
-            },
-            other => panic!("expected child session notification, got {other:?}"),
-        }
-
-        assert_eq!(
-            encoded["notification"]["notificationId"],
-            Value::String("note-1".to_string())
-        );
-    }
-
     // ─── T041 谱系兼容性测试 ──────────────────────────────
 
     /// 验证 spawn/fork/resume 三种 lineage kind 在 ChildAgentRef 中均可序列化/反序列化，
@@ -664,7 +639,7 @@ mod tests {
                 sub_run_id: "subrun-1".to_string(),
                 parent_agent_id: Some("agent-parent".to_string()),
                 lineage_kind: kind,
-                status: crate::AgentStatus::Running,
+                status: crate::AgentLifecycleStatus::Running,
                 open_session_id: "session-child".to_string(),
             };
 
@@ -700,7 +675,7 @@ mod tests {
                 parent_agent_id: Some("agent-parent".to_string()),
                 parent_turn_id: "turn-1".to_string(),
                 lineage_kind: kind,
-                status: crate::AgentStatus::Completed,
+                status: crate::AgentLifecycleStatus::Idle,
                 status_source: crate::ChildSessionStatusSource::Durable,
                 created_by_tool_call_id: None,
                 lineage_snapshot: None,

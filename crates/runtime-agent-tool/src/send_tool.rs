@@ -12,9 +12,12 @@ use crate::{
     collaboration_executor::CollaborationExecutor,
 };
 
-const TOOL_NAME: &str = "sendAgent";
+const TOOL_NAME: &str = "send";
 
 /// 向既有 child agent 追加消息的协作工具。
+///
+/// 消息进入 child agent 的 inbox，由其下一轮 LLM 调用消费。
+/// 必须指定 `agentId`，该 ID 来自 spawn 返回结果中的稳定引用。
 pub struct SendAgentTool {
     executor: Arc<dyn CollaborationExecutor>,
 }
@@ -38,7 +41,7 @@ impl SendAgentTool {
 
 - 需要向正在运行的子 Agent 追加信息或修改要求
 - 子 Agent 完成后需要返工或补充
-- 不要用于创建新 Agent（用 `spawnAgent`）"#
+- 不要用于创建新 Agent（用 `spawn`）"#
             .to_string()
     }
 
@@ -80,11 +83,13 @@ impl Tool for SendAgentTool {
             .tag("agent")
             .tag("collaboration")
             .concurrency_safe(true)
+            // send 的 tool result 不应在 compact 模式下被折叠，
+            // 因为它包含 childRef，LLM 需要逐字复用其中的 agentId
             .compact_clearable(false)
             .prompt(
                 ToolPromptMetadata::new(
                     "向已有子 Agent 追加消息",
-                    "使用 sendAgent 向正在运行或已完成的子 Agent 追加要求或返工请求。目标通过稳定 \
+                    "使用 send 向正在运行或已完成的子 Agent 追加要求或返工请求。目标通过稳定 \
                      agentId 指定，该 ID 来自之前协作 tool result 的 `Child agent \
                      reference`，必须逐字复用原值。",
                 )
@@ -107,7 +112,7 @@ impl Tool for SendAgentTool {
                 return Ok(collaboration_error_result(
                     tool_call_id,
                     TOOL_NAME,
-                    format!("invalid sendAgent params: {error}"),
+                    format!("invalid send params: {error}"),
                 ));
             },
         };
@@ -116,7 +121,7 @@ impl Tool for SendAgentTool {
             return Ok(collaboration_error_result(
                 tool_call_id,
                 TOOL_NAME,
-                format!("invalid sendAgent params: {err}"),
+                format!("invalid send params: {err}"),
             ));
         }
 

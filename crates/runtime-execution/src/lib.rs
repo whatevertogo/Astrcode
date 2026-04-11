@@ -99,66 +99,34 @@ impl DeliveryBufferStage {
     }
 }
 
-/// legacy cutover 的稳定拒绝原因。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LegacyRejectionKind {
-    SharedHistoryUnsupported,
-}
-
-impl LegacyRejectionKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::SharedHistoryUnsupported => "unsupported_legacy_shared_history",
-        }
-    }
-}
-
-/// 统一 legacy shared-history 拒绝文案，避免 runtime/server 各自拼接出不一致错误。
-pub fn legacy_shared_history_rejection_message(
-    session_id: &str,
-    sub_run_id: Option<&str>,
-) -> String {
-    match sub_run_id.filter(|value| !value.is_empty()) {
-        Some(sub_run_id) => format!(
-            "{}: session '{}' contains legacy shared-history data for sub-run '{}'; open the \
-             migrated child session durable history before continuing",
-            LegacyRejectionKind::SharedHistoryUnsupported.as_str(),
-            session_id,
-            sub_run_id
-        ),
-        None => format!(
-            "{}: session '{}' contains legacy shared-history data; open the migrated child \
-             session durable history before continuing",
-            LegacyRejectionKind::SharedHistoryUnsupported.as_str(),
-            session_id
-        ),
-    }
-}
 
 /// Child terminal delivery 的统一结果标签。
 ///
 /// 用于 observability 日志，避免不同调用方各自拼接不一致字符串。
 pub fn child_delivery_outcome_label(result: &astrcode_core::SubRunResult) -> &'static str {
-    match result.status {
-        astrcode_core::AgentStatus::Running => "running",
-        astrcode_core::AgentStatus::Completed => "completed",
-        astrcode_core::AgentStatus::Failed => "failed",
-        astrcode_core::AgentStatus::Cancelled => "cancelled",
-        astrcode_core::AgentStatus::TokenExceeded => "token_exceeded",
-        _ => "unknown",
+    match result.last_turn_outcome {
+        None => match result.lifecycle {
+            astrcode_core::AgentLifecycleStatus::Running => "running",
+            astrcode_core::AgentLifecycleStatus::Pending => "pending",
+            _ => "unknown",
+        },
+        Some(outcome) => match outcome {
+            astrcode_core::AgentTurnOutcome::Completed => "completed",
+            astrcode_core::AgentTurnOutcome::Failed => "failed",
+            astrcode_core::AgentTurnOutcome::Cancelled => "cancelled",
+            astrcode_core::AgentTurnOutcome::TokenExceeded => "token_exceeded",
+        },
     }
 }
 
-/// 协作工具（send/wait/close/resume/deliver）结果的统一标签。
+/// 协作工具（send/close）结果的统一标签。
 ///
 /// 用于 observability 日志，记录协作操作类型与接受状态。
 pub fn collaboration_action_label(result: &astrcode_core::CollaborationResult) -> &'static str {
     match result.kind {
         astrcode_core::CollaborationResultKind::Sent => "sent",
-        astrcode_core::CollaborationResultKind::WaitResolved => "wait_resolved",
+        astrcode_core::CollaborationResultKind::Observed => "observed",
         astrcode_core::CollaborationResultKind::Closed => "closed",
-        astrcode_core::CollaborationResultKind::Resumed => "resumed",
-        astrcode_core::CollaborationResultKind::Delivered => "delivered",
     }
 }
 

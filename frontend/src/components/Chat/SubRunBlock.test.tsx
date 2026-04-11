@@ -82,7 +82,7 @@ describe('SubRunBlock result rendering', () => {
       subRunId: 'subrun-1',
       agentProfile: 'explore',
       resolvedOverrides: {
-        storageMode: 'sharedSession',
+        storageMode: 'independentSession',
         inheritSystemInstructions: true,
         inheritProjectInstructions: true,
         inheritWorkingDir: true,

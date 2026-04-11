@@ -1,0 +1,24 @@
+name: "Setup Rust"
+description: "安装 Rust 工具链并配置依赖缓存"
+
+inputs:
+  components:
+    description: "额外安装的组件（如 rustfmt, clippy）"
+    required: false
+    default: ""
+  cache-key:
+    description: "Rust 缓存的 shared-key"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: ${{ inputs.components }}
+
+    - name: Cache Rust dependencies
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ inputs.cache-key }}

@@ -16,10 +16,8 @@ use std::{
     time::Duration,
 };
 
-use astrcode_core::{AgentStatus, SubRunStorageMode};
-use astrcode_runtime_execution::{
-    ChildLifecycleStage, DeliveryBufferStage, LegacyRejectionKind, LineageMismatchKind,
-};
+use astrcode_core::{AgentLifecycleStatus, AgentTurnOutcome};
+use astrcode_runtime_execution::{ChildLifecycleStage, DeliveryBufferStage, LineageMismatchKind};
 
 /// 回放路径：优先缓存，不足时回退到磁盘。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,15 +103,15 @@ impl RuntimeObservability {
     pub fn record_subrun_execution(
         &self,
         duration: Duration,
-        outcome: &AgentStatus,
-        storage_mode: SubRunStorageMode,
+        lifecycle: &AgentLifecycleStatus,
+        last_turn_outcome: &Option<AgentTurnOutcome>,
         step_count: u32,
         estimated_tokens: u64,
     ) {
         self.subrun_execution.record(
             duration,
-            outcome,
-            storage_mode,
+            lifecycle,
+            last_turn_outcome,
             u64::from(step_count),
             estimated_tokens,
         );
@@ -137,15 +135,6 @@ impl RuntimeObservability {
 
     pub fn record_delivery_buffer(&self, stage: DeliveryBufferStage) {
         self.execution_diagnostics.record_delivery_buffer(stage);
-    }
-
-    #[allow(dead_code)]
-    pub fn record_legacy_rejection(&self, kind: LegacyRejectionKind) {
-        log::warn!(
-            "execution diagnostics: legacy rejection recorded ({})",
-            kind.as_str()
-        );
-        self.execution_diagnostics.record_legacy_rejection(kind);
     }
 
     pub fn snapshot(&self) -> RuntimeObservabilitySnapshot {
@@ -179,7 +168,6 @@ pub struct ExecutionDiagnosticsSnapshot {
     pub delivery_buffer_wake_requested: u64,
     pub delivery_buffer_wake_succeeded: u64,
     pub delivery_buffer_wake_failed: u64,
-    pub legacy_shared_history_rejections: u64,
 }
 
 /// 子执行域共享观测指标快照。
@@ -190,7 +178,6 @@ pub struct SubRunExecutionMetricsSnapshot {
     pub completed: u64,
     pub aborted: u64,
     pub token_exceeded: u64,
-    pub shared_session_total: u64,
     pub independent_session_total: u64,
     pub total_duration_ms: u64,
     pub last_duration_ms: u64,
@@ -294,7 +281,6 @@ struct SubRunExecutionMetrics {
     completed: AtomicU64,
     aborted: AtomicU64,
     token_exceeded: AtomicU64,
-    shared_session_total: AtomicU64,
     independent_session_total: AtomicU64,
     total_duration_ms: AtomicU64,
     last_duration_ms: AtomicU64,
@@ -308,8 +294,8 @@ impl SubRunExecutionMetrics {
     fn record(
         &self,
         duration: Duration,
-        outcome: &AgentStatus,
-        storage_mode: SubRunStorageMode,
+        lifecycle: &AgentLifecycleStatus,
+        last_turn_outcome: &Option<AgentTurnOutcome>,
         step_count: u64,
         estimated_tokens: u64,
     ) {
@@ -325,28 +311,30 @@ impl SubRunExecutionMetrics {
         self.last_estimated_tokens
             .store(estimated_tokens, Ordering::Relaxed);
 
-        match storage_mode {
-            SubRunStorageMode::SharedSession => {
-                self.shared_session_total.fetch_add(1, Ordering::Relaxed);
-            },
-            SubRunStorageMode::IndependentSession => {
-                self.independent_session_total
-                    .fetch_add(1, Ordering::Relaxed);
-            },
-        }
+        // 所有子执行均使用独立会话
+        self.independent_session_total
+            .fetch_add(1, Ordering::Relaxed);
 
-        match outcome {
-            AgentStatus::Pending | AgentStatus::Running => {},
-            AgentStatus::Completed => {
+        match last_turn_outcome {
+            None => match lifecycle {
+                AgentLifecycleStatus::Pending | AgentLifecycleStatus::Running => {},
+                AgentLifecycleStatus::Idle => {
+                    // Idle 但无 outcome——不计入具体分类
+                },
+                AgentLifecycleStatus::Terminated => {
+                    self.aborted.fetch_add(1, Ordering::Relaxed);
+                },
+            },
+            Some(AgentTurnOutcome::Completed) => {
                 self.completed.fetch_add(1, Ordering::Relaxed);
             },
-            AgentStatus::Cancelled => {
+            Some(AgentTurnOutcome::Cancelled) => {
                 self.aborted.fetch_add(1, Ordering::Relaxed);
             },
-            AgentStatus::TokenExceeded => {
+            Some(AgentTurnOutcome::TokenExceeded) => {
                 self.token_exceeded.fetch_add(1, Ordering::Relaxed);
             },
-            AgentStatus::Failed => {
+            Some(AgentTurnOutcome::Failed) => {
                 self.failures.fetch_add(1, Ordering::Relaxed);
             },
         }
@@ -359,7 +347,6 @@ impl SubRunExecutionMetrics {
             completed: self.completed.load(Ordering::Relaxed),
             aborted: self.aborted.load(Ordering::Relaxed),
             token_exceeded: self.token_exceeded.load(Ordering::Relaxed),
-            shared_session_total: self.shared_session_total.load(Ordering::Relaxed),
             independent_session_total: self.independent_session_total.load(Ordering::Relaxed),
             total_duration_ms: self.total_duration_ms.load(Ordering::Relaxed),
             last_duration_ms: self.last_duration_ms.load(Ordering::Relaxed),
@@ -390,7 +377,6 @@ struct ExecutionDiagnosticsMetrics {
     delivery_buffer_wake_requested: AtomicU64,
     delivery_buffer_wake_succeeded: AtomicU64,
     delivery_buffer_wake_failed: AtomicU64,
-    legacy_shared_history_rejections: AtomicU64,
 }
 
 impl ExecutionDiagnosticsMetrics {
@@ -435,16 +421,6 @@ impl ExecutionDiagnosticsMetrics {
         counter.fetch_add(1, Ordering::Relaxed);
     }
 
-    #[allow(dead_code)]
-    fn record_legacy_rejection(&self, kind: LegacyRejectionKind) {
-        match kind {
-            LegacyRejectionKind::SharedHistoryUnsupported => {
-                self.legacy_shared_history_rejections
-                    .fetch_add(1, Ordering::Relaxed);
-            },
-        }
-    }
-
     fn snapshot(&self) -> ExecutionDiagnosticsSnapshot {
         ExecutionDiagnosticsSnapshot {
             child_spawned: self.child_spawned.load(Ordering::Relaxed),
@@ -480,9 +456,6 @@ impl ExecutionDiagnosticsMetrics {
                 .delivery_buffer_wake_succeeded
                 .load(Ordering::Relaxed),
             delivery_buffer_wake_failed: self.delivery_buffer_wake_failed.load(Ordering::Relaxed),
-            legacy_shared_history_rejections: self
-                .legacy_shared_history_rejections
-                .load(Ordering::Relaxed),
         }
     }
 }
@@ -496,15 +469,15 @@ mod tests {
         let metrics = RuntimeObservability::default();
         metrics.record_subrun_execution(
             Duration::from_millis(10),
-            &AgentStatus::Completed,
-            SubRunStorageMode::SharedSession,
+            &AgentLifecycleStatus::Idle,
+            &Some(AgentTurnOutcome::Completed),
             3,
             120,
         );
         metrics.record_subrun_execution(
             Duration::from_millis(20),
-            &AgentStatus::Failed,
-            SubRunStorageMode::IndependentSession,
+            &AgentLifecycleStatus::Idle,
+            &Some(AgentTurnOutcome::Failed),
             5,
             240,
         );
@@ -513,8 +486,7 @@ mod tests {
         assert_eq!(snapshot.total, 2);
         assert_eq!(snapshot.completed, 1);
         assert_eq!(snapshot.failures, 1);
-        assert_eq!(snapshot.shared_session_total, 1);
-        assert_eq!(snapshot.independent_session_total, 1);
+        assert_eq!(snapshot.independent_session_total, 2);
         assert_eq!(snapshot.total_steps, 8);
         assert_eq!(snapshot.total_estimated_tokens, 360);
         assert_eq!(snapshot.last_step_count, 5);
@@ -538,7 +510,6 @@ mod tests {
         metrics.record_delivery_buffer(DeliveryBufferStage::Queued);
         metrics.record_delivery_buffer(DeliveryBufferStage::WakeRequested);
         metrics.record_delivery_buffer(DeliveryBufferStage::WakeFailed);
-        metrics.record_legacy_rejection(LegacyRejectionKind::SharedHistoryUnsupported);
 
         let snapshot = metrics.snapshot().execution_diagnostics;
         assert_eq!(snapshot.child_spawned, 1);
@@ -554,6 +525,5 @@ mod tests {
         assert_eq!(snapshot.delivery_buffer_queued, 1);
         assert_eq!(snapshot.delivery_buffer_wake_requested, 1);
         assert_eq!(snapshot.delivery_buffer_wake_failed, 1);
-        assert_eq!(snapshot.legacy_shared_history_rejections, 1);
     }
 }

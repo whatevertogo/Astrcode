@@ -50,6 +50,7 @@
 //! - Prompt 组装通过 `PromptComposer` 独立实现，保持关注点分离
 //! - `AgentLoop` 本身不创建脱管后台任务；所有后台唤醒/句柄管理由上层 runtime service 负责
 
+mod compaction_cycle;
 mod llm_cycle;
 pub mod token_budget;
 mod tool_cycle;

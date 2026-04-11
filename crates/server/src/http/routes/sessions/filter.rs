@@ -131,7 +131,11 @@ fn event_agent_context(event: &AgentEvent) -> Option<&astrcode_core::AgentEventC
         | AgentEvent::ChildSessionNotification { agent, .. }
         | AgentEvent::PromptMetrics { agent, .. }
         | AgentEvent::TurnDone { agent, .. }
-        | AgentEvent::Error { agent, .. } => Some(agent),
+        | AgentEvent::Error { agent, .. }
+        | AgentEvent::AgentMailboxQueued { agent, .. }
+        | AgentEvent::AgentMailboxBatchStarted { agent, .. }
+        | AgentEvent::AgentMailboxBatchAcked { agent, .. }
+        | AgentEvent::AgentMailboxDiscarded { agent, .. } => Some(agent),
     }
 }
 
@@ -162,7 +166,7 @@ mod tests {
             parent_turn_id.to_string(),
             "review",
             sub_run_id.to_string(),
-            SubRunStorageMode::SharedSession,
+            SubRunStorageMode::IndependentSession,
             None,
         )
     }

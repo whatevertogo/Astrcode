@@ -462,6 +462,10 @@ impl ExecutionLineageIndex {
                     self.observe_turn_owner(turn_id, agent.sub_run_id.as_deref());
                 }
             },
+            AgentEvent::AgentMailboxQueued { .. }
+            | AgentEvent::AgentMailboxBatchStarted { .. }
+            | AgentEvent::AgentMailboxBatchAcked { .. }
+            | AgentEvent::AgentMailboxDiscarded { .. } => {},
             AgentEvent::SessionStarted { .. } => {},
         }
     }
@@ -876,7 +880,7 @@ mod tests {
                         "turn-root",
                         "review",
                         "sub-a",
-                        astrcode_core::SubRunStorageMode::SharedSession,
+                        astrcode_core::SubRunStorageMode::IndependentSession,
                         None,
                     ),
                     tool_call_id: None,
@@ -893,7 +897,7 @@ mod tests {
                         "turn-a",
                         "review",
                         "sub-b",
-                        astrcode_core::SubRunStorageMode::SharedSession,
+                        astrcode_core::SubRunStorageMode::IndependentSession,
                         None,
                     ),
                     tool_call_id: None,
@@ -920,7 +924,7 @@ mod tests {
                     "turn-legacy",
                     "review",
                     "sub-legacy",
-                    astrcode_core::SubRunStorageMode::SharedSession,
+                    astrcode_core::SubRunStorageMode::IndependentSession,
                     None,
                 ),
                 tool_call_id: None,

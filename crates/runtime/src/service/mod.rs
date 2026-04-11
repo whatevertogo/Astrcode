@@ -13,7 +13,9 @@ use astrcode_core::{
 };
 use astrcode_runtime_agent_control::AgentControl;
 use astrcode_runtime_agent_loader::{AgentProfileLoader, AgentProfileRegistry};
-use astrcode_runtime_agent_loop::{AgentLoop, ApprovalBroker, DefaultApprovalBroker};
+use astrcode_runtime_agent_loop::{
+    AgentLoop, ApprovalBroker, DefaultApprovalBroker, DynProviderFactory,
+};
 use astrcode_runtime_prompt::{
     LayeredPromptBuilder, PromptDeclaration, default_layered_prompt_builder,
 };
@@ -26,8 +28,9 @@ use dashmap::DashMap;
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 
-use crate::config::load_config;
+use crate::{config::load_config, provider_factory::ConfigFileProviderFactory};
 
+mod agent;
 #[cfg(test)]
 mod baselines;
 mod blocking_bridge;
@@ -42,12 +45,14 @@ mod session;
 mod turn;
 mod watch;
 
+pub use agent::AgentServiceHandle;
+pub(crate) use agent::{DeferredCollaborationExecutor, service_error_to_astr};
 pub use composer::ComposerServiceHandle;
 pub use config::ConfigServiceHandle;
+pub(crate) use execution::DeferredSubAgentExecutor;
 pub use execution::{
     AgentExecutionServiceHandle, AgentProfileSummary, ToolExecutionServiceHandle, ToolSummary,
 };
-pub(crate) use execution::{DeferredCollaborationExecutor, DeferredSubAgentExecutor};
 pub use lifecycle::LifecycleServiceHandle;
 pub use loop_surface::LoopSurfaceServiceHandle;
 use observability::RuntimeObservability;
@@ -82,6 +87,9 @@ struct RuntimeSurfaceState {
     skill_catalog: Arc<SkillCatalog>,
     hook_handlers: Vec<Arc<dyn HookHandler>>,
     prompt_builder: LayeredPromptBuilder,
+    /// LLM Provider 工厂，用于子代理 scoped execution 组装 AgentLoop。
+    /// 测试中可通过 `install_test_loop` 注入 StaticProvider。
+    factory: DynProviderFactory,
 }
 
 pub(crate) struct RuntimeServiceDeps {
@@ -163,7 +171,7 @@ pub struct RuntimeService {
     agent_profiles: Arc<StdRwLock<Arc<AgentProfileRegistry>>>,
     /// scoped agent profile 缓存。
     ///
-    /// `spawnAgent` 会反复查询同一个 working dir 的 profile 视图；如果每次都重新扫盘，
+    /// `spawn` 会反复查询同一个 working dir 的 profile 视图；如果每次都重新扫盘，
     /// 子 agent 冷启动前的同步 IO 会明显拖慢工具返回。这里缓存“按目录解析后的注册表”，
     /// 并在 agent 热重载后统一失效，保持语义集中在 runtime 层。
     scoped_agent_profiles: DashMap<PathBuf, Arc<AgentProfileRegistry>>,
@@ -187,7 +195,7 @@ impl RuntimeService {
         RuntimeOwnerGraph {
             session_owner: "runtime-session",
             execution_owner: "runtime-execution",
-            tool_owner: "runtime-execution",
+            tool_owner: "runtime-agent",
         }
     }
 
@@ -197,6 +205,12 @@ impl RuntimeService {
 
     pub fn config(self: &Arc<Self>) -> ConfigServiceHandle {
         ConfigServiceHandle::new(Arc::clone(self))
+    }
+
+    pub fn agent(self: &Arc<Self>) -> AgentServiceHandle {
+        AgentServiceHandle {
+            runtime: Arc::clone(self),
+        }
     }
 
     pub fn watch(self: &Arc<Self>) -> WatchServiceHandle {
@@ -289,6 +303,7 @@ impl RuntimeService {
             skill_catalog,
             hook_handlers: Vec::new(),
             prompt_builder: default_layered_prompt_builder(),
+            factory: Arc::new(ConfigFileProviderFactory),
         };
         let loop_ = build_agent_loop(
             &surface,

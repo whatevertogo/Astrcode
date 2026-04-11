@@ -50,13 +50,19 @@ pub use action::{
 };
 pub use agent::{
     AgentEventContext, AgentInboxEnvelope, AgentMode, AgentProfile, AgentProfileCatalog,
-    AgentStatus, ArtifactRef, ChildAgentRef, ChildSessionLineageKind, ChildSessionNode,
+    ArtifactRef, ChildAgentRef, ChildSessionLineageKind, ChildSessionNode,
     ChildSessionNotification, ChildSessionNotificationKind, ChildSessionStatusSource,
-    CloseAgentParams, CollaborationResult, CollaborationResultKind, DeliverToParentParams,
-    ForkMode, InboxEnvelopeKind, InvocationKind, LineageSnapshot, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, ResumeAgentParams, SendAgentParams, SpawnAgentParams,
-    SubRunFailure, SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunResult, SubRunStorageMode,
-    SubagentContextOverrides, WaitAgentParams, WaitUntil,
+    CloseAgentParams, CollaborationResult, CollaborationResultKind, ForkMode, InboxEnvelopeKind,
+    InvocationKind, LineageSnapshot, ResolvedExecutionLimitsSnapshot,
+    ResolvedSubagentContextOverrides, SendAgentParams, SpawnAgentParams, SubRunFailure,
+    SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunResult, SubRunStorageMode,
+    SubagentContextOverrides,
+    lifecycle::{AgentLifecycleStatus, AgentTurnOutcome},
+    mailbox::{
+        AgentMailboxEnvelope, BatchId, CloseParams, DeliveryId, MailboxBatchAckedPayload,
+        MailboxBatchStartedPayload, MailboxDiscardedPayload, MailboxProjection,
+        MailboxQueuedPayload, ObserveAgentResult, ObserveParams, SendParams,
+    },
 };
 pub use cancel::CancelToken;
 pub use compact_summary::{

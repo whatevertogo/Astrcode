@@ -374,6 +374,34 @@ impl EventTranslator {
                         .force_to(Phase::Interrupted, turn_id, agent);
                 }
             },
+            StorageEventPayload::AgentMailboxQueued { payload, .. } => {
+                push(AgentEvent::AgentMailboxQueued {
+                    turn_id: turn_id.clone(),
+                    agent: agent.clone(),
+                    payload: payload.clone(),
+                });
+            },
+            StorageEventPayload::AgentMailboxBatchStarted { payload, .. } => {
+                push(AgentEvent::AgentMailboxBatchStarted {
+                    turn_id: turn_id.clone(),
+                    agent: agent.clone(),
+                    payload: payload.clone(),
+                });
+            },
+            StorageEventPayload::AgentMailboxBatchAcked { payload, .. } => {
+                push(AgentEvent::AgentMailboxBatchAcked {
+                    turn_id: turn_id.clone(),
+                    agent: agent.clone(),
+                    payload: payload.clone(),
+                });
+            },
+            StorageEventPayload::AgentMailboxDiscarded { payload, .. } => {
+                push(AgentEvent::AgentMailboxDiscarded {
+                    turn_id: turn_id.clone(),
+                    agent: agent.clone(),
+                    payload: payload.clone(),
+                });
+            },
         }
     }
 
@@ -403,10 +431,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        AgentEvent, AgentEventContext, AgentStatus, ChildSessionLineageKind,
-        ChildSessionNotification, ChildSessionNotificationKind, PromptMetricsPayload, StoredEvent,
-        SubRunResult, SubRunStorageMode, ToolOutputStream, UserMessageOrigin,
-        format_compact_summary, phase_of_storage_event,
+        AgentEvent, AgentEventContext, PromptMetricsPayload, StoredEvent, ToolOutputStream,
+        UserMessageOrigin, format_compact_summary, phase_of_storage_event,
     };
 
     #[test]
@@ -711,134 +737,6 @@ mod tests {
                 && metrics.provider_cache_metrics_supported
                 && metrics.prompt_cache_reuse_hits == 3
                 && metrics.prompt_cache_reuse_misses == 1
-        ));
-    }
-
-    #[test]
-    fn subrun_lifecycle_translation_preserves_tool_call_id() {
-        let records = replay_records(
-            &[
-                StoredEvent {
-                    storage_seq: 10,
-                    event: StorageEvent {
-                        turn_id: Some("turn-parent".to_string()),
-                        agent: AgentEventContext::sub_run(
-                            "agent-child",
-                            "turn-parent",
-                            "review",
-                            "subrun-1",
-                            SubRunStorageMode::SharedSession,
-                            None,
-                        ),
-                        payload: StorageEventPayload::SubRunStarted {
-                            tool_call_id: Some("call-1".to_string()),
-                            resolved_overrides: crate::ResolvedSubagentContextOverrides::default(),
-                            resolved_limits: crate::ResolvedExecutionLimitsSnapshot::default(),
-                            timestamp: None,
-                        },
-                    },
-                },
-                StoredEvent {
-                    storage_seq: 11,
-                    event: StorageEvent {
-                        turn_id: Some("turn-parent".to_string()),
-                        agent: AgentEventContext::sub_run(
-                            "agent-child",
-                            "turn-parent",
-                            "review",
-                            "subrun-1",
-                            SubRunStorageMode::SharedSession,
-                            None,
-                        ),
-                        payload: StorageEventPayload::SubRunFinished {
-                            tool_call_id: Some("call-1".to_string()),
-                            result: SubRunResult {
-                                status: AgentStatus::Completed,
-                                handoff: None,
-                                failure: None,
-                            },
-                            step_count: 4,
-                            estimated_tokens: 88,
-                            timestamp: None,
-                        },
-                    },
-                },
-            ],
-            None,
-        );
-
-        let started = records.iter().find_map(|record| match &record.event {
-            AgentEvent::SubRunStarted { tool_call_id, .. } => tool_call_id.clone(),
-            _ => None,
-        });
-        let finished = records.iter().find_map(|record| match &record.event {
-            AgentEvent::SubRunFinished {
-                tool_call_id,
-                result,
-                ..
-            } => Some((tool_call_id.clone(), result.clone())),
-            _ => None,
-        });
-
-        assert_eq!(started.as_deref(), Some("call-1"));
-        assert_eq!(
-            finished
-                .as_ref()
-                .and_then(|(tool_call_id, _)| tool_call_id.as_deref()),
-            Some("call-1")
-        );
-        assert_eq!(
-            finished.as_ref().map(|(_, result)| result.status),
-            Some(AgentStatus::Completed)
-        );
-    }
-
-    #[test]
-    fn child_session_notification_translates_into_domain_event() {
-        let records = replay_records(
-            &[StoredEvent {
-                storage_seq: 12,
-                event: StorageEvent {
-                    turn_id: Some("turn-parent".to_string()),
-                    agent: AgentEventContext::sub_run(
-                        "agent-parent",
-                        "turn-parent",
-                        "planner",
-                        "subrun-parent",
-                        SubRunStorageMode::SharedSession,
-                        None,
-                    ),
-                    payload: StorageEventPayload::ChildSessionNotification {
-                        notification: ChildSessionNotification {
-                            notification_id: "note-1".to_string(),
-                            child_ref: crate::ChildAgentRef {
-                                agent_id: "agent-child".to_string(),
-                                session_id: "session-parent".to_string(),
-                                sub_run_id: "subrun-1".to_string(),
-                                parent_agent_id: Some("agent-parent".to_string()),
-                                lineage_kind: ChildSessionLineageKind::Spawn,
-                                status: AgentStatus::Running,
-                                open_session_id: "session-child".to_string(),
-                            },
-                            kind: ChildSessionNotificationKind::Started,
-                            summary: "child started".to_string(),
-                            status: AgentStatus::Running,
-                            source_tool_call_id: Some("call-1".to_string()),
-                            final_reply_excerpt: None,
-                        },
-                        timestamp: None,
-                    },
-                },
-            }],
-            None,
-        );
-
-        assert_eq!(records.len(), 1);
-        assert!(matches!(
-            &records[0].event,
-            AgentEvent::ChildSessionNotification { notification, .. }
-                if notification.notification_id == "note-1"
-                    && notification.child_ref.agent_id == "agent-child"
         ));
     }
 }

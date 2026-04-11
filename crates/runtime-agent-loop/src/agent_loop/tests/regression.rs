@@ -19,8 +19,9 @@ use std::{
 };
 
 use astrcode_core::{
-    ApprovalDefault, ApprovalResolution, CancelToken, LlmMessage, Phase, StorageEventPayload,
-    ToolCallRequest, UserMessageOrigin,
+    AgentLifecycleStatus, ApprovalDefault, ApprovalResolution, CancelToken, ChildAgentRef,
+    ChildSessionLineageKind, ChildSessionNotification, ChildSessionNotificationKind, LlmMessage,
+    Phase, StorageEventPayload, ToolCallRequest, UserMessageOrigin,
 };
 use astrcode_runtime_llm::LlmOutput;
 use serde_json::json;
@@ -29,7 +30,7 @@ use super::{
     fixtures::*,
     test_support::{boxed_tool, capabilities_from_tools, empty_capabilities},
 };
-use crate::{AgentLoop, agent_loop::TurnOutcome};
+use crate::{AgentLoop, agent_loop::TurnOutcome, child_delivery_prompt_declaration};
 
 // ---------------------------------------------------------------------------
 // 基础场景矩阵
@@ -431,6 +432,33 @@ async fn phase0_behavior_regression_covers_compaction_and_policy_edges() {
     }
 }
 
+#[test]
+fn child_delivery_prompt_regression_keeps_delivery_identity_and_duplicate_guidance() {
+    let notification = ChildSessionNotification {
+        notification_id: "delivery-regression-1".to_string(),
+        child_ref: ChildAgentRef {
+            agent_id: "agent-child".to_string(),
+            session_id: "session-parent".to_string(),
+            sub_run_id: "subrun-child".to_string(),
+            parent_agent_id: Some("agent-parent".to_string()),
+            lineage_kind: ChildSessionLineageKind::Spawn,
+            status: AgentLifecycleStatus::Idle,
+            open_session_id: "session-child".to_string(),
+        },
+        kind: ChildSessionNotificationKind::Delivered,
+        summary: "child summary".to_string(),
+        status: AgentLifecycleStatus::Idle,
+        source_tool_call_id: None,
+        final_reply_excerpt: Some("child final excerpt".to_string()),
+    };
+
+    let prompt = child_delivery_prompt_declaration(&notification);
+
+    assert!(prompt.contains("deliveryId: delivery-regression-1"));
+    assert!(prompt.contains("相同的 deliveryId"));
+    assert!(prompt.contains("不能把它当作新任务重复处理"));
+}
+
 /// 构造一个 413 prompt too long 错误。
 fn make_prompt_too_long_error() -> astrcode_core::AstrError {
     astrcode_core::AstrError::LlmRequestFailed {
@@ -444,21 +472,20 @@ fn make_prompt_too_long_error() -> astrcode_core::AstrError {
 // ---------------------------------------------------------------------------
 
 /// 验证 agent loop 在收到子 Agent 交付结果后仍然能正常完成 turn。
-/// 模型在收到 closeAgent 工具结果后选择关闭子 Agent，
+/// 模型在收到 close 工具结果后选择关闭子 Agent，
 /// turn 应正常完成（Completed），不应因子交付的存在而阻塞。
 #[tokio::test]
 async fn parent_turn_completes_after_deciding_to_close_child() {
     let provider = Arc::new(ScriptedProvider {
         responses: Mutex::new(VecDeque::from([
-            // 第一轮：模型调用 closeAgent 关闭子 Agent
+            // 第一轮：模型调用 close 关闭子 Agent
             LlmOutput {
                 content: String::new(),
                 tool_calls: vec![ToolCallRequest {
                     id: "call-close-1".to_string(),
-                    name: "closeAgent".to_string(),
+                    name: "close".to_string(),
                     args: json!({
-                        "agentId": "agent-child-1",
-                        "cascade": true
+                        "agentId": "agent-child-1"
                     }),
                 }],
                 reasoning: None,
@@ -500,10 +527,10 @@ async fn parent_turn_completes_after_deciding_to_close_child() {
     // 验证事件序列中包含 ToolCall、ToolResult 和 TurnDone
     let events = events.lock().expect("events lock").clone();
     assert!(events.iter().any(
-        |e| matches!(&e.payload, StorageEventPayload::ToolCall { tool_name, .. } if tool_name == "closeAgent")
+        |e| matches!(&e.payload, StorageEventPayload::ToolCall { tool_name, .. } if tool_name == "close")
     ));
     assert!(events.iter().any(
-        |e| matches!(&e.payload, StorageEventPayload::ToolResult { tool_name, .. } if tool_name == "closeAgent")
+        |e| matches!(&e.payload, StorageEventPayload::ToolResult { tool_name, .. } if tool_name == "close")
     ));
     assert!(events.iter().any(|e| matches!(
         &e.payload,
@@ -512,18 +539,18 @@ async fn parent_turn_completes_after_deciding_to_close_child() {
 }
 
 /// 验证 agent loop 在选择保留子 Agent 时能正常继续执行后续工具调用。
-/// 模型先调用 sendAgent 追加消息，然后输出最终回复，
+/// 模型先调用 send 追加消息，然后输出最终回复，
 /// turn 应正常完成，子 Agent 保留继续运行。
 #[tokio::test]
 async fn parent_turn_completes_after_deciding_to_keep_child() {
     let provider = Arc::new(ScriptedProvider {
         responses: Mutex::new(VecDeque::from([
-            // 第一轮：模型调用 sendAgent 向子 Agent 发送消息
+            // 第一轮：模型调用 send 向子 Agent 发送消息
             LlmOutput {
                 content: String::new(),
                 tool_calls: vec![ToolCallRequest {
                     id: "call-send-1".to_string(),
-                    name: "sendAgent".to_string(),
+                    name: "send".to_string(),
                     args: json!({
                         "agentId": "agent-child-1",
                         "message": "继续执行"
@@ -565,10 +592,10 @@ async fn parent_turn_completes_after_deciding_to_keep_child() {
         .expect("turn should complete");
     assert_eq!(outcome, TurnOutcome::Completed);
 
-    // 验证事件序列中包含 sendAgent 工具调用
+    // 验证事件序列中包含 send 工具调用
     let events = events.lock().expect("events lock").clone();
     assert!(events.iter().any(
-        |e| matches!(&e.payload, StorageEventPayload::ToolCall { tool_name, .. } if tool_name == "sendAgent")
+        |e| matches!(&e.payload, StorageEventPayload::ToolCall { tool_name, .. } if tool_name == "send")
     ));
     assert!(events.iter().any(|e| matches!(
         &e.payload,

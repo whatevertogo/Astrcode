@@ -6,7 +6,7 @@ use std::{
 use anyhow::Result;
 use astrcode_core::{
     AgentState, AgentStateProjector, CancelToken, ChildSessionNode, EventLogWriter,
-    EventTranslator, Phase, SessionEventRecord, SessionTurnLease, StorageEvent,
+    EventTranslator, MailboxProjection, Phase, SessionEventRecord, SessionTurnLease, StorageEvent,
     StorageEventPayload, StoredEvent, ToolEventSink,
 };
 use tokio::sync::broadcast;
@@ -139,6 +139,7 @@ pub struct SessionState {
     recent_records: StdMutex<RecentSessionEvents>,
     recent_stored: StdMutex<RecentStoredEvents>,
     child_nodes: StdMutex<HashMap<String, ChildSessionNode>>,
+    mailbox_projection_index: StdMutex<HashMap<String, MailboxProjection>>,
 }
 
 impl SessionState {
@@ -155,6 +156,7 @@ impl SessionState {
         let mut cached_stored = RecentStoredEvents::default();
         cached_stored.replace(recent_stored.clone());
         let child_nodes = rebuild_child_nodes(&recent_stored);
+        let mailbox_projection_index = MailboxProjection::replay_index(&recent_stored);
         Self {
             phase: StdMutex::new(phase),
             running: AtomicBool::new(false),
@@ -169,6 +171,7 @@ impl SessionState {
             recent_records: StdMutex::new(cached_records),
             recent_stored: StdMutex::new(cached_stored),
             child_nodes: StdMutex::new(child_nodes),
+            mailbox_projection_index: StdMutex::new(mailbox_projection_index),
         }
     }
 
@@ -221,6 +224,7 @@ impl SessionState {
         if let Some(node) = child_node_from_stored_event(stored) {
             self.upsert_child_session_node(node)?;
         }
+        self.apply_mailbox_event(stored);
         Ok(records)
     }
 
@@ -296,6 +300,68 @@ impl SessionState {
         result.sort_by(|a, b| a.sub_run_id.cmp(&b.sub_run_id));
         Ok(result)
     }
+
+    /// 读取指定 agent 的 mailbox durable 投影。
+    pub fn mailbox_projection_for_agent(&self, agent_id: &str) -> Result<MailboxProjection> {
+        Ok(
+            lock_anyhow(&self.mailbox_projection_index, "mailbox projection index")?
+                .get(agent_id)
+                .cloned()
+                .unwrap_or_default(),
+        )
+    }
+
+    /// 增量应用一条 mailbox durable 事件到投影索引。
+    fn apply_mailbox_event(&self, stored: &StoredEvent) {
+        let mut index =
+            match lock_anyhow(&self.mailbox_projection_index, "mailbox projection index") {
+                Ok(index) => index,
+                Err(_) => return,
+            };
+        match &stored.event.payload {
+            StorageEventPayload::AgentMailboxQueued { payload } => {
+                let projection = index
+                    .entry(payload.envelope.to_agent_id.clone())
+                    .or_insert_with(MailboxProjection::default);
+                MailboxProjection::apply_event_for_agent(
+                    projection,
+                    stored,
+                    &payload.envelope.to_agent_id,
+                );
+            },
+            StorageEventPayload::AgentMailboxBatchStarted { payload } => {
+                let projection = index
+                    .entry(payload.target_agent_id.clone())
+                    .or_insert_with(MailboxProjection::default);
+                MailboxProjection::apply_event_for_agent(
+                    projection,
+                    stored,
+                    &payload.target_agent_id,
+                );
+            },
+            StorageEventPayload::AgentMailboxBatchAcked { payload } => {
+                let projection = index
+                    .entry(payload.target_agent_id.clone())
+                    .or_insert_with(MailboxProjection::default);
+                MailboxProjection::apply_event_for_agent(
+                    projection,
+                    stored,
+                    &payload.target_agent_id,
+                );
+            },
+            StorageEventPayload::AgentMailboxDiscarded { payload } => {
+                let projection = index
+                    .entry(payload.target_agent_id.clone())
+                    .or_insert_with(MailboxProjection::default);
+                MailboxProjection::apply_event_for_agent(
+                    projection,
+                    stored,
+                    &payload.target_agent_id,
+                );
+            },
+            _ => {},
+        }
+    }
 }
 
 fn rebuild_child_nodes(events: &[StoredEvent]) -> HashMap<String, ChildSessionNode> {
@@ -367,7 +433,7 @@ mod tests {
     use std::sync::Arc;
 
     use astrcode_core::{
-        AgentEventContext, AgentStateProjector, AgentStatus, ChildAgentRef,
+        AgentEventContext, AgentLifecycleStatus, AgentStateProjector, ChildAgentRef,
         ChildSessionLineageKind, ChildSessionNotification, ChildSessionNotificationKind,
         EventLogWriter, InvocationKind, Phase, StorageEvent, StorageEventPayload, StoreResult,
         StoredEvent, UserMessageOrigin,
@@ -388,8 +454,7 @@ mod tests {
         AgentEventContext::default()
     }
 
-    // Why: 这里故意保留 SharedSession 夹具，用于验证 legacy shared-history 子事件
-    // 不会重新污染父级投影；它不代表新的 child session 写入路径。
+    // Legacy shared-history 子事件夹具——storage_mode 已统一为 IndependentSession。
     fn legacy_shared_sub_run_agent() -> AgentEventContext {
         AgentEventContext {
             agent_id: Some("agent-child".to_string()),
@@ -397,7 +462,7 @@ mod tests {
             agent_profile: Some("explore".to_string()),
             sub_run_id: Some("subrun-1".to_string()),
             invocation_kind: Some(InvocationKind::SubRun),
-            storage_mode: Some(astrcode_core::SubRunStorageMode::SharedSession),
+            storage_mode: Some(astrcode_core::SubRunStorageMode::IndependentSession),
             child_session_id: None,
         }
     }
@@ -420,7 +485,7 @@ mod tests {
 
     fn child_notification_event(
         kind: ChildSessionNotificationKind,
-        status: AgentStatus,
+        status: AgentLifecycleStatus,
     ) -> StorageEvent {
         event(
             Some("turn-root"),
@@ -582,14 +647,14 @@ mod tests {
                     1,
                     child_notification_event(
                         ChildSessionNotificationKind::Started,
-                        AgentStatus::Running,
+                        AgentLifecycleStatus::Running,
                     ),
                 ),
                 stored(
                     2,
                     child_notification_event(
                         ChildSessionNotificationKind::Delivered,
-                        AgentStatus::Completed,
+                        AgentLifecycleStatus::Idle,
                     ),
                 ),
             ],
@@ -602,7 +667,7 @@ mod tests {
 
         assert_eq!(node.child_session_id, "session-child");
         assert_eq!(node.parent_session_id, "session-parent");
-        assert_eq!(node.status, AgentStatus::Completed);
+        assert_eq!(node.status, AgentLifecycleStatus::Idle);
         assert_eq!(node.created_by_tool_call_id.as_deref(), Some("call-1"));
     }
 
@@ -623,7 +688,7 @@ mod tests {
                     1,
                     child_notification_event(
                         ChildSessionNotificationKind::Started,
-                        AgentStatus::Running,
+                        AgentLifecycleStatus::Running,
                     ),
                 ),
                 &mut translator,
@@ -635,7 +700,7 @@ mod tests {
                     2,
                     child_notification_event(
                         ChildSessionNotificationKind::Failed,
-                        AgentStatus::Failed,
+                        AgentLifecycleStatus::Idle,
                     ),
                 ),
                 &mut translator,
@@ -647,7 +712,7 @@ mod tests {
             .expect("child node lookup should succeed")
             .expect("child node should exist");
 
-        assert_eq!(node.status, AgentStatus::Failed);
+        assert_eq!(node.status, AgentLifecycleStatus::Idle);
         assert_eq!(node.parent_turn_id, "turn-root");
     }
 }

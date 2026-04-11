@@ -9,5 +9,6 @@ authors.workspace = true
 astrcode-core = { path = "../core" }
 astrcode-runtime-config = { path = "../runtime-config" }
 async-trait.workspace = true
+log.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

@@ -1,42 +1,38 @@
 use astrcode_core::{
-    CloseAgentParams, CollaborationResult, DeliverToParentParams, Result, ResumeAgentParams,
-    SendAgentParams, ToolContext, WaitAgentParams,
+    CloseAgentParams, CollaborationResult, ObserveParams, Result, SendAgentParams, ToolContext,
 };
 use async_trait::async_trait;
 
 /// 协作工具执行器抽象。
 ///
-/// 真实执行器由 runtime 提供，这里只定义 Tool 所需的最小边界。
-/// 与 `SubAgentExecutor` 拆开是因为协作操作和 spawn 的生命周期完全不同：
-/// spawn 负责创建新 agent，而协作操作面向已存在的 agent。
+/// 与 `SubAgentExecutor` 拆开是因为两者的职责粒度完全不同：
+/// - `SubAgentExecutor` 只管"创建并启动"，是一锤子买卖；
+/// - `CollaborationExecutor` 管理已存在 agent 的协作生命周期（发消息/观测/关闭）。
+///
+/// 真实实现由 runtime 边界注入，本 crate 不感知 session 调度细节。
 #[async_trait]
 pub trait CollaborationExecutor: Send + Sync {
     /// 向既有 child agent 追加消息。
+    ///
+    /// 消息会进入 child agent 的 inbox，由其下一轮 LLM 调用消费。
     async fn send(&self, params: SendAgentParams, ctx: &ToolContext)
     -> Result<CollaborationResult>;
 
-    /// 等待指定 child agent 到达可消费状态。
-    async fn wait(&self, params: WaitAgentParams, ctx: &ToolContext)
-    -> Result<CollaborationResult>;
-
     /// 关闭指定 child agent。
+    ///
+    /// runtime 层负责级联关闭逻辑（关闭整棵子树）。
     async fn close(
         &self,
         params: CloseAgentParams,
         ctx: &ToolContext,
     ) -> Result<CollaborationResult>;
 
-    /// 恢复已完成的 child agent 继续协作。
-    async fn resume(
+    /// 获取目标 child agent 的增强快照（四工具模型 observe）。
+    ///
+    /// 只返回直接子 agent 的快照，融合 live lifecycle、对话投影和 mailbox 派生信息。
+    async fn observe(
         &self,
-        params: ResumeAgentParams,
-        ctx: &ToolContext,
-    ) -> Result<CollaborationResult>;
-
-    /// 向直接父 agent 交付结果。
-    async fn deliver(
-        &self,
-        params: DeliverToParentParams,
+        params: ObserveParams,
         ctx: &ToolContext,
     ) -> Result<CollaborationResult>;
 }

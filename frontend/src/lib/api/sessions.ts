@@ -2,7 +2,7 @@
 //!
 //! Session and project CRUD operations.
 
-import type { AgentStatus, DeleteProjectResult, SessionMeta } from '../../types';
+import type { AgentLifecycle, DeleteProjectResult, SessionMeta } from '../../types';
 import { getErrorMessage, request, requestJson, requestRaw } from './client';
 // 共享工具函数，消除与 lib/shared/index.ts 的重复定义
 import { asRecord, pickStringOrUndefined as pickString, pickOptionalString } from '../shared';
@@ -25,7 +25,7 @@ export interface ChildAgentRef {
   parentAgentId?: string;
   lineageKind: 'spawn' | 'fork' | 'resume';
   lineageSnapshot?: LineageSnapshot;
-  status: AgentStatus;
+  status: AgentLifecycle;
   openSessionId: string;
 }
 
@@ -41,7 +41,7 @@ export interface ChildSessionNotification {
   childRef: ChildAgentRef;
   kind: 'started' | 'progress_summary' | 'delivered' | 'waiting' | 'resumed' | 'closed' | 'failed';
   summary: string;
-  status: AgentStatus;
+  status: AgentLifecycle;
   sourceToolCallId?: string;
   finalReplyExcerpt?: string;
 }
@@ -114,19 +114,16 @@ export async function interruptSession(sessionId: string): Promise<void> {
 
 /// 关闭指定 agent 及其子树。
 ///
-/// 替代旧的 cancelSubRun 端点。新端点按 agent_id 定位，支持级联关闭。
-/// cascade 默认为 true。
-export async function closeAgent(
+/// 按 agent_id 定位，始终级联关闭。
+export async function closeChildAgent(
   sessionId: string,
-  agentId: string,
-  cascade?: boolean
+  agentId: string
 ): Promise<{ closedAgentIds: string[] }> {
   return requestJson<{ closedAgentIds: string[] }>(
     `/api/v1/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}/close`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cascade: cascade ?? true }),
     }
   );
 }

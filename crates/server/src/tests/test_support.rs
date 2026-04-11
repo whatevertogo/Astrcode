@@ -121,8 +121,8 @@ pub(crate) fn seed_subrun_status_contract_session(session_id: &str, working_dir:
         "turn-contract",
         "review",
         "subrun-contract",
-        astrcode_core::SubRunStorageMode::SharedSession,
-        None,
+        astrcode_core::SubRunStorageMode::IndependentSession,
+        Some("child-contract".to_string()),
     );
 
     append_session_events(
@@ -156,7 +156,8 @@ pub(crate) fn seed_subrun_status_contract_session(session_id: &str, working_dir:
                 payload: StorageEventPayload::SubRunFinished {
                     tool_call_id: Some("call-contract".to_string()),
                     result: astrcode_core::SubRunResult {
-                        status: astrcode_core::AgentStatus::Completed,
+                        lifecycle: astrcode_core::AgentLifecycleStatus::Terminated,
+                        last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Completed),
                         handoff: Some(astrcode_core::SubRunHandoff {
                             summary: "contract done".to_string(),
                             findings: Vec::new(),
@@ -188,7 +189,7 @@ pub(crate) fn seed_child_delivery_contract_session(session_id: &str, working_dir
         sub_run_id: "subrun-delivery-contract".to_string(),
         parent_agent_id: Some("agent-parent".to_string()),
         lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
-        status: astrcode_core::AgentStatus::Completed,
+        status: astrcode_core::AgentLifecycleStatus::Terminated,
         open_session_id: "session-child-contract".to_string(),
     };
 
@@ -226,7 +227,8 @@ pub(crate) fn seed_child_delivery_contract_session(session_id: &str, working_dir
                 payload: StorageEventPayload::SubRunFinished {
                     tool_call_id: Some("call-delivery-contract".to_string()),
                     result: astrcode_core::SubRunResult {
-                        status: astrcode_core::AgentStatus::Completed,
+                        lifecycle: astrcode_core::AgentLifecycleStatus::Terminated,
+                        last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Completed),
                         handoff: Some(astrcode_core::SubRunHandoff {
                             summary: "child final reply summary".to_string(),
                             findings: Vec::new(),
@@ -249,7 +251,7 @@ pub(crate) fn seed_child_delivery_contract_session(session_id: &str, working_dir
                         child_ref,
                         kind: astrcode_core::ChildSessionNotificationKind::Delivered,
                         summary: "child final reply summary".to_string(),
-                        status: astrcode_core::AgentStatus::Completed,
+                        status: astrcode_core::AgentLifecycleStatus::Terminated,
                         source_tool_call_id: Some("call-delivery-contract".to_string()),
                         final_reply_excerpt: Some("final answer excerpt".to_string()),
                     },

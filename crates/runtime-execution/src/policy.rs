@@ -120,20 +120,6 @@ mod tests {
         assert_eq!(resolved.storage_mode, SubRunStorageMode::IndependentSession);
     }
 
-    /// 显式选择 SharedSession 仍保留为可解析输入，
-    /// 便于 legacy 样本、协议 round-trip 和读侧拒绝路径继续表达旧数据形态。
-    #[test]
-    fn resolve_subagent_overrides_preserves_explicit_shared_session_for_legacy_inputs() {
-        let overrides = SubagentContextOverrides {
-            storage_mode: Some(SubRunStorageMode::SharedSession),
-            ..SubagentContextOverrides::default()
-        };
-
-        let resolved = resolve_subagent_overrides(Some(&overrides), &RuntimeConfig::default())
-            .expect("explicit shared session should remain representable for legacy inputs");
-
-        assert_eq!(resolved.storage_mode, SubRunStorageMode::SharedSession);
-    }
 
     #[test]
     fn resolve_subagent_overrides_rejects_inconsistent_instruction_inheritance() {

@@ -418,7 +418,6 @@ pub const DEFAULT_API_SESSION_TTL_HOURS: i64 = 8;
 /// 默认 Agent 嵌套深度上限。
 ///
 /// 限制子 Agent 可被嵌套的层数，防止无限递归。
-/// 例如 maxDepth=3 表示最多允许 root→child→grandchild 三层。
 pub const DEFAULT_MAX_AGENT_DEPTH: usize = 3;
 
 /// 默认受控子会话最大深度。
@@ -437,10 +436,15 @@ pub const DEFAULT_MAX_CONCURRENT_AGENTS: usize = 8;
 /// 已完成/已失败/已取消的 Agent 条目在内存中的保留上限。
 pub const DEFAULT_FINALIZED_AGENT_RETAIN_LIMIT: usize = 256;
 
-/// 是否默认启用独立子会话实验特性。
-/// 独立子会话模式已从实验特性升级为默认行为，
-/// 旧的共享写入模式仅保留读取兼容。
-pub const DEFAULT_EXPERIMENTAL_INDEPENDENT_SESSION: bool = true;
+/// 默认单个 agent 收件箱容量上限。
+///
+/// 超过此限制时 push_inbox 返回错误，防止消费端停滞时内存无限增长。
+pub const DEFAULT_INBOX_CAPACITY: usize = 1024;
+
+/// 默认单个会话的父级交付队列容量上限。
+///
+/// 超过此限制时 enqueue_parent_delivery 返回 false。
+pub const DEFAULT_PARENT_DELIVERY_CAPACITY: usize = 1024;
 
 // ============================================================================
 // 压缩恢复与熔断配置
@@ -498,23 +502,13 @@ pub fn resolve_max_tool_concurrency(runtime: &RuntimeConfig) -> usize {
 // 多 Agent 控制配置解析
 // ============================================================================
 
-/// 解析 Agent 嵌套深度上限。
-///
-/// 当 `runtime.agent.maxDepth` 未设置时回退到 [`DEFAULT_MAX_AGENT_DEPTH`]。
-pub fn resolve_agent_max_depth(agent: Option<&AgentConfig>) -> usize {
-    agent
-        .and_then(|a| a.max_depth)
-        .unwrap_or(DEFAULT_MAX_AGENT_DEPTH)
-        .max(1)
-}
-
 /// 解析受控子会话最大深度。
 ///
-/// 新逻辑优先读取 `maxSubrunDepth`，并在旧配置里回退到 `maxDepth`，
-/// 这样可以平滑兼容已经存在的用户配置。
+/// 仅读取 `runtime.agent.maxSubrunDepth`，如果未设置则回退到
+/// [`DEFAULT_MAX_SUBRUN_DEPTH`]。
 pub fn resolve_agent_max_subrun_depth(agent: Option<&AgentConfig>) -> usize {
     agent
-        .and_then(|a| a.max_subrun_depth.or(a.max_depth))
+        .and_then(|a| a.max_subrun_depth)
         .unwrap_or(DEFAULT_MAX_SUBRUN_DEPTH)
         .max(1)
 }
@@ -539,11 +533,20 @@ pub fn resolve_agent_finalized_retain_limit(agent: Option<&AgentConfig>) -> usiz
         .unwrap_or(DEFAULT_FINALIZED_AGENT_RETAIN_LIMIT)
 }
 
-/// 解析是否启用独立子会话实验特性。
-pub fn resolve_agent_experimental_independent_session(agent: Option<&AgentConfig>) -> bool {
+/// 解析单个 agent 收件箱容量上限。
+pub fn resolve_agent_inbox_capacity(agent: Option<&AgentConfig>) -> usize {
     agent
-        .and_then(|a| a.experimental_independent_session)
-        .unwrap_or(DEFAULT_EXPERIMENTAL_INDEPENDENT_SESSION)
+        .and_then(|a| a.inbox_capacity)
+        .unwrap_or(DEFAULT_INBOX_CAPACITY)
+        .max(1)
+}
+
+/// 解析单个会话的父级交付队列容量上限。
+pub fn resolve_agent_parent_delivery_capacity(agent: Option<&AgentConfig>) -> usize {
+    agent
+        .and_then(|a| a.parent_delivery_capacity)
+        .unwrap_or(DEFAULT_PARENT_DELIVERY_CAPACITY)
+        .max(1)
 }
 
 // ============================================================================

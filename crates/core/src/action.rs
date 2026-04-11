@@ -161,11 +161,7 @@ impl ToolExecutionResult {
 
         // 这里显式强调“精确复用原值”，避免模型把 `agent-1` 自作主张改写成
         // `agent-01` 之类的展示型编号，导致后续协作工具命中不存在的 agent。
-        lines.push(
-            "Use this exact `agentId` value in later sendAgent/waitAgent/closeAgent/resumeAgent \
-             calls."
-                .to_string(),
-        );
+        lines.push("Use this exact `agentId` value in later send/observe/close calls.".to_string());
         Some(lines.join("\n"))
     }
 }
@@ -381,9 +377,9 @@ mod tests {
     fn model_content_appends_exact_child_agent_reference_from_metadata() {
         let result = ToolExecutionResult {
             tool_call_id: "call-1".to_string(),
-            tool_name: "spawnAgent".to_string(),
+            tool_name: "spawn".to_string(),
             ok: true,
-            output: "spawnAgent 已在后台启动。".to_string(),
+            output: "spawn 已在后台启动。".to_string(),
             error: None,
             metadata: Some(json!({
                 "agentRef": {
@@ -399,7 +395,7 @@ mod tests {
         };
 
         let content = result.model_content();
-        assert!(content.contains("spawnAgent 已在后台启动。"));
+        assert!(content.contains("spawn 已在后台启动。"));
         assert!(content.contains("- agentId: agent-1"));
         assert!(content.contains("- subRunId: subrun-1"));
         assert!(content.contains("Use this exact `agentId` value"));

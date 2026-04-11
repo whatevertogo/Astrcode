@@ -86,7 +86,7 @@ pub fn child_delivery_notification_fixture(seed: &str) -> ChildSessionNotificati
         child_ref,
         kind: ChildSessionNotificationKind::Delivered,
         summary: format!("子会话 {seed} 已完成"),
-        status: astrcode_core::AgentStatus::Completed,
+        status: astrcode_core::AgentLifecycleStatus::Idle,
         source_tool_call_id: Some(format!("call-{seed}")),
         final_reply_excerpt: Some(format!("最终摘要 {seed}")),
     }

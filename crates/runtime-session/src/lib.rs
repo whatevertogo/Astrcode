@@ -16,8 +16,10 @@ pub use session_state::{
 };
 pub use support::{lock_anyhow, spawn_blocking_anyhow};
 pub use turn_runtime::{
-    append_and_broadcast, append_and_broadcast_from_turn_callback, complete_session_execution,
-    prepare_session_execution, recent_turn_event_tail, should_record_compaction_tail_event,
+    append_and_broadcast, append_and_broadcast_from_turn_callback, append_batch_acked,
+    append_batch_started, append_mailbox_discarded, append_mailbox_queued,
+    complete_session_execution, prepare_session_execution, recent_turn_event_tail,
+    should_record_compaction_tail_event,
 };
 
 #[async_trait]

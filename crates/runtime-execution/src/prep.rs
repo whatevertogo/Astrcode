@@ -220,7 +220,7 @@ fn build_child_prompt_declarations(
             priority_hint: Some(100),
             always_include: true,
             source: astrcode_runtime_prompt::PromptDeclarationSource::Builtin,
-            capability_name: Some("spawnAgent".to_string()),
+            capability_name: Some("spawn".to_string()),
             origin: Some(format!("agent-profile:{}", profile.id)),
         });
     }
@@ -247,7 +247,7 @@ fn build_inherited_context_prompt_declarations(
             priority_hint: Some(540),
             always_include: true,
             source: astrcode_runtime_prompt::PromptDeclarationSource::Builtin,
-            capability_name: Some("spawnAgent".to_string()),
+            capability_name: Some("spawn".to_string()),
             origin: Some("child-context:compact-summary".to_string()),
         });
     }
@@ -273,7 +273,7 @@ fn build_inherited_context_prompt_declarations(
             priority_hint: Some(550),
             always_include: true,
             source: astrcode_runtime_prompt::PromptDeclarationSource::Builtin,
-            capability_name: Some("spawnAgent".to_string()),
+            capability_name: Some("spawn".to_string()),
             origin: Some("child-context:recent-tail".to_string()),
         });
     }
@@ -386,16 +386,10 @@ pub fn build_root_spawn_params(
     }
 }
 
+/// 只有一种存储模式 IndependentSession，无需校验。
 pub fn validate_root_execution_storage_mode(
-    storage_mode: SubRunStorageMode,
+    _storage_mode: SubRunStorageMode,
 ) -> Result<(), AstrError> {
-    if matches!(storage_mode, SubRunStorageMode::IndependentSession) {
-        return Err(AstrError::Validation(
-            "root execution already runs in its own session; \
-             contextOverrides.storageMode=independentSession is not applicable"
-                .to_string(),
-        ));
-    }
     Ok(())
 }
 
@@ -633,7 +627,7 @@ pub fn build_background_subrun_handoff(
     artifacts.extend(build_result_artifacts(child));
 
     SubRunHandoff {
-        summary: "spawnAgent 已在后台启动。".to_string(),
+        summary: "spawn 已在后台启动。".to_string(),
         findings: Vec::new(),
         artifacts,
     }
@@ -671,7 +665,7 @@ fn classify_subrun_failure(error: &AstrError) -> SubRunFailureCode {
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        AgentMode, AgentProfile, AgentStatus, AstrError, InvocationKind,
+        AgentLifecycleStatus, AgentMode, AgentProfile, AstrError, InvocationKind,
         ResolvedSubagentContextOverrides, SpawnAgentParams, SubRunFailureCode, SubRunStorageMode,
         SubagentContextOverrides,
     };
@@ -699,8 +693,9 @@ mod tests {
                 parent_turn_id: "turn-1".to_string(),
                 parent_agent_id: None,
                 agent_profile: "plan".to_string(),
-                storage_mode: SubRunStorageMode::SharedSession,
-                status: AgentStatus::Completed,
+                storage_mode: SubRunStorageMode::IndependentSession,
+                lifecycle: AgentLifecycleStatus::Idle,
+                last_turn_outcome: None,
             },
             "session-parent-1",
             Some("done"),
@@ -726,8 +721,9 @@ mod tests {
                 parent_turn_id: "turn-1".to_string(),
                 parent_agent_id: None,
                 agent_profile: "plan".to_string(),
-                storage_mode: SubRunStorageMode::SharedSession,
-                status: AgentStatus::Completed,
+                storage_mode: SubRunStorageMode::IndependentSession,
+                lifecycle: AgentLifecycleStatus::Idle,
+                last_turn_outcome: None,
             },
             "session-parent-1",
             None,
@@ -761,12 +757,13 @@ mod tests {
                 parent_agent_id: None,
                 agent_profile: "plan".to_string(),
                 storage_mode: SubRunStorageMode::IndependentSession,
-                status: AgentStatus::Running,
+                lifecycle: AgentLifecycleStatus::Running,
+                last_turn_outcome: None,
             },
             "session-parent-1",
         );
 
-        assert_eq!(handoff.summary, "spawnAgent 已在后台启动。");
+        assert_eq!(handoff.summary, "spawn 已在后台启动。");
         assert_eq!(handoff.artifacts[0].kind, "subRun");
         assert_eq!(handoff.artifacts[0].id, "subrun-1");
         assert_eq!(handoff.artifacts[1].kind, "agent");
@@ -994,9 +991,8 @@ mod tests {
         assert_eq!(params.context.as_deref(), Some("focus on boundaries"));
         assert!(params.description.ends_with("..."));
         assert!(summarize_execution_description("short") == "short");
-        assert!(validate_root_execution_storage_mode(SubRunStorageMode::SharedSession).is_ok());
         assert!(
-            validate_root_execution_storage_mode(SubRunStorageMode::IndependentSession).is_err()
+            validate_root_execution_storage_mode(SubRunStorageMode::IndependentSession).is_ok()
         );
 
         let launch = prepare_root_execution_launch(

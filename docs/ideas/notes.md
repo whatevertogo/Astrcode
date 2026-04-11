@@ -10,5 +10,4 @@
 5. 前端路由需要清理
 6. shell 工具output优化
 7. 子session换个好点的位置放置
-8. 前端重构为tailwind技术栈而不是混合cssmodules和tailwind
-9. 删除waitagent的工具，这个工具冗余
+8. 删除waitagent的工具，这个工具冗余

@@ -1,6 +1,6 @@
 //! 子 Agent profile 摘要贡献者。
 //!
-//! 当 `spawnAgent` 工具可用时，生成当前可委派 profile 的动态索引块。
+//! 当 `spawn` 工具可用时，生成当前可委派 profile 的动态索引块。
 //! 这样可把动态 profile 列表放在 prompt 层，而不是固化进 tool definition。
 
 use async_trait::async_trait;
@@ -12,7 +12,7 @@ use crate::{
 
 pub struct AgentProfileSummaryContributor;
 
-const SPAWN_AGENT_TOOL_NAME: &str = "spawnAgent";
+const SPAWN_AGENT_TOOL_NAME: &str = "spawn";
 const MAX_PROFILE_SUMMARY_CHARS: usize = 120;
 
 #[async_trait]
@@ -45,8 +45,8 @@ impl PromptContributor for AgentProfileSummaryContributor {
         }
 
         let mut content = String::from(
-            "Use `spawnAgent` when a task benefits from a dedicated sub-agent with an isolated \
-             task scope.\n\nAvailable sub-agent profiles:\n",
+            "Use `spawn` when a task benefits from a dedicated sub-agent with an isolated task \
+             scope.\n\nAvailable sub-agent profiles:\n",
         );
         for profile in profiles {
             append_profile_line(&mut content, &profile);
@@ -127,7 +127,7 @@ mod tests {
         let contribution = AgentProfileSummaryContributor
             .contribute(&PromptContext {
                 working_dir: "/workspace/demo".to_string(),
-                tool_names: vec!["shell".to_string(), "spawnAgent".to_string()],
+                tool_names: vec!["shell".to_string(), "spawn".to_string()],
                 capability_descriptors: Vec::new(),
                 prompt_declarations: Vec::new(),
                 agent_profiles: vec![PromptAgentProfileSummary::new("reviewer", "多视角代码审查")],

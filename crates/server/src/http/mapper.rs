@@ -28,19 +28,19 @@ use astrcode_core::{
 use astrcode_protocol::{
     capability::CapabilityDescriptor,
     http::{
-        AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentProfileDto, AgentStatusDto,
-        ArtifactRefDto, ChildAgentRefDto, ChildSessionLineageKindDto,
+        AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentLifecycleDto, AgentProfileDto,
+        AgentTurnOutcomeDto, ArtifactRefDto, ChildAgentRefDto, ChildSessionLineageKindDto,
         ChildSessionNotificationKindDto, CompactTriggerDto, ComposerOptionDto,
         ComposerOptionKindDto, ComposerOptionsResponseDto, ConfigView, CurrentModelInfoDto,
-        ForkModeDto, InvocationKindDto, LineageSnapshotDto, ModelOptionDto, OperationMetricsDto,
-        PROTOCOL_VERSION, PhaseDto, PluginHealthDto, PluginRuntimeStateDto, ProfileView,
-        ReplayMetricsDto, ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto,
-        RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto,
-        SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem,
-        SubRunExecutionMetricsDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
-        SubRunOutcomeDto, SubRunResultDto, SubRunStatusDto, SubRunStatusSourceDto,
-        SubRunStorageModeDto, SubagentContextOverridesDto, ToolCallResultDto, ToolDescriptorDto,
-        ToolOutputStreamDto,
+        ForkModeDto, InvocationKindDto, LineageSnapshotDto, MailboxBatchDto, MailboxDiscardedDto,
+        MailboxQueuedDto, ModelOptionDto, OperationMetricsDto, PROTOCOL_VERSION, PhaseDto,
+        PluginHealthDto, PluginRuntimeStateDto, ProfileView, ReplayMetricsDto,
+        ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto, RuntimeCapabilityDto,
+        RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto, SessionCatalogEventEnvelope,
+        SessionCatalogEventPayload, SessionListItem, SubRunExecutionMetricsDto,
+        SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto,
+        SubRunResultDto, SubRunStatusDto, SubRunStatusSourceDto, SubRunStorageModeDto,
+        SubagentContextOverridesDto, ToolCallResultDto, ToolDescriptorDto, ToolOutputStreamDto,
     },
 };
 use astrcode_runtime::{
@@ -155,7 +155,8 @@ pub(crate) fn to_subrun_status_dto(snapshot: SubRunStatusSnapshot) -> SubRunStat
         depth: handle.depth,
         parent_agent_id: handle.parent_agent_id,
         storage_mode: to_subrun_storage_mode_dto(handle.storage_mode),
-        status: to_agent_status_dto(handle.status),
+        lifecycle: to_agent_lifecycle_dto(handle.lifecycle),
+        last_turn_outcome: handle.last_turn_outcome.map(to_agent_turn_outcome_dto),
         result: result.map(to_subrun_result_dto),
         step_count,
         estimated_tokens,
@@ -321,33 +322,39 @@ fn to_artifact_ref_dto(artifact: ArtifactRef) -> ArtifactRefDto {
 
 fn from_subrun_storage_mode_dto(mode: SubRunStorageModeDto) -> SubRunStorageMode {
     match mode {
-        SubRunStorageModeDto::SharedSession => SubRunStorageMode::SharedSession,
         SubRunStorageModeDto::IndependentSession => SubRunStorageMode::IndependentSession,
     }
 }
 
 fn to_subrun_storage_mode_dto(mode: SubRunStorageMode) -> SubRunStorageModeDto {
     match mode {
-        SubRunStorageMode::SharedSession => SubRunStorageModeDto::SharedSession,
         SubRunStorageMode::IndependentSession => SubRunStorageModeDto::IndependentSession,
     }
 }
 
-fn to_subrun_outcome_dto(outcome: astrcode_core::AgentStatus) -> SubRunOutcomeDto {
-    match outcome {
-        astrcode_core::AgentStatus::Pending | astrcode_core::AgentStatus::Running => {
-            SubRunOutcomeDto::Running
+/// 将 lifecycle + last_turn_outcome 组合映射为 SubRunOutcomeDto。
+///
+/// 旧 `AgentStatus` 已拆分为 `AgentLifecycleStatus`（生命周期阶段）和
+/// `AgentTurnOutcome`（单轮结束原因），此函数将两者重新投影为前端兼容的 outcome 枚举。
+fn to_subrun_outcome_dto(
+    lifecycle: astrcode_core::AgentLifecycleStatus,
+    last_turn_outcome: Option<astrcode_core::AgentTurnOutcome>,
+) -> SubRunOutcomeDto {
+    match last_turn_outcome {
+        Some(astrcode_core::AgentTurnOutcome::Completed) => SubRunOutcomeDto::Completed,
+        Some(astrcode_core::AgentTurnOutcome::Failed) => SubRunOutcomeDto::Failed,
+        Some(astrcode_core::AgentTurnOutcome::Cancelled) => SubRunOutcomeDto::Aborted,
+        Some(astrcode_core::AgentTurnOutcome::TokenExceeded) => SubRunOutcomeDto::TokenExceeded,
+        None => match lifecycle {
+            astrcode_core::AgentLifecycleStatus::Terminated => SubRunOutcomeDto::Running,
+            _ => SubRunOutcomeDto::Running,
         },
-        astrcode_core::AgentStatus::Completed => SubRunOutcomeDto::Completed,
-        astrcode_core::AgentStatus::Cancelled => SubRunOutcomeDto::Aborted,
-        astrcode_core::AgentStatus::Failed => SubRunOutcomeDto::Failed,
-        astrcode_core::AgentStatus::TokenExceeded => SubRunOutcomeDto::TokenExceeded,
     }
 }
 
 fn to_subrun_result_dto(result: SubRunResult) -> SubRunResultDto {
     SubRunResultDto {
-        status: to_subrun_outcome_dto(result.status),
+        status: to_subrun_outcome_dto(result.lifecycle, result.last_turn_outcome),
         handoff: result.handoff.map(to_subrun_handoff_dto),
         failure: result.failure.map(to_subrun_failure_dto),
     }
@@ -360,19 +367,26 @@ fn to_child_agent_ref_dto(child_ref: astrcode_core::ChildAgentRef) -> ChildAgent
         sub_run_id: child_ref.sub_run_id,
         parent_agent_id: child_ref.parent_agent_id,
         lineage_kind: to_child_lineage_kind_dto(child_ref.lineage_kind),
-        status: to_agent_status_dto(child_ref.status),
+        status: to_agent_lifecycle_dto(child_ref.status),
         open_session_id: child_ref.open_session_id,
     }
 }
 
-fn to_agent_status_dto(status: astrcode_core::AgentStatus) -> AgentStatusDto {
+fn to_agent_lifecycle_dto(status: astrcode_core::AgentLifecycleStatus) -> AgentLifecycleDto {
     match status {
-        astrcode_core::AgentStatus::Pending => AgentStatusDto::Pending,
-        astrcode_core::AgentStatus::Running => AgentStatusDto::Running,
-        astrcode_core::AgentStatus::Completed => AgentStatusDto::Completed,
-        astrcode_core::AgentStatus::Cancelled => AgentStatusDto::Cancelled,
-        astrcode_core::AgentStatus::Failed => AgentStatusDto::Failed,
-        astrcode_core::AgentStatus::TokenExceeded => AgentStatusDto::TokenExceeded,
+        astrcode_core::AgentLifecycleStatus::Pending => AgentLifecycleDto::Pending,
+        astrcode_core::AgentLifecycleStatus::Running => AgentLifecycleDto::Running,
+        astrcode_core::AgentLifecycleStatus::Idle => AgentLifecycleDto::Idle,
+        astrcode_core::AgentLifecycleStatus::Terminated => AgentLifecycleDto::Terminated,
+    }
+}
+
+fn to_agent_turn_outcome_dto(outcome: astrcode_core::AgentTurnOutcome) -> AgentTurnOutcomeDto {
+    match outcome {
+        astrcode_core::AgentTurnOutcome::Completed => AgentTurnOutcomeDto::Completed,
+        astrcode_core::AgentTurnOutcome::Failed => AgentTurnOutcomeDto::Failed,
+        astrcode_core::AgentTurnOutcome::Cancelled => AgentTurnOutcomeDto::Cancelled,
+        astrcode_core::AgentTurnOutcome::TokenExceeded => AgentTurnOutcomeDto::TokenExceeded,
     }
 }
 
@@ -588,7 +602,6 @@ fn to_subrun_execution_metrics_dto(
         completed: snapshot.completed,
         aborted: snapshot.aborted,
         token_exceeded: snapshot.token_exceeded,
-        shared_session_total: snapshot.shared_session_total,
         independent_session_total: snapshot.independent_session_total,
         total_duration_ms: snapshot.total_duration_ms,
         last_duration_ms: snapshot.last_duration_ms,
@@ -754,7 +767,7 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
             child_ref: to_child_agent_ref_dto(notification.child_ref.clone()),
             kind: to_child_notification_kind_dto(notification.kind),
             summary: notification.summary,
-            status: to_agent_status_dto(notification.status),
+            status: to_agent_lifecycle_dto(notification.status),
             source_tool_call_id: notification.source_tool_call_id,
             final_reply_excerpt: notification.final_reply_excerpt,
         },
@@ -793,6 +806,68 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
             provider_cache_metrics_supported: metrics.provider_cache_metrics_supported,
             prompt_cache_reuse_hits: metrics.prompt_cache_reuse_hits,
             prompt_cache_reuse_misses: metrics.prompt_cache_reuse_misses,
+        },
+        AgentEvent::AgentMailboxQueued {
+            turn_id,
+            agent,
+            payload,
+        } => AgentEventPayload::AgentMailboxQueued {
+            turn_id,
+            agent: to_agent_context_dto(agent),
+            payload: MailboxQueuedDto {
+                delivery_id: payload.envelope.delivery_id,
+                from_agent_id: payload.envelope.from_agent_id,
+                to_agent_id: payload.envelope.to_agent_id,
+                message: payload.envelope.message,
+                queued_at: payload.envelope.queued_at.to_rfc3339(),
+                sender_lifecycle_status: format!("{:?}", payload.envelope.sender_lifecycle_status),
+                sender_last_turn_outcome: payload
+                    .envelope
+                    .sender_last_turn_outcome
+                    .map(|outcome| format!("{outcome:?}")),
+                sender_open_session_id: payload.envelope.sender_open_session_id,
+                summary: None,
+            },
+        },
+        AgentEvent::AgentMailboxBatchStarted {
+            turn_id,
+            agent,
+            payload,
+        } => AgentEventPayload::AgentMailboxBatchStarted {
+            turn_id,
+            agent: to_agent_context_dto(agent),
+            payload: MailboxBatchDto {
+                target_agent_id: payload.target_agent_id,
+                turn_id: payload.turn_id,
+                batch_id: payload.batch_id,
+                delivery_ids: payload.delivery_ids,
+            },
+        },
+        AgentEvent::AgentMailboxBatchAcked {
+            turn_id,
+            agent,
+            payload,
+        } => AgentEventPayload::AgentMailboxBatchAcked {
+            turn_id,
+            agent: to_agent_context_dto(agent),
+            payload: MailboxBatchDto {
+                target_agent_id: payload.target_agent_id,
+                turn_id: payload.turn_id,
+                batch_id: payload.batch_id,
+                delivery_ids: payload.delivery_ids,
+            },
+        },
+        AgentEvent::AgentMailboxDiscarded {
+            turn_id,
+            agent,
+            payload,
+        } => AgentEventPayload::AgentMailboxDiscarded {
+            turn_id,
+            agent: to_agent_context_dto(agent),
+            payload: MailboxDiscardedDto {
+                target_agent_id: payload.target_agent_id,
+                delivery_ids: payload.delivery_ids,
+            },
         },
     }
 }

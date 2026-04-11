@@ -150,6 +150,34 @@ pub enum AgentEvent {
         turn_id: String,
         agent: AgentEventContext,
     },
+    /// Durable mailbox 消息入队（前端可见，用于 UI 渲染）。
+    AgentMailboxQueued {
+        turn_id: Option<String>,
+        agent: AgentEventContext,
+        #[serde(flatten)]
+        payload: crate::MailboxQueuedPayload,
+    },
+    /// Mailbox 批次开始消费。
+    AgentMailboxBatchStarted {
+        turn_id: Option<String>,
+        agent: AgentEventContext,
+        #[serde(flatten)]
+        payload: crate::MailboxBatchStartedPayload,
+    },
+    /// Mailbox 批次确认完成。
+    AgentMailboxBatchAcked {
+        turn_id: Option<String>,
+        agent: AgentEventContext,
+        #[serde(flatten)]
+        payload: crate::MailboxBatchAckedPayload,
+    },
+    /// Mailbox 消息丢弃。
+    AgentMailboxDiscarded {
+        turn_id: Option<String>,
+        agent: AgentEventContext,
+        #[serde(flatten)]
+        payload: crate::MailboxDiscardedPayload,
+    },
     /// 错误事件
     Error {
         /// 发生错误的 Turn ID（可能为空，如会话级别错误）

@@ -1,5 +1,6 @@
 use astrcode_core::{
-    AgentEventContext, AgentMode, AgentProfile, EventLogWriter, PluginHealth, PluginState, Result,
+    AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope, AgentMode, AgentProfile,
+    AgentTurnOutcome, EventLogWriter, MailboxQueuedPayload, PluginHealth, PluginState, Result,
     StorageEvent, StorageEventPayload, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
     ToolExecutionResult, UserMessageOrigin, plugin::PluginEntry,
 };
@@ -26,7 +27,7 @@ use tower::ServiceExt;
 use crate::{
     AUTH_HEADER_NAME,
     routes::build_api_router,
-    test_support::{test_state, test_state_with_capabilities},
+    test_support::{append_session_events, test_state, test_state_with_capabilities},
 };
 
 struct DemoReadTool;
@@ -42,7 +43,7 @@ fn seed_shared_subrun_session(session_id: &str, working_dir: &std::path::Path) {
         "turn-root",
         "review",
         "sub-a",
-        astrcode_core::SubRunStorageMode::SharedSession,
+        astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
     let sub_b = AgentEventContext::sub_run(
@@ -50,7 +51,7 @@ fn seed_shared_subrun_session(session_id: &str, working_dir: &std::path::Path) {
         "turn-a",
         "review",
         "sub-b",
-        astrcode_core::SubRunStorageMode::SharedSession,
+        astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
     let sub_c = AgentEventContext::sub_run(
@@ -58,7 +59,7 @@ fn seed_shared_subrun_session(session_id: &str, working_dir: &std::path::Path) {
         "turn-b",
         "review",
         "sub-c",
-        astrcode_core::SubRunStorageMode::SharedSession,
+        astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
 
@@ -144,8 +145,8 @@ fn seed_finished_subrun_session(session_id: &str, working_dir: &std::path::Path)
         "turn-root",
         "review",
         "sub-durable",
-        astrcode_core::SubRunStorageMode::SharedSession,
-        None,
+        astrcode_core::SubRunStorageMode::IndependentSession,
+        Some("child-durable".to_string()),
     );
 
     for event in [
@@ -176,7 +177,8 @@ fn seed_finished_subrun_session(session_id: &str, working_dir: &std::path::Path)
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: Some("call-durable".to_string()),
                 result: astrcode_core::SubRunResult {
-                    status: astrcode_core::AgentStatus::Completed,
+                    lifecycle: astrcode_core::AgentLifecycleStatus::Terminated,
+                    last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Completed),
                     handoff: Some(astrcode_core::SubRunHandoff {
                         summary: "done".to_string(),
                         findings: vec!["ok".to_string()],
@@ -202,7 +204,7 @@ fn seed_legacy_subrun_session(session_id: &str, working_dir: &std::path::Path) {
         "turn-legacy",
         "review",
         "sub-legacy",
-        astrcode_core::SubRunStorageMode::SharedSession,
+        astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
 
@@ -234,7 +236,8 @@ fn seed_legacy_subrun_session(session_id: &str, working_dir: &std::path::Path) {
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: Some("call-legacy".to_string()),
                 result: astrcode_core::SubRunResult {
-                    status: astrcode_core::AgentStatus::Completed,
+                    lifecycle: astrcode_core::AgentLifecycleStatus::Terminated,
+                    last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Completed),
                     handoff: None,
                     failure: None,
                 },
@@ -256,7 +259,7 @@ fn seed_parent_abort_storage_mode_parity_session(session_id: &str, working_dir: 
         "turn-parent",
         "review",
         "sub-shared",
-        astrcode_core::SubRunStorageMode::SharedSession,
+        astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
     let independent = AgentEventContext::sub_run(
@@ -296,7 +299,8 @@ fn seed_parent_abort_storage_mode_parity_session(session_id: &str, working_dir: 
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: Some("call-shared".to_string()),
                 result: astrcode_core::SubRunResult {
-                    status: astrcode_core::AgentStatus::Cancelled,
+                    lifecycle: astrcode_core::AgentLifecycleStatus::Terminated,
+                    last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Cancelled),
                     handoff: None,
                     failure: None,
                 },
@@ -321,7 +325,8 @@ fn seed_parent_abort_storage_mode_parity_session(session_id: &str, working_dir: 
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: Some("call-independent".to_string()),
                 result: astrcode_core::SubRunResult {
-                    status: astrcode_core::AgentStatus::Cancelled,
+                    lifecycle: astrcode_core::AgentLifecycleStatus::Terminated,
+                    last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Cancelled),
                     handoff: None,
                     failure: None,
                 },
@@ -770,6 +775,88 @@ async fn session_history_endpoint_filters_subrun_scope_and_cursor() {
 }
 
 #[tokio::test]
+async fn session_history_endpoint_serializes_mailbox_payload_with_sender_snapshots() {
+    let (state, _guard) = test_state(None);
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let session_id = "mailbox-history-session";
+    append_session_events(
+        session_id,
+        temp_dir.path(),
+        [
+            StorageEvent {
+                turn_id: None,
+                agent: AgentEventContext::default(),
+                payload: StorageEventPayload::SessionStart {
+                    session_id: session_id.to_string(),
+                    timestamp: Utc::now(),
+                    working_dir: temp_dir.path().display().to_string(),
+                    parent_session_id: None,
+                    parent_storage_seq: None,
+                },
+            },
+            StorageEvent {
+                turn_id: Some("turn-parent".to_string()),
+                agent: AgentEventContext::default(),
+                payload: StorageEventPayload::AgentMailboxQueued {
+                    payload: MailboxQueuedPayload {
+                        envelope: AgentMailboxEnvelope {
+                            delivery_id: "delivery-history-1".to_string(),
+                            from_agent_id: "agent-child".to_string(),
+                            to_agent_id: "agent-parent".to_string(),
+                            message: "child summary".to_string(),
+                            queued_at: Utc::now(),
+                            sender_lifecycle_status: AgentLifecycleStatus::Idle,
+                            sender_last_turn_outcome: Some(AgentTurnOutcome::Completed),
+                            sender_open_session_id: "session-child".to_string(),
+                        },
+                    },
+                },
+            },
+        ],
+    );
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/sessions/{}/history", session_id))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body should be readable");
+    let payload: SessionHistoryResponseDto =
+        serde_json::from_slice(&bytes).expect("history response should deserialize");
+
+    let mailbox_event = payload
+        .events
+        .iter()
+        .find_map(|event| match &event.event {
+            astrcode_protocol::http::AgentEventPayload::AgentMailboxQueued { payload, .. } => {
+                Some(payload)
+            },
+            _ => None,
+        })
+        .expect("history should include mailbox queued payload");
+
+    assert_eq!(mailbox_event.delivery_id, "delivery-history-1");
+    assert_eq!(mailbox_event.from_agent_id, "agent-child");
+    assert_eq!(mailbox_event.to_agent_id, "agent-parent");
+    assert_eq!(mailbox_event.sender_lifecycle_status, "Idle");
+    assert_eq!(
+        mailbox_event.sender_last_turn_outcome.as_deref(),
+        Some("Completed")
+    );
+    assert_eq!(mailbox_event.sender_open_session_id, "session-child");
+}
+
+#[tokio::test]
 async fn session_history_endpoint_rejects_legacy_subtree_scope() {
     let (state, _guard) = test_state(None);
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
@@ -1073,8 +1160,8 @@ async fn subrun_status_endpoint_returns_contract_fields_for_durable_snapshot() {
     assert_eq!(payload.sub_run_id, "sub-durable");
     assert_eq!(payload.source, SubRunStatusSourceDto::Durable);
     assert_eq!(
-        payload.status,
-        astrcode_protocol::http::AgentStatusDto::Completed
+        payload.lifecycle,
+        astrcode_protocol::http::AgentLifecycleDto::Terminated
     );
     assert_eq!(payload.step_count, Some(2));
     assert_eq!(payload.estimated_tokens, Some(120));
@@ -1088,10 +1175,9 @@ async fn subrun_status_endpoint_keeps_storage_mode_parity_for_parent_aborted_sub
     seed_parent_abort_storage_mode_parity_session("subrun-abort-parity", temp_dir.path());
     let app = build_api_router().with_state(state);
 
-    for (sub_run_id, expected_mode) in [
-        ("sub-shared", SubRunStorageModeDto::SharedSession),
-        ("sub-independent", SubRunStorageModeDto::IndependentSession),
-    ] {
+    for (sub_run_id, expected_mode) in
+        [("sub-independent", SubRunStorageModeDto::IndependentSession)]
+    {
         let response = app
             .clone()
             .oneshot(
@@ -1115,40 +1201,11 @@ async fn subrun_status_endpoint_keeps_storage_mode_parity_for_parent_aborted_sub
 
         assert_eq!(payload.source, SubRunStatusSourceDto::Durable);
         assert_eq!(
-            payload.status,
-            astrcode_protocol::http::AgentStatusDto::Cancelled
+            payload.lifecycle,
+            astrcode_protocol::http::AgentLifecycleDto::Terminated
         );
         assert_eq!(payload.storage_mode, expected_mode);
     }
-}
-
-#[tokio::test]
-async fn subrun_status_endpoint_rejects_legacy_shared_history() {
-    let (state, _guard) = test_state(None);
-    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    seed_legacy_subrun_session("subrun-legacy-session", temp_dir.path());
-    let app = build_api_router().with_state(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/sessions/subrun-legacy-session/subruns/sub-legacy")
-                .header(AUTH_HEADER_NAME, "browser-token")
-                .body(Body::empty())
-                .expect("request should be valid"),
-        )
-        .await
-        .expect("response should be returned");
-
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let body = String::from_utf8(
-        to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body should be readable")
-            .to_vec(),
-    )
-    .expect("body should be utf-8");
-    assert!(body.contains("unsupported_legacy_shared_history"));
 }
 
 #[tokio::test]
@@ -1190,8 +1247,11 @@ async fn subrun_status_endpoint_reports_live_for_independent_subrun_owned_by_par
         )
         .await
         .expect("independent sub-run should spawn");
-    let _ = control
-        .mark_running(&handle.agent_id)
+    control
+        .set_lifecycle(
+            &handle.agent_id,
+            astrcode_core::AgentLifecycleStatus::Running,
+        )
         .await
         .expect("sub-run should be running");
 
@@ -1241,8 +1301,8 @@ async fn subrun_status_endpoint_reports_live_for_independent_subrun_owned_by_par
         serde_json::from_slice(&bytes).expect("status payload should deserialize");
     assert_eq!(payload.source, SubRunStatusSourceDto::Live);
     assert_eq!(
-        payload.status,
-        astrcode_protocol::http::AgentStatusDto::Running
+        payload.lifecycle,
+        astrcode_protocol::http::AgentLifecycleDto::Running
     );
     assert_eq!(
         payload.storage_mode,

@@ -1245,3 +1245,353 @@ async fn p4_1_non_recoverable_error_does_not_trigger_compact() {
         "should NOT have emitted CompactApplied for non-recoverable error"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 新增：暴露 proactive compact 与 reactive compact 之间 system prompt 不一致问题
+// ---------------------------------------------------------------------------
+
+/// 验证 proactive compact 使用 policy 改写后的 system prompt。
+///
+/// 当前代码中，proactive compact（步骤⑥）在 policy check（步骤⑦）之前执行，
+/// 因此它拿到的是改写前的 system prompt。而 reactive compact 正确使用了改写后的。
+/// 这会导致 proactive compact 的摘要基于过时的指令，产生内容漂移。
+#[tokio::test]
+async fn proactive_compact_uses_policy_rewritten_system_prompt() {
+    let _guard = super::test_support::TestEnvGuard::new();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(RecordingFailingProvider {
+        results: Mutex::new(VecDeque::from([
+            // 第一轮：用于 compact 的摘要生成请求
+            Ok(LlmOutput {
+                content: "<analysis>trimmed</analysis><summary>condensed history</summary>"
+                    .to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            }),
+            // 第二轮：最终回复
+            Ok(LlmOutput {
+                content: "final answer".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            }),
+        ])),
+        requests: Arc::clone(&requests),
+    });
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::from_capabilities(factory, empty_capabilities())
+        .with_policy_engine(Arc::new(RewriteSystemPromptPolicy {
+            suffix: "CRITICAL POLICY CONTEXT".to_string(),
+        }))
+        .with_auto_compact_enabled(true)
+        .with_compact_threshold_percent(1)
+        .with_compact_keep_recent_turns(1);
+    let state = astrcode_core::AgentState {
+        session_id: "test".into(),
+        working_dir: std::env::temp_dir(),
+        messages: vec![
+            LlmMessage::User {
+                content: "legacy ".repeat(1_500),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "ack".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+            LlmMessage::User {
+                content: "current ask".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ],
+        phase: Phase::Thinking,
+        turn_count: 0,
+    };
+    let (_events, mut on_event) = collect_events();
+
+    let outcome = loop_runner
+        .run_turn(
+            &state,
+            "turn-proactive-policy-prompt",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+
+    assert!(
+        matches!(outcome, TurnOutcome::Completed),
+        "turn should complete, got: {outcome:?}"
+    );
+    let requests = requests.lock().expect("requests lock");
+    // 第一个请求是 compact 摘要请求，第二个是最终模型请求
+    assert!(
+        requests.len() >= 2,
+        "should have at least a compact request and a final request, got {}",
+        requests.len()
+    );
+    let compact_request = &requests[0];
+    // compact 请求的 system_prompt 应该包含 policy 追加的内容，
+    // 否则摘要模型不知道完整的工作指令上下文，会丢失关键信息。
+    let compact_system = compact_request.system_prompt.as_deref().unwrap_or("<none>");
+    assert!(
+        compact_system.contains("CRITICAL POLICY CONTEXT"),
+        "proactive compact should use the policy-rewritten system prompt, but system_prompt was: \
+         {compact_system}"
+    );
+}
+
+/// 验证 proactive compact 之后 reactive compact 的计数器保持独立。
+///
+/// 如果 proactive compact 成功了但 LLM 仍然返回 prompt-too-long，
+/// reactive compact 应该从 0 开始计数（而非继承之前的某种状态）。
+#[tokio::test]
+async fn reactive_compact_counter_starts_from_zero_after_proactive_compact() {
+    let _guard = super::test_support::TestEnvGuard::new();
+    // 阈值设到 1%，确保 proactive compact 一定触发。
+    // 但 compact 后的摘要 + 尾部仍然可能触发 413（模拟极端场景）。
+    let provider = Arc::new(FailingProvider {
+        results: Mutex::new(VecDeque::from([
+            // compact 摘要生成成功
+            Ok(LlmOutput {
+                content: "<analysis>trimmed</analysis><summary>short summary</summary>".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            }),
+            // compact 后第一次 LLM 调用失败 → 触发 reactive compact
+            Err(make_prompt_too_long_error()),
+            // reactive compact 摘要生成
+            Ok(LlmOutput {
+                content: "<analysis>trimmed</analysis><summary>even shorter</summary>".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            }),
+            // reactive compact 后 LLM 调用成功
+            Ok(LlmOutput {
+                content: "recovered".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            }),
+        ])),
+        delay: std::time::Duration::from_millis(0),
+    });
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::from_capabilities(factory, empty_capabilities())
+        .with_auto_compact_enabled(true)
+        .with_compact_threshold_percent(1)
+        .with_compact_keep_recent_turns(1);
+    let state = astrcode_core::AgentState {
+        session_id: "test".into(),
+        working_dir: std::env::temp_dir(),
+        messages: vec![
+            LlmMessage::User {
+                content: "legacy ".repeat(1_500),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "ack".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+            LlmMessage::User {
+                content: "current ask".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ],
+        phase: Phase::Thinking,
+        turn_count: 0,
+    };
+    let (events, mut on_event) = collect_events();
+
+    let outcome = loop_runner
+        .run_turn(
+            &state,
+            "turn-proactive-then-reactive",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+
+    assert!(
+        matches!(outcome, TurnOutcome::Completed),
+        "turn should recover via reactive compact after proactive compact, got: {outcome:?}"
+    );
+    let compact_count = events
+        .lock()
+        .expect("events lock")
+        .iter()
+        .filter(|event| matches!(&event.payload, StorageEventPayload::CompactApplied { .. }))
+        .count();
+    assert_eq!(
+        compact_count, 2,
+        "should have exactly two CompactApplied events (one proactive, one reactive)"
+    );
+}
+
+/// 验证 auto_compact 关闭时 reactive compact 不会触发。
+///
+/// 当 auto_compact_enabled=false 时，即使 LLM 返回 413 prompt-too-long，
+/// reactive compact 也应该直接终止 turn 而不是尝试恢复。
+#[tokio::test]
+async fn reactive_compact_does_not_fire_when_auto_compact_disabled() {
+    let _guard = super::test_support::TestEnvGuard::new();
+    let provider = Arc::new(FailingProvider {
+        results: Mutex::new(VecDeque::from([Err(make_prompt_too_long_error())])),
+        delay: std::time::Duration::from_millis(0),
+    });
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::from_capabilities(factory, empty_capabilities())
+        .with_auto_compact_enabled(false)
+        .with_compact_threshold_percent(95)
+        .with_compact_keep_recent_turns(1);
+    let state = astrcode_core::AgentState {
+        session_id: "test".into(),
+        working_dir: std::env::temp_dir(),
+        messages: vec![
+            LlmMessage::User {
+                content: "legacy ".repeat(1_500),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "ack".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+            LlmMessage::User {
+                content: "current ask".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ],
+        phase: Phase::Thinking,
+        turn_count: 0,
+    };
+    let (events, mut on_event) = collect_events();
+
+    let outcome = loop_runner
+        .run_turn(
+            &state,
+            "turn-disabled-auto-compact-413",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("run_turn should return Ok(TurnOutcome) even on error");
+
+    assert!(
+        matches!(outcome, TurnOutcome::Error { .. }),
+        "turn should end with Error when auto_compact is disabled and LLM returns 413, got: \
+         {outcome:?}"
+    );
+    let compact_count = events
+        .lock()
+        .expect("events lock")
+        .iter()
+        .filter(|event| matches!(&event.payload, StorageEventPayload::CompactApplied { .. }))
+        .count();
+    assert_eq!(
+        compact_count, 0,
+        "should NOT emit any CompactApplied when auto_compact is disabled"
+    );
+}
+
+/// 验证 proactive compact 成功后 step_index 不会增长。
+///
+/// compact 只是替换了对话历史，当前 step 仍然在处理同一个用户请求，
+/// 因此 step_index 应保持不变直到工具执行完成。
+#[tokio::test]
+async fn proactive_compact_does_not_increment_step_index() {
+    let _guard = super::test_support::TestEnvGuard::new();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(RecordingFailingProvider {
+        results: Mutex::new(VecDeque::from([
+            // compact 摘要
+            Ok(LlmOutput {
+                content: "<analysis>trimmed</analysis><summary>summary</summary>".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            }),
+            // 最终回复
+            Ok(LlmOutput {
+                content: "done".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+                usage: None,
+                finish_reason: Default::default(),
+            }),
+        ])),
+        requests: Arc::clone(&requests),
+    });
+    let factory = Arc::new(StaticProviderFactory { provider });
+    let loop_runner = AgentLoop::from_capabilities(factory, empty_capabilities())
+        .with_auto_compact_enabled(true)
+        .with_compact_threshold_percent(1)
+        .with_compact_keep_recent_turns(1);
+    let state = astrcode_core::AgentState {
+        session_id: "test".into(),
+        working_dir: std::env::temp_dir(),
+        messages: vec![
+            LlmMessage::User {
+                content: "legacy ".repeat(1_500),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "ack".to_string(),
+                tool_calls: vec![],
+                reasoning: None,
+            },
+            LlmMessage::User {
+                content: "current ask".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ],
+        phase: Phase::Thinking,
+        turn_count: 0,
+    };
+    let (events, mut on_event) = collect_events();
+
+    let outcome = loop_runner
+        .run_turn(
+            &state,
+            "turn-step-index-check",
+            &mut on_event,
+            CancelToken::new(),
+        )
+        .await
+        .expect("turn should complete");
+
+    assert!(matches!(outcome, TurnOutcome::Completed));
+    // 检查 PromptMetrics 事件中的 step_index 顺序
+    let events = events.lock().expect("events lock");
+    let step_indices: Vec<u32> = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            StorageEventPayload::PromptMetrics { metrics } => Some(metrics.step_index),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !step_indices.is_empty(),
+        "should have emitted at least one PromptMetrics event"
+    );
+    // proactive compact 不应导致 step_index 跳跃
+    // 预期序列：[0, 0] 或 [0]（compact 前和最终请求，都是 step 0）
+    for (i, index) in step_indices.iter().enumerate() {
+        assert_eq!(
+            *index, 0,
+            "step_index at position {i} should be 0 (proactive compact should not increment it), \
+             got {index}"
+        );
+    }
+}

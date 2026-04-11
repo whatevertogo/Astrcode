@@ -5,13 +5,15 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentEventContext, AgentMode, AgentProfile, AgentStatus, AstrError, CancelToken,
-    ChildSessionLineageKind, ChildSessionNotificationKind, ExecutionOwner, InvocationKind, Phase,
-    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SessionTurnAcquireResult,
-    SpawnAgentParams, StorageEvent, StorageEventPayload, SubRunFailure, SubRunFailureCode,
-    SubRunHandle, SubRunHandoff, SubRunResult, SubRunStorageMode, SubagentContextOverrides, Tool,
-    ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolEventSink, ToolExecutionResult,
-    UserMessageOrigin, test_support::TestEnvGuard,
+    AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope, AgentMode, AgentProfile,
+    AgentTurnOutcome, AstrError, CancelToken, ChildSessionLineageKind,
+    ChildSessionNotificationKind, CloseAgentParams, ExecutionOwner, InvocationKind,
+    MailboxBatchStartedPayload, MailboxProjection, MailboxQueuedPayload, ObserveAgentResult,
+    ObserveParams, Phase, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
+    SendAgentParams, SessionTurnAcquireResult, SpawnAgentParams, StorageEvent, StorageEventPayload,
+    SubRunFailure, SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunResult, SubRunStorageMode,
+    SubagentContextOverrides, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
+    ToolEventSink, ToolExecutionResult, UserMessageOrigin, test_support::TestEnvGuard,
 };
 use astrcode_runtime_agent_loop::{AgentLoop, ProviderFactory};
 use astrcode_runtime_agent_tool::{SpawnAgentTool, SubAgentExecutor};
@@ -125,11 +127,14 @@ fn append_storage_event(service: &RuntimeService, session_id: &str, event: &Stor
 }
 
 async fn install_provider_loop(service: &Arc<RuntimeService>, provider: Arc<dyn LlmProvider>) {
-    let loop_ = AgentLoop::from_capabilities(
-        Arc::new(StaticProviderFactory { provider }),
-        empty_capabilities(),
-    );
+    let factory: Arc<dyn astrcode_runtime_agent_loop::ProviderFactory> =
+        Arc::new(StaticProviderFactory {
+            provider: provider.clone(),
+        });
+    let loop_ = AgentLoop::from_capabilities(factory.clone(), empty_capabilities());
     *service.loop_.write().await = Arc::new(loop_);
+    // 同步更新 surface 中的 factory，以便子代理 scoped execution 也使用 StaticProvider
+    service.surface.write().await.factory = factory;
 }
 
 async fn install_test_loop(service: &Arc<RuntimeService>, output: LlmOutput) {
@@ -195,7 +200,18 @@ fn extract_spawned_sub_run_id(result: &ToolExecutionResult) -> String {
         })
         .and_then(|artifact| artifact.get("id"))
         .and_then(|value| value.as_str())
-        .expect("spawnAgent launch should expose sub-run artifact")
+        .expect("spawn launch should expose sub-run artifact")
+        .to_string()
+}
+
+fn extract_spawned_agent_id(result: &ToolExecutionResult) -> String {
+    result
+        .metadata
+        .as_ref()
+        .and_then(|value| value.get("agentRef"))
+        .and_then(|value| value.get("agentId"))
+        .and_then(|value| value.as_str())
+        .expect("spawn launch should expose child agent id")
         .to_string()
 }
 
@@ -376,7 +392,7 @@ async fn spawn_agent_background_cancellation_releases_concurrency_slots() {
                 "call-1".to_string(),
                 json!({
                     "type": "plan",
-                    "description": "regression test for spawnAgent slot leak",
+                    "description": "regression test for spawn slot leak",
                     "prompt": "collect quick summary"
                 }),
                 &context,
@@ -396,7 +412,7 @@ async fn spawn_agent_background_cancellation_releases_concurrency_slots() {
             .await
             .expect("cancelled sub-run should still be observable");
         assert!(
-            handle.status.is_final(),
+            !handle.lifecycle.occupies_slot(),
             "background sub-run should eventually release its concurrency slot via any final state"
         );
     }
@@ -549,7 +565,8 @@ async fn get_subrun_status_reconstructs_durable_snapshot_without_live_handle() {
         allowed_tools: vec!["readFile".to_string()],
     };
     let result = SubRunResult {
-        status: AgentStatus::Completed,
+        lifecycle: AgentLifecycleStatus::Idle,
+        last_turn_outcome: Some(AgentTurnOutcome::Completed),
         handoff: Some(SubRunHandoff {
             summary: "done".to_string(),
             findings: vec!["ok".to_string()],
@@ -594,7 +611,7 @@ async fn get_subrun_status_reconstructs_durable_snapshot_without_live_handle() {
         .await
         .expect("durable snapshot should be reconstructed");
 
-    assert_eq!(snapshot.handle.status, AgentStatus::Completed);
+    assert_eq!(snapshot.handle.lifecycle, AgentLifecycleStatus::Idle);
     assert_eq!(snapshot.handle.agent_id, "agent-durable");
     assert_eq!(snapshot.handle.agent_profile, "review");
     assert_eq!(snapshot.result, Some(result));
@@ -633,16 +650,18 @@ async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
         model_preference: None,
     };
     let handle = control
-        .spawn(
+        .spawn_with_storage(
             &profile,
             &session.session_id,
+            Some("child-live".to_string()),
             "turn-parent".to_string(),
             None,
+            SubRunStorageMode::IndependentSession,
         )
         .await
         .expect("live sub-run should spawn");
-    let _ = control
-        .mark_running(&handle.sub_run_id)
+    control
+        .set_lifecycle(&handle.sub_run_id, AgentLifecycleStatus::Running)
         .await
         .expect("live sub-run should become running");
 
@@ -656,13 +675,14 @@ async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
                 "turn-parent".to_string(),
                 "review".to_string(),
                 handle.sub_run_id.clone(),
-                SubRunStorageMode::SharedSession,
-                None,
+                SubRunStorageMode::IndependentSession,
+                Some("child-live".to_string()),
             ),
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: None,
                 result: SubRunResult {
-                    status: AgentStatus::Completed,
+                    lifecycle: AgentLifecycleStatus::Idle,
+                    last_turn_outcome: Some(AgentTurnOutcome::Completed),
                     handoff: Some(SubRunHandoff {
                         summary: "durable completed".to_string(),
                         findings: Vec::new(),
@@ -685,11 +705,11 @@ async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
 
     assert_eq!(snapshot.handle.sub_run_id, handle.sub_run_id);
     assert_eq!(snapshot.handle.agent_id, handle.agent_id);
-    assert_eq!(snapshot.handle.status, AgentStatus::Running);
+    assert_eq!(snapshot.handle.lifecycle, AgentLifecycleStatus::Running);
     assert_eq!(snapshot.source, crate::service::SubRunStatusSource::Live);
     assert_eq!(
-        snapshot.result.as_ref().map(|item| item.status),
-        Some(AgentStatus::Completed)
+        snapshot.result.as_ref().map(|item| item.lifecycle),
+        Some(AgentLifecycleStatus::Idle)
     );
     assert_eq!(snapshot.step_count, Some(9));
     assert_eq!(snapshot.estimated_tokens, Some(999));
@@ -748,7 +768,8 @@ async fn get_subrun_status_keeps_storage_mode_parity_for_parent_aborted_independ
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: None,
                 result: SubRunResult {
-                    status: AgentStatus::Cancelled,
+                    lifecycle: AgentLifecycleStatus::Idle,
+                    last_turn_outcome: Some(AgentTurnOutcome::Cancelled),
                     handoff: None,
                     failure: None,
                 },
@@ -769,10 +790,10 @@ async fn get_subrun_status_keeps_storage_mode_parity_for_parent_aborted_independ
         snapshot.handle.storage_mode,
         SubRunStorageMode::IndependentSession
     );
-    assert_eq!(snapshot.handle.status, AgentStatus::Cancelled);
+    assert_eq!(snapshot.handle.lifecycle, AgentLifecycleStatus::Idle);
     assert_eq!(
-        snapshot.result.as_ref().map(|item| item.status),
-        Some(AgentStatus::Cancelled)
+        snapshot.result.as_ref().map(|item| item.lifecycle),
+        Some(AgentLifecycleStatus::Idle)
     );
 }
 
@@ -813,8 +834,8 @@ async fn get_subrun_status_rejects_live_handle_from_other_session() {
         .spawn(&profile, &session_a.session_id, "turn-a".to_string(), None)
         .await
         .expect("live sub-run should spawn");
-    let _ = control
-        .mark_running(&handle.sub_run_id)
+    control
+        .set_lifecycle(&handle.sub_run_id, AgentLifecycleStatus::Running)
         .await
         .expect("live sub-run should become running");
 
@@ -863,8 +884,8 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
         .spawn(&profile, &session_a.session_id, "turn-a".to_string(), None)
         .await
         .expect("live sub-run should spawn");
-    let _ = control
-        .mark_running(&live_handle.sub_run_id)
+    control
+        .set_lifecycle(&live_handle.sub_run_id, AgentLifecycleStatus::Running)
         .await
         .expect("live sub-run should become running");
 
@@ -878,8 +899,8 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
                 "turn-b".to_string(),
                 "review".to_string(),
                 live_handle.sub_run_id.clone(),
-                SubRunStorageMode::SharedSession,
-                None,
+                SubRunStorageMode::IndependentSession,
+                Some("child-b".to_string()),
             ),
             payload: StorageEventPayload::SubRunStarted {
                 tool_call_id: Some("call-b".to_string()),
@@ -899,13 +920,14 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
                 "turn-b".to_string(),
                 "review".to_string(),
                 live_handle.sub_run_id.clone(),
-                SubRunStorageMode::SharedSession,
-                None,
+                SubRunStorageMode::IndependentSession,
+                Some("child-b".to_string()),
             ),
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: Some("call-b".to_string()),
                 result: SubRunResult {
-                    status: AgentStatus::Completed,
+                    lifecycle: AgentLifecycleStatus::Idle,
+                    last_turn_outcome: Some(AgentTurnOutcome::Completed),
                     handoff: Some(SubRunHandoff {
                         summary: "durable completed".to_string(),
                         findings: Vec::new(),
@@ -927,7 +949,7 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
         .expect("durable snapshot should be returned");
 
     assert_eq!(snapshot.source, crate::service::SubRunStatusSource::Durable);
-    assert_eq!(snapshot.handle.status, AgentStatus::Completed);
+    assert_eq!(snapshot.handle.lifecycle, AgentLifecycleStatus::Idle);
     assert_eq!(snapshot.handle.agent_id, "agent-b");
     assert_eq!(snapshot.tool_call_id.as_deref(), Some("call-b"));
 }
@@ -953,6 +975,16 @@ async fn get_subrun_status_uses_live_overlay_for_independent_subrun_in_parent_se
         .create(temp_dir.path())
         .await
         .expect("child session should be created");
+    service
+        .execution()
+        .control()
+        .register_root_agent(
+            "agent-parent".to_string(),
+            "session-parent".to_string(),
+            "explore".to_string(),
+        )
+        .await
+        .expect("parent agent should register");
     let profile = AgentProfile {
         id: "review".to_string(),
         name: "Review".to_string(),
@@ -975,8 +1007,8 @@ async fn get_subrun_status_uses_live_overlay_for_independent_subrun_in_parent_se
         )
         .await
         .expect("independent sub-run should spawn");
-    let _ = control
-        .mark_running(&handle.agent_id)
+    control
+        .set_lifecycle(&handle.agent_id, AgentLifecycleStatus::Running)
         .await
         .expect("sub-run should be running");
 
@@ -1012,7 +1044,7 @@ async fn get_subrun_status_uses_live_overlay_for_independent_subrun_in_parent_se
         .expect("status should resolve through parent ownership");
 
     assert_eq!(snapshot.source, crate::service::SubRunStatusSource::Live);
-    assert_eq!(snapshot.handle.status, AgentStatus::Running);
+    assert_eq!(snapshot.handle.lifecycle, AgentLifecycleStatus::Running);
     assert_eq!(
         snapshot.handle.storage_mode,
         SubRunStorageMode::IndependentSession
@@ -1045,7 +1077,7 @@ async fn get_subrun_status_rejects_legacy_shared_history_snapshots() {
         "turn-legacy".to_string(),
         "review".to_string(),
         "subrun-legacy".to_string(),
-        SubRunStorageMode::SharedSession,
+        SubRunStorageMode::IndependentSession,
         None,
     );
     append_storage_event(
@@ -1071,7 +1103,8 @@ async fn get_subrun_status_rejects_legacy_shared_history_snapshots() {
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: Some("call-legacy".to_string()),
                 result: SubRunResult {
-                    status: AgentStatus::Completed,
+                    lifecycle: AgentLifecycleStatus::Idle,
+                    last_turn_outcome: Some(AgentTurnOutcome::Completed),
                     handoff: None,
                     failure: None,
                 },
@@ -1183,16 +1216,16 @@ async fn resume_child_session_replays_existing_child_history_and_mints_new_subru
         )
         .await
         .expect("child execution should spawn");
-    let _ = service
+    service
         .execution()
         .control()
-        .mark_running(&original_handle.agent_id)
+        .set_lifecycle(&original_handle.agent_id, AgentLifecycleStatus::Running)
         .await
         .expect("child execution should become running");
     let _ = service
         .execution()
         .control()
-        .mark_completed(&original_handle.agent_id)
+        .complete_turn(&original_handle.agent_id, AgentTurnOutcome::Completed)
         .await
         .expect("child execution should complete");
 
@@ -1227,7 +1260,7 @@ async fn resume_child_session_replays_existing_child_history_and_mints_new_subru
         .await
         .expect("resume should succeed");
 
-    assert_eq!(running_result.status, AgentStatus::Running);
+    assert_eq!(running_result.lifecycle, AgentLifecycleStatus::Running);
     assert_eq!(resumed_handle.agent_id, original_handle.agent_id);
     assert_ne!(resumed_handle.sub_run_id, original_handle.sub_run_id);
     assert_eq!(
@@ -1248,7 +1281,7 @@ async fn resume_child_session_replays_existing_child_history_and_mints_new_subru
         .get(&original_handle.sub_run_id)
         .await
         .expect("historical execution should remain queryable by old sub-run id");
-    assert_eq!(historical.status, AgentStatus::Completed);
+    assert_eq!(historical.lifecycle, AgentLifecycleStatus::Idle);
 
     let child_snapshot = service
         .ensure_session_loaded(&child_session.session_id)
@@ -1380,16 +1413,16 @@ async fn resume_child_session_rejects_lineage_mismatch_before_minting_new_execut
         )
         .await
         .expect("child execution should spawn");
-    let _ = service
+    service
         .execution()
         .control()
-        .mark_running(&original_handle.agent_id)
+        .set_lifecycle(&original_handle.agent_id, AgentLifecycleStatus::Running)
         .await
         .expect("child execution should become running");
     let _ = service
         .execution()
         .control()
-        .mark_completed(&original_handle.agent_id)
+        .complete_turn(&original_handle.agent_id, AgentTurnOutcome::Completed)
         .await
         .expect("child execution should complete");
 
@@ -1439,7 +1472,7 @@ async fn resume_child_session_rejects_lineage_mismatch_before_minting_new_execut
         .await
         .expect("agent should still resolve to the previous execution");
     assert_eq!(latest_handle.sub_run_id, original_handle.sub_run_id);
-    assert_eq!(latest_handle.status, AgentStatus::Completed);
+    assert_eq!(latest_handle.lifecycle, AgentLifecycleStatus::Idle);
 
     let diagnostics = service.observability.snapshot().execution_diagnostics;
     assert_eq!(diagnostics.lineage_mismatch_parent_session, 1);
@@ -1508,16 +1541,16 @@ async fn resume_child_session_rejects_empty_child_history_as_unsafe_resume() {
         )
         .await
         .expect("child execution should spawn");
-    let _ = service
+    service
         .execution()
         .control()
-        .mark_running(&original_handle.agent_id)
+        .set_lifecycle(&original_handle.agent_id, AgentLifecycleStatus::Running)
         .await
         .expect("child execution should become running");
     let _ = service
         .execution()
         .control()
-        .mark_completed(&original_handle.agent_id)
+        .complete_turn(&original_handle.agent_id, AgentTurnOutcome::Completed)
         .await
         .expect("child execution should complete");
 
@@ -1685,7 +1718,8 @@ fn derive_child_execution_owner_keeps_root_identity() {
         parent_agent_id: None,
         agent_profile: "plan".to_string(),
         storage_mode: SubRunStorageMode::IndependentSession,
-        status: AgentStatus::Pending,
+        lifecycle: AgentLifecycleStatus::Pending,
+        last_turn_outcome: None,
     };
 
     let owner = derive_child_execution_owner(&context, "turn-root", &child);
@@ -1704,7 +1738,7 @@ fn runtime_owner_graph_exposes_execution_surface_owner() {
     let owner_graph = service.owner_graph();
     assert_eq!(owner_graph.session_owner, "runtime-session");
     assert_eq!(owner_graph.execution_owner, "runtime-execution");
-    assert_eq!(owner_graph.tool_owner, "runtime-execution");
+    assert_eq!(owner_graph.tool_owner, "runtime-agent");
 }
 
 #[tokio::test]
@@ -1747,10 +1781,10 @@ async fn parent_turn_completion_does_not_cancel_running_child_session() {
         )
         .await
         .expect("child sub-run should spawn");
-    let _ = service
+    service
         .execution()
         .control()
-        .mark_running(&child.agent_id)
+        .set_lifecycle(&child.agent_id, AgentLifecycleStatus::Running)
         .await
         .expect("child should transition to running");
     let child_cancel = service
@@ -1784,7 +1818,7 @@ async fn parent_turn_completion_does_not_cancel_running_child_session() {
         .get(&child.agent_id)
         .await
         .expect("child should remain in registry");
-    assert_eq!(refreshed.status, AgentStatus::Running);
+    assert_eq!(refreshed.lifecycle, AgentLifecycleStatus::Running);
     assert!(!child_cancel.is_cancelled());
 }
 
@@ -1834,7 +1868,7 @@ async fn spawn_agent_terminal_delivery_notification_is_emitted_once() {
             &context,
         )
         .await
-        .expect("spawnAgent launch should succeed");
+        .expect("spawn launch should succeed");
 
     let sub_run_id = extract_spawned_sub_run_id(&launched);
 
@@ -1886,6 +1920,615 @@ async fn spawn_agent_terminal_delivery_notification_is_emitted_once() {
     assert_eq!(terminal_count, 1, "terminal delivery must be emitted once");
 }
 
+#[tokio::test]
+async fn reusable_child_can_be_observed_restarted_and_closed() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![
+            Box::new(DemoTool { name: "readFile" }),
+            Box::new(DemoTool { name: "grep" }),
+        ]))
+        .expect("runtime service should build"),
+    );
+    install_test_loop(
+        &service,
+        LlmOutput {
+            content: "first pass".to_string(),
+            ..LlmOutput::default()
+        },
+    )
+    .await;
+
+    let executor = Arc::new(DeferredSubAgentExecutor::default());
+    executor.bind(&service);
+    let tool = SpawnAgentTool::new(executor);
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("session should be created");
+    let spawn_context = ToolContext::new(
+        session.session_id.clone(),
+        temp_dir.path().to_path_buf(),
+        CancelToken::new(),
+    )
+    .with_turn_id("turn-parent-1");
+
+    let launched = tool
+        .execute(
+            "call-reusable-child".to_string(),
+            json!({
+                "type": "plan",
+                "description": "reusable child",
+                "prompt": "first pass"
+            }),
+            &spawn_context,
+        )
+        .await
+        .expect("spawn should succeed");
+
+    let child_agent_id = extract_spawned_agent_id(&launched);
+    let initial_handle = service
+        .execution()
+        .control()
+        .get(&child_agent_id)
+        .await
+        .expect("child handle should exist");
+    let child_session_id = initial_handle
+        .child_session_id
+        .clone()
+        .expect("independent child session should exist");
+
+    let _ = service
+        .execution()
+        .control()
+        .wait(&child_agent_id)
+        .await
+        .expect("child should reach first terminal outcome");
+
+    assert_eq!(
+        service
+            .execution()
+            .control()
+            .get_lifecycle(&child_agent_id)
+            .await,
+        Some(astrcode_core::AgentLifecycleStatus::Idle)
+    );
+    assert_eq!(
+        service
+            .execution()
+            .control()
+            .get_turn_outcome(&child_agent_id)
+            .await,
+        Some(Some(AgentTurnOutcome::Completed))
+    );
+
+    let observe = service
+        .agent()
+        .observe_child(
+            ObserveParams {
+                agent_id: child_agent_id.clone(),
+            },
+            &spawn_context,
+        )
+        .await
+        .expect("observe should succeed");
+    let snapshot: ObserveAgentResult = serde_json::from_str(
+        observe
+            .summary
+            .as_deref()
+            .expect("observe should serialize snapshot"),
+    )
+    .expect("observe result should be valid json");
+    assert_eq!(
+        snapshot.lifecycle_status,
+        astrcode_core::AgentLifecycleStatus::Idle
+    );
+    assert_eq!(
+        snapshot.last_turn_outcome,
+        Some(AgentTurnOutcome::Completed)
+    );
+    assert!(snapshot.active_task.is_none());
+    assert!(snapshot.pending_task.is_none());
+    let child_session_state = service
+        .ensure_session_loaded(&child_session_id)
+        .await
+        .expect("child session state should load");
+    let initial_projected = child_session_state
+        .snapshot_projected_state()
+        .expect("initial child projected state should load");
+    let initial_assistant_count = initial_projected
+        .messages
+        .iter()
+        .filter(|message| matches!(message, astrcode_core::LlmMessage::Assistant { .. }))
+        .count();
+
+    install_test_loop(
+        &service,
+        LlmOutput {
+            content: "second pass".to_string(),
+            ..LlmOutput::default()
+        },
+    )
+    .await;
+
+    let send_context = ToolContext::new(
+        session.session_id.clone(),
+        temp_dir.path().to_path_buf(),
+        CancelToken::new(),
+    )
+    .with_turn_id("turn-parent-2");
+    service
+        .agent()
+        .send_to_child(
+            SendAgentParams {
+                agent_id: child_agent_id.clone(),
+                message: "继续补充第二轮结果".to_string(),
+                context: Some("重点看尚未覆盖的检查项".to_string()),
+            },
+            &send_context,
+        )
+        .await
+        .expect("send should restart an idle child");
+
+    let restarted_handle = service
+        .execution()
+        .control()
+        .get(&child_agent_id)
+        .await
+        .expect("restarted child handle should exist");
+    assert_eq!(restarted_handle.lifecycle, AgentLifecycleStatus::Running);
+    assert_ne!(restarted_handle.sub_run_id, initial_handle.sub_run_id);
+
+    let _ = service
+        .execution()
+        .control()
+        .wait(&child_agent_id)
+        .await
+        .expect("restarted child should finish");
+
+    let projected = child_session_state
+        .snapshot_projected_state()
+        .expect("child projected state should load");
+    let resumed_assistant_count = projected
+        .messages
+        .iter()
+        .filter(|message| matches!(message, astrcode_core::LlmMessage::Assistant { .. }))
+        .count();
+    assert!(
+        projected.messages.iter().any(|message| matches!(
+            message,
+            astrcode_core::LlmMessage::User { content, .. }
+                if content.contains("继续补充第二轮结果")
+        )) && resumed_assistant_count > initial_assistant_count,
+        "reused child session should append a new user instruction and a new assistant response, \
+         actual messages: {:?}",
+        projected.messages
+    );
+
+    service
+        .agent()
+        .close_child(
+            CloseAgentParams {
+                agent_id: child_agent_id.clone(),
+            },
+            &send_context,
+        )
+        .await
+        .expect("close should succeed");
+
+    let closed_handle = service
+        .execution()
+        .control()
+        .get(&child_agent_id)
+        .await
+        .expect("closed child handle should remain queryable");
+    assert_eq!(
+        service
+            .execution()
+            .control()
+            .get_lifecycle(&child_agent_id)
+            .await,
+        Some(astrcode_core::AgentLifecycleStatus::Terminated)
+    );
+    assert_eq!(closed_handle.lifecycle, AgentLifecycleStatus::Terminated);
+
+    let send_after_close = service
+        .agent()
+        .send_to_child(
+            SendAgentParams {
+                agent_id: child_agent_id,
+                message: "关闭后不应再接收消息".to_string(),
+                context: None,
+            },
+            &send_context,
+        )
+        .await;
+    assert!(send_after_close.is_err());
+}
+
+#[tokio::test]
+async fn send_to_running_child_persists_mailbox_queued_event() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![Box::new(DemoTool {
+            name: "readFile",
+        })]))
+        .expect("runtime service should build"),
+    );
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let child_session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("child session should be created");
+    service
+        .execution()
+        .control()
+        .register_root_agent(
+            "agent-parent".to_string(),
+            "session-parent".to_string(),
+            "explore".to_string(),
+        )
+        .await
+        .expect("parent agent should register");
+    let profile = AgentProfile {
+        id: "explore".to_string(),
+        name: "Explore".to_string(),
+        description: "explore".to_string(),
+        mode: AgentMode::SubAgent,
+        system_prompt: None,
+        allowed_tools: vec!["readFile".to_string()],
+        disallowed_tools: Vec::new(),
+        model_preference: None,
+    };
+    let child = service
+        .execution()
+        .control()
+        .spawn_with_storage(
+            &profile,
+            child_session.session_id.clone(),
+            Some(child_session.session_id.clone()),
+            "turn-parent".to_string(),
+            Some("agent-parent".to_string()),
+            SubRunStorageMode::IndependentSession,
+        )
+        .await
+        .expect("child should spawn");
+    service
+        .execution()
+        .control()
+        .set_lifecycle(&child.agent_id, AgentLifecycleStatus::Running)
+        .await
+        .expect("child should be running");
+
+    let parent_context = ToolContext::new(
+        "session-parent".to_string(),
+        temp_dir.path().to_path_buf(),
+        CancelToken::new(),
+    )
+    .with_turn_id("turn-parent")
+    .with_agent_context(AgentEventContext::root_execution("agent-parent", "explore"));
+
+    service
+        .agent()
+        .send_to_child(
+            SendAgentParams {
+                agent_id: child.agent_id.clone(),
+                message: "补充检查缓存命中".to_string(),
+                context: Some("只看 runtime 缓存链路".to_string()),
+            },
+            &parent_context,
+        )
+        .await
+        .expect("send should queue mailbox message");
+
+    let child_events = crate::service::session::load_events(
+        Arc::clone(&service.session_manager),
+        &child_session.session_id,
+    )
+    .await
+    .expect("child events should load");
+    assert!(child_events.iter().any(|stored| {
+        matches!(
+            &stored.event.payload,
+            StorageEventPayload::AgentMailboxQueued { payload }
+                if payload.envelope.to_agent_id == child.agent_id
+                    && payload.envelope.message.contains("补充检查缓存命中")
+                    && payload.envelope.message.contains("只看 runtime 缓存链路")
+        )
+    }));
+}
+
+#[tokio::test]
+async fn close_child_persists_mailbox_discarded_event_for_pending_messages() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![Box::new(DemoTool {
+            name: "readFile",
+        })]))
+        .expect("runtime service should build"),
+    );
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let child_session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("child session should be created");
+    service
+        .execution()
+        .control()
+        .register_root_agent(
+            "agent-parent".to_string(),
+            "session-parent".to_string(),
+            "explore".to_string(),
+        )
+        .await
+        .expect("parent agent should register");
+    let profile = AgentProfile {
+        id: "explore".to_string(),
+        name: "Explore".to_string(),
+        description: "explore".to_string(),
+        mode: AgentMode::SubAgent,
+        system_prompt: None,
+        allowed_tools: vec!["readFile".to_string()],
+        disallowed_tools: Vec::new(),
+        model_preference: None,
+    };
+    let child = service
+        .execution()
+        .control()
+        .spawn_with_storage(
+            &profile,
+            child_session.session_id.clone(),
+            Some(child_session.session_id.clone()),
+            "turn-parent".to_string(),
+            Some("agent-parent".to_string()),
+            SubRunStorageMode::IndependentSession,
+        )
+        .await
+        .expect("child should spawn");
+    service
+        .execution()
+        .control()
+        .set_lifecycle(&child.agent_id, AgentLifecycleStatus::Running)
+        .await
+        .expect("child should be running");
+
+    let parent_context = ToolContext::new(
+        "session-parent".to_string(),
+        temp_dir.path().to_path_buf(),
+        CancelToken::new(),
+    )
+    .with_turn_id("turn-parent")
+    .with_agent_context(AgentEventContext::root_execution("agent-parent", "explore"));
+
+    service
+        .agent()
+        .send_to_child(
+            SendAgentParams {
+                agent_id: child.agent_id.clone(),
+                message: "关闭前的排队消息".to_string(),
+                context: None,
+            },
+            &parent_context,
+        )
+        .await
+        .expect("send should queue mailbox message");
+
+    service
+        .agent()
+        .close_child(
+            CloseAgentParams {
+                agent_id: child.agent_id.clone(),
+            },
+            &parent_context,
+        )
+        .await
+        .expect("close should succeed");
+
+    let child_events = crate::service::session::load_events(
+        Arc::clone(&service.session_manager),
+        &child_session.session_id,
+    )
+    .await
+    .expect("child events should load");
+    assert!(child_events.iter().any(|stored| {
+        matches!(
+            &stored.event.payload,
+            StorageEventPayload::AgentMailboxDiscarded { payload }
+                if payload.target_agent_id == child.agent_id && !payload.delivery_ids.is_empty()
+        )
+    }));
+}
+
+#[tokio::test]
+async fn child_terminal_delivery_triggers_parent_wake_batch_started_and_acked() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(empty_capabilities())
+            .expect("runtime service should build"),
+    );
+    install_test_loop(
+        &service,
+        LlmOutput {
+            content: "parent processed delivery".to_string(),
+            ..LlmOutput::default()
+        },
+    )
+    .await;
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let parent_session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("parent session should be created");
+
+    let notification = astrcode_core::ChildSessionNotification {
+        notification_id: "delivery-parent-1".to_string(),
+        child_ref: astrcode_core::ChildAgentRef {
+            agent_id: "agent-child".to_string(),
+            session_id: parent_session.session_id.clone(),
+            sub_run_id: "subrun-child-1".to_string(),
+            parent_agent_id: Some("agent-parent".to_string()),
+            lineage_kind: ChildSessionLineageKind::Spawn,
+            status: AgentLifecycleStatus::Idle,
+            open_session_id: "session-child".to_string(),
+        },
+        kind: ChildSessionNotificationKind::Delivered,
+        summary: "child completed summary".to_string(),
+        status: AgentLifecycleStatus::Idle,
+        source_tool_call_id: None,
+        final_reply_excerpt: Some("child final excerpt".to_string()),
+    };
+
+    service
+        .agent()
+        .reactivate_parent_agent_if_idle(&parent_session.session_id, "turn-parent", &notification)
+        .await;
+
+    let parent_events = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let events = crate::service::session::load_events(
+                Arc::clone(&service.session_manager),
+                &parent_session.session_id,
+            )
+            .await
+            .expect("parent events should load");
+            let has_batch_acked = events.iter().any(|stored| {
+                matches!(
+                    &stored.event.payload,
+                    StorageEventPayload::AgentMailboxBatchAcked { payload }
+                        if payload.target_agent_id == "agent-parent"
+                            && payload.delivery_ids
+                                == vec!["delivery-parent-1".to_string()]
+                )
+            });
+            if has_batch_acked {
+                let pending = service
+                    .execution()
+                    .control()
+                    .pending_parent_delivery_count(&parent_session.session_id)
+                    .await;
+                if pending == 0 {
+                    break events;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("parent wake turn should finish and ack mailbox batch");
+
+    assert!(parent_events.iter().any(|stored| {
+        matches!(
+            &stored.event.payload,
+            StorageEventPayload::AgentMailboxQueued { payload }
+                if payload.envelope.delivery_id == "delivery-parent-1"
+                    && payload.envelope.to_agent_id == "agent-parent"
+                    && payload.envelope.sender_lifecycle_status
+                        == astrcode_core::AgentLifecycleStatus::Idle
+                    && payload.envelope.sender_last_turn_outcome
+                        == Some(AgentTurnOutcome::Completed)
+        )
+    }));
+    assert!(parent_events.iter().any(|stored| {
+        matches!(
+            &stored.event.payload,
+            StorageEventPayload::AgentMailboxBatchStarted { payload }
+                if payload.target_agent_id == "agent-parent"
+                    && payload.delivery_ids
+                        == vec!["delivery-parent-1".to_string()]
+        )
+    }));
+    assert_eq!(
+        service
+            .execution()
+            .control()
+            .pending_parent_delivery_count(&parent_session.session_id)
+            .await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn mailbox_projection_replays_started_without_acked_batch_as_pending_after_reload() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(empty_capabilities())
+            .expect("runtime service should build"),
+    );
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let created = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("session should be created");
+
+    append_storage_event(
+        &service,
+        &created.session_id,
+        &StorageEvent {
+            turn_id: Some("turn-parent".to_string()),
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::AgentMailboxQueued {
+                payload: MailboxQueuedPayload {
+                    envelope: AgentMailboxEnvelope {
+                        delivery_id: "delivery-replay-1".to_string(),
+                        from_agent_id: "agent-child".to_string(),
+                        to_agent_id: "agent-parent".to_string(),
+                        message: "child summary".to_string(),
+                        queued_at: chrono::Utc::now(),
+                        sender_lifecycle_status: AgentLifecycleStatus::Idle,
+                        sender_last_turn_outcome: Some(AgentTurnOutcome::Completed),
+                        sender_open_session_id: "session-child".to_string(),
+                    },
+                },
+            },
+        },
+    );
+    append_storage_event(
+        &service,
+        &created.session_id,
+        &StorageEvent {
+            turn_id: Some("turn-parent-replay".to_string()),
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::AgentMailboxBatchStarted {
+                payload: MailboxBatchStartedPayload {
+                    target_agent_id: "agent-parent".to_string(),
+                    turn_id: "turn-parent-replay".to_string(),
+                    batch_id: "batch-replay-1".to_string(),
+                    delivery_ids: vec!["delivery-replay-1".to_string()],
+                },
+            },
+        },
+    );
+
+    let events = crate::service::session::load_events(
+        Arc::clone(&service.session_manager),
+        &created.session_id,
+    )
+    .await
+    .expect("session events should load");
+    let mailbox = MailboxProjection::replay_for_agent(&events, "agent-parent");
+
+    assert_eq!(
+        mailbox.pending_delivery_ids,
+        vec!["delivery-replay-1".to_string()]
+    );
+    assert_eq!(mailbox.active_batch_id.as_deref(), Some("batch-replay-1"));
+    assert_eq!(
+        mailbox.active_delivery_ids,
+        vec!["delivery-replay-1".to_string()]
+    );
+    assert!(mailbox.discarded_delivery_ids.is_empty());
+}
+
 // ─── 状态投影与重激活测试 ──────────────────────────────────
 
 #[test]
@@ -1893,7 +2536,8 @@ fn project_child_terminal_delivery_keeps_token_exceeded_terminal_status_with_han
     // TokenExceeded 仍然是 Delivered，但终态保持 TokenExceeded，
     // 避免把资源约束结束误投影成普通 Completed。
     let result = SubRunResult {
-        status: AgentStatus::TokenExceeded,
+        lifecycle: AgentLifecycleStatus::Idle,
+        last_turn_outcome: Some(AgentTurnOutcome::TokenExceeded),
         handoff: Some(SubRunHandoff {
             summary: "达到 token 上限，已收集部分结果".to_string(),
             findings: vec!["中间发现1".to_string()],
@@ -1903,7 +2547,7 @@ fn project_child_terminal_delivery_keeps_token_exceeded_terminal_status_with_han
     };
     let projection = super::status::project_child_terminal_delivery(&result);
     assert_eq!(projection.kind, ChildSessionNotificationKind::Delivered);
-    assert_eq!(projection.status, AgentStatus::TokenExceeded);
+    assert_eq!(projection.status, AgentLifecycleStatus::Idle);
     assert_eq!(projection.summary, "达到 token 上限，已收集部分结果");
     assert_eq!(
         projection.final_reply_excerpt.as_deref(),
@@ -1915,13 +2559,14 @@ fn project_child_terminal_delivery_keeps_token_exceeded_terminal_status_with_han
 fn project_child_terminal_delivery_keeps_token_exceeded_terminal_status_without_handoff() {
     // TokenExceeded + 无 handoff 时，summary 应走默认回退。
     let result = SubRunResult {
-        status: AgentStatus::TokenExceeded,
+        lifecycle: AgentLifecycleStatus::Idle,
+        last_turn_outcome: Some(AgentTurnOutcome::TokenExceeded),
         handoff: None,
         failure: None,
     };
     let projection = super::status::project_child_terminal_delivery(&result);
     assert_eq!(projection.kind, ChildSessionNotificationKind::Delivered);
-    assert_eq!(projection.status, AgentStatus::TokenExceeded);
+    assert_eq!(projection.status, AgentLifecycleStatus::Idle);
     assert_eq!(
         projection.summary,
         "子 Agent 因 token 限额结束，但没有返回可读总结。"
@@ -1933,7 +2578,8 @@ fn project_child_terminal_delivery_keeps_token_exceeded_terminal_status_without_
 fn project_child_terminal_delivery_uses_failure_display_message_as_summary_fallback() {
     // handoff 为空但 failure 有 display_message 时，summary 应使用 display_message。
     let result = SubRunResult {
-        status: AgentStatus::Failed,
+        lifecycle: AgentLifecycleStatus::Idle,
+        last_turn_outcome: Some(AgentTurnOutcome::Failed),
         handoff: None,
         failure: Some(SubRunFailure {
             code: SubRunFailureCode::Internal,
@@ -1944,7 +2590,7 @@ fn project_child_terminal_delivery_uses_failure_display_message_as_summary_fallb
     };
     let projection = super::status::project_child_terminal_delivery(&result);
     assert_eq!(projection.kind, ChildSessionNotificationKind::Failed);
-    assert_eq!(projection.status, AgentStatus::Failed);
+    assert_eq!(projection.status, AgentLifecycleStatus::Idle);
     assert_eq!(projection.summary, "模型调用失败：配额不足");
     assert!(projection.final_reply_excerpt.is_none());
 }
@@ -1953,13 +2599,14 @@ fn project_child_terminal_delivery_uses_failure_display_message_as_summary_fallb
 fn project_child_terminal_delivery_returns_default_summary_when_no_handoff_or_failure() {
     // 既无 handoff 也无 failure 时，使用状态对应的中文默认文案。
     let result = SubRunResult {
-        status: AgentStatus::Completed,
+        lifecycle: AgentLifecycleStatus::Idle,
+        last_turn_outcome: Some(AgentTurnOutcome::Completed),
         handoff: None,
         failure: None,
     };
     let projection = super::status::project_child_terminal_delivery(&result);
     assert_eq!(projection.kind, ChildSessionNotificationKind::Delivered);
-    assert_eq!(projection.status, AgentStatus::Completed);
+    assert_eq!(projection.status, AgentLifecycleStatus::Idle);
     assert_eq!(projection.summary, "子 Agent 已完成，但没有返回可读总结。");
     assert!(projection.final_reply_excerpt.is_none());
 }
@@ -2004,7 +2651,7 @@ async fn reactivate_parent_buffers_delivery_while_parent_turn_is_busy() {
 
     let notification = make_test_notification("child-reactivate-busy", "turn-child");
     service
-        .execution()
+        .agent()
         .reactivate_parent_agent_if_idle(&session.session_id, "turn-parent", &notification)
         .await;
 
@@ -2070,7 +2717,7 @@ async fn reactivate_parent_drains_buffer_after_busy_parent_turn_completes() {
 
     let notification = make_test_notification("child-reactivate-drain", "turn-child");
     service
-        .execution()
+        .agent()
         .reactivate_parent_agent_if_idle(&session.session_id, "turn-parent", &notification)
         .await;
     assert_eq!(
@@ -2088,7 +2735,7 @@ async fn reactivate_parent_drains_buffer_after_busy_parent_turn_completes() {
     )
     .await;
     service
-        .execution()
+        .agent()
         .try_start_parent_delivery_turn(&session.session_id)
         .await
         .expect("wake turn scheduling should succeed");
@@ -2136,7 +2783,7 @@ async fn reactivate_parent_idle_wake_turn_uses_runtime_only_delivery_input() {
 
     let notification = make_test_notification("child-reactivate-origin", "turn-child");
     service
-        .execution()
+        .agent()
         .reactivate_parent_agent_if_idle(&session.session_id, "turn-parent", &notification)
         .await;
 
@@ -2183,7 +2830,7 @@ async fn reactivate_parent_failed_wake_turn_requeues_delivery_for_retry() {
 
     let notification = make_test_notification("child-reactivate-failed", "turn-child");
     service
-        .execution()
+        .agent()
         .reactivate_parent_agent_if_idle(&session.session_id, "turn-parent", &notification)
         .await;
 
@@ -2221,7 +2868,7 @@ async fn reactivate_parent_failed_wake_turn_requeues_delivery_for_retry() {
     )
     .await;
     service
-        .execution()
+        .agent()
         .try_start_parent_delivery_turn(&session.session_id)
         .await
         .expect("retry wake turn should schedule successfully");
@@ -2272,14 +2919,16 @@ fn make_test_notification(
             agent_id: child_agent_id.to_string(),
             session_id: "session-child".to_string(),
             sub_run_id: format!("subrun-{child_agent_id}"),
-            parent_agent_id: None,
+            // Why: US2 之后 child->parent wake 先走 durable mailbox，
+            // mailbox envelope 需要显式的直接父 agent id，旧测试夹具不能再省略它。
+            parent_agent_id: Some("agent-parent".to_string()),
             lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
-            status: AgentStatus::Completed,
+            status: AgentLifecycleStatus::Idle,
             open_session_id: "session-child".to_string(),
         },
         kind: ChildSessionNotificationKind::Delivered,
         summary: "子 agent 完成".to_string(),
-        status: AgentStatus::Completed,
+        status: AgentLifecycleStatus::Idle,
         source_tool_call_id: None,
         final_reply_excerpt: None,
     }

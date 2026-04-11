@@ -106,6 +106,8 @@ impl AgentExecutionServiceHandle {
             .await;
             complete_session_execution(&state, result.phase, &agent_control).await;
             if let Err(error) = execution_service
+                .runtime
+                .agent()
                 .try_start_parent_delivery_turn(&drain_session_id)
                 .await
             {

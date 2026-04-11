@@ -166,7 +166,7 @@ function pickStringField(value: unknown, ...keys: string[]): string | undefined 
 }
 
 function pickSpawnedAgentRef(message: Message): SpawnedAgentRef | null {
-  if (message.kind !== 'toolCall' || message.toolName !== 'spawnAgent' || message.status !== 'ok') {
+  if (message.kind !== 'toolCall' || message.toolName !== 'spawn' || message.status !== 'ok') {
     return null;
   }
 
@@ -299,7 +299,7 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
       return;
     }
 
-    // Why: 历史回放偶发缺少 subRun lifecycle 时，spawnAgent 的 agentRef 仍然能稳定标识子执行；
+    // Why: 历史回放偶发缺少 subRun lifecycle 时，spawn 的 agentRef 仍然能稳定标识子执行；
     // 用它补建占位记录，避免父会话把已启动的子 Agent 直接“吃掉”。
     const record = getOrCreateRecord(records, spawnedAgentRef.subRunId, index);
     record.startIndex = Math.min(record.startIndex, index);

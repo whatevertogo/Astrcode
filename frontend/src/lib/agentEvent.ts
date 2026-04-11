@@ -3,8 +3,9 @@
 //! 将 SSE 接收的原始事件规范化为前端可用的格式。
 
 import type {
-  AgentStatus,
+  AgentLifecycle,
   AgentEventPayload,
+  AgentTurnOutcome,
   ChildSessionNotificationKind,
   CompactTrigger,
   InvocationKind,
@@ -35,7 +36,7 @@ const VALID_PHASES: Phase[] = [
 ];
 const VALID_TOOL_OUTPUT_STREAMS: ToolOutputStream[] = ['stdout', 'stderr'];
 const VALID_INVOCATION_KINDS: InvocationKind[] = ['subRun', 'rootExecution'];
-const VALID_SUBRUN_STORAGE_MODES: SubRunStorageMode[] = ['sharedSession', 'independentSession'];
+const VALID_SUBRUN_STORAGE_MODES: SubRunStorageMode[] = ['independentSession'];
 const VALID_CHILD_NOTIFICATION_KINDS: ChildSessionNotificationKind[] = [
   'started',
   'progress_summary',
@@ -45,12 +46,11 @@ const VALID_CHILD_NOTIFICATION_KINDS: ChildSessionNotificationKind[] = [
   'closed',
   'failed',
 ];
-const VALID_AGENT_STATUSES: AgentStatus[] = [
-  'pending',
-  'running',
+const VALID_AGENT_LIFECYCLES: AgentLifecycle[] = ['pending', 'running', 'idle', 'terminated'];
+const VALID_AGENT_TURN_OUTCOMES: AgentTurnOutcome[] = [
   'completed',
-  'cancelled',
   'failed',
+  'cancelled',
   'token_exceeded',
 ];
 
@@ -105,14 +105,42 @@ function toSubRunStorageMode(value: unknown): SubRunStorageMode | null {
   return null;
 }
 
-function toAgentStatus(value: unknown): AgentStatus | null {
+function toAgentLifecycle(value: unknown): AgentLifecycle | null {
   if (typeof value !== 'string') {
     return null;
   }
-  if ((VALID_AGENT_STATUSES as string[]).includes(value)) {
-    return value as AgentStatus;
+  if ((VALID_AGENT_LIFECYCLES as string[]).includes(value)) {
+    return value as AgentLifecycle;
   }
   return null;
+}
+
+function toAgentTurnOutcome(value: unknown): AgentTurnOutcome | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  if ((VALID_AGENT_TURN_OUTCOMES as string[]).includes(value)) {
+    return value as AgentTurnOutcome;
+  }
+  return null;
+}
+
+function normalizeChildNotificationStatus(
+  value: unknown,
+  fallback: AgentLifecycle
+): AgentLifecycle {
+  const lifecycle = toAgentLifecycle(value);
+  if (lifecycle) {
+    return lifecycle;
+  }
+
+  // Why: 旧样本里 childSessionNotification 偶发把 terminal outcome 写进 status；
+  // 四工具模型统一把这些终态结果投影为 lifecycle=`idle` + kind/summary 表达细节。
+  if (toAgentTurnOutcome(value)) {
+    return 'idle';
+  }
+
+  return fallback;
 }
 
 function invalidEvent(reason: string, raw: unknown): AgentEventPayload {
@@ -595,8 +623,8 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
         ? (kindRaw as ChildSessionNotificationKind)
         : 'failed';
     const summary = pickString(data, 'summary') ?? '';
-    const status = toAgentStatus(data.status) ?? 'failed';
-    const childStatus = toAgentStatus(childRefRaw.status) ?? status;
+    const status = normalizeChildNotificationStatus(data.status, 'terminated');
+    const childStatus = normalizeChildNotificationStatus(childRefRaw.status, status);
     const openSessionId = pickString(childRefRaw, 'openSessionId', 'open_session_id') ?? sessionId;
     return {
       event: 'childSessionNotification',

@@ -1,11 +1,11 @@
 use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, AgentProfile, AgentState, AgentStatus, AstrError, CancelToken,
-    ChildSessionNotificationKind, ChildSessionStatusSource, ExecutionOwner, InvocationKind,
-    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SpawnAgentParams,
-    StorageEvent, StorageEventPayload, SubRunHandle, SubRunResult, SubRunStorageMode, ToolContext,
-    ToolEventSink, UserMessageOrigin,
+    AgentEventContext, AgentLifecycleStatus, AgentProfile, AgentState, AgentTurnOutcome, AstrError,
+    CancelToken, ChildSessionNotificationKind, ChildSessionStatusSource, ExecutionOwner,
+    InvocationKind, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
+    SpawnAgentParams, StorageEvent, StorageEventPayload, SubRunHandle, SubRunResult,
+    SubRunStorageMode, ToolContext, ToolEventSink, UserMessageOrigin,
 };
 use astrcode_runtime_agent_loop::{AgentLoop, ChildExecutionTracker, TurnOutcome};
 use astrcode_runtime_execution::{
@@ -31,7 +31,6 @@ pub(super) struct ParentExecutionContext {
 struct PreparedSubagentExecution {
     profile: AgentProfile,
     prepared_execution: PreparedAgentExecution<Arc<AgentLoop>>,
-    child_storage_mode: SubRunStorageMode,
     child_task: String,
 }
 
@@ -45,7 +44,6 @@ pub(super) struct SpawnedSubagentExecution {
     pub(super) child_state: AgentState,
     pub(super) child_loop: Arc<AgentLoop>,
     pub(super) child_cancel: CancelToken,
-    pub(super) child_storage_mode: SubRunStorageMode,
     pub(super) parent_session_id: String,
     pub(super) parent_turn_id: String,
     pub(super) parent_state: Arc<SessionState>,
@@ -91,20 +89,16 @@ impl AgentExecutionServiceHandle {
         ctx: &ToolContext,
     ) -> ServiceResult<ParentExecutionContext> {
         let parent_turn_id = ctx.turn_id().ok_or_else(|| {
-            ServiceError::InvalidInput("spawnAgent requires a parent turn id".to_string())
+            ServiceError::InvalidInput("spawn requires a parent turn id".to_string())
         })?;
         let parent_state = self.runtime.ensure_session_loaded(ctx.session_id()).await?;
         let parent_snapshot = parent_state
             .snapshot_projected_state()
             .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
-        let parent_agent_id_for_control = if matches!(
-            ctx.agent_context().invocation_kind,
-            Some(InvocationKind::RootExecution)
-        ) {
-            None
-        } else {
-            ctx.agent_context().agent_id.clone()
-        };
+        // 四工具模型：root agent 也注册在控制树中（depth=0），
+        // 所以 root 下创建 child 时，parent_agent_id 就是 root 自己的 agent_id。
+        // 旧模型中 root 执行不提供 agent_id，导致 child 无父级引用。
+        let parent_agent_id_for_control = ctx.agent_context().agent_id.clone();
 
         Ok(ParentExecutionContext {
             parent_session_id: ctx.session_id().to_string(),
@@ -127,7 +121,8 @@ impl AgentExecutionServiceHandle {
         self.emit_child_started_or_fail(&spawned).await?;
 
         let running_result = SubRunResult {
-            status: AgentStatus::Running,
+            lifecycle: AgentLifecycleStatus::Running,
+            last_turn_outcome: None,
             handoff: Some(build_background_subrun_handoff(
                 &spawned.child,
                 &spawned.parent_session_id,
@@ -158,17 +153,15 @@ impl AgentExecutionServiceHandle {
         params: &SpawnAgentParams,
         parent: &ParentExecutionContext,
     ) -> ServiceResult<PreparedSubagentExecution> {
-        let prepared_execution = self.prepare_scoped_execution(
-            InvocationKind::SubRun,
-            profile,
-            params,
-            self.snapshot_execution_surface().await,
-            Some(&parent.parent_snapshot),
-        )?;
-        let child_storage_mode = prepared_execution
-            .execution_spec
-            .resolved_overrides
-            .storage_mode;
+        let prepared_execution = self
+            .prepare_scoped_execution(
+                InvocationKind::SubRun,
+                profile,
+                params,
+                self.snapshot_execution_surface().await,
+                Some(&parent.parent_snapshot),
+            )
+            .await?;
         let child_task = prepared_execution
             .execution_spec
             .resolved_context_snapshot
@@ -178,7 +171,6 @@ impl AgentExecutionServiceHandle {
         Ok(PreparedSubagentExecution {
             profile: profile.clone(),
             prepared_execution,
-            child_storage_mode,
             child_task,
         })
     }
@@ -189,28 +181,21 @@ impl AgentExecutionServiceHandle {
         parent: &ParentExecutionContext,
         ctx: &ToolContext,
     ) -> ServiceResult<SpawnedSubagentExecution> {
-        let child_session_meta = match prepared.child_storage_mode {
-            SubRunStorageMode::SharedSession => None,
-            SubRunStorageMode::IndependentSession => Some(
-                self.runtime
-                    .sessions()
-                    .create(ctx.working_dir())
-                    .await
-                    .map_err(|error| {
-                        ServiceError::Conflict(format!(
-                            "failed to create independent child session for parentTurn='{}': {}",
-                            parent.parent_turn_id, error
-                        ))
-                    })?,
-            ),
-        };
-        let target_session_id = child_session_meta
-            .as_ref()
-            .map(|meta| meta.session_id.clone())
-            .unwrap_or_else(|| ctx.session_id().to_string());
-        let child_session_id = child_session_meta
-            .as_ref()
-            .map(|meta| meta.session_id.clone());
+        // 为什么强制 IndependentSession：四工具模型要求所有新 spawn 的子 agent
+        // 拥有独立的 durable event log。
+        let child_session_meta = self
+            .runtime
+            .sessions()
+            .create(ctx.working_dir())
+            .await
+            .map_err(|error| {
+                ServiceError::Conflict(format!(
+                    "failed to create independent child session for parentTurn='{}': {}",
+                    parent.parent_turn_id, error
+                ))
+            })?;
+        let target_session_id = child_session_meta.session_id.clone();
+        let child_session_id = Some(child_session_meta.session_id.clone());
 
         let child = self
             .runtime
@@ -221,16 +206,23 @@ impl AgentExecutionServiceHandle {
                 child_session_id.clone(),
                 parent.parent_turn_id.clone(),
                 parent.parent_agent_id_for_control.clone(),
-                prepared.child_storage_mode,
+                SubRunStorageMode::IndependentSession,
             )
             .await
             .map_err(|error| ServiceError::Conflict(error.to_string()))?;
         // 故意忽略：子代理状态标记失败不应阻断启动流程
-        let _ = self
+        if self
             .runtime
             .agent_control
-            .mark_running(&child.agent_id)
-            .await;
+            .set_lifecycle(&child.agent_id, AgentLifecycleStatus::Running)
+            .await
+            .is_none()
+        {
+            log::warn!(
+                "set_lifecycle(Running) 返回 None，agent {} 可能未注册进控制树",
+                child.agent_id
+            );
+        }
         let child_cancel = self
             .runtime
             .agent_control
@@ -266,9 +258,8 @@ impl AgentExecutionServiceHandle {
             ctx.working_dir().to_path_buf(),
             &prepared.child_task,
         );
-        let (parent_event_sink, active_sink) = self
-            .build_event_sinks(parent, &target_session_id, prepared.child_storage_mode)
-            .await?;
+        let (parent_event_sink, active_sink) =
+            self.build_event_sinks(parent, &target_session_id).await?;
 
         Ok(SpawnedSubagentExecution {
             child,
@@ -280,7 +271,6 @@ impl AgentExecutionServiceHandle {
             child_state,
             child_loop: Arc::clone(&prepared.prepared_execution.loop_),
             child_cancel,
-            child_storage_mode: prepared.child_storage_mode,
             parent_session_id: parent.parent_session_id.clone(),
             parent_turn_id: parent.parent_turn_id.clone(),
             parent_state: Arc::clone(&parent.parent_state),
@@ -299,24 +289,19 @@ impl AgentExecutionServiceHandle {
         &self,
         parent: &ParentExecutionContext,
         target_session_id: &str,
-        child_storage_mode: SubRunStorageMode,
     ) -> ServiceResult<(Arc<dyn ToolEventSink>, Arc<dyn ToolEventSink>)> {
         let parent_event_sink: Arc<dyn ToolEventSink> = Arc::new(
             SessionStateEventSink::new(Arc::clone(&parent.parent_state))
                 .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?,
         );
-        let active_sink: Arc<dyn ToolEventSink> =
-            if matches!(child_storage_mode, SubRunStorageMode::IndependentSession) {
-                let child_state = self
-                    .runtime
-                    .ensure_session_loaded(target_session_id)
-                    .await?;
-                Arc::new(SessionStateEventSink::new(child_state).map_err(|error| {
-                    ServiceError::Internal(AstrError::Internal(error.to_string()))
-                })?)
-            } else {
-                parent_event_sink.clone()
-            };
+        let child_state = self
+            .runtime
+            .ensure_session_loaded(target_session_id)
+            .await?;
+        let active_sink: Arc<dyn ToolEventSink> = Arc::new(
+            SessionStateEventSink::new(child_state)
+                .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?,
+        );
         Ok((parent_event_sink, active_sink))
     }
 
@@ -393,11 +378,11 @@ impl AgentExecutionServiceHandle {
         execution: &SpawnedSubagentExecution,
     ) -> ServiceResult<()> {
         if let Err(error) = self.emit_child_started(execution) {
-            // 故意忽略：标记失败时已在处理另一个错误，不能覆盖
+            // 标记失败时已在处理另一个错误，不能覆盖
             let _ = self
                 .runtime
                 .agent_control
-                .mark_failed(&execution.child.agent_id)
+                .complete_turn(&execution.child.agent_id, AgentTurnOutcome::Failed)
                 .await;
             return Err(error);
         }
@@ -437,12 +422,26 @@ impl AgentExecutionServiceHandle {
     ) -> ServiceResult<SubRunResult> {
         let result = match outcome {
             Ok(TurnOutcome::Completed) => {
-                // 故意忽略：子代理状态更新失败不应覆盖执行结果
-                let _ = self
+                // 四工具模型：子 agent 完成一轮后进入 Idle，而非终态。
+                // 只有 close 才会进入 Terminated。Idle 状态下父 agent 可以继续 send 新消息。
+                let turn_outcome = if tracker.token_limit_hit() || tracker.step_limit_hit() {
+                    astrcode_core::AgentTurnOutcome::TokenExceeded
+                } else {
+                    astrcode_core::AgentTurnOutcome::Completed
+                };
+                // complete_turn 失败意味着控制平面与实际执行脱节，记录但不阻断
+                if self
                     .runtime
                     .agent_control
-                    .mark_completed(&execution.child.agent_id)
-                    .await;
+                    .complete_turn(&execution.child.agent_id, turn_outcome)
+                    .await
+                    .is_none()
+                {
+                    log::warn!(
+                        "complete_turn 返回 None，agent {} 的 lifecycle 可能与实际脱节",
+                        execution.child.agent_id
+                    );
+                }
                 let completion_fallback = if tracker.step_count() > 0 {
                     format!(
                         "子 Agent 已完成 {} \
@@ -454,11 +453,14 @@ impl AgentExecutionServiceHandle {
                         .to_string()
                 };
                 SubRunResult {
-                    status: if tracker.token_limit_hit() || tracker.step_limit_hit() {
-                        AgentStatus::TokenExceeded
-                    } else {
-                        AgentStatus::Completed
-                    },
+                    lifecycle: AgentLifecycleStatus::Idle,
+                    last_turn_outcome: Some(
+                        if tracker.token_limit_hit() || tracker.step_limit_hit() {
+                            AgentTurnOutcome::TokenExceeded
+                        } else {
+                            AgentTurnOutcome::Completed
+                        },
+                    ),
                     handoff: Some(build_subrun_handoff(
                         &execution.child,
                         &execution.parent_session_id,
@@ -472,21 +474,35 @@ impl AgentExecutionServiceHandle {
                 }
             },
             Ok(TurnOutcome::Cancelled) => {
-                // 故意忽略：取消子代理失败不应阻断结果处理
-                let _ = self
+                // 四工具模型：被取消（cancel token 触发）也进入 Idle，
+                // 而不是直接 Terminated。父 agent 可以判断是否需要 send 或 close。
+                let turn_outcome = if tracker.token_limit_hit() || tracker.step_limit_hit() {
+                    astrcode_core::AgentTurnOutcome::TokenExceeded
+                } else {
+                    astrcode_core::AgentTurnOutcome::Cancelled
+                };
+                // complete_turn 失败意味着控制平面与实际执行脱节，记录但不阻断
+                if self
                     .runtime
                     .agent_control
-                    .cancel(&execution.child.agent_id)
-                    .await;
-                let status = if tracker.token_limit_hit() || tracker.step_limit_hit() {
-                    AgentStatus::TokenExceeded
-                } else {
-                    AgentStatus::Cancelled
-                };
-                let cancelled_fallback =
-                    "子 Agent 已中止。请展开子执行查看已产生的工具和思考流。".to_string();
+                    .complete_turn(&execution.child.agent_id, turn_outcome)
+                    .await
+                    .is_none()
+                {
+                    log::warn!(
+                        "complete_turn (cancel) 返回 None，agent {} 的 lifecycle 可能与实际脱节",
+                        execution.child.agent_id
+                    );
+                }
                 SubRunResult {
-                    status,
+                    lifecycle: AgentLifecycleStatus::Idle,
+                    last_turn_outcome: Some(
+                        if tracker.token_limit_hit() || tracker.step_limit_hit() {
+                            AgentTurnOutcome::TokenExceeded
+                        } else {
+                            AgentTurnOutcome::Cancelled
+                        },
+                    ),
                     handoff: Some(build_subrun_handoff(
                         &execution.child,
                         &execution.parent_session_id,
@@ -494,35 +510,59 @@ impl AgentExecutionServiceHandle {
                         tracker.token_limit_hit(),
                         tracker.step_limit_hit(),
                         started_at.elapsed().as_millis() as u64,
-                        &cancelled_fallback,
+                        "子 Agent 已中止。请展开子执行查看已产生的工具和思考流。",
                     )),
                     failure: None,
                 }
             },
             Ok(TurnOutcome::Error { message }) => {
-                // 故意忽略：子代理状态更新失败不应覆盖执行结果
-                let _ = self
+                // 四工具模型：错误结束后也进入 Idle（带 Failed outcome），
+                // 父 agent 可以选择 send 新指令重试或 close。
+                if self
                     .runtime
                     .agent_control
-                    .mark_failed(&execution.child.agent_id)
-                    .await;
+                    .complete_turn(
+                        &execution.child.agent_id,
+                        astrcode_core::AgentTurnOutcome::Failed,
+                    )
+                    .await
+                    .is_none()
+                {
+                    log::warn!(
+                        "complete_turn (error) 返回 None，agent {} 的 lifecycle 可能与实际脱节",
+                        execution.child.agent_id
+                    );
+                }
                 let error = AstrError::Internal(message);
                 SubRunResult {
-                    status: AgentStatus::Failed,
+                    lifecycle: AgentLifecycleStatus::Idle,
+                    last_turn_outcome: Some(AgentTurnOutcome::Failed),
                     handoff: None,
                     failure: Some(build_subrun_failure(&error)),
                 }
             },
             Err(error) => {
-                let _ = self
+                if self
                     .runtime
                     .agent_control
-                    .mark_failed(&execution.child.agent_id)
-                    .await;
+                    .complete_turn(
+                        &execution.child.agent_id,
+                        astrcode_core::AgentTurnOutcome::Failed,
+                    )
+                    .await
+                    .is_none()
+                {
+                    log::warn!(
+                        "complete_turn (fatal) 返回 None，agent {} 的 lifecycle 可能与实际脱节",
+                        execution.child.agent_id
+                    );
+                }
+                let err = AstrError::Internal(error.to_string());
                 SubRunResult {
-                    status: AgentStatus::Failed,
+                    lifecycle: AgentLifecycleStatus::Idle,
+                    last_turn_outcome: Some(AgentTurnOutcome::Failed),
                     handoff: None,
-                    failure: Some(build_subrun_failure(&error)),
+                    failure: Some(build_subrun_failure(&err)),
                 }
             },
         };
@@ -530,8 +570,8 @@ impl AgentExecutionServiceHandle {
         let duration = started_at.elapsed();
         self.runtime.observability.record_subrun_execution(
             duration,
-            &result.status,
-            execution.child_storage_mode,
+            &result.lifecycle,
+            &result.last_turn_outcome,
             tracker.step_count(),
             tracker.estimated_tokens_used(),
         );
@@ -561,7 +601,7 @@ impl AgentExecutionServiceHandle {
             format!(
                 "child-terminal:{}:{}",
                 execution.child.sub_run_id,
-                status_label(result.status)
+                status_label(result.lifecycle, result.last_turn_outcome)
             ),
             delivery.kind,
             delivery.summary,
@@ -588,12 +628,14 @@ impl AgentExecutionServiceHandle {
             .observability
             .record_child_lifecycle(ChildLifecycleStage::TerminalPersisted);
 
-        self.reactivate_parent_agent_if_idle(
-            &execution.parent_session_id,
-            &execution.parent_turn_id,
-            &terminal_notification,
-        )
-        .await;
+        self.runtime
+            .agent()
+            .reactivate_parent_agent_if_idle(
+                &execution.parent_session_id,
+                &execution.parent_turn_id,
+                &terminal_notification,
+            )
+            .await;
 
         log::info!(
             "child session terminal delivery persisted: parentSession='{}', childAgent='{}', \
@@ -608,13 +650,20 @@ impl AgentExecutionServiceHandle {
     }
 }
 
-fn status_label(status: AgentStatus) -> &'static str {
-    match status {
-        AgentStatus::Pending => "pending",
-        AgentStatus::Running => "running",
-        AgentStatus::Completed => "completed",
-        AgentStatus::Cancelled => "cancelled",
-        AgentStatus::Failed => "failed",
-        AgentStatus::TokenExceeded => "token_exceeded",
+fn status_label(
+    lifecycle: AgentLifecycleStatus,
+    outcome: Option<AgentTurnOutcome>,
+) -> &'static str {
+    match outcome {
+        Some(AgentTurnOutcome::Completed) => "completed",
+        Some(AgentTurnOutcome::Cancelled) => "cancelled",
+        Some(AgentTurnOutcome::Failed) => "failed",
+        Some(AgentTurnOutcome::TokenExceeded) => "token_exceeded",
+        None => match lifecycle {
+            AgentLifecycleStatus::Pending => "pending",
+            AgentLifecycleStatus::Running => "running",
+            AgentLifecycleStatus::Idle => "idle",
+            AgentLifecycleStatus::Terminated => "terminated",
+        },
     }
 }

@@ -12,7 +12,7 @@ use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::{
     ApiError, AppState,
@@ -93,32 +93,23 @@ pub(crate) async fn get_subrun_status(
 /// 关闭指定 agent 及其子树。
 ///
 /// 替代旧的 `cancel_subrun` 路由。新路由按 agent_id 而非 sub_run_id 定位，
-/// 并支持级联关闭子树。`cascade` 默认为 `true`。
+/// 始终级联关闭子树。
 pub(crate) async fn close_agent(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((session_id, agent_id)): Path<(String, String)>,
-    Json(body): Json<CloseAgentRequest>,
 ) -> Result<Json<CloseAgentResponse>, ApiError> {
     require_auth(&state, &headers, None)?;
     let session_id = sessions::validate_session_path_id(&session_id)?;
-    let cascade = body.cascade.unwrap_or(true);
     let closed_ids = state
         .service
         .execution()
-        .close_agent_subtree(&session_id, &agent_id, cascade)
+        .close_agent_subtree(&session_id, &agent_id, true)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(CloseAgentResponse {
         closed_agent_ids: closed_ids,
     }))
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CloseAgentRequest {
-    #[serde(default)]
-    cascade: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
