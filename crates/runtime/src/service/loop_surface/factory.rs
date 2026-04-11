@@ -6,7 +6,9 @@
 use std::sync::Arc;
 
 use astrcode_core::{AgentProfileCatalog, HookHandler, PolicyEngine};
-use astrcode_runtime_agent_loop::{AgentLoop, ApprovalBroker, SubAgentPolicyEngine};
+use astrcode_runtime_agent_loop::{
+    AgentLoop, ApprovalBroker, DynProviderFactory, SubAgentPolicyEngine,
+};
 use astrcode_runtime_prompt::PromptDeclaration;
 use astrcode_runtime_registry::CapabilityRouter;
 use astrcode_runtime_skill_loader::SkillCatalog;
@@ -17,7 +19,6 @@ use crate::{
         resolve_compact_threshold_percent, resolve_max_tool_concurrency,
         resolve_tool_result_max_bytes,
     },
-    provider_factory::ConfigFileProviderFactory,
     service::RuntimeSurfaceState,
 };
 
@@ -28,6 +29,9 @@ pub(in crate::service) struct LoopSurfaceInputs {
     pub(in crate::service) skill_catalog: Arc<SkillCatalog>,
     pub(in crate::service) hook_handlers: Vec<Arc<dyn HookHandler>>,
     pub(in crate::service) prompt_builder: astrcode_runtime_prompt::LayeredPromptBuilder,
+    /// LLM Provider 工厂，从 RuntimeSurfaceState 透传到子代理 AgentLoop。
+    /// 测试中可注入 StaticProvider 以避免依赖 ConfigFileProviderFactory。
+    pub(in crate::service) factory: DynProviderFactory,
 }
 
 impl LoopSurfaceInputs {
@@ -38,6 +42,7 @@ impl LoopSurfaceInputs {
             skill_catalog: Arc::clone(&surface.skill_catalog),
             hook_handlers: surface.hook_handlers.clone(),
             prompt_builder: surface.prompt_builder.clone(),
+            factory: surface.factory.clone(),
         }
     }
 }
@@ -95,10 +100,11 @@ pub(in crate::service) fn build_agent_loop_from_parts(
         skill_catalog,
         hook_handlers,
         prompt_builder,
+        factory,
     } = surface;
     Arc::new(
         AgentLoop::from_capabilities_with_prompt_inputs(
-            Arc::new(ConfigFileProviderFactory),
+            factory,
             capabilities,
             prompt_declarations,
             skill_catalog,

@@ -30,7 +30,7 @@ impl AgentExecutionServiceHandle {
         }
     }
 
-    pub(super) fn prepare_scoped_execution(
+    pub(super) async fn prepare_scoped_execution(
         &self,
         invocation_kind: astrcode_core::InvocationKind,
         profile: &astrcode_core::AgentProfile,
@@ -39,15 +39,19 @@ impl AgentExecutionServiceHandle {
         parent_state: Option<&astrcode_core::AgentState>,
     ) -> ServiceResult<PreparedAgentExecution<Arc<AgentLoop>>> {
         let request = AgentExecutionRequest::from_spawn_agent_params(params, None);
+        // 从 surface 读取 factory 用于子代理 loop 组装
+        let factory = self.runtime.surface.read().await.factory.clone();
         self.prepare_scoped_execution_request(
             invocation_kind,
             profile,
             request,
             surface,
             parent_state,
+            factory,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn prepare_scoped_execution_request(
         &self,
         invocation_kind: astrcode_core::InvocationKind,
@@ -55,6 +59,7 @@ impl AgentExecutionServiceHandle {
         request: AgentExecutionRequest,
         surface: ScopedExecutionSurface<Arc<astrcode_runtime_skill_loader::SkillCatalog>>,
         parent_state: Option<&astrcode_core::AgentState>,
+        factory: astrcode_runtime_agent_loop::DynProviderFactory,
     ) -> ServiceResult<PreparedAgentExecution<Arc<AgentLoop>>> {
         prepare_scoped_agent_execution(
             invocation_kind,
@@ -76,6 +81,7 @@ impl AgentExecutionServiceHandle {
                         skill_catalog,
                         hook_handlers,
                         prompt_builder,
+                        factory: factory.clone(),
                     },
                     active_profile,
                     runtime_config,

@@ -13,7 +13,9 @@ use astrcode_core::{
 };
 use astrcode_runtime_agent_control::AgentControl;
 use astrcode_runtime_agent_loader::{AgentProfileLoader, AgentProfileRegistry};
-use astrcode_runtime_agent_loop::{AgentLoop, ApprovalBroker, DefaultApprovalBroker};
+use astrcode_runtime_agent_loop::{
+    AgentLoop, ApprovalBroker, DefaultApprovalBroker, DynProviderFactory,
+};
 use astrcode_runtime_prompt::{
     LayeredPromptBuilder, PromptDeclaration, default_layered_prompt_builder,
 };
@@ -26,7 +28,7 @@ use dashmap::DashMap;
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 
-use crate::config::load_config;
+use crate::{config::load_config, provider_factory::ConfigFileProviderFactory};
 
 mod agent;
 #[cfg(test)]
@@ -85,6 +87,9 @@ struct RuntimeSurfaceState {
     skill_catalog: Arc<SkillCatalog>,
     hook_handlers: Vec<Arc<dyn HookHandler>>,
     prompt_builder: LayeredPromptBuilder,
+    /// LLM Provider 工厂，用于子代理 scoped execution 组装 AgentLoop。
+    /// 测试中可通过 `install_test_loop` 注入 StaticProvider。
+    factory: DynProviderFactory,
 }
 
 pub(crate) struct RuntimeServiceDeps {
@@ -298,6 +303,7 @@ impl RuntimeService {
             skill_catalog,
             hook_handlers: Vec::new(),
             prompt_builder: default_layered_prompt_builder(),
+            factory: Arc::new(ConfigFileProviderFactory),
         };
         let loop_ = build_agent_loop(
             &surface,

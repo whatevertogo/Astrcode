@@ -103,18 +103,19 @@ impl ProviderFactory for StaticProviderFactory {
 
 /// 为测试服务安装一个静态 AgentLoop，使用固定延迟和输出。
 async fn install_test_loop(service: &RuntimeService, delay: Duration) {
-    let provider: Arc<dyn LlmProvider> = Arc::new(StaticProvider {
-        delay,
-        output: LlmOutput {
-            content: "done".to_string(),
-            ..LlmOutput::default()
-        },
-    });
-    let loop_ = AgentLoop::from_capabilities(
-        Arc::new(StaticProviderFactory { provider }),
-        empty_capabilities(),
-    );
+    let factory: Arc<dyn astrcode_runtime_agent_loop::ProviderFactory> =
+        Arc::new(StaticProviderFactory {
+            provider: Arc::new(StaticProvider {
+                delay,
+                output: LlmOutput {
+                    content: "done".to_string(),
+                    ..LlmOutput::default()
+                },
+            }),
+        });
+    let loop_ = AgentLoop::from_capabilities(factory.clone(), empty_capabilities());
     *service.loop_.write().await = Arc::new(loop_);
+    service.surface.write().await.factory = factory;
 }
 
 /// 为测试会话播种预定义的 JSONL 日志。

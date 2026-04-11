@@ -306,23 +306,19 @@ impl AgentExecutionServiceHandle {
                         resumed.agent_profile
                     ))
                 })?;
-            let request =
-                astrcode_runtime_execution::AgentExecutionRequest::from_spawn_agent_params(
-                    &SpawnAgentParams {
-                        r#type: Some(profile.id.clone()),
-                        description: "resume".to_string(),
-                        prompt: resume_message.clone(),
-                        context: None,
-                    },
-                    None,
-                );
-            self.prepare_scoped_execution_request(
+            self.prepare_scoped_execution(
                 InvocationKind::SubRun,
                 &profile,
-                request,
+                &SpawnAgentParams {
+                    r#type: Some(profile.id.clone()),
+                    description: "resume".to_string(),
+                    prompt: resume_message.clone(),
+                    context: None,
+                },
                 self.snapshot_execution_surface().await,
                 Some(&parent.parent_snapshot),
-            )?
+            )
+            .await?
             .loop_
         };
 

@@ -127,11 +127,14 @@ fn append_storage_event(service: &RuntimeService, session_id: &str, event: &Stor
 }
 
 async fn install_provider_loop(service: &Arc<RuntimeService>, provider: Arc<dyn LlmProvider>) {
-    let loop_ = AgentLoop::from_capabilities(
-        Arc::new(StaticProviderFactory { provider }),
-        empty_capabilities(),
-    );
+    let factory: Arc<dyn astrcode_runtime_agent_loop::ProviderFactory> =
+        Arc::new(StaticProviderFactory {
+            provider: provider.clone(),
+        });
+    let loop_ = AgentLoop::from_capabilities(factory.clone(), empty_capabilities());
     *service.loop_.write().await = Arc::new(loop_);
+    // 同步更新 surface 中的 factory，以便子代理 scoped execution 也使用 StaticProvider
+    service.surface.write().await.factory = factory;
 }
 
 async fn install_test_loop(service: &Arc<RuntimeService>, output: LlmOutput) {

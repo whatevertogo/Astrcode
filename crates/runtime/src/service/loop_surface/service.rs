@@ -41,12 +41,14 @@ impl<'a> LoopSurfaceService<'a> {
             (config.active_profile.clone(), config.runtime.clone())
         };
         let shared_prompt_builder = self.runtime.surface.read().await.prompt_builder.clone();
+        let shared_factory = self.runtime.surface.read().await.factory.clone();
         let next_surface = RuntimeSurfaceState {
             capabilities,
             prompt_declarations,
             skill_catalog,
             hook_handlers,
             prompt_builder: shared_prompt_builder,
+            factory: shared_factory,
         };
         let next_loop = build_agent_loop(
             &next_surface,

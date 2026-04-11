@@ -432,21 +432,42 @@ impl AgentControl {
     ///
     /// 在 turn 完成（无论是正常完成还是失败）时调用，
     /// 同时将 lifecycle 从 Running 推进到 Idle。
+    ///
+    /// 四工具模型下 Idle 表示"不在执行但仍存活"，legacy status 会被映射为
+    /// Completed/Failed/Cancelled/TokenExceeded（均属终态）。并发槽位在此时释放，
+    /// 后续 resume 会重新占用。
     pub async fn complete_turn(
         &self,
         id: &str,
         outcome: AgentTurnOutcome,
     ) -> Option<AgentLifecycleStatus> {
+        // 在获取写锁前先读取，避免同时借用 self 和 state
+        let next_seq = self.next_finalized_seq.fetch_add(1, Ordering::SeqCst);
+        let retain_limit = self.finalized_retain_limit;
         let mut state = self.state.write().await;
         let key = resolve_entry_key(&state, id)?.to_string();
-        let entry = state.entries.get_mut(&key)?;
-        entry.last_turn_outcome = Some(outcome);
-        entry.lifecycle_status = AgentLifecycleStatus::Idle;
-        let projected_status =
-            lifecycle_to_legacy_status(entry.lifecycle_status, entry.last_turn_outcome)?;
-        entry.handle.status = projected_status;
-        entry.status_tx.send_replace(projected_status);
-        Some(entry.lifecycle_status)
+        // 先收集需要的信息，再修改 entry，避免 entry 借用与 state.active_count 冲突
+        let (was_active, new_lifecycle) = {
+            let entry = state.entries.get_mut(&key)?;
+            let was_active = !entry.handle.status.is_final();
+            entry.last_turn_outcome = Some(outcome);
+            entry.lifecycle_status = AgentLifecycleStatus::Idle;
+            let projected_status =
+                lifecycle_to_legacy_status(entry.lifecycle_status, entry.last_turn_outcome)?;
+            entry.handle.status = projected_status;
+            // Idle + any turn outcome 映射到 legacy 终态，需要释放并发槽位
+            // 以便新 spawn 的子 agent 能获取资源；后续 resume 会重新占用。
+            if projected_status.is_final() {
+                entry.finalized_seq = Some(next_seq);
+            }
+            entry.status_tx.send_replace(projected_status);
+            (was_active, entry.lifecycle_status)
+        };
+        if was_active {
+            state.active_count = state.active_count.saturating_sub(1);
+        }
+        prune_finalized_agents_locked(&mut state, retain_limit);
+        Some(new_lifecycle)
     }
 
     /// 列出当前已注册的 Agent。

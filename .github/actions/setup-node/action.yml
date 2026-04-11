@@ -1,0 +1,18 @@
+name: "Setup Node.js"
+description: "安装 Node.js 并可选配置 npm 缓存"
+
+inputs:
+  cache-dependency-path:
+    description: "package-lock.json 路径，用于启用 npm 缓存"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+        cache: ${{ inputs.cache-dependency-path && 'npm' || '' }}
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}

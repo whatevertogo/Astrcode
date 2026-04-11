@@ -112,12 +112,14 @@ impl AgentExecutionServiceHandle {
                 });
             },
         }
+        let factory = self.runtime.surface.read().await.factory.clone();
         let prepared_execution = self.prepare_scoped_execution_request(
             InvocationKind::RootExecution,
             &profile,
             request,
             self.snapshot_execution_surface().await,
             None,
+            factory,
         )?;
         validate_root_execution_storage_mode(
             prepared_execution

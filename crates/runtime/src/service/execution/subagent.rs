@@ -154,13 +154,15 @@ impl AgentExecutionServiceHandle {
         params: &SpawnAgentParams,
         parent: &ParentExecutionContext,
     ) -> ServiceResult<PreparedSubagentExecution> {
-        let prepared_execution = self.prepare_scoped_execution(
-            InvocationKind::SubRun,
-            profile,
-            params,
-            self.snapshot_execution_surface().await,
-            Some(&parent.parent_snapshot),
-        )?;
+        let prepared_execution = self
+            .prepare_scoped_execution(
+                InvocationKind::SubRun,
+                profile,
+                params,
+                self.snapshot_execution_surface().await,
+                Some(&parent.parent_snapshot),
+            )
+            .await?;
         let child_storage_mode = prepared_execution
             .execution_spec
             .resolved_overrides
