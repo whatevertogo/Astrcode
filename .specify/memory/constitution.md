@@ -20,6 +20,8 @@ Sync Impact Report
 -->
 # Astrcode Constitution
 
+当前项目的Memory.md中记录了项目历程的准则，你需要选择相关的内容查看
+
 ## 核心原则
 
 ### I. Durable Truth First

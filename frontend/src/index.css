@@ -28,11 +28,35 @@
   /* 状态色 */
   --color-success-soft: var(--success-soft);
   --color-success: var(--success);
+  --color-warning-soft: var(--warning-soft);
+  --color-warning: var(--warning);
+  --color-warning-border: var(--warning-border);
+  --color-info-soft: var(--info-soft);
+  --color-info: var(--info);
+  --color-info-border: var(--info-border);
   --color-danger-soft: var(--danger-soft);
   --color-danger: var(--danger);
+  --color-overlay-backdrop: var(--overlay-backdrop);
+  --color-code-surface: var(--code-surface);
+  --color-code-surface-strong: var(--code-surface-strong);
+  --color-code-border: var(--code-border);
+  --color-code-label: var(--code-label);
+  --color-code-text: var(--code-text);
+  --color-avatar-surface: var(--avatar-surface);
+  --color-avatar-surface-strong: var(--avatar-surface-strong);
+  --color-avatar-text: var(--avatar-text);
+  --color-cache-high: var(--cache-high);
+  --color-cache-medium: var(--cache-medium);
+  --color-cache-low: var(--cache-low);
+  --color-cache-none: var(--cache-none);
 
   /* 阴影 */
   --shadow-soft: var(--shadow-soft);
+  --shadow-surface-lg: var(--shadow-surface-lg);
+  --shadow-composer-shell: var(--shadow-composer-shell);
+  --shadow-focus-warm: var(--shadow-focus-warm);
+  --shadow-focus-accent: var(--shadow-focus-accent);
+  --shadow-code-panel: var(--shadow-code-panel);
 
   /* Phase 指示灯颜色 */
   --color-phase-idle: var(--phase-idle);
@@ -53,6 +77,15 @@
   --color-rename-input-bg: var(--rename-input-bg);
   --color-rename-input-border: var(--rename-input-border);
   --color-rename-input-color: var(--rename-input-color);
+
+  /* JSON 语法高亮 */
+  --color-json-key: var(--json-key);
+  --color-json-string: var(--json-string);
+  --color-json-number: var(--json-number);
+  --color-json-boolean: var(--json-boolean);
+
+  /* 用户消息气泡 */
+  --color-user-bubble: var(--user-bubble);
 
   /* 共享动画 */
   --animate-blink: blink 1s step-end infinite;
@@ -85,9 +118,34 @@
   --accent-soft: #39c98f;
   --success-soft: #e7f7ee;
   --success: #3ebc7f;
+  --warning-soft: #fff3e7;
+  --warning: #c77d2f;
+  --warning-border: #e5c79b;
+  --info-soft: #eef4ff;
+  --info: #315798;
+  --info-border: #b9caea;
   --danger-soft: #fff0ed;
   --danger: #cc5b5b;
+  --overlay-backdrop: rgba(55, 42, 26, 0.18);
+  --code-surface: #f5f3ef;
+  --code-surface-strong: #ece6dd;
+  --code-border: #d7cbbd;
+  --code-label: #7a6f60;
+  --code-text: #2f3a48;
+  --avatar-surface: #f3eadf;
+  --avatar-surface-strong: #ebdfd1;
+  --avatar-text: #8a7458;
+  --cache-high: #10b981;
+  --cache-medium: #f59e0b;
+  --cache-low: #ef4444;
+  --cache-none: #dc2626;
   --shadow-soft: 0 10px 30px rgba(117, 90, 52, 0.08);
+  --shadow-surface-lg: 0 24px 60px rgba(83, 61, 31, 0.16);
+  --shadow-composer-shell:
+    0 24px 42px rgba(117, 90, 52, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  --shadow-focus-warm: 0 0 0 4px rgba(220, 203, 180, 0.35);
+  --shadow-focus-accent: 0 0 0 4px rgba(57, 201, 143, 0.12), 0 28px 48px rgba(117, 90, 52, 0.13);
+  --shadow-code-panel: 0 12px 28px rgba(68, 102, 193, 0.08);
 
   /* Phase 指示灯颜色 */
   --phase-idle: #4ec9b0;
@@ -108,6 +166,24 @@
   --rename-input-bg: #252525;
   --rename-input-border: #555;
   --rename-input-color: #d4d4d4;
+
+  /* JSON 语法高亮 */
+  --json-key: #7a654d;
+  --json-string: #1f6b45;
+  --json-number: #355e9b;
+  --json-boolean: #8f4038;
+
+  /* 用户消息气泡 */
+  --user-bubble: #f3f2ee;
+
+  /* 聊天布局变量（原 Chat.module.css，全局唯一事实源） */
+  --chat-content-max-width: 860px;
+  --chat-composer-max-width: 916px; /* 860 + 56 */
+  --chat-content-horizontal-padding: 32px;
+  --chat-content-horizontal-padding-mobile: 16px;
+  --chat-assistant-content-offset: 44px; /* avatar(28) + gap(16) */
+  --chat-assistant-center-shift: 22px; /* offset / 2 */
+  --chat-composer-shell-padding-x: 16px;
 }
 
 html,

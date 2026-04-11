@@ -1,23 +1,20 @@
 import React, { Component, useCallback, useEffect, useRef } from 'react';
 import type { Message } from '../../types';
 import type { SubRunViewData, ThreadItem } from '../../lib/subRunView';
+import { emptyStateSurface, errorSurface } from '../../lib/styles';
 import { cn } from '../../lib/utils';
-import UserMessage from './UserMessage';
 import AssistantMessage from './AssistantMessage';
-import ToolCallBlock from './ToolCallBlock';
 import CompactMessage from './CompactMessage';
 import SubRunBlock from './SubRunBlock';
+import ToolCallBlock from './ToolCallBlock';
+import UserMessage from './UserMessage';
+import { useChatScreenContext } from './ChatScreenContext';
 
 interface MessageListProps {
-  sessionId: string | null;
   threadItems: ThreadItem[];
   childSubRuns: SubRunViewData[];
   subRunViews: Map<string, SubRunViewData>;
   contentFingerprint: string;
-  emptyStateText?: string;
-  onCancelSubRun: (sessionId: string, subRunId: string) => void | Promise<void>;
-  onFocusSubRun: (subRunId: string) => void;
-  onOpenChildSession: (childSessionId: string) => void | Promise<void>;
 }
 
 interface MessageBoundaryProps {
@@ -48,9 +45,9 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
     if (this.state.hasError) {
       const { message } = this.props;
       return (
-        <div className="self-stretch border border-[#f0d5d2] bg-[#fff7f6] text-[#915454] rounded-2xl px-4 py-3.5">
-          <div className="text-[13px] font-semibold mb-1.5">消息渲染失败</div>
-          <div className="text-xs text-[#b88585] mb-2">kind: {message.kind}</div>
+        <div className={errorSurface}>
+          <div className="mb-1.5 text-[13px] font-semibold">消息渲染失败</div>
+          <div className="mb-2 text-xs text-danger/70">kind: {message.kind}</div>
           {message.kind === 'toolCall' ? (
             <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
               {JSON.stringify(
@@ -144,16 +141,13 @@ function isRowNested(options?: { nested?: boolean }): boolean {
 }
 
 export default function MessageList({
-  sessionId,
   threadItems,
   childSubRuns,
   subRunViews,
   contentFingerprint,
-  emptyStateText,
-  onCancelSubRun,
-  onFocusSubRun,
-  onOpenChildSession,
 }: MessageListProps) {
+  const { sessionId, activeSubRunPath, onCancelSubRun, onOpenSubRun, onOpenChildSession } =
+    useChatScreenContext();
   const listRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
@@ -214,7 +208,7 @@ export default function MessageList({
         return <ToolCallBlock message={msg} />;
       }
       if (msg.kind === 'promptMetrics') {
-        return null; // 不再单独渲染，而是附加到 assistant 消息
+        return null;
       }
       if (msg.kind === 'compact') {
         return <CompactMessage message={msg} />;
@@ -240,8 +234,6 @@ export default function MessageList({
     ) => {
       const isContinuation =
         previousMessage !== null && isAssistantLike(msg) && isAssistantLike(previousMessage);
-
-      // 使用传入的 metrics 或检查 nextMessage
       const metricsToAttach =
         metricsOverride ??
         (msg.kind === 'assistant' && nextMessage?.kind === 'promptMetrics'
@@ -252,7 +244,7 @@ export default function MessageList({
         <div
           key={options?.key ?? msg.id}
           className={cn(
-            isRowNested(options) ? 'w-full' : 'w-[min(100%,var(--chat-content-max-width))] mx-auto',
+            isRowNested(options) ? 'w-full' : 'mx-auto w-[min(100%,var(--chat-content-max-width))]',
             'transition-[margin-top] duration-200 ease-out',
             isContinuation && '-mt-4'
           )}
@@ -272,62 +264,59 @@ export default function MessageList({
       options?: {
         nested?: boolean;
       }
-    ): React.ReactNode[] => {
-      return items.map((item, index) => {
+    ): React.ReactNode[] =>
+      items.map((item, index) => {
         if (item.kind === 'message') {
           const previousItem = items[index - 1];
           const nextItem = items[index + 1];
           const previousMessage = previousItem?.kind === 'message' ? previousItem.message : null;
           const nextMessage = nextItem?.kind === 'message' ? nextItem.message : null;
 
-          // 跳过 promptMetrics 消息，因为它们会被附加到前一个 assistant 消息
           if (item.message.kind === 'promptMetrics') {
             return null;
           }
 
-          // 如果当前是 assistant 消息，只在 turn 的最后一个 assistant 消息上显示 metrics
-          let metricsToAttach: Message | undefined = undefined;
+          let metricsToAttach: Message | undefined;
           if (item.message.kind === 'assistant') {
-            // 检查后面是否还有同一个 turn 的 assistant 消息
             let hasMoreAssistantInTurn = false;
             const currentTurnId = item.message.turnId;
 
-            for (let j = index + 1; j < items.length; j++) {
-              const nextItem = items[j];
-              if (nextItem.kind === 'message') {
-                if (
-                  nextItem.message.kind === 'assistant' &&
-                  nextItem.message.turnId === currentTurnId
-                ) {
-                  // 同一个 turn 还有后续 assistant 消息，当前不显示 metrics
-                  hasMoreAssistantInTurn = true;
-                  break;
-                } else if (
-                  nextItem.message.kind === 'user' ||
-                  (nextItem.message.kind === 'assistant' &&
-                    nextItem.message.turnId !== currentTurnId)
-                ) {
-                  // 遇到新的 turn，停止查找
-                  break;
-                }
+            for (let nextIndex = index + 1; nextIndex < items.length; nextIndex += 1) {
+              const nextThreadItem = items[nextIndex];
+              if (nextThreadItem.kind !== 'message') {
+                continue;
+              }
+              if (
+                nextThreadItem.message.kind === 'assistant' &&
+                nextThreadItem.message.turnId === currentTurnId
+              ) {
+                hasMoreAssistantInTurn = true;
+                break;
+              }
+              if (
+                nextThreadItem.message.kind === 'user' ||
+                (nextThreadItem.message.kind === 'assistant' &&
+                  nextThreadItem.message.turnId !== currentTurnId)
+              ) {
+                break;
               }
             }
 
-            // 只有当这是 turn 的最后一个 assistant 消息时，才查找并附加 metrics
             if (!hasMoreAssistantInTurn) {
-              for (let j = index + 1; j < items.length; j++) {
-                const nextItem = items[j];
-                if (nextItem.kind === 'message') {
-                  if (nextItem.message.kind === 'promptMetrics') {
-                    metricsToAttach = nextItem.message;
-                    break;
-                  } else if (
-                    nextItem.message.kind === 'assistant' ||
-                    nextItem.message.kind === 'user'
-                  ) {
-                    // 遇到下一个消息，停止查找
-                    break;
-                  }
+              for (let nextIndex = index + 1; nextIndex < items.length; nextIndex += 1) {
+                const nextThreadItem = items[nextIndex];
+                if (nextThreadItem.kind !== 'message') {
+                  continue;
+                }
+                if (nextThreadItem.message.kind === 'promptMetrics') {
+                  metricsToAttach = nextThreadItem.message;
+                  break;
+                }
+                if (
+                  nextThreadItem.message.kind === 'assistant' ||
+                  nextThreadItem.message.kind === 'user'
+                ) {
+                  break;
                 }
               }
             }
@@ -353,12 +342,12 @@ export default function MessageList({
               className={
                 isRowNested(options)
                   ? 'w-full'
-                  : 'w-[min(100%,var(--chat-content-max-width))] mx-auto'
+                  : 'mx-auto w-[min(100%,var(--chat-content-max-width))]'
               }
             >
-              <div className="self-stretch border border-[#f0d5d2] bg-[#fff7f6] text-[#915454] rounded-2xl px-4 py-3.5">
-                <div className="text-[13px] font-semibold mb-1.5">子执行渲染失败</div>
-                <div className="text-xs text-[#b88585] mb-2">subRunId: {item.subRunId}</div>
+              <div className={errorSurface}>
+                <div className="mb-1.5 text-[13px] font-semibold">子执行渲染失败</div>
+                <div className="mb-2 text-xs text-danger/70">subRunId: {item.subRunId}</div>
               </div>
             </div>
           );
@@ -368,7 +357,7 @@ export default function MessageList({
           subRunView.startMessage ?? subRunView.finishMessage ?? subRunView.bodyMessages[0];
         const rowClass = isRowNested(options)
           ? 'w-full'
-          : 'w-[min(100%,var(--chat-content-max-width))] mx-auto';
+          : 'mx-auto w-[min(100%,var(--chat-content-max-width))]';
         const subRunBlock = (
           <SubRunBlock
             subRunId={subRunView.subRunId}
@@ -382,7 +371,7 @@ export default function MessageList({
             hasDescriptorLineage={subRunView.hasDescriptorLineage}
             renderThreadItems={renderThreadItems}
             onCancelSubRun={onCancelSubRun}
-            onFocusSubRun={onFocusSubRun}
+            onFocusSubRun={onOpenSubRun}
             onOpenChildSession={onOpenChildSession}
           />
         );
@@ -396,9 +385,8 @@ export default function MessageList({
             )}
           </div>
         );
-      });
-    },
-    [onCancelSubRun, onFocusSubRun, onOpenChildSession, renderMessageRow, sessionId, subRunViews]
+      }),
+    [onCancelSubRun, onOpenChildSession, onOpenSubRun, renderMessageRow, sessionId, subRunViews]
   );
 
   const renderedRows = renderThreadItems(threadItems);
@@ -418,7 +406,7 @@ export default function MessageList({
         hasDescriptorLineage={subRunView.hasDescriptorLineage}
         renderThreadItems={renderThreadItems}
         onCancelSubRun={onCancelSubRun}
-        onFocusSubRun={onFocusSubRun}
+        onFocusSubRun={onOpenSubRun}
         onOpenChildSession={onOpenChildSession}
         displayMode="directory"
       />
@@ -427,7 +415,7 @@ export default function MessageList({
     return (
       <div
         key={`child-subrun-${subRunView.subRunId}`}
-        className="w-[min(100%,var(--chat-content-max-width))] mx-auto"
+        className="mx-auto w-[min(100%,var(--chat-content-max-width))]"
       >
         {boundaryMessage ? (
           <MessageBoundary message={boundaryMessage}>{subRunBlock}</MessageBoundary>
@@ -441,18 +429,23 @@ export default function MessageList({
   return (
     <div
       ref={listRef}
-      className="flex-1 min-h-0 overflow-y-auto py-7 px-[var(--chat-content-horizontal-padding)] max-sm:px-[var(--chat-content-horizontal-padding-mobile)] flex flex-col gap-[22px] max-sm:gap-[18px] max-sm:pt-[18px] max-sm:pb-2 bg-[var(--panel-bg)]"
+      className="flex flex-1 flex-col gap-[22px] overflow-y-auto bg-panel-bg px-[var(--chat-content-horizontal-padding)] py-7 max-sm:gap-[18px] max-sm:px-[var(--chat-content-horizontal-padding-mobile)] max-sm:pb-2 max-sm:pt-[18px]"
       onScroll={updateStickiness}
     >
       {threadItems.length === 0 && childSubRuns.length === 0 && (
-        <div className="w-[min(100%,var(--chat-content-max-width))] mx-auto mt-[90px] max-sm:mt-[54px] text-text-secondary text-sm text-center px-7 py-6 border border-dashed border-border rounded-[18px] bg-[rgba(255,255,255,0.45)]">
-          {emptyStateText ?? '向 AstrCode 提问，开始对话...'}
+        <div
+          className={cn(
+            emptyStateSurface,
+            'mx-auto mt-[90px] w-[min(100%,var(--chat-content-max-width))] max-sm:mt-[54px]'
+          )}
+        >
+          {activeSubRunPath.length > 0 ? '等待该子执行输出...' : '向 AstrCode 提问，开始对话...'}
         </div>
       )}
       {renderedRows}
       {childSubRuns.length > 0 && (
-        <section className="w-[min(100%,var(--chat-content-max-width))] mx-auto mt-1 flex flex-col gap-3">
-          <div className="text-xs leading-snug text-text-secondary tracking-[0.02em]">
+        <section className="mx-auto mt-1 flex w-[min(100%,var(--chat-content-max-width))] flex-col gap-3">
+          <div className="text-xs leading-snug tracking-[0.02em] text-text-secondary">
             下一级子执行
           </div>
           <div className="flex flex-col gap-[18px]">{childSubRunRows}</div>

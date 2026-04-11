@@ -2,7 +2,16 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SubRunFinishMessage, SubRunStartMessage } from '../../types';
 import type { ThreadItem } from '../../lib/subRunView';
 import { cn } from '../../lib/utils';
-import { pillBase, expandableBody, chevronIcon } from '../../lib/styles';
+import {
+  chevronIcon,
+  expandableBody,
+  infoButton,
+  pillDanger,
+  pillNeutral,
+  pillSuccess,
+  pillWarning,
+  subtleActionButton,
+} from '../../lib/styles';
 
 interface SubRunBlockProps {
   subRunId: string;
@@ -21,7 +30,7 @@ interface SubRunBlockProps {
     }
   ) => React.ReactNode[];
   onCancelSubRun: (sessionId: string, agentId: string) => void | Promise<void>;
-  onFocusSubRun?: (subRunId: string) => void;
+  onFocusSubRun?: (subRunId: string) => void | Promise<void>;
   onOpenChildSession?: (childSessionId: string) => void | Promise<void>;
   displayMode?: 'thread' | 'directory';
 }
@@ -59,16 +68,16 @@ function getStorageModeLabel(startMessage?: SubRunStartMessage, childSessionId?:
 function getStatusVariant(status: SubRunStatus): string {
   switch (status) {
     case 'completed':
-      return 'bg-[#eaf6ef] text-[#2e6f4d]';
+      return pillSuccess;
     case 'aborted':
-      return 'bg-[#f7f0e7] text-[#816343]';
+      return pillNeutral;
     case 'token_exceeded':
-      return 'bg-[#fff3e7] text-[#8a5831]';
+      return pillWarning;
     case 'failed':
-      return 'bg-[#fbeceb] text-[#8f4038]';
+      return pillDanger;
     case 'running':
     default:
-      return 'bg-[#f5efe3] text-[#7b6143]';
+      return pillNeutral;
   }
 }
 
@@ -136,6 +145,7 @@ function SubRunBlock({
         ? '这是独立子会话，请打开会话查看思考和工具流。'
         : '展开查看子执行的思考和工具流。');
   const shouldAutoOpen = !userInteracted && isBackgroundRunning;
+  const cancelTargetAgentId = startMessage?.agentId ?? subRunId;
 
   const updateStreamStickiness = useCallback(() => {
     const container = streamRef.current;
@@ -209,20 +219,20 @@ function SubRunBlock({
     setCancelError(null);
     try {
       // 使用 agentId 定位，fallback 到 subRunId（旧事件可能缺少 agentId）
-      await onCancelSubRun(sessionId, startMessage?.agentId ?? subRunId);
+      await onCancelSubRun(sessionId, cancelTargetAgentId);
     } catch (error) {
       setCancelError(error instanceof Error ? error.message : String(error));
     } finally {
       setCancelling(false);
     }
-  }, [cancelling, onCancelSubRun, sessionId, subRunId]);
+  }, [cancelTargetAgentId, cancelling, onCancelSubRun, sessionId]);
 
   const handleOpenView = useCallback(async () => {
     if (childSessionId) {
       await onOpenChildSession?.(childSessionId);
       return;
     }
-    onFocusSubRun?.(subRunId);
+    await onFocusSubRun?.(subRunId);
   }, [childSessionId, onFocusSubRun, onOpenChildSession, subRunId]);
 
   const renderToolbar = () => (
@@ -234,7 +244,7 @@ function SubRunBlock({
         {(onFocusSubRun || (childSessionId && onOpenChildSession)) && (
           <button
             type="button"
-            className="border border-[rgba(51,88,154,0.18)] bg-gradient-to-b from-[#f6f9ff] to-[#eef4ff] text-[#315798] rounded-full min-h-[30px] px-3 text-xs font-semibold cursor-pointer transition-[background,border-color,opacity] duration-150 ease-out hover:from-[#f0f5ff] hover:to-[#e6eeff] hover:border-[rgba(51,88,154,0.3)]"
+            className={cn(infoButton, 'min-h-[30px]')}
             onClick={() => void handleOpenView()}
           >
             {navigationLabel}
@@ -243,7 +253,10 @@ function SubRunBlock({
         {sessionId && isBackgroundRunning && (
           <button
             type="button"
-            className="border border-[#d7c5ad] bg-white text-[#7a4d34] rounded-full min-h-[30px] px-3 text-xs font-semibold cursor-pointer transition-[background,border-color,opacity] duration-150 ease-out hover:not-disabled:bg-[#fcf2e4] hover:not-disabled:border-[#c9af8c] disabled:cursor-wait disabled:opacity-60"
+            className={cn(
+              subtleActionButton,
+              'min-h-[30px] disabled:cursor-wait disabled:opacity-60'
+            )}
             onClick={() => void handleCancel()}
             disabled={cancelling}
           >
@@ -358,7 +371,7 @@ function SubRunBlock({
         <span className="block flex-1 min-w-0 whitespace-nowrap overflow-hidden text-ellipsis">
           子 Agent {title}
         </span>
-        <span className={cn(pillBase, getStatusVariant(status))}>{statusLabel}</span>
+        <span className={getStatusVariant(status)}>{statusLabel}</span>
         <span className="shrink-0 text-xs text-text-secondary whitespace-nowrap max-sm:hidden">
           {metrics}
         </span>
@@ -387,7 +400,7 @@ function SubRunBlock({
             {(onFocusSubRun || (childSessionId && onOpenChildSession)) && (
               <button
                 type="button"
-                className="border border-[rgba(51,88,154,0.18)] bg-gradient-to-b from-[#f6f9ff] to-[#eef4ff] text-[#315798] rounded-full min-h-[30px] px-3 text-xs font-semibold cursor-pointer transition-[background,border-color,opacity] duration-150 ease-out hover:from-[#f0f5ff] hover:to-[#e6eeff] hover:border-[rgba(51,88,154,0.3)]"
+                className={cn(infoButton, 'min-h-[30px]')}
                 onClick={() => void handleOpenView()}
               >
                 {navigationLabel}

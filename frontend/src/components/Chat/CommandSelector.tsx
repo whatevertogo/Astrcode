@@ -163,9 +163,7 @@ export default function CommandSelector({
                 onClick={() => onSelect(option)}
                 className={cn(
                   'w-full flex items-center justify-start gap-3 px-2 h-[34px] text-left transition-all duration-75 rounded-lg cursor-pointer',
-                  index === selectedIndex
-                    ? 'bg-[rgba(0,0,0,0.06)] text-text-primary'
-                    : 'text-text-secondary'
+                  index === selectedIndex ? 'bg-black/5 text-text-primary' : 'text-text-secondary'
                 )}
               >
                 <span

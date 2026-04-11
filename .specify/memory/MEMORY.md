@@ -12,5 +12,6 @@
 - [Anthropic 缓存优化](anthropic_cache_optimization.md) — Phase 1 可见性、Phase 2 消息缓存深度 3、Phase 3 CacheTracker 失效检测
 
 ## Code Quality
+- [006 Dead Code & Contract Cleanup](006-prune-dead-code.md) — 跨层死代码清理、legacy 兼容层删除、subrun canonical contract 收口
 - [Code Quality Fixes](code_quality_fixes.md) — 锁恢复机制、错误链保留、异步任务管理、日志级别、Plugin 类型归属、模块大小约束
 - [Tool Security Enhancements](tool_security_enhancements.md) — 设备文件黑名单、UNC 路径检查、文件大小限制、符号链接检测、引号规范化、Grep 限制

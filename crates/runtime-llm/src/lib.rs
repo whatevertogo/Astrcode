@@ -583,6 +583,16 @@ pub trait LlmProvider: Send + Sync {
         false
     }
 
+    /// 将 provider 原始 usage 里的输入 token 规范化成适合前端展示的 prompt 总量。
+    ///
+    /// 某些 provider（如 Anthropic）会把缓存读取的 token 单独放在
+    /// `cache_read_input_tokens`，而 `input_tokens` 只表示本次实际重新发送/计费的部分。
+    /// 前端展示“缓存命中率”时需要一个统一口径的总输入值，因此默认直接回放
+    /// `usage.input_tokens`，特殊 provider 再自行覆盖。
+    fn prompt_metrics_input_tokens(&self, usage: LlmUsage) -> usize {
+        usage.input_tokens
+    }
+
     /// 返回模型的上下文窗口估算。
     ///
     /// 用于调用方判断当前消息历史是否接近上下文限制，触发压缩或截断。

@@ -1,4 +1,3 @@
-import React from 'react';
 import type { Project } from '../../types';
 import SessionItem from './SessionItem';
 import { useContextMenu } from '../../hooks/useContextMenu';
@@ -27,7 +26,7 @@ export default function ProjectItem({
   return (
     <div className="relative">
       <div
-        className="group flex items-center gap-2 min-h-[34px] py-1.5 px-2 cursor-pointer transition-[color,background-color] duration-150 ease-out select-none rounded-lg hover:bg-[rgba(0,0,0,0.05)] hover:text-text-primary"
+        className="group flex min-h-[34px] cursor-pointer select-none items-center gap-2 rounded-lg px-2 py-1.5 transition-[color,background-color] duration-150 ease-out hover:bg-black/5 hover:text-text-primary"
         onContextMenu={openMenu}
         onClick={() => onToggleExpand(project.id)}
       >

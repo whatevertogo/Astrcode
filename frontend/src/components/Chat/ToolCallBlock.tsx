@@ -9,7 +9,7 @@ import {
   extractToolShellDisplay,
 } from '../../lib/toolDisplay';
 import { cn } from '../../lib/utils';
-import { terminalBlock, patchLine } from '../../lib/styles';
+import { chevronIcon, pillNeutral, terminalBlock, patchLine } from '../../lib/styles';
 import ToolJsonView from './ToolJsonView';
 
 interface ToolCallBlockProps {
@@ -19,18 +19,18 @@ interface ToolCallBlockProps {
 function patchLineVariant(line: string): string {
   switch (classifyToolDiffLine(line)) {
     case 'meta':
-      return 'text-[#6d5a45] bg-[#efe4d5]';
+      return 'bg-surface-muted text-text-secondary';
     case 'header':
-      return 'text-[#6d5a45] bg-[#f4ebdf]';
+      return 'bg-surface-soft text-text-secondary';
     case 'add':
-      return 'text-[#1f6b45] bg-[#ebf7ef]';
+      return 'bg-success-soft text-success';
     case 'remove':
-      return 'text-[#8f4038] bg-[#fbeceb]';
+      return 'bg-danger-soft text-danger';
     case 'note':
-      return 'text-[#8a7458] bg-[#f8f1e6]';
+      return 'bg-warning-soft text-warning';
     case 'context':
     default:
-      return 'text-[#6d5a45]';
+      return 'text-text-secondary';
   }
 }
 
@@ -85,7 +85,7 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
         <span className="block flex-1 whitespace-nowrap overflow-hidden text-ellipsis min-w-0">
           {summaryText}
         </span>
-        <span className="w-3.5 h-3.5 inline-flex items-center justify-center shrink-0 text-text-secondary opacity-50 transition-transform duration-150 ease-out group-open:rotate-90">
+        <span className={chevronIcon}>
           <svg
             width="14"
             height="14"
@@ -110,25 +110,15 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
         {shell && (
           <div className="pb-3">
             {shell.command && (
-              <div className="font-mono text-[13px] text-[#4c3f31] leading-relaxed overflow-wrap-anywhere">
+              <div className="font-mono text-[13px] leading-relaxed text-text-primary overflow-wrap-anywhere">
                 $ {shell.command}
               </div>
             )}
-            <div className="mt-2 flex items-center flex-wrap gap-2">
-              {shell.cwd && (
-                <span className="inline-flex items-center min-h-[24px] px-2.5 rounded-full text-xs text-[#7a654d] bg-[#f4eadc]">
-                  {shell.cwd}
-                </span>
-              )}
-              {shell.shell && (
-                <span className="inline-flex items-center min-h-[24px] px-2.5 rounded-full text-xs text-[#7a654d] bg-[#f4eadc]">
-                  {shell.shell}
-                </span>
-              )}
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {shell.cwd && <span className={pillNeutral}>{shell.cwd}</span>}
+              {shell.shell && <span className={pillNeutral}>{shell.shell}</span>}
               {typeof shell.exitCode === 'number' && (
-                <span className="inline-flex items-center min-h-[24px] px-2.5 rounded-full text-xs text-[#7a654d] bg-[#f4eadc]">
-                  exit {shell.exitCode}
-                </span>
+                <span className={pillNeutral}>exit {shell.exitCode}</span>
               )}
             </div>
           </div>
@@ -140,31 +130,22 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
           </div>
         )}
         {diff && (
-          <div className="flex items-center flex-wrap gap-2 pb-3">
-            {diff.changeType && (
-              <span className="inline-flex items-center min-h-[24px] px-2.5 rounded-full text-xs text-[#7a654d] bg-[#f4eadc]">
-                {diff.changeType}
-              </span>
-            )}
+          <div className="flex flex-wrap items-center gap-2 pb-3">
+            {diff.changeType && <span className={pillNeutral}>{diff.changeType}</span>}
             {diff.path && (
               <span className="text-xs text-text-secondary font-mono overflow-wrap-anywhere">
                 {diff.path}
               </span>
             )}
             {typeof diff.bytes === 'number' && (
-              <span className="inline-flex items-center min-h-[24px] px-2.5 rounded-full text-xs text-[#7a654d] bg-[#f4eadc]">
-                {diff.bytes} bytes
-              </span>
+              <span className={pillNeutral}>{diff.bytes} bytes</span>
             )}
           </div>
         )}
         {!diff && metadataSummary?.pills.length ? (
           <div className="flex items-center flex-wrap gap-2">
             {metadataSummary.pills.map((pill, index) => (
-              <span
-                key={`${toolCallId}-${index}-${pill}`}
-                className="inline-flex items-center min-h-[24px] px-2.5 rounded-full text-xs text-[#7a654d] bg-[#f4eadc]"
-              >
+              <span key={`${toolCallId}-${index}-${pill}`} className={pillNeutral}>
                 {pill}
               </span>
             ))}
@@ -187,7 +168,7 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
                   key={`${toolCallId}-segment-${index}`}
                   className={cn(
                     'px-4 py-2 font-mono text-[13px] leading-relaxed whitespace-pre-wrap overflow-wrap-anywhere text-text-primary',
-                    segment.stream === 'stderr' && 'text-[var(--terminal-error)]'
+                    segment.stream === 'stderr' && 'text-terminal-error'
                   )}
                 >
                   {segment.text}
