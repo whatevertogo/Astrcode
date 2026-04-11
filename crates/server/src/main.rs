@@ -312,24 +312,48 @@ fn init_dev_logger() {
 
     use env_logger::Builder;
 
+    let mut builder = Builder::new();
     // RUST_LOG 已设置时尊重用户意图，否则用项目默认过滤。
     if std::env::var("RUST_LOG").is_ok() {
-        Builder::from_default_env().format_timestamp_secs().init();
+        builder.parse_default_env();
     } else {
-        Builder::new()
-            // 项目 crate 全部 info 级别
-            .parse_default_env_or("astrcode=info,astrcode_core=info,astrcode_runtime=info,astrcode_runtime_execution=info,astrcode_runtime_agent_control=info,astrcode_runtime_agent_loop=info,astrcode_runtime_agent_tool=info,astrcode_runtime_config=info,astrcode_runtime_llm=info,astrcode_runtime_prompt=info,astrcode_runtime_session=info,astrcode_runtime_skill_loader=info,astrcode_runtime_tool_loader=info,astrcode_runtime_registry=info,astrcode_storage=info,astrcode_protocol=info,astrcode_server=info,astrcode_plugin=info,astrcode_sdk=info,warn")
-            .format(|buf, record| {
-                writeln!(
-                    buf,
-                    "[{} {:5}] {}",
-                    buf.timestamp(),
-                    record.level(),
-                    record.args()
-                )
-            })
-            .init();
+        // 项目 crate 全部 info 级别，其余依赖 warn
+        for crate_name in [
+            "astrcode",
+            "astrcode_core",
+            "astrcode_runtime",
+            "astrcode_runtime_execution",
+            "astrcode_runtime_agent_control",
+            "astrcode_runtime_agent_loop",
+            "astrcode_runtime_agent_tool",
+            "astrcode_runtime_config",
+            "astrcode_runtime_llm",
+            "astrcode_runtime_prompt",
+            "astrcode_runtime_session",
+            "astrcode_runtime_skill_loader",
+            "astrcode_runtime_tool_loader",
+            "astrcode_runtime_registry",
+            "astrcode_storage",
+            "astrcode_protocol",
+            "astrcode_server",
+            "astrcode_plugin",
+            "astrcode_sdk",
+        ] {
+            builder.filter_module(crate_name, log::LevelFilter::Info);
+        }
+        builder.filter_level(log::LevelFilter::Warn);
     }
+    builder
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "[{} {:5}] {}",
+                buf.timestamp(),
+                record.level(),
+                record.args()
+            )
+        })
+        .init();
 }
 
 #[cfg(not(debug_assertions))]
