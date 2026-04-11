@@ -22,7 +22,7 @@ impl PromptContributor for AgentProfileSummaryContributor {
     }
 
     fn cache_version(&self) -> u64 {
-        2
+        3
     }
 
     fn cache_fingerprint(&self, ctx: &PromptContext) -> String {
@@ -45,15 +45,19 @@ impl PromptContributor for AgentProfileSummaryContributor {
         }
 
         let mut content = String::from(
-            "Use `spawn` when a task benefits from a dedicated sub-agent with an isolated task \
-             scope.\n\nAvailable sub-agent profiles:\n",
+            "Use `spawn` only when a task benefits from a dedicated sub-agent with an isolated \
+             task scope. Prefer doing the work locally when the task is tiny, the answer is \
+             needed immediately for the next step, or no context isolation is \
+             needed.\n\nAvailable sub-agent profiles:\n",
         );
         for profile in profiles {
             append_profile_line(&mut content, &profile);
         }
         content.push_str(
             "\nWhen choosing `type`, prefer the narrowest profile that matches the task. Omit \
-             `type` to use the default `explore` profile.",
+             `type` to use the default `explore` profile. Profile descriptions tell you the \
+             primary job, not the full delegation policy; use the `spawn` guide for the final \
+             spawn-vs-local decision.",
         );
 
         PromptContribution {

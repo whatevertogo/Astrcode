@@ -103,6 +103,10 @@ impl Tool for ObserveAgentTool {
                      `Child agent reference`，并逐字复用。",
                 )
                 .caveat("只返回直接子 Agent 的快照；不要把 `agent-1` 改写成 `agent-01`")
+                .caveat(
+                    "状态转换：Pending → Running → Idle（等待新任务）或 Terminated（已关闭）。\
+                     observe 是同步查询不阻塞，间隔调用即可，不要密集轮询。",
+                )
                 .prompt_tag("collaboration"),
             )
     }

@@ -123,6 +123,23 @@ fn tool_description_is_stable_and_excludes_dynamic_profile_listing() {
     assert!(definition.description.contains("链式执行"));
 }
 
+#[test]
+fn spawn_tool_exposes_prompt_metadata_for_tool_summary_indexing() {
+    let executor = Arc::new(RecordingExecutor {
+        calls: Mutex::new(Vec::new()),
+    });
+    let tool = SpawnAgentTool::new(executor);
+
+    let prompt = tool
+        .capability_metadata()
+        .prompt
+        .expect("spawn should expose prompt metadata");
+
+    assert!(prompt.summary.contains("独立上下文"));
+    assert!(prompt.guide.contains("并行"));
+    assert!(prompt.guide.contains("`agentId`"));
+}
+
 #[tokio::test]
 async fn spawn_agent_tool_preserves_running_outcome_in_metadata() {
     struct RunningExecutor;

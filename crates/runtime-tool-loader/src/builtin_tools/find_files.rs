@@ -104,10 +104,10 @@ impl Tool for FindFilesTool {
                     "Find candidate files by glob when you know the filename pattern but not the \
                      exact path.",
                     "Find files by glob pattern inside the workspace. Use this before `grep` when \
-                     you only know a filename, extension, or glob. Use glob syntax: `**/*.rs` \
-                     (recursive), `*.toml` (current dir). When using `root`, the glob pattern is \
-                     relative to that root, not the workspace root. Results sorted by \
-                     modification time.",
+                     you only know a filename, extension, or glob. Supported common glob forms \
+                     include `**/*.rs` (recursive), `*.toml` (current dir), and `*.{json,toml}` \
+                     (alternation). When using `root`, the glob pattern is relative to that root, \
+                     not the workspace root. Results are sorted by modification time.",
                 )
                 .caveat(
                     "Pattern must stay inside the workspace. Truncated at 200 results — narrow \

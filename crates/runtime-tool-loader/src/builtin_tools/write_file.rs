@@ -81,8 +81,9 @@ impl Tool for WriteFileTool {
                      keeps the change narrower and easier to validate.",
                 )
                 .caveat(
-                    "Overwrites the entire file. Set `createDirs: true` to auto-create parent \
-                     directories.",
+                    "Overwrites the entire file. `createDirs` defaults to false — parent \
+                     directories must exist or set it to true. Path must stay inside the working \
+                     directory.",
                 )
                 .caveat(
                     "For small edits to existing files, prefer `editFile` or `apply_patch` to \

@@ -396,15 +396,19 @@ impl Tool for ShellTool {
                          single command line than as a dedicated file tool. This session defaults \
                          to `{default_shell}`. The optional `shell` override only supports known \
                          shell families (PowerShell, cmd, sh/bash/zsh) so runtime can pass the \
-                         command with the correct flags. Keep commands scoped to the workspace, \
-                         explain risky commands before running them, and prefer read-only \
-                         inspection before mutation."
+                         command with the correct flags. Prefer `shell` for build/test/git/system \
+                         inspection commands. Prefer dedicated tools instead of `shell` for file \
+                         reading (`readFile`), code search (`grep`/`findFiles`), and structured \
+                         file edits (`editFile`/`apply_patch`). Keep commands scoped to the \
+                         workspace, explain risky commands before running them, and prefer \
+                         read-only inspection before mutation."
                     ),
                 )
                 .caveat(
-                    "Non-interactive single shot. Use `cwd` to set the working directory instead \
-                     of `cd &&`. If quoting issues, set `shell` explicitly to pwsh/cmd/sh. On \
-                     Windows, `sh/bash/zsh` require Git Bash or WSL.",
+                    "Non-interactive single shot — no stdin, no interactive prompts. Use `cwd` to \
+                     set the working directory instead of `cd &&`. On timeout the process is \
+                     killed; only output produced so far is returned. If quoting issues, set \
+                     `shell` explicitly to pwsh/cmd/sh.",
                 )
                 .example("Run cargo test: { command: \"cargo test --lib\", timeout: 300 }")
                 .prompt_tag("shell"),

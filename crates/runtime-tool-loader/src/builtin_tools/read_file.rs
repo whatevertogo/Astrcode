@@ -254,14 +254,14 @@ impl Tool for ReadFileTool {
                 ToolPromptMetadata::new(
                     "Read file contents — supports text, images (base64), targeted line-range \
                      reads.",
-                    "Use after `grep`/`findFiles` gives you a path. Set `offset` (0-based line) + \
-                     `limit` to read a specific range. Set `lineNumbers: false` to skip \
-                     line-number prefixes.",
+                    "Use after `grep`/`findFiles` gives you a path. Set `offset` (**0-based** \
+                     line) + `limit` to read a specific range. Set `lineNumbers: false` to skip \
+                     line-number prefixes. `maxChars` (default 20000) includes line-number \
+                     prefixes in its budget.",
                 )
                 .caveat(
-                    "Output is capped at `maxChars` (default 20000, counting from the first \
-                     character of output including line-number prefixes). Truncation may occur \
-                     mid-line. If truncated, use `offset` + `limit` to read the next chunk.",
+                    "If output is truncated, use `offset` + `limit` to read the next chunk — do \
+                     not retry with a larger `maxChars`.",
                 )
                 .example("Read lines 50–100: { path: \"src/main.rs\", offset: 50, limit: 50 }")
                 .prompt_tag("filesystem")

@@ -717,7 +717,9 @@ impl Tool for ApplyPatchTool {
                 ToolPromptMetadata::new(
                     "Apply a unified diff patch across one or more files.",
                     "Use `apply_patch` for coordinated multi-file changes using standard unified \
-                     diff format (like `git diff` output).",
+                     diff format (like `git diff` output). Prefer this over `editFile` when you \
+                     need to change multiple regions, touch multiple files, or create/delete \
+                     files.",
                 )
                 .caveat(
                     "Hunk context lines must match the current file exactly — provide at least 3 \
@@ -728,6 +730,14 @@ impl Tool for ApplyPatchTool {
                 .example(
                     "Replace in one file: { patch: \"--- a/src/lib.rs\\n+++ b/src/lib.rs\\n@@ \
                      -1,3 +1,3 @@\\n fn x()\\n-    old()\\n+    new()\\n\" }",
+                )
+                .example(
+                    "Create a file: { patch: \"--- /dev/null\\n+++ b/src/new.rs\\n@@ -0,0 +1,2 \
+                     @@\\n+pub fn new_file() {}\\n\" }",
+                )
+                .example(
+                    "Delete a file: { patch: \"--- a/src/old.rs\\n+++ /dev/null\\n@@ -1,2 +0,0 \
+                     @@\\n-old line 1\\n-old line 2\\n\" }",
                 )
                 .prompt_tag("filesystem")
                 .always_include(true),

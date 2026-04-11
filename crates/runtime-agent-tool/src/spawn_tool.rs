@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use astrcode_core::{
     Result, SpawnAgentParams, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult,
+    ToolExecutionResult, ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -101,6 +101,25 @@ impl Tool for SpawnAgentTool {
             .concurrency_safe(true)
             // compact 模式下可以折叠 spawn 的 tool result，减少上下文占用
             .compact_clearable(true)
+            .prompt(
+                ToolPromptMetadata::new(
+                    "启动一个带独立上下文的子 Agent。只有当并行收益、上下文隔离或职责分离明显时再用。",
+                    "使用 `spawn` 把探索、审查、计划或定向修改委托给子 Agent。优先在这些场景使用：\
+                     任务会占用较多上下文、适合与当前工作并行推进、或需要一个独立责任边界。不要把简单读取、\
+                     一次搜索、或你已经能立即完成的小操作交给子 Agent。调用后记住 tool result 返回的原始 \
+                     `agentId`；后续 `send`、`observe`、`close` 都必须逐字复用。",
+                )
+                .caveat(
+                    "如果你的下一步就依赖这个结果，通常直接自己做更快；只有在并行价值或隔离价值明确时再 spawn",
+                )
+                .caveat(
+                    "`description` 只用于 UI/日志摘要，真正的任务要求写在 `prompt`；`type` 选最窄 profile，不确定时省略并使用默认 `explore`",
+                )
+                .example(
+                    "并行探索：{ description: \"检查缓存层\", prompt: \"审查 crates/runtime-cache 的并发与失效风险\", type: \"reviewer\" }",
+                )
+                .prompt_tag("collaboration"),
+            )
     }
 
     async fn execute(

@@ -201,17 +201,13 @@ impl Tool for GrepTool {
             .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Search file contents by regex when you already know the search root. `grep` \
-                     always requires both `pattern` and `path`.",
+                    "Search file contents by regex when you already know the search root. Always \
+                     provide both `pattern` and `path`.",
                     "Use `grep` only for content search inside a known file or directory. Always \
                      provide both `pattern` and `path`. `glob` and `fileType` only narrow which \
                      files are searched inside that path; they never replace `path`. If you only \
                      know a filename pattern or need to discover candidate paths first, use \
                      `findFiles`.",
-                )
-                .caveat(
-                    "Never call `grep` with only `glob` or only `fileType`; both `pattern` and \
-                     `path` are required.",
                 )
                 .caveat(
                     "Pattern uses Rust regex syntax. Narrow scope with `glob`/`fileType`. If \
@@ -1176,11 +1172,7 @@ mod tests {
             .prompt
             .expect("grep should expose prompt metadata");
 
-        assert!(
-            prompt
-                .summary
-                .contains("requires both `pattern` and `path`")
-        );
+        assert!(prompt.summary.contains("provide both `pattern` and `path`"));
         assert!(prompt.guide.contains("glob"));
         assert!(prompt.guide.contains("findFiles"));
     }

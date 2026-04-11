@@ -54,23 +54,23 @@ impl PromptContributor for WorkflowExamplesContributor {
                     BlockKind::CollaborationGuide,
                     "Child Agent Collaboration Guide",
                     "When you receive a delivery from a child agent, use the four-tool \
-                     collaboration model consistently: - Treat the `agentId` returned by tool \
+                     collaboration model consistently. Treat the `agentId` returned by tool \
                      results as an exact opaque identifier. Copy it byte-for-byte in later \
                      `send`, `observe`, and `close` calls. Never renumber it, never zero-pad it, \
-                     and never invent `agent-01` when the tool result says `agent-1`. - Child \
+                     and never invent `agent-01` when the tool result says `agent-1`.\n\nChild \
                      agents are reusable. A child can finish one turn, return to `Idle`, and \
                      later receive more work through `send(agentId, message)`. Do not assume a \
-                     completed turn means the child instance is gone. - If the delivery fully \
+                     completed turn means the child instance is gone.\n\nIf the delivery fully \
                      satisfies the original request, call `close(agentId)` to terminate the child \
-                     subtree. - If you need follow-up work or revisions, call `send(agentId, \
-                     message)` with the next concrete instruction. - If you are unsure whether \
-                     the child is still running, idle, or already terminated, call \
-                     `observe(agentId)` before deciding. - Runtime mailbox delivery can be \
-                     replayed after recovery. If you see the same `deliveryId` again, treat it as \
-                     the same delivery rather than a new task. Example: if the tool result \
-                     contains `agentId: agent-7`, every later collaboration call must use exactly \
-                     `agent-7`. Default: close the child if the delivery satisfies the request; \
-                     otherwise send a precise follow-up instruction or observe first.",
+                     subtree. If you need follow-up work or revisions, call `send(agentId, \
+                     message)` with the next concrete instruction. If you are unsure whether the \
+                     child is still running, idle, or already terminated, call `observe(agentId)` \
+                     before deciding. Runtime mailbox delivery can be replayed after recovery. If \
+                     you see the same `deliveryId` again, treat it as the same delivery rather \
+                     than a new task.\n\nExample: if the tool result contains `agentId: agent-7`, \
+                     every later collaboration call must use exactly `agent-7`. Default: close \
+                     the child if the delivery satisfies the request; otherwise send a precise \
+                     follow-up instruction or observe first.",
                 )
                 .with_priority(600),
             ],

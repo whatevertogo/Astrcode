@@ -117,8 +117,8 @@ impl Tool for ListDirTool {
                      meaningful.",
                 )
                 .caveat(
-                    "Truncated at maxEntries (default 200). When truncated, use a more specific \
-                     path or `findFiles`.",
+                    "Truncated at maxEntries (default 200). If result count equals maxEntries, \
+                     the output may be truncated — use a more specific `path` or `findFiles`.",
                 )
                 .example("List root: { }. List src/: { path: \"src\", sortBy: \"modified\" }")
                 .prompt_tag("filesystem"),

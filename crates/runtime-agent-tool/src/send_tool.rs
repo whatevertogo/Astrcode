@@ -96,6 +96,9 @@ impl Tool for SendAgentTool {
                 .caveat(
                     "只能向自己 spawn 的子 Agent 发送消息，且不要把 `agent-1` 改写成 `agent-01`",
                 )
+                .caveat(
+                    "消息进入子 Agent 邮箱排队，按发送顺序处理；send 后需 observe 检查结果，不要假设立即处理完毕",
+                )
                 .prompt_tag("collaboration"),
             )
     }

@@ -101,7 +101,7 @@ fn should_expand_tool_guides(tool_guide_count: usize) -> bool {
 fn build_tool_summary_block(tool_guides: &[ToolGuideEntry]) -> BlockSpec {
     let mut content = String::from(
         "Use the narrowest tool that can answer the request. Prefer read-only inspection before \
-         mutation.\n",
+         mutation. All paths must stay inside the working directory.\n",
     );
     for guide in tool_guides {
         let caveat = guide

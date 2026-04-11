@@ -190,8 +190,10 @@ impl Tool for EditFileTool {
                     "Apply a narrow, safety-checked string replacement inside an existing file.",
                     "Use `editFile` when you know the exact old text and want a minimal change. \
                      It rejects ambiguous replacements, which makes it safer than rewriting a \
-                     whole file for small edits. If the file was changed after the last \
-                     `readFile`, `editFile` will stop and ask for a fresh reread first.",
+                     whole file for small edits. Prefer `apply_patch` instead when you need \
+                     multi-file edits, multiple distant changes, or file creation/deletion. If \
+                     the file was changed after the last `readFile`, `editFile` will stop and ask \
+                     for a fresh reread first.",
                 )
                 .caveat(
                     "`oldStr` must match exactly once — including whitespace, newlines, trailing \

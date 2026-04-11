@@ -81,6 +81,10 @@ impl Tool for CloseAgentTool {
                      之前协作 tool result 的 `Child agent reference`，并逐字复用。",
                 )
                 .caveat("已终态的子 Agent 会被幂等处理；不要把 `agent-1` 改写成 `agent-01`")
+                .caveat(
+                    "关闭后会级联终止所有后代 Agent；close 后不应再对该 agentId 调用 send 或 \
+                     observe",
+                )
                 .prompt_tag("collaboration"),
             )
     }
