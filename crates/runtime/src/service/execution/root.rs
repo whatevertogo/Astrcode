@@ -58,10 +58,6 @@ impl AgentExecutionServiceHandle {
         self.runtime.loop_surface().current_loop().await
     }
 
-    pub(crate) fn collaboration_executor(&self) -> Arc<super::DeferredCollaborationExecutor> {
-        Arc::clone(&self.runtime.collaboration_executor)
-    }
-
     pub fn list_profiles(&self) -> Vec<AgentProfileSummary> {
         let mut profiles = self
             .runtime
@@ -220,6 +216,8 @@ impl AgentExecutionServiceHandle {
             complete_session_execution(&session_state_for_task, task_result.phase, &agent_control)
                 .await;
             if let Err(error) = execution_service
+                .runtime
+                .agent()
                 .try_start_parent_delivery_turn(&drain_session_id)
                 .await
             {

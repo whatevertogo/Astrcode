@@ -28,6 +28,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::load_config;
 
+mod agent;
 #[cfg(test)]
 mod baselines;
 mod blocking_bridge;
@@ -42,12 +43,14 @@ mod session;
 mod turn;
 mod watch;
 
+pub use agent::AgentServiceHandle;
+pub(crate) use agent::{DeferredCollaborationExecutor, service_error_to_astr};
 pub use composer::ComposerServiceHandle;
 pub use config::ConfigServiceHandle;
+pub(crate) use execution::DeferredSubAgentExecutor;
 pub use execution::{
     AgentExecutionServiceHandle, AgentProfileSummary, ToolExecutionServiceHandle, ToolSummary,
 };
-pub(crate) use execution::{DeferredCollaborationExecutor, DeferredSubAgentExecutor};
 pub use lifecycle::LifecycleServiceHandle;
 pub use loop_surface::LoopSurfaceServiceHandle;
 use observability::RuntimeObservability;
@@ -187,7 +190,7 @@ impl RuntimeService {
         RuntimeOwnerGraph {
             session_owner: "runtime-session",
             execution_owner: "runtime-execution",
-            tool_owner: "runtime-execution",
+            tool_owner: "runtime-agent",
         }
     }
 
@@ -197,6 +200,12 @@ impl RuntimeService {
 
     pub fn config(self: &Arc<Self>) -> ConfigServiceHandle {
         ConfigServiceHandle::new(Arc::clone(self))
+    }
+
+    pub fn agent(self: &Arc<Self>) -> AgentServiceHandle {
+        AgentServiceHandle {
+            runtime: Arc::clone(self),
+        }
     }
 
     pub fn watch(self: &Arc<Self>) -> WatchServiceHandle {

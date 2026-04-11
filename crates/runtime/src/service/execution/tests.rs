@@ -1727,7 +1727,7 @@ fn runtime_owner_graph_exposes_execution_surface_owner() {
     let owner_graph = service.owner_graph();
     assert_eq!(owner_graph.session_owner, "runtime-session");
     assert_eq!(owner_graph.execution_owner, "runtime-execution");
-    assert_eq!(owner_graph.tool_owner, "runtime-execution");
+    assert_eq!(owner_graph.tool_owner, "runtime-agent");
 }
 
 #[tokio::test]
@@ -1995,7 +1995,7 @@ async fn reusable_child_can_be_observed_restarted_and_closed() {
     );
 
     let observe = service
-        .execution()
+        .agent()
         .observe_child(
             ObserveParams {
                 agent_id: child_agent_id.clone(),
@@ -2048,7 +2048,7 @@ async fn reusable_child_can_be_observed_restarted_and_closed() {
     )
     .with_turn_id("turn-parent-2");
     service
-        .execution()
+        .agent()
         .send_to_child(
             SendAgentParams {
                 agent_id: child_agent_id.clone(),
@@ -2096,7 +2096,7 @@ async fn reusable_child_can_be_observed_restarted_and_closed() {
     );
 
     service
-        .execution()
+        .agent()
         .close_child(
             CloseAgentParams {
                 agent_id: child_agent_id.clone(),
@@ -2124,7 +2124,7 @@ async fn reusable_child_can_be_observed_restarted_and_closed() {
     assert_eq!(closed_handle.status, AgentStatus::Cancelled);
 
     let send_after_close = service
-        .execution()
+        .agent()
         .send_to_child(
             SendAgentParams {
                 agent_id: child_agent_id,
@@ -2202,7 +2202,7 @@ async fn send_to_running_child_persists_mailbox_queued_event() {
     .with_agent_context(AgentEventContext::root_execution("agent-parent", "explore"));
 
     service
-        .execution()
+        .agent()
         .send_to_child(
             SendAgentParams {
                 agent_id: child.agent_id.clone(),
@@ -2296,7 +2296,7 @@ async fn close_child_persists_mailbox_discarded_event_for_pending_messages() {
     .with_agent_context(AgentEventContext::root_execution("agent-parent", "explore"));
 
     service
-        .execution()
+        .agent()
         .send_to_child(
             SendAgentParams {
                 agent_id: child.agent_id.clone(),
@@ -2309,7 +2309,7 @@ async fn close_child_persists_mailbox_discarded_event_for_pending_messages() {
         .expect("send should queue mailbox message");
 
     service
-        .execution()
+        .agent()
         .close_child(
             CloseAgentParams {
                 agent_id: child.agent_id.clone(),
@@ -2377,7 +2377,7 @@ async fn child_terminal_delivery_triggers_parent_wake_batch_started_and_acked() 
     };
 
     service
-        .execution()
+        .agent()
         .reactivate_parent_agent_if_idle(&parent_session.session_id, "turn-parent", &notification)
         .await;
 
@@ -2636,7 +2636,7 @@ async fn reactivate_parent_buffers_delivery_while_parent_turn_is_busy() {
 
     let notification = make_test_notification("child-reactivate-busy", "turn-child");
     service
-        .execution()
+        .agent()
         .reactivate_parent_agent_if_idle(&session.session_id, "turn-parent", &notification)
         .await;
 
@@ -2702,7 +2702,7 @@ async fn reactivate_parent_drains_buffer_after_busy_parent_turn_completes() {
 
     let notification = make_test_notification("child-reactivate-drain", "turn-child");
     service
-        .execution()
+        .agent()
         .reactivate_parent_agent_if_idle(&session.session_id, "turn-parent", &notification)
         .await;
     assert_eq!(
@@ -2720,7 +2720,7 @@ async fn reactivate_parent_drains_buffer_after_busy_parent_turn_completes() {
     )
     .await;
     service
-        .execution()
+        .agent()
         .try_start_parent_delivery_turn(&session.session_id)
         .await
         .expect("wake turn scheduling should succeed");
@@ -2768,7 +2768,7 @@ async fn reactivate_parent_idle_wake_turn_uses_runtime_only_delivery_input() {
 
     let notification = make_test_notification("child-reactivate-origin", "turn-child");
     service
-        .execution()
+        .agent()
         .reactivate_parent_agent_if_idle(&session.session_id, "turn-parent", &notification)
         .await;
 
@@ -2815,7 +2815,7 @@ async fn reactivate_parent_failed_wake_turn_requeues_delivery_for_retry() {
 
     let notification = make_test_notification("child-reactivate-failed", "turn-child");
     service
-        .execution()
+        .agent()
         .reactivate_parent_agent_if_idle(&session.session_id, "turn-parent", &notification)
         .await;
 
@@ -2853,7 +2853,7 @@ async fn reactivate_parent_failed_wake_turn_requeues_delivery_for_retry() {
     )
     .await;
     service
-        .execution()
+        .agent()
         .try_start_parent_delivery_turn(&session.session_id)
         .await
         .expect("retry wake turn should schedule successfully");

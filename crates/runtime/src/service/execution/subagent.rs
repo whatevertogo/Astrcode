@@ -600,12 +600,14 @@ impl AgentExecutionServiceHandle {
             .observability
             .record_child_lifecycle(ChildLifecycleStage::TerminalPersisted);
 
-        self.reactivate_parent_agent_if_idle(
-            &execution.parent_session_id,
-            &execution.parent_turn_id,
-            &terminal_notification,
-        )
-        .await;
+        self.runtime
+            .agent()
+            .reactivate_parent_agent_if_idle(
+                &execution.parent_session_id,
+                &execution.parent_turn_id,
+                &terminal_notification,
+            )
+            .await;
 
         log::info!(
             "child session terminal delivery persisted: parentSession='{}', childAgent='{}', \
