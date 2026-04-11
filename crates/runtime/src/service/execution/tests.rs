@@ -1656,6 +1656,7 @@ fn child_task_payload_stays_task_only_while_parent_context_moves_to_inherited_bl
         ],
         phase: astrcode_core::Phase::Idle,
         turn_count: 3,
+        last_assistant_at: None,
     };
     let request = AgentExecutionRequest {
         subagent_type: Some("review".to_string()),

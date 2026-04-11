@@ -170,13 +170,26 @@ impl EventLog {
     /// 删除 JSONL 文件后清理空目录。
     pub(crate) fn delete_session_from_path(projects_root: &Path, session_id: &str) -> Result<()> {
         let target = Self::resolve_existing_session_path_from_root(projects_root, session_id)?;
+        let session_dir = target.parent().map(|p| p.to_path_buf());
+
+        // 删除 JSONL 文件（主操作，失败直接返回错误）
         fs::remove_file(&target).map_err(|error| {
             io_error(
                 format!("failed to delete session file: {}", target.display()),
                 error,
             )
         })?;
-        remove_empty_session_dir(target.parent())?;
+
+        // 清理整个会话目录（包含 tool-results/、tool-state/ 等子目录）
+        if let Some(dir) = &session_dir {
+            if let Err(error) = fs::remove_dir_all(dir) {
+                // 目录清理失败不阻止主操作，但记录诊断日志
+                log::warn!(
+                    "session jsonl deleted but directory cleanup failed for '{}': {error}",
+                    dir.display()
+                );
+            }
+        }
         Ok(())
     }
 
@@ -223,8 +236,13 @@ impl EventLog {
 
             match fs::remove_file(&path) {
                 Ok(()) => {
-                    // 故意忽略：清理空目录失败不影响主流程
-                    let _ = remove_empty_session_dir(Some(&session_dir));
+                    // 清理整个会话目录（包含 tool-results/、tool-state/ 等子目录）
+                    if let Err(error) = fs::remove_dir_all(&session_dir) {
+                        log::warn!(
+                            "session jsonl deleted but directory cleanup failed for '{}': {error}",
+                            session_dir.display()
+                        );
+                    }
                     success_count += 1;
                 },
                 Err(_) => failed_session_ids.push(session_id),
@@ -525,38 +543,6 @@ fn session_file_path_in_dir(session_dir: &Path) -> Result<PathBuf> {
         })?;
     let session_id = validated_session_id(dir_name)?;
     Ok(session_dir.join(session_file_name(&session_id)))
-}
-
-/// 删除空的会话目录。
-///
-/// 在删除会话文件后调用，如果目录中不再有任何条目则一并删除目录，
-/// 避免留下空目录占用文件系统命名空间。
-fn remove_empty_session_dir(session_dir: Option<&Path>) -> Result<()> {
-    let Some(session_dir) = session_dir else {
-        return Ok(());
-    };
-
-    let mut entries = fs::read_dir(session_dir).map_err(|error| {
-        io_error(
-            format!(
-                "failed to inspect session directory after delete: {}",
-                session_dir.display()
-            ),
-            error,
-        )
-    })?;
-    if entries.next().is_none() {
-        fs::remove_dir(session_dir).map_err(|error| {
-            io_error(
-                format!(
-                    "failed to remove empty session directory: {}",
-                    session_dir.display()
-                ),
-                error,
-            )
-        })?;
-    }
-    Ok(())
 }
 
 /// 从事件中提取时间戳。

@@ -489,6 +489,7 @@ async fn runtime_plugins_endpoint_returns_not_found_after_skeleton_removal() {
                 side_effect: SideEffectLevel::None,
                 stability: StabilityLevel::Stable,
                 metadata: json!(null),
+                max_result_inline_size: None,
             }],
             failure: None,
             warnings: vec![

@@ -295,6 +295,7 @@ pub fn build_child_agent_state(
         }],
         phase: astrcode_core::Phase::Thinking,
         turn_count: 0,
+        last_assistant_at: None,
     }
 }
 
@@ -910,6 +911,7 @@ mod tests {
             ],
             phase: astrcode_core::Phase::Idle,
             turn_count: 2,
+            last_assistant_at: None,
         };
 
         let resumed = build_resumed_child_agent_state(replayed, "继续完成剩余检查");

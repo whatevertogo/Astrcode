@@ -82,6 +82,7 @@ async fn rebuilds_system_prompt_for_every_step_and_keeps_agents_rules_active() {
         }],
         phase: Phase::Thinking,
         turn_count: 0,
+        last_assistant_at: None,
     };
 
     loop_runner

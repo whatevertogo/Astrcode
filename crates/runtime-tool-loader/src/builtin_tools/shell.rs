@@ -35,13 +35,14 @@ use std::{
 use astrcode_core::{
     AstrError, Result, ShellFamily, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
     ToolExecutionResult, ToolOutputStream, ToolPromptMetadata, default_shell_label, resolve_shell,
+    tool_result_persist::maybe_persist_tool_result,
 };
 use astrcode_protocol::capability::SideEffectLevel;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::builtin_tools::fs_common::{check_cancel, resolve_path};
+use crate::builtin_tools::fs_common::{check_cancel, resolve_path, session_dir_for_tool_results};
 
 /// Shell 工具实现。
 ///
@@ -438,6 +439,7 @@ impl Tool for ShellTool {
             None => ctx.working_dir().to_path_buf(),
         };
         let cwd_text = cwd.to_string_lossy().to_string();
+        let session_dir = session_dir_for_tool_results(ctx)?;
 
         let mut child = Command::new(&spec.program)
             .args(&spec.args)
@@ -499,6 +501,12 @@ impl Tool for ShellTool {
                     .map(|c| c.text)
                     .unwrap_or_default();
                 let output = render_shell_output(&stdout_capture, &stderr_capture);
+                let output = maybe_persist_tool_result(
+                    &session_dir,
+                    &tool_call_id,
+                    &output,
+                    ctx.resolved_inline_limit(),
+                );
 
                 return Ok(ToolExecutionResult {
                     tool_call_id,
@@ -565,6 +573,14 @@ impl Tool for ShellTool {
         } else {
             (output, false)
         };
+
+        // 大结果持久化到磁盘，替换为引用 + 预览
+        let output = maybe_persist_tool_result(
+            &session_dir,
+            &tool_call_id,
+            &output,
+            ctx.resolved_inline_limit(),
+        );
 
         Ok(ToolExecutionResult {
             tool_call_id,

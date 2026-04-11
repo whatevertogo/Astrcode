@@ -129,6 +129,7 @@ async fn unified_capability_router_executes_builtin_and_plugin_tools() {
         }],
         phase: Phase::Thinking,
         turn_count: 0,
+        last_assistant_at: None,
     };
 
     let (events, mut on_event) = collect_events();

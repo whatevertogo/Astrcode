@@ -161,6 +161,7 @@ fn capability(name: &str) -> CapabilityDescriptor {
         side_effect: SideEffectLevel::None,
         stability: StabilityLevel::Stable,
         metadata: Value::Null,
+        max_result_inline_size: None,
     }
 }
 
@@ -749,6 +750,7 @@ async fn bootstrap_background_load_propagates_plugin_hook_handlers_into_agent_lo
         ],
         phase: astrcode_core::Phase::Thinking,
         turn_count: 2,
+        last_assistant_at: None,
     };
 
     let error = loop_

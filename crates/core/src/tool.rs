@@ -22,6 +22,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::{
     AgentEventContext, CancelToken, InvocationKind, Result, StorageEvent, ToolDefinition,
     ToolExecutionResult, ToolOutputDelta, ToolOutputStream,
+    tool_result_persist::DEFAULT_TOOL_RESULT_INLINE_LIMIT,
 };
 
 /// Unique identifier for a session.
@@ -134,6 +135,12 @@ pub struct ToolContext {
     ///
     /// 当前只作为只读上下文向下游传播，为后续根级任务控制平面预留稳定 owner。
     execution_owner: Option<ExecutionOwner>,
+    /// 当前工具的结果内联阈值（字节）。
+    ///
+    /// 由工具调度时从 `CapabilityDescriptor::max_result_inline_size` 解析填入，
+    /// 未设置时使用 `DEFAULT_TOOL_RESULT_INLINE_LIMIT`。
+    /// 工具执行侧用此值决定是否将结果持久化到磁盘。
+    resolved_inline_limit: usize,
 }
 
 impl ToolContext {
@@ -153,6 +160,7 @@ impl ToolContext {
             tool_output_sender: None,
             event_sink: None,
             execution_owner: None,
+            resolved_inline_limit: DEFAULT_TOOL_RESULT_INLINE_LIMIT,
         }
     }
 
@@ -210,6 +218,14 @@ impl ToolContext {
         self
     }
 
+    /// 设置当前工具的结果内联阈值。
+    ///
+    /// 由工具调度时从 `CapabilityDescriptor::max_result_inline_size` 解析填入。
+    pub fn with_resolved_inline_limit(mut self, limit: usize) -> Self {
+        self.resolved_inline_limit = limit;
+        self
+    }
+
     /// Returns the session identifier.
     pub fn session_id(&self) -> &str {
         &self.session_id
@@ -260,6 +276,11 @@ impl ToolContext {
     /// 返回当前执行 owner。
     pub fn execution_owner(&self) -> Option<&ExecutionOwner> {
         self.execution_owner.as_ref()
+    }
+
+    /// 返回当前工具的结果内联阈值（字节）。
+    pub fn resolved_inline_limit(&self) -> usize {
+        self.resolved_inline_limit
     }
 
     /// Emits a tool delta to the runtime if streaming is enabled.
@@ -315,6 +336,7 @@ impl Clone for ToolContext {
             tool_output_sender: self.tool_output_sender.clone(),
             event_sink: self.event_sink.clone(),
             execution_owner: self.execution_owner.clone(),
+            resolved_inline_limit: self.resolved_inline_limit,
         }
     }
 }
@@ -338,6 +360,7 @@ impl fmt::Debug for ToolContext {
                 &self.event_sink.as_ref().map(|_| "<attached>"),
             )
             .field("execution_owner", &self.execution_owner)
+            .field("resolved_inline_limit", &self.resolved_inline_limit)
             .finish()
     }
 }

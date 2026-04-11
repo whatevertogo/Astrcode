@@ -19,6 +19,8 @@
 
 use std::path::PathBuf;
 
+use chrono::{DateTime, Utc};
+
 use crate::{
     InvocationKind, LlmMessage, Phase, ReasoningContent, SubRunStorageMode, ToolCallRequest,
     UserMessageOrigin,
@@ -42,6 +44,10 @@ pub struct AgentState {
     pub phase: Phase,
     /// 已完成的 turn 数量
     pub turn_count: usize,
+    /// 最后一条 assistant 消息的时间戳。
+    /// "会话输出静默时间"：从最后一次 assistant 输出算起，
+    /// 不是"最后任意事件时间"。用于微压缩时间触发判断。
+    pub last_assistant_at: Option<DateTime<Utc>>,
 }
 
 impl Default for AgentState {
@@ -52,6 +58,7 @@ impl Default for AgentState {
             messages: Vec::new(),
             phase: Phase::Idle,
             turn_count: 0,
+            last_assistant_at: None,
         }
     }
 }
@@ -122,7 +129,7 @@ impl AgentStateProjector {
                 content,
                 reasoning_content,
                 reasoning_signature,
-                ..
+                timestamp,
             } => {
                 self.flush_pending_assistant();
                 let parts = split_assistant_content(content, reasoning_content.as_deref());
@@ -131,6 +138,10 @@ impl AgentStateProjector {
                     content,
                     signature: reasoning_signature.clone(),
                 });
+                // 只在 timestamp 为 Some 时更新，None 时保留旧值
+                if let Some(ts) = timestamp {
+                    self.state.last_assistant_at = Some(*ts);
+                }
             },
 
             StorageEventPayload::ToolCall {

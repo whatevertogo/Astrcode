@@ -226,6 +226,7 @@ async fn auto_compact_emits_compact_applied_before_retrying_the_turn() {
         ],
         phase: Phase::Thinking,
         turn_count: 0,
+        last_assistant_at: None,
     };
     let (events, mut on_event) = collect_events();
 
@@ -332,6 +333,7 @@ async fn auto_compact_with_keep_recent_turns_two_keeps_second_latest_turn_tool_r
         ],
         phase: Phase::Thinking,
         turn_count: 0,
+        last_assistant_at: None,
     };
     let (_events, mut on_event) = collect_events();
 
@@ -450,6 +452,7 @@ async fn reactive_compact_restores_recent_file_context_after_current_turn_file_a
         ],
         phase: Phase::Thinking,
         turn_count: 0,
+        last_assistant_at: None,
     };
     let (_events, mut on_event) = collect_events();
 
@@ -536,6 +539,7 @@ async fn manual_compact_event_uses_manual_trigger_via_compaction_runtime() {
         ],
         phase: Phase::Idle,
         turn_count: 1,
+        last_assistant_at: None,
     };
 
     let event = loop_runner
@@ -605,6 +609,7 @@ async fn manual_compact_event_caps_keep_recent_turns_so_manual_requests_do_real_
         ],
         phase: Phase::Idle,
         turn_count: 3,
+        last_assistant_at: None,
     };
 
     let event = loop_runner
@@ -648,6 +653,7 @@ async fn manual_compact_event_returns_none_when_single_turn_has_no_safe_cut_poin
         }],
         phase: Phase::Idle,
         turn_count: 1,
+        last_assistant_at: None,
     };
 
     let event = loop_runner
@@ -692,6 +698,7 @@ async fn manual_compact_event_allows_single_real_turn_when_assistant_step_bounda
         ],
         phase: Phase::Idle,
         turn_count: 1,
+        last_assistant_at: None,
     };
 
     let event = loop_runner
@@ -761,6 +768,7 @@ async fn manual_compact_event_recovers_files_from_recent_stored_events_not_only_
         ],
         phase: Phase::Idle,
         turn_count: 2,
+        last_assistant_at: None,
     };
     let recent_stored_events = vec![astrcode_core::StoredEvent {
         storage_seq: 10,
@@ -875,6 +883,7 @@ async fn p4_1_reactive_compact_recovers_from_413_error() {
         ],
         phase: Phase::Thinking,
         turn_count: 0,
+        last_assistant_at: None,
     };
 
     let (events, mut on_event) = collect_events();
@@ -965,6 +974,7 @@ async fn reactive_compact_uses_policy_rewritten_system_prompt() {
         ],
         phase: Phase::Thinking,
         turn_count: 0,
+        last_assistant_at: None,
     };
     let (_events, mut on_event) = collect_events();
 
@@ -1025,6 +1035,7 @@ async fn compaction_event_is_not_emitted_when_rebuild_fails() {
         ],
         phase: Phase::Thinking,
         turn_count: 0,
+        last_assistant_at: None,
     };
     let (events, mut on_event) = collect_events();
 
@@ -1073,6 +1084,7 @@ async fn p4_1_reactive_compact_fails_when_no_compressible_history() {
         }],
         phase: Phase::Thinking,
         turn_count: 0,
+        last_assistant_at: None,
     };
 
     let (_events, mut on_event) = collect_events();
@@ -1156,6 +1168,7 @@ async fn p4_1_reactive_compact_stops_after_max_attempts() {
         ],
         phase: Phase::Thinking,
         turn_count: 0,
+        last_assistant_at: None,
     };
 
     let (events, mut on_event) = collect_events();
@@ -1218,6 +1231,7 @@ async fn p4_1_non_recoverable_error_does_not_trigger_compact() {
         ],
         phase: Phase::Thinking,
         turn_count: 0,
+        last_assistant_at: None,
     };
 
     let (events, mut on_event) = collect_events();
@@ -1309,6 +1323,7 @@ async fn proactive_compact_uses_policy_rewritten_system_prompt() {
         ],
         phase: Phase::Thinking,
         turn_count: 0,
+        last_assistant_at: None,
     };
     let (_events, mut on_event) = collect_events();
 
@@ -1409,6 +1424,7 @@ async fn reactive_compact_counter_starts_from_zero_after_proactive_compact() {
         ],
         phase: Phase::Thinking,
         turn_count: 0,
+        last_assistant_at: None,
     };
     let (events, mut on_event) = collect_events();
 
@@ -1474,6 +1490,7 @@ async fn reactive_compact_does_not_fire_when_auto_compact_disabled() {
         ],
         phase: Phase::Thinking,
         turn_count: 0,
+        last_assistant_at: None,
     };
     let (events, mut on_event) = collect_events();
 
@@ -1558,6 +1575,7 @@ async fn proactive_compact_does_not_increment_step_index() {
         ],
         phase: Phase::Thinking,
         turn_count: 0,
+        last_assistant_at: None,
     };
     let (events, mut on_event) = collect_events();
 

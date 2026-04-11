@@ -30,6 +30,7 @@ impl CapabilityHandler for EchoHandler {
             side_effect: SideEffectLevel::None,
             stability: StabilityLevel::Stable,
             metadata: Value::Null,
+            max_result_inline_size: None,
         }
     }
 
@@ -64,6 +65,7 @@ impl CapabilityHandler for PatchStreamHandler {
             side_effect: SideEffectLevel::Workspace,
             stability: StabilityLevel::Stable,
             metadata: Value::Null,
+            max_result_inline_size: None,
         }
     }
 
@@ -127,6 +129,7 @@ impl CapabilityHandler for DelayedEchoHandler {
             side_effect: SideEffectLevel::None,
             stability: StabilityLevel::Stable,
             metadata: Value::Null,
+            max_result_inline_size: None,
         }
     }
 

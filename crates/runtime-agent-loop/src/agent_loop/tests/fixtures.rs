@@ -40,6 +40,7 @@ pub fn make_state(user_text: &str) -> AgentState {
         }],
         phase: Phase::Thinking,
         turn_count: 0,
+        last_assistant_at: None,
     }
 }
 
@@ -75,6 +76,7 @@ pub fn replayed_child_state_fixture(seed: &str) -> AgentState {
         ],
         phase: Phase::CallingTool,
         turn_count: 3,
+        last_assistant_at: None,
     }
 }
 

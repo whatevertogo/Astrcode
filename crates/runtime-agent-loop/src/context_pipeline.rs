@@ -3,14 +3,19 @@
 //! ## 职责
 //!
 //! 通过可组合的 pipeline stages 构建模型可见的上下文包（`ContextBundle`）。
-//! 将"可用的材料是什么"与"循环何时使用它"严格分离，各阶段只做同步纯变换。
+//! 将"可用的材料是什么"与"循环何时使用它"严格分离，各阶段以同步纯变换为主。
+//!
+//! **例外**：`PersistenceBudgetStage` 被正式授权做受控文件 IO（同步、幂等、
+//! 失败降级），但只修改 `ContextBundle`，不修改 `AgentState` 或事件日志。
+//! 详见该 stage 的文档。
 //!
 //! ## 在 Turn 流程中的作用
 //!
 //! - **调用时机**：每个 step 开始时，`turn_runner` 调用 `build_bundle()`
 //! - **输入**：`AgentState` + `ContextBundleInput`（turn_id/step_index/compaction view/模型窗口等）
 //! - **输出**：`ContextBundle`（包含 `ConversationView`、workset、memory、诊断信息）
-//! - **不变约束**：stage 不做 IO、不发事件、不做审批、不触发 compact
+//! - **不变约束**：stage 以同步纯变换为主，不发事件、不做审批、不触发 compact。
+//!   唯一例外：`PersistenceBudgetStage` 可做受控 IO（同步幂等、失败降级）。
 //!
 //! ## Pipeline Stages（按执行顺序）
 //!
@@ -21,6 +26,8 @@
 //! | `WorksetStage` | 注入工作目录等结构化工作集槽位 |
 //! | `CompactionViewStage` | 若已有压缩后的窄视图，覆盖 baseline 对话视图 |
 //! | `RecoveryContextStage` | 注入 compact rebuild 产出的瞬时恢复上下文 |
+//! | `MicroCompactStage` | 空闲超阈值时清除旧可压缩工具结果 |
+//! | `PersistenceBudgetStage` | 聚合预算超限时强制落盘最大工具结果（受控 IO） |
 //! | `PrunePassStage` | 运行 prune pass，裁剪大工具结果、清理安全工具元数据 |
 //! | `BudgetTrimStage` | 占位，未来实现 token budget 感知的主动裁剪 |
 //!
@@ -37,7 +44,7 @@
 //! - `tool_result_max_bytes()` 暴露给 `AgentLoop`，供 `RuntimeService` 装配时查询
 //! - `ContextBundleInput` 结构体收口了 6 个 per-step 参数，避免函数参数膨胀
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use astrcode_core::{AgentState, LlmMessage, Result};
 use astrcode_protocol::capability::CapabilityDescriptor;
@@ -46,7 +53,11 @@ use astrcode_runtime_prompt::{
     PromptDeclarationSource, PromptLayer,
 };
 
-use crate::context_window::{PruneStats, apply_prune_pass, effective_context_window};
+use crate::context_window::{
+    PersistenceStats, PruneStats, apply_prune_pass, effective_context_window,
+    micro_compact::{MicroCompactConfig, MicroCompactStats, apply_micro_compact, should_trigger},
+    tool_result_persistence::{PersistenceBudgetConfig, enforce_aggregate_budget},
+};
 
 /// 当前对模型可见的会话视图。
 ///
@@ -115,6 +126,8 @@ pub(crate) struct ContextBundle {
     pub budget_state: TokenBudgetState,
     pub truncated_tool_results: usize,
     pub prune_stats: PruneStats,
+    pub persistence_stats: PersistenceStats,
+    pub micro_compact_stats: MicroCompactStats,
 }
 
 const MAX_RUNTIME_MEMORY_PROMPT_BLOCKS: usize = 4;
@@ -184,6 +197,15 @@ pub(crate) struct ContextStageContext<'a> {
     pub keep_recent_turns: usize,
     pub model_context_window: usize,
     pub tool_result_max_bytes: usize,
+    /// 会话目录路径，供 PersistenceBudgetStage 做受控 IO 使用。
+    /// None 时 PersistenceBudgetStage 为 no-op。
+    pub session_dir: Option<PathBuf>,
+    /// 聚合预算配置。None 时 PersistenceBudgetStage 为 no-op。
+    pub persistence_budget_config: Option<&'a PersistenceBudgetConfig>,
+    /// 微压缩配置。None 时 MicroCompactStage 为 no-op。
+    pub micro_compact_config: Option<&'a MicroCompactConfig>,
+    /// 最后 assistant 输出的时间戳，供微压缩判断空闲时间。
+    pub last_assistant_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// 组装模型可见上下文包时所需的 per-step 输入。
@@ -201,7 +223,9 @@ pub(crate) struct ContextBundleInput<'a> {
 
 /// Pipeline stage。
 ///
-/// 约束：stage 只做同步纯变换，不做 IO、不发事件、不做审批，也不触发 compact。
+/// 约束：stage 以同步纯变换为主，不做 IO、不发事件、不做审批，也不触发 compact。
+/// 唯一例外：`PersistenceBudgetStage` 被正式授权做受控文件 IO（同步、幂等、失败降级），
+/// 但只修改 `ContextBundle`，不修改 `AgentState` 或事件日志。
 pub(crate) trait ContextStage: Send + Sync {
     fn apply(&self, bundle: ContextBundle, ctx: &ContextStageContext<'_>) -> Result<ContextBundle>;
 }
@@ -210,6 +234,8 @@ pub(crate) trait ContextStage: Send + Sync {
 pub(crate) struct ContextRuntime {
     stages: Vec<Box<dyn ContextStage>>,
     tool_result_max_bytes: usize,
+    persistence_budget_config: Option<PersistenceBudgetConfig>,
+    micro_compact_config: Option<MicroCompactConfig>,
 }
 
 impl ContextRuntime {
@@ -221,11 +247,25 @@ impl ContextRuntime {
                 Box::new(WorksetStage),
                 Box::new(CompactionViewStage),
                 Box::new(RecoveryContextStage),
+                Box::new(MicroCompactStage),
+                Box::new(PersistenceBudgetStage),
                 Box::new(PrunePassStage),
                 Box::new(BudgetTrimStage),
             ],
             tool_result_max_bytes: tool_result_max_bytes.max(1),
+            persistence_budget_config: None,
+            micro_compact_config: None,
         }
+    }
+
+    pub fn with_persistence_budget_config(mut self, config: PersistenceBudgetConfig) -> Self {
+        self.persistence_budget_config = Some(config);
+        self
+    }
+
+    pub fn with_micro_compact_config(mut self, config: MicroCompactConfig) -> Self {
+        self.micro_compact_config = Some(config);
+        self
     }
 
     #[cfg(test)]
@@ -233,6 +273,8 @@ impl ContextRuntime {
         Self {
             stages,
             tool_result_max_bytes: 100_000, // 测试默认值，与 runtime-config 保持一致
+            persistence_budget_config: None,
+            micro_compact_config: None,
         }
     }
 
@@ -246,6 +288,9 @@ impl ContextRuntime {
         state: &AgentState,
         input: ContextBundleInput<'_>,
     ) -> Result<ContextBundle> {
+        let session_dir = astrcode_core::project::project_dir(&state.working_dir)
+            .map(|dir| dir.join("sessions").join(&state.session_id))
+            .ok();
         let ctx = ContextStageContext {
             session_id: &state.session_id,
             working_dir: &state.working_dir,
@@ -257,6 +302,10 @@ impl ContextRuntime {
             keep_recent_turns: input.keep_recent_turns,
             model_context_window: input.model_context_window,
             tool_result_max_bytes: self.tool_result_max_bytes,
+            session_dir,
+            persistence_budget_config: self.persistence_budget_config.as_ref(),
+            micro_compact_config: self.micro_compact_config.as_ref(),
+            last_assistant_at: state.last_assistant_at,
         };
         let mut bundle = ContextBundle::default();
         for stage in &self.stages {
@@ -372,6 +421,65 @@ impl ContextStage for RecoveryContextStage {
     }
 }
 
+/// 时间触发微压缩：当会话空闲时间超过阈值时，
+/// 清除标记为 `compact_clearable` 的旧工具结果，释放上下文空间。
+///
+/// 与 PrunePass 的区别：MicroCompact 基于时间触发（会话输出静默时间），
+/// 而 PrunePass 基于 token 压力在每个 step 执行。
+struct MicroCompactStage;
+
+impl ContextStage for MicroCompactStage {
+    fn apply(
+        &self,
+        mut bundle: ContextBundle,
+        ctx: &ContextStageContext<'_>,
+    ) -> Result<ContextBundle> {
+        if let Some(config) = ctx.micro_compact_config {
+            if should_trigger(
+                ctx.last_assistant_at,
+                chrono::Utc::now(),
+                config.gap_threshold_secs,
+            ) {
+                let stats = apply_micro_compact(
+                    &mut bundle.conversation.messages,
+                    ctx.capability_descriptors,
+                    config.keep_recent_results,
+                );
+                bundle.micro_compact_stats = stats;
+            }
+        }
+        Ok(bundle)
+    }
+}
+
+/// 聚合预算持久化：当消息流中未持久化工具结果的总大小超过预算时，
+/// 将最大的结果强制落盘并替换为 `<persisted-output>` 引用。
+///
+/// 这是管线中唯一被授权做受控文件 IO 的 stage：
+/// - IO 操作是同步、幂等的（同一 tool_call_id 写一次，重复调用跳过）
+/// - 不修改 AgentState 或事件日志（只修改 ContextBundle）
+/// - 失败时降级（磁盘写入失败 → 不替换，让 PrunePass 截断兜底）
+struct PersistenceBudgetStage;
+
+impl ContextStage for PersistenceBudgetStage {
+    fn apply(
+        &self,
+        mut bundle: ContextBundle,
+        ctx: &ContextStageContext<'_>,
+    ) -> Result<ContextBundle> {
+        if let Some(config) = ctx.persistence_budget_config {
+            let stats = enforce_aggregate_budget(
+                &mut bundle.conversation.messages,
+                ctx.capability_descriptors,
+                ctx.session_dir.as_deref(),
+                config,
+            );
+            bundle.persistence_stats = stats;
+        }
+        Ok(bundle)
+    }
+}
+
 /// 直接在模型可见的 conversation 上执行本地 prune。
 ///
 /// 这样 request assembler 继续保持纯编码边界，不再悄悄修改上下文内容。
@@ -434,6 +542,7 @@ mod tests {
             messages,
             phase: astrcode_core::Phase::Thinking,
             turn_count: 1,
+            last_assistant_at: None,
         }
     }
 

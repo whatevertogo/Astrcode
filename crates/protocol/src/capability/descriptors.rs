@@ -275,6 +275,11 @@ pub struct CapabilityDescriptor {
     /// 扩展元数据
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub metadata: Value,
+    /// 工具结果内联阈值（字节）。超过此大小的结果在执行时持久化到磁盘。
+    /// None 表示使用系统默认阈值（DEFAULT_TOOL_RESULT_INLINE_LIMIT = 32KB）。
+    /// 借鉴 Claude Code 各工具的 maxResultSizeChars。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_result_inline_size: Option<usize>,
 }
 
 impl CapabilityDescriptor {
@@ -371,6 +376,7 @@ pub struct CapabilityDescriptorBuilder {
     side_effect: SideEffectLevel,
     stability: StabilityLevel,
     metadata: Value,
+    max_result_inline_size: Option<usize>,
 }
 
 impl CapabilityDescriptorBuilder {
@@ -391,6 +397,7 @@ impl CapabilityDescriptorBuilder {
             side_effect: SideEffectLevel::default(),
             stability: StabilityLevel::default(),
             metadata: Value::Null,
+            max_result_inline_size: None,
         }
     }
 
@@ -515,6 +522,12 @@ impl CapabilityDescriptorBuilder {
         self
     }
 
+    /// 设置工具结果内联阈值（字节）。
+    pub fn max_result_inline_size(mut self, size: usize) -> Self {
+        self.max_result_inline_size = Some(size);
+        self
+    }
+
     /// 构建并校验能力描述符。
     ///
     /// 校验所有必填字段和格式约束，失败时返回 `DescriptorBuildError`。
@@ -555,6 +568,7 @@ impl CapabilityDescriptorBuilder {
             side_effect: self.side_effect,
             stability: self.stability,
             metadata: self.metadata,
+            max_result_inline_size: self.max_result_inline_size,
         })
     }
 }

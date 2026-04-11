@@ -42,12 +42,14 @@ pub use astrcode_runtime_config::{
     is_env_var_name, list_model_options, load_config, load_resolved_config, open_config_in_editor,
     parse_env_value, resolve_active_selection, resolve_agent_finalized_retain_limit,
     resolve_agent_max_concurrent, resolve_agent_max_subrun_depth,
-    resolve_anthropic_messages_api_url, resolve_anthropic_models_api_url,
-    resolve_auto_compact_enabled, resolve_compact_keep_recent_turns,
-    resolve_compact_threshold_percent, resolve_continuation_min_delta_tokens,
-    resolve_current_model, resolve_default_token_budget, resolve_env_value,
-    resolve_max_consecutive_failures, resolve_max_continuations, resolve_max_tool_concurrency,
-    resolve_recovery_truncate_bytes, resolve_tool_result_max_bytes, save_config, test_connection,
+    resolve_aggregate_result_bytes_budget, resolve_anthropic_messages_api_url,
+    resolve_anthropic_models_api_url, resolve_auto_compact_enabled,
+    resolve_compact_keep_recent_turns, resolve_compact_threshold_percent,
+    resolve_continuation_min_delta_tokens, resolve_current_model, resolve_default_token_budget,
+    resolve_env_value, resolve_max_consecutive_failures, resolve_max_continuations,
+    resolve_max_tool_concurrency, resolve_micro_compact_gap_threshold_secs,
+    resolve_micro_compact_keep_recent_results, resolve_recovery_truncate_bytes,
+    resolve_tool_result_max_bytes, save_config, test_connection,
 };
 pub use astrcode_runtime_llm as llm;
 pub use astrcode_runtime_prompt as prompt;

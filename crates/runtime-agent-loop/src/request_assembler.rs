@@ -206,6 +206,8 @@ mod tests {
                     budget_state: TokenBudgetState,
                     truncated_tool_results: 0,
                     prune_stats: PruneStats::default(),
+                    persistence_stats: Default::default(),
+                    micro_compact_stats: Default::default(),
                 },
                 vec![ToolDefinition {
                     name: "base".to_string(),
@@ -249,6 +251,8 @@ mod tests {
                         budget_state: TokenBudgetState,
                         truncated_tool_results: 2,
                         prune_stats: PruneStats::default(),
+                        persistence_stats: Default::default(),
+                        micro_compact_stats: Default::default(),
                     },
                     tools: vec![],
                     model_context_window: 8192,
@@ -312,6 +316,8 @@ mod tests {
                     budget_state: TokenBudgetState,
                     truncated_tool_results: 0,
                     prune_stats: PruneStats::default(),
+                    persistence_stats: Default::default(),
+                    micro_compact_stats: Default::default(),
                 },
                 vec![],
             )
@@ -412,6 +418,8 @@ mod tests {
                     budget_state: TokenBudgetState,
                     truncated_tool_results: 0,
                     prune_stats: PruneStats::default(),
+                    persistence_stats: Default::default(),
+                    micro_compact_stats: Default::default(),
                 },
                 vec![],
             )
@@ -482,6 +490,8 @@ mod tests {
                     budget_state: TokenBudgetState,
                     truncated_tool_results: 0,
                     prune_stats: PruneStats::default(),
+                    persistence_stats: Default::default(),
+                    micro_compact_stats: Default::default(),
                 },
                 vec![],
             )

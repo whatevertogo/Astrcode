@@ -87,6 +87,7 @@ mod tests {
                 side_effect: SideEffectLevel::Workspace,
                 stability: StabilityLevel::Stable,
                 metadata: serde_json::Value::Null,
+                max_result_inline_size: None,
             },
             payload: json!({}),
             prompt: "Allow sample?".to_string(),

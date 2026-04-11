@@ -15,9 +15,10 @@ use astrcode_runtime_skill_loader::SkillCatalog;
 
 use crate::{
     config::{
-        resolve_auto_compact_enabled, resolve_compact_keep_recent_turns,
-        resolve_compact_threshold_percent, resolve_max_tool_concurrency,
-        resolve_tool_result_max_bytes,
+        resolve_aggregate_result_bytes_budget, resolve_auto_compact_enabled,
+        resolve_compact_keep_recent_turns, resolve_compact_threshold_percent,
+        resolve_max_tool_concurrency, resolve_micro_compact_gap_threshold_secs,
+        resolve_micro_compact_keep_recent_results, resolve_tool_result_max_bytes,
     },
     service::RuntimeSurfaceState,
 };
@@ -118,6 +119,11 @@ pub(in crate::service) fn build_agent_loop_from_parts(
         .with_compact_threshold_percent(resolve_compact_threshold_percent(runtime_config))
         .with_tool_result_max_bytes(resolve_tool_result_max_bytes(runtime_config))
         .with_compact_keep_recent_turns(resolve_compact_keep_recent_turns(runtime_config) as usize)
+        .with_aggregate_result_bytes_budget(resolve_aggregate_result_bytes_budget(runtime_config))
+        .with_micro_compact_config(
+            resolve_micro_compact_gap_threshold_secs(runtime_config),
+            resolve_micro_compact_keep_recent_results(runtime_config),
+        )
         .with_policy_engine(policy)
         .with_approval_broker(approval),
     )

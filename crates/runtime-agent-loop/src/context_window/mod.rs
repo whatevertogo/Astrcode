@@ -15,8 +15,10 @@
 
 pub mod compaction;
 pub(crate) mod file_access;
+pub(crate) mod micro_compact;
 pub mod prune_pass;
 pub mod token_usage;
+pub(crate) mod tool_result_persistence;
 
 /// 自动压缩配置和入口函数。
 pub use compaction::{CompactConfig, CompactResult, auto_compact, is_prompt_too_long};
@@ -28,3 +30,5 @@ pub use token_usage::{
     PromptTokenSnapshot, TokenUsageTracker, build_prompt_snapshot, effective_context_window,
     estimate_message_tokens, estimate_request_tokens, estimate_text_tokens, should_compact,
 };
+/// 聚合预算持久化统计。
+pub(crate) use tool_result_persistence::PersistenceStats;

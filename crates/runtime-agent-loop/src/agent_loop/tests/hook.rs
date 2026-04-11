@@ -289,6 +289,7 @@ async fn manual_compact_runs_pre_and_post_compact_hooks() {
         ],
         phase: astrcode_core::Phase::Thinking,
         turn_count: 2,
+        last_assistant_at: None,
     };
 
     let event = loop_runner

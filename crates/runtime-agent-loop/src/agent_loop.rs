@@ -86,7 +86,10 @@ use crate::{
         ThresholdCompactionPolicy,
     },
     context_pipeline::ContextRuntime,
-    context_window::{file_access::FileAccessTracker, merge_compact_prompt_context},
+    context_window::{
+        file_access::FileAccessTracker, merge_compact_prompt_context,
+        micro_compact::MicroCompactConfig, tool_result_persistence::PersistenceBudgetConfig,
+    },
     hook_runtime::HookRuntime,
     prompt_runtime::PromptRuntime,
     provider_factory::DynProviderFactory,
@@ -819,6 +822,25 @@ impl AgentLoop {
     /// RuntimeService 装配层的调用兼容性。
     pub fn with_tool_result_max_bytes(mut self, tool_result_max_bytes: usize) -> Self {
         self.context = ContextRuntime::new(tool_result_max_bytes);
+        self
+    }
+
+    /// 设置聚合预算：未持久化工具结果总字节超过此值时强制落盘。
+    pub fn with_aggregate_result_bytes_budget(mut self, budget: usize) -> Self {
+        self.context = self
+            .context
+            .with_persistence_budget_config(PersistenceBudgetConfig {
+                aggregate_result_bytes_budget: budget,
+            });
+        self
+    }
+
+    /// 设置微压缩参数：空闲阈值（秒）和保留最近工具结果数。
+    pub fn with_micro_compact_config(mut self, gap_secs: u64, keep_recent: usize) -> Self {
+        self.context = self.context.with_micro_compact_config(MicroCompactConfig {
+            gap_threshold_secs: gap_secs,
+            keep_recent_results: keep_recent,
+        });
         self
     }
 

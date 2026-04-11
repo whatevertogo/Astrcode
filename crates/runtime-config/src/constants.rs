@@ -412,6 +412,26 @@ pub const DEFAULT_MAX_CONCURRENT_BRANCH_DEPTH: usize = 3;
 pub const DEFAULT_API_SESSION_TTL_HOURS: i64 = 8;
 
 // ============================================================================
+// 上下文管线持久化与微压缩
+// ============================================================================
+
+/// 默认聚合预算（字节）。
+///
+/// 消息流中所有未持久化工具结果的总字节预算。
+/// 超过此值时将最大的结果强制落盘。
+pub const DEFAULT_AGGREGATE_RESULT_BYTES_BUDGET: usize = 200_000;
+
+/// 默认微压缩空闲阈值（秒）。
+///
+/// 会话输出静默时间超过此值后触发微压缩，清除旧的可压缩工具结果。
+pub const DEFAULT_MICRO_COMPACT_GAP_THRESHOLD_SECS: u64 = 3600;
+
+/// 默认微压缩保留最近工具结果数。
+///
+/// 微压缩时保留最近 N 条工具结果不被清除。
+pub const DEFAULT_MICRO_COMPACT_KEEP_RECENT_RESULTS: usize = 10;
+
+// ============================================================================
 // 多 Agent 控制配置
 // ============================================================================
 
@@ -766,6 +786,39 @@ pub fn resolve_api_session_ttl_hours(runtime: &RuntimeConfig) -> i64 {
         .api_session_ttl_hours
         .unwrap_or(DEFAULT_API_SESSION_TTL_HOURS)
         .max(1)
+}
+
+// ============================================================================
+// 上下文管线持久化与微压缩配置解析
+// ============================================================================
+
+/// 解析聚合预算（字节）。
+///
+/// 未设置时回退到 [`DEFAULT_AGGREGATE_RESULT_BYTES_BUDGET`]。
+pub fn resolve_aggregate_result_bytes_budget(runtime: &RuntimeConfig) -> usize {
+    runtime
+        .aggregate_result_bytes_budget
+        .unwrap_or(DEFAULT_AGGREGATE_RESULT_BYTES_BUDGET)
+        .max(1024) // 至少 1KB
+}
+
+/// 解析微压缩空闲阈值（秒）。
+///
+/// 未设置时回退到 [`DEFAULT_MICRO_COMPACT_GAP_THRESHOLD_SECS`]。
+pub fn resolve_micro_compact_gap_threshold_secs(runtime: &RuntimeConfig) -> u64 {
+    runtime
+        .micro_compact_gap_threshold_secs
+        .unwrap_or(DEFAULT_MICRO_COMPACT_GAP_THRESHOLD_SECS)
+        .max(60) // 至少 1 分钟
+}
+
+/// 解析微压缩保留最近工具结果数。
+///
+/// 未设置时回退到 [`DEFAULT_MICRO_COMPACT_KEEP_RECENT_RESULTS`]。
+pub fn resolve_micro_compact_keep_recent_results(runtime: &RuntimeConfig) -> usize {
+    runtime
+        .micro_compact_keep_recent_results
+        .unwrap_or(DEFAULT_MICRO_COMPACT_KEEP_RECENT_RESULTS)
 }
 
 #[cfg(test)]

@@ -106,6 +106,7 @@ impl ToolHandler for WorkspaceSummaryTool {
             side_effect: SideEffectLevel::None,
             stability: StabilityLevel::Stable,
             metadata: Value::Null,
+            max_result_inline_size: None,
         }
     }
 
@@ -195,11 +196,12 @@ impl ToolHandler for FilePreviewTool {
             side_effect: SideEffectLevel::None,
             stability: StabilityLevel::Stable,
             metadata: Value::Null,
+            max_result_inline_size: None,
         }
     }
 
     fn execute(
-        &self,
+        self: &FilePreviewTool,
         input: Value,
         context: PluginContext,
         stream: StreamWriter,

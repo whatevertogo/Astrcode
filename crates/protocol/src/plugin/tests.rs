@@ -296,6 +296,7 @@ fn capability_validate_rejects_direct_blank_kind() {
         side_effect: SideEffectLevel::None,
         stability: StabilityLevel::Stable,
         metadata: json!({}),
+        max_result_inline_size: None,
     };
 
     assert_eq!(

@@ -599,20 +599,15 @@ fn should_use_session_tool_results_root(path: &Path) -> bool {
 }
 
 /// 工具输出 inline 阈值：序列化结果超过此字节数时触发存盘。
-pub const TOOL_RESULT_INLINE_LIMIT: usize = 32 * 1024;
-
-/// 工具结果存盘目录名（相对于 session 目录）。
-pub const TOOL_RESULTS_DIR: &str = "tool-results";
-
+pub use astrcode_core::tool_result_persist::DEFAULT_TOOL_RESULT_INLINE_LIMIT as TOOL_RESULT_INLINE_LIMIT;
 /// 工具结果预览截断大小。
-///
-/// 超阈值被存盘时，返回此大小的预览供 LLM 快速了解内容。
-pub const TOOL_RESULT_PREVIEW_LIMIT: usize = 2 * 1024;
+pub use astrcode_core::tool_result_persist::TOOL_RESULT_PREVIEW_LIMIT;
+/// 工具结果存盘目录名（相对于 session 目录）。
+pub use astrcode_core::tool_result_persist::TOOL_RESULTS_DIR;
 
 /// 将大型工具结果存到磁盘并返回截断预览。
 ///
-/// 超阈值时存到 `session_dir/tool-results/<id>.txt`，返回预览供 LLM 了解内容。
-/// 存盘失败时降级为 `truncate_with_notice`。
+/// 委托给 `astrcode_core::tool_result_persist::maybe_persist_tool_result`。
 /// `force_inline` 用于调试/测试模式跳过存盘。
 pub fn maybe_persist_large_tool_result(
     session_dir: &std::path::Path,
@@ -620,67 +615,14 @@ pub fn maybe_persist_large_tool_result(
     content: &str,
     force_inline: bool,
 ) -> String {
-    let content_bytes = content.len();
-    if content_bytes <= TOOL_RESULT_INLINE_LIMIT || force_inline {
+    if force_inline {
         return content.to_string();
     }
-
-    let results_dir = session_dir.join(TOOL_RESULTS_DIR);
-    if std::fs::create_dir_all(&results_dir).is_err() {
-        log::warn!(
-            "tool-result: failed to create dir '{}', falling back to truncation",
-            results_dir.display()
-        );
-        return truncate_with_notice(content);
-    }
-
-    let safe_id: String = tool_call_id
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-        .take(64)
-        .collect();
-    let path = results_dir.join(format!("{safe_id}.txt"));
-    if std::fs::write(&path, content).is_err() {
-        log::warn!(
-            "tool-result: failed to write '{}', falling back to truncation",
-            path.display()
-        );
-        return truncate_with_notice(content);
-    }
-
-    let relative_path = path
-        .strip_prefix(session_dir)
-        .unwrap_or(&path)
-        .to_string_lossy()
-        .replace('\\', "/");
-
-    format_persisted_output(&relative_path, content_bytes, content)
-}
-
-/// 截断内容并附加通知。
-fn truncate_with_notice(content: &str) -> String {
-    let limit = TOOL_RESULT_PREVIEW_LIMIT.min(content.len());
-    let truncated_at = content.floor_char_boundary(limit);
-    let prefix = &content[..truncated_at];
-    format!(
-        "{prefix}\n\n... [output truncated after {} bytes; use offset/limit parameters or \
-         readFile with persisted path for full content]",
-        TOOL_RESULT_INLINE_LIMIT
-    )
-}
-
-/// 构建 `<persisted-output>` 格式的截断预览。
-///
-/// 让 LLM 能在同 turn 中用 `readFile` 读取完整内容。
-fn format_persisted_output(relative_path: &str, total_bytes: usize, content: &str) -> String {
-    let preview_limit = TOOL_RESULT_PREVIEW_LIMIT.min(content.len());
-    let truncated_at = content.floor_char_boundary(preview_limit);
-    let preview = &content[..truncated_at];
-
-    format!(
-        "<persisted-output>\nOutput too large ({total_bytes} bytes). Full output saved to: \
-         {relative_path}\n\nPreview (first {preview_limit} bytes):\n{preview}\n...\nUse \
-         `readFile` with the persisted path to view the full content.\n</persisted-output>"
+    astrcode_core::tool_result_persist::maybe_persist_tool_result(
+        session_dir,
+        tool_call_id,
+        content,
+        TOOL_RESULT_INLINE_LIMIT,
     )
 }
 

@@ -241,6 +241,7 @@ mod tests {
                 side_effect: SideEffectLevel::None,
                 stability: StabilityLevel::Stable,
                 metadata: Value::Null,
+                max_result_inline_size: None,
             }
         }
 

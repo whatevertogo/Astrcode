@@ -196,6 +196,19 @@ pub struct RuntimeConfig {
     pub max_concurrent_branch_depth: Option<usize>,
 
     // -------------------------------------------------------------------------
+    // 上下文管线持久化与微压缩
+    // -------------------------------------------------------------------------
+    /// 聚合预算：未持久化工具结果总字节超过此值时强制落盘。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aggregate_result_bytes_budget: Option<usize>,
+    /// 微压缩空闲阈值（秒）：会话输出静默超过此值时触发微压缩。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub micro_compact_gap_threshold_secs: Option<u64>,
+    /// 微压缩保留最近工具结果数。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub micro_compact_keep_recent_results: Option<usize>,
+
+    // -------------------------------------------------------------------------
     // 服务器认证
     // -------------------------------------------------------------------------
     /// API 会话有效期（小时）。
@@ -400,6 +413,13 @@ impl fmt::Debug for RuntimeConfig {
             .field("session_broadcast_capacity", &self.session_broadcast_capacity)
             .field("session_recent_record_limit", &self.session_recent_record_limit)
             .field("max_concurrent_branch_depth", &self.max_concurrent_branch_depth)
+            // 持久化与微压缩
+            .field("aggregate_result_bytes_budget", &self.aggregate_result_bytes_budget)
+            .field("micro_compact_gap_threshold_secs", &self.micro_compact_gap_threshold_secs)
+            .field(
+                "micro_compact_keep_recent_results",
+                &self.micro_compact_keep_recent_results,
+            )
             // 服务器认证
             .field("api_session_ttl_hours", &self.api_session_ttl_hours)
             .finish()

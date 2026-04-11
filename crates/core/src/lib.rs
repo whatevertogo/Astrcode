@@ -43,6 +43,7 @@ pub mod support;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 mod tool;
+pub mod tool_result_persist;
 
 pub use action::{
     AssistantContentParts, LlmMessage, ReasoningContent, ToolCallRequest, ToolDefinition,
@@ -108,4 +109,8 @@ pub use time::{
 pub use tool::{
     DEFAULT_MAX_OUTPUT_SIZE, ExecutionOwner, SessionId, Tool, ToolCapabilityMetadata, ToolContext,
     ToolEventSink, ToolPromptMetadata,
+};
+pub use tool_result_persist::{
+    DEFAULT_TOOL_RESULT_INLINE_LIMIT, TOOL_RESULT_PREVIEW_LIMIT, TOOL_RESULTS_DIR,
+    is_persisted_output, maybe_persist_tool_result, persist_tool_result,
 };

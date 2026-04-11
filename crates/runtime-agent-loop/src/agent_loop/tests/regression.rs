@@ -199,6 +199,7 @@ async fn phase0_behavior_regression_covers_compaction_and_policy_edges() {
             ],
             phase: Phase::Thinking,
             turn_count: 0,
+            last_assistant_at: None,
         };
         let (events, mut on_event) = collect_events();
 
@@ -271,6 +272,7 @@ async fn phase0_behavior_regression_covers_compaction_and_policy_edges() {
             ],
             phase: Phase::Thinking,
             turn_count: 0,
+            last_assistant_at: None,
         };
         let (events, mut on_event) = collect_events();
 
