@@ -11,9 +11,9 @@
 
 **Purpose**: 锁定迁移边界、调用方清单与最终验收基线
 
-- [ ] T001 Lock the old-collaboration caller inventory and removal order in `specs/008-agent-four-tools/findings.md` and `specs/008-agent-four-tools/migration.md`
-- [ ] T002 [P] Lock the mailbox event glossary, snapshot field sources, and replay checkpoints in `specs/008-agent-four-tools/data-model.md` and `specs/008-agent-four-tools/quickstart.md`
-- [ ] T003 [P] Lock the four-tool public contract and removed-surface invariants in `specs/008-agent-four-tools/contracts/agent-collaboration-tool-contract.md` and `specs/008-agent-four-tools/contracts/mailbox-event-contract.md`
+- [x] T001 Lock the old-collaboration caller inventory and removal order in `specs/008-agent-four-tools/findings.md` and `specs/008-agent-four-tools/migration.md`
+- [x] T002 [P] Lock the mailbox event glossary, snapshot field sources, and replay checkpoints in `specs/008-agent-four-tools/data-model.md` and `specs/008-agent-four-tools/quickstart.md`
+- [x] T003 [P] Lock the four-tool public contract and removed-surface invariants in `specs/008-agent-four-tools/contracts/agent-collaboration-tool-contract.md` and `specs/008-agent-four-tools/contracts/mailbox-event-contract.md`
 
 ---
 
@@ -23,11 +23,11 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T004 Update shared agent contracts, lifecycle/outcome enums, four-tool params, `delivery_id`/`batch_id` models, and durable mailbox event payloads in `crates/core/src/agent/mod.rs`, `crates/runtime-agent-tool/src/collab_result_mapping.rs`, and `crates/runtime-agent-tool/src/result_mapping.rs`
-- [ ] T005 Register root agents in the control tree and split live lifecycle/outcome state in `crates/runtime-agent-control/src/lib.rs`
-- [ ] T006 [P] Add durable mailbox append/replay primitives, mailbox projector helpers, and structured error/logging hooks in `crates/runtime-session/src/session_state.rs`, `crates/runtime-session/src/turn_runtime.rs`, `crates/runtime-session/src/lib.rs`, `crates/runtime/src/service/execution/mod.rs`, and `crates/runtime/src/service/execution/context.rs`
-- [ ] T007 [P] Make all newly spawned child agents write as `IndependentSession` in `crates/runtime/src/service/execution/root.rs`, `crates/runtime/src/service/execution/subagent.rs`, and `crates/runtime-execution/src/policy.rs`
-- [ ] T008 Audit runtime robustness for locks, wake queues, and spawned tasks in `crates/runtime-agent-control/src/lib.rs`, `crates/runtime/src/service/execution/mod.rs`, and `crates/runtime/src/service/execution/collaboration.rs`
+- [x] T004 Update shared agent contracts, lifecycle/outcome enums, four-tool params, `delivery_id`/`batch_id` models, and durable mailbox event payloads in `crates/core/src/agent/mod.rs`, `crates/runtime-agent-tool/src/collab_result_mapping.rs`, and `crates/runtime-agent-tool/src/result_mapping.rs`
+- [x] T005 Register root agents in the control tree and split live lifecycle/outcome state in `crates/runtime-agent-control/src/lib.rs`
+- [x] T006 [P] Add durable mailbox append/replay primitives, mailbox projector helpers, and structured error/logging hooks in `crates/runtime-session/src/session_state.rs`, `crates/runtime-session/src/turn_runtime.rs`, `crates/runtime-session/src/lib.rs`, `crates/runtime/src/service/execution/mod.rs`, and `crates/runtime/src/service/execution/context.rs`
+- [x] T007 [P] Make all newly spawned child agents write as `IndependentSession` in `crates/runtime/src/service/execution/root.rs`, `crates/runtime/src/service/execution/subagent.rs`, and `crates/runtime-execution/src/policy.rs`
+- [x] T008 Audit runtime robustness for locks, wake queues, and spawned tasks in `crates/runtime-agent-control/src/lib.rs`, `crates/runtime/src/service/execution/mod.rs`, and `crates/runtime/src/service/execution/collaboration.rs`
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 
@@ -41,15 +41,15 @@
 
 ### Tests for User Story 1 ⚠️
 
-- [ ] T009 [P] [US1] Add lifecycle and subtree-close regression coverage in `crates/runtime-agent-control/src/lib.rs` and `crates/runtime/src/service/execution/tests.rs`
-- [ ] T010 [P] [US1] Add reusable-child tool flow coverage in `crates/runtime-agent-tool/src/tests.rs`
+- [x] T009 [P] [US1] Add lifecycle and subtree-close regression coverage in `crates/runtime-agent-control/src/lib.rs` and `crates/runtime/src/service/execution/tests.rs`
+- [x] T010 [P] [US1] Add reusable-child tool flow coverage in `crates/runtime-agent-tool/src/tests.rs`
 
 ### Implementation for User Story 1
 
-- [ ] T011 [US1] Implement `Pending -> Running -> Idle -> Terminated` transitions and `last_turn_outcome` updates in `crates/runtime-agent-control/src/lib.rs` and `crates/runtime/src/service/execution/collaboration.rs`
-- [ ] T012 [US1] Replace `spawnAgent`/`sendAgent`/`closeAgent` implementations with `spawn`/`send`/`close` in `crates/runtime-agent-tool/src/spawn_tool.rs`, `crates/runtime-agent-tool/src/send_tool.rs`, `crates/runtime-agent-tool/src/close_tool.rs`, `crates/runtime-agent-tool/src/executor.rs`, and `crates/runtime-agent-tool/src/lib.rs`
-- [ ] T013 [US1] Wire root-owned child creation and reusable-child scheduling in `crates/runtime/src/service/execution/root.rs` and `crates/runtime/src/service/execution/subagent.rs`
-- [ ] T014 [US1] Enforce subtree terminate, mailbox discard of unacked messages, running-turn cancellation, and post-close `send` rejection in `crates/runtime/src/service/execution/collaboration.rs` and `crates/runtime-agent-control/src/lib.rs`
+- [x] T011 [US1] Implement `Pending -> Running -> Idle -> Terminated` transitions and `last_turn_outcome` updates in `crates/runtime-agent-control/src/lib.rs` and `crates/runtime/src/service/execution/collaboration.rs`
+- [x] T012 [US1] Replace `spawnAgent`/`sendAgent`/`closeAgent` implementations with `spawn`/`send`/`close` in `crates/runtime-agent-tool/src/spawn_tool.rs`, `crates/runtime-agent-tool/src/send_tool.rs`, `crates/runtime-agent-tool/src/close_tool.rs`, `crates/runtime-agent-tool/src/executor.rs`, and `crates/runtime-agent-tool/src/lib.rs`
+- [x] T013 [US1] Wire root-owned child creation and reusable-child scheduling in `crates/runtime/src/service/execution/root.rs` and `crates/runtime/src/service/execution/subagent.rs`
+- [x] T014 [US1] Enforce subtree terminate, mailbox discard of unacked messages, running-turn cancellation, and post-close `send` rejection in `crates/runtime/src/service/execution/collaboration.rs` and `crates/runtime-agent-control/src/lib.rs`
 
 **Checkpoint**: User Story 1 should now support reusable child agents and explicit subtree close as the MVP
 
@@ -63,15 +63,15 @@
 
 ### Tests for User Story 2 ⚠️
 
-- [ ] T015 [P] [US2] Add durable mailbox replay and started-before-acked crash coverage in `crates/runtime-agent-control/src/lib.rs`, `crates/runtime/src/service/execution/tests.rs`, and `crates/server/src/tests/runtime_routes_tests.rs`
-- [ ] T016 [P] [US2] Add mailbox batch-boundary and duplicate-delivery prompt coverage in `crates/runtime-agent-loop/src/agent_loop/tests/regression.rs`
+- [x] T015 [P] [US2] Add durable mailbox replay and started-before-acked crash coverage in `crates/runtime-agent-control/src/lib.rs`, `crates/runtime/src/service/execution/tests.rs`, and `crates/server/src/tests/runtime_routes_tests.rs`
+- [x] T016 [P] [US2] Add mailbox batch-boundary and duplicate-delivery prompt coverage in `crates/runtime-agent-loop/src/agent_loop/tests/regression.rs`
 
 ### Implementation for User Story 2
 
-- [ ] T017 [US2] Implement `AgentMailboxQueued`/`AgentMailboxBatchStarted`/`AgentMailboxBatchAcked`/`AgentMailboxDiscarded` append paths with sender lifecycle snapshot fields and live-cache ordering in `crates/runtime/src/service/execution/collaboration.rs` and `crates/runtime-session/src/session_state.rs`
-- [ ] T018 [US2] Implement turn-start snapshot drain with `delivery_id` dedup, pending replay, and batch-ack sequencing in `crates/runtime/src/service/execution/mod.rs` and `crates/runtime-session/src/turn_runtime.rs`
-- [ ] T019 [US2] Inject mailbox batch context and duplicate-`delivery_id` guidance in `crates/runtime-agent-loop/src/subagent.rs` and `crates/runtime-prompt/src/contributors/workflow_examples.rs`
-- [ ] T020 [US2] Implement child-to-parent wake, pending wake cleanup, durable discard handling, and preserved UI/timeline notification flow in `crates/runtime-agent-control/src/lib.rs`, `crates/runtime/src/service/execution/mod.rs`, and `crates/runtime-agent-loop/src/subagent.rs`
+- [x] T017 [US2] Implement `AgentMailboxQueued`/`AgentMailboxBatchStarted`/`AgentMailboxBatchAcked`/`AgentMailboxDiscarded` append paths with sender lifecycle snapshot fields and live-cache ordering in `crates/runtime/src/service/execution/collaboration.rs` and `crates/runtime-session/src/session_state.rs`
+- [x] T018 [US2] Implement turn-start snapshot drain with `delivery_id` dedup, pending replay, and batch-ack sequencing in `crates/runtime/src/service/execution/mod.rs` and `crates/runtime-session/src/turn_runtime.rs`
+- [x] T019 [US2] Inject mailbox batch context and duplicate-`delivery_id` guidance in `crates/runtime-agent-loop/src/subagent.rs` and `crates/runtime-prompt/src/contributors/workflow_examples.rs`
+- [x] T020 [US2] Implement child-to-parent wake, pending wake cleanup, durable discard handling, and preserved UI/timeline notification flow in `crates/runtime-agent-control/src/lib.rs`, `crates/runtime/src/service/execution/mod.rs`, and `crates/runtime-agent-loop/src/subagent.rs`
 
 **Checkpoint**: User Story 2 should now provide durable mailbox recovery, snapshot-drain semantics, and parent wake on child messages
 
@@ -107,6 +107,7 @@
 - [ ] T028 Remove leftover old-surface references and dead collaboration code in `crates/runtime-agent-tool/src/lib.rs`, `crates/runtime-agent-tool/src/tests.rs`, `crates/server/src/tests/session_contract_tests.rs`, and `frontend/src/lib/api/sessions.ts`
 - [ ] T029 Run runtime robustness review for locks, wake queues, spawned tasks, and error propagation in `crates/runtime-agent-control/src/lib.rs`, `crates/runtime/src/service/execution/mod.rs`, and `crates/runtime/src/service/execution/collaboration.rs`
 - [ ] T030 Run repository validation commands from `specs/008-agent-four-tools/quickstart.md`: `cargo fmt --all --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cd frontend && npm run typecheck`, `rg -n "waitAgent|sendAgent|closeAgent|deliverToParent|resumeAgent" crates frontend -g '*.rs' -g '*.ts' -g '*.tsx'`, and verify sub-session notification channels remain functional after migration
+- [ ] T031 删除所有老的dto模型、契约、文档片段等，确保没有任何遗留的旧协作工具表面或概念残留在代码库或文档中
 
 ---
 

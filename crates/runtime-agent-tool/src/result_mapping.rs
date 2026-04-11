@@ -1,15 +1,15 @@
-//! spawnAgent 的结果映射逻辑。
+//! `spawn` 的结果映射逻辑。
 //!
 //! 将 runtime 返回的 `SubRunResult` 映射为统一的 `ToolExecutionResult`，
 //! 并从 handoff artifacts 中提取 `ChildAgentRef` 注入 metadata，
-//! 使 LLM 后续协作工具（send/wait/close/resume）可以直接复用同一 agentId。
+//! 使 LLM 后续协作工具（send/observe/close）可以直接复用同一 agentId。
 
 use astrcode_core::{
     AgentStatus, ChildAgentRef, ChildSessionLineageKind, SubRunResult, ToolExecutionResult,
 };
 use serde_json::{Value, json};
 
-const TOOL_NAME: &str = "spawnAgent";
+const TOOL_NAME: &str = "spawn";
 const SUBRUN_RESULT_SCHEMA: &str = "subRunResult";
 
 /// 参数校验失败的快捷构造。

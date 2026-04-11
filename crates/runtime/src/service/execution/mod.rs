@@ -19,8 +19,10 @@ mod surface;
 use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentProfile, AgentProfileCatalog, AstrError, ExecutionOrchestrationBoundary,
-    LiveSubRunControlBoundary, Result, SessionTurnAcquireResult, SpawnAgentParams, SubRunHandle,
+    AgentLifecycleStatus, AgentMailboxEnvelope, AgentProfile, AgentProfileCatalog,
+    AgentTurnOutcome, AstrError, EventTranslator, ExecutionOrchestrationBoundary,
+    LiveSubRunControlBoundary, MailboxBatchAckedPayload, MailboxBatchStartedPayload,
+    MailboxQueuedPayload, Result, SessionTurnAcquireResult, SpawnAgentParams, SubRunHandle,
     SubRunResult, ToolContext,
 };
 use astrcode_runtime_agent_control::PendingParentDelivery;
@@ -30,7 +32,9 @@ use astrcode_runtime_prompt::{
     PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
     PromptDeclarationSource, PromptLayer,
 };
-use astrcode_runtime_session::prepare_session_execution;
+use astrcode_runtime_session::{
+    append_batch_acked, append_batch_started, append_mailbox_queued, prepare_session_execution,
+};
 use async_trait::async_trait;
 pub(crate) use context::{
     DeferredCollaborationExecutor, DeferredSubAgentExecutor, service_error_to_astr,
@@ -152,6 +156,34 @@ impl AgentExecutionServiceHandle {
         notification: &astrcode_core::ChildSessionNotification,
     ) {
         let parent_session_id = astrcode_runtime_session::normalize_session_id(parent_session_id);
+        let parent_session = match self.runtime.ensure_session_loaded(&parent_session_id).await {
+            Ok(session) => session,
+            Err(error) => {
+                log::warn!(
+                    "failed to load parent session for mailbox queue append: parentSession='{}', \
+                     childAgent='{}', error='{}'",
+                    parent_session_id,
+                    notification.child_ref.agent_id,
+                    error
+                );
+                return;
+            },
+        };
+        if let Err(error) = self
+            .append_parent_delivery_mailbox_queue(&parent_session, parent_turn_id, notification)
+            .await
+        {
+            log::warn!(
+                "failed to persist durable parent mailbox queue before wake: parentSession='{}', \
+                 childAgent='{}', deliveryId='{}', error='{}'",
+                parent_session_id,
+                notification.child_ref.agent_id,
+                notification.notification_id,
+                error
+            );
+            return;
+        }
+
         let queued = self
             .runtime
             .agent_control
@@ -193,14 +225,23 @@ impl AgentExecutionServiceHandle {
         parent_session_id: &str,
     ) -> ServiceResult<bool> {
         let parent_session_id = astrcode_runtime_session::normalize_session_id(parent_session_id);
-        let Some(delivery) = self
+        let Some(delivery_batch) = self
             .runtime
             .agent_control
-            .checkout_parent_delivery(&parent_session_id)
+            .checkout_parent_delivery_batch(&parent_session_id)
             .await
         else {
             return Ok(false);
         };
+        let batch_delivery_ids = delivery_batch
+            .iter()
+            .map(|delivery| delivery.delivery_id.clone())
+            .collect::<Vec<_>>();
+        let batch_id = uuid::Uuid::new_v4().to_string();
+        let target_agent_id = delivery_batch
+            .first()
+            .and_then(|delivery| delivery.notification.child_ref.parent_agent_id.clone())
+            .unwrap_or_default();
 
         self.runtime
             .observability
@@ -238,7 +279,7 @@ impl AgentExecutionServiceHandle {
                 let _ = self
                     .runtime
                     .agent_control
-                    .requeue_parent_delivery(&parent_session_id, &delivery.delivery_id)
+                    .requeue_parent_delivery_batch(&parent_session_id, &batch_delivery_ids)
                     .await;
                 return Ok(false);
             },
@@ -256,11 +297,36 @@ impl AgentExecutionServiceHandle {
             let _ = self
                 .runtime
                 .agent_control
-                .requeue_parent_delivery(&parent_session_id, &delivery.delivery_id)
+                .requeue_parent_delivery_batch(&parent_session_id, &batch_delivery_ids)
                 .await;
             return Err(ServiceError::Internal(AstrError::Internal(
                 error.to_string(),
             )));
+        }
+
+        let mut batch_translator = EventTranslator::new(session.current_phase()?);
+        if let Err(error) = append_batch_started(
+            &session,
+            &turn_id,
+            astrcode_core::AgentEventContext::default(),
+            MailboxBatchStartedPayload {
+                target_agent_id: target_agent_id.clone(),
+                turn_id: turn_id.clone(),
+                batch_id: batch_id.clone(),
+                delivery_ids: batch_delivery_ids.clone(),
+            },
+            &mut batch_translator,
+        )
+        .await
+        {
+            let _ = self
+                .runtime
+                .agent_control
+                .requeue_parent_delivery_batch(&parent_session_id, &batch_delivery_ids)
+                .await;
+            return Err(ServiceError::Internal(AstrError::Internal(format!(
+                "failed to append parent delivery batch started: {error}"
+            ))));
         }
 
         let loop_ = self.current_loop().await;
@@ -269,9 +335,12 @@ impl AgentExecutionServiceHandle {
         let service = self.clone();
         let wake_session_id = parent_session_id.clone();
         let wake_turn_id = turn_id.clone();
+        let wake_batch_id = batch_id.clone();
+        let wake_target_agent_id = target_agent_id.clone();
+        let wake_delivery_ids = batch_delivery_ids.clone();
         let runtime_input = RuntimeTurnInput {
             user_event: None,
-            prompt_declarations: vec![build_parent_delivery_prompt_declaration(&delivery)],
+            prompt_declarations: build_parent_delivery_prompt_declarations(&delivery_batch),
         };
         let handle = tokio::spawn(async move {
             let turn_started_at = Instant::now();
@@ -297,57 +366,105 @@ impl AgentExecutionServiceHandle {
             let mut should_continue_draining = false;
             // 只有在 wake turn 成功后才消费 delivery，否则重新排队以防止子交付丢失
             if result.succeeded {
-                let consumed = service
-                    .runtime
-                    .agent_control
-                    .consume_parent_delivery(&wake_session_id, &delivery.delivery_id)
-                    .await;
-                if !consumed {
-                    log::warn!(
-                        "parent wake turn succeeded but delivery consume failed: \
-                         parentSession='{}', turnId='{}', deliveryId='{}'",
-                        wake_session_id,
-                        wake_turn_id,
-                        delivery.delivery_id
+                let ack_result = async {
+                    let mut translator = EventTranslator::new(
+                        session
+                            .current_phase()
+                            .unwrap_or(astrcode_core::Phase::Idle),
                     );
+                    append_batch_acked(
+                        &session,
+                        &wake_turn_id,
+                        astrcode_core::AgentEventContext::default(),
+                        MailboxBatchAckedPayload {
+                            target_agent_id: wake_target_agent_id.clone(),
+                            turn_id: wake_turn_id.clone(),
+                            batch_id: wake_batch_id.clone(),
+                            delivery_ids: wake_delivery_ids.clone(),
+                        },
+                        &mut translator,
+                    )
+                    .await
                 }
-                service
-                    .runtime
-                    .observability
-                    .record_delivery_buffer(DeliveryBufferStage::Dequeued);
-                service
-                    .runtime
-                    .observability
-                    .record_child_lifecycle(ChildLifecycleStage::ReactivationSucceeded);
-                service
-                    .runtime
-                    .observability
-                    .record_delivery_buffer(DeliveryBufferStage::WakeSucceeded);
-                should_continue_draining = true;
+                .await;
+                match ack_result {
+                    Ok(_) => {
+                        let consumed = service
+                            .runtime
+                            .agent_control
+                            .consume_parent_delivery_batch(&wake_session_id, &wake_delivery_ids)
+                            .await;
+                        if !consumed {
+                            log::warn!(
+                                "parent wake turn succeeded but delivery batch consume failed: \
+                                 parentSession='{}', turnId='{}', batchId='{}'",
+                                wake_session_id,
+                                wake_turn_id,
+                                wake_batch_id
+                            );
+                        }
+                        service
+                            .runtime
+                            .observability
+                            .record_delivery_buffer(DeliveryBufferStage::Dequeued);
+                        service
+                            .runtime
+                            .observability
+                            .record_child_lifecycle(ChildLifecycleStage::ReactivationSucceeded);
+                        service
+                            .runtime
+                            .observability
+                            .record_delivery_buffer(DeliveryBufferStage::WakeSucceeded);
+                        should_continue_draining = true;
+                    },
+                    Err(error) => {
+                        let _ = service
+                            .runtime
+                            .agent_control
+                            .requeue_parent_delivery_batch(&wake_session_id, &wake_delivery_ids)
+                            .await;
+                        log::warn!(
+                            "parent wake turn succeeded but mailbox ack append failed: \
+                             parentSession='{}', turnId='{}', batchId='{}', error='{}'",
+                            wake_session_id,
+                            wake_turn_id,
+                            wake_batch_id,
+                            error
+                        );
+                        service
+                            .runtime
+                            .observability
+                            .record_child_lifecycle(ChildLifecycleStage::ReactivationFailed);
+                        service
+                            .runtime
+                            .observability
+                            .record_delivery_buffer(DeliveryBufferStage::WakeFailed);
+                    },
+                }
             } else {
                 log::warn!(
-                    "parent wake turn finished with failure, requeueing delivery: \
-                     parentSession='{}', turnId='{}', deliveryId='{}', childAgent='{}', \
-                     subRunId='{}'",
+                    "parent wake turn finished with failure, requeueing delivery batch: \
+                     parentSession='{}', turnId='{}', batchId='{}', deliveryCount={}",
                     wake_session_id,
                     wake_turn_id,
-                    delivery.delivery_id,
-                    delivery.notification.child_ref.agent_id,
-                    delivery.notification.child_ref.sub_run_id
+                    wake_batch_id,
+                    wake_delivery_ids.len()
                 );
                 // 重新排队 delivery，以便后续重试
                 let requeued = service
                     .runtime
                     .agent_control
-                    .requeue_parent_delivery(&wake_session_id, &delivery.delivery_id)
+                    .requeue_parent_delivery_batch(&wake_session_id, &wake_delivery_ids)
                     .await;
-                if !requeued {
+                if requeued != wake_delivery_ids.len() {
                     log::error!(
-                        "parent wake turn failed and delivery requeue was lost: \
-                         parentSession='{}', turnId='{}', deliveryId='{}'",
+                        "parent wake turn failed and delivery batch requeue was incomplete: \
+                         parentSession='{}', turnId='{}', batchId='{}', expected={}, actual={}",
                         wake_session_id,
                         wake_turn_id,
-                        delivery.delivery_id
+                        wake_batch_id,
+                        wake_delivery_ids.len(),
+                        requeued
                     );
                 }
                 service
@@ -387,6 +504,55 @@ impl AgentExecutionServiceHandle {
 
         Ok(true)
     }
+
+    async fn append_parent_delivery_mailbox_queue(
+        &self,
+        parent_session: &astrcode_runtime_session::SessionState,
+        parent_turn_id: &str,
+        notification: &astrcode_core::ChildSessionNotification,
+    ) -> ServiceResult<()> {
+        let Some(target_agent_id) = notification.child_ref.parent_agent_id.clone() else {
+            return Err(ServiceError::InvalidInput(
+                "child terminal delivery missing direct parent agent id".to_string(),
+            ));
+        };
+        let message = notification
+            .final_reply_excerpt
+            .as_deref()
+            .filter(|excerpt| !excerpt.trim().is_empty())
+            .unwrap_or(notification.summary.as_str())
+            .to_string();
+        let sender_last_turn_outcome = match notification.status {
+            astrcode_core::AgentStatus::Completed => Some(AgentTurnOutcome::Completed),
+            astrcode_core::AgentStatus::Failed => Some(AgentTurnOutcome::Failed),
+            astrcode_core::AgentStatus::Cancelled => Some(AgentTurnOutcome::Cancelled),
+            astrcode_core::AgentStatus::TokenExceeded => Some(AgentTurnOutcome::TokenExceeded),
+            astrcode_core::AgentStatus::Pending | astrcode_core::AgentStatus::Running => None,
+        };
+        let payload = MailboxQueuedPayload {
+            envelope: AgentMailboxEnvelope {
+                delivery_id: notification.notification_id.clone(),
+                from_agent_id: notification.child_ref.agent_id.clone(),
+                to_agent_id: target_agent_id,
+                message,
+                queued_at: chrono::Utc::now(),
+                sender_lifecycle_status: AgentLifecycleStatus::Idle,
+                sender_last_turn_outcome,
+                sender_open_session_id: notification.child_ref.open_session_id.clone(),
+            },
+        };
+        let mut translator = EventTranslator::new(parent_session.current_phase()?);
+        append_mailbox_queued(
+            parent_session,
+            parent_turn_id,
+            astrcode_core::AgentEventContext::default(),
+            payload,
+            &mut translator,
+        )
+        .await
+        .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
+        Ok(())
+    }
 }
 
 fn build_parent_delivery_prompt_declaration(delivery: &PendingParentDelivery) -> PromptDeclaration {
@@ -408,6 +574,15 @@ fn build_parent_delivery_prompt_declaration(delivery: &PendingParentDelivery) ->
             delivery.parent_turn_id, delivery.delivery_id
         )),
     }
+}
+
+fn build_parent_delivery_prompt_declarations(
+    deliveries: &[PendingParentDelivery],
+) -> Vec<PromptDeclaration> {
+    deliveries
+        .iter()
+        .map(build_parent_delivery_prompt_declaration)
+        .collect()
 }
 
 #[async_trait]

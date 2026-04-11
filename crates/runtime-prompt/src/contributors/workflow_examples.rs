@@ -53,20 +53,24 @@ impl PromptContributor for WorkflowExamplesContributor {
                     "child-collaboration-guidance",
                     BlockKind::CollaborationGuide,
                     "Child Agent Collaboration Guide",
-                    "When you receive a delivery from a child agent, decide whether to close or \
-                     keep the child: - Treat the `agentId` returned by tool results as an exact \
-                     opaque identifier. Copy it byte-for-byte in later `waitAgent`, `sendAgent`, \
-                     `closeAgent`, and `resumeAgent` calls. Never renumber it, never zero-pad it, \
-                     and never invent `agent-01` when the tool result says `agent-1`. - Use \
-                     `closeAgent` if the child's task is fully complete and no further work is \
-                     needed. Set `cascade: true` to close the entire subtree, or `cascade: false` \
-                     to close only the target agent. - Use `sendAgent` if you need the child to \
-                     continue with follow-up work or revisions based on the delivery. - Use \
-                     `waitAgent` if you want to wait for the child's next delivery before \
-                     proceeding. Example: if the tool result contains `Child agent reference` \
-                     with `agentId: agent-7`, the next collaboration call must use exactly \
-                     `agent-7`. Default: close the child if the delivery satisfies the original \
-                     request; keep it running if you need additional iterations.",
+                    "When you receive a delivery from a child agent, use the four-tool \
+                     collaboration model consistently: - Treat the `agentId` returned by tool \
+                     results as an exact opaque identifier. Copy it byte-for-byte in later \
+                     `send`, `observe`, and `close` calls. Never renumber it, never zero-pad it, \
+                     and never invent `agent-01` when the tool result says `agent-1`. - Child \
+                     agents are reusable. A child can finish one turn, return to `Idle`, and \
+                     later receive more work through `send(agentId, message)`. Do not assume a \
+                     completed turn means the child instance is gone. - If the delivery fully \
+                     satisfies the original request, call `close(agentId)` to terminate the child \
+                     subtree. - If you need follow-up work or revisions, call `send(agentId, \
+                     message)` with the next concrete instruction. - If you are unsure whether \
+                     the child is still running, idle, or already terminated, call \
+                     `observe(agentId)` before deciding. - Runtime mailbox delivery can be \
+                     replayed after recovery. If you see the same `deliveryId` again, treat it as \
+                     the same delivery rather than a new task. Example: if the tool result \
+                     contains `agentId: agent-7`, every later collaboration call must use exactly \
+                     `agent-7`. Default: close the child if the delivery satisfies the request; \
+                     otherwise send a precise follow-up instruction or observe first.",
                 )
                 .with_priority(600),
             ],
@@ -117,6 +121,16 @@ mod tests {
                 .contains("Copy it byte-for-byte")
         );
         assert!(collaboration_block.content.contains("agent-01"));
+        assert!(
+            collaboration_block
+                .content
+                .contains("`send`, `observe`, and `close`")
+        );
+        assert!(
+            collaboration_block
+                .content
+                .contains("same `deliveryId` again")
+        );
         match &output.plan.prepend_messages[0] {
             LlmMessage::User { content, .. } => assert!(content.contains("findFiles")),
             other => panic!("expected prepended user message, got {other:?}"),

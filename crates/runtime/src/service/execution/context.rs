@@ -6,7 +6,7 @@
 use std::sync::{Arc, RwLock as StdRwLock, Weak};
 
 use astrcode_core::{
-    AstrError, CloseAgentParams, CollaborationResult, DeliverToParentParams, Result,
+    AstrError, CloseAgentParams, CollaborationResult, DeliverToParentParams, ObserveParams, Result,
     ResumeAgentParams, SendAgentParams, SpawnAgentParams, SubRunResult, ToolContext,
     WaitAgentParams,
 };
@@ -164,6 +164,19 @@ impl CollaborationExecutor for DeferredCollaborationExecutor {
         runtime
             .execution()
             .deliver_to_parent(params, ctx)
+            .await
+            .map_err(service_error_to_astr)
+    }
+
+    async fn observe(
+        &self,
+        params: ObserveParams,
+        ctx: &ToolContext,
+    ) -> Result<CollaborationResult> {
+        let runtime = self.runtime()?;
+        runtime
+            .execution()
+            .observe_child(params, ctx)
             .await
             .map_err(service_error_to_astr)
     }

@@ -6,20 +6,23 @@
 use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, AgentStatus, AstrError, CancelToken, ChildAgentRef, ChildSessionLineageKind,
-    ChildSessionNotificationKind, CloseAgentParams, CollaborationResult, CollaborationResultKind,
-    DeliverToParentParams, InboxEnvelopeKind, InvocationKind, LineageSnapshot,
-    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, ResumeAgentParams,
-    SendAgentParams, SpawnAgentParams, StorageEvent, StorageEventPayload, SubRunHandle,
-    SubRunResult, SubRunStorageMode, ToolContext, ToolEventSink, UserMessageOrigin,
-    WaitAgentParams, WaitUntil,
+    AgentEventContext, AgentInboxEnvelope, AgentLifecycleStatus, AgentMailboxEnvelope, AgentStatus,
+    AstrError, CancelToken, ChildAgentRef, ChildSessionLineageKind, ChildSessionNotificationKind,
+    CloseAgentParams, CollaborationResult, CollaborationResultKind, DeliverToParentParams,
+    InboxEnvelopeKind, InvocationKind, LineageSnapshot, MailboxDiscardedPayload,
+    MailboxQueuedPayload, ObserveAgentResult, ObserveParams, ResolvedExecutionLimitsSnapshot,
+    ResolvedSubagentContextOverrides, ResumeAgentParams, SendAgentParams, SpawnAgentParams,
+    StorageEvent, StorageEventPayload, SubRunHandle, SubRunResult, SubRunStorageMode, ToolContext,
+    ToolEventSink, UserMessageOrigin, WaitAgentParams, WaitUntil,
 };
 use astrcode_runtime_execution::{
     DeliveryBufferStage, LineageMismatchKind, build_background_subrun_handoff,
     build_child_session_notification, build_resumed_child_agent_state, build_subrun_started_event,
     derive_child_execution_owner,
 };
-use astrcode_runtime_session::SessionStateEventSink;
+use astrcode_runtime_session::{
+    SessionStateEventSink, append_mailbox_discarded, append_mailbox_queued,
+};
 
 use super::{root::AgentExecutionServiceHandle, subagent::SpawnedSubagentExecution};
 use crate::service::{ServiceError, ServiceResult};
@@ -457,6 +460,11 @@ impl AgentExecutionServiceHandle {
     // ─── sendAgent ──────────────────────────────────────────
 
     /// 向子 Agent 追加消息。
+    ///
+    /// 四工具模型约束：
+    /// - 目标为 Terminated → 直接报错，不入 mailbox
+    /// - 目标为 Idle → 消息入队后触发目标下一轮
+    /// - 目标为 Running → 消息只入队，不插入当前轮
     pub async fn send_to_child(
         &self,
         params: SendAgentParams,
@@ -475,8 +483,59 @@ impl AgentExecutionServiceHandle {
 
         self.verify_caller_owns_child(ctx, &child)?;
 
-        let envelope = astrcode_core::AgentInboxEnvelope {
-            delivery_id: format!("delivery-{}", uuid::Uuid::new_v4()),
+        // 四工具模型：Terminated 的 agent 拒收任何新 send
+        let lifecycle = self
+            .runtime
+            .agent_control
+            .get_lifecycle(&params.agent_id)
+            .await;
+        if matches!(
+            lifecycle,
+            Some(astrcode_core::AgentLifecycleStatus::Terminated)
+        ) {
+            return Err(ServiceError::InvalidInput(format!(
+                "agent '{}' has been terminated and cannot receive new messages",
+                params.agent_id
+            )));
+        }
+
+        if matches!(lifecycle, Some(astrcode_core::AgentLifecycleStatus::Idle))
+            && child.status.is_final()
+        {
+            let pending = self
+                .runtime
+                .agent_control
+                .drain_inbox(&child.agent_id)
+                .await
+                .unwrap_or_default();
+            let resume_message = compose_reusable_child_message(&pending, &params);
+            let (reused_handle, _) = self
+                .resume_child_session(&params.agent_id, Some(resume_message), ctx)
+                .await?;
+            let child_ref = self.build_child_ref_from_handle(&reused_handle).await;
+
+            log::info!(
+                "send: reusable child agent '{}' restarted with a new turn (subRunId='{}')",
+                params.agent_id,
+                reused_handle.sub_run_id
+            );
+
+            return Ok(CollaborationResult {
+                accepted: true,
+                kind: CollaborationResultKind::Sent,
+                agent_ref: Some(self.project_child_ref_status(child_ref).await),
+                delivery_id: None,
+                summary: Some(format!("消息已发送到子 Agent {}", params.agent_id)),
+                parent_agent_id: None,
+                cascade: None,
+                closed_root_agent_id: None,
+                failure: None,
+            });
+        }
+
+        let delivery_id = format!("delivery-{}", uuid::Uuid::new_v4());
+        let envelope = AgentInboxEnvelope {
+            delivery_id: delivery_id.clone(),
             from_agent_id: ctx.agent_context().agent_id.clone().unwrap_or_default(),
             to_agent_id: params.agent_id.clone(),
             kind: InboxEnvelopeKind::ParentMessage,
@@ -487,6 +546,8 @@ impl AgentExecutionServiceHandle {
             findings: Vec::new(),
             artifacts: Vec::new(),
         };
+        self.append_durable_mailbox_queue(&child, &envelope, ctx)
+            .await?;
 
         self.runtime
             .agent_control
@@ -499,7 +560,7 @@ impl AgentExecutionServiceHandle {
         let child_ref = self.build_child_ref_from_handle(&child).await;
 
         log::info!(
-            "sendAgent: message sent to child agent '{}' (subRunId='{}')",
+            "send: message sent to child agent '{}' (subRunId='{}')",
             params.agent_id,
             child.sub_run_id
         );
@@ -507,8 +568,8 @@ impl AgentExecutionServiceHandle {
         Ok(CollaborationResult {
             accepted: true,
             kind: CollaborationResultKind::Sent,
-            agent_ref: Some(child_ref),
-            delivery_id: Some(format!("delivery-{}", uuid::Uuid::new_v4())),
+            agent_ref: Some(self.project_child_ref_status(child_ref).await),
+            delivery_id: Some(delivery_id),
             summary: Some(format!("消息已发送到子 Agent {}", params.agent_id)),
             parent_agent_id: None,
             cascade: None,
@@ -584,10 +645,12 @@ impl AgentExecutionServiceHandle {
 
     // ─── closeAgent ─────────────────────────────────────────
 
-    /// 关闭子 Agent。
+    /// 关闭子 Agent（四工具模型 close 语义）。
     ///
-    /// 使用 agent ownership subtree 语义执行级联关闭，
-    /// 而不是按 parent turn 分组关闭。
+    /// 统一使用 subtree terminate 语义：
+    /// 1. 对整棵子树设置 lifecycle = Terminated
+    /// 2. 触发 cancel token 中断正在运行的 turn
+    /// 3. 级联到所有后代
     pub async fn close_child(
         &self,
         params: CloseAgentParams,
@@ -606,10 +669,30 @@ impl AgentExecutionServiceHandle {
             })?;
         self.verify_caller_owns_child(ctx, &target)?;
 
-        // 使用 subtree 语义关闭，而非 agent_control.cancel
-        let closed_ids = self
-            .close_agent_subtree(ctx.session_id(), &params.agent_id, params.cascade)
+        // 收集子树大小用于摘要（terminate_subtree 前统计）
+        let subtree_handles = self
+            .runtime
+            .agent_control
+            .collect_subtree_handles(&params.agent_id)
+            .await;
+        let mut discard_targets = Vec::with_capacity(subtree_handles.len() + 1);
+        discard_targets.push(target.clone());
+        discard_targets.extend(subtree_handles.iter().cloned());
+
+        self.append_durable_mailbox_discard_batch(&discard_targets, ctx)
             .await?;
+
+        // 使用四工具模型的 terminate_subtree 替代旧 cancel
+        self.runtime
+            .agent_control
+            .terminate_subtree(&params.agent_id)
+            .await
+            .ok_or_else(|| {
+                ServiceError::NotFound(format!(
+                    "agent '{}' terminate failed (not found or already finalized)",
+                    params.agent_id
+                ))
+            })?;
 
         let cancelled = self
             .runtime
@@ -620,7 +703,7 @@ impl AgentExecutionServiceHandle {
                 ServiceError::NotFound(format!("agent '{}' not found", params.agent_id))
             })?;
 
-        let subtree_count = closed_ids.len().saturating_sub(1);
+        let subtree_count = subtree_handles.len();
         let summary = if subtree_count > 0 {
             format!(
                 "子 Agent {} 已关闭（含 {} 个后代）",
@@ -631,10 +714,9 @@ impl AgentExecutionServiceHandle {
         };
 
         log::info!(
-            "closeAgent: child agent '{}' closed (cascade={}, subtree_size={})",
+            "close: child agent '{}' closed (subtree_size={})",
             params.agent_id,
-            params.cascade,
-            closed_ids.len()
+            subtree_count
         );
 
         Ok(CollaborationResult {
@@ -644,7 +726,7 @@ impl AgentExecutionServiceHandle {
             delivery_id: None,
             summary: Some(summary),
             parent_agent_id: cancelled.parent_agent_id,
-            cascade: Some(params.cascade),
+            cascade: Some(true),
             closed_root_agent_id: Some(cancelled.agent_id.clone()),
             failure: None,
         })
@@ -835,6 +917,100 @@ impl AgentExecutionServiceHandle {
         })
     }
 
+    // ─── observe ────────────────────────────────────────────
+
+    /// 获取目标 child agent 的增强快照（四工具模型 observe）。
+    ///
+    /// 只返回直接子 agent 的快照，融合三层信息：
+    /// - live lifecycle + last_turn_outcome（来自 agent_control）
+    /// - 对话投影 phase/turn_count/last_output（来自 SessionState 投影）
+    /// - mailbox pending count（来自 durable replay）
+    pub async fn observe_child(
+        &self,
+        params: ObserveParams,
+        ctx: &ToolContext,
+    ) -> ServiceResult<CollaborationResult> {
+        params.validate().map_err(ServiceError::from)?;
+
+        let child = self
+            .runtime
+            .agent_control
+            .get(&params.agent_id)
+            .await
+            .ok_or_else(|| {
+                ServiceError::NotFound(format!("agent '{}' not found", params.agent_id))
+            })?;
+
+        self.verify_caller_owns_child(ctx, &child)?;
+
+        // 读取 live lifecycle 状态
+        let lifecycle_status = self
+            .runtime
+            .agent_control
+            .get_lifecycle(&params.agent_id)
+            .await
+            .unwrap_or(AgentLifecycleStatus::Pending);
+
+        let last_turn_outcome = self
+            .runtime
+            .agent_control
+            .get_turn_outcome(&params.agent_id)
+            .await
+            .flatten();
+
+        // 读取对话投影（phase/turn_count/last_output）
+        let open_session_id = child
+            .child_session_id
+            .clone()
+            .unwrap_or_else(|| child.session_id.clone());
+        let session_state = self.runtime.ensure_session_loaded(&open_session_id).await?;
+        let projected = session_state
+            .snapshot_projected_state()
+            .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
+
+        // 读取 mailbox pending count
+        let pending_message_count = session_state
+            .mailbox_projection_for_agent(&params.agent_id)
+            .map(|p| p.pending_message_count())
+            .unwrap_or(0);
+
+        let observe_result = ObserveAgentResult {
+            agent_id: child.agent_id.clone(),
+            sub_run_id: child.sub_run_id.clone(),
+            session_id: child.session_id.clone(),
+            open_session_id,
+            parent_agent_id: child.parent_agent_id.clone().unwrap_or_default(),
+            lifecycle_status,
+            last_turn_outcome,
+            phase: format!("{:?}", projected.phase),
+            turn_count: projected.turn_count as u32,
+            pending_message_count,
+            last_output: extract_last_output(&projected.messages),
+        };
+
+        log::info!(
+            "observe: snapshot for child agent '{}' (lifecycle={:?}, pending={})",
+            params.agent_id,
+            lifecycle_status,
+            pending_message_count
+        );
+
+        Ok(CollaborationResult {
+            accepted: true,
+            kind: CollaborationResultKind::Sent, // 复用 Sent 作为 observe result kind
+            agent_ref: Some(
+                self.project_child_ref_status(self.build_child_ref_from_handle(&child).await)
+                    .await,
+            ),
+            delivery_id: None,
+            summary: Some(serde_json::to_string(&observe_result).unwrap_or_default()),
+            parent_agent_id: None,
+            cascade: None,
+            closed_root_agent_id: None,
+            failure: None,
+        })
+    }
+
     // ─── 辅助方法 ───────────────────────────────────────────
 
     /// 从 SubRunHandle 构建稳定 ChildAgentRef。
@@ -861,6 +1037,26 @@ impl AgentExecutionServiceHandle {
                 .clone()
                 .unwrap_or_else(|| handle.session_id.clone()),
         }
+    }
+
+    /// 用 lifecycle/outcome 修正过渡期协作面暴露的旧状态值。
+    async fn project_child_ref_status(&self, mut child_ref: ChildAgentRef) -> ChildAgentRef {
+        let lifecycle = self
+            .runtime
+            .agent_control
+            .get_lifecycle(&child_ref.agent_id)
+            .await;
+        let last_turn_outcome = self
+            .runtime
+            .agent_control
+            .get_turn_outcome(&child_ref.agent_id)
+            .await
+            .flatten();
+        if let Some(lifecycle) = lifecycle {
+            child_ref.status =
+                project_collaboration_status(lifecycle, last_turn_outcome, child_ref.status);
+        }
+        child_ref
     }
 
     // ─── forkChildSession ───────────────────────────────────
@@ -905,5 +1101,207 @@ impl AgentExecutionServiceHandle {
         }
 
         Ok(result)
+    }
+}
+
+/// 从消息列表中提取最后一条 assistant 消息的输出摘要。
+fn extract_last_output(messages: &[astrcode_core::LlmMessage]) -> Option<String> {
+    messages.iter().rev().find_map(|msg| match msg {
+        astrcode_core::LlmMessage::Assistant { content, .. } => {
+            if content.is_empty() {
+                None
+            } else if content.len() > 200 {
+                Some(format!("{}...", &content[..200]))
+            } else {
+                Some(content.clone())
+            }
+        },
+        _ => None,
+    })
+}
+
+fn project_collaboration_status(
+    lifecycle: AgentLifecycleStatus,
+    last_turn_outcome: Option<astrcode_core::AgentTurnOutcome>,
+    fallback: AgentStatus,
+) -> AgentStatus {
+    match lifecycle {
+        AgentLifecycleStatus::Pending => AgentStatus::Pending,
+        AgentLifecycleStatus::Running => AgentStatus::Running,
+        AgentLifecycleStatus::Idle => match last_turn_outcome {
+            Some(astrcode_core::AgentTurnOutcome::Completed) => AgentStatus::Completed,
+            Some(astrcode_core::AgentTurnOutcome::Failed) => AgentStatus::Failed,
+            Some(astrcode_core::AgentTurnOutcome::Cancelled) => AgentStatus::Cancelled,
+            Some(astrcode_core::AgentTurnOutcome::TokenExceeded) => AgentStatus::TokenExceeded,
+            None => fallback,
+        },
+        AgentLifecycleStatus::Terminated => AgentStatus::Cancelled,
+    }
+}
+
+fn compose_reusable_child_message(
+    pending: &[astrcode_core::AgentInboxEnvelope],
+    params: &SendAgentParams,
+) -> String {
+    let mut parts = pending
+        .iter()
+        .filter(|envelope| matches!(envelope.kind, InboxEnvelopeKind::ParentMessage))
+        .map(render_parent_message_envelope)
+        .collect::<Vec<_>>();
+    parts.push(render_parent_message_input(
+        params.message.as_str(),
+        params.context.as_deref(),
+    ));
+
+    if parts.len() == 1 {
+        return parts.pop().unwrap_or_default();
+    }
+
+    let enumerated = parts
+        .into_iter()
+        .enumerate()
+        .map(|(index, part)| format!("{}. {}", index + 1, part))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!("请按顺序处理以下追加要求：\n\n{enumerated}")
+}
+
+fn render_parent_message_envelope(envelope: &astrcode_core::AgentInboxEnvelope) -> String {
+    render_parent_message_input(envelope.message.as_str(), envelope.context.as_deref())
+}
+
+fn render_parent_message_input(message: &str, context: Option<&str>) -> String {
+    match context {
+        Some(context) if !context.trim().is_empty() => {
+            format!("{message}\n\n补充上下文：{context}")
+        },
+        _ => message.to_string(),
+    }
+}
+
+impl AgentExecutionServiceHandle {
+    async fn append_durable_mailbox_queue(
+        &self,
+        child: &SubRunHandle,
+        envelope: &AgentInboxEnvelope,
+        ctx: &ToolContext,
+    ) -> ServiceResult<()> {
+        let target_session_id = child
+            .child_session_id
+            .clone()
+            .unwrap_or_else(|| child.session_id.clone());
+        let target_session = self
+            .runtime
+            .ensure_session_loaded(&target_session_id)
+            .await?;
+        let sender_agent_id = ctx.agent_context().agent_id.clone().unwrap_or_default();
+        let sender_lifecycle_status = if sender_agent_id.is_empty() {
+            AgentLifecycleStatus::Running
+        } else {
+            self.runtime
+                .agent_control
+                .get_lifecycle(&sender_agent_id)
+                .await
+                .unwrap_or(AgentLifecycleStatus::Running)
+        };
+        let sender_last_turn_outcome = if sender_agent_id.is_empty() {
+            None
+        } else {
+            self.runtime
+                .agent_control
+                .get_turn_outcome(&sender_agent_id)
+                .await
+                .flatten()
+        };
+        let sender_open_session_id = ctx
+            .agent_context()
+            .child_session_id
+            .clone()
+            .unwrap_or_else(|| ctx.session_id().to_string());
+        let payload = MailboxQueuedPayload {
+            envelope: AgentMailboxEnvelope {
+                delivery_id: envelope.delivery_id.clone(),
+                from_agent_id: envelope.from_agent_id.clone(),
+                to_agent_id: envelope.to_agent_id.clone(),
+                message: render_parent_message_input(
+                    &envelope.message,
+                    envelope.context.as_deref(),
+                ),
+                queued_at: chrono::Utc::now(),
+                sender_lifecycle_status,
+                sender_last_turn_outcome,
+                sender_open_session_id,
+            },
+        };
+        let event_agent = AgentEventContext::sub_run(
+            child.agent_id.clone(),
+            child.parent_turn_id.clone(),
+            child.agent_profile.clone(),
+            child.sub_run_id.clone(),
+            child.storage_mode,
+            child.child_session_id.clone(),
+        );
+        let mut translator = astrcode_core::EventTranslator::new(target_session.current_phase()?);
+        append_mailbox_queued(
+            &target_session,
+            ctx.turn_id().unwrap_or(&child.parent_turn_id),
+            event_agent,
+            payload,
+            &mut translator,
+        )
+        .await
+        .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
+        Ok(())
+    }
+
+    async fn append_durable_mailbox_discard_batch(
+        &self,
+        handles: &[SubRunHandle],
+        ctx: &ToolContext,
+    ) -> ServiceResult<()> {
+        for handle in handles {
+            self.append_durable_mailbox_discard(handle, ctx).await?;
+        }
+        Ok(())
+    }
+
+    async fn append_durable_mailbox_discard(
+        &self,
+        handle: &SubRunHandle,
+        ctx: &ToolContext,
+    ) -> ServiceResult<()> {
+        let target_session_id = handle
+            .child_session_id
+            .clone()
+            .unwrap_or_else(|| handle.session_id.clone());
+        let target_session = self
+            .runtime
+            .ensure_session_loaded(&target_session_id)
+            .await?;
+        let projection = target_session
+            .mailbox_projection_for_agent(&handle.agent_id)
+            .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
+        if projection.pending_delivery_ids.is_empty() {
+            return Ok(());
+        }
+
+        let payload = MailboxDiscardedPayload {
+            target_agent_id: handle.agent_id.clone(),
+            delivery_ids: projection.pending_delivery_ids,
+        };
+        // discard payload 自己已经携带 agent_id；这里如果再 flatten 一个 sub_run 上下文，
+        // durable JSON 会出现重复的 agentId 字段，重放时会被判为损坏文件。
+        let event_agent = AgentEventContext::default();
+        let mut translator = astrcode_core::EventTranslator::new(target_session.current_phase()?);
+        append_mailbox_discarded(
+            &target_session,
+            ctx.turn_id().unwrap_or(&handle.parent_turn_id),
+            event_agent,
+            payload,
+            &mut translator,
+        )
+        .await
+        .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
+        Ok(())
     }
 }

@@ -1,5 +1,6 @@
 use astrcode_core::{
-    AgentEventContext, AgentMode, AgentProfile, EventLogWriter, PluginHealth, PluginState, Result,
+    AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope, AgentMode, AgentProfile,
+    AgentTurnOutcome, EventLogWriter, MailboxQueuedPayload, PluginHealth, PluginState, Result,
     StorageEvent, StorageEventPayload, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
     ToolExecutionResult, UserMessageOrigin, plugin::PluginEntry,
 };
@@ -26,7 +27,7 @@ use tower::ServiceExt;
 use crate::{
     AUTH_HEADER_NAME,
     routes::build_api_router,
-    test_support::{test_state, test_state_with_capabilities},
+    test_support::{append_session_events, test_state, test_state_with_capabilities},
 };
 
 struct DemoReadTool;
@@ -767,6 +768,88 @@ async fn session_history_endpoint_filters_subrun_scope_and_cursor() {
         vec!["subrun:sub-b".to_string(), "user:sub-b".to_string(),]
     );
     assert_eq!(payload.cursor.as_deref(), Some("6.0"));
+}
+
+#[tokio::test]
+async fn session_history_endpoint_serializes_mailbox_payload_with_sender_snapshots() {
+    let (state, _guard) = test_state(None);
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let session_id = "mailbox-history-session";
+    append_session_events(
+        session_id,
+        temp_dir.path(),
+        [
+            StorageEvent {
+                turn_id: None,
+                agent: AgentEventContext::default(),
+                payload: StorageEventPayload::SessionStart {
+                    session_id: session_id.to_string(),
+                    timestamp: Utc::now(),
+                    working_dir: temp_dir.path().display().to_string(),
+                    parent_session_id: None,
+                    parent_storage_seq: None,
+                },
+            },
+            StorageEvent {
+                turn_id: Some("turn-parent".to_string()),
+                agent: AgentEventContext::default(),
+                payload: StorageEventPayload::AgentMailboxQueued {
+                    payload: MailboxQueuedPayload {
+                        envelope: AgentMailboxEnvelope {
+                            delivery_id: "delivery-history-1".to_string(),
+                            from_agent_id: "agent-child".to_string(),
+                            to_agent_id: "agent-parent".to_string(),
+                            message: "child summary".to_string(),
+                            queued_at: Utc::now(),
+                            sender_lifecycle_status: AgentLifecycleStatus::Idle,
+                            sender_last_turn_outcome: Some(AgentTurnOutcome::Completed),
+                            sender_open_session_id: "session-child".to_string(),
+                        },
+                    },
+                },
+            },
+        ],
+    );
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/sessions/{}/history", session_id))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body should be readable");
+    let payload: SessionHistoryResponseDto =
+        serde_json::from_slice(&bytes).expect("history response should deserialize");
+
+    let mailbox_event = payload
+        .events
+        .iter()
+        .find_map(|event| match &event.event {
+            astrcode_protocol::http::AgentEventPayload::AgentMailboxQueued { payload, .. } => {
+                Some(payload)
+            },
+            _ => None,
+        })
+        .expect("history should include mailbox queued payload");
+
+    assert_eq!(mailbox_event.delivery_id, "delivery-history-1");
+    assert_eq!(mailbox_event.from_agent_id, "agent-child");
+    assert_eq!(mailbox_event.to_agent_id, "agent-parent");
+    assert_eq!(mailbox_event.sender_lifecycle_status, "Idle");
+    assert_eq!(
+        mailbox_event.sender_last_turn_outcome.as_deref(),
+        Some("Completed")
+    );
+    assert_eq!(mailbox_event.sender_open_session_id, "session-child");
 }
 
 #[tokio::test]

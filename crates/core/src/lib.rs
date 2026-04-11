@@ -57,6 +57,12 @@ pub use agent::{
     ResolvedSubagentContextOverrides, ResumeAgentParams, SendAgentParams, SpawnAgentParams,
     SubRunFailure, SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunResult, SubRunStorageMode,
     SubagentContextOverrides, WaitAgentParams, WaitUntil,
+    lifecycle::{AgentLifecycleStatus, AgentTurnOutcome},
+    mailbox::{
+        AgentMailboxEnvelope, BatchId, CloseParams, DeliveryId, MailboxBatchAckedPayload,
+        MailboxBatchStartedPayload, MailboxDiscardedPayload, MailboxProjection,
+        MailboxQueuedPayload, ObserveAgentResult, ObserveParams, SendParams,
+    },
 };
 pub use cancel::CancelToken;
 pub use compact_summary::{

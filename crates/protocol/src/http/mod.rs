@@ -39,10 +39,10 @@ pub use config::{
 };
 pub use event::{
     AgentContextDto, AgentEventEnvelope, AgentEventPayload, ArtifactRefDto, CompactTriggerDto,
-    ForkModeDto, InvocationKindDto, PROTOCOL_VERSION, PhaseDto, ResolvedExecutionLimitsDto,
-    ResolvedSubagentContextOverridesDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
-    SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto, ToolCallResultDto,
-    ToolOutputStreamDto,
+    ForkModeDto, InvocationKindDto, MailboxBatchDto, MailboxDiscardedDto, MailboxQueuedDto,
+    PROTOCOL_VERSION, PhaseDto, ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto,
+    SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto,
+    SubRunStorageModeDto, ToolCallResultDto, ToolOutputStreamDto,
 };
 pub use model::{CurrentModelInfoDto, ModelOptionDto};
 pub use runtime::{

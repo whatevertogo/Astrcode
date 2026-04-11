@@ -6,7 +6,7 @@ use std::{
 use anyhow::Result;
 use astrcode_core::{
     AgentState, AgentStateProjector, CancelToken, ChildSessionNode, EventLogWriter,
-    EventTranslator, Phase, SessionEventRecord, SessionTurnLease, StorageEvent,
+    EventTranslator, MailboxProjection, Phase, SessionEventRecord, SessionTurnLease, StorageEvent,
     StorageEventPayload, StoredEvent, ToolEventSink,
 };
 use tokio::sync::broadcast;
@@ -139,6 +139,7 @@ pub struct SessionState {
     recent_records: StdMutex<RecentSessionEvents>,
     recent_stored: StdMutex<RecentStoredEvents>,
     child_nodes: StdMutex<HashMap<String, ChildSessionNode>>,
+    mailbox_projection_index: StdMutex<HashMap<String, MailboxProjection>>,
 }
 
 impl SessionState {
@@ -155,6 +156,7 @@ impl SessionState {
         let mut cached_stored = RecentStoredEvents::default();
         cached_stored.replace(recent_stored.clone());
         let child_nodes = rebuild_child_nodes(&recent_stored);
+        let mailbox_projection_index = MailboxProjection::replay_index(&recent_stored);
         Self {
             phase: StdMutex::new(phase),
             running: AtomicBool::new(false),
@@ -169,6 +171,7 @@ impl SessionState {
             recent_records: StdMutex::new(cached_records),
             recent_stored: StdMutex::new(cached_stored),
             child_nodes: StdMutex::new(child_nodes),
+            mailbox_projection_index: StdMutex::new(mailbox_projection_index),
         }
     }
 
@@ -221,6 +224,7 @@ impl SessionState {
         if let Some(node) = child_node_from_stored_event(stored) {
             self.upsert_child_session_node(node)?;
         }
+        self.apply_mailbox_event(stored);
         Ok(records)
     }
 
@@ -295,6 +299,68 @@ impl SessionState {
         }
         result.sort_by(|a, b| a.sub_run_id.cmp(&b.sub_run_id));
         Ok(result)
+    }
+
+    /// 读取指定 agent 的 mailbox durable 投影。
+    pub fn mailbox_projection_for_agent(&self, agent_id: &str) -> Result<MailboxProjection> {
+        Ok(
+            lock_anyhow(&self.mailbox_projection_index, "mailbox projection index")?
+                .get(agent_id)
+                .cloned()
+                .unwrap_or_default(),
+        )
+    }
+
+    /// 增量应用一条 mailbox durable 事件到投影索引。
+    fn apply_mailbox_event(&self, stored: &StoredEvent) {
+        let mut index =
+            match lock_anyhow(&self.mailbox_projection_index, "mailbox projection index") {
+                Ok(index) => index,
+                Err(_) => return,
+            };
+        match &stored.event.payload {
+            StorageEventPayload::AgentMailboxQueued { payload } => {
+                let projection = index
+                    .entry(payload.envelope.to_agent_id.clone())
+                    .or_insert_with(MailboxProjection::default);
+                MailboxProjection::apply_event_for_agent(
+                    projection,
+                    stored,
+                    &payload.envelope.to_agent_id,
+                );
+            },
+            StorageEventPayload::AgentMailboxBatchStarted { payload } => {
+                let projection = index
+                    .entry(payload.target_agent_id.clone())
+                    .or_insert_with(MailboxProjection::default);
+                MailboxProjection::apply_event_for_agent(
+                    projection,
+                    stored,
+                    &payload.target_agent_id,
+                );
+            },
+            StorageEventPayload::AgentMailboxBatchAcked { payload } => {
+                let projection = index
+                    .entry(payload.target_agent_id.clone())
+                    .or_insert_with(MailboxProjection::default);
+                MailboxProjection::apply_event_for_agent(
+                    projection,
+                    stored,
+                    &payload.target_agent_id,
+                );
+            },
+            StorageEventPayload::AgentMailboxDiscarded { payload } => {
+                let projection = index
+                    .entry(payload.target_agent_id.clone())
+                    .or_insert_with(MailboxProjection::default);
+                MailboxProjection::apply_event_for_agent(
+                    projection,
+                    stored,
+                    &payload.target_agent_id,
+                );
+            },
+            _ => {},
+        }
     }
 }
 

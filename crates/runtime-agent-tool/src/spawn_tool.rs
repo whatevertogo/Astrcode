@@ -12,7 +12,7 @@ use crate::{
     result_mapping::{invalid_params_result, map_subrun_result},
 };
 
-const TOOL_NAME: &str = "spawnAgent";
+const TOOL_NAME: &str = "spawn";
 
 /// 把子 Agent 能力暴露给 LLM 的内置工具。
 ///
@@ -35,9 +35,9 @@ impl SpawnAgentTool {
 1. **选择合适的 Agent**: `type` 填目标 profile 标识；可用 profile 以当前会话提供的 agent 索引或提示信息为准
 2. **写清楚任务**: `prompt` 参数要具体、明确，说明要做什么、找什么、分析什么
 3. **补充上下文**: 如果任务涉及特定背景，在 `context` 中说明（如"关注安全问题"、"只看 frontend 目录"）
-4. **默认异步**: `spawnAgent` 统一用后台子会话方式启动，通过子会话流持续回传进度
-5. **记住原始 agentId**: 后续 `waitAgent` / `sendAgent` / `closeAgent` / `resumeAgent` 必须逐字复用 tool result 里的 `agentId`，不能补零、改写或猜测
-6. **并行执行**: 需要并行时，直接在同一轮对话中发起多个 `spawnAgent` 调用即可
+4. **默认异步**: `spawn` 统一用后台子会话方式启动，通过子会话流持续回传进度
+5. **记住原始 agentId**: 后续 `send` / `observe` / `close` 必须逐字复用 tool result 里的 `agentId`，不能补零、改写或猜测
+6. **并行执行**: 需要并行时，直接在同一轮对话中发起多个 `spawn` 调用即可
 7. **链式执行**: 需要链式时，你可以等待每个 agent 的工作，读取前一步的 `summary`，然后在下一步的 `context` 中显式传入
 
 ## 何时使用
@@ -96,10 +96,10 @@ impl Tool for SpawnAgentTool {
         ToolCapabilityMetadata::builtin()
             .tag("agent")
             .tag("subagent")
-            // spawnAgent 统一为后台启动：工具本身只负责建链和返回句柄，
+            // spawn 统一为后台启动：工具本身只负责建链和返回句柄，
             // 不会阻塞当前 agent 的 LLM 轮次，因此可以安全并发。
             .concurrency_safe(true)
-            // compact 模式下可以折叠 spawnAgent 的 tool result，减少上下文占用
+            // compact 模式下可以折叠 spawn 的 tool result，减少上下文占用
             .compact_clearable(true)
     }
 
@@ -114,7 +114,7 @@ impl Tool for SpawnAgentTool {
             Err(error) => {
                 return Ok(invalid_params_result(
                     tool_call_id,
-                    format!("invalid spawnAgent params: {error}"),
+                    format!("invalid spawn params: {error}"),
                 ));
             },
         };
@@ -123,7 +123,7 @@ impl Tool for SpawnAgentTool {
         if let Err(err) = params.validate() {
             return Ok(invalid_params_result(
                 tool_call_id,
-                format!("invalid spawnAgent params: {err}"),
+                format!("invalid spawn params: {err}"),
             ));
         }
 
@@ -131,7 +131,7 @@ impl Tool for SpawnAgentTool {
         let launch_ctx = ctx.clone().with_tool_call_id(tool_call_id.clone());
         let result = self.launcher.launch(params, &launch_ctx).await?;
         // 结果映射会统一注入 childRef/openSessionId 等稳定元数据，
-        // 让后续 send/wait/resume/close 可以直接复用同一 identity
+        // 让后续 send/observe/close 可以直接复用同一 identity
         Ok(map_subrun_result(tool_call_id, result))
     }
 }

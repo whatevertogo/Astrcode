@@ -154,6 +154,18 @@ impl AgentExecutionServiceHandle {
             ))),
         }?;
         let root_agent_id = format!("root-agent-{}", Uuid::new_v4());
+        // 为什么在 prepare_session_execution 之前注册：四工具模型要求根 agent 作为一等控制对象
+        // 进入控制树（depth=0），这样 child 可以通过 send(parentId, ...) 向根发消息。
+        // 必须在 spawn 任务前完成注册，否则子 agent 在同 turn 内可能找不到父 agent。
+        self.runtime
+            .agent_control
+            .register_root_agent(
+                root_agent_id.clone(),
+                session_meta.session_id.clone(),
+                profile.id.clone(),
+            )
+            .await
+            .map_err(|error| ServiceError::Conflict(error.to_string()))?;
         let budget_settings = BudgetSettings {
             continuation_min_delta_tokens: crate::config::resolve_continuation_min_delta_tokens(
                 &prepared_execution.runtime_config,

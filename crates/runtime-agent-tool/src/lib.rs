@@ -9,16 +9,22 @@
 //!   `RuntimeService`，避免把 runtime 细节扩散到 Tool crate。
 //! - **Runtime 层**：实现上述两个 trait，负责创建 session、调度 event、管理 inbox。
 //!
-//! ## 工具族
+//! ## 四工具公开面
 //!
 //! | 工具 | 用途 | 执行器 |
 //! |------|------|--------|
-//! | `spawnAgent` | 创建并启动子 Agent | `SubAgentExecutor` |
-//! | `sendAgent` | 向既有子 Agent 追加消息 | `CollaborationExecutor` |
-//! | `waitAgent` | 阻塞等待子 Agent 状态变化 | `CollaborationExecutor` |
-//! | `closeAgent` | 关闭子 Agent（可级联） | `CollaborationExecutor` |
-//! | `resumeAgent` | 恢复已完成的子 Agent | `CollaborationExecutor` |
-//! | `deliverToParent` | 子 Agent 向父 Agent 交付结果 | `CollaborationExecutor` |
+//! | `spawn` | 创建并启动子 Agent | `SubAgentExecutor` |
+//! | `send` | 向子 Agent / 父 Agent 发送消息 | `CollaborationExecutor` |
+//! | `observe` | 获取子 Agent 状态快照 | `CollaborationExecutor` |
+//! | `close` | 终止子 Agent 及子树 | `CollaborationExecutor` |
+//!
+//! ## 内部保留工具（不在公开 prompt 中暴露）
+//!
+//! | 工具 | 用途 |
+//! |------|------|
+//! | `waitAgent` | 阻塞等待子 Agent 状态变化（过渡期内部保留） |
+//! | `resumeAgent` | 恢复已完成的子 Agent（过渡期内部保留） |
+//! | `deliverToParent` | 子 Agent 向父 Agent 交付结果（过渡期内部保留） |
 //!
 //! ## 设计约束
 //!
@@ -30,6 +36,7 @@ mod collab_result_mapping;
 mod collaboration_executor;
 mod deliver_tool;
 mod executor;
+mod observe_tool;
 mod result_mapping;
 mod resume_tool;
 mod send_tool;
@@ -38,12 +45,14 @@ mod wait_tool;
 
 pub use astrcode_core::{
     CloseAgentParams, CollaborationResult, CollaborationResultKind, DeliverToParentParams,
-    ResumeAgentParams, SendAgentParams, SpawnAgentParams, WaitAgentParams, WaitUntil,
+    ObserveParams, ResumeAgentParams, SendAgentParams, SpawnAgentParams, WaitAgentParams,
+    WaitUntil,
 };
 pub use close_tool::CloseAgentTool;
 pub use collaboration_executor::CollaborationExecutor;
 pub use deliver_tool::DeliverToParentTool;
 pub use executor::SubAgentExecutor;
+pub use observe_tool::ObserveAgentTool;
 pub use resume_tool::ResumeAgentTool;
 pub use send_tool::SendAgentTool;
 pub use spawn_tool::SpawnAgentTool;

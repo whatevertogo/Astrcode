@@ -19,9 +19,9 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentInboxEnvelope, AgentProfile, AgentStatus, AstrError, CancelToken,
-    LiveSubRunControlBoundary, SpawnAgentParams, SubRunHandle, SubRunResult, SubRunStorageMode,
-    ToolContext,
+    AgentInboxEnvelope, AgentLifecycleStatus, AgentProfile, AgentStatus, AgentTurnOutcome,
+    AstrError, CancelToken, LiveSubRunControlBoundary, SpawnAgentParams, SubRunHandle,
+    SubRunResult, SubRunStorageMode, ToolContext,
 };
 use astrcode_runtime_config::{
     RuntimeConfig, resolve_agent_finalized_retain_limit, resolve_agent_max_concurrent,
@@ -50,6 +50,11 @@ struct AgentEntry {
     inbox: VecDeque<AgentInboxEnvelope>,
     /// 收件箱版本号，每次 push_inbox 递增，用于 wait_for_inbox 的变化检测。
     inbox_version: watch::Sender<u64>,
+    /// 四工具模型的持久生命周期状态（与旧 AgentStatus 正交）。
+    /// Pending → Running → Idle → Terminated，完成单轮后不自动终止。
+    lifecycle_status: AgentLifecycleStatus,
+    /// 最近一轮执行的结束原因。Running 期间为 None，turn 完成后设为 Some。
+    last_turn_outcome: Option<AgentTurnOutcome>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -309,6 +314,8 @@ impl AgentControl {
                 finalized_seq: None,
                 inbox: VecDeque::new(),
                 inbox_version: watch::channel(0).0,
+                lifecycle_status: AgentLifecycleStatus::Pending,
+                last_turn_outcome: None,
             },
         );
         state.agent_index.insert(agent_id, sub_run_id.clone());
@@ -322,6 +329,115 @@ impl AgentControl {
         }
         prune_finalized_agents_locked(&mut state, self.finalized_retain_limit);
         Ok(handle)
+    }
+
+    /// 注册根 Agent 到控制树。
+    ///
+    /// 四工具模型要求根 Agent 也成为一等控制对象，
+    /// 这样 child 可以通过 `send(parentId, ...)` 向根发送消息，
+    /// `observe` 也可以沿着统一父子树进行权限校验。
+    ///
+    /// 根 Agent 深度为 0，无父节点，生命周期初始为 Running（根已在执行中）。
+    pub async fn register_root_agent(
+        &self,
+        agent_id: String,
+        session_id: String,
+        profile_id: String,
+    ) -> Result<SubRunHandle, AgentControlError> {
+        let mut state = self.state.write().await;
+        // 如果该 agent 已注册，直接返回现有句柄（幂等）
+        if let Some(existing_key) = state.agent_index.get(&agent_id) {
+            if let Some(entry) = state.entries.get(existing_key) {
+                return Ok(entry.handle.clone());
+            }
+        }
+        // 根 agent 没有真实 sub_run_id，使用 agent_id 等价
+        let sub_run_id = format!("root-{agent_id}");
+        let handle = SubRunHandle {
+            sub_run_id: sub_run_id.clone(),
+            agent_id: agent_id.clone(),
+            session_id,
+            child_session_id: None,
+            depth: 0,
+            parent_turn_id: String::new(),
+            parent_agent_id: None,
+            agent_profile: profile_id,
+            storage_mode: SubRunStorageMode::SharedSession,
+            status: AgentStatus::Running,
+        };
+        let cancel = CancelToken::new();
+        let (status_tx, _status_rx) = watch::channel(handle.status);
+        state.entries.insert(
+            sub_run_id.clone(),
+            AgentEntry {
+                handle: handle.clone(),
+                cancel,
+                status_tx,
+                parent_agent_id: None,
+                children: BTreeSet::new(),
+                finalized_seq: None,
+                inbox: VecDeque::new(),
+                inbox_version: watch::channel(0).0,
+                lifecycle_status: AgentLifecycleStatus::Running,
+                last_turn_outcome: None,
+            },
+        );
+        state.agent_index.insert(agent_id, sub_run_id);
+        state.active_count += 1;
+        Ok(handle)
+    }
+
+    // ── 生命周期与轮次结果（四工具模型） ──────────────────────────────
+
+    /// 读取 agent 的持久生命周期状态。
+    pub async fn get_lifecycle(&self, id: &str) -> Option<AgentLifecycleStatus> {
+        let state = self.state.read().await;
+        let key = resolve_entry_key(&state, id)?;
+        state.entries.get(key).map(|e| e.lifecycle_status)
+    }
+
+    /// 读取 agent 的最近一轮执行结果。
+    pub async fn get_turn_outcome(&self, id: &str) -> Option<Option<AgentTurnOutcome>> {
+        let state = self.state.read().await;
+        let key = resolve_entry_key(&state, id)?;
+        state.entries.get(key).map(|e| e.last_turn_outcome)
+    }
+
+    /// 更新 agent 的持久生命周期状态。
+    ///
+    /// 状态迁移规则由调用方保证合法性（Pending→Running→Idle→Terminated），
+    /// 此方法不做状态机校验，只做原子写入。
+    pub async fn set_lifecycle(&self, id: &str, new_status: AgentLifecycleStatus) -> Option<()> {
+        let mut state = self.state.write().await;
+        let key = resolve_entry_key(&state, id)?.to_string();
+        let entry = state.entries.get_mut(&key)?;
+        entry.lifecycle_status = new_status;
+        let projected_status =
+            lifecycle_to_legacy_status(entry.lifecycle_status, entry.last_turn_outcome)?;
+        entry.handle.status = projected_status;
+        entry.status_tx.send_replace(projected_status);
+        Some(())
+    }
+
+    /// 更新 agent 的最近一轮执行结果。
+    ///
+    /// 在 turn 完成（无论是正常完成还是失败）时调用，
+    /// 同时将 lifecycle 从 Running 推进到 Idle。
+    pub async fn complete_turn(
+        &self,
+        id: &str,
+        outcome: AgentTurnOutcome,
+    ) -> Option<AgentLifecycleStatus> {
+        let mut state = self.state.write().await;
+        let key = resolve_entry_key(&state, id)?.to_string();
+        let entry = state.entries.get_mut(&key)?;
+        entry.last_turn_outcome = Some(outcome);
+        entry.lifecycle_status = AgentLifecycleStatus::Idle;
+        let projected_status =
+            lifecycle_to_legacy_status(entry.lifecycle_status, entry.last_turn_outcome)?;
+        entry.handle.status = projected_status;
+        entry.status_tx.send_replace(projected_status);
+        Some(entry.lifecycle_status)
     }
 
     /// 列出当前已注册的 Agent。
@@ -413,6 +529,8 @@ impl AgentControl {
                 finalized_seq: None,
                 inbox: VecDeque::new(),
                 inbox_version,
+                lifecycle_status: AgentLifecycleStatus::Pending,
+                last_turn_outcome: None,
             },
         );
         state
@@ -614,6 +732,52 @@ impl AgentControl {
         Some(entry.delivery.clone())
     }
 
+    /// 以 turn-start snapshot drain 的方式锁定一个父级交付批次。
+    ///
+    /// 批次规则：
+    /// - 只从队头开始抓取连续的 `Queued` 项
+    /// - 批内 delivery 必须属于同一个直接父 agent，避免一次 wake turn 混入不同 owner
+    /// - 抓取后统一标记为 `WakingParent`，后续必须整体 consume 或 requeue
+    pub async fn checkout_parent_delivery_batch(
+        &self,
+        parent_session_id: &str,
+    ) -> Option<Vec<PendingParentDelivery>> {
+        let mut state = self.state.write().await;
+        let queue = state.parent_delivery_queues.get_mut(parent_session_id)?;
+        let first = queue.deliveries.front()?;
+        if !matches!(first.state, PendingParentDeliveryState::Queued) {
+            return None;
+        }
+
+        let target_parent_agent_id = first
+            .delivery
+            .notification
+            .child_ref
+            .parent_agent_id
+            .clone();
+        let mut batch_len = 0usize;
+        for entry in &queue.deliveries {
+            if !matches!(entry.state, PendingParentDeliveryState::Queued) {
+                break;
+            }
+            if entry.delivery.notification.child_ref.parent_agent_id != target_parent_agent_id {
+                break;
+            }
+            batch_len += 1;
+        }
+
+        if batch_len == 0 {
+            return None;
+        }
+
+        let mut deliveries = Vec::with_capacity(batch_len);
+        for entry in queue.deliveries.iter_mut().take(batch_len) {
+            entry.state = PendingParentDeliveryState::WakingParent;
+            deliveries.push(entry.delivery.clone());
+        }
+        Some(deliveries)
+    }
+
     /// 将正在唤醒中的交付标记回 `Queued`，用于父会话繁忙或启动失败后的重试。
     pub async fn requeue_parent_delivery(
         &self,
@@ -633,6 +797,28 @@ impl AgentControl {
         };
         entry.state = PendingParentDeliveryState::Queued;
         true
+    }
+
+    /// 将一批正在唤醒中的交付重新标记为 `Queued`。
+    pub async fn requeue_parent_delivery_batch(
+        &self,
+        parent_session_id: &str,
+        delivery_ids: &[String],
+    ) -> usize {
+        let mut state = self.state.write().await;
+        let Some(queue) = state.parent_delivery_queues.get_mut(parent_session_id) else {
+            return 0;
+        };
+
+        let target_ids = delivery_ids.iter().collect::<HashSet<_>>();
+        let mut updated = 0usize;
+        for entry in &mut queue.deliveries {
+            if target_ids.contains(&entry.delivery.delivery_id) {
+                entry.state = PendingParentDeliveryState::Queued;
+                updated += 1;
+            }
+        }
+        updated
     }
 
     /// 确认最前面的交付已经被父 turn 消费，并将其从缓冲中移除。
@@ -663,6 +849,38 @@ impl AgentControl {
         true
     }
 
+    /// 确认一整个交付批次已经被父 turn 消费，并按 FIFO 从队头移除。
+    pub async fn consume_parent_delivery_batch(
+        &self,
+        parent_session_id: &str,
+        delivery_ids: &[String],
+    ) -> bool {
+        let mut state = self.state.write().await;
+        let Some(queue) = state.parent_delivery_queues.get_mut(parent_session_id) else {
+            return false;
+        };
+
+        for delivery_id in delivery_ids {
+            let Some(front) = queue.deliveries.front() else {
+                return false;
+            };
+            if front.delivery.delivery_id != *delivery_id {
+                return false;
+            }
+            let removed = queue.deliveries.pop_front();
+            if let Some(removed) = removed {
+                queue
+                    .known_delivery_ids
+                    .remove(&removed.delivery.delivery_id);
+            }
+        }
+
+        if queue.deliveries.is_empty() {
+            state.parent_delivery_queues.remove(parent_session_id);
+        }
+        true
+    }
+
     pub async fn pending_parent_delivery_count(&self, parent_session_id: &str) -> usize {
         let state = self.state.read().await;
         state
@@ -680,6 +898,31 @@ impl AgentControl {
         let mut state = self.state.write().await;
         let key = resolve_entry_key(&state, sub_run_or_agent_id)?.to_string();
         let handle = update_status_locked(&mut state, &key, next_status, &self.next_finalized_seq);
+        prune_finalized_agents_locked(&mut state, self.finalized_retain_limit);
+        handle
+    }
+
+    /// 终止指定 agent 及其整棵子树（四工具模型 close 语义）。
+    ///
+    /// 与 `cancel` 不同，terminate 使用 `AgentLifecycleStatus::Terminated`，
+    /// 而不是旧 `AgentStatus::Cancelled`。四工具模型要求 `close` 后 agent
+    /// 进入 `Terminated` 生命周期，且后续 `send` 被拒绝。
+    ///
+    /// 终止过程中：
+    /// 1. 对每个节点设置 lifecycle = Terminated
+    /// 2. 触发 cancel token 以中断正在运行的 turn
+    /// 3. 级联到所有后代
+    pub async fn terminate_subtree(&self, sub_run_or_agent_id: &str) -> Option<SubRunHandle> {
+        let mut state = self.state.write().await;
+        let mut visited = HashSet::new();
+        let key = resolve_entry_key(&state, sub_run_or_agent_id)?.to_string();
+        let handle = terminate_tree(&mut state, &key, &mut visited, &self.next_finalized_seq);
+        let terminated_agent_ids = visited
+            .iter()
+            .filter_map(|entry_key| state.entries.get(entry_key))
+            .map(|entry| entry.handle.agent_id.clone())
+            .collect::<HashSet<_>>();
+        discard_parent_deliveries_locked(&mut state, &terminated_agent_ids);
         prune_finalized_agents_locked(&mut state, self.finalized_retain_limit);
         handle
     }
@@ -760,6 +1003,24 @@ fn resolve_entry_key<'a>(
         .map(String::as_str)
 }
 
+fn lifecycle_to_legacy_status(
+    lifecycle: AgentLifecycleStatus,
+    last_turn_outcome: Option<AgentTurnOutcome>,
+) -> Option<AgentStatus> {
+    match lifecycle {
+        AgentLifecycleStatus::Pending => Some(AgentStatus::Pending),
+        AgentLifecycleStatus::Running => Some(AgentStatus::Running),
+        AgentLifecycleStatus::Idle => match last_turn_outcome {
+            Some(AgentTurnOutcome::Completed) => Some(AgentStatus::Completed),
+            Some(AgentTurnOutcome::Failed) => Some(AgentStatus::Failed),
+            Some(AgentTurnOutcome::Cancelled) => Some(AgentStatus::Cancelled),
+            Some(AgentTurnOutcome::TokenExceeded) => Some(AgentStatus::TokenExceeded),
+            None => None,
+        },
+        AgentLifecycleStatus::Terminated => Some(AgentStatus::Cancelled),
+    }
+}
+
 fn update_status_locked(
     state: &mut AgentRegistryState,
     agent_id: &str,
@@ -772,10 +1033,35 @@ fn update_status_locked(
     }
     let was_active = !entry.handle.status.is_final();
     entry.handle.status = next_status;
+    // 为什么同步推进 lifecycle：避免双真相源。旧 AgentStatus 驱动取消/并发槽，
+    // 新 lifecycle 驱动四工具模型的 Idle/终止语义。两者必须在同一写锁内同步，
+    // 否则 observe 看到的 lifecycle 和 cancel 看到的 status 会对不上。
+    match next_status {
+        AgentStatus::Running => {
+            entry.lifecycle_status = AgentLifecycleStatus::Running;
+        },
+        AgentStatus::Completed => {
+            entry.lifecycle_status = AgentLifecycleStatus::Idle;
+            entry.last_turn_outcome = Some(AgentTurnOutcome::Completed);
+        },
+        AgentStatus::Cancelled => {
+            entry.lifecycle_status = AgentLifecycleStatus::Terminated;
+            entry.last_turn_outcome = Some(AgentTurnOutcome::Cancelled);
+        },
+        AgentStatus::Failed => {
+            entry.lifecycle_status = AgentLifecycleStatus::Terminated;
+            entry.last_turn_outcome = Some(AgentTurnOutcome::Failed);
+        },
+        AgentStatus::TokenExceeded => {
+            entry.lifecycle_status = AgentLifecycleStatus::Idle;
+            entry.last_turn_outcome = Some(AgentTurnOutcome::TokenExceeded);
+        },
+        AgentStatus::Pending => {},
+    }
     if next_status.is_final() {
         entry.finalized_seq = Some(next_finalized_seq.fetch_add(1, Ordering::SeqCst));
         // 这里在终态瞬间释放并发槽位，确保新的子 Agent 能及时获取资源；
-        // 同时保留终态 handle 供 UI / replay 查询，不把“是否仍可见”与“是否占并发”混为一谈。
+        // 同时保留终态 handle 供 UI / replay 查询，不把”是否仍可见”与”是否占并发”混为一谈。
         if was_active {
             state.active_count = state.active_count.saturating_sub(1);
         }
@@ -814,6 +1100,55 @@ fn cancel_tree(
     Some(handle)
 }
 
+/// 四工具模型的 subtree terminate 实现。
+///
+/// 与 `cancel_tree` 使用旧 `AgentStatus::Cancelled` 不同，
+/// terminate 设置 `lifecycle_status = Terminated` 并触发 cancel token，
+/// 同时释放并发槽位。子 agent 在 Terminated 后拒收任何新 send。
+fn terminate_tree(
+    state: &mut AgentRegistryState,
+    agent_id: &str,
+    visited: &mut HashSet<String>,
+    next_finalized_seq: &AtomicU64,
+) -> Option<SubRunHandle> {
+    if !visited.insert(agent_id.to_string()) {
+        return state
+            .entries
+            .get(agent_id)
+            .map(|entry| entry.handle.clone());
+    }
+
+    let children = state
+        .entries
+        .get(agent_id)
+        .map(|entry| entry.children.iter().cloned().collect::<Vec<_>>())?;
+
+    let entry = state.entries.get_mut(agent_id)?;
+    let was_active = !entry.handle.status.is_final();
+
+    // 设置四工具生命周期为 Terminated
+    entry.lifecycle_status = AgentLifecycleStatus::Terminated;
+    // 同步旧 status 以维持 cancel_token 和并发槽位语义
+    entry.handle.status = AgentStatus::Cancelled;
+    entry.last_turn_outcome = Some(AgentTurnOutcome::Cancelled);
+    entry.inbox.clear();
+    entry.finalized_seq = Some(next_finalized_seq.fetch_add(1, Ordering::SeqCst));
+    if was_active {
+        state.active_count = state.active_count.saturating_sub(1);
+    }
+    entry.status_tx.send_replace(AgentStatus::Cancelled);
+    let current_inbox_version = *entry.inbox_version.borrow();
+    entry.inbox_version.send_replace(current_inbox_version + 1);
+    // 触发 cancel token 以中断正在运行的 turn
+    entry.cancel.cancel();
+
+    let handle = entry.handle.clone();
+    for child_id in children {
+        let _ = terminate_tree(state, &child_id, visited, next_finalized_seq);
+    }
+    Some(handle)
+}
+
 fn cancel_tree_collect(
     state: &mut AgentRegistryState,
     agent_id: &str,
@@ -848,6 +1183,46 @@ fn cancel_tree_collect(
     for child_id in children {
         cancel_tree_collect(state, &child_id, visited, cancelled, next_finalized_seq);
     }
+}
+
+fn discard_parent_deliveries_locked(
+    state: &mut AgentRegistryState,
+    terminated_agent_ids: &HashSet<String>,
+) -> usize {
+    if terminated_agent_ids.is_empty() {
+        return 0;
+    }
+
+    let mut removed_count = 0usize;
+    let mut empty_sessions = Vec::new();
+    for (session_id, queue) in &mut state.parent_delivery_queues {
+        let mut retained = VecDeque::new();
+        let mut removed_delivery_ids = Vec::new();
+
+        while let Some(entry) = queue.deliveries.pop_front() {
+            if terminated_agent_ids.contains(&entry.delivery.notification.child_ref.agent_id) {
+                removed_delivery_ids.push(entry.delivery.delivery_id.clone());
+            } else {
+                retained.push_back(entry);
+            }
+        }
+
+        for delivery_id in &removed_delivery_ids {
+            queue.known_delivery_ids.remove(delivery_id);
+        }
+        removed_count += removed_delivery_ids.len();
+        queue.deliveries = retained;
+
+        if queue.deliveries.is_empty() {
+            empty_sessions.push(session_id.clone());
+        }
+    }
+
+    for session_id in empty_sessions {
+        state.parent_delivery_queues.remove(&session_id);
+    }
+
+    removed_count
 }
 
 fn prune_finalized_agents_locked(state: &mut AgentRegistryState, finalized_retain_limit: usize) {
@@ -894,9 +1269,9 @@ mod tests {
     use std::time::Duration;
 
     use astrcode_core::{
-        AgentInboxEnvelope, AgentMode, AgentProfile, AgentStatus, ChildAgentRef,
-        ChildSessionLineageKind, ChildSessionNotification, ChildSessionNotificationKind,
-        LiveSubRunControlBoundary,
+        AgentInboxEnvelope, AgentLifecycleStatus, AgentMode, AgentProfile, AgentStatus,
+        AgentTurnOutcome, ChildAgentRef, ChildSessionLineageKind, ChildSessionNotification,
+        ChildSessionNotificationKind, LiveSubRunControlBoundary, SubRunHandle,
     };
     use astrcode_runtime_config::{DEFAULT_MAX_AGENT_DEPTH, DEFAULT_MAX_CONCURRENT_AGENTS};
 
@@ -942,6 +1317,34 @@ mod tests {
                 final_reply_excerpt: Some(format!("final-{notification_id}")),
             },
         )
+    }
+
+    fn sample_parent_delivery_for_child(
+        notification_id: &str,
+        parent_session_id: &str,
+        _parent_turn_id: &str,
+        child: &SubRunHandle,
+    ) -> ChildSessionNotification {
+        ChildSessionNotification {
+            notification_id: notification_id.to_string(),
+            child_ref: ChildAgentRef {
+                agent_id: child.agent_id.clone(),
+                session_id: parent_session_id.to_string(),
+                sub_run_id: child.sub_run_id.clone(),
+                parent_agent_id: child.parent_agent_id.clone(),
+                lineage_kind: ChildSessionLineageKind::Spawn,
+                status: child.status,
+                open_session_id: child
+                    .child_session_id
+                    .clone()
+                    .unwrap_or_else(|| child.session_id.clone()),
+            },
+            kind: ChildSessionNotificationKind::Delivered,
+            summary: format!("summary-{notification_id}"),
+            status: child.status,
+            source_tool_call_id: None,
+            final_reply_excerpt: Some(format!("final-{notification_id}")),
+        }
     }
 
     #[tokio::test]
@@ -1565,6 +1968,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn complete_turn_moves_agent_into_idle_with_last_outcome() {
+        let control = AgentControl::new();
+        let handle = control
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
+            .await
+            .expect("spawn should succeed");
+        let _ = control
+            .mark_running(&handle.agent_id)
+            .await
+            .expect("mark running should succeed");
+
+        let lifecycle = control
+            .complete_turn(&handle.agent_id, AgentTurnOutcome::Completed)
+            .await
+            .expect("complete turn should succeed");
+        assert_eq!(lifecycle, AgentLifecycleStatus::Idle);
+        assert_eq!(
+            control.get_lifecycle(&handle.agent_id).await,
+            Some(AgentLifecycleStatus::Idle)
+        );
+        assert_eq!(
+            control.get_turn_outcome(&handle.agent_id).await,
+            Some(Some(AgentTurnOutcome::Completed))
+        );
+        assert_eq!(
+            control
+                .get(&handle.agent_id)
+                .await
+                .expect("completed handle should remain queryable")
+                .status,
+            AgentStatus::Completed
+        );
+    }
+
+    #[tokio::test]
     async fn push_inbox_deduplication_by_delivery_id() {
         let control = AgentControl::new();
         let handle = control
@@ -1627,6 +2065,125 @@ mod tests {
             .expect("waiter should finish before timeout")
             .expect("waiter should join");
         assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn terminate_subtree_clears_pending_inbox_messages() {
+        let control = AgentControl::with_limits(4, 16, 256);
+        let parent = control
+            .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
+            .await
+            .expect("parent spawn should succeed");
+        let child = control
+            .spawn(
+                &explore_profile(),
+                "session-1",
+                "turn-1".to_string(),
+                Some(parent.agent_id.clone()),
+            )
+            .await
+            .expect("child spawn should succeed");
+        let _ = control.mark_running(&parent.agent_id).await;
+        let _ = control.mark_running(&child.agent_id).await;
+
+        control
+            .push_inbox(
+                &child.agent_id,
+                sample_envelope("d-close", "agent-parent", &child.agent_id, "终止前排队消息"),
+            )
+            .await
+            .expect("push should succeed");
+
+        control
+            .terminate_subtree(&parent.agent_id)
+            .await
+            .expect("terminate subtree should succeed");
+
+        let child_inbox = control
+            .drain_inbox(&child.agent_id)
+            .await
+            .expect("drain should succeed after close");
+        assert!(child_inbox.is_empty());
+        assert_eq!(
+            control.get_lifecycle(&child.agent_id).await,
+            Some(AgentLifecycleStatus::Terminated)
+        );
+    }
+
+    #[tokio::test]
+    async fn terminate_subtree_discards_pending_parent_deliveries_for_closed_branch() {
+        let control = AgentControl::with_limits(4, 16, 256);
+        let root = control
+            .spawn(
+                &explore_profile(),
+                "session-parent",
+                "turn-root".to_string(),
+                None,
+            )
+            .await
+            .expect("root spawn should succeed");
+        let child = control
+            .spawn(
+                &explore_profile(),
+                "session-child-a",
+                "turn-root".to_string(),
+                Some(root.agent_id.clone()),
+            )
+            .await
+            .expect("child spawn should succeed");
+        let sibling = control
+            .spawn(
+                &explore_profile(),
+                "session-child-b",
+                "turn-root".to_string(),
+                Some(root.agent_id.clone()),
+            )
+            .await
+            .expect("sibling spawn should succeed");
+
+        let session_id = "session-parent".to_string();
+        let turn_id = "turn-root".to_string();
+        assert!(
+            control
+                .enqueue_parent_delivery(
+                    session_id.clone(),
+                    turn_id.clone(),
+                    sample_parent_delivery_for_child(
+                        "closed-branch",
+                        &session_id,
+                        &turn_id,
+                        &child,
+                    )
+                )
+                .await
+        );
+        assert!(
+            control
+                .enqueue_parent_delivery(
+                    session_id.clone(),
+                    turn_id.clone(),
+                    sample_parent_delivery_for_child(
+                        "live-branch",
+                        &session_id,
+                        &turn_id,
+                        &sibling,
+                    )
+                )
+                .await
+        );
+        assert_eq!(control.pending_parent_delivery_count(&session_id).await, 2);
+
+        control
+            .terminate_subtree(&child.agent_id)
+            .await
+            .expect("terminate should succeed");
+
+        assert_eq!(control.pending_parent_delivery_count(&session_id).await, 1);
+        let remaining = control
+            .checkout_parent_delivery(&session_id)
+            .await
+            .expect("sibling delivery should remain queued");
+        assert_eq!(remaining.notification.child_ref.agent_id, sibling.agent_id);
     }
 
     #[tokio::test]
@@ -1743,6 +2300,172 @@ mod tests {
                 .await
         );
         assert_eq!(control.pending_parent_delivery_count(&session_id).await, 0);
+    }
+
+    #[tokio::test]
+    async fn parent_delivery_batch_checkout_uses_turn_start_snapshot_for_same_parent_agent() {
+        let control = AgentControl::new();
+        let session_id = "session-parent".to_string();
+        let turn_id = "turn-parent".to_string();
+        let make_delivery =
+            |delivery_id: &str, child_id: &str, parent_agent_id: &str| ChildSessionNotification {
+                notification_id: delivery_id.to_string(),
+                child_ref: ChildAgentRef {
+                    agent_id: child_id.to_string(),
+                    session_id: session_id.clone(),
+                    sub_run_id: format!("subrun-{delivery_id}"),
+                    parent_agent_id: Some(parent_agent_id.to_string()),
+                    lineage_kind: ChildSessionLineageKind::Spawn,
+                    status: AgentStatus::Completed,
+                    open_session_id: format!("child-session-{delivery_id}"),
+                },
+                kind: ChildSessionNotificationKind::Delivered,
+                summary: format!("summary-{delivery_id}"),
+                status: AgentStatus::Completed,
+                source_tool_call_id: None,
+                final_reply_excerpt: Some(format!("final-{delivery_id}")),
+            };
+
+        assert!(
+            control
+                .enqueue_parent_delivery(
+                    session_id.clone(),
+                    turn_id.clone(),
+                    make_delivery("delivery-1", "agent-child-1", "agent-parent-a"),
+                )
+                .await
+        );
+        assert!(
+            control
+                .enqueue_parent_delivery(
+                    session_id.clone(),
+                    turn_id.clone(),
+                    make_delivery("delivery-2", "agent-child-2", "agent-parent-a"),
+                )
+                .await
+        );
+        assert!(
+            control
+                .enqueue_parent_delivery(
+                    session_id.clone(),
+                    turn_id,
+                    make_delivery("delivery-3", "agent-child-3", "agent-parent-b"),
+                )
+                .await
+        );
+
+        let first_batch = control
+            .checkout_parent_delivery_batch(&session_id)
+            .await
+            .expect("same parent-agent head deliveries should form a batch");
+        assert_eq!(
+            first_batch
+                .iter()
+                .map(|delivery| delivery.delivery_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["delivery-1", "delivery-2"]
+        );
+        assert!(
+            control
+                .checkout_parent_delivery_batch(&session_id)
+                .await
+                .is_none(),
+            "head batch is already waking; next batch must wait for consume/requeue"
+        );
+        assert!(
+            control
+                .consume_parent_delivery_batch(
+                    &session_id,
+                    &first_batch
+                        .iter()
+                        .map(|delivery| delivery.delivery_id.clone())
+                        .collect::<Vec<_>>(),
+                )
+                .await
+        );
+
+        let second_batch = control
+            .checkout_parent_delivery_batch(&session_id)
+            .await
+            .expect("next parent-agent group should become the next batch");
+        assert_eq!(second_batch.len(), 1);
+        assert_eq!(second_batch[0].delivery_id, "delivery-3");
+    }
+
+    #[tokio::test]
+    async fn parent_delivery_batch_requeue_restores_started_snapshot_for_retry() {
+        let control = AgentControl::new();
+        let session_id = "session-parent".to_string();
+        let turn_id = "turn-parent".to_string();
+        let make_delivery =
+            |delivery_id: &str, child_id: &str, parent_agent_id: &str| ChildSessionNotification {
+                notification_id: delivery_id.to_string(),
+                child_ref: ChildAgentRef {
+                    agent_id: child_id.to_string(),
+                    session_id: session_id.clone(),
+                    sub_run_id: format!("subrun-{delivery_id}"),
+                    parent_agent_id: Some(parent_agent_id.to_string()),
+                    lineage_kind: ChildSessionLineageKind::Spawn,
+                    status: AgentStatus::Completed,
+                    open_session_id: format!("child-session-{delivery_id}"),
+                },
+                kind: ChildSessionNotificationKind::Delivered,
+                summary: format!("summary-{delivery_id}"),
+                status: AgentStatus::Completed,
+                source_tool_call_id: None,
+                final_reply_excerpt: Some(format!("final-{delivery_id}")),
+            };
+
+        assert!(
+            control
+                .enqueue_parent_delivery(
+                    session_id.clone(),
+                    turn_id.clone(),
+                    make_delivery("delivery-1", "agent-child-1", "agent-parent-a"),
+                )
+                .await
+        );
+        assert!(
+            control
+                .enqueue_parent_delivery(
+                    session_id.clone(),
+                    turn_id,
+                    make_delivery("delivery-2", "agent-child-2", "agent-parent-a"),
+                )
+                .await
+        );
+
+        let started_batch = control
+            .checkout_parent_delivery_batch(&session_id)
+            .await
+            .expect("queued deliveries should form a started batch");
+        let delivery_ids = started_batch
+            .iter()
+            .map(|delivery| delivery.delivery_id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            delivery_ids,
+            vec!["delivery-1".to_string(), "delivery-2".to_string()]
+        );
+
+        assert_eq!(
+            control
+                .requeue_parent_delivery_batch(&session_id, &delivery_ids)
+                .await,
+            2
+        );
+
+        let replayed_batch = control
+            .checkout_parent_delivery_batch(&session_id)
+            .await
+            .expect("requeued started batch should become available again");
+        assert_eq!(
+            replayed_batch
+                .iter()
+                .map(|delivery| delivery.delivery_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["delivery-1", "delivery-2"]
+        );
     }
 
     // ─── T035 层级协作回归测试 ──────────────────────────────

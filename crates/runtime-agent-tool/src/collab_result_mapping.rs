@@ -1,7 +1,7 @@
-//! 协作工具（send/wait/close/resume/deliver）共享的结果映射逻辑。
+//! 协作工具（send/observe/close）共享的结果映射逻辑。
 //!
 //! 与 `result_mapping` 拆开是因为协作工具的返回类型是 `CollaborationResult`，
-//! 其结构与 spawnAgent 的 `SubRunResult` 完全不同：
+//! 其结构与 spawn 的 `SubRunResult` 完全不同：
 //! - CollaborationResult 侧重 accepted/failure/summary 三元组
 //! - SubRunResult 侧重 status/handoff/artifacts 组合
 //!

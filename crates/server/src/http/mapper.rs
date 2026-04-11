@@ -32,15 +32,15 @@ use astrcode_protocol::{
         ArtifactRefDto, ChildAgentRefDto, ChildSessionLineageKindDto,
         ChildSessionNotificationKindDto, CompactTriggerDto, ComposerOptionDto,
         ComposerOptionKindDto, ComposerOptionsResponseDto, ConfigView, CurrentModelInfoDto,
-        ForkModeDto, InvocationKindDto, LineageSnapshotDto, ModelOptionDto, OperationMetricsDto,
-        PROTOCOL_VERSION, PhaseDto, PluginHealthDto, PluginRuntimeStateDto, ProfileView,
-        ReplayMetricsDto, ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto,
-        RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto,
-        SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem,
-        SubRunExecutionMetricsDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
-        SubRunOutcomeDto, SubRunResultDto, SubRunStatusDto, SubRunStatusSourceDto,
-        SubRunStorageModeDto, SubagentContextOverridesDto, ToolCallResultDto, ToolDescriptorDto,
-        ToolOutputStreamDto,
+        ForkModeDto, InvocationKindDto, LineageSnapshotDto, MailboxBatchDto, MailboxDiscardedDto,
+        MailboxQueuedDto, ModelOptionDto, OperationMetricsDto, PROTOCOL_VERSION, PhaseDto,
+        PluginHealthDto, PluginRuntimeStateDto, ProfileView, ReplayMetricsDto,
+        ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto, RuntimeCapabilityDto,
+        RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto, SessionCatalogEventEnvelope,
+        SessionCatalogEventPayload, SessionListItem, SubRunExecutionMetricsDto,
+        SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto,
+        SubRunResultDto, SubRunStatusDto, SubRunStatusSourceDto, SubRunStorageModeDto,
+        SubagentContextOverridesDto, ToolCallResultDto, ToolDescriptorDto, ToolOutputStreamDto,
     },
 };
 use astrcode_runtime::{
@@ -793,6 +793,68 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
             provider_cache_metrics_supported: metrics.provider_cache_metrics_supported,
             prompt_cache_reuse_hits: metrics.prompt_cache_reuse_hits,
             prompt_cache_reuse_misses: metrics.prompt_cache_reuse_misses,
+        },
+        AgentEvent::AgentMailboxQueued {
+            turn_id,
+            agent,
+            payload,
+        } => AgentEventPayload::AgentMailboxQueued {
+            turn_id,
+            agent: to_agent_context_dto(agent),
+            payload: MailboxQueuedDto {
+                delivery_id: payload.envelope.delivery_id,
+                from_agent_id: payload.envelope.from_agent_id,
+                to_agent_id: payload.envelope.to_agent_id,
+                message: payload.envelope.message,
+                queued_at: payload.envelope.queued_at.to_rfc3339(),
+                sender_lifecycle_status: format!("{:?}", payload.envelope.sender_lifecycle_status),
+                sender_last_turn_outcome: payload
+                    .envelope
+                    .sender_last_turn_outcome
+                    .map(|outcome| format!("{outcome:?}")),
+                sender_open_session_id: payload.envelope.sender_open_session_id,
+                summary: None,
+            },
+        },
+        AgentEvent::AgentMailboxBatchStarted {
+            turn_id,
+            agent,
+            payload,
+        } => AgentEventPayload::AgentMailboxBatchStarted {
+            turn_id,
+            agent: to_agent_context_dto(agent),
+            payload: MailboxBatchDto {
+                target_agent_id: payload.target_agent_id,
+                turn_id: payload.turn_id,
+                batch_id: payload.batch_id,
+                delivery_ids: payload.delivery_ids,
+            },
+        },
+        AgentEvent::AgentMailboxBatchAcked {
+            turn_id,
+            agent,
+            payload,
+        } => AgentEventPayload::AgentMailboxBatchAcked {
+            turn_id,
+            agent: to_agent_context_dto(agent),
+            payload: MailboxBatchDto {
+                target_agent_id: payload.target_agent_id,
+                turn_id: payload.turn_id,
+                batch_id: payload.batch_id,
+                delivery_ids: payload.delivery_ids,
+            },
+        },
+        AgentEvent::AgentMailboxDiscarded {
+            turn_id,
+            agent,
+            payload,
+        } => AgentEventPayload::AgentMailboxDiscarded {
+            turn_id,
+            agent: to_agent_context_dto(agent),
+            payload: MailboxDiscardedDto {
+                target_agent_id: payload.target_agent_id,
+                delivery_ids: payload.delivery_ids,
+            },
         },
     }
 }

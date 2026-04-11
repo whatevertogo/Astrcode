@@ -1,8 +1,15 @@
 //! # Agent 基础类型
 //!
 //! 定义 Agent / 子会话控制平面需要复用的稳定 DTO。
-//! 这里刻意把“Agent 实例”和“受控子会话执行域”拆开，
+//! 这里刻意把”Agent 实例”和”受控子会话执行域”拆开，
 //! 这样 runtime、存储事件、SSE 和 UI 都能围绕同一套语义建模。
+//!
+//! 子模块划分：
+//! - `lifecycle`：AgentLifecycleStatus + AgentTurnOutcome（四工具模型的状态拆层）
+//! - `mailbox`：durable mailbox 信封、事件载荷、四工具参数和 observe 快照
+
+pub mod lifecycle;
+pub mod mailbox;
 
 use serde::{Deserialize, Serialize};
 

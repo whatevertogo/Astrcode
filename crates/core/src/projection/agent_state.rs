@@ -200,6 +200,10 @@ impl AgentStateProjector {
             | StorageEventPayload::SubRunStarted { .. }
             | StorageEventPayload::SubRunFinished { .. }
             | StorageEventPayload::ChildSessionNotification { .. }
+            | StorageEventPayload::AgentMailboxQueued { .. }
+            | StorageEventPayload::AgentMailboxBatchStarted { .. }
+            | StorageEventPayload::AgentMailboxBatchAcked { .. }
+            | StorageEventPayload::AgentMailboxDiscarded { .. }
             | StorageEventPayload::Error { .. } => {},
         }
     }

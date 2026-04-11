@@ -374,6 +374,34 @@ impl EventTranslator {
                         .force_to(Phase::Interrupted, turn_id, agent);
                 }
             },
+            StorageEventPayload::AgentMailboxQueued { payload, .. } => {
+                push(AgentEvent::AgentMailboxQueued {
+                    turn_id: turn_id.clone(),
+                    agent: agent.clone(),
+                    payload: payload.clone(),
+                });
+            },
+            StorageEventPayload::AgentMailboxBatchStarted { payload, .. } => {
+                push(AgentEvent::AgentMailboxBatchStarted {
+                    turn_id: turn_id.clone(),
+                    agent: agent.clone(),
+                    payload: payload.clone(),
+                });
+            },
+            StorageEventPayload::AgentMailboxBatchAcked { payload, .. } => {
+                push(AgentEvent::AgentMailboxBatchAcked {
+                    turn_id: turn_id.clone(),
+                    agent: agent.clone(),
+                    payload: payload.clone(),
+                });
+            },
+            StorageEventPayload::AgentMailboxDiscarded { payload, .. } => {
+                push(AgentEvent::AgentMailboxDiscarded {
+                    turn_id: turn_id.clone(),
+                    agent: agent.clone(),
+                    payload: payload.clone(),
+                });
+            },
         }
     }
 

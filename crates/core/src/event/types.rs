@@ -13,8 +13,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AgentEventContext, ChildSessionNotification, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, SubRunResult, ToolOutputStream, UserMessageOrigin,
+    AgentEventContext, ChildSessionNotification, MailboxBatchAckedPayload,
+    MailboxBatchStartedPayload, MailboxDiscardedPayload, MailboxQueuedPayload,
+    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SubRunResult,
+    ToolOutputStream, UserMessageOrigin,
 };
 
 /// Prompt/缓存指标共享载荷。
@@ -191,6 +193,36 @@ pub enum StorageEventPayload {
         timestamp: DateTime<Utc>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+    },
+    /// Durable mailbox 消息入队。
+    ///
+    /// 记录一条协作消息成功进入目标 agent 的 mailbox。
+    /// live inbox 只能在该事件 append 成功后更新。
+    AgentMailboxQueued {
+        #[serde(flatten)]
+        payload: MailboxQueuedPayload,
+    },
+    /// Mailbox 批次开始消费。
+    ///
+    /// snapshot drain 时写入，记录本轮接管了哪些 delivery_ids。
+    /// 必须是 mailbox-wake turn 的第一条 durable 事件。
+    AgentMailboxBatchStarted {
+        #[serde(flatten)]
+        payload: MailboxBatchStartedPayload,
+    },
+    /// Mailbox 批次确认完成。
+    ///
+    /// durable turn completion 后写入，标记对应 delivery_ids 已被消费。
+    AgentMailboxBatchAcked {
+        #[serde(flatten)]
+        payload: MailboxBatchAckedPayload,
+    },
+    /// Mailbox 消息丢弃。
+    ///
+    /// close 时写入，记录被主动丢弃的 pending delivery_ids。
+    AgentMailboxDiscarded {
+        #[serde(flatten)]
+        payload: MailboxDiscardedPayload,
     },
     /// 错误事件。
     Error {

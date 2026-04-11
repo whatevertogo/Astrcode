@@ -5,13 +5,15 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentEventContext, AgentMode, AgentProfile, AgentStatus, AstrError, CancelToken,
-    ChildSessionLineageKind, ChildSessionNotificationKind, ExecutionOwner, InvocationKind, Phase,
-    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SessionTurnAcquireResult,
-    SpawnAgentParams, StorageEvent, StorageEventPayload, SubRunFailure, SubRunFailureCode,
-    SubRunHandle, SubRunHandoff, SubRunResult, SubRunStorageMode, SubagentContextOverrides, Tool,
-    ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolEventSink, ToolExecutionResult,
-    UserMessageOrigin, test_support::TestEnvGuard,
+    AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope, AgentMode, AgentProfile,
+    AgentStatus, AgentTurnOutcome, AstrError, CancelToken, ChildSessionLineageKind,
+    ChildSessionNotificationKind, CloseAgentParams, ExecutionOwner, InvocationKind,
+    MailboxBatchStartedPayload, MailboxProjection, MailboxQueuedPayload, ObserveAgentResult,
+    ObserveParams, Phase, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
+    SendAgentParams, SessionTurnAcquireResult, SpawnAgentParams, StorageEvent, StorageEventPayload,
+    SubRunFailure, SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunResult, SubRunStorageMode,
+    SubagentContextOverrides, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
+    ToolEventSink, ToolExecutionResult, UserMessageOrigin, test_support::TestEnvGuard,
 };
 use astrcode_runtime_agent_loop::{AgentLoop, ProviderFactory};
 use astrcode_runtime_agent_tool::{SpawnAgentTool, SubAgentExecutor};
@@ -196,6 +198,17 @@ fn extract_spawned_sub_run_id(result: &ToolExecutionResult) -> String {
         .and_then(|artifact| artifact.get("id"))
         .and_then(|value| value.as_str())
         .expect("spawnAgent launch should expose sub-run artifact")
+        .to_string()
+}
+
+fn extract_spawned_agent_id(result: &ToolExecutionResult) -> String {
+    result
+        .metadata
+        .as_ref()
+        .and_then(|value| value.get("agentRef"))
+        .and_then(|value| value.get("agentId"))
+        .and_then(|value| value.as_str())
+        .expect("spawn launch should expose child agent id")
         .to_string()
 }
 
@@ -953,6 +966,16 @@ async fn get_subrun_status_uses_live_overlay_for_independent_subrun_in_parent_se
         .create(temp_dir.path())
         .await
         .expect("child session should be created");
+    service
+        .execution()
+        .control()
+        .register_root_agent(
+            "agent-parent".to_string(),
+            "session-parent".to_string(),
+            "explore".to_string(),
+        )
+        .await
+        .expect("parent agent should register");
     let profile = AgentProfile {
         id: "review".to_string(),
         name: "Review".to_string(),
@@ -1886,6 +1909,615 @@ async fn spawn_agent_terminal_delivery_notification_is_emitted_once() {
     assert_eq!(terminal_count, 1, "terminal delivery must be emitted once");
 }
 
+#[tokio::test]
+async fn reusable_child_can_be_observed_restarted_and_closed() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![
+            Box::new(DemoTool { name: "readFile" }),
+            Box::new(DemoTool { name: "grep" }),
+        ]))
+        .expect("runtime service should build"),
+    );
+    install_test_loop(
+        &service,
+        LlmOutput {
+            content: "first pass".to_string(),
+            ..LlmOutput::default()
+        },
+    )
+    .await;
+
+    let executor = Arc::new(DeferredSubAgentExecutor::default());
+    executor.bind(&service);
+    let tool = SpawnAgentTool::new(executor);
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("session should be created");
+    let spawn_context = ToolContext::new(
+        session.session_id.clone(),
+        temp_dir.path().to_path_buf(),
+        CancelToken::new(),
+    )
+    .with_turn_id("turn-parent-1");
+
+    let launched = tool
+        .execute(
+            "call-reusable-child".to_string(),
+            json!({
+                "type": "plan",
+                "description": "reusable child",
+                "prompt": "first pass"
+            }),
+            &spawn_context,
+        )
+        .await
+        .expect("spawn should succeed");
+
+    let child_agent_id = extract_spawned_agent_id(&launched);
+    let initial_handle = service
+        .execution()
+        .control()
+        .get(&child_agent_id)
+        .await
+        .expect("child handle should exist");
+    let child_session_id = initial_handle
+        .child_session_id
+        .clone()
+        .expect("independent child session should exist");
+
+    let _ = service
+        .execution()
+        .control()
+        .wait(&child_agent_id)
+        .await
+        .expect("child should reach first terminal outcome");
+
+    assert_eq!(
+        service
+            .execution()
+            .control()
+            .get_lifecycle(&child_agent_id)
+            .await,
+        Some(astrcode_core::AgentLifecycleStatus::Idle)
+    );
+    assert_eq!(
+        service
+            .execution()
+            .control()
+            .get_turn_outcome(&child_agent_id)
+            .await,
+        Some(Some(AgentTurnOutcome::Completed))
+    );
+
+    let observe = service
+        .execution()
+        .observe_child(
+            ObserveParams {
+                agent_id: child_agent_id.clone(),
+            },
+            &spawn_context,
+        )
+        .await
+        .expect("observe should succeed");
+    let snapshot: ObserveAgentResult = serde_json::from_str(
+        observe
+            .summary
+            .as_deref()
+            .expect("observe should serialize snapshot"),
+    )
+    .expect("observe result should be valid json");
+    assert_eq!(
+        snapshot.lifecycle_status,
+        astrcode_core::AgentLifecycleStatus::Idle
+    );
+    assert_eq!(
+        snapshot.last_turn_outcome,
+        Some(AgentTurnOutcome::Completed)
+    );
+    let child_session_state = service
+        .ensure_session_loaded(&child_session_id)
+        .await
+        .expect("child session state should load");
+    let initial_projected = child_session_state
+        .snapshot_projected_state()
+        .expect("initial child projected state should load");
+    let initial_assistant_count = initial_projected
+        .messages
+        .iter()
+        .filter(|message| matches!(message, astrcode_core::LlmMessage::Assistant { .. }))
+        .count();
+
+    install_test_loop(
+        &service,
+        LlmOutput {
+            content: "second pass".to_string(),
+            ..LlmOutput::default()
+        },
+    )
+    .await;
+
+    let send_context = ToolContext::new(
+        session.session_id.clone(),
+        temp_dir.path().to_path_buf(),
+        CancelToken::new(),
+    )
+    .with_turn_id("turn-parent-2");
+    service
+        .execution()
+        .send_to_child(
+            SendAgentParams {
+                agent_id: child_agent_id.clone(),
+                message: "继续补充第二轮结果".to_string(),
+                context: Some("重点看尚未覆盖的检查项".to_string()),
+            },
+            &send_context,
+        )
+        .await
+        .expect("send should restart an idle child");
+
+    let restarted_handle = service
+        .execution()
+        .control()
+        .get(&child_agent_id)
+        .await
+        .expect("restarted child handle should exist");
+    assert_eq!(restarted_handle.status, AgentStatus::Running);
+    assert_ne!(restarted_handle.sub_run_id, initial_handle.sub_run_id);
+
+    let _ = service
+        .execution()
+        .control()
+        .wait(&child_agent_id)
+        .await
+        .expect("restarted child should finish");
+
+    let projected = child_session_state
+        .snapshot_projected_state()
+        .expect("child projected state should load");
+    let resumed_assistant_count = projected
+        .messages
+        .iter()
+        .filter(|message| matches!(message, astrcode_core::LlmMessage::Assistant { .. }))
+        .count();
+    assert!(
+        projected.messages.iter().any(|message| matches!(
+            message,
+            astrcode_core::LlmMessage::User { content, .. }
+                if content.contains("继续补充第二轮结果")
+        )) && resumed_assistant_count > initial_assistant_count,
+        "reused child session should append a new user instruction and a new assistant response, \
+         actual messages: {:?}",
+        projected.messages
+    );
+
+    service
+        .execution()
+        .close_child(
+            CloseAgentParams {
+                agent_id: child_agent_id.clone(),
+                cascade: true,
+            },
+            &send_context,
+        )
+        .await
+        .expect("close should succeed");
+
+    let closed_handle = service
+        .execution()
+        .control()
+        .get(&child_agent_id)
+        .await
+        .expect("closed child handle should remain queryable");
+    assert_eq!(
+        service
+            .execution()
+            .control()
+            .get_lifecycle(&child_agent_id)
+            .await,
+        Some(astrcode_core::AgentLifecycleStatus::Terminated)
+    );
+    assert_eq!(closed_handle.status, AgentStatus::Cancelled);
+
+    let send_after_close = service
+        .execution()
+        .send_to_child(
+            SendAgentParams {
+                agent_id: child_agent_id,
+                message: "关闭后不应再接收消息".to_string(),
+                context: None,
+            },
+            &send_context,
+        )
+        .await;
+    assert!(send_after_close.is_err());
+}
+
+#[tokio::test]
+async fn send_to_running_child_persists_mailbox_queued_event() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![Box::new(DemoTool {
+            name: "readFile",
+        })]))
+        .expect("runtime service should build"),
+    );
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let child_session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("child session should be created");
+    service
+        .execution()
+        .control()
+        .register_root_agent(
+            "agent-parent".to_string(),
+            "session-parent".to_string(),
+            "explore".to_string(),
+        )
+        .await
+        .expect("parent agent should register");
+    let profile = AgentProfile {
+        id: "explore".to_string(),
+        name: "Explore".to_string(),
+        description: "explore".to_string(),
+        mode: AgentMode::SubAgent,
+        system_prompt: None,
+        allowed_tools: vec!["readFile".to_string()],
+        disallowed_tools: Vec::new(),
+        model_preference: None,
+    };
+    let child = service
+        .execution()
+        .control()
+        .spawn_with_storage(
+            &profile,
+            child_session.session_id.clone(),
+            Some(child_session.session_id.clone()),
+            "turn-parent".to_string(),
+            Some("agent-parent".to_string()),
+            SubRunStorageMode::IndependentSession,
+        )
+        .await
+        .expect("child should spawn");
+    let _ = service
+        .execution()
+        .control()
+        .mark_running(&child.agent_id)
+        .await
+        .expect("child should be running");
+
+    let parent_context = ToolContext::new(
+        "session-parent".to_string(),
+        temp_dir.path().to_path_buf(),
+        CancelToken::new(),
+    )
+    .with_turn_id("turn-parent")
+    .with_agent_context(AgentEventContext::root_execution("agent-parent", "explore"));
+
+    service
+        .execution()
+        .send_to_child(
+            SendAgentParams {
+                agent_id: child.agent_id.clone(),
+                message: "补充检查缓存命中".to_string(),
+                context: Some("只看 runtime 缓存链路".to_string()),
+            },
+            &parent_context,
+        )
+        .await
+        .expect("send should queue mailbox message");
+
+    let child_events = crate::service::session::load_events(
+        Arc::clone(&service.session_manager),
+        &child_session.session_id,
+    )
+    .await
+    .expect("child events should load");
+    assert!(child_events.iter().any(|stored| {
+        matches!(
+            &stored.event.payload,
+            StorageEventPayload::AgentMailboxQueued { payload }
+                if payload.envelope.to_agent_id == child.agent_id
+                    && payload.envelope.message.contains("补充检查缓存命中")
+                    && payload.envelope.message.contains("只看 runtime 缓存链路")
+        )
+    }));
+}
+
+#[tokio::test]
+async fn close_child_persists_mailbox_discarded_event_for_pending_messages() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(capabilities_from_tools(vec![Box::new(DemoTool {
+            name: "readFile",
+        })]))
+        .expect("runtime service should build"),
+    );
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let child_session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("child session should be created");
+    service
+        .execution()
+        .control()
+        .register_root_agent(
+            "agent-parent".to_string(),
+            "session-parent".to_string(),
+            "explore".to_string(),
+        )
+        .await
+        .expect("parent agent should register");
+    let profile = AgentProfile {
+        id: "explore".to_string(),
+        name: "Explore".to_string(),
+        description: "explore".to_string(),
+        mode: AgentMode::SubAgent,
+        system_prompt: None,
+        allowed_tools: vec!["readFile".to_string()],
+        disallowed_tools: Vec::new(),
+        model_preference: None,
+    };
+    let child = service
+        .execution()
+        .control()
+        .spawn_with_storage(
+            &profile,
+            child_session.session_id.clone(),
+            Some(child_session.session_id.clone()),
+            "turn-parent".to_string(),
+            Some("agent-parent".to_string()),
+            SubRunStorageMode::IndependentSession,
+        )
+        .await
+        .expect("child should spawn");
+    let _ = service
+        .execution()
+        .control()
+        .mark_running(&child.agent_id)
+        .await
+        .expect("child should be running");
+
+    let parent_context = ToolContext::new(
+        "session-parent".to_string(),
+        temp_dir.path().to_path_buf(),
+        CancelToken::new(),
+    )
+    .with_turn_id("turn-parent")
+    .with_agent_context(AgentEventContext::root_execution("agent-parent", "explore"));
+
+    service
+        .execution()
+        .send_to_child(
+            SendAgentParams {
+                agent_id: child.agent_id.clone(),
+                message: "关闭前的排队消息".to_string(),
+                context: None,
+            },
+            &parent_context,
+        )
+        .await
+        .expect("send should queue mailbox message");
+
+    service
+        .execution()
+        .close_child(
+            CloseAgentParams {
+                agent_id: child.agent_id.clone(),
+                cascade: true,
+            },
+            &parent_context,
+        )
+        .await
+        .expect("close should succeed");
+
+    let child_events = crate::service::session::load_events(
+        Arc::clone(&service.session_manager),
+        &child_session.session_id,
+    )
+    .await
+    .expect("child events should load");
+    assert!(child_events.iter().any(|stored| {
+        matches!(
+            &stored.event.payload,
+            StorageEventPayload::AgentMailboxDiscarded { payload }
+                if payload.target_agent_id == child.agent_id && !payload.delivery_ids.is_empty()
+        )
+    }));
+}
+
+#[tokio::test]
+async fn child_terminal_delivery_triggers_parent_wake_batch_started_and_acked() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(empty_capabilities())
+            .expect("runtime service should build"),
+    );
+    install_test_loop(
+        &service,
+        LlmOutput {
+            content: "parent processed delivery".to_string(),
+            ..LlmOutput::default()
+        },
+    )
+    .await;
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let parent_session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("parent session should be created");
+
+    let notification = astrcode_core::ChildSessionNotification {
+        notification_id: "delivery-parent-1".to_string(),
+        child_ref: astrcode_core::ChildAgentRef {
+            agent_id: "agent-child".to_string(),
+            session_id: parent_session.session_id.clone(),
+            sub_run_id: "subrun-child-1".to_string(),
+            parent_agent_id: Some("agent-parent".to_string()),
+            lineage_kind: ChildSessionLineageKind::Spawn,
+            status: AgentStatus::Completed,
+            open_session_id: "session-child".to_string(),
+        },
+        kind: ChildSessionNotificationKind::Delivered,
+        summary: "child completed summary".to_string(),
+        status: AgentStatus::Completed,
+        source_tool_call_id: None,
+        final_reply_excerpt: Some("child final excerpt".to_string()),
+    };
+
+    service
+        .execution()
+        .reactivate_parent_agent_if_idle(&parent_session.session_id, "turn-parent", &notification)
+        .await;
+
+    let parent_events = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let events = crate::service::session::load_events(
+                Arc::clone(&service.session_manager),
+                &parent_session.session_id,
+            )
+            .await
+            .expect("parent events should load");
+            let has_batch_acked = events.iter().any(|stored| {
+                matches!(
+                    &stored.event.payload,
+                    StorageEventPayload::AgentMailboxBatchAcked { payload }
+                        if payload.target_agent_id == "agent-parent"
+                            && payload.delivery_ids
+                                == vec!["delivery-parent-1".to_string()]
+                )
+            });
+            if has_batch_acked {
+                let pending = service
+                    .execution()
+                    .control()
+                    .pending_parent_delivery_count(&parent_session.session_id)
+                    .await;
+                if pending == 0 {
+                    break events;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("parent wake turn should finish and ack mailbox batch");
+
+    assert!(parent_events.iter().any(|stored| {
+        matches!(
+            &stored.event.payload,
+            StorageEventPayload::AgentMailboxQueued { payload }
+                if payload.envelope.delivery_id == "delivery-parent-1"
+                    && payload.envelope.to_agent_id == "agent-parent"
+                    && payload.envelope.sender_lifecycle_status
+                        == astrcode_core::AgentLifecycleStatus::Idle
+                    && payload.envelope.sender_last_turn_outcome
+                        == Some(AgentTurnOutcome::Completed)
+        )
+    }));
+    assert!(parent_events.iter().any(|stored| {
+        matches!(
+            &stored.event.payload,
+            StorageEventPayload::AgentMailboxBatchStarted { payload }
+                if payload.target_agent_id == "agent-parent"
+                    && payload.delivery_ids
+                        == vec!["delivery-parent-1".to_string()]
+        )
+    }));
+    assert_eq!(
+        service
+            .execution()
+            .control()
+            .pending_parent_delivery_count(&parent_session.session_id)
+            .await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn mailbox_projection_replays_started_without_acked_batch_as_pending_after_reload() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(empty_capabilities())
+            .expect("runtime service should build"),
+    );
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let created = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("session should be created");
+
+    append_storage_event(
+        &service,
+        &created.session_id,
+        &StorageEvent {
+            turn_id: Some("turn-parent".to_string()),
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::AgentMailboxQueued {
+                payload: MailboxQueuedPayload {
+                    envelope: AgentMailboxEnvelope {
+                        delivery_id: "delivery-replay-1".to_string(),
+                        from_agent_id: "agent-child".to_string(),
+                        to_agent_id: "agent-parent".to_string(),
+                        message: "child summary".to_string(),
+                        queued_at: chrono::Utc::now(),
+                        sender_lifecycle_status: AgentLifecycleStatus::Idle,
+                        sender_last_turn_outcome: Some(AgentTurnOutcome::Completed),
+                        sender_open_session_id: "session-child".to_string(),
+                    },
+                },
+            },
+        },
+    );
+    append_storage_event(
+        &service,
+        &created.session_id,
+        &StorageEvent {
+            turn_id: Some("turn-parent-replay".to_string()),
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::AgentMailboxBatchStarted {
+                payload: MailboxBatchStartedPayload {
+                    target_agent_id: "agent-parent".to_string(),
+                    turn_id: "turn-parent-replay".to_string(),
+                    batch_id: "batch-replay-1".to_string(),
+                    delivery_ids: vec!["delivery-replay-1".to_string()],
+                },
+            },
+        },
+    );
+
+    let events = crate::service::session::load_events(
+        Arc::clone(&service.session_manager),
+        &created.session_id,
+    )
+    .await
+    .expect("session events should load");
+    let mailbox = MailboxProjection::replay_for_agent(&events, "agent-parent");
+
+    assert_eq!(
+        mailbox.pending_delivery_ids,
+        vec!["delivery-replay-1".to_string()]
+    );
+    assert_eq!(mailbox.active_batch_id.as_deref(), Some("batch-replay-1"));
+    assert_eq!(
+        mailbox.active_delivery_ids,
+        vec!["delivery-replay-1".to_string()]
+    );
+    assert!(mailbox.discarded_delivery_ids.is_empty());
+}
+
 // ─── 状态投影与重激活测试 ──────────────────────────────────
 
 #[test]
@@ -2272,7 +2904,9 @@ fn make_test_notification(
             agent_id: child_agent_id.to_string(),
             session_id: "session-child".to_string(),
             sub_run_id: format!("subrun-{child_agent_id}"),
-            parent_agent_id: None,
+            // Why: US2 之后 child->parent wake 先走 durable mailbox，
+            // mailbox envelope 需要显式的直接父 agent id，旧测试夹具不能再省略它。
+            parent_agent_id: Some("agent-parent".to_string()),
             lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
             status: AgentStatus::Completed,
             open_session_id: "session-child".to_string(),

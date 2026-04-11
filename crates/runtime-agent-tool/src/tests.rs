@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 use astrcode_core::{
     AgentStatus, ArtifactRef, CancelToken, ChildAgentRef, ChildSessionLineageKind,
     CloseAgentParams, CollaborationResult, CollaborationResultKind, DeliverToParentParams,
-    ResumeAgentParams, SendAgentParams, SubRunFailure, SubRunFailureCode, SubRunHandoff,
-    SubRunResult, Tool, ToolContext, WaitAgentParams, WaitUntil,
+    ObserveParams, ResumeAgentParams, SendAgentParams, SubRunFailure, SubRunFailureCode,
+    SubRunHandoff, SubRunResult, Tool, ToolContext, WaitAgentParams, WaitUntil,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -101,7 +101,7 @@ async fn spawn_agent_tool_reports_invalid_params_as_tool_failure() {
         result
             .error
             .as_deref()
-            .is_some_and(|error| error.contains("invalid spawnAgent params"))
+            .is_some_and(|error| error.contains("invalid spawn params"))
     );
 }
 
@@ -232,7 +232,7 @@ async fn spawn_agent_tool_background_returns_subrun_artifact() {
             Ok(SubRunResult {
                 status: AgentStatus::Running,
                 handoff: Some(SubRunHandoff {
-                    summary: "spawnAgent 已在后台启动。".to_string(),
+                    summary: "spawn 已在后台启动。".to_string(),
                     findings: Vec::new(),
                     artifacts: vec![
                         ArtifactRef {
@@ -288,7 +288,7 @@ async fn spawn_agent_tool_background_returns_subrun_artifact() {
         .expect("background outcome should serialize");
 
     assert!(result.ok);
-    assert_eq!(result.output, "spawnAgent 已在后台启动。");
+    assert_eq!(result.output, "spawn 已在后台启动。");
     let artifact_kind = result
         .metadata
         .as_ref()
@@ -316,6 +316,122 @@ async fn spawn_agent_tool_background_returns_subrun_artifact() {
             .and_then(|value| value.as_str()),
         Some("agent-42")
     );
+}
+
+#[tokio::test]
+async fn tool_flow_reuses_spawned_agent_id_for_send_and_close() {
+    struct BackgroundExecutor;
+
+    #[async_trait]
+    impl SubAgentExecutor for BackgroundExecutor {
+        async fn launch(
+            &self,
+            _params: SpawnAgentParams,
+            _ctx: &ToolContext,
+        ) -> astrcode_core::Result<SubRunResult> {
+            Ok(SubRunResult {
+                status: AgentStatus::Running,
+                handoff: Some(SubRunHandoff {
+                    summary: "spawn 已在后台启动。".to_string(),
+                    findings: Vec::new(),
+                    artifacts: vec![
+                        ArtifactRef {
+                            kind: "subRun".to_string(),
+                            id: "subrun-99".to_string(),
+                            label: "Background sub-run".to_string(),
+                            session_id: None,
+                            storage_seq: None,
+                            uri: None,
+                        },
+                        ArtifactRef {
+                            kind: "agent".to_string(),
+                            id: "agent-99".to_string(),
+                            label: "Child agent id".to_string(),
+                            session_id: None,
+                            storage_seq: None,
+                            uri: None,
+                        },
+                        ArtifactRef {
+                            kind: "parentSession".to_string(),
+                            id: "session-parent-99".to_string(),
+                            label: "Parent session".to_string(),
+                            session_id: Some("session-parent-99".to_string()),
+                            storage_seq: None,
+                            uri: None,
+                        },
+                        ArtifactRef {
+                            kind: "session".to_string(),
+                            id: "session-child-99".to_string(),
+                            label: "Independent child session".to_string(),
+                            session_id: Some("session-child-99".to_string()),
+                            storage_seq: None,
+                            uri: None,
+                        },
+                    ],
+                }),
+                failure: None,
+            })
+        }
+    }
+
+    let spawn_tool = SpawnAgentTool::new(Arc::new(BackgroundExecutor));
+    let executor = Arc::new(RecordingCollabExecutor::new());
+    let send_tool = SendAgentTool::new(executor.clone());
+    let close_tool = CloseAgentTool::new(executor.clone());
+
+    let spawned = spawn_tool
+        .execute(
+            "call-flow-spawn".to_string(),
+            json!({
+                "description": "background task",
+                "prompt": "one"
+            }),
+            &tool_context(),
+        )
+        .await
+        .expect("spawn should succeed");
+    let spawned_agent_id = spawned
+        .metadata
+        .as_ref()
+        .and_then(|value| value.get("agentRef"))
+        .and_then(|value| value.get("agentId"))
+        .and_then(|value| value.as_str())
+        .expect("spawn should expose a stable agentId")
+        .to_string();
+
+    let send_result = send_tool
+        .execute(
+            "call-flow-send".to_string(),
+            json!({
+                "agentId": spawned_agent_id,
+                "message": "继续执行第二轮"
+            }),
+            &tool_context(),
+        )
+        .await
+        .expect("send should succeed");
+    assert!(send_result.ok);
+
+    let close_result = close_tool
+        .execute(
+            "call-flow-close".to_string(),
+            json!({
+                "agentId": "agent-99"
+            }),
+            &tool_context(),
+        )
+        .await
+        .expect("close should succeed");
+    assert!(close_result.ok);
+
+    let send_calls = executor.send_calls.lock().expect("lock");
+    assert_eq!(send_calls.len(), 1);
+    assert_eq!(send_calls[0].agent_id, "agent-99");
+    drop(send_calls);
+
+    let close_calls = executor.close_calls.lock().expect("lock");
+    assert_eq!(close_calls.len(), 1);
+    assert_eq!(close_calls[0].agent_id, "agent-99");
 }
 
 // ─── 协作工具测试 ───────────────────────────────────────────
@@ -453,9 +569,27 @@ impl CollaborationExecutor for RecordingCollabExecutor {
             failure: None,
         })
     }
+
+    async fn observe(
+        &self,
+        params: ObserveParams,
+        _ctx: &ToolContext,
+    ) -> astrcode_core::Result<CollaborationResult> {
+        Ok(CollaborationResult {
+            accepted: true,
+            kind: CollaborationResultKind::Sent,
+            agent_ref: Some(sample_child_ref()),
+            delivery_id: None,
+            summary: Some(format!("observe result for agent '{}'", params.agent_id)),
+            parent_agent_id: None,
+            cascade: None,
+            closed_root_agent_id: None,
+            failure: None,
+        })
+    }
 }
 
-// ─── sendAgent ──────────────────────────────────────────────
+// ─── send ──────────────────────────────────────────────────
 
 #[tokio::test]
 async fn send_agent_tool_parses_params_and_delegates_to_executor() {
@@ -473,11 +607,11 @@ async fn send_agent_tool_parses_params_and_delegates_to_executor() {
             &tool_context(),
         )
         .await
-        .expect("sendAgent should succeed");
+        .expect("send should succeed");
 
     assert!(result.ok);
     assert_eq!(result.output, "消息已发送");
-    assert_eq!(result.tool_name, "sendAgent");
+    assert_eq!(result.tool_name, "send");
     let calls = executor.send_calls.lock().expect("lock");
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].agent_id, "agent-42");
@@ -503,7 +637,7 @@ async fn send_agent_tool_rejects_missing_agent_id() {
         result
             .error
             .as_deref()
-            .is_some_and(|e| e.contains("invalid sendAgent params"))
+            .is_some_and(|e| e.contains("invalid send params"))
     );
 }
 
@@ -525,7 +659,7 @@ async fn send_agent_tool_rejects_empty_message() {
         result
             .error
             .as_deref()
-            .is_some_and(|e| e.contains("invalid sendAgent params"))
+            .is_some_and(|e| e.contains("invalid send params"))
     );
 }
 
@@ -591,7 +725,7 @@ async fn wait_agent_tool_rejects_missing_agent_id() {
     );
 }
 
-// ─── closeAgent ─────────────────────────────────────────────
+// ─── close ─────────────────────────────────────────────────
 
 #[tokio::test]
 async fn close_agent_tool_parses_params_and_returns_cascade_info() {
@@ -605,11 +739,11 @@ async fn close_agent_tool_parses_params_and_returns_cascade_info() {
             &tool_context(),
         )
         .await
-        .expect("closeAgent should succeed");
+        .expect("close should succeed");
 
     assert!(result.ok);
     assert_eq!(result.output, "子 Agent 已关闭");
-    assert_eq!(result.tool_name, "closeAgent");
+    assert_eq!(result.tool_name, "close");
     let calls = executor.close_calls.lock().expect("lock");
     assert_eq!(calls.len(), 1);
     assert!(calls[0].cascade); // 默认级联
@@ -627,7 +761,7 @@ async fn close_agent_tool_allows_disabling_cascade() {
             &tool_context(),
         )
         .await
-        .expect("closeAgent should succeed");
+        .expect("close should succeed");
 
     assert!(result.ok);
     let calls = executor.close_calls.lock().expect("lock");
@@ -652,7 +786,7 @@ async fn close_agent_tool_rejects_empty_agent_id() {
         result
             .error
             .as_deref()
-            .is_some_and(|e| e.contains("invalid closeAgent params"))
+            .is_some_and(|e| e.contains("invalid close params"))
     );
 }
 

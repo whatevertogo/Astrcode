@@ -2,8 +2,10 @@ use std::{collections::VecDeque, sync::atomic::Ordering};
 
 use anyhow::Result;
 use astrcode_core::{
-    AstrError, CancelToken, EventTranslator, InvocationKind, Phase, SessionTurnLease, StorageEvent,
-    StorageEventPayload, StoredEvent, SubRunStorageMode, UserMessageOrigin,
+    AstrError, CancelToken, EventTranslator, InvocationKind, MailboxBatchAckedPayload,
+    MailboxBatchStartedPayload, MailboxDiscardedPayload, MailboxQueuedPayload, Phase,
+    SessionTurnLease, StorageEvent, StorageEventPayload, StoredEvent, SubRunStorageMode,
+    UserMessageOrigin,
 };
 
 use crate::{SessionState, SessionTokenBudgetState, support::lock_anyhow};
@@ -81,6 +83,99 @@ pub fn append_and_broadcast_from_turn_callback(
             append_and_broadcast_blocking(session, event, translator)
         }),
     }
+}
+
+// ── Mailbox 事件 append 辅助 ──────────────────────────────────────
+
+/// 追加一条 `AgentMailboxQueued` 事件到 session event log。
+///
+/// 用于 `send` 工具在消息入队成功后写入 durable 记录。
+/// live inbox 只能在 Queued append 成功后更新。
+pub async fn append_mailbox_queued(
+    session: &SessionState,
+    turn_id: &str,
+    agent: astrcode_core::AgentEventContext,
+    payload: MailboxQueuedPayload,
+    translator: &mut EventTranslator,
+) -> Result<StoredEvent> {
+    append_and_broadcast(
+        session,
+        &StorageEvent {
+            turn_id: Some(turn_id.to_string()),
+            agent,
+            payload: StorageEventPayload::AgentMailboxQueued { payload },
+        },
+        translator,
+    )
+    .await
+}
+
+/// 追加一条 `AgentMailboxBatchStarted` 事件。
+///
+/// 必须是 mailbox-wake turn 的第一条 durable 事件，
+/// 确保 replay 时能准确恢复"本轮接管了什么"。
+pub async fn append_batch_started(
+    session: &SessionState,
+    turn_id: &str,
+    agent: astrcode_core::AgentEventContext,
+    payload: MailboxBatchStartedPayload,
+    translator: &mut EventTranslator,
+) -> Result<StoredEvent> {
+    append_and_broadcast(
+        session,
+        &StorageEvent {
+            turn_id: Some(turn_id.to_string()),
+            agent,
+            payload: StorageEventPayload::AgentMailboxBatchStarted { payload },
+        },
+        translator,
+    )
+    .await
+}
+
+/// 追加一条 `AgentMailboxBatchAcked` 事件。
+///
+/// 必须在 durable turn completion 之后追加，
+/// 不允许在模型流结束但 turn 尚未 durable 提交时提前 ack。
+pub async fn append_batch_acked(
+    session: &SessionState,
+    turn_id: &str,
+    agent: astrcode_core::AgentEventContext,
+    payload: MailboxBatchAckedPayload,
+    translator: &mut EventTranslator,
+) -> Result<StoredEvent> {
+    append_and_broadcast(
+        session,
+        &StorageEvent {
+            turn_id: Some(turn_id.to_string()),
+            agent,
+            payload: StorageEventPayload::AgentMailboxBatchAcked { payload },
+        },
+        translator,
+    )
+    .await
+}
+
+/// 追加一条 `AgentMailboxDiscarded` 事件。
+///
+/// close 时写入，记录被主动丢弃的 pending delivery_ids。
+pub async fn append_mailbox_discarded(
+    session: &SessionState,
+    turn_id: &str,
+    agent: astrcode_core::AgentEventContext,
+    payload: MailboxDiscardedPayload,
+    translator: &mut EventTranslator,
+) -> Result<StoredEvent> {
+    append_and_broadcast(
+        session,
+        &StorageEvent {
+            turn_id: Some(turn_id.to_string()),
+            agent,
+            payload: StorageEventPayload::AgentMailboxDiscarded { payload },
+        },
+        translator,
+    )
+    .await
 }
 
 /// Manual / auto compact 都应该基于 durable tail，而不是投影后的消息列表。

@@ -462,6 +462,10 @@ impl ExecutionLineageIndex {
                     self.observe_turn_owner(turn_id, agent.sub_run_id.as_deref());
                 }
             },
+            AgentEvent::AgentMailboxQueued { .. }
+            | AgentEvent::AgentMailboxBatchStarted { .. }
+            | AgentEvent::AgentMailboxBatchAcked { .. }
+            | AgentEvent::AgentMailboxDiscarded { .. } => {},
             AgentEvent::SessionStarted { .. } => {},
         }
     }

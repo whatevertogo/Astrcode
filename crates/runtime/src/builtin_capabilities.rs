@@ -18,8 +18,8 @@ use std::sync::Arc;
 
 use astrcode_core::{CapabilityInvoker, Result};
 use astrcode_runtime_agent_tool::{
-    CloseAgentTool, CollaborationExecutor, DeliverToParentTool, ResumeAgentTool, SendAgentTool,
-    SpawnAgentTool, SubAgentExecutor, WaitAgentTool,
+    CloseAgentTool, CollaborationExecutor, DeliverToParentTool, ObserveAgentTool, ResumeAgentTool,
+    SendAgentTool, SpawnAgentTool, SubAgentExecutor,
 };
 use astrcode_runtime_registry::ToolCapabilityInvoker;
 use astrcode_runtime_skill_loader::SkillCatalog;
@@ -50,7 +50,9 @@ pub(crate) fn built_in_capability_invokers(
         ToolCapabilityInvoker::boxed(Box::new(SpawnAgentTool::new(subagent_executor))),
         // 协作工具族：通过 CollaborationExecutor 统一委托
         ToolCapabilityInvoker::boxed(Box::new(SendAgentTool::new(collaboration_executor.clone()))),
-        ToolCapabilityInvoker::boxed(Box::new(WaitAgentTool::new(collaboration_executor.clone()))),
+        ToolCapabilityInvoker::boxed(Box::new(ObserveAgentTool::new(
+            collaboration_executor.clone(),
+        ))),
         ToolCapabilityInvoker::boxed(Box::new(CloseAgentTool::new(
             collaboration_executor.clone(),
         ))),

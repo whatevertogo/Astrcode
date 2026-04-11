@@ -19,8 +19,9 @@ use std::{
 };
 
 use astrcode_core::{
-    ApprovalDefault, ApprovalResolution, CancelToken, LlmMessage, Phase, StorageEventPayload,
-    ToolCallRequest, UserMessageOrigin,
+    AgentStatus, ApprovalDefault, ApprovalResolution, CancelToken, ChildAgentRef,
+    ChildSessionLineageKind, ChildSessionNotification, ChildSessionNotificationKind, LlmMessage,
+    Phase, StorageEventPayload, ToolCallRequest, UserMessageOrigin,
 };
 use astrcode_runtime_llm::LlmOutput;
 use serde_json::json;
@@ -29,7 +30,7 @@ use super::{
     fixtures::*,
     test_support::{boxed_tool, capabilities_from_tools, empty_capabilities},
 };
-use crate::{AgentLoop, agent_loop::TurnOutcome};
+use crate::{AgentLoop, agent_loop::TurnOutcome, child_delivery_prompt_declaration};
 
 // ---------------------------------------------------------------------------
 // 基础场景矩阵
@@ -429,6 +430,33 @@ async fn phase0_behavior_regression_covers_compaction_and_policy_edges() {
             1
         );
     }
+}
+
+#[test]
+fn child_delivery_prompt_regression_keeps_delivery_identity_and_duplicate_guidance() {
+    let notification = ChildSessionNotification {
+        notification_id: "delivery-regression-1".to_string(),
+        child_ref: ChildAgentRef {
+            agent_id: "agent-child".to_string(),
+            session_id: "session-parent".to_string(),
+            sub_run_id: "subrun-child".to_string(),
+            parent_agent_id: Some("agent-parent".to_string()),
+            lineage_kind: ChildSessionLineageKind::Spawn,
+            status: AgentStatus::Completed,
+            open_session_id: "session-child".to_string(),
+        },
+        kind: ChildSessionNotificationKind::Delivered,
+        summary: "child summary".to_string(),
+        status: AgentStatus::Completed,
+        source_tool_call_id: None,
+        final_reply_excerpt: Some("child final excerpt".to_string()),
+    };
+
+    let prompt = child_delivery_prompt_declaration(&notification);
+
+    assert!(prompt.contains("deliveryId: delivery-regression-1"));
+    assert!(prompt.contains("相同的 deliveryId"));
+    assert!(prompt.contains("不能把它当作新任务重复处理"));
 }
 
 /// 构造一个 413 prompt too long 错误。

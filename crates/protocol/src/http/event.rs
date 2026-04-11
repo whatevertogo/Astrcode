@@ -233,6 +233,41 @@ pub struct ToolCallResultDto {
     pub truncated: bool,
 }
 
+/// Mailbox 消息入队事件载荷。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MailboxQueuedDto {
+    pub delivery_id: String,
+    pub from_agent_id: String,
+    pub to_agent_id: String,
+    pub message: String,
+    pub queued_at: String,
+    pub sender_lifecycle_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_last_turn_outcome: Option<String>,
+    pub sender_open_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+/// Mailbox 批次开始/确认事件载荷。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MailboxBatchDto {
+    pub target_agent_id: String,
+    pub turn_id: String,
+    pub batch_id: String,
+    pub delivery_ids: Vec<String>,
+}
+
+/// Mailbox 消息丢弃事件载荷。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MailboxDiscardedDto {
+    pub target_agent_id: String,
+    pub delivery_ids: Vec<String>,
+}
+
 /// Agent 事件载荷的 tagged enum。
 ///
 /// 采用 `#[serde(tag = "event", content = "data")]` 序列化策略，
@@ -423,6 +458,42 @@ pub enum AgentEventPayload {
         prompt_cache_reuse_hits: u32,
         #[serde(default)]
         prompt_cache_reuse_misses: u32,
+    },
+    /// Mailbox 消息入队事件。
+    AgentMailboxQueued {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
+        agent: AgentContextDto,
+        #[serde(flatten)]
+        payload: MailboxQueuedDto,
+    },
+    /// Mailbox 批次开始消费事件。
+    AgentMailboxBatchStarted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
+        agent: AgentContextDto,
+        #[serde(flatten)]
+        payload: MailboxBatchDto,
+    },
+    /// Mailbox 批次确认完成事件。
+    AgentMailboxBatchAcked {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
+        agent: AgentContextDto,
+        #[serde(flatten)]
+        payload: MailboxBatchDto,
+    },
+    /// Mailbox 消息丢弃事件。
+    AgentMailboxDiscarded {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(default, flatten, skip_serializing_if = "AgentContextDto::is_empty")]
+        agent: AgentContextDto,
+        #[serde(flatten)]
+        payload: MailboxDiscardedDto,
     },
 }
 

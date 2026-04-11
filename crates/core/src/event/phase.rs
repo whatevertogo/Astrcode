@@ -22,7 +22,11 @@ pub fn target_phase(event: &StorageEvent) -> Phase {
         | StorageEventPayload::CompactApplied { .. }
         | StorageEventPayload::SubRunStarted { .. }
         | StorageEventPayload::SubRunFinished { .. }
-        | StorageEventPayload::ChildSessionNotification { .. } => Phase::Idle,
+        | StorageEventPayload::ChildSessionNotification { .. }
+        | StorageEventPayload::AgentMailboxQueued { .. }
+        | StorageEventPayload::AgentMailboxBatchStarted { .. }
+        | StorageEventPayload::AgentMailboxBatchAcked { .. }
+        | StorageEventPayload::AgentMailboxDiscarded { .. } => Phase::Idle,
         StorageEventPayload::AssistantDelta { .. }
         | StorageEventPayload::ThinkingDelta { .. }
         | StorageEventPayload::AssistantFinal { .. } => Phase::Streaming,
@@ -66,6 +70,10 @@ impl PhaseTracker {
                 | StorageEventPayload::SubRunStarted { .. }
                 | StorageEventPayload::SubRunFinished { .. }
                 | StorageEventPayload::ChildSessionNotification { .. }
+                | StorageEventPayload::AgentMailboxQueued { .. }
+                | StorageEventPayload::AgentMailboxBatchStarted { .. }
+                | StorageEventPayload::AgentMailboxBatchAcked { .. }
+                | StorageEventPayload::AgentMailboxDiscarded { .. }
         ) {
             return None;
         }

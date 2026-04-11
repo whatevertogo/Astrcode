@@ -12,7 +12,7 @@ use crate::{
     collaboration_executor::CollaborationExecutor,
 };
 
-const TOOL_NAME: &str = "closeAgent";
+const TOOL_NAME: &str = "close";
 
 /// 关闭指定 child agent 的协作工具。
 ///
@@ -84,7 +84,7 @@ impl Tool for CloseAgentTool {
             .prompt(
                 ToolPromptMetadata::new(
                     "关闭子 Agent",
-                    "使用 closeAgent 关闭不再需要的子 Agent。默认级联关闭子 Agent 的所有子 \
+                    "使用 close 关闭不再需要的子 Agent。默认级联关闭子 Agent 的所有子 \
                      Agent。`agentId` 必须来自之前协作 tool result 的 `Child agent \
                      reference`，并逐字复用。",
                 )
@@ -105,7 +105,7 @@ impl Tool for CloseAgentTool {
                 return Ok(collaboration_error_result(
                     tool_call_id,
                     TOOL_NAME,
-                    format!("invalid closeAgent params: {error}"),
+                    format!("invalid close params: {error}"),
                 ));
             },
         };
@@ -114,7 +114,7 @@ impl Tool for CloseAgentTool {
             return Ok(collaboration_error_result(
                 tool_call_id,
                 TOOL_NAME,
-                format!("invalid closeAgent params: {err}"),
+                format!("invalid close params: {err}"),
             ));
         }
 
