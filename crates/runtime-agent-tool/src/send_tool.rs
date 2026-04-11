@@ -15,6 +15,9 @@ use crate::{
 const TOOL_NAME: &str = "sendAgent";
 
 /// 向既有 child agent 追加消息的协作工具。
+///
+/// 消息进入 child agent 的 inbox，由其下一轮 LLM 调用消费。
+/// 必须指定 `agentId`，该 ID 来自 spawnAgent 返回结果中的稳定引用。
 pub struct SendAgentTool {
     executor: Arc<dyn CollaborationExecutor>,
 }
@@ -80,6 +83,8 @@ impl Tool for SendAgentTool {
             .tag("agent")
             .tag("collaboration")
             .concurrency_safe(true)
+            // send 的 tool result 不应在 compact 模式下被折叠，
+            // 因为它包含 childRef，LLM 需要逐字复用其中的 agentId
             .compact_clearable(false)
             .prompt(
                 ToolPromptMetadata::new(

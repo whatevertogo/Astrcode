@@ -15,6 +15,9 @@ use crate::{
 const TOOL_NAME: &str = "closeAgent";
 
 /// 关闭指定 child agent 的协作工具。
+///
+/// 默认级联关闭整棵子树（cascade = true），因为孤立子 agent 无法自行终止。
+/// 设 cascade = false 可仅关闭目标 agent 本身。
 pub struct CloseAgentTool {
     executor: Arc<dyn CollaborationExecutor>,
 }
@@ -74,7 +77,9 @@ impl Tool for CloseAgentTool {
         ToolCapabilityMetadata::builtin()
             .tag("agent")
             .tag("collaboration")
+            // close 会改变子树状态，并发关闭可能导致不可预测的级联行为
             .concurrency_safe(false)
+            // close 的 tool result 在 compact 模式下可折叠，因为关闭后不再需要 agentId
             .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(

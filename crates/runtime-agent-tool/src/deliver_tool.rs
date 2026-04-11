@@ -16,7 +16,10 @@ const TOOL_NAME: &str = "deliverToParent";
 
 /// 向直接父 agent 交付结果的协作工具。
 ///
-/// 仅 child session 可见，用于把阶段性结果或最终交付送回直接父 agent。
+/// 设计约束：
+/// - 仅 child session 可见此工具（由 runtime 层的 tool registry 控制）
+/// - 交付目标固定为直接父 agent，不可跨级
+/// - 支持阶段交付（summary + findings）和终态交付（finalReply）
 pub struct DeliverToParentTool {
     executor: Arc<dyn CollaborationExecutor>,
 }
@@ -94,7 +97,9 @@ impl Tool for DeliverToParentTool {
         ToolCapabilityMetadata::builtin()
             .tag("agent")
             .tag("collaboration")
+            // deliver 本身是轻量写入操作（往父 agent inbox 追加一条消息），可以安全并发
             .concurrency_safe(true)
+            // deliver 的 tool result 不应折叠——它确认交付是否成功，LLM 需要看到结果
             .compact_clearable(false)
             .prompt(
                 ToolPromptMetadata::new(

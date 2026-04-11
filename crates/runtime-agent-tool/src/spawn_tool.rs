@@ -15,6 +15,9 @@ use crate::{
 const TOOL_NAME: &str = "spawnAgent";
 
 /// 把子 Agent 能力暴露给 LLM 的内置工具。
+///
+/// 持有一个 `SubAgentExecutor` trait object，将实际的 session 创建和 agent 启动
+/// 委托给 runtime 层，本工具只负责参数 schema 定义、校验和结果映射。
 pub struct SpawnAgentTool {
     launcher: Arc<dyn SubAgentExecutor>,
 }
@@ -93,9 +96,10 @@ impl Tool for SpawnAgentTool {
         ToolCapabilityMetadata::builtin()
             .tag("agent")
             .tag("subagent")
-            // `spawnAgent` 已统一为后台启动，工具本身只负责快速建链和返回句柄，
-            // 可以安全地和其他同类启动请求并发执行。
+            // spawnAgent 统一为后台启动：工具本身只负责建链和返回句柄，
+            // 不会阻塞当前 agent 的 LLM 轮次，因此可以安全并发。
             .concurrency_safe(true)
+            // compact 模式下可以折叠 spawnAgent 的 tool result，减少上下文占用
             .compact_clearable(true)
     }
 
@@ -123,10 +127,11 @@ impl Tool for SpawnAgentTool {
             ));
         }
 
+        // 将 tool_call_id 注入 context，runtime 层据此关联子会话与发起者
         let launch_ctx = ctx.clone().with_tool_call_id(tool_call_id.clone());
         let result = self.launcher.launch(params, &launch_ctx).await?;
-        // 结果映射会统一注入稳定 child ref/openSessionId 元数据，
-        // 让后续 send/wait/resume/close 可以直接复用同一 identity。
+        // 结果映射会统一注入 childRef/openSessionId 等稳定元数据，
+        // 让后续 send/wait/resume/close 可以直接复用同一 identity
         Ok(map_subrun_result(tool_call_id, result))
     }
 }

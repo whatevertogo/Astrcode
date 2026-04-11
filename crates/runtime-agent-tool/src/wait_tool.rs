@@ -15,6 +15,12 @@ use crate::{
 const TOOL_NAME: &str = "waitAgent";
 
 /// 等待指定 child agent 的协作工具。
+///
+/// 支持两种等待策略：
+/// - `final`：阻塞到子 agent 进入终态（completed/failed/cancelled）
+/// - `next_delivery`：阻塞到子 agent 下一次 deliverToParent
+///
+/// 调用会阻塞当前 agent 的 LLM 轮次，因此 concurrency_safe = false。
 pub struct WaitAgentTool {
     executor: Arc<dyn CollaborationExecutor>,
 }

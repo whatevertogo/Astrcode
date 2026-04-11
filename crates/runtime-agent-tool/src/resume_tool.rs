@@ -15,6 +15,9 @@ use crate::{
 const TOOL_NAME: &str = "resumeAgent";
 
 /// 恢复已完成 child agent 的协作工具。
+///
+/// 恢复操作复用同一 child session（保持上下文连续性），不创建新会话。
+/// 仅对终态 agent（completed/failed/cancelled）有效。
 pub struct ResumeAgentTool {
     executor: Arc<dyn CollaborationExecutor>,
 }
@@ -75,7 +78,9 @@ impl Tool for ResumeAgentTool {
         ToolCapabilityMetadata::builtin()
             .tag("agent")
             .tag("collaboration")
+            // resume 会重启子 agent 的 LLM 轮次，状态变更期间不应并发操作同一 agent
             .concurrency_safe(false)
+            // resume 的 tool result 可折叠，但 agentId 仍需保留供后续协作使用
             .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
