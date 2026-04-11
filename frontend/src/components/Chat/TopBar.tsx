@@ -1,31 +1,25 @@
-import styles from './TopBar.module.css';
+import { ghostIconButton, topBarShell } from '../../lib/styles';
+import { cn } from '../../lib/utils';
+import { useChatScreenContext } from './ChatScreenContext';
 
-interface TopBarProps {
-  projectName: string | null;
-  sessionTitle: string | null;
-  activeSubRunPath: string[];
-  activeSubRunBreadcrumbs: Array<{ subRunId: string; title: string }>;
-  isSidebarOpen: boolean;
-  toggleSidebar: () => void;
-  onCloseSubRun: () => void;
-  onNavigateSubRunPath: (subRunPath: string[]) => void;
-}
+export default function TopBar() {
+  const {
+    projectName,
+    sessionTitle,
+    activeSubRunPath,
+    activeSubRunBreadcrumbs,
+    isSidebarOpen,
+    toggleSidebar,
+    onCloseSubRun,
+    onNavigateSubRunPath,
+  } = useChatScreenContext();
 
-export default function TopBar({
-  projectName,
-  sessionTitle,
-  activeSubRunPath,
-  activeSubRunBreadcrumbs,
-  isSidebarOpen,
-  toggleSidebar,
-  onCloseSubRun,
-  onNavigateSubRunPath,
-}: TopBarProps) {
   return (
-    <div className={styles.topBar}>
-      <div className={styles.breadcrumb}>
+    <div className={topBarShell}>
+      <div className="flex min-w-0 flex-1 items-center gap-1.5">
         <button
-          className={styles.toggleSidebarBtn}
+          className={cn(ghostIconButton, '-ml-1 p-1')}
+          type="button"
           onClick={toggleSidebar}
           aria-label={isSidebarOpen ? '收起侧边栏' : '展开侧边栏'}
           title={isSidebarOpen ? '收起侧边栏' : '展开侧边栏'}
@@ -46,31 +40,46 @@ export default function TopBar({
         </button>
         {projectName ? (
           <>
-            <span className={styles.projectName}>{projectName}</span>
+            <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px] text-text-secondary">
+              {projectName}
+            </span>
             {sessionTitle && (
               <>
-                <span className={styles.sep}>›</span>
+                <span className="text-[13px] text-text-faint">›</span>
                 {activeSubRunPath.length > 0 ? (
-                  <button type="button" className={styles.breadcrumbButton} onClick={onCloseSubRun}>
+                  <button
+                    type="button"
+                    className="inline-flex min-h-[26px] items-center justify-center rounded-full border border-border bg-surface px-2 text-xs font-medium text-text-secondary transition-[background,border-color,color] duration-150 ease-out hover:border-black/12 hover:bg-black/3 hover:text-text-primary"
+                    onClick={() => void onCloseSubRun()}
+                  >
                     {sessionTitle}
                   </button>
                 ) : (
-                  <span className={styles.sessionTitle}>{sessionTitle}</span>
+                  <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px] font-medium text-text-primary">
+                    {sessionTitle}
+                  </span>
                 )}
               </>
             )}
             {activeSubRunBreadcrumbs.map((breadcrumb, index) => {
               const isLast = index === activeSubRunBreadcrumbs.length - 1;
               return (
-                <span key={breadcrumb.subRunId} className={styles.breadcrumbSegment}>
-                  <span className={styles.sep}>›</span>
+                <span
+                  key={breadcrumb.subRunId}
+                  className="inline-flex min-w-0 items-center gap-1.5"
+                >
+                  <span className="text-[13px] text-text-faint">›</span>
                   {isLast ? (
-                    <span className={styles.subRunTitle}>{breadcrumb.title}</span>
+                    <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px] font-semibold text-text-primary">
+                      {breadcrumb.title}
+                    </span>
                   ) : (
                     <button
                       type="button"
-                      className={styles.subRunBackBtn}
-                      onClick={() => onNavigateSubRunPath(activeSubRunPath.slice(0, index + 1))}
+                      className="inline-flex min-h-[26px] items-center justify-center rounded-full border border-border bg-surface px-2.5 text-xs font-semibold text-text-secondary transition-[background,border-color,color] duration-150 ease-out hover:border-black/12 hover:bg-black/3 hover:text-text-primary"
+                      onClick={() =>
+                        void onNavigateSubRunPath(activeSubRunPath.slice(0, index + 1))
+                      }
                     >
                       {breadcrumb.title}
                     </button>
@@ -80,7 +89,7 @@ export default function TopBar({
             })}
           </>
         ) : (
-          <span className={styles.empty}>未选择会话</span>
+          <span className="text-[13px] text-text-muted">未选择会话</span>
         )}
       </div>
     </div>

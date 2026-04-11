@@ -1,7 +1,17 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SubRunFinishMessage, SubRunStartMessage } from '../../types';
 import type { ThreadItem } from '../../lib/subRunView';
-import styles from './SubRunBlock.module.css';
+import { cn } from '../../lib/utils';
+import {
+  chevronIcon,
+  expandableBody,
+  infoButton,
+  pillDanger,
+  pillNeutral,
+  pillSuccess,
+  pillWarning,
+  subtleActionButton,
+} from '../../lib/styles';
 
 interface SubRunBlockProps {
   subRunId: string;
@@ -20,7 +30,7 @@ interface SubRunBlockProps {
     }
   ) => React.ReactNode[];
   onCancelSubRun: (sessionId: string, agentId: string) => void | Promise<void>;
-  onFocusSubRun?: (subRunId: string) => void;
+  onFocusSubRun?: (subRunId: string) => void | Promise<void>;
   onOpenChildSession?: (childSessionId: string) => void | Promise<void>;
   displayMode?: 'thread' | 'directory';
 }
@@ -55,19 +65,19 @@ function getStorageModeLabel(startMessage?: SubRunStartMessage, childSessionId?:
   return 'shared session';
 }
 
-function getStatusClassName(status: SubRunStatus): string {
+function getStatusVariant(status: SubRunStatus): string {
   switch (status) {
     case 'completed':
-      return styles.statusCompleted;
+      return pillSuccess;
     case 'aborted':
-      return styles.statusAborted;
+      return pillNeutral;
     case 'token_exceeded':
-      return styles.statusTokenExceeded;
+      return pillWarning;
     case 'failed':
-      return styles.statusFailed;
+      return pillDanger;
     case 'running':
     default:
-      return styles.statusRunning;
+      return pillNeutral;
   }
 }
 
@@ -135,6 +145,7 @@ function SubRunBlock({
         ? '这是独立子会话，请打开会话查看思考和工具流。'
         : '展开查看子执行的思考和工具流。');
   const shouldAutoOpen = !userInteracted && isBackgroundRunning;
+  const cancelTargetAgentId = startMessage?.agentId ?? subRunId;
 
   const updateStreamStickiness = useCallback(() => {
     const container = streamRef.current;
@@ -208,35 +219,44 @@ function SubRunBlock({
     setCancelError(null);
     try {
       // 使用 agentId 定位，fallback 到 subRunId（旧事件可能缺少 agentId）
-      await onCancelSubRun(sessionId, startMessage?.agentId ?? subRunId);
+      await onCancelSubRun(sessionId, cancelTargetAgentId);
     } catch (error) {
       setCancelError(error instanceof Error ? error.message : String(error));
     } finally {
       setCancelling(false);
     }
-  }, [cancelling, onCancelSubRun, sessionId, subRunId]);
+  }, [cancelTargetAgentId, cancelling, onCancelSubRun, sessionId]);
 
   const handleOpenView = useCallback(async () => {
     if (childSessionId) {
       await onOpenChildSession?.(childSessionId);
       return;
     }
-    onFocusSubRun?.(subRunId);
+    await onFocusSubRun?.(subRunId);
   }, [childSessionId, onFocusSubRun, onOpenChildSession, subRunId]);
 
   const renderToolbar = () => (
-    <div className={styles.toolbar}>
-      <div className={styles.toolbarText}>{activitySummary}</div>
-      <div className={styles.toolbarActions}>
+    <div className="flex items-start justify-between gap-3 flex-wrap">
+      <div className="flex-1 basis-[260px] min-w-0 text-[13px] leading-relaxed text-text-secondary whitespace-pre-wrap overflow-wrap-anywhere">
+        {activitySummary}
+      </div>
+      <div className="flex items-center gap-2.5 flex-wrap">
         {(onFocusSubRun || (childSessionId && onOpenChildSession)) && (
-          <button type="button" className={styles.openButton} onClick={() => void handleOpenView()}>
+          <button
+            type="button"
+            className={cn(infoButton, 'min-h-[30px]')}
+            onClick={() => void handleOpenView()}
+          >
             {navigationLabel}
           </button>
         )}
         {sessionId && isBackgroundRunning && (
           <button
             type="button"
-            className={styles.cancelButton}
+            className={cn(
+              subtleActionButton,
+              'min-h-[30px] disabled:cursor-wait disabled:opacity-60'
+            )}
             onClick={() => void handleCancel()}
             disabled={cancelling}
           >
@@ -249,15 +269,15 @@ function SubRunBlock({
 
   const renderActivity = () => (
     <details
-      className={styles.activitySection}
+      className="m-0 bg-transparent border-none group"
       open={isBackgroundRunning || activityItems.length > 0}
     >
-      <summary className={styles.activitySummary}>
+      <summary className="inline-flex items-center gap-2 py-1 min-h-[24px] cursor-pointer select-none bg-transparent border-none text-text-secondary transition-opacity duration-150 ease-out text-sm font-medium list-none [&::-webkit-details-marker]:hidden hover:opacity-80">
         <span>思考与工具</span>
-        <span className={styles.activityMeta}>
+        <span className="text-xs text-text-secondary opacity-80">
           {activityItems.length > 0 ? `${activityItems.length} 条活动` : '等待输出'}
         </span>
-        <span className={styles.summaryChevron}>
+        <span className={chevronIcon}>
           <svg
             width="14"
             height="14"
@@ -272,13 +292,17 @@ function SubRunBlock({
           </svg>
         </span>
       </summary>
-      <div ref={streamRef} className={styles.activityBody} onScroll={updateStreamStickiness}>
+      <div
+        ref={streamRef}
+        className="mt-2 mb-2 max-h-[360px] max-sm:max-h-[300px] overflow-y-auto pr-1 flex flex-col gap-3.5"
+        onScroll={updateStreamStickiness}
+      >
         {activityItems.length === 0 ? (
-          <div className={styles.activityEmpty}>
+          <div className="py-1 text-text-secondary text-xs leading-relaxed">
             {isIndependentSession
               ? isBackgroundRunning
-                ? '该子 Agent 运行在独立会话中；请点击“打开独立会话”查看实时输出。'
-                : '该子 Agent 的思考和工具流保存在独立会话中；请点击“打开独立会话”查看。'
+                ? '该子 Agent 运行在独立会话中；请点击"打开独立会话"查看实时输出。'
+                : '该子 Agent 的思考和工具流保存在独立会话中；请点击"打开独立会话"查看。'
               : isBackgroundRunning
                 ? '等待子 Agent 输出思考或工具调用...'
                 : '该子执行没有产生可展示的思考或工具调用。'}
@@ -296,10 +320,10 @@ function SubRunBlock({
       return null;
     }
     return (
-      <details className={styles.activitySection} open>
-        <summary className={styles.activitySummary}>
+      <details className="m-0 bg-transparent border-none group" open>
+        <summary className="inline-flex items-center gap-2 py-1 min-h-[24px] cursor-pointer select-none bg-transparent border-none text-text-secondary transition-opacity duration-150 ease-out text-sm font-medium list-none [&::-webkit-details-marker]:hidden hover:opacity-80">
           <span>最终回复</span>
-          <span className={styles.summaryChevron}>
+          <span className={chevronIcon}>
             <svg
               width="14"
               height="14"
@@ -314,10 +338,12 @@ function SubRunBlock({
             </svg>
           </span>
         </summary>
-        <div className={styles.activityBody}>
-          <div className={styles.toolbarText}>{resultHandoff.summary}</div>
+        <div className="mt-2 mb-2">
+          <div className="flex-1 basis-[260px] min-w-0 text-[13px] leading-relaxed text-text-secondary whitespace-pre-wrap overflow-wrap-anywhere">
+            {resultHandoff.summary}
+          </div>
           {resultHandoff.findings.length > 0 && (
-            <ul className={styles.findingsList}>
+            <ul className="mt-1 mb-0 ml-4 p-0 list-disc text-text-secondary text-[0.85em]">
               {resultHandoff.findings.map((finding, index) => (
                 <li key={index}>{finding}</li>
               ))}
@@ -331,18 +357,25 @@ function SubRunBlock({
   return (
     <details
       ref={detailsRef}
-      className={styles.wrapper}
+      className="block mb-1.5 ml-[var(--chat-assistant-content-offset)] animate-block-enter motion-reduce:animate-none group"
       onToggle={(event) => {
         if (event.target === event.currentTarget && event.nativeEvent.isTrusted) {
           setUserInteracted(true);
         }
       }}
     >
-      <summary className={styles.summary} title={`${title} · ${statusLabel} · ${metrics}`}>
-        <span className={styles.summaryText}>子 Agent {title}</span>
-        <span className={`${styles.statusPill} ${getStatusClassName(status)}`}>{statusLabel}</span>
-        <span className={styles.summaryMeta}>{metrics}</span>
-        <span className={styles.summaryChevron}>
+      <summary
+        className="flex items-center gap-2 py-1 min-h-[24px] cursor-pointer select-none bg-transparent border-none text-text-secondary transition-opacity duration-150 ease-out text-[13px] font-normal font-mono list-none flex-nowrap w-full min-w-0 [&::-webkit-details-marker]:hidden hover:opacity-80"
+        title={`${title} · ${statusLabel} · ${metrics}`}
+      >
+        <span className="block flex-1 min-w-0 whitespace-nowrap overflow-hidden text-ellipsis">
+          子 Agent {title}
+        </span>
+        <span className={getStatusVariant(status)}>{statusLabel}</span>
+        <span className="shrink-0 text-xs text-text-secondary whitespace-nowrap max-sm:hidden">
+          {metrics}
+        </span>
+        <span className={chevronIcon}>
           <svg
             width="14"
             height="14"
@@ -358,14 +391,16 @@ function SubRunBlock({
         </span>
       </summary>
 
-      <div className={styles.body}>
+      <div className={cn(expandableBody, 'flex flex-col gap-3')}>
         {displayMode === 'directory' ? (
-          <div className={styles.directoryCard}>
-            <div className={styles.toolbarText}>{activitySummary}</div>
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div className="flex-1 basis-[260px] min-w-0 text-[13px] leading-relaxed text-text-secondary whitespace-pre-wrap overflow-wrap-anywhere">
+              {activitySummary}
+            </div>
             {(onFocusSubRun || (childSessionId && onOpenChildSession)) && (
               <button
                 type="button"
-                className={styles.openButton}
+                className={cn(infoButton, 'min-h-[30px]')}
                 onClick={() => void handleOpenView()}
               >
                 {navigationLabel}
@@ -375,16 +410,22 @@ function SubRunBlock({
         ) : (
           <>
             {renderToolbar()}
-            {cancelError && <div className={styles.resultError}>{cancelError}</div>}
+            {cancelError && (
+              <div className="text-danger text-xs leading-relaxed font-mono whitespace-pre-wrap overflow-wrap-anywhere">
+                {cancelError}
+              </div>
+            )}
             {resultFailure && (
-              <div className={styles.failureCard}>
-                <div className={styles.failureTitle}>执行失败</div>
-                <div className={styles.failureMessage}>{resultFailure.displayMessage}</div>
+              <div className="flex flex-col gap-2">
+                <div className="text-xs font-semibold text-danger">执行失败</div>
+                <div className="text-[13px] leading-relaxed text-text-primary whitespace-pre-wrap overflow-wrap-anywhere">
+                  {resultFailure.displayMessage}
+                </div>
                 {resultFailure.technicalMessage && (
-                  <details className={styles.activitySection}>
-                    <summary className={styles.activitySummary}>
+                  <details className="m-0 bg-transparent border-none group">
+                    <summary className="inline-flex items-center gap-2 py-1 min-h-[24px] cursor-pointer select-none bg-transparent border-none text-text-secondary transition-opacity duration-150 ease-out text-sm font-medium list-none [&::-webkit-details-marker]:hidden hover:opacity-80">
                       <span>技术详情</span>
-                      <span className={styles.summaryChevron}>
+                      <span className={chevronIcon}>
                         <svg
                           width="14"
                           height="14"
@@ -399,8 +440,10 @@ function SubRunBlock({
                         </svg>
                       </span>
                     </summary>
-                    <div className={styles.activityBody}>
-                      <div className={styles.resultError}>{resultFailure.technicalMessage}</div>
+                    <div className="mt-2 mb-2">
+                      <div className="text-danger text-xs leading-relaxed font-mono whitespace-pre-wrap overflow-wrap-anywhere">
+                        {resultFailure.technicalMessage}
+                      </div>
                     </div>
                   </details>
                 )}

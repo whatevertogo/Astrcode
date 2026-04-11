@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { CurrentModelInfo, ModelOption } from '../../types';
+import { cn } from '../../lib/utils';
 
 interface ModelSelectorProps {
   refreshKey: number;
@@ -193,7 +194,7 @@ export default function ModelSelector({
     <div ref={wrapperRef} className="relative">
       <button
         type="button"
-        className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg hover:bg-[rgba(0,0,0,0.05)] text-[13px] text-[var(--text-secondary)] transition-all duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(57,201,143,0.3)] disabled:opacity-60 disabled:cursor-not-allowed"
+        className="flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-[13px] text-text-secondary transition-all duration-150 ease-out hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-soft/30 disabled:cursor-not-allowed disabled:opacity-60"
         onClick={() => {
           if (!triggerDisabled) {
             setOpen((value) => !value);
@@ -205,7 +206,7 @@ export default function ModelSelector({
         aria-expanded={open}
         aria-controls={listboxId}
       >
-        <span className="truncate max-w-[200px] text-[var(--text-primary)] font-medium">
+        <span className="truncate max-w-[200px] text-text-primary font-medium">
           {selectedOption?.model ?? (loading ? '加载中...' : '未选择模型')}
         </span>
         <svg
@@ -224,12 +225,12 @@ export default function ModelSelector({
       {open && (
         <div
           id={listboxId}
-          className="absolute bottom-[calc(100%+8px)] left-0 w-[240px] bg-[var(--surface)] border border-[rgba(230,220,205,0.95)] rounded-2xl shadow-[0_12px_32px_rgba(117,90,52,0.1)] z-[9999] flex flex-col origin-bottom-left animate-in fade-in zoom-in-95 duration-100"
+          className="absolute bottom-[calc(100%+8px)] left-0 z-[9999] flex w-[240px] origin-bottom-left flex-col rounded-2xl border border-border bg-surface shadow-soft animate-in fade-in zoom-in-95 duration-100"
         >
-          <div className="p-1.5 border-b border-[var(--border)]">
+          <div className="p-1.5 border-b border-border">
             <div className="relative flex items-center">
               <svg
-                className="absolute left-2.5 w-3.5 h-3.5 text-[var(--text-muted)]"
+                className="absolute left-2.5 w-3.5 h-3.5 text-text-muted"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
@@ -244,7 +245,7 @@ export default function ModelSelector({
                 ref={searchInputRef}
                 type="text"
                 placeholder="搜索模型..."
-                className="w-full bg-transparent border-none py-1.5 pl-7 pr-2.5 text-[13px] text-[var(--text-primary)] focus:outline-none placeholder:text-[var(--text-muted)]"
+                className="w-full bg-transparent border-none py-1.5 pl-7 pr-2.5 text-[13px] text-text-primary focus:outline-none placeholder:text-text-muted"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
@@ -256,13 +257,11 @@ export default function ModelSelector({
             style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
           >
             {groupedOptions.length === 0 ? (
-              <div className="px-3 py-6 text-center text-[12px] text-[var(--text-muted)]">
-                无结果
-              </div>
+              <div className="px-3 py-6 text-center text-[12px] text-text-muted">无结果</div>
             ) : (
               groupedOptions.map(([profileName, profileOptions], groupIdx) => (
                 <div key={profileName} className={groupIdx > 0 ? 'mt-1.5' : ''}>
-                  <div className="px-4 py-1.5 text-[11px] font-semibold text-[var(--text-muted)] tracking-wider uppercase select-none">
+                  <div className="px-4 py-1.5 text-[11px] font-semibold text-text-muted tracking-wider uppercase select-none">
                     {profileName}
                   </div>
                   <div className="flex flex-col gap-0.5 px-1.5">
@@ -274,11 +273,10 @@ export default function ModelSelector({
                           type="button"
                           onMouseEnter={() => setHoverIndex(index)}
                           onMouseLeave={() => setHoverIndex(-1)}
-                          className="w-full flex items-center justify-between px-3 h-[34px] text-left rounded-lg transition-colors duration-100 text-[var(--text-primary)]"
-                          style={{
-                            backgroundColor:
-                              index === hoverIndex ? 'rgba(0, 0, 0, 0.05)' : 'transparent',
-                          }}
+                          className={cn(
+                            'w-full flex items-center justify-between px-3 h-[34px] text-left rounded-lg transition-colors duration-100 text-text-primary',
+                            index === hoverIndex && 'bg-black/5'
+                          )}
                           onClick={() => void handleSelect(index)}
                           role="option"
                           aria-selected={isSelected}
@@ -288,7 +286,7 @@ export default function ModelSelector({
                           </span>
                           {isSelected && (
                             <svg
-                              className="w-4 h-4 text-[var(--text-primary)] flex-shrink-0"
+                              className="w-4 h-4 text-text-primary flex-shrink-0"
                               viewBox="0 0 24 24"
                               fill="none"
                               stroke="currentColor"
@@ -308,7 +306,7 @@ export default function ModelSelector({
             )}
           </div>
           {error && (
-            <div className="mx-1.5 mb-1.5 p-2 bg-[#fff8f7] text-[#b34e4e] rounded-lg text-[12px] text-center border border-[#f0d5d2]">
+            <div className="mx-1.5 mb-1.5 p-2 bg-danger-soft text-danger rounded-lg text-[12px] text-center border border-danger/25">
               {error}
             </div>
           )}

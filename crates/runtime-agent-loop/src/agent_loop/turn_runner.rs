@@ -448,7 +448,9 @@ where
                             truncated_tool_results: truncated_tool_results.min(u32::MAX as usize)
                                 as u32,
                             provider_input_tokens: Some(
-                                usage.input_tokens.min(u32::MAX as usize) as u32
+                                provider
+                                    .prompt_metrics_input_tokens(usage)
+                                    .min(u32::MAX as usize) as u32,
                             ),
                             provider_output_tokens: Some(
                                 usage.output_tokens.min(u32::MAX as usize) as u32,

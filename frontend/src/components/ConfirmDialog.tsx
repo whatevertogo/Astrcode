@@ -3,7 +3,8 @@
 //! 替代原生 window.confirm()，保持桌面端风格一致。
 
 import React, { memo } from 'react';
-import styles from './ConfirmDialog.module.css';
+import { btnDanger, btnPrimary, btnSecondary, dialogSurface, overlay } from '../lib/styles';
+import { cn } from '../lib/utils';
 
 interface ConfirmDialogProps {
   /** 对话框标题 */
@@ -46,21 +47,26 @@ function ConfirmDialog({
 
   return (
     <div
-      className={styles.overlay}
+      className={overlay}
       role="dialog"
       aria-modal="true"
       aria-label={title}
       onKeyDown={handleKeyDown}
     >
-      <div className={styles.modal}>
-        <div className={styles.title}>{title}</div>
-        <div className={styles.message}>{message}</div>
-        <div className={styles.actions}>
-          <button className={styles.cancelBtn} type="button" onClick={onCancel} autoFocus>
+      <div className={cn(dialogSurface, 'w-[380px] max-w-full')}>
+        <div className="text-base font-bold text-text-primary mb-2">{title}</div>
+        <div className="text-sm leading-relaxed text-text-secondary mb-5">{message}</div>
+        <div className="flex justify-end gap-2.5">
+          <button
+            className={cn(btnSecondary, 'py-[9px]')}
+            type="button"
+            onClick={onCancel}
+            autoFocus
+          >
             {cancelLabel}
           </button>
           <button
-            className={`${styles.confirmBtn} ${danger ? styles.dangerBtn : ''}`}
+            className={cn(danger ? btnDanger : btnPrimary, 'py-[9px]')}
             type="button"
             onClick={() => {
               void onConfirm();

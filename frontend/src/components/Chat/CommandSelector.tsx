@@ -12,6 +12,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ComposerOption } from '../../types';
+import { cn } from '../../lib/utils';
 
 interface CommandSelectorProps {
   /** 是否可见 */
@@ -121,20 +122,18 @@ export default function CommandSelector({
 
   return (
     <div
-      className="absolute bottom-[calc(100%+8px)] left-1/2 -translate-x-1/2 w-[calc(100%-24px)] max-w-[760px] max-h-[420px] overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl p-1.5 z-[9999]"
+      className="absolute bottom-[calc(100%+8px)] left-1/2 -translate-x-1/2 w-[calc(100%-24px)] max-w-[760px] max-h-[420px] overflow-y-auto rounded-xl border border-border bg-surface shadow-2xl p-1.5 z-[9999]"
       ref={panelRef}
       onMouseDown={(e) => e.preventDefault()}
       role="listbox"
       aria-label="命令选择"
     >
       {loading ? (
-        <div className="flex items-center justify-center py-4 text-xs text-[var(--text-muted)]">
+        <div className="flex items-center justify-center py-4 text-xs text-text-muted">
           加载中...
         </div>
       ) : filteredOptions.length === 0 ? (
-        <div className="px-3 py-2 text-xs text-[var(--text-faint)]">
-          没有找到匹配「{query}」的命令
-        </div>
+        <div className="px-3 py-2 text-xs text-text-faint">没有找到匹配「{query}」的命令</div>
       ) : (
         filteredOptions.map((option, index) => {
           const previousOption = index > 0 ? filteredOptions[index - 1] : null;
@@ -151,7 +150,7 @@ export default function CommandSelector({
           return (
             <React.Fragment key={option.id}>
               {showHeader && (
-                <div className="px-3 py-1.5 mt-1 first:mt-0 text-[11px] font-semibold text-[var(--text-muted)] tracking-wider">
+                <div className="px-3 py-1.5 mt-1 first:mt-0 text-[11px] font-semibold text-text-muted tracking-wider">
                   {headerText}
                 </div>
               )}
@@ -162,34 +161,34 @@ export default function CommandSelector({
                 data-index={index}
                 onMouseEnter={() => setSelectedIndex(index)}
                 onClick={() => onSelect(option)}
-                className="w-full flex items-center justify-start gap-3 px-2 h-[34px] text-left transition-all duration-75 rounded-lg cursor-pointer"
-                style={{
-                  backgroundColor: index === selectedIndex ? 'rgba(0, 0, 0, 0.06)' : 'transparent',
-                  color: index === selectedIndex ? 'var(--text-primary)' : 'var(--text-secondary)',
-                }}
+                className={cn(
+                  'w-full flex items-center justify-start gap-3 px-2 h-[34px] text-left transition-all duration-75 rounded-lg cursor-pointer',
+                  index === selectedIndex ? 'bg-black/5 text-text-primary' : 'text-text-secondary'
+                )}
               >
                 <span
-                  className="flex items-center justify-center shrink-0 w-4 h-4"
-                  style={{
-                    color: index === selectedIndex ? 'var(--text-primary)' : 'var(--text-muted)',
-                  }}
+                  className={cn(
+                    'flex items-center justify-center shrink-0 w-4 h-4',
+                    index === selectedIndex ? 'text-text-primary' : 'text-text-muted'
+                  )}
                 >
                   <CommandIcon kind={option.kind} isSelected={index === selectedIndex} />
                 </span>
                 <div className="flex flex-1 items-center gap-3 min-w-0 overflow-hidden">
                   <span
-                    className="text-[13px] shrink-0 text-inherit leading-normal"
-                    style={{ fontWeight: index === selectedIndex ? 600 : 500 }}
+                    className={cn(
+                      'text-[13px] shrink-0 text-inherit leading-normal',
+                      index === selectedIndex ? 'font-semibold' : 'font-medium'
+                    )}
                   >
                     {option.title}
                   </span>
                   {option.description && (
                     <span
-                      className="text-[12px] truncate min-w-0 flex-1 leading-normal"
-                      style={{
-                        color:
-                          index === selectedIndex ? 'var(--text-secondary)' : 'var(--text-muted)',
-                      }}
+                      className={cn(
+                        'text-[12px] truncate min-w-0 flex-1 leading-normal',
+                        index === selectedIndex ? 'text-text-secondary' : 'text-text-muted'
+                      )}
                       title={option.description}
                     >
                       {option.description}
@@ -200,8 +199,7 @@ export default function CommandSelector({
                       {option.badges.map((badge) => (
                         <span
                           key={badge}
-                          className="inline-block px-1.5 py-[2px] text-[10px] leading-normal border-none uppercase font-semibold tracking-wide"
-                          style={{ color: 'var(--text-muted)' }}
+                          className="inline-block px-1.5 py-[2px] text-[10px] leading-normal border-none uppercase font-semibold tracking-wide text-text-muted"
                         >
                           {badge}
                         </span>
@@ -222,11 +220,11 @@ export default function CommandSelector({
  * Skill / Capability 图标，根据 kind 展示不同图标
  */
 function CommandIcon({ kind, isSelected }: { kind: ComposerOption['kind']; isSelected: boolean }) {
-  const color = isSelected ? 'stroke-[var(--text-primary)]' : 'stroke-[var(--text-muted)]';
+  const strokeClass = isSelected ? 'stroke-text-primary' : 'stroke-text-muted';
 
   return (
     <svg
-      className={`h-4 w-4 ${color} fill-none`}
+      className={cn('h-4 w-4 fill-none', strokeClass)}
       viewBox="0 0 24 24"
       strokeLinecap="round"
       strokeLinejoin="round"
@@ -238,7 +236,7 @@ function CommandIcon({ kind, isSelected }: { kind: ComposerOption['kind']; isSel
           d="M13 10V3L4 14h7v7l9-11h-7z"
           fill="currentColor"
           stroke="none"
-          className={isSelected ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'}
+          className={isSelected ? 'text-text-primary' : 'text-text-muted'}
         />
       ) : kind === 'command' ? (
         <path d="M8 8 4 12l4 4M16 8l4 4-4 4M13 5l-2 14" />
