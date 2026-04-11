@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { ComposerOption, Phase, CurrentModelInfo, ModelOption } from '../../types';
 import CommandSelector from './CommandSelector';
 import ModelSelector from './ModelSelector';
-import styles from './InputBar.module.css';
 
 /**
  * 输入框组件，支持 '/' 触发 slash 候选选择器
@@ -226,9 +225,9 @@ export default function InputBar({
   };
 
   return (
-    <div className={styles.container}>
-      <div className={styles.contentRail}>
-        <div className={styles.composerFrame}>
+    <div className="flex-shrink-0 px-[var(--chat-content-horizontal-padding)] pt-4 pb-[18px] bg-panel-bg max-sm:px-[var(--chat-content-horizontal-padding-mobile)] max-sm:py-3.5">
+      <div className="w-full max-w-[var(--chat-composer-max-width)] mx-auto translate-x-[var(--chat-assistant-center-shift)] max-sm:translate-x-0">
+        <div className="relative w-full">
           <div className="bg-[linear-gradient(180deg,rgba(255,255,255,0.96)_0%,rgba(253,248,241,0.98)_100%)] border border-[rgba(230,220,205,0.95)] rounded-[24px] shadow-[0_24px_42px_rgba(117,90,52,0.1),inset_0_1px_0_rgba(255,255,255,0.82)] transition-[border-color,box-shadow,transform] duration-[180ms] ease-out focus-within:border-[rgba(122,185,153,0.56)] focus-within:shadow-[0_0_0_4px_rgba(57,201,143,0.12),0_28px_48px_rgba(117,90,52,0.13)] focus-within:-translate-y-px">
             {workingDir && (
               <div
@@ -255,7 +254,7 @@ export default function InputBar({
               </div>
             )}
             <div className="relative">
-              <div className={styles.composerBody}>
+              <div className="flex flex-col px-[var(--chat-composer-shell-padding-x)] py-3">
                 <textarea
                   ref={textareaRef}
                   className="w-full min-h-[50px] max-h-[240px] text-[var(--text-primary)] text-[15px] leading-[1.75] overflow-y-auto placeholder:text-[var(--text-muted)] disabled:opacity-60 disabled:cursor-not-allowed border-0 bg-transparent focus:outline-none resize-none p-0 mb-3"
@@ -345,7 +344,9 @@ export default function InputBar({
           )}
         </div>
       </div>
-      <div className={styles.notice}>AI 可能会产生误导性信息，请核实重要内容</div>
+      <div className="w-full max-w-[var(--chat-composer-max-width)] mx-auto mt-2.5 text-center text-xs text-text-muted">
+        AI 可能会产生误导性信息，请核实重要内容
+      </div>
     </div>
   );
 }

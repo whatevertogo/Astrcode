@@ -2,7 +2,7 @@ import React, { Component, memo, useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { AssistantMessage as AssistantMessageType, PromptMetricsMessage } from '../../types';
-import styles from './AssistantMessage.module.css';
+import { cn } from '../../lib/utils';
 
 interface AssistantMessageProps {
   message: AssistantMessageType;
@@ -28,7 +28,11 @@ class MarkdownGuard extends Component<MarkdownGuardProps, MarkdownGuardState> {
 
   override render() {
     if (this.state.hasError) {
-      return <pre className={styles.fallbackText}>{this.props.fallback}</pre>;
+      return (
+        <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere font-inherit text-inherit">
+          {this.props.fallback}
+        </pre>
+      );
     }
 
     return this.props.children;
@@ -47,7 +51,7 @@ function extractThinkingBlocks(
     thinkingBlocks.push(explicitReasoning.trim());
   }
   const visibleText = text
-    .replace(/<think>([\s\S]*?)<\/think>/gi, (_match, content: string) => {
+    .replace(/<think([\s\S]*?)<\/think>/gi, (_match, content: string) => {
       const normalized = content.trim();
       if (normalized) {
         if (!thinkingBlocks.includes(normalized)) {
@@ -75,7 +79,11 @@ function CopyButton({ code }: { code: string }) {
   }, [code]);
 
   return (
-    <button className={styles.copyBtn} onClick={handleCopy} title="复制代码">
+    <button
+      className="flex items-center justify-center gap-1.5 h-7 px-2 rounded border-none bg-transparent text-[#6b7280] text-[13px] cursor-pointer opacity-0 transition-all duration-200 ease-out translate-y-0.5 group-hover:opacity-100 group-hover:translate-y-0 hover:bg-[rgba(0,0,0,0.06)] hover:text-[#1f2937]"
+      onClick={handleCopy}
+      title="复制代码"
+    >
       {copied ? (
         <>
           <svg
@@ -127,7 +135,7 @@ function CodeBlockRenderer({ node, className, children, ...props }: CodeBlockRen
 
   if (isInline) {
     return (
-      <code className={styles.inlineCode} {...props}>
+      <code className={className} {...props}>
         {children}
       </code>
     );
@@ -136,12 +144,15 @@ function CodeBlockRenderer({ node, className, children, ...props }: CodeBlockRen
   const codeText = String(children).replace(/\n$/, '');
 
   return (
-    <div className={styles.codeBlockWrapper}>
-      <div className={styles.codeHeader}>
-        <span className={styles.codeLanguage}>{language || 'text'}</span>
+    <div className="my-4 rounded-lg border border-[rgba(0,0,0,0.08)] overflow-hidden bg-[rgba(0,0,0,0.03)] relative group">
+      <div className="flex justify-between items-center px-3 pt-2 pl-4 bg-transparent">
+        <span className="text-xs text-[#6b7280] lowercase">{language || 'text'}</span>
         <CopyButton code={codeText} />
       </div>
-      <pre className={styles.codeBlock} {...props}>
+      <pre
+        className="m-0 px-4 pt-2 pb-4 overflow-x-auto text-sm leading-relaxed text-[#1f2937] font-mono"
+        {...props}
+      >
         <code className={className}>{children}</code>
       </pre>
     </div>
@@ -186,23 +197,31 @@ function formatTokenCount(value?: number): string {
   return value.toLocaleString();
 }
 
-function getCacheIndicator(metrics?: PromptMetricsMessage): React.ReactNode {
-  if (!metrics?.providerInputTokens || metrics.providerInputTokens === 0) {
+function calculateCacheHitRatePercent(metrics?: PromptMetricsMessage): number | null {
+  if (!metrics?.providerInputTokens || metrics.providerInputTokens <= 0) {
     return null;
   }
 
   const cacheRead = metrics.cacheReadInputTokens ?? 0;
-  const hitRate = Math.round((cacheRead / metrics.providerInputTokens) * 100);
+  const rawRate = Math.round((cacheRead / metrics.providerInputTokens) * 100);
+  return Math.min(Math.max(rawRate, 0), 100);
+}
+
+function getCacheIndicator(metrics?: PromptMetricsMessage): React.ReactNode {
+  const hitRate = calculateCacheHitRatePercent(metrics);
+  if (hitRate === null) {
+    return null;
+  }
 
   // 缓存命中率分级
   if (hitRate >= 80) {
-    return <span className={styles.cacheHigh}>🟢 缓存 {hitRate}%</span>;
+    return <span className="text-[#10b981] font-medium ml-2">🟢 缓存 {hitRate}%</span>;
   } else if (hitRate >= 30) {
-    return <span className={styles.cacheMedium}>🟡 缓存 {hitRate}%</span>;
+    return <span className="text-[#f59e0b] font-medium ml-2">🟡 缓存 {hitRate}%</span>;
   } else if (hitRate > 0) {
-    return <span className={styles.cacheLow}>🟠 缓存 {hitRate}%</span>;
+    return <span className="text-[#ef4444] font-medium ml-2">🟠 缓存 {hitRate}%</span>;
   } else {
-    return <span className={styles.cacheMiss}>🔴 无缓存</span>;
+    return <span className="text-[#dc2626] font-semibold ml-2">🔴 无缓存</span>;
   }
 }
 
@@ -214,13 +233,13 @@ function AssistantMessage({ message, hideAvatar, metrics }: AssistantMessageProp
   const streaming = message.streaming;
 
   return (
-    <div className={styles.wrapper}>
+    <div className="flex items-start gap-4 animate-message-enter max-sm:gap-3 motion-reduce:animate-none">
       <div
-        className={styles.avatar}
+        className="w-7 h-7 inline-flex items-center justify-center bg-[linear-gradient(180deg,#f3eadf_0%,#ebdfd1_100%)] text-[#8a7458] rounded shrink-0"
         aria-hidden="true"
         style={{ opacity: hideAvatar ? 0 : 1, visibility: hideAvatar ? 'hidden' : 'visible' }}
       >
-        <svg viewBox="0 0 20 20">
+        <svg viewBox="0 0 20 20" className="w-4 h-4">
           <rect
             x="3.25"
             y="3.25"
@@ -240,19 +259,21 @@ function AssistantMessage({ message, hideAvatar, metrics }: AssistantMessageProp
           />
         </svg>
       </div>
-      <div className={styles.body}>
+      <div className="flex-1 min-w-0 pt-0.5">
         <div
-          className={`${styles.content} ${message.streaming ? styles.contentStreaming : ''}`}
+          className={cn(
+            'relative py-2 bg-transparent text-[#141413] overflow-wrap-anywhere prose-chat'
+          )}
           data-streaming={message.streaming ? 'true' : 'false'}
         >
           {thinkingBlocks.map((block, index) => (
             <details
               key={`${message.id}-thinking-${index}`}
-              className={styles.thinkingBlock}
+              className="mb-3.5 bg-transparent border-none rounded-0 overflow-visible group"
               open={message.streaming}
             >
-              <summary className={styles.thinkingSummary}>
-                <span className={styles.thinkingIcon}>
+              <summary className="inline-flex items-center gap-2 py-1 min-h-[24px] cursor-pointer select-none bg-transparent border-none rounded-0 text-text-secondary transition-opacity duration-150 ease-out text-sm font-medium list-none [&::-webkit-details-marker]:hidden hover:opacity-80">
+                <span className="w-4 h-4 inline-flex items-center justify-center shrink-0 text-[13px] text-text-secondary">
                   <svg
                     width="16"
                     height="16"
@@ -275,7 +296,7 @@ function AssistantMessage({ message, hideAvatar, metrics }: AssistantMessageProp
                   </svg>
                 </span>
                 <span>Thinking</span>
-                <span className={styles.thinkingChevron}>
+                <span className="w-4 h-4 text-text-secondary transition-transform duration-150 ease-out opacity-60 group-open:rotate-90">
                   <svg
                     width="16"
                     height="16"
@@ -290,16 +311,20 @@ function AssistantMessage({ message, hideAvatar, metrics }: AssistantMessageProp
                   </svg>
                 </span>
               </summary>
-              <div className={styles.thinkingContent}>
+              <div className="mt-2 mb-2 ml-2 pl-4 border-l-2 border-[rgba(0,0,0,0.1)] overflow-wrap-anywhere text-sm text-text-secondary leading-relaxed prose-chat">
                 <MarkdownContent text={block} defer={streaming} />
               </div>
             </details>
           ))}
           {visibleText ? <MarkdownContent text={visibleText} defer={streaming} /> : null}
-          {message.streaming && <span className={styles.cursor}>▋</span>}
+          {message.streaming && (
+            <span className="inline-block text-[#6b6258] animate-blink motion-reduce:animate-none ml-px">
+              ▋
+            </span>
+          )}
         </div>
         {metrics && (
-          <div className={styles.metricsInline}>
+          <div className="mt-3 pt-2 border-t border-[rgba(0,0,0,0.06)] text-xs leading-relaxed text-[#6b7280]">
             📊 {formatTokenCount(metrics.estimatedTokens)} tokens
             {getCacheIndicator(metrics)}
           </div>

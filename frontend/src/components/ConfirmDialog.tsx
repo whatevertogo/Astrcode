@@ -3,7 +3,8 @@
 //! 替代原生 window.confirm()，保持桌面端风格一致。
 
 import React, { memo } from 'react';
-import styles from './ConfirmDialog.module.css';
+import { overlay } from '../lib/styles';
+import { cn } from '../lib/utils';
 
 interface ConfirmDialogProps {
   /** 对话框标题 */
@@ -46,21 +47,29 @@ function ConfirmDialog({
 
   return (
     <div
-      className={styles.overlay}
+      className={overlay}
       role="dialog"
       aria-modal="true"
       aria-label={title}
       onKeyDown={handleKeyDown}
     >
-      <div className={styles.modal}>
-        <div className={styles.title}>{title}</div>
-        <div className={styles.message}>{message}</div>
-        <div className={styles.actions}>
-          <button className={styles.cancelBtn} type="button" onClick={onCancel} autoFocus>
+      <div className="w-[380px] max-w-full p-6 rounded-[20px] border border-border bg-surface shadow-[0_24px_60px_rgba(83,61,31,0.16)]">
+        <div className="text-base font-bold text-text-primary mb-2">{title}</div>
+        <div className="text-sm leading-relaxed text-text-secondary mb-5">{message}</div>
+        <div className="flex justify-end gap-2.5">
+          <button
+            className="px-4 py-[9px] text-[13px] font-semibold rounded-xl border border-border bg-surface-soft text-text-secondary transition-[background-color,border-color,color] duration-150 ease-out hover:bg-white hover:border-border-strong hover:text-text-primary"
+            type="button"
+            onClick={onCancel}
+            autoFocus
+          >
             {cancelLabel}
           </button>
           <button
-            className={`${styles.confirmBtn} ${danger ? styles.dangerBtn : ''}`}
+            className={cn(
+              'px-4 py-[9px] text-[13px] font-semibold rounded-xl border-none bg-accent-strong text-white transition-[background-color,opacity] duration-150 ease-out hover:bg-[#1f1b17]',
+              danger && 'bg-danger hover:bg-[#b54a4a]'
+            )}
             type="button"
             onClick={() => {
               void onConfirm();

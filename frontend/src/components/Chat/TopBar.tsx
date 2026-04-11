@@ -1,5 +1,3 @@
-import styles from './TopBar.module.css';
-
 interface TopBarProps {
   projectName: string | null;
   sessionTitle: string | null;
@@ -22,10 +20,10 @@ export default function TopBar({
   onNavigateSubRunPath,
 }: TopBarProps) {
   return (
-    <div className={styles.topBar}>
-      <div className={styles.breadcrumb}>
+    <div className="relative z-30 flex items-center justify-between gap-4 px-[22px] py-3.5 border-b border-border bg-[linear-gradient(180deg,rgba(255,252,247,0.96)_0%,rgba(252,250,247,0.9)_100%)] backdrop-blur-[12px] flex-shrink-0 max-[899px]:flex-wrap max-[899px]:px-4">
+      <div className="flex-1 flex items-center gap-1.5 min-w-0">
         <button
-          className={styles.toggleSidebarBtn}
+          className="flex items-center justify-center bg-transparent border-none text-text-secondary rounded-md p-1 -ml-1 transition-all duration-200 ease-out cursor-pointer outline-none hover:bg-black/5 hover:text-text-primary"
           onClick={toggleSidebar}
           aria-label={isSidebarOpen ? '收起侧边栏' : '展开侧边栏'}
           title={isSidebarOpen ? '收起侧边栏' : '展开侧边栏'}
@@ -46,30 +44,43 @@ export default function TopBar({
         </button>
         {projectName ? (
           <>
-            <span className={styles.projectName}>{projectName}</span>
+            <span className="text-[13px] text-text-secondary overflow-hidden text-ellipsis whitespace-nowrap">
+              {projectName}
+            </span>
             {sessionTitle && (
               <>
-                <span className={styles.sep}>›</span>
+                <span className="text-text-faint text-[13px]">›</span>
                 {activeSubRunPath.length > 0 ? (
-                  <button type="button" className={styles.breadcrumbButton} onClick={onCloseSubRun}>
+                  <button
+                    type="button"
+                    className="inline-flex items-center justify-center min-h-[26px] px-2 border border-border rounded-full bg-surface text-text-secondary text-xs font-medium cursor-pointer transition-[background,border-color,color] duration-150 ease-out hover:bg-black/3 hover:border-black/12 hover:text-text-primary"
+                    onClick={onCloseSubRun}
+                  >
                     {sessionTitle}
                   </button>
                 ) : (
-                  <span className={styles.sessionTitle}>{sessionTitle}</span>
+                  <span className="text-[13px] text-text-primary font-medium overflow-hidden text-ellipsis whitespace-nowrap">
+                    {sessionTitle}
+                  </span>
                 )}
               </>
             )}
             {activeSubRunBreadcrumbs.map((breadcrumb, index) => {
               const isLast = index === activeSubRunBreadcrumbs.length - 1;
               return (
-                <span key={breadcrumb.subRunId} className={styles.breadcrumbSegment}>
-                  <span className={styles.sep}>›</span>
+                <span
+                  key={breadcrumb.subRunId}
+                  className="inline-flex items-center gap-1.5 min-w-0"
+                >
+                  <span className="text-text-faint text-[13px]">›</span>
                   {isLast ? (
-                    <span className={styles.subRunTitle}>{breadcrumb.title}</span>
+                    <span className="text-[13px] text-text-primary font-semibold overflow-hidden text-ellipsis whitespace-nowrap">
+                      {breadcrumb.title}
+                    </span>
                   ) : (
                     <button
                       type="button"
-                      className={styles.subRunBackBtn}
+                      className="inline-flex items-center justify-center min-h-[26px] px-2.5 border border-border rounded-full bg-surface text-text-secondary text-xs font-semibold cursor-pointer transition-[background,border-color,color] duration-150 ease-out hover:bg-black/3 hover:border-black/12 hover:text-text-primary"
                       onClick={() => onNavigateSubRunPath(activeSubRunPath.slice(0, index + 1))}
                     >
                       {breadcrumb.title}
@@ -80,7 +91,7 @@ export default function TopBar({
             })}
           </>
         ) : (
-          <span className={styles.empty}>未选择会话</span>
+          <span className="text-[13px] text-text-muted">未选择会话</span>
         )}
       </div>
     </div>
