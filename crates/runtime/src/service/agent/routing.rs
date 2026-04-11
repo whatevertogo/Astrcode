@@ -2,10 +2,8 @@
 
 use astrcode_core::{
     AgentLifecycleStatus, AgentStatus, ChildAgentRef, ChildSessionLineageKind, CloseAgentParams,
-    CollaborationResult, CollaborationResultKind, DeliverToParentParams, InboxEnvelopeKind,
-    ResumeAgentParams, SendAgentParams, SubRunHandle, WaitAgentParams, WaitUntil,
+    CollaborationResult, CollaborationResultKind, InboxEnvelopeKind, SendAgentParams, SubRunHandle,
 };
-use astrcode_runtime_execution::DeliveryBufferStage;
 
 use super::{AgentServiceHandle, mailbox::compose_reusable_child_message};
 use crate::service::{ServiceError, ServiceResult};
@@ -90,7 +88,6 @@ impl AgentServiceHandle {
                 agent_ref: Some(self.project_child_ref_status(child_ref).await),
                 delivery_id: None,
                 summary: Some(format!("消息已发送到子 Agent {}", params.agent_id)),
-                parent_agent_id: None,
                 cascade: None,
                 closed_root_agent_id: None,
                 failure: None,
@@ -135,62 +132,6 @@ impl AgentServiceHandle {
             agent_ref: Some(self.project_child_ref_status(child_ref).await),
             delivery_id: Some(delivery_id),
             summary: Some(format!("消息已发送到子 Agent {}", params.agent_id)),
-            parent_agent_id: None,
-            cascade: None,
-            closed_root_agent_id: None,
-            failure: None,
-        })
-    }
-
-    pub async fn wait_for_child(
-        &self,
-        params: WaitAgentParams,
-        ctx: &astrcode_core::ToolContext,
-    ) -> ServiceResult<CollaborationResult> {
-        params.validate().map_err(ServiceError::from)?;
-
-        let handle = match params.until {
-            WaitUntil::Final => self
-                .runtime
-                .agent_control
-                .wait(&params.agent_id)
-                .await
-                .ok_or_else(|| {
-                    ServiceError::NotFound(format!(
-                        "agent '{}' not found or already finalized",
-                        params.agent_id
-                    ))
-                })?,
-            WaitUntil::NextDelivery => self
-                .runtime
-                .agent_control
-                .wait_for_inbox(&params.agent_id)
-                .await
-                .ok_or_else(|| {
-                    ServiceError::NotFound(format!(
-                        "agent '{}' not found for inbox wait",
-                        params.agent_id
-                    ))
-                })?,
-        };
-
-        self.verify_caller_owns_child(ctx, &handle)?;
-
-        let child_ref = self.build_child_ref_from_handle(&handle).await;
-        let summary = match handle.status {
-            AgentStatus::Completed => "子 Agent 已完成".to_string(),
-            AgentStatus::Failed => "子 Agent 执行失败".to_string(),
-            AgentStatus::Cancelled => "子 Agent 已取消".to_string(),
-            _ => format!("子 Agent 状态: {:?}", handle.status),
-        };
-
-        Ok(CollaborationResult {
-            accepted: true,
-            kind: CollaborationResultKind::WaitResolved,
-            agent_ref: Some(child_ref),
-            delivery_id: None,
-            summary: Some(summary),
-            parent_agent_id: None,
             cascade: None,
             closed_root_agent_id: None,
             failure: None,
@@ -262,162 +203,8 @@ impl AgentServiceHandle {
             agent_ref: None,
             delivery_id: None,
             summary: Some(summary),
-            parent_agent_id: cancelled.parent_agent_id,
             cascade: Some(true),
             closed_root_agent_id: Some(cancelled.agent_id.clone()),
-            failure: None,
-        })
-    }
-
-    pub async fn resume_child(
-        &self,
-        params: ResumeAgentParams,
-        ctx: &astrcode_core::ToolContext,
-    ) -> ServiceResult<CollaborationResult> {
-        params.validate().map_err(ServiceError::from)?;
-
-        let target = self
-            .runtime
-            .agent_control
-            .get(&params.agent_id)
-            .await
-            .ok_or_else(|| {
-                ServiceError::NotFound(format!("agent '{}' not found", params.agent_id))
-            })?;
-        self.verify_caller_owns_child(ctx, &target)?;
-
-        let (resumed_handle, result) = self
-            .runtime
-            .execution()
-            .resume_child_session(&params.agent_id, params.message.clone(), ctx)
-            .await?;
-
-        let child_ref = Some(ChildAgentRef {
-            agent_id: resumed_handle.agent_id.clone(),
-            session_id: resumed_handle.session_id.clone(),
-            sub_run_id: resumed_handle.sub_run_id.clone(),
-            parent_agent_id: resumed_handle.parent_agent_id.clone(),
-            lineage_kind: ChildSessionLineageKind::Resume,
-            status: AgentStatus::Running,
-            open_session_id: resumed_handle
-                .child_session_id
-                .clone()
-                .unwrap_or_else(|| resumed_handle.session_id.clone()),
-        });
-
-        Ok(CollaborationResult {
-            accepted: true,
-            kind: CollaborationResultKind::Resumed,
-            agent_ref: child_ref,
-            delivery_id: None,
-            summary: Some(result.handoff.map(|h| h.summary).unwrap_or_default()),
-            parent_agent_id: None,
-            cascade: None,
-            closed_root_agent_id: None,
-            failure: None,
-        })
-    }
-
-    pub async fn deliver_to_parent(
-        &self,
-        params: DeliverToParentParams,
-        ctx: &astrcode_core::ToolContext,
-    ) -> ServiceResult<CollaborationResult> {
-        params.validate().map_err(ServiceError::from)?;
-
-        let current_agent_id = ctx.agent_context().agent_id.clone().ok_or_else(|| {
-            ServiceError::InvalidInput("deliverToParent requires an agent context".to_string())
-        })?;
-
-        let current_handle = self
-            .runtime
-            .agent_control
-            .get(&current_agent_id)
-            .await
-            .ok_or_else(|| {
-                ServiceError::NotFound(format!("agent '{}' not found", current_agent_id))
-            })?;
-
-        let parent_agent_id = current_handle.parent_agent_id.clone().ok_or_else(|| {
-            ServiceError::InvalidInput(
-                "deliverToParent can only be called by a child agent".to_string(),
-            )
-        })?;
-
-        let parent_handle = self
-            .runtime
-            .agent_control
-            .get(&parent_agent_id)
-            .await
-            .ok_or_else(|| {
-                ServiceError::NotFound(format!(
-                    "direct parent agent '{}' not found — delivery rejected",
-                    parent_agent_id
-                ))
-            })?;
-
-        let ancestor_chain = self
-            .runtime
-            .agent_control
-            .ancestor_chain(&current_agent_id)
-            .await;
-        if ancestor_chain.len() < 2 {
-            return Err(ServiceError::InvalidInput(
-                "deliverToParent requires at least a two-level agent chain".to_string(),
-            ));
-        }
-        if ancestor_chain[1].agent_id != parent_agent_id {
-            return Err(ServiceError::InvalidInput(format!(
-                "direct parent routing mismatch: expected '{}', found '{}' in ancestor chain",
-                parent_agent_id, ancestor_chain[1].agent_id
-            )));
-        }
-
-        let delivery_id = format!("delivery-{}", uuid::Uuid::new_v4());
-        let envelope = astrcode_core::AgentInboxEnvelope {
-            delivery_id: delivery_id.clone(),
-            from_agent_id: current_agent_id.clone(),
-            to_agent_id: parent_agent_id.clone(),
-            kind: InboxEnvelopeKind::ChildDelivery,
-            message: params
-                .final_reply
-                .clone()
-                .unwrap_or_else(|| params.summary.clone()),
-            context: None,
-            is_final: params.final_reply.is_some(),
-            summary: Some(params.summary.clone()),
-            findings: params.findings.clone(),
-            artifacts: params.artifacts.clone(),
-        };
-
-        self.runtime
-            .agent_control
-            .push_inbox(&parent_agent_id, envelope)
-            .await
-            .ok_or_else(|| {
-                ServiceError::NotFound(format!(
-                    "parent agent '{}' inbox not available for delivery",
-                    parent_agent_id
-                ))
-            })?;
-        self.runtime
-            .observability
-            .record_delivery_buffer(DeliveryBufferStage::Queued);
-
-        let _ = parent_handle;
-
-        Ok(CollaborationResult {
-            accepted: true,
-            kind: CollaborationResultKind::Delivered,
-            agent_ref: None,
-            delivery_id: Some(delivery_id),
-            summary: Some(format!(
-                "结果已交付给直接父 Agent {}（一次性消费）",
-                parent_agent_id
-            )),
-            parent_agent_id: Some(parent_agent_id),
-            cascade: None,
-            closed_root_agent_id: None,
             failure: None,
         })
     }

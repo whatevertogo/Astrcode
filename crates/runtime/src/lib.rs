@@ -41,7 +41,7 @@ pub use astrcode_runtime_config::{
     ModelOption, ParsedEnvValue, Profile, RuntimeConfig, TestResult, config_path, env_reference,
     is_env_var_name, list_model_options, load_config, load_resolved_config, open_config_in_editor,
     parse_env_value, resolve_active_selection, resolve_agent_experimental_independent_session,
-    resolve_agent_finalized_retain_limit, resolve_agent_max_concurrent, resolve_agent_max_depth,
+    resolve_agent_finalized_retain_limit, resolve_agent_max_concurrent,
     resolve_agent_max_subrun_depth, resolve_anthropic_messages_api_url,
     resolve_anthropic_models_api_url, resolve_auto_compact_enabled,
     resolve_compact_keep_recent_turns, resolve_compact_threshold_percent,

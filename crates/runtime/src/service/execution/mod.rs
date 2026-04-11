@@ -9,8 +9,8 @@
 //! - `context`：bootstrap 阶段的延迟执行器桥与错误转换工具
 
 mod cancel;
-mod collaboration;
 mod context;
+pub(super) mod resume;
 pub(super) mod root;
 mod status;
 mod subagent;

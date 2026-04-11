@@ -114,19 +114,16 @@ export async function interruptSession(sessionId: string): Promise<void> {
 
 /// 关闭指定 agent 及其子树。
 ///
-/// 替代旧的 cancelSubRun 端点。新端点按 agent_id 定位，支持级联关闭。
-/// cascade 默认为 true。
+/// 按 agent_id 定位，始终级联关闭。
 export async function closeAgent(
   sessionId: string,
-  agentId: string,
-  cascade?: boolean
+  agentId: string
 ): Promise<{ closedAgentIds: string[] }> {
   return requestJson<{ closedAgentIds: string[] }>(
     `/api/v1/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}/close`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cascade: cascade ?? true }),
     }
   );
 }

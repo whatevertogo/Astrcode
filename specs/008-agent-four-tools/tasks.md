@@ -85,15 +85,15 @@
 
 ### Tests for User Story 3 ⚠️
 
-- [ ] T021 [P] [US3] Add `observe` authorization and snapshot-field coverage in `crates/runtime-agent-tool/src/tests.rs`, `crates/runtime/src/service/execution/tests.rs`, and `crates/server/src/tests/session_contract_tests.rs`
-- [ ] T022 [P] [US3] Add removed-surface regression coverage for old collaboration tool names in `crates/runtime-agent-tool/src/tests.rs` and `crates/server/src/tests/runtime_routes_tests.rs`
+- [x] T021 [P] [US3] Add `observe` authorization and snapshot-field coverage in `crates/runtime-agent-tool/src/tests.rs`, `crates/runtime/src/service/execution/tests.rs`, and `crates/server/src/tests/session_contract_tests.rs`
+- [x] T022 [P] [US3] Add removed-surface regression coverage for old collaboration tool names in `crates/runtime-agent-tool/src/tests.rs` and `crates/server/src/tests/runtime_routes_tests.rs`
 
 ### Implementation for User Story 3
 
-- [ ] T023 [US3] Implement `observe` snapshot aggregation in `crates/runtime/src/service/execution/collaboration.rs` and `crates/runtime/src/service/execution/status.rs`
-- [ ] T024 [US3] Replace old wait/deliver/resume tool wiring, create the `observe` tool struct with `Tool` trait impl, parameters schema, and capability metadata, and register the four-tool surface in `crates/runtime-agent-tool/src/observe_tool.rs`, `crates/runtime-agent-tool/src/collaboration_executor.rs`, `crates/runtime-agent-tool/src/wait_tool.rs`, `crates/runtime-agent-tool/src/deliver_tool.rs`, `crates/runtime-agent-tool/src/resume_tool.rs`, and `crates/runtime/src/builtin_capabilities.rs`
-- [ ] T025 [US3] Update server and frontend callers to the new `spawn`/`send`/`observe`/`close` contract in `crates/server/src/http/routes/agents.rs`, `crates/server/src/http/routes/sessions/mutation.rs`, `frontend/src/lib/api/sessions.ts`, and `frontend/src/hooks/useAgent.ts`
-- [ ] T026 [US3] Rewrite tool descriptions, spawn guidance, and workflow examples to the four-tool mental model in `crates/runtime-agent-tool/src/spawn_tool.rs`, `crates/runtime-prompt/src/contributors/workflow_examples.rs`, and `crates/core/src/action.rs`
+- [x] T023 [US3] Implement `observe` snapshot aggregation in `crates/runtime/src/service/agent/observe.rs`
+- [x] T024 [US3] Replace old wait/deliver/resume tool wiring, create the `observe` tool struct with `Tool` trait impl, parameters schema, and capability metadata, and register the four-tool surface in `crates/runtime-agent-tool/src/observe_tool.rs`, `crates/runtime-agent-tool/src/collaboration_executor.rs`, and `crates/runtime/src/builtin_capabilities.rs`
+- [x] T025 [US3] Update server and frontend callers to the new `spawn`/`send`/`observe`/`close` contract in `crates/server/src/http/routes/agents.rs`, `frontend/src/lib/api/sessions.ts`, and `frontend/src/hooks/useAgent.ts`
+- [x] T026 [US3] Rewrite tool descriptions, spawn guidance, and workflow examples to the four-tool mental model in `crates/runtime-agent-tool/src/close_tool.rs` and `crates/core/src/action.rs`
 
 **Checkpoint**: All user stories should now be independently functional, and the public collaboration surface should be fully simplified and observable
 

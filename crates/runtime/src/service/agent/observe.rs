@@ -79,14 +79,13 @@ impl AgentServiceHandle {
 
         Ok(CollaborationResult {
             accepted: true,
-            kind: CollaborationResultKind::Sent,
+            kind: CollaborationResultKind::Observed,
             agent_ref: Some(
                 self.project_child_ref_status(self.build_child_ref_from_handle(&child).await)
                     .await,
             ),
             delivery_id: None,
             summary: Some(serde_json::to_string(&observe_result).unwrap_or_default()),
-            parent_agent_id: None,
             cascade: None,
             closed_root_agent_id: None,
             failure: None,

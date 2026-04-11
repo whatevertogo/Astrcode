@@ -234,15 +234,6 @@ pub struct AgentConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_subrun_depth: Option<usize>,
 
-    /// Agent 嵌套深度上限。
-    ///
-    /// 限制子 Agent 可被嵌套的层数，防止无限递归。
-    /// 例如 maxDepth=3 表示最多允许 root→child→grandchild 三层。
-    ///
-    /// 保留该字段是为了兼容旧配置；新逻辑优先读取 `maxSubrunDepth`。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_depth: Option<usize>,
-
     /// 并发子 Agent 数上限。
     ///
     /// 同时处于活跃状态（Pending / Running）的子 Agent 最大数量，
@@ -268,7 +259,6 @@ impl fmt::Debug for AgentConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AgentConfig")
             .field("max_subrun_depth", &self.max_subrun_depth)
-            .field("max_depth", &self.max_depth)
             .field("max_concurrent", &self.max_concurrent)
             .field("finalized_retain_limit", &self.finalized_retain_limit)
             .field(

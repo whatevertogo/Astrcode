@@ -418,7 +418,6 @@ pub const DEFAULT_API_SESSION_TTL_HOURS: i64 = 8;
 /// 默认 Agent 嵌套深度上限。
 ///
 /// 限制子 Agent 可被嵌套的层数，防止无限递归。
-/// 例如 maxDepth=3 表示最多允许 root→child→grandchild 三层。
 pub const DEFAULT_MAX_AGENT_DEPTH: usize = 3;
 
 /// 默认受控子会话最大深度。
@@ -498,23 +497,13 @@ pub fn resolve_max_tool_concurrency(runtime: &RuntimeConfig) -> usize {
 // 多 Agent 控制配置解析
 // ============================================================================
 
-/// 解析 Agent 嵌套深度上限。
-///
-/// 当 `runtime.agent.maxDepth` 未设置时回退到 [`DEFAULT_MAX_AGENT_DEPTH`]。
-pub fn resolve_agent_max_depth(agent: Option<&AgentConfig>) -> usize {
-    agent
-        .and_then(|a| a.max_depth)
-        .unwrap_or(DEFAULT_MAX_AGENT_DEPTH)
-        .max(1)
-}
-
 /// 解析受控子会话最大深度。
 ///
-/// 新逻辑优先读取 `maxSubrunDepth`，并在旧配置里回退到 `maxDepth`，
-/// 这样可以平滑兼容已经存在的用户配置。
+/// 仅读取 `runtime.agent.maxSubrunDepth`，如果未设置则回退到
+/// [`DEFAULT_MAX_SUBRUN_DEPTH`]。
 pub fn resolve_agent_max_subrun_depth(agent: Option<&AgentConfig>) -> usize {
     agent
-        .and_then(|a| a.max_subrun_depth.or(a.max_depth))
+        .and_then(|a| a.max_subrun_depth)
         .unwrap_or(DEFAULT_MAX_SUBRUN_DEPTH)
         .max(1)
 }

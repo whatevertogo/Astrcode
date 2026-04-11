@@ -6,8 +6,8 @@
 use std::sync::{Arc, RwLock as StdRwLock, Weak};
 
 use astrcode_core::{
-    AstrError, CloseAgentParams, CollaborationResult, DeliverToParentParams, ObserveParams, Result,
-    ResumeAgentParams, SendAgentParams, ToolContext, WaitAgentParams,
+    AstrError, CloseAgentParams, CollaborationResult, ObserveParams, Result, SendAgentParams,
+    ToolContext,
 };
 use astrcode_runtime_agent_tool::CollaborationExecutor;
 use async_trait::async_trait;
@@ -68,19 +68,6 @@ impl CollaborationExecutor for DeferredCollaborationExecutor {
             .map_err(service_error_to_astr)
     }
 
-    async fn wait(
-        &self,
-        params: WaitAgentParams,
-        ctx: &ToolContext,
-    ) -> Result<CollaborationResult> {
-        let runtime = self.runtime()?;
-        runtime
-            .agent()
-            .wait_for_child(params, ctx)
-            .await
-            .map_err(service_error_to_astr)
-    }
-
     async fn close(
         &self,
         params: CloseAgentParams,
@@ -90,32 +77,6 @@ impl CollaborationExecutor for DeferredCollaborationExecutor {
         runtime
             .agent()
             .close_child(params, ctx)
-            .await
-            .map_err(service_error_to_astr)
-    }
-
-    async fn resume(
-        &self,
-        params: ResumeAgentParams,
-        ctx: &ToolContext,
-    ) -> Result<CollaborationResult> {
-        let runtime = self.runtime()?;
-        runtime
-            .agent()
-            .resume_child(params, ctx)
-            .await
-            .map_err(service_error_to_astr)
-    }
-
-    async fn deliver(
-        &self,
-        params: DeliverToParentParams,
-        ctx: &ToolContext,
-    ) -> Result<CollaborationResult> {
-        let runtime = self.runtime()?;
-        runtime
-            .agent()
-            .deliver_to_parent(params, ctx)
             .await
             .map_err(service_error_to_astr)
     }

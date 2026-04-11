@@ -2,16 +2,15 @@ use std::sync::{Arc, Mutex};
 
 use astrcode_core::{
     AgentStatus, ArtifactRef, CancelToken, ChildAgentRef, ChildSessionLineageKind,
-    CloseAgentParams, CollaborationResult, CollaborationResultKind, DeliverToParentParams,
-    ObserveParams, ResumeAgentParams, SendAgentParams, SubRunFailure, SubRunFailureCode,
-    SubRunHandoff, SubRunResult, Tool, ToolContext, WaitAgentParams, WaitUntil,
+    CloseAgentParams, CollaborationResult, CollaborationResultKind, ObserveParams, SendAgentParams,
+    SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult, Tool, ToolContext,
 };
 use async_trait::async_trait;
 use serde_json::json;
 
 use crate::{
-    CloseAgentTool, CollaborationExecutor, DeliverToParentTool, ResumeAgentTool, SendAgentTool,
-    SpawnAgentParams, SpawnAgentTool, SubAgentExecutor, WaitAgentTool,
+    CloseAgentTool, CollaborationExecutor, ObserveAgentTool, SendAgentTool, SpawnAgentParams,
+    SpawnAgentTool, SubAgentExecutor,
 };
 
 struct RecordingExecutor {
@@ -439,20 +438,16 @@ async fn tool_flow_reuses_spawned_agent_id_for_send_and_close() {
 /// 记录所有调用并返回预设结果的协作执行器。
 struct RecordingCollabExecutor {
     send_calls: Mutex<Vec<SendAgentParams>>,
-    wait_calls: Mutex<Vec<WaitAgentParams>>,
     close_calls: Mutex<Vec<CloseAgentParams>>,
-    resume_calls: Mutex<Vec<ResumeAgentParams>>,
-    deliver_calls: Mutex<Vec<DeliverToParentParams>>,
+    observe_calls: Mutex<Vec<ObserveParams>>,
 }
 
 impl RecordingCollabExecutor {
     fn new() -> Self {
         Self {
             send_calls: Mutex::new(Vec::new()),
-            wait_calls: Mutex::new(Vec::new()),
             close_calls: Mutex::new(Vec::new()),
-            resume_calls: Mutex::new(Vec::new()),
-            deliver_calls: Mutex::new(Vec::new()),
+            observe_calls: Mutex::new(Vec::new()),
         }
     }
 }
@@ -483,28 +478,6 @@ impl CollaborationExecutor for RecordingCollabExecutor {
             agent_ref: Some(sample_child_ref()),
             delivery_id: Some("delivery-1".to_string()),
             summary: Some("消息已发送".to_string()),
-            parent_agent_id: None,
-            cascade: None,
-            closed_root_agent_id: None,
-            failure: None,
-        })
-    }
-
-    async fn wait(
-        &self,
-        params: WaitAgentParams,
-        _ctx: &ToolContext,
-    ) -> astrcode_core::Result<CollaborationResult> {
-        self.wait_calls.lock().expect("lock").push(params);
-        let mut child_ref = sample_child_ref();
-        child_ref.status = AgentStatus::Completed;
-        Ok(CollaborationResult {
-            accepted: true,
-            kind: CollaborationResultKind::WaitResolved,
-            agent_ref: Some(child_ref),
-            delivery_id: None,
-            summary: Some("子 Agent 已完成".to_string()),
-            parent_agent_id: None,
             cascade: None,
             closed_root_agent_id: None,
             failure: None,
@@ -523,49 +496,8 @@ impl CollaborationExecutor for RecordingCollabExecutor {
             agent_ref: None,
             delivery_id: None,
             summary: Some("子 Agent 已关闭".to_string()),
-            parent_agent_id: None,
             cascade: Some(true),
             closed_root_agent_id: Some("agent-42".to_string()),
-            failure: None,
-        })
-    }
-
-    async fn resume(
-        &self,
-        params: ResumeAgentParams,
-        _ctx: &ToolContext,
-    ) -> astrcode_core::Result<CollaborationResult> {
-        self.resume_calls.lock().expect("lock").push(params);
-        let mut child_ref = sample_child_ref();
-        child_ref.status = AgentStatus::Running;
-        Ok(CollaborationResult {
-            accepted: true,
-            kind: CollaborationResultKind::Resumed,
-            agent_ref: Some(child_ref),
-            delivery_id: None,
-            summary: Some("子 Agent 已恢复".to_string()),
-            parent_agent_id: None,
-            cascade: None,
-            closed_root_agent_id: None,
-            failure: None,
-        })
-    }
-
-    async fn deliver(
-        &self,
-        params: DeliverToParentParams,
-        _ctx: &ToolContext,
-    ) -> astrcode_core::Result<CollaborationResult> {
-        self.deliver_calls.lock().expect("lock").push(params);
-        Ok(CollaborationResult {
-            accepted: true,
-            kind: CollaborationResultKind::Delivered,
-            agent_ref: None,
-            delivery_id: Some("delivery-99".to_string()),
-            summary: Some("结果已交付".to_string()),
-            parent_agent_id: Some("agent-parent".to_string()),
-            cascade: None,
-            closed_root_agent_id: None,
             failure: None,
         })
     }
@@ -575,13 +507,14 @@ impl CollaborationExecutor for RecordingCollabExecutor {
         params: ObserveParams,
         _ctx: &ToolContext,
     ) -> astrcode_core::Result<CollaborationResult> {
+        let agent_id = params.agent_id.clone();
+        self.observe_calls.lock().expect("lock").push(params);
         Ok(CollaborationResult {
             accepted: true,
-            kind: CollaborationResultKind::Sent,
+            kind: CollaborationResultKind::Observed,
             agent_ref: Some(sample_child_ref()),
             delivery_id: None,
-            summary: Some(format!("observe result for agent '{}'", params.agent_id)),
-            parent_agent_id: None,
+            summary: Some(format!("observe result for agent '{}'", agent_id)),
             cascade: None,
             closed_root_agent_id: None,
             failure: None,
@@ -663,68 +596,6 @@ async fn send_agent_tool_rejects_empty_message() {
     );
 }
 
-// ─── waitAgent ──────────────────────────────────────────────
-
-#[tokio::test]
-async fn wait_agent_tool_parses_params_and_returns_resolved_status() {
-    let executor = Arc::new(RecordingCollabExecutor::new());
-    let tool = WaitAgentTool::new(executor.clone());
-
-    let result = tool
-        .execute(
-            "call-wait-1".to_string(),
-            json!({"agentId": "agent-42"}),
-            &tool_context(),
-        )
-        .await
-        .expect("waitAgent should succeed");
-
-    assert!(result.ok);
-    assert_eq!(result.output, "子 Agent 已完成");
-    assert_eq!(result.tool_name, "waitAgent");
-    let calls = executor.wait_calls.lock().expect("lock");
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].agent_id, "agent-42");
-    assert_eq!(calls[0].until, WaitUntil::Final);
-}
-
-#[tokio::test]
-async fn wait_agent_tool_accepts_next_delivery_until() {
-    let executor = Arc::new(RecordingCollabExecutor::new());
-    let tool = WaitAgentTool::new(executor.clone());
-
-    let result = tool
-        .execute(
-            "call-wait-2".to_string(),
-            json!({"agentId": "agent-42", "until": "next_delivery"}),
-            &tool_context(),
-        )
-        .await
-        .expect("waitAgent should succeed");
-
-    assert!(result.ok);
-    let calls = executor.wait_calls.lock().expect("lock");
-    assert_eq!(calls[0].until, WaitUntil::NextDelivery);
-}
-
-#[tokio::test]
-async fn wait_agent_tool_rejects_missing_agent_id() {
-    let tool = WaitAgentTool::new(Arc::new(RecordingCollabExecutor::new()));
-
-    let result = tool
-        .execute("call-wait-3".to_string(), json!({}), &tool_context())
-        .await
-        .expect("should return tool result");
-
-    assert!(!result.ok);
-    assert!(
-        result
-            .error
-            .as_deref()
-            .is_some_and(|e| e.contains("invalid waitAgent params"))
-    );
-}
-
 // ─── close ─────────────────────────────────────────────────
 
 #[tokio::test]
@@ -746,26 +617,7 @@ async fn close_agent_tool_parses_params_and_returns_cascade_info() {
     assert_eq!(result.tool_name, "close");
     let calls = executor.close_calls.lock().expect("lock");
     assert_eq!(calls.len(), 1);
-    assert!(calls[0].cascade); // 默认级联
-}
-
-#[tokio::test]
-async fn close_agent_tool_allows_disabling_cascade() {
-    let executor = Arc::new(RecordingCollabExecutor::new());
-    let tool = CloseAgentTool::new(executor.clone());
-
-    let result = tool
-        .execute(
-            "call-close-2".to_string(),
-            json!({"agentId": "agent-42", "cascade": false}),
-            &tool_context(),
-        )
-        .await
-        .expect("close should succeed");
-
-    assert!(result.ok);
-    let calls = executor.close_calls.lock().expect("lock");
-    assert!(!calls[0].cascade);
+    assert_eq!(calls[0].agent_id, "agent-42");
 }
 
 #[tokio::test]
@@ -790,57 +642,36 @@ async fn close_agent_tool_rejects_empty_agent_id() {
     );
 }
 
-// ─── resumeAgent ────────────────────────────────────────────
+// ─── observe ───────────────────────────────────────────────
 
 #[tokio::test]
-async fn resume_agent_tool_parses_params_and_returns_running_status() {
+async fn observe_agent_tool_parses_params_and_delegates_to_executor() {
     let executor = Arc::new(RecordingCollabExecutor::new());
-    let tool = ResumeAgentTool::new(executor.clone());
+    let tool = ObserveAgentTool::new(executor.clone());
 
     let result = tool
         .execute(
-            "call-resume-1".to_string(),
-            json!({"agentId": "agent-42", "message": "请继续修改"}),
-            &tool_context(),
-        )
-        .await
-        .expect("resumeAgent should succeed");
-
-    assert!(result.ok);
-    assert_eq!(result.output, "子 Agent 已恢复");
-    assert_eq!(result.tool_name, "resumeAgent");
-    let calls = executor.resume_calls.lock().expect("lock");
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].agent_id, "agent-42");
-    assert_eq!(calls[0].message.as_deref(), Some("请继续修改"));
-}
-
-#[tokio::test]
-async fn resume_agent_tool_accepts_message_optional() {
-    let executor = Arc::new(RecordingCollabExecutor::new());
-    let tool = ResumeAgentTool::new(executor.clone());
-
-    let result = tool
-        .execute(
-            "call-resume-2".to_string(),
+            "call-observe-1".to_string(),
             json!({"agentId": "agent-42"}),
             &tool_context(),
         )
         .await
-        .expect("resumeAgent should succeed without message");
+        .expect("observe should succeed");
 
     assert!(result.ok);
-    let calls = executor.resume_calls.lock().expect("lock");
-    assert!(calls[0].message.is_none());
+    assert_eq!(result.tool_name, "observe");
+    let calls = executor.observe_calls.lock().expect("lock");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].agent_id, "agent-42");
 }
 
 #[tokio::test]
-async fn resume_agent_tool_rejects_empty_agent_id() {
-    let tool = ResumeAgentTool::new(Arc::new(RecordingCollabExecutor::new()));
+async fn observe_agent_tool_rejects_empty_agent_id() {
+    let tool = ObserveAgentTool::new(Arc::new(RecordingCollabExecutor::new()));
 
     let result = tool
         .execute(
-            "call-resume-3".to_string(),
+            "call-observe-2".to_string(),
             json!({"agentId": ""}),
             &tool_context(),
         )
@@ -852,84 +683,24 @@ async fn resume_agent_tool_rejects_empty_agent_id() {
         result
             .error
             .as_deref()
-            .is_some_and(|e| e.contains("invalid resumeAgent params"))
+            .is_some_and(|e| e.contains("invalid observe params"))
     );
 }
 
-// ─── deliverToParent ────────────────────────────────────────
+// ─── 四工具公开面回归 ────────────────────────────────────────
 
-#[tokio::test]
-async fn deliver_to_parent_tool_parses_params_and_returns_delivery_id() {
+#[test]
+fn only_four_tools_registered_in_public_surface() {
     let executor = Arc::new(RecordingCollabExecutor::new());
-    let tool = DeliverToParentTool::new(executor.clone());
+    let tools: Vec<Box<dyn Tool>> = vec![
+        Box::new(SendAgentTool::new(executor.clone())),
+        Box::new(ObserveAgentTool::new(executor.clone())),
+        Box::new(CloseAgentTool::new(executor)),
+    ];
 
-    let result = tool
-        .execute(
-            "call-deliver-1".to_string(),
-            json!({
-                "summary": "代码审查完成",
-                "findings": ["发现3个问题"],
-                "finalReply": "建议修改A模块"
-            }),
-            &tool_context(),
-        )
-        .await
-        .expect("deliverToParent should succeed");
-
-    assert!(result.ok);
-    assert_eq!(result.output, "结果已交付");
-    assert_eq!(result.tool_name, "deliverToParent");
-    let calls = executor.deliver_calls.lock().expect("lock");
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].summary, "代码审查完成");
-    assert_eq!(calls[0].findings, vec!["发现3个问题"]);
-    assert_eq!(calls[0].final_reply.as_deref(), Some("建议修改A模块"));
+    let names: Vec<String> = tools.iter().map(|t| t.definition().name.clone()).collect();
+    assert_eq!(names, vec!["send", "observe", "close"]);
 }
-
-#[tokio::test]
-async fn deliver_to_parent_tool_rejects_empty_summary() {
-    let tool = DeliverToParentTool::new(Arc::new(RecordingCollabExecutor::new()));
-
-    let result = tool
-        .execute(
-            "call-deliver-2".to_string(),
-            json!({"summary": "  "}),
-            &tool_context(),
-        )
-        .await
-        .expect("should return tool result");
-
-    assert!(!result.ok);
-    assert!(
-        result
-            .error
-            .as_deref()
-            .is_some_and(|e| e.contains("invalid deliverToParent params"))
-    );
-}
-
-#[tokio::test]
-async fn deliver_to_parent_tool_works_with_summary_only() {
-    let executor = Arc::new(RecordingCollabExecutor::new());
-    let tool = DeliverToParentTool::new(executor.clone());
-
-    let result = tool
-        .execute(
-            "call-deliver-3".to_string(),
-            json!({"summary": "阶段性完成"}),
-            &tool_context(),
-        )
-        .await
-        .expect("deliverToParent should work with summary only");
-
-    assert!(result.ok);
-    let calls = executor.deliver_calls.lock().expect("lock");
-    assert!(calls[0].findings.is_empty());
-    assert!(calls[0].final_reply.is_none());
-    assert!(calls[0].artifacts.is_empty());
-}
-
-// ─── 协作工具 metadata 不暴露 runtime 内部细节 ──────────────
 
 #[test]
 fn collaboration_tool_definitions_exclude_runtime_internals() {
@@ -939,19 +710,36 @@ fn collaboration_tool_definitions_exclude_runtime_internals() {
     assert!(!send_def.description.contains("AgentControl"));
     assert!(!send_def.description.contains("AgentInboxEnvelope"));
 
-    let wait_def = WaitAgentTool::new(executor.clone()).definition();
-    assert!(!wait_def.description.contains("runtime"));
-
     let close_def = CloseAgentTool::new(executor.clone()).definition();
     assert!(!close_def.description.contains("CancelToken"));
 
-    let resume_def = ResumeAgentTool::new(executor.clone()).definition();
-    assert!(!resume_def.description.contains("SubRunHandle"));
+    let observe_def = ObserveAgentTool::new(executor).definition();
+    assert!(!observe_def.description.contains("MailboxProjection"));
+}
 
-    let deliver_def = DeliverToParentTool::new(executor).definition();
-    assert!(
-        !deliver_def
-            .description
-            .contains("CollaborationNotification")
-    );
+#[test]
+fn old_tool_names_not_in_definitions() {
+    let executor = Arc::new(RecordingCollabExecutor::new());
+    let tools: Vec<Box<dyn Tool>> = vec![
+        Box::new(SendAgentTool::new(executor.clone())),
+        Box::new(ObserveAgentTool::new(executor.clone())),
+        Box::new(CloseAgentTool::new(executor)),
+    ];
+
+    for tool in &tools {
+        let name = &tool.definition().name;
+        assert!(
+            ![
+                "waitAgent",
+                "resumeAgent",
+                "deliverToParent",
+                "spawnAgent",
+                "sendAgent",
+                "closeAgent"
+            ]
+            .contains(&name.as_str()),
+            "old tool name '{}' should not appear",
+            name
+        );
+    }
 }

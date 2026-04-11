@@ -14,10 +14,9 @@ use crate::{
 
 const TOOL_NAME: &str = "close";
 
-/// 关闭指定 child agent 的协作工具。
+/// 关闭指定 child agent 及其子树的协作工具。
 ///
-/// 默认级联关闭整棵子树（cascade = true），因为孤立子 agent 无法自行终止。
-/// 设 cascade = false 可仅关闭目标 agent 本身。
+/// 始终级联关闭整棵子树，因为孤立子 agent 无法自行终止。
 pub struct CloseAgentTool {
     executor: Arc<dyn CollaborationExecutor>,
 }
@@ -28,13 +27,13 @@ impl CloseAgentTool {
     }
 
     fn build_description() -> String {
-        r#"关闭指定子 Agent，默认级联关闭其子树。
+        r#"关闭指定子 Agent，级联关闭其子树。
 
 ## 使用指南
 
 1. **指定 agentId**: 填入要关闭的子 Agent ID
 2. `agentId` 必须逐字复制自之前 tool result 的 `Child agent reference`，不能补零、改写或猜测
-3. **级联控制**: 默认会级联关闭该 Agent 的所有子 Agent；设 `cascade: false` 仅关闭目标本身
+3. **级联关闭**: 会同时关闭该 Agent 的所有后代 Agent
 
 ## 何时使用
 
@@ -52,10 +51,6 @@ impl CloseAgentTool {
                 "agentId": {
                     "type": "string",
                     "description": "要关闭的子 Agent 稳定 ID。"
-                },
-                "cascade": {
-                    "type": "boolean",
-                    "description": "是否级联关闭子树，默认 true。"
                 }
             },
             "required": ["agentId"]
@@ -77,16 +72,13 @@ impl Tool for CloseAgentTool {
         ToolCapabilityMetadata::builtin()
             .tag("agent")
             .tag("collaboration")
-            // close 会改变子树状态，并发关闭可能导致不可预测的级联行为
             .concurrency_safe(false)
-            // close 的 tool result 在 compact 模式下可折叠，因为关闭后不再需要 agentId
             .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
                     "关闭子 Agent",
-                    "使用 close 关闭不再需要的子 Agent。默认级联关闭子 Agent 的所有子 \
-                     Agent。`agentId` 必须来自之前协作 tool result 的 `Child agent \
-                     reference`，并逐字复用。",
+                    "使用 close 关闭不再需要的子 Agent，会级联关闭其子树。`agentId` 必须来自 \
+                     之前协作 tool result 的 `Child agent reference`，并逐字复用。",
                 )
                 .caveat("已终态的子 Agent 会被幂等处理；不要把 `agent-1` 改写成 `agent-01`")
                 .prompt_tag("collaboration"),

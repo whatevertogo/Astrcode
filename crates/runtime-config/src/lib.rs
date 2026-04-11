@@ -73,7 +73,7 @@ pub use constants::{
     PLUGIN_ENV_VARS, PROVIDER_API_KEY_ENV_VARS, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI,
     RUNTIME_ENV_VARS, TAURI_ENV_TARGET_TRIPLE_ENV, max_tool_concurrency,
     resolve_agent_experimental_independent_session, resolve_agent_finalized_retain_limit,
-    resolve_agent_max_concurrent, resolve_agent_max_depth, resolve_agent_max_subrun_depth,
+    resolve_agent_max_concurrent, resolve_agent_max_subrun_depth,
     resolve_anthropic_messages_api_url, resolve_anthropic_models_api_url,
     resolve_api_session_ttl_hours, resolve_auto_compact_enabled, resolve_compact_keep_recent_turns,
     resolve_compact_threshold_percent, resolve_continuation_min_delta_tokens,

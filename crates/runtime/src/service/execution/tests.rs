@@ -2100,7 +2100,6 @@ async fn reusable_child_can_be_observed_restarted_and_closed() {
         .close_child(
             CloseAgentParams {
                 agent_id: child_agent_id.clone(),
-                cascade: true,
             },
             &send_context,
         )
@@ -2313,7 +2312,6 @@ async fn close_child_persists_mailbox_discarded_event_for_pending_messages() {
         .close_child(
             CloseAgentParams {
                 agent_id: child.agent_id.clone(),
-                cascade: true,
             },
             &parent_context,
         )
