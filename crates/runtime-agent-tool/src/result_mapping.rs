@@ -54,7 +54,7 @@ pub(crate) fn map_subrun_result(tool_call_id: String, result: SubRunResult) -> T
 
 /// 组装 metadata：schema + outcome + handoff + agentRef + openSessionId。
 ///
-/// agentRef 和 openSessionId 是后续协作工具（send/wait/close/resume）
+/// agentRef 和 openSessionId 是后续协作工具（send/observe/close）
 /// 定位子 agent 的唯一入口，必须从 handoff artifacts 中精确提取。
 fn subrun_metadata(result: &SubRunResult) -> Value {
     let mut metadata = json!({
