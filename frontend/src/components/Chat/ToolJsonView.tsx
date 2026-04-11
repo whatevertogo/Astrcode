@@ -39,21 +39,21 @@ function renderPrimitiveValue(value: unknown): ReactNode {
         ? `${value.slice(0, MAX_STRING_PREVIEW)}... (${value.length} chars)`
         : value;
     return (
-      <span className="text-[#1f6b45] whitespace-pre-wrap overflow-wrap-anywhere">
+      <span className="whitespace-pre-wrap overflow-wrap-anywhere text-json-string">
         &quot;{truncated}&quot;
       </span>
     );
   }
 
   if (typeof value === 'number') {
-    return <span className="text-[#355e9b]">{String(value)}</span>;
+    return <span className="text-json-number">{String(value)}</span>;
   }
 
   if (typeof value === 'boolean') {
-    return <span className="text-[#8f4038]">{String(value)}</span>;
+    return <span className="text-json-boolean">{String(value)}</span>;
   }
 
-  // JSON.parse 产物通常不会到这里，这里兜底展示，避免出现空白节点。
+  // JSON.parse 产物通常不会到这里，兜底展示
   return <span className="text-text-secondary">{String(value)}</span>;
 }
 
@@ -61,7 +61,7 @@ function JsonNode({ value, label, path, defaultOpen = false }: JsonNodeProps) {
   if (!Array.isArray(value) && !isObjectContainer(value)) {
     return (
       <div className="flex items-baseline gap-1.5 px-3 py-1 text-text-primary">
-        <span className="text-[#7a654d] break-words">{label}</span>
+        <span className="break-words text-json-key">{label}</span>
         <span className="text-text-secondary">:</span>
         {renderPrimitiveValue(value)}
       </div>
@@ -77,7 +77,7 @@ function JsonNode({ value, label, path, defaultOpen = false }: JsonNodeProps) {
   return (
     <details className="m-0 group" open={defaultOpen}>
       <summary className="flex items-baseline gap-1.5 px-3 py-2 cursor-pointer text-text-primary list-none [&::-webkit-details-marker]:hidden before:content-['▸'] before:text-text-secondary before:transition-transform before:duration-120 before:ease-out group-open:before:rotate-90">
-        <span className="text-[#7a654d] break-words">{label}</span>
+        <span className="break-words text-json-key">{label}</span>
         <span className="text-text-secondary">:</span>
         <span className="text-text-secondary">{summarizeContainer(value)}</span>
       </summary>
@@ -102,7 +102,7 @@ function JsonNode({ value, label, path, defaultOpen = false }: JsonNodeProps) {
 
 function ToolJsonView({ value, summary }: ToolJsonViewProps) {
   return (
-    <div className="m-0 border border-border rounded-lg bg-surface max-h-[360px] overflow-auto font-mono text-[13px]">
+    <div className="m-0 max-h-[360px] overflow-auto rounded-lg border border-code-border bg-code-surface font-mono text-[13px]">
       <JsonNode value={value} label="JSON" path="root" defaultOpen={false} />
       <div className="px-3 py-2 border-t border-border text-text-secondary text-xs">{summary}</div>
     </div>

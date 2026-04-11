@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { ConfigView, ProfileView, TestResult } from '../../types';
-import { overlay, btnSecondary, btnPrimary } from '../../lib/styles';
+import { btnPrimary, btnSecondary, dialogSurface, fieldInput, overlay } from '../../lib/styles';
 import { cn } from '../../lib/utils';
 
 interface SettingsModalProps {
@@ -162,9 +162,14 @@ export default function SettingsModal({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="w-[520px] max-w-[min(520px,100%)] bg-surface border border-border rounded-[20px] shadow-[0_24px_60px_rgba(83,61,31,0.16)] p-6 sm:max-w-[calc(100vw-20px)] sm:p-4">
+      <div
+        className={cn(
+          dialogSurface,
+          'w-[520px] max-w-[min(520px,100%)] sm:max-w-[calc(100vw-20px)] sm:p-4'
+        )}
+      >
         {warning && (
-          <div className="mb-3.5 py-3 px-3.5 bg-[#fff7e8] border border-[#f1d7a7] rounded-[14px] text-[#8d621f] text-xs leading-relaxed">
+          <div className="mb-3.5 rounded-[14px] border border-warning-border bg-warning-soft px-3.5 py-3 text-xs leading-relaxed text-warning">
             {warning}
           </div>
         )}
@@ -183,7 +188,7 @@ export default function SettingsModal({
 
         {loading ? (
           <div className="flex items-center gap-2 text-xs text-text-secondary leading-relaxed">
-            <span className="w-[14px] h-[14px] rounded-full border-2 border-[rgba(139,94,49,0.18)] border-t-[#8b5e31] animate-spin" />
+            <span className="h-[14px] w-[14px] animate-spin rounded-full border-2 border-border border-t-text-secondary" />
             正在读取配置...
           </div>
         ) : (
@@ -210,11 +215,7 @@ export default function SettingsModal({
               <label className="block mb-2 text-text-secondary text-[13px] font-semibold">
                 Profile
               </label>
-              <select
-                className="w-full py-[11px] px-3 rounded-xl border border-border bg-surface text-text-primary text-[13px] outline-none transition-[border-color,box-shadow] duration-150 ease-out focus:border-border-strong focus:shadow-[0_0_0_4px_rgba(220,203,180,0.35)]"
-                value={selectedProfile}
-                onChange={handleProfileChange}
-              >
+              <select className={fieldInput} value={selectedProfile} onChange={handleProfileChange}>
                 {profiles.map((profile) => (
                   <option key={profile.name} value={profile.name}>
                     {profile.name}
@@ -229,7 +230,7 @@ export default function SettingsModal({
               </label>
               <select
                 className={cn(
-                  'w-full py-[11px] px-3 rounded-xl border border-border bg-surface text-text-primary text-[13px] outline-none transition-[border-color,box-shadow] duration-150 ease-out focus:border-border-strong focus:shadow-[0_0_0_4px_rgba(220,203,180,0.35)]',
+                  fieldInput,
                   (!currentProfile || currentProfile.models.length === 0) && 'opacity-50'
                 )}
                 value={selectedModel}
@@ -281,7 +282,7 @@ export default function SettingsModal({
             <div className="min-h-7 mt-3.5">
               {testing && (
                 <div className="flex items-center gap-2 text-xs text-text-secondary leading-relaxed">
-                  <span className="w-[14px] h-[14px] rounded-full border-2 border-[rgba(139,94,49,0.18)] border-t-[#8b5e31] animate-spin" />
+                  <span className="h-[14px] w-[14px] animate-spin rounded-full border-2 border-border border-t-text-secondary" />
                   正在测试连接...
                 </div>
               )}

@@ -3,7 +3,7 @@
 //! 替代原生 window.confirm()，保持桌面端风格一致。
 
 import React, { memo } from 'react';
-import { overlay } from '../lib/styles';
+import { btnDanger, btnPrimary, btnSecondary, dialogSurface, overlay } from '../lib/styles';
 import { cn } from '../lib/utils';
 
 interface ConfirmDialogProps {
@@ -53,12 +53,12 @@ function ConfirmDialog({
       aria-label={title}
       onKeyDown={handleKeyDown}
     >
-      <div className="w-[380px] max-w-full p-6 rounded-[20px] border border-border bg-surface shadow-[0_24px_60px_rgba(83,61,31,0.16)]">
+      <div className={cn(dialogSurface, 'w-[380px] max-w-full')}>
         <div className="text-base font-bold text-text-primary mb-2">{title}</div>
         <div className="text-sm leading-relaxed text-text-secondary mb-5">{message}</div>
         <div className="flex justify-end gap-2.5">
           <button
-            className="px-4 py-[9px] text-[13px] font-semibold rounded-xl border border-border bg-surface-soft text-text-secondary transition-[background-color,border-color,color] duration-150 ease-out hover:bg-white hover:border-border-strong hover:text-text-primary"
+            className={cn(btnSecondary, 'py-[9px]')}
             type="button"
             onClick={onCancel}
             autoFocus
@@ -66,10 +66,7 @@ function ConfirmDialog({
             {cancelLabel}
           </button>
           <button
-            className={cn(
-              'px-4 py-[9px] text-[13px] font-semibold rounded-xl border-none bg-accent-strong text-white transition-[background-color,opacity] duration-150 ease-out hover:bg-[#1f1b17]',
-              danger && 'bg-danger hover:bg-[#b54a4a]'
-            )}
+            className={cn(danger ? btnDanger : btnPrimary, 'py-[9px]')}
             type="button"
             onClick={() => {
               void onConfirm();

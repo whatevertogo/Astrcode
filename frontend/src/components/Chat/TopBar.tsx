@@ -1,29 +1,25 @@
-interface TopBarProps {
-  projectName: string | null;
-  sessionTitle: string | null;
-  activeSubRunPath: string[];
-  activeSubRunBreadcrumbs: Array<{ subRunId: string; title: string }>;
-  isSidebarOpen: boolean;
-  toggleSidebar: () => void;
-  onCloseSubRun: () => void;
-  onNavigateSubRunPath: (subRunPath: string[]) => void;
-}
+import { ghostIconButton, topBarShell } from '../../lib/styles';
+import { cn } from '../../lib/utils';
+import { useChatScreenContext } from './ChatScreenContext';
 
-export default function TopBar({
-  projectName,
-  sessionTitle,
-  activeSubRunPath,
-  activeSubRunBreadcrumbs,
-  isSidebarOpen,
-  toggleSidebar,
-  onCloseSubRun,
-  onNavigateSubRunPath,
-}: TopBarProps) {
+export default function TopBar() {
+  const {
+    projectName,
+    sessionTitle,
+    activeSubRunPath,
+    activeSubRunBreadcrumbs,
+    isSidebarOpen,
+    toggleSidebar,
+    onCloseSubRun,
+    onNavigateSubRunPath,
+  } = useChatScreenContext();
+
   return (
-    <div className="relative z-30 flex items-center justify-between gap-4 px-[22px] py-3.5 border-b border-border bg-[linear-gradient(180deg,rgba(255,252,247,0.96)_0%,rgba(252,250,247,0.9)_100%)] backdrop-blur-[12px] flex-shrink-0 max-[899px]:flex-wrap max-[899px]:px-4">
-      <div className="flex-1 flex items-center gap-1.5 min-w-0">
+    <div className={topBarShell}>
+      <div className="flex min-w-0 flex-1 items-center gap-1.5">
         <button
-          className="flex items-center justify-center bg-transparent border-none text-text-secondary rounded-md p-1 -ml-1 transition-all duration-200 ease-out cursor-pointer outline-none hover:bg-black/5 hover:text-text-primary"
+          className={cn(ghostIconButton, '-ml-1 p-1')}
+          type="button"
           onClick={toggleSidebar}
           aria-label={isSidebarOpen ? '收起侧边栏' : '展开侧边栏'}
           title={isSidebarOpen ? '收起侧边栏' : '展开侧边栏'}
@@ -44,22 +40,22 @@ export default function TopBar({
         </button>
         {projectName ? (
           <>
-            <span className="text-[13px] text-text-secondary overflow-hidden text-ellipsis whitespace-nowrap">
+            <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px] text-text-secondary">
               {projectName}
             </span>
             {sessionTitle && (
               <>
-                <span className="text-text-faint text-[13px]">›</span>
+                <span className="text-[13px] text-text-faint">›</span>
                 {activeSubRunPath.length > 0 ? (
                   <button
                     type="button"
-                    className="inline-flex items-center justify-center min-h-[26px] px-2 border border-border rounded-full bg-surface text-text-secondary text-xs font-medium cursor-pointer transition-[background,border-color,color] duration-150 ease-out hover:bg-black/3 hover:border-black/12 hover:text-text-primary"
-                    onClick={onCloseSubRun}
+                    className="inline-flex min-h-[26px] items-center justify-center rounded-full border border-border bg-surface px-2 text-xs font-medium text-text-secondary transition-[background,border-color,color] duration-150 ease-out hover:border-black/12 hover:bg-black/3 hover:text-text-primary"
+                    onClick={() => void onCloseSubRun()}
                   >
                     {sessionTitle}
                   </button>
                 ) : (
-                  <span className="text-[13px] text-text-primary font-medium overflow-hidden text-ellipsis whitespace-nowrap">
+                  <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px] font-medium text-text-primary">
                     {sessionTitle}
                   </span>
                 )}
@@ -70,18 +66,20 @@ export default function TopBar({
               return (
                 <span
                   key={breadcrumb.subRunId}
-                  className="inline-flex items-center gap-1.5 min-w-0"
+                  className="inline-flex min-w-0 items-center gap-1.5"
                 >
-                  <span className="text-text-faint text-[13px]">›</span>
+                  <span className="text-[13px] text-text-faint">›</span>
                   {isLast ? (
-                    <span className="text-[13px] text-text-primary font-semibold overflow-hidden text-ellipsis whitespace-nowrap">
+                    <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px] font-semibold text-text-primary">
                       {breadcrumb.title}
                     </span>
                   ) : (
                     <button
                       type="button"
-                      className="inline-flex items-center justify-center min-h-[26px] px-2.5 border border-border rounded-full bg-surface text-text-secondary text-xs font-semibold cursor-pointer transition-[background,border-color,color] duration-150 ease-out hover:bg-black/3 hover:border-black/12 hover:text-text-primary"
-                      onClick={() => onNavigateSubRunPath(activeSubRunPath.slice(0, index + 1))}
+                      className="inline-flex min-h-[26px] items-center justify-center rounded-full border border-border bg-surface px-2.5 text-xs font-semibold text-text-secondary transition-[background,border-color,color] duration-150 ease-out hover:border-black/12 hover:bg-black/3 hover:text-text-primary"
+                      onClick={() =>
+                        void onNavigateSubRunPath(activeSubRunPath.slice(0, index + 1))
+                      }
                     >
                       {breadcrumb.title}
                     </button>

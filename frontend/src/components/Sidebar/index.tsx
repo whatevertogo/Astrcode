@@ -52,7 +52,7 @@ export default function Sidebar({
       <div className="flex items-center gap-2.5 px-2 shrink-0">
         <span
           className={cn(
-            'w-[9px] h-[9px] rounded-full shrink-0 transition-[background-color] duration-300 ease-out shadow-[0_0_0_6px_rgba(57,201,143,0.12)]',
+            'h-[9px] w-[9px] shrink-0 rounded-full shadow-[0_0_0_6px_theme(colors.accent-soft/12%)] transition-[background-color] duration-300 ease-out',
             PHASE_BG_CLASS[phase]
           )}
           title={phase}
@@ -66,7 +66,7 @@ export default function Sidebar({
         <button
           type="button"
           onClick={onNewSession}
-          className="flex items-center w-full min-h-[34px] rounded-lg bg-transparent border-none cursor-pointer outline-none transition-[background-color,color] duration-150 ease-out text-text-primary hover:bg-[rgba(0,0,0,0.05)] px-2 gap-2"
+          className="flex min-h-[34px] w-full items-center gap-2 rounded-lg border-none bg-transparent px-2 text-text-primary outline-none transition-[background-color,color] duration-150 ease-out hover:bg-black/5"
         >
           <div className="w-4 h-4 flex items-center justify-center shrink-0 text-text-secondary">
             <svg
@@ -106,14 +106,14 @@ export default function Sidebar({
       <div className="px-1 pt-4 border-t border-border shrink-0">
         <div className="flex items-center gap-2">
           <button
-            className="flex-1 h-[38px] bg-surface text-text-primary border border-border rounded-xl text-sm font-semibold transition-[background-color,border-color,transform] duration-150 ease-out text-center shadow-[0_4px_18px_rgba(112,86,50,0.06)] hover:bg-white hover:border-border-strong hover:-translate-y-px"
+            className="h-[38px] flex-1 rounded-xl border border-border bg-surface text-center text-sm font-semibold text-text-primary shadow-soft transition-[background-color,border-color,transform] duration-150 ease-out hover:border-border-strong hover:bg-white hover:-translate-y-px"
             onClick={() => setShowModal(true)}
           >
             + 新项目
           </button>
           <button
             type="button"
-            className="w-[38px] h-[38px] inline-flex items-center justify-center bg-surface text-text-secondary rounded-xl border border-border shadow-[0_4px_18px_rgba(112,86,50,0.05)] transition-[background-color,color,border-color,transform] duration-150 ease-out hover:bg-white hover:text-text-primary hover:border-border-strong hover:-translate-y-px"
+            className="inline-flex h-[38px] w-[38px] items-center justify-center rounded-xl border border-border bg-surface text-text-secondary shadow-soft transition-[background-color,color,border-color,transform] duration-150 ease-out hover:border-border-strong hover:bg-white hover:text-text-primary hover:-translate-y-px"
             onClick={onOpenSettings}
             aria-label="打开设置"
             title="设置"

@@ -2,7 +2,16 @@ import React, { Component, memo, useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { AssistantMessage as AssistantMessageType, PromptMetricsMessage } from '../../types';
-import { cn } from '../../lib/utils';
+import {
+  assistantAvatar,
+  chevronIcon,
+  codeBlockContent,
+  codeBlockHeader,
+  codeBlockShell,
+  expandableBody,
+  ghostIconButton,
+} from '../../lib/styles';
+import { cn, calculateCacheHitRatePercent } from '../../lib/utils';
 
 interface AssistantMessageProps {
   message: AssistantMessageType;
@@ -80,7 +89,10 @@ function CopyButton({ code }: { code: string }) {
 
   return (
     <button
-      className="flex items-center justify-center gap-1.5 h-7 px-2 rounded border-none bg-transparent text-[#6b7280] text-[13px] cursor-pointer opacity-0 transition-all duration-200 ease-out translate-y-0.5 group-hover:opacity-100 group-hover:translate-y-0 hover:bg-[rgba(0,0,0,0.06)] hover:text-[#1f2937]"
+      className={cn(
+        ghostIconButton,
+        'h-7 gap-1.5 rounded px-2 text-[13px] opacity-0 translate-y-0.5 group-hover:translate-y-0 group-hover:opacity-100'
+      )}
       onClick={handleCopy}
       title="复制代码"
     >
@@ -144,15 +156,12 @@ function CodeBlockRenderer({ node, className, children, ...props }: CodeBlockRen
   const codeText = String(children).replace(/\n$/, '');
 
   return (
-    <div className="my-4 rounded-lg border border-[rgba(0,0,0,0.08)] overflow-hidden bg-[rgba(0,0,0,0.03)] relative group">
-      <div className="flex justify-between items-center px-3 pt-2 pl-4 bg-transparent">
-        <span className="text-xs text-[#6b7280] lowercase">{language || 'text'}</span>
+    <div className={codeBlockShell}>
+      <div className={codeBlockHeader}>
+        <span className="text-xs lowercase">{language || 'text'}</span>
         <CopyButton code={codeText} />
       </div>
-      <pre
-        className="m-0 px-4 pt-2 pb-4 overflow-x-auto text-sm leading-relaxed text-[#1f2937] font-mono"
-        {...props}
-      >
+      <pre className={codeBlockContent} {...props}>
         <code className={className}>{children}</code>
       </pre>
     </div>
@@ -197,16 +206,6 @@ function formatTokenCount(value?: number): string {
   return value.toLocaleString();
 }
 
-function calculateCacheHitRatePercent(metrics?: PromptMetricsMessage): number | null {
-  if (!metrics?.providerInputTokens || metrics.providerInputTokens <= 0) {
-    return null;
-  }
-
-  const cacheRead = metrics.cacheReadInputTokens ?? 0;
-  const rawRate = Math.round((cacheRead / metrics.providerInputTokens) * 100);
-  return Math.min(Math.max(rawRate, 0), 100);
-}
-
 function getCacheIndicator(metrics?: PromptMetricsMessage): React.ReactNode {
   const hitRate = calculateCacheHitRatePercent(metrics);
   if (hitRate === null) {
@@ -215,13 +214,13 @@ function getCacheIndicator(metrics?: PromptMetricsMessage): React.ReactNode {
 
   // 缓存命中率分级
   if (hitRate >= 80) {
-    return <span className="text-[#10b981] font-medium ml-2">🟢 缓存 {hitRate}%</span>;
+    return <span className="ml-2 font-medium text-cache-high">🟢 缓存 {hitRate}%</span>;
   } else if (hitRate >= 30) {
-    return <span className="text-[#f59e0b] font-medium ml-2">🟡 缓存 {hitRate}%</span>;
+    return <span className="ml-2 font-medium text-cache-medium">🟡 缓存 {hitRate}%</span>;
   } else if (hitRate > 0) {
-    return <span className="text-[#ef4444] font-medium ml-2">🟠 缓存 {hitRate}%</span>;
+    return <span className="ml-2 font-medium text-cache-low">🟠 缓存 {hitRate}%</span>;
   } else {
-    return <span className="text-[#dc2626] font-semibold ml-2">🔴 无缓存</span>;
+    return <span className="ml-2 font-semibold text-cache-none">🔴 无缓存</span>;
   }
 }
 
@@ -235,7 +234,7 @@ function AssistantMessage({ message, hideAvatar, metrics }: AssistantMessageProp
   return (
     <div className="flex items-start gap-4 animate-message-enter max-sm:gap-3 motion-reduce:animate-none">
       <div
-        className="w-7 h-7 inline-flex items-center justify-center bg-[linear-gradient(180deg,#f3eadf_0%,#ebdfd1_100%)] text-[#8a7458] rounded shrink-0"
+        className={assistantAvatar}
         aria-hidden="true"
         style={{ opacity: hideAvatar ? 0 : 1, visibility: hideAvatar ? 'hidden' : 'visible' }}
       >
@@ -262,7 +261,7 @@ function AssistantMessage({ message, hideAvatar, metrics }: AssistantMessageProp
       <div className="flex-1 min-w-0 pt-0.5">
         <div
           className={cn(
-            'relative py-2 bg-transparent text-[#141413] overflow-wrap-anywhere prose-chat'
+            'relative overflow-wrap-anywhere bg-transparent py-2 text-text-primary prose-chat'
           )}
           data-streaming={message.streaming ? 'true' : 'false'}
         >
@@ -296,7 +295,7 @@ function AssistantMessage({ message, hideAvatar, metrics }: AssistantMessageProp
                   </svg>
                 </span>
                 <span>Thinking</span>
-                <span className="w-4 h-4 text-text-secondary transition-transform duration-150 ease-out opacity-60 group-open:rotate-90">
+                <span className={chevronIcon}>
                   <svg
                     width="16"
                     height="16"
@@ -311,20 +310,25 @@ function AssistantMessage({ message, hideAvatar, metrics }: AssistantMessageProp
                   </svg>
                 </span>
               </summary>
-              <div className="mt-2 mb-2 ml-2 pl-4 border-l-2 border-[rgba(0,0,0,0.1)] overflow-wrap-anywhere text-sm text-text-secondary leading-relaxed prose-chat">
+              <div
+                className={cn(
+                  expandableBody,
+                  'overflow-wrap-anywhere text-sm leading-relaxed text-text-secondary prose-chat'
+                )}
+              >
                 <MarkdownContent text={block} defer={streaming} />
               </div>
             </details>
           ))}
           {visibleText ? <MarkdownContent text={visibleText} defer={streaming} /> : null}
           {message.streaming && (
-            <span className="inline-block text-[#6b6258] animate-blink motion-reduce:animate-none ml-px">
+            <span className="ml-px inline-block animate-blink text-text-secondary motion-reduce:animate-none">
               ▋
             </span>
           )}
         </div>
         {metrics && (
-          <div className="mt-3 pt-2 border-t border-[rgba(0,0,0,0.06)] text-xs leading-relaxed text-[#6b7280]">
+          <div className="mt-3 border-t border-border pt-2 text-xs leading-relaxed text-text-secondary">
             📊 {formatTokenCount(metrics.estimatedTokens)} tokens
             {getCacheIndicator(metrics)}
           </div>

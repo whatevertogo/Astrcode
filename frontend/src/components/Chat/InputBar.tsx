@@ -1,6 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { ComposerOption, Phase, CurrentModelInfo, ModelOption } from '../../types';
+import {
+  composerAttachmentButton,
+  composerInterruptButton,
+  composerShell,
+  composerSubmitButton,
+} from '../../lib/styles';
+import type { ComposerOption } from '../../types';
 import CommandSelector from './CommandSelector';
+import { useChatScreenContext } from './ChatScreenContext';
 import ModelSelector from './ModelSelector';
 
 /**
@@ -13,60 +20,36 @@ import ModelSelector from './ModelSelector';
  * - 选中后将 insertText 替换 '/' 前缀并写回输入框
  */
 
-interface InputBarProps {
-  /** 当前会话 ID，用于拉取技能候选 */
-  sessionId: string | null;
-  workingDir: string;
-  phase: Phase;
-  onSubmit: (text: string) => void | Promise<void>;
-  onInterrupt: () => void | Promise<void>;
-  listComposerOptions: (
-    sessionId: string,
-    query: string,
-    signal?: AbortSignal
-  ) => Promise<ComposerOption[]>;
-  modelRefreshKey: number;
-  getCurrentModel: () => Promise<CurrentModelInfo>;
-  listAvailableModels: () => Promise<ModelOption[]>;
-  setModel: (profileName: string, model: string) => Promise<void>;
-}
-
-export default function InputBar({
-  sessionId,
-  workingDir,
-  phase,
-  onSubmit,
-  onInterrupt,
-  listComposerOptions,
-  modelRefreshKey,
-  getCurrentModel,
-  listAvailableModels,
-  setModel,
-}: InputBarProps) {
+export default function InputBar() {
+  const {
+    sessionId,
+    workingDir,
+    phase,
+    onSubmitPrompt,
+    onInterrupt,
+    listComposerOptions,
+    modelRefreshKey,
+    getCurrentModel,
+    listAvailableModels,
+    setModel,
+  } = useChatScreenContext();
   const [value, setValue] = useState('');
   const [isComposing, setIsComposing] = useState(false);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const isBusy = phase !== 'idle';
-
-  // Slash 候选面板状态
   const [slashTriggerVisible, setSlashTriggerVisible] = useState(false);
   const [slashQuery, setSlashQuery] = useState('');
   const [slashOptions, setSlashOptions] = useState<ComposerOption[]>([]);
   const [slashLoading, setSlashLoading] = useState(false);
-  // 记录 '/' 触发位置，用于选中后替换
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const slashTriggerStartRef = useRef(0);
   const slashTriggerEndRef = useRef(0);
-
-  // AbortController 引用，避免会话切换后旧请求更新状态
   const slashAbortRef = useRef<AbortController | null>(null);
+  const isBusy = phase !== 'idle';
 
-  // 关闭选择器
   const closeSlashTrigger = useCallback(() => {
     setSlashTriggerVisible(false);
     setSlashQuery('');
     setSlashOptions([]);
     setSlashLoading(false);
-    // 停止正在进行的请求
     slashAbortRef.current?.abort();
     slashAbortRef.current = null;
   }, []);
@@ -76,27 +59,29 @@ export default function InputBar({
    * @returns {triggerStart: '/' 的字符索引, triggerEnd: 光标位置, query: '/' 后的文本}
    */
   function findSlashTrigger(
-    val: string,
+    currentValue: string,
     cursorPos: number
   ): { triggerStart: number; triggerEnd: number; query: string } | null {
-    const lineStart = Math.max(0, val.lastIndexOf('\n', cursorPos - 1) + 1);
-    const segment = val.slice(lineStart, cursorPos);
-
+    const lineStart = Math.max(0, currentValue.lastIndexOf('\n', cursorPos - 1) + 1);
+    const segment = currentValue.slice(lineStart, cursorPos);
     const slashIdx = segment.lastIndexOf('/');
-    if (slashIdx === -1) return null;
+    if (slashIdx === -1) {
+      return null;
+    }
 
-    // '/' 前必须是行首或空格
     const beforeSlash = slashIdx === 0 ? '' : segment[slashIdx - 1];
-    if (beforeSlash !== ' ' && slashIdx !== 0) return null;
+    if (beforeSlash !== ' ' && slashIdx !== 0) {
+      return null;
+    }
 
     const afterSlash = segment.slice(slashIdx + 1);
-    // '/' 后不能有空格（否则不是命令前缀）
-    if (/\s/.test(afterSlash)) return null;
+    if (/\s/.test(afterSlash)) {
+      return null;
+    }
 
     return { triggerStart: lineStart + slashIdx, triggerEnd: cursorPos, query: afterSlash };
   }
 
-  // 当输入变化时检测 '/' 触发
   useEffect(() => {
     if (!sessionId) {
       closeSlashTrigger();
@@ -104,141 +89,140 @@ export default function InputBar({
     }
 
     const textarea = textareaRef.current;
-    if (!textarea) return;
+    if (!textarea) {
+      return;
+    }
 
-    const cursorPos = textarea.selectionStart;
-    const trigger = findSlashTrigger(value, cursorPos);
-
+    const trigger = findSlashTrigger(value, textarea.selectionStart);
     if (trigger) {
       slashTriggerStartRef.current = trigger.triggerStart;
       slashTriggerEndRef.current = trigger.triggerEnd;
       setSlashQuery(trigger.query);
-      if (!slashTriggerVisible) setSlashTriggerVisible(true);
-    } else if (slashTriggerVisible) {
+      if (!slashTriggerVisible) {
+        setSlashTriggerVisible(true);
+      }
+      return;
+    }
+
+    if (slashTriggerVisible) {
       closeSlashTrigger();
     }
-  }, [value, sessionId, slashTriggerVisible, closeSlashTrigger]);
+  }, [closeSlashTrigger, sessionId, slashTriggerVisible, value]);
 
-  // 当 slashQuery 变化时拉取候选项
   useEffect(() => {
-    if (!slashTriggerVisible || !sessionId) return;
+    if (!slashTriggerVisible || !sessionId) {
+      return;
+    }
 
-    // 取消旧请求
     slashAbortRef.current?.abort();
     const controller = new AbortController();
     slashAbortRef.current = controller;
-
     setSlashLoading(true);
+
     listComposerOptions(sessionId, slashQuery, controller.signal)
       .then((options) => {
-        if (!controller.signal.aborted) {
-          setSlashOptions(options);
-          setSlashLoading(false);
+        if (controller.signal.aborted) {
+          return;
         }
+        setSlashOptions(options);
+        setSlashLoading(false);
       })
-      .catch((err) => {
-        if (!controller.signal.aborted) {
-          console.warn('[CommandSelector] 获取技能选项失败:', err);
-          setSlashOptions([]);
-          setSlashLoading(false);
+      .catch((error) => {
+        if (controller.signal.aborted) {
+          return;
         }
+        console.warn('[CommandSelector] 获取技能选项失败:', error);
+        setSlashOptions([]);
+        setSlashLoading(false);
       });
 
     return () => {
       controller.abort();
     };
-  }, [slashQuery, slashTriggerVisible, sessionId, listComposerOptions]);
+  }, [listComposerOptions, sessionId, slashQuery, slashTriggerVisible]);
 
-  /**
-   * 选中某个 slash 候选后，将 insertText 替换掉 '/' 前缀并写回输入框
-   */
   const handleComposerOptionSelect = useCallback(
     (option: ComposerOption) => {
       const before = value.slice(0, slashTriggerStartRef.current);
       const after = value.slice(slashTriggerEndRef.current);
-      // 后端 insert_text 格式为 /skill-id（如 /git-commit）
-      // 选中后保留 / 前缀并将光标置于插入文本之后
       const insertText = option.insertText;
-      const newValue = before + insertText + ' ' + after;
-      setValue(newValue);
+      const nextValue = `${before}${insertText} ${after}`;
+      setValue(nextValue);
       closeSlashTrigger();
 
-      // 让 textarea 获得焦点并将光标置于插入文本之后
       requestAnimationFrame(() => {
-        const ta = textareaRef.current;
-        if (ta) {
-          const newPos = before.length + insertText.length + 1;
-          ta.focus();
-          ta.setSelectionRange(newPos, newPos);
-          // 触发 auto-resize
-          ta.style.height = 'auto';
-          ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+        const textarea = textareaRef.current;
+        if (!textarea) {
+          return;
         }
+        const nextCursor = before.length + insertText.length + 1;
+        textarea.focus();
+        textarea.setSelectionRange(nextCursor, nextCursor);
+        textarea.style.height = 'auto';
+        textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
       });
     },
-    [value, closeSlashTrigger]
+    [closeSlashTrigger, value]
   );
 
-  const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setValue(e.target.value);
-    // Auto-resize
-    const ta = textareaRef.current;
-    if (ta) {
-      ta.style.height = 'auto';
-      ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+  const handleInput = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setValue(event.target.value);
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
     }
+    textarea.style.height = 'auto';
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
   };
 
   const submit = () => {
     const trimmed = value.trim();
-    if (!trimmed || isBusy) return;
-    // 提交前关闭技能选择器
+    if (!trimmed || isBusy) {
+      return;
+    }
     closeSlashTrigger();
-    void onSubmit(trimmed);
+    void onSubmitPrompt(trimmed);
     setValue('');
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // 技能选择器可见时，让选择器处理 ↑↓ / Enter / Escape
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (slashTriggerVisible) {
-      switch (e.key) {
+      switch (event.key) {
         case 'Escape':
-          e.preventDefault();
+          event.preventDefault();
           closeSlashTrigger();
           return;
-        // ArrowUp/ArrowDown/Enter 交由 CommandSelector 的全局键盘监听处理
-        // 但需要阻止默认行为（避免 Enter 提交、arrow 移动光标）
         case 'ArrowUp':
         case 'ArrowDown':
-          e.preventDefault();
+          event.preventDefault();
           return;
       }
     }
 
-    if (e.key === 'Enter' && !e.shiftKey && !isComposing) {
-      e.preventDefault();
+    if (event.key === 'Enter' && !event.shiftKey && !isComposing) {
+      event.preventDefault();
       submit();
     }
   };
 
   return (
-    <div className="flex-shrink-0 px-[var(--chat-content-horizontal-padding)] pt-4 pb-[18px] bg-panel-bg max-sm:px-[var(--chat-content-horizontal-padding-mobile)] max-sm:py-3.5">
-      <div className="w-full max-w-[var(--chat-composer-max-width)] mx-auto translate-x-[var(--chat-assistant-center-shift)] max-sm:translate-x-0">
+    <div className="max-sm:py-3.5 flex-shrink-0 bg-panel-bg px-[var(--chat-content-horizontal-padding)] pb-[18px] pt-4 max-sm:px-[var(--chat-content-horizontal-padding-mobile)]">
+      <div className="mx-auto w-full max-w-[var(--chat-composer-max-width)] translate-x-[var(--chat-assistant-center-shift)] max-sm:translate-x-0">
         <div className="relative w-full">
-          <div className="bg-[linear-gradient(180deg,rgba(255,255,255,0.96)_0%,rgba(253,248,241,0.98)_100%)] border border-[rgba(230,220,205,0.95)] rounded-[24px] shadow-[0_24px_42px_rgba(117,90,52,0.1),inset_0_1px_0_rgba(255,255,255,0.82)] transition-[border-color,box-shadow,transform] duration-[180ms] ease-out focus-within:border-[rgba(122,185,153,0.56)] focus-within:shadow-[0_0_0_4px_rgba(57,201,143,0.12),0_28px_48px_rgba(117,90,52,0.13)] focus-within:-translate-y-px">
+          <div className={composerShell}>
             {workingDir && (
               <div
-                className="flex items-center gap-2 px-4 py-2.5 border-b border-[var(--border)] text-[var(--text-secondary)] bg-white/40 rounded-t-[23px]"
+                className="flex items-center gap-2 rounded-t-[23px] border-b border-border bg-white/40 px-4 py-2.5 text-text-secondary"
                 title={workingDir}
               >
                 <span
-                  className="w-3.5 h-3.5 inline-flex items-center justify-center flex-shrink-0"
+                  className="inline-flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center"
                   aria-hidden="true"
                 >
-                  <svg className="w-3.5 h-3.5" viewBox="0 0 20 20">
+                  <svg className="h-3.5 w-3.5" viewBox="0 0 20 20">
                     <path
                       d="M2.5 5.75A1.75 1.75 0 0 1 4.25 4h4.03c.46 0 .9.18 1.23.5l1.02 1c.32.3.74.47 1.18.47h4.04A1.75 1.75 0 0 1 17.5 7.72v6.53A1.75 1.75 0 0 1 15.75 16H4.25A1.75 1.75 0 0 1 2.5 14.25V5.75Z"
                       fill="none"
@@ -248,7 +232,7 @@ export default function InputBar({
                     />
                   </svg>
                 </span>
-                <div className="overflow-hidden text-ellipsis whitespace-nowrap text-xs font-mono">
+                <div className="overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xs">
                   {workingDir}
                 </div>
               </div>
@@ -257,7 +241,7 @@ export default function InputBar({
               <div className="flex flex-col px-[var(--chat-composer-shell-padding-x)] py-3">
                 <textarea
                   ref={textareaRef}
-                  className="w-full min-h-[50px] max-h-[240px] text-[var(--text-primary)] text-[15px] leading-[1.75] overflow-y-auto placeholder:text-[var(--text-muted)] disabled:opacity-60 disabled:cursor-not-allowed border-0 bg-transparent focus:outline-none resize-none p-0 mb-3"
+                  className="mb-3 max-h-[240px] min-h-[50px] w-full resize-none overflow-y-auto border-0 bg-transparent p-0 text-[15px] leading-[1.75] text-text-primary placeholder:text-text-muted focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
                   placeholder="向 AstrCode 提问..."
                   value={value}
                   disabled={isBusy}
@@ -268,10 +252,14 @@ export default function InputBar({
                   onCompositionEnd={() => setIsComposing(false)}
                 />
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 flex-shrink-0">
+                  <div className="flex flex-shrink-0 items-center gap-2">
+                    {/* TODO: 后续在这里接入附件 / 扩展入口，当前先显式呈现为不可用占位态。 */}
                     <button
                       type="button"
-                      className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors"
+                      className={composerAttachmentButton}
+                      disabled
+                      aria-disabled="true"
+                      title="附件功能待实现"
                     >
                       <svg
                         width="18"
@@ -282,6 +270,7 @@ export default function InputBar({
                         strokeWidth="2.5"
                         strokeLinecap="round"
                         strokeLinejoin="round"
+                        aria-hidden="true"
                       >
                         <line x1="12" y1="5" x2="12" y2="19"></line>
                         <line x1="5" y1="12" x2="19" y2="12"></line>
@@ -294,10 +283,10 @@ export default function InputBar({
                       setModel={setModel}
                     />
                   </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
+                  <div className="flex flex-shrink-0 items-center gap-2">
                     {isBusy ? (
                       <button
-                        className="h-9 px-3.5 bg-[var(--danger-soft)] text-[var(--danger)] border border-[#f2d2cc] rounded-xl text-[13px] font-semibold flex-shrink-0 transition-colors duration-150 ease-out hover:bg-[#ffe7e2]"
+                        className={composerInterruptButton}
                         type="button"
                         onClick={() => void onInterrupt()}
                       >
@@ -305,7 +294,7 @@ export default function InputBar({
                       </button>
                     ) : (
                       <button
-                        className="w-9 h-9 inline-flex items-center justify-center bg-gradient-to-b from-[#35302b] to-[#26211d] text-white rounded-full flex-shrink-0 transition-[transform,background-color,opacity,box-shadow] duration-150 ease-out shadow-[0_14px_26px_rgba(47,43,39,0.16)] hover:from-[#2f2b27] hover:to-[#1f1b17] hover:-translate-y-px hover:scale-105 hover:shadow-[0_18px_32px_rgba(47,43,39,0.2)] focus-visible:outline-none focus-visible:shadow-[0_0_0_4px_rgba(57,201,143,0.16),0_18px_32px_rgba(47,43,39,0.2)] disabled:opacity-35 disabled:cursor-not-allowed [&_svg]:w-[16px] [&_svg]:h-[16px]"
+                        className={composerSubmitButton}
                         type="button"
                         onClick={submit}
                         disabled={!value.trim()}
@@ -331,7 +320,6 @@ export default function InputBar({
               </div>
             </div>
           </div>
-          {/* Skill Selector 悬浮面板，挂在 composer frame 下与外框同一基线 */}
           {sessionId && slashTriggerVisible && (
             <CommandSelector
               visible={slashTriggerVisible}
@@ -344,7 +332,7 @@ export default function InputBar({
           )}
         </div>
       </div>
-      <div className="w-full max-w-[var(--chat-composer-max-width)] mx-auto mt-2.5 text-center text-xs text-text-muted">
+      <div className="mx-auto mt-2.5 w-full max-w-[var(--chat-composer-max-width)] text-center text-xs text-text-muted">
         AI 可能会产生误导性信息，请核实重要内容
       </div>
     </div>

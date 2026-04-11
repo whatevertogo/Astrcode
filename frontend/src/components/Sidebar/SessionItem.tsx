@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import type { Session } from '../../types';
 import { useContextMenu } from '../../hooks/useContextMenu';
 import { contextMenu as contextMenuClass, menuItem } from '../../lib/styles';
@@ -26,9 +26,8 @@ export default function SessionItem({ session, isActive, onSelect, onDelete }: S
       <div
         ref={rowRef}
         className={cn(
-          'flex items-center min-h-9 ml-6 py-2 px-3 cursor-pointer transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out select-none border border-transparent rounded-[10px] hover:bg-[rgba(255,255,255,0.6)] focus-visible:outline-2 focus-visible:outline-[rgba(76,138,255,0.18)] focus-visible:outline-offset-2',
-          isActive &&
-            'bg-surface border-border shadow-[0_8px_20px_rgba(112,86,50,0.08)] translate-x-px'
+          'ml-6 flex min-h-9 cursor-pointer select-none items-center rounded-[10px] border border-transparent px-3 py-2 transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out hover:bg-white/60 focus-visible:outline-2 focus-visible:outline-accent-soft/30 focus-visible:outline-offset-2',
+          isActive && 'translate-x-px border-border bg-surface shadow-soft'
         )}
         onClick={(e) => {
           onSelect();

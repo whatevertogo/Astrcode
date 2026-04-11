@@ -1,4 +1,4 @@
-import type { AgentStatus, Message, SubRunFinishMessage, SubRunStartMessage } from '../types';
+import type { Message, SubRunFinishMessage, SubRunStartMessage } from '../types';
 
 interface IndexedMessage {
   index: number;

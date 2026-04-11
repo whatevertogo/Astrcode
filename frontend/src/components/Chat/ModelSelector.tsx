@@ -194,7 +194,7 @@ export default function ModelSelector({
     <div ref={wrapperRef} className="relative">
       <button
         type="button"
-        className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg hover:bg-[rgba(0,0,0,0.05)] text-[13px] text-text-secondary transition-all duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-soft/30 disabled:opacity-60 disabled:cursor-not-allowed"
+        className="flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-[13px] text-text-secondary transition-all duration-150 ease-out hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-soft/30 disabled:cursor-not-allowed disabled:opacity-60"
         onClick={() => {
           if (!triggerDisabled) {
             setOpen((value) => !value);
@@ -225,7 +225,7 @@ export default function ModelSelector({
       {open && (
         <div
           id={listboxId}
-          className="absolute bottom-[calc(100%+8px)] left-0 w-[240px] bg-surface border border-border rounded-2xl shadow-[0_12px_32px_rgba(117,90,52,0.1)] z-[9999] flex flex-col origin-bottom-left animate-in fade-in zoom-in-95 duration-100"
+          className="absolute bottom-[calc(100%+8px)] left-0 z-[9999] flex w-[240px] origin-bottom-left flex-col rounded-2xl border border-border bg-surface shadow-soft animate-in fade-in zoom-in-95 duration-100"
         >
           <div className="p-1.5 border-b border-border">
             <div className="relative flex items-center">
@@ -275,7 +275,7 @@ export default function ModelSelector({
                           onMouseLeave={() => setHoverIndex(-1)}
                           className={cn(
                             'w-full flex items-center justify-between px-3 h-[34px] text-left rounded-lg transition-colors duration-100 text-text-primary',
-                            index === hoverIndex && 'bg-[rgba(0,0,0,0.05)]'
+                            index === hoverIndex && 'bg-black/5'
                           )}
                           onClick={() => void handleSelect(index)}
                           role="option"
@@ -306,7 +306,7 @@ export default function ModelSelector({
             )}
           </div>
           {error && (
-            <div className="mx-1.5 mb-1.5 p-2 bg-danger-soft text-danger rounded-lg text-[12px] text-center border border-danger-soft">
+            <div className="mx-1.5 mb-1.5 p-2 bg-danger-soft text-danger rounded-lg text-[12px] text-center border border-danger/25">
               {error}
             </div>
           )}

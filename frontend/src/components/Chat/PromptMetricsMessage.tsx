@@ -1,6 +1,8 @@
 import { memo } from 'react';
 
 import type { PromptMetricsMessage as PromptMetricsMessageType } from '../../types';
+import { pillInfo } from '../../lib/styles';
+import { calculateCacheHitRatePercent } from '../../lib/utils';
 
 interface PromptMetricsMessageProps {
   message: PromptMetricsMessageType;
@@ -13,26 +15,13 @@ function formatTokenCount(value?: number): string {
   return value.toLocaleString();
 }
 
-function calculateCacheHitRatePercent(message: PromptMetricsMessageType): number | null {
-  if (!message.providerInputTokens || message.providerInputTokens <= 0) {
-    return null;
-  }
-
-  const rawRate = Math.round(
-    ((message.cacheReadInputTokens ?? 0) / message.providerInputTokens) * 100
-  );
-  return Math.min(Math.max(rawRate, 0), 100);
-}
-
 function PromptMetricsMessage({ message }: PromptMetricsMessageProps) {
   const hitRate = calculateCacheHitRatePercent(message);
 
   return (
-    <div className="ml-[var(--chat-assistant-content-offset)] border border-[rgba(89,132,255,0.2)] bg-[linear-gradient(180deg,rgba(247,249,255,0.98)_0%,rgba(240,244,255,0.96)_100%)] rounded-[18px] px-4 py-3.5 shadow-[0_12px_28px_rgba(68,102,193,0.08)]">
-      <div className="flex items-center gap-2.5 flex-wrap mb-3">
-        <span className="inline-flex items-center min-h-[26px] px-2.5 rounded-full bg-[rgba(89,132,255,0.14)] text-[#3558c4] text-xs font-bold">
-          Prompt 指标
-        </span>
+    <div className="ml-[var(--chat-assistant-content-offset)] rounded-[18px] border border-info-border bg-info-soft px-4 py-3.5 shadow-code-panel">
+      <div className="mb-3 flex flex-wrap items-center gap-2.5">
+        <span className={pillInfo}>Prompt 指标</span>
         <span className="text-text-muted text-xs">step #{message.stepIndex}</span>
       </div>
       <div className="grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] gap-3">
