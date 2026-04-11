@@ -102,6 +102,64 @@ describe('toolDisplay shell metadata helpers', () => {
     expect(preview).toBe('[pwsh] $ cargo test  ok');
   });
 
+  it('formats collapsed shell previews for bash-family labels', () => {
+    expect(
+      formatToolShellPreview(
+        {
+          kind: 'terminal',
+          command: 'git status',
+          cwd: '/repo',
+          shell: 'git-bash',
+          exitCode: 0,
+          segments: [{ stream: 'stdout', text: 'clean\n' }],
+        },
+        'shell'
+      )
+    ).toBe('[git-bash] $ git status  clean');
+
+    expect(
+      formatToolShellPreview(
+        {
+          kind: 'terminal',
+          command: 'cargo test',
+          cwd: '/repo',
+          shell: 'wsl-bash',
+          exitCode: 0,
+          segments: [{ stream: 'stdout', text: 'ok\n' }],
+        },
+        'shell'
+      )
+    ).toBe('[wsl-bash] $ cargo test  ok');
+
+    expect(
+      formatToolShellPreview(
+        {
+          kind: 'terminal',
+          command: 'cargo test',
+          cwd: '/repo',
+          shell: 'bash',
+          exitCode: 0,
+          segments: [{ stream: 'stdout', text: 'ok\n' }],
+        },
+        'shell'
+      )
+    ).toBe('[bash] $ cargo test  ok');
+
+    expect(
+      formatToolShellPreview(
+        {
+          kind: 'terminal',
+          command: 'make build',
+          cwd: '/repo',
+          shell: 'sh',
+          exitCode: 0,
+          segments: [{ stream: 'stdout', text: 'done\n' }],
+        },
+        'shell'
+      )
+    ).toBe('[sh] $ make build  done');
+  });
+
   it('extracts generic tool metadata message and stats pills', () => {
     const summary = extractToolMetadataSummary({
       message: 'No matches found for the given pattern.',

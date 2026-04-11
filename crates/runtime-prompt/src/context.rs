@@ -13,6 +13,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
+use astrcode_core::default_shell_label;
 use astrcode_protocol::capability::CapabilityDescriptor;
 use serde::{Deserialize, Serialize};
 
@@ -130,7 +131,7 @@ impl PromptContext {
             "env.os" => Some(std::env::consts::OS.to_string()),
             // Keep prompt-side shell detection aligned with the shell tool so the model sees
             // which executor will actually run commands before it decides to call `shell`.
-            "env.shell" => Some(prompt_default_shell().to_string()),
+            "env.shell" => Some(prompt_default_shell()),
             "run.date" => Some(chrono::Local::now().format("%Y-%m-%d").to_string()),
             "run.time" => Some(chrono::Local::now().format("%H:%M:%S").to_string()),
             _ => None,
@@ -184,29 +185,8 @@ impl PromptContext {
     }
 }
 
-#[cfg(windows)]
-fn prompt_default_shell() -> &'static str {
-    use std::sync::OnceLock;
-
-    static SHELL: OnceLock<&'static str> = OnceLock::new();
-    SHELL.get_or_init(|| {
-        if std::process::Command::new("pwsh")
-            .arg("-NoProfile")
-            .arg("-Command")
-            .arg("$PSVersionTable.PSVersion")
-            .output()
-            .is_ok()
-        {
-            "pwsh"
-        } else {
-            "powershell"
-        }
-    })
-}
-
-#[cfg(not(windows))]
-fn prompt_default_shell() -> &'static str {
-    "/bin/sh"
+fn prompt_default_shell() -> String {
+    default_shell_label()
 }
 
 #[cfg(test)]
@@ -247,7 +227,7 @@ mod tests {
         );
         assert_eq!(
             ctx.resolve_builtin_var("env.shell").as_deref(),
-            Some(prompt_default_shell())
+            Some(prompt_default_shell().as_str())
         );
         assert!(ctx.resolve_builtin_var("run.date").is_some());
     }

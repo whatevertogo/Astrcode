@@ -33,6 +33,7 @@ pub mod projection;
 pub mod registry;
 pub mod runtime;
 pub mod session;
+mod shell;
 pub mod store;
 mod time;
 // test_support 通过 feature gate "test-support" 守卫。
@@ -94,6 +95,9 @@ pub use runtime::{
     SessionTruthBoundary,
 };
 pub use session::{DeleteProjectResult, SessionEventRecord, SessionMeta};
+pub use shell::{
+    ResolvedShell, ShellFamily, default_shell_label, detect_shell_family, resolve_shell,
+};
 pub use store::{
     EventLogWriter, SessionManager, SessionTurnAcquireResult, SessionTurnBusy, SessionTurnLease,
     StoreError, StoreResult,

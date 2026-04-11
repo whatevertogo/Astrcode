@@ -9,7 +9,7 @@
 //! - **UTF-8 安全**: 跨读取边界的碎片 UTF-8 序列必须正确拼接，不能截断多字节字符
 //! - **输出截断**: 防止超长输出导致内存溢出或前端渲染卡顿
 //! - **取消支持**: 用户取消时立即 kill 子进程并清理资源
-//! - **跨平台**: Windows 默认 pwsh/powershell，Unix 默认 /bin/sh
+//! - **跨平台**: 默认优先继承当前环境使用的 shell，再回退到平台兜底链
 //!
 //! ## 流式读取机制
 //!
@@ -26,15 +26,15 @@
 
 use std::{
     io::Read,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
 
 use astrcode_core::{
-    AstrError, Result, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult, ToolOutputStream, ToolPromptMetadata,
+    AstrError, Result, ShellFamily, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
+    ToolExecutionResult, ToolOutputStream, ToolPromptMetadata, default_shell_label, resolve_shell,
 };
 use astrcode_protocol::capability::SideEffectLevel;
 use async_trait::async_trait;
@@ -53,7 +53,7 @@ pub struct ShellTool;
 /// Shell 工具的反序列化参数。
 ///
 /// `command` 是必填项；`cwd` 和 `shell` 可选，
-/// 未指定时分别使用上下文工作目录和平台默认 shell。
+/// 未指定时分别使用上下文工作目录和当前环境推导出的默认 shell。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ShellArgs {
@@ -71,18 +71,12 @@ struct ShellArgs {
 /// 平台相关的 shell 命令规范。
 ///
 /// 将用户输入的 command 字符串转换为具体的可执行程序 + 参数列表，
-/// 屏蔽 Windows (PowerShell) 和 Unix (sh) 的差异。
+/// 屏蔽 PowerShell/cmd/Posix/WSL 的参数差异。
 #[derive(Debug)]
 struct CommandSpec {
     program: String,
     args: Vec<String>,
-}
-
-#[derive(Clone, Copy)]
-enum ShellFamily {
-    PowerShell,
-    Cmd,
-    Posix,
+    display_shell: String,
 }
 
 /// 流输出捕获器，负责增量收集、截断控制和截断通知。
@@ -363,7 +357,7 @@ impl Tool for ShellTool {
                     "cwd": { "type": "string" },
                     "shell": {
                         "type": "string",
-                        "description": "Optional shell override. Supported families: pwsh/powershell, cmd, sh/bash/zsh. On Windows, sh/bash/zsh require Git Bash or WSL."
+                        "description": "Optional shell override. Supported families: pwsh/powershell, cmd, wsl, sh/bash/zsh."
                     },
                     "timeout": {
                         "type": "integer",
@@ -394,9 +388,11 @@ impl Tool for ShellTool {
                     format!(
                         "Use `shell` for non-interactive commands that are easier to express as a \
                          single command line than as a dedicated file tool. This session defaults \
-                         to `{default_shell}`. The optional `shell` override only supports known \
-                         shell families (PowerShell, cmd, sh/bash/zsh) so runtime can pass the \
-                         command with the correct flags. Prefer `shell` for build/test/git/system \
+                         to `{default_shell}` and resolves that default by preferring the current \
+                         environment's shell before falling back to platform-safe options. The \
+                         optional `shell` override only supports known shell families \
+                         (PowerShell, cmd, WSL bash, sh/bash/zsh) so runtime can pass the command \
+                         with the correct flags. Prefer `shell` for build/test/git/system \
                          inspection commands. Prefer dedicated tools instead of `shell` for file \
                          reading (`readFile`), code search (`grep`/`findFiles`), and structured \
                          file edits (`editFile`/`apply_patch`). Keep commands scoped to the \
@@ -408,7 +404,7 @@ impl Tool for ShellTool {
                     "Non-interactive single shot — no stdin, no interactive prompts. Use `cwd` to \
                      set the working directory instead of `cd &&`. On timeout the process is \
                      killed; only output produced so far is returned. If quoting issues, set \
-                     `shell` explicitly to pwsh/cmd/sh.",
+                     `shell` explicitly to pwsh/cmd/wsl/sh.",
                 )
                 .example("Run cargo test: { command: \"cargo test --lib\", timeout: 300 }")
                 .prompt_tag("shell"),
@@ -433,7 +429,7 @@ impl Tool for ShellTool {
         let spec = command_spec(args.shell.as_deref(), &args.command)?;
         let started_at = Instant::now();
         let command_text = args.command.clone();
-        let shell_program = spec.program.clone();
+        let shell_display = spec.display_shell.clone();
         // 超时上限 600 秒，默认 120 秒
         let timeout_secs = args.timeout.unwrap_or(120).min(600);
         let deadline = started_at + Duration::from_secs(timeout_secs);
@@ -513,7 +509,7 @@ impl Tool for ShellTool {
                     metadata: Some(json!({
                         "command": command_text,
                         "cwd": cwd_text.clone(),
-                        "shell": shell_program,
+                        "shell": shell_display.clone(),
                         "exitCode": -1,
                         "streamed": true,
                         "timedOut": true,
@@ -521,7 +517,7 @@ impl Tool for ShellTool {
                             "kind": "terminal",
                             "command": args.command,
                             "cwd": cwd_text,
-                            "shell": spec.program,
+                            "shell": spec.display_shell,
                             "exitCode": -1,
                         },
                     })),
@@ -583,7 +579,7 @@ impl Tool for ShellTool {
             metadata: Some(json!({
                 "command": command_text,
                 "cwd": cwd_text.clone(),
-                "shell": shell_program,
+                "shell": shell_display,
                 "exitCode": exit_code,
                 "streamed": true,
                 "stdoutBytes": stdout_capture.bytes_read,
@@ -594,7 +590,7 @@ impl Tool for ShellTool {
                     "kind": "terminal",
                     "command": args.command,
                     "cwd": cwd_text,
-                    "shell": spec.program,
+                    "shell": spec.display_shell,
                     "exitCode": exit_code,
                 },
                 "truncated": truncated,
@@ -607,37 +603,15 @@ impl Tool for ShellTool {
 
 /// 根据平台和用户偏好构建 shell 命令规范。
 ///
-/// ## 平台差异
-///
-/// - **Windows**: 优先使用 PowerShell (`pwsh` 或 `powershell`)， 通过 `-NoProfile -Command`
-///   执行，避免加载用户 profile 拖慢速度
-/// - **Unix**: 使用 `/bin/sh -lc` 执行命令
-///
-/// 用户可以通过 `shell` 参数覆盖默认 shell。
+/// 默认策略优先继承当前环境中的 shell 线索，再回退到平台可用的
+/// bash/PowerShell/WSL 兜底链。用户显式传入 `shell` 时始终优先。
 fn command_spec(shell: Option<&str>, command: &str) -> Result<CommandSpec> {
-    #[cfg(windows)]
-    {
-        let program = shell.unwrap_or(default_windows_shell()).to_string();
-        let family = shell
-            .map(detect_shell_family)
-            .unwrap_or(Some(ShellFamily::PowerShell))
-            .ok_or_else(|| unsupported_shell_error(&program))?;
-        Ok(command_spec_for_family(program, family, command))
-    }
-
-    #[cfg(not(windows))]
-    {
-        let program = shell.unwrap_or("/bin/sh").to_string();
-        let family = shell
-            .map(detect_shell_family)
-            .unwrap_or(Some(ShellFamily::Posix))
-            .ok_or_else(|| unsupported_shell_error(&program))?;
-        Ok(command_spec_for_family(program, family, command))
-    }
+    let resolved_shell = resolve_shell(shell)?;
+    Ok(command_spec_for_family(resolved_shell, command))
 }
 
-fn command_spec_for_family(program: String, family: ShellFamily, command: &str) -> CommandSpec {
-    let args = match family {
+fn command_spec_for_family(shell: astrcode_core::ResolvedShell, command: &str) -> CommandSpec {
+    let args = match shell.family {
         ShellFamily::PowerShell => vec![
             "-NoProfile".to_string(),
             "-Command".to_string(),
@@ -651,67 +625,18 @@ fn command_spec_for_family(program: String, family: ShellFamily, command: &str) 
             command.to_string(),
         ],
         ShellFamily::Posix => vec!["-lc".to_string(), command.to_string()],
+        // 通过 `wsl.exe bash -lc` 复用 Linux bash 语义，同时保持工具仍是一次性调用。
+        ShellFamily::Wsl => vec!["bash".to_string(), "-lc".to_string(), command.to_string()],
     };
-    CommandSpec { program, args }
-}
-
-fn detect_shell_family(shell: &str) -> Option<ShellFamily> {
-    let file_name = Path::new(shell)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or(shell);
-    let normalized = file_name.trim_end_matches(".exe").to_ascii_lowercase();
-
-    match normalized.as_str() {
-        "pwsh" | "powershell" => Some(ShellFamily::PowerShell),
-        "cmd" => Some(ShellFamily::Cmd),
-        "sh" | "bash" | "zsh" => Some(ShellFamily::Posix),
-        _ => None,
+    CommandSpec {
+        program: shell.program,
+        args,
+        display_shell: shell.label,
     }
 }
 
-fn unsupported_shell_error(shell: &str) -> AstrError {
-    AstrError::Validation(format!(
-        "unsupported shell override '{}'; supported families are pwsh/powershell, cmd, and \
-         sh/bash/zsh",
-        shell
-    ))
-}
-
-fn default_shell_for_prompt() -> &'static str {
-    #[cfg(windows)]
-    {
-        default_windows_shell()
-    }
-
-    #[cfg(not(windows))]
-    {
-        "/bin/sh"
-    }
-}
-
-/// 检测 Windows 平台默认 shell。
-///
-/// 优先使用 `pwsh`（PowerShell Core），如果不可用则回退到
-/// `powershell`（Windows PowerShell）。使用 `OnceLock` 确保
-/// 只检测一次，避免每次执行命令都重复探测。
-#[cfg(windows)]
-fn default_windows_shell() -> &'static str {
-    use std::sync::OnceLock;
-    static SHELL: OnceLock<&'static str> = OnceLock::new();
-    SHELL.get_or_init(|| {
-        if std::process::Command::new("pwsh")
-            .arg("-NoProfile")
-            .arg("-Command")
-            .arg("$PSVersionTable.PSVersion")
-            .output()
-            .is_ok()
-        {
-            "pwsh"
-        } else {
-            "powershell"
-        }
-    })
+fn default_shell_for_prompt() -> String {
+    default_shell_label()
 }
 
 #[cfg(test)]
@@ -864,9 +789,9 @@ mod tests {
     async fn shell_tool_runs_non_interactive_command() {
         let tool = ShellTool;
         let args = if cfg!(windows) {
-            json!({"command": "Write-Output 'ok'"})
+            json!({"command": "echo ok", "shell": "cmd"})
         } else {
-            json!({"command": "echo ok"})
+            json!({"command": "echo ok", "shell": "sh"})
         };
 
         let result = tool
@@ -906,25 +831,34 @@ mod tests {
             .prompt
             .expect("shell prompt metadata should exist");
 
-        assert!(definition.description.contains(default_shell_for_prompt()));
-        assert!(prompt.summary.contains(default_shell_for_prompt()));
-        assert!(prompt.guide.contains(default_shell_for_prompt()));
+        let default_shell = default_shell_for_prompt();
+
+        assert!(definition.description.contains(default_shell.as_str()));
+        assert!(prompt.summary.contains(default_shell.as_str()));
+        assert!(prompt.guide.contains(default_shell.as_str()));
     }
 
     #[test]
     fn detect_shell_family_supports_common_shell_names() {
         assert!(matches!(
-            detect_shell_family("pwsh"),
+            astrcode_core::detect_shell_family("pwsh"),
             Some(ShellFamily::PowerShell)
         ));
         assert!(matches!(
-            detect_shell_family("powershell.exe"),
+            astrcode_core::detect_shell_family("powershell.exe"),
             Some(ShellFamily::PowerShell)
         ));
-        assert!(matches!(detect_shell_family("cmd"), Some(ShellFamily::Cmd)));
         assert!(matches!(
-            detect_shell_family("/bin/bash"),
+            astrcode_core::detect_shell_family("cmd"),
+            Some(ShellFamily::Cmd)
+        ));
+        assert!(matches!(
+            astrcode_core::detect_shell_family("/bin/bash"),
             Some(ShellFamily::Posix)
+        ));
+        assert!(matches!(
+            astrcode_core::detect_shell_family("wsl.exe"),
+            Some(ShellFamily::Wsl)
         ));
     }
 
@@ -932,5 +866,17 @@ mod tests {
     fn command_spec_rejects_unknown_shell_override() {
         let err = command_spec(Some("fish"), "echo ok").expect_err("unsupported shell should fail");
         assert!(matches!(err, AstrError::Validation(_)));
+    }
+
+    #[test]
+    fn command_spec_uses_stable_display_labels() {
+        let cmd_spec = command_spec(Some("cmd"), "echo ok").expect("cmd should resolve");
+        assert_eq!(cmd_spec.display_shell, "cmd");
+
+        let pwsh_spec = command_spec(Some("pwsh"), "echo ok").expect("pwsh should resolve");
+        assert_eq!(pwsh_spec.display_shell, "pwsh");
+
+        let wsl_spec = command_spec(Some("wsl.exe"), "echo ok").expect("wsl should resolve");
+        assert_eq!(wsl_spec.display_shell, "wsl-bash");
     }
 }
