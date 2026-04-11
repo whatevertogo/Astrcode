@@ -1,9 +1,6 @@
-use std::{
-    env,
-    path::{Path, PathBuf},
-    process::Command,
-    sync::OnceLock,
-};
+#[cfg(windows)]
+use std::path::PathBuf;
+use std::{env, path::Path, process::Command, sync::OnceLock};
 
 use crate::{AstrError, Result};
 
