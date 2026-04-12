@@ -41,6 +41,7 @@ impl ObserveAgentTool {
 2. **Copy agentId exactly**: `agentId` must be copied byte-for-byte from a previous tool result's `Child agent reference` — never zero-pad, rewrite, or guess.
 3. **Snapshot contents**: Returns a full state snapshot including `lifecycleStatus`, `lastTurnOutcome`, `activeTask`, `pendingTask`, `pendingMessageCount`, etc.
 4. **Decision basis**: Use the snapshot to decide whether to `send` a new task or `close` the agent.
+5. **Recommended practice**: Use a shell script to wait for a short interval before observing again, to avoid aggressive polling.
 
 ## Returned Fields
 
