@@ -223,6 +223,7 @@ impl AgentExecutionServiceHandle {
             parent.parent_turn_id.clone(),
             resumed.agent_profile.clone(),
             resumed.sub_run_id.clone(),
+            None,
             resumed.storage_mode,
             resumed.child_session_id.clone(),
         );
@@ -389,6 +390,7 @@ impl AgentExecutionServiceHandle {
             parent_turn_id.to_string(),
             child.agent_profile.clone(),
             child.sub_run_id.clone(),
+            child.parent_sub_run_id.clone(),
             child.storage_mode,
             child.child_session_id.clone(),
         )

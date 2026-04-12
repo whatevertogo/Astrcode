@@ -355,6 +355,7 @@ mod tests {
                 session_id: "session-parent".to_string(),
                 sub_run_id: "subrun-1".to_string(),
                 parent_agent_id: Some("agent-parent".to_string()),
+                parent_sub_run_id: None,
                 lineage_kind: ChildSessionLineageKind::Spawn,
                 status: AgentLifecycleStatus::Idle,
                 open_session_id: "session-child".to_string(),

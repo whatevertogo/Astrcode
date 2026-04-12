@@ -554,6 +554,7 @@ async fn get_subrun_status_reconstructs_durable_snapshot_without_live_handle() {
         "turn-parent".to_string(),
         "review".to_string(),
         "subrun-durable".to_string(),
+        None,
         SubRunStorageMode::IndependentSession,
         Some("child-session".to_string()),
     );
@@ -675,6 +676,7 @@ async fn get_subrun_status_prefers_live_handle_when_agent_control_has_entry() {
                 "turn-parent".to_string(),
                 "review".to_string(),
                 handle.sub_run_id.clone(),
+                None,
                 SubRunStorageMode::IndependentSession,
                 Some("child-live".to_string()),
             ),
@@ -739,6 +741,7 @@ async fn get_subrun_status_keeps_storage_mode_parity_for_parent_aborted_independ
         "turn-parent".to_string(),
         "review".to_string(),
         sub_run_id.to_string(),
+        None,
         SubRunStorageMode::IndependentSession,
         Some("child-independent".to_string()),
     );
@@ -786,6 +789,7 @@ async fn get_subrun_status_keeps_storage_mode_parity_for_parent_aborted_independ
         .await
         .expect("durable snapshot should be reconstructed");
 
+    assert_eq!(snapshot.handle.parent_sub_run_id, None);
     assert_eq!(
         snapshot.handle.storage_mode,
         SubRunStorageMode::IndependentSession
@@ -899,6 +903,7 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
                 "turn-b".to_string(),
                 "review".to_string(),
                 live_handle.sub_run_id.clone(),
+                None,
                 SubRunStorageMode::IndependentSession,
                 Some("child-b".to_string()),
             ),
@@ -920,6 +925,7 @@ async fn get_subrun_status_does_not_overlay_unrelated_live_handle_when_durable_e
                 "turn-b".to_string(),
                 "review".to_string(),
                 live_handle.sub_run_id.clone(),
+                None,
                 SubRunStorageMode::IndependentSession,
                 Some("child-b".to_string()),
             ),
@@ -1022,6 +1028,7 @@ async fn get_subrun_status_uses_live_overlay_for_independent_subrun_in_parent_se
                 "turn-parent".to_string(),
                 "review".to_string(),
                 handle.sub_run_id.clone(),
+                None,
                 SubRunStorageMode::IndependentSession,
                 Some(child_session.session_id.clone()),
             ),
@@ -1045,6 +1052,7 @@ async fn get_subrun_status_uses_live_overlay_for_independent_subrun_in_parent_se
 
     assert_eq!(snapshot.source, crate::service::SubRunStatusSource::Live);
     assert_eq!(snapshot.handle.lifecycle, AgentLifecycleStatus::Running);
+    assert_eq!(snapshot.handle.parent_sub_run_id, None);
     assert_eq!(
         snapshot.handle.storage_mode,
         SubRunStorageMode::IndependentSession
@@ -1077,6 +1085,7 @@ async fn get_subrun_status_rejects_legacy_shared_history_snapshots() {
         "turn-legacy".to_string(),
         "review".to_string(),
         "subrun-legacy".to_string(),
+        None,
         SubRunStorageMode::IndependentSession,
         None,
     );
@@ -1717,6 +1726,7 @@ fn derive_child_execution_owner_keeps_root_identity() {
         depth: 1,
         parent_turn_id: "turn-root".to_string(),
         parent_agent_id: None,
+        parent_sub_run_id: None,
         agent_profile: "plan".to_string(),
         storage_mode: SubRunStorageMode::IndependentSession,
         lifecycle: AgentLifecycleStatus::Pending,
@@ -2377,6 +2387,7 @@ async fn child_terminal_delivery_triggers_parent_wake_batch_started_and_acked() 
             session_id: parent_session.session_id.clone(),
             sub_run_id: "subrun-child-1".to_string(),
             parent_agent_id: Some("agent-parent".to_string()),
+            parent_sub_run_id: None,
             lineage_kind: ChildSessionLineageKind::Spawn,
             status: AgentLifecycleStatus::Idle,
             open_session_id: "session-child".to_string(),
@@ -2923,6 +2934,7 @@ fn make_test_notification(
             // Why: US2 之后 child->parent wake 先走 durable mailbox，
             // mailbox envelope 需要显式的直接父 agent id，旧测试夹具不能再省略它。
             parent_agent_id: Some("agent-parent".to_string()),
+            parent_sub_run_id: None,
             lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
             status: AgentLifecycleStatus::Idle,
             open_session_id: "session-child".to_string(),

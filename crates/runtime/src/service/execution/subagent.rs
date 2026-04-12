@@ -237,6 +237,7 @@ impl AgentExecutionServiceHandle {
             parent.parent_turn_id.clone(),
             prepared.profile.id.clone(),
             child.sub_run_id.clone(),
+            None,
             child.storage_mode,
             child.child_session_id.clone(),
         );

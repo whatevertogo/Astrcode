@@ -344,6 +344,7 @@ mod tests {
             "turn-parent",
             "explore",
             "subrun-1",
+            None,
             crate::SubRunStorageMode::IndependentSession,
             Some("session-child".to_string()),
         )
@@ -527,6 +528,7 @@ mod tests {
             "turn-parent",
             "explore",
             "subrun-independent",
+            None,
             crate::SubRunStorageMode::IndependentSession,
             Some("session-child".to_string()),
         );

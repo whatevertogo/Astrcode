@@ -121,6 +121,7 @@ pub(crate) fn seed_subrun_status_contract_session(session_id: &str, working_dir:
         "turn-contract",
         "review",
         "subrun-contract",
+        None,
         astrcode_core::SubRunStorageMode::IndependentSession,
         Some("child-contract".to_string()),
     );
@@ -180,6 +181,7 @@ pub(crate) fn seed_child_delivery_contract_session(session_id: &str, working_dir
         "turn-delivery-contract",
         "review",
         "subrun-delivery-contract",
+        None,
         astrcode_core::SubRunStorageMode::IndependentSession,
         Some("session-child-contract".to_string()),
     );
@@ -188,6 +190,7 @@ pub(crate) fn seed_child_delivery_contract_session(session_id: &str, working_dir
         session_id: session_id.to_string(),
         sub_run_id: "subrun-delivery-contract".to_string(),
         parent_agent_id: Some("agent-parent".to_string()),
+        parent_sub_run_id: None,
         lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
         status: astrcode_core::AgentLifecycleStatus::Terminated,
         open_session_id: "session-child-contract".to_string(),

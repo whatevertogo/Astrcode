@@ -69,6 +69,7 @@ pub fn child_session_node_fixture(seed: &str) -> ChildSessionNode {
         sub_run_id: format!("subrun-{normalized}"),
         parent_session_id: format!("session-parent-{normalized}"),
         parent_agent_id: Some(format!("agent-parent-{normalized}")),
+        parent_sub_run_id: None,
         parent_turn_id: format!("turn-parent-{normalized}"),
         lineage_kind: ChildSessionLineageKind::Spawn,
         status: AgentLifecycleStatus::Running,

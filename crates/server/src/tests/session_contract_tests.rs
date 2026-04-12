@@ -721,6 +721,7 @@ fn seed_nested_subrun_hierarchy(session_id: &str, working_dir: &std::path::Path)
         "turn-root",
         "review",
         "sub-level1",
+        None,
         astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
@@ -729,6 +730,7 @@ fn seed_nested_subrun_hierarchy(session_id: &str, working_dir: &std::path::Path)
         "turn-level1",
         "review",
         "sub-level2",
+        None,
         astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
@@ -737,6 +739,7 @@ fn seed_nested_subrun_hierarchy(session_id: &str, working_dir: &std::path::Path)
         "turn-level2",
         "review",
         "sub-level3",
+        None,
         astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
@@ -946,6 +949,7 @@ fn seed_parent_summary_list_session(session_id: &str, working_dir: &std::path::P
         session_id: session_id.to_string(),
         sub_run_id: "subrun-ok".to_string(),
         parent_agent_id: Some("agent-parent".to_string()),
+        parent_sub_run_id: None,
         lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
         status: astrcode_core::AgentLifecycleStatus::Terminated,
         open_session_id: "session-child-ok".to_string(),
@@ -955,6 +959,7 @@ fn seed_parent_summary_list_session(session_id: &str, working_dir: &std::path::P
         session_id: session_id.to_string(),
         sub_run_id: "subrun-fail".to_string(),
         parent_agent_id: Some("agent-parent".to_string()),
+        parent_sub_run_id: None,
         lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
         status: astrcode_core::AgentLifecycleStatus::Terminated,
         open_session_id: "session-child-fail".to_string(),
@@ -965,6 +970,7 @@ fn seed_parent_summary_list_session(session_id: &str, working_dir: &std::path::P
         "turn-parent",
         "explore",
         "subrun-ok",
+        None,
         astrcode_core::SubRunStorageMode::IndependentSession,
         Some("session-child-ok".to_string()),
     );
@@ -973,6 +979,7 @@ fn seed_parent_summary_list_session(session_id: &str, working_dir: &std::path::P
         "turn-parent",
         "explore",
         "subrun-fail",
+        None,
         astrcode_core::SubRunStorageMode::IndependentSession,
         Some("session-child-fail".to_string()),
     );

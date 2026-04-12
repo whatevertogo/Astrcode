@@ -225,6 +225,7 @@ impl AgentServiceHandle {
             session_id: handle.session_id.clone(),
             sub_run_id: handle.sub_run_id.clone(),
             parent_agent_id: handle.parent_agent_id.clone(),
+            parent_sub_run_id: handle.parent_sub_run_id.clone(),
             lineage_kind,
             status: handle.lifecycle,
             open_session_id: handle
