@@ -1,4 +1,4 @@
-# Repository Guidelines
+﻿# Repository Guidelines
 
 本项目不需要向后兼容的代码，只需要良好代码架构和干净代码
 
