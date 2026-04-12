@@ -13,7 +13,7 @@ pub(crate) use mutation::{
     compact_session, create_session, delete_project, delete_session, interrupt_session,
     submit_prompt,
 };
-pub(crate) use query::{list_sessions, session_history};
+pub(crate) use query::{list_sessions, session_history, session_view};
 pub(crate) use stream::{session_catalog_events, session_events};
 
 use crate::ApiError;

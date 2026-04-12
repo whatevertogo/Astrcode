@@ -82,7 +82,7 @@ export default function App() {
   const {
     createSession,
     listSessionsWithMeta,
-    loadSession,
+    loadSessionView,
     connectSession,
     disconnectSession,
     submitPrompt,
@@ -109,7 +109,7 @@ export default function App() {
     activeSubRunPathRef,
     phaseRef,
     sessionActivationGenerationRef,
-    loadSession,
+    loadSessionView,
     listSessionsWithMeta,
     connectSession,
     disconnectSession,

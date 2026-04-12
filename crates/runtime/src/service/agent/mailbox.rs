@@ -115,6 +115,7 @@ impl AgentServiceHandle {
             child.parent_turn_id.clone(),
             child.agent_profile.clone(),
             child.sub_run_id.clone(),
+            child.parent_sub_run_id.clone(),
             child.storage_mode,
             child.child_session_id.clone(),
         );

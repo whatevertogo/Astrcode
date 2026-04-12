@@ -43,6 +43,7 @@ fn seed_shared_subrun_session(session_id: &str, working_dir: &std::path::Path) {
         "turn-root",
         "review",
         "sub-a",
+        None,
         astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
@@ -51,6 +52,7 @@ fn seed_shared_subrun_session(session_id: &str, working_dir: &std::path::Path) {
         "turn-a",
         "review",
         "sub-b",
+        Some("sub-a".to_string()),
         astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
@@ -59,6 +61,7 @@ fn seed_shared_subrun_session(session_id: &str, working_dir: &std::path::Path) {
         "turn-b",
         "review",
         "sub-c",
+        Some("sub-b".to_string()),
         astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
@@ -145,6 +148,7 @@ fn seed_finished_subrun_session(session_id: &str, working_dir: &std::path::Path)
         "turn-root",
         "review",
         "sub-durable",
+        None,
         astrcode_core::SubRunStorageMode::IndependentSession,
         Some("child-durable".to_string()),
     );
@@ -204,6 +208,7 @@ fn seed_legacy_subrun_session(session_id: &str, working_dir: &std::path::Path) {
         "turn-legacy",
         "review",
         "sub-legacy",
+        None,
         astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
@@ -259,6 +264,7 @@ fn seed_parent_abort_storage_mode_parity_session(session_id: &str, working_dir: 
         "turn-parent",
         "review",
         "sub-shared",
+        None,
         astrcode_core::SubRunStorageMode::IndependentSession,
         None,
     );
@@ -267,6 +273,7 @@ fn seed_parent_abort_storage_mode_parity_session(session_id: &str, working_dir: 
         "turn-parent",
         "review",
         "sub-independent",
+        None,
         astrcode_core::SubRunStorageMode::IndependentSession,
         Some("child-independent".to_string()),
     );
@@ -1264,6 +1271,7 @@ async fn subrun_status_endpoint_reports_live_for_independent_subrun_owned_by_par
             "turn-parent",
             "review",
             handle.sub_run_id.clone(),
+            None,
             astrcode_core::SubRunStorageMode::IndependentSession,
             Some(child_session.session_id.clone()),
         ),

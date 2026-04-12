@@ -163,6 +163,8 @@ function pickAgentContext(
   const includeParentTurnId = options?.includeParentTurnId !== false;
   const agentId = pickOptionalString(data, 'agentId', 'agent_id') ?? undefined;
   const parentTurnId = pickOptionalString(data, 'parentTurnId', 'parent_turn_id') ?? undefined;
+  const parentSubRunId =
+    pickOptionalString(data, 'parentSubRunId', 'parent_sub_run_id') ?? undefined;
   const agentProfile = pickOptionalString(data, 'agentProfile', 'agent_profile') ?? undefined;
   const subRunId = pickOptionalString(data, 'subRunId', 'sub_run_id') ?? undefined;
   const executionId =
@@ -173,6 +175,7 @@ function pickAgentContext(
   const storageMode = toSubRunStorageMode(data.storageMode ?? data.storage_mode) ?? undefined;
   const context = {
     ...(agentId ? { agentId } : {}),
+    ...(parentSubRunId ? { parentSubRunId } : {}),
     ...(agentProfile ? { agentProfile } : {}),
     ...(subRunId ? { subRunId } : {}),
     ...(executionId ? { executionId } : {}),
@@ -637,6 +640,8 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
           executionId,
           parentAgentId:
             pickOptionalString(childRefRaw, 'parentAgentId', 'parent_agent_id') ?? undefined,
+          parentSubRunId:
+            pickOptionalString(childRefRaw, 'parentSubRunId', 'parent_sub_run_id') ?? undefined,
           lineageKind,
           status: childStatus,
           openSessionId,

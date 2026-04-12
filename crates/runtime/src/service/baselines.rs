@@ -317,7 +317,7 @@ async fn reconnect_with_recent_cursor_uses_cached_tail_and_updates_metrics() {
 
 /// 验证使用过期游标重连时回退到磁盘回放，并正确记录指标。
 ///
-/// 场景：加载 1500 个 Turn 的会话，使用过期游标 "1.0" 重连。
+/// 场景：加载 6000 个 Turn 的会话，使用过期游标 "1.0" 重连。
 /// 预期：从磁盘恢复历史事件，磁盘回退计数 +1。
 #[tokio::test]
 async fn reconnect_with_stale_cursor_falls_back_to_disk_and_records_it() {
@@ -328,7 +328,9 @@ async fn reconnect_with_stale_cursor_falls_back_to_disk_and_records_it() {
     );
 
     let working_dir = tempfile::tempdir().expect("tempdir should be created");
-    seed_session_log("baseline-replay-disk", working_dir.path(), 1_500);
+    // Why: recent cache 默认已提升到 16_384，测试需要明确超过窗口，
+    // 才能稳定覆盖 disk fallback 路径。
+    seed_session_log("baseline-replay-disk", working_dir.path(), 6_000);
     service
         .ensure_session_loaded("baseline-replay-disk")
         .await

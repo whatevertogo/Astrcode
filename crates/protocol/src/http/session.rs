@@ -84,6 +84,20 @@ pub struct SessionHistoryResponseDto {
     pub phase: PhaseDto,
 }
 
+/// `GET /api/sessions/:id/view` 响应体。
+///
+/// 子执行页面需要同时拿到聚焦视图和直接子执行视图；
+/// 合并成单次加载可以避免前端再并发请求两次 `/history`。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionViewResponseDto {
+    pub focus_events: Vec<AgentEventEnvelope>,
+    pub direct_children_events: Vec<AgentEventEnvelope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    pub phase: PhaseDto,
+}
+
 
 /// `DELETE /api/projects/:working_dir` 响应体——项目删除结果。
 ///

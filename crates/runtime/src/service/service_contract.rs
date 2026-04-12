@@ -27,6 +27,27 @@ pub struct SessionHistorySnapshot {
     pub phase: Phase,
 }
 
+#[derive(Debug, Clone)]
+pub struct SessionViewSnapshot {
+    pub focus_history: Vec<SessionEventRecord>,
+    pub direct_children_history: Vec<SessionEventRecord>,
+    pub cursor: Option<String>,
+    pub phase: Phase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubRunEventScope {
+    SelfOnly,
+    Subtree,
+    DirectChildren,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionEventFilterSpec {
+    pub target_sub_run_id: String,
+    pub scope: SubRunEventScope,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubRunStatusSource {
     Live,

@@ -443,6 +443,7 @@ fn child_delivery_prompt_regression_keeps_delivery_identity_and_duplicate_guidan
             session_id: "session-parent".to_string(),
             sub_run_id: "subrun-child".to_string(),
             parent_agent_id: Some("agent-parent".to_string()),
+            parent_sub_run_id: Some("subrun-parent".to_string()),
             lineage_kind: ChildSessionLineageKind::Spawn,
             status: AgentLifecycleStatus::Idle,
             open_session_id: "session-child".to_string(),

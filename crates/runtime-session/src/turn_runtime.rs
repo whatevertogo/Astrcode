@@ -477,6 +477,7 @@ mod tests {
             "turn-root",
             "explore",
             "subrun-shared",
+            None,
             SubRunStorageMode::IndependentSession,
             None,
         );
@@ -539,6 +540,7 @@ mod tests {
             "turn-root",
             "explore",
             "subrun-independent",
+            None,
             SubRunStorageMode::IndependentSession,
             Some("session-child".to_string()),
         );

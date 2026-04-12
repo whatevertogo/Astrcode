@@ -60,8 +60,9 @@ pub use service::{
     AgentExecutionServiceHandle, AgentProfileSummary, ComposerOption, ComposerOptionKind,
     ComposerOptionsRequest, ComposerServiceHandle, ExecutionDiagnosticsSnapshot,
     OperationMetricsSnapshot, ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot,
-    RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent, SessionEventRecord,
-    SessionHistorySnapshot, SessionReplay, SessionReplaySource, SessionServiceHandle,
+    RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent, SessionEventFilter,
+    SessionEventFilterSpec, SessionEventRecord, SessionHistorySnapshot, SessionReplay,
+    SessionReplaySource, SessionServiceHandle, SessionViewSnapshot, SubRunEventScope,
     SubRunExecutionMetricsSnapshot, SubRunStatusSnapshot, SubRunStatusSource,
     ToolExecutionServiceHandle, ToolSummary,
 };

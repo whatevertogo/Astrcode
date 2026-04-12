@@ -19,6 +19,7 @@ pub(super) struct BudgetSettings {
 }
 
 pub(super) use orchestration::{RuntimeTurnInput, complete_session_execution, run_session_turn};
+pub(crate) use replay::ReplayFallbackFuture;
 
 #[cfg(test)]
 mod tests;

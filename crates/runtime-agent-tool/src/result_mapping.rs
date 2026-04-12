@@ -141,6 +141,7 @@ fn extract_child_ref(result: &SubRunResult) -> Option<ChildAgentRef> {
         session_id,
         sub_run_id,
         parent_agent_id,
+        parent_sub_run_id: artifact_id(&handoff.artifacts, "parentSubRun"),
         lineage_kind: ChildSessionLineageKind::Spawn,
         status: result.lifecycle,
         open_session_id,

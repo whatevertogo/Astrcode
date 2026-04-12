@@ -1,5 +1,4 @@
-use astrcode_core::AgentEvent;
-use astrcode_protocol::http::{SessionHistoryResponseDto, SessionListItem};
+use astrcode_protocol::http::{SessionHistoryResponseDto, SessionListItem, SessionViewResponseDto};
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -10,10 +9,7 @@ use crate::{
     ApiError, AppState,
     auth::require_auth,
     mapper::{to_agent_event_envelope, to_phase_dto, to_session_list_item},
-    routes::sessions::{
-        filter::{SessionEventFilter, SessionEventFilterQuery, SessionEventFilterSpec},
-        validate_session_path_id,
-    },
+    routes::sessions::{filter::SessionEventFilterQuery, validate_session_path_id},
 };
 
 pub(crate) async fn list_sessions(
@@ -41,54 +37,55 @@ pub(crate) async fn session_history(
 ) -> Result<Json<SessionHistoryResponseDto>, ApiError> {
     require_auth(&state, &headers, None)?;
     let session_id = validate_session_path_id(&session_id)?;
-    let filter_spec = SessionEventFilterSpec::from_query(filter_query)?;
+    let filter_spec = filter_query.into_runtime_filter_spec()?;
     let snapshot = state
         .service
         .sessions()
-        .history(&session_id)
+        .history_filtered(&session_id, filter_spec)
         .await
         .map_err(ApiError::from)?;
-    let history = filter_history(snapshot.history, filter_spec)?;
-    let cursor = history.last().map(|record| record.event_id.clone());
 
     Ok(Json(SessionHistoryResponseDto {
-        events: history
+        events: snapshot
+            .history
             .into_iter()
             .map(|record| to_agent_event_envelope(record.event))
             .collect(),
-        cursor,
+        cursor: snapshot.cursor,
         phase: to_phase_dto(snapshot.phase),
     }))
 }
 
-fn filter_history(
-    history: Vec<astrcode_core::SessionEventRecord>,
-    filter_spec: Option<SessionEventFilterSpec>,
-) -> Result<Vec<astrcode_core::SessionEventRecord>, ApiError> {
-    let Some(filter_spec) = filter_spec else {
-        return Ok(history
+pub(crate) async fn session_view(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Query(filter_query): Query<SessionEventFilterQuery>,
+) -> Result<Json<SessionViewResponseDto>, ApiError> {
+    require_auth(&state, &headers, None)?;
+    let session_id = validate_session_path_id(&session_id)?;
+    let filter_spec = filter_query.into_runtime_filter_spec()?;
+    let snapshot = state
+        .service
+        .sessions()
+        .view(&session_id, filter_spec)
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok(Json(SessionViewResponseDto {
+        focus_events: snapshot
+            .focus_history
             .into_iter()
-            .filter(parent_timeline_event_visible)
-            .collect());
-    };
-
-    let mut filter = SessionEventFilter::new(filter_spec, &history)?;
-    // 用户显式指定 subRunId 时不应用 parent_timeline_event_visible，
-    // 因为用户明确请求了特定子执行的完整事件流，包括 boundary 事件。
-    Ok(history
-        .into_iter()
-        .filter(|record| filter.matches(record))
-        .collect())
-}
-
-/// 父时间线只保留 child boundary facts，不再直接暴露独立 child session 的内部 lifecycle。
-fn parent_timeline_event_visible(record: &astrcode_core::SessionEventRecord) -> bool {
-    match &record.event {
-        AgentEvent::SubRunStarted { agent, .. } | AgentEvent::SubRunFinished { agent, .. } => {
-            agent.storage_mode != Some(astrcode_core::SubRunStorageMode::IndependentSession)
-        },
-        _ => true,
-    }
+            .map(|record| to_agent_event_envelope(record.event))
+            .collect(),
+        direct_children_events: snapshot
+            .direct_children_history
+            .into_iter()
+            .map(|record| to_agent_event_envelope(record.event))
+            .collect(),
+        cursor: snapshot.cursor,
+        phase: to_phase_dto(snapshot.phase),
+    }))
 }
 
 /// 将路径中可能带 "session-" 前缀的 ID 统一剥离后返回 canonical 形式。

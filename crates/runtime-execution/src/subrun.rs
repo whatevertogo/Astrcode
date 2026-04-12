@@ -72,6 +72,7 @@ pub fn build_child_session_node(
         sub_run_id: child.sub_run_id.clone(),
         parent_session_id: parent_session_id.to_string(),
         parent_agent_id: child.parent_agent_id.clone(),
+        parent_sub_run_id: child.parent_sub_run_id.clone(),
         parent_turn_id: parent_turn_id.to_string(),
         lineage_kind: ChildSessionLineageKind::Spawn,
         status: child.lifecycle,
@@ -349,6 +350,7 @@ fn build_replayed_handle(
         depth: 0,
         parent_turn_id,
         parent_agent_id: None,
+        parent_sub_run_id: agent.parent_sub_run_id.clone(),
         agent_profile: agent
             .agent_profile
             .clone()
@@ -393,6 +395,7 @@ mod tests {
             depth: 2,
             parent_turn_id: "turn-1".to_string(),
             parent_agent_id: Some("parent-agent".to_string()),
+            parent_sub_run_id: Some("subrun-parent".to_string()),
             agent_profile: "review".to_string(),
             storage_mode: SubRunStorageMode::IndependentSession,
             lifecycle: AgentLifecycleStatus::Running,
@@ -417,6 +420,7 @@ mod tests {
             "turn-1".to_string(),
             "review".to_string(),
             "subrun-1".to_string(),
+            None,
             SubRunStorageMode::IndependentSession,
             Some("child-1".to_string()),
         );
@@ -508,6 +512,7 @@ mod tests {
             "turn-1".to_string(),
             "review".to_string(),
             "subrun-1".to_string(),
+            None,
             SubRunStorageMode::IndependentSession,
             None,
         );
@@ -561,6 +566,7 @@ mod tests {
                     "turn-2".to_string(),
                     "plan".to_string(),
                     "subrun-2".to_string(),
+                    None,
                     SubRunStorageMode::IndependentSession,
                     Some("child-2".to_string()),
                 ),
@@ -605,6 +611,7 @@ mod tests {
             "turn-parent".to_string(),
             "review".to_string(),
             "subrun-abort".to_string(),
+            None,
             SubRunStorageMode::IndependentSession,
             Some("child-abort".to_string()),
         );
@@ -681,6 +688,7 @@ mod tests {
                         "turn-legacy".to_string(),
                         "review".to_string(),
                         "subrun-legacy".to_string(),
+                        None,
                         SubRunStorageMode::IndependentSession,
                         None,
                     ),
@@ -701,6 +709,7 @@ mod tests {
                         "turn-legacy".to_string(),
                         "review".to_string(),
                         "subrun-legacy".to_string(),
+                        None,
                         SubRunStorageMode::IndependentSession,
                         None,
                     ),
@@ -738,6 +747,7 @@ mod tests {
                     "turn-parent".to_string(),
                     "review".to_string(),
                     "subrun-3".to_string(),
+                    None,
                     SubRunStorageMode::IndependentSession,
                     None,
                 ),
@@ -775,6 +785,7 @@ mod tests {
                 depth: 1,
                 parent_turn_id: "turn-live".to_string(),
                 parent_agent_id: Some("agent-root-live".to_string()),
+                parent_sub_run_id: Some("subrun-root-live".to_string()),
                 agent_profile: "review".to_string(),
                 storage_mode: SubRunStorageMode::IndependentSession,
                 lifecycle: AgentLifecycleStatus::Running,
@@ -797,6 +808,7 @@ mod tests {
                 depth: 1,
                 parent_turn_id: "turn-durable".to_string(),
                 parent_agent_id: Some("agent-root-durable".to_string()),
+                parent_sub_run_id: Some("subrun-root-durable".to_string()),
                 agent_profile: "review".to_string(),
                 storage_mode: SubRunStorageMode::IndependentSession,
                 lifecycle: AgentLifecycleStatus::Idle,
@@ -838,6 +850,7 @@ mod tests {
                     "turn-1".to_string(),
                     "review".to_string(),
                     "subrun-2".to_string(),
+                    None,
                     SubRunStorageMode::IndependentSession,
                     None,
                 ),
@@ -865,6 +878,7 @@ mod tests {
             depth: 2,
             parent_turn_id: "turn-parent".to_string(),
             parent_agent_id: Some("agent-parent".to_string()),
+            parent_sub_run_id: Some("subrun-parent".to_string()),
             agent_profile: "review".to_string(),
             storage_mode: SubRunStorageMode::IndependentSession,
             lifecycle: AgentLifecycleStatus::Running,
@@ -875,6 +889,7 @@ mod tests {
             "turn-parent".to_string(),
             "review".to_string(),
             "subrun-1".to_string(),
+            Some("subrun-parent".to_string()),
             SubRunStorageMode::IndependentSession,
             Some("child-1".to_string()),
         );
@@ -940,6 +955,7 @@ mod tests {
             depth: 1,
             parent_turn_id: "turn-1".to_string(),
             parent_agent_id: None,
+            parent_sub_run_id: None,
             agent_profile: "review".to_string(),
             storage_mode: SubRunStorageMode::IndependentSession,
             lifecycle: AgentLifecycleStatus::Running,
@@ -989,6 +1005,7 @@ mod tests {
             depth: 1,
             parent_turn_id: "turn-1".to_string(),
             parent_agent_id: None,
+            parent_sub_run_id: None,
             agent_profile: "review".to_string(),
             storage_mode: SubRunStorageMode::IndependentSession,
             lifecycle: AgentLifecycleStatus::Running,
@@ -1039,6 +1056,7 @@ mod tests {
             depth: 1,
             parent_turn_id: "turn-parent-1".to_string(),
             parent_agent_id: None,
+            parent_sub_run_id: None,
             agent_profile: "review".to_string(),
             storage_mode: SubRunStorageMode::IndependentSession,
             lifecycle: AgentLifecycleStatus::Running,
@@ -1079,6 +1097,7 @@ mod tests {
             depth: 1,
             parent_turn_id: "turn-parent-11".to_string(),
             parent_agent_id: Some("agent-parent-11".to_string()),
+            parent_sub_run_id: Some("subrun-parent-11".to_string()),
             agent_profile: "review".to_string(),
             storage_mode: SubRunStorageMode::IndependentSession,
             lifecycle: AgentLifecycleStatus::Running,
@@ -1097,6 +1116,7 @@ mod tests {
         assert_eq!(node.child_session_id, "session-child-11");
         assert_eq!(node.sub_run_id, "subrun-11");
         assert_eq!(node.parent_agent_id.as_deref(), Some("agent-parent-11"));
+        assert_eq!(node.parent_sub_run_id.as_deref(), Some("subrun-parent-11"));
         assert_eq!(node.created_by_tool_call_id.as_deref(), Some("call-11"));
     }
 
@@ -1110,6 +1130,7 @@ mod tests {
             depth: 1,
             parent_turn_id: "turn-parent-12".to_string(),
             parent_agent_id: Some("agent-parent-12".to_string()),
+            parent_sub_run_id: Some("subrun-parent-12".to_string()),
             agent_profile: "review".to_string(),
             storage_mode: SubRunStorageMode::IndependentSession,
             lifecycle: AgentLifecycleStatus::Running,
@@ -1134,6 +1155,10 @@ mod tests {
         assert_eq!(notification.notification_id, "child-started:subrun-12");
         assert_eq!(notification.child_ref.agent_id, "agent-12");
         assert_eq!(notification.child_ref.sub_run_id, "subrun-12");
+        assert_eq!(
+            notification.child_ref.parent_sub_run_id.as_deref(),
+            Some("subrun-parent-12")
+        );
         assert_eq!(notification.child_ref.open_session_id, "session-parent-12");
         assert_eq!(notification.child_ref.open_session_id, "session-parent-12");
         assert_eq!(notification.source_tool_call_id.as_deref(), Some("call-12"));

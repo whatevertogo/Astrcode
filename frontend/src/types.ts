@@ -36,6 +36,7 @@ export type SubRunFailureCode =
 export interface AgentContext {
   agentId?: string;
   parentTurnId?: string;
+  parentSubRunId?: string;
   agentProfile?: string;
   subRunId?: string;
   executionId?: string;
@@ -128,6 +129,7 @@ export interface SubRunStatusSnapshot {
   depth: number;
   parentTurnId?: string;
   parentAgentId?: string;
+  parentSubRunId?: string;
   storageMode: SubRunStorageMode;
   lifecycle: AgentLifecycle;
   lastTurnOutcome?: AgentTurnOutcome;
@@ -219,6 +221,7 @@ export type AgentEventPayload =
           subRunId: string;
           executionId?: string;
           parentAgentId?: string;
+          parentSubRunId?: string;
           lineageKind: 'spawn' | 'fork' | 'resume';
           status: AgentLifecycle;
           openSessionId: string;
@@ -255,6 +258,7 @@ export interface UserMessage {
   turnId?: string | null;
   agentId?: string;
   parentTurnId?: string;
+  parentSubRunId?: string;
   agentProfile?: string;
   subRunId?: string;
   executionId?: string;
@@ -271,6 +275,7 @@ export interface AssistantMessage {
   turnId?: string | null;
   agentId?: string;
   parentTurnId?: string;
+  parentSubRunId?: string;
   agentProfile?: string;
   subRunId?: string;
   executionId?: string;
@@ -291,6 +296,7 @@ export interface ToolCallMessage {
   turnId?: string | null;
   agentId?: string;
   parentTurnId?: string;
+  parentSubRunId?: string;
   agentProfile?: string;
   subRunId?: string;
   executionId?: string;
@@ -315,6 +321,7 @@ export interface CompactMessage {
   turnId?: string | null;
   agentId?: string;
   parentTurnId?: string;
+  parentSubRunId?: string;
   agentProfile?: string;
   subRunId?: string;
   executionId?: string;
@@ -333,6 +340,7 @@ export interface PromptMetricsMessage {
   turnId?: string | null;
   agentId?: string;
   parentTurnId?: string;
+  parentSubRunId?: string;
   agentProfile?: string;
   subRunId?: string;
   executionId?: string;
@@ -361,6 +369,7 @@ export interface SubRunStartMessage {
   turnId?: string | null;
   agentId?: string;
   parentTurnId?: string;
+  parentSubRunId?: string;
   agentProfile?: string;
   subRunId?: string;
   executionId?: string;
@@ -380,6 +389,7 @@ export interface SubRunFinishMessage {
   turnId?: string | null;
   agentId?: string;
   parentTurnId?: string;
+  parentSubRunId?: string;
   agentProfile?: string;
   subRunId?: string;
   executionId?: string;
@@ -400,6 +410,7 @@ export interface ChildSessionNotificationMessage {
   turnId?: string | null;
   agentId?: string;
   parentTurnId?: string;
+  parentSubRunId?: string;
   agentProfile?: string;
   subRunId?: string;
   executionId?: string;
@@ -412,6 +423,7 @@ export interface ChildSessionNotificationMessage {
     subRunId: string;
     executionId?: string;
     parentAgentId?: string;
+    parentSubRunId?: string;
     lineageKind: 'spawn' | 'fork' | 'resume';
     status: AgentLifecycle;
     openSessionId: string;
@@ -452,6 +464,13 @@ export interface SessionMeta {
   updatedAt: string;
   parentSessionId?: string;
   parentStorageSeq?: number;
+  phase: Phase;
+}
+
+export interface SessionViewSnapshot {
+  focusEvents: AgentEventPayload[];
+  directChildrenEvents: AgentEventPayload[];
+  cursor: string | null;
   phase: Phase;
 }
 
@@ -525,6 +544,7 @@ export interface AppState {
 type AgentActionContext = {
   agentId?: string;
   parentTurnId?: string;
+  parentSubRunId?: string;
   agentProfile?: string;
   subRunId?: string;
   executionId?: string;

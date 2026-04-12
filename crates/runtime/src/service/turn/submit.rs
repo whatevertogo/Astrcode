@@ -90,6 +90,16 @@ impl AgentExecutionServiceHandle {
         let agent_control = self.control();
         let execution_service = self.clone();
         let drain_session_id = accepted_session_id.clone();
+        // 为什么查找根 agent：submit_prompt 不经过 execute_root_agent，
+        // 但四工具模型要求 ToolContext.agent_id 正确设置，
+        // 否则子 agent 的 parent_agent_id 为 None，导致 mailbox 投递失败。
+        let agent_context = agent_control
+            .find_root_agent_for_session(&accepted_session_id)
+            .await
+            .map(|root| {
+                astrcode_core::AgentEventContext::root_execution(root.agent_id, root.agent_profile)
+            })
+            .unwrap_or_default();
         let handle = tokio::spawn(async move {
             let turn_started_at = Instant::now();
             let result = run_session_turn(
@@ -98,7 +108,7 @@ impl AgentExecutionServiceHandle {
                 &turn_id,
                 cancel.clone(),
                 RuntimeTurnInput::from_user_event(user_event),
-                astrcode_core::AgentEventContext::default(),
+                agent_context,
                 execution_owner,
                 budget_settings,
                 Some(observability.clone()),

@@ -61,14 +61,15 @@ pub use observability::{
     ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot,
     SubRunExecutionMetricsSnapshot,
 };
-pub use session::SessionServiceHandle;
+pub use session::{SessionEventFilter, SessionServiceHandle};
 pub use watch::WatchServiceHandle;
 
 use self::loop_surface::{LoopRuntimeDeps, build_agent_loop};
 pub use self::service_contract::{
     ComposerOption, ComposerOptionKind, ComposerOptionsRequest, ServiceError, ServiceResult,
-    SessionCatalogEvent, SessionEventRecord, SessionHistorySnapshot, SessionReplay,
-    SessionReplaySource, SubRunStatusSnapshot, SubRunStatusSource,
+    SessionCatalogEvent, SessionEventFilterSpec, SessionEventRecord, SessionHistorySnapshot,
+    SessionReplay, SessionReplaySource, SessionViewSnapshot, SubRunEventScope,
+    SubRunStatusSnapshot, SubRunStatusSource,
 };
 
 const SESSION_CATALOG_BROADCAST_CAPACITY: usize = 256;
@@ -153,6 +154,10 @@ pub struct RuntimeService {
     /// 仅用于确保互斥。相比使用专门的 AtomicBool + Notify 机制，
     /// 这种方式更简洁且编译器能更好地优化。
     session_load_lock: Arc<Mutex<()>>,
+    /// 同一 session 的 durable replay singleflight。
+    ///
+    /// recent cache miss 时，共享同一次磁盘回放结果，避免并发请求重复回盘。
+    replay_fallbacks: DashMap<String, turn::ReplayFallbackFuture>,
     /// 可观测性（指标收集）
     observability: Arc<RuntimeObservability>,
     /// 子 Agent 控制平面。
@@ -328,6 +333,7 @@ impl RuntimeService {
             config: Mutex::new(config),
             session_manager,
             session_load_lock: Arc::new(Mutex::new(())),
+            replay_fallbacks: DashMap::new(),
             observability: Arc::new(RuntimeObservability::default()),
             agent_control,
             agent_loader,

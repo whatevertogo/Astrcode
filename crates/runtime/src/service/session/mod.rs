@@ -9,10 +9,12 @@ mod delete;
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentStateProjector, AstrError, DeleteProjectResult, Phase, SessionMeta, StorageEvent,
-    StorageEventPayload, StoredEvent, generate_session_id, phase_of_storage_event, replay_records,
+    AgentEvent, AgentStateProjector, AstrError, DeleteProjectResult, Phase, SessionEventRecord,
+    SessionMeta, StorageEvent, StorageEventPayload, StoredEvent, generate_session_id,
+    phase_of_storage_event, replay_records,
 };
 use astrcode_runtime_agent_loop::CompactionTailSnapshot;
+use astrcode_runtime_execution::{ExecutionLineageIndex, ExecutionLineageScope};
 use astrcode_runtime_session::{
     SessionState, SessionWriter, display_name_from_working_dir, normalize_session_id,
     normalize_working_dir, recent_turn_event_tail,
@@ -22,7 +24,8 @@ use chrono::Utc;
 use tokio::sync::broadcast;
 
 use super::{
-    RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent, SessionHistorySnapshot,
+    RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent, SessionEventFilterSpec,
+    SessionHistorySnapshot, SessionViewSnapshot, SubRunEventScope,
     blocking_bridge::{lock_anyhow, spawn_blocking_service},
 };
 
@@ -30,6 +33,12 @@ use super::{
 #[derive(Clone)]
 pub struct SessionServiceHandle {
     pub(crate) runtime: Arc<RuntimeService>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionEventFilter {
+    spec: SessionEventFilterSpec,
+    lineage: ExecutionLineageIndex,
 }
 
 impl SessionServiceHandle {
@@ -124,6 +133,76 @@ impl SessionServiceHandle {
         let cursor = history.last().map(|record| record.event_id.clone());
         Ok(SessionHistorySnapshot {
             history,
+            cursor,
+            phase,
+        })
+    }
+
+    pub async fn history_filtered(
+        &self,
+        session_id: &str,
+        filter_spec: Option<SessionEventFilterSpec>,
+    ) -> ServiceResult<SessionHistorySnapshot> {
+        let snapshot = self.history(session_id).await?;
+        let SessionHistorySnapshot {
+            history,
+            cursor: _,
+            phase,
+        } = snapshot;
+        let filtered_history = if let Some(filter_spec) = filter_spec {
+            filter_owned_history(history, filter_spec)?
+        } else {
+            history
+                .into_iter()
+                .filter(parent_timeline_event_visible)
+                .collect::<Vec<_>>()
+        };
+        let cursor = filtered_history
+            .last()
+            .map(|record| record.event_id.clone());
+        Ok(SessionHistorySnapshot {
+            history: filtered_history,
+            cursor,
+            phase,
+        })
+    }
+
+    pub async fn view(
+        &self,
+        session_id: &str,
+        filter_spec: Option<SessionEventFilterSpec>,
+    ) -> ServiceResult<SessionViewSnapshot> {
+        let snapshot = self.history(session_id).await?;
+        let cursor = snapshot.cursor.clone();
+        let phase = snapshot.phase;
+        let history = snapshot.history;
+
+        let focus_history = filter_spec.as_ref().map_or_else(
+            || {
+                Ok(history
+                    .iter()
+                    .filter(|record| parent_timeline_event_visible(record))
+                    .cloned()
+                    .collect::<Vec<_>>())
+            },
+            |spec| filter_cloned_history(&history, spec.clone()),
+        )?;
+
+        let direct_children_history = if let Some(spec) = filter_spec.as_ref() {
+            filter_cloned_history(
+                &history,
+                SessionEventFilterSpec {
+                    target_sub_run_id: spec.target_sub_run_id.clone(),
+                    scope: SubRunEventScope::DirectChildren,
+                },
+            )?
+        } else {
+            Vec::new()
+        };
+
+        Ok(SessionViewSnapshot {
+            focus_history,
+            direct_children_history,
             cursor,
             phase,
         })
@@ -371,6 +450,40 @@ impl RuntimeService {
     }
 }
 
+impl SessionEventFilter {
+    pub fn new(
+        spec: SessionEventFilterSpec,
+        history: &[SessionEventRecord],
+    ) -> ServiceResult<Self> {
+        let lineage = ExecutionLineageIndex::from_session_history(history);
+        lineage
+            .require_scope(&spec.target_sub_run_id, map_lineage_scope(spec.scope))
+            .map_err(ServiceError::Conflict)?;
+        Ok(Self { spec, lineage })
+    }
+
+    pub fn matches(&mut self, record: &SessionEventRecord) -> bool {
+        self.lineage.observe_session_record(record);
+        let Some(event_sub_run_id) = event_sub_run_id(&record.event) else {
+            return false;
+        };
+
+        match self.spec.scope {
+            SubRunEventScope::SelfOnly => event_sub_run_id == self.spec.target_sub_run_id,
+            SubRunEventScope::DirectChildren => self
+                .lineage
+                .is_direct_child_of(event_sub_run_id, &self.spec.target_sub_run_id),
+            SubRunEventScope::Subtree => self
+                .lineage
+                .is_in_subtree(event_sub_run_id, &self.spec.target_sub_run_id),
+        }
+    }
+
+    pub fn spec(&self) -> &SessionEventFilterSpec {
+        &self.spec
+    }
+}
+
 pub(crate) async fn load_events(
     session_manager: Arc<dyn astrcode_core::SessionManager>,
     session_id: &str,
@@ -392,5 +505,77 @@ fn service_error_to_astr(error: ServiceError) -> AstrError {
         | ServiceError::Conflict(message)
         | ServiceError::InvalidInput(message) => AstrError::Validation(message),
         ServiceError::Internal(error) => error,
+    }
+}
+
+fn filter_owned_history(
+    history: Vec<SessionEventRecord>,
+    filter_spec: SessionEventFilterSpec,
+) -> ServiceResult<Vec<SessionEventRecord>> {
+    let mut filter = SessionEventFilter::new(filter_spec, &history)?;
+    Ok(history
+        .into_iter()
+        .filter(|record| filter.matches(record))
+        .collect())
+}
+
+fn filter_cloned_history(
+    history: &[SessionEventRecord],
+    filter_spec: SessionEventFilterSpec,
+) -> ServiceResult<Vec<SessionEventRecord>> {
+    let mut filter = SessionEventFilter::new(filter_spec, history)?;
+    Ok(history
+        .iter()
+        .filter(|record| filter.matches(record))
+        .cloned()
+        .collect())
+}
+
+pub(crate) fn parent_timeline_event_visible(record: &SessionEventRecord) -> bool {
+    match &record.event {
+        AgentEvent::SubRunStarted { agent, .. } | AgentEvent::SubRunFinished { agent, .. } => {
+            agent.storage_mode != Some(astrcode_core::SubRunStorageMode::IndependentSession)
+        },
+        _ => true,
+    }
+}
+
+fn map_lineage_scope(scope: SubRunEventScope) -> ExecutionLineageScope {
+    match scope {
+        SubRunEventScope::SelfOnly => ExecutionLineageScope::SelfOnly,
+        SubRunEventScope::DirectChildren => ExecutionLineageScope::DirectChildren,
+        SubRunEventScope::Subtree => ExecutionLineageScope::Subtree,
+    }
+}
+
+fn event_sub_run_id(event: &AgentEvent) -> Option<&str> {
+    event_agent_context(event)?
+        .sub_run_id
+        .as_deref()
+        .filter(|sub_run_id| !sub_run_id.is_empty())
+}
+
+fn event_agent_context(event: &AgentEvent) -> Option<&astrcode_core::AgentEventContext> {
+    match event {
+        AgentEvent::SessionStarted { .. } => None,
+        AgentEvent::UserMessage { agent, .. }
+        | AgentEvent::PhaseChanged { agent, .. }
+        | AgentEvent::ModelDelta { agent, .. }
+        | AgentEvent::ThinkingDelta { agent, .. }
+        | AgentEvent::AssistantMessage { agent, .. }
+        | AgentEvent::ToolCallStart { agent, .. }
+        | AgentEvent::ToolCallDelta { agent, .. }
+        | AgentEvent::ToolCallResult { agent, .. }
+        | AgentEvent::CompactApplied { agent, .. }
+        | AgentEvent::SubRunStarted { agent, .. }
+        | AgentEvent::SubRunFinished { agent, .. }
+        | AgentEvent::ChildSessionNotification { agent, .. }
+        | AgentEvent::PromptMetrics { agent, .. }
+        | AgentEvent::TurnDone { agent, .. }
+        | AgentEvent::Error { agent, .. }
+        | AgentEvent::AgentMailboxQueued { agent, .. }
+        | AgentEvent::AgentMailboxBatchStarted { agent, .. }
+        | AgentEvent::AgentMailboxBatchAcked { agent, .. }
+        | AgentEvent::AgentMailboxDiscarded { agent, .. } => Some(agent),
     }
 }

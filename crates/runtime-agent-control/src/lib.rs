@@ -298,6 +298,10 @@ impl AgentControl {
         let agent_id = format!("agent-{next_id}");
         let sub_run_id = format!("subrun-{next_id}");
         let session_id = session_id.into();
+        let parent_sub_run_id = parent_agent_id
+            .as_ref()
+            .and_then(|parent_agent_id| state.agent_index.get(parent_agent_id))
+            .cloned();
         let handle = SubRunHandle {
             sub_run_id: sub_run_id.clone(),
             agent_id: agent_id.clone(),
@@ -306,6 +310,7 @@ impl AgentControl {
             depth,
             parent_turn_id,
             parent_agent_id: parent_agent_id.clone(),
+            parent_sub_run_id,
             agent_profile: profile.id.clone(),
             storage_mode,
             lifecycle: AgentLifecycleStatus::Pending,
@@ -371,6 +376,7 @@ impl AgentControl {
             depth: 0,
             parent_turn_id: String::new(),
             parent_agent_id: None,
+            parent_sub_run_id: None,
             agent_profile: profile_id,
             storage_mode: SubRunStorageMode::IndependentSession,
             lifecycle: AgentLifecycleStatus::Running,
@@ -479,6 +485,19 @@ impl AgentControl {
         let state = self.state.read().await;
         let key = resolve_entry_key(&state, sub_run_or_agent_id)?;
         state.entries.get(key).map(|entry| entry.handle.clone())
+    }
+
+    /// 根据 session_id 查找该 session 的根 agent（depth=0）。
+    ///
+    /// 为什么需要：`submit_prompt` 路径不经过 `execute_root_agent`，无法直接获得根 agent ID，
+    /// 但四工具模型要求 ToolContext 中的 agent_id 正确设置，以便子 agent 建立父子关系。
+    pub async fn find_root_agent_for_session(&self, session_id: &str) -> Option<SubRunHandle> {
+        let state = self.state.read().await;
+        state
+            .entries
+            .values()
+            .find(|entry| entry.handle.depth == 0 && entry.handle.session_id == session_id)
+            .map(|entry| entry.handle.clone())
     }
 
     /// 获取某个 Agent 的取消令牌，供真正的执行器复用。

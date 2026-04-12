@@ -17,8 +17,8 @@ use crate::{
 };
 
 const SESSION_BROADCAST_CAPACITY: usize = 2048;
-const SESSION_RECENT_RECORD_LIMIT: usize = 4096;
-const SESSION_RECENT_STORED_LIMIT: usize = 4096;
+const SESSION_RECENT_RECORD_LIMIT: usize = 16_384;
+const SESSION_RECENT_STORED_LIMIT: usize = 16_384;
 
 #[derive(Default)]
 struct RecentSessionEvents {
@@ -384,6 +384,7 @@ fn child_node_from_stored_event(stored: &StoredEvent) -> Option<ChildSessionNode
                 sub_run_id: notification.child_ref.sub_run_id.clone(),
                 parent_session_id: notification.child_ref.session_id.clone(),
                 parent_agent_id: notification.child_ref.parent_agent_id.clone(),
+                parent_sub_run_id: notification.child_ref.parent_sub_run_id.clone(),
                 parent_turn_id: stored.event.turn_id.clone().unwrap_or_default(),
                 lineage_kind: notification.child_ref.lineage_kind,
                 status: notification.status,
@@ -459,6 +460,7 @@ mod tests {
         AgentEventContext {
             agent_id: Some("agent-child".to_string()),
             parent_turn_id: Some("turn-root".to_string()),
+            parent_sub_run_id: None,
             agent_profile: Some("explore".to_string()),
             sub_run_id: Some("subrun-1".to_string()),
             invocation_kind: Some(InvocationKind::SubRun),
@@ -498,6 +500,7 @@ mod tests {
                         session_id: "session-parent".into(),
                         sub_run_id: "subrun-1".into(),
                         parent_agent_id: Some("agent-parent".into()),
+                        parent_sub_run_id: Some("subrun-parent".into()),
                         lineage_kind: ChildSessionLineageKind::Spawn,
                         status,
                         open_session_id: "session-child".into(),

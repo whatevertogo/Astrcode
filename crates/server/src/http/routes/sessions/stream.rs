@@ -1,6 +1,7 @@
 use std::{convert::Infallible, pin::Pin, time::Duration};
 
 use astrcode_protocol::http::PROTOCOL_VERSION;
+use astrcode_runtime::SessionEventFilter;
 use async_stream::stream;
 use axum::{
     extract::{Path, Query, State},
@@ -15,10 +16,7 @@ use crate::{
     auth::require_auth,
     mapper::{format_event_id, parse_event_id, to_session_catalog_sse_event, to_sse_event},
     routes::sessions::{
-        filter::{
-            SessionEventFilter, SessionEventFilterQuery, SessionEventFilterSpec,
-            record_is_after_cursor,
-        },
+        filter::{SessionEventFilterQuery, record_is_after_cursor},
         validate_session_path_id,
     },
 };
@@ -70,7 +68,7 @@ pub(crate) async fn session_events(
 ) -> Result<SessionEventSse, ApiError> {
     require_auth(&state, &headers, query.token.as_deref())?;
     let session_id = validate_session_path_id(&session_id)?;
-    let filter_spec = SessionEventFilterSpec::from_query(query.filter)?;
+    let filter_spec = query.filter.into_runtime_filter_spec()?;
     let last_event_id = headers
         .get("last-event-id")
         .and_then(|value| value.to_str().ok())
@@ -178,7 +176,7 @@ async fn unfiltered_session_events(
 async fn filtered_session_events(
     state: AppState,
     session_id: String,
-    filter_spec: SessionEventFilterSpec,
+    filter_spec: astrcode_runtime::SessionEventFilterSpec,
     last_event_id: Option<String>,
 ) -> Result<SessionEventSse, ApiError> {
     let snapshot = state
@@ -188,7 +186,8 @@ async fn filtered_session_events(
         .await
         .map_err(ApiError::from)?;
     let latest_cursor = snapshot.cursor.clone();
-    let mut filter = SessionEventFilter::new(filter_spec, &snapshot.history)?;
+    let mut filter =
+        SessionEventFilter::new(filter_spec, &snapshot.history).map_err(ApiError::from)?;
     let mut initial_history = Vec::new();
     let mut last_sent = last_event_id.as_deref().and_then(parse_event_id);
 
@@ -243,12 +242,12 @@ async fn filtered_session_events(
                     {
                         Ok(recovered) => {
                             let mut recovered_filter =
-                                match SessionEventFilter::new(filter.spec(), &recovered.history) {
+                                match SessionEventFilter::new(filter.spec().clone(), &recovered.history) {
                                     Ok(filter) => filter,
                                     Err(error) => {
                                         yield Ok::<Event, Infallible>(stream_error_event(
                                             "lineage_metadata_unavailable",
-                                            error.message,
+                                            error.to_string(),
                                         ));
                                         break;
                                     },

@@ -5,11 +5,30 @@ use std::{sync::Arc, time::Instant};
 use astrcode_core::replay_records;
 use astrcode_runtime_session::normalize_session_id;
 use async_trait::async_trait;
+use futures_util::future::{BoxFuture, FutureExt, Shared};
 
 use crate::service::{
-    ReplayPath, ServiceResult, SessionReplay, SessionReplaySource,
+    ReplayPath, ServiceError, ServiceResult, SessionReplay, SessionReplaySource,
     session::{SessionServiceHandle, load_events},
 };
+
+pub(crate) type ReplayFallbackFuture = Shared<BoxFuture<'static, ReplayFallbackResult>>;
+
+type ReplayFallbackResult = Result<Arc<Vec<astrcode_core::StoredEvent>>, ReplayFallbackError>;
+
+#[derive(Debug, Clone)]
+pub(crate) struct ReplayFallbackError {
+    kind: ReplayFallbackErrorKind,
+    message: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ReplayFallbackErrorKind {
+    NotFound,
+    Conflict,
+    InvalidInput,
+    Internal,
+}
 
 impl SessionServiceHandle {
     /// 回放指定会话的事件历史。
@@ -28,11 +47,12 @@ impl SessionServiceHandle {
         let started_at = Instant::now();
         let replay_result = match state.recent_records_after(last_event_id)? {
             Some(history) => Ok((history, ReplayPath::Cache)),
-            None => load_events(Arc::clone(&self.runtime.session_manager), &session_id)
+            None => self
+                .load_replay_fallback_once(&session_id)
                 .await
                 .map(|events| {
                     (
-                        replay_records(&events, last_event_id),
+                        replay_records(events.as_ref(), last_event_id),
                         ReplayPath::DiskFallback,
                     )
                 }),
@@ -72,6 +92,75 @@ impl SessionServiceHandle {
         }
         let (history, _) = replay_result?;
         Ok(SessionReplay { history, receiver })
+    }
+}
+
+impl SessionServiceHandle {
+    async fn load_replay_fallback_once(
+        &self,
+        session_id: &str,
+    ) -> ServiceResult<Arc<Vec<astrcode_core::StoredEvent>>> {
+        if let Some(existing) = self.runtime.replay_fallbacks.get(session_id) {
+            return existing
+                .clone()
+                .await
+                .map_err(replay_fallback_error_to_service_error);
+        }
+
+        let session_id_owned = session_id.to_string();
+        let session_manager = Arc::clone(&self.runtime.session_manager);
+        let future = async move {
+            load_events(session_manager, &session_id_owned)
+                .await
+                .map(Arc::new)
+                .map_err(service_error_to_replay_fallback_error)
+        }
+        .boxed()
+        .shared();
+
+        let shared = match self.runtime.replay_fallbacks.entry(session_id.to_string()) {
+            dashmap::mapref::entry::Entry::Occupied(existing) => existing.get().clone(),
+            dashmap::mapref::entry::Entry::Vacant(vacant) => {
+                vacant.insert(future.clone());
+                future
+            },
+        };
+
+        let result = shared.await;
+        self.runtime.replay_fallbacks.remove(session_id);
+        result.map_err(replay_fallback_error_to_service_error)
+    }
+}
+
+fn service_error_to_replay_fallback_error(error: ServiceError) -> ReplayFallbackError {
+    match error {
+        ServiceError::NotFound(message) => ReplayFallbackError {
+            kind: ReplayFallbackErrorKind::NotFound,
+            message,
+        },
+        ServiceError::Conflict(message) => ReplayFallbackError {
+            kind: ReplayFallbackErrorKind::Conflict,
+            message,
+        },
+        ServiceError::InvalidInput(message) => ReplayFallbackError {
+            kind: ReplayFallbackErrorKind::InvalidInput,
+            message,
+        },
+        ServiceError::Internal(error) => ReplayFallbackError {
+            kind: ReplayFallbackErrorKind::Internal,
+            message: error.to_string(),
+        },
+    }
+}
+
+fn replay_fallback_error_to_service_error(error: ReplayFallbackError) -> ServiceError {
+    match error.kind {
+        ReplayFallbackErrorKind::NotFound => ServiceError::NotFound(error.message),
+        ReplayFallbackErrorKind::Conflict => ServiceError::Conflict(error.message),
+        ReplayFallbackErrorKind::InvalidInput => ServiceError::InvalidInput(error.message),
+        ReplayFallbackErrorKind::Internal => {
+            ServiceError::Internal(astrcode_core::AstrError::Internal(error.message))
+        },
     }
 }
 

@@ -25,6 +25,7 @@ import {
   interruptSession,
   listSessionsWithMeta,
   loadSession,
+  loadSessionView,
   submitPrompt,
 } from '../lib/api/sessions';
 import { getConfig, saveActiveSelection } from '../lib/api/config';
@@ -38,6 +39,7 @@ import type {
   ModelOption,
   Phase,
   SessionMeta,
+  SessionViewSnapshot,
   TestResult,
 } from '../types';
 import type { SessionEventFilterQuery } from '../lib/sessionView';
@@ -314,6 +316,13 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     []
   );
 
+  const handleLoadSessionView = useCallback(
+    async (sessionId: string, filter?: SessionEventFilterQuery): Promise<SessionViewSnapshot> => {
+      return loadSessionView(sessionId, filter);
+    },
+    []
+  );
+
   const handleSubmitPrompt = useCallback(
     async (sessionId: string, text: string): Promise<PromptSubmission> => {
       const response = await submitPrompt(sessionId, text);
@@ -414,6 +423,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     createSession: handleCreateSession,
     listSessionsWithMeta: handleListSessionsWithMeta,
     loadSession: handleLoadSession,
+    loadSessionView: handleLoadSessionView,
     connectSession,
     disconnectSession,
     submitPrompt: handleSubmitPrompt,

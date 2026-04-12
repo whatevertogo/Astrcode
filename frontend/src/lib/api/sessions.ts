@@ -2,12 +2,18 @@
 //!
 //! Session and project CRUD operations.
 
-import type { AgentLifecycle, DeleteProjectResult, SessionMeta } from '../../types';
+import type {
+  AgentEventPayload,
+  AgentLifecycle,
+  DeleteProjectResult,
+  Phase,
+  SessionMeta,
+  SessionViewSnapshot,
+} from '../../types';
 import { getErrorMessage, request, requestJson, requestRaw } from './client';
 // 共享工具函数，消除与 lib/shared/index.ts 的重复定义
 import { asRecord, pickStringOrUndefined as pickString, pickOptionalString } from '../shared';
 import { normalizeAgentEvent } from '../agentEvent';
-import type { AgentEventPayload, Phase } from '../../types';
 import { buildSessionEventQueryString } from '../sessionView';
 import type { SessionEventFilterQuery } from '../sessionView';
 
@@ -23,6 +29,7 @@ export interface ChildAgentRef {
   subRunId: string;
   executionId?: string;
   parentAgentId?: string;
+  parentSubRunId?: string;
   lineageKind: 'spawn' | 'fork' | 'resume';
   lineageSnapshot?: LineageSnapshot;
   status: AgentLifecycle;
@@ -91,6 +98,41 @@ export async function loadSession(
     events: eventsRaw.map((event) => normalizeAgentEvent(event)),
     cursor: pickOptionalString(payload, 'cursor') ?? null,
     phase,
+  };
+}
+
+export async function loadSessionView(
+  sessionId: string,
+  filter?: SessionEventFilterQuery
+): Promise<SessionViewSnapshot> {
+  const response = await request(
+    `/api/sessions/${encodeURIComponent(sessionId)}/view${buildSessionEventQueryString({ filter })}`
+  );
+  const payload = asRecord((await response.json()) as unknown);
+  if (!payload) {
+    throw new Error('invalid session view response');
+  }
+
+  const phase = pickString(payload, 'phase');
+  if (
+    phase !== 'idle' &&
+    phase !== 'thinking' &&
+    phase !== 'callingTool' &&
+    phase !== 'streaming' &&
+    phase !== 'interrupted' &&
+    phase !== 'done'
+  ) {
+    throw new Error(`invalid session phase: ${String(phase)}`);
+  }
+
+  const normalizeEvents = (value: unknown): AgentEventPayload[] =>
+    Array.isArray(value) ? value.map((event) => normalizeAgentEvent(event)) : [];
+
+  return {
+    focusEvents: normalizeEvents(payload.focusEvents),
+    directChildrenEvents: normalizeEvents(payload.directChildrenEvents),
+    cursor: pickOptionalString(payload, 'cursor') ?? null,
+    phase: phase as Phase,
   };
 }
 

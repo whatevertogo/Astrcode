@@ -104,6 +104,7 @@ pub fn child_delivery_storage_event_fixture(seed: &str) -> StorageEvent {
             turn_id.clone(),
             "review".to_string(),
             format!("subrun-{seed}"),
+            None,
             astrcode_core::SubRunStorageMode::IndependentSession,
             Some(format!("session-child-{seed}")),
         ),

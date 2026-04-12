@@ -69,9 +69,9 @@ McpConfigManager ──1:1──→ McpServerRegistry
 | server_info | Option\<McpServerInfo\> | 握手后获取的服务器信息 |
 | capabilities | Option\<McpServerCapabilities\> | 服务器支持的能力集 |
 | instructions | Option\<String\> | 服务器提供的 prompt 指令 |
-| transport_handle | Option\<dyn McpTransport\> | 传输通道句柄 |
+| transport_handle | Option\<Arc\<dyn McpTransport\>\> | 传输通道句柄 |
 | reconnect_attempt | u32 | 当前重连尝试次数 |
-| cleanup_fn | Option\<Box<dyn Fn() → Result\>\> | 清理函数（关闭进程/连接） |
+| cleanup_fn | Option\<Box\<dyn Fn() -> Result\<()\> + Send + Sync\>\> | 清理函数（关闭进程/连接） |
 
 **McpConnectionState** (状态枚举):
 

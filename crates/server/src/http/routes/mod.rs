@@ -47,6 +47,7 @@ use crate::{ApiError, AppState, bootstrap::serve_run_info};
 /// - `GET /api/sessions` — 列出所有会话
 /// - `GET /api/session-events` — 订阅会话目录事件（SSE）
 /// - `GET /api/sessions/:id/history` — 获取会话历史事件快照
+/// - `GET /api/sessions/:id/view` — 获取会话/子执行视图快照
 /// - `GET /api/sessions/:id/composer/options` — 获取输入框候选列表
 /// - `POST /api/sessions/:id/prompts` — 提交用户提示
 /// - `POST /api/sessions/:id/compact` — 压缩会话上下文
@@ -80,6 +81,7 @@ pub(crate) fn build_api_router() -> Router<AppState> {
         )
         .route("/api/session-events", get(sessions::session_catalog_events))
         .route("/api/sessions/{id}/history", get(sessions::session_history))
+        .route("/api/sessions/{id}/view", get(sessions::session_view))
         .route(
             "/api/sessions/{id}/composer/options",
             get(composer::session_composer_options),

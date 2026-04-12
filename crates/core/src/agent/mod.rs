@@ -334,6 +334,9 @@ pub struct SubRunHandle {
     /// 触发该子会话的父 agent。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<String>,
+    /// 触发该子会话的父 sub-run。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_sub_run_id: Option<String>,
     /// 该实例绑定的 profile ID。
     pub agent_profile: String,
     /// 当前存储模式。
@@ -374,6 +377,8 @@ pub struct ChildAgentRef {
     pub sub_run_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_sub_run_id: Option<String>,
     pub lineage_kind: ChildSessionLineageKind,
     pub status: AgentLifecycleStatus,
     /// 唯一 canonical child open target。通知、DTO 与其他外层载荷不得重复持有同值字段。
@@ -408,6 +413,8 @@ pub struct ChildSessionNode {
     pub parent_session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_sub_run_id: Option<String>,
     pub parent_turn_id: String,
     pub lineage_kind: ChildSessionLineageKind,
     pub status: AgentLifecycleStatus,
@@ -429,6 +436,7 @@ impl ChildSessionNode {
             session_id: self.session_id.clone(),
             sub_run_id: self.sub_run_id.clone(),
             parent_agent_id: self.parent_agent_id.clone(),
+            parent_sub_run_id: self.parent_sub_run_id.clone(),
             lineage_kind: self.lineage_kind,
             status: self.status,
             open_session_id: self.child_session_id.clone(),
@@ -614,6 +622,9 @@ pub struct AgentEventContext {
     /// 受控子会话执行域 ID。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sub_run_id: Option<String>,
+    /// 父 sub-run ID。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_sub_run_id: Option<String>,
     /// 执行来源。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invocation_kind: Option<InvocationKind>,
@@ -632,6 +643,7 @@ impl AgentEventContext {
         parent_turn_id: impl Into<String>,
         agent_profile: impl Into<String>,
         sub_run_id: impl Into<String>,
+        parent_sub_run_id: Option<String>,
         storage_mode: SubRunStorageMode,
         child_session_id: Option<String>,
     ) -> Self {
@@ -640,6 +652,7 @@ impl AgentEventContext {
             parent_turn_id: Some(parent_turn_id.into()),
             agent_profile: Some(agent_profile.into()),
             sub_run_id: Some(sub_run_id.into()),
+            parent_sub_run_id,
             invocation_kind: Some(InvocationKind::SubRun),
             storage_mode: Some(storage_mode),
             child_session_id,
@@ -653,6 +666,7 @@ impl AgentEventContext {
             parent_turn_id: None,
             agent_profile: Some(agent_profile.into()),
             sub_run_id: None,
+            parent_sub_run_id: None,
             invocation_kind: Some(InvocationKind::RootExecution),
             storage_mode: None,
             child_session_id: None,
@@ -665,6 +679,7 @@ impl AgentEventContext {
             && self.parent_turn_id.is_none()
             && self.agent_profile.is_none()
             && self.sub_run_id.is_none()
+            && self.parent_sub_run_id.is_none()
             && self.invocation_kind.is_none()
             && self.storage_mode.is_none()
             && self.child_session_id.is_none()
@@ -679,6 +694,7 @@ impl From<&SubRunHandle> for AgentEventContext {
             parent_turn_id: Some(handle.parent_turn_id.clone()),
             agent_profile: Some(handle.agent_profile.clone()),
             sub_run_id: Some(handle.sub_run_id.clone()),
+            parent_sub_run_id: handle.parent_sub_run_id.clone(),
             invocation_kind: Some(InvocationKind::SubRun),
             storage_mode: Some(handle.storage_mode),
             child_session_id: handle.child_session_id.clone(),
@@ -730,6 +746,7 @@ mod tests {
             sub_run_id: "subrun-1".to_string(),
             parent_session_id: "session-parent".to_string(),
             parent_agent_id: Some("agent-parent".to_string()),
+            parent_sub_run_id: Some("subrun-parent".to_string()),
             parent_turn_id: "turn-parent".to_string(),
             lineage_kind: ChildSessionLineageKind::Spawn,
             status: AgentLifecycleStatus::Running,

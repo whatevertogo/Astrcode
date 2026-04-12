@@ -13,6 +13,7 @@ fn sub_run_started_serializes_contract_fields_in_camel_case() {
         agent: AgentContextDto {
             agent_id: Some("agent-1".to_string()),
             parent_turn_id: Some("parent-turn".to_string()),
+            parent_sub_run_id: Some("subrun-parent".to_string()),
             agent_profile: Some("explore".to_string()),
             sub_run_id: Some("subrun-1".to_string()),
             invocation_kind: Some(InvocationKindDto::SubRun),
@@ -95,6 +96,7 @@ fn sub_run_finished_payload_roundtrip_without_descriptor() {
         agent: AgentContextDto {
             agent_id: Some("agent-1".to_string()),
             parent_turn_id: Some("parent-turn".to_string()),
+            parent_sub_run_id: Some("subrun-parent".to_string()),
             agent_profile: Some("explore".to_string()),
             sub_run_id: Some("subrun-1".to_string()),
             invocation_kind: Some(InvocationKindDto::SubRun),
@@ -160,6 +162,7 @@ fn child_session_notification_roundtrip_keeps_projection_fields() {
             session_id: "session-parent".to_string(),
             sub_run_id: "subrun-1".to_string(),
             parent_agent_id: Some("agent-parent".to_string()),
+            parent_sub_run_id: Some("subrun-parent".to_string()),
             lineage_kind: ChildSessionLineageKindDto::Spawn,
             status: AgentLifecycleDto::Running,
             open_session_id: "session-child".to_string(),
@@ -196,6 +199,7 @@ fn child_session_notification_event_payload_roundtrip() {
         agent: AgentContextDto {
             agent_id: Some("agent-parent".to_string()),
             parent_turn_id: Some("turn-parent".to_string()),
+            parent_sub_run_id: None,
             agent_profile: Some("planner".to_string()),
             sub_run_id: Some("subrun-parent".to_string()),
             invocation_kind: Some(InvocationKindDto::SubRun),
@@ -207,6 +211,7 @@ fn child_session_notification_event_payload_roundtrip() {
             session_id: "session-parent".to_string(),
             sub_run_id: "subrun-1".to_string(),
             parent_agent_id: Some("agent-parent".to_string()),
+            parent_sub_run_id: Some("subrun-parent".to_string()),
             lineage_kind: ChildSessionLineageKindDto::Spawn,
             status: AgentLifecycleDto::Running,
             open_session_id: "session-child".to_string(),
@@ -240,6 +245,7 @@ fn lineage_kind_spawn_fork_resume_all_roundtrip_through_child_ref() {
             session_id: "session-parent".to_string(),
             sub_run_id: "subrun-1".to_string(),
             parent_agent_id: Some("agent-parent".to_string()),
+            parent_sub_run_id: Some("subrun-parent".to_string()),
             lineage_kind: kind.clone(),
             status: AgentLifecycleDto::Running,
             open_session_id: "session-child".to_string(),

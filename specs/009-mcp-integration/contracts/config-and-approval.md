@@ -15,12 +15,22 @@ pub struct McpConfigManager {
     local_configs: HashMap<String, McpServerConfig>,
 }
 
+/// 配置文件路径定位。
+pub struct McpConfigPaths {
+    /// 用户全局配置目录（如 `~/.astrcode/`）。
+    pub user_config_dir: PathBuf,
+    /// 项目根目录（用于查找 `.mcp.json`，从 CWD 向上遍历）。
+    pub project_dir: PathBuf,
+    /// 项目本地私有配置目录（如 `.astrcode/`）。
+    pub local_config_dir: PathBuf,
+}
+
 impl McpConfigManager {
     /// 从所有作用域加载并合并配置。
     ///
     /// 优先级：user < project < local
     /// 同签名时高优先级覆盖低优先级。
-    pub async fn load_all() -> Result<Self>;
+    pub async fn load_all(paths: McpConfigPaths) -> Result<Self>;
 
     /// 检测配置是否有变更（用于热加载）。
     pub async fn has_changes(&self) -> bool;
@@ -35,8 +45,9 @@ impl McpConfigManager {
 
     /// 展开配置中的环境变量。
     ///
-    /// `${VAR}` 格式，缺失的变量记录警告并替换为空字符串。
-    fn expand_env_vars(config: &mut McpServerConfig) -> Vec<String>;
+    /// `${VAR}` 格式，缺失的变量记录错误并返回 Err，
+    /// 调用方据此将该服务器标记为 failed。
+    fn expand_env_vars(config: &mut McpServerConfig) -> Result<Vec<EnvVarWarning>>;
 
     /// 基于签名去重。
     ///

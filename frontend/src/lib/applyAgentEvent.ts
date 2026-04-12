@@ -41,6 +41,7 @@ export function applyAgentEvent(
       ? {
           agentId: 'agentId' in event.data ? event.data.agentId : undefined,
           parentTurnId: 'parentTurnId' in event.data ? event.data.parentTurnId : undefined,
+          parentSubRunId: 'parentSubRunId' in event.data ? event.data.parentSubRunId : undefined,
           agentProfile: 'agentProfile' in event.data ? event.data.agentProfile : undefined,
           subRunId: 'subRunId' in event.data ? event.data.subRunId : undefined,
           executionId: 'executionId' in event.data ? event.data.executionId : undefined,
@@ -51,6 +52,7 @@ export function applyAgentEvent(
       : {
           agentId: undefined,
           parentTurnId: undefined,
+          parentSubRunId: undefined,
           agentProfile: undefined,
           subRunId: undefined,
           executionId: undefined,

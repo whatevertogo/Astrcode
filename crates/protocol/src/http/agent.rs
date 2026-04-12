@@ -115,8 +115,14 @@ pub struct SubRunStatusDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_session_id: Option<String>,
     pub depth: usize,
+    // parent_agent_id 表示“这个子会话归哪个父 agent 所有”，它描述的是控制/权限关系
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<String>,
+    // parent_sub_run_id 表示“这个子执行是从哪个父 sub-run 触发出来的”，它描述的是执行谱系关系
+    // WHY:同一个 agent_id 可以经历多个 sub_run_id;UI / history / SSE
+    // 过滤需要的是执行树，不是权限树;只靠 parent_agent_id 会把我们拉回“推断谱系”
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_sub_run_id: Option<String>,
     pub storage_mode: SubRunStorageModeDto,
     pub lifecycle: AgentLifecycleDto,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -159,6 +165,8 @@ pub struct ChildAgentRefDto {
     pub sub_run_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_sub_run_id: Option<String>,
     pub lineage_kind: ChildSessionLineageKindDto,
     pub status: AgentLifecycleDto,
     pub open_session_id: String,

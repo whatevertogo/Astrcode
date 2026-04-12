@@ -181,6 +181,8 @@ pub struct AgentContextDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_sub_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sub_run_id: Option<String>,
@@ -196,6 +198,7 @@ impl AgentContextDto {
     pub fn is_empty(&self) -> bool {
         self.agent_id.is_none()
             && self.parent_turn_id.is_none()
+            && self.parent_sub_run_id.is_none()
             && self.agent_profile.is_none()
             && self.sub_run_id.is_none()
             && self.invocation_kind.is_none()

@@ -3,13 +3,9 @@ import { groupSessionsByProject, replaceSessionMessages } from '../../store/util
 import { replaySessionHistory } from '../../lib/sessionHistory';
 import { findMatchingSessionId, normalizeSessionIdForCompare } from '../../lib/sessionId';
 import { buildSubRunThreadTree, listRootSubRunViews } from '../../lib/subRunView';
-import {
-  buildFocusedSubRunFilter,
-  buildSubRunChildrenFilter,
-  type SessionEventFilterQuery,
-} from '../../lib/sessionView';
+import { buildFocusedSubRunFilter, type SessionEventFilterQuery } from '../../lib/sessionView';
 import type { Action, Phase, SessionMeta } from '../../types';
-import type { SessionSnapshot } from '../useAgent';
+import type { SessionViewSnapshot } from '../../types';
 
 type RootSubRunViews = ReturnType<typeof listRootSubRunViews>;
 
@@ -29,7 +25,10 @@ interface UseSessionCoordinatorOptions {
   activeSubRunPathRef: MutableRefObject<string[]>;
   phaseRef: MutableRefObject<Phase>;
   sessionActivationGenerationRef: MutableRefObject<number>;
-  loadSession: (sessionId: string, filter?: SessionEventFilterQuery) => Promise<SessionSnapshot>;
+  loadSessionView: (
+    sessionId: string,
+    filter?: SessionEventFilterQuery
+  ) => Promise<SessionViewSnapshot>;
   listSessionsWithMeta: () => Promise<SessionMeta[]>;
   connectSession: (
     sessionId: string,
@@ -46,7 +45,7 @@ export function useSessionCoordinator({
   activeSubRunPathRef,
   phaseRef,
   sessionActivationGenerationRef,
-  loadSession,
+  loadSessionView: fetchSessionView,
   listSessionsWithMeta,
   connectSession,
   disconnectSession,
@@ -57,18 +56,13 @@ export function useSessionCoordinator({
     contentFingerprint: '',
   });
 
-  const loadSessionView = useCallback(
+  const loadSessionBundle = useCallback(
     async (sessionId: string, subRunPath: string[]) => {
       const filter = buildFocusedSubRunFilter(subRunPath);
-      const [snapshot, childSnapshot] = await Promise.all([
-        loadSession(sessionId, filter),
-        filter?.subRunId
-          ? loadSession(sessionId, buildSubRunChildrenFilter(filter.subRunId))
-          : Promise.resolve(null),
-      ]);
-      const replayed = replaySessionHistory(sessionId, snapshot.events, snapshot.phase);
+      const snapshot = await fetchSessionView(sessionId, filter);
+      const replayed = replaySessionHistory(sessionId, snapshot.focusEvents, snapshot.phase);
 
-      if (!filter?.subRunId || !childSnapshot) {
+      if (!filter?.subRunId) {
         return {
           filter,
           cursor: snapshot.cursor,
@@ -81,8 +75,8 @@ export function useSessionCoordinator({
 
       const childReplayed = replaySessionHistory(
         sessionId,
-        childSnapshot.events,
-        childSnapshot.phase
+        snapshot.directChildrenEvents,
+        snapshot.phase
       );
       const childTree = buildSubRunThreadTree(childReplayed.messages);
       return {
@@ -94,7 +88,7 @@ export function useSessionCoordinator({
         childContentFingerprint: childTree.rootStreamFingerprint,
       };
     },
-    [loadSession]
+    [fetchSessionView]
   );
 
   const loadAndActivateSession = useCallback(
@@ -102,7 +96,7 @@ export function useSessionCoordinator({
       const activationGeneration = ++sessionActivationGenerationRef.current;
       const previousSessionId = activeSessionIdRef.current;
       disconnectSession();
-      const loaded = await loadSessionView(sessionId, subRunPath);
+      const loaded = await loadSessionBundle(sessionId, subRunPath);
       if (activationGeneration !== sessionActivationGenerationRef.current) {
         return;
       }
@@ -136,7 +130,7 @@ export function useSessionCoordinator({
       connectSession,
       disconnectSession,
       dispatch,
-      loadSessionView,
+      loadSessionBundle,
       phaseRef,
       sessionActivationGenerationRef,
     ]
@@ -179,7 +173,7 @@ export function useSessionCoordinator({
 
       if (nextProjectId && nextSessionId) {
         disconnectSession();
-        const loaded = await loadSessionView(nextSessionId, nextActiveSubRunPath);
+        const loaded = await loadSessionBundle(nextSessionId, nextActiveSubRunPath);
         if (activationGeneration !== sessionActivationGenerationRef.current) {
           return;
         }
@@ -232,7 +226,7 @@ export function useSessionCoordinator({
       disconnectSession,
       dispatch,
       listSessionsWithMeta,
-      loadSessionView,
+      loadSessionBundle,
       phaseRef,
       sessionActivationGenerationRef,
     ]

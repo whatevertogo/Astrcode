@@ -70,7 +70,12 @@ impl McpClient {
     /// 注册 list_changed 通知处理器。
     ///
     /// 当服务器推送 `tools/list_changed` 等通知时调用回调。
-    pub fn on_list_changed(&self, kind: McpListKind, handler: Box<dyn Fn() + Send + Sync>);
+    /// 回调为异步函数，因为需要重新调用 `list_tools()` 等方法并更新注册表。
+    pub fn on_list_changed(
+        &self,
+        kind: McpListKind,
+        handler: Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
+    );
 
     /// 关闭客户端，发送关闭通知。
     pub async fn disconnect(self) -> Result<()>;

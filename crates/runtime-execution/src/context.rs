@@ -325,7 +325,7 @@ pub struct ExecutionLineageEntry {
 pub struct ExecutionLineageIndex {
     by_sub_run_id: HashMap<String, ExecutionLineageEntry>,
     /// turn_id → 拥有该 turn 的 sub_run_id。
-    /// 用于从 SubRunStarted 的 parent_turn_id 反查 parent sub_run。
+    /// 该索引只用于 ownership/scope 校验，不再承担父链推导职责。
     turn_to_sub_run: HashMap<String, String>,
     children_by_parent_sub_run: HashMap<String, Vec<String>>,
 }
@@ -423,7 +423,7 @@ impl ExecutionLineageIndex {
                 self.observe_lifecycle(
                     agent.sub_run_id.as_deref(),
                     agent.agent_id.as_deref(),
-                    agent.parent_turn_id.as_deref(),
+                    agent.parent_sub_run_id.as_deref(),
                 );
             },
             _ => {
@@ -440,7 +440,7 @@ impl ExecutionLineageIndex {
                 self.observe_lifecycle(
                     agent.sub_run_id.as_deref(),
                     agent.agent_id.as_deref(),
-                    agent.parent_turn_id.as_deref(),
+                    agent.parent_sub_run_id.as_deref(),
                 );
             },
             AgentEvent::UserMessage { turn_id, agent, .. }
@@ -479,14 +479,14 @@ impl ExecutionLineageIndex {
     }
 
     /// 注册一个 sub_run 的生命周期事件。
-    /// `sub_run_id`: 当前 sub_run 的 ID
-    /// `agent_id`: 当前 sub_run 的 agent ID
-    /// `parent_turn_id`: 触发此 sub_run 的父 turn（通过此值反查 parent sub_run）
+    ///
+    /// 父链真相直接来自事件上下文里的 `parent_sub_run_id`，
+    /// 不再通过 `parent_turn_id -> turn_to_sub_run` 反推。
     fn observe_lifecycle(
         &mut self,
         sub_run_id: Option<&str>,
         agent_id: Option<&str>,
-        parent_turn_id: Option<&str>,
+        parent_sub_run_id: Option<&str>,
     ) {
         let Some(sub_run_id) = sub_run_id else {
             return;
@@ -499,36 +499,54 @@ impl ExecutionLineageIndex {
                 agent_id: None,
                 parent_sub_run_id: None,
             });
+        let previous_parent = entry.parent_sub_run_id.clone();
 
         if let Some(agent_id) = agent_id {
             entry.agent_id = Some(agent_id.to_string());
         }
 
-        // 通过 parent_turn_id 反查 parent sub_run。
-        entry.parent_sub_run_id = parent_turn_id
-            .and_then(|turn| self.turn_to_sub_run.get(turn))
-            .filter(|parent_sub_run| parent_sub_run.as_str() != sub_run_id)
-            .cloned();
+        let next_parent = parent_sub_run_id
+            .filter(|parent_sub_run| *parent_sub_run != sub_run_id)
+            .map(ToString::to_string);
+        entry.parent_sub_run_id = next_parent.clone();
 
-        self.rebuild_children_index();
+        if previous_parent != next_parent {
+            if let Some(previous_parent) = previous_parent.as_deref() {
+                self.remove_child_link(previous_parent, sub_run_id);
+            }
+            if let Some(new_parent) = next_parent.as_deref() {
+                self.add_child_link(new_parent, sub_run_id);
+            }
+        }
     }
 
-    fn rebuild_children_index(&mut self) {
-        let mut children_by_parent_sub_run: HashMap<String, Vec<String>> = HashMap::new();
-        for entry in self.by_sub_run_id.values() {
-            let Some(parent_sub_run_id) = entry.parent_sub_run_id.as_ref() else {
-                continue;
+    fn add_child_link(&mut self, parent_sub_run_id: &str, child_sub_run_id: &str) {
+        let children = self
+            .children_by_parent_sub_run
+            .entry(parent_sub_run_id.to_string())
+            .or_default();
+        match children.binary_search_by(|existing| existing.as_str().cmp(child_sub_run_id)) {
+            Ok(_) => {},
+            Err(index) => children.insert(index, child_sub_run_id.to_string()),
+        }
+    }
+
+    fn remove_child_link(&mut self, parent_sub_run_id: &str, child_sub_run_id: &str) {
+        let should_remove_parent =
+            if let Some(children) = self.children_by_parent_sub_run.get_mut(parent_sub_run_id) {
+                if let Ok(index) =
+                    children.binary_search_by(|existing| existing.as_str().cmp(child_sub_run_id))
+                {
+                    children.remove(index);
+                }
+                children.is_empty()
+            } else {
+                false
             };
-            children_by_parent_sub_run
-                .entry(parent_sub_run_id.clone())
-                .or_default()
-                .push(entry.sub_run_id.clone());
+
+        if should_remove_parent {
+            self.children_by_parent_sub_run.remove(parent_sub_run_id);
         }
-        for children in children_by_parent_sub_run.values_mut() {
-            children.sort();
-            children.dedup();
-        }
-        self.children_by_parent_sub_run = children_by_parent_sub_run;
     }
 }
 
@@ -880,6 +898,7 @@ mod tests {
                         "turn-root",
                         "review",
                         "sub-a",
+                        None,
                         astrcode_core::SubRunStorageMode::IndependentSession,
                         None,
                     ),
@@ -897,6 +916,7 @@ mod tests {
                         "turn-a",
                         "review",
                         "sub-b",
+                        Some("sub-a".to_string()),
                         astrcode_core::SubRunStorageMode::IndependentSession,
                         None,
                     ),
@@ -924,6 +944,7 @@ mod tests {
                     "turn-legacy",
                     "review",
                     "sub-legacy",
+                    None,
                     astrcode_core::SubRunStorageMode::IndependentSession,
                     None,
                 ),

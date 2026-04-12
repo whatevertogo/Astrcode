@@ -154,6 +154,7 @@ pub(crate) fn to_subrun_status_dto(snapshot: SubRunStatusSnapshot) -> SubRunStat
         child_session_id: handle.child_session_id,
         depth: handle.depth,
         parent_agent_id: handle.parent_agent_id,
+        parent_sub_run_id: handle.parent_sub_run_id,
         storage_mode: to_subrun_storage_mode_dto(handle.storage_mode),
         lifecycle: to_agent_lifecycle_dto(handle.lifecycle),
         last_turn_outcome: handle.last_turn_outcome.map(to_agent_turn_outcome_dto),
@@ -298,6 +299,7 @@ fn to_agent_context_dto(agent: AgentEventContext) -> AgentContextDto {
     AgentContextDto {
         agent_id: agent.agent_id,
         parent_turn_id: agent.parent_turn_id,
+        parent_sub_run_id: agent.parent_sub_run_id,
         agent_profile: agent.agent_profile,
         sub_run_id: agent.sub_run_id,
         invocation_kind: agent.invocation_kind.map(|kind| match kind {
@@ -366,6 +368,7 @@ fn to_child_agent_ref_dto(child_ref: astrcode_core::ChildAgentRef) -> ChildAgent
         session_id: child_ref.session_id,
         sub_run_id: child_ref.sub_run_id,
         parent_agent_id: child_ref.parent_agent_id,
+        parent_sub_run_id: child_ref.parent_sub_run_id,
         lineage_kind: to_child_lineage_kind_dto(child_ref.lineage_kind),
         status: to_agent_lifecycle_dto(child_ref.status),
         open_session_id: child_ref.open_session_id,

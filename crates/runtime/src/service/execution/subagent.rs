@@ -26,6 +26,7 @@ pub(super) struct ParentExecutionContext {
     pub(super) parent_state: Arc<SessionState>,
     pub(super) parent_snapshot: AgentState,
     pub(super) parent_agent_id_for_control: Option<String>,
+    pub(super) parent_sub_run_id: Option<String>,
 }
 
 struct PreparedSubagentExecution {
@@ -99,6 +100,7 @@ impl AgentExecutionServiceHandle {
         // 所以 root 下创建 child 时，parent_agent_id 就是 root 自己的 agent_id。
         // 旧模型中 root 执行不提供 agent_id，导致 child 无父级引用。
         let parent_agent_id_for_control = ctx.agent_context().agent_id.clone();
+        let parent_sub_run_id = ctx.agent_context().sub_run_id.clone();
 
         Ok(ParentExecutionContext {
             parent_session_id: ctx.session_id().to_string(),
@@ -106,6 +108,7 @@ impl AgentExecutionServiceHandle {
             parent_state,
             parent_snapshot,
             parent_agent_id_for_control,
+            parent_sub_run_id,
         })
     }
 
@@ -232,11 +235,13 @@ impl AgentExecutionServiceHandle {
         let child_turn_id = format!("{}-child-{}", parent.parent_turn_id, uuid::Uuid::new_v4());
         let child_execution_owner =
             derive_child_execution_owner(ctx, &parent.parent_turn_id, &child);
+        debug_assert_eq!(child.parent_sub_run_id, parent.parent_sub_run_id);
         let child_agent = AgentEventContext::sub_run(
             child.agent_id.clone(),
             parent.parent_turn_id.clone(),
             prepared.profile.id.clone(),
             child.sub_run_id.clone(),
+            child.parent_sub_run_id.clone(),
             child.storage_mode,
             child.child_session_id.clone(),
         );

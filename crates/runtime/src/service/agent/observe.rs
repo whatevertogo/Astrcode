@@ -140,10 +140,13 @@ pub(super) fn extract_last_output(messages: &[astrcode_core::LlmMessage]) -> Opt
         astrcode_core::LlmMessage::Assistant { content, .. } => {
             if content.is_empty() {
                 None
-            } else if content.len() > 200 {
-                Some(format!("{}...", &content[..200]))
             } else {
-                Some(content.clone())
+                let char_count = content.chars().count();
+                if char_count > 200 {
+                    Some(content.chars().take(200).collect::<String>() + "...")
+                } else {
+                    Some(content.clone())
+                }
             }
         },
         _ => None,
@@ -448,5 +451,20 @@ mod tests {
         ];
 
         assert_eq!(extract_last_output(&messages), Some("最后输出".to_string()));
+    }
+
+    #[test]
+    fn extract_last_output_truncates_at_char_boundary_for_multibyte() {
+        // 构造一个恰好使 byte 200 落在中文多字节字符内部的字符串
+        let content = "a".repeat(199) + "成功完成";
+        assert!(content.len() > 200);
+        let result = extract_last_output(&[LlmMessage::Assistant {
+            content: content.clone(),
+            tool_calls: Vec::new(),
+            reasoning: None,
+        }])
+        .unwrap();
+        assert!(result.ends_with("..."));
+        assert_eq!(result.trim_end_matches("...").chars().count(), 200);
     }
 }

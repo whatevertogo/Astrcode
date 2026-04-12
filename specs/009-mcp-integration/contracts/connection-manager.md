@@ -45,8 +45,8 @@ impl McpConnectionManager {
     /// 热加载：检测配置变更，增减连接。
     pub async fn reload_config(&self) -> McpReloadResult;
 
-    /// 获取所有已连接服务器的工具列表。
-    pub fn connected_tools(&self) -> Vec<Arc<dyn Tool>>;
+    /// 获取所有已连接服务器的工具（已包装为 CapabilityInvoker）。
+    pub fn connected_invokers(&self) -> Vec<Arc<dyn CapabilityInvoker>>;
 
     /// 获取所有已连接服务器的 prompt 声明。
     pub fn connected_prompt_declarations(&self) -> Vec<PromptDeclaration>;

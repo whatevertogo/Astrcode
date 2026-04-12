@@ -46,6 +46,7 @@ specs/009-mcp-integration/
 ├── contracts/
 │   ├── transport.md                 # McpTransport trait 契约
 │   ├── client.md                    # McpClient 契约
+│   ├── tool-bridge.md               # McpToolBridge 契约（结果映射 + CancelToken 流转）
 │   ├── connection-manager.md        # McpConnectionManager 契约
 │   └── config-and-approval.md       # 配置与审批契约
 ├── checklists/
