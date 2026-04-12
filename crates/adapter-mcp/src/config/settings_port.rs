@@ -50,4 +50,7 @@ pub trait McpSettingsStore: Send + Sync {
         project_path: &str,
         data: &McpApprovalData,
     ) -> std::result::Result<(), String>;
+
+    /// 清理指定项目的所有审批记录。
+    fn clear_approvals(&self, project_path: &str) -> std::result::Result<(), String>;
 }

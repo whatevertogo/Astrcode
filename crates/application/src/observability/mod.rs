@@ -15,7 +15,7 @@ pub use metrics_snapshot::{
 
 /// 运行时治理快照，替代旧 `RuntimeGovernanceSnapshot`。
 ///
-/// 不依赖 `RuntimeService`，数据来源于 `RuntimeCoordinator`、`SessionRuntime`
+/// 不依赖 `RuntimeService`，数据来源于运行时治理端口、`SessionRuntime`
 /// 和可观测性指标提供者。
 #[derive(Debug, Clone)]
 pub struct GovernanceSnapshot {

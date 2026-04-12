@@ -27,8 +27,7 @@ pub(crate) async fn get_config(
     let config_path = state
         .app
         .config()
-        .current_config_path()
-        .await
+        .config_path()
         .to_string_lossy()
         .to_string();
     Ok(Json(build_config_view(&config, config_path)?))
@@ -66,14 +65,13 @@ pub(crate) async fn reload_config(
     let config = state
         .app
         .config()
-        .reload_config_from_disk()
+        .reload_from_disk()
         .await
         .map_err(ApiError::from)?;
     let config_path = state
         .app
         .config()
-        .current_config_path()
-        .await
+        .config_path()
         .to_string_lossy()
         .to_string();
     let config_view = build_config_view(&config, config_path)?;

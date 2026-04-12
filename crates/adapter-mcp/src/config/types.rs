@@ -110,6 +110,20 @@ pub struct McpJsonServerEntry {
     /// 超时覆盖。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
+    /// 初始化握手超时覆盖。
+    #[serde(
+        default,
+        rename = "initTimeout",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub init_timeout: Option<u64>,
+    /// 最大重连次数覆盖。
+    #[serde(
+        default,
+        rename = "maxReconnectAttempts",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_reconnect_attempts: Option<u32>,
 }
 
 impl McpTransportConfig {

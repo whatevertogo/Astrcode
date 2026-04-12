@@ -4,16 +4,16 @@
 //!
 //! ## 设计要点
 //!
-//! - 依赖 `RuntimeCoordinator` 和会话信息提供者，而非旧 `RuntimeService`
-//! - 通过 `RuntimeCoordinator` 获取运行时句柄、插件注册表、能力列表
+//! - 依赖运行时治理端口和会话信息提供者，而非旧 `RuntimeService`
+//! - 通过运行时治理端口获取运行时标识、插件快照、能力列表和关闭能力
 //! - 通过 `SessionInfoProvider` 获取会话计数和活跃会话列表
 //! - 可观测性指标通过 `ObservabilitySnapshotProvider` trait 获取， Phase 10 组合根接线时桥接旧
 //!   runtime 的实际收集器
 //! - 重载逻辑通过 `RuntimeReloader` trait 委托，Phase 10 实现具体组装
 
-use std::{path::PathBuf, sync::Arc};
+use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
 
-use astrcode_core::RuntimeCoordinator;
+use astrcode_core::{CapabilitySpec, plugin::PluginEntry};
 
 use super::TaskRegistry;
 use crate::{
@@ -50,13 +50,37 @@ pub trait RuntimeReloader: Send + Sync {
     fn reload(&self) -> Result<Vec<PathBuf>, ApplicationError>;
 }
 
+/// 运行时治理快照。
+///
+/// 这是 `AppGovernance` 需要的最小治理视图，
+/// 用于避免应用层直接依赖具体的 `RuntimeCoordinator` 实现。
+#[derive(Debug, Clone)]
+pub struct RuntimeGovernanceSnapshot {
+    pub runtime_name: String,
+    pub runtime_kind: String,
+    pub capabilities: Vec<CapabilitySpec>,
+    pub plugins: Vec<PluginEntry>,
+}
+
+/// 运行时治理端口。
+///
+/// 组合根可以用 `RuntimeCoordinator` 适配它，也可以替换成其他治理实现，
+/// 但应用层只依赖这份最小契约。
+pub trait RuntimeGovernancePort: Send + Sync {
+    fn snapshot(&self) -> RuntimeGovernanceSnapshot;
+    fn shutdown(
+        &self,
+        timeout_secs: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ApplicationError>> + Send + '_>>;
+}
+
 /// 应用层治理。
 ///
 /// 管理运行时的生命周期、可观测性和重载能力。
-/// 不持有旧 `RuntimeService` 引用，通过组合 `RuntimeCoordinator`
+/// 不持有旧 `RuntimeService` 引用，通过组合运行时治理端口
 /// 和 trait 提供者实现所有治理功能。
 pub struct AppGovernance {
-    coordinator: Arc<RuntimeCoordinator>,
+    runtime: Arc<dyn RuntimeGovernancePort>,
     task_registry: Arc<TaskRegistry>,
     observability: Arc<dyn ObservabilitySnapshotProvider>,
     sessions: Arc<dyn SessionInfoProvider>,
@@ -65,13 +89,13 @@ pub struct AppGovernance {
 
 impl AppGovernance {
     pub fn new(
-        coordinator: Arc<RuntimeCoordinator>,
+        runtime: Arc<dyn RuntimeGovernancePort>,
         task_registry: Arc<TaskRegistry>,
         observability: Arc<dyn ObservabilitySnapshotProvider>,
         sessions: Arc<dyn SessionInfoProvider>,
     ) -> Self {
         Self {
-            coordinator,
+            runtime,
             task_registry,
             observability,
             sessions,
@@ -87,17 +111,17 @@ impl AppGovernance {
 
     /// 获取当前运行时治理快照。
     pub fn snapshot(&self, plugin_search_paths: Vec<PathBuf>) -> GovernanceSnapshot {
-        let runtime = self.coordinator.runtime();
+        let runtime = self.runtime.snapshot();
 
         GovernanceSnapshot {
-            runtime_name: runtime.runtime_name().to_string(),
-            runtime_kind: runtime.runtime_kind().to_string(),
+            runtime_name: runtime.runtime_name,
+            runtime_kind: runtime.runtime_kind,
             loaded_session_count: self.sessions.loaded_session_count(),
             running_session_ids: self.sessions.running_session_ids(),
             plugin_search_paths,
             metrics: self.observability.snapshot(),
-            capabilities: self.coordinator.capabilities(),
-            plugins: self.coordinator.plugin_registry().snapshot(),
+            capabilities: runtime.capabilities,
+            plugins: runtime.plugins,
         }
     }
 
@@ -129,14 +153,11 @@ impl AppGovernance {
         }
 
         // 然后关闭运行时和托管组件
-        self.coordinator
-            .shutdown(timeout_secs)
-            .await
-            .map_err(|e| ApplicationError::Internal(e.to_string()))
+        self.runtime.shutdown(timeout_secs).await
     }
 
-    pub fn coordinator(&self) -> &Arc<RuntimeCoordinator> {
-        &self.coordinator
+    pub fn runtime(&self) -> &Arc<dyn RuntimeGovernancePort> {
+        &self.runtime
     }
 
     pub fn task_registry(&self) -> &Arc<TaskRegistry> {
@@ -146,8 +167,9 @@ impl AppGovernance {
 
 impl std::fmt::Debug for AppGovernance {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let runtime = self.runtime.snapshot();
         f.debug_struct("AppGovernance")
-            .field("runtime_name", &self.coordinator.runtime().runtime_name())
+            .field("runtime_name", &runtime.runtime_name)
             .finish_non_exhaustive()
     }
 }

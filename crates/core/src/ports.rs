@@ -3,24 +3,34 @@
 //! 这些 trait 定义在 `core`，由 adapter 层实现，由 kernel/session-runtime/application
 //! 通过依赖倒置消费，避免上层再反向依赖具体实现 crate。
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    CancelToken, CapabilitySpec, LlmMessage, ReasoningContent, Result, SessionId, StorageEvent,
-    StoredEvent, SystemPromptBlock, ToolCallRequest, ToolDefinition, TurnId,
+    CancelToken, CapabilitySpec, Config, ConfigOverlay, DeleteProjectResult, LlmMessage,
+    ReasoningContent, Result, SessionId, SessionMeta, StorageEvent, StoredEvent, SystemPromptBlock,
+    ToolCallRequest, ToolDefinition, TurnId,
 };
 
 /// EventStore 端口。
 #[async_trait]
 pub trait EventStore: Send + Sync {
+    async fn ensure_session(&self, session_id: &SessionId, working_dir: &Path) -> Result<()>;
     async fn append(&self, session_id: &SessionId, event: &StorageEvent) -> Result<StoredEvent>;
     async fn replay(&self, session_id: &SessionId) -> Result<Vec<StoredEvent>>;
     async fn list_sessions(&self) -> Result<Vec<SessionId>>;
+    async fn list_session_metas(&self) -> Result<Vec<SessionMeta>>;
     async fn delete_session(&self, session_id: &SessionId) -> Result<()>;
+    async fn delete_sessions_by_working_dir(
+        &self,
+        working_dir: &str,
+    ) -> Result<DeleteProjectResult>;
 }
 
 /// 模型能力限制。
@@ -187,4 +197,24 @@ pub trait ResourceProvider: Send + Sync {
         uri: &str,
         context: &ResourceRequestContext,
     ) -> Result<ResourceReadResult>;
+}
+
+/// 配置存储端口。
+///
+/// 将配置文件 IO 从 application 层剥离，由 adapter 层实现。
+pub trait ConfigStore: Send + Sync {
+    /// 从磁盘加载配置（文件不存在时创建默认配置）。
+    fn load(&self) -> Result<Config>;
+    /// 保存配置到磁盘（原子写入）。
+    fn save(&self, config: &Config) -> Result<()>;
+    /// 返回配置文件路径。
+    fn path(&self) -> PathBuf;
+    /// 加载项目 overlay（文件存在时）。
+    fn load_overlay(&self, working_dir: &std::path::Path) -> Result<Option<ConfigOverlay>>;
+    /// 保存项目 overlay；当值为空时允许实现删除文件。
+    fn save_overlay(&self, working_dir: &std::path::Path, overlay: &ConfigOverlay) -> Result<()>;
+    /// 读取项目级 `.mcp.json` 原始配置。
+    fn load_project_mcp(&self, working_dir: &std::path::Path) -> Result<Option<Value>>;
+    /// 保存项目级 `.mcp.json` 原始配置；当值为空时允许实现删除文件。
+    fn save_project_mcp(&self, working_dir: &std::path::Path, mcp: Option<&Value>) -> Result<()>;
 }

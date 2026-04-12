@@ -1,25 +1,26 @@
 //! # 服务器运行时组合根
 //!
 //! 由 server 显式组装 adapter、kernel、session-runtime、application。
+//! 所有 provider 和 gateway 在此唯一位置接线，handler 只依赖 `App`。
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::Arc;
 
-use astrcode_application::{
-    App, AppGovernance, ObservabilitySnapshotProvider, RuntimeObservabilitySnapshot,
-    SessionInfoProvider, lifecycle::TaskRegistry,
-};
-use astrcode_core::{
-    EventStore, LlmOutput, LlmProvider, ModelLimits, PluginRegistry, PromptBuildOutput,
-    PromptBuildRequest, PromptProvider, ResourceProvider, ResourceReadResult,
-    ResourceRequestContext, Result, RuntimeCoordinator, RuntimeHandle, SessionId, StorageEvent,
-    StoredEvent,
-};
+use astrcode_adapter_storage::core_port::FsEventStore;
+use astrcode_application::{App, AppGovernance};
+use astrcode_core::{EventStore, LlmProvider, PromptProvider, ResourceProvider, Result};
 use astrcode_kernel::{CapabilityRouter, Kernel, KernelBuilder};
 use astrcode_session_runtime::SessionRuntime;
-use async_trait::async_trait;
+
+use super::{
+    capabilities::{
+        CapabilitySurfaceSync, build_builtin_capability_invokers, build_server_capability_router,
+    },
+    governance::build_app_governance,
+    mcp::{bootstrap_mcp_manager, build_mcp_service},
+    providers::{
+        build_config_service, build_llm_provider, build_prompt_provider, build_resource_provider,
+    },
+};
 
 /// 服务器运行时：组合根输出。
 pub struct ServerRuntime {
@@ -29,189 +30,56 @@ pub struct ServerRuntime {
 
 /// 构建服务器运行时组合根。
 pub async fn bootstrap_server_runtime() -> Result<ServerRuntime> {
-    let kernel = Arc::new(build_kernel()?);
-    let event_store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::default());
-    let session_runtime = Arc::new(SessionRuntime::new(kernel.clone(), event_store));
-    let app = Arc::new(App::new(kernel.clone(), session_runtime.clone()));
+    let config_service = build_config_service()?;
+    let working_dir = std::env::current_dir().map_err(|error| {
+        astrcode_core::AstrError::io("failed to resolve server working directory", error)
+    })?;
+    let mcp_manager = bootstrap_mcp_manager(config_service.clone(), working_dir.as_path()).await?;
 
-    let runtime: Arc<dyn RuntimeHandle> = Arc::new(AppRuntimeHandle {});
-    let coordinator = Arc::new(RuntimeCoordinator::new(
-        runtime,
-        Arc::new(PluginRegistry::default()),
-        kernel.surface().snapshot().capability_specs,
+    let builtin_invokers = build_builtin_capability_invokers()?;
+    let mut all_invokers = builtin_invokers.clone();
+    all_invokers.extend(mcp_manager.current_surface().await.capability_invokers);
+    let capabilities = build_server_capability_router(all_invokers)?;
+
+    let kernel = Arc::new(build_kernel(
+        capabilities,
+        build_llm_provider(config_service.clone(), working_dir.clone()),
+        build_prompt_provider(),
+        build_resource_provider(mcp_manager.clone()),
+    )?);
+    let capability_sync = CapabilitySurfaceSync::new(kernel.clone(), builtin_invokers);
+
+    let event_store: Arc<dyn EventStore> = Arc::new(FsEventStore::new());
+    let session_runtime = Arc::new(SessionRuntime::new(kernel.clone(), event_store));
+    let mcp_service = build_mcp_service(
+        config_service.clone(),
+        working_dir,
+        mcp_manager,
+        capability_sync,
+    );
+
+    let app = Arc::new(App::new(
+        kernel.clone(),
+        session_runtime.clone(),
+        config_service,
+        mcp_service,
     ));
-    let governance = Arc::new(AppGovernance::new(
-        coordinator,
-        Arc::new(TaskRegistry::new()),
-        Arc::new(DefaultObservability),
-        Arc::new(SessionRuntimeInfo {
-            session_runtime: session_runtime.clone(),
-        }),
-    ));
+    let governance = build_app_governance(session_runtime, kernel.clone());
 
     Ok(ServerRuntime { app, governance })
 }
 
-fn build_kernel() -> Result<Kernel> {
+fn build_kernel(
+    capabilities: CapabilityRouter,
+    llm_provider: Arc<dyn LlmProvider>,
+    prompt_provider: Arc<dyn PromptProvider>,
+    resource_provider: Arc<dyn ResourceProvider>,
+) -> Result<Kernel> {
     KernelBuilder::default()
-        .with_capabilities(CapabilityRouter::default())
-        .with_llm_provider(Arc::new(NoopLlmProvider))
-        .with_prompt_provider(Arc::new(NoopPromptProvider))
-        .with_resource_provider(Arc::new(NoopResourceProvider))
+        .with_capabilities(capabilities)
+        .with_llm_provider(llm_provider)
+        .with_prompt_provider(prompt_provider)
+        .with_resource_provider(resource_provider)
         .build()
         .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))
-}
-
-#[derive(Debug)]
-struct AppRuntimeHandle;
-
-#[async_trait]
-impl RuntimeHandle for AppRuntimeHandle {
-    fn runtime_name(&self) -> &'static str {
-        "astrcode-application"
-    }
-
-    fn runtime_kind(&self) -> &'static str {
-        "application"
-    }
-
-    async fn shutdown(
-        &self,
-        _timeout_secs: u64,
-    ) -> std::result::Result<(), astrcode_core::AstrError> {
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-struct DefaultObservability;
-
-impl ObservabilitySnapshotProvider for DefaultObservability {
-    fn snapshot(&self) -> RuntimeObservabilitySnapshot {
-        RuntimeObservabilitySnapshot::default()
-    }
-}
-
-struct SessionRuntimeInfo {
-    session_runtime: Arc<SessionRuntime>,
-}
-
-impl std::fmt::Debug for SessionRuntimeInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SessionRuntimeInfo").finish()
-    }
-}
-
-impl SessionInfoProvider for SessionRuntimeInfo {
-    fn loaded_session_count(&self) -> usize {
-        self.session_runtime.list_sessions().len()
-    }
-
-    fn running_session_ids(&self) -> Vec<String> {
-        self.session_runtime
-            .list_sessions()
-            .into_iter()
-            .map(|id| id.to_string())
-            .collect()
-    }
-}
-
-#[derive(Default)]
-struct InMemoryEventStore {
-    events: Mutex<HashMap<String, Vec<StoredEvent>>>,
-}
-
-#[async_trait]
-impl EventStore for InMemoryEventStore {
-    async fn append(&self, session_id: &SessionId, event: &StorageEvent) -> Result<StoredEvent> {
-        let mut guard = self
-            .events
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let list = guard.entry(session_id.to_string()).or_default();
-        let stored = StoredEvent {
-            storage_seq: (list.len() as u64) + 1,
-            event: event.clone(),
-        };
-        list.push(stored.clone());
-        Ok(stored)
-    }
-
-    async fn replay(&self, session_id: &SessionId) -> Result<Vec<StoredEvent>> {
-        let guard = self
-            .events
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Ok(guard.get(session_id.as_str()).cloned().unwrap_or_default())
-    }
-
-    async fn list_sessions(&self) -> Result<Vec<SessionId>> {
-        let guard = self
-            .events
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Ok(guard.keys().cloned().map(SessionId::from).collect())
-    }
-
-    async fn delete_session(&self, session_id: &SessionId) -> Result<()> {
-        let mut guard = self
-            .events
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.remove(session_id.as_str());
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-struct NoopLlmProvider;
-
-#[async_trait]
-impl LlmProvider for NoopLlmProvider {
-    async fn generate(
-        &self,
-        _request: astrcode_core::LlmRequest,
-        _sink: Option<astrcode_core::LlmEventSink>,
-    ) -> Result<LlmOutput> {
-        Ok(LlmOutput::default())
-    }
-
-    fn model_limits(&self) -> ModelLimits {
-        ModelLimits {
-            context_window: 128_000,
-            max_output_tokens: 8_192,
-        }
-    }
-}
-
-#[derive(Debug)]
-struct NoopPromptProvider;
-
-#[async_trait]
-impl PromptProvider for NoopPromptProvider {
-    async fn build_prompt(&self, _request: PromptBuildRequest) -> Result<PromptBuildOutput> {
-        Ok(PromptBuildOutput {
-            system_prompt: "You are AstrCode.".to_string(),
-            system_prompt_blocks: Vec::new(),
-            metadata: serde_json::Value::Null,
-        })
-    }
-}
-
-#[derive(Debug)]
-struct NoopResourceProvider;
-
-#[async_trait]
-impl ResourceProvider for NoopResourceProvider {
-    async fn read_resource(
-        &self,
-        uri: &str,
-        _context: &ResourceRequestContext,
-    ) -> Result<ResourceReadResult> {
-        Ok(ResourceReadResult {
-            uri: uri.to_string(),
-            content: serde_json::Value::Null,
-            metadata: serde_json::Value::Null,
-        })
-    }
 }

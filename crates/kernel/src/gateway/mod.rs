@@ -35,6 +35,10 @@ impl KernelGateway {
         &self.capabilities
     }
 
+    pub fn model_limits(&self) -> astrcode_core::ModelLimits {
+        self.llm.model_limits()
+    }
+
     pub async fn invoke_tool(
         &self,
         call: &ToolCallRequest,

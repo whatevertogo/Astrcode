@@ -214,7 +214,9 @@ dependencies = [
 name = "astrcode-adapter-storage"
 version = "0.1.0"
 dependencies = [
+ "astrcode-adapter-mcp",
  "astrcode-core",
+ "async-trait",
  "chrono",
  "fs2",
  "log",
@@ -252,10 +254,13 @@ dependencies = [
  "astrcode-core",
  "astrcode-kernel",
  "astrcode-session-runtime",
+ "async-trait",
  "chrono",
+ "log",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
- "toml 1.1.2+spec-1.1.0",
 ]
 
 [[package]]
@@ -343,7 +348,11 @@ name = "astrcode-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "astrcode-adapter-llm",
+ "astrcode-adapter-mcp",
+ "astrcode-adapter-prompt",
  "astrcode-adapter-storage",
+ "astrcode-adapter-tools",
  "astrcode-application",
  "astrcode-core",
  "astrcode-kernel",
@@ -377,8 +386,11 @@ dependencies = [
  "async-trait",
  "chrono",
  "dashmap",
+ "futures-util",
  "log",
+ "regex",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

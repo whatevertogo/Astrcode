@@ -1,8 +1,14 @@
-//! Turn 执行核心类型。
+//! Turn 执行核心类型与实现。
 //!
-//! 从 `runtime-agent-loop` 迁入 turn 执行相关的类型定义。
-//! 实际的 TurnRunner 执行引擎需要 adapter-llm、adapter-prompt 等依赖，
-//! 留在旧 crate 中直到 Phase 10 组合根阶段统一接线。
+//! Turn 是单个 Agent 交互循环的完整生命周期（用户消息 -> LLM 响应 -> 工具调用 -> ... -> Turn
+//! 结束）。
+
+mod compaction_cycle;
+pub mod llm_cycle;
+mod runner;
+// pub mod subagent;
+pub mod token_budget;
+pub mod tool_cycle;
 
 use astrcode_core::{SessionId, TurnId};
 
@@ -23,3 +29,5 @@ pub enum TurnOutcome {
     /// 不可恢复错误。
     Error { message: String },
 }
+
+pub use runner::{TurnRunRequest as RunnerRequest, TurnRunResult, run_turn};

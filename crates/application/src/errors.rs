@@ -13,3 +13,22 @@ pub enum ApplicationError {
     #[error("internal error: {0}")]
     Internal(String),
 }
+
+impl From<astrcode_core::AstrError> for ApplicationError {
+    fn from(e: astrcode_core::AstrError) -> Self {
+        match e {
+            astrcode_core::AstrError::SessionNotFound(message)
+            | astrcode_core::AstrError::ProjectNotFound(message) => {
+                ApplicationError::NotFound(message)
+            },
+            astrcode_core::AstrError::TurnInProgress(message) => {
+                ApplicationError::Conflict(message)
+            },
+            astrcode_core::AstrError::Validation(message)
+            | astrcode_core::AstrError::InvalidSessionId(message) => {
+                ApplicationError::InvalidArgument(message)
+            },
+            other => ApplicationError::Internal(other.to_string()),
+        }
+    }
+}

@@ -20,6 +20,10 @@
 //! `run.json` 不再承担桌面端单实例发现职责；桌面端进程间协调改走宿主 IPC。
 //! 它保留的原因是浏览器开发模式仍需要一个稳定的本地文件来读取 bootstrap token。
 
+mod capabilities;
+mod governance;
+mod mcp;
+mod providers;
 pub(crate) mod runtime;
 use std::path::{Path as FsPath, PathBuf};
 

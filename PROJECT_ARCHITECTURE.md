@@ -18,7 +18,7 @@ crates/
 ├── protocol/              # HTTP/SSE DTO 与 wire 类型（仅依赖 core）
 │
 ├── kernel/                # 全局控制：registry / gateway / surface / agent_tree / events
-├── session-runtime/       # 会话真相：state / actor / turn / observe / catalog
+├── session-runtime/       # 会话真相：state / catalog / actor / turn / context / factory / query
 ├── application/           # 用例编排、参数校验、业务错误、治理模型
 ├── server/                # HTTP/SSE 边界与唯一组合根
 │
@@ -58,6 +58,7 @@ crates/
 - `CapabilitySpec` 是运行时内部唯一能力语义模型。
 - HTTP 状态码映射只在 `server` 层发生。
 - `SessionActor` 不直接持有 provider（tool/llm/prompt/resource），统一经由 `kernel` gateway。
+- `application::App` 不保存 session shadow state；session 列表、history、replay、turn 推进都由 `session-runtime` 提供。
 - 公共 API 不暴露内部并发容器（`DashMap`、`RwLock`、`Mutex` 等）。
 
 ## 5. 组合根
@@ -93,3 +94,16 @@ crates/
 5. `server`：看 HTTP/SSE 映射与组合根
 
 这样可以避免在历史实现细节中横跳，直接按稳定架构边界理解系统。
+
+## 8. 注意
+
+1. 让 application 真正承担治理，而不是传声筒。
+2. 把参数校验、权限检查、配额/策略、错误归类稳稳放在 application，不要只是转发到 session-runtime。
+3. 把 kernel gateway 限定成“轻量寻址层”。
+4. 它负责定位、鉴权、拿句柄；不要让它做重转发、重序列化、全局大锁，不然很容易长成新的 God Object。
+5. Turn 内尽量使用已解析的轻量句柄。
+6. SessionActor 可以在 turn 开始时通过 gateway 拿到已鉴权的 provider/capability handle，turn 内直接复用，减少反复跨层调用。
+7. 边界层优先 Arc<dyn Trait>，内部局部再谈泛型。
+8. 同步业务调用继续走明确 trait / boundary；只有通知、广播、异步副作用才走事件，不然语义会越来越虚。
+9. 盯死两条防腐线：application 别长胖，adapter-* 别带业务策略。
+一个容易膨胀成新 RuntimeService，一个容易偷渡业务真相；这两个是后续最容易回潮的点。

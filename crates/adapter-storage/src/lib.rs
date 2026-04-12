@@ -24,6 +24,9 @@
 //! 锁持有者同时在 `active-turn.json` 中写入元数据（turn_id、owner_pid、acquired_at），
 //! 以便竞争者获取当前持有者信息并做出相应处理。
 
+pub mod config_store;
+pub mod core_port;
+pub mod mcp_settings_store;
 pub mod session;
 
 use astrcode_core::store::{StoreError, StoreResult};

@@ -27,6 +27,7 @@ pub mod context;
 pub mod contribution;
 pub mod contributor;
 pub mod contributors;
+pub mod core_port;
 pub mod diagnostics;
 pub mod layered_builder;
 pub mod plan;

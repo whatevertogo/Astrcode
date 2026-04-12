@@ -125,6 +125,11 @@ impl McpApprovalManager {
     pub fn all_server_statuses(&self, project_path: &str) -> Vec<McpApprovalData> {
         self.store.load_approvals(project_path).unwrap_or_default()
     }
+
+    /// 清空指定项目的审批记录。
+    pub fn reset_project(&self, project_path: &str) -> Result<(), String> {
+        self.store.clear_approvals(project_path)
+    }
 }
 
 /// 生成当前时间的 ISO 8601 字符串（不依赖 chrono）。
@@ -178,6 +183,11 @@ mod tests {
             } else {
                 approvals.push(data.clone());
             }
+            Ok(())
+        }
+
+        fn clear_approvals(&self, _project_path: &str) -> std::result::Result<(), String> {
+            self.approvals.lock().unwrap().clear();
             Ok(())
         }
     }

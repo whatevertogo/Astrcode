@@ -1,18 +1,87 @@
 use std::sync::Arc;
 
-use astrcode_core::{AgentId, SessionId, StoreResult, StoredEvent, TurnId};
+use astrcode_core::{
+    AgentId, AgentStateProjector, EventLogWriter, EventStore, EventTranslator, Phase, SessionId,
+    StorageEvent, StoreError, StoreResult, StoredEvent, TurnId, replay_records,
+};
 
 use crate::state::{SessionSnapshot, SessionState, SessionWriter};
 
-/// 空操作 EventLogWriter，用于无持久化需求的 actor（如测试或空闲 session）。
+/// 空操作 EventLogWriter，仅用于测试态 actor。
+#[cfg(test)]
 struct NopEventLogWriter;
 
-impl astrcode_core::EventLogWriter for NopEventLogWriter {
+#[cfg(test)]
+impl EventLogWriter for NopEventLogWriter {
     fn append(&mut self, _event: &astrcode_core::StorageEvent) -> StoreResult<StoredEvent> {
         // 空操作 writer 不持久化，但返回一个虚拟序号以满足调用方契约
         Ok(StoredEvent {
             storage_seq: 0,
             event: _event.clone(),
+        })
+    }
+}
+
+struct EventStoreLogWriter {
+    event_store: Arc<dyn EventStore>,
+    session_id: SessionId,
+}
+
+impl EventStoreLogWriter {
+    fn new(event_store: Arc<dyn EventStore>, session_id: SessionId) -> Self {
+        Self {
+            event_store,
+            session_id,
+        }
+    }
+}
+
+impl EventLogWriter for EventStoreLogWriter {
+    fn append(&mut self, event: &StorageEvent) -> StoreResult<StoredEvent> {
+        // SessionState 目前仍要求同步 writer，所以这里需要把异步 EventStore 安全桥接回来。
+        // 多线程 tokio runtime 里使用 `block_in_place + handle.block_on`；
+        // 单线程 runtime 或纯同步上下文里则退到独立线程/临时 runtime，避免嵌套 runtime panic。
+        let event_store = self.event_store.clone();
+        let session_id = self.session_id.clone();
+        let fallback_event = event.clone();
+        let run_append = move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("temp runtime should build");
+            rt.block_on(event_store.append(&session_id, &fallback_event))
+        };
+        let result = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => match handle.runtime_flavor() {
+                tokio::runtime::RuntimeFlavor::MultiThread => {
+                    let event_store = self.event_store.clone();
+                    let session_id = self.session_id.clone();
+                    let event = event.clone();
+                    tokio::task::block_in_place(move || {
+                        handle.block_on(event_store.append(&session_id, &event))
+                    })
+                },
+                tokio::runtime::RuntimeFlavor::CurrentThread => std::thread::scope(|scope| {
+                    scope
+                        .spawn(run_append)
+                        .join()
+                        .expect("append thread should not panic")
+                }),
+                _ => std::thread::scope(|scope| {
+                    scope
+                        .spawn(run_append)
+                        .join()
+                        .expect("append thread should not panic")
+                }),
+            },
+            Err(_) => run_append(),
+        };
+        result.map_err(|error| StoreError::Io {
+            context: format!(
+                "event store append failed for '{}': {error}",
+                self.session_id
+            ),
+            source: std::io::Error::other(error.to_string()),
         })
     }
 }
@@ -42,9 +111,85 @@ impl SessionActor {
         }
     }
 
+    /// 创建一个带 durable writer 的 actor。
+    pub fn new_persistent(
+        session_id: SessionId,
+        working_dir: impl Into<String>,
+        root_agent_id: AgentId,
+        event_store: Arc<dyn EventStore>,
+    ) -> astrcode_core::Result<Self> {
+        let working_dir = working_dir.into();
+        let writer = Arc::new(SessionWriter::new(Box::new(EventStoreLogWriter::new(
+            event_store,
+            session_id.clone(),
+        ))));
+
+        let session_start = StorageEvent {
+            turn_id: None,
+            agent: astrcode_core::AgentEventContext::default(),
+            payload: astrcode_core::StorageEventPayload::SessionStart {
+                session_id: session_id.to_string(),
+                timestamp: chrono::Utc::now(),
+                working_dir: working_dir.clone(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
+        };
+        let stored = writer.append_blocking(&session_start)?;
+        let mut translator = EventTranslator::new(Phase::Idle);
+        let recent_records = translator.translate(&stored);
+        let state = SessionState::new(
+            Phase::Idle,
+            writer,
+            astrcode_core::AgentStateProjector::default(),
+            recent_records,
+            vec![stored],
+        );
+
+        Ok(Self {
+            state: Arc::new(state),
+            session_id,
+            working_dir,
+            root_agent_id,
+        })
+    }
+
+    /// 从 durable 事件日志重建一个会话 actor。
+    ///
+    /// Why: `session-runtime` 需要在 application 不持有 shadow state 的前提下，
+    /// 按需把任意 session 从持久化存储恢复成可执行的 live actor。
+    pub fn from_replay(
+        session_id: SessionId,
+        working_dir: impl Into<String>,
+        root_agent_id: AgentId,
+        event_store: Arc<dyn EventStore>,
+        stored_events: Vec<StoredEvent>,
+    ) -> astrcode_core::Result<Self> {
+        let working_dir = working_dir.into();
+        let writer = Arc::new(SessionWriter::new(Box::new(EventStoreLogWriter::new(
+            event_store,
+            session_id.clone(),
+        ))));
+        let mut projector = AgentStateProjector::default();
+        for stored in &stored_events {
+            projector.apply(&stored.event);
+        }
+        let phase = projector.snapshot().phase;
+        let recent_records = replay_records(&stored_events, None);
+        let state = SessionState::new(phase, writer, projector, recent_records, stored_events);
+
+        Ok(Self {
+            state: Arc::new(state),
+            session_id,
+            working_dir,
+            root_agent_id,
+        })
+    }
+
     /// 创建一个空闲状态的 actor（无事件历史、无持久化）。
     ///
     /// 实际生产中应使用带持久化 writer 的 `new()` 构造路径。
+    #[cfg(test)]
     pub fn new_idle(
         session_id: SessionId,
         working_dir: impl Into<String>,

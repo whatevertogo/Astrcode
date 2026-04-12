@@ -171,6 +171,46 @@ impl CapabilityRouter {
         })
     }
 
+    /// 用新的执行器集合原子替换整份能力路由。
+    ///
+    /// 外部 surface（如 MCP）发生变化时，组合根需要同步刷新 kernel 能力面。
+    /// 这里直接替换整份注册表，避免旧能力只增不减地残留。
+    pub fn replace_invokers(&self, invokers: Vec<Arc<dyn CapabilityInvoker>>) -> Result<()> {
+        let mut invokers_by_name = HashMap::new();
+        let mut order = Vec::new();
+        let mut tool_order = Vec::new();
+
+        for invoker in invokers {
+            let capability_spec = invoker.capability_spec();
+            capability_spec.validate().map_err(|error| {
+                AstrError::Validation(format!(
+                    "invalid capability spec '{}': {}",
+                    capability_spec.name, error
+                ))
+            })?;
+            if invokers_by_name
+                .insert(capability_spec.name.to_string(), Arc::clone(&invoker))
+                .is_some()
+            {
+                return Err(AstrError::Validation(format!(
+                    "duplicate capability '{}' registered",
+                    capability_spec.name
+                )));
+            }
+            if capability_spec.kind.is_tool() {
+                tool_order.push(capability_spec.name.to_string());
+            }
+            order.push(capability_spec.name.to_string());
+        }
+
+        support::with_write_lock_recovery(&self.inner, "capability_router", |inner| {
+            inner.invokers_by_name = invokers_by_name;
+            inner.order = order;
+            inner.tool_order = tool_order;
+            Ok(())
+        })
+    }
+
     pub fn capability_specs(&self) -> Vec<CapabilitySpec> {
         support::with_read_lock_recovery(&self.inner, "capability_router", |inner| {
             inner

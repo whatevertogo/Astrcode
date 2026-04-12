@@ -7,6 +7,11 @@ authors.workspace = true
 
 [dependencies]
 astrcode-application = { path = "../application" }
+astrcode-adapter-llm = { path = "../adapter-llm" }
+astrcode-adapter-mcp = { path = "../adapter-mcp" }
+astrcode-adapter-prompt = { path = "../adapter-prompt" }
+astrcode-adapter-storage = { path = "../adapter-storage" }
+astrcode-adapter-tools = { path = "../adapter-tools" }
 astrcode-core = { path = "../core" }
 astrcode-kernel = { path = "../kernel" }
 astrcode-protocol = { path = "../protocol" }

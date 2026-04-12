@@ -95,6 +95,13 @@ pub struct McpConnectionManager {
     project_path: Option<String>,
 }
 
+impl std::fmt::Debug for McpConnectionManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpConnectionManager")
+            .finish_non_exhaustive()
+    }
+}
+
 impl Default for McpConnectionManager {
     fn default() -> Self {
         Self::new()
@@ -519,6 +526,23 @@ impl McpConnectionManager {
         self.current_surface().await.capability_invokers
     }
 
+    /// 通过 MCP 协议读取指定服务器的资源。
+    pub async fn read_resource(
+        &self,
+        server_name: &str,
+        uri: &str,
+    ) -> Result<crate::protocol::types::McpResourceContent> {
+        let conns = self.connections.lock().await;
+        let managed = conns.get(server_name).ok_or_else(|| {
+            AstrError::Validation(format!(
+                "MCP server '{}' not connected for resource read",
+                server_name
+            ))
+        })?;
+        let client = managed.client.lock().await;
+        client.read_resource(uri).await
+    }
+
     /// 重新连接指定服务器。
     ///
     /// 当配置未变化但用户希望手动重连时，先断开当前连接，再按已声明配置重建。
@@ -607,6 +631,26 @@ impl McpConnectionManager {
             self.notify_surface_changed();
         }
         result
+    }
+
+    /// 清理当前项目的审批记录。
+    pub fn reset_project_choices(&self) -> Result<()> {
+        let lock = self
+            .approval_manager
+            .as_ref()
+            .ok_or_else(|| AstrError::Internal("approval manager not configured".into()))?;
+        let manager = lock
+            .lock()
+            .map_err(|_| AstrError::Internal("approval manager lock poisoned".into()))?;
+        let project_path = self
+            .project_path
+            .as_deref()
+            .ok_or_else(|| AstrError::Internal("project path not set".into()))?;
+        manager
+            .reset_project(project_path)
+            .map_err(AstrError::Internal)?;
+        self.notify_surface_changed();
+        Ok(())
     }
 
     // ===== 内部方法 =====
@@ -1191,6 +1235,9 @@ mod tests {
             ) -> std::result::Result<(), String> {
                 Ok(())
             }
+            fn clear_approvals(&self, _: &str) -> std::result::Result<(), String> {
+                Ok(())
+            }
         }
 
         let manager = McpConnectionManager::new().with_approval(
@@ -1248,6 +1295,9 @@ mod tests {
                 _: &str,
                 _: &crate::config::McpApprovalData,
             ) -> std::result::Result<(), String> {
+                Ok(())
+            }
+            fn clear_approvals(&self, _: &str) -> std::result::Result<(), String> {
                 Ok(())
             }
         }

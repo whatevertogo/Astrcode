@@ -1,3 +1,14 @@
+//! Composer 输入补全用例。
+//!
+//! 提供 composer 输入候选列表的查询和过滤用例。
+//! 候选来源包括：命令、技能、能力（通过 `KernelGateway` 查询）。
+
+use astrcode_kernel::KernelGateway;
+
+// ============================================================
+// 业务模型
+// ============================================================
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ComposerOptionKind {
     Command,
@@ -33,40 +44,72 @@ pub struct ComposerOption {
     pub keywords: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct ComposerService;
+// ============================================================
+// Composer 用例服务
+// ============================================================
+
+/// Composer 输入补全用例服务。
+pub struct ComposerService {
+    builtin_commands: Vec<ComposerOption>,
+}
+
+impl Default for ComposerService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ComposerService {
-    pub fn list_options(&self, request: ComposerOptionsRequest) -> Vec<ComposerOption> {
-        let mut items = vec![
-            ComposerOption {
-                kind: ComposerOptionKind::Command,
-                id: "compact".to_string(),
-                title: "压缩上下文".to_string(),
-                description: "压缩当前会话上下文".to_string(),
-                insert_text: "/compact".to_string(),
-                badges: vec!["built-in".to_string()],
-                keywords: vec!["compact".to_string(), "compress".to_string()],
-            },
-            ComposerOption {
-                kind: ComposerOptionKind::Skill,
-                id: "git-commit".to_string(),
-                title: "Git 提交".to_string(),
-                description: "生成并执行规范提交".to_string(),
-                insert_text: "/git-commit".to_string(),
-                badges: vec!["skill".to_string()],
-                keywords: vec!["git".to_string(), "commit".to_string()],
-            },
-            ComposerOption {
-                kind: ComposerOptionKind::Capability,
-                id: "readFile".to_string(),
-                title: "读取文件".to_string(),
-                description: "读取工作区文件内容".to_string(),
-                insert_text: "readFile".to_string(),
-                badges: vec!["capability".to_string()],
-                keywords: vec!["read".to_string(), "file".to_string()],
-            },
-        ];
+    pub fn new() -> Self {
+        Self {
+            builtin_commands: vec![
+                ComposerOption {
+                    kind: ComposerOptionKind::Command,
+                    id: "compact".to_string(),
+                    title: "压缩上下文".to_string(),
+                    description: "压缩当前会话上下文".to_string(),
+                    insert_text: "/compact".to_string(),
+                    badges: vec!["built-in".to_string()],
+                    keywords: vec!["compact".to_string(), "compress".to_string()],
+                },
+                ComposerOption {
+                    kind: ComposerOptionKind::Skill,
+                    id: "git-commit".to_string(),
+                    title: "Git 提交".to_string(),
+                    description: "生成并执行规范提交".to_string(),
+                    insert_text: "/git-commit".to_string(),
+                    badges: vec!["skill".to_string()],
+                    keywords: vec!["git".to_string(), "commit".to_string()],
+                },
+            ],
+        }
+    }
+
+    /// 用例：列出可用的 composer 选项。
+    ///
+    /// 合并内置命令和通过 kernel gateway 查询到的能力选项，
+    /// 然后按 kind 和 query 过滤。
+    pub fn list_options(
+        &self,
+        request: ComposerOptionsRequest,
+        gateway: Option<&KernelGateway>,
+    ) -> Vec<ComposerOption> {
+        let mut items = self.builtin_commands.clone();
+
+        if let Some(gateway) = gateway {
+            for spec in gateway.capabilities().capability_specs() {
+                let name_str = spec.name.to_string();
+                items.push(ComposerOption {
+                    kind: ComposerOptionKind::Capability,
+                    id: name_str.clone(),
+                    title: name_str.clone(),
+                    description: spec.description.clone(),
+                    insert_text: name_str.clone(),
+                    badges: vec!["capability".to_string()],
+                    keywords: vec![name_str.to_lowercase()],
+                });
+            }
+        }
 
         if !request.kinds.is_empty() {
             items.retain(|item| request.kinds.contains(&item.kind));
@@ -81,13 +124,19 @@ impl ComposerService {
                     || item
                         .keywords
                         .iter()
-                        .any(|keyword| keyword.to_lowercase().contains(&query))
+                        .any(|kw| kw.to_lowercase().contains(&query))
             });
         }
 
-        if items.len() > request.limit {
-            items.truncate(request.limit);
-        }
+        items.truncate(request.limit);
         items
+    }
+}
+
+impl std::fmt::Debug for ComposerService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ComposerService")
+            .field("builtin_commands", &self.builtin_commands.len())
+            .finish()
     }
 }

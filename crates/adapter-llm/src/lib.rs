@@ -54,6 +54,7 @@ use tokio::{select, time::sleep};
 
 pub mod anthropic;
 pub mod cache_tracker;
+pub mod core_port;
 pub mod openai;
 
 // ---------------------------------------------------------------------------

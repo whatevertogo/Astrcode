@@ -6,7 +6,9 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+astrcode-adapter-mcp = { path = "../adapter-mcp" }
 astrcode-core = { path = "../core" }
+async-trait.workspace = true
 chrono.workspace = true
 fs2.workspace = true
 log.workspace = true

@@ -24,6 +24,7 @@ pub(crate) async fn list_sessions(
         .app
         .list_sessions()
         .await
+        .map_err(ApiError::from)?
         .into_iter()
         .map(to_session_list_item)
         .collect();

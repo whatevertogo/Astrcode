@@ -10,7 +10,17 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
 pub enum SessionCatalogEvent {
-    SessionCreated { session_id: String },
-    SessionDeleted { session_id: String },
-    ProjectDeleted { working_dir: String },
+    SessionCreated {
+        session_id: String,
+    },
+    SessionDeleted {
+        session_id: String,
+    },
+    ProjectDeleted {
+        working_dir: String,
+    },
+    SessionBranched {
+        session_id: String,
+        source_session_id: String,
+    },
 }

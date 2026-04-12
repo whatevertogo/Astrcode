@@ -37,6 +37,15 @@ pub struct RuntimeCoordinator {
     managed_components: RwLock<Vec<Arc<dyn ManagedRuntimeComponent>>>,
 }
 
+impl std::fmt::Debug for RuntimeCoordinator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeCoordinator")
+            .field("runtime_name", &self.active_runtime.runtime_name())
+            .field("runtime_kind", &self.active_runtime.runtime_kind())
+            .finish_non_exhaustive()
+    }
+}
+
 impl RuntimeCoordinator {
     /// 创建运行时协调器。
     pub fn new(

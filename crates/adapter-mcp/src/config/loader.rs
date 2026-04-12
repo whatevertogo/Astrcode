@@ -177,8 +177,8 @@ impl McpConfigManager {
             scope,
             enabled: !entry.disabled.unwrap_or(false),
             timeout_secs: entry.timeout.unwrap_or(120),
-            init_timeout_secs: 30,
-            max_reconnect_attempts: 5,
+            init_timeout_secs: entry.init_timeout.unwrap_or(30),
+            max_reconnect_attempts: entry.max_reconnect_attempts.unwrap_or(5),
         })
     }
 

@@ -2,9 +2,7 @@
 //!
 //! 提供 MCP 状态查询、审批，以及服务端配置管理入口。
 
-use astrcode_application::{
-    McpConfigScope, McpServerConfig, McpServerStatusSnapshot, McpTransportConfig,
-};
+use astrcode_application::{McpConfigScope, McpServerStatusView, RegisterMcpServerInput};
 use axum::{
     Json,
     extract::State,
@@ -14,7 +12,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ApiError, AppState, auth::require_auth};
 
-/// 服务器状态信息。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct McpServerStatus {
@@ -77,29 +74,7 @@ pub(crate) struct UpsertServerRequest {
     pub init_timeout_secs: Option<u64>,
     #[serde(default)]
     pub max_reconnect_attempts: Option<u32>,
-    pub transport: UpsertTransportRequest,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "type")]
-pub(crate) enum UpsertTransportRequest {
-    Stdio {
-        command: String,
-        #[serde(default)]
-        args: Vec<String>,
-        #[serde(default)]
-        env: std::collections::HashMap<String, String>,
-    },
-    Http {
-        url: String,
-        #[serde(default)]
-        headers: std::collections::HashMap<String, String>,
-    },
-    Sse {
-        url: String,
-        #[serde(default)]
-        headers: std::collections::HashMap<String, String>,
-    },
+    pub transport: serde_json::Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -190,11 +165,19 @@ pub(crate) async fn upsert_mcp_server(
     Json(request): Json<UpsertServerRequest>,
 ) -> Result<(StatusCode, Json<McpActionResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
-    let config = request.into_server_config()?;
+    let input = RegisterMcpServerInput {
+        name: request.name,
+        scope: parse_scope(&request.scope)?,
+        enabled: request.enabled.unwrap_or(true),
+        timeout_secs: request.timeout_secs.unwrap_or(120),
+        init_timeout_secs: request.init_timeout_secs.unwrap_or(30),
+        max_reconnect_attempts: request.max_reconnect_attempts.unwrap_or(5),
+        transport_config: request.transport,
+    };
     state
         .app
         .mcp()
-        .upsert_config(config)
+        .upsert_config(input)
         .await
         .map_err(ApiError::from)?;
     Ok(ok_response(StatusCode::OK))
@@ -252,38 +235,8 @@ fn parse_scope(scope: &str) -> Result<McpConfigScope, ApiError> {
     }
 }
 
-impl UpsertServerRequest {
-    fn into_server_config(self) -> Result<McpServerConfig, ApiError> {
-        let transport = match self.transport {
-            UpsertTransportRequest::Stdio { command, args, env } => {
-                McpTransportConfig::Stdio { command, args, env }
-            },
-            UpsertTransportRequest::Http { url, headers } => McpTransportConfig::StreamableHttp {
-                url,
-                headers,
-                oauth: None,
-            },
-            UpsertTransportRequest::Sse { url, headers } => McpTransportConfig::Sse {
-                url,
-                headers,
-                oauth: None,
-            },
-        };
-
-        Ok(McpServerConfig {
-            name: self.name,
-            transport,
-            scope: parse_scope(&self.scope)?,
-            enabled: self.enabled.unwrap_or(true),
-            timeout_secs: self.timeout_secs.unwrap_or(120),
-            init_timeout_secs: self.init_timeout_secs.unwrap_or(30),
-            max_reconnect_attempts: self.max_reconnect_attempts.unwrap_or(5),
-        })
-    }
-}
-
-impl From<McpServerStatusSnapshot> for McpServerStatus {
-    fn from(value: McpServerStatusSnapshot) -> Self {
+impl From<McpServerStatusView> for McpServerStatus {
+    fn from(value: McpServerStatusView) -> Self {
         Self {
             name: value.name,
             scope: value.scope,
