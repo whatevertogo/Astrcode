@@ -263,6 +263,11 @@ impl ContextRuntime {
         self
     }
 
+    pub fn with_tool_result_max_bytes(mut self, tool_result_max_bytes: usize) -> Self {
+        self.tool_result_max_bytes = tool_result_max_bytes.max(1);
+        self
+    }
+
     pub fn with_micro_compact_config(mut self, config: MicroCompactConfig) -> Self {
         self.micro_compact_config = Some(config);
         self
@@ -1423,5 +1428,53 @@ mod tests {
             bundle.prune_stats.truncated_tool_results >= 1
                 || bundle.prune_stats.cleared_tool_results >= 1
         );
+    }
+
+    #[test]
+    fn updating_tool_result_max_bytes_keeps_other_context_stage_configs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let working = dir.path().join("project");
+        std::fs::create_dir_all(&working).expect("create working dir");
+
+        let messages = make_tool_conversation(&[
+            ("readFile", "call-old", &"x".repeat(30_000)),
+            ("readFile", "call-big", &"y".repeat(40_000)),
+        ]);
+
+        let state = AgentState {
+            session_id: "s-preserve-config".to_string(),
+            working_dir: working,
+            messages,
+            phase: astrcode_core::Phase::Thinking,
+            turn_count: 1,
+            last_assistant_at: Some(chrono::Utc::now() - chrono::Duration::seconds(7200)),
+        };
+
+        let descriptors = vec![compact_clearable_descriptor("readFile")];
+
+        let bundle = ContextRuntime::new(100_000)
+            .with_persistence_budget_config(PersistenceBudgetConfig {
+                aggregate_result_bytes_budget: 5_000,
+            })
+            .with_micro_compact_config(MicroCompactConfig {
+                gap_threshold_secs: 3600,
+                keep_recent_results: 1,
+            })
+            .with_tool_result_max_bytes(10_000)
+            .build_bundle(
+                &state,
+                ContextBundleInput {
+                    turn_id: "turn-1",
+                    step_index: 0,
+                    prior_compaction_view: None,
+                    capability_descriptors: &descriptors,
+                    keep_recent_turns: 1,
+                    model_context_window: 200_000,
+                },
+            )
+            .expect("bundle should build");
+
+        assert!(bundle.micro_compact_stats.cleared_count >= 1);
+        assert!(bundle.persistence_stats.persisted_count >= 1);
     }
 }

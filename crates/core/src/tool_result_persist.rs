@@ -66,12 +66,16 @@ pub fn is_persisted_output(content: &str) -> bool {
 /// 1. Per-tool 环境变量 `ASTRCODE_TOOL_INLINE_LIMIT_{TOOL_NAME}`（大写）
 /// 2. 描述符中的 `max_result_inline_size`
 /// 3. 全局环境变量 `ASTRCODE_TOOL_RESULT_INLINE_LIMIT`
-/// 4. `DEFAULT_TOOL_RESULT_INLINE_LIMIT`（32KB）
+/// 4. 调用方提供的默认阈值（通常来自 runtime 配置）
 ///
 /// 工具名转换规则：camelCase → SCREAMING_SNAKE_CASE。
 /// 例如 `readFile` → `ASTRCODE_TOOL_INLINE_LIMIT_READ_FILE`，
 /// `shell` → `ASTRCODE_TOOL_INLINE_LIMIT_SHELL`。
-pub fn resolve_inline_limit(tool_name: &str, descriptor_limit: Option<usize>) -> usize {
+pub fn resolve_inline_limit(
+    tool_name: &str,
+    descriptor_limit: Option<usize>,
+    configured_default: usize,
+) -> usize {
     let per_tool_env_key = format!(
         "{}{}",
         crate::env::ASTRCODE_TOOL_INLINE_LIMIT_PREFIX,
@@ -83,6 +87,7 @@ pub fn resolve_inline_limit(tool_name: &str, descriptor_limit: Option<usize>) ->
         std::env::var(crate::env::ASTRCODE_TOOL_RESULT_INLINE_LIMIT_ENV)
             .ok()
             .as_deref(),
+        configured_default,
     )
 }
 
@@ -91,6 +96,7 @@ fn resolve_inline_limit_impl(
     per_tool_env: Option<&str>,
     descriptor_limit: Option<usize>,
     global_env: Option<&str>,
+    configured_default: usize,
 ) -> usize {
     // 层级 1：per-tool 环境变量
     if let Some(val) = per_tool_env {
@@ -112,7 +118,7 @@ fn resolve_inline_limit_impl(
     }
 
     // 层级 4：默认值
-    DEFAULT_TOOL_RESULT_INLINE_LIMIT
+    configured_default.max(1)
 }
 
 /// 将 camelCase 转换为 SCREAMING_SNAKE_CASE。
@@ -190,9 +196,8 @@ fn truncate_with_notice(content: &str) -> String {
     let truncated_at = content.floor_char_boundary(limit);
     let prefix = &content[..truncated_at];
     format!(
-        "{prefix}\n\n... [output truncated after {} bytes; use offset/limit parameters or \
-         readFile with persisted path for full content]",
-        DEFAULT_TOOL_RESULT_INLINE_LIMIT
+        "{prefix}\n\n... [output truncated to {limit} bytes because persisted storage is \
+         unavailable; use offset/limit parameters or rerun with a narrower scope for full content]"
     )
 }
 
@@ -279,22 +284,33 @@ mod tests {
     fn resolve_inline_limit_uses_default_when_no_override() {
         // 无 env、无描述符 → 默认 32KB
         assert_eq!(
-            resolve_inline_limit_impl(None, None, None),
+            resolve_inline_limit_impl(None, None, None, DEFAULT_TOOL_RESULT_INLINE_LIMIT),
             DEFAULT_TOOL_RESULT_INLINE_LIMIT
         );
 
         // 有描述符值 → 使用描述符值
-        assert_eq!(resolve_inline_limit_impl(None, Some(30_000), None), 30_000);
+        assert_eq!(
+            resolve_inline_limit_impl(None, Some(30_000), None, DEFAULT_TOOL_RESULT_INLINE_LIMIT),
+            30_000
+        );
     }
 
     #[test]
     fn resolve_inline_limit_global_env_overrides_default() {
         // 无描述符值，全局 env 覆盖默认
-        assert_eq!(resolve_inline_limit_impl(None, None, Some("65536")), 65536);
+        assert_eq!(
+            resolve_inline_limit_impl(None, None, Some("65536"), DEFAULT_TOOL_RESULT_INLINE_LIMIT),
+            65536
+        );
 
         // 全局 env 优先级低于描述符值
         assert_eq!(
-            resolve_inline_limit_impl(None, Some(30_000), Some("65536")),
+            resolve_inline_limit_impl(
+                None,
+                Some(30_000),
+                Some("65536"),
+                DEFAULT_TOOL_RESULT_INLINE_LIMIT,
+            ),
             30_000
         );
     }
@@ -303,20 +319,40 @@ mod tests {
     fn resolve_inline_limit_per_tool_env_has_highest_priority() {
         // per-tool env > 描述符值 > 全局 env
         assert_eq!(
-            resolve_inline_limit_impl(Some("12345"), Some(30_000), Some("65536")),
+            resolve_inline_limit_impl(
+                Some("12345"),
+                Some(30_000),
+                Some("65536"),
+                DEFAULT_TOOL_RESULT_INLINE_LIMIT,
+            ),
             12345
         );
 
         // per-tool env 为无效值 → 降级到描述符值
         assert_eq!(
-            resolve_inline_limit_impl(Some("not-a-number"), Some(30_000), Some("65536")),
+            resolve_inline_limit_impl(
+                Some("not-a-number"),
+                Some(30_000),
+                Some("65536"),
+                DEFAULT_TOOL_RESULT_INLINE_LIMIT,
+            ),
             30_000
         );
 
         // per-tool env 为 None → 降级到描述符值
         assert_eq!(
-            resolve_inline_limit_impl(None, Some(20_000), Some("65536")),
+            resolve_inline_limit_impl(
+                None,
+                Some(20_000),
+                Some("65536"),
+                DEFAULT_TOOL_RESULT_INLINE_LIMIT,
+            ),
             20_000
         );
+    }
+
+    #[test]
+    fn resolve_inline_limit_uses_runtime_default_after_all_overrides_miss() {
+        assert_eq!(resolve_inline_limit_impl(None, None, None, 88_888), 88_888);
     }
 }

@@ -67,7 +67,8 @@ use astrcode_core::{
 use astrcode_protocol::capability::CapabilityDescriptor;
 use astrcode_runtime_config::{
     DEFAULT_AUTO_COMPACT_ENABLED, DEFAULT_COMPACT_KEEP_RECENT_TURNS,
-    DEFAULT_COMPACT_THRESHOLD_PERCENT, DEFAULT_TOOL_RESULT_MAX_BYTES, max_tool_concurrency,
+    DEFAULT_COMPACT_THRESHOLD_PERCENT, DEFAULT_TOOL_RESULT_INLINE_LIMIT,
+    DEFAULT_TOOL_RESULT_MAX_BYTES, max_tool_concurrency,
 };
 use astrcode_runtime_llm::LlmProvider;
 use astrcode_runtime_prompt::{
@@ -160,6 +161,10 @@ pub struct AgentLoop {
     policy_profile: String,
     /// 单个 step 内允许并发执行的只读工具上限
     max_tool_concurrency: usize,
+    /// 工具结果内联阈值的运行时默认值。
+    ///
+    /// 具体工具仍会优先使用 per-tool env、描述符值和全局 env 覆盖。
+    default_tool_result_inline_limit: usize,
 }
 
 impl AgentLoop {
@@ -223,6 +228,7 @@ impl AgentLoop {
             // 默认并行度统一从 runtime-config 读取，这样环境变量覆盖和
             // 直接构造 AgentLoop 的默认行为保持同一套来源。
             max_tool_concurrency: max_tool_concurrency(),
+            default_tool_result_inline_limit: DEFAULT_TOOL_RESULT_INLINE_LIMIT,
         }
     }
 
@@ -821,7 +827,17 @@ impl AgentLoop {
     /// 该值实际上由 ContextRuntime 持有，此处保留 builder 方法以保持
     /// RuntimeService 装配层的调用兼容性。
     pub fn with_tool_result_max_bytes(mut self, tool_result_max_bytes: usize) -> Self {
-        self.context = ContextRuntime::new(tool_result_max_bytes);
+        self.context = self
+            .context
+            .with_tool_result_max_bytes(tool_result_max_bytes);
+        self
+    }
+
+    /// 设置工具结果内联阈值的运行时默认值。
+    ///
+    /// 该值作为最后一层回退，只在没有 env 覆盖和 per-tool 描述符时生效。
+    pub fn with_tool_result_inline_limit(mut self, tool_result_inline_limit: usize) -> Self {
+        self.default_tool_result_inline_limit = tool_result_inline_limit.max(1);
         self
     }
 
@@ -870,6 +886,10 @@ impl AgentLoop {
     /// 这样前端看到的工具候选不会和模型真实可见的工具列表漂移。
     pub fn capability_descriptors(&self) -> &[CapabilityDescriptor] {
         self.prompt.capability_descriptors()
+    }
+
+    pub(crate) fn default_tool_result_inline_limit(&self) -> usize {
+        self.default_tool_result_inline_limit
     }
 
     /// 暴露统一 skill 目录。

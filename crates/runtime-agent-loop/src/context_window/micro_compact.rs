@@ -41,8 +41,11 @@ pub(crate) fn should_trigger(
     let Some(last) = last_assistant_at else {
         return false;
     };
+    if last > now {
+        return false;
+    }
     let gap = now.signed_duration_since(last);
-    gap.num_seconds().unsigned_abs() >= gap_threshold_secs
+    gap.num_seconds() as u64 >= gap_threshold_secs
 }
 
 /// 对消息流执行微压缩。
@@ -168,6 +171,13 @@ mod tests {
     #[test]
     fn should_trigger_returns_false_when_no_timestamp() {
         assert!(!should_trigger(None, Utc::now(), 1800));
+    }
+
+    #[test]
+    fn should_trigger_returns_false_when_timestamp_is_in_future() {
+        let now = Utc::now();
+        let future = now + chrono::Duration::seconds(3600);
+        assert!(!should_trigger(Some(future), now, 1800));
     }
 
     #[test]

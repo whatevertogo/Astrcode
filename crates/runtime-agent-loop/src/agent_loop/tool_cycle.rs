@@ -209,7 +209,8 @@ where
         }
 
         let ctx = agent_loop.tool_context(state, cancel.clone(), execution_owner.clone());
-        let inline_limit = resolve_tool_inline_limit(capabilities, &pending.tool_call.name);
+        let inline_limit =
+            resolve_tool_inline_limit(agent_loop, capabilities, &pending.tool_call.name);
         let ctx = ctx.with_resolved_inline_limit(inline_limit);
         let result = execute_raw_tool_call(
             pending.tool_call,
@@ -232,11 +233,19 @@ where
 }
 
 /// 从 CapabilityRouter 查找工具描述符并解析内联阈值。
-fn resolve_tool_inline_limit(capabilities: &CapabilityRouter, tool_name: &str) -> usize {
+fn resolve_tool_inline_limit(
+    agent_loop: &AgentLoop,
+    capabilities: &CapabilityRouter,
+    tool_name: &str,
+) -> usize {
     let descriptor_limit = capabilities
         .descriptor(tool_name)
         .and_then(|d| d.max_result_inline_size);
-    resolve_inline_limit(tool_name, descriptor_limit)
+    resolve_inline_limit(
+        tool_name,
+        descriptor_limit,
+        agent_loop.default_tool_result_inline_limit(),
+    )
 }
 
 fn push_prepared_call(
@@ -287,8 +296,11 @@ where
                 async move {
                     let ctx =
                         agent_loop.tool_context(state, cancel.clone(), execution_owner.clone());
-                    let inline_limit =
-                        resolve_tool_inline_limit(capabilities, &pending.tool_call.name);
+                    let inline_limit = resolve_tool_inline_limit(
+                        agent_loop,
+                        capabilities,
+                        &pending.tool_call.name,
+                    );
                     let ctx = ctx.with_resolved_inline_limit(inline_limit);
                     let result = execute_raw_tool_call(
                         pending.tool_call,
