@@ -118,6 +118,11 @@ Failed → Disabled (max retries exceeded)
 - 远程服务器按 URL 签名去重
 - 高优先级配置覆盖低优先级：`user < project < local`
 
+**环境变量展开**:
+- 配置值支持 `${VAR}` 格式的环境变量引用（headers、command args 等）
+- 缺失的环境变量导致该服务器标记为 failed（而非仅警告），确保用户能明确发现配置问题
+- 错误信息中包含缺失的变量名，方便排查
+
 ---
 
 ## R7: 与 runtime 门面的集成点

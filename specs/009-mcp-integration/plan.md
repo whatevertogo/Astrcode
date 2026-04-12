@@ -66,7 +66,8 @@ crates/runtime-mcp/                   # 新增 crate
     │   ├── mod.rs                    # McpTransport trait 定义
     │   ├── stdio.rs                  # StdioTransport: 子进程 stdin/stdout
     │   ├── http.rs                   # StreamableHttpTransport: HTTP POST + SSE
-    │   └── sse.rs                    # SseTransport: SSE 兼容回退
+    │   ├── sse.rs                    # SseTransport: SSE 兼容回退
+    │   └── mock.rs                   # #[cfg(test)] mock 传输（单元测试用）
     ├── protocol/
     │   ├── mod.rs                    # JSON-RPC 消息类型
     │   ├── client.rs                 # McpClient: 握手、工具调用
@@ -81,21 +82,31 @@ crates/runtime-mcp/                   # 新增 crate
     ├── config/
     │   ├── mod.rs
     │   ├── loader.rs                 # 多作用域加载 + 去重
-    │   ├── approval.rs               # 审批状态管理
-    │   └── policy.rs                 # 策略过滤
-    ├── connection.rs                 # McpConnection 状态机
-    ├── manager.rs                    # McpConnectionManager
-    └── hot_reload.rs                 # 配置文件监听 + 热加载
+    │   ├── approval.rs               # 审批状态管理 + McpSettingsStore trait 定义
+    │   ├── policy.rs                 # 策略过滤
+    │   └── settings_port.rs          # McpSettingsStore trait + 审批 DTO（纯接口层）
+    └── manager/                      # 连接生命周期管理（统一目录）
+        ├── mod.rs                    # McpConnectionManager 公共接口
+        ├── connection.rs             # McpConnection 状态机（内部）
+        ├── reconnect.rs              # 重连策略：指数退避、远程/stdio 差异化
+        └── hot_reload.rs             # 配置文件监听（notify）+ mpsc 事件驱动
 
 crates/runtime/src/                   # 修改
 ├── runtime_surface_assembler.rs      # 扩展: MCP 初始化路径
 └── bootstrap.rs                      # 扩展: 加载 MCP 配置
 
 crates/server/src/                    # 修改
-└── routes/                           # 新增: MCP 状态 API
+└── routes/
+    └── mcp.rs                        # GET /api/mcp/status, POST /api/mcp/approve, POST /api/mcp/reject
 ```
 
-**Structure Decision**: 新增 `runtime-mcp` crate 与 `plugin` 并行。仅修改 `runtime`（组装集成）和 `server`（状态 API），不修改 `core` 或 `protocol`。
+**Structure Decision**: 新增 `runtime-mcp` crate 与 `plugin` 并列。仅修改 `runtime`（组装集成）和 `server`（状态 API），不修改 `core` 或 `protocol`。
+
+**Module Organization Rationale**:
+
+- **`manager/` 目录化**: `McpConnection` 状态机、重连策略、热加载都是 `McpConnectionManager` 的内部行为，放在同一目录下表达内聚性。外部只通过 `mod.rs` 的公共接口交互。
+- **`config/settings_port.rs`**: `McpSettingsStore` trait 定义在 runtime-mcp 中（纯接口），具体实现由 runtime 在 bootstrap 时注入。这样 runtime-mcp 不依赖 runtime，只依赖 core——符合宪法编译隔离约束。
+- **`transport/mock.rs`**: 使用 `#[cfg(test)]` 条件编译。当前所有使用 mock 的测试（T016/T016b/T032）都在 runtime-mcp crate 内部，无需跨 crate 暴露。如果后续集成测试需要跨 crate 使用，再提取为 `test-utils` feature。
 
 ## Implementation Phases
 
