@@ -29,7 +29,7 @@
 - 所有异步操作有取消机制，不在持锁状态下 await（宪法 VI: Runtime Robustness）
 - 关键操作有结构化日志，错误不静默忽略（宪法 VII: Observability）
 - 单个文件不超过 800 行（宪法：runtime 门面约束）
-- 审批状态等 settings 的读写接口定义在 core（纯契约），runtime-mcp 仅依赖 core 的接口，不依赖 runtime 或 runtime-config
+- 审批状态等 settings 的读写接口（`McpSettingsStore` trait）定义在 `runtime-mcp/config/settings_port.rs`（纯接口层，无 IO 实现），runtime 在 bootstrap 时注入具体实现；runtime-mcp 不直接读写 settings 文件，不依赖 runtime 或 runtime-config
 
 ## 关键设计决策
 
@@ -37,6 +37,7 @@
 - **in-flight 追踪**: T020 创建 McpConnectionManager 时建立 `Arc<AtomicUsize>` 计数器追踪进行中的工具调用，T036 基于此实现优雅断开。
 - **热加载文件监听**: 使用 workspace 已有的 `notify` crate，回调通过 `tokio::sync::mpsc` 通道安全触发异步 reload。
 - **settings 接口边界**: `McpSettingsStore` trait 定义在 `config/settings_port.rs`（纯接口层），`McpApprovalManager` 通过 trait 读写审批数据，具体实现由 runtime 在 bootstrap 时注入——runtime-mcp 不直接读写 settings 文件，不依赖 runtime 或 runtime-config
+- **OAuth 显式延期**: FR-018 要求的 OAuth（DCR、浏览器授权、token 刷新）仅创建了 `McpOAuthConfig` DTO。完整 OAuth 流程不在本期实现范围内，后续由独立 spec 覆盖
 
 ---
 
@@ -84,22 +85,22 @@
 
 ### Implementation for User Story 1
 
-- [ ] T018 [P] [US1] 实现 `crates/runtime-mcp/src/bridge/tool_bridge.rs`：`McpToolBridge` struct 实现 `Tool` trait，桥接 MCP 工具到 Astrcode Tool 接口（definition 从 MCP inputSchema 映射、execute 调用 McpClient.call_tool、annotations 映射到 capability metadata）；工具执行结果复用 `ToolContext.resolved_inline_limit` 决定是否落盘
-- [ ] T019 [P] [US1] 实现 `crates/runtime-mcp/src/bridge/mod.rs`：bridge 模块公共导出和辅助函数（build_mcp_tool_name 生成 `mcp__{server}__{tool}` 格式名称）；在 lib.rs 中声明 bridge 模块
-- [ ] T020 [US1] 实现 `crates/runtime-mcp/src/manager/mod.rs`：`McpConnectionManager`——批量连接所有已声明服务器（本地并发度 ≤ 3，远程并发度 ≤ 10），单个失败不阻塞其他，返回 `McpConnectionResults`；内部维护 `Arc<AtomicUsize>` 进行中调用计数器
-- [ ] T021 [US1] 为 McpConnectionManager 实现 `connect_one()` 方法：连接单个服务器、获取工具列表、创建 McpToolBridge、通过 ToolCapabilityInvoker 包装为 CapabilityInvoker；连接成功后注册 list_changed handler（收到通知时清除工具缓存并重新 list_tools）
-- [ ] T022 [US1] 为 McpConnectionManager 实现 `ManagedRuntimeComponent` trait（component_name、shutdown_component）
-- [ ] T023 [US1] 实现 `crates/runtime-mcp/src/config/loader.rs`：`McpConfigManager`——从 `.mcp.json` 和 settings 加载配置、环境变量展开（`${VAR}` 缺失变量返回 Err 并明确指出缺失的变量名）、签名去重（stdio 按 command:args，远程按 URL）
-- [ ] T024 [US1] 实现 `crates/runtime-mcp/src/config/settings_port.rs`：定义 `McpSettingsStore` trait（load/save 审批数据）和 `McpApprovalData` DTO——纯接口层，无 IO 实现；实现 `crates/runtime-mcp/src/config/approval.rs`：`McpApprovalManager`——项目级服务器审批状态管理（approved/rejected/pending），通过 `McpSettingsStore` trait 读写审批数据，具体实现由 runtime 在 bootstrap 时注入
-- [ ] T025 [US1] 实现 `crates/runtime-mcp/src/config/policy.rs`：`McpPolicyFilter`——策略允许/拒绝列表过滤（按名称、命令、URL 匹配，拒绝优先于允许）
-- [ ] T026 [US1] 修改 `crates/runtime/src/runtime_surface_assembler.rs`：新增 MCP 初始化路径——将 `Option<Arc<McpConnectionManager>>` 作为参数传入 `assemble_runtime_surface`；MCP 为 None 或初始化失败时跳过 MCP 贡献，不影响内置工具和插件注册；将 MCP 工具注入到 AssembledRuntimeSurface（复用已有 `RuntimeSurfaceContribution` 结构）
-- [ ] T027 [US1] 修改 `crates/runtime/src/bootstrap.rs`：在 bootstrap 流程中尝试加载 MCP 配置（`Option<McpConfigManager>`），成功则创建 McpConnectionManager 并传入 assembler；失败则记录警告日志并传入 None；确保 MCP 不可用时 runtime 照常启动
-- [ ] T028 [US1] 实现 `crates/runtime-mcp/src/transport/http.rs`：`StreamableHttpTransport`——使用 reqwest 发送 HTTP POST，接收 SSE 响应流，支持静态 headers 注入（从 McpTransportConfig 读取）
-- [ ] T029 [US1] 实现 `crates/runtime-mcp/src/transport/sse.rs`：`SseTransport`（兼容回退）——SSE 连接 + HTTP POST 请求，支持静态 headers 注入
-- [ ] T030 [US1] 为 McpToolBridge 编写单元测试（验证 Tool trait 实现、名称生成、annotations 映射），在 `bridge/tool_bridge.rs` 底部 `#[cfg(test)]` 模块
-- [ ] T031 [US1] 为 McpConfigManager 编写单元测试（配置加载、去重、环境变量缺失返回 Err），在 `config/loader.rs` 底部 `#[cfg(test)]` 模块
-- [ ] T032 [US1] 为 McpConnectionManager 编写单元测试（批量连接、错误隔离、工具注册、工具名冲突时记录明确警告日志含两个来源标识——验证 FR-025），使用 mock 传输，在 `manager/mod.rs` 底部 `#[cfg(test)]` 模块
-- [ ] T033 [US1] 确认 `cargo fmt --all --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test -p astrcode-runtime-mcp` 通过
+- [x] T018 [P] [US1] 实现 `crates/runtime-mcp/src/bridge/tool_bridge.rs`：`McpToolBridge` struct 实现 `Tool` trait，桥接 MCP 工具到 Astrcode Tool 接口（definition 从 MCP inputSchema 映射、execute 调用 McpClient.call_tool、annotations 映射到 capability metadata）；工具执行结果复用 `ToolContext.resolved_inline_limit` 决定是否落盘
+- [x] T019 [P] [US1] 实现 `crates/runtime-mcp/src/bridge/mod.rs`：bridge 模块公共导出和辅助函数（build_mcp_tool_name 生成 `mcp__{server}__{tool}` 格式名称）；在 lib.rs 中声明 bridge 模块
+- [x] T020 [US1] 实现 `crates/runtime-mcp/src/manager/mod.rs`：`McpConnectionManager`——批量连接所有已声明服务器（本地并发度 ≤ 3，远程并发度 ≤ 10），单个失败不阻塞其他，返回 `McpConnectionResults`；内部维护 `Arc<AtomicUsize>` 进行中调用计数器
+- [x] T021 [US1] 为 McpConnectionManager 实现 `connect_one()` 方法：连接单个服务器、获取工具列表、创建 McpToolBridge、通过 ToolCapabilityInvoker 包装为 CapabilityInvoker；连接成功后注册 list_changed handler（收到通知时清除工具缓存并重新 list_tools）
+- [x] T022 [US1] 为 McpConnectionManager 实现 `ManagedRuntimeComponent` trait（component_name、shutdown_component）
+- [x] T023 [US1] 实现 `crates/runtime-mcp/src/config/loader.rs`：`McpConfigManager`——从 `.mcp.json` 和 settings 加载配置、环境变量展开（`${VAR}` 缺失变量返回 Err 并明确指出缺失的变量名）、签名去重（stdio 按 command:args，远程按 URL）
+- [x] T024 [US1] 实现 `crates/runtime-mcp/src/config/settings_port.rs`：定义 `McpSettingsStore` trait（load/save 审批数据）和 `McpApprovalData` DTO——纯接口层，无 IO 实现；实现 `crates/runtime-mcp/src/config/approval.rs`：`McpApprovalManager`——项目级服务器审批状态管理（approved/rejected/pending），通过 `McpSettingsStore` trait 读写审批数据，具体实现由 runtime 在 bootstrap 时注入
+- [x] T025 [US1] 实现 `crates/runtime-mcp/src/config/policy.rs`：`McpPolicyFilter`——策略允许/拒绝列表过滤（按名称、命令、URL 匹配，拒绝优先于允许）
+- [x] T026 [US1] 修改 `crates/runtime/src/runtime_surface_assembler.rs`：新增 MCP 初始化路径——将 `Option<Arc<McpConnectionManager>>` 作为参数传入 `assemble_runtime_surface`；MCP 为 None 或初始化失败时跳过 MCP 贡献，不影响内置工具和插件注册；将 MCP 工具注入到 AssembledRuntimeSurface（复用已有 `RuntimeSurfaceContribution` 结构）
+- [x] T027 [US1] 修改 `crates/runtime/src/bootstrap.rs`：在 bootstrap 流程中尝试加载 MCP 配置（`Option<McpConfigManager>`），成功则创建 McpConnectionManager 并传入 assembler；失败则记录警告日志并传入 None；确保 MCP 不可用时 runtime 照常启动
+- [x] T028 [US1] 实现 `crates/runtime-mcp/src/transport/http.rs`：`StreamableHttpTransport`——使用 reqwest 发送 HTTP POST，接收 SSE 响应流，支持静态 headers 注入（从 McpTransportConfig 读取）
+- [x] T029 [US1] 实现 `crates/runtime-mcp/src/transport/sse.rs`：`SseTransport`（兼容回退）——SSE 连接 + HTTP POST 请求，支持静态 headers 注入
+- [x] T030 [US1] 为 McpToolBridge 编写单元测试（验证 Tool trait 实现、名称生成、annotations 映射），在 `bridge/tool_bridge.rs` 底部 `#[cfg(test)]` 模块
+- [x] T031 [US1] 为 McpConfigManager 编写单元测试（配置加载、去重、环境变量缺失返回 Err），在 `config/loader.rs` 底部 `#[cfg(test)]` 模块
+- [x] T032 [US1] 为 McpConnectionManager 编写单元测试（批量连接、错误隔离、工具注册、工具名冲突时记录明确警告日志含两个来源标识——验证 FR-025），使用 mock 传输，在 `manager/mod.rs` 底部 `#[cfg(test)]` 模块
+- [x] T033 [US1] 确认 `cargo fmt --all --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test -p astrcode-runtime-mcp` 通过
 
 **Checkpoint**: MCP 服务器可连接、工具可注册、Agent 可调用——MVP 完成
 
@@ -113,18 +114,18 @@
 
 ### Implementation for User Story 2
 
-- [ ] T034 [US2] 实现 `crates/runtime-mcp/src/manager/reconnect.rs`：自动重连逻辑——仅远程传输（HTTP/SSE），指数退避（1s → 2s → 4s → 8s → 16s, max 30s），最多 5 次，使用 tokio::spawn 持有 JoinHandle；重连前检查 `is_disabled()` 标志；stdio 传输不重连（直接返回）
-- [ ] T035 [US2] 实现连接断开检测：监听 transport 的 is_active 状态变化和 McpClient 内部错误回调，调用 `reconnect.rs` 中的重连流程；区分 stdio（不重连）和远程传输（触发重连）
-- [ ] T036a [US2] 在 `manager/mod.rs` 中实现 in-flight 请求追踪：`AtomicUsize` 计数器在工具调用开始时 +1、完成（含错误）时 -1；提供 `in_flight_count()` 和 `wait_idle(timeout)` 方法
-- [ ] T036 [US2] 为 McpConnectionManager 实现 `disconnect_one()` 方法：先调用 `wait_idle(30s)` 等待进行中调用完成，超时后强制断开 transport，然后清除缓存（tools/commands/resources 的 memoize cache）
-- [ ] T036c [US2] 在 `manager/mod.rs` 中实现 cancel + 强制断开逻辑：工具调用 cancel 时发送 `notifications/cancelled`，设置 30 秒计时器，超时后调用 transport.close() 强制断开连接并向 Agent 返回超时错误——验证 FR-013
-- [ ] T037 [US2] 实现 `crates/runtime-mcp/src/manager/hot_reload.rs`：使用 `notify` crate 监听 `.mcp.json` 和 settings 文件变更；通过 `tokio::sync::mpsc` 通道发送变更事件，避免文件监听线程直接触碰异步状态
-- [ ] T038 [US2] 为 McpConnectionManager 实现 `reload_config()` 方法：接收 mpsc 变更事件，调用 McpConfigManager.load_all() 获取新配置，对比差异后新增调用 connect_one()、移除调用 disconnect_one()、未变化保持不变
-- [ ] T039 [US2] 为 McpConnectionManager 实现 `connected_invokers()` 方法：返回当前所有已连接服务器的 CapabilityInvoker 列表，供 runtime 重新注册到 CapabilityRouter
-- [ ] T040 [US2] 修改 runtime bootstrap 集成热加载：启动 notify 文件监听，变更事件通过 mpsc 传递到 runtime 的 tokio task，触发 reload_config 并用 connected_invokers() 更新 CapabilityRouter
-- [ ] T041 [US2] 为重连策略编写单元测试（指数退避、最大次数、取消机制、stdio 不重连），在 `manager/reconnect.rs` 底部 `#[cfg(test)]` 模块
-- [ ] T042 [US2] 为热加载编写单元测试（新增/移除/变更检测、mpsc 通道正确传递事件），在 `manager/hot_reload.rs` 底部 `#[cfg(test)]` 模块
-- [ ] T043 [US2] 确认 `cargo test -p astrcode-runtime-mcp` 通过
+- [x] T034 [US2] 实现 `crates/runtime-mcp/src/manager/reconnect.rs`：自动重连逻辑——仅远程传输（HTTP/SSE），指数退避（1s → 2s → 4s → 8s → 16s, max 30s），最多 5 次，使用 tokio::spawn 持有 JoinHandle；重连前检查 `is_disabled()` 标志；stdio 传输不重连（直接返回）
+- [x] T035 [US2] 实现连接断开检测：监听 transport 的 is_active 状态变化和 McpClient 内部错误回调，调用 `reconnect.rs` 中的重连流程；区分 stdio（不重连）和远程传输（触发重连）
+- [x] T036a [US2] 在 `manager/mod.rs` 中实现 in-flight 请求追踪：`AtomicUsize` 计数器在工具调用开始时 +1、完成（含错误）时 -1；提供 `in_flight_count()` 和 `wait_idle(timeout)` 方法
+- [x] T036 [US2] 为 McpConnectionManager 实现 `disconnect_one()` 方法：先调用 `wait_idle(30s)` 等待进行中调用完成，超时后强制断开 transport，然后清除缓存（tools/commands/resources 的 memoize cache）
+- [x] T036c [US2] 在 `manager/mod.rs` 中实现 cancel + 强制断开逻辑：工具调用 cancel 时发送 `notifications/cancelled`，设置 30 秒计时器，超时后调用 transport.close() 强制断开连接并向 Agent 返回超时错误——验证 FR-013
+- [x] T037 [US2] 实现 `crates/runtime-mcp/src/manager/hot_reload.rs`：使用 `notify` crate 监听 `.mcp.json` 和 settings 文件变更；通过 `tokio::sync::mpsc` 通道发送变更事件，避免文件监听线程直接触碰异步状态
+- [x] T038 [US2] 为 McpConnectionManager 实现 `reload_config()` 方法：接收 mpsc 变更事件，调用 McpConfigManager.load_all() 获取新配置，对比差异后新增调用 connect_one()、移除调用 disconnect_one()、未变化保持不变
+- [x] T039 [US2] 为 McpConnectionManager 实现 `connected_invokers()` 方法：返回当前所有已连接服务器的 CapabilityInvoker 列表，供 runtime 重新注册到 CapabilityRouter
+- [x] T040 [US2] 修改 runtime bootstrap 集成热加载：启动 notify 文件监听，变更事件通过 mpsc 传递到 runtime 的 tokio task，触发 reload_config 并用 connected_invokers() 更新 CapabilityRouter
+- [x] T041 [US2] 为重连策略编写单元测试（指数退避、最大次数、取消机制、stdio 不重连），在 `manager/reconnect.rs` 底部 `#[cfg(test)]` 模块
+- [x] T042 [US2] 为热加载编写单元测试（新增/移除/变更检测、mpsc 通道正确传递事件），在 `manager/hot_reload.rs` 底部 `#[cfg(test)]` 模块
+- [x] T043 [US2] 确认 `cargo test -p astrcode-runtime-mcp` 通过
 
 **Checkpoint**: MCP 服务器可自动重连、配置可热加载
 
@@ -138,14 +139,14 @@
 
 ### Implementation for User Story 3
 
-- [ ] T044 [P] [US3] 实现 `crates/runtime-mcp/src/bridge/prompt_bridge.rs`：将 MCP 服务器握手响应中的 `instructions` 转换为 `PromptDeclaration`（source 设为 Mcp，origin 设为服务器名）
-- [ ] T045 [P] [US3] 为 McpClient 实现 `list_prompts()` 和 `get_prompt()` 方法：调用 MCP `prompts/list` 和 `prompts/get`，解析返回的 prompt 模板
-- [ ] T046 [US3] 修改 McpConnectionManager：在连接成功后收集 instructions 和 prompt 模板，加入 `McpConnectionResults.prompt_declarations`
-- [ ] T047 [US3] 修改 runtime_surface_assembler：将 MCP prompt_declarations 注入到 prompt 组装管线，处理 block_id 去重
-- [ ] T048 [US3] 为 prompt 桥接编写单元测试（instructions 注入、block_id 去重），在 `bridge/prompt_bridge.rs` 底部 `#[cfg(test)]` 模块
-- [ ] T049 [US3] 确认 `cargo test -p astrcode-runtime-mcp` 通过
+- [x] T044 [P] [US3] 实现 `crates/runtime-mcp/src/bridge/prompt_bridge.rs`：将 MCP 服务器握手响应中的 `instructions` 转换为 `PromptDeclaration`（source 设为 Mcp，origin 设为服务器名）
+- [x] T045 [P] [US3] 为 McpClient 实现 `list_prompts()` 和 `get_prompt()` 方法：调用 MCP `prompts/list` 和 `prompts/get`，解析返回的 prompt 模板
+- [x] T046 [US3] 修改 McpConnectionManager：在连接成功后收集 instructions 和 prompt 模板，加入 `McpConnectionResults.prompt_declarations`
+- [x] T047 [US3] 修改 runtime_surface_assembler：将 MCP prompt_declarations 注入到 prompt 组装管线，处理 block_id 去重
+- [x] T048 [US3] 为 prompt 桥接编写单元测试（instructions 注入、block_id 去重），在 `bridge/prompt_bridge.rs` 底部 `#[cfg(test)]` 模块
+- [x] T049 [US3] 确认 `cargo test -p astrcode-runtime-mcp` 通过
 
-**Checkpoint**: MCP 服务器可注入 prompt 指令
+**Checkpoint**: MCP 服务器可注入 prompt 指令到 prompt 组装管线
 
 ---
 
@@ -157,12 +158,12 @@
 
 ### Implementation for User Story 4
 
-- [ ] T050 [P] [US4] 实现 `crates/runtime-mcp/src/bridge/resource_tool.rs`：`ListMcpResourcesTool` 实现 Tool trait——遍历所有已连接服务器调用 `resources/list`，返回资源 URI、名称和描述
-- [ ] T051 [P] [US4] 在 `crates/runtime-mcp/src/bridge/resource_tool.rs`：`ReadMcpResourceTool` 实现 Tool trait——指定服务器名和 URI 调用 `resources/read`，二进制内容持久化到磁盘并返回文件路径
-- [ ] T052 [US4] 为 McpClient 实现 `list_resources()` 和 `read_resource()` 方法
-- [ ] T053 [US4] 修改 McpConnectionManager：注册 ListMcpResources 和 ReadMcpResource 为内置工具
-- [ ] T054 [US4] 为资源工具编写单元测试（列出资源、读取文本/二进制资源），在 `bridge/resource_tool.rs` 底部 `#[cfg(test)]` 模块
-- [ ] T055 [US4] 确认 `cargo test -p astrcode-runtime-mcp` 通过
+- [x] T050 [P] [US4] 实现 `crates/runtime-mcp/src/bridge/resource_tool.rs`：`ListMcpResourcesTool` 实现 Tool trait——遍历所有已连接服务器调用 `resources/list`，返回资源 URI、名称和描述
+- [x] T051 [P] [US4] 在 `crates/runtime-mcp/src/bridge/resource_tool.rs`：`ReadMcpResourceTool` 实现 Tool trait——指定服务器名和 URI 调用 `resources/read`，二进制内容持久化到磁盘并返回文件路径
+- [x] T052 [US4] 为 McpClient 实现 `list_resources()` 和 `read_resource()` 方法
+- [x] T053 [US4] 修改 McpConnectionManager：注册 ListMcpResources 和 ReadMcpResource 为内置工具
+- [x] T054 [US4] 为资源工具编写单元测试（列出资源、读取文本/二进制资源），在 `bridge/resource_tool.rs` 底部 `#[cfg(test)]` 模块
+- [x] T055 [US4] 确认 `cargo test -p astrcode-runtime-mcp` 通过
 
 **Checkpoint**: MCP 资源可通过内置工具访问
 
@@ -176,11 +177,11 @@
 
 ### Implementation for User Story 5
 
-- [ ] T056 [US5] 完善 `config/approval.rs`：审批状态通过 `McpSettingsStore` trait（定义在 `config/settings_port.rs`）持久化，runtime 在 bootstrap 时注入具体实现（读写本地 settings 文件），支持单服务器审批、全部批准、拒绝操作
-- [ ] T057 [US5] 修改 McpConnectionManager.connect_all()：项目级服务器在连接前检查审批状态，pending 状态跳过连接并记录日志；提供 `pending_approval_servers()` 方法供 API 查询
-- [ ] T058 [US5] 在 server 层新增 `crates/server/src/routes/mcp.rs`：`GET /api/mcp/status` 返回所有服务器状态（含 pending 的项目服务器），`POST /api/mcp/approve` 和 `POST /api/mcp/reject` 处理审批操作——server 层通过 RuntimeService 访问 McpConnectionManager，不直接依赖 runtime-mcp crate
-- [ ] T059 [US5] 为审批流程编写单元测试（pending/approved/rejected 状态转换、McpSettingsStore trait mock），在 `config/approval.rs` 底部 `#[cfg(test)]` 模块
-- [ ] T060 [US5] 确认 `cargo test -p astrcode-runtime-mcp` 通过
+- [x] T056 [US5] 完善 `config/approval.rs`：审批状态通过 `McpSettingsStore` trait（定义在 `config/settings_port.rs`）持久化，runtime 在 bootstrap 时注入具体实现（读写本地 settings 文件），支持单服务器审批、全部批准、拒绝操作
+- [x] T057 [US5] 修改 McpConnectionManager.connect_all()：项目级服务器在连接前检查审批状态，pending 状态跳过连接并记录日志；提供 `pending_approval_servers()` 方法供 API 查询
+- [x] T058 [US5] 在 server 层新增 `crates/server/src/routes/mcp.rs`：`GET /api/mcp/status` 返回所有服务器状态（含 pending 的项目服务器），`POST /api/mcp/approve` 和 `POST /api/mcp/reject` 处理审批操作——server 层通过 RuntimeService 访问 McpConnectionManager，不直接依赖 runtime-mcp crate
+- [x] T059 [US5] 为审批流程编写单元测试（pending/approved/rejected 状态转换、McpSettingsStore trait mock），在 `config/approval.rs` 底部 `#[cfg(test)]` 模块
+- [x] T060 [US5] 确认 `cargo test -p astrcode-runtime-mcp` 通过
 
 **Checkpoint**: 项目级 MCP 服务器需审批后才连接
 
@@ -190,12 +191,15 @@
 
 **Purpose**: 跨 user story 的改进、集成测试和最终验证
 
-- [ ] T061 [P] 实现 `crates/runtime-mcp/src/bridge/skill_bridge.rs`：MCP skill → SkillSpec 转换，注册到 SkillCatalog（优先级：builtin < mcp < plugin）
-- [ ] T062 [P] 为 McpConnectionManager 实现完整的 list_changed 通知处理：收到 tools/list_changed 时清除工具缓存、重新获取工具列表、通过 CapabilityRouter 动态更新已注册的 invoker
-- [ ] T063 审查所有文件行数不超过 800 行，超过则拆分模块
-- [ ] T064 审查所有异步操作：无 unwrap/expect on locks、spawn 句柄均被管理、无 lock-held-across-await
-- [ ] T065 审查所有关键操作的日志：连接/断开/重连/工具调用有结构化日志，错误级别正确，无静默忽略
-- [ ] T066 确认 `cargo fmt --all --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test` 全量通过
+- [x] T061 [P] **工具来源标签（source tags）**：McpToolBridge 的 descriptor 添加 `tags.push("source:mcp")`，plugin 侧 invoker 注册时添加 `tags.push("source:plugin")`；builtin 工具不加标签（默认即 builtin）；与 `SkillSource::as_tag()` 设计对称，不修改 protocol crate 的 CapabilityDescriptor
+- [x] T062 [P] `CapabilityPromptContributor` 按来源分层：无 `source:mcp`/`source:plugin` tag 的工具展开 summary + detailed guide（保持现有行为），有这两个 tag 的工具仅出现在 summary 索引（一行 `name: description`），不展开 guide
+- [x] T063 [P] `tool_search` 内置工具：搜索 `CapabilityRouter` 中带 `source:mcp` 或 `source:plugin` tag 的工具（按 name/description 模糊匹配），返回匹配工具的 schema；模型按需调用，MCP/Plugin 工具无需全量展开到 prompt
+- [x] T064 为 McpConnectionManager 实现完整的 list_changed 通知处理：收到 tools/list_changed 时清除工具缓存、重新获取工具列表、通过 CapabilityRouter 动态更新已注册的 invoker
+- [x] T065 补充 prompts/resources list_changed 监听：收到 prompts/list_changed 时刷新 prompt declarations，收到 resources/list_changed 时清除资源缓存
+- [ ] T066 审查所有文件行数不超过 800 行，超过则拆分模块
+- [ ] T067 审查所有异步操作：无 unwrap/expect on locks、spawn 句柄均被管理、无 lock-held-across-await
+- [ ] T068 审查所有关键操作的日志：连接/断开/重连/工具调用有结构化日志，错误级别正确，无静默忽略
+- [x] T069 确认 `cargo fmt --all --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test` 全量通过
 
 ---
 

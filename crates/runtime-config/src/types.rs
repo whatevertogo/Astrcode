@@ -16,6 +16,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::{
     constants::{
@@ -49,6 +50,12 @@ pub struct Config {
     pub active_model: String,
     #[serde(default)]
     pub runtime: RuntimeConfig,
+    /// MCP 配置原始块。
+    ///
+    /// 该字段仅作为宿主配置承载层使用，具体语义由 `runtime-mcp` 解析，
+    /// 避免在 `runtime-config` 中复制一套 MCP DTO 并引入跨 crate 耦合。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<Value>,
     #[serde(default = "default_config_profiles")]
     pub profiles: Vec<Profile>,
 }
@@ -61,6 +68,9 @@ pub struct Config {
 pub struct ConfigOverlay {
     pub active_profile: Option<String>,
     pub active_model: Option<String>,
+    /// 项目本地 MCP 配置原始块。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<Value>,
     pub profiles: Option<Vec<Profile>>,
 }
 
@@ -292,6 +302,7 @@ impl Default for Config {
             active_profile: "deepseek".to_string(),
             active_model: "deepseek-chat".to_string(),
             runtime: RuntimeConfig::default(),
+            mcp: None,
             profiles: default_config_profiles(),
         }
     }

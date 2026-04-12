@@ -210,6 +210,65 @@ impl McpClient {
         self.list_changed_handlers.insert(kind, handler);
     }
 
+    /// 请求服务器的 prompt 模板列表。
+    pub async fn list_prompts(&self) -> Result<Vec<McpPromptInfo>> {
+        let response = self.send_request("prompts/list", None).await?;
+
+        #[derive(serde::Deserialize)]
+        struct PromptsListResult {
+            #[serde(default)]
+            prompts: Vec<McpPromptInfo>,
+        }
+
+        let result: PromptsListResult = self.extract_result(response)?;
+        Ok(result.prompts)
+    }
+
+    /// 获取指定 prompt 模板的完整内容。
+    pub async fn get_prompt(
+        &self,
+        prompt_name: &str,
+        arguments: Option<Value>,
+    ) -> Result<McpPromptResult> {
+        let mut params = json!({ "name": prompt_name });
+        if let Some(args) = arguments {
+            params["arguments"] = args;
+        }
+        let response = self.send_request("prompts/get", Some(params)).await?;
+        self.extract_result(response)
+    }
+
+    /// 请求服务器的资源列表。
+    pub async fn list_resources(&self) -> Result<Vec<McpResourceInfo>> {
+        let response = self.send_request("resources/list", None).await?;
+
+        #[derive(serde::Deserialize)]
+        struct ResourcesListResult {
+            #[serde(default)]
+            resources: Vec<McpResourceInfo>,
+        }
+
+        let result: ResourcesListResult = self.extract_result(response)?;
+        Ok(result.resources)
+    }
+
+    /// 读取指定资源的内容。
+    pub async fn read_resource(&self, uri: &str) -> Result<McpResourceContent> {
+        let params = json!({ "uri": uri });
+        let response = self.send_request("resources/read", Some(params)).await?;
+
+        #[derive(serde::Deserialize)]
+        struct ReadResourceResult {
+            #[serde(default)]
+            contents: Vec<McpResourceContent>,
+        }
+
+        let result: ReadResourceResult = self.extract_result(response)?;
+        result.contents.into_iter().next().ok_or_else(|| {
+            McpProtocolError::ParseError("no content in resource response".into()).into()
+        })
+    }
+
     /// 关闭客户端。
     pub async fn disconnect(self) -> Result<()> {
         let mut transport = self.transport.lock().await;

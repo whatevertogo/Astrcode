@@ -24,7 +24,9 @@ use astrcode_runtime_agent_tool::{
 use astrcode_runtime_registry::ToolCapabilityInvoker;
 use astrcode_runtime_skill_loader::SkillCatalog;
 
-use crate::skill_tool::SkillTool;
+use crate::{
+    external_tool_catalog::ExternalToolCatalog, skill_tool::SkillTool, tool_search::ToolSearchTool,
+};
 
 /// 构建所有内置能力的调用器列表。
 ///
@@ -40,11 +42,13 @@ use crate::skill_tool::SkillTool;
 /// 4. 搜索工具
 pub(crate) fn built_in_capability_invokers(
     skill_catalog: Arc<SkillCatalog>,
+    external_tool_catalog: Arc<ExternalToolCatalog>,
     subagent_executor: Arc<dyn SubAgentExecutor>,
     collaboration_executor: Arc<dyn CollaborationExecutor>,
 ) -> Result<Vec<Arc<dyn CapabilityInvoker>>> {
     vec![
         ToolCapabilityInvoker::boxed(Box::new(SkillTool::new(skill_catalog))),
+        ToolCapabilityInvoker::boxed(Box::new(ToolSearchTool::new(external_tool_catalog))),
         // 注意 SpawnAgentTool 依赖 SubAgentExecutor，因此放在 SkillTool 之后注册，确保
         // subagent_executor 已经准备好 子agent工具
         ToolCapabilityInvoker::boxed(Box::new(SpawnAgentTool::new(subagent_executor))),

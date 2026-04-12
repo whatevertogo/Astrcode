@@ -17,6 +17,7 @@
 pub(crate) mod agents;
 pub(crate) mod composer;
 pub(crate) mod config;
+pub(crate) mod mcp;
 pub(crate) mod model;
 pub(crate) mod sessions;
 
@@ -117,6 +118,18 @@ pub(crate) fn build_api_router() -> Router<AppState> {
             "/api/v1/sessions/{id}/agents/{agent_id}/close",
             post(agents::close_agent),
         )
+        // MCP 管理
+        .route("/api/mcp/status", get(mcp::get_mcp_status))
+        .route("/api/mcp/approve", post(mcp::approve_mcp_server))
+        .route("/api/mcp/reject", post(mcp::reject_mcp_server))
+        .route("/api/mcp/reconnect", post(mcp::reconnect_mcp_server))
+        .route(
+            "/api/mcp/reset-project-choices",
+            post(mcp::reset_project_mcp_choices),
+        )
+        .route("/api/mcp/server", post(mcp::upsert_mcp_server))
+        .route("/api/mcp/server/remove", post(mcp::remove_mcp_server))
+        .route("/api/mcp/server/enabled", post(mcp::set_mcp_server_enabled))
 }
 
 async fn exchange_auth(

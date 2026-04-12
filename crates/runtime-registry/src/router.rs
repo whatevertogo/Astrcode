@@ -175,6 +175,20 @@ impl CapabilityRouter {
         })
     }
 
+    /// 返回按注册顺序排列的 invoker 快照。
+    ///
+    /// runtime surface 热替换需要拿到现有 invoker，再按来源增删外部能力后
+    /// 重建整份路由；直接暴露 `Arc` 克隆可以避免重新解析 descriptor 丢失执行器。
+    pub fn invokers(&self) -> Vec<Arc<dyn CapabilityInvoker>> {
+        support::with_read_lock_recovery(&self.inner, "capability_router", |inner| {
+            inner
+                .order
+                .iter()
+                .filter_map(|name| inner.invokers_by_name.get(name).cloned())
+                .collect()
+        })
+    }
+
     pub fn descriptor(&self, name: &str) -> Option<CapabilityDescriptor> {
         support::with_read_lock_recovery(&self.inner, "capability_router", |inner| {
             inner

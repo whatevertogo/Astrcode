@@ -16,6 +16,7 @@
 //! - `manager`: 连接生命周期管理（连接管理器、状态机、重连、热加载）
 //! - `bridge`: 工具/prompt/资源/skill 桥接层（Phase 3+ 声明）
 
+pub mod bridge;
 pub mod config;
 pub mod manager;
 pub mod protocol;

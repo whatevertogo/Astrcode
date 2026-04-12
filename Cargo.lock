@@ -209,6 +209,7 @@ dependencies = [
  "astrcode-runtime-config",
  "astrcode-runtime-execution",
  "astrcode-runtime-llm",
+ "astrcode-runtime-mcp",
  "astrcode-runtime-prompt",
  "astrcode-runtime-registry",
  "astrcode-runtime-session",
@@ -338,7 +339,9 @@ version = "0.1.0"
 dependencies = [
  "astrcode-core",
  "astrcode-protocol",
+ "astrcode-runtime-prompt",
  "async-trait",
+ "base64 0.22.1",
  "futures-util",
  "log",
  "notify",

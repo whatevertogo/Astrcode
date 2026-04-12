@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use astrcode_core::HookHandler;
+use astrcode_core::{CapabilityInvoker, HookHandler};
 use astrcode_runtime_agent_loop::AgentLoop;
 use astrcode_runtime_prompt::PromptDeclaration;
 use astrcode_runtime_registry::CapabilityRouter;
-use astrcode_runtime_skill_loader::SkillCatalog;
+use astrcode_runtime_skill_loader::{SkillCatalog, SkillSpec};
 
 use crate::service::{RuntimeService, ServiceResult};
 
@@ -15,6 +15,14 @@ pub(in crate::service) use factory::{
     LoopRuntimeDeps, LoopSurfaceInputs, build_agent_loop, build_scoped_agent_loop,
 };
 pub(crate) use service::LoopSurfaceService;
+
+#[derive(Clone)]
+pub struct LoopSurfaceSnapshot {
+    pub capability_invokers: Vec<Arc<dyn CapabilityInvoker>>,
+    pub prompt_declarations: Vec<PromptDeclaration>,
+    pub base_skills: Vec<SkillSpec>,
+    pub hook_handlers: Vec<Arc<dyn HookHandler>>,
+}
 
 /// `runtime-loop-surface` 的唯一 surface handle。
 #[derive(Clone)]
@@ -33,6 +41,10 @@ impl LoopSurfaceServiceHandle {
 
     pub async fn current_loop(&self) -> Arc<AgentLoop> {
         self.service().current_loop().await
+    }
+
+    pub async fn current_surface_snapshot(&self) -> LoopSurfaceSnapshot {
+        self.service().current_surface_snapshot().await
     }
 
     pub async fn replace_surface(

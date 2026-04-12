@@ -35,11 +35,17 @@ impl PromptContributor for CapabilityPromptContributor {
 
     async fn contribute(&self, ctx: &PromptContext) -> PromptContribution {
         let mut blocks = Vec::new();
+
+        // 带 prompt 元数据的工具（通常为 builtin）
         let tool_guides = collect_tool_guides(&ctx.capability_descriptors);
-        if !tool_guides.is_empty() {
-            blocks.push(build_tool_summary_block(&tool_guides));
+        // 标记为 source:mcp 或 source:plugin 的外部工具（无 prompt 元数据）
+        let external_tools = collect_external_tools(&ctx.capability_descriptors);
+
+        if !tool_guides.is_empty() || !external_tools.is_empty() {
+            blocks.push(build_tool_summary_block(&tool_guides, &external_tools));
         }
 
+        // 外部工具不展开详细指南（仅出现在 summary）
         blocks.extend(
             tool_guides
                 .iter()
@@ -94,11 +100,38 @@ fn collect_tool_guides(capability_descriptors: &[CapabilityDescriptor]) -> Vec<T
     guides
 }
 
+/// 收集标记为 source:mcp 或 source:plugin 的外部工具（无 prompt 元数据）。
+///
+/// 这些工具仅出现在摘要索引中，不展开详细指南。
+fn collect_external_tools(
+    capability_descriptors: &[CapabilityDescriptor],
+) -> Vec<CapabilityDescriptor> {
+    let mut tools: Vec<CapabilityDescriptor> = capability_descriptors
+        .iter()
+        .filter(|d| d.kind.is_tool())
+        .filter(|d| {
+            d.tags
+                .iter()
+                .any(|t| t == "source:mcp" || t == "source:plugin")
+        })
+        .filter(|d| {
+            // 排除已有 prompt 元数据的（已经由 tool_guides 处理）
+            d.metadata.get("prompt").is_none()
+        })
+        .cloned()
+        .collect();
+    tools.sort_by(|left, right| left.name.cmp(&right.name));
+    tools
+}
+
 fn should_expand_tool_guides(tool_guide_count: usize) -> bool {
     tool_guide_count <= MAX_ALWAYS_ON_DETAILED_GUIDES
 }
 
-fn build_tool_summary_block(tool_guides: &[ToolGuideEntry]) -> BlockSpec {
+fn build_tool_summary_block(
+    tool_guides: &[ToolGuideEntry],
+    external_tools: &[CapabilityDescriptor],
+) -> BlockSpec {
     let mut content = String::from(
         "Use the narrowest tool that can answer the request. Prefer read-only inspection before \
          mutation. All paths must stay inside the working directory.\n",
@@ -114,6 +147,11 @@ fn build_tool_summary_block(tool_guides: &[ToolGuideEntry]) -> BlockSpec {
             "\n- `{}`: {}{}",
             guide.descriptor.name, guide.prompt.summary, caveat
         ));
+    }
+
+    // 外部工具（MCP/Plugin）仅一行 name: description
+    for tool in external_tools {
+        content.push_str(&format!("\n- `{}`: {}", tool.name, tool.description));
     }
 
     BlockSpec::system_text(

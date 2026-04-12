@@ -33,6 +33,7 @@ astrcode-runtime-skill-loader = { path = "../runtime-skill-loader" }
 astrcode-runtime-agent-loader = { path = "../runtime-agent-loader" }
 astrcode-runtime-agent-tool = { path = "../runtime-agent-tool" }
 astrcode-runtime-registry = { path = "../runtime-registry" }
+astrcode-runtime-mcp = { path = "../runtime-mcp" }
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true

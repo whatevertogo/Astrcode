@@ -18,17 +18,26 @@
 
 use std::{
     collections::HashSet,
+    path::PathBuf,
     sync::{Arc, RwLock as StdRwLock},
 };
 
 use astrcode_core::{AstrError, PluginManifest, PluginRegistry, RuntimeCoordinator, RuntimeHandle};
 use astrcode_runtime_agent_loader::{AgentLoaderError, AgentProfileLoader, AgentProfileRegistry};
+use astrcode_runtime_mcp::{
+    config::{
+        McpApprovalData, McpConfigManager, McpConfigScope, McpServerConfig, McpSettingsStore,
+    },
+    manager::{McpConnectionManager, McpSurfaceSnapshot, hot_reload::McpHotReload},
+};
 use astrcode_runtime_registry::CapabilityRouter;
-use astrcode_runtime_skill_loader::{SkillCatalog, merge_skill_layers};
+use astrcode_runtime_skill_loader::{SkillCatalog, SkillSource, merge_skill_layers};
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::{
     RuntimeService, ServiceError,
+    external_tool_catalog::ExternalToolCatalog,
     plugin_discovery::{configured_plugin_paths, discover_plugin_manifests_in},
     runtime_governance::RuntimeGovernance,
     runtime_surface_assembler::{
@@ -61,6 +70,10 @@ pub struct RuntimeBootstrap {
     pub plugin_load_handle: PluginLoadHandle,
     /// 后台插件初始化 spawn 的 JoinHandle，shutdown 时 abort。
     pub plugin_init_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// MCP 连接管理器（可选，MCP 不可用时为 None）。
+    pub mcp_manager: Option<Arc<astrcode_runtime_mcp::manager::McpConnectionManager>>,
+    /// MCP 热加载 watcher 的 JoinHandle（shutdown 时 abort）。
+    pub mcp_hot_reload_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 /// 插件加载状态。
@@ -120,6 +133,85 @@ impl PluginLoadHandle {
     }
 }
 
+struct McpBootstrapState {
+    manager: Arc<McpConnectionManager>,
+    surface: McpSurfaceSnapshot,
+    watch_paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredMcpApprovals {
+    #[serde(default)]
+    projects: std::collections::HashMap<String, Vec<McpApprovalData>>,
+}
+
+struct FileMcpSettingsStore {
+    path: PathBuf,
+}
+
+impl FileMcpSettingsStore {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    fn load_document(&self) -> std::result::Result<StoredMcpApprovals, String> {
+        if !self.path.exists() {
+            return Ok(StoredMcpApprovals::default());
+        }
+        let content = std::fs::read_to_string(&self.path)
+            .map_err(|error| format!("failed to read {}: {}", self.path.display(), error))?;
+        serde_json::from_str::<StoredMcpApprovals>(&content)
+            .map_err(|error| format!("failed to parse {}: {}", self.path.display(), error))
+    }
+
+    fn save_document(&self, document: &StoredMcpApprovals) -> std::result::Result<(), String> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("failed to create {}: {}", parent.display(), error))?;
+        }
+        let content = serde_json::to_vec_pretty(document)
+            .map_err(|error| format!("failed to serialize MCP approvals: {}", error))?;
+        std::fs::write(&self.path, content)
+            .map_err(|error| format!("failed to write {}: {}", self.path.display(), error))
+    }
+}
+
+impl McpSettingsStore for FileMcpSettingsStore {
+    fn load_approvals(
+        &self,
+        project_path: &str,
+    ) -> std::result::Result<Vec<McpApprovalData>, String> {
+        let document = self.load_document()?;
+        Ok(document
+            .projects
+            .get(project_path)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn save_approval(
+        &self,
+        project_path: &str,
+        data: &McpApprovalData,
+    ) -> std::result::Result<(), String> {
+        let mut document = self.load_document()?;
+        let approvals = document
+            .projects
+            .entry(project_path.to_string())
+            .or_default();
+        if let Some(existing) = approvals
+            .iter_mut()
+            .find(|approval| approval.server_signature == data.server_signature)
+        {
+            *existing = data.clone();
+        } else {
+            approvals.push(data.clone());
+        }
+        self.save_document(&document)
+    }
+}
+
 /// 引导运行时系统。
 ///
 /// 按以下顺序初始化：
@@ -154,32 +246,53 @@ where
     // 为当前 surface 创建独立的 skill 目录和 router。
     // 后台加载完成后会整体替换为新 surface，避免把半更新状态暴露给新 turn。
     let builtin_skill_catalog = Arc::new(SkillCatalog::new(builtin_skills.clone()));
+    let external_tool_catalog = Arc::new(ExternalToolCatalog::default());
     let subagent_executor = Arc::new(DeferredSubAgentExecutor::default());
     let collaboration_executor = Arc::new(DeferredCollaborationExecutor::default());
-    let router = create_builtin_router(
+    let builtin_router = create_builtin_router(
         Arc::clone(&builtin_skill_catalog),
+        Arc::clone(&external_tool_catalog),
         subagent_executor.clone(),
         collaboration_executor.clone(),
     )?;
 
     // 获取内置能力名称集合（用于冲突检测）
-    let builtin_names: HashSet<String> = router
+    let builtin_names: HashSet<String> = builtin_router
         .descriptors()
         .iter()
         .map(|d| d.name.clone())
         .collect();
 
+    // 尝试初始化 MCP 连接（MCP 不可用时 runtime 照常启动）
+    let mcp_bootstrap = init_mcp_connections().await;
+    let (router, initial_prompt_declarations) = if let Some(bootstrap) = &mcp_bootstrap {
+        let router = build_router_with_mcp(
+            &builtin_router,
+            bootstrap.surface.capability_invokers.clone(),
+        )?;
+        (router, bootstrap.surface.prompt_declarations.clone())
+    } else {
+        (builtin_router.clone(), Vec::new())
+    };
+    let mcp_manager = mcp_bootstrap
+        .as_ref()
+        .map(|bootstrap| bootstrap.manager.clone());
+    external_tool_catalog.replace_from_descriptors(&router.descriptors());
+
     // 创建 RuntimeService（立即可用）
     let service = Arc::new(
         RuntimeService::from_capabilities_with_prompt_inputs_and_agents(
             router.clone(),
-            Vec::new(), // prompt declarations 将在插件加载后动态添加
+            initial_prompt_declarations,
             Arc::clone(&builtin_skill_catalog),
             Arc::clone(&agent_loader),
             Arc::clone(&agent_profiles),
         )
         .map_err(service_error_to_astr)?,
     );
+    if let Some(bootstrap) = &mcp_bootstrap {
+        service.install_mcp_manager(bootstrap.manager.clone()).await;
+    }
     subagent_executor.bind(&service);
     collaboration_executor.bind(&service);
     // 配置热重载需要尽早挂载 watcher，确保用户在应用启动后直接编辑 config.json
@@ -188,6 +301,14 @@ where
     // Agent 定义属于独立的文件系统输入面，需要单独 watch，避免用户编辑 agents
     // 后必须重启 runtime 才能生效。
     service.watch().start_agent_auto_reload();
+    let mcp_hot_reload_handle = mcp_bootstrap.as_ref().map(|bootstrap| {
+        start_mcp_surface_sync(
+            Arc::clone(&service),
+            bootstrap.manager.clone(),
+            Arc::clone(&external_tool_catalog),
+            bootstrap.watch_paths.clone(),
+        )
+    });
 
     // 创建后台加载句柄
     let plugin_load_handle = PluginLoadHandle::new();
@@ -225,6 +346,8 @@ where
             governance,
             plugin_load_handle,
             plugin_init_handle: std::sync::Mutex::new(None),
+            mcp_manager,
+            mcp_hot_reload_handle: std::sync::Mutex::new(mcp_hot_reload_handle),
         });
     }
 
@@ -237,9 +360,7 @@ where
     let service_for_bg = Arc::clone(&service);
     let governance_for_bg = Arc::clone(&governance);
     let coordinator_for_bg = Arc::clone(&coordinator);
-    let builtin_skills_for_bg = builtin_skills;
-    let subagent_executor_for_bg = subagent_executor;
-    let collaboration_executor_for_bg = collaboration_executor;
+    let external_tool_catalog_for_bg = Arc::clone(&external_tool_catalog);
     let total_plugin_count = manifests.len();
 
     let plugin_init_task = tokio::spawn(async move {
@@ -253,15 +374,21 @@ where
 
         match result {
             Ok(assembled) => {
+                let current_surface = service_for_bg
+                    .loop_surface()
+                    .current_surface_snapshot()
+                    .await;
                 let updated_skill_catalog = Arc::new(SkillCatalog::new(merge_skill_layers(
-                    builtin_skills_for_bg,
+                    filter_base_skills_by_source(current_surface.base_skills, SkillSource::Plugin),
                     assembled.skills,
                 )));
-                let updated_router = match build_runtime_router(
-                    Arc::clone(&updated_skill_catalog),
-                    assembled.invokers,
-                    subagent_executor_for_bg.clone(),
-                    collaboration_executor_for_bg.clone(),
+                let updated_router = match build_router_from_invokers(
+                    current_surface
+                        .capability_invokers
+                        .into_iter()
+                        .filter(|invoker| !has_source_tag(&invoker.descriptor(), "source:plugin"))
+                        .chain(assembled.invokers)
+                        .collect(),
                 ) {
                     Ok(router) => router,
                     Err(error) => {
@@ -276,13 +403,25 @@ where
                     },
                 };
                 let updated_capabilities = updated_router.descriptors();
+                external_tool_catalog_for_bg.replace_from_descriptors(&updated_capabilities);
 
                 // 先切换 service，让新 turn 能看到完整的新 surface；若失败则不推进后续状态。
+                let merged_prompt_declarations = merge_prompt_declarations(
+                    current_surface
+                        .prompt_declarations
+                        .into_iter()
+                        .filter(|declaration| {
+                            declaration.source
+                                != astrcode_runtime_prompt::prompt_declaration::PromptDeclarationSource::Plugin
+                        })
+                        .collect(),
+                    assembled.prompt_declarations,
+                );
                 if let Err(error) = service_for_bg
                     .loop_surface()
                     .replace_surface(
                         updated_router,
-                        assembled.prompt_declarations,
+                        merged_prompt_declarations,
                         updated_skill_catalog,
                         assembled.hook_handlers,
                     )
@@ -351,21 +490,44 @@ where
         governance,
         plugin_load_handle,
         plugin_init_handle: std::sync::Mutex::new(Some(plugin_init_task)),
+        mcp_manager,
+        mcp_hot_reload_handle: std::sync::Mutex::new(mcp_hot_reload_handle),
     })
 }
 
 /// 创建只包含内置能力的路由器。
 fn create_builtin_router(
     skill_catalog: Arc<SkillCatalog>,
+    external_tool_catalog: Arc<ExternalToolCatalog>,
     subagent_executor: Arc<dyn astrcode_runtime_agent_tool::SubAgentExecutor>,
     collaboration_executor: Arc<dyn astrcode_runtime_agent_tool::CollaborationExecutor>,
 ) -> std::result::Result<CapabilityRouter, AstrError> {
     let invokers = crate::builtin_capabilities::built_in_capability_invokers(
         skill_catalog,
+        external_tool_catalog,
         subagent_executor,
         collaboration_executor,
     )?;
 
+    build_router_from_invokers(invokers)
+}
+
+fn build_router_with_mcp(
+    builtin_router: &CapabilityRouter,
+    mcp_invokers: Vec<Arc<dyn astrcode_core::CapabilityInvoker>>,
+) -> std::result::Result<CapabilityRouter, AstrError> {
+    build_router_from_invokers(
+        builtin_router
+            .invokers()
+            .into_iter()
+            .chain(mcp_invokers)
+            .collect(),
+    )
+}
+
+fn build_router_from_invokers(
+    invokers: Vec<Arc<dyn astrcode_core::CapabilityInvoker>>,
+) -> std::result::Result<CapabilityRouter, AstrError> {
     let mut builder = CapabilityRouter::builder();
     for invoker in invokers {
         builder = builder.register_invoker(invoker);
@@ -373,19 +535,21 @@ fn create_builtin_router(
     builder.build()
 }
 
-/// 构建完整 runtime router。
-///
-/// 先挂载共享同一份 skill 目录的内置能力，再批量注册插件能力，
-/// 确保 `Skill` 工具与 prompt surface 看到的是同一份目录。
-fn build_runtime_router(
-    skill_catalog: Arc<SkillCatalog>,
-    plugin_invokers: Vec<Arc<dyn astrcode_core::CapabilityInvoker>>,
-    subagent_executor: Arc<dyn astrcode_runtime_agent_tool::SubAgentExecutor>,
-    collaboration_executor: Arc<dyn astrcode_runtime_agent_tool::CollaborationExecutor>,
-) -> std::result::Result<CapabilityRouter, AstrError> {
-    let router = create_builtin_router(skill_catalog, subagent_executor, collaboration_executor)?;
-    router.register_invokers(plugin_invokers)?;
-    Ok(router)
+fn has_source_tag(
+    descriptor: &astrcode_protocol::capability::CapabilityDescriptor,
+    tag: &str,
+) -> bool {
+    descriptor.tags.iter().any(|candidate| candidate == tag)
+}
+
+fn filter_base_skills_by_source(
+    skills: Vec<astrcode_runtime_skill_loader::SkillSpec>,
+    source: SkillSource,
+) -> Vec<astrcode_runtime_skill_loader::SkillSpec> {
+    skills
+        .into_iter()
+        .filter(|skill| skill.source != source)
+        .collect()
 }
 
 fn service_error_to_astr(error: ServiceError) -> AstrError {
@@ -417,4 +581,232 @@ fn agent_loader_error_to_astr(error: AgentLoaderError) -> AstrError {
             path, message
         )),
     }
+}
+
+/// 尝试初始化 MCP 连接并启动热加载。
+async fn init_mcp_connections() -> Option<McpBootstrapState> {
+    let (configs, project_key, approval_store_path, watch_paths) = match load_mcp_declared_configs()
+    {
+        Ok(inputs) => inputs,
+        Err(error) => {
+            log::warn!("MCP config load failed, skipping: {}", error);
+            return None;
+        },
+    };
+
+    if configs.is_empty() {
+        return None;
+    }
+
+    let manager = Arc::new(McpConnectionManager::new().with_approval(
+        astrcode_runtime_mcp::config::McpApprovalManager::new(Box::new(FileMcpSettingsStore::new(
+            approval_store_path,
+        ))),
+        project_key,
+    ));
+    let results = manager.connect_all(configs).await;
+    for (name, error) in &results.failed {
+        log::warn!("MCP server '{}' failed: {}", name, error);
+    }
+
+    Some(McpBootstrapState {
+        surface: manager.current_surface().await,
+        manager,
+        watch_paths,
+    })
+}
+
+fn start_mcp_surface_sync(
+    service: Arc<RuntimeService>,
+    manager: Arc<McpConnectionManager>,
+    external_tool_catalog: Arc<ExternalToolCatalog>,
+    watch_paths: Vec<PathBuf>,
+) -> tokio::task::JoinHandle<()> {
+    let mut surface_events = manager.subscribe_surface_events();
+    let mut hot_reload = McpHotReload::new_with_paths(watch_paths);
+
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                event = hot_reload.events().recv() => {
+                    if event.is_none() {
+                        break;
+                    }
+                    match load_mcp_declared_configs() {
+                        Ok((configs, _, _, _)) => {
+                            if let Err(error) = manager.reload_config(configs).await {
+                                log::warn!("MCP config reload failed: {}", error);
+                                continue;
+                            }
+                            if let Err(error) = apply_mcp_surface(&service, &manager, &external_tool_catalog).await {
+                                log::warn!("MCP surface apply after config reload failed: {}", error);
+                            }
+                        },
+                        Err(error) => {
+                            log::warn!("MCP config reload load failed: {}", error);
+                        },
+                    }
+                }
+                changed = surface_events.recv() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    if let Err(error) = apply_mcp_surface(&service, &manager, &external_tool_catalog).await {
+                        log::warn!("MCP surface apply failed: {}", error);
+                    }
+                }
+            }
+        }
+        log::info!("MCP surface sync task ended");
+    })
+}
+
+async fn apply_mcp_surface(
+    service: &Arc<RuntimeService>,
+    manager: &Arc<McpConnectionManager>,
+    external_tool_catalog: &Arc<ExternalToolCatalog>,
+) -> std::result::Result<(), AstrError> {
+    let current_surface = service.loop_surface().current_surface_snapshot().await;
+    let mcp_surface = manager.current_surface().await;
+    let capabilities = build_router_from_invokers(
+        current_surface
+            .capability_invokers
+            .into_iter()
+            .filter(|invoker| !has_source_tag(&invoker.descriptor(), "source:mcp"))
+            .chain(mcp_surface.capability_invokers)
+            .collect(),
+    )?;
+    let prompt_declarations = merge_prompt_declarations(
+        current_surface
+            .prompt_declarations
+            .into_iter()
+            .filter(|declaration| {
+                declaration.source
+                    != astrcode_runtime_prompt::prompt_declaration::PromptDeclarationSource::Mcp
+            })
+            .collect(),
+        mcp_surface.prompt_declarations,
+    );
+    let skill_catalog = Arc::new(SkillCatalog::new(filter_base_skills_by_source(
+        current_surface.base_skills,
+        SkillSource::Mcp,
+    )));
+    let descriptors = capabilities.descriptors();
+    service
+        .loop_surface()
+        .replace_surface(
+            capabilities,
+            prompt_declarations,
+            skill_catalog,
+            current_surface.hook_handlers,
+        )
+        .await
+        .map_err(service_error_to_astr)?;
+    external_tool_catalog.replace_from_descriptors(&descriptors);
+    Ok(())
+}
+
+fn load_mcp_declared_configs()
+-> std::result::Result<(Vec<McpServerConfig>, String, PathBuf, Vec<PathBuf>), AstrError> {
+    let working_dir = std::env::current_dir()
+        .map_err(|error| AstrError::io("failed to resolve current directory", error))?;
+    let user_config_path = crate::config::config_path()?;
+    let user_config = crate::config::load_config_from_path(&user_config_path)?;
+    let local_overlay_path = crate::config::project_overlay_path(&working_dir)?;
+    let local_overlay = crate::config::load_config_overlay_from_path(&local_overlay_path)?;
+    let project_mcp_path = working_dir.join(".mcp.json");
+    let approval_store_path = approval_store_path()?;
+    let project_key = std::fs::canonicalize(&working_dir)
+        .unwrap_or_else(|_| working_dir.clone())
+        .to_string_lossy()
+        .to_string();
+
+    let mut configs = Vec::new();
+    if let Some(raw) = user_config.mcp.as_ref() {
+        configs.extend(McpConfigManager::load_from_value(
+            raw,
+            McpConfigScope::User,
+        )?);
+    }
+    if let Some(overlay) = local_overlay
+        .as_ref()
+        .and_then(|overlay| overlay.mcp.as_ref())
+    {
+        configs.extend(McpConfigManager::load_from_value(
+            overlay,
+            McpConfigScope::Local,
+        )?);
+    }
+    if project_mcp_path.exists() {
+        configs.extend(McpConfigManager::load_from_file(
+            &project_mcp_path,
+            McpConfigScope::Project,
+        )?);
+    }
+
+    Ok((
+        merge_mcp_scoped_configs(configs),
+        project_key,
+        approval_store_path.clone(),
+        vec![
+            user_config_path,
+            local_overlay_path,
+            project_mcp_path,
+            approval_store_path,
+        ],
+    ))
+}
+
+fn merge_mcp_scoped_configs(configs: Vec<McpServerConfig>) -> Vec<McpServerConfig> {
+    let mut by_signature = std::collections::HashMap::<String, McpServerConfig>::new();
+    for config in configs {
+        let signature = McpConfigManager::compute_signature(&config);
+        match by_signature.get(&signature) {
+            Some(existing) if existing.scope > config.scope => {},
+            _ => {
+                by_signature.insert(signature, config);
+            },
+        }
+    }
+    let mut merged = by_signature.into_values().collect::<Vec<_>>();
+    merged.sort_by(|left, right| left.name.cmp(&right.name));
+    merged
+}
+
+fn approval_store_path() -> std::result::Result<PathBuf, AstrError> {
+    Ok(astrcode_core::project::astrcode_dir()?.join("mcp-approvals.json"))
+}
+
+/// 合并 MCP prompt declarations 和插件 prompt declarations，按 block_id 去重。
+///
+/// MCP declarations 在前（较低优先级），插件 declarations 在后（较高优先级）。
+/// 相同 block_id 的声明只保留后出现的（插件覆盖 MCP）。
+fn merge_prompt_declarations(
+    mcp_declarations: Vec<astrcode_runtime_prompt::PromptDeclaration>,
+    plugin_declarations: Vec<astrcode_runtime_prompt::PromptDeclaration>,
+) -> Vec<astrcode_runtime_prompt::PromptDeclaration> {
+    use std::collections::HashSet;
+
+    let mut seen_block_ids = HashSet::new();
+    let mut merged = Vec::with_capacity(mcp_declarations.len() + plugin_declarations.len());
+
+    // 先加 MCP（较低优先级）
+    for decl in mcp_declarations {
+        seen_block_ids.insert(decl.block_id.clone());
+        merged.push(decl);
+    }
+
+    // 再加插件（较高优先级），去重
+    for decl in plugin_declarations {
+        if seen_block_ids.insert(decl.block_id.clone()) {
+            merged.push(decl);
+        } else {
+            // 替换已有的同 block_id 声明
+            if let Some(existing) = merged.iter_mut().find(|d| d.block_id == decl.block_id) {
+                *existing = decl;
+            }
+        }
+    }
+
+    merged
 }

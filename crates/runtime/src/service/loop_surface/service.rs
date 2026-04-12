@@ -8,7 +8,10 @@ use astrcode_runtime_skill_loader::SkillCatalog;
 
 use crate::service::{
     RuntimeService, RuntimeSurfaceState, ServiceResult,
-    loop_surface::factory::{LoopRuntimeDeps, build_agent_loop},
+    loop_surface::{
+        LoopSurfaceSnapshot,
+        factory::{LoopRuntimeDeps, build_agent_loop},
+    },
 };
 
 /// Loop surface 服务：集中处理 runtime surface 与 loop 热替换。
@@ -26,6 +29,16 @@ impl<'a> LoopSurfaceService<'a> {
 
     pub(crate) async fn current_loop(&self) -> Arc<AgentLoop> {
         self.runtime.loop_.read().await.clone()
+    }
+
+    pub(crate) async fn current_surface_snapshot(&self) -> LoopSurfaceSnapshot {
+        let surface = self.runtime.surface.read().await;
+        LoopSurfaceSnapshot {
+            capability_invokers: surface.capabilities.invokers(),
+            prompt_declarations: surface.prompt_declarations.clone(),
+            base_skills: surface.skill_catalog.base_skills(),
+            hook_handlers: surface.hook_handlers.clone(),
+        }
     }
 
     pub(crate) async fn replace_surface(

@@ -39,6 +39,7 @@ mod config;
 mod execution;
 mod lifecycle;
 mod loop_surface;
+mod mcp;
 mod observability;
 mod service_contract;
 mod session;
@@ -55,6 +56,7 @@ pub use execution::{
 };
 pub use lifecycle::LifecycleServiceHandle;
 pub use loop_surface::LoopSurfaceServiceHandle;
+pub use mcp::McpServiceHandle;
 use observability::RuntimeObservability;
 pub use observability::{
     ExecutionDiagnosticsSnapshot, ObservabilityServiceHandle, OperationMetricsSnapshot,
@@ -193,6 +195,8 @@ pub struct RuntimeService {
     task_registry: lifecycle::TaskRegistry,
     /// 协作工具的延迟执行器桥（runtime surface 热重载时复用）。
     collaboration_executor: Arc<DeferredCollaborationExecutor>,
+    /// MCP 管理面，通过 runtime façade 暴露给 server。
+    mcp_manager: RwLock<Option<Arc<astrcode_runtime_mcp::manager::McpConnectionManager>>>,
 }
 
 impl RuntimeService {
@@ -232,6 +236,10 @@ impl RuntimeService {
 
     pub fn observability(self: &Arc<Self>) -> ObservabilityServiceHandle {
         ObservabilityServiceHandle::new(Arc::clone(self))
+    }
+
+    pub fn mcp(self: &Arc<Self>) -> McpServiceHandle {
+        McpServiceHandle::new(Arc::clone(self))
     }
 
     fn agent_profile_catalog(&self) -> Arc<dyn AgentProfileCatalog> {
@@ -345,6 +353,7 @@ impl RuntimeService {
             watch_state: watch::WatchState::new(),
             task_registry: lifecycle::TaskRegistry::new(),
             collaboration_executor: Arc::new(DeferredCollaborationExecutor::default()),
+            mcp_manager: RwLock::new(None),
         })
     }
 
@@ -377,6 +386,13 @@ impl RuntimeService {
             .read()
             .expect("agent profile registry lock should not be poisoned")
             .clone()
+    }
+
+    pub(crate) async fn install_mcp_manager(
+        &self,
+        manager: Arc<astrcode_runtime_mcp::manager::McpConnectionManager>,
+    ) {
+        *self.mcp_manager.write().await = Some(manager);
     }
 }
 

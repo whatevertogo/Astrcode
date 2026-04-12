@@ -100,7 +100,7 @@ pub use loader::{
     config_path, load_config, load_config_from_path, load_config_overlay_from_path,
     load_resolved_config, project_overlay_path,
 };
-pub use saver::{save_config, save_config_to_path};
+pub use saver::{save_config, save_config_overlay_to_path, save_config_to_path};
 pub use selection::{
     ActiveSelection, CurrentModelSelection, ModelOption, ResolvedModelConfig, list_model_options,
     resolve_active_selection, resolve_current_model, resolve_model_for_profile,
@@ -308,6 +308,7 @@ mod tests {
             active_profile: "custom".to_string(),
             active_model: "gpt-4o-mini".to_string(),
             runtime: RuntimeConfig::default(),
+            mcp: None,
             profiles: vec![Profile {
                 name: "custom".to_string(),
                 provider_kind: PROVIDER_KIND_OPENAI.to_string(),
@@ -382,6 +383,7 @@ mod tests {
             active_profile: profile.name.clone(),
             active_model: profile.models[0].id.clone(),
             runtime: RuntimeConfig::default(),
+            mcp: None,
             profiles: vec![profile.clone(), profile],
             version: CURRENT_CONFIG_VERSION.to_string(),
         })
@@ -428,6 +430,7 @@ mod tests {
             serde_json::to_vec_pretty(&ConfigOverlay {
                 active_profile: Some("anthropic".to_string()),
                 active_model: Some("claude-opus-4-5".to_string()),
+                mcp: None,
                 profiles: None,
             })
             .expect("overlay should serialize"),

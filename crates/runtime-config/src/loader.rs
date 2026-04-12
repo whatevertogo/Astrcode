@@ -146,7 +146,10 @@ where
 /// 1. 将原始文件重命名为 `.bak` 备份
 /// 2. 将临时文件重命名为目标文件
 /// 3. 若步骤 2 失败，从 `.bak` 恢复原始文件；临时文件故意保留以供手动恢复
-pub(crate) fn write_json_atomic(path: &Path, config: &Config) -> Result<()> {
+pub(crate) fn write_json_atomic<T>(path: &Path, config: &T) -> Result<()>
+where
+    T: serde::Serialize,
+{
     use std::io::Write;
 
     let json = serde_json::to_vec_pretty(config)

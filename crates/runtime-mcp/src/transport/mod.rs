@@ -3,6 +3,8 @@
 //! 定义 `McpTransport` trait——所有 MCP 传输实现的统一抽象。
 //! 传输层负责底层消息收发，不涉及 MCP 协议语义。
 
+pub mod http;
+pub mod sse;
 pub mod stdio;
 
 #[cfg(test)]

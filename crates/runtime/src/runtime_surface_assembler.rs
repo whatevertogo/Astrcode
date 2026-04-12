@@ -43,7 +43,7 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::{
-    builtin_capabilities::built_in_capability_invokers,
+    builtin_capabilities::built_in_capability_invokers, external_tool_catalog::ExternalToolCatalog,
     plugin_hook_adapter::build_plugin_hook_handlers,
     plugin_skill_materializer::materialize_plugin_skills,
 };
@@ -147,7 +147,11 @@ struct GovernedPluginInvoker {
 #[async_trait]
 impl CapabilityInvoker for GovernedPluginInvoker {
     fn descriptor(&self) -> CapabilityDescriptor {
-        self.inner.descriptor()
+        let mut descriptor = self.inner.descriptor();
+        if !descriptor.tags.iter().any(|tag| tag == "source:plugin") {
+            descriptor.tags.push("source:plugin".to_string());
+        }
+        descriptor
     }
 
     async fn invoke(
@@ -309,6 +313,7 @@ where
     let skill_catalog = Arc::new(SkillCatalog::new(builtin_skills.clone()));
     let built_in_invokers = built_in_capability_invokers(
         Arc::clone(&skill_catalog),
+        Arc::new(ExternalToolCatalog::default()),
         subagent_executor,
         collaboration_executor,
     )?;

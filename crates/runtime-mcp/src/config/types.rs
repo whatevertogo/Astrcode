@@ -21,7 +21,7 @@ pub enum McpConfigScope {
 }
 
 /// MCP 服务器完整配置。
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerConfig {
     /// 服务器唯一标识（仅允许 `[a-zA-Z0-9_-]`）。
     pub name: String,
@@ -44,7 +44,7 @@ pub struct McpServerConfig {
 }
 
 /// MCP 传输配置（联合类型）。
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum McpTransportConfig {
     /// stdio 传输：启动子进程通过 stdin/stdout 通信。
@@ -79,6 +79,7 @@ pub enum McpTransportConfig {
 /// 从 `.mcp.json` 文件反序列化的顶层结构。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct McpJsonFile {
+    #[serde(rename = "mcpServers")]
     pub mcp_servers: HashMap<String, McpJsonServerEntry>,
 }
 
@@ -109,6 +110,13 @@ pub struct McpJsonServerEntry {
     /// 超时覆盖。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
+}
+
+impl McpTransportConfig {
+    /// 是否为远程传输（HTTP/SSE）。
+    pub fn is_remote(&self) -> bool {
+        matches!(self, Self::StreamableHttp { .. } | Self::Sse { .. })
+    }
 }
 
 // ========== 辅助函数 ==========

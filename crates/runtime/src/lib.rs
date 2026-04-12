@@ -17,6 +17,7 @@ mod bootstrap;
 #[cfg(test)]
 mod bootstrap_tests;
 mod builtin_capabilities;
+mod external_tool_catalog;
 mod plugin_discovery;
 mod plugin_hook_adapter;
 mod plugin_skill_materializer;
@@ -27,6 +28,7 @@ mod service;
 mod skill_tool;
 #[cfg(test)]
 mod test_support;
+mod tool_search;
 
 pub use astrcode_runtime_agent_control as agent_control;
 pub use astrcode_runtime_agent_control::{AgentControl, AgentControlError};
@@ -52,13 +54,17 @@ pub use astrcode_runtime_config::{
     resolve_tool_result_max_bytes, save_config, test_connection,
 };
 pub use astrcode_runtime_llm as llm;
+pub use astrcode_runtime_mcp::{
+    config::{McpConfigScope, McpServerConfig, McpTransportConfig},
+    manager::McpServerStatusSnapshot,
+};
 pub use astrcode_runtime_prompt as prompt;
 pub use astrcode_runtime_skill_loader as skills;
 pub use bootstrap::{PluginLoadHandle, PluginLoadState, RuntimeBootstrap, bootstrap_runtime};
 pub use runtime_governance::{RuntimeGovernance, RuntimeGovernanceSnapshot, RuntimeReloadResult};
 pub use service::{
     AgentExecutionServiceHandle, AgentProfileSummary, ComposerOption, ComposerOptionKind,
-    ComposerOptionsRequest, ComposerServiceHandle, ExecutionDiagnosticsSnapshot,
+    ComposerOptionsRequest, ComposerServiceHandle, ExecutionDiagnosticsSnapshot, McpServiceHandle,
     OperationMetricsSnapshot, ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot,
     RuntimeService, ServiceError, ServiceResult, SessionCatalogEvent, SessionEventFilter,
     SessionEventFilterSpec, SessionEventRecord, SessionHistorySnapshot, SessionReplay,

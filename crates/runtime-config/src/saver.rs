@@ -16,7 +16,11 @@ use std::{fs, path::Path};
 
 use astrcode_core::{AstrError, Result};
 
-use crate::{loader::write_json_atomic, types::Config, validation::normalize_config};
+use crate::{
+    loader::write_json_atomic,
+    types::{Config, ConfigOverlay},
+    validation::normalize_config,
+};
 
 /// 保存配置到默认路径。
 ///
@@ -44,4 +48,22 @@ pub fn save_config_to_path(path: &Path, config: &Config) -> Result<()> {
 
     let normalized = normalize_config(config.clone())?;
     write_json_atomic(path, &normalized)
+}
+
+/// 保存项目级私有 overlay 到指定路径。
+///
+/// overlay 只承载显式覆盖字段，因此不做 `Config` 级别的规范化校验；
+/// 但仍复用原子写入策略，避免在写配置过程中留下半截 JSON。
+pub fn save_config_overlay_to_path(path: &Path, overlay: &ConfigOverlay) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        AstrError::Internal(format!("config path has no parent: {}", path.display()))
+    })?;
+    fs::create_dir_all(parent).map_err(|e| {
+        AstrError::io(
+            format!("failed to create config directory for {}", parent.display()),
+            e,
+        )
+    })?;
+
+    write_json_atomic(path, overlay)
 }

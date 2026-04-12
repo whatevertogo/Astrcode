@@ -178,6 +178,14 @@ pub struct McpPromptMessage {
     pub content: McpContentBlock,
 }
 
+/// `prompts/get` 返回结果。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct McpPromptResult {
+    pub messages: Vec<McpPromptMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 // ========== MCP 资源类型 ==========
 
 /// MCP 服务器声明的资源信息。
@@ -337,7 +345,7 @@ pub const CLIENT_NAME: &str = "astrcode";
 pub const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// OAuth 配置。
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpOAuthConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
