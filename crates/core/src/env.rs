@@ -25,5 +25,14 @@ pub const ANTHROPIC_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
 /// Maximum number of concurrency-safe tools that may execute in parallel within a single step.
 pub const ASTRCODE_MAX_TOOL_CONCURRENCY_ENV: &str = "ASTRCODE_MAX_TOOL_CONCURRENCY";
 
+/// 工具结果内联阈值的全局环境变量覆盖（字节）。
+/// 设置后所有工具使用此值作为落盘阈值，优先级低于 per-tool 环境变量。
+pub const ASTRCODE_TOOL_RESULT_INLINE_LIMIT_ENV: &str = "ASTRCODE_TOOL_RESULT_INLINE_LIMIT";
+
+/// 工具结果内联阈值的 per-tool 环境变量前缀。
+/// 拼接大写工具名使用，如 `ASTRCODE_TOOL_INLINE_LIMIT_SHELL=50000`。
+/// 优先级高于全局 `ASTRCODE_TOOL_RESULT_INLINE_LIMIT` 和描述符中的 `max_result_inline_size`。
+pub const ASTRCODE_TOOL_INLINE_LIMIT_PREFIX: &str = "ASTRCODE_TOOL_INLINE_LIMIT_";
+
 /// 本地 sidecar 服务器的默认端口号。
 pub const DEFAULT_LOCAL_SERVER_PORT: u16 = 62000;

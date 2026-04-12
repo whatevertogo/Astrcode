@@ -20,7 +20,7 @@ use std::{
 
 use astrcode_core::{
     AstrError, Result, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult, ToolPromptMetadata,
+    ToolExecutionResult, ToolPromptMetadata, tool_result_persist::maybe_persist_tool_result,
 };
 use astrcode_protocol::capability::SideEffectLevel;
 use async_trait::async_trait;
@@ -28,7 +28,9 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::builtin_tools::fs_common::{check_cancel, remember_file_observation, resolve_read_path};
+use crate::builtin_tools::fs_common::{
+    check_cancel, remember_file_observation, resolve_read_path, session_dir_for_tool_results,
+};
 
 /// 二进制检测采样大小（前 N 字节）。
 const BINARY_DETECT_SAMPLE_SIZE: usize = 8192;
@@ -267,6 +269,8 @@ impl Tool for ReadFileTool {
                 .prompt_tag("filesystem")
                 .always_include(true),
             )
+            // read_file 有自身的 maxChars 分页控制，使用较高阈值
+            .max_result_inline_size(100_000)
     }
 
     async fn execute(
@@ -431,11 +435,19 @@ impl Tool for ReadFileTool {
             json!(observation.modified_unix_nanos),
         );
 
+        let session_dir = session_dir_for_tool_results(ctx)?;
+        let final_output = maybe_persist_tool_result(
+            &session_dir,
+            &tool_call_id,
+            &text,
+            ctx.resolved_inline_limit(),
+        );
+
         Ok(ToolExecutionResult {
             tool_call_id,
             tool_name: "readFile".to_string(),
             ok: true,
-            output: text,
+            output: final_output,
             error: None,
             metadata: Some(serde_json::Value::Object(meta_object)),
             duration_ms: started_at.elapsed().as_millis() as u64,

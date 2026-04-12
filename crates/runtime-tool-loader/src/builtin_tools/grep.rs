@@ -53,14 +53,18 @@ pub struct GrepTool;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GrepArgs {
+    /// Rust 正则表达式模式，必填。
     pattern: String,
     /// 搜索路径，可选。未提供时使用当前工作目录。
     #[serde(default)]
     path: Option<PathBuf>,
+    /// 递归搜索子目录。默认为 true 当 path 是目录时。
     #[serde(default)]
-    recursive: bool,
+    recursive: Option<bool>,
+    /// 是否大小写敏感。默认为 false（不区分大小写）。
     #[serde(default)]
     case_insensitive: bool,
+    /// 最大匹配数量，超过则截断结果。默认为 250。
     #[serde(default)]
     max_matches: Option<usize>,
     /// 跳过的匹配数量，用于分页获取后续结果。
@@ -149,7 +153,7 @@ impl Tool for GrepTool {
                     },
                     "recursive": {
                         "type": "boolean",
-                        "description": "Search subdirectories recursively"
+                        "description": "Search subdirectories recursively. Defaults to true when `path` resolves to a directory."
                     },
                     "caseInsensitive": { "type": "boolean" },
                     "maxMatches": {
@@ -205,9 +209,10 @@ impl Tool for GrepTool {
                      provide both `pattern` and `path`.",
                     "Use `grep` only for content search inside a known file or directory. Always \
                      provide both `pattern` and `path`. `glob` and `fileType` only narrow which \
-                     files are searched inside that path; they never replace `path`. If you only \
-                     know a filename pattern or need to discover candidate paths first, use \
-                     `findFiles`.",
+                     files are searched inside that path; they never replace `path`. Directory \
+                     paths recurse by default; set `recursive: false` only when you intentionally \
+                     want the current directory level only. If you only know a filename pattern \
+                     or need to discover candidate paths first, use `findFiles`.",
                 )
                 .caveat(
                     "Pattern uses Rust regex syntax. Narrow scope with `glob`/`fileType`. If \
@@ -231,6 +236,7 @@ impl Tool for GrepTool {
                 .prompt_tag("search")
                 .always_include(true),
             )
+            .max_result_inline_size(20_000)
     }
 
     async fn execute(
@@ -257,6 +263,7 @@ impl Tool for GrepTool {
                 reason: format!("invalid regex: {}", error),
             })?;
 
+        let recursive = args.recursive.unwrap_or(path.is_dir());
         let output_mode = args.output_mode.unwrap_or_default();
         let max_matches = args.max_matches.unwrap_or(DEFAULT_MAX_MATCHES);
         let offset = args.offset.unwrap_or(0);
@@ -267,7 +274,7 @@ impl Tool for GrepTool {
 
         let files = collect_candidate_files(
             &path,
-            args.recursive,
+            recursive,
             ctx.cancel(),
             glob_matcher.as_ref(),
             type_extensions,
@@ -901,6 +908,71 @@ mod tests {
             canonical_tool_path(&file).to_string_lossy().to_string()
         );
         assert_eq!(matches[0].match_text, Some("pub fn".to_string()));
+    }
+
+    #[tokio::test]
+    async fn grep_directory_path_recurses_by_default() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let nested_dir = temp.path().join("nested");
+        tokio::fs::create_dir_all(&nested_dir)
+            .await
+            .expect("nested dir should be created");
+        let nested_file = nested_dir.join("lib.rs");
+        tokio::fs::write(&nested_file, "pub fn nested() {}\n")
+            .await
+            .expect("seed write should work");
+        let tool = GrepTool;
+
+        let result = tool
+            .execute(
+                "tc-grep-recursive-default".to_string(),
+                json!({
+                    "pattern": "nested",
+                    "path": temp.path().to_string_lossy()
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("grep should recurse into directory by default");
+
+        let matches: Vec<GrepMatch> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        assert_eq!(matches.len(), 1);
+        assert!(
+            matches[0].file.ends_with("nested\\lib.rs")
+                || matches[0].file.ends_with("nested/lib.rs")
+        );
+    }
+
+    #[tokio::test]
+    async fn grep_recursive_false_limits_search_to_top_level_directory() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let nested_dir = temp.path().join("nested");
+        tokio::fs::create_dir_all(&nested_dir)
+            .await
+            .expect("nested dir should be created");
+        let nested_file = nested_dir.join("lib.rs");
+        tokio::fs::write(&nested_file, "pub fn nested() {}\n")
+            .await
+            .expect("seed write should work");
+        let tool = GrepTool;
+
+        let result = tool
+            .execute(
+                "tc-grep-non-recursive-explicit".to_string(),
+                json!({
+                    "pattern": "nested",
+                    "path": temp.path().to_string_lossy(),
+                    "recursive": false
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("grep should succeed");
+
+        let matches: Vec<GrepMatch> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        assert!(matches.is_empty());
     }
 
     #[tokio::test]

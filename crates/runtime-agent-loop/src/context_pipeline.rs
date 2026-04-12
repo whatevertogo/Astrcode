@@ -862,4 +862,566 @@ mod tests {
             "deterministic trimming should keep the newest runtime memory blocks under budget"
         );
     }
+
+    // ── 管线集成测试：PersistenceBudget + MicroCompact + PrunePass 协同 ──
+
+    fn compact_clearable_descriptor(name: &str) -> CapabilityDescriptor {
+        CapabilityDescriptor::builder(name, CapabilityKind::tool())
+            .description("test tool")
+            .schema(json!({"type": "object"}), json!({"type": "string"}))
+            .compact_clearable(true)
+            .build()
+            .expect("descriptor should build")
+    }
+
+    /// 辅助：构造包含多个工具调用的消息流。
+    /// 格式：[(tool_name, call_id, result_content), ...]
+    fn make_tool_conversation(calls: &[(&str, &str, &str)]) -> Vec<LlmMessage> {
+        let mut messages = Vec::new();
+        messages.push(LlmMessage::Assistant {
+            content: String::new(),
+            tool_calls: calls
+                .iter()
+                .map(|(name, id, _)| astrcode_core::ToolCallRequest {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    args: json!({}),
+                })
+                .collect(),
+            reasoning: None,
+        });
+        for (_, id, content) in calls {
+            messages.push(LlmMessage::Tool {
+                tool_call_id: id.to_string(),
+                content: content.to_string(),
+            });
+        }
+        messages
+    }
+
+    /// PersistenceBudget 在有 session_dir 时持久化超预算的大结果。
+    #[test]
+    fn persistence_budget_persists_with_session_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // 把 tempdir 挂到 working_dir 上，让 project_dir 能算出 session_dir
+        let working = dir.path().join("project");
+        std::fs::create_dir_all(&working).expect("create working dir");
+
+        let big = "x".repeat(40_000);
+        let messages = make_tool_conversation(&[
+            ("readFile", "call-1", &big),
+            ("readFile", "call-2", "small result"),
+        ]);
+
+        let state = AgentState {
+            session_id: "s-persist-test".to_string(),
+            working_dir: working.clone(),
+            messages,
+            phase: astrcode_core::Phase::Thinking,
+            turn_count: 1,
+            last_assistant_at: None,
+        };
+
+        let descriptors = vec![compact_clearable_descriptor("readFile")];
+
+        let bundle = ContextRuntime::new(100_000)
+            .with_persistence_budget_config(PersistenceBudgetConfig {
+                aggregate_result_bytes_budget: 10_000,
+            })
+            .build_bundle(
+                &state,
+                ContextBundleInput {
+                    turn_id: "turn-1",
+                    step_index: 0,
+                    prior_compaction_view: None,
+                    capability_descriptors: &descriptors,
+                    keep_recent_turns: 1,
+                    model_context_window: 200_000,
+                },
+            )
+            .expect("bundle should build");
+
+        // call-1 (40KB) 应被持久化
+        assert!(bundle.persistence_stats.persisted_count >= 1);
+        assert!(bundle.persistence_stats.bytes_saved > 0);
+    }
+
+    /// 没有 PersistenceBudget 配置时 PersistenceBudgetStage 为 no-op。
+    #[test]
+    fn persistence_budget_no_op_without_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let working = dir.path().join("project");
+        std::fs::create_dir_all(&working).expect("create working dir");
+
+        let big = "x".repeat(40_000);
+        let messages = make_tool_conversation(&[("readFile", "call-1", &big)]);
+
+        let state = AgentState {
+            session_id: "s-no-config".to_string(),
+            working_dir: working,
+            messages,
+            phase: astrcode_core::Phase::Thinking,
+            turn_count: 1,
+            last_assistant_at: None,
+        };
+
+        // 不配置 PersistenceBudget
+        let bundle = ContextRuntime::new(100_000)
+            .build_bundle(
+                &state,
+                ContextBundleInput {
+                    turn_id: "turn-1",
+                    step_index: 0,
+                    prior_compaction_view: None,
+                    capability_descriptors: &[],
+                    keep_recent_turns: 1,
+                    model_context_window: 200_000,
+                },
+            )
+            .expect("bundle should build");
+
+        // 没有 PersistenceBudget 配置，应为 no-op
+        assert_eq!(bundle.persistence_stats.persisted_count, 0);
+    }
+
+    /// MicroCompact 在空闲超阈值时清除旧可压缩工具结果。
+    #[test]
+    fn micro_compact_clears_when_gap_exceeded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let working = dir.path().join("project");
+        std::fs::create_dir_all(&working).expect("create working dir");
+
+        let messages = make_tool_conversation(&[
+            ("readFile", "call-old", "old file content"),
+            ("readFile", "call-recent", "recent file content"),
+        ]);
+
+        // last_assistant_at 在 2 小时前（超过 3600 秒阈值）
+        let past = chrono::Utc::now() - chrono::Duration::seconds(7200);
+
+        let state = AgentState {
+            session_id: "s-micro-test".to_string(),
+            working_dir: working,
+            messages,
+            phase: astrcode_core::Phase::Thinking,
+            turn_count: 1,
+            last_assistant_at: Some(past),
+        };
+
+        let descriptors = vec![compact_clearable_descriptor("readFile")];
+
+        let bundle = ContextRuntime::new(100_000)
+            .with_micro_compact_config(MicroCompactConfig {
+                gap_threshold_secs: 3600,
+                keep_recent_results: 1,
+            })
+            .build_bundle(
+                &state,
+                ContextBundleInput {
+                    turn_id: "turn-1",
+                    step_index: 0,
+                    prior_compaction_view: None,
+                    capability_descriptors: &descriptors,
+                    keep_recent_turns: 1,
+                    model_context_window: 200_000,
+                },
+            )
+            .expect("bundle should build");
+
+        assert!(bundle.micro_compact_stats.cleared_count >= 1);
+    }
+
+    /// MicroCompact 在空闲未超阈值时不触发。
+    #[test]
+    fn micro_compact_no_op_when_gap_below_threshold() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let working = dir.path().join("project");
+        std::fs::create_dir_all(&working).expect("create working dir");
+
+        let messages = make_tool_conversation(&[("readFile", "call-1", "content")]);
+
+        // last_assistant_at 在 10 秒前（远小于 3600 秒阈值）
+        let recent = chrono::Utc::now() - chrono::Duration::seconds(10);
+
+        let state = AgentState {
+            session_id: "s-micro-noop".to_string(),
+            working_dir: working,
+            messages,
+            phase: astrcode_core::Phase::Thinking,
+            turn_count: 1,
+            last_assistant_at: Some(recent),
+        };
+
+        let descriptors = vec![compact_clearable_descriptor("readFile")];
+
+        let bundle = ContextRuntime::new(100_000)
+            .with_micro_compact_config(MicroCompactConfig {
+                gap_threshold_secs: 3600,
+                keep_recent_results: 0,
+            })
+            .build_bundle(
+                &state,
+                ContextBundleInput {
+                    turn_id: "turn-1",
+                    step_index: 0,
+                    prior_compaction_view: None,
+                    capability_descriptors: &descriptors,
+                    keep_recent_turns: 1,
+                    model_context_window: 200_000,
+                },
+            )
+            .expect("bundle should build");
+
+        assert_eq!(bundle.micro_compact_stats.cleared_count, 0);
+    }
+
+    /// MicroCompact + PersistenceBudget 协同：
+    /// 微压缩先清掉旧结果 → 聚合预算检测到的 fresh 字节减少 → 可能退化为 no-op。
+    #[test]
+    fn micro_compact_then_persistence_budget_cooperation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let working = dir.path().join("project");
+        std::fs::create_dir_all(&working).expect("create working dir");
+
+        let big_old = "x".repeat(30_000);
+        let big_recent = "y".repeat(20_000);
+        let small = "z".repeat(5_000);
+
+        let messages = make_tool_conversation(&[
+            ("readFile", "call-old", &big_old),
+            ("readFile", "call-recent", &big_recent),
+            ("readFile", "call-small", &small),
+        ]);
+
+        // 空闲超过阈值
+        let past = chrono::Utc::now() - chrono::Duration::seconds(7200);
+
+        let state = AgentState {
+            session_id: "s-coop-test".to_string(),
+            working_dir: working,
+            messages,
+            phase: astrcode_core::Phase::Thinking,
+            turn_count: 1,
+            last_assistant_at: Some(past),
+        };
+
+        let descriptors = vec![compact_clearable_descriptor("readFile")];
+
+        let bundle = ContextRuntime::new(100_000)
+            .with_micro_compact_config(MicroCompactConfig {
+                gap_threshold_secs: 3600,
+                keep_recent_results: 2, // 保留最近 2 个（call-recent, call-small）
+            })
+            .with_persistence_budget_config(PersistenceBudgetConfig {
+                aggregate_result_bytes_budget: 30_000, // 微压缩后只剩 25KB，不超预算
+            })
+            .build_bundle(
+                &state,
+                ContextBundleInput {
+                    turn_id: "turn-1",
+                    step_index: 0,
+                    prior_compaction_view: None,
+                    capability_descriptors: &descriptors,
+                    keep_recent_turns: 1,
+                    model_context_window: 200_000,
+                },
+            )
+            .expect("bundle should build");
+
+        // 微压缩应清除了 call-old（保留最近 2 个）
+        assert!(bundle.micro_compact_stats.cleared_count >= 1);
+
+        // 微压缩后剩余 fresh 字节（20K + 5K = 25K）< 30K 预算，
+        // PersistenceBudget 应为 no-op
+        assert_eq!(bundle.persistence_stats.persisted_count, 0);
+    }
+
+    /// MicroCompact + PersistenceBudget 协同（反向场景）：
+    /// 即使微压缩清除了部分结果，剩余结果仍超预算 → PersistenceBudget 介入持久化。
+    #[test]
+    fn micro_compact_then_persistence_budget_still_persists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let working = dir.path().join("project");
+        std::fs::create_dir_all(&working).expect("create working dir");
+
+        let big_old = "x".repeat(30_000);
+        let big_recent = "y".repeat(40_000);
+        let small = "z".repeat(5_000);
+
+        let messages = make_tool_conversation(&[
+            ("readFile", "call-old", &big_old),
+            ("readFile", "call-recent", &big_recent),
+            ("readFile", "call-small", &small),
+        ]);
+
+        let past = chrono::Utc::now() - chrono::Duration::seconds(7200);
+
+        let state = AgentState {
+            session_id: "s-coop-persist".to_string(),
+            working_dir: working,
+            messages,
+            phase: astrcode_core::Phase::Thinking,
+            turn_count: 1,
+            last_assistant_at: Some(past),
+        };
+
+        let descriptors = vec![compact_clearable_descriptor("readFile")];
+
+        let bundle = ContextRuntime::new(100_000)
+            .with_micro_compact_config(MicroCompactConfig {
+                gap_threshold_secs: 3600,
+                keep_recent_results: 2, // 保留 call-recent (40KB) + call-small (5KB)
+            })
+            .with_persistence_budget_config(PersistenceBudgetConfig {
+                aggregate_result_bytes_budget: 20_000, // 40K + 5K = 45K > 20K
+            })
+            .build_bundle(
+                &state,
+                ContextBundleInput {
+                    turn_id: "turn-1",
+                    step_index: 0,
+                    prior_compaction_view: None,
+                    capability_descriptors: &descriptors,
+                    keep_recent_turns: 1,
+                    model_context_window: 200_000,
+                },
+            )
+            .expect("bundle should build");
+
+        // 微压缩清除了 call-old
+        assert!(bundle.micro_compact_stats.cleared_count >= 1);
+
+        // PersistenceBudget 检测到 call-recent (40KB) 超预算，应持久化
+        assert!(bundle.persistence_stats.persisted_count >= 1);
+    }
+
+    /// 无 PersistenceBudget/MicroCompact 配置时管线向后兼容。
+    #[test]
+    fn no_config_is_backward_compatible() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let working = dir.path().join("project");
+        std::fs::create_dir_all(&working).expect("create working dir");
+
+        let big = "x".repeat(40_000);
+        let messages = make_tool_conversation(&[
+            ("readFile", "call-1", &big),
+            ("readFile", "call-2", "small"),
+        ]);
+
+        let past = chrono::Utc::now() - chrono::Duration::seconds(7200);
+
+        let state = AgentState {
+            session_id: "s-compat".to_string(),
+            working_dir: working,
+            messages,
+            phase: astrcode_core::Phase::Thinking,
+            turn_count: 1,
+            last_assistant_at: Some(past),
+        };
+
+        // 不配置 PersistenceBudget 和 MicroCompact
+        let bundle = ContextRuntime::new(100_000)
+            .build_bundle(
+                &state,
+                ContextBundleInput {
+                    turn_id: "turn-1",
+                    step_index: 0,
+                    prior_compaction_view: None,
+                    capability_descriptors: &[],
+                    keep_recent_turns: 1,
+                    model_context_window: 200_000,
+                },
+            )
+            .expect("bundle should build");
+
+        assert_eq!(bundle.persistence_stats.persisted_count, 0);
+        assert_eq!(bundle.micro_compact_stats.cleared_count, 0);
+    }
+
+    /// 连续两次 build_bundle 对已持久化结果产生幂等决策。
+    ///
+    /// 注意：此测试依赖磁盘写入成功。如果 `persist_tool_result` 降级
+    /// （例如路径不可写），则跳过幂等性检查，仅验证第一次调用触发了持久化。
+    #[test]
+    fn deterministic_state_on_repeated_build_bundle() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let working = dir.path().join("project");
+        std::fs::create_dir_all(&working).expect("create working dir");
+
+        let big = "x".repeat(40_000);
+        // 需要包含 User 消息以确保 PrunePass 将 Tool 结果视为"最近轮次"保留
+        let mut messages = vec![LlmMessage::User {
+            content: "read the file".to_string(),
+            origin: UserMessageOrigin::User,
+        }];
+        messages.extend(make_tool_conversation(&[("shell", "call-1", &big)]));
+
+        let state = AgentState {
+            session_id: "s-deterministic".to_string(),
+            working_dir: working,
+            messages,
+            phase: astrcode_core::Phase::Thinking,
+            turn_count: 1,
+            last_assistant_at: None,
+        };
+
+        // shell 不标记 compact_clearable，避免 PrunePass 误清除已持久化的内容
+        let descriptors = vec![
+            CapabilityDescriptor::builder("shell", CapabilityKind::tool())
+                .description("test")
+                .schema(json!({"type": "object"}), json!({"type": "string"}))
+                .compact_clearable(false)
+                .build()
+                .expect("descriptor should build"),
+        ];
+
+        let runtime =
+            ContextRuntime::new(100_000).with_persistence_budget_config(PersistenceBudgetConfig {
+                aggregate_result_bytes_budget: 10_000,
+            });
+
+        let bundle1 = runtime
+            .build_bundle(
+                &state,
+                ContextBundleInput {
+                    turn_id: "turn-1",
+                    step_index: 0,
+                    prior_compaction_view: None,
+                    capability_descriptors: &descriptors,
+                    keep_recent_turns: 1,
+                    model_context_window: 200_000,
+                },
+            )
+            .expect("bundle should build");
+
+        // 第一次应触发持久化
+        assert_eq!(bundle1.persistence_stats.persisted_count, 1);
+
+        // 从管线输出中找到修改后的 Tool 消息内容
+        let modified_content = bundle1
+            .conversation
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                LlmMessage::Tool {
+                    tool_call_id,
+                    content,
+                } if tool_call_id == "call-1" => Some(content.clone()),
+                _ => None,
+            })
+            .expect("should find call-1 in bundle output");
+
+        // 仅在磁盘写入成功（内容包含 persisted 标签）时验证幂等性
+        if !modified_content.contains("<persisted-output>") {
+            // 磁盘写入降级为截断，跳过幂等性检查
+            // 幂等性已在 tool_result_persistence 单元测试中验证
+            return;
+        }
+
+        // 构造第二次输入：用已持久化的内容替换原始内容
+        let mut updated_messages = state.messages.clone();
+        for msg in &mut updated_messages {
+            if let LlmMessage::Tool {
+                tool_call_id,
+                content,
+            } = msg
+            {
+                if tool_call_id == "call-1" {
+                    *content = modified_content.clone();
+                }
+            }
+        }
+        let state2 = AgentState {
+            session_id: state.session_id.clone(),
+            working_dir: state.working_dir.clone(),
+            messages: updated_messages,
+            phase: state.phase,
+            turn_count: state.turn_count,
+            last_assistant_at: state.last_assistant_at,
+        };
+
+        let bundle2 = runtime
+            .build_bundle(
+                &state2,
+                ContextBundleInput {
+                    turn_id: "turn-1",
+                    step_index: 0,
+                    prior_compaction_view: None,
+                    capability_descriptors: &descriptors,
+                    keep_recent_turns: 1,
+                    model_context_window: 200_000,
+                },
+            )
+            .expect("bundle should build");
+
+        // 第二次应检测到已持久化，不再重复持久化
+        assert_eq!(bundle2.persistence_stats.persisted_count, 0);
+        assert!(bundle2.persistence_stats.skipped_already_persisted >= 1);
+    }
+
+    /// 全管线协同：MicroCompact → PersistenceBudget → PrunePass 三层全部触发。
+    #[test]
+    fn full_pipeline_all_three_stages_active() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let working = dir.path().join("project");
+        std::fs::create_dir_all(&working).expect("create working dir");
+
+        let big_old = "x".repeat(30_000);
+        let big_recent = "y".repeat(40_000);
+        let medium = "z".repeat(20_000);
+        let small = "w".repeat(1_000);
+
+        let messages = make_tool_conversation(&[
+            ("readFile", "call-old", &big_old),
+            ("readFile", "call-big", &big_recent),
+            ("readFile", "call-medium", &medium),
+            ("readFile", "call-small", &small),
+        ]);
+
+        let past = chrono::Utc::now() - chrono::Duration::seconds(7200);
+
+        let state = AgentState {
+            session_id: "s-full-pipeline".to_string(),
+            working_dir: working,
+            messages,
+            phase: astrcode_core::Phase::Thinking,
+            turn_count: 1,
+            last_assistant_at: Some(past),
+        };
+
+        let descriptors = vec![compact_clearable_descriptor("readFile")];
+
+        let bundle = ContextRuntime::new(10_000) // PrunePass 截断阈值 10KB
+            .with_micro_compact_config(MicroCompactConfig {
+                gap_threshold_secs: 3600,
+                keep_recent_results: 2, // 保留最近 2 个（call-medium, call-small）
+            })
+            .with_persistence_budget_config(PersistenceBudgetConfig {
+                aggregate_result_bytes_budget: 5_000, // 微压缩后仍有大结果，触发持久化
+            })
+            .build_bundle(
+                &state,
+                ContextBundleInput {
+                    turn_id: "turn-1",
+                    step_index: 0,
+                    prior_compaction_view: None,
+                    capability_descriptors: &descriptors,
+                    keep_recent_turns: 1,
+                    model_context_window: 200_000,
+                },
+            )
+            .expect("bundle should build");
+
+        // 第一层 MicroCompact：清除 call-old（超过 keep_recent=2）
+        assert!(bundle.micro_compact_stats.cleared_count >= 1);
+
+        // 第二层 PersistenceBudget：call-big (40KB) 超预算，应被持久化
+        assert!(bundle.persistence_stats.persisted_count >= 1);
+
+        // 第三层 PrunePass：call-medium (20KB) > 10KB 截断阈值，应被截断
+        assert!(
+            bundle.prune_stats.truncated_tool_results >= 1
+                || bundle.prune_stats.cleared_tool_results >= 1
+        );
+    }
 }

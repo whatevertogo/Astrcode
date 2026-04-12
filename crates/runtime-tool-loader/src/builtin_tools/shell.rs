@@ -410,6 +410,7 @@ impl Tool for ShellTool {
                 .example("Run cargo test: { command: \"cargo test --lib\", timeout: 300 }")
                 .prompt_tag("shell"),
             )
+            .max_result_inline_size(30_000)
     }
 
     async fn execute(

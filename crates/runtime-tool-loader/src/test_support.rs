@@ -9,6 +9,9 @@ pub fn test_tool_context_for(path: impl Into<PathBuf>) -> ToolContext {
     let session_storage_root = cwd.join(".astrcode-test-state");
     ToolContext::new("session-test".to_string(), cwd, CancelToken::new())
         .with_session_storage_root(session_storage_root)
+        // 测试上下文使用 100KB 内联阈值，与 readFile 的 max_result_inline_size(100_000) 对齐。
+        // 避免工具测试中 readFile 二次持久化已持久化的 grep 结果。
+        .with_resolved_inline_limit(100_000)
 }
 
 pub fn canonical_tool_path(path: impl AsRef<Path>) -> PathBuf {

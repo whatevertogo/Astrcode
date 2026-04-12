@@ -24,7 +24,7 @@ use astrcode_core::{
     AgentEventContext, AgentState, ApprovalPending, ApprovalResolution, CancelToken,
     CapabilityCall, ExecutionOwner, LlmMessage, PolicyVerdict, Result, StorageEvent,
     StorageEventPayload, ToolCallRequest, ToolEventSink, ToolExecutionResult,
-    ToolHookResultContext,
+    ToolHookResultContext, tool_result_persist::resolve_inline_limit,
 };
 use astrcode_protocol::capability::CapabilityDescriptor;
 use astrcode_runtime_registry::CapabilityRouter;
@@ -209,6 +209,8 @@ where
         }
 
         let ctx = agent_loop.tool_context(state, cancel.clone(), execution_owner.clone());
+        let inline_limit = resolve_tool_inline_limit(capabilities, &pending.tool_call.name);
+        let ctx = ctx.with_resolved_inline_limit(inline_limit);
         let result = execute_raw_tool_call(
             pending.tool_call,
             RawToolExecutionContext {
@@ -227,6 +229,14 @@ where
 
     push_tool_messages(messages, outcomes);
     Ok(ToolCycleOutcome::Completed)
+}
+
+/// 从 CapabilityRouter 查找工具描述符并解析内联阈值。
+fn resolve_tool_inline_limit(capabilities: &CapabilityRouter, tool_name: &str) -> usize {
+    let descriptor_limit = capabilities
+        .descriptor(tool_name)
+        .and_then(|d| d.max_result_inline_size);
+    resolve_inline_limit(tool_name, descriptor_limit)
 }
 
 fn push_prepared_call(
@@ -277,6 +287,9 @@ where
                 async move {
                     let ctx =
                         agent_loop.tool_context(state, cancel.clone(), execution_owner.clone());
+                    let inline_limit =
+                        resolve_tool_inline_limit(capabilities, &pending.tool_call.name);
+                    let ctx = ctx.with_resolved_inline_limit(inline_limit);
                     let result = execute_raw_tool_call(
                         pending.tool_call,
                         RawToolExecutionContext {

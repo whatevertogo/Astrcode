@@ -435,6 +435,10 @@ pub struct ToolCapabilityMetadata {
     pub stability: StabilityLevel,
     /// Prompt guidance that should be projected into the layered prompt system.
     pub prompt: Option<ToolPromptMetadata>,
+    /// 工具结果内联阈值（字节）。
+    /// 超过此大小的结果在执行时持久化到磁盘。
+    /// None 时使用系统默认阈值（DEFAULT_TOOL_RESULT_INLINE_LIMIT = 32KB）。
+    pub max_result_inline_size: Option<usize>,
 }
 
 impl Default for ToolCapabilityMetadata {
@@ -458,6 +462,7 @@ impl ToolCapabilityMetadata {
             compact_clearable: false,
             stability: StabilityLevel::Stable,
             prompt: None,
+            max_result_inline_size: None,
         }
     }
 
@@ -545,6 +550,12 @@ impl ToolCapabilityMetadata {
         self
     }
 
+    /// Sets the maximum inline size for tool results (bytes).
+    pub fn max_result_inline_size(mut self, size: usize) -> Self {
+        self.max_result_inline_size = Some(size);
+        self
+    }
+
     /// Builds a [`CapabilityDescriptor`] from this metadata and the tool definition.
     pub fn build_descriptor(
         self,
@@ -561,7 +572,7 @@ impl ToolCapabilityMetadata {
             );
         }
 
-        CapabilityDescriptor::builder(definition.name, CapabilityKind::tool())
+        let builder = CapabilityDescriptor::builder(definition.name, CapabilityKind::tool())
             .description(definition.description)
             .schema(definition.parameters, json!({ "type": "string" }))
             .profiles(self.profiles)
@@ -571,8 +582,12 @@ impl ToolCapabilityMetadata {
             .concurrency_safe(self.concurrency_safe)
             .compact_clearable(self.compact_clearable)
             .stability(self.stability)
-            .metadata(Value::Object(metadata))
-            .build()
+            .metadata(Value::Object(metadata));
+        let builder = match self.max_result_inline_size {
+            Some(size) => builder.max_result_inline_size(size),
+            None => builder,
+        };
+        builder.build()
     }
 }
 
