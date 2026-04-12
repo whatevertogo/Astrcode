@@ -44,6 +44,7 @@ impl SessionServiceHandle {
         let state = self.runtime.ensure_session_loaded(&session_id).await?;
 
         let receiver = state.broadcaster.subscribe();
+        let live_receiver = state.subscribe_live();
         let started_at = Instant::now();
         let replay_result = match state.recent_records_after(last_event_id)? {
             Some(history) => Ok((history, ReplayPath::Cache)),
@@ -91,7 +92,11 @@ impl SessionServiceHandle {
             },
         }
         let (history, _) = replay_result?;
-        Ok(SessionReplay { history, receiver })
+        Ok(SessionReplay {
+            history,
+            receiver,
+            live_receiver,
+        })
     }
 }
 

@@ -2817,6 +2817,90 @@ async fn reactivate_parent_idle_wake_turn_uses_runtime_only_delivery_input() {
 }
 
 #[tokio::test]
+async fn reactivate_parent_idle_wake_turn_persists_registered_parent_agent_context() {
+    let _guard = TestEnvGuard::new();
+    let service = Arc::new(
+        RuntimeService::from_capabilities(empty_capabilities())
+            .expect("runtime service should build"),
+    );
+    install_test_loop(
+        &service,
+        LlmOutput {
+            content: "delivery consumed".to_string(),
+            ..LlmOutput::default()
+        },
+    )
+    .await;
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let session = service
+        .sessions()
+        .create(temp_dir.path())
+        .await
+        .expect("session should be created");
+    service
+        .execution()
+        .control()
+        .register_root_agent(
+            "agent-parent".to_string(),
+            session.session_id.clone(),
+            "explore".to_string(),
+        )
+        .await
+        .expect("parent agent should register");
+
+    let notification = make_test_notification("child-reactivate-context", "turn-child");
+    service
+        .agent()
+        .reactivate_parent_agent_if_idle(&session.session_id, "turn-parent", &notification)
+        .await;
+
+    let events = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let events = crate::service::session::load_events(
+                Arc::clone(&service.session_manager),
+                &session.session_id,
+            )
+            .await
+            .expect("session events should load");
+            let has_acked = events.iter().any(|stored| {
+                matches!(
+                    &stored.event.payload,
+                    StorageEventPayload::AgentMailboxBatchAcked { payload }
+                        if payload.target_agent_id == "agent-parent"
+                )
+            });
+            if has_acked {
+                break events;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("wake turn should ack mailbox batch");
+
+    let carries_parent_agent = |stored: &astrcode_core::StoredEvent| {
+        stored.event.agent.agent_id.as_deref() == Some("agent-parent")
+            && stored.event.agent.agent_profile.as_deref() == Some("explore")
+            && stored.event.agent.invocation_kind == Some(InvocationKind::RootExecution)
+    };
+
+    assert!(events.iter().any(|stored| {
+        matches!(
+            &stored.event.payload,
+            StorageEventPayload::AgentMailboxBatchStarted { payload }
+                if payload.target_agent_id == "agent-parent"
+        ) && carries_parent_agent(stored)
+    }));
+    assert!(events.iter().any(|stored| {
+        matches!(
+            &stored.event.payload,
+            StorageEventPayload::AgentMailboxBatchAcked { payload }
+                if payload.target_agent_id == "agent-parent"
+        ) && carries_parent_agent(stored)
+    }));
+}
+
+#[tokio::test]
 async fn reactivate_parent_failed_wake_turn_requeues_delivery_for_retry() {
     let _guard = TestEnvGuard::new();
     let service = Arc::new(

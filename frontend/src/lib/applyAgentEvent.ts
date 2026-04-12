@@ -1,4 +1,4 @@
-import type { Action, AgentEventPayload, Phase } from '../types';
+import type { Action, AgentEventPayload, AtomicAction, Phase } from '../types';
 import { uuid } from '../utils/uuid';
 import { releaseTurnMapping, resolveSessionForTurn } from './turnRouting';
 
@@ -23,6 +23,36 @@ export interface AgentEventDispatchContext {
 export function applyAgentEvent(
   context: AgentEventDispatchContext,
   event: AgentEventPayload
+): void {
+  applyAgentEvents(context, [event]);
+}
+
+export function applyAgentEvents(
+  context: AgentEventDispatchContext,
+  events: AgentEventPayload[]
+): void {
+  const actions: AtomicAction[] = [];
+  for (const event of events) {
+    collectAgentEventActions(context, event, (action) => {
+      actions.push(action);
+    });
+  }
+
+  const mergedActions = mergeStreamingActions(actions);
+  if (mergedActions.length === 0) {
+    return;
+  }
+  if (mergedActions.length === 1) {
+    context.dispatch(mergedActions[0]);
+    return;
+  }
+  context.dispatch({ type: 'APPLY_AGENT_EVENTS_BATCH', actions: mergedActions });
+}
+
+function collectAgentEventActions(
+  context: AgentEventDispatchContext,
+  event: AgentEventPayload,
+  emit: (action: AtomicAction) => void
 ): void {
   const scheduleMicrotask = context.scheduleMicrotask ?? ((callback: () => void) => callback());
   const resolveSessionId = (turnId?: string | null): string | null => {
@@ -70,7 +100,7 @@ export function applyAgentEvent(
       if (!sessionId) {
         break;
       }
-      context.dispatch({
+      emit({
         type: 'UPSERT_USER_MESSAGE',
         sessionId,
         turnId: event.data.turnId,
@@ -85,7 +115,7 @@ export function applyAgentEvent(
         resolveSessionId(event.data.turnId);
       }
       context.phaseRef.current = event.data.phase;
-      context.dispatch({ type: 'SET_PHASE', phase: event.data.phase });
+      emit({ type: 'SET_PHASE', phase: event.data.phase });
       break;
     }
 
@@ -94,7 +124,7 @@ export function applyAgentEvent(
       if (!sessionId) {
         break;
       }
-      context.dispatch({
+      emit({
         type: 'APPEND_DELTA',
         sessionId,
         turnId: event.data.turnId,
@@ -109,7 +139,7 @@ export function applyAgentEvent(
       if (!sessionId) {
         break;
       }
-      context.dispatch({
+      emit({
         type: 'APPEND_REASONING_DELTA',
         sessionId,
         turnId: event.data.turnId,
@@ -127,7 +157,7 @@ export function applyAgentEvent(
       if (!event.data.content && !event.data.reasoningContent) {
         break;
       }
-      context.dispatch({
+      emit({
         type: 'FINALIZE_ASSISTANT',
         sessionId,
         turnId: event.data.turnId,
@@ -143,7 +173,7 @@ export function applyAgentEvent(
       if (!sessionId) {
         break;
       }
-      context.dispatch({
+      emit({
         type: 'ADD_MESSAGE',
         sessionId,
         message: {
@@ -166,7 +196,7 @@ export function applyAgentEvent(
       if (!sessionId) {
         break;
       }
-      context.dispatch({
+      emit({
         type: 'APPEND_TOOL_CALL_DELTA',
         sessionId,
         turnId: event.data.turnId,
@@ -184,7 +214,7 @@ export function applyAgentEvent(
       if (!sessionId) {
         break;
       }
-      context.dispatch({
+      emit({
         type: 'UPDATE_TOOL_CALL',
         sessionId,
         turnId: event.data.turnId,
@@ -208,7 +238,7 @@ export function applyAgentEvent(
       if (!sessionId) {
         break;
       }
-      context.dispatch({
+      emit({
         type: 'UPSERT_PROMPT_METRICS',
         sessionId,
         turnId: event.data.turnId ?? null,
@@ -237,7 +267,7 @@ export function applyAgentEvent(
       if (!sessionId) {
         break;
       }
-      context.dispatch({
+      emit({
         type: 'ADD_MESSAGE',
         sessionId,
         message: {
@@ -260,7 +290,7 @@ export function applyAgentEvent(
         break;
       }
       const toolCallId = event.data.toolCallId;
-      context.dispatch({
+      emit({
         type: 'ADD_MESSAGE',
         sessionId,
         message: {
@@ -283,7 +313,7 @@ export function applyAgentEvent(
         break;
       }
       const toolCallId = event.data.toolCallId;
-      context.dispatch({
+      emit({
         type: 'ADD_MESSAGE',
         sessionId,
         message: {
@@ -307,7 +337,7 @@ export function applyAgentEvent(
         break;
       }
       const openSessionId = event.data.childRef.openSessionId;
-      context.dispatch({
+      emit({
         type: 'ADD_MESSAGE',
         sessionId,
         message: {
@@ -333,7 +363,7 @@ export function applyAgentEvent(
     case 'turnDone': {
       const sessionId = resolveSessionId(event.data.turnId);
       if (sessionId) {
-        context.dispatch({ type: 'END_STREAMING', sessionId, turnId: event.data.turnId });
+        emit({ type: 'END_STREAMING', sessionId, turnId: event.data.turnId });
       }
       releaseTurnMapping(context.turnSessionMapRef.current, event.data.turnId);
       scheduleMicrotask(() => {
@@ -348,7 +378,7 @@ export function applyAgentEvent(
     case 'error': {
       const sessionId = resolveSessionId(event.data.turnId ?? null);
       if (sessionId && event.data.code !== 'interrupted') {
-        context.dispatch({
+        emit({
           type: 'ADD_MESSAGE',
           sessionId,
           message: {
@@ -366,8 +396,48 @@ export function applyAgentEvent(
         releaseTurnMapping(context.turnSessionMapRef.current, event.data.turnId);
       }
       context.phaseRef.current = 'idle';
-      context.dispatch({ type: 'SET_PHASE', phase: 'idle' });
+      emit({ type: 'SET_PHASE', phase: 'idle' });
       break;
     }
   }
+}
+
+function mergeStreamingActions(actions: AtomicAction[]): AtomicAction[] {
+  const merged: AtomicAction[] = [];
+
+  for (const action of actions) {
+    const previous = merged[merged.length - 1];
+    if (previous?.type === 'APPEND_DELTA' && action.type === 'APPEND_DELTA' && hasSameDeltaTarget(previous, action)) {
+      previous.delta += action.delta;
+      continue;
+    }
+    if (
+      previous?.type === 'APPEND_REASONING_DELTA' &&
+      action.type === 'APPEND_REASONING_DELTA' &&
+      hasSameDeltaTarget(previous, action)
+    ) {
+      previous.delta += action.delta;
+      continue;
+    }
+    merged.push(action);
+  }
+
+  return merged;
+}
+
+function hasSameDeltaTarget(
+  previous:
+    | Extract<AtomicAction, { type: 'APPEND_DELTA' }>
+    | Extract<AtomicAction, { type: 'APPEND_REASONING_DELTA' }>,
+  next:
+    | Extract<AtomicAction, { type: 'APPEND_DELTA' }>
+    | Extract<AtomicAction, { type: 'APPEND_REASONING_DELTA' }>
+): boolean {
+  return (
+    previous.sessionId === next.sessionId &&
+    previous.turnId === next.turnId &&
+    previous.subRunId === next.subRunId &&
+    previous.executionId === next.executionId &&
+    previous.agentId === next.agentId
+  );
 }

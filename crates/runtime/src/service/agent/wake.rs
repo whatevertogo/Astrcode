@@ -3,8 +3,8 @@
 use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentLifecycleStatus, AgentMailboxEnvelope, AgentTurnOutcome, AstrError, EventTranslator,
-    MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxQueuedPayload,
+    AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope, AgentTurnOutcome, AstrError,
+    EventTranslator, MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxQueuedPayload,
     SessionTurnAcquireResult,
 };
 use astrcode_runtime_agent_control::PendingParentDelivery;
@@ -118,6 +118,7 @@ impl AgentServiceHandle {
             .first()
             .and_then(|delivery| delivery.notification.child_ref.parent_agent_id.clone())
             .unwrap_or_default();
+        let wake_agent = self.resolve_wake_agent_context(&target_agent_id).await;
 
         self.runtime
             .observability
@@ -184,7 +185,7 @@ impl AgentServiceHandle {
         if let Err(error) = append_batch_started(
             &session,
             &turn_id,
-            astrcode_core::AgentEventContext::default(),
+            wake_agent.clone(),
             MailboxBatchStartedPayload {
                 target_agent_id: target_agent_id.clone(),
                 turn_id: turn_id.clone(),
@@ -214,6 +215,7 @@ impl AgentServiceHandle {
         let wake_batch_id = batch_id.clone();
         let wake_target_agent_id = target_agent_id.clone();
         let wake_delivery_ids = batch_delivery_ids.clone();
+        let wake_agent_for_turn = wake_agent.clone();
         let runtime_input = RuntimeTurnInput {
             user_event: None,
             prompt_declarations: build_parent_delivery_prompt_declarations(&delivery_batch),
@@ -226,7 +228,7 @@ impl AgentServiceHandle {
                 &wake_turn_id,
                 cancel,
                 runtime_input,
-                astrcode_core::AgentEventContext::default(),
+                wake_agent_for_turn.clone(),
                 astrcode_core::ExecutionOwner::root(
                     wake_session_id.clone(),
                     wake_turn_id.clone(),
@@ -250,7 +252,7 @@ impl AgentServiceHandle {
                     append_batch_acked(
                         &session,
                         &wake_turn_id,
-                        astrcode_core::AgentEventContext::default(),
+                        wake_agent_for_turn.clone(),
                         MailboxBatchAckedPayload {
                             target_agent_id: wake_target_agent_id.clone(),
                             turn_id: wake_turn_id.clone(),
@@ -426,6 +428,27 @@ impl AgentServiceHandle {
         .await
         .map_err(|error| ServiceError::Internal(AstrError::Internal(error.to_string())))?;
         Ok(())
+    }
+
+    async fn resolve_wake_agent_context(&self, target_agent_id: &str) -> AgentEventContext {
+        let Some(parent_handle) = self.runtime.agent_control.get(target_agent_id).await else {
+            // Why: 历史/手工植入的 session 可能只有 durable mailbox，
+            // 没有 live 控制面句柄；此时退回默认上下文以保持旧会话仍可被消费。
+            return AgentEventContext::default();
+        };
+        if parent_handle.depth == 0 {
+            AgentEventContext::root_execution(parent_handle.agent_id, parent_handle.agent_profile)
+        } else {
+            AgentEventContext::sub_run(
+                parent_handle.agent_id,
+                parent_handle.parent_turn_id,
+                parent_handle.agent_profile,
+                parent_handle.sub_run_id,
+                parent_handle.parent_sub_run_id,
+                parent_handle.storage_mode,
+                parent_handle.child_session_id,
+            )
+        }
     }
 }
 

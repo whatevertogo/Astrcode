@@ -81,8 +81,9 @@ crates/runtime-mcp/                   # 新增 crate
     │   └── skill_bridge.rs           # MCP skill → SkillSpec
     ├── config/
     │   ├── mod.rs
+    │   ├── types.rs                  # McpServerConfig、McpTransportConfig 等配置 DTO
     │   ├── loader.rs                 # 多作用域加载 + 去重
-    │   ├── approval.rs               # 审批状态管理 + McpSettingsStore trait 定义
+    │   ├── approval.rs               # 审批状态管理
     │   ├── policy.rs                 # 策略过滤
     │   └── settings_port.rs          # McpSettingsStore trait + 审批 DTO（纯接口层）
     └── manager/                      # 连接生命周期管理（统一目录）

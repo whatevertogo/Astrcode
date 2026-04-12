@@ -1,6 +1,7 @@
 import { reducer } from '../store/reducer';
 import type { AgentEventPayload, AppState, Message, Phase } from '../types';
 import { applyAgentEvent } from './applyAgentEvent';
+import { createEmptySubRunThreadTree } from './subRunView';
 
 interface SessionHistoryReplayResult {
   messages: Message[];
@@ -31,6 +32,7 @@ export function replaySessionHistory(
             title: '新会话',
             createdAt: 0,
             messages: [],
+            subRunThreadTree: createEmptySubRunThreadTree(),
           },
         ],
       },

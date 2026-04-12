@@ -18,6 +18,7 @@ members = [
     "crates/sdk",
     "crates/runtime-tool-loader",
     "crates/runtime-registry",
+    "crates/runtime-mcp",
     "crates/server",
     "examples/example-plugin",
     "src-tauri",

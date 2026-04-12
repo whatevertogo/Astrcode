@@ -226,6 +226,12 @@ pub async fn execute_turn_chain(
                 &mut |event| {
                     observe_turn_event(&mut stats, &event);
                     observe_runtime_prompt_metrics(observability.as_deref(), &event);
+                    if is_live_only_stream_event(&event) {
+                        for live_event in translator.translate_live(&event) {
+                            state.broadcast_live_event(live_event);
+                        }
+                        return Ok(());
+                    }
                     let stored = append_and_broadcast_from_turn_callback(state, &event, translator)
                         .map_err(|error| AstrError::Internal(error.to_string()))?;
                     if astrcode_runtime_session::should_record_compaction_tail_event(&event) {
@@ -400,4 +406,11 @@ fn turn_done_reason(outcome: &TurnOutcome) -> &'static str {
         TurnOutcome::Cancelled => "cancelled",
         TurnOutcome::Error { .. } => "error",
     }
+}
+
+fn is_live_only_stream_event(event: &StorageEvent) -> bool {
+    matches!(
+        event.payload,
+        StorageEventPayload::AssistantDelta { .. } | StorageEventPayload::ThinkingDelta { .. }
+    )
 }

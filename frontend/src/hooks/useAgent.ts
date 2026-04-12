@@ -63,18 +63,20 @@ const SSE_RECONNECT_FATAL_ATTEMPTS = 3;
 
 /// 分发流错误事件
 function dispatchStreamError(
-  onEvent: (event: AgentEventPayload) => void,
+  onEvents: (events: AgentEventPayload[]) => void,
   message: string,
   turnId: string | null = null
 ): void {
-  onEvent({
-    event: 'error',
-    data: {
-      code: 'event_stream_error',
-      message,
-      turnId,
+  onEvents([
+    {
+      event: 'error',
+      data: {
+        code: 'event_stream_error',
+        message,
+        turnId,
+      },
     },
-  });
+  ]);
 }
 
 function shouldRetryEventStream(error: unknown): boolean {
@@ -83,10 +85,12 @@ function shouldRetryEventStream(error: unknown): boolean {
   return !message.includes('unauthorized') && !message.includes('403');
 }
 
-export function useAgent(onEvent: (event: AgentEventPayload) => void) {
-  const onEventRef = useRef(onEvent);
+export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
+  const onEventRef = useRef(onEvents);
   const streamAbortRef = useRef<AbortController | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
+  const frameFlushRef = useRef<number | null>(null);
+  const pendingEventBufferRef = useRef<AgentEventPayload[]>([]);
   const reconnectAttemptRef = useRef(0);
   const connectedSessionIdRef = useRef<string | null>(null);
   const connectedSessionFilterRef = useRef<SessionEventFilterQuery | undefined>(undefined);
@@ -96,8 +100,8 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
   const streamGenerationRef = useRef(0);
 
   useEffect(() => {
-    onEventRef.current = onEvent;
-  }, [onEvent]);
+    onEventRef.current = onEvents;
+  }, [onEvents]);
 
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current !== null) {
@@ -105,6 +109,46 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
       reconnectTimerRef.current = null;
     }
   }, []);
+
+  useEffect(() => {
+    return () => {
+      streamAbortRef.current?.abort();
+      streamAbortRef.current = null;
+      clearReconnectTimer();
+      if (frameFlushRef.current !== null) {
+        window.cancelAnimationFrame(frameFlushRef.current);
+        frameFlushRef.current = null;
+      }
+      pendingEventBufferRef.current = [];
+    };
+  }, [clearReconnectTimer]);
+
+  const flushBufferedEvents = useCallback(() => {
+    if (frameFlushRef.current !== null) {
+      window.cancelAnimationFrame(frameFlushRef.current);
+      frameFlushRef.current = null;
+    }
+    if (pendingEventBufferRef.current.length === 0) {
+      return;
+    }
+    const batch = pendingEventBufferRef.current;
+    pendingEventBufferRef.current = [];
+    onEventRef.current(batch);
+  }, []);
+
+  const queueIncomingEvent = useCallback(
+    (rawEvent: unknown) => {
+      pendingEventBufferRef.current.push(normalizeAgentEvent(rawEvent));
+      if (frameFlushRef.current !== null) {
+        return;
+      }
+      frameFlushRef.current = window.requestAnimationFrame(() => {
+        frameFlushRef.current = null;
+        flushBufferedEvents();
+      });
+    },
+    [flushBufferedEvents]
+  );
 
   const failActiveConnection = useCallback(
     (message: string, turnId: string | null = null) => {
@@ -118,22 +162,11 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
       lastEventIdRef.current = null;
       reconnectAttemptRef.current = 0;
       streamGenerationRef.current += 1;
+      flushBufferedEvents();
       dispatchStreamError(onEventRef.current, message, turnId);
     },
-    [clearReconnectTimer]
+    [clearReconnectTimer, flushBufferedEvents]
   );
-
-  useEffect(() => {
-    return () => {
-      streamAbortRef.current?.abort();
-      streamAbortRef.current = null;
-      clearReconnectTimer();
-    };
-  }, [clearReconnectTimer]);
-
-  const dispatchIncomingEvent = useCallback((rawEvent: unknown) => {
-    onEventRef.current(normalizeAgentEvent(rawEvent));
-  }, []);
 
   const connectSession = useCallback(
     async (
@@ -144,6 +177,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
       await ensureServerSession();
       clearReconnectTimer();
       streamAbortRef.current?.abort();
+      pendingEventBufferRef.current = [];
 
       // Increment generation to invalidate any pending operations from previous connections
       const generation = ++streamGenerationRef.current;
@@ -230,9 +264,9 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
                 lastEventIdRef.current = eventId;
               }
               try {
-                dispatchIncomingEvent(JSON.parse(payload));
+                queueIncomingEvent(JSON.parse(payload));
               } catch (error) {
-                dispatchIncomingEvent({
+                queueIncomingEvent({
                   protocolVersion: 1,
                   event: 'error',
                   data: {
@@ -261,6 +295,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
             }
             return;
           }
+          flushBufferedEvents();
         } catch (error) {
           // Check generation before handling error
           if (streamGenerationRef.current !== generation) {
@@ -277,6 +312,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
             }
           }
         } finally {
+          flushBufferedEvents();
           if (streamAbortRef.current === controller) {
             streamAbortRef.current = null;
           }
@@ -285,7 +321,7 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
 
       void startStream(lastEventIdRef.current);
     },
-    [clearReconnectTimer, dispatchIncomingEvent, failActiveConnection]
+    [clearReconnectTimer, failActiveConnection, flushBufferedEvents, queueIncomingEvent]
   );
 
   const disconnectSession = useCallback(() => {
@@ -296,9 +332,10 @@ export function useAgent(onEvent: (event: AgentEventPayload) => void) {
     connectedSessionFilterRef.current = undefined;
     lastEventIdRef.current = null;
     reconnectAttemptRef.current = 0;
+    flushBufferedEvents();
     // Increment generation to invalidate any pending operations
     streamGenerationRef.current++;
-  }, [clearReconnectTimer]);
+  }, [clearReconnectTimer, flushBufferedEvents]);
 
   const handleCreateSession = useCallback(async (workingDir: string): Promise<SessionMeta> => {
     return createSession(workingDir);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { makeInitialState, reducer } from './reducer';
+import { createEmptySubRunThreadTree } from '../lib/subRunView';
 
 describe('app reducer user message sync', () => {
   it('upserts a user message by turn id instead of duplicating it', () => {
@@ -18,6 +19,7 @@ describe('app reducer user message sync', () => {
               projectId: 'project-1',
               title: '新会话',
               createdAt: Date.now(),
+              subRunThreadTree: createEmptySubRunThreadTree(),
               messages: [
                 {
                   id: 'user-1',
@@ -105,6 +107,7 @@ describe('app reducer user message sync', () => {
               projectId: 'project-1',
               title: '新会话',
               createdAt: Date.now(),
+              subRunThreadTree: createEmptySubRunThreadTree(),
               messages: [
                 {
                   id: 'metrics-1',
@@ -177,6 +180,7 @@ describe('app reducer user message sync', () => {
               projectId: 'project-1',
               title: '新会话',
               createdAt: Date.now(),
+              subRunThreadTree: createEmptySubRunThreadTree(),
               messages: [],
             },
           ],
@@ -225,5 +229,84 @@ describe('app reducer user message sync', () => {
         toolName: 'readFile',
       }),
     ]);
+  });
+
+  it('applies batched streaming actions once while keeping sub-run projection in sync', () => {
+    const initial = {
+      ...makeInitialState(),
+      projects: [
+        {
+          id: 'project-1',
+          name: 'Project',
+          workingDir: 'D:/repo',
+          isExpanded: true,
+          sessions: [
+            {
+              id: 'session-1',
+              projectId: 'project-1',
+              title: '新会话',
+              createdAt: Date.now(),
+              subRunThreadTree: createEmptySubRunThreadTree(),
+              messages: [],
+            },
+          ],
+        },
+      ],
+      activeProjectId: 'project-1',
+      activeSessionId: 'session-1',
+    };
+
+    const next = reducer(initial, {
+      type: 'APPLY_AGENT_EVENTS_BATCH',
+      actions: [
+        {
+          type: 'ADD_MESSAGE',
+          sessionId: 'session-1',
+          message: {
+            id: 'subrun-start-1',
+            kind: 'subRunStart',
+            turnId: 'turn-1',
+            subRunId: 'subrun-1',
+            resolvedOverrides: {
+              storageMode: 'independentSession',
+              inheritSystemInstructions: true,
+              inheritProjectInstructions: true,
+              inheritWorkingDir: true,
+              inheritPolicyUpperBound: true,
+              inheritCancelToken: true,
+              includeCompactSummary: true,
+              includeRecentTail: true,
+              includeRecoveryRefs: true,
+              includeParentFindings: true,
+            },
+            resolvedLimits: {
+              allowedTools: ['readFile'],
+            },
+            timestamp: 1,
+          },
+        },
+        {
+          type: 'APPEND_DELTA',
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          delta: 'hello',
+          subRunId: 'subrun-1',
+        },
+        {
+          type: 'APPEND_DELTA',
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          delta: ' world',
+          subRunId: 'subrun-1',
+        },
+      ],
+    });
+
+    const session = next.projects[0].sessions[0];
+    expect(session.messages).toEqual([
+      expect.objectContaining({ kind: 'subRunStart', subRunId: 'subrun-1' }),
+      expect.objectContaining({ kind: 'assistant', text: 'hello world', subRunId: 'subrun-1' }),
+    ]);
+    expect(session.subRunThreadTree.subRuns.has('subrun-1')).toBe(true);
   });
 });

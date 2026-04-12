@@ -1,5 +1,6 @@
 import { appendToolDeltaMetadata, mergeToolMetadata } from '../lib/toolDisplay';
-import type { Action, AppState } from '../types';
+import type { Action, AppState, Message, Session } from '../types';
+import { buildSubRunThreadTree } from '../lib/subRunView';
 import { uuid } from '../utils/uuid';
 import {
   findAssistantMessageIndex,
@@ -10,6 +11,24 @@ import {
   moveUpdatedMessageToTail,
   upsertAssistantTurnMessage,
 } from './reducerHelpers';
+
+function isStructuralSubRunMessage(message: Message): boolean {
+  return (
+    message.kind === 'subRunStart' ||
+    message.kind === 'subRunFinish' ||
+    message.kind === 'childSessionNotification'
+  );
+}
+
+function withMaybeRebuiltSubRunTree(session: Session, refresh: boolean): Session {
+  if (!refresh) {
+    return session;
+  }
+  return {
+    ...session,
+    subRunThreadTree: buildSubRunThreadTree(session.messages),
+  };
+}
 
 export function handleProjectedMessageAction(state: AppState, action: Action): AppState | null {
   switch (action.type) {
@@ -22,7 +41,12 @@ export function handleProjectedMessageAction(state: AppState, action: Action): A
         ) {
           title = action.message.text.slice(0, 20) || '新会话';
         }
-        return { ...session, title, messages: [...session.messages, action.message] };
+        const nextSession = {
+          ...session,
+          title,
+          messages: [...session.messages, action.message],
+        };
+        return withMaybeRebuiltSubRunTree(nextSession, isStructuralSubRunMessage(action.message));
       });
 
     case 'UPSERT_USER_MESSAGE':
@@ -255,7 +279,7 @@ export function handleProjectedMessageAction(state: AppState, action: Action): A
           };
         }
 
-        return {
+        const nextSession = {
           ...session,
           messages: session.messages.map((message, index) => {
             if (index !== targetIndex || message.kind !== 'toolCall') {
@@ -285,6 +309,7 @@ export function handleProjectedMessageAction(state: AppState, action: Action): A
             };
           }),
         };
+        return nextSession;
       });
 
     case 'UPDATE_TOOL_CALL':
@@ -329,7 +354,7 @@ export function handleProjectedMessageAction(state: AppState, action: Action): A
           };
         }
 
-        return {
+        const nextSession = {
           ...session,
           messages: session.messages.map((message, index) => {
             if (index !== targetIndex || message.kind !== 'toolCall') {
@@ -358,6 +383,16 @@ export function handleProjectedMessageAction(state: AppState, action: Action): A
             };
           }),
         };
+        const shouldRefreshSubRunTree =
+          action.toolName === 'spawn' &&
+          action.status !== 'running' &&
+          nextSession.messages.some(
+            (message) =>
+              message.kind === 'toolCall' &&
+              message.toolCallId === action.toolCallId &&
+              message.toolName === action.toolName
+          );
+        return withMaybeRebuiltSubRunTree(nextSession, shouldRefreshSubRunTree);
       });
 
     case 'UPSERT_PROMPT_METRICS':

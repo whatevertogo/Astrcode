@@ -11,7 +11,6 @@ import { useSidebarResize } from './hooks/useSidebarResize';
 import { useComposerActions, type ConfirmDialogState } from './hooks/app/useComposerActions';
 import { useSessionCoordinator } from './hooks/app/useSessionCoordinator';
 import { useSubRunNavigation } from './hooks/app/useSubRunNavigation';
-import { buildSubRunThreadTree } from './lib/subRunView';
 import { buildSessionViewLocationHref, readSessionViewLocation } from './lib/sessionView';
 import { cn } from './lib/utils';
 import type { SessionCatalogEventPayload } from './types';
@@ -141,10 +140,7 @@ export default function App() {
     state.projects.find((project) => project.id === state.activeProjectId) ?? null;
   const activeSession =
     activeProject?.sessions.find((session) => session.id === state.activeSessionId) ?? null;
-  const activeSubRunThreadTree = useMemo(
-    () => (activeSession ? buildSubRunThreadTree(activeSession.messages) : null),
-    [activeSession]
-  );
+  const activeSubRunThreadTree = activeSession?.subRunThreadTree ?? null;
 
   useEffect(() => {
     if (!activeSubRunThreadTree) {

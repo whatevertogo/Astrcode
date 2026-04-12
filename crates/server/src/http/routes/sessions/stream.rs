@@ -14,7 +14,10 @@ use serde_json::json;
 use crate::{
     ApiError, AppState,
     auth::require_auth,
-    mapper::{format_event_id, parse_event_id, to_session_catalog_sse_event, to_sse_event},
+    mapper::{
+        format_event_id, parse_event_id, to_live_sse_event, to_session_catalog_sse_event,
+        to_sse_event,
+    },
     routes::sessions::{
         filter::{SessionEventFilterQuery, record_is_after_cursor},
         validate_session_path_id,
@@ -106,60 +109,77 @@ async fn unfiltered_session_events(
         }
 
         loop {
-            match replay.receiver.recv().await {
-                Ok(record) => {
-                    let Some(current_id) = parse_event_id(&record.event_id) else {
-                        continue;
-                    };
-                    if let Some(last_id) = last_sent {
-                        if current_id <= last_id {
-                            continue;
-                        }
-                    }
-                    last_sent = Some(current_id);
-                    yield Ok::<Event, Infallible>(to_sse_event(record));
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    let cursor = last_sent.map(format_event_id);
-                    match service
-                        .sessions()
-                        .replay(&session_id_for_stream, cursor.as_deref())
-                        .await
-                    {
-                        Ok(recovered) => {
-                            for record in &recovered.history {
-                                if let Some(id) = parse_event_id(&record.event_id) {
-                                    last_sent = Some(id);
+            tokio::select! {
+                durable = replay.receiver.recv() => {
+                    match durable {
+                        Ok(record) => {
+                            let Some(current_id) = parse_event_id(&record.event_id) else {
+                                continue;
+                            };
+                            if let Some(last_id) = last_sent {
+                                if current_id <= last_id {
+                                    continue;
                                 }
-                                yield Ok::<Event, Infallible>(to_sse_event(record.clone()));
                             }
-                            replay = recovered;
+                            last_sent = Some(current_id);
+                            yield Ok::<Event, Infallible>(to_sse_event(record));
                         }
-                        Err(error) => {
-                            log::warn!(
-                                "SSE replay recovery failed for session '{}': cursor='{}', error={}",
-                                session_id_for_stream,
-                                cursor.as_deref().unwrap_or("<start>"),
-                                error
-                            );
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            let cursor = last_sent.map(format_event_id);
+                            match service
+                                .sessions()
+                                .replay(&session_id_for_stream, cursor.as_deref())
+                                .await
+                            {
+                                Ok(recovered) => {
+                                    for record in &recovered.history {
+                                        if let Some(id) = parse_event_id(&record.event_id) {
+                                            last_sent = Some(id);
+                                        }
+                                        yield Ok::<Event, Infallible>(to_sse_event(record.clone()));
+                                    }
+                                    replay = recovered;
+                                }
+                                Err(error) => {
+                                    log::warn!(
+                                        "SSE replay recovery failed for session '{}': cursor='{}', error={}",
+                                        session_id_for_stream,
+                                        cursor.as_deref().unwrap_or("<start>"),
+                                        error
+                                    );
+                                    yield Ok::<Event, Infallible>(stream_error_event(
+                                        "session_event_replay_failed",
+                                        format!(
+                                            "failed to recover lagged session events for '{}': {error}",
+                                            session_id_for_stream
+                                        ),
+                                    ));
+                                    break;
+                                },
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             yield Ok::<Event, Infallible>(stream_error_event(
-                                "session_event_replay_failed",
-                                format!(
-                                    "failed to recover lagged session events for '{}': {error}",
-                                    session_id_for_stream
-                                ),
+                                "session_event_stream_closed",
+                                format!("session event stream closed for '{}'", session_id_for_stream),
                             ));
                             break;
                         },
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    yield Ok::<Event, Infallible>(stream_error_event(
-                        "session_event_stream_closed",
-                        format!("session event stream closed for '{}'", session_id_for_stream),
-                    ));
-                    break;
-                },
+                live = replay.live_receiver.recv() => {
+                    match live {
+                        Ok(event) => yield Ok::<Event, Infallible>(to_live_sse_event(event)),
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            log::debug!(
+                                "session '{}' live delta stream lagged by {} events; skipping lost live-only deltas",
+                                session_id_for_stream,
+                                skipped
+                            );
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {}
+                    }
+                }
             }
         }
     };
@@ -217,85 +237,106 @@ async fn filtered_session_events(
         }
 
         loop {
-            match replay.receiver.recv().await {
-                Ok(record) => {
-                    let Some(current_id) = parse_event_id(&record.event_id) else {
-                        continue;
-                    };
-                    if let Some(last_id) = last_sent {
-                        if current_id <= last_id {
-                            continue;
-                        }
-                    }
-                    if !filter.matches(&record) {
-                        continue;
-                    }
-                    last_sent = Some(current_id);
-                    yield Ok::<Event, Infallible>(to_sse_event(record));
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    let cursor = last_sent.map(format_event_id);
-                    match service
-                        .sessions()
-                        .replay(&session_id_for_stream, cursor.as_deref())
-                        .await
-                    {
-                        Ok(recovered) => {
-                            let mut recovered_filter =
-                                match SessionEventFilter::new(filter.spec().clone(), &recovered.history) {
-                                    Ok(filter) => filter,
-                                    Err(error) => {
-                                        yield Ok::<Event, Infallible>(stream_error_event(
-                                            "lineage_metadata_unavailable",
-                                            error.to_string(),
-                                        ));
-                                        break;
-                                    },
-                                };
-                            for record in &recovered.history {
-                                let Some(current_id) = parse_event_id(&record.event_id) else {
-                                    continue;
-                                };
-                                if let Some(last_id) = last_sent {
-                                    if current_id <= last_id {
-                                        continue;
-                                    }
-                                }
-                                if !recovered_filter.matches(record) {
+            tokio::select! {
+                durable = replay.receiver.recv() => {
+                    match durable {
+                        Ok(record) => {
+                            let Some(current_id) = parse_event_id(&record.event_id) else {
+                                continue;
+                            };
+                            if let Some(last_id) = last_sent {
+                                if current_id <= last_id {
                                     continue;
                                 }
-                                last_sent = Some(current_id);
-                                yield Ok::<Event, Infallible>(to_sse_event(record.clone()));
                             }
-                            filter = recovered_filter;
-                            replay = recovered;
+                            if !filter.matches(&record) {
+                                continue;
+                            }
+                            last_sent = Some(current_id);
+                            yield Ok::<Event, Infallible>(to_sse_event(record));
                         }
-                        Err(error) => {
-                            log::warn!(
-                                "SSE filtered replay recovery failed for session '{}': cursor='{}', filter={:?}, error={}",
-                                session_id_for_stream,
-                                cursor.as_deref().unwrap_or("<start>"),
-                                filter.spec(),
-                                error
-                            );
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            let cursor = last_sent.map(format_event_id);
+                            match service
+                                .sessions()
+                                .replay(&session_id_for_stream, cursor.as_deref())
+                                .await
+                            {
+                                Ok(recovered) => {
+                                    let mut recovered_filter =
+                                        match SessionEventFilter::new(filter.spec().clone(), &recovered.history) {
+                                            Ok(filter) => filter,
+                                            Err(error) => {
+                                                yield Ok::<Event, Infallible>(stream_error_event(
+                                                    "lineage_metadata_unavailable",
+                                                    error.to_string(),
+                                                ));
+                                                break;
+                                            },
+                                        };
+                                    for record in &recovered.history {
+                                        let Some(current_id) = parse_event_id(&record.event_id) else {
+                                            continue;
+                                        };
+                                        if let Some(last_id) = last_sent {
+                                            if current_id <= last_id {
+                                                continue;
+                                            }
+                                        }
+                                        if !recovered_filter.matches(record) {
+                                            continue;
+                                        }
+                                        last_sent = Some(current_id);
+                                        yield Ok::<Event, Infallible>(to_sse_event(record.clone()));
+                                    }
+                                    filter = recovered_filter;
+                                    replay = recovered;
+                                }
+                                Err(error) => {
+                                    log::warn!(
+                                        "SSE filtered replay recovery failed for session '{}': cursor='{}', filter={:?}, error={}",
+                                        session_id_for_stream,
+                                        cursor.as_deref().unwrap_or("<start>"),
+                                        filter.spec(),
+                                        error
+                                    );
+                                    yield Ok::<Event, Infallible>(stream_error_event(
+                                        "session_event_replay_failed",
+                                        format!(
+                                            "failed to recover lagged filtered session events for '{}': {error}",
+                                            session_id_for_stream
+                                        ),
+                                    ));
+                                    break;
+                                },
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             yield Ok::<Event, Infallible>(stream_error_event(
-                                "session_event_replay_failed",
-                                format!(
-                                    "failed to recover lagged filtered session events for '{}': {error}",
-                                    session_id_for_stream
-                                ),
+                                "session_event_stream_closed",
+                                format!("filtered session event stream closed for '{}'", session_id_for_stream),
                             ));
                             break;
                         },
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    yield Ok::<Event, Infallible>(stream_error_event(
-                        "session_event_stream_closed",
-                        format!("filtered session event stream closed for '{}'", session_id_for_stream),
-                    ));
-                    break;
-                },
+                live = replay.live_receiver.recv() => {
+                    match live {
+                        Ok(event) => {
+                            if filter.matches_event(&event) {
+                                yield Ok::<Event, Infallible>(to_live_sse_event(event));
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            log::debug!(
+                                "session '{}' filtered live delta stream lagged by {} events; skipping lost live-only deltas",
+                                session_id_for_stream,
+                                skipped
+                            );
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {}
+                    }
+                }
             }
         }
     };

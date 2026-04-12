@@ -464,7 +464,20 @@ impl SessionEventFilter {
 
     pub fn matches(&mut self, record: &SessionEventRecord) -> bool {
         self.lineage.observe_session_record(record);
-        let Some(event_sub_run_id) = event_sub_run_id(&record.event) else {
+        self.matches_event_internal(&record.event)
+    }
+
+    pub fn matches_event(&mut self, event: &AgentEvent) -> bool {
+        self.lineage.observe_agent_event(event);
+        self.matches_event_internal(event)
+    }
+
+    pub fn spec(&self) -> &SessionEventFilterSpec {
+        &self.spec
+    }
+
+    fn matches_event_internal(&self, event: &AgentEvent) -> bool {
+        let Some(event_sub_run_id) = event_sub_run_id(event) else {
             return false;
         };
 
@@ -477,10 +490,6 @@ impl SessionEventFilter {
                 .lineage
                 .is_in_subtree(event_sub_run_id, &self.spec.target_sub_run_id),
         }
-    }
-
-    pub fn spec(&self) -> &SessionEventFilterSpec {
-        &self.spec
     }
 }
 

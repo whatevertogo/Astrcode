@@ -434,7 +434,11 @@ impl ExecutionLineageIndex {
         }
     }
 
-    fn observe_agent_event(&mut self, event: &AgentEvent) {
+    /// 增量吸收一条 live / durable AgentEvent。
+    ///
+    /// `/history`、`/view` 与 SSE `/events` 必须共享同一份谱系演化规则，
+    /// 否则过滤边界会在“初始快照”和“后续增量”之间漂移。
+    pub fn observe_agent_event(&mut self, event: &AgentEvent) {
         match event {
             AgentEvent::SubRunStarted { agent, .. } | AgentEvent::SubRunFinished { agent, .. } => {
                 self.observe_lifecycle(

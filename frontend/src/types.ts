@@ -446,6 +446,38 @@ export type Message =
   | SubRunFinishMessage
   | ChildSessionNotificationMessage;
 
+export interface ThreadMessageItem {
+  kind: 'message';
+  message: Message;
+}
+
+export interface ThreadSubRunItem {
+  kind: 'subRun';
+  subRunId: string;
+}
+
+export type ThreadItem = ThreadMessageItem | ThreadSubRunItem;
+
+export interface SubRunViewData {
+  subRunId: string;
+  title: string;
+  startMessage?: SubRunStartMessage;
+  finishMessage?: SubRunFinishMessage;
+  bodyMessages: Message[];
+  threadItems: ThreadItem[];
+  streamFingerprint: string;
+  childSessionId?: string;
+  parentSubRunId: string | null;
+  directChildSubRunIds: string[];
+  hasDescriptorLineage: boolean;
+}
+
+export interface SubRunThreadTree {
+  rootThreadItems: ThreadItem[];
+  rootStreamFingerprint: string;
+  subRuns: Map<string, SubRunViewData>;
+}
+
 export interface Session {
   id: string;
   projectId: string;
@@ -453,6 +485,7 @@ export interface Session {
   createdAt: number;
   updatedAt?: number;
   messages: Message[];
+  subRunThreadTree: SubRunThreadTree;
 }
 
 export interface SessionMeta {
@@ -556,7 +589,7 @@ type AgentActionContext = {
 // ────────────────────────────────────────────────────────────
 // Reducer action 联合类型（App 和 hooks 之间共享）
 // ────────────────────────────────────────────────────────────
-export type Action =
+export type AtomicAction =
   | { type: 'SET_PHASE'; phase: Phase }
   | { type: 'PUSH_ACTIVE_SUBRUN'; subRunId: string }
   | { type: 'POP_ACTIVE_SUBRUN' }
@@ -635,3 +668,10 @@ export type Action =
     }
   | { type: 'REPLACE_SESSION_MESSAGES'; sessionId: string; messages: Message[] }
   | { type: 'ADD_SESSION_BACKEND'; projectId: string; sessionId: string };
+
+export type Action =
+  | AtomicAction
+  | {
+      type: 'APPLY_AGENT_EVENTS_BATCH';
+      actions: AtomicAction[];
+    };

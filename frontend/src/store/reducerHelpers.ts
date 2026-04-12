@@ -5,9 +5,21 @@ export function mapProject(
   projectId: string,
   fn: (project: Project) => Project
 ): AppState {
+  const projectIndex = state.projects.findIndex((project) => project.id === projectId);
+  if (projectIndex < 0) {
+    return state;
+  }
+  const nextProject = fn(state.projects[projectIndex]);
+  if (nextProject === state.projects[projectIndex]) {
+    return state;
+  }
   return {
     ...state,
-    projects: state.projects.map((project) => (project.id === projectId ? fn(project) : project)),
+    projects: [
+      ...state.projects.slice(0, projectIndex),
+      nextProject,
+      ...state.projects.slice(projectIndex + 1),
+    ],
   };
 }
 
@@ -16,14 +28,36 @@ export function mapSession(
   sessionId: string,
   fn: (session: Session) => Session
 ): AppState {
+  const projectIndex = state.projects.findIndex((project) =>
+    project.sessions.some((session) => session.id === sessionId)
+  );
+  if (projectIndex < 0) {
+    return state;
+  }
+  const project = state.projects[projectIndex];
+  const sessionIndex = project.sessions.findIndex((session) => session.id === sessionId);
+  if (sessionIndex < 0) {
+    return state;
+  }
+  const nextSession = fn(project.sessions[sessionIndex]);
+  if (nextSession === project.sessions[sessionIndex]) {
+    return state;
+  }
+  const nextProject: Project = {
+    ...project,
+    sessions: [
+      ...project.sessions.slice(0, sessionIndex),
+      nextSession,
+      ...project.sessions.slice(sessionIndex + 1),
+    ],
+  };
   return {
     ...state,
-    projects: state.projects.map((project) => ({
-      ...project,
-      sessions: project.sessions.map((session) =>
-        session.id === sessionId ? fn(session) : session
-      ),
-    })),
+    projects: [
+      ...state.projects.slice(0, projectIndex),
+      nextProject,
+      ...state.projects.slice(projectIndex + 1),
+    ],
   };
 }
 

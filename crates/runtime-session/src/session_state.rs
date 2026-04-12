@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::Result;
 use astrcode_core::{
-    AgentState, AgentStateProjector, CancelToken, ChildSessionNode, EventLogWriter,
+    AgentEvent, AgentState, AgentStateProjector, CancelToken, ChildSessionNode, EventLogWriter,
     EventTranslator, MailboxProjection, Phase, SessionEventRecord, SessionTurnLease, StorageEvent,
     StorageEventPayload, StoredEvent, ToolEventSink,
 };
@@ -17,6 +17,7 @@ use crate::{
 };
 
 const SESSION_BROADCAST_CAPACITY: usize = 2048;
+const SESSION_LIVE_BROADCAST_CAPACITY: usize = 2048;
 const SESSION_RECENT_RECORD_LIMIT: usize = 16_384;
 const SESSION_RECENT_STORED_LIMIT: usize = 16_384;
 
@@ -134,6 +135,7 @@ pub struct SessionState {
     pub token_budget: StdMutex<Option<SessionTokenBudgetState>>,
     pub compact_failure_count: StdMutex<u32>,
     pub broadcaster: broadcast::Sender<SessionEventRecord>,
+    live_broadcaster: broadcast::Sender<AgentEvent>,
     pub writer: Arc<SessionWriter>,
     projector: StdMutex<AgentStateProjector>,
     recent_records: StdMutex<RecentSessionEvents>,
@@ -151,6 +153,7 @@ impl SessionState {
         recent_stored: Vec<StoredEvent>,
     ) -> Self {
         let (broadcaster, _) = broadcast::channel(SESSION_BROADCAST_CAPACITY);
+        let (live_broadcaster, _) = broadcast::channel(SESSION_LIVE_BROADCAST_CAPACITY);
         let mut cached_records = RecentSessionEvents::default();
         cached_records.replace(recent_records);
         let mut cached_stored = RecentStoredEvents::default();
@@ -166,6 +169,7 @@ impl SessionState {
             token_budget: StdMutex::new(None),
             compact_failure_count: StdMutex::new(0),
             broadcaster,
+            live_broadcaster,
             writer,
             projector: StdMutex::new(projector),
             recent_records: StdMutex::new(cached_records),
@@ -177,6 +181,20 @@ impl SessionState {
 
     pub fn snapshot_projected_state(&self) -> Result<AgentState> {
         Ok(lock_anyhow(&self.projector, "session projector")?.snapshot())
+    }
+
+    /// 订阅 live-only 事件流。
+    ///
+    /// 这条通道专门承载 token 级 delta 等瞬时事件，不参与 durable replay。
+    pub fn subscribe_live(&self) -> broadcast::Receiver<AgentEvent> {
+        self.live_broadcaster.subscribe()
+    }
+
+    /// 广播一条 live-only 事件。
+    ///
+    /// 广播失败只表示当前没有订阅者，不应影响 turn 主链路。
+    pub fn broadcast_live_event(&self, event: AgentEvent) {
+        let _ = self.live_broadcaster.send(event);
     }
 
     pub fn current_phase(&self) -> Result<Phase> {

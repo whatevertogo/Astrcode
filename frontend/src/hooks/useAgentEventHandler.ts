@@ -1,6 +1,6 @@
 import { useCallback, type Dispatch, type MutableRefObject } from 'react';
 import type { AgentEventPayload, Action, Phase } from '../types';
-import { applyAgentEvent } from '../lib/applyAgentEvent';
+import { applyAgentEvents } from '../lib/applyAgentEvent';
 
 interface AgentEventHandlerOptions {
   activeSessionIdRef: MutableRefObject<string | null>;
@@ -18,8 +18,8 @@ export function useAgentEventHandler({
   dispatch,
 }: AgentEventHandlerOptions) {
   return useCallback(
-    (event: AgentEventPayload) => {
-      applyAgentEvent(
+    (events: AgentEventPayload[]) => {
+      applyAgentEvents(
         {
           activeSessionIdRef,
           pendingSubmitSessionRef,
@@ -28,7 +28,7 @@ export function useAgentEventHandler({
           dispatch,
           scheduleMicrotask: queueMicrotask,
         },
-        event
+        events
       );
     },
     [activeSessionIdRef, dispatch, pendingSubmitSessionRef, phaseRef, turnSessionMapRef]

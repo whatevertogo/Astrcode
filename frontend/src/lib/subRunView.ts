@@ -1,4 +1,14 @@
-import type { Message, SubRunFinishMessage, SubRunStartMessage } from '../types';
+import type {
+  Message,
+  SubRunFinishMessage,
+  SubRunStartMessage,
+  SubRunThreadTree,
+  SubRunViewData,
+  ThreadItem,
+  ThreadSubRunItem,
+} from '../types';
+
+export type { SubRunThreadTree, SubRunViewData, ThreadItem, ThreadSubRunItem } from '../types';
 
 interface IndexedMessage {
   index: number;
@@ -54,42 +64,18 @@ function wouldCreateSubRunCycle(
   return false;
 }
 
-export interface ThreadMessageItem {
-  kind: 'message';
-  message: Message;
-}
-
-export interface ThreadSubRunItem {
-  kind: 'subRun';
-  subRunId: string;
-}
-
-export type ThreadItem = ThreadMessageItem | ThreadSubRunItem;
-
-export interface SubRunViewData {
-  subRunId: string;
-  title: string;
-  startMessage?: SubRunStartMessage;
-  finishMessage?: SubRunFinishMessage;
-  bodyMessages: Message[];
-  threadItems: ThreadItem[];
-  streamFingerprint: string;
-  childSessionId?: string;
-  parentSubRunId: string | null;
-  directChildSubRunIds: string[];
-  hasDescriptorLineage: boolean;
-}
-
-export interface SubRunThreadTree {
-  rootThreadItems: ThreadItem[];
-  rootStreamFingerprint: string;
-  subRuns: Map<string, SubRunViewData>;
-}
-
 export interface SubRunPathView {
   validPath: string[];
   views: SubRunViewData[];
   activeView: SubRunViewData | null;
+}
+
+export function createEmptySubRunThreadTree(): SubRunThreadTree {
+  return {
+    rootThreadItems: [],
+    rootStreamFingerprint: '',
+    subRuns: new Map(),
+  };
 }
 
 /// 父视图摘要卡片——从 childSessionNotification 消息中提取的只读投影。
@@ -520,11 +506,7 @@ export function buildSubRunThreadTree(messages: Message[]): SubRunThreadTree {
     )
     .join('|');
 
-  return {
-    rootThreadItems,
-    rootStreamFingerprint,
-    subRuns,
-  };
+  return { rootThreadItems, rootStreamFingerprint, subRuns };
 }
 
 export function buildSubRunView(

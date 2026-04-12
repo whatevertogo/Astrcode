@@ -3,7 +3,7 @@
 //! Central state management for the app.
 //! The top-level reducer now only routes actions to focused handler groups.
 
-import type { Action, AppState } from '../types';
+import type { Action, AppState, AtomicAction } from '../types';
 import {
   findAssistantMessageIndex,
   findPromptMetricsMessageIndex,
@@ -15,6 +15,7 @@ import {
   upsertAssistantTurnMessage,
 } from './reducerHelpers';
 import { handleProjectedMessageAction } from './reducerMessageProjection';
+import { buildSubRunThreadTree } from '../lib/subRunView';
 
 export {
   findAssistantMessageIndex,
@@ -148,13 +149,14 @@ function handleCatalogAction(state: AppState, action: Action): AppState | null {
       return mapSession(state, action.sessionId, (session) => ({
         ...session,
         messages: action.messages,
+        subRunThreadTree: buildSubRunThreadTree(action.messages),
       }));
     default:
       return null;
   }
 }
 
-export function reducer(state: AppState, action: Action): AppState {
+function reduceAtomicAction(state: AppState, action: AtomicAction): AppState {
   return (
     handleUiStateAction(state, action) ??
     handleNavigationAction(state, action) ??
@@ -162,6 +164,13 @@ export function reducer(state: AppState, action: Action): AppState {
     handleProjectedMessageAction(state, action) ??
     state
   );
+}
+
+export function reducer(state: AppState, action: Action): AppState {
+  if (action.type === 'APPLY_AGENT_EVENTS_BATCH') {
+    return action.actions.reduce(reduceAtomicAction, state);
+  }
+  return reduceAtomicAction(state, action);
 }
 
 export function makeInitialState(): AppState {

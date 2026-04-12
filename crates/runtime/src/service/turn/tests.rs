@@ -145,6 +145,37 @@ impl LlmProvider for DelayedProvider {
     }
 }
 
+struct StreamingProvider;
+
+#[async_trait]
+impl LlmProvider for StreamingProvider {
+    fn model_limits(&self) -> ModelLimits {
+        ModelLimits {
+            context_window: 128_000,
+            max_output_tokens: 4_096,
+        }
+    }
+
+    async fn generate(
+        &self,
+        _request: LlmRequest,
+        sink: Option<EventSink>,
+    ) -> astrcode_core::Result<LlmOutput> {
+        if let Some(sink) = sink {
+            sink(astrcode_runtime_llm::LlmEvent::ThinkingDelta(
+                "分析中".to_string(),
+            ));
+            sink(astrcode_runtime_llm::LlmEvent::TextDelta(
+                "hello".to_string(),
+            ));
+        }
+        Ok(LlmOutput {
+            content: "hello".to_string(),
+            ..LlmOutput::default()
+        })
+    }
+}
+
 fn build_test_state() -> (tempfile::TempDir, SessionState, EventTranslator) {
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let log =
@@ -570,6 +601,90 @@ async fn repeated_turns_record_prompt_cache_hits_and_misses_in_observability() {
     assert!(diagnostics.cache_reuse_hits > 0);
 
     // 防止 tempdir 在 test 结束前被提前释放
+    let _ = temp_dir.path();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_session_turn_routes_model_deltas_to_live_stream_without_durable_append() {
+    let _guard = TestEnvGuard::new();
+    let (temp_dir, state, _translator) = build_test_state();
+    let loop_ = AgentLoop::from_capabilities(
+        Arc::new(StaticProviderFactory {
+            provider: Arc::new(StreamingProvider),
+        }),
+        crate::test_support::empty_capabilities(),
+    );
+    let mut live_receiver = state.subscribe_live();
+
+    let result = run_session_turn(
+        &state,
+        &loop_,
+        "turn-live",
+        CancelToken::new(),
+        RuntimeTurnInput::from_user_event(StorageEvent {
+            turn_id: Some("turn-live".to_string()),
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::UserMessage {
+                content: "hello".to_string(),
+                origin: UserMessageOrigin::User,
+                timestamp: Utc::now(),
+            },
+        }),
+        AgentEventContext::default(),
+        ExecutionOwner::root("test-session", "turn-live", InvocationKind::RootExecution),
+        BudgetSettings {
+            continuation_min_delta_tokens: 1,
+            max_continuations: 1,
+        },
+        None,
+    )
+    .await;
+
+    assert!(matches!(result.outcome, Ok(TurnOutcome::Completed)));
+
+    let live_phase = tokio::time::timeout(Duration::from_millis(50), live_receiver.recv())
+        .await
+        .expect("phase event should arrive")
+        .expect("live phase event should be available");
+    let live_thinking = tokio::time::timeout(Duration::from_millis(50), live_receiver.recv())
+        .await
+        .expect("thinking delta should arrive")
+        .expect("live thinking event should be available");
+    let live_delta = tokio::time::timeout(Duration::from_millis(50), live_receiver.recv())
+        .await
+        .expect("model delta should arrive")
+        .expect("live model delta event should be available");
+
+    assert!(matches!(
+        live_phase,
+        AgentEvent::PhaseChanged {
+            phase: Phase::Streaming,
+            ..
+        }
+    ));
+    assert!(matches!(
+        live_thinking,
+        AgentEvent::ThinkingDelta { ref delta, .. } if delta == "分析中"
+    ));
+    assert!(matches!(
+        live_delta,
+        AgentEvent::ModelDelta { ref delta, .. } if delta == "hello"
+    ));
+
+    let stored = state
+        .snapshot_recent_stored_events()
+        .expect("stored events should be available");
+    assert!(
+        stored.iter().all(|stored| {
+            !matches!(
+                stored.event.payload,
+                StorageEventPayload::AssistantDelta { .. }
+                    | StorageEventPayload::ThinkingDelta { .. }
+            )
+        }),
+        "live-only delta 不应再落入 durable event log"
+    );
+
     let _ = temp_dir.path();
 }
 

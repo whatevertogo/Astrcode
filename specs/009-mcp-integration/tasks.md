@@ -44,13 +44,13 @@
 
 **Purpose**: 创建 crate 骨架、协议类型定义、项目配置
 
-- [ ] T001 创建 `crates/runtime-mcp/Cargo.toml`，依赖 astrcode-core、astrcode-protocol、tokio、reqwest、serde、serde_json、async-trait、thiserror、log、futures-util、notify；在 workspace `Cargo.toml` 中注册新 member
-- [ ] T002 [P] 创建 `crates/runtime-mcp/src/lib.rs`，仅声明 Phase 1/2 已有的子模块（protocol、transport、config、manager），导出公共类型；后续 Phase 开始时再声明新模块（bridge 在 Phase 3、hot_reload 在 manager 目录内无需额外声明）
-- [ ] T003 [P] 实现 `crates/runtime-mcp/src/protocol/mod.rs`：定义 JSON-RPC 2.0 消息类型（JsonRpcRequest、JsonRpcResponse、JsonRpcNotification、JsonRpcError）和序列化/反序列化
-- [ ] T004 [P] 实现 `crates/runtime-mcp/src/protocol/types.rs`：MCP DTO 类型（McpToolInfo、McpPromptInfo、McpResourceInfo、McpToolAnnotations、McpServerInfo、McpServerCapabilities、InitializeParams、InitializeResult 等）
-- [ ] T005 [P] 实现 `crates/runtime-mcp/src/protocol/error.rs`：MCP 协议错误类型（McpProtocolError、McpTransportError、McpTimeoutError），实现 From 转换到 AstrError
-- [ ] T006 [P] 实现 `crates/runtime-mcp/src/config/types.rs`：配置数据类型（McpServerConfig、McpTransportConfig、McpConfigScope、McpOAuthConfig），从 JSON 反序列化
-- [ ] T007 确认 `cargo build -p astrcode-runtime-mcp` 通过
+- [x] T001 创建 `crates/runtime-mcp/Cargo.toml`，依赖 astrcode-core、astrcode-protocol、tokio、reqwest、serde、serde_json、async-trait、thiserror、log、futures-util、notify；在 workspace `Cargo.toml` 中注册新 member
+- [x] T002 [P] 创建 `crates/runtime-mcp/src/lib.rs`，仅声明 Phase 1/2 已有的子模块（protocol、transport、config、manager），导出公共类型；后续 Phase 开始时再声明新模块（bridge 在 Phase 3、hot_reload 在 manager 目录内无需额外声明）
+- [x] T003 [P] 实现 `crates/runtime-mcp/src/protocol/mod.rs`：定义 JSON-RPC 2.0 消息类型（JsonRpcRequest、JsonRpcResponse、JsonRpcNotification、JsonRpcError）和序列化/反序列化
+- [x] T004 [P] 实现 `crates/runtime-mcp/src/protocol/types.rs`：MCP DTO 类型（McpToolInfo、McpPromptInfo、McpResourceInfo、McpToolAnnotations、McpServerInfo、McpServerCapabilities、InitializeParams、InitializeResult 等）
+- [x] T005 [P] 实现 `crates/runtime-mcp/src/protocol/error.rs`：MCP 协议错误类型（McpProtocolError、McpTransportError、McpTimeoutError），实现 From 转换到 AstrError
+- [x] T006 [P] 实现 `crates/runtime-mcp/src/config/mod.rs` 和 `config/types.rs`：config 模块声明 + 配置数据类型（McpServerConfig、McpTransportConfig、McpConfigScope、McpOAuthConfig），从 JSON 反序列化
+- [x] T007 确认 `cargo build -p astrcode-runtime-mcp` 通过
 
 ---
 
@@ -60,17 +60,17 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T008 实现 `crates/runtime-mcp/src/transport/mod.rs`：定义 `McpTransport` trait（start、send_request、send_notification、close、is_active、transport_type）
-- [ ] T009 实现 `crates/runtime-mcp/src/transport/stdio.rs`：`StdioTransport`，使用 `tokio::process::Command` 启动子进程，stdin/stdout 做 JSON-RPC 传输，按 SIGINT → SIGTERM → SIGKILL 顺序优雅关闭
-- [ ] T010 实现 `crates/runtime-mcp/src/protocol/client.rs`：`McpClient`——封装 MCP 握手（initialize + initialized 通知）、协议版本兼容性检查、server_info/capabilities/instructions 存储
-- [ ] T011 为 McpClient 实现 `list_tools()` 和 `call_tool()` 方法：构造 JSON-RPC 请求、解析响应、处理错误码
-- [ ] T012 为 McpClient 实现 `send_cancel()` 方法：发送 `notifications/cancelled` 通知，并返回 cancel request_id 供调用方设置超时断开计时器
-- [ ] T013 为 McpClient 实现 `on_list_changed()` 方法：注册 list_changed 通知的异步回调处理器
-- [ ] T014 [P] 实现 `crates/runtime-mcp/src/manager/connection.rs`：`McpConnection` 状态机（Pending/Connecting/Connected/Failed/NeedsAuth/Disabled）及状态转换逻辑；创建 `manager/` 目录，`manager/mod.rs` 仅声明 connection 子模块（Phase 3 会扩展）
-- [ ] T015 创建 `crates/runtime-mcp/src/transport/mock.rs`（测试用，`#[cfg(test)]` 条件编译）：mock 传输实现，支持预设响应序列、请求验证、可编程断连行为（用于测试重连）
-- [ ] T016 为 McpClient 握手、list_tools、call_tool 编写单元测试（使用 mock 传输），验证协议流程正确性——在 `crates/runtime-mcp/src/protocol/client.rs` 底部 `#[cfg(test)]` 模块中
-- [ ] T016b 为远程传输异常场景编写 mock 测试：SSE 断流后重连、HTTP 5xx 错误处理、请求超时触发 cancel 流程——在 `transport/mock.rs` 底部 `#[cfg(test)]` 模块中，验证 McpClient 在传输层异常时的行为
-- [ ] T017 确认 `cargo test -p astrcode-runtime-mcp` 通过
+- [x] T008 实现 `crates/runtime-mcp/src/transport/mod.rs`：定义 `McpTransport` trait（start、send_request、send_notification、close、is_active、transport_type）
+- [x] T009 实现 `crates/runtime-mcp/src/transport/stdio.rs`：`StdioTransport`，使用 `tokio::process::Command` 启动子进程，stdin/stdout 做 JSON-RPC 传输，按 SIGINT → SIGTERM → SIGKILL 顺序优雅关闭
+- [x] T010 实现 `crates/runtime-mcp/src/protocol/client.rs`：`McpClient`——封装 MCP 握手（initialize + initialized 通知）、协议版本兼容性检查、server_info/capabilities/instructions 存储
+- [x] T011 为 McpClient 实现 `list_tools()` 和 `call_tool()` 方法：构造 JSON-RPC 请求、解析响应、处理错误码
+- [x] T012 为 McpClient 实现 `send_cancel()` 方法：发送 `notifications/cancelled` 通知，并返回 cancel request_id 供调用方设置超时断开计时器
+- [x] T013 为 McpClient 实现 `on_list_changed()` 方法：注册 list_changed 通知的异步回调处理器
+- [x] T014 [P] 实现 `crates/runtime-mcp/src/manager/connection.rs`：`McpConnection` 状态机（Pending/Connecting/Connected/Failed/NeedsAuth/Disabled）及状态转换逻辑；创建 `manager/` 目录，`manager/mod.rs` 仅声明 connection 子模块（Phase 3 会扩展）
+- [x] T015 创建 `crates/runtime-mcp/src/transport/mock.rs`（测试用，`#[cfg(test)]` 条件编译）：mock 传输实现，支持预设响应序列、请求验证、可编程断连行为（用于测试重连）
+- [x] T016 为 McpClient 握手、list_tools、call_tool 编写单元测试（使用 mock 传输），验证协议流程正确性——在 `crates/runtime-mcp/src/protocol/client.rs` 底部 `#[cfg(test)]` 模块中
+- [x] T016b 为远程传输异常场景编写 mock 测试：SSE 断流后重连、HTTP 5xx 错误处理、请求超时触发 cancel 流程——在 `transport/mock.rs` 底部 `#[cfg(test)]` 模块中，验证 McpClient 在传输层异常时的行为
+- [x] T017 确认 `cargo test -p astrcode-runtime-mcp` 通过
 
 **Checkpoint**: 传输层抽象和 MCP 协议客户端就绪，可开始 user story 实现
 
@@ -117,7 +117,7 @@
 - [ ] T035 [US2] 实现连接断开检测：监听 transport 的 is_active 状态变化和 McpClient 内部错误回调，调用 `reconnect.rs` 中的重连流程；区分 stdio（不重连）和远程传输（触发重连）
 - [ ] T036a [US2] 在 `manager/mod.rs` 中实现 in-flight 请求追踪：`AtomicUsize` 计数器在工具调用开始时 +1、完成（含错误）时 -1；提供 `in_flight_count()` 和 `wait_idle(timeout)` 方法
 - [ ] T036 [US2] 为 McpConnectionManager 实现 `disconnect_one()` 方法：先调用 `wait_idle(30s)` 等待进行中调用完成，超时后强制断开 transport，然后清除缓存（tools/commands/resources 的 memoize cache）
-- [ ] T036c [US2] 实现 cancel + 强制断开逻辑：工具调用 cancel 时发送 `notifications/cancelled`，设置 30 秒计时器，超时后调用 transport.close() 强制断开连接并向 Agent 返回超时错误——验证 FR-013
+- [ ] T036c [US2] 在 `manager/mod.rs` 中实现 cancel + 强制断开逻辑：工具调用 cancel 时发送 `notifications/cancelled`，设置 30 秒计时器，超时后调用 transport.close() 强制断开连接并向 Agent 返回超时错误——验证 FR-013
 - [ ] T037 [US2] 实现 `crates/runtime-mcp/src/manager/hot_reload.rs`：使用 `notify` crate 监听 `.mcp.json` 和 settings 文件变更；通过 `tokio::sync::mpsc` 通道发送变更事件，避免文件监听线程直接触碰异步状态
 - [ ] T038 [US2] 为 McpConnectionManager 实现 `reload_config()` 方法：接收 mpsc 变更事件，调用 McpConfigManager.load_all() 获取新配置，对比差异后新增调用 connect_one()、移除调用 disconnect_one()、未变化保持不变
 - [ ] T039 [US2] 为 McpConnectionManager 实现 `connected_invokers()` 方法：返回当前所有已连接服务器的 CapabilityInvoker 列表，供 runtime 重新注册到 CapabilityRouter

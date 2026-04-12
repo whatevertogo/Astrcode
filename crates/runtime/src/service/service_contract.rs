@@ -9,8 +9,8 @@ use std::fmt::{Display, Formatter};
 
 pub use astrcode_core::SessionEventRecord;
 use astrcode_core::{
-    AstrError, Phase, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    StoreError, SubRunHandle, SubRunResult,
+    AgentEvent, AstrError, Phase, ResolvedExecutionLimitsSnapshot,
+    ResolvedSubagentContextOverrides, StoreError, SubRunHandle, SubRunResult,
 };
 use async_trait::async_trait;
 use tokio::sync::broadcast;
@@ -18,6 +18,7 @@ use tokio::sync::broadcast;
 pub struct SessionReplay {
     pub history: Vec<SessionEventRecord>,
     pub receiver: broadcast::Receiver<SessionEventRecord>,
+    pub live_receiver: broadcast::Receiver<AgentEvent>,
 }
 
 #[derive(Debug, Clone)]

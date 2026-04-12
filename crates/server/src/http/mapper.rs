@@ -214,6 +214,26 @@ pub(crate) fn to_sse_event(record: SessionEventRecord) -> Event {
     Event::default().id(record.event_id).data(payload)
 }
 
+/// 将 live-only 增量事件转换为 SSE 事件。
+///
+/// live 事件不参与 durable cursor/replay，因此故意不写 event id；
+/// 断线恢复统一依赖后续 durable 真相（如 AssistantFinal / TurnDone）。
+pub(crate) fn to_live_sse_event(event: AgentEvent) -> Event {
+    let payload = serde_json::to_string(&to_agent_event_envelope(event)).unwrap_or_else(|error| {
+        serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "event": "error",
+            "data": {
+                "turnId": null,
+                "code": "serialization_error",
+                "message": error.to_string()
+            }
+        })
+        .to_string()
+    });
+    Event::default().data(payload)
+}
+
 /// 将内部事件投影为 HTTP 事件信封。
 ///
 /// 历史快照和 SSE 增量都应复用同一份 envelope 映射，避免服务端在

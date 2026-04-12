@@ -4,6 +4,7 @@
 //! These were previously at the top of App.tsx and made the file harder to navigate.
 
 import type { Message, Project, SessionMeta } from '../types';
+import { buildSubRunThreadTree, createEmptySubRunThreadTree } from '../lib/subRunView';
 
 function toEpochMs(value: string): number {
   const parsed = Date.parse(value);
@@ -49,6 +50,7 @@ export function groupSessionsByProject(sessionMetas: SessionMeta[]): Project[] {
       createdAt,
       updatedAt,
       messages: [],
+      subRunThreadTree: createEmptySubRunThreadTree(),
     });
   }
 
@@ -68,7 +70,9 @@ export function replaceSessionMessages(
   return projects.map((project) => ({
     ...project,
     sessions: project.sessions.map((session) =>
-      session.id === sessionId ? { ...session, messages } : session
+      session.id === sessionId
+        ? { ...session, messages, subRunThreadTree: buildSubRunThreadTree(messages) }
+        : session
     ),
   }));
 }

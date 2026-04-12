@@ -333,6 +333,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrcode-runtime-mcp"
+version = "0.1.0"
+dependencies = [
+ "astrcode-core",
+ "astrcode-protocol",
+ "async-trait",
+ "futures-util",
+ "log",
+ "notify",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "astrcode-runtime-prompt"
 version = "0.1.0"
 dependencies = [

@@ -1,6 +1,5 @@
 import React, { Component, useCallback, useEffect, useRef } from 'react';
-import type { Message } from '../../types';
-import type { SubRunViewData, ThreadItem } from '../../lib/subRunView';
+import type { Message, SubRunViewData, ThreadItem } from '../../types';
 import { emptyStateSurface, errorSurface } from '../../lib/styles';
 import { cn } from '../../lib/utils';
 import AssistantMessage from './AssistantMessage';

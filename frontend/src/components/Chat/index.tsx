@@ -1,4 +1,4 @@
-import type { SubRunViewData, ThreadItem } from '../../lib/subRunView';
+import type { SubRunViewData, ThreadItem } from '../../types';
 import { subRunNotice } from '../../lib/styles';
 import InputBar from './InputBar';
 import MessageList from './MessageList';

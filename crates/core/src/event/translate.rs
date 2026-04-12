@@ -94,6 +94,34 @@ impl EventTranslator {
         self.phase_tracker.current()
     }
 
+    /// 将一条内存态事件转换为 live SSE 事件。
+    ///
+    /// live 事件不参与 durable event id 分配，但仍需共享同一份 phase / turn
+    /// 语义，否则 `/history` 和 `/events` 会出现状态漂移。
+    pub fn translate_live(&mut self, event: &StorageEvent) -> Vec<AgentEvent> {
+        let mut events = Vec::new();
+        let turn_id = self.turn_id_for(event);
+        let agent = event.agent_context().cloned().unwrap_or_default();
+
+        if let Some(phase_event) =
+            self.phase_tracker
+                .on_event(event, turn_id.clone(), agent.clone())
+        {
+            events.push(phase_event);
+        }
+
+        let live_stored = StoredEvent {
+            // Why: live-only 事件不会被 durable 存储，这里只复用已有转换逻辑，
+            // 不把这个序号暴露到外部，也不作为 replay cursor 使用。
+            storage_seq: 0,
+            event: event.clone(),
+        };
+        self.convert_event(&live_stored, turn_id, agent, &mut |event| {
+            events.push(event)
+        });
+        events
+    }
+
     pub fn translate(&mut self, stored: &StoredEvent) -> Vec<SessionEventRecord> {
         let mut subindex = 0u32;
         let mut records = Vec::new();
