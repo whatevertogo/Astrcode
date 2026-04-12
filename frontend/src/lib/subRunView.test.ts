@@ -777,6 +777,136 @@ describe('buildSubRunView', () => {
     expect(orphanView?.parentSubRunId).toBeNull();
   });
 
+  it('breaks self-referential parent links from notification lineage', () => {
+    const messages: Message[] = [
+      {
+        id: 'subrun-self-start',
+        kind: 'subRunStart',
+        turnId: 'turn-root',
+        parentTurnId: 'turn-root',
+        agentId: 'agent-self',
+        subRunId: 'subrun-self',
+        agentProfile: 'self',
+        resolvedOverrides: {
+          storageMode: 'independentSession',
+          inheritSystemInstructions: true,
+          inheritProjectInstructions: true,
+          inheritWorkingDir: true,
+          inheritPolicyUpperBound: true,
+          inheritCancelToken: true,
+          includeCompactSummary: false,
+          includeRecentTail: true,
+          includeRecoveryRefs: false,
+          includeParentFindings: false,
+        },
+        resolvedLimits: {
+          allowedTools: ['readFile'],
+        },
+        timestamp: 1,
+      },
+      {
+        id: 'subrun-self-notification',
+        kind: 'childSessionNotification',
+        turnId: 'turn-root',
+        subRunId: 'subrun-self',
+        childRef: {
+          agentId: 'agent-self',
+          sessionId: 'session-child',
+          subRunId: 'subrun-self',
+          executionId: 'subrun-self',
+          parentAgentId: 'agent-self',
+          lineageKind: 'spawn',
+          status: 'running',
+          openSessionId: 'session-child',
+        },
+        notificationKind: 'started',
+        status: 'running',
+        summary: 'started',
+        timestamp: 2,
+      },
+    ];
+
+    const tree = buildSubRunThreadTree(messages);
+    expect(listRootSubRunViews(tree).map((view) => view.subRunId)).toEqual(['subrun-self']);
+    expect(buildSubRunView(tree, 'subrun-self')?.parentSubRunId).toBeNull();
+    expect(buildSubRunView(tree, 'subrun-self')?.directChildSubRunIds).toEqual([]);
+  });
+
+  it('breaks cyclic parent links without blowing the stack', () => {
+    const messages: Message[] = [
+      {
+        ...makeSubRunStartFixture({
+          id: 'subrun-a-start',
+          turnId: 'turn-root',
+          parentTurnId: 'turn-root',
+          agentId: 'agent-a',
+          subRunId: 'subrun-a',
+          agentProfile: 'planner',
+          depth: 1,
+          timestamp: 1,
+        }),
+      },
+      {
+        ...makeSubRunStartFixture({
+          id: 'subrun-b-start',
+          turnId: 'turn-a',
+          parentTurnId: 'turn-a',
+          agentId: 'agent-b',
+          subRunId: 'subrun-b',
+          agentProfile: 'reviewer',
+          depth: 2,
+          timestamp: 2,
+        }),
+      },
+      {
+        id: 'subrun-a-notification',
+        kind: 'childSessionNotification',
+        turnId: 'turn-root',
+        subRunId: 'subrun-a',
+        childRef: {
+          agentId: 'agent-a',
+          sessionId: 'session-a',
+          subRunId: 'subrun-a',
+          executionId: 'subrun-a',
+          parentAgentId: 'agent-b',
+          lineageKind: 'spawn',
+          status: 'running',
+          openSessionId: 'session-a',
+        },
+        notificationKind: 'started',
+        status: 'running',
+        summary: 'a started',
+        timestamp: 3,
+      },
+      {
+        id: 'subrun-b-notification',
+        kind: 'childSessionNotification',
+        turnId: 'turn-a',
+        subRunId: 'subrun-b',
+        childRef: {
+          agentId: 'agent-b',
+          sessionId: 'session-b',
+          subRunId: 'subrun-b',
+          executionId: 'subrun-b',
+          parentAgentId: 'agent-a',
+          lineageKind: 'spawn',
+          status: 'running',
+          openSessionId: 'session-b',
+        },
+        notificationKind: 'started',
+        status: 'running',
+        summary: 'b started',
+        timestamp: 4,
+      },
+    ];
+
+    const tree = buildSubRunThreadTree(messages);
+
+    expect(listRootSubRunViews(tree).map((view) => view.subRunId)).toEqual(['subrun-a']);
+    expect(buildSubRunView(tree, 'subrun-a')?.directChildSubRunIds).toEqual(['subrun-b']);
+    expect(buildSubRunView(tree, 'subrun-b')?.parentSubRunId).toBe('subrun-a');
+  });
+
   // 父摘要投影测试 — 确保根级子执行可作为父视图摘要卡片使用
   it('projects root sub-runs as parent summary cards with title and status', () => {
     const messages: Message[] = [

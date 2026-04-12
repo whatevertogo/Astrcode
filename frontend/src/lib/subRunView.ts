@@ -32,6 +32,28 @@ interface SubRunIndex {
   rootEntries: IndexedMessage[];
 }
 
+function wouldCreateSubRunCycle(
+  records: Map<string, SubRunRecord>,
+  childSubRunId: string,
+  parentSubRunId: string | null
+): boolean {
+  let current = parentSubRunId;
+  const seen = new Set<string>();
+
+  while (current) {
+    if (current === childSubRunId) {
+      return true;
+    }
+    if (seen.has(current)) {
+      return true;
+    }
+    seen.add(current);
+    current = records.get(current)?.parentSubRunId ?? null;
+  }
+
+  return false;
+}
+
 export interface ThreadMessageItem {
   kind: 'message';
   message: Message;
@@ -349,11 +371,28 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
     if (!record.parentSubRunId) {
       return;
     }
+    if (
+      record.parentSubRunId === record.subRunId ||
+      !records.has(record.parentSubRunId) ||
+      wouldCreateSubRunCycle(records, record.subRunId, record.parentSubRunId)
+    ) {
+      // Why: lineage 数据可能来自不同事件源（start、notification、spawn fallback），
+      // 一旦形成自环或环引用，递归渲染会直接栈溢出；这里降级为根节点，保证 UI 可继续工作。
+      record.parentSubRunId = null;
+    }
+  });
+
+  orderedRecords.forEach((record) => {
+    if (!record.parentSubRunId) {
+      return;
+    }
     const parentRecord = records.get(record.parentSubRunId);
     if (!parentRecord) {
       return;
     }
-    parentRecord.directChildSubRunIds.push(record.subRunId);
+    if (!parentRecord.directChildSubRunIds.includes(record.subRunId)) {
+      parentRecord.directChildSubRunIds.push(record.subRunId);
+    }
   });
 
   orderedRecords.forEach((record) => {
@@ -406,6 +445,7 @@ function buildThreadItems(
 export function buildSubRunThreadTree(messages: Message[]): SubRunThreadTree {
   const index = buildSubRunIndex(messages);
   const subRuns = new Map<string, SubRunViewData>();
+  const materializing = new Set<string>();
 
   const materializeSubRun = (subRunId: string): SubRunViewData | null => {
     const cached = subRuns.get(subRunId);
@@ -417,6 +457,15 @@ export function buildSubRunThreadTree(messages: Message[]): SubRunThreadTree {
     if (!record) {
       return null;
     }
+    if (materializing.has(subRunId)) {
+      // Why: 即便上游 lineage 清洗漏网，视图层也必须防止递归爆栈。
+      console.warn('sub-run tree detected recursive lineage, skipping recursive materialization', {
+        subRunId,
+      });
+      return null;
+    }
+
+    materializing.add(subRunId);
 
     record.directChildSubRunIds.forEach((childSubRunId) => {
       materializeSubRun(childSubRunId);
@@ -445,6 +494,7 @@ export function buildSubRunThreadTree(messages: Message[]): SubRunThreadTree {
       hasDescriptorLineage: record.hasDescriptorLineage,
     };
     subRuns.set(subRunId, view);
+    materializing.delete(subRunId);
     return view;
   };
 
