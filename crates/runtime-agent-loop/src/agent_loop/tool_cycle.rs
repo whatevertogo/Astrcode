@@ -208,7 +208,9 @@ where
             return Ok(ToolCycleOutcome::Interrupted);
         }
 
-        let ctx = agent_loop.tool_context(state, cancel.clone(), execution_owner.clone());
+        let ctx = agent_loop
+            .tool_context(state, cancel.clone(), execution_owner.clone())
+            .with_agent_context(agent.clone());
         let inline_limit =
             resolve_tool_inline_limit(agent_loop, capabilities, &pending.tool_call.name);
         let ctx = ctx.with_resolved_inline_limit(inline_limit);
@@ -294,8 +296,9 @@ where
             .map(move |pending| {
                 let event_tx = worker_event_tx.clone();
                 async move {
-                    let ctx =
-                        agent_loop.tool_context(state, cancel.clone(), execution_owner.clone());
+                    let ctx = agent_loop
+                        .tool_context(state, cancel.clone(), execution_owner.clone())
+                        .with_agent_context(agent.clone());
                     let inline_limit = resolve_tool_inline_limit(
                         agent_loop,
                         capabilities,
