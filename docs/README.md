@@ -1,35 +1,20 @@
 # Astrcode 文档目录
 
-## 目录约定
+## 当前目录结构
 
-- `adr/`：已经接受并生效的架构决策记录。
-- `architecture/`：稳定的全局架构说明与路线图。
-- `design/`：**短文档**，只表达问题、约束、方案与边界，尽量少写实现细节。
-- `spec/`：**规范文档**，定义数据模型、协议、事件、状态机、API 与实现约束。
-- `ideas/`：未定稿的想法与调研，不作为实现依据。
+- `adr/`：已经接受并生效的架构决策记录
+- `architecture/`：当前仓库结构、依赖关系和全局架构说明
+- `ideas/`：未定稿的想法与草稿，不作为实现依据
 
-## 当前整理规则
+## 阅读顺序
 
-这次整理把原来的：
-
-- `docs/design/` 中的长篇设计稿
-- `docs/plan/` 中的实施计划
-- `docs/TODO/` 中的待办清单
-
-重组为两层：
-
-1. `docs/design/`：保留精简后的设计结论。
-2. `docs/spec/`：承接规范、约束、开放项与后续待办。
-
-## 推荐阅读顺序
-
-1. `docs/architecture/README.md`
-2. `docs/design/README.md`
-3. `docs/spec/README.md`
+1. 根目录 [README.md](/D:/GitObjectsOwn/Astrcode/README.md)
+2. 根目录 [PROJECT_ARCHITECTURE.md](/D:/GitObjectsOwn/Astrcode/PROJECT_ARCHITECTURE.md)
+3. [docs/architecture/README.md](/D:/GitObjectsOwn/Astrcode/docs/architecture/README.md)
 4. 相关 ADR
 
 ## 说明
 
-- 设计是否成立，以 `design/` 为入口。
-- 实现怎么做、哪些字段和事件必须稳定，以 `spec/` 为准。
-- 尚未完成但已经识别出的工作，统一收口到 `docs/spec/open-items.md`。
+- 想看“项目现在怎么分层”，优先读 `PROJECT_ARCHITECTURE.md` 和 `docs/architecture/`
+- 想看“为什么这么设计”，读 `docs/adr/`
+- `ideas/` 里的内容只能当讨论材料，不能直接当实现依据

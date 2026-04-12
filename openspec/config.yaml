@@ -1,7 +1,8 @@
 schema: spec-driven # 默认 schema，推荐使用这个；也可以改成 minimalist 或自定义 schema
 
 context: |
-  # 这里写项目整体上下文（尽量具体，但保持精炼，避免无关提示词堆积）
+  必要:
+    - 用中文写所有文档
   技术栈:
     - 后端: Rust, Axum, SSE
     - 桌面端: Tauri
