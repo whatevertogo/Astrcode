@@ -10,8 +10,8 @@
 use async_trait::async_trait;
 
 use crate::{
-    AgentProfile, AstrError, SessionEventRecord, SessionMeta, SubRunHandle, SubRunResult,
-    SubagentContextOverrides,
+    AgentId, AgentProfile, AstrError, SessionEventRecord, SessionId, SessionMeta, SubRunHandle,
+    SubRunResult, SubagentContextOverrides, TurnId,
 };
 
 /// 运行时主句柄。
@@ -49,10 +49,10 @@ pub trait ManagedRuntimeComponent: Send + Sync {
 /// 内部 contract 不再分裂，HTTP 路由可按需做 DTO 投影。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionAccepted {
-    pub session_id: String,
-    pub turn_id: String,
+    pub session_id: SessionId,
+    pub turn_id: TurnId,
     /// 仅 root execute 等有独立 agent 时存在。
-    pub agent_id: Option<String>,
+    pub agent_id: Option<AgentId>,
     /// 仅 prompt submit 分支场景存在。
     pub branched_from_session_id: Option<String>,
 }
@@ -69,7 +69,7 @@ pub trait SessionTruthBoundary: Send + Sync {
 
     async fn load_history(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
     ) -> std::result::Result<Vec<SessionEventRecord>, AstrError>;
 }
 
@@ -82,16 +82,17 @@ pub trait SessionTruthBoundary: Send + Sync {
 pub trait ExecutionOrchestrationBoundary: Send + Sync {
     async fn submit_prompt(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         text: String,
     ) -> std::result::Result<ExecutionAccepted, AstrError>;
 
-    async fn interrupt_session(&self, session_id: &str) -> std::result::Result<(), AstrError>;
+    async fn interrupt_session(&self, session_id: &SessionId)
+    -> std::result::Result<(), AstrError>;
 
     // TODO: 未来可能需要重新添加 max_steps 参数来限制根智能体执行
     async fn execute_root_agent(
         &self,
-        agent_id: String,
+        agent_id: AgentId,
         task: String,
         context: Option<String>,
         context_overrides: Option<SubagentContextOverrides>,
@@ -104,8 +105,8 @@ pub trait ExecutionOrchestrationBoundary: Send + Sync {
 pub trait LoopRunnerBoundary: Send + Sync {
     async fn run_session_turn(
         &self,
-        session_id: &str,
-        turn_id: &str,
+        session_id: &SessionId,
+        turn_id: &TurnId,
     ) -> std::result::Result<(), AstrError>;
 }
 
@@ -116,13 +117,13 @@ pub trait LoopRunnerBoundary: Send + Sync {
 pub trait LiveSubRunControlBoundary: Send + Sync {
     async fn get_subrun_handle(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         sub_run_id: &str,
     ) -> std::result::Result<Option<SubRunHandle>, AstrError>;
 
     async fn cancel_subrun(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         sub_run_id: &str,
     ) -> std::result::Result<(), AstrError>;
 

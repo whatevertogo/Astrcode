@@ -2,9 +2,9 @@
 
 ### Requirement: `core` 定义唯一能力语义模型 `CapabilitySpec`
 
-`astrcode-core` SHALL 定义 `CapabilitySpec`，作为 runtime 内部唯一能力语义模型。`CapabilitySpec` SHALL 不依赖 `astrcode-protocol`。
+`astrcode-core` SHALL 定义 `CapabilitySpec`，作为运行时内部唯一能力语义模型。`CapabilitySpec` SHALL 不依赖 `astrcode-protocol`。
 
-`CapabilitySpec` SHALL 包含以下字段：
+`CapabilitySpec` SHALL 至少包含以下语义字段：
 
 - `name`
 - `kind`
@@ -21,92 +21,82 @@
 - `stability`
 - `max_result_inline_size`
 
-#### Scenario: core 独立编译
+#### Scenario: core 可以独立于 protocol 编译
 
 - **WHEN** 执行 `cargo check -p astrcode-core`
 - **THEN** 编译成功
-- **AND** `crates/core/Cargo.toml` 中不包含 `astrcode-protocol`
+- **AND** `crates/core/Cargo.toml` 不包含 `astrcode-protocol`
 
-#### Scenario: CapabilitySpec 是 runtime 内部统一模型
+#### Scenario: 运行时内部统一消费 CapabilitySpec
 
 - **WHEN** 检查 `core`、`kernel`、`session-runtime`、`application`、`adapter-*`
-- **THEN** 它们内部消费的能力语义类型是 `core::CapabilitySpec`
-- **AND** 不再以 `protocol::CapabilityDescriptor` 作为内部能力模型
+- **THEN** 内部能力语义类型为 `core::CapabilitySpec`
+- **AND** 不再以 `protocol::CapabilityDescriptor` 作为内部主模型
 
 ---
 
-### Requirement: 能力模型使用强类型而不是字符串拼装
+### Requirement: 能力语义使用强类型
 
-`CapabilitySpec` 相关语义 SHALL 使用强类型枚举或 newtype 表达，而不是在内部依赖裸字符串约定。
+能力语义 SHALL 使用枚举或 newtype 表达，不依赖裸字符串约定。
 
-#### Scenario: kind 与 invocation mode 是枚举
+#### Scenario: `CapabilityKind` 与 `InvocationMode` 为枚举
 
-- **WHEN** 检查 `CapabilityKind` 与 `InvocationMode`
-- **THEN** 它们是 `enum`
-- **AND** 运行时内部不通过字符串比较决定能力语义
+- **WHEN** 检查能力语义定义
+- **THEN** `CapabilityKind` 与 `InvocationMode` 均为 `enum`
+- **AND** 运行时内部不通过字符串比较决定能力行为
 
----
-
-### Requirement: `InvocationMode` 进入 `core`
-
-`streaming: bool` SHALL 被 `core::InvocationMode` 替代，避免用传输层布尔字段表达运行时调用语义。
-
-#### Scenario: Streaming tool 通过 InvocationMode 表达
+#### Scenario: 流式语义不再用 `streaming: bool`
 
 - **WHEN** 一个能力支持流式返回
-- **THEN** 它的 `CapabilitySpec.invocation_mode` 为 `InvocationMode::Streaming`
-
-#### Scenario: Unary tool 通过 InvocationMode 表达
-
-- **WHEN** 一个能力只支持普通请求-响应
-- **THEN** 它的 `CapabilitySpec.invocation_mode` 为 `InvocationMode::Unary`
+- **THEN** `CapabilitySpec.invocation_mode == InvocationMode::Streaming`
+- **AND** 不再以传输层布尔字段表达运行时调用语义
 
 ---
 
-### Requirement: 运行时真正使用的执行提示字段留在 `core`
+### Requirement: 执行提示字段归 `core` 所有
 
-以下字段 SHALL 归 `core` 所有，因为它们影响运行时行为，而不是单纯影响传输形状：
+以下字段 SHALL 归 `core` 所有，因为它们决定运行时行为，而不是传输形状：
 
 - `profiles`
 - `compact_clearable`
 - `max_result_inline_size`
 - `invocation_mode`
 
-#### Scenario: prompt/runtime/plugin 不再从 protocol 读取这些字段
+#### Scenario: prompt / loop / plugin 基于 CapabilitySpec 决策
 
-- **WHEN** `runtime-prompt`、`runtime-agent-loop`、`plugin` 需要判断 profile、compaction 或 streaming 语义
-- **THEN** 它们从 `CapabilitySpec` 读取
-- **AND** 不再把 `CapabilityDescriptor` 当作运行时主模型
+- **WHEN** prompt、turn loop 或 plugin 需要判断 profile、compaction、streaming 语义
+- **THEN** 从 `CapabilitySpec` 读取
+- **AND** 不再从 `CapabilityDescriptor` 读取执行语义
 
 ---
 
-### Requirement: `protocol::CapabilityDescriptor` 只保留传输职责
+### Requirement: `CapabilityDescriptor` 降级为边界 DTO
 
-`astrcode-protocol` SHALL 保留 `CapabilityDescriptor` 作为 wire DTO，但它不再是 runtime 内部的主语义模型。
+`astrcode-protocol::CapabilityDescriptor` SHALL 仅承担 wire DTO 职责，不承担运行时内部语义职责。
 
-#### Scenario: 边界处进行映射
+#### Scenario: 协议边界统一映射
 
-- **WHEN** server 响应、插件握手或其他协议边界需要能力描述
-- **THEN** 在边界处将 `CapabilitySpec` 映射为 `CapabilityDescriptor`
+- **WHEN** server 响应、插件握手或其他协议边界输出能力描述
+- **THEN** 通过显式 mapper 将 `CapabilitySpec` 映射为 `CapabilityDescriptor`
 
-#### Scenario: runtime 内部不直接依赖 DTO
+#### Scenario: 非边界层不依赖 DTO 语义
 
 - **WHEN** 检查 `core`、`kernel`、`session-runtime`、`application`
-- **THEN** 不存在直接围绕 `CapabilityDescriptor` 进行业务判断的实现
+- **THEN** 不存在围绕 `CapabilityDescriptor` 的业务判断逻辑
 
 ---
 
-### Requirement: Tool 和 CapabilityInvoker 改为返回 `CapabilitySpec`
+### Requirement: Tool 与 Registry 接口返回 `CapabilitySpec`
 
-`ToolCapabilityMetadata`、`Tool` trait 的能力描述接口，以及 `CapabilityInvoker` trait SHALL 改为构建并返回 `CapabilitySpec`。
+`ToolCapabilityMetadata`、`Tool` trait 的能力描述接口，以及 `CapabilityInvoker` trait SHALL 返回 `CapabilitySpec`。
 
-#### Scenario: Tool 不再构建 CapabilityDescriptor
+#### Scenario: Tool 能力描述返回 CapabilitySpec
 
 - **WHEN** 检查 `core/tool.rs`
 - **THEN** 默认能力描述构建逻辑返回 `CapabilitySpec`
 
-#### Scenario: CapabilityInvoker 不再暴露 descriptor
+#### Scenario: CapabilityInvoker 主接口返回 CapabilitySpec
 
 - **WHEN** 检查 `core/registry/router.rs`
-- **THEN** 公开接口返回 `CapabilitySpec`
-- **AND** 不再以 `descriptor()` 作为主接口
+- **THEN** 公共接口返回 `CapabilitySpec`
+- **AND** 不再以 `descriptor()` 作为主语义接口

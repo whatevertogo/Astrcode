@@ -2,6 +2,9 @@
 //!
 //! 提供 MCP 状态查询、审批，以及服务端配置管理入口。
 
+use astrcode_application::{
+    McpConfigScope, McpServerConfig, McpServerStatusSnapshot, McpTransportConfig,
+};
 use axum::{
     Json,
     extract::State,
@@ -112,7 +115,7 @@ pub(crate) async fn get_mcp_status(
 ) -> Result<(StatusCode, Json<McpStatusResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     let servers = state
-        .service
+        .app
         .mcp()
         .list_status()
         .await
@@ -129,7 +132,7 @@ pub(crate) async fn approve_mcp_server(
 ) -> Result<(StatusCode, Json<McpActionResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     state
-        .service
+        .app
         .mcp()
         .approve_server(&request.server_signature)
         .await
@@ -144,7 +147,7 @@ pub(crate) async fn reject_mcp_server(
 ) -> Result<(StatusCode, Json<McpActionResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     state
-        .service
+        .app
         .mcp()
         .reject_server(&request.server_signature)
         .await
@@ -159,7 +162,7 @@ pub(crate) async fn reconnect_mcp_server(
 ) -> Result<(StatusCode, Json<McpActionResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     state
-        .service
+        .app
         .mcp()
         .reconnect_server(&request.name)
         .await
@@ -173,7 +176,7 @@ pub(crate) async fn reset_project_mcp_choices(
 ) -> Result<(StatusCode, Json<McpActionResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     state
-        .service
+        .app
         .mcp()
         .reset_project_choices()
         .await
@@ -189,7 +192,7 @@ pub(crate) async fn upsert_mcp_server(
     require_auth(&state, &headers, None)?;
     let config = request.into_server_config()?;
     state
-        .service
+        .app
         .mcp()
         .upsert_config(config)
         .await
@@ -204,7 +207,7 @@ pub(crate) async fn remove_mcp_server(
 ) -> Result<(StatusCode, Json<McpActionResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     state
-        .service
+        .app
         .mcp()
         .remove_config(parse_scope(&request.scope)?, &request.name)
         .await
@@ -219,7 +222,7 @@ pub(crate) async fn set_mcp_server_enabled(
 ) -> Result<(StatusCode, Json<McpActionResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     state
-        .service
+        .app
         .mcp()
         .set_enabled(parse_scope(&request.scope)?, &request.name, request.enabled)
         .await
@@ -237,11 +240,11 @@ fn ok_response(status: StatusCode) -> (StatusCode, Json<McpActionResponse>) {
     )
 }
 
-fn parse_scope(scope: &str) -> Result<astrcode_runtime::McpConfigScope, ApiError> {
+fn parse_scope(scope: &str) -> Result<McpConfigScope, ApiError> {
     match scope {
-        "user" => Ok(astrcode_runtime::McpConfigScope::User),
-        "project" => Ok(astrcode_runtime::McpConfigScope::Project),
-        "local" => Ok(astrcode_runtime::McpConfigScope::Local),
+        "user" => Ok(McpConfigScope::User),
+        "project" => Ok(McpConfigScope::Project),
+        "local" => Ok(McpConfigScope::Local),
         other => Err(ApiError::bad_request(format!(
             "unsupported MCP scope '{}'",
             other
@@ -250,28 +253,24 @@ fn parse_scope(scope: &str) -> Result<astrcode_runtime::McpConfigScope, ApiError
 }
 
 impl UpsertServerRequest {
-    fn into_server_config(self) -> Result<astrcode_runtime::McpServerConfig, ApiError> {
+    fn into_server_config(self) -> Result<McpServerConfig, ApiError> {
         let transport = match self.transport {
             UpsertTransportRequest::Stdio { command, args, env } => {
-                astrcode_runtime::McpTransportConfig::Stdio { command, args, env }
+                McpTransportConfig::Stdio { command, args, env }
             },
-            UpsertTransportRequest::Http { url, headers } => {
-                astrcode_runtime::McpTransportConfig::StreamableHttp {
-                    url,
-                    headers,
-                    oauth: None,
-                }
+            UpsertTransportRequest::Http { url, headers } => McpTransportConfig::StreamableHttp {
+                url,
+                headers,
+                oauth: None,
             },
-            UpsertTransportRequest::Sse { url, headers } => {
-                astrcode_runtime::McpTransportConfig::Sse {
-                    url,
-                    headers,
-                    oauth: None,
-                }
+            UpsertTransportRequest::Sse { url, headers } => McpTransportConfig::Sse {
+                url,
+                headers,
+                oauth: None,
             },
         };
 
-        Ok(astrcode_runtime::McpServerConfig {
+        Ok(McpServerConfig {
             name: self.name,
             transport,
             scope: parse_scope(&self.scope)?,
@@ -283,8 +282,8 @@ impl UpsertServerRequest {
     }
 }
 
-impl From<astrcode_runtime::McpServerStatusSnapshot> for McpServerStatus {
-    fn from(value: astrcode_runtime::McpServerStatusSnapshot) -> Self {
+impl From<McpServerStatusSnapshot> for McpServerStatus {
+    fn from(value: McpServerStatusSnapshot) -> Self {
         Self {
             name: value.name,
             scope: value.scope,

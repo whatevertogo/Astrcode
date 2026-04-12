@@ -10,23 +10,17 @@
 
 use std::{fmt, path::PathBuf, sync::Arc};
 
-use astrcode_protocol::capability::{
-    CapabilityDescriptor, CapabilityKind, DescriptorBuildError, PermissionHint, SideEffectLevel,
-    StabilityLevel,
-};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    AgentEventContext, CancelToken, InvocationKind, Result, StorageEvent, ToolDefinition,
-    ToolExecutionResult, ToolOutputDelta, ToolOutputStream,
+    AgentEventContext, CancelToken, CapabilityKind, CapabilitySpec, CapabilitySpecBuildError,
+    InvocationKind, InvocationMode, PermissionSpec, Result, SessionId, SideEffect, Stability,
+    StorageEvent, ToolDefinition, ToolExecutionResult, ToolOutputDelta, ToolOutputStream,
     tool_result_persist::DEFAULT_TOOL_RESULT_INLINE_LIMIT,
 };
-
-/// Unique identifier for a session.
-pub type SessionId = String;
 
 /// 工具执行的默认最大输出大小（1 MB）
 ///
@@ -137,7 +131,7 @@ pub struct ToolContext {
     execution_owner: Option<ExecutionOwner>,
     /// 当前工具的结果内联阈值（字节）。
     ///
-    /// 由工具调度时从 `CapabilityDescriptor::max_result_inline_size` 解析填入，
+    /// 由工具调度时从 `CapabilitySpec::max_result_inline_size` 解析填入，
     /// 未设置时使用 `DEFAULT_TOOL_RESULT_INLINE_LIMIT`。
     /// 工具执行侧用此值决定是否将结果持久化到磁盘。
     resolved_inline_limit: usize,
@@ -220,7 +214,7 @@ impl ToolContext {
 
     /// 设置当前工具的结果内联阈值。
     ///
-    /// 由工具调度时从 `CapabilityDescriptor::max_result_inline_size` 解析填入。
+    /// 由工具调度时从 `CapabilitySpec::max_result_inline_size` 解析填入。
     pub fn with_resolved_inline_limit(mut self, limit: usize) -> Self {
         self.resolved_inline_limit = limit;
         self
@@ -424,15 +418,17 @@ pub struct ToolCapabilityMetadata {
     /// Descriptive tags for categorization and discovery.
     pub tags: Vec<String>,
     /// Permission hints indicating what resources or actions this tool may access.
-    pub permissions: Vec<PermissionHint>,
+    pub permissions: Vec<PermissionSpec>,
+    /// 调用模式，替代旧的 `streaming: bool`。
+    pub invocation_mode: InvocationMode,
     /// The level of side effects this tool may produce.
-    pub side_effect: SideEffectLevel,
+    pub side_effect: SideEffect,
     /// Whether the runtime may execute multiple calls to this capability in parallel.
     pub concurrency_safe: bool,
     /// Whether old tool results may be compacted out of request context to save tokens.
     pub compact_clearable: bool,
     /// Stability level indicating API maturity.
-    pub stability: StabilityLevel,
+    pub stability: Stability,
     /// Prompt guidance that should be projected into the layered prompt system.
     pub prompt: Option<ToolPromptMetadata>,
     /// 工具结果内联阈值（字节）。
@@ -457,10 +453,11 @@ impl ToolCapabilityMetadata {
             profiles: vec!["coding".to_string()],
             tags: vec!["builtin".to_string()],
             permissions: Vec::new(),
-            side_effect: SideEffectLevel::Workspace,
+            invocation_mode: InvocationMode::Unary,
+            side_effect: SideEffect::Workspace,
             concurrency_safe: false,
             compact_clearable: false,
-            stability: StabilityLevel::Stable,
+            stability: Stability::Stable,
             prompt: None,
             max_result_inline_size: None,
         }
@@ -500,7 +497,7 @@ impl ToolCapabilityMetadata {
 
     /// Adds a permission hint without a rationale.
     pub fn permission(mut self, name: impl Into<String>) -> Self {
-        self.permissions.push(PermissionHint {
+        self.permissions.push(PermissionSpec {
             name: name.into(),
             rationale: None,
         });
@@ -513,15 +510,21 @@ impl ToolCapabilityMetadata {
         name: impl Into<String>,
         rationale: impl Into<String>,
     ) -> Self {
-        self.permissions.push(PermissionHint {
+        self.permissions.push(PermissionSpec {
             name: name.into(),
             rationale: Some(rationale.into()),
         });
         self
     }
 
+    /// 设置调用模式（Unary / Streaming）。
+    pub fn invocation_mode(mut self, invocation_mode: InvocationMode) -> Self {
+        self.invocation_mode = invocation_mode;
+        self
+    }
+
     /// Sets the side effect level for this tool.
-    pub fn side_effect(mut self, side_effect: SideEffectLevel) -> Self {
+    pub fn side_effect(mut self, side_effect: SideEffect) -> Self {
         self.side_effect = side_effect;
         self
     }
@@ -539,7 +542,7 @@ impl ToolCapabilityMetadata {
     }
 
     /// Sets the stability level for this tool.
-    pub fn stability(mut self, stability: StabilityLevel) -> Self {
+    pub fn stability(mut self, stability: Stability) -> Self {
         self.stability = stability;
         self
     }
@@ -556,11 +559,11 @@ impl ToolCapabilityMetadata {
         self
     }
 
-    /// Builds a [`CapabilityDescriptor`] from this metadata and the tool definition.
-    pub fn build_descriptor(
+    /// Builds a [`CapabilitySpec`] from this metadata and the tool definition.
+    pub fn build_spec(
         self,
         definition: ToolDefinition,
-    ) -> std::result::Result<CapabilityDescriptor, DescriptorBuildError> {
+    ) -> std::result::Result<CapabilitySpec, CapabilitySpecBuildError> {
         let mut metadata = serde_json::Map::new();
         if let Some(prompt) = self.prompt {
             metadata.insert(
@@ -568,13 +571,14 @@ impl ToolCapabilityMetadata {
                 serde_json::to_value(prompt)
                     // 提示词元数据必须作为 descriptor 的一部分向上游显式报错，
                     // 不能在库层 panic 吞掉调用方的构建上下文。
-                    .map_err(|_| DescriptorBuildError::InvalidSchema("metadata"))?,
+                    .map_err(|_| CapabilitySpecBuildError::InvalidSchema("metadata"))?,
             );
         }
 
-        let builder = CapabilityDescriptor::builder(definition.name, CapabilityKind::tool())
+        let builder = CapabilitySpec::builder(definition.name, CapabilityKind::Tool)
             .description(definition.description)
             .schema(definition.parameters, json!({ "type": "string" }))
+            .invocation_mode(self.invocation_mode)
             .profiles(self.profiles)
             .tags(self.tags)
             .permissions(self.permissions)
@@ -608,16 +612,13 @@ pub trait Tool: Send + Sync {
         ToolCapabilityMetadata::builtin()
     }
 
-    /// Returns a full capability descriptor for this tool.
+    /// Returns a full capability spec for this tool.
     ///
-    /// The default implementation builds a descriptor from `definition()` and
+    /// The default implementation builds a spec from `definition()` and
     /// `capability_metadata()`. Override this method for advanced tools that
-    /// need complete control over the descriptor.
-    fn capability_descriptor(
-        &self,
-    ) -> std::result::Result<CapabilityDescriptor, DescriptorBuildError> {
-        self.capability_metadata()
-            .build_descriptor(self.definition())
+    /// need complete control over the capability spec.
+    fn capability_spec(&self) -> std::result::Result<CapabilitySpec, CapabilitySpecBuildError> {
+        self.capability_metadata().build_spec(self.definition())
     }
 
     /// Executes the tool with the given arguments and context.

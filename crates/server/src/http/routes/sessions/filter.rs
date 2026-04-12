@@ -1,5 +1,5 @@
-use astrcode_core::SessionEventRecord;
-use astrcode_runtime::{SessionEventFilterSpec, SubRunEventScope};
+use astrcode_core::{AgentEvent, AgentEventContext, SessionEventRecord};
+use astrcode_session_runtime::{SessionEventFilterSpec, SubRunEventScope};
 use serde::Deserialize;
 
 use super::validate_path_id;
@@ -48,6 +48,32 @@ pub(crate) fn record_is_after_cursor(record: &SessionEventRecord, cursor: Option
     }
 }
 
+pub(crate) fn record_matches_filter(
+    record: &SessionEventRecord,
+    filter_spec: &SessionEventFilterSpec,
+) -> bool {
+    event_matches_filter(&record.event, filter_spec)
+}
+
+pub(crate) fn event_matches_filter(
+    event: &AgentEvent,
+    filter_spec: &SessionEventFilterSpec,
+) -> bool {
+    let Some(context) = event_context(event) else {
+        return false;
+    };
+    let target = filter_spec.target_sub_run_id.as_str();
+    let current = context.sub_run_id.as_deref();
+    let parent = context.parent_sub_run_id.as_deref();
+
+    match filter_spec.scope {
+        SubRunEventScope::SelfOnly => current == Some(target),
+        SubRunEventScope::DirectChildren => parent == Some(target),
+        // 目前事件上下文只暴露当前节点和父节点，这里按“自己或直接子节点”做安全子集实现。
+        SubRunEventScope::Subtree => current == Some(target) || parent == Some(target),
+    }
+}
+
 fn map_scope(scope: SessionEventScopeQuery) -> SubRunEventScope {
     match scope {
         SessionEventScopeQuery::SelfOnly => SubRunEventScope::SelfOnly,
@@ -58,4 +84,29 @@ fn map_scope(scope: SessionEventScopeQuery) -> SubRunEventScope {
 
 fn validate_subrun_query_id(raw_sub_run_id: &str) -> Result<String, ApiError> {
     validate_path_id(raw_sub_run_id, None, false, "sub-run")
+}
+
+fn event_context(event: &AgentEvent) -> Option<&AgentEventContext> {
+    match event {
+        AgentEvent::UserMessage { agent, .. }
+        | AgentEvent::PhaseChanged { agent, .. }
+        | AgentEvent::ModelDelta { agent, .. }
+        | AgentEvent::ThinkingDelta { agent, .. }
+        | AgentEvent::AssistantMessage { agent, .. }
+        | AgentEvent::ToolCallStart { agent, .. }
+        | AgentEvent::ToolCallDelta { agent, .. }
+        | AgentEvent::ToolCallResult { agent, .. }
+        | AgentEvent::CompactApplied { agent, .. }
+        | AgentEvent::SubRunStarted { agent, .. }
+        | AgentEvent::SubRunFinished { agent, .. }
+        | AgentEvent::ChildSessionNotification { agent, .. }
+        | AgentEvent::TurnDone { agent, .. }
+        | AgentEvent::Error { agent, .. }
+        | AgentEvent::PromptMetrics { agent, .. }
+        | AgentEvent::AgentMailboxQueued { agent, .. }
+        | AgentEvent::AgentMailboxBatchStarted { agent, .. }
+        | AgentEvent::AgentMailboxBatchAcked { agent, .. }
+        | AgentEvent::AgentMailboxDiscarded { agent, .. } => Some(agent),
+        AgentEvent::SessionStarted { .. } => None,
+    }
 }

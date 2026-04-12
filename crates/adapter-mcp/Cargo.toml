@@ -1,0 +1,21 @@
+[package]
+name = "astrcode-adapter-mcp"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+astrcode-core = { path = "../core" }
+astrcode-adapter-prompt = { path = "../adapter-prompt" }
+async-trait.workspace = true
+base64.workspace = true
+futures-util.workspace = true
+log.workspace = true
+notify.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true

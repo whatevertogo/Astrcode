@@ -5,11 +5,14 @@ use std::{
     sync::Arc,
 };
 
-use astrcode_core::{AstrError, CancelToken, Result};
+use astrcode_core::{AstrError, CancelToken, CapabilitySpec, Result};
 use astrcode_plugin::{CapabilityHandler, CapabilityRouter, EventEmitter, Worker};
-use astrcode_protocol::plugin::{
-    CapabilityDescriptor, CapabilityKind, InvocationContext, PeerDescriptor, PeerRole,
-    SideEffectLevel, StabilityLevel,
+use astrcode_protocol::{
+    capability::descriptor_to_spec,
+    plugin::{
+        CapabilityDescriptor, CapabilityKind, InvocationContext, PeerDescriptor, PeerRole,
+        SideEffectLevel, StabilityLevel,
+    },
 };
 use astrcode_sdk::{
     DeserializeOwned, PluginContext, Serialize, StreamWriter, ToolHandler, ToolRegistration,
@@ -37,8 +40,9 @@ impl RegisteredToolAdapter {
 
 #[async_trait]
 impl CapabilityHandler for RegisteredToolAdapter {
-    fn descriptor(&self) -> CapabilityDescriptor {
-        self.registration.descriptor().clone()
+    fn capability_spec(&self) -> CapabilitySpec {
+        descriptor_to_spec(self.registration.descriptor())
+            .expect("tool descriptor from SDK must map to core capability spec")
     }
 
     async fn invoke(
@@ -292,6 +296,6 @@ async fn main() -> Result<()> {
         },
         router,
         None,
-    );
+    )?;
     worker.run().await
 }

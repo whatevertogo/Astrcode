@@ -13,21 +13,23 @@
 //! - [`runtime`][]: 运行时协调器接口
 //! - [`projection`][]: Agent 状态投影（从事件流推导状态）
 //! - `action`: LLM 消息与工具调用相关的数据结构
-//!
-//! 注意：能力描述符（capability）定义在 `astrcode-protocol` crate 中。
 
 mod action;
 pub mod agent;
 mod cancel;
+pub mod capability;
 mod compact_summary;
+pub mod config;
 pub mod env;
 mod error;
 pub mod event;
 pub mod home;
 pub mod hook;
+pub mod ids;
 pub mod local_server;
 pub mod plugin;
 pub mod policy;
+pub mod ports;
 pub mod project;
 pub mod projection;
 pub mod registry;
@@ -67,9 +69,17 @@ pub use agent::{
     },
 };
 pub use cancel::CancelToken;
+pub use capability::{
+    CapabilityKind, CapabilitySpec, CapabilitySpecBuildError, InvocationMode, PermissionSpec,
+    SideEffect, Stability,
+};
 pub use compact_summary::{
     COMPACT_SUMMARY_CONTINUATION, COMPACT_SUMMARY_PREFIX, CompactSummaryEnvelope,
     format_compact_summary, parse_compact_summary_message,
+};
+pub use config::{
+    ActiveSelection, AgentConfig, Config, ConfigOverlay, CurrentModelSelection, ModelConfig,
+    ModelOption, Profile, RuntimeConfig,
 };
 pub use error::{AstrError, Result, ResultExt};
 pub use event::{
@@ -81,12 +91,18 @@ pub use hook::{
     CompactionHookContext, CompactionHookResultContext, HookCompactionReason, HookEvent,
     HookHandler, HookInput, HookOutcome, ToolHookContext, ToolHookResultContext,
 };
+pub use ids::{AgentId, CapabilityName, SessionId, TurnId};
 pub use local_server::{LOCAL_SERVER_READY_PREFIX, LocalServerInfo};
 pub use plugin::{PluginHealth, PluginManifest, PluginRegistry, PluginState, PluginType};
 pub use policy::{
     AllowAllPolicyEngine, ApprovalDefault, ApprovalPending, ApprovalRequest, ApprovalResolution,
     CapabilityCall, ContextDecisionInput, ContextStrategy, ModelRequest, PolicyContext,
     PolicyEngine, PolicyVerdict, SystemPromptBlock, SystemPromptLayer,
+};
+pub use ports::{
+    EventStore, LlmEvent, LlmEventSink, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest,
+    LlmUsage, ModelLimits, PromptBuildOutput, PromptBuildRequest, PromptProvider, ResourceProvider,
+    ResourceReadResult, ResourceRequestContext,
 };
 pub use projection::{AgentState, AgentStateProjector, project};
 pub use registry::{CapabilityContext, CapabilityExecutionResult, CapabilityInvoker};
@@ -107,7 +123,7 @@ pub use time::{
     format_local_rfc3339, format_local_rfc3339_opt, local_rfc3339, local_rfc3339_option,
 };
 pub use tool::{
-    DEFAULT_MAX_OUTPUT_SIZE, ExecutionOwner, SessionId, Tool, ToolCapabilityMetadata, ToolContext,
+    DEFAULT_MAX_OUTPUT_SIZE, ExecutionOwner, Tool, ToolCapabilityMetadata, ToolContext,
     ToolEventSink, ToolPromptMetadata,
 };
 pub use tool_result_persist::{

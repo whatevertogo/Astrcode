@@ -4,15 +4,14 @@
 
 use std::{fmt, path::PathBuf, sync::Arc};
 
-use astrcode_protocol::capability::CapabilityDescriptor;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    AgentEventContext, CancelToken, ExecutionOwner, Result, ToolEventSink, ToolExecutionResult,
-    ToolOutputDelta,
+    AgentEventContext, CancelToken, CapabilitySpec, ExecutionOwner, Result, SessionId,
+    ToolEventSink, ToolExecutionResult, ToolOutputDelta,
 };
 
 /// 能力调用的上下文信息。
@@ -23,7 +22,7 @@ pub struct CapabilityContext {
     /// 分布式追踪标识，关联同一请求的多个子操作
     pub trace_id: Option<String>,
     /// 所属会话标识
-    pub session_id: String,
+    pub session_id: SessionId,
     /// 工作目录，工具执行时的当前路径
     pub working_dir: PathBuf,
     /// 取消令牌，用于外部中断长时间运行的能力调用
@@ -161,8 +160,8 @@ impl CapabilityExecutionResult {
 /// 所有能力执行器必须实现此 trait，路由器通过它统一分派调用。
 #[async_trait]
 pub trait CapabilityInvoker: Send + Sync {
-    /// 获取能力描述符，包含名称、类型、输入 schema 等元信息。
-    fn descriptor(&self) -> CapabilityDescriptor;
+    /// 获取能力规范，包含名称、类型、输入 schema 等元信息。
+    fn capability_spec(&self) -> CapabilitySpec;
 
     /// 执行能力调用。
     ///

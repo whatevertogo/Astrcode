@@ -11,9 +11,7 @@
 
 use std::{collections::BTreeMap, sync::RwLock};
 
-use astrcode_protocol::capability::CapabilityDescriptor;
-
-use crate::PluginManifest;
+use crate::{CapabilitySpec, PluginManifest};
 
 /// 插件生命周期状态。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +54,7 @@ pub struct PluginEntry {
     /// 连续失败次数
     pub failure_count: u32,
     /// 已注册的能力列表
-    pub capabilities: Vec<CapabilityDescriptor>,
+    pub capabilities: Vec<CapabilitySpec>,
     /// 失败原因（仅在失败时设置）
     pub failure: Option<String>,
     /// 非致命诊断信息（如 skill 物化失败、allowed_tools 被降级）。
@@ -100,7 +98,7 @@ impl PluginRegistry {
     pub fn record_initialized(
         &self,
         manifest: PluginManifest,
-        capabilities: Vec<CapabilityDescriptor>,
+        capabilities: Vec<CapabilitySpec>,
         warnings: Vec<String>,
     ) {
         self.upsert(PluginEntry {
@@ -122,7 +120,7 @@ impl PluginRegistry {
         &self,
         manifest: PluginManifest,
         failure: impl Into<String>,
-        capabilities: Vec<CapabilityDescriptor>,
+        capabilities: Vec<CapabilitySpec>,
         warnings: Vec<String>,
     ) {
         self.upsert(PluginEntry {
@@ -259,14 +257,14 @@ impl PluginRegistry {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_protocol::capability::{
-        CapabilityDescriptor, CapabilityKind, SideEffectLevel, StabilityLevel,
-    };
     use chrono::Utc;
     use serde_json::json;
 
     use super::{PluginHealth, PluginRegistry, PluginState};
-    use crate::{PluginManifest, PluginType};
+    use crate::{
+        CapabilityKind, CapabilitySpec, InvocationMode, PluginManifest, PluginType, SideEffect,
+        Stability,
+    };
 
     fn manifest(name: &str) -> PluginManifest {
         PluginManifest {
@@ -282,21 +280,21 @@ mod tests {
         }
     }
 
-    fn capability(name: &str) -> CapabilityDescriptor {
-        CapabilityDescriptor {
-            name: name.to_string(),
-            kind: CapabilityKind::tool(),
+    fn capability(name: &str) -> CapabilitySpec {
+        CapabilitySpec {
+            name: name.into(),
+            kind: CapabilityKind::Tool,
             description: format!("{name} capability"),
             input_schema: json!({ "type": "object" }),
             output_schema: json!({ "type": "object" }),
-            streaming: false,
+            invocation_mode: InvocationMode::Unary,
             concurrency_safe: false,
             compact_clearable: false,
             profiles: vec!["coding".to_string()],
             tags: Vec::new(),
             permissions: Vec::new(),
-            side_effect: SideEffectLevel::None,
-            stability: StabilityLevel::Stable,
+            side_effect: SideEffect::None,
+            stability: Stability::Stable,
             metadata: json!(null),
             max_result_inline_size: None,
         }

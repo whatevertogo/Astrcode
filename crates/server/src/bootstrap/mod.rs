@@ -4,6 +4,7 @@
 //!
 //! ## 职责范围
 //!
+//! - **运行时组合根**（`runtime`）：组装 `App`、`AppGovernance` 等
 //! - **前端静态文件服务**：加载 `frontend/dist/` 构建产物并注入 bootstrap token
 //! - **运行信息管理**：写入/清理 `~/.astrcode/run.json`，供浏览器桥接和诊断读取
 //! - **浏览器引导 token 注入**：将 `window.__ASTRCODE_BOOTSTRAP__` 嵌入 HTML
@@ -13,12 +14,13 @@
 //! ## 启动流程
 //!
 //! 这些功能在启动时按顺序调用：
-//! 1. 生成 bootstrap token → 2. 写 `run.json` → 3. 配置 CORS →
-//! 4. 加载前端构建产物 → 5. 注入 token 到 HTML → 6. 挂载路由
+//! 1. 引导运行时 → 2. 生成 bootstrap token → 3. 写 `run.json` → 4. 配置 CORS →
+//! 5. 加载前端构建产物 → 6. 注入 token 到 HTML → 7. 挂载路由
 //!
 //! `run.json` 不再承担桌面端单实例发现职责；桌面端进程间协调改走宿主 IPC。
 //! 它保留的原因是浏览器开发模式仍需要一个稳定的本地文件来读取 bootstrap token。
 
+pub(crate) mod runtime;
 use std::path::{Path as FsPath, PathBuf};
 
 use anyhow::{Context, Result as AnyhowResult, anyhow};
@@ -32,6 +34,7 @@ use axum::{
     routing::get,
 };
 use rand::RngExt;
+pub(crate) use runtime::bootstrap_server_runtime;
 use serde::Serialize;
 use tower::ServiceExt;
 use tower_http::{cors::CorsLayer, services::ServeDir};

@@ -1,6 +1,6 @@
 //! 工具结果磁盘持久化基础设施。
 //!
-//! 提供工具结果落盘的核心函数，供工具执行侧（runtime-tool-loader）和
+//! 提供工具结果落盘的核心函数，供工具执行侧（adapter-tools）和
 //! 管线聚合预算层（runtime-agent-loop）共享。
 //!
 //! # 两层接口
@@ -23,7 +23,7 @@ pub const TOOL_RESULT_PREVIEW_LIMIT: usize = 2 * 1024;
 
 /// 默认内联阈值（字节）。
 ///
-/// 工具结果超过此大小时触发落盘。可通过 `CapabilityDescriptor.max_result_inline_size`
+/// 工具结果超过此大小时触发落盘。可通过 `CapabilitySpec.max_result_inline_size`
 /// 覆盖为 per-tool 值。
 pub const DEFAULT_TOOL_RESULT_INLINE_LIMIT: usize = 32 * 1024;
 

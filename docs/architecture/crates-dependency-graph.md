@@ -8,82 +8,49 @@
 
 ```mermaid
 graph TD
-  astrcode-core[astrcode-core] --> astrcode-protocol[astrcode-protocol]
+  astrcode-adapter-agents[astrcode-adapter-agents] --> astrcode-core[astrcode-core]
+  astrcode-adapter-llm[astrcode-adapter-llm] --> astrcode-core[astrcode-core]
+  astrcode-adapter-mcp[astrcode-adapter-mcp] --> astrcode-adapter-prompt[astrcode-adapter-prompt]
+  astrcode-adapter-mcp[astrcode-adapter-mcp] --> astrcode-core[astrcode-core]
+  astrcode-adapter-prompt[astrcode-adapter-prompt] --> astrcode-core[astrcode-core]
+  astrcode-adapter-skills[astrcode-adapter-skills] --> astrcode-core[astrcode-core]
+  astrcode-adapter-storage[astrcode-adapter-storage] --> astrcode-core[astrcode-core]
+  astrcode-adapter-tools[astrcode-adapter-tools] --> astrcode-core[astrcode-core]
+  astrcode-application[astrcode-application] --> astrcode-core[astrcode-core]
+  astrcode-application[astrcode-application] --> astrcode-kernel[astrcode-kernel]
+  astrcode-application[astrcode-application] --> astrcode-session-runtime[astrcode-session-runtime]
+  astrcode-core[astrcode-core]
+  astrcode-kernel[astrcode-kernel] --> astrcode-core[astrcode-core]
   astrcode-plugin[astrcode-plugin] --> astrcode-core[astrcode-core]
   astrcode-plugin[astrcode-plugin] --> astrcode-protocol[astrcode-protocol]
-  astrcode-protocol[astrcode-protocol]
-  astrcode-runtime[astrcode-runtime] --> astrcode-core[astrcode-core]
-  astrcode-runtime[astrcode-runtime] --> astrcode-plugin[astrcode-plugin]
-  astrcode-runtime[astrcode-runtime] --> astrcode-protocol[astrcode-protocol]
-  astrcode-runtime[astrcode-runtime] --> astrcode-runtime-agent-control[astrcode-runtime-agent-control]
-  astrcode-runtime[astrcode-runtime] --> astrcode-runtime-agent-loader[astrcode-runtime-agent-loader]
-  astrcode-runtime[astrcode-runtime] --> astrcode-runtime-agent-loop[astrcode-runtime-agent-loop]
-  astrcode-runtime[astrcode-runtime] --> astrcode-runtime-agent-tool[astrcode-runtime-agent-tool]
-  astrcode-runtime[astrcode-runtime] --> astrcode-runtime-config[astrcode-runtime-config]
-  astrcode-runtime[astrcode-runtime] --> astrcode-runtime-execution[astrcode-runtime-execution]
-  astrcode-runtime[astrcode-runtime] --> astrcode-runtime-llm[astrcode-runtime-llm]
-  astrcode-runtime[astrcode-runtime] --> astrcode-runtime-prompt[astrcode-runtime-prompt]
-  astrcode-runtime[astrcode-runtime] --> astrcode-runtime-registry[astrcode-runtime-registry]
-  astrcode-runtime[astrcode-runtime] --> astrcode-runtime-session[astrcode-runtime-session]
-  astrcode-runtime[astrcode-runtime] --> astrcode-runtime-skill-loader[astrcode-runtime-skill-loader]
-  astrcode-runtime[astrcode-runtime] --> astrcode-runtime-tool-loader[astrcode-runtime-tool-loader]
-  astrcode-runtime[astrcode-runtime] --> astrcode-storage[astrcode-storage]
-  astrcode-runtime-agent-control[astrcode-runtime-agent-control] --> astrcode-core[astrcode-core]
-  astrcode-runtime-agent-control[astrcode-runtime-agent-control] --> astrcode-runtime-config[astrcode-runtime-config]
-  astrcode-runtime-agent-loader[astrcode-runtime-agent-loader] --> astrcode-core[astrcode-core]
-  astrcode-runtime-agent-loop[astrcode-runtime-agent-loop] --> astrcode-core[astrcode-core]
-  astrcode-runtime-agent-loop[astrcode-runtime-agent-loop] --> astrcode-plugin[astrcode-plugin]
-  astrcode-runtime-agent-loop[astrcode-runtime-agent-loop] --> astrcode-protocol[astrcode-protocol]
-  astrcode-runtime-agent-loop[astrcode-runtime-agent-loop] --> astrcode-runtime-config[astrcode-runtime-config]
-  astrcode-runtime-agent-loop[astrcode-runtime-agent-loop] --> astrcode-runtime-llm[astrcode-runtime-llm]
-  astrcode-runtime-agent-loop[astrcode-runtime-agent-loop] --> astrcode-runtime-prompt[astrcode-runtime-prompt]
-  astrcode-runtime-agent-loop[astrcode-runtime-agent-loop] --> astrcode-runtime-registry[astrcode-runtime-registry]
-  astrcode-runtime-agent-loop[astrcode-runtime-agent-loop] --> astrcode-runtime-skill-loader[astrcode-runtime-skill-loader]
-  astrcode-runtime-agent-tool[astrcode-runtime-agent-tool] --> astrcode-core[astrcode-core]
-  astrcode-runtime-config[astrcode-runtime-config] --> astrcode-core[astrcode-core]
-  astrcode-runtime-execution[astrcode-runtime-execution] --> astrcode-core[astrcode-core]
-  astrcode-runtime-execution[astrcode-runtime-execution] --> astrcode-runtime-config[astrcode-runtime-config]
-  astrcode-runtime-execution[astrcode-runtime-execution] --> astrcode-runtime-prompt[astrcode-runtime-prompt]
-  astrcode-runtime-execution[astrcode-runtime-execution] --> astrcode-runtime-registry[astrcode-runtime-registry]
-  astrcode-runtime-llm[astrcode-runtime-llm] --> astrcode-core[astrcode-core]
-  astrcode-runtime-prompt[astrcode-runtime-prompt] --> astrcode-core[astrcode-core]
-  astrcode-runtime-prompt[astrcode-runtime-prompt] --> astrcode-protocol[astrcode-protocol]
-  astrcode-runtime-registry[astrcode-runtime-registry] --> astrcode-core[astrcode-core]
-  astrcode-runtime-registry[astrcode-runtime-registry] --> astrcode-protocol[astrcode-protocol]
-  astrcode-runtime-session[astrcode-runtime-session] --> astrcode-core[astrcode-core]
-  astrcode-runtime-skill-loader[astrcode-runtime-skill-loader] --> astrcode-core[astrcode-core]
-  astrcode-runtime-tool-loader[astrcode-runtime-tool-loader] --> astrcode-core[astrcode-core]
-  astrcode-runtime-tool-loader[astrcode-runtime-tool-loader] --> astrcode-protocol[astrcode-protocol]
+  astrcode-protocol[astrcode-protocol] --> astrcode-core[astrcode-core]
   astrcode-sdk[astrcode-sdk] --> astrcode-protocol[astrcode-protocol]
+  astrcode-server[astrcode-server] --> astrcode-adapter-storage[astrcode-adapter-storage]
+  astrcode-server[astrcode-server] --> astrcode-application[astrcode-application]
   astrcode-server[astrcode-server] --> astrcode-core[astrcode-core]
+  astrcode-server[astrcode-server] --> astrcode-kernel[astrcode-kernel]
   astrcode-server[astrcode-server] --> astrcode-protocol[astrcode-protocol]
-  astrcode-server[astrcode-server] --> astrcode-runtime[astrcode-runtime]
-  astrcode-server[astrcode-server] --> astrcode-runtime-execution[astrcode-runtime-execution]
-  astrcode-server[astrcode-server] --> astrcode-runtime-registry[astrcode-runtime-registry]
-  astrcode-server[astrcode-server] --> astrcode-storage[astrcode-storage]
-  astrcode-storage[astrcode-storage] --> astrcode-core[astrcode-core]
+  astrcode-server[astrcode-server] --> astrcode-session-runtime[astrcode-session-runtime]
+  astrcode-session-runtime[astrcode-session-runtime] --> astrcode-core[astrcode-core]
+  astrcode-session-runtime[astrcode-session-runtime] --> astrcode-kernel[astrcode-kernel]
 ```
 
 ## Crate 依赖表
 
 | Crate | Path | Internal Deps Count | Internal Deps |
 |---|---|---:|---|
-| astrcode-core | crates/core | 1 | astrcode-protocol |
+| astrcode-adapter-agents | crates/adapter-agents | 1 | astrcode-core |
+| astrcode-adapter-llm | crates/adapter-llm | 1 | astrcode-core |
+| astrcode-adapter-mcp | crates/adapter-mcp | 2 | astrcode-adapter-prompt, astrcode-core |
+| astrcode-adapter-prompt | crates/adapter-prompt | 1 | astrcode-core |
+| astrcode-adapter-skills | crates/adapter-skills | 1 | astrcode-core |
+| astrcode-adapter-storage | crates/adapter-storage | 1 | astrcode-core |
+| astrcode-adapter-tools | crates/adapter-tools | 1 | astrcode-core |
+| astrcode-application | crates/application | 3 | astrcode-core, astrcode-kernel, astrcode-session-runtime |
+| astrcode-core | crates/core | 0 | - |
+| astrcode-kernel | crates/kernel | 1 | astrcode-core |
 | astrcode-plugin | crates/plugin | 2 | astrcode-core, astrcode-protocol |
-| astrcode-protocol | crates/protocol | 0 | - |
-| astrcode-runtime | crates/runtime | 16 | astrcode-core, astrcode-plugin, astrcode-protocol, astrcode-runtime-agent-control, astrcode-runtime-agent-loader, astrcode-runtime-agent-loop, astrcode-runtime-agent-tool, astrcode-runtime-config, astrcode-runtime-execution, astrcode-runtime-llm, astrcode-runtime-prompt, astrcode-runtime-registry, astrcode-runtime-session, astrcode-runtime-skill-loader, astrcode-runtime-tool-loader, astrcode-storage |
-| astrcode-runtime-agent-control | crates/runtime-agent-control | 2 | astrcode-core, astrcode-runtime-config |
-| astrcode-runtime-agent-loader | crates/runtime-agent-loader | 1 | astrcode-core |
-| astrcode-runtime-agent-loop | crates/runtime-agent-loop | 8 | astrcode-core, astrcode-plugin, astrcode-protocol, astrcode-runtime-config, astrcode-runtime-llm, astrcode-runtime-prompt, astrcode-runtime-registry, astrcode-runtime-skill-loader |
-| astrcode-runtime-agent-tool | crates/runtime-agent-tool | 1 | astrcode-core |
-| astrcode-runtime-config | crates/runtime-config | 1 | astrcode-core |
-| astrcode-runtime-execution | crates/runtime-execution | 4 | astrcode-core, astrcode-runtime-config, astrcode-runtime-prompt, astrcode-runtime-registry |
-| astrcode-runtime-llm | crates/runtime-llm | 1 | astrcode-core |
-| astrcode-runtime-prompt | crates/runtime-prompt | 2 | astrcode-core, astrcode-protocol |
-| astrcode-runtime-registry | crates/runtime-registry | 2 | astrcode-core, astrcode-protocol |
-| astrcode-runtime-session | crates/runtime-session | 1 | astrcode-core |
-| astrcode-runtime-skill-loader | crates/runtime-skill-loader | 1 | astrcode-core |
-| astrcode-runtime-tool-loader | crates/runtime-tool-loader | 2 | astrcode-core, astrcode-protocol |
+| astrcode-protocol | crates/protocol | 1 | astrcode-core |
 | astrcode-sdk | crates/sdk | 1 | astrcode-protocol |
-| astrcode-server | crates/server | 6 | astrcode-core, astrcode-protocol, astrcode-runtime, astrcode-runtime-execution, astrcode-runtime-registry, astrcode-storage |
-| astrcode-storage | crates/storage | 1 | astrcode-core |
+| astrcode-server | crates/server | 6 | astrcode-adapter-storage, astrcode-application, astrcode-core, astrcode-kernel, astrcode-protocol, astrcode-session-runtime |
+| astrcode-session-runtime | crates/session-runtime | 2 | astrcode-core, astrcode-kernel |

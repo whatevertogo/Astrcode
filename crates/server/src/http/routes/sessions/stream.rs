@@ -1,7 +1,7 @@
 use std::{convert::Infallible, pin::Pin, time::Duration};
 
 use astrcode_protocol::http::PROTOCOL_VERSION;
-use astrcode_runtime::SessionEventFilter;
+use astrcode_session_runtime::SessionEventFilterSpec;
 use async_stream::stream;
 use axum::{
     extract::{Path, Query, State},
@@ -19,7 +19,10 @@ use crate::{
         to_sse_event,
     },
     routes::sessions::{
-        filter::{SessionEventFilterQuery, record_is_after_cursor},
+        filter::{
+            SessionEventFilterQuery, event_matches_filter, record_is_after_cursor,
+            record_matches_filter,
+        },
         validate_session_path_id,
     },
 };
@@ -38,7 +41,7 @@ pub(crate) async fn session_catalog_events(
     headers: HeaderMap,
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiError> {
     require_auth(&state, &headers, None)?;
-    let mut receiver = state.service.sessions().subscribe_catalog();
+    let mut receiver = state.app.subscribe_catalog();
 
     let event_stream = stream! {
         loop {
@@ -91,13 +94,12 @@ async fn unfiltered_session_events(
     last_event_id: Option<String>,
 ) -> Result<SessionEventSse, ApiError> {
     let mut replay = state
-        .service
-        .sessions()
-        .replay(&session_id, last_event_id.as_deref())
+        .app
+        .session_replay(&session_id, last_event_id.as_deref())
         .await
         .map_err(ApiError::from)?;
     let mut last_sent = last_event_id.as_deref().and_then(parse_event_id);
-    let service = state.service.clone();
+    let app = state.app.clone();
     let session_id_for_stream = session_id.clone();
 
     let event_stream = stream! {
@@ -126,9 +128,8 @@ async fn unfiltered_session_events(
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                             let cursor = last_sent.map(format_event_id);
-                            match service
-                                .sessions()
-                                .replay(&session_id_for_stream, cursor.as_deref())
+                            match app
+                                .session_replay(&session_id_for_stream, cursor.as_deref())
                                 .await
                             {
                                 Ok(recovered) => {
@@ -196,23 +197,20 @@ async fn unfiltered_session_events(
 async fn filtered_session_events(
     state: AppState,
     session_id: String,
-    filter_spec: astrcode_runtime::SessionEventFilterSpec,
+    filter_spec: SessionEventFilterSpec,
     last_event_id: Option<String>,
 ) -> Result<SessionEventSse, ApiError> {
     let snapshot = state
-        .service
-        .sessions()
-        .history(&session_id)
+        .app
+        .session_history(&session_id)
         .await
         .map_err(ApiError::from)?;
     let latest_cursor = snapshot.cursor.clone();
-    let mut filter =
-        SessionEventFilter::new(filter_spec, &snapshot.history).map_err(ApiError::from)?;
     let mut initial_history = Vec::new();
     let mut last_sent = last_event_id.as_deref().and_then(parse_event_id);
 
     for record in snapshot.history {
-        let matched = filter.matches(&record);
+        let matched = record_matches_filter(&record, &filter_spec);
         if !matched || !record_is_after_cursor(&record, last_event_id.as_deref()) {
             continue;
         }
@@ -223,12 +221,11 @@ async fn filtered_session_events(
     }
 
     let mut replay = state
-        .service
-        .sessions()
-        .replay(&session_id, latest_cursor.as_deref())
+        .app
+        .session_replay(&session_id, latest_cursor.as_deref())
         .await
         .map_err(ApiError::from)?;
-    let service = state.service.clone();
+    let app = state.app.clone();
     let session_id_for_stream = session_id.clone();
 
     let event_stream = stream! {
@@ -249,7 +246,7 @@ async fn filtered_session_events(
                                     continue;
                                 }
                             }
-                            if !filter.matches(&record) {
+                            if !record_matches_filter(&record, &filter_spec) {
                                 continue;
                             }
                             last_sent = Some(current_id);
@@ -257,23 +254,11 @@ async fn filtered_session_events(
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                             let cursor = last_sent.map(format_event_id);
-                            match service
-                                .sessions()
-                                .replay(&session_id_for_stream, cursor.as_deref())
+                            match app
+                                .session_replay(&session_id_for_stream, cursor.as_deref())
                                 .await
                             {
                                 Ok(recovered) => {
-                                    let mut recovered_filter =
-                                        match SessionEventFilter::new(filter.spec().clone(), &recovered.history) {
-                                            Ok(filter) => filter,
-                                            Err(error) => {
-                                                yield Ok::<Event, Infallible>(stream_error_event(
-                                                    "lineage_metadata_unavailable",
-                                                    error.to_string(),
-                                                ));
-                                                break;
-                                            },
-                                        };
                                     for record in &recovered.history {
                                         let Some(current_id) = parse_event_id(&record.event_id) else {
                                             continue;
@@ -283,13 +268,12 @@ async fn filtered_session_events(
                                                 continue;
                                             }
                                         }
-                                        if !recovered_filter.matches(record) {
+                                        if !record_matches_filter(record, &filter_spec) {
                                             continue;
                                         }
                                         last_sent = Some(current_id);
                                         yield Ok::<Event, Infallible>(to_sse_event(record.clone()));
                                     }
-                                    filter = recovered_filter;
                                     replay = recovered;
                                 }
                                 Err(error) => {
@@ -297,7 +281,7 @@ async fn filtered_session_events(
                                         "SSE filtered replay recovery failed for session '{}': cursor='{}', filter={:?}, error={}",
                                         session_id_for_stream,
                                         cursor.as_deref().unwrap_or("<start>"),
-                                        filter.spec(),
+                                        filter_spec,
                                         error
                                     );
                                     yield Ok::<Event, Infallible>(stream_error_event(
@@ -323,7 +307,7 @@ async fn filtered_session_events(
                 live = replay.live_receiver.recv() => {
                     match live {
                         Ok(event) => {
-                            if filter.matches_event(&event) {
+                            if event_matches_filter(&event, &filter_spec) {
                                 yield Ok::<Event, Infallible>(to_live_sse_event(event));
                             }
                         }

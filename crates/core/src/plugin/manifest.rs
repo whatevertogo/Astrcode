@@ -4,10 +4,9 @@
 //!
 //! 插件清单从 `Plugin.toml` 文件解析而来，描述插件的名称、版本、能力声明和启动方式。
 
-use astrcode_protocol::capability::CapabilityDescriptor;
 use serde::{Deserialize, Serialize};
 
-use crate::AstrError;
+use crate::{AstrError, CapabilitySpec};
 
 /// 插件类型。
 ///
@@ -38,8 +37,8 @@ pub struct PluginManifest {
     pub description: String,
     /// 插件类型列表
     pub plugin_type: Vec<PluginType>,
-    /// 能力描述符列表（声明该插件提供的能力）
-    pub capabilities: Vec<CapabilityDescriptor>,
+    /// 能力规范列表（声明该插件提供的能力）
+    pub capabilities: Vec<CapabilitySpec>,
     /// 可执行文件路径（可选，用于 sidecar 模式启动）
     pub executable: Option<String>,
     /// 启动参数

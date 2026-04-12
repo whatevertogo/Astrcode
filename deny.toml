@@ -39,7 +39,7 @@ deny = [
       "astrcode-runtime-agent-control",
       "astrcode-runtime-agent-loop",
       "astrcode-runtime-config",
-      "astrcode-runtime-llm",
+      "astrcode-adapter-llm",
       "astrcode-runtime-registry",
       "astrcode-runtime-session",
       "astrcode-server",

@@ -60,8 +60,8 @@ impl Worker {
         local_peer: PeerDescriptor,
         router: CapabilityRouter,
         local_initialize: Option<InitializeMessage>,
-    ) -> Self {
-        let capabilities = router.capabilities();
+    ) -> Result<Self> {
+        let capabilities = router.capabilities()?;
         let initialize = local_initialize.unwrap_or_else(|| {
             crate::supervisor::default_initialize_message(
                 local_peer,
@@ -71,7 +71,7 @@ impl Worker {
         });
         let transport = Arc::new(StdioTransport::from_process_stdio());
         let peer = Peer::new(transport, initialize, Arc::new(router));
-        Self { peer }
+        Ok(Self { peer })
     }
 
     /// 进入事件循环，持续处理宿主的调用请求。

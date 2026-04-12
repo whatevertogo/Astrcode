@@ -23,13 +23,12 @@ pub(crate) async fn get_config(
     headers: HeaderMap,
 ) -> Result<Json<ConfigView>, ApiError> {
     require_auth(&state, &headers, None)?;
-    let config = state.service.config().get_config().await;
+    let config = state.app.config().get_config().await;
     let config_path = state
-        .service
+        .app
         .config()
         .current_config_path()
         .await
-        .map_err(ApiError::from)?
         .to_string_lossy()
         .to_string();
     Ok(Json(build_config_view(&config, config_path)?))
@@ -47,7 +46,7 @@ pub(crate) async fn save_active_selection(
 ) -> Result<StatusCode, ApiError> {
     require_auth(&state, &headers, None)?;
     state
-        .service
+        .app
         .config()
         .save_active_selection(request.active_profile, request.active_model)
         .await
@@ -65,17 +64,16 @@ pub(crate) async fn reload_config(
 ) -> Result<(StatusCode, Json<ConfigReloadResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     let config = state
-        .service
+        .app
         .config()
         .reload_config_from_disk()
         .await
         .map_err(ApiError::from)?;
     let config_path = state
-        .service
+        .app
         .config()
         .current_config_path()
         .await
-        .map_err(ApiError::from)?
         .to_string_lossy()
         .to_string();
     let config_view = build_config_view(&config, config_path)?;

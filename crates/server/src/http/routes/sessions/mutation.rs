@@ -28,9 +28,8 @@ pub(crate) async fn create_session(
 ) -> Result<Json<SessionListItem>, ApiError> {
     require_auth(&state, &headers, None)?;
     let meta = state
-        .service
-        .sessions()
-        .create(request.working_dir)
+        .app
+        .create_session(request.working_dir)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(to_session_list_item(meta)))
@@ -45,16 +44,15 @@ pub(crate) async fn submit_prompt(
     require_auth(&state, &headers, None)?;
     let session_id = validate_session_path_id(&session_id)?;
     let accepted: ExecutionAccepted = state
-        .service
-        .execution()
+        .app
         .submit_prompt(&session_id, request.text)
         .await
         .map_err(ApiError::from)?;
     Ok((
         StatusCode::ACCEPTED,
         Json(PromptAcceptedResponse {
-            turn_id: accepted.turn_id,
-            session_id: accepted.session_id,
+            turn_id: accepted.turn_id.to_string(),
+            session_id: accepted.session_id.to_string(),
             branched_from_session_id: accepted.branched_from_session_id,
         }),
     ))
@@ -68,8 +66,7 @@ pub(crate) async fn interrupt_session(
     require_auth(&state, &headers, None)?;
     let session_id = validate_session_path_id(&session_id)?;
     state
-        .service
-        .execution()
+        .app
         .interrupt_session(&session_id)
         .await
         .map_err(ApiError::from)?;
@@ -84,9 +81,8 @@ pub(crate) async fn compact_session(
     require_auth(&state, &headers, None)?;
     let session_id = validate_session_path_id(&session_id)?;
     state
-        .service
-        .sessions()
-        .compact(&session_id)
+        .app
+        .compact_session(&session_id)
         .await
         .map_err(ApiError::from)?;
     Ok(StatusCode::NO_CONTENT)
@@ -100,8 +96,7 @@ pub(crate) async fn delete_session(
     require_auth(&state, &headers, None)?;
     let session_id = validate_session_path_id(&session_id)?;
     state
-        .service
-        .execution()
+        .app
         .delete_session(&session_id)
         .await
         .map_err(ApiError::from)?;
@@ -115,8 +110,7 @@ pub(crate) async fn delete_project(
 ) -> Result<Json<DeleteProjectResultDto>, ApiError> {
     require_auth(&state, &headers, None)?;
     let result = state
-        .service
-        .execution()
+        .app
         .delete_project(&query.working_dir)
         .await
         .map_err(ApiError::from)?;

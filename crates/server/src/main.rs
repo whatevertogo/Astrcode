@@ -28,8 +28,6 @@ mod bootstrap;
 #[cfg(test)]
 #[path = "tests/composer_routes_tests.rs"]
 mod composer_routes_tests;
-#[cfg(test)]
-mod e2e_tests;
 #[path = "logging.rs"]
 mod logging;
 #[path = "http/mapper.rs"]
@@ -37,20 +35,14 @@ mod mapper;
 #[path = "http/routes/mod.rs"]
 mod routes;
 #[cfg(test)]
-#[path = "tests/runtime_routes_tests.rs"]
-mod runtime_routes_tests;
-#[cfg(test)]
-#[path = "tests/session_contract_tests.rs"]
-mod session_contract_tests;
-#[cfg(test)]
 #[path = "tests/test_support.rs"]
 mod test_support;
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::{Result as AnyhowResult, anyhow};
-use astrcode_core::{AstrError, LocalServerInfo, RuntimeCoordinator, format_local_rfc3339};
-use astrcode_runtime::{RuntimeGovernance, RuntimeService, ServiceError, bootstrap_runtime};
+use astrcode_application::{App, AppGovernance, ApplicationError};
+use astrcode_core::{AstrError, LocalServerInfo, format_local_rfc3339};
 use axum::{
     Json, Router,
     http::StatusCode,
@@ -77,18 +69,14 @@ pub(crate) const AUTH_HEADER_NAME: &str = "x-astrcode-token";
 /// 应用状态（共享给所有路由处理器）。
 ///
 /// 通过 Axum 的 `State` 提取器注入到每个路由处理器中，
-/// 包含运行时服务、协调器、治理、认证管理器和前端构建产物。
+/// 包含应用层入口、治理模型、认证管理器和前端构建产物。
 /// 所有字段均为 `Arc` 或可 `Clone` 类型，支持多线程共享。
 #[derive(Clone)]
 pub(crate) struct AppState {
-    /// 运行时服务
-    service: Arc<RuntimeService>,
-    /// 运行时协调器（用于关闭）
-    coordinator: Arc<RuntimeCoordinator>,
-    /// 运行时治理（重载、配置）
-    /// TODO:治理相关操作未被使用
-    #[allow(dead_code)]
-    runtime_governance: Arc<RuntimeGovernance>,
+    /// 应用层唯一业务入口
+    app: Arc<App>,
+    /// 新治理层（快照/shutdown/reload，替代旧 RuntimeGovernance）
+    governance: Arc<AppGovernance>,
     /// 认证会话管理器
     auth_sessions: Arc<AuthSessionManager>,
     /// Bootstrap 阶段的认证（短期 token）
@@ -156,24 +144,28 @@ impl IntoResponse for ApiError {
     }
 }
 
-impl From<ServiceError> for ApiError {
-    fn from(value: ServiceError) -> Self {
+impl From<ApplicationError> for ApiError {
+    fn from(value: ApplicationError) -> Self {
         match value {
-            ServiceError::NotFound(message) => Self {
+            ApplicationError::NotFound(message) => Self {
                 status: StatusCode::NOT_FOUND,
                 message,
             },
-            ServiceError::Conflict(message) => Self {
+            ApplicationError::Conflict(message) => Self {
                 status: StatusCode::CONFLICT,
                 message,
             },
-            ServiceError::InvalidInput(message) => Self {
+            ApplicationError::InvalidArgument(message) => Self {
                 status: StatusCode::BAD_REQUEST,
                 message,
             },
-            ServiceError::Internal(error) => Self {
+            ApplicationError::PermissionDenied(message) => Self {
+                status: StatusCode::FORBIDDEN,
+                message,
+            },
+            ApplicationError::Internal(error) => Self {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: error.to_string(),
+                message: error,
             },
         }
     }
@@ -194,10 +186,10 @@ async fn main() -> AnyhowResult<()> {
     // 初始化日志：stderr（开发调试）+ 文件（warn+ 持久化）
     logging::init_logger();
 
-    let runtime = bootstrap_runtime()
+    let runtime = crate::bootstrap::bootstrap_server_runtime()
         .await
         .map_err(|error| anyhow!(error.to_string()))?;
-    let service = runtime.service;
+    let app_service = runtime.app;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -231,14 +223,13 @@ async fn main() -> AnyhowResult<()> {
     );
 
     let state = AppState {
-        service: Arc::clone(&service),
-        coordinator: Arc::clone(&runtime.coordinator),
-        runtime_governance: Arc::clone(&runtime.governance),
+        app: Arc::clone(&app_service),
+        governance: Arc::clone(&runtime.governance),
         auth_sessions: Arc::new(AuthSessionManager::default()),
         bootstrap_auth,
         frontend_build: frontend_build.clone(),
     };
-    let shutdown_coordinator = Arc::clone(&state.coordinator);
+    let shutdown_governance = Arc::clone(&state.governance);
     let shutdown_pid = std::process::id();
 
     let app: Router<AppState> = build_api_router();
@@ -248,7 +239,7 @@ async fn main() -> AnyhowResult<()> {
     Ok(axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
-            if let Err(error) = shutdown_coordinator.shutdown(5).await {
+            if let Err(error) = shutdown_governance.shutdown(5).await {
                 log::error!("graceful shutdown finished with errors: {}", error);
             }
             if let Err(error) = clear_run_info(shutdown_pid) {

@@ -1,6 +1,6 @@
 //! # DTO 映射层
 //!
-//! 本模块负责将内部领域类型（`core`/`runtime`/`storage`）投影为 HTTP 协议 DTO。
+//! 本模块负责将内部领域类型（`core`/`application`/`runtime`/`storage`）投影为 HTTP 协议 DTO。
 //!
 //! ## 设计原则
 //!
@@ -13,46 +13,64 @@
 //! ## 映射分类
 //!
 //! - **会话相关**：`SessionMeta` → `SessionListItem`
-//! - **运行时相关**：`RuntimeGovernanceSnapshot` → `RuntimeStatusDto`
+//! - **运行时相关**：`GovernanceSnapshot` → `RuntimeStatusDto`
 //! - **事件相关**：`AgentEvent` → `AgentEventPayload`、`SessionCatalogEvent` →
 //!   `SessionCatalogEventPayload`
 //! - **配置相关**：`Config` → `ConfigView`、模型选项解析
 //! - **SSE 工具**：事件 ID 解析/格式化（`{storage_seq}.{subindex}` 格式）
 
+use astrcode_application::{
+    ApplicationError, ComposerOption, ComposerOptionKind, GovernanceSnapshot,
+    OperationMetricsSnapshot, ReplayMetricsSnapshot, RuntimeObservabilitySnapshot,
+    SessionCatalogEvent, SubRunExecutionMetricsSnapshot, is_env_var_name,
+    list_model_options as resolve_model_options, resolve_active_selection,
+    resolve_current_model as resolve_runtime_current_model,
+};
 use astrcode_core::{
-    AgentEvent, AgentEventContext, ArtifactRef, AstrError, ForkMode, Phase, PluginHealth,
-    PluginState, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    SessionEventRecord, SessionMeta, SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult,
-    SubRunStorageMode, SubagentContextOverrides, format_local_rfc3339, plugin::PluginEntry,
+    AgentEvent, AgentEventContext, ArtifactRef, CapabilitySpec, Config, ForkMode, InvocationMode,
+    Phase, PluginHealth, PluginState, ResolvedExecutionLimitsSnapshot,
+    ResolvedSubagentContextOverrides, SessionEventRecord, SessionMeta, SubRunFailure,
+    SubRunFailureCode, SubRunHandoff, SubRunResult, SubRunStorageMode, SubagentContextOverrides,
+    format_local_rfc3339, plugin::PluginEntry,
 };
-use astrcode_protocol::{
-    capability::CapabilityDescriptor,
-    http::{
-        AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentLifecycleDto, AgentProfileDto,
-        AgentTurnOutcomeDto, ArtifactRefDto, ChildAgentRefDto, ChildSessionLineageKindDto,
-        ChildSessionNotificationKindDto, CompactTriggerDto, ComposerOptionDto,
-        ComposerOptionKindDto, ComposerOptionsResponseDto, ConfigView, CurrentModelInfoDto,
-        ForkModeDto, InvocationKindDto, LineageSnapshotDto, MailboxBatchDto, MailboxDiscardedDto,
-        MailboxQueuedDto, ModelOptionDto, OperationMetricsDto, PROTOCOL_VERSION, PhaseDto,
-        PluginHealthDto, PluginRuntimeStateDto, ProfileView, ReplayMetricsDto,
-        ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto, RuntimeCapabilityDto,
-        RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto, SessionCatalogEventEnvelope,
-        SessionCatalogEventPayload, SessionListItem, SubRunExecutionMetricsDto,
-        SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto,
-        SubRunResultDto, SubRunStatusDto, SubRunStatusSourceDto, SubRunStorageModeDto,
-        SubagentContextOverridesDto, ToolCallResultDto, ToolDescriptorDto, ToolOutputStreamDto,
-    },
+use astrcode_protocol::http::{
+    AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentLifecycleDto, AgentProfileDto,
+    AgentTurnOutcomeDto, ArtifactRefDto, ChildAgentRefDto, ChildSessionLineageKindDto,
+    ChildSessionNotificationKindDto, CompactTriggerDto, ComposerOptionDto, ComposerOptionKindDto,
+    ComposerOptionsResponseDto, ConfigView, CurrentModelInfoDto, ForkModeDto, InvocationKindDto,
+    LineageSnapshotDto, MailboxBatchDto, MailboxDiscardedDto, MailboxQueuedDto, ModelOptionDto,
+    OperationMetricsDto, PROTOCOL_VERSION, PhaseDto, PluginHealthDto, PluginRuntimeStateDto,
+    ProfileView, ReplayMetricsDto, ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto,
+    RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto,
+    SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem,
+    SubRunExecutionMetricsDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
+    SubRunOutcomeDto, SubRunResultDto, SubRunStatusDto, SubRunStatusSourceDto,
+    SubRunStorageModeDto, SubagentContextOverridesDto, ToolCallResultDto, ToolDescriptorDto,
+    ToolOutputStreamDto,
 };
-use astrcode_runtime::{
-    AgentProfileSummary, ComposerOption, ComposerOptionKind, Config, OperationMetricsSnapshot,
-    ReplayMetricsSnapshot, RuntimeGovernanceSnapshot, RuntimeObservabilitySnapshot,
-    SessionCatalogEvent, SubRunExecutionMetricsSnapshot, SubRunStatusSnapshot, SubRunStatusSource,
-    ToolSummary, is_env_var_name, list_model_options as resolve_model_options,
-    resolve_active_selection, resolve_current_model as resolve_runtime_current_model,
-};
+use astrcode_session_runtime::{SubRunStatusSnapshot, SubRunStatusSource};
 use axum::{http::StatusCode, response::sse::Event};
 
 use crate::ApiError;
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct AgentProfileSummary {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub mode: astrcode_core::AgentMode,
+    pub allowed_tools: Vec<String>,
+    pub disallowed_tools: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ToolSummary {
+    pub name: String,
+    pub description: String,
+    pub profiles: Vec<String>,
+    pub streaming: bool,
+}
 
 /// 将会话元数据映射为列表项 DTO。
 ///
@@ -77,7 +95,7 @@ pub(crate) fn to_session_list_item(meta: SessionMeta) -> SessionListItem {
 /// 包含运行时名称、类型、已加载会话数、运行中的会话 ID、
 /// 插件搜索路径、运行时指标、能力描述和插件状态。
 #[allow(dead_code)]
-pub(crate) fn to_runtime_status_dto(snapshot: RuntimeGovernanceSnapshot) -> RuntimeStatusDto {
+pub(crate) fn to_runtime_status_dto(snapshot: GovernanceSnapshot) -> RuntimeStatusDto {
     RuntimeStatusDto {
         runtime_name: snapshot.runtime_name,
         runtime_kind: snapshot.runtime_kind,
@@ -102,6 +120,7 @@ pub(crate) fn to_runtime_status_dto(snapshot: RuntimeGovernanceSnapshot) -> Runt
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn to_agent_profile_dto(profile: AgentProfileSummary) -> AgentProfileDto {
     AgentProfileDto {
         id: profile.id,
@@ -128,6 +147,7 @@ pub(crate) fn to_tool_descriptor_dto(tool: ToolSummary) -> ToolDescriptorDto {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn to_subrun_status_dto(snapshot: SubRunStatusSnapshot) -> SubRunStatusDto {
     let SubRunStatusSnapshot {
         handle,
@@ -136,8 +156,6 @@ pub(crate) fn to_subrun_status_dto(snapshot: SubRunStatusSnapshot) -> SubRunStat
         result,
         step_count,
         estimated_tokens,
-        resolved_overrides,
-        resolved_limits,
     } = snapshot;
     let source = match source {
         SubRunStatusSource::Live => SubRunStatusSourceDto::Live,
@@ -161,11 +179,12 @@ pub(crate) fn to_subrun_status_dto(snapshot: SubRunStatusSnapshot) -> SubRunStat
         result: result.map(to_subrun_result_dto),
         step_count,
         estimated_tokens,
-        resolved_overrides: resolved_overrides.map(to_resolved_overrides_dto),
-        resolved_limits: resolved_limits.map(to_resolved_limits_dto),
+        resolved_overrides: None,
+        resolved_limits: None,
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn from_subagent_context_overrides_dto(
     dto: Option<SubagentContextOverridesDto>,
 ) -> Option<SubagentContextOverrides> {
@@ -184,6 +203,7 @@ pub(crate) fn from_subagent_context_overrides_dto(
     })
 }
 
+#[allow(dead_code)]
 fn from_fork_mode_dto(dto: ForkModeDto) -> ForkMode {
     match dto {
         ForkModeDto::FullHistory => ForkMode::FullHistory,
@@ -342,6 +362,7 @@ fn to_artifact_ref_dto(artifact: ArtifactRef) -> ArtifactRefDto {
     }
 }
 
+#[allow(dead_code)]
 fn from_subrun_storage_mode_dto(mode: SubRunStorageModeDto) -> SubRunStorageMode {
     match mode {
         SubRunStorageModeDto::IndependentSession => SubRunStorageMode::IndependentSession,
@@ -404,6 +425,7 @@ fn to_agent_lifecycle_dto(status: astrcode_core::AgentLifecycleStatus) -> AgentL
     }
 }
 
+#[allow(dead_code)]
 fn to_agent_turn_outcome_dto(outcome: astrcode_core::AgentTurnOutcome) -> AgentTurnOutcomeDto {
     match outcome {
         astrcode_core::AgentTurnOutcome::Completed => AgentTurnOutcomeDto::Completed,
@@ -529,16 +551,13 @@ fn to_resolved_limits_dto(limits: ResolvedExecutionLimitsSnapshot) -> ResolvedEx
 /// `kind` 字段通过 serde_json 序列化后取字符串表示，
 /// 反序列化失败时降级为 "unknown"，避免协议层崩溃。
 #[allow(dead_code)]
-fn to_runtime_capability_dto(descriptor: CapabilityDescriptor) -> RuntimeCapabilityDto {
+fn to_runtime_capability_dto(spec: CapabilitySpec) -> RuntimeCapabilityDto {
     RuntimeCapabilityDto {
-        name: descriptor.name,
-        kind: serde_json::to_value(&descriptor.kind)
-            .ok()
-            .and_then(|value| value.as_str().map(ToString::to_string))
-            .unwrap_or_else(|| "unknown".to_string()),
-        description: descriptor.description,
-        profiles: descriptor.profiles,
-        streaming: descriptor.streaming,
+        name: spec.name.to_string(),
+        kind: spec.kind.as_str().to_string(),
+        description: spec.description,
+        profiles: spec.profiles,
+        streaming: matches!(spec.invocation_mode, InvocationMode::Streaming),
     }
 }
 
@@ -1032,7 +1051,7 @@ fn to_composer_option_dto(item: ComposerOption) -> ComposerOptionDto {
     }
 }
 
-fn config_selection_error(error: AstrError) -> ApiError {
+fn config_selection_error(error: ApplicationError) -> ApiError {
     ApiError {
         status: StatusCode::BAD_REQUEST,
         message: error.to_string(),

@@ -9,7 +9,10 @@ use crate::{
     ApiError, AppState,
     auth::require_auth,
     mapper::{to_agent_event_envelope, to_phase_dto, to_session_list_item},
-    routes::sessions::{filter::SessionEventFilterQuery, validate_session_path_id},
+    routes::sessions::{
+        filter::{SessionEventFilterQuery, record_matches_filter},
+        validate_session_path_id,
+    },
 };
 
 pub(crate) async fn list_sessions(
@@ -18,11 +21,9 @@ pub(crate) async fn list_sessions(
 ) -> Result<Json<Vec<SessionListItem>>, ApiError> {
     require_auth(&state, &headers, None)?;
     let sessions = state
-        .service
-        .sessions()
-        .list()
+        .app
+        .list_sessions()
         .await
-        .map_err(ApiError::from)?
         .into_iter()
         .map(to_session_list_item)
         .collect();
@@ -39,18 +40,24 @@ pub(crate) async fn session_history(
     let session_id = validate_session_path_id(&session_id)?;
     let filter_spec = filter_query.into_runtime_filter_spec()?;
     let snapshot = state
-        .service
-        .sessions()
-        .history_filtered(&session_id, filter_spec)
+        .app
+        .session_history(&session_id)
         .await
         .map_err(ApiError::from)?;
+    let events = snapshot
+        .history
+        .into_iter()
+        .filter(|record| {
+            filter_spec
+                .as_ref()
+                .map(|spec| record_matches_filter(record, spec))
+                .unwrap_or(true)
+        })
+        .map(|record| to_agent_event_envelope(record.event))
+        .collect();
 
     Ok(Json(SessionHistoryResponseDto {
-        events: snapshot
-            .history
-            .into_iter()
-            .map(|record| to_agent_event_envelope(record.event))
-            .collect(),
+        events,
         cursor: snapshot.cursor,
         phase: to_phase_dto(snapshot.phase),
     }))
@@ -66,9 +73,8 @@ pub(crate) async fn session_view(
     let session_id = validate_session_path_id(&session_id)?;
     let filter_spec = filter_query.into_runtime_filter_spec()?;
     let snapshot = state
-        .service
-        .sessions()
-        .view(&session_id, filter_spec)
+        .app
+        .session_view(&session_id)
         .await
         .map_err(ApiError::from)?;
 
@@ -76,11 +82,23 @@ pub(crate) async fn session_view(
         focus_events: snapshot
             .focus_history
             .into_iter()
+            .filter(|record| {
+                filter_spec
+                    .as_ref()
+                    .map(|spec| record_matches_filter(record, spec))
+                    .unwrap_or(true)
+            })
             .map(|record| to_agent_event_envelope(record.event))
             .collect(),
         direct_children_events: snapshot
             .direct_children_history
             .into_iter()
+            .filter(|record| {
+                filter_spec
+                    .as_ref()
+                    .map(|spec| record_matches_filter(record, spec))
+                    .unwrap_or(true)
+            })
             .map(|record| to_agent_event_envelope(record.event))
             .collect(),
         cursor: snapshot.cursor,

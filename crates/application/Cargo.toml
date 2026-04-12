@@ -1,0 +1,15 @@
+[package]
+name = "astrcode-application"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+astrcode-core = { path = "../core" }
+astrcode-kernel = { path = "../kernel" }
+astrcode-session-runtime = { path = "../session-runtime" }
+chrono.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true

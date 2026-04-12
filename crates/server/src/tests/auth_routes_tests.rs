@@ -9,7 +9,7 @@ use crate::{auth::BootstrapAuth, routes::build_api_router, test_support::test_st
 
 #[tokio::test]
 async fn exchange_auth_issues_session_token_for_valid_bootstrap() {
-    let (state, _guard) = test_state(None);
+    let (state, _guard) = test_state(None).await;
     let auth_sessions = state.auth_sessions.clone();
     let app = build_api_router().with_state(state);
 
@@ -44,7 +44,7 @@ async fn exchange_auth_issues_session_token_for_valid_bootstrap() {
 
 #[tokio::test]
 async fn exchange_auth_rejects_expired_bootstrap_token() {
-    let (mut state, _guard) = test_state(None);
+    let (mut state, _guard) = test_state(None).await;
     state.bootstrap_auth = BootstrapAuth::new(
         "browser-token".to_string(),
         chrono::Utc::now().timestamp_millis() - 1,

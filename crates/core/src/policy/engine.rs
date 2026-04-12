@@ -13,12 +13,11 @@
 //! 每次能力调用都会经过 `check_capability_call`，返回三种裁决之一：
 //! `Allow`（直接执行）、`Deny`（拒绝并说明原因）、`Ask`（等待用户审批）。
 
-use astrcode_protocol::capability::CapabilityDescriptor;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{LlmMessage, Result, ToolDefinition};
+use crate::{CapabilitySpec, LlmMessage, Result, ToolDefinition};
 
 /// 系统提示词块所属层级。
 ///
@@ -37,7 +36,7 @@ pub enum SystemPromptLayer {
 /// 已渲染的系统提示词块。
 ///
 /// RequestAssembler 会把 `PromptPlan` 中的 system blocks 降级为这个 provider 无关 DTO。
-/// 这样 `core` 只感知“分段后的系统提示词”，而不依赖 `runtime-prompt` 的内部类型。
+/// 这样 `core` 只感知“分段后的系统提示词”，而不依赖 `adapter-prompt` 的内部类型。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemPromptBlock {
@@ -87,8 +86,8 @@ pub struct ModelRequest {
 pub struct CapabilityCall {
     /// 请求 ID
     pub request_id: String,
-    /// 能力描述符
-    pub descriptor: CapabilityDescriptor,
+    /// 能力规范
+    pub capability: CapabilitySpec,
     /// 调用载荷
     pub payload: Value,
     /// 元数据
@@ -99,7 +98,7 @@ pub struct CapabilityCall {
 impl CapabilityCall {
     /// 获取能力名称
     pub fn name(&self) -> &str {
-        &self.descriptor.name
+        self.capability.name.as_str()
     }
 }
 
@@ -192,7 +191,7 @@ pub struct ApprovalRequest {
     /// Turn ID
     pub turn_id: String,
     /// 能力描述符
-    pub capability: CapabilityDescriptor,
+    pub capability: CapabilitySpec,
     /// 调用载荷
     pub payload: Value,
     /// 提示文本（向用户展示）
@@ -359,32 +358,31 @@ impl PolicyEngine for AllowAllPolicyEngine {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_protocol::capability::{
-        CapabilityDescriptor, CapabilityKind, SideEffectLevel, StabilityLevel,
-    };
     use serde_json::{Value, json};
 
     use super::{
         AllowAllPolicyEngine, ApprovalDefault, ApprovalRequest, ContextDecisionInput,
         ContextStrategy, PolicyContext, PolicyEngine, PolicyVerdict,
     };
-    use crate::ModelRequest;
+    use crate::{
+        CapabilityKind, CapabilitySpec, InvocationMode, ModelRequest, SideEffect, Stability,
+    };
 
-    fn descriptor(name: &str) -> CapabilityDescriptor {
-        CapabilityDescriptor {
-            name: name.to_string(),
-            kind: CapabilityKind::tool(),
+    fn capability(name: &str) -> CapabilitySpec {
+        CapabilitySpec {
+            name: name.into(),
+            kind: CapabilityKind::Tool,
             description: "test capability".to_string(),
             input_schema: json!({ "type": "object" }),
             output_schema: json!({ "type": "object" }),
-            streaming: false,
+            invocation_mode: InvocationMode::Unary,
             concurrency_safe: false,
             compact_clearable: false,
             profiles: vec!["coding".to_string()],
             tags: vec![],
             permissions: vec![],
-            side_effect: SideEffectLevel::Workspace,
-            stability: StabilityLevel::Stable,
+            side_effect: SideEffect::Workspace,
+            stability: Stability::Stable,
             metadata: Value::Null,
             max_result_inline_size: None,
         }
@@ -412,7 +410,7 @@ mod tests {
         };
         let call = super::CapabilityCall {
             request_id: "call-1".to_string(),
-            descriptor: descriptor("tool.sample"),
+            capability: capability("tool.sample"),
             payload: json!({ "path": "Cargo.toml" }),
             metadata: Value::Null,
         };
@@ -468,7 +466,7 @@ mod tests {
             request_id: "call-1".to_string(),
             session_id: "session-1".to_string(),
             turn_id: "turn-1".to_string(),
-            capability: descriptor("tool.sample"),
+            capability: capability("tool.sample"),
             payload: json!({}),
             prompt: "Allow?".to_string(),
             default: ApprovalDefault::Deny,

@@ -18,8 +18,11 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use astrcode_core::{AstrError, CancelToken, Result};
-use astrcode_protocol::plugin::{CapabilityDescriptor, InvocationContext};
+use astrcode_core::{AstrError, CancelToken, CapabilitySpec, Result};
+use astrcode_protocol::{
+    capability::{CapabilityDescriptor, spec_to_descriptor},
+    plugin::InvocationContext,
+};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -28,7 +31,7 @@ use crate::EventEmitter;
 /// 能力处理器 trait。
 ///
 /// 每个实现代表一个可被插件或宿主调用的能力。
-/// 能力通过 `descriptor()` 声明元数据（名称、类型、输入输出 schema 等），
+/// 能力通过 `capability_spec()` 声明元数据（名称、类型、输入输出 schema 等），
 /// 通过 `invoke()` 执行实际逻辑。
 ///
 /// # 线程安全
@@ -36,7 +39,7 @@ use crate::EventEmitter;
 /// 需要 `Send + Sync`，因为路由器可能在多线程环境中并发调用。
 #[async_trait]
 pub trait CapabilityHandler: Send + Sync {
-    fn descriptor(&self) -> CapabilityDescriptor;
+    fn capability_spec(&self) -> CapabilitySpec;
 
     async fn invoke(
         &self,
@@ -56,7 +59,7 @@ pub trait CapabilityHandler: Send + Sync {
 /// 默认实现 `AllowAllPermissionChecker` 允许所有请求，
 /// 生产环境应替换为更严格的检查器。
 pub trait PermissionChecker: Send + Sync {
-    fn check(&self, capability: &CapabilityDescriptor, context: &InvocationContext) -> Result<()>;
+    fn check(&self, capability: &CapabilitySpec, context: &InvocationContext) -> Result<()>;
 }
 
 /// 允许所有请求的权限检查器。
@@ -67,11 +70,7 @@ pub trait PermissionChecker: Send + Sync {
 pub struct AllowAllPermissionChecker;
 
 impl PermissionChecker for AllowAllPermissionChecker {
-    fn check(
-        &self,
-        _capability: &CapabilityDescriptor,
-        _context: &InvocationContext,
-    ) -> Result<()> {
+    fn check(&self, _capability: &CapabilitySpec, _context: &InvocationContext) -> Result<()> {
         Ok(())
     }
 }
@@ -115,7 +114,7 @@ impl CapabilityRouter {
     ///
     /// # 验证
     ///
-    /// - 检查 `CapabilityDescriptor` 的合法性（名称格式、必填字段等）
+    /// - 检查 `CapabilitySpec` 的合法性（名称格式、必填字段等）
     /// - 检查是否已有同名能力（不允许重复注册）
     ///
     /// # 错误
@@ -134,30 +133,38 @@ impl CapabilityRouter {
     /// 与 `register()` 功能相同，但允许调用方自行管理 handler 的 `Arc`，
     /// 适用于需要在多处共享同一个 handler 实例的场景。
     pub fn register_arc(&mut self, handler: Arc<dyn CapabilityHandler>) -> Result<()> {
-        let descriptor = handler.descriptor();
-        descriptor.validate().map_err(|error| {
+        let spec = handler.capability_spec();
+        spec.validate().map_err(|error| {
             AstrError::Validation(format!(
-                "invalid capability descriptor '{}': {}",
-                descriptor.name, error
+                "invalid capability spec '{}': {}",
+                spec.name, error
             ))
         })?;
-        if self.handlers.contains_key(&descriptor.name) {
+        if self.handlers.contains_key(spec.name.as_str()) {
             return Err(AstrError::Validation(format!(
                 "duplicate capability registration: {}",
-                descriptor.name
+                spec.name
             )));
         }
-        self.handlers.insert(descriptor.name.clone(), handler);
+        self.handlers.insert(spec.name.to_string(), handler);
         Ok(())
     }
 
     /// 获取所有已注册能力的描述符列表。
     ///
     /// 返回顺序由内部 `BTreeMap` 的键顺序决定（按能力名称字典序）。
-    pub fn capabilities(&self) -> Vec<CapabilityDescriptor> {
+    pub fn capabilities(&self) -> Result<Vec<CapabilityDescriptor>> {
         self.handlers
             .values()
-            .map(|handler| handler.descriptor())
+            .map(|handler| {
+                let spec = handler.capability_spec();
+                spec_to_descriptor(&spec).map_err(|error| {
+                    AstrError::Validation(format!(
+                        "failed to project capability spec '{}' to descriptor: {}",
+                        spec.name, error
+                    ))
+                })
+            })
             .collect()
     }
 
@@ -189,9 +196,9 @@ impl CapabilityRouter {
             .handlers
             .get(capability)
             .ok_or_else(|| AstrError::Validation(format!("unknown capability '{capability}'")))?;
-        let descriptor = handler.descriptor();
-        self.validate_profile(&descriptor, &context)?;
-        self.permission_checker.check(&descriptor, &context)?;
+        let spec = handler.capability_spec();
+        self.validate_profile(&spec, &context)?;
+        self.permission_checker.check(&spec, &context)?;
         handler.invoke(input, context, events, cancel).await
     }
 
@@ -199,24 +206,20 @@ impl CapabilityRouter {
     ///
     /// 如果能力没有声明任何 profiles（空列表），则认为支持所有 profile。
     /// 否则，上下文的 profile 必须在能力的 profiles 列表中。
-    fn validate_profile(
-        &self,
-        descriptor: &CapabilityDescriptor,
-        context: &InvocationContext,
-    ) -> Result<()> {
-        if descriptor.profiles.is_empty() || descriptor.profiles.contains(&context.profile) {
+    fn validate_profile(&self, spec: &CapabilitySpec, context: &InvocationContext) -> Result<()> {
+        if spec.profiles.is_empty() || spec.profiles.contains(&context.profile) {
             return Ok(());
         }
         Err(AstrError::Validation(format!(
             "capability '{}' does not support profile '{}'",
-            descriptor.name, context.profile
+            spec.name, context.profile
         )))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use astrcode_protocol::plugin::{CapabilityKind, SideEffectLevel, StabilityLevel};
+    use astrcode_core::CapabilityKind;
     use serde_json::json;
 
     use super::*;
@@ -225,24 +228,13 @@ mod tests {
 
     #[async_trait]
     impl CapabilityHandler for SampleHandler {
-        fn descriptor(&self) -> CapabilityDescriptor {
-            CapabilityDescriptor {
-                name: "tool.sample".to_string(),
-                kind: CapabilityKind::tool(),
-                description: "sample".to_string(),
-                input_schema: json!({ "type": "object" }),
-                output_schema: json!({ "type": "object" }),
-                streaming: false,
-                concurrency_safe: false,
-                compact_clearable: false,
-                profiles: vec!["coding".to_string()],
-                tags: vec![],
-                permissions: vec![],
-                side_effect: SideEffectLevel::None,
-                stability: StabilityLevel::Stable,
-                metadata: Value::Null,
-                max_result_inline_size: None,
-            }
+        fn capability_spec(&self) -> CapabilitySpec {
+            CapabilitySpec::builder("tool.sample", CapabilityKind::Tool)
+                .description("sample")
+                .schema(json!({ "type": "object" }), json!({ "type": "object" }))
+                .profiles(["coding"])
+                .build()
+                .expect("sample capability spec should build")
         }
 
         async fn invoke(
@@ -259,11 +251,7 @@ mod tests {
     struct DenyChecker;
 
     impl PermissionChecker for DenyChecker {
-        fn check(
-            &self,
-            _capability: &CapabilityDescriptor,
-            _context: &InvocationContext,
-        ) -> Result<()> {
+        fn check(&self, _capability: &CapabilitySpec, _context: &InvocationContext) -> Result<()> {
             Err(AstrError::Validation("denied by checker".to_string()))
         }
     }

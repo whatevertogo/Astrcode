@@ -12,10 +12,11 @@
 use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AstrError, CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, Result,
+    AstrError, CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, CapabilitySpec,
+    InvocationMode, Result,
 };
 use astrcode_protocol::{
-    capability::CapabilityDescriptor,
+    capability::{CapabilityDescriptor, descriptor_to_spec},
     plugin::{EventPhase, InvocationContext, WorkspaceRef},
 };
 use async_trait::async_trait;
@@ -37,7 +38,7 @@ use crate::{Peer, StreamExecution, Supervisor};
 #[derive(Clone)]
 pub struct PluginCapabilityInvoker {
     peer: Peer,
-    descriptor: CapabilityDescriptor,
+    capability_spec: CapabilitySpec,
     remote_name: String,
 }
 
@@ -46,19 +47,25 @@ impl PluginCapabilityInvoker {
     ///
     /// `remote_name` 保存原始的能力名称，因为 `descriptor.name` 可能在
     /// 适配过程中被修改（如添加命名空间前缀）。
-    pub fn from_protocol_descriptor(peer: Peer, descriptor: CapabilityDescriptor) -> Self {
-        Self {
+    pub fn from_protocol_descriptor(peer: Peer, descriptor: CapabilityDescriptor) -> Result<Self> {
+        let capability_spec = descriptor_to_spec(&descriptor).map_err(|error| {
+            AstrError::Validation(format!(
+                "invalid protocol capability descriptor '{}': {}",
+                descriptor.name, error
+            ))
+        })?;
+        Ok(Self {
             remote_name: descriptor.name.clone(),
-            descriptor,
+            capability_spec,
             peer,
-        }
+        })
     }
 }
 
 #[async_trait]
 impl CapabilityInvoker for PluginCapabilityInvoker {
-    fn descriptor(&self) -> CapabilityDescriptor {
-        self.descriptor.clone()
+    fn capability_spec(&self) -> CapabilitySpec {
+        self.capability_spec.clone()
     }
 
     /// 执行能力调用。
@@ -81,7 +88,10 @@ impl CapabilityInvoker for PluginCapabilityInvoker {
         let started_at = Instant::now();
         let invocation = to_invocation_context(ctx);
 
-        if self.descriptor.streaming {
+        if matches!(
+            self.capability_spec.invocation_mode,
+            InvocationMode::Streaming
+        ) {
             let mut stream = self
                 .peer
                 .invoke_stream(astrcode_protocol::plugin::InvokeMessage {
@@ -92,7 +102,12 @@ impl CapabilityInvoker for PluginCapabilityInvoker {
                     stream: true,
                 })
                 .await?;
-            finish_stream_invocation(self.descriptor.name.clone(), &mut stream, started_at).await
+            finish_stream_invocation(
+                self.capability_spec.name.to_string(),
+                &mut stream,
+                started_at,
+            )
+            .await
         } else {
             let result = self
                 .peer
@@ -114,7 +129,7 @@ impl CapabilityInvoker for PluginCapabilityInvoker {
                 (false, Some(error))
             };
             Ok(CapabilityExecutionResult {
-                capability_name: self.descriptor.name.clone(),
+                capability_name: self.capability_spec.name.to_string(),
                 success,
                 output: result.output,
                 error,
@@ -136,11 +151,14 @@ impl Supervisor {
             .capabilities
             .iter()
             .cloned()
-            .map(|descriptor| {
-                Arc::new(PluginCapabilityInvoker::from_protocol_descriptor(
-                    self.peer(),
-                    descriptor,
-                )) as Arc<dyn CapabilityInvoker>
+            .filter_map(|descriptor| {
+                match PluginCapabilityInvoker::from_protocol_descriptor(self.peer(), descriptor) {
+                    Ok(invoker) => Some(Arc::new(invoker) as Arc<dyn CapabilityInvoker>),
+                    Err(error) => {
+                        log::error!("failed to adapt plugin capability descriptor: {error}");
+                        None
+                    },
+                }
             })
             .collect()
     }
@@ -230,7 +248,7 @@ fn to_invocation_context(ctx: &CapabilityContext) -> InvocationContext {
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string()),
         trace_id: ctx.trace_id.clone(),
-        session_id: Some(ctx.session_id.clone()),
+        session_id: Some(ctx.session_id.to_string()),
         caller: None,
         workspace: Some(WorkspaceRef {
             working_dir: Some(working_dir.clone()),

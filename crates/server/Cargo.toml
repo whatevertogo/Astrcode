@@ -6,13 +6,14 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+astrcode-application = { path = "../application" }
 astrcode-core = { path = "../core" }
+astrcode-kernel = { path = "../kernel" }
 astrcode-protocol = { path = "../protocol" }
-astrcode-runtime = { path = "../runtime" }
-astrcode-runtime-execution = { path = "../runtime-execution" }
-astrcode-runtime-registry = { path = "../runtime-registry" }
+astrcode-session-runtime = { path = "../session-runtime" }
 async-stream.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
 axum.workspace = true
 axum-extra.workspace = true
 chrono.workspace = true
@@ -29,6 +30,5 @@ tower.workspace = true
 tower-http.workspace = true
 
 [dev-dependencies]
-async-trait.workspace = true
-astrcode-storage = { path = "../storage" }
+astrcode-adapter-storage = { path = "../adapter-storage" }
 tempfile.workspace = true

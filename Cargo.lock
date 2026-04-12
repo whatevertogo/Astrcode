@@ -138,10 +138,130 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrcode-adapter-agents"
+version = "0.1.0"
+dependencies = [
+ "astrcode-core",
+ "serde",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "astrcode-adapter-llm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "astrcode-core",
+ "async-trait",
+ "futures-util",
+ "log",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "astrcode-adapter-mcp"
+version = "0.1.0"
+dependencies = [
+ "astrcode-adapter-prompt",
+ "astrcode-core",
+ "async-trait",
+ "base64 0.22.1",
+ "futures-util",
+ "log",
+ "notify",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "astrcode-adapter-prompt"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "astrcode-core",
+ "async-trait",
+ "chrono",
+ "dirs",
+ "log",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "astrcode-adapter-skills"
+version = "0.1.0"
+dependencies = [
+ "astrcode-core",
+ "log",
+ "serde",
+ "serde_yaml",
+ "tempfile",
+]
+
+[[package]]
+name = "astrcode-adapter-storage"
+version = "0.1.0"
+dependencies = [
+ "astrcode-core",
+ "chrono",
+ "fs2",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "astrcode-adapter-tools"
+version = "0.1.0"
+dependencies = [
+ "astrcode-core",
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "glob",
+ "globset",
+ "ignore",
+ "log",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "astrcode-application"
+version = "0.1.0"
+dependencies = [
+ "astrcode-core",
+ "astrcode-kernel",
+ "astrcode-session-runtime",
+ "chrono",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 1.1.2+spec-1.1.0",
+]
+
+[[package]]
 name = "astrcode-core"
 version = "0.1.0"
 dependencies = [
- "astrcode-protocol",
  "async-trait",
  "chrono",
  "dirs",
@@ -170,6 +290,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrcode-kernel"
+version = "0.1.0"
+dependencies = [
+ "astrcode-core",
+ "async-trait",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "astrcode-plugin"
 version = "0.1.0"
 dependencies = [
@@ -188,244 +321,11 @@ dependencies = [
 name = "astrcode-protocol"
 version = "0.1.0"
 dependencies = [
+ "astrcode-core",
  "async-trait",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "astrcode-runtime"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "astrcode-core",
- "astrcode-plugin",
- "astrcode-protocol",
- "astrcode-runtime-agent-control",
- "astrcode-runtime-agent-loader",
- "astrcode-runtime-agent-loop",
- "astrcode-runtime-agent-tool",
- "astrcode-runtime-config",
- "astrcode-runtime-execution",
- "astrcode-runtime-llm",
- "astrcode-runtime-mcp",
- "astrcode-runtime-prompt",
- "astrcode-runtime-registry",
- "astrcode-runtime-session",
- "astrcode-runtime-skill-loader",
- "astrcode-runtime-tool-loader",
- "astrcode-storage",
- "async-trait",
- "chrono",
- "dashmap",
- "dirs",
- "futures-util",
- "log",
- "notify",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "uuid",
-]
-
-[[package]]
-name = "astrcode-runtime-agent-control"
-version = "0.1.0"
-dependencies = [
- "astrcode-core",
- "astrcode-runtime-config",
- "async-trait",
- "log",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "astrcode-runtime-agent-loader"
-version = "0.1.0"
-dependencies = [
- "astrcode-core",
- "serde",
- "serde_yaml",
- "tempfile",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "astrcode-runtime-agent-loop"
-version = "0.1.0"
-dependencies = [
- "astrcode-core",
- "astrcode-plugin",
- "astrcode-protocol",
- "astrcode-runtime-config",
- "astrcode-runtime-llm",
- "astrcode-runtime-prompt",
- "astrcode-runtime-registry",
- "astrcode-runtime-skill-loader",
- "async-trait",
- "chrono",
- "futures-util",
- "log",
- "regex",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "astrcode-runtime-agent-tool"
-version = "0.1.0"
-dependencies = [
- "astrcode-core",
- "async-trait",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "astrcode-runtime-config"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "astrcode-core",
- "log",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "astrcode-runtime-execution"
-version = "0.1.0"
-dependencies = [
- "astrcode-core",
- "astrcode-runtime-config",
- "astrcode-runtime-prompt",
- "astrcode-runtime-registry",
- "async-trait",
- "chrono",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "astrcode-runtime-llm"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "astrcode-core",
- "async-trait",
- "futures-util",
- "log",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "astrcode-runtime-mcp"
-version = "0.1.0"
-dependencies = [
- "astrcode-core",
- "astrcode-protocol",
- "astrcode-runtime-prompt",
- "async-trait",
- "base64 0.22.1",
- "futures-util",
- "log",
- "notify",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "astrcode-runtime-prompt"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "astrcode-core",
- "astrcode-protocol",
- "async-trait",
- "chrono",
- "dirs",
- "log",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "astrcode-runtime-registry"
-version = "0.1.0"
-dependencies = [
- "astrcode-core",
- "astrcode-protocol",
- "async-trait",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "astrcode-runtime-session"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "astrcode-core",
- "async-trait",
- "chrono",
- "log",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "astrcode-runtime-skill-loader"
-version = "0.1.0"
-dependencies = [
- "astrcode-core",
- "log",
- "serde",
- "serde_yaml",
- "tempfile",
-]
-
-[[package]]
-name = "astrcode-runtime-tool-loader"
-version = "0.1.0"
-dependencies = [
- "astrcode-core",
- "astrcode-protocol",
- "async-trait",
- "base64 0.22.1",
- "chrono",
- "glob",
- "globset",
- "ignore",
- "log",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]
@@ -443,12 +343,12 @@ name = "astrcode-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "astrcode-adapter-storage",
+ "astrcode-application",
  "astrcode-core",
+ "astrcode-kernel",
  "astrcode-protocol",
- "astrcode-runtime",
- "astrcode-runtime-execution",
- "astrcode-runtime-registry",
- "astrcode-storage",
+ "astrcode-session-runtime",
  "async-stream",
  "async-trait",
  "axum",
@@ -469,18 +369,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "astrcode-storage"
+name = "astrcode-session-runtime"
 version = "0.1.0"
 dependencies = [
  "astrcode-core",
+ "astrcode-kernel",
+ "async-trait",
  "chrono",
- "fs2",
+ "dashmap",
  "log",
  "serde",
- "serde_json",
  "tempfile",
  "thiserror 2.0.18",
- "uuid",
+ "tokio",
 ]
 
 [[package]]
@@ -5389,7 +5290,6 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
- "futures-util",
  "pin-project-lite",
  "tokio",
 ]

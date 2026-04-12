@@ -1,130 +1,103 @@
 ## ADDED Requirements
 
-### Requirement: `session-runtime` 作为唯一会话真相面
+### Requirement: `session-runtime` 是唯一会话真相面
 
-`session-runtime` crate SHALL 作为唯一会话真相面，负责：
+`session-runtime` crate SHALL 统一负责会话生命周期与执行真相，包括：
 
 - session 目录
-- session actor
-- session state
+- session actor / state
 - turn loop
 - interrupt / replay / branch
 - observe / mailbox / routing
 - durable event append
 - session catalog 广播
 
-#### Scenario: session-runtime 持有 session registry
+#### Scenario: SessionRuntime 持有会话目录
 
-- **WHEN** 检查 `SessionRuntime` 的核心结构
+- **WHEN** 检查 `SessionRuntime` 核心结构
 - **THEN** 它持有 session registry（例如 `DashMap<SessionId, Arc<SessionActor>>`）
 
-#### Scenario: kernel 不再持有 session registry
+#### Scenario: kernel 不再持有会话真相
 
 - **WHEN** 检查 `kernel` crate
 - **THEN** 不存在 session actor 目录或 session state 真相容器
 
 ---
 
-### Requirement: `session-runtime` 隐藏内部并发容器
+### Requirement: 会话执行构造逻辑归 `session-runtime`
 
-`session-runtime` MAY 在内部使用 `DashMap`、`RwLock`、`Mutex`，但 SHALL NOT 将这些并发容器直接暴露给外部。
+`build_agent_loop`、`LoopRuntimeDeps`、`AgentLoop`、`TurnRunner` SHALL 位于 `session-runtime/turn` 或 `session-runtime/factory`，不在 `kernel`。
 
-#### Scenario: 外部拿到的是 handle 或 snapshot
+#### Scenario: turn 由 session-runtime 完整驱动
 
-- **WHEN** `application` 或 `server` 查询 session 状态
-- **THEN** 获取的是 typed handle、snapshot 或查询结果
-- **AND** 不是内部 `DashMap` 或锁保护对象
+- **WHEN** `application` 请求执行 turn
+- **THEN** 通过 `SessionRuntime::run_turn(...)`（或等价入口）驱动完整执行
 
----
+#### Scenario: kernel 不持有 turn 构造实现
 
-### Requirement: session 标识使用 newtype
-
-`session-runtime` 内部和对外接口 SHALL 使用 `SessionId`、`TurnId`、`AgentId` 这类强类型标识，而不是以裸 `String` 作为核心 API 主类型。
-
-#### Scenario: public API 不以 String 代表 session 身份
-
-- **WHEN** 检查 `SessionRuntime` 的公共方法
-- **THEN** 会话与 turn 身份通过强类型 ID 传递
+- **WHEN** 检查 `kernel` 模块
+- **THEN** 不存在 `build_agent_loop` 或 `LoopRuntimeDeps`
 
 ---
 
-### Requirement: `runtime-session` 迁入 `session-runtime/state`
+### Requirement: `runtime-session` / `runtime-agent-loop` / `runtime-execution` 迁入 `session-runtime`
 
-`runtime-session` 的 `SessionState` 与相关状态逻辑 SHALL 迁入 `session-runtime/state`。
+以下旧层能力 SHALL 迁入 `session-runtime`：
 
-#### Scenario: runtime-session 最终删除
+- `runtime-session` -> `session-runtime/state`
+- `runtime-agent-loop` -> `session-runtime/turn`
+- `runtime-execution` -> `session-runtime/actor` 与 `session-runtime/context`
+- `runtime/service/session/*` -> `session-runtime/catalog`
+- `runtime/service/turn/*` 与 `runtime/service/agent/*` -> `session-runtime` 对应子模块
+
+#### Scenario: 旧会话执行层最终删除
 
 - **WHEN** 清理阶段完成
-- **THEN** workspace 中不再包含 `runtime-session`
+- **THEN** workspace 不再包含 `runtime-session`、`runtime-agent-loop`、`runtime-execution`
 
 ---
 
-### Requirement: `runtime-agent-loop` 迁入 `session-runtime/turn`
+### Requirement: durable append 是执行主路径职责
 
-`runtime-agent-loop` SHALL 迁入 `session-runtime/turn`，成为会话执行面的核心实现。
+`session-runtime` SHALL 持有 `Arc<dyn EventStore>`，并将 durable append 作为执行主路径的一部分。
 
-#### Scenario: turn loop 由 session-runtime 驱动
-
-- **WHEN** application 请求执行一个 turn
-- **THEN** 由 `SessionRuntime::run_turn(...)` 或等价入口驱动完整 turn loop
-
----
-
-### Requirement: `runtime-execution` 迁入 `session-runtime/actor` 与 `context`
-
-`runtime-execution` SHALL 迁入 `session-runtime/actor` 与 `session-runtime/context`，不再保留独立 crate。
-
-#### Scenario: 子 agent 执行编排属于 session-runtime
-
-- **WHEN** 检查根 agent / 子 agent 的执行编排代码
-- **THEN** 它们位于 `session-runtime`
-
----
-
-### Requirement: `runtime/service/session` 迁入 `session-runtime/catalog`
-
-当前 runtime 中的 session 创建、加载、删除、列表、目录广播等逻辑 SHALL 统一归入 `session-runtime/catalog`。
-
-#### Scenario: session 列表由 session-runtime 返回
-
-- **WHEN** `application` 需要列出当前所有 session
-- **THEN** 通过 `session-runtime` 获取
-
-#### Scenario: session catalog 广播由 session-runtime 持有
-
-- **WHEN** 新建、删除、分叉 session
-- **THEN** `session-runtime` 发出 session catalog 级广播
-
----
-
-### Requirement: durable append 是 session-runtime 主路径职责
-
-`session-runtime` SHALL 持有 `Arc<dyn EventStore>`，并把 durable append 作为主路径职责，而不是异步订阅副作用。
-
-#### Scenario: 事件先持久化再继续推进执行
+#### Scenario: 关键事件先落盘再推进
 
 - **WHEN** SessionActor 追加关键事件
-- **THEN** 通过 `EventStore::append()` 显式落盘
-- **AND** durability 是执行主路径的一部分
+- **THEN** 通过 `EventStore::append()` 落盘
+- **AND** 再继续后续执行步骤
 
 ---
 
-### Requirement: SessionActor 不直接持有 provider
+### Requirement: SessionActor 通过 kernel 间接调用 provider
 
-SessionActor SHALL 只通过 `kernel` 间接调用 tool / llm / prompt / resource provider。
+SessionActor SHALL NOT 直接持有 `LlmProvider`、`PromptProvider`、`ToolProvider`、`ResourceProvider`。
 
 #### Scenario: SessionActor 字段干净
 
 - **WHEN** 检查 `SessionActor` 字段
-- **THEN** 不存在 `LlmProvider`、`PromptProvider`、`ToolProvider`、`ResourceProvider` 的直接字段
+- **THEN** 不存在上述 provider 直接字段
+- **AND** provider 调用由 `kernel` gateway 承担
 
 ---
 
-### Requirement: 协作工具桥接实现迁入 session-runtime
+### Requirement: 协作执行桥接实现归 `session-runtime`
 
-`SubAgentExecutor` 和 `CollaborationExecutor` 的实际执行桥接 SHALL 位于 `session-runtime`，因为它们本质上操作 session / agent 真相。
+`SubAgentExecutor` 与 `CollaborationExecutor` 的实际执行桥接 SHALL 位于 `session-runtime`。
 
-#### Scenario: runtime 不再承载桥接实现
+#### Scenario: runtime 旧门面不再承载协作桥接
 
 - **WHEN** 清理阶段完成
-- **THEN** 旧 `runtime` crate 中不再保留这两个桥接实现
+- **THEN** 旧 `runtime` crate 中不再保留这两类桥接实现
+
+---
+
+### Requirement: 公共 API 使用强类型并隐藏并发容器
+
+`session-runtime` 公共 API SHALL 使用 `SessionId`、`TurnId`、`AgentId` 等强类型；内部并发容器 SHALL NOT 外泄。
+
+#### Scenario: 外部获取 handle 或 snapshot
+
+- **WHEN** `application` 或 `server` 查询会话状态
+- **THEN** 返回 typed handle / snapshot / query result
+- **AND** 不返回内部 `DashMap` 或锁对象

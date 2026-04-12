@@ -12,10 +12,9 @@
 
 use std::sync::{Arc, RwLock};
 
-use astrcode_protocol::capability::CapabilityDescriptor;
-
 use crate::{
-    AstrError, ManagedRuntimeComponent, PluginRegistry, Result, RuntimeHandle, plugin::PluginEntry,
+    AstrError, CapabilitySpec, ManagedRuntimeComponent, PluginRegistry, Result, RuntimeHandle,
+    plugin::PluginEntry,
 };
 
 /// 运行时协调器。
@@ -33,7 +32,7 @@ pub struct RuntimeCoordinator {
     /// 插件注册表，管理插件生命周期和健康状态
     plugin_registry: Arc<PluginRegistry>,
     /// 可用能力描述符列表（原子引用，支持并发读取）
-    capabilities: RwLock<Arc<[CapabilityDescriptor]>>,
+    capabilities: RwLock<Arc<[CapabilitySpec]>>,
     /// 可关闭的托管组件列表，按注册顺序关闭
     managed_components: RwLock<Vec<Arc<dyn ManagedRuntimeComponent>>>,
 }
@@ -43,7 +42,7 @@ impl RuntimeCoordinator {
     pub fn new(
         active_runtime: Arc<dyn RuntimeHandle>,
         plugin_registry: Arc<PluginRegistry>,
-        capabilities: Vec<CapabilityDescriptor>,
+        capabilities: Vec<CapabilitySpec>,
     ) -> Self {
         Self {
             active_runtime,
@@ -78,7 +77,7 @@ impl RuntimeCoordinator {
     }
 
     /// 获取当前可用能力描述符列表的副本。
-    pub fn capabilities(&self) -> Vec<CapabilityDescriptor> {
+    pub fn capabilities(&self) -> Vec<CapabilitySpec> {
         self.capabilities
             .read()
             .expect("runtime coordinator capabilities lock poisoned")
@@ -95,7 +94,7 @@ impl RuntimeCoordinator {
     pub fn replace_runtime_surface(
         &self,
         plugin_entries: Vec<PluginEntry>,
-        capabilities: Vec<CapabilityDescriptor>,
+        capabilities: Vec<CapabilitySpec>,
         managed_components: Vec<Arc<dyn ManagedRuntimeComponent>>,
     ) -> Vec<Arc<dyn ManagedRuntimeComponent>> {
         self.plugin_registry.replace_snapshot(plugin_entries);
@@ -166,15 +165,13 @@ impl RuntimeCoordinator {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use astrcode_protocol::capability::{
-        CapabilityDescriptor, CapabilityKind, SideEffectLevel, StabilityLevel,
-    };
     use async_trait::async_trait;
     use serde_json::json;
 
     use super::RuntimeCoordinator;
     use crate::{
-        AstrError, ManagedRuntimeComponent, PluginRegistry, Result, RuntimeHandle,
+        AstrError, CapabilityKind, CapabilitySpec, InvocationMode, ManagedRuntimeComponent,
+        PluginRegistry, Result, RuntimeHandle, SideEffect, Stability,
         plugin::{PluginEntry, PluginHealth},
     };
 
@@ -231,21 +228,21 @@ mod tests {
         }
     }
 
-    fn capability(name: &str) -> CapabilityDescriptor {
-        CapabilityDescriptor {
-            name: name.to_string(),
-            kind: CapabilityKind::tool(),
+    fn capability(name: &str) -> CapabilitySpec {
+        CapabilitySpec {
+            name: name.into(),
+            kind: CapabilityKind::Tool,
             description: format!("{name} capability"),
             input_schema: json!({ "type": "object" }),
             output_schema: json!({ "type": "object" }),
-            streaming: false,
+            invocation_mode: InvocationMode::Unary,
             concurrency_safe: false,
             compact_clearable: false,
             profiles: vec!["coding".to_string()],
             tags: Vec::new(),
             permissions: Vec::new(),
-            side_effect: SideEffectLevel::None,
-            stability: StabilityLevel::Stable,
+            side_effect: SideEffect::None,
+            stability: Stability::Stable,
             metadata: json!(null),
             max_result_inline_size: None,
         }
@@ -389,7 +386,7 @@ mod tests {
             coordinator
                 .capabilities()
                 .into_iter()
-                .map(|descriptor| descriptor.name)
+                .map(|descriptor| descriptor.name.to_string())
                 .collect::<Vec<_>>(),
             vec!["tool.beta".to_string()]
         );
