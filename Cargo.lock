@@ -295,11 +295,13 @@ version = "0.1.0"
 dependencies = [
  "astrcode-core",
  "async-trait",
+ "chrono",
  "log",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

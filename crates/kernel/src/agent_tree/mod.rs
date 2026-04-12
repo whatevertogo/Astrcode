@@ -1269,5 +1269,7 @@ fn prune_finalized_agents_locked(state: &mut AgentRegistryState, finalized_retai
     }
 }
 
+pub mod subrun;
+
 #[cfg(test)]
 mod tests;
