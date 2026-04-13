@@ -189,6 +189,35 @@ crates/
    - 当前项目已经开始分离：有 `query/` 模块，也有只读快照类型。
    - 但 `SessionRuntime` 仍同时暴露较多 command/query 方法；长期可以继续向轻量 CQRS 靠拢，让只读查询尽量不被写侧执行路径阻塞。
 
+当前 `session-runtime` 子域的 allowed / forbidden responsibilities 进一步固定为：
+
+- `context`
+  - allowed：上下文来源、继承链、解析结果、结构化快照
+  - forbidden：token 裁剪、预算决策、最终 request assembly
+- `context_window`
+  - allowed：预算、裁剪、压缩、窗口化消息序列
+  - forbidden：最终 request assembly、profile/context 来源解析
+- `turn/request`
+  - allowed：最终 prompt/request 组装、prompt metadata、与 window/compaction 的编排接缝
+  - forbidden：上下文来源解析、跨 session 编排
+- `actor`
+  - allowed：live truth、推进执行所需状态、writer 桥接
+  - forbidden：observe 快照投影、外部订阅协议映射
+- `observe`
+  - allowed：replay/live 订阅语义、scope/filter、状态来源整合
+  - forbidden：同步快照投影算法、turn 推进、副作用
+- `query`
+  - allowed：拉取、快照、投影、durable replay 后的只读恢复
+  - forbidden：推进、副作用、长时间持有运行态协调逻辑
+- `factory`
+  - allowed：执行输入或执行对象构造
+  - forbidden：策略决策、校验、状态读写、业务权限判断
+
+`application` 在这个边界上继续保持：
+
+- allowed：参数校验、权限检查、错误归类、跨 session 编排、稳定 `SessionRuntime` API 调用
+- forbidden：单 session 终态投影细节、durable append 细节、observe 快照拼装细节
+
 ### 4.6 `adapter-*`
 
 - `adapter-*` 只实现端口，不持有业务真相。

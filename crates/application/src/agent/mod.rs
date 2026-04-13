@@ -12,13 +12,11 @@
 //! - 不直接依赖 adapter-*
 //! - 不缓存 session 引用
 
-mod mailbox;
 mod observe;
 mod routing;
 mod terminal;
 #[cfg(test)]
 mod test_support;
-mod turn_watch;
 mod wake;
 
 use std::{path::Path, sync::Arc};

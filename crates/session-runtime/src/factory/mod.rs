@@ -1,17 +1,11 @@
-//! 单 session 执行构造辅助。
+//! 单 session 执行对象构造辅助。
 //!
-//! Why: `session-runtime` 需要少量执行构造胶水，
-//! 但这些胶水不应该散落在 `turn` 或 `application` 里。
+//! Why: `factory` 只保留“构造执行对象”这类无状态职责，
+//! 状态读取应通过 `query` 完成，避免 factory 膨胀成杂项入口。
 
-use astrcode_core::{LlmMessage, Result, SessionTurnLease};
-
-use crate::state::SessionState;
+use astrcode_core::SessionTurnLease;
 
 #[derive(Debug)]
 pub struct NoopSessionTurnLease;
 
 impl SessionTurnLease for NoopSessionTurnLease {}
-
-pub fn prepare_turn_messages(session: &SessionState) -> Result<Vec<LlmMessage>> {
-    Ok(session.snapshot_projected_state()?.messages)
-}

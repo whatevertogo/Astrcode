@@ -1,115 +1,25 @@
-//! # Request Assembler
+//! Turn prompt request assembly.
 //!
-//! 将 step 前的上下文治理收拢到单一入口：
-//! 1. micro compact
-//! 2. prune pass
-//! 3. prompt 构建
-//! 4. token 快照与 auto compact
-//! 5. compaction 后文件内容恢复
+//! This module keeps the boundary between context-window sizing and final prompt
+//! request construction. It composes prompt metadata, runs prune/micro-compact,
+//! emits metrics, and finally builds `LlmRequest`.
 
-use std::{
-    collections::HashSet,
-    path::Path,
-    time::{Duration, Instant},
-};
+use std::{collections::HashSet, path::Path, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, CompactTrigger, LlmMessage, LlmRequest, PromptBuildRequest, PromptFacts,
-    PromptFactsProvider, PromptFactsRequest, PromptMetricsPayload, Result, StorageEvent,
-    StorageEventPayload, UserMessageOrigin, config::RuntimeConfig,
+    AgentEventContext, CompactTrigger, LlmMessage, LlmRequest, PromptBuildOutput,
+    PromptBuildRequest, PromptFacts, PromptFactsProvider, PromptFactsRequest, PromptMetricsPayload,
+    Result, StorageEvent, StorageEventPayload, UserMessageOrigin,
 };
 use astrcode_kernel::KernelGateway;
 
-use super::{
+use crate::context_window::{
+    ContextWindowSettings,
     compaction::{CompactConfig, auto_compact},
     file_access::{FileAccessTracker, FileRecoveryConfig},
-    micro_compact::{MicroCompactConfig, MicroCompactState},
-    prune_pass::apply_prune_pass,
+    micro_compact::MicroCompactState,
     token_usage::{PromptTokenSnapshot, TokenUsageTracker, build_prompt_snapshot, should_compact},
 };
-
-const DEFAULT_AUTO_COMPACT_ENABLED: bool = true;
-const DEFAULT_COMPACT_THRESHOLD_PERCENT: u8 = 90;
-const DEFAULT_TOOL_RESULT_MAX_BYTES: usize = 100_000;
-const DEFAULT_COMPACT_KEEP_RECENT_TURNS: usize = 2;
-const DEFAULT_MAX_TRACKED_FILES: usize = 12;
-const DEFAULT_MAX_RECOVERED_FILES: usize = 3;
-const DEFAULT_RECOVERY_TOKEN_BUDGET: usize = 6_000;
-const DEFAULT_MICRO_COMPACT_GAP_THRESHOLD_SECS: u64 = 45;
-const DEFAULT_MICRO_COMPACT_KEEP_RECENT_RESULTS: usize = 2;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ContextWindowSettings {
-    pub auto_compact_enabled: bool,
-    pub compact_threshold_percent: u8,
-    pub tool_result_max_bytes: usize,
-    pub compact_keep_recent_turns: usize,
-    pub max_tracked_files: usize,
-    pub max_recovered_files: usize,
-    pub recovery_token_budget: usize,
-    pub micro_compact_gap_threshold: Duration,
-    pub micro_compact_keep_recent_results: usize,
-}
-
-impl ContextWindowSettings {
-    pub fn micro_compact_config(&self) -> MicroCompactConfig {
-        MicroCompactConfig {
-            gap_threshold: self.micro_compact_gap_threshold,
-            keep_recent_results: self.micro_compact_keep_recent_results,
-        }
-    }
-
-    pub fn file_recovery_config(&self) -> FileRecoveryConfig {
-        FileRecoveryConfig {
-            max_tracked_files: self.max_tracked_files,
-            max_recovered_files: self.max_recovered_files,
-            recovery_token_budget: self.recovery_token_budget,
-        }
-    }
-}
-
-impl From<&RuntimeConfig> for ContextWindowSettings {
-    fn from(config: &RuntimeConfig) -> Self {
-        Self {
-            auto_compact_enabled: config
-                .auto_compact_enabled
-                .unwrap_or(DEFAULT_AUTO_COMPACT_ENABLED),
-            compact_threshold_percent: config
-                .compact_threshold_percent
-                .unwrap_or(DEFAULT_COMPACT_THRESHOLD_PERCENT),
-            tool_result_max_bytes: config
-                .tool_result_max_bytes
-                .unwrap_or(DEFAULT_TOOL_RESULT_MAX_BYTES),
-            compact_keep_recent_turns: config
-                .compact_keep_recent_turns
-                .map(usize::from)
-                .unwrap_or(DEFAULT_COMPACT_KEEP_RECENT_TURNS)
-                .max(1),
-            max_tracked_files: config
-                .max_tracked_files
-                .unwrap_or(DEFAULT_MAX_TRACKED_FILES)
-                .max(1),
-            max_recovered_files: config
-                .max_recovered_files
-                .unwrap_or(DEFAULT_MAX_RECOVERED_FILES)
-                .max(1),
-            recovery_token_budget: config
-                .recovery_token_budget
-                .unwrap_or(DEFAULT_RECOVERY_TOKEN_BUDGET)
-                .max(1),
-            micro_compact_gap_threshold: Duration::from_secs(
-                config
-                    .micro_compact_gap_threshold_secs
-                    .unwrap_or(DEFAULT_MICRO_COMPACT_GAP_THRESHOLD_SECS)
-                    .max(1),
-            ),
-            micro_compact_keep_recent_results: config
-                .micro_compact_keep_recent_results
-                .unwrap_or(DEFAULT_MICRO_COMPACT_KEEP_RECENT_RESULTS)
-                .max(1),
-        }
-    }
-}
 
 pub struct AssemblePromptRequest<'a> {
     pub gateway: &'a KernelGateway,
@@ -135,6 +45,8 @@ pub struct AssemblePromptResult {
     pub events: Vec<StorageEvent>,
 }
 
+/// Why: request assembly 要回答“最终如何形成一次 LLM 请求”，
+/// 因此它属于 `turn/request`，而不属于 `context_window`。
 pub async fn assemble_prompt_request(
     request: AssemblePromptRequest<'_>,
 ) -> Result<AssemblePromptResult> {
@@ -149,7 +61,7 @@ pub async fn assemble_prompt_request(
     );
     let mut messages = micro_outcome.messages;
 
-    let prune_outcome = apply_prune_pass(
+    let prune_outcome = crate::context_window::prune_pass::apply_prune_pass(
         &messages,
         request.clearable_tools,
         request.settings.tool_result_max_bytes,
@@ -190,11 +102,13 @@ pub async fn assemble_prompt_request(
             .await?
             {
                 messages = compaction.messages;
-                messages.extend(
-                    request
-                        .file_access_tracker
-                        .build_recovery_messages(request.settings.file_recovery_config()),
-                );
+                messages.extend(request.file_access_tracker.build_recovery_messages(
+                    FileRecoveryConfig {
+                        max_tracked_files: request.settings.max_tracked_files,
+                        max_recovered_files: request.settings.max_recovered_files,
+                        recovery_token_budget: request.settings.recovery_token_budget,
+                    },
+                ));
 
                 events.push(StorageEvent {
                     turn_id: Some(request.turn_id.to_string()),
@@ -260,7 +174,7 @@ pub async fn assemble_prompt_request(
     })
 }
 
-async fn build_prompt_output(
+pub(crate) async fn build_prompt_output(
     gateway: &KernelGateway,
     prompt_facts_provider: &dyn PromptFactsProvider,
     session_id: &str,
@@ -268,7 +182,7 @@ async fn build_prompt_output(
     working_dir: &Path,
     step_index: usize,
     messages: &[LlmMessage],
-) -> Result<astrcode_core::PromptBuildOutput> {
+) -> Result<PromptBuildOutput> {
     let facts = prompt_facts_provider
         .resolve_prompt_facts(&PromptFactsRequest {
             session_id: Some(session_id.to_string().into()),
@@ -307,7 +221,7 @@ async fn build_prompt_output(
         .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))
 }
 
-fn build_prompt_metadata(
+pub(crate) fn build_prompt_metadata(
     session_id: &str,
     turn_id: &str,
     step_index: usize,
@@ -319,6 +233,7 @@ fn build_prompt_metadata(
         LlmMessage::User {
             content,
             origin: UserMessageOrigin::User,
+            ..
         } => Some(content.clone()),
         _ => None,
     });
@@ -351,7 +266,7 @@ fn build_prompt_metadata(
     serde_json::Value::Object(metadata)
 }
 
-fn count_user_turns(messages: &[LlmMessage]) -> usize {
+pub(crate) fn count_user_turns(messages: &[LlmMessage]) -> usize {
     messages
         .iter()
         .filter(|message| {
@@ -405,19 +320,19 @@ mod tests {
     use std::sync::Arc;
 
     use astrcode_core::{
-        AgentEventContext, CancelToken, LlmProvider, LlmRequest, PromptBuildOutput,
-        PromptBuildRequest, PromptFacts, PromptFactsProvider, PromptFactsRequest, PromptProvider,
-        ResourceProvider, ResourceReadResult, ResourceRequestContext, Result, ToolDefinition,
+        LlmProvider, LlmRequest, PromptBuildRequest, PromptFactsRequest, PromptProvider,
+        ResourceProvider, ResourceReadResult, ResourceRequestContext, ToolDefinition,
+        config::RuntimeConfig,
     };
     use astrcode_kernel::CapabilityRouter;
-    use async_trait::async_trait;
     use serde_json::json;
 
     use super::*;
+    use crate::context_window::token_usage::TokenUsageTracker;
 
     struct TestPromptProvider;
 
-    #[async_trait]
+    #[async_trait::async_trait]
     impl PromptProvider for TestPromptProvider {
         async fn build_prompt(&self, _request: PromptBuildRequest) -> Result<PromptBuildOutput> {
             Ok(PromptBuildOutput {
@@ -430,7 +345,7 @@ mod tests {
 
     struct TestPromptFactsProvider;
 
-    #[async_trait]
+    #[async_trait::async_trait]
     impl PromptFactsProvider for TestPromptFactsProvider {
         async fn resolve_prompt_facts(&self, _request: &PromptFactsRequest) -> Result<PromptFacts> {
             Ok(PromptFacts::default())
@@ -439,7 +354,7 @@ mod tests {
 
     struct TestResourceProvider;
 
-    #[async_trait]
+    #[async_trait::async_trait]
     impl ResourceProvider for TestResourceProvider {
         async fn read_resource(
             &self,
@@ -458,7 +373,7 @@ mod tests {
         limits: astrcode_core::ModelLimits,
     }
 
-    #[async_trait]
+    #[async_trait::async_trait]
     impl LlmProvider for TestLlmProvider {
         async fn generate(
             &self,
@@ -488,10 +403,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn assembler_emits_prompt_metrics_for_final_prompt() {
+    async fn assemble_prompt_request_emits_prompt_metrics_for_final_prompt() {
         let gateway = test_gateway(64_000);
-        let mut micro_state = MicroCompactState::default();
-        let tracker = FileAccessTracker::new(4);
+        let mut micro_state = crate::context_window::micro_compact::MicroCompactState::default();
+        let tracker = crate::context_window::file_access::FileAccessTracker::new(4);
         let settings = ContextWindowSettings::from(&RuntimeConfig::default());
 
         let result = assemble_prompt_request(AssemblePromptRequest {
@@ -504,7 +419,7 @@ mod tests {
                 content: "hello".to_string(),
                 origin: astrcode_core::UserMessageOrigin::User,
             }],
-            cancel: CancelToken::new(),
+            cancel: astrcode_core::CancelToken::new(),
             agent: &AgentEventContext::default(),
             step_index: 0,
             token_tracker: &TokenUsageTracker::default(),
@@ -514,7 +429,7 @@ mod tests {
                 parameters: json!({"type":"object"}),
             }],
             settings: &settings,
-            clearable_tools: &HashSet::new(),
+            clearable_tools: &std::collections::HashSet::new(),
             micro_compact_state: &mut micro_state,
             file_access_tracker: &tracker,
         })

@@ -12,16 +12,18 @@
 //! 超过上限则终止 turn，避免无限循环。
 
 use astrcode_core::{
-    AgentEventContext, CancelToken, CompactTrigger, LlmMessage, PromptBuildRequest, PromptFacts,
-    PromptFactsProvider, PromptFactsRequest, Result, StorageEvent, StorageEventPayload,
-    UserMessageOrigin,
+    AgentEventContext, CancelToken, CompactTrigger, LlmMessage, PromptFactsProvider, Result,
+    StorageEvent, StorageEventPayload,
 };
 use astrcode_kernel::KernelGateway;
 
-use crate::context_window::{
-    compaction::{CompactConfig, auto_compact},
-    file_access::FileAccessTracker,
-    request_assembler::ContextWindowSettings,
+use crate::{
+    context_window::{
+        ContextWindowSettings,
+        compaction::{CompactConfig, auto_compact},
+        file_access::FileAccessTracker,
+    },
+    turn::request::build_prompt_output,
 };
 
 /// reactive compact 最大重试次数。
@@ -59,43 +61,16 @@ pub struct ReactiveCompactContext<'a> {
 pub async fn try_reactive_compact(
     ctx: &ReactiveCompactContext<'_>,
 ) -> Result<Option<RecoveryResult>> {
-    // 获取 system prompt 供压缩模板使用
-    let prompt_facts = ctx
-        .prompt_facts_provider
-        .resolve_prompt_facts(&PromptFactsRequest {
-            session_id: Some(ctx.session_id.to_string().into()),
-            turn_id: Some(ctx.turn_id.to_string().into()),
-            working_dir: ctx.working_dir.to_string().into(),
-        })
-        .await?;
-    let metadata = prompt_metadata(ctx, &prompt_facts);
-    let turn_index = count_user_turns(ctx.messages);
-    let PromptFacts {
-        profile,
-        profile_context,
-        metadata: _,
-        skills,
-        agent_profiles,
-        prompt_declarations,
-    } = prompt_facts;
-    let prompt_output = ctx
-        .gateway
-        .build_prompt(PromptBuildRequest {
-            session_id: Some(ctx.session_id.to_string().into()),
-            turn_id: Some(ctx.turn_id.to_string().into()),
-            working_dir: ctx.working_dir.to_string().into(),
-            profile,
-            step_index: ctx.step_index,
-            turn_index,
-            profile_context,
-            capabilities: ctx.gateway.capabilities().capability_specs(),
-            skills,
-            agent_profiles,
-            prompt_declarations,
-            metadata,
-        })
-        .await
-        .map_err(|e| astrcode_core::AstrError::Internal(e.to_string()))?;
+    let prompt_output = build_prompt_output(
+        ctx.gateway,
+        ctx.prompt_facts_provider,
+        ctx.session_id,
+        ctx.turn_id,
+        ctx.working_dir.as_ref(),
+        ctx.step_index,
+        ctx.messages,
+    )
+    .await?;
 
     match auto_compact(
         ctx.gateway,
@@ -135,47 +110,4 @@ pub async fn try_reactive_compact(
         },
         None => Ok(None),
     }
-}
-
-fn prompt_metadata(ctx: &ReactiveCompactContext<'_>, facts: &PromptFacts) -> serde_json::Value {
-    let mut metadata = match &facts.metadata {
-        serde_json::Value::Object(map) => map.clone(),
-        _ => serde_json::Map::new(),
-    };
-    metadata.insert(
-        "sessionId".to_string(),
-        serde_json::Value::String(ctx.session_id.to_string()),
-    );
-    metadata.insert(
-        "turnId".to_string(),
-        serde_json::Value::String(ctx.turn_id.to_string()),
-    );
-    if let Some(content) = ctx.messages.iter().rev().find_map(|message| match message {
-        LlmMessage::User {
-            content,
-            origin: UserMessageOrigin::User,
-        } => Some(content.clone()),
-        _ => None,
-    }) {
-        metadata.insert(
-            "latestUserMessage".to_string(),
-            serde_json::Value::String(content),
-        );
-    }
-    serde_json::Value::Object(metadata)
-}
-
-fn count_user_turns(messages: &[LlmMessage]) -> usize {
-    messages
-        .iter()
-        .filter(|message| {
-            matches!(
-                message,
-                LlmMessage::User {
-                    origin: UserMessageOrigin::User,
-                    ..
-                }
-            )
-        })
-        .count()
 }

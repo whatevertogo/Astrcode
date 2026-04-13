@@ -8,6 +8,7 @@ mod compaction_cycle;
 mod interrupt;
 pub mod llm_cycle;
 mod replay;
+mod request;
 mod runner;
 mod submit;
 // pub mod subagent;

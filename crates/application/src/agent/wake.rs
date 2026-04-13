@@ -4,11 +4,9 @@
 //! 这里负责把 child terminal delivery 追加到 durable mailbox、排入 kernel queue，
 //! 再通过“不分叉”的父级 wake turn 继续驱动父 agent。
 
-use std::collections::{HashMap, HashSet};
-
 use astrcode_core::{
-    AgentEventContext, MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxProjection,
-    MailboxQueuedPayload, SessionId, StorageEventPayload, TurnId,
+    AgentEventContext, MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxQueuedPayload,
+    StorageEventPayload, TurnId,
 };
 
 use super::{
@@ -26,26 +24,8 @@ impl AgentOrchestrationService {
         self.metrics.record_parent_reactivation_requested();
         let parent_session_id = astrcode_session_runtime::normalize_session_id(parent_session_id);
 
-        let session_state = match self
-            .session_runtime
-            .get_session_state(&SessionId::from(parent_session_id.clone()))
-            .await
-        {
-            Ok(state) => state,
-            Err(error) => {
-                log::warn!(
-                    "failed to load parent session for mailbox queue append: parentSession='{}', \
-                     childAgent='{}', error='{}'",
-                    parent_session_id,
-                    notification.child_ref.agent_id,
-                    error
-                );
-                return;
-            },
-        };
-
         if let Err(error) = self
-            .append_parent_delivery_mailbox_queue(&session_state, parent_turn_id, notification)
+            .append_parent_delivery_mailbox_queue(&parent_session_id, parent_turn_id, notification)
             .await
         {
             log::warn!(
@@ -217,6 +197,7 @@ impl AgentOrchestrationService {
         target_agent_id: String,
     ) -> Result<(), AgentOrchestrationError> {
         let terminal = self
+            .session_runtime
             .wait_for_turn_terminal_snapshot(&parent_session_id, &turn_id)
             .await?;
         let wake_succeeded =
@@ -267,7 +248,7 @@ impl AgentOrchestrationService {
 
     async fn append_parent_delivery_mailbox_queue(
         &self,
-        parent_session_state: &astrcode_session_runtime::SessionState,
+        parent_session_id: &str,
         parent_turn_id: &str,
         notification: &astrcode_core::ChildSessionNotification,
     ) -> Result<(), AgentOrchestrationError> {
@@ -281,21 +262,17 @@ impl AgentOrchestrationService {
                 )
             })?;
 
-        let payload = MailboxQueuedPayload {
-            envelope: child_delivery_mailbox_envelope(notification, target_agent_id),
-        };
-
-        let mut translator =
-            astrcode_core::EventTranslator::new(parent_session_state.current_phase()?);
-        astrcode_session_runtime::append_mailbox_event(
-            parent_session_state,
-            parent_turn_id,
-            AgentEventContext::default(),
-            astrcode_session_runtime::MailboxEventAppend::Queued(payload),
-            &mut translator,
-        )
-        .await
-        .map_err(|error| AgentOrchestrationError::Internal(error.to_string()))?;
+        self.session_runtime
+            .append_agent_mailbox_queued(
+                parent_session_id,
+                parent_turn_id,
+                AgentEventContext::default(),
+                MailboxQueuedPayload {
+                    envelope: child_delivery_mailbox_envelope(notification, target_agent_id),
+                },
+            )
+            .await
+            .map_err(AgentOrchestrationError::from)?;
         Ok(())
     }
 
@@ -307,27 +284,20 @@ impl AgentOrchestrationService {
         batch_delivery_ids: &[String],
         event_agent: &AgentEventContext,
     ) -> Result<(), AgentOrchestrationError> {
-        let session_state = self
-            .session_runtime
-            .get_session_state(&SessionId::from(parent_session_id.to_string()))
+        self.session_runtime
+            .append_agent_mailbox_batch_started(
+                parent_session_id,
+                turn_id,
+                event_agent.clone(),
+                MailboxBatchStartedPayload {
+                    target_agent_id: target_agent_id.to_string(),
+                    turn_id: turn_id.to_string(),
+                    batch_id: parent_wake_batch_id(turn_id),
+                    delivery_ids: batch_delivery_ids.to_vec(),
+                },
+            )
             .await
             .map_err(AgentOrchestrationError::from)?;
-        let payload = MailboxBatchStartedPayload {
-            target_agent_id: target_agent_id.to_string(),
-            turn_id: turn_id.to_string(),
-            batch_id: parent_wake_batch_id(turn_id),
-            delivery_ids: batch_delivery_ids.to_vec(),
-        };
-        let mut translator = astrcode_core::EventTranslator::new(session_state.current_phase()?);
-        astrcode_session_runtime::append_mailbox_event(
-            &session_state,
-            turn_id,
-            event_agent.clone(),
-            astrcode_session_runtime::MailboxEventAppend::BatchStarted(payload),
-            &mut translator,
-        )
-        .await
-        .map_err(|error| AgentOrchestrationError::Internal(error.to_string()))?;
         Ok(())
     }
 
@@ -338,27 +308,20 @@ impl AgentOrchestrationService {
         target_agent_id: &str,
         batch_delivery_ids: &[String],
     ) -> Result<(), AgentOrchestrationError> {
-        let session_state = self
-            .session_runtime
-            .get_session_state(&SessionId::from(parent_session_id.to_string()))
+        self.session_runtime
+            .append_agent_mailbox_batch_acked(
+                parent_session_id,
+                turn_id,
+                AgentEventContext::default(),
+                MailboxBatchAckedPayload {
+                    target_agent_id: target_agent_id.to_string(),
+                    turn_id: turn_id.to_string(),
+                    batch_id: parent_wake_batch_id(turn_id),
+                    delivery_ids: batch_delivery_ids.to_vec(),
+                },
+            )
             .await
             .map_err(AgentOrchestrationError::from)?;
-        let payload = MailboxBatchAckedPayload {
-            target_agent_id: target_agent_id.to_string(),
-            turn_id: turn_id.to_string(),
-            batch_id: parent_wake_batch_id(turn_id),
-            delivery_ids: batch_delivery_ids.to_vec(),
-        };
-        let mut translator = astrcode_core::EventTranslator::new(session_state.current_phase()?);
-        astrcode_session_runtime::append_mailbox_event(
-            &session_state,
-            turn_id,
-            AgentEventContext::default(),
-            astrcode_session_runtime::MailboxEventAppend::BatchAcked(payload),
-            &mut translator,
-        )
-        .await
-        .map_err(|error| AgentOrchestrationError::Internal(error.to_string()))?;
         Ok(())
     }
 
@@ -366,17 +329,11 @@ impl AgentOrchestrationService {
         &self,
         parent_session_id: &str,
     ) -> Result<(), AgentOrchestrationError> {
-        let session_id = SessionId::from(parent_session_id.to_string());
-        let events = self
+        let recoverable = self
             .session_runtime
-            .replay_stored_events(&session_id)
+            .recoverable_parent_deliveries(parent_session_id)
             .await
             .map_err(AgentOrchestrationError::from)?;
-        if events.is_empty() {
-            return Ok(());
-        }
-
-        let recoverable = recoverable_parent_deliveries(&events);
         if recoverable.is_empty() {
             return Ok(());
         }
@@ -452,59 +409,6 @@ fn build_wake_prompt_from_deliveries(
             .collect::<Vec<_>>()
             .join("\n\n")
     )
-}
-
-fn recoverable_parent_deliveries(
-    events: &[astrcode_core::StoredEvent],
-) -> Vec<astrcode_kernel::PendingParentDelivery> {
-    let projection_index = MailboxProjection::replay_index(events);
-    let mut recoverable_by_agent = HashMap::<String, HashSet<String>>::new();
-    for (agent_id, projection) in projection_index {
-        let active_ids = projection
-            .active_delivery_ids
-            .into_iter()
-            .collect::<HashSet<_>>();
-        let recoverable = projection
-            .pending_delivery_ids
-            .into_iter()
-            .filter(|delivery_id| !active_ids.contains(delivery_id))
-            .collect::<HashSet<_>>();
-        if !recoverable.is_empty() {
-            recoverable_by_agent.insert(agent_id, recoverable);
-        }
-    }
-
-    let mut recovered = Vec::new();
-    let mut seen = HashSet::new();
-    for stored in events {
-        let StorageEventPayload::ChildSessionNotification { notification, .. } =
-            &stored.event.payload
-        else {
-            continue;
-        };
-        let Some(parent_agent_id) = notification.child_ref.parent_agent_id.as_ref() else {
-            continue;
-        };
-        let Some(recoverable_ids) = recoverable_by_agent.get(parent_agent_id) else {
-            continue;
-        };
-        if !recoverable_ids.contains(&notification.notification_id) {
-            continue;
-        }
-        if !seen.insert(notification.notification_id.clone()) {
-            continue;
-        }
-        let Some(parent_turn_id) = stored.event.turn_id().map(ToString::to_string) else {
-            continue;
-        };
-        recovered.push(astrcode_kernel::PendingParentDelivery {
-            delivery_id: notification.notification_id.clone(),
-            parent_session_id: notification.child_ref.session_id.clone(),
-            parent_turn_id,
-            notification: notification.clone(),
-        });
-    }
-    recovered
 }
 
 #[cfg(test)]
@@ -785,11 +689,7 @@ mod tests {
 
         harness
             .service
-            .append_parent_delivery_mailbox_queue(
-                parent_state.as_ref(),
-                "turn-parent",
-                &notification,
-            )
+            .append_parent_delivery_mailbox_queue(&parent.session_id, "turn-parent", &notification)
             .await
             .expect("durable mailbox queue should append");
         let mut translator = astrcode_core::EventTranslator::new(
@@ -975,7 +875,7 @@ mod tests {
             },
         ];
 
-        let recovered = recoverable_parent_deliveries(&events);
+        let recovered = astrcode_session_runtime::recoverable_parent_deliveries(&events);
 
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered[0].delivery_id, failed.notification_id);

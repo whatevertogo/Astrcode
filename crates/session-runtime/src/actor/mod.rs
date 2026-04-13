@@ -1,3 +1,10 @@
+//! Session actor 与 live truth。
+//!
+//! 边界约束：
+//! - 这里只负责推进所需的 live state 与 durable writer 桥接
+//! - 不负责 observe 视图拼装
+//! - 不负责外部订阅协议映射
+
 use std::sync::Arc;
 
 use astrcode_core::{

@@ -1,18 +1,21 @@
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use astrcode_core::{
-    AgentEventContext, AgentId, DeleteProjectResult, EventStore, EventTranslator, LlmMessage,
-    Phase, PromptFactsProvider, Result, RuntimeMetricsRecorder, SessionId, SessionMeta,
-    StorageEvent, StorageEventPayload, StoredEvent, event::generate_session_id,
+    AgentEventContext, AgentId, AgentLifecycleStatus, ChildSessionNotification,
+    DeleteProjectResult, EventStore, EventTranslator, LlmMessage, MailboxBatchAckedPayload,
+    MailboxBatchStartedPayload, MailboxDiscardedPayload, MailboxQueuedPayload, Phase,
+    PromptFactsProvider, Result, RuntimeMetricsRecorder, SessionId, SessionMeta, StorageEvent,
+    StorageEventPayload, StoredEvent, event::generate_session_id,
 };
-use astrcode_kernel::Kernel;
+use astrcode_kernel::{Kernel, PendingParentDelivery};
 use chrono::Utc;
 use dashmap::DashMap;
 use thiserror::Error;
-use tokio::sync::broadcast;
+use tokio::{sync::broadcast, time::sleep};
 
 pub mod actor;
 pub mod catalog;
@@ -31,7 +34,11 @@ use observe::SessionObserveSnapshot;
 pub use observe::{
     SessionEventFilterSpec, SubRunEventScope, SubRunStatusSnapshot, SubRunStatusSource,
 };
-pub use query::{SessionHistorySnapshot, SessionReplay, SessionViewSnapshot};
+pub use query::{
+    AgentObserveSnapshot, ProjectedTurnOutcome, SessionHistorySnapshot, SessionReplay,
+    SessionViewSnapshot, TurnTerminalSnapshot, build_agent_observe_snapshot, current_turn_messages,
+    has_terminal_turn_signal, project_turn_outcome, recoverable_parent_deliveries,
+};
 pub use state::{
     MailboxEventAppend, SessionSnapshot, SessionState, SessionStateEventSink,
     SessionTokenBudgetState, SessionWriter, append_and_broadcast,
@@ -233,6 +240,165 @@ impl SessionRuntime {
     pub async fn replay_stored_events(&self, session_id: &SessionId) -> Result<Vec<StoredEvent>> {
         self.ensure_session_exists(session_id).await?;
         self.event_store.replay(session_id).await
+    }
+
+    /// 等待指定 turn 进入可判定终态，并返回该 turn 的 durable 事件快照。
+    pub async fn wait_for_turn_terminal_snapshot(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+    ) -> Result<TurnTerminalSnapshot> {
+        let session_id = SessionId::from(normalize_session_id(session_id));
+        loop {
+            let state = self.get_session_state(&session_id).await?;
+            let phase = state.current_phase()?;
+            if matches!(phase, Phase::Idle | Phase::Interrupted | Phase::Done) {
+                let events = self
+                    .replay_stored_events(&session_id)
+                    .await?
+                    .into_iter()
+                    .filter(|stored| stored.event.turn_id() == Some(turn_id))
+                    .collect::<Vec<_>>();
+                if has_terminal_turn_signal(&events) || matches!(phase, Phase::Interrupted) {
+                    return Ok(TurnTerminalSnapshot { phase, events });
+                }
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// 生成面向 agent 编排的单 session observe 快照。
+    pub async fn observe_agent_session(
+        &self,
+        open_session_id: &str,
+        target_agent_id: &str,
+        lifecycle_status: AgentLifecycleStatus,
+    ) -> Result<AgentObserveSnapshot> {
+        let session_id = SessionId::from(normalize_session_id(open_session_id));
+        let session_state = self.get_session_state(&session_id).await?;
+        let projected = session_state.snapshot_projected_state()?;
+        let mailbox_projection = session_state.mailbox_projection_for_agent(target_agent_id)?;
+        let stored_events = self.replay_stored_events(&session_id).await?;
+        Ok(build_agent_observe_snapshot(
+            lifecycle_status,
+            &projected,
+            &mailbox_projection,
+            &stored_events,
+            target_agent_id,
+        ))
+    }
+
+    /// 读取指定 agent 当前 mailbox durable 投影中的待处理 delivery id。
+    pub async fn pending_delivery_ids_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Vec<String>> {
+        let session_id = SessionId::from(normalize_session_id(session_id));
+        let session_state = self.get_session_state(&session_id).await?;
+        Ok(session_state
+            .mailbox_projection_for_agent(agent_id)?
+            .pending_delivery_ids)
+    }
+
+    pub async fn append_agent_mailbox_queued(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        agent: AgentEventContext,
+        payload: MailboxQueuedPayload,
+    ) -> Result<StoredEvent> {
+        let session_id = SessionId::from(normalize_session_id(session_id));
+        let session_state = self.get_session_state(&session_id).await?;
+        let mut translator = EventTranslator::new(session_state.current_phase()?);
+        append_mailbox_queued(&session_state, turn_id, agent, payload, &mut translator).await
+    }
+
+    pub async fn append_agent_mailbox_discarded(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        agent: AgentEventContext,
+        payload: MailboxDiscardedPayload,
+    ) -> Result<StoredEvent> {
+        let session_id = SessionId::from(normalize_session_id(session_id));
+        let session_state = self.get_session_state(&session_id).await?;
+        let mut translator = EventTranslator::new(session_state.current_phase()?);
+        append_mailbox_discarded(&session_state, turn_id, agent, payload, &mut translator).await
+    }
+
+    pub async fn append_agent_mailbox_batch_started(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        agent: AgentEventContext,
+        payload: MailboxBatchStartedPayload,
+    ) -> Result<StoredEvent> {
+        let session_id = SessionId::from(normalize_session_id(session_id));
+        let session_state = self.get_session_state(&session_id).await?;
+        let mut translator = EventTranslator::new(session_state.current_phase()?);
+        append_batch_started(&session_state, turn_id, agent, payload, &mut translator).await
+    }
+
+    pub async fn append_agent_mailbox_batch_acked(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        agent: AgentEventContext,
+        payload: MailboxBatchAckedPayload,
+    ) -> Result<StoredEvent> {
+        let session_id = SessionId::from(normalize_session_id(session_id));
+        let session_state = self.get_session_state(&session_id).await?;
+        let mut translator = EventTranslator::new(session_state.current_phase()?);
+        append_batch_acked(&session_state, turn_id, agent, payload, &mut translator).await
+    }
+
+    /// 向指定父 session 追加 `ChildSessionNotification` durable 事件。
+    pub async fn append_child_session_notification(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        agent: AgentEventContext,
+        notification: ChildSessionNotification,
+    ) -> Result<StoredEvent> {
+        let session_id = SessionId::from(normalize_session_id(session_id));
+        let session_state = self.get_session_state(&session_id).await?;
+        let mut translator = EventTranslator::new(session_state.current_phase()?);
+        append_and_broadcast(
+            &session_state,
+            &StorageEvent {
+                turn_id: Some(turn_id.to_string()),
+                agent,
+                payload: StorageEventPayload::ChildSessionNotification {
+                    notification,
+                    timestamp: Some(Utc::now()),
+                },
+            },
+            &mut translator,
+        )
+        .await
+    }
+
+    /// 从 durable mailbox + child notification 中恢复仍可重试的父级 delivery。
+    pub async fn recoverable_parent_deliveries(
+        &self,
+        parent_session_id: &str,
+    ) -> Result<Vec<PendingParentDelivery>> {
+        let session_id = SessionId::from(normalize_session_id(parent_session_id));
+        let events = self.replay_stored_events(&session_id).await?;
+        Ok(recoverable_parent_deliveries(&events))
+    }
+
+    /// 基于单 session terminal 事件投影出结构化 turn outcome。
+    pub async fn project_turn_outcome(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+    ) -> Result<ProjectedTurnOutcome> {
+        let terminal = self
+            .wait_for_turn_terminal_snapshot(session_id, turn_id)
+            .await?;
+        Ok(project_turn_outcome(terminal.phase, &terminal.events))
     }
 
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {

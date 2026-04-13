@@ -2,6 +2,10 @@
 //!
 //! 从 `runtime/service/agent/` 和 `runtime/service/session/` 迁入
 //! observe/view 相关的类型定义。实际执行逻辑在 Phase 10 组合根接线。
+//!
+//! 边界约束：
+//! - `observe` 只承载 replay/live 订阅语义、scope/filter 与状态来源
+//! - 同步快照投影算法统一留在 `query`
 
 use astrcode_core::SubRunHandle;
 

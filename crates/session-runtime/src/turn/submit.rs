@@ -7,9 +7,9 @@ use astrcode_core::{
 use chrono::Utc;
 
 use crate::{
-    SessionRuntime, TurnOutcome,
-    factory::prepare_turn_messages,
-    prepare_session_execution, run_turn,
+    SessionRuntime, TurnOutcome, prepare_session_execution,
+    query::current_turn_messages,
+    run_turn,
     state::{append_and_broadcast, complete_session_execution},
 };
 
@@ -158,7 +158,7 @@ impl SessionRuntime {
 
         let mut translator = EventTranslator::new(submit_target.actor.state().current_phase()?);
         append_and_broadcast(submit_target.actor.state(), &user_message, &mut translator).await?;
-        let messages = prepare_turn_messages(submit_target.actor.state())?;
+        let messages = current_turn_messages(submit_target.actor.state())?;
 
         let kernel = Arc::clone(&self.kernel);
         let prompt_facts_provider = Arc::clone(&self.prompt_facts_provider);

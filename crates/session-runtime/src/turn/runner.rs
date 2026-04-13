@@ -6,7 +6,7 @@
 //! ## 架构：纯编排器
 //!
 //! `run_turn` 只负责 step 循环的编排，所有细节委托给子模块：
-//! - `request_assembler` — 上下文优化管线（微压缩 → 裁剪 → 自动压缩）
+//! - `request` — 最终请求拼装（微压缩 → 裁剪 → 自动压缩 → prompt request）
 //! - `llm_cycle` — LLM 流式调用
 //! - `compaction_cycle` — reactive compact 错误恢复
 //! - `tool_cycle` — 工具并发执行
@@ -43,13 +43,10 @@ use super::{
 use crate::{
     SessionState,
     context_window::{
-        file_access::FileAccessTracker,
-        micro_compact::MicroCompactState,
-        request_assembler::{
-            AssemblePromptRequest, ContextWindowSettings, assemble_prompt_request,
-        },
+        ContextWindowSettings, file_access::FileAccessTracker, micro_compact::MicroCompactState,
         token_usage::TokenUsageTracker,
     },
+    turn::request::{AssemblePromptRequest, assemble_prompt_request},
 };
 
 /// 单个 Turn 的默认最大 step 数，防止无限循环。

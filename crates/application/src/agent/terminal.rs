@@ -2,8 +2,8 @@ use std::time::Instant;
 
 use astrcode_core::{
     AgentLifecycleStatus, AgentTurnOutcome, ChildAgentRef, ChildSessionLineageKind,
-    ChildSessionNotification, ChildSessionNotificationKind, EventTranslator, Phase, StorageEvent,
-    StorageEventPayload, SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult,
+    ChildSessionNotification, ChildSessionNotificationKind, SubRunFailure, SubRunFailureCode,
+    SubRunHandoff, SubRunResult,
 };
 
 use super::{
@@ -62,10 +62,10 @@ impl AgentOrchestrationService {
         &self,
         watch: ChildTerminalWatchContext,
     ) -> Result<(), AgentOrchestrationError> {
-        let terminal = self
-            .wait_for_turn_terminal_snapshot(&watch.child_session_id, &watch.child_turn_id)
+        let outcome = self
+            .session_runtime
+            .project_turn_outcome(&watch.child_session_id, &watch.child_turn_id)
             .await?;
-        let outcome = project_child_turn_outcome(terminal.phase, &terminal.events);
         let result = build_child_subrun_result(&watch.child, &watch.parent_session_id, &outcome);
         let _ = self
             .kernel
@@ -122,33 +122,15 @@ impl AgentOrchestrationService {
         notification: &ChildSessionNotification,
     ) -> Result<(), AgentOrchestrationError> {
         let parent_session_id = notification.child_ref.session_id.clone();
-        let session_state = self
-            .session_runtime
-            .get_session_state(&astrcode_core::SessionId::from(
-                astrcode_session_runtime::normalize_session_id(&parent_session_id),
-            ))
+        self.session_runtime
+            .append_child_session_notification(
+                &parent_session_id,
+                parent_turn_id,
+                subrun_event_context_for_parent_turn(child, parent_turn_id),
+                notification.clone(),
+            )
             .await
             .map_err(AgentOrchestrationError::from)?;
-        let mut translator = EventTranslator::new(
-            session_state
-                .current_phase()
-                .map_err(AgentOrchestrationError::from)?,
-        );
-        let agent = subrun_event_context_for_parent_turn(child, parent_turn_id);
-        astrcode_session_runtime::append_and_broadcast(
-            &session_state,
-            &StorageEvent {
-                turn_id: Some(parent_turn_id.to_string()),
-                agent,
-                payload: StorageEventPayload::ChildSessionNotification {
-                    notification: notification.clone(),
-                    timestamp: Some(chrono::Utc::now()),
-                },
-            },
-            &mut translator,
-        )
-        .await
-        .map_err(|error| AgentOrchestrationError::Internal(error.to_string()))?;
         Ok(())
     }
 }
@@ -156,7 +138,7 @@ impl AgentOrchestrationService {
 fn build_child_subrun_result(
     child: &astrcode_core::SubRunHandle,
     parent_session_id: &str,
-    outcome: &ChildTurnOutcome,
+    outcome: &astrcode_session_runtime::ProjectedTurnOutcome,
 ) -> SubRunResult {
     match outcome.outcome {
         AgentTurnOutcome::Completed | AgentTurnOutcome::TokenExceeded => SubRunResult {
@@ -255,81 +237,6 @@ fn child_open_session_id(child: &astrcode_core::SubRunHandle) -> String {
         .child_session_id
         .clone()
         .unwrap_or_else(|| child.session_id.clone())
-}
-
-struct ChildTurnOutcome {
-    outcome: AgentTurnOutcome,
-    summary: String,
-    technical_message: String,
-}
-
-fn project_child_turn_outcome(
-    phase: Phase,
-    events: &[astrcode_core::StoredEvent],
-) -> ChildTurnOutcome {
-    let last_assistant = events
-        .iter()
-        .rev()
-        .find_map(|stored| match &stored.event.payload {
-            StorageEventPayload::AssistantFinal { content, .. } if !content.trim().is_empty() => {
-                Some(content.trim().to_string())
-            },
-            _ => None,
-        });
-    let last_error = events
-        .iter()
-        .rev()
-        .find_map(|stored| match &stored.event.payload {
-            StorageEventPayload::Error { message, .. } if !message.trim().is_empty() => {
-                Some(message.trim().to_string())
-            },
-            _ => None,
-        });
-    let turn_done_reason = events
-        .iter()
-        .rev()
-        .find_map(|stored| match &stored.event.payload {
-            StorageEventPayload::TurnDone { reason, .. } => reason.clone(),
-            _ => None,
-        });
-
-    let outcome = if matches!(phase, Phase::Interrupted) {
-        match last_error.as_deref() {
-            Some("interrupted") | None => AgentTurnOutcome::Cancelled,
-            Some(_) => AgentTurnOutcome::Failed,
-        }
-    } else if last_error.is_some() {
-        AgentTurnOutcome::Failed
-    } else if matches!(
-        turn_done_reason.as_deref(),
-        Some("budget_exhausted" | "diminishing_returns")
-    ) {
-        AgentTurnOutcome::TokenExceeded
-    } else {
-        AgentTurnOutcome::Completed
-    };
-
-    let summary = match outcome {
-        AgentTurnOutcome::Completed => last_assistant
-            .clone()
-            .unwrap_or_else(|| "子 Agent 已完成，但没有返回可读总结。".to_string()),
-        AgentTurnOutcome::TokenExceeded => last_assistant
-            .clone()
-            .unwrap_or_else(|| "子 Agent 因 token 限额结束，但没有返回可读总结。".to_string()),
-        AgentTurnOutcome::Failed => last_error
-            .clone()
-            .or(last_assistant.clone())
-            .unwrap_or_else(|| "子 Agent 失败，且没有返回可读错误信息。".to_string()),
-        AgentTurnOutcome::Cancelled => last_error
-            .clone()
-            .unwrap_or_else(|| "子 Agent 已关闭。".to_string()),
-    };
-
-    ChildTurnOutcome {
-        outcome,
-        summary: summary.clone(),
-        technical_message: last_error.unwrap_or(summary),
-    }
 }
 
 fn project_child_terminal_delivery(result: &SubRunResult) -> ChildTerminalDeliveryProjection {

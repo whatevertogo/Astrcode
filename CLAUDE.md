@@ -17,6 +17,8 @@
 - 最后需要cargo fmt --all --check  && cargo clippy --all-targets --all-features -- -D warnings && cargo test验证你的更改
 - 前端css不允许出现webview相关内容这会导致应用端无法下滑窗口
 - 你必须用中文写文档
+- Git 提交信息使用 emoji + type + scope 风格（如 `✨ feat(module): brief description`）
+- 使用 OpenSpec 管理变更，changes 归档时需先合并 delta specs 到主目录
 
 你需要了解PROJECT_ARCHITECTURE.md中的架构设计原则和模块划分，才能更好地理解和参与项目的开发
 有可以顺手优化的问题顺手优化一下
