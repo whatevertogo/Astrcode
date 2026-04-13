@@ -23,5 +23,9 @@ pub mod list_dir;
 pub mod read_file;
 /// Shell 命令执行工具：流式 stdout/stderr
 pub mod shell;
+/// 技能工具：按需加载 skill 指令
+pub mod skill_tool;
+/// 外部工具搜索：按需展开 MCP/plugin 工具 schema
+pub mod tool_search;
 /// 文件写入工具：创建/覆盖文本文件
 pub mod write_file;

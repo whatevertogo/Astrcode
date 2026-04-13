@@ -14,8 +14,8 @@ use serde_json::Value;
 
 use crate::{
     CancelToken, CapabilitySpec, Config, ConfigOverlay, DeleteProjectResult, LlmMessage,
-    ReasoningContent, Result, SessionId, SessionMeta, StorageEvent, StoredEvent, SystemPromptBlock,
-    ToolCallRequest, ToolDefinition, TurnId,
+    ReasoningContent, Result, SessionId, SessionMeta, SessionTurnAcquireResult, StorageEvent,
+    StoredEvent, SystemPromptBlock, SystemPromptLayer, ToolCallRequest, ToolDefinition, TurnId,
 };
 
 /// EventStore 端口。
@@ -24,6 +24,11 @@ pub trait EventStore: Send + Sync {
     async fn ensure_session(&self, session_id: &SessionId, working_dir: &Path) -> Result<()>;
     async fn append(&self, session_id: &SessionId, event: &StorageEvent) -> Result<StoredEvent>;
     async fn replay(&self, session_id: &SessionId) -> Result<Vec<StoredEvent>>;
+    async fn try_acquire_turn(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> Result<SessionTurnAcquireResult>;
     async fn list_sessions(&self) -> Result<Vec<SessionId>>;
     async fn list_session_metas(&self) -> Result<Vec<SessionMeta>>;
     async fn delete_session(&self, session_id: &SessionId) -> Result<()>;
@@ -131,6 +136,129 @@ pub trait LlmProvider: Send + Sync {
 }
 
 /// Prompt 组装请求。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptSkillSummary {
+    pub id: String,
+    pub description: String,
+}
+
+/// Prompt 侧的轻量 agent profile 摘要。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptAgentProfileSummary {
+    pub id: String,
+    pub description: String,
+}
+
+/// Prompt 声明来源。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptDeclarationSource {
+    Builtin,
+    #[default]
+    Plugin,
+    Mcp,
+}
+
+/// Prompt 声明语义类型。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptDeclarationKind {
+    ToolGuide,
+    #[default]
+    ExtensionInstruction,
+}
+
+/// Prompt 声明渲染目标。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptDeclarationRenderTarget {
+    #[default]
+    System,
+    PrependUser,
+    PrependAssistant,
+    AppendUser,
+    AppendAssistant,
+}
+
+/// 稳定的 Prompt 声明 DTO。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptDeclaration {
+    pub block_id: String,
+    pub title: String,
+    pub content: String,
+    #[serde(default)]
+    pub render_target: PromptDeclarationRenderTarget,
+    #[serde(default, skip_serializing_if = "is_unspecified_prompt_layer")]
+    pub layer: SystemPromptLayer,
+    #[serde(default)]
+    pub kind: PromptDeclarationKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_hint: Option<i32>,
+    #[serde(default)]
+    pub always_include: bool,
+    #[serde(default)]
+    pub source: PromptDeclarationSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+}
+
+/// Prompt 事实查询请求。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptFactsRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<TurnId>,
+    pub working_dir: PathBuf,
+}
+
+/// Prompt 组装前的已解析事实。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptFacts {
+    pub profile: String,
+    #[serde(default)]
+    pub profile_context: Value,
+    #[serde(default)]
+    pub metadata: Value,
+    #[serde(default)]
+    pub skills: Vec<PromptSkillSummary>,
+    #[serde(default)]
+    pub agent_profiles: Vec<PromptAgentProfileSummary>,
+    #[serde(default)]
+    pub prompt_declarations: Vec<PromptDeclaration>,
+}
+
+impl Default for PromptFacts {
+    fn default() -> Self {
+        Self {
+            profile: "coding".to_string(),
+            profile_context: Value::Null,
+            metadata: Value::Null,
+            skills: Vec::new(),
+            agent_profiles: Vec::new(),
+            prompt_declarations: Vec::new(),
+        }
+    }
+}
+
+fn is_unspecified_prompt_layer(layer: &SystemPromptLayer) -> bool {
+    matches!(layer, SystemPromptLayer::Unspecified)
+}
+
+/// Prompt facts provider 端口。
+#[async_trait]
+pub trait PromptFactsProvider: Send + Sync {
+    async fn resolve_prompt_facts(&self, request: &PromptFactsRequest) -> Result<PromptFacts>;
+}
+
+/// Prompt 组装请求。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptBuildRequest {
@@ -141,9 +269,19 @@ pub struct PromptBuildRequest {
     pub working_dir: PathBuf,
     pub profile: String,
     #[serde(default)]
+    pub step_index: usize,
+    #[serde(default)]
+    pub turn_index: usize,
+    #[serde(default)]
     pub profile_context: Value,
     #[serde(default)]
     pub capabilities: Vec<CapabilitySpec>,
+    #[serde(default)]
+    pub skills: Vec<PromptSkillSummary>,
+    #[serde(default)]
+    pub agent_profiles: Vec<PromptAgentProfileSummary>,
+    #[serde(default)]
+    pub prompt_declarations: Vec<PromptDeclaration>,
     #[serde(default)]
     pub metadata: Value,
 }

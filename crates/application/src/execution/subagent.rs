@@ -44,7 +44,7 @@ pub async fn launch_subagent(
         .map_err(ApplicationError::from)?;
 
     // 在控制树中注册子 agent
-    let _handle = kernel
+    let handle = kernel
         .agent_control()
         .spawn(
             &request.profile,
@@ -64,10 +64,12 @@ pub async fn launch_subagent(
     };
 
     // 异步提交 prompt
-    session_runtime
+    let mut accepted = session_runtime
         .submit_prompt(&child_session.session_id, merged_task, runtime_config)
         .await
-        .map_err(ApplicationError::from)
+        .map_err(ApplicationError::from)?;
+    accepted.agent_id = Some(handle.agent_id.into());
+    Ok(accepted)
 }
 
 fn validate_subagent_request(request: &SubagentExecutionRequest) -> Result<(), ApplicationError> {

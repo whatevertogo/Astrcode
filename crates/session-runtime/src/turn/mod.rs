@@ -1,11 +1,15 @@
-//! Turn 执行核心类型与实现。
+//! Turn 用例与执行核心。
 //!
-//! Turn 是单个 Agent 交互循环的完整生命周期（用户消息 -> LLM 响应 -> 工具调用 -> ... -> Turn
-//! 结束）。
+//! `session-runtime::turn` 只承接“单次 turn 如何开始、如何中断、如何回放、如何分支、如何执行”。
+//! `runner` 负责 step 循环，`submit/replay/interrupt/branch` 负责对外 façade。
 
+mod branch;
 mod compaction_cycle;
+mod interrupt;
 pub mod llm_cycle;
+mod replay;
 mod runner;
+mod submit;
 // pub mod subagent;
 pub mod summary;
 pub mod token_budget;

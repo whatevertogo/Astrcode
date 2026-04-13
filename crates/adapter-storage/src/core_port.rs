@@ -4,8 +4,8 @@
 //! 本模块将其适配到 `FileSystemSessionRepository` 的完整文件系统实现上。
 
 use astrcode_core::{
-    DeleteProjectResult, Result, SessionId, SessionMeta, StorageEvent, StoredEvent,
-    ports::EventStore, store::SessionManager,
+    DeleteProjectResult, Result, SessionId, SessionMeta, SessionTurnAcquireResult, StorageEvent,
+    StoredEvent, ports::EventStore, store::SessionManager,
 };
 use async_trait::async_trait;
 
@@ -80,6 +80,16 @@ impl EventStore for FsEventStore {
             events.push(event);
         }
         Ok(events)
+    }
+
+    async fn try_acquire_turn(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> Result<SessionTurnAcquireResult> {
+        self.repo
+            .try_acquire_turn(session_id.as_str(), turn_id)
+            .map_err(|e| astrcode_core::AstrError::Internal(e.to_string()))
     }
 
     async fn list_sessions(&self) -> Result<Vec<SessionId>> {

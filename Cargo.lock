@@ -231,6 +231,7 @@ dependencies = [
 name = "astrcode-adapter-tools"
 version = "0.1.0"
 dependencies = [
+ "astrcode-adapter-skills",
  "astrcode-core",
  "async-trait",
  "base64 0.22.1",
@@ -251,6 +252,7 @@ dependencies = [
 name = "astrcode-application"
 version = "0.1.0"
 dependencies = [
+ "astrcode-adapter-tools",
  "astrcode-core",
  "astrcode-kernel",
  "astrcode-session-runtime",
@@ -262,6 +264,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -347,14 +350,17 @@ name = "astrcode-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "astrcode-adapter-agents",
  "astrcode-adapter-llm",
  "astrcode-adapter-mcp",
  "astrcode-adapter-prompt",
+ "astrcode-adapter-skills",
  "astrcode-adapter-storage",
  "astrcode-adapter-tools",
  "astrcode-application",
  "astrcode-core",
  "astrcode-kernel",
+ "astrcode-plugin",
  "astrcode-protocol",
  "astrcode-session-runtime",
  "async-stream",

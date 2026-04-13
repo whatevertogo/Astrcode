@@ -9,4 +9,4 @@ mod subagent;
 
 pub use profiles::{ProfileProvider, ProfileResolutionService};
 pub use root::execute_root_agent;
-pub use subagent::launch_subagent;
+pub use subagent::{SubagentExecutionRequest, launch_subagent};

@@ -5,6 +5,7 @@ use astrcode_kernel::Kernel;
 use astrcode_session_runtime::SessionRuntime;
 use tokio::sync::broadcast;
 
+pub mod agent;
 pub mod composer;
 pub mod config;
 pub mod errors;
@@ -14,6 +15,7 @@ pub mod mcp;
 pub mod observability;
 pub mod watch;
 
+pub use agent::AgentOrchestrationService;
 pub use astrcode_session_runtime::{
     SessionCatalogEvent, SessionHistorySnapshot, SessionReplay, SessionViewSnapshot, TurnSummary,
 };
@@ -144,6 +146,7 @@ pub struct App {
     config_service: Arc<ConfigService>,
     composer_service: Arc<composer::ComposerService>,
     mcp_service: Arc<mcp::McpService>,
+    agent_service: Arc<AgentOrchestrationService>,
 }
 
 impl App {
@@ -152,6 +155,7 @@ impl App {
         session_runtime: Arc<SessionRuntime>,
         config_service: Arc<ConfigService>,
         mcp_service: Arc<mcp::McpService>,
+        agent_service: Arc<AgentOrchestrationService>,
     ) -> Self {
         Self {
             kernel,
@@ -159,6 +163,7 @@ impl App {
             config_service,
             composer_service: Arc::new(composer::ComposerService::new()),
             mcp_service,
+            agent_service,
         }
     }
 
@@ -180,6 +185,10 @@ impl App {
 
     pub fn composer(&self) -> &Arc<composer::ComposerService> {
         &self.composer_service
+    }
+
+    pub fn agent(&self) -> &Arc<AgentOrchestrationService> {
+        &self.agent_service
     }
 
     pub fn subscribe_catalog(&self) -> broadcast::Receiver<SessionCatalogEvent> {

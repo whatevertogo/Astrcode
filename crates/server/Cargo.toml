@@ -7,13 +7,16 @@ authors.workspace = true
 
 [dependencies]
 astrcode-application = { path = "../application" }
+astrcode-adapter-agents = { path = "../adapter-agents" }
 astrcode-adapter-llm = { path = "../adapter-llm" }
 astrcode-adapter-mcp = { path = "../adapter-mcp" }
 astrcode-adapter-prompt = { path = "../adapter-prompt" }
+astrcode-adapter-skills = { path = "../adapter-skills" }
 astrcode-adapter-storage = { path = "../adapter-storage" }
 astrcode-adapter-tools = { path = "../adapter-tools" }
 astrcode-core = { path = "../core" }
 astrcode-kernel = { path = "../kernel" }
+astrcode-plugin = { path = "../plugin" }
 astrcode-protocol = { path = "../protocol" }
 astrcode-session-runtime = { path = "../session-runtime" }
 async-stream.workspace = true
@@ -35,5 +38,6 @@ tower.workspace = true
 tower-http.workspace = true
 
 [dev-dependencies]
+astrcode-core = { path = "../core", features = ["test-support"] }
 astrcode-adapter-storage = { path = "../adapter-storage" }
 tempfile.workspace = true

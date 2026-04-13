@@ -1,15 +1,20 @@
-//! 桥接 `adapter-prompt` 的 `PromptComposer` 与 `core::ports::PromptProvider`。
+//! 桥接 `adapter-prompt` 的分层 prompt builder 与 `core::ports::PromptProvider`。
 //!
 //! `core::ports::PromptProvider` 是 kernel 消费的简化端口接口，
-//! 本模块将其适配到 `PromptComposer` 的完整 prompt 构建能力上。
+//! 本模块将其适配到 `LayeredPromptBuilder` 的完整 prompt 构建能力上。
 
 use astrcode_core::{
     Result, SystemPromptBlock, SystemPromptLayer,
     ports::{PromptBuildOutput, PromptBuildRequest, PromptProvider},
 };
 use async_trait::async_trait;
+use serde_json::Value;
 
-use crate::{composer::PromptComposer, context::PromptContext};
+use crate::{
+    PromptAgentProfileSummary, PromptContext, PromptDeclaration, PromptDeclarationKind,
+    PromptDeclarationRenderTarget, PromptDeclarationSource, PromptSkillSummary,
+    layered_builder::{LayeredPromptBuilder, default_layered_prompt_builder},
+};
 
 /// adapter-prompt 的 PromptLayer → core 的 SystemPromptLayer
 fn convert_layer(layer: crate::PromptLayer) -> SystemPromptLayer {
@@ -22,23 +27,23 @@ fn convert_layer(layer: crate::PromptLayer) -> SystemPromptLayer {
     }
 }
 
-/// 基于 `PromptComposer` 的 `PromptProvider` 实现。
+/// 基于 `LayeredPromptBuilder` 的 `PromptProvider` 实现。
 ///
 /// 将 `core::ports::PromptBuildRequest` 转为 `PromptContext`，
-/// 调用 `PromptComposer::build()` 后将 `PromptPlan` 渲染为 system prompt。
+/// 调用分层 builder 后将 `PromptPlan` 渲染为 system prompt。
 pub struct ComposerPromptProvider {
-    composer: PromptComposer,
+    builder: LayeredPromptBuilder,
 }
 
 impl ComposerPromptProvider {
-    pub fn new(composer: PromptComposer) -> Self {
-        Self { composer }
+    pub fn new(builder: LayeredPromptBuilder) -> Self {
+        Self { builder }
     }
 
     /// 使用默认贡献者创建。
     pub fn with_defaults() -> Self {
         Self {
-            composer: PromptComposer::with_defaults(),
+            builder: default_layered_prompt_builder(),
         }
     }
 }
@@ -52,16 +57,34 @@ impl std::fmt::Debug for ComposerPromptProvider {
 #[async_trait]
 impl PromptProvider for ComposerPromptProvider {
     async fn build_prompt(&self, request: PromptBuildRequest) -> Result<PromptBuildOutput> {
+        let vars = build_prompt_vars(&request);
         let ctx = PromptContext {
             working_dir: request.working_dir.to_string_lossy().to_string(),
+            tool_names: request
+                .capabilities
+                .iter()
+                .filter(|capability| capability.kind.is_tool())
+                .map(|capability| capability.name.to_string())
+                .collect(),
             capability_specs: request.capabilities,
-            step_index: 0,
-            turn_index: 0,
-            ..Default::default()
+            prompt_declarations: request
+                .prompt_declarations
+                .into_iter()
+                .map(convert_prompt_declaration)
+                .collect(),
+            agent_profiles: request
+                .agent_profiles
+                .into_iter()
+                .map(convert_agent_profile)
+                .collect(),
+            skills: request.skills.into_iter().map(convert_skill).collect(),
+            step_index: request.step_index,
+            turn_index: request.turn_index,
+            vars,
         };
 
         let output = self
-            .composer
+            .builder
             .build(&ctx)
             .await
             .map_err(|e| astrcode_core::AstrError::Internal(e.to_string()))?;
@@ -87,7 +110,111 @@ impl PromptProvider for ComposerPromptProvider {
             metadata: serde_json::json!({
                 "extra_tools_count": output.plan.extra_tools.len(),
                 "diagnostics_count": output.diagnostics.items.len(),
+                "profile": request.profile,
+                "step_index": request.step_index,
+                "turn_index": request.turn_index,
             }),
         })
     }
+}
+
+fn convert_prompt_declaration(declaration: astrcode_core::PromptDeclaration) -> PromptDeclaration {
+    PromptDeclaration {
+        block_id: declaration.block_id,
+        title: declaration.title,
+        content: declaration.content,
+        render_target: match declaration.render_target {
+            astrcode_core::PromptDeclarationRenderTarget::System => {
+                PromptDeclarationRenderTarget::System
+            },
+            astrcode_core::PromptDeclarationRenderTarget::PrependUser => {
+                PromptDeclarationRenderTarget::PrependUser
+            },
+            astrcode_core::PromptDeclarationRenderTarget::PrependAssistant => {
+                PromptDeclarationRenderTarget::PrependAssistant
+            },
+            astrcode_core::PromptDeclarationRenderTarget::AppendUser => {
+                PromptDeclarationRenderTarget::AppendUser
+            },
+            astrcode_core::PromptDeclarationRenderTarget::AppendAssistant => {
+                PromptDeclarationRenderTarget::AppendAssistant
+            },
+        },
+        layer: match declaration.layer {
+            astrcode_core::SystemPromptLayer::Stable => crate::PromptLayer::Stable,
+            astrcode_core::SystemPromptLayer::SemiStable => crate::PromptLayer::SemiStable,
+            astrcode_core::SystemPromptLayer::Inherited => crate::PromptLayer::Inherited,
+            astrcode_core::SystemPromptLayer::Dynamic => crate::PromptLayer::Dynamic,
+            astrcode_core::SystemPromptLayer::Unspecified => crate::PromptLayer::Unspecified,
+        },
+        kind: match declaration.kind {
+            astrcode_core::PromptDeclarationKind::ToolGuide => PromptDeclarationKind::ToolGuide,
+            astrcode_core::PromptDeclarationKind::ExtensionInstruction => {
+                PromptDeclarationKind::ExtensionInstruction
+            },
+        },
+        priority_hint: declaration.priority_hint,
+        always_include: declaration.always_include,
+        source: match declaration.source {
+            astrcode_core::PromptDeclarationSource::Builtin => PromptDeclarationSource::Builtin,
+            astrcode_core::PromptDeclarationSource::Plugin => PromptDeclarationSource::Plugin,
+            astrcode_core::PromptDeclarationSource::Mcp => PromptDeclarationSource::Mcp,
+        },
+        capability_name: declaration.capability_name,
+        origin: declaration.origin,
+    }
+}
+
+fn convert_agent_profile(
+    summary: astrcode_core::PromptAgentProfileSummary,
+) -> PromptAgentProfileSummary {
+    PromptAgentProfileSummary::new(summary.id, summary.description)
+}
+
+fn convert_skill(summary: astrcode_core::PromptSkillSummary) -> PromptSkillSummary {
+    PromptSkillSummary::new(summary.id, summary.description)
+}
+
+fn build_prompt_vars(request: &PromptBuildRequest) -> std::collections::HashMap<String, String> {
+    let mut vars = std::collections::HashMap::new();
+    if let Some(session_id) = &request.session_id {
+        vars.insert("session.id".to_string(), session_id.to_string());
+    }
+    if let Some(turn_id) = &request.turn_id {
+        vars.insert("turn.id".to_string(), turn_id.to_string());
+    }
+    vars.insert("profile.name".to_string(), request.profile.clone());
+    insert_json_string(&mut vars, "profile.context", &request.profile_context);
+    insert_json_string(&mut vars, "request.metadata", &request.metadata);
+    if let Some(config_version) = request
+        .metadata
+        .get("configVersion")
+        .and_then(Value::as_str)
+    {
+        vars.insert("config.version".to_string(), config_version.to_string());
+    }
+    if let Some(user_message) = request
+        .metadata
+        .get("latestUserMessage")
+        .and_then(Value::as_str)
+    {
+        vars.insert("turn.user_message".to_string(), user_message.to_string());
+    }
+    vars
+}
+
+fn insert_json_string(
+    vars: &mut std::collections::HashMap<String, String>,
+    key: &str,
+    value: &Value,
+) {
+    if value.is_null() {
+        return;
+    }
+    let rendered = if let Some(text) = value.as_str() {
+        text.to_string()
+    } else {
+        value.to_string()
+    };
+    vars.insert(key.to_string(), rendered);
 }

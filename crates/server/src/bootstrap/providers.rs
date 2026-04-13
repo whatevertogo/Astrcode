@@ -13,7 +13,9 @@ use astrcode_adapter_llm::{
     ModelLimits as AdapterModelLimits, anthropic::AnthropicProvider, openai::OpenAiProvider,
 };
 use astrcode_adapter_mcp::{core_port::McpResourceProvider, manager::McpConnectionManager};
-use astrcode_adapter_prompt::core_port::ComposerPromptProvider;
+use astrcode_adapter_prompt::{
+    core_port::ComposerPromptProvider, layered_builder::default_layered_prompt_builder,
+};
 use astrcode_adapter_storage::config_store::FileConfigStore;
 use astrcode_application::{
     ApplicationError, ConfigService,
@@ -33,7 +35,7 @@ pub(crate) fn build_llm_provider(
 }
 
 pub(crate) fn build_prompt_provider() -> Arc<dyn PromptProvider> {
-    Arc::new(ComposerPromptProvider::with_defaults())
+    Arc::new(ComposerPromptProvider::new(default_layered_prompt_builder()))
 }
 
 pub(crate) fn build_resource_provider(

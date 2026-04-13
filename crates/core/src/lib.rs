@@ -101,8 +101,10 @@ pub use policy::{
 };
 pub use ports::{
     EventStore, LlmEvent, LlmEventSink, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest,
-    LlmUsage, ModelLimits, PromptBuildOutput, PromptBuildRequest, PromptProvider, ResourceProvider,
-    ResourceReadResult, ResourceRequestContext,
+    LlmUsage, ModelLimits, PromptAgentProfileSummary, PromptBuildOutput, PromptBuildRequest,
+    PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
+    PromptDeclarationSource, PromptFacts, PromptFactsProvider, PromptFactsRequest, PromptProvider,
+    PromptSkillSummary, ResourceProvider, ResourceReadResult, ResourceRequestContext,
 };
 pub use projection::{AgentState, AgentStateProjector, project};
 pub use registry::{CapabilityContext, CapabilityExecutionResult, CapabilityInvoker};

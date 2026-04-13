@@ -4,9 +4,9 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentEventContext, AgentId, CancelToken, DeleteProjectResult, EventStore, EventTranslator,
-    ExecutionAccepted, LlmMessage, Phase, Result, SessionId, SessionMeta, StorageEvent,
-    StorageEventPayload, TurnId, config::RuntimeConfig, event::generate_session_id, replay_records,
+    AgentEventContext, AgentId, DeleteProjectResult, EventStore, EventTranslator, LlmMessage,
+    Phase, PromptFactsProvider, Result, SessionId, SessionMeta, StorageEvent, StorageEventPayload,
+    StoredEvent, event::generate_session_id,
 };
 use astrcode_kernel::Kernel;
 use chrono::Utc;
@@ -27,7 +27,6 @@ pub mod turn;
 use actor::SessionActor;
 pub use catalog::SessionCatalogEvent;
 pub use context::ResolvedContextSnapshot;
-use factory::{NoopSessionTurnLease, prepare_turn_messages};
 use observe::SessionObserveSnapshot;
 pub use observe::{
     SessionEventFilterSpec, SubRunEventScope, SubRunStatusSnapshot, SubRunStatusSource,
@@ -88,16 +87,22 @@ impl From<SessionRuntimeError> for astrcode_core::AstrError {
 /// 单 session 真相面。
 pub struct SessionRuntime {
     kernel: Arc<Kernel>,
+    prompt_facts_provider: Arc<dyn PromptFactsProvider>,
     sessions: DashMap<SessionId, Arc<LoadedSession>>,
     event_store: Arc<dyn EventStore>,
     catalog_events: broadcast::Sender<SessionCatalogEvent>,
 }
 
 impl SessionRuntime {
-    pub fn new(kernel: Arc<Kernel>, event_store: Arc<dyn EventStore>) -> Self {
+    pub fn new(
+        kernel: Arc<Kernel>,
+        prompt_facts_provider: Arc<dyn PromptFactsProvider>,
+        event_store: Arc<dyn EventStore>,
+    ) -> Self {
         let (catalog_events, _) = broadcast::channel(256);
         Self {
             kernel,
+            prompt_facts_provider,
             sessions: DashMap::new(),
             event_store,
             catalog_events,
@@ -191,6 +196,23 @@ impl SessionRuntime {
         })
     }
 
+    /// 按需加载 session 并返回内部状态引用。
+    ///
+    /// 用于 agent 编排层需要直接操作 SessionState 的场景
+    /// （如 mailbox 追加、对话投影读取等）。
+    pub async fn get_session_state(&self, session_id: &SessionId) -> Result<Arc<SessionState>> {
+        let actor = self.ensure_loaded_session(session_id).await?;
+        Ok(Arc::clone(actor.state()))
+    }
+
+    /// 回放指定 session 的全部持久化事件。
+    ///
+    /// 用于 agent 编排层需要从 durable 事件中提取 mailbox 信封等场景。
+    pub async fn replay_stored_events(&self, session_id: &SessionId) -> Result<Vec<StoredEvent>> {
+        self.ensure_session_exists(session_id).await?;
+        self.event_store.replay(session_id).await
+    }
+
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
         let session_id = SessionId::from(normalize_session_id(session_id));
         self.ensure_session_exists(&session_id).await?;
@@ -229,206 +251,6 @@ impl SessionRuntime {
                 working_dir: working_dir.to_string(),
             });
         Ok(deleted)
-    }
-
-    pub async fn session_history(&self, session_id: &str) -> Result<SessionHistorySnapshot> {
-        let session_id = SessionId::from(normalize_session_id(session_id));
-        let records = self.replay_history(&session_id, None).await?;
-        let phase = self.session_phase(&session_id).await?;
-        Ok(SessionHistorySnapshot {
-            cursor: records.last().map(|record| record.event_id.clone()),
-            history: records,
-            phase,
-        })
-    }
-
-    pub async fn session_view(&self, session_id: &str) -> Result<SessionViewSnapshot> {
-        let history = self.session_history(session_id).await?;
-        Ok(SessionViewSnapshot {
-            focus_history: history.history.clone(),
-            direct_children_history: Vec::new(),
-            cursor: history.cursor,
-            phase: history.phase,
-        })
-    }
-
-    pub async fn session_replay(
-        &self,
-        session_id: &str,
-        last_event_id: Option<&str>,
-    ) -> Result<SessionReplay> {
-        let session_id = SessionId::from(normalize_session_id(session_id));
-        let actor = self.ensure_loaded_session(&session_id).await?;
-        let history = self.replay_history(&session_id, last_event_id).await?;
-        Ok(SessionReplay {
-            history,
-            receiver: actor.state().broadcaster.subscribe(),
-            live_receiver: actor.state().subscribe_live(),
-        })
-    }
-
-    pub async fn submit_prompt(
-        &self,
-        session_id: &str,
-        text: String,
-        runtime: RuntimeConfig,
-    ) -> Result<ExecutionAccepted> {
-        let text = text.trim().to_string();
-        if text.is_empty() {
-            return Err(astrcode_core::AstrError::Validation(
-                "prompt must not be empty".to_string(),
-            ));
-        }
-
-        let session_id = SessionId::from(normalize_session_id(session_id));
-        let actor = self.ensure_loaded_session(&session_id).await?;
-        let turn_id = TurnId::from(format!("turn-{}", Utc::now().timestamp_millis()));
-        let cancel = CancelToken::new();
-
-        prepare_session_execution(
-            actor.state(),
-            session_id.as_str(),
-            turn_id.as_str(),
-            cancel.clone(),
-            Box::new(NoopSessionTurnLease),
-            runtime.default_token_budget,
-        )?;
-        *actor
-            .state()
-            .phase
-            .lock()
-            .map_err(|_| astrcode_core::AstrError::LockPoisoned("session phase".to_string()))? =
-            Phase::Thinking;
-
-        let user_message = StorageEvent {
-            turn_id: Some(turn_id.to_string()),
-            agent: AgentEventContext::default(),
-            payload: StorageEventPayload::UserMessage {
-                content: text,
-                origin: astrcode_core::UserMessageOrigin::User,
-                timestamp: Utc::now(),
-            },
-        };
-        let mut translator = EventTranslator::new(actor.state().current_phase()?);
-        append_and_broadcast(actor.state(), &user_message, &mut translator).await?;
-        let messages = prepare_turn_messages(actor.state())?;
-
-        let kernel = Arc::clone(&self.kernel);
-        let actor_for_task = Arc::clone(&actor);
-        let session_id_for_task = session_id.clone();
-        let turn_id_for_task = turn_id.clone();
-        tokio::spawn(async move {
-            let request = turn::RunnerRequest {
-                session_id: session_id_for_task.to_string(),
-                working_dir: actor_for_task.working_dir().to_string(),
-                turn_id: turn_id_for_task.to_string(),
-                messages,
-                runtime,
-                cancel: cancel.clone(),
-                agent: AgentEventContext::default(),
-            };
-
-            let result = run_turn(kernel, request).await;
-            let terminal_phase = match &result {
-                Ok(outcome) => match outcome.outcome {
-                    TurnOutcome::Completed => Phase::Idle,
-                    TurnOutcome::Cancelled => Phase::Interrupted,
-                    TurnOutcome::Error { .. } => Phase::Interrupted,
-                },
-                Err(_) => Phase::Interrupted,
-            };
-
-            let mut translator = EventTranslator::new(
-                actor_for_task
-                    .state()
-                    .current_phase()
-                    .unwrap_or(Phase::Idle),
-            );
-
-            match result {
-                Ok(turn_result) => {
-                    for event in turn_result.events {
-                        if let Err(error) =
-                            append_and_broadcast(actor_for_task.state(), &event, &mut translator)
-                                .await
-                        {
-                            log::error!(
-                                "failed to persist turn event for session '{}': {}",
-                                session_id_for_task,
-                                error
-                            );
-                            break;
-                        }
-                    }
-                },
-                Err(error) => {
-                    log::error!(
-                        "turn execution failed for session '{}': {}",
-                        session_id_for_task,
-                        error
-                    );
-                    let failure = StorageEvent {
-                        turn_id: Some(turn_id_for_task.to_string()),
-                        agent: AgentEventContext::default(),
-                        payload: StorageEventPayload::Error {
-                            message: error.to_string(),
-                            timestamp: Some(Utc::now()),
-                        },
-                    };
-                    if let Err(append_error) =
-                        append_and_broadcast(actor_for_task.state(), &failure, &mut translator)
-                            .await
-                    {
-                        log::error!(
-                            "failed to persist turn failure for session '{}': {}",
-                            session_id_for_task,
-                            append_error
-                        );
-                    }
-                },
-            }
-
-            complete_session_execution(actor_for_task.state(), terminal_phase);
-        });
-
-        Ok(ExecutionAccepted {
-            session_id,
-            turn_id,
-            agent_id: None,
-            branched_from_session_id: None,
-        })
-    }
-
-    pub async fn interrupt_session(&self, session_id: &str) -> Result<()> {
-        let session_id = SessionId::from(normalize_session_id(session_id));
-        let actor = self.ensure_loaded_session(&session_id).await?;
-        let cancel = actor
-            .state()
-            .cancel
-            .lock()
-            .map_err(|_| astrcode_core::AstrError::LockPoisoned("session cancel".to_string()))?
-            .clone();
-        cancel.cancel();
-
-        let mut translator = EventTranslator::new(actor.state().current_phase()?);
-        let event = StorageEvent {
-            turn_id: actor
-                .state()
-                .active_turn_id
-                .lock()
-                .map_err(|_| {
-                    astrcode_core::AstrError::LockPoisoned("session active turn".to_string())
-                })?
-                .clone(),
-            agent: AgentEventContext::default(),
-            payload: StorageEventPayload::Error {
-                message: "interrupted".to_string(),
-                timestamp: Some(Utc::now()),
-            },
-        };
-        append_and_broadcast(actor.state(), &event, &mut translator).await?;
-        complete_session_execution(actor.state(), Phase::Interrupted);
-        Ok(())
     }
 
     pub async fn compact_session(&self, session_id: &str) -> Result<()> {
@@ -481,16 +303,6 @@ impl SessionRuntime {
             .find(|meta| normalize_session_id(&meta.session_id) == session_id.as_str())
             .ok_or_else(|| SessionRuntimeError::SessionNotFound(session_id.to_string()))?;
         Ok(meta.phase)
-    }
-
-    async fn replay_history(
-        &self,
-        session_id: &SessionId,
-        last_event_id: Option<&str>,
-    ) -> Result<Vec<astrcode_core::SessionEventRecord>> {
-        self.ensure_session_exists(session_id).await?;
-        let stored = self.event_store.replay(session_id).await?;
-        Ok(replay_records(&stored, last_event_id))
     }
 
     async fn ensure_loaded_session(&self, session_id: &SessionId) -> Result<Arc<SessionActor>> {

@@ -162,6 +162,16 @@ impl Kernel {
             .enqueue_parent_delivery(parent_session_id, parent_turn_id, notification)
             .await
     }
+
+    /// 取消指定父 turn 下仍在运行的子执行。
+    pub async fn cancel_subruns_for_turn(&self, parent_turn_id: &str) -> Vec<String> {
+        self.agent_control
+            .cancel_for_parent_turn(parent_turn_id)
+            .await
+            .into_iter()
+            .map(|handle| handle.agent_id)
+            .collect()
+    }
 }
 
 #[derive(Default)]

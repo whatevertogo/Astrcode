@@ -26,8 +26,8 @@
 use std::{collections::HashSet, path::Path, sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, CancelToken, LlmMessage, Result, StorageEvent, StorageEventPayload,
-    UserMessageOrigin, config::RuntimeConfig,
+    AgentEventContext, CancelToken, LlmMessage, PromptFactsProvider, Result, StorageEvent,
+    StorageEventPayload, UserMessageOrigin, config::RuntimeConfig,
 };
 use astrcode_kernel::Kernel;
 use chrono::Utc;
@@ -62,6 +62,7 @@ pub struct TurnRunRequest {
     pub runtime: RuntimeConfig,
     pub cancel: CancelToken,
     pub agent: AgentEventContext,
+    pub prompt_facts_provider: Arc<dyn PromptFactsProvider>,
 }
 
 /// Turn 执行结果。
@@ -164,6 +165,7 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
         // —— 上下文优化管线（微压缩 → 裁剪 → 自动压缩）——
         let assembled = assemble_prompt_request(AssemblePromptRequest {
             gateway,
+            prompt_facts_provider: request.prompt_facts_provider.as_ref(),
             session_id: &request.session_id,
             turn_id: &request.turn_id,
             working_dir: Path::new(&request.working_dir),
@@ -211,10 +213,12 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
                     let recovery =
                         compaction_cycle::try_reactive_compact(&ReactiveCompactContext {
                             gateway,
+                            prompt_facts_provider: request.prompt_facts_provider.as_ref(),
                             messages: &messages,
                             session_id: &request.session_id,
                             working_dir: &request.working_dir,
                             turn_id: &request.turn_id,
+                            step_index,
                             agent: &request.agent,
                             cancel: request.cancel.clone(),
                             settings: &settings,

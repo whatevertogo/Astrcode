@@ -23,6 +23,8 @@
 mod capabilities;
 mod governance;
 mod mcp;
+mod plugins;
+mod prompt_facts;
 mod providers;
 pub(crate) mod runtime;
 use std::path::{Path as FsPath, PathBuf};

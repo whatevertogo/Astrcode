@@ -10,20 +10,28 @@ use astrcode_application::{
     RuntimeGovernanceSnapshot, RuntimeObservabilitySnapshot, SessionInfoProvider,
     lifecycle::TaskRegistry,
 };
-use astrcode_core::{CapabilitySpec, PluginRegistry, RuntimeCoordinator, RuntimeHandle};
+use astrcode_core::{
+    CapabilitySpec, ManagedRuntimeComponent, PluginRegistry, RuntimeCoordinator, RuntimeHandle,
+};
 use astrcode_kernel::Kernel;
+use astrcode_plugin::Supervisor;
 use astrcode_session_runtime::SessionRuntime;
 use async_trait::async_trait;
 
 pub(crate) fn build_app_governance(
     session_runtime: Arc<SessionRuntime>,
     kernel: Arc<Kernel>,
+    plugin_registry: Arc<PluginRegistry>,
+    plugin_supervisors: Vec<Arc<Supervisor>>,
 ) -> Arc<AppGovernance> {
-    let coordinator = Arc::new(RuntimeCoordinator::new(
-        Arc::new(AppRuntimeHandle),
-        Arc::new(PluginRegistry::default()),
-        Vec::new(),
-    ));
+    let managed_components: Vec<Arc<dyn ManagedRuntimeComponent>> = plugin_supervisors
+        .into_iter()
+        .map(|supervisor| supervisor as Arc<dyn ManagedRuntimeComponent>)
+        .collect();
+    let coordinator = Arc::new(
+        RuntimeCoordinator::new(Arc::new(AppRuntimeHandle), plugin_registry, Vec::new())
+            .with_managed_components(managed_components),
+    );
 
     Arc::new(AppGovernance::new(
         Arc::new(CoordinatorGovernancePort {

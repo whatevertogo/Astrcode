@@ -14,8 +14,9 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentEventContext, CompactTrigger, LlmMessage, LlmRequest, PromptBuildRequest,
-    PromptMetricsPayload, Result, StorageEvent, StorageEventPayload, config::RuntimeConfig,
+    AgentEventContext, CompactTrigger, LlmMessage, LlmRequest, PromptBuildRequest, PromptFacts,
+    PromptFactsProvider, PromptFactsRequest, PromptMetricsPayload, Result, StorageEvent,
+    StorageEventPayload, UserMessageOrigin, config::RuntimeConfig,
 };
 use astrcode_kernel::KernelGateway;
 
@@ -112,6 +113,7 @@ impl From<&RuntimeConfig> for ContextWindowSettings {
 
 pub struct AssemblePromptRequest<'a> {
     pub gateway: &'a KernelGateway,
+    pub prompt_facts_provider: &'a dyn PromptFactsProvider,
     pub session_id: &'a str,
     pub turn_id: &'a str,
     pub working_dir: &'a Path,
@@ -157,9 +159,12 @@ pub async fn assemble_prompt_request(
 
     let mut prompt_output = build_prompt_output(
         request.gateway,
+        request.prompt_facts_provider,
         request.session_id,
         request.turn_id,
         request.working_dir,
+        request.step_index,
+        &messages,
     )
     .await?;
     let mut snapshot = build_prompt_snapshot(
@@ -208,9 +213,12 @@ pub async fn assemble_prompt_request(
 
                 prompt_output = build_prompt_output(
                     request.gateway,
+                    request.prompt_facts_provider,
                     request.session_id,
                     request.turn_id,
                     request.working_dir,
+                    request.step_index,
+                    &messages,
                 )
                 .await?;
                 snapshot = build_prompt_snapshot(
@@ -254,22 +262,108 @@ pub async fn assemble_prompt_request(
 
 async fn build_prompt_output(
     gateway: &KernelGateway,
+    prompt_facts_provider: &dyn PromptFactsProvider,
     session_id: &str,
     turn_id: &str,
     working_dir: &Path,
+    step_index: usize,
+    messages: &[LlmMessage],
 ) -> Result<astrcode_core::PromptBuildOutput> {
+    let facts = prompt_facts_provider
+        .resolve_prompt_facts(&PromptFactsRequest {
+            session_id: Some(session_id.to_string().into()),
+            turn_id: Some(turn_id.to_string().into()),
+            working_dir: working_dir.to_path_buf(),
+        })
+        .await?;
+    let turn_index = count_user_turns(messages);
+    let metadata = build_prompt_metadata(
+        session_id, turn_id, step_index, turn_index, messages, &facts,
+    );
+    let PromptFacts {
+        profile,
+        profile_context,
+        metadata: _,
+        skills,
+        agent_profiles,
+        prompt_declarations,
+    } = facts;
     gateway
         .build_prompt(PromptBuildRequest {
             session_id: Some(session_id.to_string().into()),
             turn_id: Some(turn_id.to_string().into()),
             working_dir: working_dir.to_path_buf(),
-            profile: "coding".to_string(),
-            profile_context: serde_json::Value::Null,
+            profile,
+            step_index,
+            turn_index,
+            profile_context,
             capabilities: gateway.capabilities().capability_specs(),
-            metadata: serde_json::Value::Null,
+            skills,
+            agent_profiles,
+            prompt_declarations,
+            metadata,
         })
         .await
         .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))
+}
+
+fn build_prompt_metadata(
+    session_id: &str,
+    turn_id: &str,
+    step_index: usize,
+    turn_index: usize,
+    messages: &[LlmMessage],
+    facts: &PromptFacts,
+) -> serde_json::Value {
+    let latest_user_message = messages.iter().rev().find_map(|message| match message {
+        LlmMessage::User {
+            content,
+            origin: UserMessageOrigin::User,
+        } => Some(content.clone()),
+        _ => None,
+    });
+    let mut metadata = match &facts.metadata {
+        serde_json::Value::Object(map) => map.clone(),
+        _ => serde_json::Map::new(),
+    };
+    metadata.insert(
+        "sessionId".to_string(),
+        serde_json::Value::String(session_id.to_string()),
+    );
+    metadata.insert(
+        "turnId".to_string(),
+        serde_json::Value::String(turn_id.to_string()),
+    );
+    metadata.insert(
+        "stepIndex".to_string(),
+        serde_json::Value::Number((step_index as u64).into()),
+    );
+    metadata.insert(
+        "turnIndex".to_string(),
+        serde_json::Value::Number((turn_index as u64).into()),
+    );
+    metadata.insert(
+        "latestUserMessage".to_string(),
+        latest_user_message
+            .map(serde_json::Value::String)
+            .unwrap_or(serde_json::Value::Null),
+    );
+    serde_json::Value::Object(metadata)
+}
+
+fn count_user_turns(messages: &[LlmMessage]) -> usize {
+    messages
+        .iter()
+        .filter(|message| {
+            matches!(
+                message,
+                LlmMessage::User {
+                    origin: UserMessageOrigin::User,
+                    ..
+                }
+            )
+        })
+        .count()
 }
 
 fn prompt_metrics_event(
@@ -312,8 +406,8 @@ mod tests {
 
     use astrcode_core::{
         AgentEventContext, CancelToken, LlmProvider, LlmRequest, PromptBuildOutput,
-        PromptBuildRequest, PromptProvider, ResourceProvider, ResourceReadResult,
-        ResourceRequestContext, Result, ToolDefinition,
+        PromptBuildRequest, PromptFacts, PromptFactsProvider, PromptFactsRequest, PromptProvider,
+        ResourceProvider, ResourceReadResult, ResourceRequestContext, Result, ToolDefinition,
     };
     use astrcode_kernel::CapabilityRouter;
     use async_trait::async_trait;
@@ -331,6 +425,15 @@ mod tests {
                 system_prompt_blocks: Vec::new(),
                 metadata: json!(null),
             })
+        }
+    }
+
+    struct TestPromptFactsProvider;
+
+    #[async_trait]
+    impl PromptFactsProvider for TestPromptFactsProvider {
+        async fn resolve_prompt_facts(&self, _request: &PromptFactsRequest) -> Result<PromptFacts> {
+            Ok(PromptFacts::default())
         }
     }
 
@@ -393,6 +496,7 @@ mod tests {
 
         let result = assemble_prompt_request(AssemblePromptRequest {
             gateway: &gateway,
+            prompt_facts_provider: &TestPromptFactsProvider,
             session_id: "session-1",
             turn_id: "turn-1",
             working_dir: Path::new("."),
