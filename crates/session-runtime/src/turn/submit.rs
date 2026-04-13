@@ -173,6 +173,7 @@ impl SessionRuntime {
                 working_dir: actor_for_task.working_dir().to_string(),
                 turn_id: turn_id_for_task.to_string(),
                 messages,
+                session_state: Arc::clone(actor_for_task.state()),
                 runtime,
                 cancel: cancel.clone(),
                 agent: agent.clone(),

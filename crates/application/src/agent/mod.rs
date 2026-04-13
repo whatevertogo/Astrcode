@@ -25,8 +25,9 @@ use std::{path::Path, sync::Arc};
 
 use astrcode_core::{
     AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope, AgentTurnOutcome, ArtifactRef,
-    CloseAgentParams, CollaborationResult, ObserveParams, Result, RuntimeMetricsRecorder,
-    SendAgentParams, SpawnAgentParams, SubRunHandle, SubRunHandoff, SubRunResult, ToolContext,
+    CloseAgentParams, CollaborationResult, InvocationKind, ObserveParams, Result,
+    RuntimeMetricsRecorder, SendAgentParams, SpawnAgentParams, SubRunHandle, SubRunHandoff,
+    SubRunResult, ToolContext,
 };
 use astrcode_kernel::Kernel;
 use astrcode_session_runtime::SessionRuntime;
@@ -78,6 +79,18 @@ pub(crate) fn subrun_event_context_for_parent_turn(
         handle.parent_sub_run_id.clone(),
         handle.storage_mode,
         handle.child_session_id.clone(),
+    )
+}
+
+pub(crate) const IMPLICIT_ROOT_PROFILE_ID: &str = "default";
+
+pub(crate) fn implicit_session_root_agent_id(session_id: &str) -> String {
+    // 为什么按 session 生成 synthetic root id：
+    // `AgentControl` 以 agent_id 作为全局索引键，普通会话若都共用 `root-agent`
+    // 会把不同 session 的父子树混在一起。
+    format!(
+        "root-agent:{}",
+        astrcode_session_runtime::normalize_session_id(session_id)
     )
 }
 
@@ -190,6 +203,75 @@ impl AgentOrchestrationService {
                 other => AgentOrchestrationError::Internal(other.to_string()),
             })
     }
+
+    async fn ensure_parent_agent_handle(
+        &self,
+        ctx: &ToolContext,
+    ) -> std::result::Result<SubRunHandle, AgentOrchestrationError> {
+        let session_id = ctx.session_id().to_string();
+        let explicit_agent_id = ctx
+            .agent_context()
+            .agent_id
+            .clone()
+            .filter(|agent_id| !agent_id.trim().is_empty());
+
+        if let Some(agent_id) = explicit_agent_id {
+            if let Some(handle) = self.kernel.get_agent_handle(&agent_id).await {
+                return Ok(handle);
+            }
+
+            let is_root_execution = matches!(
+                ctx.agent_context().invocation_kind,
+                Some(InvocationKind::RootExecution)
+            );
+            if is_root_execution {
+                let profile_id = ctx
+                    .agent_context()
+                    .agent_profile
+                    .clone()
+                    .filter(|profile_id| !profile_id.trim().is_empty())
+                    .unwrap_or_else(|| IMPLICIT_ROOT_PROFILE_ID.to_string());
+                return self
+                    .kernel
+                    .agent_control()
+                    .register_root_agent(agent_id, session_id, profile_id)
+                    .await
+                    .map_err(|error| {
+                        AgentOrchestrationError::Internal(format!(
+                            "failed to register root agent for parent context: {error}"
+                        ))
+                    });
+            }
+
+            return Err(AgentOrchestrationError::NotFound(format!(
+                "agent '{}' not found",
+                agent_id
+            )));
+        }
+
+        if let Some(handle) = self
+            .kernel
+            .agent_control()
+            .find_root_agent_for_session(&session_id)
+            .await
+        {
+            return Ok(handle);
+        }
+
+        self.kernel
+            .agent_control()
+            .register_root_agent(
+                implicit_session_root_agent_id(&session_id),
+                session_id,
+                IMPLICIT_ROOT_PROFILE_ID.to_string(),
+            )
+            .await
+            .map_err(|error| {
+                AgentOrchestrationError::Internal(format!(
+                    "failed to register implicit root agent for session parent context: {error}"
+                ))
+            })
+    }
 }
 
 // ── 实现 SubAgentExecutor（供 spawn 工具使用）──────────────────────
@@ -197,7 +279,11 @@ impl AgentOrchestrationService {
 #[async_trait]
 impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
     async fn launch(&self, params: SpawnAgentParams, ctx: &ToolContext) -> Result<SubRunResult> {
-        let parent_agent_id = ctx.agent_context().agent_id.clone().unwrap_or_default();
+        let parent_handle = self
+            .ensure_parent_agent_handle(ctx)
+            .await
+            .map_err(map_orchestration_error)?;
+        let parent_agent_id = parent_handle.agent_id.clone();
         let parent_turn_id = ctx.turn_id().unwrap_or("unknown-turn").to_string();
         let parent_session_id = ctx.session_id().to_string();
         let profile_id = params
@@ -210,7 +296,7 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
 
         let request = SubagentExecutionRequest {
             parent_session_id: parent_session_id.clone(),
-            parent_agent_id,
+            parent_agent_id: parent_agent_id.clone(),
             parent_turn_id,
             working_dir: ctx.working_dir().display().to_string(),
             profile,
@@ -287,7 +373,7 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
                     },
                     ArtifactRef {
                         kind: "parentAgent".to_string(),
-                        id: ctx.agent_context().agent_id.clone().unwrap_or_default(),
+                        id: parent_agent_id,
                         label: "Parent Agent".to_string(),
                         session_id: Some(ctx.session_id().to_string()),
                         storage_seq: None,
@@ -338,14 +424,17 @@ impl astrcode_core::CollaborationExecutor for AgentOrchestrationService {
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        AgentLifecycleStatus, ChildAgentRef, ChildSessionLineageKind, ChildSessionNotification,
-        ChildSessionNotificationKind,
+        AgentLifecycleStatus, CancelToken, ChildAgentRef, ChildSessionLineageKind,
+        ChildSessionNotification, ChildSessionNotificationKind, SpawnAgentParams, ToolContext,
+        agent::executor::SubAgentExecutor,
     };
 
     use super::{
-        child_delivery_mailbox_envelope, root_execution_event_context,
-        terminal_notification_message, terminal_notification_turn_outcome,
+        IMPLICIT_ROOT_PROFILE_ID, child_delivery_mailbox_envelope, implicit_session_root_agent_id,
+        root_execution_event_context, terminal_notification_message,
+        terminal_notification_turn_outcome,
     };
+    use crate::agent::test_support::{TestLlmBehavior, build_agent_test_harness};
 
     #[test]
     fn root_execution_event_context_uses_explicit_agent_id() {
@@ -393,5 +482,58 @@ mod tests {
             envelope.sender_last_turn_outcome,
             Some(astrcode_core::AgentTurnOutcome::Completed)
         );
+    }
+
+    #[tokio::test]
+    async fn launch_without_explicit_agent_context_registers_session_root_parent() {
+        let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
+            content: "子代理已完成。".to_string(),
+        })
+        .expect("test harness should build");
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let parent = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("parent session should be created");
+        let ctx = ToolContext::new(
+            parent.session_id.clone().into(),
+            project.path().to_path_buf(),
+            CancelToken::new(),
+        )
+        .with_turn_id("turn-1");
+
+        let result = harness
+            .service
+            .launch(
+                SpawnAgentParams {
+                    r#type: Some("reviewer".to_string()),
+                    description: "仓库审查".to_string(),
+                    prompt: "请阅读代码".to_string(),
+                    context: None,
+                },
+                &ctx,
+            )
+            .await
+            .expect("subagent should launch with implicit root parent");
+
+        let parent_agent_artifact = result
+            .handoff
+            .as_ref()
+            .expect("handoff should exist")
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == "parentAgent")
+            .expect("parent agent artifact should exist");
+        let expected_parent_agent_id = implicit_session_root_agent_id(&parent.session_id);
+        assert_eq!(parent_agent_artifact.id, expected_parent_agent_id);
+
+        let root_status = harness
+            .kernel
+            .query_root_agent_status(&parent.session_id)
+            .await
+            .expect("implicit root agent should be registered");
+        assert_eq!(root_status.agent_id, expected_parent_agent_id);
+        assert_eq!(root_status.agent_profile, IMPLICIT_ROOT_PROFILE_ID);
     }
 }

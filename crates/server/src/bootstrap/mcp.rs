@@ -199,6 +199,14 @@ pub(crate) async fn load_declared_configs(
         }
     }
 
+    if let Some(mcp) = config_service.load_user_mcp()? {
+        for config in McpConfigManager::load_from_value(&mcp, McpConfigScope::User)
+            .map_err(core_error_to_app)?
+        {
+            merged.insert(config.name.clone(), config);
+        }
+    }
+
     let project_file = working_dir.join(".mcp.json");
     if project_file.is_file() {
         for config in McpConfigManager::load_from_file(&project_file, McpConfigScope::Project)
@@ -218,5 +226,113 @@ pub(crate) async fn load_declared_configs(
         }
     }
 
+    if let Some(mcp) = config_service.load_local_mcp(working_dir)? {
+        for config in McpConfigManager::load_from_value(&mcp, McpConfigScope::Local)
+            .map_err(core_error_to_app)?
+        {
+            merged.insert(config.name.clone(), config);
+        }
+    }
+
     Ok(merged.into_values().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use astrcode_adapter_storage::config_store::FileConfigStore;
+    use astrcode_core::{Config, ConfigOverlay};
+    use serde_json::json;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn load_declared_configs_merges_config_and_sidecars_by_scope_precedence() {
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let project = tempfile::tempdir().expect("project should exist");
+        let store = Arc::new(FileConfigStore::new(
+            temp.path().join(".astrcode").join("config.json"),
+        ));
+
+        let config = Config {
+            mcp: Some(json!({
+                "mcpServers": {
+                    "shared": { "command": "user-config" },
+                    "user-config-only": { "command": "user-config-only" }
+                }
+            })),
+            ..Config::default()
+        };
+        store.save(&config).expect("config should save");
+
+        store
+            .save_user_mcp(Some(&json!({
+                "mcpServers": {
+                    "shared": { "command": "user-sidecar" },
+                    "user-sidecar-only": { "command": "user-sidecar-only" }
+                }
+            })))
+            .expect("user sidecar should save");
+
+        store
+            .save_project_mcp(
+                project.path(),
+                Some(&json!({
+                    "mcpServers": {
+                        "shared": { "command": "project-shared" },
+                        "project-only": { "command": "project-only" }
+                    }
+                })),
+            )
+            .expect("project mcp should save");
+
+        store
+            .save_overlay(
+                project.path(),
+                &ConfigOverlay {
+                    mcp: Some(json!({
+                        "mcpServers": {
+                            "shared": { "command": "local-config" },
+                            "local-config-only": { "command": "local-config-only" }
+                        }
+                    })),
+                    ..ConfigOverlay::default()
+                },
+            )
+            .expect("overlay should save");
+
+        store
+            .save_local_mcp(
+                project.path(),
+                Some(&json!({
+                    "mcpServers": {
+                        "shared": { "command": "local-sidecar" },
+                        "local-sidecar-only": { "command": "local-sidecar-only" }
+                    }
+                })),
+            )
+            .expect("local sidecar should save");
+
+        let config_service = Arc::new(ConfigService::new(store));
+        let configs = load_declared_configs(&config_service, project.path())
+            .await
+            .expect("configs should load");
+        let by_name: HashMap<_, _> = configs
+            .into_iter()
+            .map(|config| (config.name.clone(), config))
+            .collect();
+
+        assert_eq!(by_name["shared"].scope, McpConfigScope::Local);
+        assert!(matches!(
+            &by_name["shared"].transport,
+            astrcode_adapter_mcp::config::McpTransportConfig::Stdio { command, .. }
+                if command == "local-sidecar"
+        ));
+        assert!(by_name.contains_key("user-config-only"));
+        assert!(by_name.contains_key("user-sidecar-only"));
+        assert!(by_name.contains_key("project-only"));
+        assert!(by_name.contains_key("local-config-only"));
+        assert!(by_name.contains_key("local-sidecar-only"));
+    }
 }

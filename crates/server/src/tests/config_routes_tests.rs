@@ -1,5 +1,6 @@
 use std::sync::atomic::Ordering;
 
+use astrcode_core::{SessionId, StorageEventPayload};
 use astrcode_protocol::http::{
     CompactSessionResponse, ConfigReloadResponse, PromptAcceptedResponse,
 };
@@ -174,6 +175,65 @@ async fn prompt_route_roundtrips_accepted_execution_control() {
     assert_eq!(accepted_control.token_budget, Some(256));
     assert_eq!(accepted_control.max_steps, Some(7));
     assert_eq!(accepted_control.manual_compact, None);
+}
+
+#[tokio::test]
+async fn prompt_submission_registers_session_root_agent_context() {
+    let (state, _guard) = test_state(None).await;
+    let session = state
+        .app
+        .create_session(
+            tempfile::tempdir()
+                .expect("tempdir")
+                .path()
+                .display()
+                .to_string(),
+        )
+        .await
+        .expect("session should be created");
+
+    state
+        .app
+        .submit_prompt(&session.session_id, "hello".to_string())
+        .await
+        .expect("prompt should be accepted");
+
+    let root_status = state
+        .app
+        .get_root_agent_status(&session.session_id)
+        .await
+        .expect("root status query should succeed")
+        .expect("ordinary prompt session should register an implicit root agent");
+    assert!(
+        root_status.agent_id.starts_with("root-agent:"),
+        "implicit root agent id should be session-scoped: {}",
+        root_status.agent_id
+    );
+    assert_eq!(root_status.agent_profile, "default");
+
+    let events = state
+        .app
+        .session_runtime()
+        .replay_stored_events(&SessionId::from(session.session_id.clone()))
+        .await
+        .expect("events should replay");
+    let user_message = events
+        .into_iter()
+        .find(|stored| {
+            matches!(
+                stored.event.payload,
+                StorageEventPayload::UserMessage { .. }
+            )
+        })
+        .expect("user message event should exist");
+    assert_eq!(
+        user_message.event.agent.agent_id.as_deref(),
+        Some(root_status.agent_id.as_str())
+    );
+    assert_eq!(
+        user_message.event.agent.agent_profile.as_deref(),
+        Some("default")
+    );
 }
 
 #[tokio::test]

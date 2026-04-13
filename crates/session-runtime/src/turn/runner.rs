@@ -40,11 +40,16 @@ use super::{
     token_budget::{TokenBudgetDecision, build_auto_continue_nudge, check_token_budget},
     tool_cycle::{self, ToolCycleContext, ToolCycleOutcome},
 };
-use crate::context_window::{
-    file_access::FileAccessTracker,
-    micro_compact::MicroCompactState,
-    request_assembler::{AssemblePromptRequest, ContextWindowSettings, assemble_prompt_request},
-    token_usage::TokenUsageTracker,
+use crate::{
+    SessionState,
+    context_window::{
+        file_access::FileAccessTracker,
+        micro_compact::MicroCompactState,
+        request_assembler::{
+            AssemblePromptRequest, ContextWindowSettings, assemble_prompt_request,
+        },
+        token_usage::TokenUsageTracker,
+    },
 };
 
 /// 单个 Turn 的默认最大 step 数，防止无限循环。
@@ -59,6 +64,7 @@ pub struct TurnRunRequest {
     pub working_dir: String,
     pub turn_id: String,
     pub messages: Vec<LlmMessage>,
+    pub session_state: Arc<SessionState>,
     pub runtime: RuntimeConfig,
     pub cancel: CancelToken,
     pub agent: AgentEventContext,
@@ -195,8 +201,8 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
             assembled.llm_request,
             &request.turn_id,
             &request.agent,
+            &request.session_state,
             &request.cancel,
-            &mut events,
         )
         .await
         {
@@ -397,6 +403,7 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
         let tool_result = tool_cycle::execute_tool_calls(
             &mut ToolCycleContext {
                 gateway,
+                session_state: &request.session_state,
                 session_id: &request.session_id,
                 working_dir: &request.working_dir,
                 turn_id: &request.turn_id,

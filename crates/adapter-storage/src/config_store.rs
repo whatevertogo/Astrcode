@@ -38,6 +38,21 @@ impl FileConfigStore {
         &self.config_path
     }
 
+    fn user_mcp_path(&self) -> PathBuf {
+        self.config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("mcp.json")
+    }
+
+    fn local_mcp_path(&self, working_dir: &Path) -> PathBuf {
+        working_dir.join(".astrcode").join("mcp.json")
+    }
+
+    fn project_mcp_path(&self, working_dir: &Path) -> PathBuf {
+        working_dir.join(".mcp.json")
+    }
+
     /// 从磁盘加载配置。文件不存在时创建默认配置。
     pub fn load(&self) -> Result<Config> {
         if !self.config_path.exists() {
@@ -87,9 +102,45 @@ impl FileConfigStore {
         self.write_json_atomic(&overlay_path, overlay)
     }
 
+    /// 读取用户级 `~/.astrcode/mcp.json` 原始值。
+    pub fn load_user_mcp(&self) -> Result<Option<Value>> {
+        let user_mcp_path = self.user_mcp_path();
+        if !user_mcp_path.exists() {
+            return Ok(None);
+        }
+        self.read_json(&user_mcp_path).map(Some)
+    }
+
+    /// 保存用户级 `~/.astrcode/mcp.json`；空值会删除文件，保持目录干净。
+    pub fn save_user_mcp(&self, mcp: Option<&Value>) -> Result<()> {
+        let user_mcp_path = self.user_mcp_path();
+        match mcp {
+            Some(value) => {
+                if let Some(parent) = user_mcp_path.parent() {
+                    ensure_parent_dir(parent)?;
+                }
+                self.write_json_atomic(&user_mcp_path, value)
+            },
+            None => {
+                if user_mcp_path.exists() {
+                    fs::remove_file(&user_mcp_path).map_err(|e| {
+                        AstrError::io(
+                            format!(
+                                "failed to remove user MCP config {}",
+                                user_mcp_path.display()
+                            ),
+                            e,
+                        )
+                    })?;
+                }
+                Ok(())
+            },
+        }
+    }
+
     /// 读取项目级 `.mcp.json` 原始值。
     pub fn load_project_mcp(&self, working_dir: &Path) -> Result<Option<Value>> {
-        let project_path = working_dir.join(".mcp.json");
+        let project_path = self.project_mcp_path(working_dir);
         if !project_path.exists() {
             return Ok(None);
         }
@@ -98,9 +149,14 @@ impl FileConfigStore {
 
     /// 保存项目级 `.mcp.json`；空值会删除文件，保持工作区干净。
     pub fn save_project_mcp(&self, working_dir: &Path, mcp: Option<&Value>) -> Result<()> {
-        let project_path = working_dir.join(".mcp.json");
+        let project_path = self.project_mcp_path(working_dir);
         match mcp {
-            Some(value) => self.write_json_atomic(&project_path, value),
+            Some(value) => {
+                if let Some(parent) = project_path.parent() {
+                    ensure_parent_dir(parent)?;
+                }
+                self.write_json_atomic(&project_path, value)
+            },
             None => {
                 if project_path.exists() {
                     fs::remove_file(&project_path).map_err(|e| {
@@ -109,6 +165,39 @@ impl FileConfigStore {
                                 "failed to remove project MCP config {}",
                                 project_path.display()
                             ),
+                            e,
+                        )
+                    })?;
+                }
+                Ok(())
+            },
+        }
+    }
+
+    /// 读取项目本地 `.astrcode/mcp.json` 原始值。
+    pub fn load_local_mcp(&self, working_dir: &Path) -> Result<Option<Value>> {
+        let local_path = self.local_mcp_path(working_dir);
+        if !local_path.exists() {
+            return Ok(None);
+        }
+        self.read_json(&local_path).map(Some)
+    }
+
+    /// 保存项目本地 `.astrcode/mcp.json`；空值会删除文件，保持工作区干净。
+    pub fn save_local_mcp(&self, working_dir: &Path, mcp: Option<&Value>) -> Result<()> {
+        let local_path = self.local_mcp_path(working_dir);
+        match mcp {
+            Some(value) => {
+                if let Some(parent) = local_path.parent() {
+                    ensure_parent_dir(parent)?;
+                }
+                self.write_json_atomic(&local_path, value)
+            },
+            None => {
+                if local_path.exists() {
+                    fs::remove_file(&local_path).map_err(|e| {
+                        AstrError::io(
+                            format!("failed to remove local MCP config {}", local_path.display()),
                             e,
                         )
                     })?;
@@ -131,12 +220,7 @@ impl FileConfigStore {
 
     fn ensure_parent(&self) -> Result<()> {
         if let Some(parent) = self.config_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                AstrError::io(
-                    format!("failed to create config dir '{}'", parent.display()),
-                    e,
-                )
-            })?;
+            ensure_parent_dir(parent)?;
         }
         Ok(())
     }
@@ -211,6 +295,15 @@ impl FileConfigStore {
     }
 }
 
+fn ensure_parent_dir(parent: &Path) -> Result<()> {
+    fs::create_dir_all(parent).map_err(|e| {
+        AstrError::io(
+            format!("failed to create config dir '{}'", parent.display()),
+            e,
+        )
+    })
+}
+
 impl std::fmt::Debug for FileConfigStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileConfigStore")
@@ -246,5 +339,78 @@ impl ConfigStore for FileConfigStore {
 
     fn save_project_mcp(&self, working_dir: &std::path::Path, mcp: Option<&Value>) -> Result<()> {
         FileConfigStore::save_project_mcp(self, working_dir, mcp)
+    }
+
+    fn load_user_mcp(&self) -> Result<Option<Value>> {
+        FileConfigStore::load_user_mcp(self)
+    }
+
+    fn save_user_mcp(&self, mcp: Option<&Value>) -> Result<()> {
+        FileConfigStore::save_user_mcp(self, mcp)
+    }
+
+    fn load_local_mcp(&self, working_dir: &std::path::Path) -> Result<Option<Value>> {
+        FileConfigStore::load_local_mcp(self, working_dir)
+    }
+
+    fn save_local_mcp(&self, working_dir: &std::path::Path, mcp: Option<&Value>) -> Result<()> {
+        FileConfigStore::save_local_mcp(self, working_dir, mcp)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::FileConfigStore;
+
+    #[test]
+    fn user_mcp_roundtrip_uses_home_sidecar_file() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let store = FileConfigStore::new(temp.path().join(".astrcode").join("config.json"));
+        let value = json!({
+            "mcpServers": {
+                "demo": {
+                    "command": "npx"
+                }
+            }
+        });
+
+        store
+            .save_user_mcp(Some(&value))
+            .expect("user mcp should save");
+
+        let loaded = store
+            .load_user_mcp()
+            .expect("user mcp should load")
+            .expect("user mcp file should exist");
+        assert_eq!(loaded, value);
+        assert!(temp.path().join(".astrcode").join("mcp.json").exists());
+    }
+
+    #[test]
+    fn local_mcp_roundtrip_uses_project_astrcode_sidecar_file() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let project = tempfile::tempdir().expect("project tempdir should be created");
+        let store = FileConfigStore::new(temp.path().join(".astrcode").join("config.json"));
+        let value = json!({
+            "mcpServers": {
+                "demo": {
+                    "type": "http",
+                    "url": "http://localhost:8080/mcp"
+                }
+            }
+        });
+
+        store
+            .save_local_mcp(project.path(), Some(&value))
+            .expect("local mcp should save");
+
+        let loaded = store
+            .load_local_mcp(project.path())
+            .expect("local mcp should load")
+            .expect("local mcp file should exist");
+        assert_eq!(loaded, value);
+        assert!(project.path().join(".astrcode").join("mcp.json").exists());
     }
 }

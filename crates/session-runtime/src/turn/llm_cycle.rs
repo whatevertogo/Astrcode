@@ -14,11 +14,12 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    AgentEventContext, AstrError, CancelToken, LlmEvent, LlmRequest, Result, StorageEvent,
-    StorageEventPayload,
+    AgentEvent, AgentEventContext, AstrError, CancelToken, LlmEvent, LlmRequest, Result,
 };
 use astrcode_kernel::{KernelError, KernelGateway};
 use tokio::sync::mpsc;
+
+use crate::SessionState;
 
 /// 调用 LLM 并收集流式 delta 为 StorageEvent。
 ///
@@ -29,8 +30,8 @@ pub async fn call_llm_streaming(
     request: LlmRequest,
     turn_id: &str,
     agent: &AgentEventContext,
+    session_state: &SessionState,
     cancel: &CancelToken,
-    events: &mut Vec<StorageEvent>,
 ) -> Result<astrcode_core::LlmOutput> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<LlmEvent>();
 
@@ -47,7 +48,7 @@ pub async fn call_llm_streaming(
             result = &mut generate_future => break result,
             maybe_event = event_rx.recv(), if event_rx_open => {
                 match maybe_event {
-                    Some(event) => push_llm_delta(event, turn_id, agent, events),
+                    Some(event) => emit_llm_delta_live(event, turn_id, agent, session_state),
                     None => event_rx_open = false,
                 }
             }
@@ -60,7 +61,7 @@ pub async fn call_llm_streaming(
 
     // 排空 channel 中残余事件：LLM 完成前推送的最后几个 delta
     while let Ok(event) = event_rx.try_recv() {
-        push_llm_delta(event, turn_id, agent, events);
+        emit_llm_delta_live(event, turn_id, agent, session_state);
     }
 
     output.map_err(map_kernel_error)
@@ -78,29 +79,30 @@ pub fn is_prompt_too_long(error: &astrcode_core::AstrError) -> bool {
         || contains_ascii_case_insensitive(&message, "too many tokens")
 }
 
-/// 将 LLM 流式增量事件转为 StorageEvent。
+/// 将 LLM 流式增量直接发到 live-only 广播通道。
 ///
-/// TextDelta → AssistantDelta, ThinkingDelta → ThinkingDelta。
-/// ThinkingSignature（计费令牌）和 ToolCallDelta（provider 内部聚合）直接丢弃。
-fn push_llm_delta(
+/// 为什么不再把 token 级 delta 塞进 turn 结束后的 durable 批量事件：
+/// 旧实现会等整轮 run_turn 完成后才 append，导致前端只能在结束时一次性看到全文。
+/// live delta 负责“即时吐字”，durable 真相继续由 AssistantFinal / TurnDone 承担。
+fn emit_llm_delta_live(
     event: LlmEvent,
     turn_id: &str,
     agent: &AgentEventContext,
-    events: &mut Vec<StorageEvent>,
+    session_state: &SessionState,
 ) {
     match event {
         LlmEvent::TextDelta(text) => {
-            events.push(StorageEvent {
-                turn_id: Some(turn_id.to_string()),
+            session_state.broadcast_live_event(AgentEvent::ModelDelta {
+                turn_id: turn_id.to_string(),
                 agent: agent.clone(),
-                payload: StorageEventPayload::AssistantDelta { token: text },
+                delta: text,
             });
         },
         LlmEvent::ThinkingDelta(text) => {
-            events.push(StorageEvent {
-                turn_id: Some(turn_id.to_string()),
+            session_state.broadcast_live_event(AgentEvent::ThinkingDelta {
+                turn_id: turn_id.to_string(),
                 agent: agent.clone(),
-                payload: StorageEventPayload::ThinkingDelta { token: text },
+                delta: text,
             });
         },
         // ThinkingSignature 是 Anthropic API 计费验证令牌，ToolCallDelta 由 provider 内部聚合。

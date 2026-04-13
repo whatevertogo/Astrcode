@@ -1,7 +1,8 @@
 use std::{path::Path, sync::Arc};
 
 use astrcode_core::{
-    AgentProfile, DeleteProjectResult, ExecutionAccepted, SessionMeta, config::Config,
+    AgentEventContext, AgentProfile, DeleteProjectResult, ExecutionAccepted, SessionMeta,
+    config::Config,
 };
 use astrcode_kernel::Kernel;
 use astrcode_session_runtime::SessionRuntime;
@@ -18,6 +19,9 @@ pub mod observability;
 pub mod watch;
 
 pub use agent::AgentOrchestrationService;
+use agent::{
+    IMPLICIT_ROOT_PROFILE_ID, implicit_session_root_agent_id, root_execution_event_context,
+};
 pub use astrcode_session_runtime::{
     SessionCatalogEvent, SessionHistorySnapshot, SessionReplay, SessionViewSnapshot, TurnSummary,
 };
@@ -305,8 +309,9 @@ impl App {
                 runtime.max_steps = Some(max_steps as usize);
             }
         }
+        let root_agent = self.ensure_session_root_agent_context(session_id).await?;
         self.session_runtime
-            .submit_prompt(session_id, text, runtime)
+            .submit_prompt_for_agent(session_id, text, runtime, root_agent)
             .await
             .map_err(ApplicationError::from)
     }
@@ -464,5 +469,44 @@ impl App {
             .close_agent_subtree(agent_id)
             .await
             .map_err(|e| ApplicationError::Internal(e.to_string()))
+    }
+
+    async fn ensure_session_root_agent_context(
+        &self,
+        session_id: &str,
+    ) -> Result<AgentEventContext, ApplicationError> {
+        self.validate_non_empty("sessionId", session_id)?;
+        let normalized_session_id = astrcode_session_runtime::normalize_session_id(session_id);
+
+        if let Some(handle) = self
+            .kernel
+            .agent_control()
+            .find_root_agent_for_session(&normalized_session_id)
+            .await
+        {
+            return Ok(root_execution_event_context(
+                handle.agent_id,
+                handle.agent_profile,
+            ));
+        }
+
+        let handle = self
+            .kernel
+            .agent_control()
+            .register_root_agent(
+                implicit_session_root_agent_id(&normalized_session_id),
+                normalized_session_id,
+                IMPLICIT_ROOT_PROFILE_ID.to_string(),
+            )
+            .await
+            .map_err(|error| {
+                ApplicationError::Internal(format!(
+                    "failed to register implicit root agent for session prompt: {error}"
+                ))
+            })?;
+        Ok(root_execution_event_context(
+            handle.agent_id,
+            handle.agent_profile,
+        ))
     }
 }
