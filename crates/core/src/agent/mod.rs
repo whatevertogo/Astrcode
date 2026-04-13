@@ -8,6 +8,7 @@
 //! - `lifecycle`：AgentLifecycleStatus + AgentTurnOutcome（四工具模型的状态拆层）
 //! - `mailbox`：durable mailbox 信封、事件载荷、四工具参数和 observe 快照
 
+pub mod executor;
 pub mod lifecycle;
 pub mod mailbox;
 

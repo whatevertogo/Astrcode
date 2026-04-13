@@ -4,8 +4,9 @@
 //! 改为通过 Kernel + SessionRuntime 完成所有操作。
 
 use astrcode_core::{
-    AgentLifecycleStatus, ChildAgentRef, ChildSessionLineageKind, CloseAgentParams,
-    CollaborationResult, CollaborationResultKind, InboxEnvelopeKind, SendAgentParams, SubRunHandle,
+    AgentInboxEnvelope, AgentLifecycleStatus, ChildAgentRef, ChildSessionLineageKind,
+    CloseAgentParams, CollaborationResult, CollaborationResultKind, InboxEnvelopeKind,
+    SendAgentParams, SubRunHandle,
 };
 
 use super::AgentOrchestrationService;
@@ -44,8 +45,7 @@ impl AgentOrchestrationService {
 
         let child = self
             .kernel
-            .agent_control()
-            .get(&params.agent_id)
+            .get_agent_handle(&params.agent_id)
             .await
             .ok_or_else(|| {
                 super::AgentOrchestrationError::NotFound(format!(
@@ -56,11 +56,7 @@ impl AgentOrchestrationService {
 
         self.verify_caller_owns_child(ctx, &child)?;
 
-        let lifecycle = self
-            .kernel
-            .agent_control()
-            .get_lifecycle(&params.agent_id)
-            .await;
+        let lifecycle = self.kernel.get_agent_lifecycle(&params.agent_id).await;
         if matches!(lifecycle, Some(AgentLifecycleStatus::Terminated)) {
             return Err(super::AgentOrchestrationError::InvalidInput(format!(
                 "agent '{}' has been terminated and cannot receive new messages",
@@ -73,15 +69,13 @@ impl AgentOrchestrationService {
         {
             let pending = self
                 .kernel
-                .agent_control()
-                .drain_inbox(&child.agent_id)
+                .drain_agent_inbox(&child.agent_id)
                 .await
                 .unwrap_or_default();
             let resume_message = super::mailbox::compose_reusable_child_message(&pending, &params);
 
             // 通过 kernel resume 机制重启子 agent
-            if let Some(reused_handle) = self.kernel.agent_control().resume(&params.agent_id).await
-            {
+            if let Some(reused_handle) = self.kernel.resume_agent(&params.agent_id).await {
                 log::info!(
                     "send: reusable child agent '{}' restarted with new turn (subRunId='{}')",
                     params.agent_id,
@@ -89,19 +83,32 @@ impl AgentOrchestrationService {
                 );
 
                 // 向子 session 提交 resume prompt
-                if let Some(child_session_id) = reused_handle
+                let Some(child_session_id) = reused_handle
                     .child_session_id
                     .as_ref()
                     .or(child.child_session_id.as_ref())
+                else {
+                    self.restore_pending_inbox(&child.agent_id, pending).await;
+                    return Err(super::AgentOrchestrationError::Internal(format!(
+                        "agent '{}' resume failed: missing child session id",
+                        params.agent_id
+                    )));
+                };
+
+                if let Err(error) = self
+                    .session_runtime
+                    .submit_prompt(
+                        child_session_id,
+                        resume_message,
+                        self.default_runtime_config(),
+                    )
+                    .await
                 {
-                    let _ = self
-                        .session_runtime
-                        .submit_prompt(
-                            child_session_id,
-                            resume_message,
-                            self.default_runtime_config(),
-                        )
-                        .await;
+                    self.restore_pending_inbox(&child.agent_id, pending).await;
+                    return Err(super::AgentOrchestrationError::Internal(format!(
+                        "agent '{}' resume submit failed: {error}",
+                        params.agent_id
+                    )));
                 }
 
                 let child_ref = self.build_child_ref_from_handle(&reused_handle).await;
@@ -116,6 +123,9 @@ impl AgentOrchestrationService {
                     failure: None,
                 });
             }
+
+            // resume 失败时恢复原 inbox，随后走常规 send 路径追加新消息。
+            self.restore_pending_inbox(&child.agent_id, pending).await;
         }
 
         // 非 idle child：直接追加 inbox 信封
@@ -136,8 +146,7 @@ impl AgentOrchestrationService {
             .await?;
 
         self.kernel
-            .agent_control()
-            .push_inbox(&child.agent_id, envelope)
+            .deliver_to_agent(&child.agent_id, envelope)
             .await
             .ok_or_else(|| {
                 super::AgentOrchestrationError::NotFound(format!(
@@ -177,8 +186,7 @@ impl AgentOrchestrationService {
 
         let target = self
             .kernel
-            .agent_control()
-            .get(&params.agent_id)
+            .get_agent_handle(&params.agent_id)
             .await
             .ok_or_else(|| {
                 super::AgentOrchestrationError::NotFound(format!(
@@ -191,8 +199,7 @@ impl AgentOrchestrationService {
         // 收集子树用于 durable discard
         let subtree_handles = self
             .kernel
-            .agent_control()
-            .collect_subtree_handles(&params.agent_id)
+            .collect_agent_subtree_handles(&params.agent_id)
             .await;
         let mut discard_targets = Vec::with_capacity(subtree_handles.len() + 1);
         discard_targets.push(target.clone());
@@ -202,25 +209,13 @@ impl AgentOrchestrationService {
             .await?;
 
         // 执行 terminate
-        self.kernel
-            .agent_control()
-            .terminate_subtree(&params.agent_id)
+        let cancelled = self
+            .kernel
+            .terminate_agent_subtree(&params.agent_id)
             .await
             .ok_or_else(|| {
                 super::AgentOrchestrationError::NotFound(format!(
                     "agent '{}' terminate failed (not found or already finalized)",
-                    params.agent_id
-                ))
-            })?;
-
-        let cancelled = self
-            .kernel
-            .agent_control()
-            .get(&params.agent_id)
-            .await
-            .ok_or_else(|| {
-                super::AgentOrchestrationError::NotFound(format!(
-                    "agent '{}' not found",
                     params.agent_id
                 ))
             })?;
@@ -278,22 +273,33 @@ impl AgentOrchestrationService {
         &self,
         mut child_ref: ChildAgentRef,
     ) -> ChildAgentRef {
-        let lifecycle = self
-            .kernel
-            .agent_control()
-            .get_lifecycle(&child_ref.agent_id)
-            .await;
+        let lifecycle = self.kernel.get_agent_lifecycle(&child_ref.agent_id).await;
         let last_turn_outcome = self
             .kernel
-            .agent_control()
-            .get_turn_outcome(&child_ref.agent_id)
-            .await
-            .flatten();
+            .get_agent_turn_outcome(&child_ref.agent_id)
+            .await;
         if let Some(lifecycle) = lifecycle {
             child_ref.status =
                 project_collaboration_lifecycle(lifecycle, last_turn_outcome, child_ref.status);
         }
         child_ref
+    }
+
+    async fn restore_pending_inbox(&self, agent_id: &str, pending: Vec<AgentInboxEnvelope>) {
+        for envelope in pending {
+            if self
+                .kernel
+                .deliver_to_agent(agent_id, envelope)
+                .await
+                .is_none()
+            {
+                log::warn!(
+                    "failed to restore drained inbox after resume error: agent='{}'",
+                    agent_id
+                );
+                break;
+            }
+        }
     }
 }
 

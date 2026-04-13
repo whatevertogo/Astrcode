@@ -252,7 +252,6 @@ dependencies = [
 name = "astrcode-application"
 version = "0.1.0"
 dependencies = [
- "astrcode-adapter-tools",
  "astrcode-core",
  "astrcode-kernel",
  "astrcode-session-runtime",

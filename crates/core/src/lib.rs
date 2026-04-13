@@ -61,6 +61,7 @@ pub use agent::{
     ResolvedSubagentContextOverrides, SendAgentParams, SpawnAgentParams, SubRunFailure,
     SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunResult, SubRunStorageMode,
     SubagentContextOverrides,
+    executor::{CollaborationExecutor, SubAgentExecutor},
     lifecycle::{AgentLifecycleStatus, AgentTurnOutcome},
     mailbox::{
         AgentMailboxEnvelope, BatchId, CloseParams, DeliveryId, MailboxBatchAckedPayload,

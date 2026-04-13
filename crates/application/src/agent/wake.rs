@@ -66,8 +66,7 @@ impl AgentOrchestrationService {
         // 2. 向 kernel delivery queue 排入通知
         let queued = self
             .kernel
-            .agent_control()
-            .enqueue_parent_delivery(
+            .enqueue_child_delivery(
                 parent_session_id.clone(),
                 parent_turn_id.to_string(),
                 notification.clone(),
@@ -106,7 +105,6 @@ impl AgentOrchestrationService {
 
         let delivery_batch = self
             .kernel
-            .agent_control()
             .checkout_parent_delivery_batch(&parent_session_id)
             .await
             .ok_or_else(|| {
@@ -134,7 +132,6 @@ impl AgentOrchestrationService {
                 // consume delivery batch
                 let consumed = self
                     .kernel
-                    .agent_control()
                     .consume_parent_delivery_batch(&parent_session_id, &batch_delivery_ids)
                     .await;
                 if !consumed {
@@ -149,7 +146,6 @@ impl AgentOrchestrationService {
             Err(error) => {
                 // requeue delivery batch 以便重试
                 self.kernel
-                    .agent_control()
                     .requeue_parent_delivery_batch(&parent_session_id, &batch_delivery_ids)
                     .await;
                 log::warn!(

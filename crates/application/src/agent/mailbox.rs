@@ -85,19 +85,14 @@ impl AgentOrchestrationService {
             AgentLifecycleStatus::Running
         } else {
             self.kernel
-                .agent_control()
-                .get_lifecycle(&sender_agent_id)
+                .get_agent_lifecycle(&sender_agent_id)
                 .await
                 .unwrap_or(AgentLifecycleStatus::Running)
         };
         let sender_last_turn_outcome = if sender_agent_id.is_empty() {
             None
         } else {
-            self.kernel
-                .agent_control()
-                .get_turn_outcome(&sender_agent_id)
-                .await
-                .flatten()
+            self.kernel.get_agent_turn_outcome(&sender_agent_id).await
         };
         let sender_open_session_id = ctx
             .agent_context()

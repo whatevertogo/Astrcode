@@ -48,6 +48,16 @@ impl From<astrcode_core::AstrError> for AgentOrchestrationError {
     }
 }
 
+fn map_orchestration_error(error: AgentOrchestrationError) -> astrcode_core::AstrError {
+    match error {
+        AgentOrchestrationError::InvalidInput(message)
+        | AgentOrchestrationError::NotFound(message) => {
+            astrcode_core::AstrError::Validation(message)
+        },
+        AgentOrchestrationError::Internal(message) => astrcode_core::AstrError::Internal(message),
+    }
+}
+
 /// Agent 编排服务。
 ///
 /// 持有 `Kernel` + `SessionRuntime` 两个显式依赖，
@@ -84,7 +94,7 @@ impl AgentOrchestrationService {
 // ── 实现 SubAgentExecutor（供 spawn 工具使用）──────────────────────
 
 #[async_trait]
-impl astrcode_adapter_tools::SubAgentExecutor for AgentOrchestrationService {
+impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
     async fn launch(&self, params: SpawnAgentParams, ctx: &ToolContext) -> Result<SubRunResult> {
         let parent_agent_id = ctx.agent_context().agent_id.clone().unwrap_or_default();
         let parent_turn_id = ctx.turn_id().unwrap_or("unknown-turn").to_string();
@@ -185,7 +195,7 @@ impl astrcode_adapter_tools::SubAgentExecutor for AgentOrchestrationService {
 // ── 实现 CollaborationExecutor（供 send/close/observe 工具使用）─────
 
 #[async_trait]
-impl astrcode_adapter_tools::CollaborationExecutor for AgentOrchestrationService {
+impl astrcode_core::CollaborationExecutor for AgentOrchestrationService {
     async fn send(
         &self,
         params: SendAgentParams,
@@ -193,7 +203,7 @@ impl astrcode_adapter_tools::CollaborationExecutor for AgentOrchestrationService
     ) -> Result<CollaborationResult> {
         self.send_to_child(params, ctx)
             .await
-            .map_err(|e| astrcode_core::AstrError::Internal(e.to_string()))
+            .map_err(map_orchestration_error)
     }
 
     async fn close(
@@ -203,7 +213,7 @@ impl astrcode_adapter_tools::CollaborationExecutor for AgentOrchestrationService
     ) -> Result<CollaborationResult> {
         self.close_child(params, ctx)
             .await
-            .map_err(|e| astrcode_core::AstrError::Internal(e.to_string()))
+            .map_err(map_orchestration_error)
     }
 
     async fn observe(
@@ -213,6 +223,6 @@ impl astrcode_adapter_tools::CollaborationExecutor for AgentOrchestrationService
     ) -> Result<CollaborationResult> {
         self.observe_child(params, ctx)
             .await
-            .map_err(|e| astrcode_core::AstrError::Internal(e.to_string()))
+            .map_err(map_orchestration_error)
     }
 }

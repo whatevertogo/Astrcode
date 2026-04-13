@@ -12,6 +12,7 @@
 //! - 整个 CollaborationResult 序列化为 metadata（供前端消费）
 
 use astrcode_core::{CollaborationResult, ToolExecutionResult};
+use serde_json::json;
 
 /// 协作工具的错误结果（参数校验失败等）。
 ///
@@ -43,7 +44,15 @@ pub(crate) fn map_collaboration_result(
 ) -> ToolExecutionResult {
     let error = result.failure.clone();
     let output = result.summary.clone().unwrap_or_default();
-    let metadata = serde_json::to_value(&result).ok();
+    let metadata = Some(match serde_json::to_value(&result) {
+        Ok(value) => value,
+        Err(serialization_error) => json!({
+            "schema": "collaborationResult",
+            "accepted": result.accepted,
+            "kind": format!("{:?}", result.kind),
+            "serializationError": serialization_error.to_string(),
+        }),
+    });
 
     ToolExecutionResult {
         tool_call_id,
