@@ -218,9 +218,6 @@ pub async fn bootstrap_server_runtime_with_options(
         session_runtime.clone(),
         profiles.clone(),
         task_registry.clone(),
-        Some(astrcode_application::resolve_default_token_budget(
-            &config_service.get_config().await.runtime,
-        )),
         observability.clone(),
     ));
 

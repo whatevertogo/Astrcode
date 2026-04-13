@@ -72,16 +72,6 @@ fn validate_runtime_params(runtime: &astrcode_core::RuntimeConfig) -> Result<()>
             "runtime.compactKeepRecentTurns must be greater than 0".to_string(),
         ));
     }
-    if matches!(runtime.continuation_min_delta_tokens, Some(0)) {
-        return Err(AstrError::Validation(
-            "runtime.continuationMinDeltaTokens must be greater than 0".to_string(),
-        ));
-    }
-    if matches!(runtime.max_continuations, Some(0)) {
-        return Err(AstrError::Validation(
-            "runtime.maxContinuations must be greater than 0".to_string(),
-        ));
-    }
     if let Some(percent) = runtime.compact_threshold_percent {
         if !(1..=100).contains(&percent) {
             return Err(AstrError::Validation(

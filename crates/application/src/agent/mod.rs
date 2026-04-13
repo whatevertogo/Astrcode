@@ -153,7 +153,6 @@ pub struct AgentOrchestrationService {
     session_runtime: Arc<SessionRuntime>,
     profiles: Arc<ProfileResolutionService>,
     task_registry: Arc<TaskRegistry>,
-    default_token_budget: Option<u64>,
     metrics: Arc<dyn RuntimeMetricsRecorder>,
 }
 
@@ -163,7 +162,6 @@ impl AgentOrchestrationService {
         session_runtime: Arc<SessionRuntime>,
         profiles: Arc<ProfileResolutionService>,
         task_registry: Arc<TaskRegistry>,
-        default_token_budget: Option<u64>,
         metrics: Arc<dyn RuntimeMetricsRecorder>,
     ) -> Self {
         Self {
@@ -171,17 +169,13 @@ impl AgentOrchestrationService {
             session_runtime,
             profiles,
             task_registry,
-            default_token_budget,
             metrics,
         }
     }
 
     /// 返回默认 RuntimeConfig 用于 wake / resume 场景。
     fn default_runtime_config(&self) -> astrcode_core::config::RuntimeConfig {
-        astrcode_core::config::RuntimeConfig {
-            default_token_budget: self.default_token_budget,
-            ..Default::default()
-        }
+        astrcode_core::config::RuntimeConfig::default()
     }
 
     fn resolve_subagent_profile(

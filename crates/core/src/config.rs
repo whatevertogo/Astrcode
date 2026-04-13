@@ -73,13 +73,7 @@ pub struct RuntimeConfig {
     pub recovery_truncate_bytes: Option<usize>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_token_budget: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub continuation_min_delta_tokens: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_continuations: Option<u8>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_connect_timeout_secs: Option<u64>,
@@ -272,12 +266,7 @@ impl fmt::Debug for RuntimeConfig {
             .field("agent", &self.agent)
             .field("max_consecutive_failures", &self.max_consecutive_failures)
             .field("recovery_truncate_bytes", &self.recovery_truncate_bytes)
-            .field("default_token_budget", &self.default_token_budget)
-            .field(
-                "continuation_min_delta_tokens",
-                &self.continuation_min_delta_tokens,
-            )
-            .field("max_continuations", &self.max_continuations)
+            .field("max_steps", &self.max_steps)
             .field("llm_connect_timeout_secs", &self.llm_connect_timeout_secs)
             .field("llm_read_timeout_secs", &self.llm_read_timeout_secs)
             .field("llm_max_retries", &self.llm_max_retries)

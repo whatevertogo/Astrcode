@@ -21,7 +21,7 @@ pub struct AgentProfileDto {
     pub allowed_tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disallowed_tools: Vec<String>,
-    // TODO: 未来可能需要添加 max_steps 和 token_budget 参数
+    // TODO: 未来可能需要添加更多 agent 级执行限制摘要
 }
 
 /// `POST /api/v1/agents/{id}/execute` 请求体。

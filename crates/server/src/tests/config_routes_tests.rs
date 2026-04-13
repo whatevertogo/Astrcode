@@ -156,7 +156,6 @@ async fn prompt_route_roundtrips_accepted_execution_control() {
                     serde_json::json!({
                         "text": "hello",
                         "control": {
-                            "tokenBudget": 256,
                             "maxSteps": 7
                         }
                     })
@@ -172,7 +171,6 @@ async fn prompt_route_roundtrips_accepted_execution_control() {
     let accepted_control = payload
         .accepted_control
         .expect("accepted control should be returned");
-    assert_eq!(accepted_control.token_budget, Some(256));
     assert_eq!(accepted_control.max_steps, Some(7));
     assert_eq!(accepted_control.manual_compact, None);
 }
@@ -263,7 +261,7 @@ async fn prompt_route_rejects_invalid_execution_control() {
                     serde_json::json!({
                         "text": "hello",
                         "control": {
-                            "tokenBudget": 0
+                            "maxSteps": 0
                         }
                     })
                     .to_string(),

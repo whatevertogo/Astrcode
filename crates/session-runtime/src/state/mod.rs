@@ -139,15 +139,6 @@ where
     })?
 }
 
-// ── SessionTokenBudgetState ───────────────────────────────
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct SessionTokenBudgetState {
-    pub total_budget: u64,
-    pub used_tokens: u64,
-    pub continuation_count: u8,
-}
-
 // ── SessionState ──────────────────────────────────────────
 
 // ── SessionState ──────────────────────────────────────────
@@ -162,7 +153,6 @@ pub struct SessionState {
     pub cancel: StdMutex<CancelToken>,
     pub active_turn_id: StdMutex<Option<String>>,
     pub turn_lease: StdMutex<Option<Box<dyn SessionTurnLease>>>,
-    pub token_budget: StdMutex<Option<SessionTokenBudgetState>>,
     pub pending_manual_compact: StdMutex<bool>,
     pub compact_failure_count: StdMutex<u32>,
     pub broadcaster: broadcast::Sender<SessionEventRecord>,
@@ -215,7 +205,6 @@ impl SessionState {
             cancel: StdMutex::new(CancelToken::new()),
             active_turn_id: StdMutex::new(None),
             turn_lease: StdMutex::new(None),
-            token_budget: StdMutex::new(None),
             pending_manual_compact: StdMutex::new(false),
             compact_failure_count: StdMutex::new(0),
             broadcaster,
@@ -264,9 +253,6 @@ impl SessionState {
         );
         support::with_lock_recovery(&self.turn_lease, "session turn lease", |lease_guard| {
             *lease_guard = None;
-        });
-        support::with_lock_recovery(&self.token_budget, "session token budget", |budget_guard| {
-            *budget_guard = None;
         });
         support::with_lock_recovery(&self.cancel, "session cancel", |cancel_guard| {
             *cancel_guard = CancelToken::new();
@@ -567,13 +553,11 @@ pub fn prepare_session_execution(
     turn_id: &str,
     cancel: CancelToken,
     turn_lease: Box<dyn SessionTurnLease>,
-    token_budget: Option<u64>,
 ) -> Result<()> {
     let mut cancel_guard = support::lock_anyhow(&session.cancel, "session cancel")?;
     let mut active_turn_guard =
         support::lock_anyhow(&session.active_turn_id, "session active turn")?;
     let mut lease_guard = support::lock_anyhow(&session.turn_lease, "session turn lease")?;
-    let mut budget_guard = support::lock_anyhow(&session.token_budget, "session token budget")?;
     if session
         .running
         .swap(true, std::sync::atomic::Ordering::SeqCst)
@@ -586,11 +570,6 @@ pub fn prepare_session_execution(
     *cancel_guard = cancel;
     *active_turn_guard = Some(turn_id.to_string());
     *lease_guard = Some(turn_lease);
-    *budget_guard = token_budget.map(|total_budget| SessionTokenBudgetState {
-        total_budget,
-        used_tokens: 0,
-        continuation_count: 0,
-    });
     Ok(())
 }
 

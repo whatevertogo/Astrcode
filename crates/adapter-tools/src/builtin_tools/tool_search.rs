@@ -128,9 +128,11 @@ impl Tool for ToolSearchTool {
             .side_effect(SideEffect::None)
             .concurrency_safe(true)
             .prompt(ToolPromptMetadata::new(
-                "Search external MCP/plugin tools and fetch their full schema only when needed.",
-                "Use `tool_search` before calling an MCP or plugin tool when the prompt summary \
-                 only gives you a name/description and you still need the concrete JSON schema.",
+                "Search external MCP/plugin tools and return their full schema on demand.",
+                "Start with builtin tools. Use `tool_search` only when builtin tools are not \
+                 enough and the prompt only gives a rough external-tool summary. `tool_search` \
+                 returns candidate MCP/plugin tools plus schema, then call the matching concrete \
+                 tool such as `mcp__...`.",
             ))
     }
 

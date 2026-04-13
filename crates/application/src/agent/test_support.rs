@@ -59,7 +59,6 @@ pub(super) fn build_agent_test_harness(llm_behavior: TestLlmBehavior) -> Result<
         Arc::clone(&session_runtime),
         profiles,
         task_registry,
-        None,
         metrics.clone(),
     );
 

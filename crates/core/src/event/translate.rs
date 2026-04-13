@@ -532,34 +532,18 @@ mod tests {
     #[test]
     fn internal_user_origins_do_not_replay_as_user_visible_messages() {
         let records = replay_records(
-            &[
-                StoredEvent {
-                    storage_seq: 3,
-                    event: StorageEvent {
-                        turn_id: Some("turn-3".to_string()),
-                        agent: AgentEventContext::default(),
-                        payload: StorageEventPayload::UserMessage {
-                            content: "The conversation was compacted. Continue from where you \
-                                      left off."
-                                .to_string(),
-                            origin: UserMessageOrigin::AutoContinueNudge,
-                            timestamp: chrono::Utc::now(),
-                        },
+            &[StoredEvent {
+                storage_seq: 3,
+                event: StorageEvent {
+                    turn_id: Some("turn-3".to_string()),
+                    agent: AgentEventContext::default(),
+                    payload: StorageEventPayload::UserMessage {
+                        content: format_compact_summary("summary"),
+                        origin: UserMessageOrigin::CompactSummary,
+                        timestamp: chrono::Utc::now(),
                     },
                 },
-                StoredEvent {
-                    storage_seq: 4,
-                    event: StorageEvent {
-                        turn_id: Some("turn-3".to_string()),
-                        agent: AgentEventContext::default(),
-                        payload: StorageEventPayload::UserMessage {
-                            content: format_compact_summary("summary"),
-                            origin: UserMessageOrigin::CompactSummary,
-                            timestamp: chrono::Utc::now(),
-                        },
-                    },
-                },
-            ],
+            }],
             None,
         );
 

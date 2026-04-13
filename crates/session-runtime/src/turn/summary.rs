@@ -15,10 +15,6 @@ use std::time::Duration;
 pub enum TurnFinishReason {
     /// LLM 自然结束（无工具调用，无截断）
     NaturalEnd,
-    /// 预算耗尽
-    BudgetExhausted,
-    /// 收益递减（增量过小）
-    DiminishingReturns,
     /// 用户取消
     Cancelled,
     /// 不可恢复错误
@@ -39,8 +35,6 @@ pub struct TurnSummary {
     pub wall_duration: Duration,
     /// Turn 内 step 数量
     pub step_count: usize,
-    /// 自动续写次数
-    pub continuation_count: u8,
     /// Provider 报告的总 token 使用量（含 input + output）
     pub total_tokens_used: u64,
     /// Provider 报告的 cache read input tokens

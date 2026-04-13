@@ -151,8 +151,6 @@ pub struct SubRunResultDto {
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionControlDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token_budget: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual_compact: Option<bool>,
@@ -182,8 +180,6 @@ pub struct ResolvedExecutionLimitsDto {
     pub allowed_tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token_budget: Option<u64>,
 }
 
 /// Agent 父子关系元数据。

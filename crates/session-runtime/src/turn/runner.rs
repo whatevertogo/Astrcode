@@ -18,7 +18,6 @@
 //! ## 终止条件
 //!
 //! - LLM 返回纯文本（无工具调用）
-//! - Token 预算耗尽或收益递减
 //! - 取消信号触发
 //! - 不可恢复错误
 //! - Step 上限
@@ -27,7 +26,7 @@ use std::{collections::HashSet, path::Path, sync::Arc, time::Instant};
 
 use astrcode_core::{
     AgentEventContext, CancelToken, LlmMessage, PromptFactsProvider, Result, StorageEvent,
-    StorageEventPayload, UserMessageOrigin, config::RuntimeConfig,
+    StorageEventPayload, config::RuntimeConfig,
 };
 use astrcode_kernel::Kernel;
 use chrono::Utc;
@@ -37,7 +36,6 @@ use super::{
     compaction_cycle::{self, ReactiveCompactContext},
     llm_cycle,
     summary::{TurnFinishReason, TurnSummary},
-    token_budget::{TokenBudgetDecision, build_auto_continue_nudge, check_token_budget},
     tool_cycle::{self, ToolCycleContext, ToolCycleOutcome},
 };
 use crate::{
@@ -92,18 +90,10 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
     let mut total_cache_read_tokens: u64 = 0;
     let mut total_cache_creation_tokens: u64 = 0;
 
-    // 解析 token 预算配置。budget > 0 时启用自动续写。
-    let token_budget = request.runtime.default_token_budget.filter(|&b| b > 0);
-    let max_continuations = request.runtime.max_continuations.unwrap_or(3).max(1);
     let max_steps = request
         .runtime
         .max_steps
         .unwrap_or(DEFAULT_MAX_STEPS)
-        .max(1);
-    let continuation_min_delta_tokens = request
-        .runtime
-        .continuation_min_delta_tokens
-        .unwrap_or(500)
         .max(1);
 
     let gateway = kernel.gateway();
@@ -127,8 +117,6 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
 
     let mut step_index: usize = 0;
     let mut reactive_compact_attempts: usize = 0;
-    let mut continuation_count: u8 = 0;
-    let mut last_delta_tokens: usize = 0;
 
     /// 构建当前 TurnSummary 的辅助宏，避免闭包借用冲突。
     macro_rules! make_summary {
@@ -137,7 +125,6 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
                 finish_reason: $reason,
                 wall_duration: turn_started_at.elapsed(),
                 step_count: step_index + 1,
-                continuation_count,
                 total_tokens_used: token_tracker.budget_tokens(0) as u64,
                 cache_read_input_tokens: total_cache_read_tokens,
                 cache_creation_input_tokens: total_cache_creation_tokens,
@@ -258,7 +245,6 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
         // —— 记录 token 使用量 ——
         token_tracker.record_usage(output.usage);
         if let Some(usage) = &output.usage {
-            last_delta_tokens = usage.output_tokens;
             total_cache_read_tokens =
                 total_cache_read_tokens.saturating_add(usage.cache_read_input_tokens as u64);
             total_cache_creation_tokens = total_cache_creation_tokens
@@ -299,93 +285,14 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
             );
         }
 
-        // —— 无工具调用时，检查 token budget 驱动的自动续写 ——
+        // —— 无工具调用时，Turn 自然结束 ——
         if !has_tool_calls {
-            let is_max_tokens = matches!(
-                output.finish_reason,
-                astrcode_core::LlmFinishReason::MaxTokens
-            );
-
-            // 当输出被 max_tokens 截断且有预算时，尝试自动续写
-            if is_max_tokens {
-                if let Some(budget) = token_budget {
-                    let turn_tokens_used = token_tracker.budget_tokens(0) as u64;
-                    let decision = check_token_budget(
-                        turn_tokens_used,
-                        budget,
-                        continuation_count,
-                        last_delta_tokens,
-                        continuation_min_delta_tokens,
-                        max_continuations,
-                    );
-
-                    match decision {
-                        TokenBudgetDecision::Continue => {
-                            continuation_count += 1;
-                            let nudge = build_auto_continue_nudge(turn_tokens_used, budget);
-                            messages.push(LlmMessage::User {
-                                content: nudge.clone(),
-                                origin: UserMessageOrigin::AutoContinueNudge,
-                            });
-                            events.push(StorageEvent {
-                                turn_id: Some(request.turn_id.clone()),
-                                agent: request.agent.clone(),
-                                payload: StorageEventPayload::UserMessage {
-                                    content: nudge,
-                                    origin: UserMessageOrigin::AutoContinueNudge,
-                                    timestamp: Utc::now(),
-                                },
-                            });
-                            step_index += 1;
-                            continue;
-                        },
-                        TokenBudgetDecision::Stop => {
-                            events.push(StorageEvent {
-                                turn_id: Some(request.turn_id.clone()),
-                                agent: request.agent.clone(),
-                                payload: StorageEventPayload::TurnDone {
-                                    timestamp: Utc::now(),
-                                    reason: Some("budget_exhausted".to_string()),
-                                },
-                            });
-                            return Ok(TurnRunResult {
-                                outcome: TurnOutcome::Completed,
-                                messages,
-                                events,
-                                summary: make_summary!(TurnFinishReason::BudgetExhausted),
-                            });
-                        },
-                        TokenBudgetDecision::DiminishingReturns => {
-                            events.push(StorageEvent {
-                                turn_id: Some(request.turn_id.clone()),
-                                agent: request.agent.clone(),
-                                payload: StorageEventPayload::TurnDone {
-                                    timestamp: Utc::now(),
-                                    reason: Some("diminishing_returns".to_string()),
-                                },
-                            });
-                            return Ok(TurnRunResult {
-                                outcome: TurnOutcome::Completed,
-                                messages,
-                                events,
-                                summary: make_summary!(TurnFinishReason::DiminishingReturns),
-                            });
-                        },
-                    }
-                }
-            }
-
-            // 无需自动续写，Turn 自然结束
             events.push(StorageEvent {
                 turn_id: Some(request.turn_id.clone()),
                 agent: request.agent.clone(),
                 payload: StorageEventPayload::TurnDone {
                     timestamp: Utc::now(),
-                    reason: if continuation_count > 0 {
-                        Some(format!("continued_{continuation_count}x_ended_naturally"))
-                    } else {
-                        None
-                    },
+                    reason: None,
                 },
             });
             return Ok(TurnRunResult {

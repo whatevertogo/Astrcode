@@ -99,11 +99,9 @@ export interface ResolvedSubagentContextOverrides {
 export interface ResolvedExecutionLimits {
   allowedTools: string[];
   maxSteps?: number;
-  tokenBudget?: number;
 }
 
 export interface ExecutionControl {
-  tokenBudget?: number;
   maxSteps?: number;
   manualCompact?: boolean;
 }

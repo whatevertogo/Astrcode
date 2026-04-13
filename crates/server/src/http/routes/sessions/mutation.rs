@@ -19,7 +19,6 @@ fn to_execution_control(
     control: Option<ExecutionControlDto>,
 ) -> Option<astrcode_application::ExecutionControl> {
     control.map(|control| astrcode_application::ExecutionControl {
-        token_budget: control.token_budget,
         max_steps: control.max_steps,
         manual_compact: control.manual_compact,
     })

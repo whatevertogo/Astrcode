@@ -13,7 +13,6 @@ mod runner;
 mod submit;
 // pub mod subagent;
 pub mod summary;
-pub mod token_budget;
 pub mod tool_cycle;
 
 use astrcode_core::{SessionId, TurnId};

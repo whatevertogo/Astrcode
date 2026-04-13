@@ -168,7 +168,7 @@ impl ToolExecutionResult {
 
 /// 用户消息的来源。
 ///
-/// 用于区分用户直接输入、自动继续提示和压缩摘要，
+/// 用于区分用户直接输入、内部唤醒提示和压缩摘要，
 /// 影响事件翻译和前端展示逻辑。
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -176,8 +176,6 @@ pub enum UserMessageOrigin {
     /// 用户直接输入
     #[default]
     User,
-    /// 自动继续提示（上下文窗口满时自动触发继续）
-    AutoContinueNudge,
     /// 子会话交付后用于唤醒父会话继续决策的内部提示。
     ReactivationPrompt,
     /// 压缩摘要（上下文压缩后插入的摘要消息）
@@ -187,7 +185,7 @@ pub enum UserMessageOrigin {
 /// 与 LLM 交互的消息。
 ///
 /// 对应 OpenAI 兼容 API 的三种角色消息：
-/// - `User`: 用户输入（含来源标记）
+/// - `User`: 用户输入或内部上下文消息（含来源标记）
 /// - `Assistant`: 助手回复（含文本、工具调用、推理内容）
 /// - `Tool`: 工具执行结果
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -197,7 +195,7 @@ pub enum LlmMessage {
     User {
         /// 消息内容
         content: String,
-        /// 消息来源（用户输入/自动继续/压缩摘要）
+        /// 消息来源（用户输入/内部唤醒/压缩摘要）
         origin: UserMessageOrigin,
     },
     /// 助手消息

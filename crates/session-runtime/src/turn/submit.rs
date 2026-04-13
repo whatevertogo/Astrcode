@@ -146,7 +146,6 @@ impl SessionRuntime {
             turn_id.as_str(),
             cancel.clone(),
             submit_target.turn_lease,
-            runtime.default_token_budget,
         )?;
         *submit_target
             .actor

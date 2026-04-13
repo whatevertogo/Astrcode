@@ -127,8 +127,7 @@ pub async fn auto_compact(
         }
     };
 
-    let auto_continue = matches!(config.trigger, astrcode_core::CompactTrigger::Auto);
-    let compacted_messages = compacted_messages(&summary, split.suffix, auto_continue);
+    let compacted_messages = compacted_messages(&summary, split.suffix);
     let post_tokens_estimate = estimate_request_tokens(&compacted_messages, compact_prompt_context);
     Ok(Some(CompactResult {
         messages: compacted_messages,
@@ -210,7 +209,6 @@ fn compact_input_messages(messages: &[LlmMessage]) -> Vec<LlmMessage> {
                 origin: UserMessageOrigin::User,
                 ..
             } => filtered.push(message.clone()),
-            LlmMessage::User { .. } => {},
             _ => filtered.push(message.clone()),
         }
     }
@@ -327,22 +325,11 @@ fn drop_oldest_compaction_unit(prefix: &mut Vec<LlmMessage>) -> bool {
     !prefix.is_empty()
 }
 
-fn compacted_messages(
-    summary: &str,
-    suffix: Vec<LlmMessage>,
-    auto_continue: bool,
-) -> Vec<LlmMessage> {
+fn compacted_messages(summary: &str, suffix: Vec<LlmMessage>) -> Vec<LlmMessage> {
     let mut messages = vec![LlmMessage::User {
         content: format_compact_summary(summary),
         origin: UserMessageOrigin::CompactSummary,
     }];
-    if auto_continue {
-        messages.push(LlmMessage::User {
-            content: "The conversation was compacted. Continue from where you left off."
-                .to_string(),
-            origin: UserMessageOrigin::AutoContinueNudge,
-        });
-    }
     messages.extend(suffix);
     messages
 }
@@ -505,7 +492,7 @@ mod tests {
 
     #[test]
     fn compacted_messages_inserts_summary_as_compact_user_message() {
-        let compacted = compacted_messages("Older history", Vec::new(), false);
+        let compacted = compacted_messages("Older history", Vec::new());
 
         assert!(matches!(
             &compacted[0],
@@ -515,20 +502,6 @@ mod tests {
             }
         ));
         assert_eq!(compacted.len(), 1);
-    }
-
-    #[test]
-    fn compacted_messages_appends_auto_continue_nudge_when_auto() {
-        let compacted = compacted_messages("Older history", Vec::new(), true);
-
-        assert_eq!(compacted.len(), 2);
-        assert!(matches!(
-            &compacted[1],
-            LlmMessage::User {
-                content,
-                origin: UserMessageOrigin::AutoContinueNudge,
-            } if content.contains("compacted")
-        ));
     }
 
     #[test]

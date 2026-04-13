@@ -41,6 +41,9 @@ mod mapper;
 #[path = "http/routes/mod.rs"]
 mod routes;
 #[cfg(test)]
+#[path = "tests/session_contract_tests.rs"]
+mod session_contract_tests;
+#[cfg(test)]
 #[path = "tests/test_support.rs"]
 mod test_support;
 

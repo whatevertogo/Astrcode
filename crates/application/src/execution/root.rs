@@ -150,9 +150,6 @@ fn apply_execution_control(runtime_config: &mut RuntimeConfig, control: Option<&
     let Some(control) = control else {
         return;
     };
-    if let Some(token_budget) = control.token_budget {
-        runtime_config.default_token_budget = Some(token_budget);
-    }
     if let Some(max_steps) = control.max_steps {
         runtime_config.max_steps = Some(max_steps as usize);
     }
@@ -264,13 +261,11 @@ mod tests {
         apply_execution_control(
             &mut runtime,
             Some(&ExecutionControl {
-                token_budget: Some(256),
                 max_steps: Some(5),
                 manual_compact: None,
             }),
         );
 
-        assert_eq!(runtime.default_token_budget, Some(256));
         assert_eq!(runtime.max_steps, Some(5));
     }
 

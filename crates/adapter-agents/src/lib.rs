@@ -457,7 +457,7 @@ fn build_agent_profile(
         system_prompt,
         allowed_tools,
         disallowed_tools,
-        // TODO: 未来可能需要添加 max_steps 和 token_budget
+        // TODO: 未来可能需要添加更多执行限制字段（如 max_steps）
         // Loader 只消费 Claude 风格 agent 定义里的稳定字段；
         // 模型选择继续交给上层 runtime 配置，避免把私有 frontmatter 扩散成事实标准。
         model_preference: None,

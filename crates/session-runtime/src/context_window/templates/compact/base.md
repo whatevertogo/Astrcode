@@ -81,7 +81,7 @@ Return exactly two XML blocks:
 ## Rules
 - Output **only** the <analysis> and <summary> blocks - no preamble, no closing remarks.
 - Be concise. Prefer bullet points over paragraphs.
-- Ignore synthetic auto-continue nudges.
+- Ignore synthetic compact-summary helper messages.
 - Write in third-person, factual tone. Do not address the end user.
 - Preserve exact file paths, function names, error messages - never paraphrase these.
 - If a section has no content, write "(none)" rather than omitting it.

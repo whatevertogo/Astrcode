@@ -139,19 +139,6 @@ pub const DEFAULT_TOOL_RESULT_MAX_BYTES: usize = 100_000;
 pub const DEFAULT_COMPACT_KEEP_RECENT_TURNS: u8 = 4;
 
 // ============================================================
-// Token 预算与续调默认值
-// ============================================================
-
-/// 默认 token 预算。值为 0 时禁用自动续调。
-pub const DEFAULT_TOKEN_BUDGET: u64 = 0;
-
-/// 默认自动续调的边际收益递减阈值。
-pub const DEFAULT_CONTINUATION_MIN_DELTA_TOKENS: usize = 500;
-
-/// 默认最大自动续调次数。
-pub const DEFAULT_MAX_CONTINUATIONS: u8 = 3;
-
-// ============================================================
 // LLM 客户端配置默认值
 // ============================================================
 
@@ -463,27 +450,6 @@ pub fn resolve_compact_keep_recent_turns(runtime: &RuntimeConfig) -> u8 {
     runtime
         .compact_keep_recent_turns
         .unwrap_or(DEFAULT_COMPACT_KEEP_RECENT_TURNS)
-        .max(1)
-}
-
-/// 解析自动续调 token 预算。
-pub fn resolve_default_token_budget(runtime: &RuntimeConfig) -> u64 {
-    runtime.default_token_budget.unwrap_or(DEFAULT_TOKEN_BUDGET)
-}
-
-/// 解析续调最小增量 token 数。
-pub fn resolve_continuation_min_delta_tokens(runtime: &RuntimeConfig) -> usize {
-    runtime
-        .continuation_min_delta_tokens
-        .unwrap_or(DEFAULT_CONTINUATION_MIN_DELTA_TOKENS)
-        .max(1)
-}
-
-/// 解析最大续调次数。
-pub fn resolve_max_continuations(runtime: &RuntimeConfig) -> u8 {
-    runtime
-        .max_continuations
-        .unwrap_or(DEFAULT_MAX_CONTINUATIONS)
         .max(1)
 }
 
@@ -899,11 +865,6 @@ mod tests {
         assert_eq!(
             resolve_tool_result_max_bytes(&runtime),
             DEFAULT_TOOL_RESULT_MAX_BYTES
-        );
-        assert_eq!(resolve_default_token_budget(&runtime), DEFAULT_TOKEN_BUDGET);
-        assert_eq!(
-            resolve_max_continuations(&runtime),
-            DEFAULT_MAX_CONTINUATIONS
         );
         assert_eq!(
             resolve_llm_connect_timeout_secs(&runtime),

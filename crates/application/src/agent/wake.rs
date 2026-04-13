@@ -520,7 +520,6 @@ mod tests {
             "turn-busy",
             CancelToken::new(),
             lease,
-            None,
         )
         .expect("busy state should prepare");
         *parent_state.phase.lock().expect("phase lock should work") = Phase::Thinking;

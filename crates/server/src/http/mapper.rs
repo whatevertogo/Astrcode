@@ -120,7 +120,7 @@ pub(crate) fn to_agent_profile_dto(profile: AgentProfileSummary) -> AgentProfile
         },
         allowed_tools: profile.allowed_tools,
         disallowed_tools: profile.disallowed_tools,
-        // TODO: 未来可能需要添加 max_steps 和 token_budget
+        // TODO: 未来可能需要添加更多 agent 级执行限制摘要
     }
 }
 
@@ -460,7 +460,6 @@ fn to_resolved_limits_dto(limits: ResolvedExecutionLimitsSnapshot) -> ResolvedEx
     ResolvedExecutionLimitsDto {
         allowed_tools: limits.allowed_tools,
         max_steps: limits.max_steps,
-        token_budget: limits.token_budget,
     }
 }
 

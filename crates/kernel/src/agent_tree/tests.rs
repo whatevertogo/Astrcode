@@ -21,7 +21,7 @@ fn explore_profile() -> AgentProfile {
         system_prompt: None,
         allowed_tools: vec!["readFile".to_string()],
         disallowed_tools: Vec::new(),
-        // TODO: 未来可能需要添加 max_steps 和 token_budget
+        // TODO: 未来可能需要添加更多执行限制字段（如 max_steps）
         model_preference: Some("fast".to_string()),
     }
 }

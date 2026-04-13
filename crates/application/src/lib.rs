@@ -47,7 +47,6 @@ pub use config::{
     DEFAULT_AUTO_COMPACT_ENABLED,
     DEFAULT_COMPACT_KEEP_RECENT_TURNS,
     DEFAULT_COMPACT_THRESHOLD_PERCENT,
-    DEFAULT_CONTINUATION_MIN_DELTA_TOKENS,
     DEFAULT_FINALIZED_AGENT_RETAIN_LIMIT,
     DEFAULT_INBOX_CAPACITY,
     DEFAULT_LLM_CONNECT_TIMEOUT_SECS,
@@ -58,7 +57,6 @@ pub use config::{
     DEFAULT_MAX_CONCURRENT_AGENTS,
     DEFAULT_MAX_CONCURRENT_BRANCH_DEPTH,
     DEFAULT_MAX_CONSECUTIVE_FAILURES,
-    DEFAULT_MAX_CONTINUATIONS,
     DEFAULT_MAX_GREP_LINES,
     DEFAULT_MAX_IMAGE_SIZE,
     DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS,
@@ -74,7 +72,6 @@ pub use config::{
     DEFAULT_SESSION_BROADCAST_CAPACITY,
     DEFAULT_SESSION_RECENT_RECORD_LIMIT,
     DEFAULT_SUMMARY_RESERVE_TOKENS,
-    DEFAULT_TOKEN_BUDGET,
     DEFAULT_TOOL_RESULT_INLINE_LIMIT,
     DEFAULT_TOOL_RESULT_MAX_BYTES,
     DEFAULT_TOOL_RESULT_PREVIEW_LIMIT,
@@ -105,15 +102,12 @@ pub use config::{
     resolve_auto_compact_enabled,
     resolve_compact_keep_recent_turns,
     resolve_compact_threshold_percent,
-    resolve_continuation_min_delta_tokens,
     resolve_current_model,
-    resolve_default_token_budget,
     resolve_llm_connect_timeout_secs,
     resolve_llm_max_retries,
     resolve_llm_read_timeout_secs,
     resolve_max_concurrent_branch_depth,
     resolve_max_consecutive_failures,
-    resolve_max_continuations,
     resolve_max_grep_lines,
     resolve_max_image_size,
     resolve_max_output_continuation_attempts,
@@ -303,9 +297,6 @@ impl App {
                     "manualCompact is not valid for prompt submission".to_string(),
                 ));
             }
-            if let Some(token_budget) = control.token_budget {
-                runtime.default_token_budget = Some(token_budget);
-            }
             if let Some(max_steps) = control.max_steps {
                 runtime.max_steps = Some(max_steps as usize);
             }
@@ -338,9 +329,9 @@ impl App {
     ) -> Result<CompactSessionAccepted, ApplicationError> {
         if let Some(control) = &control {
             control.validate()?;
-            if control.token_budget.is_some() || control.max_steps.is_some() {
+            if control.max_steps.is_some() {
                 return Err(ApplicationError::InvalidArgument(
-                    "tokenBudget/maxSteps are not valid for manual compact".to_string(),
+                    "maxSteps is not valid for manual compact".to_string(),
                 ));
             }
         }
