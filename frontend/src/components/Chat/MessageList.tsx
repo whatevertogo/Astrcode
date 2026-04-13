@@ -245,7 +245,7 @@ export default function MessageList({
           key={options?.key ?? msg.id}
           className={cn(
             isRowNested(options) ? 'w-full' : 'mx-auto w-[min(100%,var(--chat-content-max-width))]',
-            'transition-[margin-top] duration-200 ease-out',
+            'min-w-0 transition-[margin-top] duration-200 ease-out',
             isContinuation && '-mt-4'
           )}
         >
@@ -341,8 +341,8 @@ export default function MessageList({
               key={`subrun-missing-${item.subRunId}`}
               className={
                 isRowNested(options)
-                  ? 'w-full'
-                  : 'mx-auto w-[min(100%,var(--chat-content-max-width))]'
+                  ? 'min-w-0 w-full'
+                  : 'mx-auto min-w-0 w-[min(100%,var(--chat-content-max-width))]'
               }
             >
               <div className={errorSurface}>
@@ -356,8 +356,8 @@ export default function MessageList({
         const boundaryMessage =
           subRunView.startMessage ?? subRunView.finishMessage ?? subRunView.bodyMessages[0];
         const rowClass = isRowNested(options)
-          ? 'w-full'
-          : 'mx-auto w-[min(100%,var(--chat-content-max-width))]';
+          ? 'min-w-0 w-full'
+          : 'mx-auto min-w-0 w-[min(100%,var(--chat-content-max-width))]';
         const subRunBlock = (
           <SubRunBlock
             subRunId={subRunView.subRunId}
@@ -415,7 +415,7 @@ export default function MessageList({
     return (
       <div
         key={`child-subrun-${subRunView.subRunId}`}
-        className="mx-auto w-[min(100%,var(--chat-content-max-width))]"
+        className="mx-auto min-w-0 w-[min(100%,var(--chat-content-max-width))]"
       >
         {boundaryMessage ? (
           <MessageBoundary message={boundaryMessage}>{subRunBlock}</MessageBoundary>
@@ -429,7 +429,7 @@ export default function MessageList({
   return (
     <div
       ref={listRef}
-      className="flex flex-1 flex-col gap-[22px] overflow-y-auto bg-panel-bg px-[var(--chat-content-horizontal-padding)] py-7 max-sm:gap-[18px] max-sm:px-[var(--chat-content-horizontal-padding-mobile)] max-sm:pb-2 max-sm:pt-[18px]"
+      className="flex min-w-0 flex-1 flex-col gap-[22px] overflow-x-hidden overflow-y-auto bg-panel-bg px-[var(--chat-content-horizontal-padding)] py-7 max-sm:gap-[18px] max-sm:px-[var(--chat-content-horizontal-padding-mobile)] max-sm:pb-2 max-sm:pt-[18px]"
       onScroll={updateStickiness}
     >
       {threadItems.length === 0 && childSubRuns.length === 0 && (

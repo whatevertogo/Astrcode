@@ -171,29 +171,67 @@ impl McpTransport for StreamableHttpTransport {
 /// 从 SSE 响应流中解析第一个完整 JSON-RPC 消息。
 async fn parse_sse_response(response: reqwest::Response) -> Result<JsonRpcResponse> {
     let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
 
     while let Some(chunk_result) = stream.next().await {
         let chunk =
             chunk_result.map_err(|e| AstrError::Network(format!("read SSE stream: {}", e)))?;
-        let text = String::from_utf8_lossy(&chunk);
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-        // 解析 SSE 事件格式
-        for line in text.lines() {
-            if let Some(data) = line.strip_prefix("data: ") {
-                let data = data.trim();
-                if data.is_empty() || data == "[DONE]" {
-                    continue;
-                }
-                if let Ok(response) = serde_json::from_str::<JsonRpcResponse>(data) {
-                    return Ok(response);
-                }
+        while let Some(event) = drain_next_sse_event(&mut buffer) {
+            if let Some(response) = parse_sse_event_jsonrpc(&event)? {
+                return Ok(response);
             }
         }
+    }
+
+    if let Some(response) = parse_sse_event_jsonrpc(buffer.trim())? {
+        return Ok(response);
     }
 
     Err(AstrError::Network(
         "SSE stream ended without JSON-RPC response".into(),
     ))
+}
+
+fn drain_next_sse_event(buffer: &mut String) -> Option<String> {
+    for delimiter in ["\r\n\r\n", "\n\n"] {
+        if let Some(index) = buffer.find(delimiter) {
+            let event = buffer[..index].to_string();
+            let remainder = buffer[index + delimiter.len()..].to_string();
+            *buffer = remainder;
+            return Some(event);
+        }
+    }
+    None
+}
+
+fn parse_sse_event_jsonrpc(event: &str) -> Result<Option<JsonRpcResponse>> {
+    let mut data_lines = Vec::new();
+
+    for raw_line in event.lines() {
+        let line = raw_line.trim_end_matches('\r');
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("data:") {
+            let payload = rest.strip_prefix(' ').unwrap_or(rest);
+            data_lines.push(payload);
+        }
+    }
+
+    if data_lines.is_empty() {
+        return Ok(None);
+    }
+
+    let data = data_lines.join("\n").trim().to_string();
+    if data.is_empty() || data == "[DONE]" {
+        return Ok(None);
+    }
+
+    let response = serde_json::from_str::<JsonRpcResponse>(&data)
+        .map_err(|e| AstrError::parse("parse MCP SSE response", e))?;
+    Ok(Some(response))
 }
 
 #[cfg(test)]
@@ -239,5 +277,23 @@ mod tests {
         let notification = JsonRpcNotification::new("test");
         let result = transport.send_notification(notification).await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_sse_event_without_space_after_data_prefix() {
+        let event =
+            "id:1\nevent:message\ndata:{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}";
+        let response = parse_sse_event_jsonrpc(event)
+            .unwrap()
+            .expect("json-rpc response");
+        assert_eq!(response.id, Some(serde_json::json!(1)));
+    }
+
+    #[test]
+    fn test_drain_next_sse_event_preserves_remainder() {
+        let mut buffer = "event:message\ndata:{\"jsonrpc\":\"2.0\"}\n\npartial".to_string();
+        let event = drain_next_sse_event(&mut buffer).expect("first event");
+        assert!(event.contains("data:{\"jsonrpc\":\"2.0\"}"));
+        assert_eq!(buffer, "partial");
     }
 }

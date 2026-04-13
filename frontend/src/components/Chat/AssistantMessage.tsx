@@ -258,10 +258,10 @@ function AssistantMessage({ message, hideAvatar, metrics }: AssistantMessageProp
           />
         </svg>
       </div>
-      <div className="flex-1 min-w-0 pt-0.5">
+      <div className="min-w-0 flex-1 pt-0.5">
         <div
           className={cn(
-            'relative overflow-wrap-anywhere bg-transparent py-2 text-text-primary prose-chat'
+            'relative min-w-0 max-w-full overflow-wrap-anywhere bg-transparent py-2 text-text-primary prose-chat'
           )}
           data-streaming={message.streaming ? 'true' : 'false'}
         >

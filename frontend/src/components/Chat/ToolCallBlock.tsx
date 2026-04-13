@@ -68,7 +68,7 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
   return (
     <details
       id={toolCallId}
-      className="block mb-1 ml-[var(--chat-assistant-content-offset)] animate-block-enter motion-reduce:animate-none group"
+      className="group mb-1 ml-[var(--chat-assistant-content-offset)] block min-w-0 max-w-full animate-block-enter motion-reduce:animate-none"
       onToggle={(e) => {
         if ((e.target as HTMLDetailsElement).open) setUserInteracted(true);
       }}
@@ -100,17 +100,17 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
           </svg>
         </span>
       </summary>
-      <div className="mt-1 mb-2">
+      <div className="mt-1 mb-2 min-w-0 max-w-full overflow-x-hidden">
         {structuredArgs && (
-          <div className="pb-3">
+          <div className="min-w-0 pb-3">
             <div className="mb-2 text-xs leading-snug text-text-secondary">调用参数</div>
             <ToolJsonView value={structuredArgs.value} summary={structuredArgs.summary} />
           </div>
         )}
         {shell && (
-          <div className="pb-3">
+          <div className="min-w-0 pb-3">
             {shell.command && (
-              <div className="font-mono text-[13px] leading-relaxed text-text-primary overflow-wrap-anywhere">
+              <div className="min-w-0 font-mono text-[13px] leading-relaxed text-text-primary overflow-wrap-anywhere">
                 $ {shell.command}
               </div>
             )}
@@ -130,10 +130,10 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
           </div>
         )}
         {diff && (
-          <div className="flex flex-wrap items-center gap-2 pb-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-2 pb-3">
             {diff.changeType && <span className={pillNeutral}>{diff.changeType}</span>}
             {diff.path && (
-              <span className="text-xs text-text-secondary font-mono overflow-wrap-anywhere">
+              <span className="min-w-0 text-xs text-text-secondary font-mono overflow-wrap-anywhere">
                 {diff.path}
               </span>
             )}

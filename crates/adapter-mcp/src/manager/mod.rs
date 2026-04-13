@@ -151,6 +151,7 @@ impl McpConnectionManager {
         let mut resource_index = Vec::new();
         let mut server_statuses = Vec::new();
         let mut has_connected_server = false;
+        let mut has_resource_server = false;
 
         for config in &declared_configs {
             let pending_approval = config.scope == crate::config::McpConfigScope::Project
@@ -170,6 +171,7 @@ impl McpConnectionManager {
                 continue;
             }
             has_connected_server = true;
+            has_resource_server |= !connection.resources.is_empty();
 
             capability_invokers.extend(connection.invokers.clone());
             prompt_declarations.extend(connection.prompt_declarations.clone());
@@ -184,7 +186,7 @@ impl McpConnectionManager {
             }));
         }
 
-        if has_connected_server {
+        if has_connected_server && has_resource_server {
             capability_invokers.push(Arc::new(ListMcpResourcesTool::new(
                 self.connections.clone(),
             )));
@@ -844,7 +846,7 @@ pub(crate) async fn establish_connection_inner(
     let resource_count = resources.len();
 
     // 注册 list_changed 通知处理器
-    {
+    if client.lock().await.supports_tools() {
         let connections_ref = connections.clone();
         let client_ref = client.clone();
         let server_name = name.clone();
@@ -866,7 +868,7 @@ pub(crate) async fn establish_connection_inner(
             }),
         );
     }
-    {
+    if client.lock().await.supports_prompts() {
         let connections_ref = connections.clone();
         let client_ref = client.clone();
         let server_name = name.clone();
@@ -888,7 +890,7 @@ pub(crate) async fn establish_connection_inner(
             }),
         );
     }
-    {
+    if client.lock().await.supports_resources() {
         let connections_ref = connections.clone();
         let client_ref = client.clone();
         let server_name = name.clone();

@@ -122,8 +122,36 @@ impl McpClient {
         self.instructions.as_deref()
     }
 
+    /// 是否声明了 tools 能力。
+    pub fn supports_tools(&self) -> bool {
+        self.capabilities
+            .as_ref()
+            .and_then(|caps| caps.tools.as_ref())
+            .is_some()
+    }
+
+    /// 是否声明了 prompts 能力。
+    pub fn supports_prompts(&self) -> bool {
+        self.capabilities
+            .as_ref()
+            .and_then(|caps| caps.prompts.as_ref())
+            .is_some()
+    }
+
+    /// 是否声明了 resources 能力。
+    pub fn supports_resources(&self) -> bool {
+        self.capabilities
+            .as_ref()
+            .and_then(|caps| caps.resources.as_ref())
+            .is_some()
+    }
+
     /// 请求服务器的工具列表。
     pub async fn list_tools(&self) -> Result<Vec<McpToolInfo>> {
+        if !self.supports_tools() {
+            return Ok(Vec::new());
+        }
+
         let response = self.send_request("tools/list", None).await?;
 
         #[derive(serde::Deserialize)]
@@ -212,6 +240,10 @@ impl McpClient {
 
     /// 请求服务器的 prompt 模板列表。
     pub async fn list_prompts(&self) -> Result<Vec<McpPromptInfo>> {
+        if !self.supports_prompts() {
+            return Ok(Vec::new());
+        }
+
         let response = self.send_request("prompts/list", None).await?;
 
         #[derive(serde::Deserialize)]
@@ -230,6 +262,12 @@ impl McpClient {
         prompt_name: &str,
         arguments: Option<Value>,
     ) -> Result<McpPromptResult> {
+        if !self.supports_prompts() {
+            return Err(AstrError::Validation(
+                "MCP server does not advertise prompt capability".into(),
+            ));
+        }
+
         let mut params = json!({ "name": prompt_name });
         if let Some(args) = arguments {
             params["arguments"] = args;
@@ -240,6 +278,10 @@ impl McpClient {
 
     /// 请求服务器的资源列表。
     pub async fn list_resources(&self) -> Result<Vec<McpResourceInfo>> {
+        if !self.supports_resources() {
+            return Ok(Vec::new());
+        }
+
         let response = self.send_request("resources/list", None).await?;
 
         #[derive(serde::Deserialize)]
@@ -254,6 +296,13 @@ impl McpClient {
 
     /// 读取指定资源的内容。
     pub async fn read_resource(&self, uri: &str) -> Result<McpResourceContent> {
+        if !self.supports_resources() {
+            return Err(AstrError::Validation(format!(
+                "MCP server does not advertise resources capability for '{}'",
+                uri
+            )));
+        }
+
         let params = json!({ "uri": uri });
         let response = self.send_request("resources/read", Some(params)).await?;
 

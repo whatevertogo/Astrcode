@@ -357,7 +357,7 @@ function SubRunBlock({
   return (
     <details
       ref={detailsRef}
-      className="block mb-1.5 ml-[var(--chat-assistant-content-offset)] animate-block-enter motion-reduce:animate-none group"
+      className="group mb-1.5 ml-[var(--chat-assistant-content-offset)] block min-w-0 max-w-full animate-block-enter motion-reduce:animate-none"
       onToggle={(event) => {
         if (event.target === event.currentTarget && event.nativeEvent.isTrusted) {
           setUserInteracted(true);
@@ -391,7 +391,9 @@ function SubRunBlock({
         </span>
       </summary>
 
-      <div className={cn(expandableBody, 'flex flex-col gap-3')}>
+      <div
+        className={cn(expandableBody, 'min-w-0 max-w-full overflow-x-hidden flex flex-col gap-3')}
+      >
         {displayMode === 'directory' ? (
           <div className="flex items-start justify-between gap-3 flex-wrap">
             <div className="flex-1 basis-[260px] min-w-0 text-[13px] leading-relaxed text-text-secondary whitespace-pre-wrap overflow-wrap-anywhere">
