@@ -1,4 +1,4 @@
-## ADDED Requirements
+## Requirements
 
 ### Requirement: `session-runtime` 是唯一会话真相面
 
@@ -12,6 +12,8 @@
 - observe / mailbox / routing
 - durable event append
 - session catalog 广播
+- token budget 驱动的单 turn 自动续写
+- turn 级 observability 汇总
 
 #### Scenario: SessionRuntime 持有会话目录
 
@@ -39,6 +41,12 @@
 
 - **WHEN** `application` 请求执行 turn
 - **THEN** 通过 `SessionRuntime::run_turn(...)`（或等价入口）驱动完整执行
+
+#### Scenario: turn 内预算与观测不泄漏到 application
+
+- **WHEN** `application` 发起一次 prompt 提交
+- **THEN** token budget、continue nudge、turn 级 observability 由 `session-runtime` 内部处理
+- **AND** `application` 不拥有 turn 内循环策略
 
 #### Scenario: kernel 不持有 turn 构造实现
 

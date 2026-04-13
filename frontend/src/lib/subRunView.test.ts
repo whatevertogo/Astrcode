@@ -6,6 +6,7 @@ import {
   buildSubRunThreadTree,
   buildSubRunView,
   listRootSubRunViews,
+  patchSubRunThreadTreeMessages,
 } from './subRunView';
 
 const DEFAULT_RESOLVED_OVERRIDES = {
@@ -1204,5 +1205,70 @@ describe('buildSubRunView', () => {
     expect(rootViews).toHaveLength(1);
     expect(rootViews[0]?.subRunId).toBe('subrun-1');
     expect(rootViews[0]?.title).toBe('planner');
+  });
+
+  it('patches thread tree incrementally when only message content changes', () => {
+    const messages: Message[] = [
+      {
+        id: 'root-user',
+        kind: 'user',
+        turnId: 'turn-root',
+        text: 'start',
+        timestamp: 1,
+      },
+      {
+        id: 'root-assistant',
+        kind: 'assistant',
+        turnId: 'turn-root',
+        text: 'hello',
+        streaming: true,
+        timestamp: 2,
+      },
+    ];
+
+    const tree = buildSubRunThreadTree(messages);
+    const nextMessages: Message[] = [
+      messages[0],
+      {
+        ...messages[1],
+        kind: 'assistant',
+        text: 'hello world',
+        streaming: false,
+      },
+    ];
+
+    const patched = patchSubRunThreadTreeMessages(tree, nextMessages);
+    expect(patched).not.toBeNull();
+    expect(patched?.rootThreadItems).toEqual([
+      { kind: 'message', message: nextMessages[0] },
+      { kind: 'message', message: nextMessages[1] },
+    ]);
+    expect(patched?.rootStreamFingerprint).not.toBe(tree.rootStreamFingerprint);
+  });
+
+  it('returns null when new messages are appended and topology may change', () => {
+    const messages: Message[] = [
+      {
+        id: 'root-user',
+        kind: 'user',
+        turnId: 'turn-root',
+        text: 'start',
+        timestamp: 1,
+      },
+    ];
+    const tree = buildSubRunThreadTree(messages);
+    const nextMessages: Message[] = [
+      ...messages,
+      {
+        id: 'root-assistant',
+        kind: 'assistant',
+        turnId: 'turn-root',
+        text: 'new reply',
+        streaming: false,
+        timestamp: 2,
+      },
+    ];
+
+    expect(patchSubRunThreadTreeMessages(tree, nextMessages)).toBeNull();
   });
 });

@@ -197,6 +197,14 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
         {
             Ok(output) => output,
             Err(e) => {
+                if e.is_cancelled() {
+                    return Ok(TurnRunResult {
+                        outcome: TurnOutcome::Cancelled,
+                        messages,
+                        events,
+                        summary: make_summary!(TurnFinishReason::Cancelled),
+                    });
+                }
                 // —— Reactive compact 错误恢复（委托 compaction_cycle）——
                 if llm_cycle::is_prompt_too_long(&e)
                     && reactive_compact_attempts < compaction_cycle::MAX_REACTIVE_COMPACT_ATTEMPTS

@@ -1,6 +1,6 @@
 import { appendToolDeltaMetadata, mergeToolMetadata } from '../lib/toolDisplay';
 import type { Action, AppState, Message, Session } from '../types';
-import { buildSubRunThreadTree } from '../lib/subRunView';
+import { buildSubRunThreadTree, patchSubRunThreadTreeMessages } from '../lib/subRunView';
 import { uuid } from '../utils/uuid';
 import {
   findAssistantMessageIndex,
@@ -12,22 +12,41 @@ import {
   upsertAssistantTurnMessage,
 } from './reducerHelpers';
 
-function isStructuralSubRunMessage(message: Message): boolean {
-  return (
+function withUpdatedMessages(
+  session: Session,
+  messages: Message[],
+  options?: { forceRebuild?: boolean }
+): Session {
+  if (!options?.forceRebuild) {
+    const patchedTree = patchSubRunThreadTreeMessages(session.subRunThreadTree, messages);
+    if (patchedTree) {
+      return {
+        ...session,
+        messages,
+        subRunThreadTree: patchedTree,
+      };
+    }
+  }
+
+  return {
+    ...session,
+    messages,
+    subRunThreadTree: buildSubRunThreadTree(messages),
+  };
+}
+
+function isStructuralMessage(message: Message): boolean {
+  if (
     message.kind === 'subRunStart' ||
     message.kind === 'subRunFinish' ||
     message.kind === 'childSessionNotification'
-  );
-}
-
-function withMaybeRebuiltSubRunTree(session: Session, refresh: boolean): Session {
-  if (!refresh) {
-    return session;
+  ) {
+    return true;
   }
-  return {
-    ...session,
-    subRunThreadTree: buildSubRunThreadTree(session.messages),
-  };
+
+  // Why: spawn 工具会作为 lifecycle 缺失时的 sub-run fallback 事实源，
+  // 它的新增/更新必须触发结构重建，避免父视图树漏子执行。
+  return message.kind === 'toolCall' && message.toolName === 'spawn';
 }
 
 export function handleProjectedMessageAction(state: AppState, action: Action): AppState | null {
@@ -41,12 +60,16 @@ export function handleProjectedMessageAction(state: AppState, action: Action): A
         ) {
           title = action.message.text.slice(0, 20) || '新会话';
         }
-        const nextSession = {
-          ...session,
-          title,
-          messages: [...session.messages, action.message],
-        };
-        return withMaybeRebuiltSubRunTree(nextSession, isStructuralSubRunMessage(action.message));
+        const nextMessages = [...session.messages, action.message];
+        const withProjection = withUpdatedMessages(session, nextMessages, {
+          forceRebuild: isStructuralMessage(action.message),
+        });
+        return title === session.title
+          ? withProjection
+          : {
+              ...withProjection,
+              title,
+            };
       });
 
     case 'UPSERT_USER_MESSAGE':
@@ -78,140 +101,157 @@ export function handleProjectedMessageAction(state: AppState, action: Action): A
         }
 
         if (targetIndex < 0) {
-          return {
-            ...session,
-            title,
-            messages: [...session.messages, userMessage],
-          };
+          const next = withUpdatedMessages(session, [...session.messages, userMessage], {
+            // 新增消息通常无法增量 patch（旧 tree 不存在该 message id），
+            // 这里直接重建避免无意义的 patch 扫描。
+            forceRebuild: true,
+          });
+          return title === session.title
+            ? next
+            : {
+                ...next,
+                title,
+              };
         }
 
-        return {
-          ...session,
-          title,
-          messages: moveUpdatedMessageToTail(session.messages, targetIndex, userMessage),
-        };
+        const next = withUpdatedMessages(
+          session,
+          moveUpdatedMessageToTail(session.messages, targetIndex, userMessage)
+        );
+        return title === session.title
+          ? next
+          : {
+              ...next,
+              title,
+            };
       });
 
     case 'APPEND_DELTA':
-      return mapSession(state, action.sessionId, (session) => ({
-        ...session,
-        messages: upsertAssistantTurnMessage(
-          session.messages,
-          action.turnId,
-          () => ({
-            id: uuid(),
-            kind: 'assistant',
-            turnId: action.turnId,
-            agentId: action.agentId,
-            parentTurnId: action.parentTurnId,
-            agentProfile: action.agentProfile,
-            subRunId: action.subRunId,
-            executionId: action.executionId,
-            invocationKind: action.invocationKind,
-            storageMode: action.storageMode,
-            childSessionId: action.childSessionId,
-            text: action.delta,
-            reasoningText: '',
-            streaming: true,
-            timestamp: Date.now(),
-          }),
-          (message) => ({
-            ...message,
-            turnId: action.turnId,
-            agentId: action.agentId ?? message.agentId,
-            parentTurnId: action.parentTurnId ?? message.parentTurnId,
-            agentProfile: action.agentProfile ?? message.agentProfile,
-            subRunId: action.subRunId ?? message.subRunId,
-            executionId: action.executionId ?? message.executionId,
-            invocationKind: action.invocationKind ?? message.invocationKind,
-            storageMode: action.storageMode ?? message.storageMode,
-            childSessionId: action.childSessionId ?? message.childSessionId,
-            text: message.text + action.delta,
-            streaming: true,
-          })
-        ),
-      }));
+      return mapSession(state, action.sessionId, (session) =>
+        withUpdatedMessages(
+          session,
+          upsertAssistantTurnMessage(
+            session.messages,
+            action.turnId,
+            () => ({
+              id: uuid(),
+              kind: 'assistant',
+              turnId: action.turnId,
+              agentId: action.agentId,
+              parentTurnId: action.parentTurnId,
+              agentProfile: action.agentProfile,
+              subRunId: action.subRunId,
+              executionId: action.executionId,
+              invocationKind: action.invocationKind,
+              storageMode: action.storageMode,
+              childSessionId: action.childSessionId,
+              text: action.delta,
+              reasoningText: '',
+              streaming: true,
+              timestamp: Date.now(),
+            }),
+            (message) => ({
+              ...message,
+              turnId: action.turnId,
+              agentId: action.agentId ?? message.agentId,
+              parentTurnId: action.parentTurnId ?? message.parentTurnId,
+              agentProfile: action.agentProfile ?? message.agentProfile,
+              subRunId: action.subRunId ?? message.subRunId,
+              executionId: action.executionId ?? message.executionId,
+              invocationKind: action.invocationKind ?? message.invocationKind,
+              storageMode: action.storageMode ?? message.storageMode,
+              childSessionId: action.childSessionId ?? message.childSessionId,
+              text: message.text + action.delta,
+              streaming: true,
+            })
+          )
+        )
+      );
 
     case 'APPEND_REASONING_DELTA':
-      return mapSession(state, action.sessionId, (session) => ({
-        ...session,
-        messages: upsertAssistantTurnMessage(
-          session.messages,
-          action.turnId,
-          () => ({
-            id: uuid(),
-            kind: 'assistant',
-            turnId: action.turnId,
-            agentId: action.agentId,
-            parentTurnId: action.parentTurnId,
-            agentProfile: action.agentProfile,
-            subRunId: action.subRunId,
-            executionId: action.executionId,
-            invocationKind: action.invocationKind,
-            storageMode: action.storageMode,
-            childSessionId: action.childSessionId,
-            text: '',
-            reasoningText: action.delta,
-            streaming: true,
-            timestamp: Date.now(),
-          }),
-          (message) => ({
-            ...message,
-            turnId: action.turnId,
-            agentId: action.agentId ?? message.agentId,
-            parentTurnId: action.parentTurnId ?? message.parentTurnId,
-            agentProfile: action.agentProfile ?? message.agentProfile,
-            subRunId: action.subRunId ?? message.subRunId,
-            executionId: action.executionId ?? message.executionId,
-            invocationKind: action.invocationKind ?? message.invocationKind,
-            storageMode: action.storageMode ?? message.storageMode,
-            childSessionId: action.childSessionId ?? message.childSessionId,
-            reasoningText: `${message.reasoningText ?? ''}${action.delta}`,
-            streaming: true,
-          })
-        ),
-      }));
+      return mapSession(state, action.sessionId, (session) =>
+        withUpdatedMessages(
+          session,
+          upsertAssistantTurnMessage(
+            session.messages,
+            action.turnId,
+            () => ({
+              id: uuid(),
+              kind: 'assistant',
+              turnId: action.turnId,
+              agentId: action.agentId,
+              parentTurnId: action.parentTurnId,
+              agentProfile: action.agentProfile,
+              subRunId: action.subRunId,
+              executionId: action.executionId,
+              invocationKind: action.invocationKind,
+              storageMode: action.storageMode,
+              childSessionId: action.childSessionId,
+              text: '',
+              reasoningText: action.delta,
+              streaming: true,
+              timestamp: Date.now(),
+            }),
+            (message) => ({
+              ...message,
+              turnId: action.turnId,
+              agentId: action.agentId ?? message.agentId,
+              parentTurnId: action.parentTurnId ?? message.parentTurnId,
+              agentProfile: action.agentProfile ?? message.agentProfile,
+              subRunId: action.subRunId ?? message.subRunId,
+              executionId: action.executionId ?? message.executionId,
+              invocationKind: action.invocationKind ?? message.invocationKind,
+              storageMode: action.storageMode ?? message.storageMode,
+              childSessionId: action.childSessionId ?? message.childSessionId,
+              reasoningText: `${message.reasoningText ?? ''}${action.delta}`,
+              streaming: true,
+            })
+          )
+        )
+      );
 
     case 'FINALIZE_ASSISTANT':
-      return mapSession(state, action.sessionId, (session) => ({
-        ...session,
-        messages: upsertAssistantTurnMessage(
-          session.messages,
-          action.turnId,
-          () => ({
-            id: uuid(),
-            kind: 'assistant',
-            turnId: action.turnId,
-            agentId: action.agentId,
-            parentTurnId: action.parentTurnId,
-            agentProfile: action.agentProfile,
-            subRunId: action.subRunId,
-            executionId: action.executionId,
-            invocationKind: action.invocationKind,
-            storageMode: action.storageMode,
-            childSessionId: action.childSessionId,
-            text: action.content,
-            reasoningText: action.reasoningText,
-            streaming: false,
-            timestamp: Date.now(),
-          }),
-          (message) => ({
-            ...message,
-            turnId: action.turnId,
-            agentId: action.agentId ?? message.agentId,
-            parentTurnId: action.parentTurnId ?? message.parentTurnId,
-            agentProfile: action.agentProfile ?? message.agentProfile,
-            subRunId: action.subRunId ?? message.subRunId,
-            executionId: action.executionId ?? message.executionId,
-            invocationKind: action.invocationKind ?? message.invocationKind,
-            storageMode: action.storageMode ?? message.storageMode,
-            childSessionId: action.childSessionId ?? message.childSessionId,
-            text: action.content,
-            reasoningText: action.reasoningText ?? message.reasoningText,
-            streaming: false,
-          })
-        ),
-      }));
+      return mapSession(state, action.sessionId, (session) =>
+        withUpdatedMessages(
+          session,
+          upsertAssistantTurnMessage(
+            session.messages,
+            action.turnId,
+            () => ({
+              id: uuid(),
+              kind: 'assistant',
+              turnId: action.turnId,
+              agentId: action.agentId,
+              parentTurnId: action.parentTurnId,
+              agentProfile: action.agentProfile,
+              subRunId: action.subRunId,
+              executionId: action.executionId,
+              invocationKind: action.invocationKind,
+              storageMode: action.storageMode,
+              childSessionId: action.childSessionId,
+              text: action.content,
+              reasoningText: action.reasoningText,
+              streaming: false,
+              timestamp: Date.now(),
+            }),
+            (message) => ({
+              ...message,
+              turnId: action.turnId,
+              agentId: action.agentId ?? message.agentId,
+              parentTurnId: action.parentTurnId ?? message.parentTurnId,
+              agentProfile: action.agentProfile ?? message.agentProfile,
+              subRunId: action.subRunId ?? message.subRunId,
+              executionId: action.executionId ?? message.executionId,
+              invocationKind: action.invocationKind ?? message.invocationKind,
+              storageMode: action.storageMode ?? message.storageMode,
+              childSessionId: action.childSessionId ?? message.childSessionId,
+              text: action.content,
+              reasoningText: action.reasoningText ?? message.reasoningText,
+              streaming: false,
+            })
+          )
+        )
+      );
 
     case 'END_STREAMING':
       return mapSession(state, action.sessionId, (session) => {
@@ -225,13 +265,13 @@ export function handleProjectedMessageAction(state: AppState, action: Action): A
           return session;
         }
 
-        return {
-          ...session,
-          messages: moveUpdatedMessageToTail(session.messages, targetIndex, {
+        return withUpdatedMessages(
+          session,
+          moveUpdatedMessageToTail(session.messages, targetIndex, {
             ...target,
             streaming: false,
-          }),
-        };
+          })
+        );
       });
 
     case 'APPEND_TOOL_CALL_DELTA':
@@ -245,43 +285,42 @@ export function handleProjectedMessageAction(state: AppState, action: Action): A
         );
 
         if (targetIndex < 0) {
-          return {
-            ...session,
-            messages: [
-              ...session.messages,
-              {
-                id: uuid(),
-                kind: 'toolCall',
-                turnId: action.turnId,
-                agentId: action.agentId,
-                parentTurnId: action.parentTurnId,
-                agentProfile: action.agentProfile,
-                subRunId: action.subRunId,
-                executionId: action.executionId,
-                invocationKind: action.invocationKind,
-                storageMode: action.storageMode,
-                childSessionId: action.childSessionId,
-                toolCallId: action.toolCallId,
-                toolName: action.toolName,
-                status: 'running',
-                args: null,
-                output: action.delta,
-                metadata: appendToolDeltaMetadata(
-                  undefined,
-                  action.toolName,
-                  null,
-                  action.stream,
-                  action.delta
-                ),
-                timestamp: Date.now(),
-              },
-            ],
-          };
+          return withUpdatedMessages(session, [
+            ...session.messages,
+            {
+              id: uuid(),
+              kind: 'toolCall',
+              turnId: action.turnId,
+              agentId: action.agentId,
+              parentTurnId: action.parentTurnId,
+              agentProfile: action.agentProfile,
+              subRunId: action.subRunId,
+              executionId: action.executionId,
+              invocationKind: action.invocationKind,
+              storageMode: action.storageMode,
+              childSessionId: action.childSessionId,
+              toolCallId: action.toolCallId,
+              toolName: action.toolName,
+              status: 'running',
+              args: null,
+              output: action.delta,
+              metadata: appendToolDeltaMetadata(
+                undefined,
+                action.toolName,
+                null,
+                action.stream,
+                action.delta
+              ),
+              timestamp: Date.now(),
+            },
+          ], {
+            forceRebuild: action.toolName === 'spawn',
+          });
         }
 
-        const nextSession = {
-          ...session,
-          messages: session.messages.map((message, index) => {
+        return withUpdatedMessages(
+          session,
+          session.messages.map((message, index) => {
             if (index !== targetIndex || message.kind !== 'toolCall') {
               return message;
             }
@@ -308,8 +347,10 @@ export function handleProjectedMessageAction(state: AppState, action: Action): A
               ),
             };
           }),
-        };
-        return nextSession;
+          {
+            forceRebuild: action.toolName === 'spawn',
+          }
+        );
       });
 
     case 'UPDATE_TOOL_CALL':
@@ -323,40 +364,39 @@ export function handleProjectedMessageAction(state: AppState, action: Action): A
         );
 
         if (targetIndex < 0) {
-          return {
-            ...session,
-            messages: [
-              ...session.messages,
-              {
-                id: uuid(),
-                kind: 'toolCall',
-                turnId: action.turnId,
-                agentId: action.agentId,
-                parentTurnId: action.parentTurnId,
-                agentProfile: action.agentProfile,
-                subRunId: action.subRunId,
-                executionId: action.executionId,
-                invocationKind: action.invocationKind,
-                storageMode: action.storageMode,
-                childSessionId: action.childSessionId,
-                toolCallId: action.toolCallId,
-                toolName: action.toolName,
-                status: action.status,
-                args: null,
-                output: action.output,
-                error: action.error,
-                metadata: action.metadata,
-                durationMs: action.durationMs,
-                truncated: action.truncated,
-                timestamp: Date.now(),
-              },
-            ],
-          };
+          return withUpdatedMessages(session, [
+            ...session.messages,
+            {
+              id: uuid(),
+              kind: 'toolCall',
+              turnId: action.turnId,
+              agentId: action.agentId,
+              parentTurnId: action.parentTurnId,
+              agentProfile: action.agentProfile,
+              subRunId: action.subRunId,
+              executionId: action.executionId,
+              invocationKind: action.invocationKind,
+              storageMode: action.storageMode,
+              childSessionId: action.childSessionId,
+              toolCallId: action.toolCallId,
+              toolName: action.toolName,
+              status: action.status,
+              args: null,
+              output: action.output,
+              error: action.error,
+              metadata: action.metadata,
+              durationMs: action.durationMs,
+              truncated: action.truncated,
+              timestamp: Date.now(),
+            },
+          ], {
+            forceRebuild: action.toolName === 'spawn',
+          });
         }
 
-        const nextSession = {
-          ...session,
-          messages: session.messages.map((message, index) => {
+        return withUpdatedMessages(
+          session,
+          session.messages.map((message, index) => {
             if (index !== targetIndex || message.kind !== 'toolCall') {
               return message;
             }
@@ -382,17 +422,10 @@ export function handleProjectedMessageAction(state: AppState, action: Action): A
               truncated: action.truncated,
             };
           }),
-        };
-        const shouldRefreshSubRunTree =
-          action.toolName === 'spawn' &&
-          action.status !== 'running' &&
-          nextSession.messages.some(
-            (message) =>
-              message.kind === 'toolCall' &&
-              message.toolCallId === action.toolCallId &&
-              message.toolName === action.toolName
-          );
-        return withMaybeRebuiltSubRunTree(nextSession, shouldRefreshSubRunTree);
+          {
+            forceRebuild: action.toolName === 'spawn',
+          }
+        );
       });
 
     case 'UPSERT_PROMPT_METRICS':
@@ -435,16 +468,15 @@ export function handleProjectedMessageAction(state: AppState, action: Action): A
         };
 
         if (targetIndex < 0) {
-          return {
-            ...session,
-            messages: [...session.messages, nextMessage],
-          };
+          return withUpdatedMessages(session, [...session.messages, nextMessage], {
+            forceRebuild: true,
+          });
         }
 
-        return {
-          ...session,
-          messages: moveUpdatedMessageToTail(session.messages, targetIndex, nextMessage),
-        };
+        return withUpdatedMessages(
+          session,
+          moveUpdatedMessageToTail(session.messages, targetIndex, nextMessage)
+        );
       });
 
     default:

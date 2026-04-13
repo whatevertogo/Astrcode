@@ -1,4 +1,4 @@
-## ADDED Requirements
+## Requirements
 
 ### Requirement: `application` 提供唯一业务入口 `App`
 
@@ -35,12 +35,62 @@
 - 权限前置检查
 - 用例编排
 - 业务错误归类
+- 根代理执行与子代理执行入口编排
 
 #### Scenario: 非法请求在 application 层被拒绝
 
 - **WHEN** 传入无效 session id 或非法参数
 - **THEN** `application` 直接返回业务错误
 - **AND** 不将错误请求继续下推到 `kernel` 或 `session-runtime`
+
+#### Scenario: submit_prompt 只触发 turn，不持有 turn 内策略
+
+- **WHEN** `App::submit_prompt` 被调用
+- **THEN** `application` 只负责校验输入、读取生效配置并调用 `SessionRuntime`
+- **AND** token budget、continue nudge、turn 内 observability 不在 `application` 中实现
+
+#### Scenario: application 承接执行入口但不持有执行真相
+
+- **WHEN** 发起根代理执行或子代理执行
+- **THEN** `application` 负责解析 profile、校验输入、编排调用
+- **AND** 单 session 执行真相仍由 `session-runtime` 持有
+- **AND** 全局 agent control 真相仍由 `kernel` 持有
+
+---
+
+### Requirement: Application Uses Stable Agent Control Contracts
+
+`application` MUST 通过稳定控制合同编排 agent control 请求。
+
+#### Scenario: Server delegates agent control to application
+
+- **WHEN** server 收到 subrun status、observe、route、wake、close 请求
+- **THEN** `application` SHALL 负责参数校验与错误归类
+- **AND** SHALL 通过稳定控制合同调用 `kernel`
+
+#### Scenario: Application does not depend on internal tree structures
+
+- **WHEN** `kernel` 内部控制实现重构
+- **THEN** `application` 对外行为 SHALL 保持稳定
+- **AND** SHALL NOT 因内部树结构重构而被迫改写实现
+
+---
+
+### Requirement: Application Governs Plugin Reload
+
+`application` MUST 通过治理入口编排 plugin 参与的 reload 流程。
+
+#### Scenario: Reload triggers full capability refresh
+
+- **WHEN** 上层触发 reload
+- **THEN** `application` SHALL 编排完整刷新链路
+- **AND** 刷新结果 SHALL 同时覆盖 builtin、MCP、plugin 能力来源
+
+#### Scenario: Governance does not hide plugin failure
+
+- **WHEN** plugin 发现、装载或物化失败
+- **THEN** `application` SHALL 暴露明确错误或治理快照结果
+- **AND** SHALL NOT 静默吞掉失败
 
 ---
 

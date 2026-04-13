@@ -117,6 +117,13 @@ impl SessionRuntime {
                         }
                     }
                 },
+                Err(error) if error.is_cancelled() => {
+                    log::warn!(
+                        "turn execution cancelled for session '{}': {}",
+                        session_id_for_task,
+                        error
+                    );
+                },
                 Err(error) => {
                     log::error!(
                         "turn execution failed for session '{}': {}",

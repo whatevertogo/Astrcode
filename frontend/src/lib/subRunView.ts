@@ -134,6 +134,56 @@ function buildMessageFingerprint(message: Message): string {
   return `${message.id}:subRunFinish:${message.subRunId ?? 'unknown'}:${message.result.status}`;
 }
 
+function remapMessageReference(
+  previous: Message,
+  nextById: ReadonlyMap<string, Message>
+): Message | null {
+  const next = nextById.get(previous.id);
+  if (!next) {
+    return null;
+  }
+  // Why: 同一个消息 ID 在投影里如果 kind 被替换，说明结构语义已经变化，
+  // 增量 patch 继续复用旧 tree 会把消息挂到错误分支，必须回退全量重建。
+  if (next.kind !== previous.kind) {
+    return null;
+  }
+  return next;
+}
+
+function patchThreadItems(
+  items: ThreadItem[],
+  nextById: ReadonlyMap<string, Message>,
+  usedMessageIds: Set<string>
+): ThreadItem[] | null {
+  const patched: ThreadItem[] = [];
+  for (const item of items) {
+    if (item.kind === 'subRun') {
+      patched.push(item);
+      continue;
+    }
+    const nextMessage = remapMessageReference(item.message, nextById);
+    if (!nextMessage) {
+      return null;
+    }
+    usedMessageIds.add(nextMessage.id);
+    patched.push({ kind: 'message', message: nextMessage });
+  }
+  return patched;
+}
+
+function buildThreadItemsFingerprint(
+  items: ThreadItem[],
+  subRunFingerprints: ReadonlyMap<string, string>
+): string {
+  return items
+    .map((item) =>
+      item.kind === 'message'
+        ? buildMessageFingerprint(item.message)
+        : `subRun:${item.subRunId}:${subRunFingerprints.get(item.subRunId) ?? item.subRunId}`
+    )
+    .join('|');
+}
+
 function getOrCreateRecord(
   records: Map<string, SubRunRecord>,
   subRunId: string,
@@ -507,6 +557,132 @@ export function buildSubRunThreadTree(messages: Message[]): SubRunThreadTree {
     .join('|');
 
   return { rootThreadItems, rootStreamFingerprint, subRuns };
+}
+
+/// 在不改变 sub-run 结构的前提下，增量刷新 thread tree 中的消息引用与 fingerprint。
+///
+/// 适用场景：assistant/tool/promptMetrics 文本或状态更新（消息 ID 不变）。
+/// 若检测到结构不兼容（消息缺失、kind 变化），返回 `null` 让调用方回退全量重建。
+export function patchSubRunThreadTreeMessages(
+  previousTree: SubRunThreadTree,
+  nextMessages: Message[]
+): SubRunThreadTree | null {
+  const nextById = new Map(nextMessages.map((message) => [message.id, message] as const));
+  const usedMessageIds = new Set<string>();
+
+  const patchedRootThreadItems = patchThreadItems(
+    previousTree.rootThreadItems,
+    nextById,
+    usedMessageIds
+  );
+  if (!patchedRootThreadItems) {
+    return null;
+  }
+
+  const patchedSubRuns = new Map<string, SubRunViewData>();
+  for (const [subRunId, view] of previousTree.subRuns.entries()) {
+    const patchedBodyMessages: Message[] = [];
+    for (const message of view.bodyMessages) {
+      const nextMessage = remapMessageReference(message, nextById);
+      if (!nextMessage) {
+        return null;
+      }
+      usedMessageIds.add(nextMessage.id);
+      patchedBodyMessages.push(nextMessage);
+    }
+
+    const patchedStartMessage = view.startMessage
+      ? remapMessageReference(view.startMessage, nextById)
+      : undefined;
+    if (view.startMessage && !patchedStartMessage) {
+      return null;
+    }
+    if (patchedStartMessage) {
+      usedMessageIds.add(patchedStartMessage.id);
+    }
+
+    const patchedFinishMessage = view.finishMessage
+      ? remapMessageReference(view.finishMessage, nextById)
+      : undefined;
+    if (view.finishMessage && !patchedFinishMessage) {
+      return null;
+    }
+    if (patchedFinishMessage) {
+      usedMessageIds.add(patchedFinishMessage.id);
+    }
+
+    const patchedThreadItems = patchThreadItems(view.threadItems, nextById, usedMessageIds);
+    if (!patchedThreadItems) {
+      return null;
+    }
+
+    patchedSubRuns.set(subRunId, {
+      ...view,
+      startMessage: patchedStartMessage as SubRunStartMessage | undefined,
+      finishMessage: patchedFinishMessage as SubRunFinishMessage | undefined,
+      bodyMessages: patchedBodyMessages,
+      threadItems: patchedThreadItems,
+    });
+  }
+
+  // Why: 旧 tree 无法覆盖的新增消息意味着结构或拓扑发生变化，
+  // 继续增量 patch 会丢消息；此时必须回退全量重建。
+  if (usedMessageIds.size !== nextById.size) {
+    return null;
+  }
+
+  const subRunFingerprints = new Map<string, string>();
+  const visiting = new Set<string>();
+  const resolveSubRunFingerprint = (subRunId: string): string => {
+    const cached = subRunFingerprints.get(subRunId);
+    if (cached) {
+      return cached;
+    }
+
+    const view = patchedSubRuns.get(subRunId);
+    if (!view) {
+      return subRunId;
+    }
+
+    if (visiting.has(subRunId)) {
+      return view.streamFingerprint;
+    }
+    visiting.add(subRunId);
+
+    const fingerprint = view.threadItems
+      .map((item) =>
+        item.kind === 'message'
+          ? buildMessageFingerprint(item.message)
+          : `subRun:${item.subRunId}:${resolveSubRunFingerprint(item.subRunId)}`
+      )
+      .join('|');
+
+    visiting.delete(subRunId);
+    subRunFingerprints.set(subRunId, fingerprint);
+    return fingerprint;
+  };
+
+  for (const subRunId of patchedSubRuns.keys()) {
+    resolveSubRunFingerprint(subRunId);
+  }
+
+  for (const [subRunId, view] of patchedSubRuns.entries()) {
+    patchedSubRuns.set(subRunId, {
+      ...view,
+      streamFingerprint: subRunFingerprints.get(subRunId) ?? view.streamFingerprint,
+    });
+  }
+
+  const rootStreamFingerprint = buildThreadItemsFingerprint(
+    patchedRootThreadItems,
+    subRunFingerprints
+  );
+
+  return {
+    rootThreadItems: patchedRootThreadItems,
+    rootStreamFingerprint,
+    subRuns: patchedSubRuns,
+  };
 }
 
 export function buildSubRunView(

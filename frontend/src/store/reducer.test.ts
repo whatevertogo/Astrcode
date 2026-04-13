@@ -309,4 +309,54 @@ describe('app reducer user message sync', () => {
     ]);
     expect(session.subRunThreadTree.subRuns.has('subrun-1')).toBe(true);
   });
+
+  it('keeps root thread items in sync when assistant delta updates existing messages', () => {
+    const initial = {
+      ...makeInitialState(),
+      projects: [
+        {
+          id: 'project-1',
+          name: 'Project',
+          workingDir: 'D:/repo',
+          isExpanded: true,
+          sessions: [
+            {
+              id: 'session-1',
+              projectId: 'project-1',
+              title: '新会话',
+              createdAt: Date.now(),
+              subRunThreadTree: createEmptySubRunThreadTree(),
+              messages: [],
+            },
+          ],
+        },
+      ],
+      activeProjectId: 'project-1',
+      activeSessionId: 'session-1',
+    };
+
+    const withFirstDelta = reducer(initial, {
+      type: 'APPEND_DELTA',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      delta: 'hello',
+    });
+    const withSecondDelta = reducer(withFirstDelta, {
+      type: 'APPEND_DELTA',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      delta: ' world',
+    });
+
+    const rootThreadItems = withSecondDelta.projects[0].sessions[0].subRunThreadTree.rootThreadItems;
+    expect(rootThreadItems).toHaveLength(1);
+    expect(rootThreadItems[0]).toEqual({
+      kind: 'message',
+      message: expect.objectContaining({
+        kind: 'assistant',
+        turnId: 'turn-1',
+        text: 'hello world',
+      }),
+    });
+  });
 });

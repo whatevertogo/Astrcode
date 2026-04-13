@@ -14,9 +14,10 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    AgentEventContext, CancelToken, LlmEvent, LlmRequest, Result, StorageEvent, StorageEventPayload,
+    AgentEventContext, AstrError, CancelToken, LlmEvent, LlmRequest, Result, StorageEvent,
+    StorageEventPayload,
 };
-use astrcode_kernel::KernelGateway;
+use astrcode_kernel::{KernelError, KernelGateway};
 use tokio::sync::mpsc;
 
 /// 调用 LLM 并收集流式 delta 为 StorageEvent。
@@ -53,7 +54,7 @@ pub async fn call_llm_streaming(
         }
 
         if cancel.is_cancelled() {
-            return Err(astrcode_core::AstrError::Internal("cancelled".to_string()));
+            return Err(AstrError::LlmInterrupted);
         }
     };
 
@@ -62,7 +63,7 @@ pub async fn call_llm_streaming(
         push_llm_delta(event, turn_id, agent, events);
     }
 
-    output.map_err(|e| astrcode_core::AstrError::Internal(e.to_string()))
+    output.map_err(map_kernel_error)
 }
 
 /// 检查错误是否为 prompt-too-long 类型。
@@ -113,4 +114,21 @@ fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
         .as_bytes()
         .windows(needle.len())
         .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
+fn map_kernel_error(error: KernelError) -> AstrError {
+    match error {
+        KernelError::Validation(message) => AstrError::Validation(message),
+        KernelError::NotFound(message) => AstrError::Internal(message),
+        KernelError::Invoke(message) => {
+            if contains_ascii_case_insensitive(&message, "llm request interrupted")
+                || contains_ascii_case_insensitive(&message, "operation cancelled")
+                || contains_ascii_case_insensitive(&message, "cancelled")
+            {
+                AstrError::LlmInterrupted
+            } else {
+                AstrError::Internal(message)
+            }
+        },
+    }
 }

@@ -234,24 +234,24 @@ impl EventLog {
         file.seek(std::io::SeekFrom::Start(offset))
             .map_err(|e| crate::io_error("failed to seek in session file", e))?;
 
-        let mut content = String::new();
-        file.read_to_string(&mut content)
+        let mut tail_bytes = Vec::new();
+        file.read_to_end(&mut tail_bytes)
             .map_err(|e| Self::enhance_read_error(path, e))?;
 
         if started_mid_line {
-            let Some((_, remaining)) = content.split_once('\n') else {
+            let Some(position) = tail_bytes.iter().position(|byte| *byte == b'\n') else {
                 return Self::scan_full_file_for_last_seq(path);
             };
-            content = remaining.to_string();
+            tail_bytes = tail_bytes[position + 1..].to_vec();
         }
 
-        for line in content.lines().rev() {
-            let trimmed = line.trim();
+        for line in tail_bytes.rsplit(|byte| *byte == b'\n') {
+            let trimmed = trim_ascii_whitespace(line);
             if trimmed.is_empty() {
                 continue;
             }
             if let Some(seq) = (|| {
-                let v = match serde_json::from_str::<serde_json::Value>(trimmed) {
+                let v = match serde_json::from_slice::<serde_json::Value>(trimmed) {
                     Ok(v) => v,
                     Err(err) => {
                         log::warn!("failed to parse event line while scanning tail: {err}");
@@ -353,6 +353,18 @@ impl EventLog {
     }
 }
 
+fn trim_ascii_whitespace(line: &[u8]) -> &[u8] {
+    let start = line
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(line.len());
+    let end = line
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+        .map_or(start, |index| index + 1);
+    &line[start..end]
+}
+
 impl EventLogWriter for EventLog {
     fn append(&mut self, event: &StorageEvent) -> Result<StoredEvent> {
         self.append_stored(event)
@@ -389,6 +401,51 @@ mod tests {
         assert_eq!(
             EventLog::last_storage_seq_from_path(&path).expect("tail scan should succeed"),
             3
+        );
+    }
+
+    #[test]
+    fn last_storage_seq_tail_scan_handles_multibyte_cutoff() {
+        const TAIL_THRESHOLD: usize = 64 * 1024;
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let path = temp_dir.path().join("session-test-session.jsonl");
+        let mut log = EventLog::create_at_path(path.clone()).expect("event log");
+
+        let mut matched = false;
+        for index in 0..16 {
+            log.append_stored(&StorageEvent {
+                turn_id: Some(format!("turn-{index}")),
+                agent: AgentEventContext::default(),
+                payload: StorageEventPayload::AssistantFinal {
+                    content: "你".repeat(30_000),
+                    reasoning_content: None,
+                    reasoning_signature: None,
+                    timestamp: Some(Utc::now()),
+                },
+            })
+            .expect("append should succeed");
+
+            let bytes = std::fs::read(&path).expect("session file should be readable");
+            if bytes.len() <= TAIL_THRESHOLD {
+                continue;
+            }
+
+            let offset = bytes.len() - TAIL_THRESHOLD;
+            // UTF-8 continuation byte（10xxxxxx）意味着 tail 读取将从多字节字符中间开始。
+            if (bytes[offset] & 0b1100_0000) == 0b1000_0000 && bytes[offset - 1] != b'\n' {
+                matched = true;
+                assert_eq!(
+                    EventLog::last_storage_seq_from_path(&path)
+                        .expect("tail scan should succeed even on multibyte cutoff"),
+                    (index + 1) as u64
+                );
+                break;
+            }
+        }
+
+        assert!(
+            matched,
+            "test setup failed to produce a multibyte tail cutoff scenario"
         );
     }
 }
