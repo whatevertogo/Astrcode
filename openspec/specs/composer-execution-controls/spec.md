@@ -1,5 +1,8 @@
-## ADDED Requirements
+# composer-execution-controls Specification
 
+## Purpose
+TBD - created by archiving change modernize-composer-execution-controls. Update Purpose after archive.
+## Requirements
 ### Requirement: Composer SHALL submit explicit execution controls
 
 前端 composer MUST 通过稳定 API 合同提交执行控制，而不是把控制语义停留在本地 TODO、隐式文本约定或零散条件分支中。
@@ -31,3 +34,4 @@
 - **WHEN** 控制请求已被系统接受且前端随后重连或切换视图
 - **THEN** 控制请求状态 SHALL 仍以服务端事实为准
 - **AND** MUST NOT 只依赖前端本地内存
+

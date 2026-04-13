@@ -95,6 +95,13 @@ impl RuntimeCoordinator {
             .collect()
     }
 
+    pub fn managed_components(&self) -> Vec<Arc<dyn ManagedRuntimeComponent>> {
+        self.managed_components
+            .read()
+            .expect("runtime coordinator managed components lock poisoned")
+            .clone()
+    }
+
     /// 原子替换运行时表面。
     ///
     /// 一次性更新插件注册表快照、能力列表和托管组件列表，

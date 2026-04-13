@@ -75,6 +75,8 @@ pub struct RuntimeConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_token_budget: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_steps: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub continuation_min_delta_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_continuations: Option<u8>,

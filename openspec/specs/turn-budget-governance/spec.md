@@ -1,8 +1,10 @@
-## Requirements
+## Purpose
 
+规范化 turn 内续写行为的预算治理规则，约束 `session-runtime` 在可观测、可追踪路径上的续写决策。
+## Requirements
 ### Requirement: Token budget 驱动 turn 自动续写
 
-`session-runtime` SHALL 在单次 turn 内根据 token budget 决策是否自动续写，而不是把继续/停止逻辑留给 `application`。
+`session-runtime` SHALL 在单次 turn 内根据 token budget 决策是否自动续写，而不是把继续/停止逻辑留给 `application`；当调用方显式提供 token budget 时，系统 SHALL 以显式输入作为本次 turn 的正式 budget 来源。
 
 #### Scenario: 预算允许时注入 continue nudge
 
@@ -16,7 +18,11 @@
 - **THEN** `session-runtime` 结束当前 turn
 - **AND** 不再注入新的 continue nudge
 
----
+#### Scenario: Explicit token budget overrides default for one turn
+
+- **WHEN** 调用方为本次执行显式提供 token budget
+- **THEN** `session-runtime` SHALL 使用该值作为本次 turn 的 budget
+- **AND** 不修改全局默认配置
 
 ### Requirement: 续写行为必须受硬上限约束
 
@@ -32,3 +38,4 @@
 
 - **WHEN** continuation 次数未达上限且 budget 允许继续
 - **THEN** turn 可以继续执行下一轮
+

@@ -60,7 +60,7 @@ use crate::{ApiError, AppState, bootstrap::serve_run_info};
 ///
 /// ### 配置
 /// - `GET /api/config` — 获取当前配置视图
-/// - `POST /api/config/reload` — 从磁盘重新加载配置并热替换 runtime loop
+/// - `POST /api/config/reload` — 通过治理入口重载配置、MCP、plugin 与统一 capability surface
 /// - `POST /api/config/active-selection` — 保存活跃的 profile/model 选择
 ///
 /// ### 日志

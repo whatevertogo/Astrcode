@@ -183,7 +183,7 @@ fn core_error_to_app(error: astrcode_core::AstrError) -> ApplicationError {
     ApplicationError::Internal(error.to_string())
 }
 
-async fn load_declared_configs(
+pub(crate) async fn load_declared_configs(
     config_service: &Arc<ConfigService>,
     working_dir: &Path,
 ) -> Result<Vec<McpServerConfig>, ApplicationError> {

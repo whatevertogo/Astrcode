@@ -1,5 +1,8 @@
-## ADDED Requirements
+# governance-reload-surface Specification
 
+## Purpose
+TBD - created by archiving change unify-governance-and-reload-surface. Update Purpose after archive.
+## Requirements
 ### Requirement: Governance reload SHALL unify all capability sources
 
 系统 MUST 通过单一治理入口编排 builtin、MCP、plugin 三类能力来源的 reload，而不是允许各来源各自宣布“已刷新完成”。
@@ -45,3 +48,4 @@
 
 - **WHEN** 不存在运行中 session
 - **THEN** 系统 SHALL 允许治理级 reload 继续执行
+

@@ -2,7 +2,14 @@ import { useCallback, type Dispatch, type MutableRefObject } from 'react';
 import { forgetProject, rememberProject } from '../../lib/knownProjects';
 import { uuid } from '../../utils/uuid';
 import { parseRuntimeSlashCommand } from '../../lib/slashCommands';
-import type { Action, DeleteProjectResult, Phase, Project, SessionMeta } from '../../types';
+import type {
+  Action,
+  DeleteProjectResult,
+  ExecutionControl,
+  Phase,
+  Project,
+  SessionMeta,
+} from '../../types';
 import { logger } from '../../lib/logger';
 
 export interface ConfirmDialogState {
@@ -32,9 +39,16 @@ interface UseComposerActionsOptions {
   setConfirmDialog: React.Dispatch<React.SetStateAction<ConfirmDialogState | null>>;
   refreshSessions: (options?: { preferredSessionId?: string | null }) => Promise<void>;
   createSession: (workingDir: string) => Promise<SessionMeta>;
-  submitPrompt: (sessionId: string, text: string) => Promise<PromptSubmission>;
+  submitPrompt: (
+    sessionId: string,
+    text: string,
+    control?: ExecutionControl
+  ) => Promise<PromptSubmission>;
   interrupt: (sessionId: string) => Promise<void>;
-  compactSession: (sessionId: string) => Promise<void>;
+  compactSession: (
+    sessionId: string,
+    control?: ExecutionControl
+  ) => Promise<{ accepted: boolean; deferred: boolean; message: string }>;
   deleteSession: (sessionId: string) => Promise<void>;
   deleteProject: (workingDir: string) => Promise<DeleteProjectResult>;
 }
@@ -47,6 +61,21 @@ function appendLocalError(dispatch: Dispatch<Action>, sessionId: string, message
       id: uuid(),
       kind: 'assistant',
       text: `错误：${message}`,
+      reasoningText: '',
+      streaming: false,
+      timestamp: Date.now(),
+    },
+  });
+}
+
+function appendLocalNotice(dispatch: Dispatch<Action>, sessionId: string, message: string) {
+  dispatch({
+    type: 'ADD_MESSAGE',
+    sessionId,
+    message: {
+      id: uuid(),
+      kind: 'assistant',
+      text: message,
       reasoningText: '',
       streaming: false,
       timestamp: Date.now(),
@@ -171,12 +200,6 @@ export function useComposerActions({
       }
 
       if (slashCommand) {
-        if (phaseRef.current !== 'idle') {
-          // TODO: 后续可在这里接入命令排队，而不是直接拒绝。
-          appendLocalError(dispatch, sessionId, '当前会话正在运行，暂不允许手动 compact。');
-          return;
-        }
-
         if (slashCommand.kind === 'compactInvalidArgs') {
           appendLocalError(
             dispatch,
@@ -187,7 +210,10 @@ export function useComposerActions({
         }
 
         try {
-          await compactSession(sessionId);
+          const acceptance = await compactSession(sessionId, { manualCompact: true });
+          if (acceptance.deferred) {
+            appendLocalNotice(dispatch, sessionId, acceptance.message);
+          }
         } catch (error) {
           appendLocalError(
             dispatch,

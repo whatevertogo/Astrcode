@@ -163,6 +163,7 @@ pub struct SessionState {
     pub active_turn_id: StdMutex<Option<String>>,
     pub turn_lease: StdMutex<Option<Box<dyn SessionTurnLease>>>,
     pub token_budget: StdMutex<Option<SessionTokenBudgetState>>,
+    pub pending_manual_compact: StdMutex<bool>,
     pub compact_failure_count: StdMutex<u32>,
     pub broadcaster: broadcast::Sender<SessionEventRecord>,
     live_broadcaster: broadcast::Sender<AgentEvent>,
@@ -215,6 +216,7 @@ impl SessionState {
             active_turn_id: StdMutex::new(None),
             turn_lease: StdMutex::new(None),
             token_budget: StdMutex::new(None),
+            pending_manual_compact: StdMutex::new(false),
             compact_failure_count: StdMutex::new(0),
             broadcaster,
             live_broadcaster,
@@ -269,6 +271,26 @@ impl SessionState {
         support::with_lock_recovery(&self.cancel, "session cancel", |cancel_guard| {
             *cancel_guard = CancelToken::new();
         });
+    }
+
+    pub fn request_manual_compact(&self) -> Result<bool> {
+        let mut guard = support::lock_anyhow(
+            &self.pending_manual_compact,
+            "session pending manual compact",
+        )?;
+        let already_pending = *guard;
+        *guard = true;
+        Ok(!already_pending)
+    }
+
+    pub fn take_pending_manual_compact(&self) -> Result<bool> {
+        let mut guard = support::lock_anyhow(
+            &self.pending_manual_compact,
+            "session pending manual compact",
+        )?;
+        let pending = *guard;
+        *guard = false;
+        Ok(pending)
     }
 
     pub fn translate_store_and_cache(

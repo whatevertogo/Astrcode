@@ -36,6 +36,8 @@ fn sub_run_started_serializes_contract_fields_in_camel_case() {
         },
         resolved_limits: ResolvedExecutionLimitsDto {
             allowed_tools: vec!["readFile".to_string(), "grep".to_string()],
+            max_steps: None,
+            token_budget: None,
         },
     };
 

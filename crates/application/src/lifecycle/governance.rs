@@ -47,7 +47,9 @@ pub trait SessionInfoProvider: Send + Sync {
 /// 实际实现在 Phase 10 组合根中桥接旧 runtime 的 `assemble_runtime_surface`。
 pub trait RuntimeReloader: Send + Sync {
     /// 执行重载，返回搜索路径列表。
-    fn reload(&self) -> Result<Vec<PathBuf>, ApplicationError>;
+    fn reload(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PathBuf>, ApplicationError>> + Send + '_>>;
 }
 
 /// 运行时治理快照。
@@ -134,8 +136,15 @@ impl AppGovernance {
             .reloader
             .as_ref()
             .ok_or_else(|| ApplicationError::Internal("no reloader configured".to_string()))?;
+        let running_sessions = self.sessions.running_session_ids();
+        if !running_sessions.is_empty() {
+            return Err(ApplicationError::Conflict(format!(
+                "cannot reload while sessions are running: {}",
+                running_sessions.join(", ")
+            )));
+        }
 
-        let search_paths = reloader.reload()?;
+        let search_paths = reloader.reload().await?;
 
         Ok(ReloadResult {
             snapshot: self.snapshot(search_paths),

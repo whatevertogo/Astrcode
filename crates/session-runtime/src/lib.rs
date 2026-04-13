@@ -5,8 +5,8 @@ use std::{
 
 use astrcode_core::{
     AgentEventContext, AgentId, DeleteProjectResult, EventStore, EventTranslator, LlmMessage,
-    Phase, PromptFactsProvider, Result, SessionId, SessionMeta, StorageEvent, StorageEventPayload,
-    StoredEvent, event::generate_session_id,
+    Phase, PromptFactsProvider, Result, RuntimeMetricsRecorder, SessionId, SessionMeta,
+    StorageEvent, StorageEventPayload, StoredEvent, event::generate_session_id,
 };
 use astrcode_kernel::Kernel;
 use chrono::Utc;
@@ -88,6 +88,7 @@ impl From<SessionRuntimeError> for astrcode_core::AstrError {
 pub struct SessionRuntime {
     kernel: Arc<Kernel>,
     prompt_facts_provider: Arc<dyn PromptFactsProvider>,
+    metrics: Arc<dyn RuntimeMetricsRecorder>,
     sessions: DashMap<SessionId, Arc<LoadedSession>>,
     event_store: Arc<dyn EventStore>,
     catalog_events: broadcast::Sender<SessionCatalogEvent>,
@@ -98,11 +99,13 @@ impl SessionRuntime {
         kernel: Arc<Kernel>,
         prompt_facts_provider: Arc<dyn PromptFactsProvider>,
         event_store: Arc<dyn EventStore>,
+        metrics: Arc<dyn RuntimeMetricsRecorder>,
     ) -> Self {
         let (catalog_events, _) = broadcast::channel(256);
         Self {
             kernel,
             prompt_facts_provider,
+            metrics,
             sessions: DashMap::new(),
             event_store,
             catalog_events,
@@ -120,6 +123,24 @@ impl SessionRuntime {
         let mut sessions = self
             .sessions
             .iter()
+            .map(|entry| entry.key().clone())
+            .collect::<Vec<_>>();
+        sessions.sort();
+        sessions
+    }
+
+    pub fn list_running_sessions(&self) -> Vec<SessionId> {
+        let mut sessions = self
+            .sessions
+            .iter()
+            .filter(|entry| {
+                entry
+                    .value()
+                    .actor
+                    .state()
+                    .running
+                    .load(std::sync::atomic::Ordering::SeqCst)
+            })
             .map(|entry| entry.key().clone())
             .collect::<Vec<_>>();
         sessions.sort();
@@ -253,9 +274,17 @@ impl SessionRuntime {
         Ok(deleted)
     }
 
-    pub async fn compact_session(&self, session_id: &str) -> Result<()> {
+    pub async fn compact_session(&self, session_id: &str) -> Result<bool> {
         let session_id = SessionId::from(normalize_session_id(session_id));
         let actor = self.ensure_loaded_session(&session_id).await?;
+        if actor
+            .state()
+            .running
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            actor.state().request_manual_compact()?;
+            return Ok(true);
+        }
         let projected = actor.state().snapshot_projected_state()?;
         let summary = projected
             .messages
@@ -288,7 +317,7 @@ impl SessionRuntime {
             },
         };
         append_and_broadcast(actor.state(), &event, &mut translator).await?;
-        Ok(())
+        Ok(false)
     }
 
     async fn session_phase(&self, session_id: &SessionId) -> Result<Phase> {

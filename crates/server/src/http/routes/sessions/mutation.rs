@@ -1,7 +1,7 @@
 use astrcode_core::ExecutionAccepted;
 use astrcode_protocol::http::{
-    CreateSessionRequest, DeleteProjectResultDto, PromptAcceptedResponse, PromptRequest,
-    SessionListItem,
+    CompactSessionRequest, CompactSessionResponse, CreateSessionRequest, DeleteProjectResultDto,
+    ExecutionControlDto, PromptAcceptedResponse, PromptRequest, SessionListItem,
 };
 use axum::{
     Json,
@@ -14,6 +14,16 @@ use crate::{
     ApiError, AppState, auth::require_auth, mapper::to_session_list_item,
     routes::sessions::validate_session_path_id,
 };
+
+fn to_execution_control(
+    control: Option<ExecutionControlDto>,
+) -> Option<astrcode_application::ExecutionControl> {
+    control.map(|control| astrcode_application::ExecutionControl {
+        token_budget: control.token_budget,
+        max_steps: control.max_steps,
+        manual_compact: control.manual_compact,
+    })
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,7 +55,11 @@ pub(crate) async fn submit_prompt(
     let session_id = validate_session_path_id(&session_id)?;
     let accepted: ExecutionAccepted = state
         .app
-        .submit_prompt(&session_id, request.text)
+        .submit_prompt_with_control(
+            &session_id,
+            request.text,
+            to_execution_control(request.control.clone()),
+        )
         .await
         .map_err(ApiError::from)?;
     Ok((
@@ -54,6 +68,7 @@ pub(crate) async fn submit_prompt(
             turn_id: accepted.turn_id.to_string(),
             session_id: accepted.session_id.to_string(),
             branched_from_session_id: accepted.branched_from_session_id,
+            accepted_control: request.control,
         }),
     ))
 }
@@ -77,15 +92,30 @@ pub(crate) async fn compact_session(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(session_id): Path<String>,
-) -> Result<StatusCode, ApiError> {
+    request: Option<Json<CompactSessionRequest>>,
+) -> Result<(StatusCode, Json<CompactSessionResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     let session_id = validate_session_path_id(&session_id)?;
-    state
+    let accepted = state
         .app
-        .compact_session(&session_id)
+        .compact_session_with_control(
+            &session_id,
+            to_execution_control(request.and_then(|request| request.0.control)),
+        )
         .await
         .map_err(ApiError::from)?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(CompactSessionResponse {
+            accepted: true,
+            deferred: accepted.deferred,
+            message: if accepted.deferred {
+                "手动 compact 已登记，会在当前 turn 完成后执行。".to_string()
+            } else {
+                "手动 compact 已执行。".to_string()
+            },
+        }),
+    ))
 }
 
 pub(crate) async fn delete_session(

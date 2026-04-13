@@ -7,10 +7,12 @@ use std::sync::Arc;
 
 use astrcode_adapter_storage::core_port::FsEventStore;
 use astrcode_adapter_tools::builtin_tools::tool_search::ToolSearchIndex;
-use astrcode_application::{AgentOrchestrationService, App, AppGovernance};
+use astrcode_application::{
+    AgentOrchestrationService, App, AppGovernance, RuntimeObservabilityCollector,
+};
 use astrcode_core::{
     CapabilityInvoker, EventStore, LlmProvider, PluginRegistry, PromptProvider, ResourceProvider,
-    Result,
+    Result, RuntimeCoordinator,
 };
 use astrcode_kernel::{CapabilityRouter, Kernel, KernelBuilder};
 use astrcode_session_runtime::SessionRuntime;
@@ -20,7 +22,7 @@ use super::{
         CapabilitySurfaceSync, build_agent_invokers, build_builtin_capability_invokers,
         build_server_capability_router, build_skill_catalog, sync_external_tool_search_index,
     },
-    governance::build_app_governance,
+    governance::{GovernanceBuildInput, build_app_governance},
     mcp::{bootstrap_mcp_manager, build_mcp_service},
     plugins::{PluginBootstrapResult, bootstrap_plugins},
     prompt_facts::build_prompt_facts_provider,
@@ -86,20 +88,30 @@ pub async fn bootstrap_server_runtime() -> Result<ServerRuntime> {
     )?);
     let capability_sync =
         CapabilitySurfaceSync::new(kernel.clone(), builtin_invokers, tool_search_index);
+    let observability = Arc::new(RuntimeObservabilityCollector::new());
+    let coordinator = Arc::new(RuntimeCoordinator::new(
+        Arc::new(super::governance::AppRuntimeHandle),
+        plugin_registry.clone(),
+        kernel.surface().snapshot().capability_specs,
+    ));
 
     let event_store: Arc<dyn EventStore> = Arc::new(FsEventStore::new());
-    let prompt_facts_provider =
-        build_prompt_facts_provider(config_service.clone(), skill_catalog, mcp_manager.clone())?;
+    let prompt_facts_provider = build_prompt_facts_provider(
+        config_service.clone(),
+        skill_catalog.clone(),
+        mcp_manager.clone(),
+    )?;
     let session_runtime = Arc::new(SessionRuntime::new(
         kernel.clone(),
         prompt_facts_provider,
         event_store,
+        observability.clone(),
     ));
     let mcp_service = build_mcp_service(
         config_service.clone(),
-        working_dir,
-        mcp_manager,
-        capability_sync,
+        working_dir.clone(),
+        mcp_manager.clone(),
+        capability_sync.clone(),
     );
 
     let agent_service = Arc::new(AgentOrchestrationService::new(
@@ -108,6 +120,7 @@ pub async fn bootstrap_server_runtime() -> Result<ServerRuntime> {
         Some(astrcode_application::resolve_default_token_budget(
             &config_service.get_config().await.runtime,
         )),
+        observability.clone(),
     ));
 
     // agent 四工具依赖 agent_service，必须在 kernel/session_runtime 之后单独注册
@@ -120,16 +133,22 @@ pub async fn bootstrap_server_runtime() -> Result<ServerRuntime> {
     let app = Arc::new(App::new(
         kernel.clone(),
         session_runtime.clone(),
-        config_service,
+        config_service.clone(),
         mcp_service,
         agent_service,
     ));
-    let governance = build_app_governance(
+    let governance = build_app_governance(GovernanceBuildInput {
         session_runtime,
-        kernel.clone(),
-        plugin_registry.clone(),
+        config_service: config_service.clone(),
+        coordinator,
+        observability,
+        mcp_manager,
+        capability_sync,
+        skill_catalog,
+        plugin_search_paths: plugin_search_paths.clone(),
         plugin_supervisors,
-    );
+        working_dir,
+    });
 
     Ok(ServerRuntime {
         app,

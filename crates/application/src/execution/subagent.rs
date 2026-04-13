@@ -5,7 +5,9 @@
 
 use std::sync::Arc;
 
-use astrcode_core::{AgentProfile, ExecutionAccepted, config::RuntimeConfig};
+use astrcode_core::{
+    AgentProfile, ExecutionAccepted, RuntimeMetricsRecorder, config::RuntimeConfig,
+};
 use astrcode_kernel::Kernel;
 use astrcode_session_runtime::SessionRuntime;
 use chrono::Utc;
@@ -34,6 +36,7 @@ pub async fn launch_subagent(
     session_runtime: &Arc<SessionRuntime>,
     request: SubagentExecutionRequest,
     runtime_config: RuntimeConfig,
+    metrics: &Arc<dyn RuntimeMetricsRecorder>,
 ) -> Result<ExecutionAccepted, ApplicationError> {
     validate_subagent_request(&request)?;
 
@@ -68,6 +71,7 @@ pub async fn launch_subagent(
         .submit_prompt(&child_session.session_id, merged_task, runtime_config)
         .await
         .map_err(ApplicationError::from)?;
+    metrics.record_child_spawned();
     accepted.agent_id = Some(handle.agent_id.into());
     Ok(accepted)
 }

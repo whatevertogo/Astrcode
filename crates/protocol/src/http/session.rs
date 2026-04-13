@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{AgentEventEnvelope, PhaseDto};
+use super::{AgentEventEnvelope, ExecutionControlDto, PhaseDto};
 
 /// `POST /api/sessions` 请求体——创建新会话。
 ///
@@ -52,6 +52,8 @@ pub struct SessionListItem {
 pub struct PromptRequest {
     /// 用户输入的文本内容
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<ExecutionControlDto>,
 }
 
 /// `POST /api/sessions/:id/prompt` 响应体——提示词已被接受。
@@ -68,6 +70,25 @@ pub struct PromptAcceptedResponse {
     /// 如果是分支会话，指向源会话 ID
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branched_from_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_control: Option<ExecutionControlDto>,
+}
+
+/// `POST /api/sessions/:id/compact` 请求体。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactSessionRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<ExecutionControlDto>,
+}
+
+/// `POST /api/sessions/:id/compact` 响应体。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactSessionResponse {
+    pub accepted: bool,
+    pub deferred: bool,
+    pub message: String,
 }
 
 /// `GET /api/sessions/:id/history` 响应体。

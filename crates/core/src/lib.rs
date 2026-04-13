@@ -27,6 +27,7 @@ pub mod home;
 pub mod hook;
 pub mod ids;
 pub mod local_server;
+pub mod observability;
 pub mod plugin;
 pub mod policy;
 pub mod ports;
@@ -94,6 +95,7 @@ pub use hook::{
 };
 pub use ids::{AgentId, CapabilityName, SessionId, TurnId};
 pub use local_server::{LOCAL_SERVER_READY_PREFIX, LocalServerInfo};
+pub use observability::{RuntimeMetricsRecorder, SubRunExecutionOutcome};
 pub use plugin::{PluginHealth, PluginManifest, PluginRegistry, PluginState, PluginType};
 pub use policy::{
     AllowAllPolicyEngine, ApprovalDefault, ApprovalPending, ApprovalRequest, ApprovalResolution,

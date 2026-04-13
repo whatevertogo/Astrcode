@@ -278,6 +278,8 @@ crates/
   - plugin / MCP / builtin 能力重新收集
   - `kernel` capability surface 原子替换
   - 治理快照更新
+- 当存在运行中的 session 时，治理层必须拒绝 reload，而不是尝试在执行中途切换能力面。
+- server 侧的 `/api/config/reload` 只是治理入口的 HTTP 映射，不允许退化回“仅重读 config store”的旁路接口。
 
 如果某次“重载”没有让上述链路闭合，那么它不是完整实现。
 
@@ -290,6 +292,25 @@ crates/
 - 治理快照如何表达成功、失败与部分可用状态
 
 在 ADR 落地之前，任何 reload 实现都应优先选择“显式失败并保留旧状态”，而不是静默接受半更新。
+
+## 7.1 当前落地语义
+
+当前仓库的治理 reload 已经按以下顺序闭合：
+
+1. `application::AppGovernance` 先检查是否存在运行中的 session。
+2. 组合根重读磁盘配置，并重新解析 MCP 声明配置。
+3. 重新发现 plugin、重建 base skill 列表，并同步外部 capability invoker。
+4. `kernel` capability surface 与治理快照一起刷新。
+5. 若 capability surface 替换失败，则保留旧 surface 与旧治理快照继续服务。
+
+这意味着“reload 成功”的定义不再是某个 manager 内部状态变化，而是整份外部能力事实源已经一致替换。
+
+## 7.2 观测与执行控制
+
+- 观测快照由 `application::RuntimeObservabilityCollector` 统一采集，并接入治理状态输出。
+- `session-runtime` 负责记录 session rehydrate、SSE catch-up、turn 执行与手动 compact 延迟落地。
+- `application` 负责校验 `tokenBudget`、`maxSteps`、`manualCompact` 等执行控制输入，再把结果下沉到单次执行上下文。
+- 忙碌 session 的手动 compact 以服务端登记为准，前端只展示接受/延迟执行反馈，不维护平行真相。
 
 ## 8. Discovery / Skill / Plugin 的长期归位
 

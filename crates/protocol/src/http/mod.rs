@@ -39,20 +39,22 @@ pub use config::{
 };
 pub use event::{
     AgentContextDto, AgentEventEnvelope, AgentEventPayload, ArtifactRefDto, CompactTriggerDto,
-    ForkModeDto, InvocationKindDto, MailboxBatchDto, MailboxDiscardedDto, MailboxQueuedDto,
-    PROTOCOL_VERSION, PhaseDto, ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto,
-    SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto,
-    SubRunStorageModeDto, ToolCallResultDto, ToolOutputStreamDto,
+    ExecutionControlDto, ForkModeDto, InvocationKindDto, MailboxBatchDto, MailboxDiscardedDto,
+    MailboxQueuedDto, PROTOCOL_VERSION, PhaseDto, ResolvedExecutionLimitsDto,
+    ResolvedSubagentContextOverridesDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
+    SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto, ToolCallResultDto,
+    ToolOutputStreamDto,
 };
 pub use model::{CurrentModelInfoDto, ModelOptionDto};
 pub use runtime::{
-    OperationMetricsDto, PluginHealthDto, PluginRuntimeStateDto, ReplayMetricsDto,
-    RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeReloadResponseDto,
-    RuntimeStatusDto, SubRunExecutionMetricsDto,
+    ExecutionDiagnosticsDto, OperationMetricsDto, PluginHealthDto, PluginRuntimeStateDto,
+    ReplayMetricsDto, RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto,
+    RuntimeReloadResponseDto, RuntimeStatusDto, SubRunExecutionMetricsDto,
 };
 pub use session::{
-    CreateSessionRequest, DeleteProjectResultDto, PromptAcceptedResponse, PromptRequest,
-    SessionHistoryResponseDto, SessionListItem, SessionViewResponseDto,
+    CompactSessionRequest, CompactSessionResponse, CreateSessionRequest, DeleteProjectResultDto,
+    PromptAcceptedResponse, PromptRequest, SessionHistoryResponseDto, SessionListItem,
+    SessionViewResponseDto,
 };
 pub use session_event::{SessionCatalogEventEnvelope, SessionCatalogEventPayload};
 pub use tool::{ToolDescriptorDto, ToolExecuteRequestDto, ToolExecuteResponseDto};

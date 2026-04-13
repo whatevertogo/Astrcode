@@ -6,11 +6,12 @@ import type {
   AgentEventPayload,
   AgentLifecycle,
   DeleteProjectResult,
+  ExecutionControl,
   Phase,
   SessionMeta,
   SessionViewSnapshot,
 } from '../../types';
-import { getErrorMessage, request, requestJson, requestRaw } from './client';
+import { request, requestJson } from './client';
 // 共享工具函数，消除与 lib/shared/index.ts 的重复定义
 import { asRecord, pickStringOrUndefined as pickString, pickOptionalString } from '../shared';
 import { normalizeAgentEvent } from '../agentEvent';
@@ -21,6 +22,13 @@ export interface PromptSubmission {
   turnId: string;
   sessionId: string;
   branchedFromSessionId?: string;
+  acceptedControl?: ExecutionControl;
+}
+
+export interface CompactSessionAcceptance {
+  accepted: boolean;
+  deferred: boolean;
+  message: string;
 }
 
 export interface ChildAgentRef {
@@ -136,13 +144,17 @@ export async function loadSessionView(
   };
 }
 
-export async function submitPrompt(sessionId: string, text: string): Promise<PromptSubmission> {
+export async function submitPrompt(
+  sessionId: string,
+  text: string,
+  control?: ExecutionControl
+): Promise<PromptSubmission> {
   const response = await requestJson<PromptSubmission>(
     `/api/sessions/${encodeURIComponent(sessionId)}/prompts`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, control }),
     }
   );
   return response;
@@ -170,17 +182,15 @@ export async function closeChildAgent(
   );
 }
 
-export async function compactSession(sessionId: string): Promise<void> {
-  const response = await requestRaw(`/api/sessions/${encodeURIComponent(sessionId)}/compact`, {
+export async function compactSession(
+  sessionId: string,
+  control?: ExecutionControl
+): Promise<CompactSessionAcceptance> {
+  return requestJson<CompactSessionAcceptance>(`/api/sessions/${encodeURIComponent(sessionId)}/compact`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ control }),
   });
-  if (response.status === 409) {
-    // 这里把后端的冲突语义提升成稳定用户文案，避免把内部错误串直接暴露到 UI。
-    throw new Error('当前会话正在运行，暂不允许手动 compact。');
-  }
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response));
-  }
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {

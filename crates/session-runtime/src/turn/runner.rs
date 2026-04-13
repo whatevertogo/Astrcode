@@ -47,8 +47,8 @@ use crate::context_window::{
     token_usage::TokenUsageTracker,
 };
 
-/// 单个 Turn 的最大 step 数，防止无限循环。
-const MAX_STEPS: usize = 50;
+/// 单个 Turn 的默认最大 step 数，防止无限循环。
+const DEFAULT_MAX_STEPS: usize = 50;
 
 /// 可清除的工具名称（这些工具的旧结果可以被 prune pass 替换为占位文本）。
 const CLEARABLE_TOOLS: &[&str] = &["readFile", "listDir", "grep", "findFiles"];
@@ -92,6 +92,11 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
     // 解析 token 预算配置。budget > 0 时启用自动续写。
     let token_budget = request.runtime.default_token_budget.filter(|&b| b > 0);
     let max_continuations = request.runtime.max_continuations.unwrap_or(3).max(1);
+    let max_steps = request
+        .runtime
+        .max_steps
+        .unwrap_or(DEFAULT_MAX_STEPS)
+        .max(1);
     let continuation_min_delta_tokens = request
         .runtime
         .continuation_min_delta_tokens
@@ -151,10 +156,10 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
         }
 
         // —— Step 上限检查 ——
-        if step_index >= MAX_STEPS {
+        if step_index >= max_steps {
             return Ok(TurnRunResult {
                 outcome: TurnOutcome::Error {
-                    message: format!("turn exceeded maximum steps ({MAX_STEPS})"),
+                    message: format!("turn exceeded maximum steps ({max_steps})"),
                 },
                 messages,
                 events,

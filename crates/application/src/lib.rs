@@ -127,6 +127,7 @@ pub use config::{
     resolve_tool_result_preview_limit,
 };
 pub use errors::ApplicationError;
+pub use execution::ExecutionControl;
 pub use lifecycle::governance::{
     AppGovernance, ObservabilitySnapshotProvider, RuntimeGovernancePort, RuntimeGovernanceSnapshot,
     RuntimeReloader, SessionInfoProvider,
@@ -134,7 +135,7 @@ pub use lifecycle::governance::{
 pub use mcp::{McpConfigScope, McpPort, McpServerStatusView, McpService, RegisterMcpServerInput};
 pub use observability::{
     ExecutionDiagnosticsSnapshot, GovernanceSnapshot, OperationMetricsSnapshot, ReloadResult,
-    ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilitySnapshot,
+    ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilityCollector, RuntimeObservabilitySnapshot,
     SubRunExecutionMetricsSnapshot,
 };
 pub use watch::{WatchEvent, WatchPort, WatchService, WatchSource};
@@ -147,6 +148,11 @@ pub struct App {
     composer_service: Arc<composer::ComposerService>,
     mcp_service: Arc<mcp::McpService>,
     agent_service: Arc<AgentOrchestrationService>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactSessionAccepted {
+    pub deferred: bool,
 }
 
 impl App {
@@ -236,8 +242,34 @@ impl App {
         session_id: &str,
         text: String,
     ) -> Result<ExecutionAccepted, ApplicationError> {
+        self.submit_prompt_with_control(session_id, text, None)
+            .await
+    }
+
+    pub async fn submit_prompt_with_control(
+        &self,
+        session_id: &str,
+        text: String,
+        control: Option<ExecutionControl>,
+    ) -> Result<ExecutionAccepted, ApplicationError> {
         self.validate_non_empty("prompt", &text)?;
-        let runtime = self.config_service.get_config().await.runtime;
+        if let Some(control) = &control {
+            control.validate()?;
+        }
+        let mut runtime = self.config_service.get_config().await.runtime;
+        if let Some(control) = control {
+            if control.manual_compact.is_some() {
+                return Err(ApplicationError::InvalidArgument(
+                    "manualCompact is not valid for prompt submission".to_string(),
+                ));
+            }
+            if let Some(token_budget) = control.token_budget {
+                runtime.default_token_budget = Some(token_budget);
+            }
+            if let Some(max_steps) = control.max_steps {
+                runtime.max_steps = Some(max_steps as usize);
+            }
+        }
         self.session_runtime
             .submit_prompt(session_id, text, runtime)
             .await
@@ -251,11 +283,32 @@ impl App {
             .map_err(ApplicationError::from)
     }
 
-    pub async fn compact_session(&self, session_id: &str) -> Result<(), ApplicationError> {
-        self.session_runtime
+    pub async fn compact_session(
+        &self,
+        session_id: &str,
+    ) -> Result<CompactSessionAccepted, ApplicationError> {
+        self.compact_session_with_control(session_id, None).await
+    }
+
+    pub async fn compact_session_with_control(
+        &self,
+        session_id: &str,
+        control: Option<ExecutionControl>,
+    ) -> Result<CompactSessionAccepted, ApplicationError> {
+        if let Some(control) = &control {
+            control.validate()?;
+            if control.token_budget.is_some() || control.max_steps.is_some() {
+                return Err(ApplicationError::InvalidArgument(
+                    "tokenBudget/maxSteps are not valid for manual compact".to_string(),
+                ));
+            }
+        }
+        let deferred = self
+            .session_runtime
             .compact_session(session_id)
             .await
-            .map_err(ApplicationError::from)
+            .map_err(ApplicationError::from)?;
+        Ok(CompactSessionAccepted { deferred })
     }
 
     pub async fn session_history(

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
     AgentEventContext, CancelToken, EventTranslator, ExecutionAccepted, Phase, Result, SessionId,
@@ -69,10 +69,12 @@ impl SessionRuntime {
 
         let kernel = Arc::clone(&self.kernel);
         let prompt_facts_provider = Arc::clone(&self.prompt_facts_provider);
+        let metrics = Arc::clone(&self.metrics);
         let actor_for_task = Arc::clone(&submit_target.actor);
         let session_id_for_task = submit_target.session_id.clone();
         let turn_id_for_task = turn_id.clone();
         tokio::spawn(async move {
+            let turn_started_at = Instant::now();
             let request = crate::turn::RunnerRequest {
                 session_id: session_id_for_task.to_string(),
                 working_dir: actor_for_task.working_dir().to_string(),
@@ -85,6 +87,10 @@ impl SessionRuntime {
             };
 
             let result = run_turn(kernel, request).await;
+            metrics.record_turn_execution(
+                turn_started_at.elapsed().as_millis() as u64,
+                result.is_ok(),
+            );
             let terminal_phase = match &result {
                 Ok(outcome) => match outcome.outcome {
                     TurnOutcome::Completed => Phase::Idle,
@@ -152,6 +158,72 @@ impl SessionRuntime {
             }
 
             complete_session_execution(actor_for_task.state(), terminal_phase);
+            if terminal_phase == Phase::Idle
+                && actor_for_task
+                    .state()
+                    .take_pending_manual_compact()
+                    .unwrap_or(false)
+            {
+                let projected = match actor_for_task.state().snapshot_projected_state() {
+                    Ok(projected) => projected,
+                    Err(error) => {
+                        log::warn!(
+                            "failed to snapshot session '{}' for deferred compact: {}",
+                            session_id_for_task,
+                            error
+                        );
+                        return;
+                    },
+                };
+                let summary = projected
+                    .messages
+                    .iter()
+                    .rev()
+                    .find_map(|message| match message {
+                        astrcode_core::LlmMessage::Assistant { content, .. }
+                            if !content.trim().is_empty() =>
+                        {
+                            Some(content.clone())
+                        },
+                        astrcode_core::LlmMessage::User { content, .. }
+                            if !content.trim().is_empty() =>
+                        {
+                            Some(content.clone())
+                        },
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "compacted".to_string());
+                let event = StorageEvent {
+                    turn_id: None,
+                    agent: AgentEventContext::default(),
+                    payload: StorageEventPayload::CompactApplied {
+                        trigger: astrcode_core::CompactTrigger::Manual,
+                        summary,
+                        preserved_recent_turns: 1,
+                        pre_tokens: 0,
+                        post_tokens_estimate: 0,
+                        messages_removed: 0,
+                        tokens_freed: 0,
+                        timestamp: Utc::now(),
+                    },
+                };
+                let mut compact_translator = EventTranslator::new(
+                    actor_for_task
+                        .state()
+                        .current_phase()
+                        .unwrap_or(Phase::Idle),
+                );
+                if let Err(error) =
+                    append_and_broadcast(actor_for_task.state(), &event, &mut compact_translator)
+                        .await
+                {
+                    log::warn!(
+                        "failed to persist deferred compact for session '{}': {}",
+                        session_id_for_task,
+                        error
+                    );
+                }
+            }
         });
 
         Ok(ExecutionAccepted {

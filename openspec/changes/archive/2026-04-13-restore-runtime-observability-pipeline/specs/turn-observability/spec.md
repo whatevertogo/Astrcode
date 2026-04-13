@@ -1,3 +1,7 @@
+## Purpose
+
+建立统一的 turn 稳定汇总语义，让治理和观测层基于可重复消费的结果进行聚合与展示，避免直接依赖原始事件流重建关键指标。
+
 ## MODIFIED Requirements
 
 ### Requirement: turn 执行形成稳定的 observability 汇总

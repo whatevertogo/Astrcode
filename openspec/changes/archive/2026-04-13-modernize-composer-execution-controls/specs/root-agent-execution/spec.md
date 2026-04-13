@@ -1,3 +1,7 @@
+## Purpose
+
+为根代理执行入口建立稳定、可追踪的入口语义，使上层调用方可以明确地控制一次完整会话执行的行为。
+
 ## MODIFIED Requirements
 
 ### Requirement: `application` 提供根代理执行入口

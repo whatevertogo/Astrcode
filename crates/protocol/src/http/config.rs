@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::http::RuntimeStatusDto;
+
 /// 配置文件中单个 profile 的只读视图。
 ///
 /// 用于 `GET /api/config` 响应中返回每个 profile 的摘要信息。
@@ -49,6 +51,8 @@ pub struct ConfigReloadResponse {
     pub reloaded_at: String,
     /// 重载后的配置快照
     pub config: ConfigView,
+    /// 重载后已生效的运行时治理快照
+    pub status: RuntimeStatusDto,
 }
 
 /// `PUT /api/config/selection` 请求体——保存用户的活跃 profile 和模型选择。

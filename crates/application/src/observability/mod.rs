@@ -3,11 +3,13 @@
 //! 提供运行时指标快照类型和治理快照能力。
 //! 实际的指标收集逻辑留在旧 runtime，Phase 10 组合根接线时桥接。
 
+mod collector;
 mod metrics_snapshot;
 
 use std::path::PathBuf;
 
 use astrcode_core::{CapabilitySpec, plugin::PluginEntry};
+pub use collector::RuntimeObservabilityCollector;
 pub use metrics_snapshot::{
     ExecutionDiagnosticsSnapshot, OperationMetricsSnapshot, ReplayMetricsSnapshot, ReplayPath,
     RuntimeObservabilitySnapshot, SubRunExecutionMetricsSnapshot,

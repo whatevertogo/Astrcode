@@ -167,7 +167,7 @@ cd frontend && npm run build
 
 ### 内建环境变量
 
-项目自定义环境变量按类别集中维护在 `crates/runtime-config/src/constants.rs`，底层常量源头在 `crates/core/src/env.rs`，避免低层 crate 反向依赖配置 crate。
+项目自定义环境变量按类别集中维护在 `crates/application/src/config/constants.rs`，底层稳定常量源头在 `crates/core/src/env.rs`，避免低层 crate 反向依赖应用编排层。
 
 | 类别 | 环境变量 | 作用 |
 |------|------|------|
@@ -226,24 +226,21 @@ cd frontend && npm run build
 ```
 AstrCode/
 ├── crates/
-│   ├── core/           # 纯领域类型、事件存储、投影、注册表
-│   │   ├── action.rs   # Agent 动作类型
-│   │   ├── cancel.rs   # 取消令牌
-│   │   ├── event/      # 事件存储与查询
-│   │   ├── plugin/     # 插件清单与注册表
-│   │   ├── registry/   # 工具/能力路由
-│   │   ├── session/    # 会话类型与持久化
-│   │   └── tool.rs     # Tool trait 定义
-│   ├── runtime/        # AgentLoop、配置与运行态 façade
-│   │   ├── agent_loop/ # LLM/Tool 循环实现
-│   │   └── service/    # RuntimeService 门面
-│   ├── protocol/       # HTTP / SSE / Plugin DTO
-│   │   ├── http/       # API 请求/响应类型
-│   │   └── plugin/     # 插件协议定义
-│   ├── plugin/         # stdio 插件运行时
-│   ├── sdk/            # 插件作者 API
-│   ├── tools/          # Tool 实现（不依赖 runtime）
-│   └── server/         # Axum 本地 server（唯一业务入口）
+│   ├── core/                 # 领域语义、强类型 ID、端口契约、稳定配置模型
+│   ├── protocol/             # HTTP / SSE / Plugin DTO
+│   ├── kernel/               # 全局控制面：surface / registry / agent tree / events
+│   ├── session-runtime/      # 单会话真相：state / turn / replay / context window
+│   ├── application/          # 用例编排、执行控制、治理与观测
+│   ├── server/               # Axum HTTP/SSE 边界与唯一组合根
+│   ├── adapter-storage/      # EventStore、ConfigStore 等存储实现
+│   ├── adapter-llm/          # LLM provider 适配
+│   ├── adapter-prompt/       # Prompt provider 适配
+│   ├── adapter-tools/        # 内置工具与 capability 桥接
+│   ├── adapter-skills/       # Skill 加载与物化
+│   ├── adapter-mcp/          # MCP 传输、连接管理与资源接入
+│   ├── adapter-agents/       # Agent profile 加载
+│   ├── plugin/               # stdio 插件模型与宿主基础设施
+│   └── sdk/                  # 插件作者 API
 ├── examples/           # 示例插件与示例 manifest
 ├── src-tauri/          # Tauri 薄壳：sidecar 管理、窗口控制
 ├── frontend/           # React + TypeScript + Vite UI
@@ -271,18 +268,33 @@ AstrCode/
                              │ HTTP/SSE
                              ▼
 ┌────────────────────────────────────────────────────────┐
-│                   astrcode-server                       │
-│  ┌─────────────┐    ┌──────────────┐   ┌─────────────┐ │
-│  │  Axum Router│───▶│RuntimeService│───▶│Capability   │ │
-│  │             │    │              │   │  Router     │ │
-│  │  /api/*     │    │  EventStore  │   │ ToolRegistry│ │
-│  └─────────────┘    └──────────────┘   └─────────────┘ │
-│  ┌─────────────┐    ┌──────────────┐   ┌─────────────┐ │
-│  │Auth/Bootstrap│   │ Plugin       │   │ Protocol    │ │
-│  │   Token     │    │ Supervisor   │   │   DTO       │ │
-│  └─────────────┘    └──────────────┘   └─────────────┘ │
+│                   astrcode-server                      │
+│  ┌─────────────┐    ┌──────────────┐   ┌────────────┐ │
+│  │  Axum Router│───▶│ application  │───▶│  kernel    │ │
+│  │  /api/*     │    │ App / Gov.   │   │ surface    │ │
+│  └─────────────┘    └──────┬───────┘   └─────┬──────┘ │
+│  ┌─────────────┐           │                 │        │
+│  │Protocol DTO │◀──────────┘          ┌──────▼──────┐ │
+│  └─────────────┘                      │session-     │ │
+│  ┌─────────────┐                      │runtime      │ │
+│  │Auth/Bootstrap│                     │turn/replay  │ │
+│  └─────────────┘                      └─────────────┘ │
 └────────────────────────────────────────────────────────┘
 ```
+
+### 当前核心分层
+
+- `application::App` 是同步业务用例入口，`application::AppGovernance` 是治理与 reload 入口。
+- `kernel` 维护统一 capability surface、tool/router、agent tree 与全局控制合同。
+- `session-runtime` 只回答单个 session 的真相，包括 turn 执行、重放、compact、context window 和 mailbox 推进。
+- `server` 只负责 DTO 映射、HTTP/SSE 状态码与组合根，不再暴露旧式 `RuntimeService` 门面。
+
+### Reload 与观测语义
+
+- `POST /api/config/reload` 现在走统一治理入口，而不是“只重读配置文件”。
+- 一次 reload 会串起：配置重载、MCP 配置刷新、plugin 重新发现、skill base 更新，以及 kernel capability surface 的一次性替换。
+- 如果存在运行中的 session，请求会被拒绝并返回冲突错误，避免半刷新期间出现执行语义漂移。
+- runtime status 接口返回真实 observability 快照，包含 `sessionRehydrate`、`sseCatchUp`、`turnExecution`、`subrunExecution` 与 `executionDiagnostics`，不再长期返回零值占位。
 
 ### Skill 架构
 
@@ -311,6 +323,7 @@ Tauri 仅作为"薄壳"，负责：
 | `/api/sessions/{id}` | DELETE | 删除会话 |
 | `/api/projects` | DELETE | 删除项目（所有会话） |
 | `/api/config` | GET | 获取配置 |
+| `/api/config/reload` | POST | 通过治理入口重载配置与统一能力面 |
 | `/api/config/active-selection` | POST | 保存当前选择 |
 | `/api/models/current` | GET | 当前模型信息 |
 | `/api/models` | GET | 可用模型列表 |
@@ -332,6 +345,12 @@ Tauri 仅作为"薄壳"，负责：
 | `toolCallResult` | 工具调用结果 |
 | `turnDone` | 对话回合结束 |
 | `error` | 错误信息 |
+
+会话提交与 agent 执行入口都支持可选执行控制：
+
+- `tokenBudget`：只覆盖本次执行的 token 预算，不污染全局配置
+- `maxSteps`：只覆盖本次 turn 的最大 step 数
+- `manualCompact`：用于显式登记手动 compact；当 session 忙碌时会由服务端登记并在当前 turn 结束后执行
 
 ## 开发指南
 

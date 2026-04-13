@@ -97,8 +97,15 @@ export interface ResolvedSubagentContextOverrides {
 }
 
 export interface ResolvedExecutionLimits {
-  // TODO: 未来可能需要添加 maxSteps 和 tokenBudget 参数
   allowedTools: string[];
+  maxSteps?: number;
+  tokenBudget?: number;
+}
+
+export interface ExecutionControl {
+  tokenBudget?: number;
+  maxSteps?: number;
+  manualCompact?: boolean;
 }
 
 export interface SubRunResult {

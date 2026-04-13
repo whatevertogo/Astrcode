@@ -21,8 +21,8 @@ use std::sync::Arc;
 
 use astrcode_core::{
     AgentLifecycleStatus, AgentMode, ArtifactRef, CloseAgentParams, CollaborationResult,
-    ObserveParams, Result, SendAgentParams, SpawnAgentParams, SubRunHandoff, SubRunResult,
-    ToolContext,
+    ObserveParams, Result, RuntimeMetricsRecorder, SendAgentParams, SpawnAgentParams,
+    SubRunHandoff, SubRunResult, ToolContext,
 };
 use astrcode_kernel::Kernel;
 use astrcode_session_runtime::SessionRuntime;
@@ -67,6 +67,7 @@ pub struct AgentOrchestrationService {
     kernel: Arc<Kernel>,
     session_runtime: Arc<SessionRuntime>,
     default_token_budget: Option<u64>,
+    metrics: Arc<dyn RuntimeMetricsRecorder>,
 }
 
 impl AgentOrchestrationService {
@@ -74,11 +75,13 @@ impl AgentOrchestrationService {
         kernel: Arc<Kernel>,
         session_runtime: Arc<SessionRuntime>,
         default_token_budget: Option<u64>,
+        metrics: Arc<dyn RuntimeMetricsRecorder>,
     ) -> Self {
         Self {
             kernel,
             session_runtime,
             default_token_budget,
+            metrics,
         }
     }
 
@@ -130,6 +133,7 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
             &self.session_runtime,
             request,
             self.default_runtime_config(),
+            &self.metrics,
         )
         .await
         .map_err(|e| astrcode_core::AstrError::Internal(e.to_string()))?;

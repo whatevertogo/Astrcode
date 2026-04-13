@@ -28,6 +28,9 @@ mod bootstrap;
 #[cfg(test)]
 #[path = "tests/composer_routes_tests.rs"]
 mod composer_routes_tests;
+#[cfg(test)]
+#[path = "tests/config_routes_tests.rs"]
+mod config_routes_tests;
 #[path = "logging.rs"]
 mod logging;
 #[path = "http/mapper.rs"]

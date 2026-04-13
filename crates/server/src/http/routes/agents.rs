@@ -8,7 +8,8 @@ use std::path::PathBuf;
 use astrcode_kernel::SubRunStatusView;
 use astrcode_protocol::http::{
     AgentExecuteRequestDto, AgentExecuteResponseDto, AgentLifecycleDto, AgentProfileDto,
-    AgentTurnOutcomeDto, SubRunStatusDto, SubRunStatusSourceDto, SubRunStorageModeDto,
+    AgentTurnOutcomeDto, ExecutionControlDto, SubRunStatusDto, SubRunStatusSourceDto,
+    SubRunStorageModeDto,
 };
 use axum::{
     Json,
@@ -18,6 +19,16 @@ use axum::{
 use serde::Serialize;
 
 use crate::{ApiError, AppState, auth::require_auth, routes::sessions};
+
+fn to_execution_control(
+    control: Option<ExecutionControlDto>,
+) -> Option<astrcode_application::ExecutionControl> {
+    control.map(|control| astrcode_application::ExecutionControl {
+        token_budget: control.token_budget,
+        max_steps: control.max_steps,
+        manual_compact: control.manual_compact,
+    })
+}
 
 pub(crate) async fn list_agents(
     State(state): State<AppState>,
@@ -58,7 +69,11 @@ pub(crate) async fn execute_agent(
     };
     let accepted = state
         .app
-        .submit_prompt(&session.session_id, merged_task)
+        .submit_prompt_with_control(
+            &session.session_id,
+            merged_task,
+            to_execution_control(request.control.clone()),
+        )
         .await
         .map_err(ApiError::from)?;
     Ok((

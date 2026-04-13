@@ -1,5 +1,7 @@
-## Requirements
+## Purpose
 
+建立统一业务入口与治理边界的需求叙述基准，覆盖应用层对执行入口、权限与能力治理行为的稳定契约。
+## Requirements
 ### Requirement: `application` 提供唯一业务入口 `App`
 
 `application` crate SHALL 提供 `App` 作为 server 的唯一业务入口。
@@ -78,21 +80,21 @@
 
 ### Requirement: Application Governs Plugin Reload
 
-`application` MUST 通过治理入口编排 plugin 参与的 reload 流程。
+`application` MUST 通过治理入口编排完整 capability reload 流程，而不是只编排 plugin 自身刷新。
 
 #### Scenario: Reload triggers full capability refresh
 
 - **WHEN** 上层触发 reload
 - **THEN** `application` SHALL 编排完整刷新链路
 - **AND** 刷新结果 SHALL 同时覆盖 builtin、MCP、plugin 能力来源
+- **AND** SHALL 以统一治理结果表达当前生效 surface
 
 #### Scenario: Governance does not hide plugin failure
 
-- **WHEN** plugin 发现、装载或物化失败
+- **WHEN** plugin 发现、装载、物化或参与统一 surface 替换失败
 - **THEN** `application` SHALL 暴露明确错误或治理快照结果
 - **AND** SHALL NOT 静默吞掉失败
-
----
+- **AND** SHALL NOT 让部分 plugin 刷新结果伪装成完整 reload 成功
 
 ### Requirement: `application` 重建治理与运行时监督模型
 
@@ -176,3 +178,4 @@
 
 - **WHEN** server 需要加载或保存配置
 - **THEN** 通过 `application/config` 完成
+

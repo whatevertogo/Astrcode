@@ -121,15 +121,22 @@ impl CapabilitySurfaceSync {
         external_invokers: Vec<Arc<dyn CapabilityInvoker>>,
     ) -> Result<()> {
         let mut invokers = self.builtin_invokers.clone();
-
-        sync_external_tool_search_index(&self.tool_search_index, &external_invokers);
-
         invokers.extend(external_invokers);
         self.router.replace_invokers(invokers.clone())?;
         self.kernel
             .surface()
             .replace_capabilities(&invokers, self.kernel.events());
+        let external_specs = invokers
+            .iter()
+            .skip(self.builtin_invokers.len())
+            .map(|invoker| invoker.capability_spec())
+            .collect();
+        self.tool_search_index.replace_from_specs(external_specs);
         Ok(())
+    }
+
+    pub(crate) fn current_capabilities(&self) -> Vec<astrcode_core::CapabilitySpec> {
+        self.kernel.surface().snapshot().capability_specs
     }
 }
 
@@ -157,4 +164,205 @@ pub(crate) fn build_agent_invokers(
             },
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use astrcode_adapter_tools::builtin_tools::tool_search::ToolSearchIndex;
+    use astrcode_core::{
+        CapabilityInvoker, CapabilityKind, LlmProvider, LlmRequest, ModelLimits, PromptBuildOutput,
+        PromptBuildRequest, PromptProvider, ResourceProvider, ResourceReadResult,
+        ResourceRequestContext, Result, Tool, ToolContext, ToolDefinition, ToolExecutionResult,
+    };
+    use astrcode_kernel::{Kernel, ToolCapabilityInvoker};
+    use async_trait::async_trait;
+    use serde_json::{Value, json};
+
+    use super::CapabilitySurfaceSync;
+    use crate::bootstrap::capabilities::sync_external_tool_search_index;
+
+    #[derive(Debug)]
+    struct StaticTool {
+        name: &'static str,
+        tags: &'static [&'static str],
+    }
+
+    #[async_trait]
+    impl Tool for StaticTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: self.name.to_string(),
+                description: format!("tool {}", self.name),
+                parameters: json!({"type": "object"}),
+            }
+        }
+
+        fn capability_spec(
+            &self,
+        ) -> std::result::Result<
+            astrcode_core::CapabilitySpec,
+            astrcode_core::CapabilitySpecBuildError,
+        > {
+            astrcode_core::CapabilitySpec::builder(self.name, CapabilityKind::Tool)
+                .description(format!("tool {}", self.name))
+                .schema(json!({"type": "object"}), json!({"type": "string"}))
+                .tags(self.tags.iter().copied())
+                .build()
+        }
+
+        async fn execute(
+            &self,
+            tool_call_id: String,
+            _input: Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolExecutionResult> {
+            Ok(ToolExecutionResult {
+                tool_call_id,
+                tool_name: self.name.to_string(),
+                ok: true,
+                output: String::new(),
+                error: None,
+                metadata: None,
+                duration_ms: 0,
+                truncated: false,
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct NoopLlmProvider;
+
+    #[async_trait]
+    impl LlmProvider for NoopLlmProvider {
+        async fn generate(
+            &self,
+            _request: LlmRequest,
+            _sink: Option<astrcode_core::LlmEventSink>,
+        ) -> Result<astrcode_core::LlmOutput> {
+            Err(astrcode_core::AstrError::Validation(
+                "noop llm provider should not execute in this test".to_string(),
+            ))
+        }
+
+        fn model_limits(&self) -> ModelLimits {
+            ModelLimits {
+                context_window: 8192,
+                max_output_tokens: 4096,
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct NoopPromptProvider;
+
+    #[async_trait]
+    impl PromptProvider for NoopPromptProvider {
+        async fn build_prompt(&self, _request: PromptBuildRequest) -> Result<PromptBuildOutput> {
+            Ok(PromptBuildOutput {
+                system_prompt: "noop".to_string(),
+                system_prompt_blocks: Vec::new(),
+                metadata: Value::Null,
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct NoopResourceProvider;
+
+    #[async_trait]
+    impl ResourceProvider for NoopResourceProvider {
+        async fn read_resource(
+            &self,
+            _uri: &str,
+            _context: &ResourceRequestContext,
+        ) -> Result<ResourceReadResult> {
+            Ok(ResourceReadResult {
+                uri: "noop://resource".to_string(),
+                content: Value::Null,
+                metadata: Value::Null,
+            })
+        }
+    }
+
+    fn invoker(name: &'static str, tags: &'static [&'static str]) -> Arc<dyn CapabilityInvoker> {
+        Arc::new(
+            ToolCapabilityInvoker::new(Arc::new(StaticTool { name, tags }))
+                .expect("static tool should build"),
+        ) as Arc<dyn CapabilityInvoker>
+    }
+
+    fn test_kernel(builtin_invokers: &[Arc<dyn CapabilityInvoker>]) -> Arc<Kernel> {
+        let router = astrcode_kernel::CapabilityRouter::builder()
+            .register_invoker(Arc::clone(&builtin_invokers[0]))
+            .build()
+            .expect("router should build");
+        Arc::new(
+            Kernel::builder()
+                .with_capabilities(router)
+                .with_llm_provider(Arc::new(NoopLlmProvider))
+                .with_prompt_provider(Arc::new(NoopPromptProvider))
+                .with_resource_provider(Arc::new(NoopResourceProvider))
+                .build()
+                .expect("kernel should build"),
+        )
+    }
+
+    #[test]
+    fn apply_external_invokers_keeps_previous_surface_on_failure() {
+        let builtin_invoker = invoker("read_file", &["source:builtin"]);
+        let builtin_invokers = vec![builtin_invoker];
+        let kernel = test_kernel(&builtin_invokers);
+        let tool_search_index = Arc::new(ToolSearchIndex::new());
+        let sync = CapabilitySurfaceSync::new(
+            Arc::clone(&kernel),
+            builtin_invokers.clone(),
+            Arc::clone(&tool_search_index),
+        );
+
+        let previous_external = invoker("mcp__demo__search", &["source:mcp"]);
+        sync.apply_external_invokers(vec![Arc::clone(&previous_external)])
+            .expect("initial replace should succeed");
+        let previous_specs = sync.current_capabilities();
+        let previous_search = tool_search_index.search("demo", 10);
+        assert_eq!(previous_search.len(), 1);
+
+        let error = sync.apply_external_invokers(vec![
+            invoker("dup_tool", &["source:mcp"]),
+            invoker("dup_tool", &["source:plugin"]),
+        ]);
+        assert!(
+            error.is_err(),
+            "duplicate capability should fail replacement"
+        );
+
+        let current_specs = sync.current_capabilities();
+        assert_eq!(current_specs, previous_specs);
+        let current_search = tool_search_index.search("demo", 10);
+        assert_eq!(current_search, previous_search);
+    }
+
+    #[test]
+    fn sync_external_tool_search_index_only_indexes_external_sources() {
+        let index = ToolSearchIndex::new();
+        sync_external_tool_search_index(
+            &index,
+            &[
+                invoker("read_file", &["source:builtin"]),
+                invoker("mcp__demo__search", &["source:mcp"]),
+                invoker("plugin.search", &["source:plugin"]),
+            ],
+        );
+
+        let names: Vec<String> = index
+            .search("", 10)
+            .into_iter()
+            .map(|spec| spec.name.to_string())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["mcp__demo__search".to_string(), "plugin.search".to_string()]
+        );
+    }
 }

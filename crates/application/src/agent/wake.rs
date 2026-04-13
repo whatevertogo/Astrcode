@@ -26,6 +26,7 @@ impl AgentOrchestrationService {
         parent_turn_id: &str,
         notification: &astrcode_core::ChildSessionNotification,
     ) {
+        self.metrics.record_parent_reactivation_requested();
         let parent_session_id = astrcode_session_runtime::normalize_session_id(parent_session_id);
 
         // 1. 加载父 session state 并追加 durable mailbox queue
@@ -72,6 +73,7 @@ impl AgentOrchestrationService {
                 notification.clone(),
             )
             .await;
+        self.metrics.record_delivery_buffer_queued();
         if !queued {
             log::warn!(
                 "failed to enqueue parent delivery: parentSession='{}', deliveryId='{}'",
@@ -85,6 +87,7 @@ impl AgentOrchestrationService {
             .try_start_parent_delivery_turn(&parent_session_id)
             .await
         {
+            self.metrics.record_parent_reactivation_failed();
             log::warn!(
                 "failed to schedule parent wake turn from child delivery: parentSession='{}', \
                  childAgent='{}', subRunId='{}', error='{}'",
@@ -94,6 +97,7 @@ impl AgentOrchestrationService {
                 error
             );
         }
+        self.metrics.record_parent_reactivation_succeeded();
     }
 
     /// 尝试从 delivery queue 中 checkout 一批交付并启动父级 wake turn。
@@ -110,6 +114,8 @@ impl AgentOrchestrationService {
             .ok_or_else(|| {
                 super::AgentOrchestrationError::Internal("no delivery batch available".to_string())
             })?;
+        self.metrics.record_delivery_buffer_dequeued();
+        self.metrics.record_delivery_buffer_wake_requested();
 
         let batch_delivery_ids: Vec<String> = delivery_batch
             .iter()
@@ -141,6 +147,7 @@ impl AgentOrchestrationService {
                         parent_session_id
                     );
                 }
+                self.metrics.record_delivery_buffer_wake_succeeded();
                 Ok(true)
             },
             Err(error) => {
@@ -148,6 +155,7 @@ impl AgentOrchestrationService {
                 self.kernel
                     .requeue_parent_delivery_batch(&parent_session_id, &batch_delivery_ids)
                     .await;
+                self.metrics.record_delivery_buffer_wake_failed();
                 log::warn!(
                     "parent wake turn failed, requeued deliveries: parentSession='{}', error='{}'",
                     parent_session_id,

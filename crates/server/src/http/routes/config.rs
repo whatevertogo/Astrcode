@@ -12,7 +12,11 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 
-use crate::{ApiError, AppState, auth::require_auth, mapper::build_config_view};
+use crate::{
+    ApiError, AppState,
+    auth::require_auth,
+    mapper::{build_config_view, to_runtime_status_dto},
+};
 
 /// 获取当前配置视图。
 ///
@@ -55,19 +59,15 @@ pub(crate) async fn save_active_selection(
 
 /// 从磁盘重新加载配置。
 ///
-/// 成功后会更新 runtime service 的内存配置快照，并重建后续 turn 使用的 AgentLoop。
-/// 成功时返回 202 Accepted 和重载后的配置视图。
+/// 成功后会通过治理入口重读配置并刷新当前 capability surface。
+/// 成功时返回 202 Accepted、重载后的配置视图和当前运行时快照。
 pub(crate) async fn reload_config(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<(StatusCode, Json<ConfigReloadResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
-    let config = state
-        .app
-        .config()
-        .reload_from_disk()
-        .await
-        .map_err(ApiError::from)?;
+    let reloaded = state.governance.reload().await.map_err(ApiError::from)?;
+    let config = state.app.config().get_config().await;
     let config_path = state
         .app
         .config()
@@ -79,8 +79,9 @@ pub(crate) async fn reload_config(
     Ok((
         StatusCode::ACCEPTED,
         Json(ConfigReloadResponse {
-            reloaded_at: format_local_rfc3339(chrono::Utc::now()),
+            reloaded_at: format_local_rfc3339(reloaded.reloaded_at),
             config: config_view,
+            status: to_runtime_status_dto(reloaded.snapshot),
         }),
     ))
 }

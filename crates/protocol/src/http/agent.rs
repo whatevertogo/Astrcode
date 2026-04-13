@@ -5,7 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::http::{ResolvedSubagentContextOverridesDto, SubRunResultDto, SubRunStorageModeDto};
+use crate::http::{
+    ExecutionControlDto, ResolvedSubagentContextOverridesDto, SubRunResultDto, SubRunStorageModeDto,
+};
 
 /// 对外暴露的 Agent Profile 摘要。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -31,7 +33,8 @@ pub struct AgentExecuteRequestDto {
     pub context: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_dir: Option<String>,
-    // TODO: 未来可能需要添加 max_steps 参数
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<ExecutionControlDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_overrides: Option<SubagentContextOverridesDto>,
 }

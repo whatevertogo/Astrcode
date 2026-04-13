@@ -1,3 +1,7 @@
+## Purpose
+
+确保 plugin 的发现、刷新与治理视图在每次 reload 与治理快照中均可追踪、可核验，并与统一能力集合保持一致。
+
 ## MODIFIED Requirements
 
 ### Requirement: Plugin Lifecycle Appears In Governance
@@ -16,7 +20,7 @@
 - **THEN** 治理快照 SHALL 继续反映旧的生效 surface 状态
 - **AND** 同时暴露本次 plugin 刷新失败信息
 
-### Requirement: Reload reports plugin refresh result
+#### Scenario: Reload reports plugin refresh result
 
 - **WHEN** reload 完成
 - **THEN** 系统 SHALL 能表达 plugin 刷新成功或失败的结果

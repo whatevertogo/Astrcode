@@ -20,10 +20,10 @@
 //! - **SSE 工具**：事件 ID 解析/格式化（`{storage_seq}.{subindex}` 格式）
 
 use astrcode_application::{
-    ApplicationError, ComposerOption, ComposerOptionKind, GovernanceSnapshot,
-    OperationMetricsSnapshot, ReplayMetricsSnapshot, RuntimeObservabilitySnapshot,
-    SessionCatalogEvent, SubRunExecutionMetricsSnapshot, is_env_var_name,
-    list_model_options as resolve_model_options, resolve_active_selection,
+    ApplicationError, ComposerOption, ComposerOptionKind, ExecutionDiagnosticsSnapshot,
+    GovernanceSnapshot, OperationMetricsSnapshot, ReplayMetricsSnapshot,
+    RuntimeObservabilitySnapshot, SessionCatalogEvent, SubRunExecutionMetricsSnapshot,
+    is_env_var_name, list_model_options as resolve_model_options, resolve_active_selection,
     resolve_current_model as resolve_runtime_current_model,
 };
 use astrcode_core::{
@@ -37,16 +37,16 @@ use astrcode_protocol::http::{
     AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentLifecycleDto, AgentProfileDto,
     AgentTurnOutcomeDto, ArtifactRefDto, ChildAgentRefDto, ChildSessionLineageKindDto,
     ChildSessionNotificationKindDto, CompactTriggerDto, ComposerOptionDto, ComposerOptionKindDto,
-    ComposerOptionsResponseDto, ConfigView, CurrentModelInfoDto, ForkModeDto, InvocationKindDto,
-    LineageSnapshotDto, MailboxBatchDto, MailboxDiscardedDto, MailboxQueuedDto, ModelOptionDto,
-    OperationMetricsDto, PROTOCOL_VERSION, PhaseDto, PluginHealthDto, PluginRuntimeStateDto,
-    ProfileView, ReplayMetricsDto, ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto,
-    RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto,
-    SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem,
-    SubRunExecutionMetricsDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
-    SubRunOutcomeDto, SubRunResultDto, SubRunStatusDto, SubRunStatusSourceDto,
-    SubRunStorageModeDto, SubagentContextOverridesDto, ToolCallResultDto, ToolDescriptorDto,
-    ToolOutputStreamDto,
+    ComposerOptionsResponseDto, ConfigView, CurrentModelInfoDto, ExecutionDiagnosticsDto,
+    ForkModeDto, InvocationKindDto, LineageSnapshotDto, MailboxBatchDto, MailboxDiscardedDto,
+    MailboxQueuedDto, ModelOptionDto, OperationMetricsDto, PROTOCOL_VERSION, PhaseDto,
+    PluginHealthDto, PluginRuntimeStateDto, ProfileView, ReplayMetricsDto,
+    ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto, RuntimeCapabilityDto,
+    RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto, SessionCatalogEventEnvelope,
+    SessionCatalogEventPayload, SessionListItem, SubRunExecutionMetricsDto, SubRunFailureCodeDto,
+    SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto, SubRunStatusDto,
+    SubRunStatusSourceDto, SubRunStorageModeDto, SubagentContextOverridesDto, ToolCallResultDto,
+    ToolDescriptorDto, ToolOutputStreamDto,
 };
 use astrcode_session_runtime::{SubRunStatusSnapshot, SubRunStatusSource};
 use axum::{http::StatusCode, response::sse::Event};
@@ -541,8 +541,9 @@ fn to_fork_mode_dto(fork_mode: ForkMode) -> ForkModeDto {
 
 fn to_resolved_limits_dto(limits: ResolvedExecutionLimitsSnapshot) -> ResolvedExecutionLimitsDto {
     ResolvedExecutionLimitsDto {
-        // TODO: 未来可能需要添加 max_steps 和 token_budget
         allowed_tools: limits.allowed_tools,
+        max_steps: limits.max_steps,
+        token_budget: limits.token_budget,
     }
 }
 
@@ -605,6 +606,7 @@ fn to_runtime_metrics_dto(snapshot: RuntimeObservabilitySnapshot) -> RuntimeMetr
         sse_catch_up: to_replay_metrics_dto(snapshot.sse_catch_up),
         turn_execution: to_operation_metrics_dto(snapshot.turn_execution),
         subrun_execution: to_subrun_execution_metrics_dto(snapshot.subrun_execution),
+        execution_diagnostics: to_execution_diagnostics_dto(snapshot.execution_diagnostics),
     }
 }
 
@@ -651,6 +653,28 @@ fn to_subrun_execution_metrics_dto(
         last_step_count: snapshot.last_step_count,
         total_estimated_tokens: snapshot.total_estimated_tokens,
         last_estimated_tokens: snapshot.last_estimated_tokens,
+    }
+}
+
+fn to_execution_diagnostics_dto(snapshot: ExecutionDiagnosticsSnapshot) -> ExecutionDiagnosticsDto {
+    ExecutionDiagnosticsDto {
+        child_spawned: snapshot.child_spawned,
+        child_started_persisted: snapshot.child_started_persisted,
+        child_terminal_persisted: snapshot.child_terminal_persisted,
+        parent_reactivation_requested: snapshot.parent_reactivation_requested,
+        parent_reactivation_succeeded: snapshot.parent_reactivation_succeeded,
+        parent_reactivation_failed: snapshot.parent_reactivation_failed,
+        lineage_mismatch_parent_agent: snapshot.lineage_mismatch_parent_agent,
+        lineage_mismatch_parent_session: snapshot.lineage_mismatch_parent_session,
+        lineage_mismatch_child_session: snapshot.lineage_mismatch_child_session,
+        lineage_mismatch_descriptor_missing: snapshot.lineage_mismatch_descriptor_missing,
+        cache_reuse_hits: snapshot.cache_reuse_hits,
+        cache_reuse_misses: snapshot.cache_reuse_misses,
+        delivery_buffer_queued: snapshot.delivery_buffer_queued,
+        delivery_buffer_dequeued: snapshot.delivery_buffer_dequeued,
+        delivery_buffer_wake_requested: snapshot.delivery_buffer_wake_requested,
+        delivery_buffer_wake_succeeded: snapshot.delivery_buffer_wake_succeeded,
+        delivery_buffer_wake_failed: snapshot.delivery_buffer_wake_failed,
     }
 }
 

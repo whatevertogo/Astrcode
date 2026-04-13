@@ -178,7 +178,8 @@ export default function InputBar() {
 
   const submit = () => {
     const trimmed = value.trim();
-    if (!trimmed || isBusy) {
+    const isSlashCommand = trimmed.startsWith('/');
+    if (!trimmed || (isBusy && !isSlashCommand)) {
       return;
     }
     closeSlashTrigger();
@@ -245,7 +246,6 @@ export default function InputBar() {
                   className="mb-3 max-h-[240px] min-h-[50px] w-full resize-none overflow-y-auto border-0 bg-transparent p-0 text-[15px] leading-[1.75] text-text-primary placeholder:text-text-muted focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
                   placeholder="向 AstrCode 提问..."
                   value={value}
-                  disabled={isBusy}
                   rows={1}
                   onChange={handleInput}
                   onKeyDown={handleKeyDown}

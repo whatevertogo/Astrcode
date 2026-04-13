@@ -1,5 +1,8 @@
-## ADDED Requirements
+# runtime-observability-pipeline Specification
 
+## Purpose
+TBD - created by archiving change restore-runtime-observability-pipeline. Update Purpose after archive.
+## Requirements
 ### Requirement: Runtime observability SHALL be backed by live collectors
 
 系统 MUST 使用真实运行时采集器生成 observability 快照，而不是使用默认零值占位实现。
@@ -30,3 +33,4 @@
 - **WHEN** 系统执行 turn、subrun 或 delivery 相关流程
 - **THEN** 对应 observability 指标 SHALL 被记录
 - **AND** 失败路径同样 SHALL 被统计
+

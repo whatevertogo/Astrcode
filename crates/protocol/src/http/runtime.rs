@@ -72,6 +72,8 @@ pub struct RuntimeMetricsDto {
     pub turn_execution: OperationMetricsDto,
     /// 子执行域共享观测指标
     pub subrun_execution: SubRunExecutionMetricsDto,
+    /// delivery / lineage / cache 诊断指标
+    pub execution_diagnostics: ExecutionDiagnosticsDto,
 }
 
 /// 子执行域共享观测指标。
@@ -90,6 +92,29 @@ pub struct SubRunExecutionMetricsDto {
     pub last_step_count: u64,
     pub total_estimated_tokens: u64,
     pub last_estimated_tokens: u64,
+}
+
+/// 结构化执行诊断指标。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionDiagnosticsDto {
+    pub child_spawned: u64,
+    pub child_started_persisted: u64,
+    pub child_terminal_persisted: u64,
+    pub parent_reactivation_requested: u64,
+    pub parent_reactivation_succeeded: u64,
+    pub parent_reactivation_failed: u64,
+    pub lineage_mismatch_parent_agent: u64,
+    pub lineage_mismatch_parent_session: u64,
+    pub lineage_mismatch_child_session: u64,
+    pub lineage_mismatch_descriptor_missing: u64,
+    pub cache_reuse_hits: u64,
+    pub cache_reuse_misses: u64,
+    pub delivery_buffer_queued: u64,
+    pub delivery_buffer_dequeued: u64,
+    pub delivery_buffer_wake_requested: u64,
+    pub delivery_buffer_wake_succeeded: u64,
+    pub delivery_buffer_wake_failed: u64,
 }
 
 /// 插件运行时状态。

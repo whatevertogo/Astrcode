@@ -37,6 +37,7 @@ import type {
   ConfigView,
   CurrentModelInfo,
   DeleteProjectResult,
+  ExecutionControl,
   ModelOption,
   Phase,
   SessionMeta,
@@ -362,8 +363,12 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
   );
 
   const handleSubmitPrompt = useCallback(
-    async (sessionId: string, text: string): Promise<PromptSubmission> => {
-      const response = await submitPrompt(sessionId, text);
+    async (
+      sessionId: string,
+      text: string,
+      control?: ExecutionControl
+    ): Promise<PromptSubmission> => {
+      const response = await submitPrompt(sessionId, text, control);
       return response;
     },
     []
@@ -381,9 +386,15 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
     [failActiveConnection]
   );
 
-  const handleCompactSession = useCallback(async (sessionId: string): Promise<void> => {
-    await compactSession(sessionId);
-  }, []);
+  const handleCompactSession = useCallback(
+    async (
+      sessionId: string,
+      control?: ExecutionControl
+    ): Promise<{ accepted: boolean; deferred: boolean; message: string }> => {
+      return compactSession(sessionId, control);
+    },
+    []
+  );
 
   const handleCancelSubRun = useCallback(
     async (sessionId: string, agentId: string): Promise<void> => {

@@ -9,3 +9,5 @@
 - 最后需要cargo fmt --all --check  && cargo clippy --all-targets --all-features -- -D warnings && cargo test验证你的更改
 - 前端css不允许出现webview相关内容这会导致应用端无法下滑窗口
 - 你必须用中文写文档
+
+你需要了解PROJECT_ARCHITECTURE.md中的架构设计原则和模块划分，才能更好地理解和参与项目的开发
