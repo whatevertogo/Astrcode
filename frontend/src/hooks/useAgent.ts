@@ -15,6 +15,7 @@ import { consumeSseStream } from '../lib/sse/consumer';
 import { buildSessionEventQueryString } from '../lib/sessionView';
 import { ensureServerSession } from '../lib/serverAuth';
 import { request } from '../lib/api/client';
+import { logger } from '../lib/logger';
 import { listComposerOptions } from '../lib/api/composer';
 import {
   compactSession,
@@ -208,20 +209,20 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
           SSE_RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1),
           SSE_RECONNECT_MAX_DELAY_MS
         );
-        reconnectTimerRef.current = window.setTimeout(() => {
-          reconnectTimerRef.current = null;
-          // Check generation again before reconnecting
-          if (streamGenerationRef.current === generation) {
-            console.warn('session event stream reconnecting', {
-              sessionId,
-              attempt,
-              delayMs,
-              cursor: lastEventIdRef.current,
-            });
-            void startStream(lastEventIdRef.current);
-          }
-        }, delayMs);
-      };
+          reconnectTimerRef.current = window.setTimeout(() => {
+            reconnectTimerRef.current = null;
+            // Check generation again before reconnecting
+            if (streamGenerationRef.current === generation) {
+              logger.warn('useAgent', 'session event stream reconnecting', {
+                sessionId,
+                attempt,
+                delayMs,
+                cursor: lastEventIdRef.current,
+              });
+              void startStream(lastEventIdRef.current);
+            }
+          }, delayMs);
+        };
 
       const startStream = async (cursor: string | null): Promise<void> => {
         // Check if this connection is still active
@@ -287,7 +288,7 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
               connectedSessionIdRef.current === sessionId &&
               streamGenerationRef.current === generation
             ) {
-              console.warn('session event stream ended unexpectedly, scheduling reconnect', {
+              logger.warn('useAgent', 'session event stream ended unexpectedly, scheduling reconnect', {
                 sessionId,
                 cursor: lastEventIdRef.current,
               });
@@ -373,7 +374,7 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
       try {
         await interruptSession(sessionId);
       } catch (error) {
-        console.error('failed to interrupt session:', error);
+        logger.error('useAgent', 'failed to interrupt session:', error);
         failActiveConnection(error instanceof Error ? error.message : String(error));
       }
     },
@@ -389,7 +390,7 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
       try {
         await closeChildAgent(sessionId, agentId);
       } catch (error) {
-        console.error('failed to close agent:', error);
+        logger.error('useAgent', 'failed to close agent:', error);
         throw error;
       }
     },

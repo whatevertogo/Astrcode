@@ -2,6 +2,7 @@ import React, { Component } from 'react';
 import ReactDOM from 'react-dom/client';
 import './index.css';
 import App from './App';
+import { logger } from './lib/logger';
 
 interface RootErrorBoundaryState {
   hasError: boolean;
@@ -22,7 +23,7 @@ class RootErrorBoundary extends Component<{ children: React.ReactNode }, RootErr
   }
 
   override componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error('root render failed', { error, errorInfo });
+    logger.error('main', 'root render failed', { error, errorInfo });
   }
 
   override render() {

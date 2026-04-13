@@ -3,6 +3,7 @@ import { forgetProject, rememberProject } from '../../lib/knownProjects';
 import { uuid } from '../../utils/uuid';
 import { parseRuntimeSlashCommand } from '../../lib/slashCommands';
 import type { Action, DeleteProjectResult, Phase, Project, SessionMeta } from '../../types';
+import { logger } from '../../lib/logger';
 
 export interface ConfirmDialogState {
   title: string;
@@ -78,7 +79,7 @@ export function useComposerActions({
         rememberProject(created.workingDir);
         await refreshSessions({ preferredSessionId: created.sessionId });
       } catch (error) {
-        console.error('Failed to create project session:', error);
+        logger.error('useComposerActions', 'Failed to create project session:', error);
       }
     },
     [createSession, refreshSessions]
@@ -88,12 +89,12 @@ export function useComposerActions({
     if (!activeProject?.workingDir) {
       return;
     }
-    try {
-      const created = await createSession(activeProject.workingDir);
-      await refreshSessions({ preferredSessionId: created.sessionId });
-    } catch (error) {
-      console.error('Failed to create session:', error);
-    }
+      try {
+        const created = await createSession(activeProject.workingDir);
+        await refreshSessions({ preferredSessionId: created.sessionId });
+      } catch (error) {
+        logger.error('useComposerActions', 'Failed to create session:', error);
+      }
   }, [activeProject?.workingDir, createSession, refreshSessions]);
 
   const handleDeleteProject = useCallback(
@@ -112,12 +113,12 @@ export function useComposerActions({
           try {
             const result = await deleteProject(project.workingDir);
             if (result.failedSessionIds.length > 0) {
-              console.error('部分会话删除失败:', result.failedSessionIds);
+              logger.error('useComposerActions', '部分会话删除失败:', result.failedSessionIds);
             }
             forgetProject(project.workingDir);
             await refreshSessions();
           } catch (error) {
-            console.error('Failed to delete project:', error);
+            logger.error('useComposerActions', 'Failed to delete project:', error);
           }
         },
       });
@@ -137,7 +138,7 @@ export function useComposerActions({
             await deleteSession(sessionId);
             await refreshSessions();
           } catch (error) {
-            console.error('Failed to delete session:', error);
+            logger.error('useComposerActions', 'Failed to delete session:', error);
           }
         },
       });

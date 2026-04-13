@@ -35,8 +35,8 @@ use chrono::Local;
 const LOG_FILE_PREFIX: &str = "server-";
 /// 保留的最大归档文件数量（不含 server-current.log 和 server-latest.txt）
 const MAX_ARCHIVE_FILES: usize = 10;
-/// 文件通道的日志级别阈值：warn 及以上
-const FILE_LOG_LEVEL: log::Level = log::Level::Warn;
+/// 文件通道的日志级别阈值：TRACE 及以上（也就是全部日志）
+const FILE_LOG_LEVEL: log::Level = log::Level::Trace;
 /// 固定入口文件名
 const CURRENT_LOG_NAME: &str = "server-current.log";
 /// 归档文件名指针
@@ -246,7 +246,7 @@ fn cleanup_old_archives(logs_dir: &std::path::Path) {
 
 /// 构建 stderr 的 env_logger。
 /// Debug：项目 crate info+，依赖 warn+。
-/// Release：error+（比完全 Off 更实用）。
+/// Release：warn+（满足“warn 及以上直接显示在 server”）。
 fn build_stderr_logger() -> env_logger::Logger {
     let mut builder = env_logger::Builder::new();
     if std::env::var("RUST_LOG").is_ok() {
@@ -261,7 +261,7 @@ fn build_stderr_logger() -> env_logger::Logger {
         }
         #[cfg(not(debug_assertions))]
         {
-            builder.filter_level(log::LevelFilter::Error);
+            builder.filter_level(log::LevelFilter::Warn);
         }
     }
     builder.format(|buf, record| {
@@ -313,8 +313,8 @@ fn init_stderr_only_logger() {
 /// 初始化顺序：目录 → 归档(必需) → latest(best-effort) → current(best-effort) → 清理 → 注册
 ///
 /// - Debug 构建：stderr 输出 info+（项目 crate）/ warn+（依赖），与现有行为一致
-/// - Release 构建：stderr 输出 error+
-/// - 文件通道始终写 warn+，在两种构建中均生效
+/// - Release 构建：stderr 输出 warn+
+/// - 文件通道写入 TRACE 及以上（也就是全部日志）
 pub fn init_logger() {
     let logs_dir = match logs_dir() {
         Ok(dir) => dir,

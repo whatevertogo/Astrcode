@@ -9,6 +9,7 @@ import type { ComposerOption } from '../../types';
 import CommandSelector from './CommandSelector';
 import { useChatScreenContext } from './ChatScreenContext';
 import ModelSelector from './ModelSelector';
+import { logger } from '../../lib/logger';
 
 /**
  * 输入框组件，支持 '/' 触发 slash 候选选择器
@@ -131,7 +132,7 @@ export default function InputBar() {
         if (controller.signal.aborted) {
           return;
         }
-        console.warn('[CommandSelector] 获取技能选项失败:', error);
+        logger.warn('InputBar', '[CommandSelector] 获取技能选项失败:', error);
         setSlashOptions([]);
         setSlashLoading(false);
       });

@@ -5,6 +5,7 @@ import { request } from '../lib/api/client';
 import { normalizeSessionCatalogEvent } from '../lib/sessionCatalogEvent';
 import { consumeSseStream } from '../lib/sse/consumer';
 import { ensureServerSession } from '../lib/serverAuth';
+import { logger } from '../lib/logger';
 
 const RECONNECT_BASE_DELAY_MS = 500;
 const RECONNECT_MAX_DELAY_MS = 5_000;
@@ -81,9 +82,9 @@ export function useSessionCatalogEvents({ onEvent, onResync }: UseSessionCatalog
         response,
         (payload) => {
           try {
-            onEventRef.current(normalizeSessionCatalogEvent(JSON.parse(payload)));
+              onEventRef.current(normalizeSessionCatalogEvent(JSON.parse(payload)));
           } catch (error) {
-            console.error('Failed to process session catalog event:', error);
+            logger.error('SessionCatalogEvents', 'Failed to process session catalog event:', error);
           }
         },
         controller.signal
@@ -96,7 +97,7 @@ export function useSessionCatalogEvents({ onEvent, onResync }: UseSessionCatalog
       if (!controller.signal.aborted && shouldRetrySessionCatalogStream(error)) {
         scheduleReconnect();
       } else if (!controller.signal.aborted) {
-        console.error('Session catalog event stream failed:', error);
+        logger.error('SessionCatalogEvents', 'Session catalog event stream failed:', error);
       }
     } finally {
       if (abortRef.current === controller) {

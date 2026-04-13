@@ -12,6 +12,7 @@ import { useComposerActions, type ConfirmDialogState } from './hooks/app/useComp
 import { useSessionCoordinator } from './hooks/app/useSessionCoordinator';
 import { useSubRunNavigation } from './hooks/app/useSubRunNavigation';
 import { forgetProject } from './lib/knownProjects';
+import { logger } from './lib/logger';
 import { buildSessionViewLocationHref, readSessionViewLocation } from './lib/sessionView';
 import { cn } from './lib/utils';
 import type { SessionCatalogEventPayload } from './types';
@@ -126,7 +127,7 @@ export default function App() {
         });
       } catch (error) {
         if (!cancelled) {
-          console.error('Failed to initialize sessions:', error);
+          logger.error('App', 'Failed to initialize sessions:', error);
         }
       }
     })();
@@ -221,7 +222,7 @@ export default function App() {
       try {
         await loadAndActivateSession(projectId, sessionId);
       } catch (error) {
-        console.error('Failed to activate session:', error);
+        logger.error('App', 'Failed to activate session:', error);
       }
     },
     [loadAndActivateSession]

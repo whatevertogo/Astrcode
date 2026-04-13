@@ -8,6 +8,8 @@ import type {
   ThreadSubRunItem,
 } from '../types';
 
+import { logger } from './logger';
+
 export type { SubRunThreadTree, SubRunViewData, ThreadItem, ThreadSubRunItem } from '../types';
 
 interface IndexedMessage {
@@ -495,7 +497,7 @@ export function buildSubRunThreadTree(messages: Message[]): SubRunThreadTree {
     }
     if (materializing.has(subRunId)) {
       // Why: 即便上游 lineage 清洗漏网，视图层也必须防止递归爆栈。
-      console.warn('sub-run tree detected recursive lineage, skipping recursive materialization', {
+      logger.warn('subRunView', 'sub-run tree detected recursive lineage, skipping recursive materialization', {
         subRunId,
       });
       return null;

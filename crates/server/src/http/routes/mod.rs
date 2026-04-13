@@ -17,6 +17,7 @@
 pub(crate) mod agents;
 pub(crate) mod composer;
 pub(crate) mod config;
+pub(crate) mod logs;
 pub(crate) mod mcp;
 pub(crate) mod model;
 pub(crate) mod sessions;
@@ -61,6 +62,9 @@ use crate::{ApiError, AppState, bootstrap::serve_run_info};
 /// - `GET /api/config` — 获取当前配置视图
 /// - `POST /api/config/reload` — 从磁盘重新加载配置并热替换 runtime loop
 /// - `POST /api/config/active-selection` — 保存活跃的 profile/model 选择
+///
+/// ### 日志
+/// - `POST /api/logs` — 前端日志上报，写入服务端日志系统
 ///
 /// ### 模型
 /// - `GET /api/models/current` — 获取当前激活的模型信息
@@ -108,6 +112,7 @@ pub(crate) fn build_api_router() -> Router<AppState> {
         .route("/api/models/current", get(model::get_current_model))
         .route("/api/models", get(model::list_models))
         .route("/api/models/test", post(model::test_model_connection))
+        .route("/api/logs", post(logs::ingest))
         .route("/api/v1/agents", get(agents::list_agents))
         .route("/api/v1/agents/{id}/execute", post(agents::execute_agent))
         .route(

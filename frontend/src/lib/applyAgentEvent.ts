@@ -1,6 +1,7 @@
 import type { Action, AgentEventPayload, AtomicAction, Phase } from '../types';
 import { uuid } from '../utils/uuid';
 import { releaseTurnMapping, resolveSessionForTurn } from './turnRouting';
+import { logger } from './logger';
 
 interface MutableValue<T> {
   current: T;
@@ -313,6 +314,13 @@ function collectAgentEventActions(
         break;
       }
       const toolCallId = event.data.toolCallId;
+      if (event.data.result.status === 'failed' && event.data.result.failure) {
+        logger.modelError('applyAgentEvent', 'subRun failed', {
+          code: event.data.result.failure.code,
+          turnId: event.data.turnId,
+          technicalMessage: event.data.result.failure.technicalMessage,
+        });
+      }
       emit({
         type: 'ADD_MESSAGE',
         sessionId,
@@ -377,6 +385,13 @@ function collectAgentEventActions(
 
     case 'error': {
       const sessionId = resolveSessionId(event.data.turnId ?? null);
+      if (event.data.code !== 'interrupted') {
+        logger.modelError('applyAgentEvent', 'agent error event', {
+          code: event.data.code,
+          turnId: event.data.turnId,
+          message: event.data.message,
+        });
+      }
       if (sessionId && event.data.code !== 'interrupted') {
         emit({
           type: 'ADD_MESSAGE',

@@ -8,6 +8,7 @@ import SubRunBlock from './SubRunBlock';
 import ToolCallBlock from './ToolCallBlock';
 import UserMessage from './UserMessage';
 import { useChatScreenContext } from './ChatScreenContext';
+import { logger } from '../../lib/logger';
 
 interface MessageListProps {
   threadItems: ThreadItem[];
@@ -33,7 +34,7 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
   }
 
   override componentDidCatch(error: Error) {
-    console.error('message render failed', {
+    logger.error('MessageList', 'message render failed', {
       kind: this.props.message.kind,
       message: this.props.message,
       error,
