@@ -417,8 +417,8 @@ impl astrcode_core::CollaborationExecutor for AgentOrchestrationService {
 mod tests {
     use astrcode_core::{
         AgentLifecycleStatus, CancelToken, ChildAgentRef, ChildSessionLineageKind,
-        ChildSessionNotification, ChildSessionNotificationKind, SpawnAgentParams, ToolContext,
-        agent::executor::SubAgentExecutor,
+        ChildSessionNotification, ChildSessionNotificationKind, SessionId, SpawnAgentParams,
+        StorageEventPayload, ToolContext, agent::executor::SubAgentExecutor,
     };
 
     use super::{
@@ -527,5 +527,99 @@ mod tests {
             .expect("implicit root agent should be registered");
         assert_eq!(root_status.agent_id, expected_parent_agent_id);
         assert_eq!(root_status.agent_profile, IMPLICIT_ROOT_PROFILE_ID);
+    }
+
+    #[tokio::test]
+    async fn launch_preserves_independent_child_session_lineage_in_handle_and_events() {
+        let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
+            content: "子代理已完成。".to_string(),
+        })
+        .expect("test harness should build");
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let parent = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("parent session should be created");
+        harness
+            .kernel
+            .agent_control()
+            .register_root_agent(
+                "root-agent".to_string(),
+                parent.session_id.clone(),
+                "root-profile".to_string(),
+            )
+            .await
+            .expect("root agent should be registered");
+        let ctx = ToolContext::new(
+            parent.session_id.clone().into(),
+            project.path().to_path_buf(),
+            CancelToken::new(),
+        )
+        .with_turn_id("turn-1")
+        .with_agent_context(root_execution_event_context("root-agent", "root-profile"));
+
+        let result = harness
+            .service
+            .launch(
+                SpawnAgentParams {
+                    r#type: Some("reviewer".to_string()),
+                    description: "仓库审查".to_string(),
+                    prompt: "请阅读代码".to_string(),
+                    context: Some("关注最近修改".to_string()),
+                },
+                &ctx,
+            )
+            .await
+            .expect("subagent should launch");
+
+        let handoff = result.handoff.expect("handoff should exist");
+        let child_agent_id = handoff
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == "agent")
+            .map(|artifact| artifact.id.clone())
+            .expect("child agent artifact should exist");
+        let child_session_id = handoff
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == "session")
+            .map(|artifact| artifact.id.clone())
+            .expect("child session artifact should exist");
+
+        let child_handle = harness
+            .kernel
+            .get_agent_handle(&child_agent_id)
+            .await
+            .expect("child handle should exist");
+        assert_eq!(
+            child_handle.session_id, parent.session_id,
+            "independent child should remain attached to parent session in control tree"
+        );
+        assert_eq!(
+            child_handle.child_session_id.as_deref(),
+            Some(child_session_id.as_str()),
+            "independent child should carry its open child session id"
+        );
+
+        let child_events = harness
+            .session_runtime
+            .replay_stored_events(&SessionId::from(child_session_id.clone()))
+            .await
+            .expect("child session events should replay");
+        let child_prompt = child_events
+            .iter()
+            .find(|stored| {
+                matches!(
+                    stored.event.payload,
+                    StorageEventPayload::UserMessage { .. }
+                )
+            })
+            .expect("child session should persist its first user prompt");
+        assert_eq!(
+            child_prompt.event.agent.child_session_id.as_deref(),
+            Some(child_session_id.as_str()),
+            "child prompt event should be stamped with its independent child session id"
+        );
     }
 }

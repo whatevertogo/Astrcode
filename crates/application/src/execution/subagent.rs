@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use astrcode_core::{
     AgentLifecycleStatus, AgentMode, AgentProfile, ExecutionAccepted, RuntimeMetricsRecorder,
-    config::RuntimeConfig,
+    SubRunStorageMode, config::RuntimeConfig,
 };
 use astrcode_kernel::Kernel;
 use astrcode_session_runtime::SessionRuntime;
@@ -50,11 +50,13 @@ pub async fn launch_subagent(
 
     let handle = kernel
         .agent_control()
-        .spawn(
+        .spawn_with_storage(
             &request.profile,
-            child_session.session_id.clone(),
+            request.parent_session_id.clone(),
+            Some(child_session.session_id.clone()),
             request.parent_turn_id,
             Some(request.parent_agent_id),
+            SubRunStorageMode::IndependentSession,
         )
         .await
         .map_err(|e| ApplicationError::Internal(format!("failed to spawn subagent: {e}")))?;

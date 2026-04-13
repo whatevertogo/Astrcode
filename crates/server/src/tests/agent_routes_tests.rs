@@ -325,6 +325,15 @@ async fn subagent_launch_uses_resolved_profile_and_inherits_parent_working_dir()
         .expect("subrun query should succeed")
         .expect("child subrun should exist");
     assert_eq!(subrun.agent_profile, "reviewer");
+    assert_eq!(
+        subrun.session_id, parent.session_id,
+        "sub-run handle should stay attached to the parent session"
+    );
+    assert_eq!(
+        subrun.child_session_id.as_deref(),
+        Some(child_session_id.as_str()),
+        "independent child session id should be preserved on the handle"
+    );
 
     let child_meta = state
         .app
