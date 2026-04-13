@@ -318,7 +318,7 @@ async fn close_agent_route_closes_target_agent_and_returns_closed_ids() {
 }
 
 #[tokio::test]
-async fn close_agent_route_defaults_cascade_to_true_when_body_is_empty() {
+async fn close_agent_route_accepts_empty_json_body() {
     let (state, _guard) = test_state(None).await;
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
@@ -367,7 +367,7 @@ async fn close_agent_route_defaults_cascade_to_true_when_body_is_empty() {
         .await
         .expect("response should be returned");
 
-    // 空 body 默认 cascade=true，应成功关闭
+    // close 接口不读取 body 字段，空 JSON body 也应保持同一契约行为。
     assert_eq!(response.status(), StatusCode::OK);
 }
 

@@ -10,6 +10,7 @@ import CommandSelector from './CommandSelector';
 import { useChatScreenContext } from './ChatScreenContext';
 import ModelSelector from './ModelSelector';
 import { logger } from '../../lib/logger';
+import { isExecutionPhase } from '../../lib/phase';
 
 /**
  * 输入框组件，支持 '/' 触发 slash 候选选择器
@@ -44,7 +45,7 @@ export default function InputBar() {
   const slashTriggerStartRef = useRef(0);
   const slashTriggerEndRef = useRef(0);
   const slashAbortRef = useRef<AbortController | null>(null);
-  const isBusy = phase !== 'idle';
+  const isBusy = isExecutionPhase(phase);
 
   const closeSlashTrigger = useCallback(() => {
     setSlashTriggerVisible(false);

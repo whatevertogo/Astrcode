@@ -2,6 +2,7 @@ import { useCallback, type Dispatch, type MutableRefObject } from 'react';
 import { forgetProject, rememberProject } from '../../lib/knownProjects';
 import { uuid } from '../../utils/uuid';
 import { parseRuntimeSlashCommand } from '../../lib/slashCommands';
+import { isExecutionPhase } from '../../lib/phase';
 import type {
   Action,
   DeleteProjectResult,
@@ -224,7 +225,7 @@ export function useComposerActions({
         return;
       }
 
-      if (phaseRef.current !== 'idle') {
+      if (isExecutionPhase(phaseRef.current)) {
         return;
       }
 

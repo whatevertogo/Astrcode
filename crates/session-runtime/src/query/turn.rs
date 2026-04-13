@@ -46,14 +46,6 @@ pub fn project_turn_outcome(phase: Phase, events: &[StoredEvent]) -> ProjectedTu
             },
             _ => None,
         });
-    let turn_done_reason = events
-        .iter()
-        .rev()
-        .find_map(|stored| match &stored.event.payload {
-            StorageEventPayload::TurnDone { reason, .. } => reason.clone(),
-            _ => None,
-        });
-
     let outcome = if matches!(phase, Phase::Interrupted) {
         match last_error.as_deref() {
             Some("interrupted") | None => AgentTurnOutcome::Cancelled,
@@ -61,11 +53,6 @@ pub fn project_turn_outcome(phase: Phase, events: &[StoredEvent]) -> ProjectedTu
         }
     } else if last_error.is_some() {
         AgentTurnOutcome::Failed
-    } else if matches!(
-        turn_done_reason.as_deref(),
-        Some("budget_exhausted" | "diminishing_returns")
-    ) {
-        AgentTurnOutcome::TokenExceeded
     } else {
         AgentTurnOutcome::Completed
     };
@@ -139,5 +126,41 @@ mod tests {
 
         assert_eq!(outcome.outcome, AgentTurnOutcome::Completed);
         assert_eq!(outcome.summary, "完成总结");
+    }
+
+    #[test]
+    fn project_turn_outcome_ignores_legacy_budget_reason() {
+        let outcome = project_turn_outcome(
+            Phase::Idle,
+            &[
+                StoredEvent {
+                    storage_seq: 1,
+                    event: StorageEvent {
+                        turn_id: Some("turn-1".to_string()),
+                        agent: AgentEventContext::default(),
+                        payload: StorageEventPayload::TurnDone {
+                            timestamp: chrono::Utc::now(),
+                            reason: Some("budget_exhausted".to_string()),
+                        },
+                    },
+                },
+                StoredEvent {
+                    storage_seq: 2,
+                    event: StorageEvent {
+                        turn_id: Some("turn-1".to_string()),
+                        agent: AgentEventContext::default(),
+                        payload: StorageEventPayload::AssistantFinal {
+                            content: "仍然视为完成".to_string(),
+                            reasoning_content: None,
+                            reasoning_signature: None,
+                            timestamp: Some(chrono::Utc::now()),
+                        },
+                    },
+                },
+            ],
+        );
+
+        assert_eq!(outcome.outcome, AgentTurnOutcome::Completed);
+        assert_eq!(outcome.summary, "仍然视为完成");
     }
 }
