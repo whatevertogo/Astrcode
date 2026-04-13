@@ -25,23 +25,49 @@ use super::capabilities::CapabilitySurfaceSync;
 
 /// 构建并初始化 MCP 连接管理器。
 pub(crate) async fn bootstrap_mcp_manager(
-    config_service: Arc<ConfigService>,
     working_dir: &Path,
     approvals_path: PathBuf,
 ) -> astrcode_core::Result<Arc<McpConnectionManager>> {
     let approval_store = FileMcpSettingsStore::new(approvals_path);
-    let manager = Arc::new(McpConnectionManager::new().with_approval(
+    Ok(Arc::new(McpConnectionManager::new().with_approval(
         McpApprovalManager::new(Box::new(approval_store)),
         working_dir.to_string_lossy().to_string(),
-    ));
-    let configs = load_declared_configs(&config_service, working_dir)
-        .await
-        .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))?;
+    )))
+}
+
+/// 在后台完成首次 MCP 连接与 capability surface 同步。
+///
+/// 这里故意不阻塞 sidecar ready：
+/// server 的核心职责是先把 HTTP API 提供出来，
+/// MCP 作为外部能力面可在后台预热，失败只影响对应能力，不应拖垮桌面端启动。
+pub(crate) async fn warmup_mcp_manager(
+    manager: Arc<McpConnectionManager>,
+    config_service: Arc<ConfigService>,
+    working_dir: PathBuf,
+    capability_sync: CapabilitySurfaceSync,
+    plugin_invokers: Vec<Arc<dyn astrcode_core::CapabilityInvoker>>,
+) {
+    let configs = match load_declared_configs(&config_service, working_dir.as_path()).await {
+        Ok(configs) => configs,
+        Err(error) => {
+            log::warn!("failed to load MCP declarations during startup warmup: {error}");
+            return;
+        },
+    };
+
     let results = manager.connect_all(configs).await;
-    for (name, error) in results.failed {
+    for (name, error) in &results.failed {
         log::warn!("MCP server '{}' 初始化失败: {}", name, error);
     }
-    Ok(manager)
+
+    let mut external_invokers = manager.current_surface().await.capability_invokers;
+    external_invokers.extend(plugin_invokers);
+    if let Err(error) = capability_sync.apply_external_invokers(external_invokers) {
+        log::error!(
+            "failed to apply MCP capability surface after startup warmup: {}",
+            error
+        );
+    }
 }
 
 /// 构建 MCP 服务，使用 `McpConnectionManager` 作为实际端口实现。

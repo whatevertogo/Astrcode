@@ -27,7 +27,7 @@ use super::{
         build_server_capability_router, build_skill_catalog, sync_external_tool_search_index,
     },
     governance::{GovernanceBuildInput, build_app_governance},
-    mcp::{bootstrap_mcp_manager, build_mcp_service},
+    mcp::{bootstrap_mcp_manager, build_mcp_service, warmup_mcp_manager},
     plugins::{PluginBootstrapResult, bootstrap_plugins_with_skill_root},
     prompt_facts::build_prompt_facts_provider,
     providers::{
@@ -46,6 +46,7 @@ pub struct ServerRuntime {
 
 pub struct ServerRuntimeHandles {
     _profile_watch_runtime: Option<super::watch::ProfileWatchRuntime>,
+    _mcp_warmup_runtime: McpWarmupRuntime,
 }
 
 /// 组合根的可覆盖选项。
@@ -81,6 +82,16 @@ pub struct ServerBootstrapPaths {
     pub plugin_skill_root: PathBuf,
     pub projects_root: PathBuf,
     pub plugin_search_paths: Vec<PathBuf>,
+}
+
+struct McpWarmupRuntime {
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for McpWarmupRuntime {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 impl ServerBootstrapPaths {
@@ -124,12 +135,8 @@ pub async fn bootstrap_server_runtime_with_options(
     };
     let agent_loader =
         astrcode_adapter_agents::AgentProfileLoader::new_with_home_dir(paths.home_dir.as_path());
-    let mcp_manager = bootstrap_mcp_manager(
-        config_service.clone(),
-        working_dir.as_path(),
-        paths.mcp_approvals_path.clone(),
-    )
-    .await?;
+    let mcp_manager =
+        bootstrap_mcp_manager(working_dir.as_path(), paths.mcp_approvals_path.clone()).await?;
 
     // plugin + MCP 是外部事实源，需要先完成装配，随后再把它们注入
     // tool_search / skill catalog，避免启动态与 reload 态出现两套事实。
@@ -159,7 +166,7 @@ pub async fn bootstrap_server_runtime_with_options(
     // 三路合并：builtin + MCP + plugin
     let mut all_invokers = builtin_invokers.clone();
     all_invokers.extend(mcp_invokers);
-    all_invokers.extend(plugin_invokers);
+    all_invokers.extend(plugin_invokers.clone());
     let capabilities = build_server_capability_router(all_invokers)?;
 
     let kernel = Arc::new(build_kernel(
@@ -238,13 +245,13 @@ pub async fn bootstrap_server_runtime_with_options(
         coordinator,
         task_registry,
         observability,
-        mcp_manager,
-        capability_sync,
+        mcp_manager: Arc::clone(&mcp_manager),
+        capability_sync: capability_sync.clone(),
         skill_catalog,
         plugin_search_paths: plugin_search_paths.clone(),
         plugin_skill_root: paths.plugin_skill_root.clone(),
         plugin_supervisors,
-        working_dir,
+        working_dir: working_dir.clone(),
     });
     let profile_watch_runtime = if options.enable_profile_watch {
         Some(
@@ -255,12 +262,22 @@ pub async fn bootstrap_server_runtime_with_options(
     } else {
         None
     };
+    let mcp_warmup_runtime = McpWarmupRuntime {
+        task: tokio::spawn(warmup_mcp_manager(
+            Arc::clone(&mcp_manager),
+            Arc::clone(&config_service),
+            working_dir,
+            capability_sync,
+            plugin_invokers,
+        )),
+    };
 
     Ok(ServerRuntime {
         app,
         governance,
         handles: Arc::new(ServerRuntimeHandles {
             _profile_watch_runtime: profile_watch_runtime,
+            _mcp_warmup_runtime: mcp_warmup_runtime,
         }),
     })
 }

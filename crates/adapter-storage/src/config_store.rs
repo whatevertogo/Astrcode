@@ -13,7 +13,7 @@ use astrcode_core::{
     AstrError, Config, ConfigOverlay, Result,
     ports::{ConfigStore, McpConfigFileScope},
 };
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 /// 配置文件存储的文件系统实现。
 ///
@@ -79,7 +79,7 @@ impl FileConfigStore {
         if !self.config_path.exists() {
             return self.init_default();
         }
-        let config = self.read_json::<Config>(&self.config_path)?;
+        let config = self.read_config_like::<Config>(&self.config_path)?;
         Ok(config)
     }
 
@@ -95,7 +95,7 @@ impl FileConfigStore {
         if !overlay_path.exists() {
             return Ok(None);
         }
-        self.read_json(&overlay_path).map(Some)
+        self.read_config_like(&overlay_path).map(Some)
     }
 
     /// 保存项目 overlay；空 overlay 会删除文件，避免残留无意义配置。
@@ -189,6 +189,21 @@ impl FileConfigStore {
         })
     }
 
+    fn read_config_like<T: serde::de::DeserializeOwned>(&self, path: &Path) -> Result<T> {
+        let raw = fs::read_to_string(path).map_err(|e| {
+            AstrError::io(format!("failed to read config at {}", path.display()), e)
+        })?;
+        let mut value: Value = serde_json::from_str(&raw).map_err(|e| {
+            AstrError::parse(format!("failed to parse config at {}", path.display()), e)
+        })?;
+        lift_top_level_mcp_servers(&mut value).map_err(|message| {
+            AstrError::Validation(format!("{} at {}", message, path.display()))
+        })?;
+        serde_json::from_value::<T>(value).map_err(|e| {
+            AstrError::parse(format!("failed to parse config at {}", path.display()), e)
+        })
+    }
+
     /// 原子写入：先写 .json.tmp → fsync → 重命名。Windows 需三步替换。
     fn write_json_atomic<T: serde::Serialize>(&self, path: &Path, value: &T) -> Result<()> {
         let json = serde_json::to_vec_pretty(value)
@@ -257,6 +272,29 @@ fn ensure_parent_dir(parent: &Path) -> Result<()> {
             e,
         )
     })
+}
+
+fn lift_top_level_mcp_servers(value: &mut Value) -> std::result::Result<(), String> {
+    let Some(root) = value.as_object_mut() else {
+        return Ok(());
+    };
+    let Some(mcp_servers) = root.remove("mcpServers") else {
+        return Ok(());
+    };
+
+    if root.contains_key("mcp") {
+        return Err("config cannot contain both 'mcp' and top-level 'mcpServers'".to_string());
+    }
+
+    if !mcp_servers.is_object() {
+        return Err("top-level 'mcpServers' must be an object".to_string());
+    }
+
+    root.insert(
+        "mcp".to_string(),
+        Value::Object(Map::from_iter([("mcpServers".to_string(), mcp_servers)])),
+    );
+    Ok(())
 }
 
 impl std::fmt::Debug for FileConfigStore {
@@ -365,5 +403,76 @@ mod tests {
             .expect("local mcp file should exist");
         assert_eq!(loaded, value);
         assert!(project.path().join(".astrcode").join("mcp.json").exists());
+    }
+
+    #[test]
+    fn load_config_accepts_top_level_mcp_servers_alias() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let store = FileConfigStore::new(temp.path().join(".astrcode").join("config.json"));
+        std::fs::create_dir_all(temp.path().join(".astrcode")).expect("config dir should exist");
+        std::fs::write(
+            temp.path().join(".astrcode").join("config.json"),
+            serde_json::to_vec_pretty(&json!({
+                "activeProfile": "deepseek",
+                "activeModel": "deepseek-chat",
+                "mcpServers": {
+                    "demo": {
+                        "command": "npx"
+                    }
+                }
+            }))
+            .expect("json should serialize"),
+        )
+        .expect("config should write");
+
+        let config = store.load().expect("config should load");
+        assert_eq!(
+            config.mcp,
+            Some(json!({
+                "mcpServers": {
+                    "demo": {
+                        "command": "npx"
+                    }
+                }
+            }))
+        );
+    }
+
+    #[test]
+    fn load_overlay_accepts_top_level_mcp_servers_alias() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let project = tempfile::tempdir().expect("project tempdir should be created");
+        let store = FileConfigStore::new(temp.path().join(".astrcode").join("config.json"));
+        std::fs::create_dir_all(project.path().join(".astrcode"))
+            .expect("overlay dir should exist");
+        std::fs::write(
+            project.path().join(".astrcode").join("config.json"),
+            serde_json::to_vec_pretty(&json!({
+                "mcpServers": {
+                    "demo": {
+                        "type": "http",
+                        "url": "http://localhost:8080/mcp"
+                    }
+                }
+            }))
+            .expect("json should serialize"),
+        )
+        .expect("overlay should write");
+
+        let overlay = store
+            .load_overlay(project.path())
+            .expect("overlay should load")
+            .expect("overlay should exist");
+        assert_eq!(
+            overlay.mcp,
+            Some(json!({
+                "mcpServers": {
+                    "demo": {
+                        "type": "http",
+                        "url": "http://localhost:8080/mcp"
+                    }
+                }
+            }))
+        );
     }
 }
