@@ -17,6 +17,7 @@ interface AssistantMessageProps {
   message: AssistantMessageType;
   hideAvatar?: boolean;
   metrics?: PromptMetricsMessage;
+  presentation?: 'root' | 'subRun';
 }
 
 interface MarkdownGuardProps {
@@ -224,12 +225,20 @@ function getCacheIndicator(metrics?: PromptMetricsMessage): React.ReactNode {
   }
 }
 
-function AssistantMessage({ message, hideAvatar, metrics }: AssistantMessageProps) {
+function AssistantMessage({
+  message,
+  hideAvatar,
+  metrics,
+  presentation = 'root',
+}: AssistantMessageProps) {
   const { visibleText, thinkingBlocks } = React.useMemo(
     () => extractThinkingBlocks(message.text, message.reasoningText),
     [message.text, message.reasoningText]
   );
   const streaming = message.streaming;
+  const useThinkingChrome = presentation === 'root';
+  const inlineReasoningText =
+    !useThinkingChrome && thinkingBlocks.length > 0 ? thinkingBlocks.join('\n\n') : '';
 
   return (
     <div className="flex items-start gap-4 animate-message-enter max-sm:gap-3 motion-reduce:animate-none">
@@ -265,61 +274,68 @@ function AssistantMessage({ message, hideAvatar, metrics }: AssistantMessageProp
           )}
           data-streaming={message.streaming ? 'true' : 'false'}
         >
-          {thinkingBlocks.map((block, index) => (
-            <details
-              key={`${message.id}-thinking-${index}`}
-              className="mb-3.5 bg-transparent border-none rounded-0 overflow-visible group"
-              open={message.streaming}
-            >
-              <summary className="inline-flex items-center gap-2 py-1 min-h-[24px] cursor-pointer select-none bg-transparent border-none rounded-0 text-text-secondary transition-opacity duration-150 ease-out text-sm font-medium list-none [&::-webkit-details-marker]:hidden hover:opacity-80">
-                <span className="w-4 h-4 inline-flex items-center justify-center shrink-0 text-[13px] text-text-secondary">
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
+          {useThinkingChrome
+            ? thinkingBlocks.map((block, index) => (
+                <details
+                  key={`${message.id}-thinking-${index}`}
+                  className="mb-3.5 bg-transparent border-none rounded-0 overflow-visible group"
+                  open={message.streaming}
+                >
+                  <summary className="inline-flex items-center gap-2 py-1 min-h-[24px] cursor-pointer select-none bg-transparent border-none rounded-0 text-text-secondary transition-opacity duration-150 ease-out text-sm font-medium list-none [&::-webkit-details-marker]:hidden hover:opacity-80">
+                    <span className="w-4 h-4 inline-flex items-center justify-center shrink-0 text-[13px] text-text-secondary">
+                      <svg
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z" />
+                        <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z" />
+                        <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4" />
+                        <path d="M17.599 6.5a3 3 0 0 0 .399-1.375" />
+                        <path d="M6.003 5.125A3 3 0 0 0 6.401 6.5" />
+                        <path d="M3.477 10.896a4 4 0 0 1 .585-.396" />
+                        <path d="M19.938 10.5a4 4 0 0 1 .585.396" />
+                        <path d="M6 18a4 4 0 0 1-1.967-.516" />
+                        <path d="M19.967 17.484A4 4 0 0 1 18 18" />
+                      </svg>
+                    </span>
+                    <span>Thinking</span>
+                    <span className={chevronIcon}>
+                      <svg
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <polyline points="9 18 15 12 9 6"></polyline>
+                      </svg>
+                    </span>
+                  </summary>
+                  <div
+                    className={cn(
+                      expandableBody,
+                      'overflow-wrap-anywhere text-sm leading-relaxed text-text-secondary prose-chat'
+                    )}
                   >
-                    <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z" />
-                    <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z" />
-                    <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4" />
-                    <path d="M17.599 6.5a3 3 0 0 0 .399-1.375" />
-                    <path d="M6.003 5.125A3 3 0 0 0 6.401 6.5" />
-                    <path d="M3.477 10.896a4 4 0 0 1 .585-.396" />
-                    <path d="M19.938 10.5a4 4 0 0 1 .585.396" />
-                    <path d="M6 18a4 4 0 0 1-1.967-.516" />
-                    <path d="M19.967 17.484A4 4 0 0 1 18 18" />
-                  </svg>
-                </span>
-                <span>Thinking</span>
-                <span className={chevronIcon}>
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <polyline points="9 18 15 12 9 6"></polyline>
-                  </svg>
-                </span>
-              </summary>
-              <div
-                className={cn(
-                  expandableBody,
-                  'overflow-wrap-anywhere text-sm leading-relaxed text-text-secondary prose-chat'
-                )}
-              >
-                <MarkdownContent text={block} defer={streaming} />
-              </div>
-            </details>
-          ))}
+                    <MarkdownContent text={block} defer={streaming} />
+                  </div>
+                </details>
+              ))
+            : null}
+          {!useThinkingChrome && inlineReasoningText ? (
+            <div className="mb-3 overflow-wrap-anywhere text-sm leading-relaxed text-text-secondary prose-chat">
+              <MarkdownContent text={inlineReasoningText} defer={streaming} />
+            </div>
+          ) : null}
           {visibleText ? <MarkdownContent text={visibleText} defer={streaming} /> : null}
           {message.streaming && (
             <span className="ml-px inline-block animate-blink text-text-secondary motion-reduce:animate-none">
@@ -327,7 +343,7 @@ function AssistantMessage({ message, hideAvatar, metrics }: AssistantMessageProp
             </span>
           )}
         </div>
-        {metrics && (
+        {metrics && useThinkingChrome && (
           <div className="mt-3 border-t border-border pt-2 text-xs leading-relaxed text-text-secondary">
             📊 {formatTokenCount(metrics.estimatedTokens)} tokens
             {getCacheIndicator(metrics)}

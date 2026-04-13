@@ -60,6 +60,7 @@ export function groupSessionsByProject(
       title: meta.title || '新会话',
       createdAt,
       updatedAt,
+      parentSessionId: meta.parentSessionId,
       messages: [],
       subRunThreadTree: createEmptySubRunThreadTree(),
     });

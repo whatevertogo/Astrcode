@@ -5,6 +5,7 @@ export interface ChatScreenContextValue {
   projectName: string | null;
   sessionId: string | null;
   sessionTitle: string | null;
+  isChildSession: boolean;
   workingDir: string;
   phase: Phase;
   activeSubRunPath: string[];

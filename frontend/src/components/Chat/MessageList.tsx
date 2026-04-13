@@ -146,8 +146,14 @@ export default function MessageList({
   subRunViews,
   contentFingerprint,
 }: MessageListProps) {
-  const { sessionId, activeSubRunPath, onCancelSubRun, onOpenSubRun, onOpenChildSession } =
-    useChatScreenContext();
+  const {
+    sessionId,
+    activeSubRunPath,
+    isChildSession,
+    onCancelSubRun,
+    onOpenSubRun,
+    onOpenChildSession,
+  } = useChatScreenContext();
   const listRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
@@ -196,13 +202,31 @@ export default function MessageList({
   }, [contentFingerprint, stickToBottom, updateStickiness]);
 
   const renderMessageContent = useCallback(
-    (msg: Message, hideAvatar: boolean, metrics?: Message) => {
+    (
+      msg: Message,
+      hideAvatar: boolean,
+      metrics?: Message,
+      options?: {
+        nested?: boolean;
+      }
+    ) => {
       if (msg.kind === 'user') {
         return <UserMessage message={msg} />;
       }
       if (msg.kind === 'assistant') {
         const promptMetrics = metrics?.kind === 'promptMetrics' ? metrics : undefined;
-        return <AssistantMessage message={msg} hideAvatar={hideAvatar} metrics={promptMetrics} />;
+        const presentation =
+          !isChildSession && activeSubRunPath.length === 0 && options?.nested !== true
+            ? 'root'
+            : 'subRun';
+        return (
+          <AssistantMessage
+            message={msg}
+            hideAvatar={hideAvatar}
+            metrics={promptMetrics}
+            presentation={presentation}
+          />
+        );
       }
       if (msg.kind === 'toolCall') {
         return <ToolCallBlock message={msg} />;
@@ -218,7 +242,7 @@ export default function MessageList({
       }
       return null;
     },
-    []
+    [activeSubRunPath.length, isChildSession]
   );
 
   const renderMessageRow = useCallback(
@@ -250,7 +274,7 @@ export default function MessageList({
           )}
         >
           <MessageBoundary message={msg}>
-            {renderMessageContent(msg, isContinuation, metricsToAttach)}
+            {renderMessageContent(msg, isContinuation, metricsToAttach, options)}
           </MessageBoundary>
         </div>
       );

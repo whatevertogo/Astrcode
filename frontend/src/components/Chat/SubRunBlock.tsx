@@ -59,10 +59,9 @@ function getStatusLabel(status: SubRunStatus): string {
 
 function getStorageModeLabel(startMessage?: SubRunStartMessage, childSessionId?: string): string {
   const storageMode = startMessage?.resolvedOverrides.storageMode ?? startMessage?.storageMode;
-  if (storageMode === 'independentSession' || childSessionId) {
-    return 'independent session';
-  }
-  return 'shared session';
+  return storageMode === 'independentSession' || childSessionId
+    ? 'independent session'
+    : 'independent session';
 }
 
 function getStatusVariant(status: SubRunStatus): string {
@@ -117,12 +116,9 @@ function SubRunBlock({
   const statusLabel = getStatusLabel(status);
   const childSessionId =
     projectedChildSessionId ?? startMessage?.childSessionId ?? finishMessage?.childSessionId;
-  const isIndependentSession =
-    (startMessage?.resolvedOverrides.storageMode ?? startMessage?.storageMode) ===
-      'independentSession' || childSessionId !== undefined;
   const metrics =
     finishMessage !== undefined
-      ? `${finishMessage.stepCount} steps · ${finishMessage.estimatedTokens} tokens`
+      ? `${finishMessage.stepCount} steps`
       : getStorageModeLabel(startMessage, childSessionId);
   const resultHandoff = finishMessage?.result.handoff;
   const resultFailure = finishMessage?.result.failure;
@@ -138,12 +134,12 @@ function SubRunBlock({
     resultFailure?.displayMessage ||
     resultHandoff?.summary.trim() ||
     (isBackgroundRunning
-      ? isIndependentSession
+      ? childSessionId
         ? '独立子会话正在后台运行，请打开会话查看实时输出。'
-        : '后台运行中，展开后会继续实时刷新。'
-      : isIndependentSession
-        ? '这是独立子会话，请打开会话查看思考和工具流。'
-        : '展开查看子执行的思考和工具流。');
+        : '独立子会话正在初始化；会话入口可用后即可直接打开。'
+      : childSessionId
+        ? '这是独立子会话，请打开会话查看完整输出。'
+        : '这是独立子会话；如果还没有会话入口，请稍后再查看。');
   const shouldAutoOpen = !userInteracted && isBackgroundRunning;
   const cancelTargetAgentId = startMessage?.agentId ?? subRunId;
 
@@ -299,13 +295,13 @@ function SubRunBlock({
       >
         {activityItems.length === 0 ? (
           <div className="py-1 text-text-secondary text-xs leading-relaxed">
-            {isIndependentSession
+            {childSessionId
               ? isBackgroundRunning
                 ? '该子 Agent 运行在独立会话中；请点击"打开独立会话"查看实时输出。'
-                : '该子 Agent 的思考和工具流保存在独立会话中；请点击"打开独立会话"查看。'
+                : '该子 Agent 的完整输出保存在独立会话中；请点击"打开独立会话"查看。'
               : isBackgroundRunning
-                ? '等待子 Agent 输出思考或工具调用...'
-                : '该子执行没有产生可展示的思考或工具调用。'}
+                ? '独立子会话正在初始化；会话入口就绪后可直接打开查看。'
+                : '该子执行没有生成可直接展示的内联输出。'}
           </div>
         ) : (
           renderThreadItems(activityItems, { nested: true })

@@ -531,6 +531,7 @@ export interface Session {
   title: string;
   createdAt: number;
   updatedAt?: number;
+  parentSessionId?: string;
   messages: Message[];
   subRunThreadTree: SubRunThreadTree;
 }

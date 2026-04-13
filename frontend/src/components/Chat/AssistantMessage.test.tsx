@@ -24,4 +24,36 @@ describe('AssistantMessage streaming markdown', () => {
     expect(html).toContain('fn main() {}');
     expect(html).toContain('Thinking');
   });
+
+  it('renders sub-run assistant content without thinking chrome or token footer', () => {
+    const html = renderToStaticMarkup(
+      <AssistantMessage
+        presentation="subRun"
+        metrics={{
+          id: 'metrics-1',
+          kind: 'promptMetrics',
+          stepIndex: 1,
+          estimatedTokens: 512,
+          contextWindow: 200000,
+          effectiveWindow: 180000,
+          thresholdTokens: 162000,
+          truncatedToolResults: 0,
+          timestamp: Date.now(),
+        }}
+        message={{
+          id: 'assistant-subrun-1',
+          kind: 'assistant',
+          text: '最终结论',
+          reasoningText: '中间推理',
+          streaming: false,
+          timestamp: Date.now(),
+        }}
+      />
+    );
+
+    expect(html).toContain('中间推理');
+    expect(html).toContain('最终结论');
+    expect(html).not.toContain('Thinking');
+    expect(html).not.toContain('tokens');
+  });
 });

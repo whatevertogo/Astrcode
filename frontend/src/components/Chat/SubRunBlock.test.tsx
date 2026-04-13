@@ -31,7 +31,7 @@ describe('SubRunBlock result rendering', () => {
       />
     );
 
-    expect(html).toContain('后台运行中，展开后会继续实时刷新。');
+    expect(html).toContain('独立子会话正在初始化；会话入口可用后即可直接打开。');
     expect(html).toContain('取消子会话');
     expect(html).toContain('思考与工具');
   });
@@ -75,7 +75,7 @@ describe('SubRunBlock result rendering', () => {
     expect(html).not.toContain('调用参数');
   });
 
-  it('renders focused-view entry for shared-session sub-runs', () => {
+  it('renders focused-view entry for sub-runs without shared-session label', () => {
     const startMessage: SubRunStartMessage = {
       id: 'subrun-start-1',
       kind: 'subRunStart',
@@ -115,6 +115,8 @@ describe('SubRunBlock result rendering', () => {
     );
 
     expect(html).toContain('查看子执行');
+    expect(html).toContain('independent session');
+    expect(html).not.toContain('shared session');
     expect(html).not.toContain('调用参数');
   });
 
