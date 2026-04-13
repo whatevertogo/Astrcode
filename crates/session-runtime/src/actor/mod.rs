@@ -146,13 +146,9 @@ impl SessionActor {
         let stored = writer.append_blocking(&session_start)?;
         let mut translator = EventTranslator::new(Phase::Idle);
         let recent_records = translator.translate(&stored);
-        let state = SessionState::new(
-            Phase::Idle,
-            writer,
-            astrcode_core::AgentStateProjector::default(),
-            recent_records,
-            vec![stored],
-        );
+        let mut projector = astrcode_core::AgentStateProjector::default();
+        projector.apply(&stored.event);
+        let state = SessionState::new(Phase::Idle, writer, projector, recent_records, vec![stored]);
 
         Ok(Self {
             state: Arc::new(state),
@@ -261,5 +257,124 @@ impl SessionActor {
 
     pub fn working_dir(&self) -> &str {
         &self.working_dir
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use astrcode_core::{
+        AgentEventContext, EventStore, Result, SessionMeta, SessionTurnAcquireResult, StorageEvent,
+        StorageEventPayload, StoredEvent, SubRunStorageMode, UserMessageOrigin,
+    };
+    use async_trait::async_trait;
+
+    use super::*;
+    use crate::append_and_broadcast;
+
+    #[derive(Debug, Default)]
+    struct StubEventStore;
+
+    struct StubTurnLease;
+
+    impl astrcode_core::SessionTurnLease for StubTurnLease {}
+
+    #[async_trait]
+    impl EventStore for StubEventStore {
+        async fn ensure_session(
+            &self,
+            _session_id: &SessionId,
+            _working_dir: &std::path::Path,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn append(
+            &self,
+            _session_id: &SessionId,
+            event: &StorageEvent,
+        ) -> Result<StoredEvent> {
+            Ok(StoredEvent {
+                storage_seq: 1,
+                event: event.clone(),
+            })
+        }
+
+        async fn replay(&self, _session_id: &SessionId) -> Result<Vec<StoredEvent>> {
+            Ok(Vec::new())
+        }
+
+        async fn try_acquire_turn(
+            &self,
+            _session_id: &SessionId,
+            _turn_id: &str,
+        ) -> Result<SessionTurnAcquireResult> {
+            Ok(SessionTurnAcquireResult::Acquired(Box::new(StubTurnLease)))
+        }
+
+        async fn list_sessions(&self) -> Result<Vec<SessionId>> {
+            Ok(Vec::new())
+        }
+
+        async fn list_session_metas(&self) -> Result<Vec<SessionMeta>> {
+            Ok(Vec::new())
+        }
+
+        async fn delete_session(&self, _session_id: &SessionId) -> Result<()> {
+            Ok(())
+        }
+
+        async fn delete_sessions_by_working_dir(
+            &self,
+            _working_dir: &str,
+        ) -> Result<astrcode_core::DeleteProjectResult> {
+            Ok(astrcode_core::DeleteProjectResult {
+                success_count: 0,
+                failed_session_ids: Vec::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn new_persistent_primes_projector_with_session_start_for_child_sessions() {
+        let actor = SessionActor::new_persistent(
+            SessionId::from("session-child".to_string()),
+            "/tmp/project",
+            AgentId::from("root-agent".to_string()),
+            Arc::new(StubEventStore),
+        )
+        .expect("actor should be created");
+
+        let child_agent = AgentEventContext::sub_run(
+            "agent-child",
+            "turn-parent",
+            "explore",
+            "subrun-1",
+            None,
+            SubRunStorageMode::IndependentSession,
+            Some("session-child".to_string()),
+        );
+        let event = StorageEvent {
+            turn_id: Some("turn-child".to_string()),
+            agent: child_agent,
+            payload: StorageEventPayload::UserMessage {
+                content: "child task".to_string(),
+                origin: UserMessageOrigin::User,
+                timestamp: chrono::Utc::now(),
+            },
+        };
+
+        let mut translator = EventTranslator::new(Phase::Idle);
+        append_and_broadcast(actor.state(), &event, &mut translator)
+            .await
+            .expect("child event should append");
+
+        let projected = actor
+            .state()
+            .snapshot_projected_state()
+            .expect("snapshot should work");
+        assert!(matches!(
+            projected.messages.as_slice(),
+            [astrcode_core::LlmMessage::User { content, .. }] if content == "child task"
+        ));
     }
 }

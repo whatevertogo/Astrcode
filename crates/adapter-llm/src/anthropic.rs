@@ -48,6 +48,67 @@ use crate::{
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const ANTHROPIC_CACHE_BREAKPOINT_LIMIT: usize = 4;
 
+fn summarize_request_for_diagnostics(request: &AnthropicRequest) -> Value {
+    let messages = request
+        .messages
+        .iter()
+        .map(|message| {
+            let block_types = message
+                .content
+                .iter()
+                .map(AnthropicContentBlock::block_type)
+                .collect::<Vec<_>>();
+            json!({
+                "role": message.role,
+                "blockTypes": block_types,
+                "blockCount": message.content.len(),
+                "cacheControlCount": message
+                    .content
+                    .iter()
+                    .filter(|block| block.has_cache_control())
+                    .count(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let system = match &request.system {
+        None => Value::Null,
+        Some(AnthropicSystemPrompt::Text(text)) => json!({
+            "kind": "text",
+            "chars": text.chars().count(),
+        }),
+        Some(AnthropicSystemPrompt::Blocks(blocks)) => json!({
+            "kind": "blocks",
+            "count": blocks.len(),
+            "cacheControlCount": blocks
+                .iter()
+                .filter(|block| block.cache_control.is_some())
+                .count(),
+            "chars": blocks.iter().map(|block| block.text.chars().count()).sum::<usize>(),
+        }),
+    };
+    let tools = request.tools.as_ref().map(|tools| {
+        json!({
+            "count": tools.len(),
+            "names": tools.iter().map(|tool| tool.name.clone()).collect::<Vec<_>>(),
+            "cacheControlCount": tools
+                .iter()
+                .filter(|tool| tool.cache_control.is_some())
+                .count(),
+        })
+    });
+
+    json!({
+        "model": request.model,
+        "maxTokens": request.max_tokens,
+        "topLevelCacheControl": request.cache_control.is_some(),
+        "hasThinking": request.thinking.is_some(),
+        "stream": request.stream.unwrap_or(false),
+        "system": system,
+        "messages": messages,
+        "tools": tools,
+    })
+}
+
 /// Anthropic Claude API 提供者实现。
 ///
 /// 封装了 HTTP 客户端、API 密钥和模型配置，提供统一的 [`LlmProvider`] 接口。
@@ -191,6 +252,12 @@ impl AnthropicProvider {
             "Anthropic request: url={}, api_key_preview={}, model={}",
             self.messages_api_url, api_key_preview, self.model
         );
+        if !is_official_anthropic_api_url(&self.messages_api_url) {
+            debug!(
+                "Anthropic-compatible request summary: {}",
+                summarize_request_for_diagnostics(request)
+            );
+        }
 
         for attempt in 0..=MAX_RETRIES {
             let send_future = self
@@ -239,6 +306,19 @@ impl AnthropicProvider {
                     if is_retryable_status(status) && attempt < MAX_RETRIES {
                         wait_retry_delay(attempt, cancel.clone()).await?;
                         continue;
+                    }
+
+                    if status.is_client_error()
+                        && !is_official_anthropic_api_url(&self.messages_api_url)
+                    {
+                        warn!(
+                            "Anthropic-compatible request rejected: url={}, status={}, \
+                             request_summary={}, response={}",
+                            self.messages_api_url,
+                            status.as_u16(),
+                            summarize_request_for_diagnostics(request),
+                            body
+                        );
                     }
 
                     // 使用结构化错误分类 (P4.3)
@@ -1251,6 +1331,24 @@ impl AnthropicCacheControl {
 }
 
 impl AnthropicContentBlock {
+    fn block_type(&self) -> &'static str {
+        match self {
+            AnthropicContentBlock::Text { .. } => "text",
+            AnthropicContentBlock::Thinking { .. } => "thinking",
+            AnthropicContentBlock::ToolUse { .. } => "tool_use",
+            AnthropicContentBlock::ToolResult { .. } => "tool_result",
+        }
+    }
+
+    fn has_cache_control(&self) -> bool {
+        match self {
+            AnthropicContentBlock::Text { cache_control, .. }
+            | AnthropicContentBlock::Thinking { cache_control, .. }
+            | AnthropicContentBlock::ToolUse { cache_control, .. }
+            | AnthropicContentBlock::ToolResult { cache_control, .. } => cache_control.is_some(),
+        }
+    }
+
     /// 判断内容块是否适合显式 `cache_control`。
     ///
     /// 出于兼容网关的稳健性，显式缓存断点仅打在 text 块上；
