@@ -154,9 +154,9 @@ fn map_kernel_error(error: KernelError) -> AstrError {
             }
 
             if let Some(raw) = message.strip_prefix("invalid api key for provider: ") {
-                return AstrError::InvalidApiKey(raw.to_string());
+                AstrError::InvalidApiKey(raw.to_string())
             } else {
-                return AstrError::Internal(message);
+                AstrError::Internal(message)
             }
         },
     }
