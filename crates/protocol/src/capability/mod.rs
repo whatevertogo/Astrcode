@@ -20,7 +20,6 @@
 //! - 所有字段都有明确的默认值和 serde 注解，保证序列化兼容性
 
 mod descriptors;
-mod mapper;
 
 pub use descriptors::{
     BudgetHint, CallerRef, CapabilityDescriptor, CapabilityDescriptorBuilder, CapabilityKind,
@@ -28,4 +27,3 @@ pub use descriptors::{
     PeerRole, PermissionHint, ProfileDescriptor, SideEffectLevel, StabilityLevel,
     TriggerDescriptor, WorkspaceRef,
 };
-pub use mapper::{CapabilityMappingError, descriptor_to_spec, spec_to_descriptor};

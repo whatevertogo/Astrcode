@@ -6,13 +6,12 @@ use std::{
 };
 
 use astrcode_core::{AstrError, CancelToken, CapabilitySpec, Result};
-use astrcode_plugin::{CapabilityHandler, CapabilityRouter, EventEmitter, Worker};
-use astrcode_protocol::{
-    capability::descriptor_to_spec,
-    plugin::{
-        CapabilityDescriptor, CapabilityKind, InvocationContext, PeerDescriptor, PeerRole,
-        SideEffectLevel, StabilityLevel,
-    },
+use astrcode_plugin::{
+    CapabilityHandler, CapabilityRouter, EventEmitter, Worker, descriptor_to_spec,
+};
+use astrcode_protocol::plugin::{
+    CapabilityDescriptor, CapabilityKind, InvocationContext, PeerDescriptor, PeerRole,
+    SideEffectLevel, StabilityLevel,
 };
 use astrcode_sdk::{
     DeserializeOwned, PluginContext, Serialize, StreamWriter, ToolHandler, ToolRegistration,

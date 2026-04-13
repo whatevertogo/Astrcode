@@ -48,17 +48,14 @@ use std::{
 };
 
 use astrcode_core::{AstrError, CancelToken, Result};
-use astrcode_protocol::{
-    plugin::{
-        CancelMessage, ErrorPayload, EventMessage, EventPhase, InitializeMessage,
-        InitializeResultData, InvokeMessage, PROTOCOL_VERSION, PluginMessage, ResultMessage,
-    },
-    transport::Transport,
+use astrcode_protocol::plugin::{
+    CancelMessage, ErrorPayload, EventMessage, EventPhase, InitializeMessage, InitializeResultData,
+    InvokeMessage, PROTOCOL_VERSION, PluginMessage, ResultMessage,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 
-use crate::{CapabilityRouter, EventEmitter, StreamExecution};
+use crate::{CapabilityRouter, EventEmitter, StreamExecution, transport::Transport};
 
 /// 与插件进程的双向通信端。
 ///

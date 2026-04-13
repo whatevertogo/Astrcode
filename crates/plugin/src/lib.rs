@@ -56,6 +56,7 @@
 //! worker.run().await?;
 //! ```
 
+mod capability_mapping;
 mod capability_router;
 mod invoker;
 mod loader;
@@ -66,6 +67,7 @@ mod supervisor;
 pub mod transport;
 mod worker;
 
+pub use capability_mapping::{descriptor_to_spec, spec_to_descriptor};
 pub use capability_router::{
     AllowAllPermissionChecker, CapabilityHandler, CapabilityRouter, PermissionChecker,
 };

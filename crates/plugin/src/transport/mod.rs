@@ -14,5 +14,14 @@
 
 mod stdio;
 
-pub use astrcode_protocol::transport::Transport;
+use async_trait::async_trait;
 pub use stdio::StdioTransport;
+
+/// 插件宿主与插件进程之间的传输抽象。
+///
+/// Why: 传输是插件宿主实现细节，不属于协议 wire types。
+#[async_trait]
+pub trait Transport: Send + Sync {
+    async fn send(&self, payload: &str) -> Result<(), String>;
+    async fn recv(&self) -> Result<Option<String>, String>;
+}

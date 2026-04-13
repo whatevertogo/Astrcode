@@ -15,15 +15,14 @@ use astrcode_core::{
     AstrError, CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, CapabilitySpec,
     InvocationMode, Result,
 };
-use astrcode_protocol::{
-    capability::{CapabilityDescriptor, descriptor_to_spec},
-    plugin::{EventPhase, InvocationContext, WorkspaceRef},
+use astrcode_protocol::plugin::{
+    CapabilityDescriptor, EventPhase, InvocationContext, WorkspaceRef,
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{Peer, StreamExecution, Supervisor};
+use crate::{Peer, StreamExecution, Supervisor, capability_mapping::descriptor_to_spec};
 
 /// 插件能力的调用器实现。
 ///

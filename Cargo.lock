@@ -256,6 +256,7 @@ dependencies = [
  "astrcode-session-runtime",
  "async-trait",
  "chrono",
+ "dashmap",
  "log",
  "serde",
  "serde_json",
@@ -326,8 +327,6 @@ dependencies = [
 name = "astrcode-protocol"
 version = "0.1.0"
 dependencies = [
- "astrcode-core",
- "async-trait",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

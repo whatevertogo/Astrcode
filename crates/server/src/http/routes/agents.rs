@@ -1,12 +1,14 @@
 //! # Agent 路由
 //!
 //! 提供 Agent Profile 查询、根执行入口和子会话状态查询。
+//! 所有路由通过 `App` 的稳定用例接口访问，不直接依赖 kernel 内部结构。
 
 use std::path::PathBuf;
 
+use astrcode_kernel::SubRunStatusView;
 use astrcode_protocol::http::{
     AgentExecuteRequestDto, AgentExecuteResponseDto, AgentLifecycleDto, AgentProfileDto,
-    SubRunStatusDto, SubRunStatusSourceDto, SubRunStorageModeDto,
+    AgentTurnOutcomeDto, SubRunStatusDto, SubRunStatusSourceDto, SubRunStorageModeDto,
 };
 use axum::{
     Json,
@@ -81,6 +83,28 @@ pub(crate) async fn get_subrun_status(
 ) -> Result<Json<SubRunStatusDto>, ApiError> {
     require_auth(&state, &headers, None)?;
     let session_id = sessions::validate_session_path_id(&session_id)?;
+
+    // 先尝试通过 agent_id 查询稳定视图
+    if let Some(view) = state
+        .app
+        .get_subrun_status(&sub_run_id)
+        .await
+        .map_err(ApiError::from)?
+    {
+        return Ok(Json(to_subrun_status_dto(view, session_id)));
+    }
+
+    // 再尝试通过 session 查找根 agent
+    if let Some(view) = state
+        .app
+        .get_root_agent_status(&session_id)
+        .await
+        .map_err(ApiError::from)?
+    {
+        return Ok(Json(to_subrun_status_dto(view, session_id)));
+    }
+
+    // 兜底：返回默认值（兼容无 agent 的 session）
     Ok(Json(SubRunStatusDto {
         sub_run_id,
         tool_call_id: None,
@@ -105,8 +129,7 @@ pub(crate) async fn get_subrun_status(
 
 /// 关闭指定 agent 及其子树。
 ///
-/// 替代旧的 `cancel_subrun` 路由。新路由按 agent_id 而非 sub_run_id 定位，
-/// 始终级联关闭子树。
+/// 通过 `App` 的稳定控制合同执行，不直接访问 kernel agent_tree。
 pub(crate) async fn close_agent(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -114,14 +137,57 @@ pub(crate) async fn close_agent(
 ) -> Result<Json<CloseAgentResponse>, ApiError> {
     require_auth(&state, &headers, None)?;
     let session_id = sessions::validate_session_path_id(&session_id)?;
-    state
+    let result = state
         .app
-        .interrupt_session(&session_id)
+        .close_agent(&session_id, &agent_id)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(CloseAgentResponse {
-        closed_agent_ids: vec![agent_id],
+        closed_agent_ids: result.closed_agent_ids,
     }))
+}
+
+/// 将稳定视图转换为协议 DTO。
+fn to_subrun_status_dto(view: SubRunStatusView, session_id: String) -> SubRunStatusDto {
+    SubRunStatusDto {
+        sub_run_id: view.sub_run_id,
+        tool_call_id: None,
+        source: SubRunStatusSourceDto::Live,
+        agent_id: view.agent_id,
+        agent_profile: view.agent_profile,
+        session_id,
+        child_session_id: view.child_session_id,
+        depth: view.depth,
+        parent_agent_id: view.parent_agent_id,
+        parent_sub_run_id: None,
+        storage_mode: SubRunStorageModeDto::IndependentSession,
+        lifecycle: to_lifecycle_dto(view.lifecycle),
+        last_turn_outcome: view.last_turn_outcome.map(to_turn_outcome_dto),
+        result: None,
+        step_count: None,
+        estimated_tokens: None,
+        resolved_overrides: None,
+        resolved_limits: None,
+    }
+}
+
+fn to_lifecycle_dto(status: astrcode_core::AgentLifecycleStatus) -> AgentLifecycleDto {
+    use astrcode_core::AgentLifecycleStatus;
+    match status {
+        AgentLifecycleStatus::Pending => AgentLifecycleDto::Pending,
+        AgentLifecycleStatus::Running => AgentLifecycleDto::Running,
+        AgentLifecycleStatus::Idle => AgentLifecycleDto::Idle,
+        AgentLifecycleStatus::Terminated => AgentLifecycleDto::Terminated,
+    }
+}
+
+fn to_turn_outcome_dto(outcome: astrcode_core::AgentTurnOutcome) -> AgentTurnOutcomeDto {
+    match outcome {
+        astrcode_core::AgentTurnOutcome::Completed => AgentTurnOutcomeDto::Completed,
+        astrcode_core::AgentTurnOutcome::Cancelled => AgentTurnOutcomeDto::Cancelled,
+        astrcode_core::AgentTurnOutcome::TokenExceeded => AgentTurnOutcomeDto::TokenExceeded,
+        astrcode_core::AgentTurnOutcome::Failed => AgentTurnOutcomeDto::Failed,
+    }
 }
 
 #[derive(Debug, Serialize)]

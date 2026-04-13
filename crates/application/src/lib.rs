@@ -8,6 +8,7 @@ use tokio::sync::broadcast;
 pub mod composer;
 pub mod config;
 pub mod errors;
+pub mod execution;
 pub mod lifecycle;
 pub mod mcp;
 pub mod observability;
@@ -314,5 +315,44 @@ impl App {
             return Ok(());
         }
         Err(ApplicationError::PermissionDenied(reason.into()))
+    }
+
+    // ── Agent 控制用例（通过 kernel 稳定控制合同） ──────────
+
+    /// 查询子运行状态。
+    pub async fn get_subrun_status(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<astrcode_kernel::SubRunStatusView>, ApplicationError> {
+        self.validate_non_empty("agentId", agent_id)?;
+        Ok(self.kernel.query_subrun_status(agent_id).await)
+    }
+
+    /// 查询指定 session 的根 agent 状态。
+    pub async fn get_root_agent_status(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<astrcode_kernel::SubRunStatusView>, ApplicationError> {
+        self.validate_non_empty("sessionId", session_id)?;
+        Ok(self.kernel.query_root_agent_status(session_id).await)
+    }
+
+    /// 列出所有 agent 状态。
+    pub async fn list_agent_statuses(&self) -> Vec<astrcode_kernel::SubRunStatusView> {
+        self.kernel.list_all_agent_statuses().await
+    }
+
+    /// 关闭 agent 及其子树。
+    pub async fn close_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<astrcode_kernel::CloseSubtreeResult, ApplicationError> {
+        self.validate_non_empty("sessionId", session_id)?;
+        self.validate_non_empty("agentId", agent_id)?;
+        self.kernel
+            .close_agent_subtree(agent_id)
+            .await
+            .map_err(|e| ApplicationError::Internal(e.to_string()))
     }
 }

@@ -12,8 +12,8 @@
 //!
 //! ## 传输方式
 //!
-//! 插件通过 stdio 与 host 通信，消息以换行符分隔的 JSON 行格式传输。
-//! 传输层由 `transport` 模块的 `Transport` trait 抽象。
+//! 本模块只定义插件通信的消息格式。
+//! 具体传输实现与传输抽象属于插件宿主侧，不属于协议 crate。
 
 mod error;
 mod handshake;

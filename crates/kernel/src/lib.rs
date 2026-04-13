@@ -13,6 +13,6 @@ pub use agent_tree::{
 pub use error::KernelError;
 pub use events::{EventHub, KernelEvent};
 pub use gateway::KernelGateway;
-pub use kernel::{Kernel, KernelBuilder};
+pub use kernel::{CloseSubtreeResult, Kernel, KernelBuilder, SubRunStatusView};
 pub use registry::{CapabilityRouter, CapabilityRouterBuilder, ToolCapabilityInvoker};
 pub use surface::{SurfaceManager, SurfaceSnapshot};

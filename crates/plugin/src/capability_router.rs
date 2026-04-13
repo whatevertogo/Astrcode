@@ -19,14 +19,11 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use astrcode_core::{AstrError, CancelToken, CapabilitySpec, Result};
-use astrcode_protocol::{
-    capability::{CapabilityDescriptor, spec_to_descriptor},
-    plugin::InvocationContext,
-};
+use astrcode_protocol::plugin::{CapabilityDescriptor, InvocationContext};
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::EventEmitter;
+use crate::{EventEmitter, capability_mapping::spec_to_descriptor};
 
 /// 能力处理器 trait。
 ///

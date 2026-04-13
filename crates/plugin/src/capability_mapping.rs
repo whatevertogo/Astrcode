@@ -1,19 +1,17 @@
-//! `CapabilitySpec` 与 `CapabilityDescriptor` 的边界映射。
+//! 插件协议描述符与宿主内部 `CapabilitySpec` 的边界映射。
 //!
-//! 运行时内部统一使用 `astrcode_core::CapabilitySpec`，协议边界统一使用
-//! `CapabilityDescriptor`。所有转换都应收口到本模块。
+//! Why: `protocol` crate 只承载 wire types，不负责宿主内部模型转换。
 
 use astrcode_core::{
     CapabilityKind as CoreCapabilityKind, CapabilitySpec, CapabilitySpecBuildError,
     InvocationMode as CoreInvocationMode, PermissionSpec, SideEffect as CoreSideEffect,
     Stability as CoreStability,
 };
-use thiserror::Error;
-
-use super::{
+use astrcode_protocol::plugin::{
     CapabilityDescriptor, CapabilityKind, DescriptorBuildError, PermissionHint, SideEffectLevel,
     StabilityLevel,
 };
+use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum CapabilityMappingError {
