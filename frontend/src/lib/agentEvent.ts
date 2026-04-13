@@ -109,8 +109,9 @@ function toAgentLifecycle(value: unknown): AgentLifecycle | null {
   if (typeof value !== 'string') {
     return null;
   }
-  if ((VALID_AGENT_LIFECYCLES as string[]).includes(value)) {
-    return value as AgentLifecycle;
+  const normalized = value.trim().toLowerCase();
+  if ((VALID_AGENT_LIFECYCLES as string[]).includes(normalized)) {
+    return normalized as AgentLifecycle;
   }
   return null;
 }
@@ -119,8 +120,9 @@ function toAgentTurnOutcome(value: unknown): AgentTurnOutcome | null {
   if (typeof value !== 'string') {
     return null;
   }
-  if ((VALID_AGENT_TURN_OUTCOMES as string[]).includes(value)) {
-    return value as AgentTurnOutcome;
+  const normalized = value.trim().toLowerCase();
+  if ((VALID_AGENT_TURN_OUTCOMES as string[]).includes(normalized)) {
+    return normalized as AgentTurnOutcome;
   }
   return null;
 }
@@ -432,6 +434,84 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
           pickNumber(data, 'promptCacheReuseHits', 'prompt_cache_reuse_hits') ?? undefined,
         promptCacheReuseMisses:
           pickNumber(data, 'promptCacheReuseMisses', 'prompt_cache_reuse_misses') ?? undefined,
+        ...pickAgentContext(data),
+      },
+    };
+  }
+
+  if (event === 'agentMailboxQueued') {
+    const deliveryId = pickString(data, 'deliveryId', 'delivery_id');
+    const fromAgentId = pickString(data, 'fromAgentId', 'from_agent_id');
+    const toAgentId = pickString(data, 'toAgentId', 'to_agent_id');
+    const message = pickStringAllowEmpty(data, 'message');
+    const queuedAt = pickString(data, 'queuedAt', 'queued_at');
+    const senderOpenSessionId = pickString(data, 'senderOpenSessionId', 'sender_open_session_id');
+    if (
+      !deliveryId ||
+      !fromAgentId ||
+      !toAgentId ||
+      message === undefined ||
+      !queuedAt ||
+      !senderOpenSessionId
+    ) {
+      return invalidEvent('agentMailboxQueued requires mailbox envelope fields', raw);
+    }
+    return {
+      event: 'agentMailboxQueued',
+      data: {
+        turnId: pickOptionalString(data, 'turnId', 'turn_id') ?? null,
+        deliveryId,
+        fromAgentId,
+        toAgentId,
+        message,
+        queuedAt,
+        senderLifecycleStatus:
+          toAgentLifecycle(data.senderLifecycleStatus ?? data.sender_lifecycle_status) ?? undefined,
+        senderLastTurnOutcome:
+          toAgentTurnOutcome(data.senderLastTurnOutcome ?? data.sender_last_turn_outcome) ??
+          undefined,
+        senderOpenSessionId,
+        summary: pickOptionalString(data, 'summary') ?? undefined,
+        ...pickAgentContext(data),
+      },
+    };
+  }
+
+  if (event === 'agentMailboxBatchStarted' || event === 'agentMailboxBatchAcked') {
+    const targetAgentId = pickString(data, 'targetAgentId', 'target_agent_id');
+    const batchId = pickString(data, 'batchId', 'batch_id');
+    const rawDeliveryIds = data.deliveryIds ?? data.delivery_ids;
+    if (!targetAgentId || !batchId || !Array.isArray(rawDeliveryIds)) {
+      return invalidEvent(`${event} requires batch envelope fields`, raw);
+    }
+    return {
+      event,
+      data: {
+        turnId: pickOptionalString(data, 'turnId', 'turn_id') ?? null,
+        targetAgentId,
+        batchId,
+        deliveryIds: rawDeliveryIds.filter(
+          (value: unknown): value is string => typeof value === 'string'
+        ),
+        ...pickAgentContext(data),
+      },
+    };
+  }
+
+  if (event === 'agentMailboxDiscarded') {
+    const targetAgentId = pickString(data, 'targetAgentId', 'target_agent_id');
+    const rawDeliveryIds = data.deliveryIds ?? data.delivery_ids;
+    if (!targetAgentId || !Array.isArray(rawDeliveryIds)) {
+      return invalidEvent('agentMailboxDiscarded requires targetAgentId and deliveryIds', raw);
+    }
+    return {
+      event: 'agentMailboxDiscarded',
+      data: {
+        turnId: pickOptionalString(data, 'turnId', 'turn_id') ?? null,
+        targetAgentId,
+        deliveryIds: rawDeliveryIds.filter(
+          (value: unknown): value is string => typeof value === 'string'
+        ),
         ...pickAgentContext(data),
       },
     };

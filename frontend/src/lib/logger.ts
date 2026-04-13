@@ -1,8 +1,4 @@
-import {
-  ensureServerSession,
-  getServerAuthToken,
-  getServerOrigin,
-} from './serverAuth';
+import { ensureServerSession, getServerAuthToken, getServerOrigin } from './serverAuth';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 type LogScope = 'frontend' | 'model' | 'backend';

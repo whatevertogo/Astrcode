@@ -101,6 +101,32 @@ export interface ResolvedExecutionLimits {
   maxSteps?: number;
 }
 
+export interface MailboxQueuedEventData {
+  turnId?: string | null;
+  deliveryId: string;
+  fromAgentId: string;
+  toAgentId: string;
+  message: string;
+  queuedAt: string;
+  senderLifecycleStatus?: AgentLifecycle;
+  senderLastTurnOutcome?: AgentTurnOutcome;
+  senderOpenSessionId: string;
+  summary?: string;
+}
+
+export interface MailboxBatchEventData {
+  turnId?: string | null;
+  targetAgentId: string;
+  batchId: string;
+  deliveryIds: string[];
+}
+
+export interface MailboxDiscardedEventData {
+  turnId?: string | null;
+  targetAgentId: string;
+  deliveryIds: string[];
+}
+
 export interface ExecutionControl {
   maxSteps?: number;
   manualCompact?: boolean;
@@ -185,6 +211,22 @@ export type AgentEventPayload =
           turnId?: string | null;
         } & PromptMetricsSnapshot
       >;
+    }
+  | {
+      event: 'agentMailboxQueued';
+      data: AgentScoped<MailboxQueuedEventData>;
+    }
+  | {
+      event: 'agentMailboxBatchStarted';
+      data: AgentScoped<MailboxBatchEventData>;
+    }
+  | {
+      event: 'agentMailboxBatchAcked';
+      data: AgentScoped<MailboxBatchEventData>;
+    }
+  | {
+      event: 'agentMailboxDiscarded';
+      data: AgentScoped<MailboxDiscardedEventData>;
     }
   | {
       event: 'compactApplied';

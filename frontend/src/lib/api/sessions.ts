@@ -186,11 +186,14 @@ export async function compactSession(
   sessionId: string,
   control?: ExecutionControl
 ): Promise<CompactSessionAcceptance> {
-  return requestJson<CompactSessionAcceptance>(`/api/sessions/${encodeURIComponent(sessionId)}/compact`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ control }),
-  });
+  return requestJson<CompactSessionAcceptance>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/compact`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ control }),
+    }
+  );
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {

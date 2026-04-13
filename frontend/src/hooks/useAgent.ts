@@ -238,20 +238,20 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
           SSE_RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1),
           SSE_RECONNECT_MAX_DELAY_MS
         );
-          reconnectTimerRef.current = window.setTimeout(() => {
-            reconnectTimerRef.current = null;
-            // Check generation again before reconnecting
-            if (streamGenerationRef.current === generation) {
-              logger.warn('useAgent', 'session event stream reconnecting', {
-                sessionId,
-                attempt,
-                delayMs,
-                cursor: lastEventIdRef.current,
-              });
-              void startStream(lastEventIdRef.current);
-            }
-          }, delayMs);
-        };
+        reconnectTimerRef.current = window.setTimeout(() => {
+          reconnectTimerRef.current = null;
+          // Check generation again before reconnecting
+          if (streamGenerationRef.current === generation) {
+            logger.warn('useAgent', 'session event stream reconnecting', {
+              sessionId,
+              attempt,
+              delayMs,
+              cursor: lastEventIdRef.current,
+            });
+            void startStream(lastEventIdRef.current);
+          }
+        }, delayMs);
+      };
 
       const startStream = async (cursor: string | null): Promise<void> => {
         // Check if this connection is still active
@@ -317,10 +317,14 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
               connectedSessionIdRef.current === sessionId &&
               streamGenerationRef.current === generation
             ) {
-              logger.warn('useAgent', 'session event stream ended unexpectedly, scheduling reconnect', {
-                sessionId,
-                cursor: lastEventIdRef.current,
-              });
+              logger.warn(
+                'useAgent',
+                'session event stream ended unexpectedly, scheduling reconnect',
+                {
+                  sessionId,
+                  cursor: lastEventIdRef.current,
+                }
+              );
               scheduleReconnect('与服务端的事件流连接已中断。');
             }
             return;

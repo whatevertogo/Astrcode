@@ -820,6 +820,30 @@ fn extract_delta_block(payload: &Value) -> &Value {
     payload.get("delta").unwrap_or(payload)
 }
 
+fn anthropic_stream_error(payload: &Value) -> AstrError {
+    let error = payload.get("error").unwrap_or(payload);
+    let error_type = error
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown_error");
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("anthropic stream returned an error event");
+    let detail = format!("{error_type}: {message}");
+
+    match error_type {
+        "invalid_request_error" => classify_http_error(400, &detail).into(),
+        "authentication_error" => classify_http_error(401, &detail).into(),
+        "permission_error" => classify_http_error(403, &detail).into(),
+        "not_found_error" => classify_http_error(404, &detail).into(),
+        "rate_limit_error" => classify_http_error(429, &detail).into(),
+        "overloaded_error" => classify_http_error(529, &detail).into(),
+        "api_error" => classify_http_error(500, &detail).into(),
+        _ => AstrError::LlmStreamError(detail),
+    }
+}
+
 /// 处理单个 Anthropic SSE 块，返回 `(is_done, stop_reason)`。
 ///
 /// Anthropic SSE 事件类型分派：
@@ -934,6 +958,7 @@ fn process_sse_block(
             ..SseProcessResult::default()
         }),
         "content_block_stop" | "ping" => Ok(SseProcessResult::default()),
+        "error" => Err(anthropic_stream_error(&payload)),
         other => {
             warn!("anthropic: unknown sse event: {}", other);
             Ok(SseProcessResult::default())
@@ -1485,6 +1510,39 @@ mod tests {
     fn parse_sse_block_ignores_empty_data_payload() {
         let parsed = parse_sse_block("event: ping\ndata:\n");
         assert!(matches!(parsed, Ok(None)));
+    }
+
+    #[test]
+    fn streaming_sse_error_event_surfaces_structured_provider_failure() {
+        let mut accumulator = LlmAccumulator::default();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = sink_collector(events);
+        let mut sse_buffer = String::new();
+        let mut stop_reason_out: Option<String> = None;
+        let mut usage_out = AnthropicUsage::default();
+
+        let error = consume_sse_text_chunk(
+            concat!(
+                "event: error\n",
+                "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",",
+                "\"message\":\"capacity exhausted\"}}\n\n"
+            ),
+            &mut sse_buffer,
+            &mut accumulator,
+            &sink,
+            &mut stop_reason_out,
+            &mut usage_out,
+        )
+        .expect_err("error event should terminate the stream with a structured error");
+
+        match error {
+            AstrError::LlmRequestFailed { status, body } => {
+                assert_eq!(status, 529);
+                assert!(body.contains("overloaded_error"));
+                assert!(body.contains("capacity exhausted"));
+            },
+            other => panic!("unexpected error variant: {other:?}"),
+        }
     }
 
     #[test]

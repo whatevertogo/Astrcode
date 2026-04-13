@@ -82,7 +82,7 @@ export function useSessionCatalogEvents({ onEvent, onResync }: UseSessionCatalog
         response,
         (payload) => {
           try {
-              onEventRef.current(normalizeSessionCatalogEvent(JSON.parse(payload)));
+            onEventRef.current(normalizeSessionCatalogEvent(JSON.parse(payload)));
           } catch (error) {
             logger.error('SessionCatalogEvents', 'Failed to process session catalog event:', error);
           }

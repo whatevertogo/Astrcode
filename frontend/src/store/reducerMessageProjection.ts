@@ -285,37 +285,41 @@ export function handleProjectedMessageAction(state: AppState, action: Action): A
         );
 
         if (targetIndex < 0) {
-          return withUpdatedMessages(session, [
-            ...session.messages,
+          return withUpdatedMessages(
+            session,
+            [
+              ...session.messages,
+              {
+                id: uuid(),
+                kind: 'toolCall',
+                turnId: action.turnId,
+                agentId: action.agentId,
+                parentTurnId: action.parentTurnId,
+                agentProfile: action.agentProfile,
+                subRunId: action.subRunId,
+                executionId: action.executionId,
+                invocationKind: action.invocationKind,
+                storageMode: action.storageMode,
+                childSessionId: action.childSessionId,
+                toolCallId: action.toolCallId,
+                toolName: action.toolName,
+                status: 'running',
+                args: null,
+                output: action.delta,
+                metadata: appendToolDeltaMetadata(
+                  undefined,
+                  action.toolName,
+                  null,
+                  action.stream,
+                  action.delta
+                ),
+                timestamp: Date.now(),
+              },
+            ],
             {
-              id: uuid(),
-              kind: 'toolCall',
-              turnId: action.turnId,
-              agentId: action.agentId,
-              parentTurnId: action.parentTurnId,
-              agentProfile: action.agentProfile,
-              subRunId: action.subRunId,
-              executionId: action.executionId,
-              invocationKind: action.invocationKind,
-              storageMode: action.storageMode,
-              childSessionId: action.childSessionId,
-              toolCallId: action.toolCallId,
-              toolName: action.toolName,
-              status: 'running',
-              args: null,
-              output: action.delta,
-              metadata: appendToolDeltaMetadata(
-                undefined,
-                action.toolName,
-                null,
-                action.stream,
-                action.delta
-              ),
-              timestamp: Date.now(),
-            },
-          ], {
-            forceRebuild: action.toolName === 'spawn',
-          });
+              forceRebuild: action.toolName === 'spawn',
+            }
+          );
         }
 
         return withUpdatedMessages(
@@ -364,34 +368,38 @@ export function handleProjectedMessageAction(state: AppState, action: Action): A
         );
 
         if (targetIndex < 0) {
-          return withUpdatedMessages(session, [
-            ...session.messages,
+          return withUpdatedMessages(
+            session,
+            [
+              ...session.messages,
+              {
+                id: uuid(),
+                kind: 'toolCall',
+                turnId: action.turnId,
+                agentId: action.agentId,
+                parentTurnId: action.parentTurnId,
+                agentProfile: action.agentProfile,
+                subRunId: action.subRunId,
+                executionId: action.executionId,
+                invocationKind: action.invocationKind,
+                storageMode: action.storageMode,
+                childSessionId: action.childSessionId,
+                toolCallId: action.toolCallId,
+                toolName: action.toolName,
+                status: action.status,
+                args: null,
+                output: action.output,
+                error: action.error,
+                metadata: action.metadata,
+                durationMs: action.durationMs,
+                truncated: action.truncated,
+                timestamp: Date.now(),
+              },
+            ],
             {
-              id: uuid(),
-              kind: 'toolCall',
-              turnId: action.turnId,
-              agentId: action.agentId,
-              parentTurnId: action.parentTurnId,
-              agentProfile: action.agentProfile,
-              subRunId: action.subRunId,
-              executionId: action.executionId,
-              invocationKind: action.invocationKind,
-              storageMode: action.storageMode,
-              childSessionId: action.childSessionId,
-              toolCallId: action.toolCallId,
-              toolName: action.toolName,
-              status: action.status,
-              args: null,
-              output: action.output,
-              error: action.error,
-              metadata: action.metadata,
-              durationMs: action.durationMs,
-              truncated: action.truncated,
-              timestamp: Date.now(),
-            },
-          ], {
-            forceRebuild: action.toolName === 'spawn',
-          });
+              forceRebuild: action.toolName === 'spawn',
+            }
+          );
         }
 
         return withUpdatedMessages(

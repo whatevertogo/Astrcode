@@ -348,7 +348,8 @@ describe('app reducer user message sync', () => {
       delta: ' world',
     });
 
-    const rootThreadItems = withSecondDelta.projects[0].sessions[0].subRunThreadTree.rootThreadItems;
+    const rootThreadItems =
+      withSecondDelta.projects[0].sessions[0].subRunThreadTree.rootThreadItems;
     expect(rootThreadItems).toHaveLength(1);
     expect(rootThreadItems[0]).toEqual({
       kind: 'message',

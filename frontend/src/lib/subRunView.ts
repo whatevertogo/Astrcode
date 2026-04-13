@@ -497,9 +497,13 @@ export function buildSubRunThreadTree(messages: Message[]): SubRunThreadTree {
     }
     if (materializing.has(subRunId)) {
       // Why: 即便上游 lineage 清洗漏网，视图层也必须防止递归爆栈。
-      logger.warn('subRunView', 'sub-run tree detected recursive lineage, skipping recursive materialization', {
-        subRunId,
-      });
+      logger.warn(
+        'subRunView',
+        'sub-run tree detected recursive lineage, skipping recursive materialization',
+        {
+          subRunId,
+        }
+      );
       return null;
     }
 

@@ -261,6 +261,14 @@ function collectAgentEventActions(
       break;
     }
 
+    case 'agentMailboxQueued':
+    case 'agentMailboxBatchStarted':
+    case 'agentMailboxBatchAcked':
+    case 'agentMailboxDiscarded':
+      // Why: mailbox 事件目前只用于协议完整性与调试观测；
+      // UI 主投影仍以 sub-run / child-session 事件为准，避免重复噪声。
+      break;
+
     case 'compactApplied': {
       const sessionId = event.data.turnId
         ? resolveSessionId(event.data.turnId)
@@ -422,7 +430,11 @@ function mergeStreamingActions(actions: AtomicAction[]): AtomicAction[] {
 
   for (const action of actions) {
     const previous = merged[merged.length - 1];
-    if (previous?.type === 'APPEND_DELTA' && action.type === 'APPEND_DELTA' && hasSameDeltaTarget(previous, action)) {
+    if (
+      previous?.type === 'APPEND_DELTA' &&
+      action.type === 'APPEND_DELTA' &&
+      hasSameDeltaTarget(previous, action)
+    ) {
       previous.delta += action.delta;
       continue;
     }

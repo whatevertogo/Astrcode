@@ -119,12 +119,12 @@ export function useComposerActions({
     if (!activeProject?.workingDir) {
       return;
     }
-      try {
-        const created = await createSession(activeProject.workingDir);
-        await refreshSessions({ preferredSessionId: created.sessionId });
-      } catch (error) {
-        logger.error('useComposerActions', 'Failed to create session:', error);
-      }
+    try {
+      const created = await createSession(activeProject.workingDir);
+      await refreshSessions({ preferredSessionId: created.sessionId });
+    } catch (error) {
+      logger.error('useComposerActions', 'Failed to create session:', error);
+    }
   }, [activeProject?.workingDir, createSession, refreshSessions]);
 
   const handleDeleteProject = useCallback(

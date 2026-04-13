@@ -273,6 +273,64 @@ describe('normalizeAgentEvent protocol gate', () => {
     });
   });
 
+  it('accepts agentMailboxQueued payloads and normalizes sender status enums', () => {
+    const normalized = normalizeAgentEvent({
+      protocolVersion: 1,
+      event: 'agentMailboxQueued',
+      data: {
+        turn_id: 'turn-mailbox',
+        agent_id: 'agent-parent',
+        delivery_id: 'child-terminal:subrun-2:completed',
+        from_agent_id: 'agent-2',
+        to_agent_id: 'root-agent',
+        message: '子 Agent 已完成，但没有返回可读总结。',
+        queued_at: '2026-04-13T18:32:26.865146200+00:00',
+        sender_lifecycle_status: 'Idle',
+        sender_last_turn_outcome: 'Completed',
+        sender_open_session_id: '2026-04-14T02-32-26-74213944',
+      },
+    });
+
+    expect(normalized).toEqual({
+      event: 'agentMailboxQueued',
+      data: {
+        turnId: 'turn-mailbox',
+        agentId: 'agent-parent',
+        deliveryId: 'child-terminal:subrun-2:completed',
+        fromAgentId: 'agent-2',
+        toAgentId: 'root-agent',
+        message: '子 Agent 已完成，但没有返回可读总结。',
+        queuedAt: '2026-04-13T18:32:26.865146200+00:00',
+        senderLifecycleStatus: 'idle',
+        senderLastTurnOutcome: 'completed',
+        senderOpenSessionId: '2026-04-14T02-32-26-74213944',
+      },
+    });
+  });
+
+  it('accepts agentMailboxBatchAcked payloads', () => {
+    const normalized = normalizeAgentEvent({
+      protocolVersion: 1,
+      event: 'agentMailboxBatchAcked',
+      data: {
+        turn_id: 'turn-mailbox',
+        target_agent_id: 'agent-child',
+        batch_id: 'batch-1',
+        delivery_ids: ['delivery-1', 'delivery-2'],
+      },
+    });
+
+    expect(normalized).toEqual({
+      event: 'agentMailboxBatchAcked',
+      data: {
+        turnId: 'turn-mailbox',
+        targetAgentId: 'agent-child',
+        batchId: 'batch-1',
+        deliveryIds: ['delivery-1', 'delivery-2'],
+      },
+    });
+  });
+
   it('accepts childSessionNotification payloads with stable child-session entry fields', () => {
     const normalized = normalizeAgentEvent(makeChildSessionNotificationFixture());
 
