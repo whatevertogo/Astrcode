@@ -591,6 +591,7 @@ type AgentActionContext = {
 // ────────────────────────────────────────────────────────────
 export type AtomicAction =
   | { type: 'SET_PHASE'; phase: Phase }
+  | { type: 'SET_ACTIVE_PROJECT'; projectId: string }
   | { type: 'PUSH_ACTIVE_SUBRUN'; subRunId: string }
   | { type: 'POP_ACTIVE_SUBRUN' }
   | { type: 'SET_ACTIVE_SUBRUN_PATH'; subRunPath: string[] }

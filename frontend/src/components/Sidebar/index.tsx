@@ -18,6 +18,7 @@ interface SidebarProps {
   projects: Project[];
   activeSessionId: string | null;
   phase: Phase;
+  onSelectProject: (projectId: string) => void;
   onSetActive: (projectId: string, sessionId: string) => void;
   onToggleExpand: (projectId: string) => void;
   canSelectDirectory: boolean;
@@ -34,6 +35,7 @@ export default function Sidebar({
   projects,
   activeSessionId,
   phase,
+  onSelectProject,
   onSetActive,
   onToggleExpand,
   canSelectDirectory,
@@ -95,6 +97,7 @@ export default function Sidebar({
             key={project.id}
             project={project}
             activeSessionId={activeSessionId}
+            onSelectProject={onSelectProject}
             onSetActive={onSetActive}
             onToggleExpand={onToggleExpand}
             onDelete={onDeleteProject}

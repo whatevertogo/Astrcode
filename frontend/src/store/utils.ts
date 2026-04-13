@@ -4,6 +4,7 @@
 //! These were previously at the top of App.tsx and made the file harder to navigate.
 
 import type { Message, Project, SessionMeta } from '../types';
+import { normalizeProjectIdentity } from '../lib/knownProjects';
 import { buildSubRunThreadTree, createEmptySubRunThreadTree } from '../lib/subRunView';
 
 function toEpochMs(value: string): number {
@@ -17,11 +18,14 @@ function getDirectoryName(path: string): string {
   return parts[parts.length - 1] || '默认项目';
 }
 
-export function groupSessionsByProject(sessionMetas: SessionMeta[]): Project[] {
+export function groupSessionsByProject(
+  sessionMetas: SessionMeta[],
+  knownWorkingDirs: string[] = []
+): Project[] {
   const projectMap = new Map<string, { project: Project; maxUpdatedAt: number }>();
 
   for (const meta of sessionMetas) {
-    const projectId = meta.workingDir || '__default_project__';
+    const projectId = normalizeProjectIdentity(meta.workingDir) || '__default_project__';
     const projectName = meta.displayName || getDirectoryName(meta.workingDir);
     const updatedAt = toEpochMs(meta.updatedAt);
     const createdAt = toEpochMs(meta.createdAt);
@@ -41,6 +45,13 @@ export function groupSessionsByProject(sessionMetas: SessionMeta[]): Project[] {
       projectMap.set(projectId, holder);
     } else {
       holder.maxUpdatedAt = Math.max(holder.maxUpdatedAt, updatedAt);
+      if (!holder.project.workingDir && meta.workingDir) {
+        holder.project = {
+          ...holder.project,
+          name: projectName,
+          workingDir: meta.workingDir,
+        };
+      }
     }
 
     holder.project.sessions.push({
@@ -51,6 +62,24 @@ export function groupSessionsByProject(sessionMetas: SessionMeta[]): Project[] {
       updatedAt,
       messages: [],
       subRunThreadTree: createEmptySubRunThreadTree(),
+    });
+  }
+
+  for (const workingDir of knownWorkingDirs) {
+    const projectId = normalizeProjectIdentity(workingDir);
+    if (!projectId || projectMap.has(projectId)) {
+      continue;
+    }
+
+    projectMap.set(projectId, {
+      project: {
+        id: projectId,
+        name: getDirectoryName(workingDir),
+        workingDir,
+        isExpanded: true,
+        sessions: [],
+      },
+      maxUpdatedAt: 0,
     });
   }
 

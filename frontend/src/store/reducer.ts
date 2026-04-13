@@ -91,6 +91,16 @@ function handleNavigationAction(state: AppState, action: Action): AppState | nul
         activeSessionId: action.sessionId,
         activeSubRunPath: [],
       };
+    case 'SET_ACTIVE_PROJECT':
+      if (state.activeProjectId === action.projectId && state.activeSessionId === null) {
+        return state;
+      }
+      return {
+        ...state,
+        activeProjectId: action.projectId,
+        activeSessionId: null,
+        activeSubRunPath: [],
+      };
     default:
       return null;
   }

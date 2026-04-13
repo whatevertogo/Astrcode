@@ -11,6 +11,7 @@ import { useSidebarResize } from './hooks/useSidebarResize';
 import { useComposerActions, type ConfirmDialogState } from './hooks/app/useComposerActions';
 import { useSessionCoordinator } from './hooks/app/useSessionCoordinator';
 import { useSubRunNavigation } from './hooks/app/useSubRunNavigation';
+import { forgetProject } from './lib/knownProjects';
 import { buildSessionViewLocationHref, readSessionViewLocation } from './lib/sessionView';
 import { cn } from './lib/utils';
 import type { SessionCatalogEventPayload } from './types';
@@ -197,7 +198,10 @@ export default function App() {
           return;
         case 'sessionCreated':
         case 'sessionDeleted':
+          void refreshSessions();
+          return;
         case 'projectDeleted':
+          forgetProject(event.data.workingDir);
           void refreshSessions();
           return;
       }
@@ -324,6 +328,9 @@ export default function App() {
               canSelectDirectory={hostBridge.canSelectDirectory}
               defaultWorkingDir={activeProject?.workingDir}
               onSelectDirectory={selectDirectory}
+              onSelectProject={(projectId) => {
+                dispatch({ type: 'SET_ACTIVE_PROJECT', projectId });
+              }}
               onSetActive={(projectId, sessionId) => {
                 void handleSetActive(projectId, sessionId);
               }}

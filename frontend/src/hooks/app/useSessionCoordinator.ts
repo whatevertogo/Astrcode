@@ -1,4 +1,5 @@
 import { useCallback, useState, type Dispatch, type MutableRefObject } from 'react';
+import { ensureKnownProjects } from '../../lib/knownProjects';
 import { groupSessionsByProject, replaceSessionMessages } from '../../store/utils';
 import { replaySessionHistory } from '../../lib/sessionHistory';
 import { findMatchingSessionId, normalizeSessionIdForCompare } from '../../lib/sessionId';
@@ -141,7 +142,8 @@ export function useSessionCoordinator({
       const activationGeneration = ++sessionActivationGenerationRef.current;
       const previousSessionId = activeSessionIdRef.current;
       const sessionMetas = await listSessionsWithMeta();
-      const projects = groupSessionsByProject(sessionMetas);
+      const knownWorkingDirs = ensureKnownProjects(sessionMetas.map((meta) => meta.workingDir));
+      const projects = groupSessionsByProject(sessionMetas, knownWorkingDirs);
       const availableSessionIds = sessionMetas.map((meta) => meta.sessionId);
       const preferredSessionId = options?.preferredSessionId;
       const matchedPreferredSessionId = findMatchingSessionId(
@@ -169,7 +171,9 @@ export function useSessionCoordinator({
             : [];
       const nextProjectId =
         projects.find((project) => project.sessions.some((session) => session.id === nextSessionId))
-          ?.id ?? null;
+          ?.id ??
+        projects[0]?.id ??
+        null;
 
       if (nextProjectId && nextSessionId) {
         disconnectSession();

@@ -1,4 +1,5 @@
 import { useCallback, type Dispatch, type MutableRefObject } from 'react';
+import { forgetProject, rememberProject } from '../../lib/knownProjects';
 import { uuid } from '../../utils/uuid';
 import { parseRuntimeSlashCommand } from '../../lib/slashCommands';
 import type { Action, DeleteProjectResult, Phase, Project, SessionMeta } from '../../types';
@@ -74,6 +75,7 @@ export function useComposerActions({
     async (workingDir: string) => {
       try {
         const created = await createSession(workingDir);
+        rememberProject(created.workingDir);
         await refreshSessions({ preferredSessionId: created.sessionId });
       } catch (error) {
         console.error('Failed to create project session:', error);
@@ -112,6 +114,7 @@ export function useComposerActions({
             if (result.failedSessionIds.length > 0) {
               console.error('部分会话删除失败:', result.failedSessionIds);
             }
+            forgetProject(project.workingDir);
             await refreshSessions();
           } catch (error) {
             console.error('Failed to delete project:', error);

@@ -7,6 +7,7 @@ import { cn } from '../../lib/utils';
 interface ProjectItemProps {
   project: Project;
   activeSessionId: string | null;
+  onSelectProject: (projectId: string) => void;
   onSetActive: (projectId: string, sessionId: string) => void;
   onToggleExpand: (projectId: string) => void;
   onDelete: (projectId: string) => void;
@@ -16,6 +17,7 @@ interface ProjectItemProps {
 export default function ProjectItem({
   project,
   activeSessionId,
+  onSelectProject,
   onSetActive,
   onToggleExpand,
   onDelete,
@@ -28,7 +30,13 @@ export default function ProjectItem({
       <div
         className="group flex min-h-[34px] cursor-pointer select-none items-center gap-2 rounded-lg px-2 py-1.5 transition-[color,background-color] duration-150 ease-out hover:bg-black/5 hover:text-text-primary"
         onContextMenu={openMenu}
-        onClick={() => onToggleExpand(project.id)}
+        onClick={() => {
+          if (project.sessions.length === 0) {
+            onSelectProject(project.id);
+            return;
+          }
+          onToggleExpand(project.id);
+        }}
       >
         <span
           className="w-4 h-4 text-text-secondary shrink-0 inline-flex items-center justify-center relative"
