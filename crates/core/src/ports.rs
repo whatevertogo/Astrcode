@@ -18,6 +18,15 @@ use crate::{
     StoredEvent, SystemPromptBlock, SystemPromptLayer, ToolCallRequest, ToolDefinition, TurnId,
 };
 
+/// MCP 配置文件作用域。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpConfigFileScope {
+    User,
+    Project,
+    Local,
+}
+
 /// EventStore 端口。
 #[async_trait]
 pub trait EventStore: Send + Sync {
@@ -351,16 +360,17 @@ pub trait ConfigStore: Send + Sync {
     fn load_overlay(&self, working_dir: &std::path::Path) -> Result<Option<ConfigOverlay>>;
     /// 保存项目 overlay；当值为空时允许实现删除文件。
     fn save_overlay(&self, working_dir: &std::path::Path, overlay: &ConfigOverlay) -> Result<()>;
-    /// 读取用户级 `~/.astrcode/mcp.json` 原始配置。
-    fn load_user_mcp(&self) -> Result<Option<Value>>;
-    /// 保存用户级 `~/.astrcode/mcp.json` 原始配置；当值为空时允许实现删除文件。
-    fn save_user_mcp(&self, mcp: Option<&Value>) -> Result<()>;
-    /// 读取项目级 `.mcp.json` 原始配置。
-    fn load_project_mcp(&self, working_dir: &std::path::Path) -> Result<Option<Value>>;
-    /// 保存项目级 `.mcp.json` 原始配置；当值为空时允许实现删除文件。
-    fn save_project_mcp(&self, working_dir: &std::path::Path, mcp: Option<&Value>) -> Result<()>;
-    /// 读取项目本地 `.<astrcode>/mcp.json` 原始配置。
-    fn load_local_mcp(&self, working_dir: &std::path::Path) -> Result<Option<Value>>;
-    /// 保存项目本地 `.<astrcode>/mcp.json` 原始配置；当值为空时允许实现删除文件。
-    fn save_local_mcp(&self, working_dir: &std::path::Path, mcp: Option<&Value>) -> Result<()>;
+    /// 读取指定作用域的独立 MCP 原始配置。
+    fn load_mcp(
+        &self,
+        scope: McpConfigFileScope,
+        working_dir: Option<&std::path::Path>,
+    ) -> Result<Option<Value>>;
+    /// 保存指定作用域的独立 MCP 原始配置；当值为空时允许实现删除文件。
+    fn save_mcp(
+        &self,
+        scope: McpConfigFileScope,
+        working_dir: Option<&std::path::Path>,
+        mcp: Option<&Value>,
+    ) -> Result<()>;
 }

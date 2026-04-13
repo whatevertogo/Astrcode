@@ -117,6 +117,19 @@ impl McpConfigManager {
         // 推断传输类型
         let transport = if let Some(transport_type) = &entry.transport_type {
             match transport_type.as_str() {
+                "stdio" => {
+                    let command = command.ok_or_else(|| {
+                        AstrError::Validation(format!(
+                            "MCP server '{}' declared as stdio but missing command",
+                            name
+                        ))
+                    })?;
+                    McpTransportConfig::Stdio {
+                        command,
+                        args: args.unwrap_or_default(),
+                        env,
+                    }
+                },
                 "http" => {
                     let url = url.ok_or_else(|| {
                         AstrError::Validation(format!(
@@ -268,6 +281,52 @@ mod tests {
             McpTransportConfig::Stdio { .. }
         ));
         assert!(configs[0].enabled);
+    }
+
+    #[test]
+    fn test_load_from_json_explicit_stdio_type() {
+        let json = r#"{
+            "mcpServers": {
+                "filesystem": {
+                    "type": "stdio",
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+                    "env": {"NODE_ENV": "test"}
+                }
+            }
+        }"#;
+
+        let configs = McpConfigManager::load_from_json(json, McpConfigScope::Project).unwrap();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].name, "filesystem");
+        assert!(matches!(
+            &configs[0].transport,
+            McpTransportConfig::Stdio { command, args, env }
+                if command == "npx"
+                    && args == &vec!["-y".to_string(), "@modelcontextprotocol/server-filesystem".to_string()]
+                    && env.get("NODE_ENV") == Some(&"test".to_string())
+        ));
+    }
+
+    #[test]
+    fn test_explicit_stdio_requires_command() {
+        let json = r#"{
+            "mcpServers": {
+                "bad": {
+                    "type": "stdio",
+                    "args": ["server"]
+                }
+            }
+        }"#;
+
+        let result = McpConfigManager::load_from_json(json, McpConfigScope::Project);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("declared as stdio but missing command")
+        );
     }
 
     #[test]

@@ -20,7 +20,7 @@ use std::{
     sync::Arc,
 };
 
-pub use astrcode_core::ports::ConfigStore;
+pub use astrcode_core::ports::{ConfigStore, McpConfigFileScope};
 use astrcode_core::{Config, ConfigOverlay};
 // 从 constants 模块重新导出常用常量和解析函数
 pub use constants::{
@@ -126,14 +126,13 @@ impl ConfigService {
         self.store.load_overlay(working_dir).map_err(Into::into)
     }
 
-    /// 读取用户级独立 `mcp.json`。
-    pub fn load_user_mcp(&self) -> Result<Option<Value>, ApplicationError> {
-        self.store.load_user_mcp().map_err(Into::into)
-    }
-
-    /// 读取项目本地独立 `.astrcode/mcp.json`。
-    pub fn load_local_mcp(&self, working_dir: &Path) -> Result<Option<Value>, ApplicationError> {
-        self.store.load_local_mcp(working_dir).map_err(Into::into)
+    /// 读取指定作用域的独立 `mcp.json`。
+    pub fn load_mcp(
+        &self,
+        scope: McpConfigFileScope,
+        working_dir: Option<&Path>,
+    ) -> Result<Option<Value>, ApplicationError> {
+        self.store.load_mcp(scope, working_dir).map_err(Into::into)
     }
 
     /// 保存活跃 profile/model 选择。
@@ -170,10 +169,11 @@ impl ConfigService {
         let entry = register_input_to_mcp_entry(input)?;
         match input.scope {
             McpConfigScope::User => {
-                let user_sidecar = self.store.load_user_mcp()?;
+                let user_sidecar = self.store.load_mcp(McpConfigFileScope::User, None)?;
                 if user_sidecar.is_some() {
                     let next = upsert_mcp_entry(user_sidecar, &input.name, entry)?;
-                    self.store.save_user_mcp(Some(&next))?;
+                    self.store
+                        .save_mcp(McpConfigFileScope::User, None, Some(&next))?;
                     return Ok(());
                 }
 
@@ -187,14 +187,21 @@ impl ConfigService {
                 }
 
                 let next = upsert_mcp_entry(None, &input.name, entry)?;
-                self.store.save_user_mcp(Some(&next))?;
+                self.store
+                    .save_mcp(McpConfigFileScope::User, None, Some(&next))?;
                 Ok(())
             },
             McpConfigScope::Local => {
-                let local_sidecar = self.store.load_local_mcp(working_dir)?;
+                let local_sidecar = self
+                    .store
+                    .load_mcp(McpConfigFileScope::Local, Some(working_dir))?;
                 if local_sidecar.is_some() {
                     let next = upsert_mcp_entry(local_sidecar, &input.name, entry)?;
-                    self.store.save_local_mcp(working_dir, Some(&next))?;
+                    self.store.save_mcp(
+                        McpConfigFileScope::Local,
+                        Some(working_dir),
+                        Some(&next),
+                    )?;
                     return Ok(());
                 }
 
@@ -206,13 +213,17 @@ impl ConfigService {
                 }
 
                 let next = upsert_mcp_entry(None, &input.name, entry)?;
-                self.store.save_local_mcp(working_dir, Some(&next))?;
+                self.store
+                    .save_mcp(McpConfigFileScope::Local, Some(working_dir), Some(&next))?;
                 Ok(())
             },
             McpConfigScope::Project => {
-                let project_mcp = self.store.load_project_mcp(working_dir)?;
+                let project_mcp = self
+                    .store
+                    .load_mcp(McpConfigFileScope::Project, Some(working_dir))?;
                 let next = upsert_mcp_entry(project_mcp, &input.name, entry)?;
-                self.store.save_project_mcp(working_dir, Some(&next))?;
+                self.store
+                    .save_mcp(McpConfigFileScope::Project, Some(working_dir), Some(&next))?;
                 Ok(())
             },
         }
@@ -227,10 +238,11 @@ impl ConfigService {
     ) -> Result<(), ApplicationError> {
         match scope {
             McpConfigScope::User => {
-                let user_sidecar = self.store.load_user_mcp()?;
+                let user_sidecar = self.store.load_mcp(McpConfigFileScope::User, None)?;
                 if mcp_document_contains_server(user_sidecar.as_ref(), name)? {
                     let next = remove_mcp_entry(user_sidecar, name)?;
-                    self.store.save_user_mcp(next.as_ref())?;
+                    self.store
+                        .save_mcp(McpConfigFileScope::User, None, next.as_ref())?;
                     return Ok(());
                 }
 
@@ -242,10 +254,16 @@ impl ConfigService {
                 Ok(())
             },
             McpConfigScope::Local => {
-                let local_sidecar = self.store.load_local_mcp(working_dir)?;
+                let local_sidecar = self
+                    .store
+                    .load_mcp(McpConfigFileScope::Local, Some(working_dir))?;
                 if mcp_document_contains_server(local_sidecar.as_ref(), name)? {
                     let next = remove_mcp_entry(local_sidecar, name)?;
-                    self.store.save_local_mcp(working_dir, next.as_ref())?;
+                    self.store.save_mcp(
+                        McpConfigFileScope::Local,
+                        Some(working_dir),
+                        next.as_ref(),
+                    )?;
                     return Ok(());
                 }
 
@@ -255,9 +273,15 @@ impl ConfigService {
                 Ok(())
             },
             McpConfigScope::Project => {
-                let project_mcp = self.store.load_project_mcp(working_dir)?;
+                let project_mcp = self
+                    .store
+                    .load_mcp(McpConfigFileScope::Project, Some(working_dir))?;
                 let next = remove_mcp_entry(project_mcp, name)?;
-                self.store.save_project_mcp(working_dir, next.as_ref())?;
+                self.store.save_mcp(
+                    McpConfigFileScope::Project,
+                    Some(working_dir),
+                    next.as_ref(),
+                )?;
                 Ok(())
             },
         }
@@ -273,10 +297,11 @@ impl ConfigService {
     ) -> Result<(), ApplicationError> {
         match scope {
             McpConfigScope::User => {
-                let user_sidecar = self.store.load_user_mcp()?;
+                let user_sidecar = self.store.load_mcp(McpConfigFileScope::User, None)?;
                 if mcp_document_contains_server(user_sidecar.as_ref(), name)? {
                     let next = set_mcp_entry_enabled(user_sidecar, name, enabled)?;
-                    self.store.save_user_mcp(next.as_ref())?;
+                    self.store
+                        .save_mcp(McpConfigFileScope::User, None, next.as_ref())?;
                     return Ok(());
                 }
 
@@ -288,10 +313,16 @@ impl ConfigService {
                 Ok(())
             },
             McpConfigScope::Local => {
-                let local_sidecar = self.store.load_local_mcp(working_dir)?;
+                let local_sidecar = self
+                    .store
+                    .load_mcp(McpConfigFileScope::Local, Some(working_dir))?;
                 if mcp_document_contains_server(local_sidecar.as_ref(), name)? {
                     let next = set_mcp_entry_enabled(local_sidecar, name, enabled)?;
-                    self.store.save_local_mcp(working_dir, next.as_ref())?;
+                    self.store.save_mcp(
+                        McpConfigFileScope::Local,
+                        Some(working_dir),
+                        next.as_ref(),
+                    )?;
                     return Ok(());
                 }
 
@@ -301,9 +332,15 @@ impl ConfigService {
                 Ok(())
             },
             McpConfigScope::Project => {
-                let project_mcp = self.store.load_project_mcp(working_dir)?;
+                let project_mcp = self
+                    .store
+                    .load_mcp(McpConfigFileScope::Project, Some(working_dir))?;
                 let next = set_mcp_entry_enabled(project_mcp, name, enabled)?;
-                self.store.save_project_mcp(working_dir, next.as_ref())?;
+                self.store.save_mcp(
+                    McpConfigFileScope::Project,
+                    Some(working_dir),
+                    next.as_ref(),
+                )?;
                 Ok(())
             },
         }
@@ -624,29 +661,37 @@ mod tests {
             Ok(())
         }
 
-        fn load_user_mcp(&self) -> Result<Option<Value>> {
-            Ok(self.user_mcp.lock().expect("user mcp mutex").clone())
+        fn load_mcp(
+            &self,
+            scope: McpConfigFileScope,
+            _working_dir: Option<&Path>,
+        ) -> Result<Option<Value>> {
+            match scope {
+                McpConfigFileScope::User => {
+                    Ok(self.user_mcp.lock().expect("user mcp mutex").clone())
+                },
+                McpConfigFileScope::Project => Ok(None),
+                McpConfigFileScope::Local => {
+                    Ok(self.local_mcp.lock().expect("local mcp mutex").clone())
+                },
+            }
         }
 
-        fn save_user_mcp(&self, mcp: Option<&Value>) -> Result<()> {
-            *self.user_mcp.lock().expect("user mcp mutex") = mcp.cloned();
-            Ok(())
-        }
-
-        fn load_project_mcp(&self, _working_dir: &Path) -> Result<Option<Value>> {
-            Ok(None)
-        }
-
-        fn save_project_mcp(&self, _working_dir: &Path, _mcp: Option<&Value>) -> Result<()> {
-            Ok(())
-        }
-
-        fn load_local_mcp(&self, _working_dir: &Path) -> Result<Option<Value>> {
-            Ok(self.local_mcp.lock().expect("local mcp mutex").clone())
-        }
-
-        fn save_local_mcp(&self, _working_dir: &Path, mcp: Option<&Value>) -> Result<()> {
-            *self.local_mcp.lock().expect("local mcp mutex") = mcp.cloned();
+        fn save_mcp(
+            &self,
+            scope: McpConfigFileScope,
+            _working_dir: Option<&Path>,
+            mcp: Option<&Value>,
+        ) -> Result<()> {
+            match scope {
+                McpConfigFileScope::User => {
+                    *self.user_mcp.lock().expect("user mcp mutex") = mcp.cloned();
+                },
+                McpConfigFileScope::Project => {},
+                McpConfigFileScope::Local => {
+                    *self.local_mcp.lock().expect("local mcp mutex") = mcp.cloned();
+                },
+            }
             Ok(())
         }
     }
@@ -678,11 +723,15 @@ mod tests {
         }));
         store.save(&config).expect("config should save");
         store
-            .save_user_mcp(Some(&json!({
-                "mcpServers": {
-                    "from-sidecar": { "command": "sidecar-cmd" }
-                }
-            })))
+            .save_mcp(
+                McpConfigFileScope::User,
+                None,
+                Some(&json!({
+                    "mcpServers": {
+                        "from-sidecar": { "command": "sidecar-cmd" }
+                    }
+                })),
+            )
             .expect("user sidecar should save");
 
         let service = ConfigService::new(store.clone());
@@ -695,7 +744,7 @@ mod tests {
             .expect("upsert should succeed");
 
         let sidecar = store
-            .load_user_mcp()
+            .load_mcp(McpConfigFileScope::User, None)
             .expect("sidecar should load")
             .expect("sidecar should exist");
         assert!(
@@ -725,7 +774,7 @@ mod tests {
             .expect("upsert should succeed");
 
         let local_sidecar = store
-            .load_local_mcp(project.path())
+            .load_mcp(McpConfigFileScope::Local, Some(project.path()))
             .expect("local sidecar should load")
             .expect("local sidecar should exist");
         assert!(

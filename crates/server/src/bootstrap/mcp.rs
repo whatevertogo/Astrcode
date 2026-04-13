@@ -16,7 +16,8 @@ use astrcode_adapter_mcp::{
 };
 use astrcode_adapter_storage::mcp_settings_store::FileMcpSettingsStore;
 use astrcode_application::{
-    ApplicationError, ConfigService, McpPort, McpServerStatusView, RegisterMcpServerInput,
+    ApplicationError, ConfigService, McpConfigFileScope, McpPort, McpServerStatusView,
+    RegisterMcpServerInput,
 };
 use async_trait::async_trait;
 
@@ -189,57 +190,97 @@ pub(crate) async fn load_declared_configs(
     working_dir: &Path,
 ) -> Result<Vec<McpServerConfig>, ApplicationError> {
     let mut merged = HashMap::new();
+    let working_dir_display = working_dir.display().to_string();
 
     let user_config = config_service.get_config().await;
     if let Some(mcp) = &user_config.mcp {
-        for config in McpConfigManager::load_from_value(mcp, McpConfigScope::User)
-            .map_err(core_error_to_app)?
-        {
-            merged.insert(config.name.clone(), config);
-        }
+        merge_configs_or_warn(
+            &mut merged,
+            "user config.json mcp",
+            McpConfigManager::load_from_value(mcp, McpConfigScope::User).map_err(core_error_to_app),
+        );
     }
 
-    if let Some(mcp) = config_service.load_user_mcp()? {
-        for config in McpConfigManager::load_from_value(&mcp, McpConfigScope::User)
-            .map_err(core_error_to_app)?
-        {
-            merged.insert(config.name.clone(), config);
-        }
+    match config_service.load_mcp(McpConfigFileScope::User, None) {
+        Ok(Some(mcp)) => merge_configs_or_warn(
+            &mut merged,
+            "user mcp.json",
+            McpConfigManager::load_from_value(&mcp, McpConfigScope::User)
+                .map_err(core_error_to_app),
+        ),
+        Ok(None) => {},
+        Err(error) => log::warn!("failed to load user mcp.json, skipping source: {error}"),
     }
 
     let project_file = working_dir.join(".mcp.json");
     if project_file.is_file() {
-        for config in McpConfigManager::load_from_file(&project_file, McpConfigScope::Project)
-            .map_err(core_error_to_app)?
-        {
-            merged.insert(config.name.clone(), config);
-        }
+        merge_configs_or_warn(
+            &mut merged,
+            &format!("project MCP file '{}'", project_file.display()),
+            McpConfigManager::load_from_file(&project_file, McpConfigScope::Project)
+                .map_err(core_error_to_app),
+        );
     }
 
-    if let Some(overlay) = config_service.load_overlay(working_dir)? {
-        if let Some(mcp) = overlay.mcp {
-            for config in McpConfigManager::load_from_value(&mcp, McpConfigScope::Local)
-                .map_err(core_error_to_app)?
-            {
-                merged.insert(config.name.clone(), config);
+    match config_service.load_overlay(working_dir) {
+        Ok(Some(overlay)) => {
+            if let Some(mcp) = overlay.mcp {
+                merge_configs_or_warn(
+                    &mut merged,
+                    &format!("local overlay mcp for '{}'", working_dir_display),
+                    McpConfigManager::load_from_value(&mcp, McpConfigScope::Local)
+                        .map_err(core_error_to_app),
+                );
             }
-        }
+        },
+        Ok(None) => {},
+        Err(error) => log::warn!(
+            "failed to load local overlay MCP config for '{}', skipping source: {error}",
+            working_dir_display
+        ),
     }
 
-    if let Some(mcp) = config_service.load_local_mcp(working_dir)? {
-        for config in McpConfigManager::load_from_value(&mcp, McpConfigScope::Local)
-            .map_err(core_error_to_app)?
-        {
-            merged.insert(config.name.clone(), config);
-        }
+    match config_service.load_mcp(McpConfigFileScope::Local, Some(working_dir)) {
+        Ok(Some(mcp)) => merge_configs_or_warn(
+            &mut merged,
+            &format!("local sidecar mcp for '{}'", working_dir_display),
+            McpConfigManager::load_from_value(&mcp, McpConfigScope::Local)
+                .map_err(core_error_to_app),
+        ),
+        Ok(None) => {},
+        Err(error) => log::warn!(
+            "failed to load local sidecar MCP config for '{}', skipping source: {error}",
+            working_dir_display
+        ),
     }
 
     Ok(merged.into_values().collect())
 }
 
+fn merge_configs_or_warn(
+    merged: &mut HashMap<String, McpServerConfig>,
+    source_label: &str,
+    configs: Result<Vec<McpServerConfig>, ApplicationError>,
+) {
+    match configs {
+        Ok(configs) => {
+            for config in configs {
+                merged.insert(config.name.clone(), config);
+            }
+        },
+        Err(error) => {
+            log::warn!(
+                "failed to parse MCP declarations from {}, skipping source: {}",
+                source_label,
+                error
+            );
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, fs};
 
     use astrcode_adapter_storage::config_store::FileConfigStore;
     use astrcode_core::{Config, ConfigOverlay};
@@ -267,17 +308,22 @@ mod tests {
         store.save(&config).expect("config should save");
 
         store
-            .save_user_mcp(Some(&json!({
-                "mcpServers": {
-                    "shared": { "command": "user-sidecar" },
-                    "user-sidecar-only": { "command": "user-sidecar-only" }
-                }
-            })))
+            .save_mcp(
+                McpConfigFileScope::User,
+                None,
+                Some(&json!({
+                    "mcpServers": {
+                        "shared": { "command": "user-sidecar" },
+                        "user-sidecar-only": { "command": "user-sidecar-only" }
+                    }
+                })),
+            )
             .expect("user sidecar should save");
 
         store
-            .save_project_mcp(
-                project.path(),
+            .save_mcp(
+                McpConfigFileScope::Project,
+                Some(project.path()),
                 Some(&json!({
                     "mcpServers": {
                         "shared": { "command": "project-shared" },
@@ -303,8 +349,9 @@ mod tests {
             .expect("overlay should save");
 
         store
-            .save_local_mcp(
-                project.path(),
+            .save_mcp(
+                McpConfigFileScope::Local,
+                Some(project.path()),
                 Some(&json!({
                     "mcpServers": {
                         "shared": { "command": "local-sidecar" },
@@ -334,5 +381,39 @@ mod tests {
         assert!(by_name.contains_key("project-only"));
         assert!(by_name.contains_key("local-config-only"));
         assert!(by_name.contains_key("local-sidecar-only"));
+    }
+
+    #[tokio::test]
+    async fn load_declared_configs_skips_invalid_project_mcp_source() {
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let project = tempfile::tempdir().expect("project should exist");
+        let store = Arc::new(FileConfigStore::new(
+            temp.path().join(".astrcode").join("config.json"),
+        ));
+
+        let config = Config {
+            mcp: Some(json!({
+                "mcpServers": {
+                    "from-user-config": { "command": "user-config" }
+                }
+            })),
+            ..Config::default()
+        };
+        store.save(&config).expect("config should save");
+
+        fs::write(project.path().join(".mcp.json"), "{ invalid json")
+            .expect("broken project mcp should be written");
+
+        let config_service = Arc::new(ConfigService::new(store));
+        let configs = load_declared_configs(&config_service, project.path())
+            .await
+            .expect("invalid project source should be skipped");
+        let by_name: HashMap<_, _> = configs
+            .into_iter()
+            .map(|config| (config.name.clone(), config))
+            .collect();
+
+        assert!(by_name.contains_key("from-user-config"));
+        assert_eq!(by_name.len(), 1);
     }
 }
