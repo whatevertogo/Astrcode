@@ -5,9 +5,8 @@
 //!
 //! # 设计原则
 //!
-//! - 当工具数量 ≤ 4 时，展开所有工具的详细指南
-//! - 超过 4 个工具时，仅展开标记为 `always_include` 的工具
 //! - 外部 MCP / plugin 工具仅保留粗略摘要，不展开详细指南
+//! - 非外部工具保持详细指南可见，不再因为工具总数被整体折叠
 //! - 只负责工具指南；外部 `PromptDeclaration` 由独立 contributor 承接
 
 use astrcode_core::{CapabilitySpec, ToolPromptMetadata};
@@ -17,8 +16,6 @@ use crate::{BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContr
 
 pub struct CapabilityPromptContributor;
 
-const MAX_ALWAYS_ON_DETAILED_GUIDES: usize = 4;
-
 #[async_trait]
 impl PromptContributor for CapabilityPromptContributor {
     fn contributor_id(&self) -> &'static str {
@@ -26,7 +23,7 @@ impl PromptContributor for CapabilityPromptContributor {
     }
 
     fn cache_version(&self) -> u64 {
-        5
+        6
     }
 
     fn cache_fingerprint(&self, ctx: &PromptContext) -> String {
@@ -53,9 +50,7 @@ impl PromptContributor for CapabilityPromptContributor {
         blocks.extend(
             internal_guides
                 .iter()
-                .filter(|guide| {
-                    guide.prompt.always_include || should_expand_tool_guides(internal_guides.len())
-                })
+                .filter(|guide| should_render_detailed_tool_guide(guide))
                 .map(build_detailed_tool_block),
         );
 
@@ -146,8 +141,18 @@ fn tool_summary_rank(name: &str) -> u8 {
     }
 }
 
-fn should_expand_tool_guides(tool_guide_count: usize) -> bool {
-    tool_guide_count <= MAX_ALWAYS_ON_DETAILED_GUIDES
+fn should_render_detailed_tool_guide(guide: &ToolGuideEntry) -> bool {
+    guide.prompt.always_include
+        || is_agent_collaboration_tool(guide)
+        || !is_external_tool(&guide.spec)
+}
+
+fn is_agent_collaboration_tool(guide: &ToolGuideEntry) -> bool {
+    guide
+        .prompt
+        .prompt_tags
+        .iter()
+        .any(|tag| tag == "collaboration")
 }
 
 fn build_tool_summary_block(
@@ -161,7 +166,10 @@ fn build_tool_summary_block(
 
     if !tool_guides.is_empty() {
         content.push_str("\n\nBuiltin Tools");
-        for guide in tool_guides {
+        for guide in tool_guides
+            .iter()
+            .filter(|guide| !is_agent_collaboration_tool(guide))
+        {
             let caveat = guide
                 .prompt
                 .caveats
@@ -172,6 +180,30 @@ fn build_tool_summary_block(
                 "\n- `{}`: {}{}",
                 guide.spec.name, guide.prompt.summary, caveat
             ));
+        }
+
+        let collaboration_guides = tool_guides
+            .iter()
+            .filter(|guide| is_agent_collaboration_tool(guide))
+            .collect::<Vec<_>>();
+        if !collaboration_guides.is_empty() {
+            content.push_str(
+                "\n\nAgent Collaboration Tools\n- Use these tools together to spawn, inspect, \
+                 update, and close child agents. Keep the original `agentId` byte-for-byte across \
+                 calls.",
+            );
+            for guide in collaboration_guides {
+                let caveat = guide
+                    .prompt
+                    .caveats
+                    .first()
+                    .map(|caveat| format!(" Caveat: {caveat}"))
+                    .unwrap_or_default();
+                content.push_str(&format!(
+                    "\n- `{}`: {}{}",
+                    guide.spec.name, guide.prompt.summary, caveat
+                ));
+            }
         }
     }
 
@@ -296,6 +328,22 @@ mod tests {
             .expect("spec should build")
     }
 
+    fn collaboration_tool_spec(name: &str) -> CapabilitySpec {
+        CapabilitySpec::builder(name, CapabilityKind::Tool)
+            .description(format!("spec for {name}"))
+            .schema(json!({"type": "object"}), json!({"type": "string"}))
+            .metadata(json!({
+                "prompt": ToolPromptMetadata::new(
+                    format!("{name} summary"),
+                    format!("{name} detailed guide")
+                )
+                .caveat(format!("{name} caveat"))
+                .prompt_tag("collaboration")
+            }))
+            .build()
+            .expect("spec should build")
+    }
+
     fn context() -> PromptContext {
         PromptContext {
             working_dir: "/workspace/demo".to_string(),
@@ -329,7 +377,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn large_tool_surfaces_only_expand_always_include_guides() {
+    async fn large_tool_surfaces_keep_internal_tool_guides_visible() {
         let _guard = TestEnvGuard::new();
         let mut ctx = context();
         ctx.capability_specs = vec![
@@ -337,23 +385,19 @@ mod tests {
             tool_spec("beta", false),
             tool_spec("gamma", false),
             tool_spec("delta", false),
-            tool_spec("epsilon", true),
+            tool_spec("epsilon", false),
         ];
 
         let contribution = CapabilityPromptContributor.contribute(&ctx).await;
 
-        assert!(
-            contribution
-                .blocks
-                .iter()
-                .any(|block| block.id == "tool-guide-epsilon")
-        );
-        assert!(
-            !contribution
-                .blocks
-                .iter()
-                .any(|block| block.id == "tool-guide-alpha")
-        );
+        for name in ["alpha", "beta", "gamma", "delta", "epsilon"] {
+            assert!(
+                contribution
+                    .blocks
+                    .iter()
+                    .any(|block| block.id == format!("tool-guide-{name}"))
+            );
+        }
     }
 
     #[tokio::test]
@@ -408,6 +452,47 @@ mod tests {
                 .blocks
                 .iter()
                 .any(|block| block.id == "tool-guide-mcp__demo__search")
+        );
+    }
+
+    #[tokio::test]
+    async fn collaboration_tools_stay_visible_on_large_tool_surfaces() {
+        let _guard = TestEnvGuard::new();
+        let mut ctx = context();
+        ctx.capability_specs = vec![
+            tool_spec("alpha", false),
+            tool_spec("beta", false),
+            tool_spec("gamma", false),
+            tool_spec("delta", false),
+            collaboration_tool_spec("spawn"),
+            collaboration_tool_spec("send"),
+        ];
+
+        let contribution = CapabilityPromptContributor.contribute(&ctx).await;
+        let summary = contribution
+            .blocks
+            .iter()
+            .find(|block| block.id == "tool-summary")
+            .expect("summary block should exist");
+        let content = match &summary.content {
+            BlockContent::Text(content) => content,
+            _ => panic!("expected text content"),
+        };
+
+        assert!(content.contains("Agent Collaboration Tools"));
+        assert!(content.contains("`spawn`"));
+        assert!(content.contains("`send`"));
+        assert!(
+            contribution
+                .blocks
+                .iter()
+                .any(|block| block.id == "tool-guide-spawn")
+        );
+        assert!(
+            contribution
+                .blocks
+                .iter()
+                .any(|block| block.id == "tool-guide-send")
         );
     }
 

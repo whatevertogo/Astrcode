@@ -41,6 +41,19 @@ pub fn target_phase(event: &StorageEvent) -> Phase {
     }
 }
 
+/// 规范化冷恢复场景下的 phase。
+///
+/// `Thinking` / `Streaming` / `CallingTool` 只应存在于活进程内。
+/// 如果会话是从磁盘历史冷恢复出来的，却仍停留在这些中间态，
+/// 说明上一次进程在 turn 尚未完成时就退出了；此时应显式降级为 `Interrupted`，
+/// 避免 UI 把陈旧会话误判成仍在运行。
+pub fn normalize_recovered_phase(phase: Phase) -> Phase {
+    match phase {
+        Phase::Thinking | Phase::Streaming | Phase::CallingTool => Phase::Interrupted,
+        other => other,
+    }
+}
+
 /// Stateful phase tracker.
 ///
 /// Call [`Self::on_event`] whenever a new `StorageEvent` arrives. If the event
@@ -111,5 +124,37 @@ impl PhaseTracker {
             agent,
             phase,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_recovered_phase;
+    use crate::Phase;
+
+    #[test]
+    fn normalize_recovered_phase_maps_transient_runtime_states_to_interrupted() {
+        assert_eq!(
+            normalize_recovered_phase(Phase::Thinking),
+            Phase::Interrupted
+        );
+        assert_eq!(
+            normalize_recovered_phase(Phase::Streaming),
+            Phase::Interrupted
+        );
+        assert_eq!(
+            normalize_recovered_phase(Phase::CallingTool),
+            Phase::Interrupted
+        );
+    }
+
+    #[test]
+    fn normalize_recovered_phase_preserves_terminal_and_stable_states() {
+        assert_eq!(normalize_recovered_phase(Phase::Idle), Phase::Idle);
+        assert_eq!(
+            normalize_recovered_phase(Phase::Interrupted),
+            Phase::Interrupted
+        );
+        assert_eq!(normalize_recovered_phase(Phase::Done), Phase::Done);
     }
 }

@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 pub use self::{
     domain::{AgentEvent, Phase},
-    phase::{PhaseTracker, target_phase as phase_of_storage_event},
+    phase::{PhaseTracker, normalize_recovered_phase, target_phase as phase_of_storage_event},
     translate::{EventTranslator, replay_records},
     types::{
         CompactTrigger, PromptMetricsPayload, StorageEvent, StorageEventPayload, StoredEvent,

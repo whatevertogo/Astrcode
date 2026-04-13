@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use astrcode_core::{
     AgentId, AgentStateProjector, EventLogWriter, EventStore, EventTranslator, Phase, SessionId,
-    StorageEvent, StoreError, StoreResult, StoredEvent, TurnId, replay_records,
+    StorageEvent, StoreError, StoreResult, StoredEvent, TurnId, normalize_recovered_phase,
+    replay_records,
 };
 
 use crate::state::{SessionSnapshot, SessionState, SessionWriter};
@@ -181,7 +182,7 @@ impl SessionActor {
         for stored in &stored_events {
             projector.apply(&stored.event);
         }
-        let phase = projector.snapshot().phase;
+        let phase = normalize_recovered_phase(projector.snapshot().phase);
         let recent_records = replay_records(&stored_events, None);
         let state = SessionState::new(phase, writer, projector, recent_records, stored_events);
 

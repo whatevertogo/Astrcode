@@ -28,6 +28,7 @@ use std::{
 
 use astrcode_core::{
     DeleteProjectResult, Phase, SessionMeta, StorageEvent, StorageEventPayload, StoredEventLine,
+    normalize_recovered_phase,
 };
 use chrono::{DateTime, Utc};
 
@@ -419,6 +420,7 @@ impl EventLog {
         Ok(Self::read_tail_value(path, |event| {
             Some(astrcode_core::phase_of_storage_event(event))
         })?
+        .map(normalize_recovered_phase)
         .unwrap_or(Phase::Idle))
     }
 
@@ -659,6 +661,51 @@ mod tests {
         let updated_at = EventLog::read_last_timestamp(&path).expect("timestamp should resolve");
 
         assert_eq!(updated_at, failed_at);
+    }
+
+    #[test]
+    fn read_last_phase_normalizes_stale_transient_phase_to_interrupted() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let path = temp.path().join("session-test.jsonl");
+        let started_at = Utc
+            .with_ymd_and_hms(2026, 3, 18, 8, 0, 0)
+            .single()
+            .expect("timestamp should be valid");
+        let lines = [
+            serde_json::to_string(&StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent {
+                    turn_id: None,
+                    agent: astrcode_core::AgentEventContext::default(),
+                    payload: StorageEventPayload::SessionStart {
+                        session_id: "session-1".to_string(),
+                        timestamp: started_at,
+                        working_dir: "/tmp/project".to_string(),
+                        parent_session_id: None,
+                        parent_storage_seq: None,
+                    },
+                },
+            })
+            .expect("session start should serialize"),
+            serde_json::to_string(&StoredEvent {
+                storage_seq: 2,
+                event: StorageEvent {
+                    turn_id: Some("turn-1".to_string()),
+                    agent: astrcode_core::AgentEventContext::default(),
+                    payload: StorageEventPayload::UserMessage {
+                        content: "still running?".to_string(),
+                        origin: astrcode_core::UserMessageOrigin::User,
+                        timestamp: started_at,
+                    },
+                },
+            })
+            .expect("user message should serialize"),
+        ];
+        fs::write(&path, format!("{}\n{}\n", lines[0], lines[1])).expect("log should be written");
+
+        let phase = EventLog::read_last_phase(&path).expect("phase should resolve");
+
+        assert_eq!(phase, Phase::Interrupted);
     }
 
     #[test]

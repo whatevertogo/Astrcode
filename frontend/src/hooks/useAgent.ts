@@ -105,6 +105,29 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
     onEventRef.current = onEvents;
   }, [onEvents]);
 
+  const recoverSessionPhase = useCallback(
+    async (sessionId: string, filter?: SessionEventFilterQuery): Promise<void> => {
+      try {
+        const snapshot = await loadSessionView(sessionId, filter);
+        onEventRef.current([
+          {
+            event: 'phaseChanged',
+            data: {
+              phase: snapshot.phase,
+              turnId: null,
+            },
+          },
+        ]);
+      } catch (error) {
+        logger.warn('useAgent', 'failed to recover session phase from server snapshot', {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    []
+  );
+
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current !== null) {
       window.clearTimeout(reconnectTimerRef.current);
@@ -154,6 +177,8 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
 
   const failActiveConnection = useCallback(
     (message: string, turnId: string | null = null) => {
+      const activeSessionId = connectedSessionIdRef.current;
+      const activeFilter = connectedSessionFilterRef.current;
       // 这里显式结束本地流状态，而不是无限重试。
       // 原因是：当用户手动关闭 server 后，继续保持 busy 只会把 UI 卡死在“可中断但无法中断”的假状态。
       clearReconnectTimer();
@@ -165,9 +190,12 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
       reconnectAttemptRef.current = 0;
       streamGenerationRef.current += 1;
       flushBufferedEvents();
+      if (activeSessionId) {
+        void recoverSessionPhase(activeSessionId, activeFilter);
+      }
       dispatchStreamError(onEventRef.current, message, turnId);
     },
-    [clearReconnectTimer, flushBufferedEvents]
+    [clearReconnectTimer, flushBufferedEvents, recoverSessionPhase]
   );
 
   const connectSession = useCallback(
@@ -378,12 +406,18 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
     async (sessionId: string): Promise<void> => {
       try {
         await interruptSession(sessionId);
+        await recoverSessionPhase(
+          sessionId,
+          connectedSessionIdRef.current === sessionId
+            ? connectedSessionFilterRef.current
+            : undefined
+        );
       } catch (error) {
         logger.error('useAgent', 'failed to interrupt session:', error);
         failActiveConnection(error instanceof Error ? error.message : String(error));
       }
     },
-    [failActiveConnection]
+    [failActiveConnection, recoverSessionPhase]
   );
 
   const handleCompactSession = useCallback(
