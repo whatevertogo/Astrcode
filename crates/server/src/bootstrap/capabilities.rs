@@ -91,7 +91,7 @@ pub(crate) fn build_server_capability_router(
 
 #[derive(Clone)]
 pub(crate) struct CapabilitySurfaceSync {
-    builtin_invokers: Vec<Arc<dyn CapabilityInvoker>>,
+    stable_invokers: Vec<Arc<dyn CapabilityInvoker>>,
     router: CapabilityRouter,
     kernel: Arc<Kernel>,
     tool_search_index: Arc<ToolSearchIndex>,
@@ -100,27 +100,27 @@ pub(crate) struct CapabilitySurfaceSync {
 impl CapabilitySurfaceSync {
     pub(crate) fn new(
         kernel: Arc<Kernel>,
-        builtin_invokers: Vec<Arc<dyn CapabilityInvoker>>,
+        stable_invokers: Vec<Arc<dyn CapabilityInvoker>>,
         tool_search_index: Arc<ToolSearchIndex>,
     ) -> Self {
         Self {
             router: kernel.gateway().capabilities().clone(),
             kernel,
-            builtin_invokers,
+            stable_invokers,
             tool_search_index,
         }
     }
 
     /// 用 MCP + plugin 的外部调用器替换整份 surface。
     ///
-    /// builtin 始终保留，MCP 和 plugin 由外部传入。
+    /// 稳定内置调用器（builtin + agent）始终保留，MCP 和 plugin 由外部传入。
     /// 整份 surface 一次性替换，不做半刷新。
     /// 同时刷新 ToolSearchIndex 使其与 router 保持同步。
     pub(crate) fn apply_external_invokers(
         &self,
         external_invokers: Vec<Arc<dyn CapabilityInvoker>>,
     ) -> Result<()> {
-        let mut invokers = self.builtin_invokers.clone();
+        let mut invokers = self.stable_invokers.clone();
         invokers.extend(external_invokers);
         self.router.replace_invokers(invokers.clone())?;
         self.kernel
@@ -128,7 +128,7 @@ impl CapabilitySurfaceSync {
             .replace_capabilities(&invokers, self.kernel.events());
         let external_specs = invokers
             .iter()
-            .skip(self.builtin_invokers.len())
+            .skip(self.stable_invokers.len())
             .map(|invoker| invoker.capability_spec())
             .collect();
         self.tool_search_index.replace_from_specs(external_specs);
@@ -294,10 +294,11 @@ mod tests {
     }
 
     fn test_kernel(builtin_invokers: &[Arc<dyn CapabilityInvoker>]) -> Arc<Kernel> {
-        let router = astrcode_kernel::CapabilityRouter::builder()
-            .register_invoker(Arc::clone(&builtin_invokers[0]))
-            .build()
-            .expect("router should build");
+        let mut builder = astrcode_kernel::CapabilityRouter::builder();
+        for invoker in builtin_invokers {
+            builder = builder.register_invoker(Arc::clone(invoker));
+        }
+        let router = builder.build().expect("router should build");
         Arc::new(
             Kernel::builder()
                 .with_capabilities(router)
@@ -364,5 +365,27 @@ mod tests {
             names,
             vec!["mcp__demo__search".to_string(), "plugin.search".to_string()]
         );
+    }
+
+    #[test]
+    fn apply_external_invokers_preserves_stable_internal_tools() {
+        let builtin_invoker = invoker("read_file", &["source:builtin"]);
+        let agent_invoker = invoker("spawn", &["builtin", "agent"]);
+        let stable_invokers = vec![builtin_invoker, agent_invoker];
+        let kernel = test_kernel(&stable_invokers);
+        let tool_search_index = Arc::new(ToolSearchIndex::new());
+        let sync = CapabilitySurfaceSync::new(
+            Arc::clone(&kernel),
+            stable_invokers,
+            Arc::clone(&tool_search_index),
+        );
+
+        sync.apply_external_invokers(vec![invoker("mcp__demo__search", &["source:mcp"])])
+            .expect("replace should succeed");
+
+        let names: Vec<String> = kernel.gateway().capabilities().tool_names();
+        assert!(names.iter().any(|name| name == "read_file"));
+        assert!(names.iter().any(|name| name == "spawn"));
+        assert!(names.iter().any(|name| name == "mcp__demo__search"));
     }
 }

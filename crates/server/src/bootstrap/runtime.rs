@@ -175,15 +175,8 @@ pub async fn bootstrap_server_runtime_with_options(
         build_prompt_provider(),
         build_resource_provider(mcp_manager.clone()),
     )?);
-    let capability_sync =
-        CapabilitySurfaceSync::new(kernel.clone(), builtin_invokers, tool_search_index);
     let observability = Arc::new(RuntimeObservabilityCollector::new());
     let task_registry = Arc::new(TaskRegistry::new());
-    let coordinator = Arc::new(RuntimeCoordinator::new(
-        Arc::new(super::governance::AppRuntimeHandle),
-        plugin_registry.clone(),
-        kernel.surface().snapshot().capability_specs,
-    ));
 
     let event_store: Arc<dyn EventStore> = Arc::new(FsEventStore::new_with_projects_root(
         paths.projects_root.clone(),
@@ -206,13 +199,6 @@ pub async fn bootstrap_server_runtime_with_options(
         None => build_watch_service(agent_loader)
             .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))?,
     };
-    let mcp_service = build_mcp_service(
-        config_service.clone(),
-        working_dir.clone(),
-        mcp_manager.clone(),
-        capability_sync.clone(),
-    );
-
     let agent_service = Arc::new(AgentOrchestrationService::new(
         kernel.clone(),
         session_runtime.clone(),
@@ -223,10 +209,25 @@ pub async fn bootstrap_server_runtime_with_options(
 
     // agent 四工具依赖 agent_service，必须在 kernel/session_runtime 之后单独注册
     let agent_invokers = build_agent_invokers(agent_service.clone())?;
-    kernel
-        .gateway()
-        .capabilities()
-        .register_invokers(agent_invokers)?;
+    let mut stable_invokers = builtin_invokers.clone();
+    stable_invokers.extend(agent_invokers);
+    let capability_sync = CapabilitySurfaceSync::new(
+        kernel.clone(),
+        stable_invokers,
+        Arc::clone(&tool_search_index),
+    );
+    capability_sync.apply_external_invokers(external_invokers.clone())?;
+    let coordinator = Arc::new(RuntimeCoordinator::new(
+        Arc::new(super::governance::AppRuntimeHandle),
+        plugin_registry.clone(),
+        capability_sync.current_capabilities(),
+    ));
+    let mcp_service = build_mcp_service(
+        config_service.clone(),
+        working_dir.clone(),
+        mcp_manager.clone(),
+        capability_sync.clone(),
+    );
 
     let app = Arc::new(App::new(
         kernel.clone(),
