@@ -22,7 +22,10 @@ use astrcode_core::{StorageEvent, StoredEvent, store::EventLogWriter};
 
 use super::{
     iterator::EventLogIterator,
-    paths::{resolve_existing_session_path, session_path},
+    paths::{
+        resolve_existing_session_path, resolve_existing_session_path_from_projects_root,
+        session_path, session_path_from_projects_root,
+    },
 };
 use crate::Result;
 
@@ -108,6 +111,20 @@ impl EventLog {
     /// - 文件必须不存在（`create_new` 保证）
     pub fn create(session_id: &str, working_dir: &Path) -> Result<Self> {
         let path = session_path(session_id, working_dir)?;
+        Self::create_at_resolved_path(path)
+    }
+
+    /// 在显式项目根目录下创建新的事件日志。
+    pub fn create_in_projects_root(
+        projects_root: &Path,
+        session_id: &str,
+        working_dir: &Path,
+    ) -> Result<Self> {
+        let path = session_path_from_projects_root(projects_root, session_id, working_dir)?;
+        Self::create_at_resolved_path(path)
+    }
+
+    fn create_at_resolved_path(path: PathBuf) -> Result<Self> {
         if let Some(parent) = path.parent() {
             // 每个 session 单独目录，后续才能安全地给该 session 增加附件或索引文件。
             fs::create_dir_all(parent).map_err(|e| {
@@ -140,6 +157,16 @@ impl EventLog {
     /// 并从文件尾部推断下一个 `storage_seq`，确保续写时序列号连续。
     pub fn open(session_id: &str) -> Result<Self> {
         let path = resolve_existing_session_path(session_id)?;
+        Self::open_at_resolved_path(path)
+    }
+
+    /// 从显式项目根目录下打开现有事件日志。
+    pub fn open_in_projects_root(projects_root: &Path, session_id: &str) -> Result<Self> {
+        let path = resolve_existing_session_path_from_projects_root(projects_root, session_id)?;
+        Self::open_at_resolved_path(path)
+    }
+
+    fn open_at_resolved_path(path: PathBuf) -> Result<Self> {
         let next_storage_seq = Self::last_storage_seq_from_path(&path)?.saturating_add(1);
         let file = OpenOptions::new().append(true).open(&path).map_err(|e| {
             crate::io_error(

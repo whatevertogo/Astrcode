@@ -26,8 +26,9 @@ use super::capabilities::CapabilitySurfaceSync;
 pub(crate) async fn bootstrap_mcp_manager(
     config_service: Arc<ConfigService>,
     working_dir: &Path,
+    approvals_path: PathBuf,
 ) -> astrcode_core::Result<Arc<McpConnectionManager>> {
-    let approval_store = FileMcpSettingsStore::default_path()?;
+    let approval_store = FileMcpSettingsStore::new(approvals_path);
     let manager = Arc::new(McpConnectionManager::new().with_approval(
         McpApprovalManager::new(Box::new(approval_store)),
         working_dir.to_string_lossy().to_string(),

@@ -1,24 +1,25 @@
 //! 子代理执行入口。
 //!
-//! 实现 `launch_subagent`：spawn 参数解析 → control 协调 → turn 启动。
+//! 实现 `launch_subagent`：spawn 参数解析 → profile 校验 → child session 创建 → turn 启动。
 //! 子代理执行结果通过 parent delivery 机制回流到父级。
 
 use std::sync::Arc;
 
 use astrcode_core::{
-    AgentProfile, ExecutionAccepted, RuntimeMetricsRecorder, config::RuntimeConfig,
+    AgentLifecycleStatus, AgentMode, AgentProfile, ExecutionAccepted, RuntimeMetricsRecorder,
+    config::RuntimeConfig,
 };
 use astrcode_kernel::Kernel;
 use astrcode_session_runtime::SessionRuntime;
-use chrono::Utc;
 
-use crate::errors::ApplicationError;
+use crate::{agent::subrun_event_context, errors::ApplicationError};
 
 /// 子代理执行请求。
 pub struct SubagentExecutionRequest {
     pub parent_session_id: String,
     pub parent_agent_id: String,
     pub parent_turn_id: String,
+    pub working_dir: String,
     pub profile: AgentProfile,
     pub task: String,
     pub context: Option<String>,
@@ -28,9 +29,10 @@ pub struct SubagentExecutionRequest {
 ///
 /// 完整流程：
 /// 1. 参数校验
-/// 2. 创建独立 child session
-/// 3. 在控制树中注册子 agent
-/// 4. 异步提交 prompt
+/// 2. 校验 profile mode
+/// 3. 创建独立 child session
+/// 4. 在控制树中注册子 agent
+/// 5. 异步提交 prompt
 pub async fn launch_subagent(
     kernel: &Arc<Kernel>,
     session_runtime: &Arc<SessionRuntime>,
@@ -39,14 +41,13 @@ pub async fn launch_subagent(
     metrics: &Arc<dyn RuntimeMetricsRecorder>,
 ) -> Result<ExecutionAccepted, ApplicationError> {
     validate_subagent_request(&request)?;
+    ensure_subagent_profile_mode(&request.profile)?;
 
-    // 创建独立 child session
     let child_session = session_runtime
-        .create_session(format!("subagent-{}", Utc::now().timestamp_millis()))
+        .create_session(&request.working_dir)
         .await
         .map_err(ApplicationError::from)?;
 
-    // 在控制树中注册子 agent
     let handle = kernel
         .agent_control()
         .spawn(
@@ -57,8 +58,11 @@ pub async fn launch_subagent(
         )
         .await
         .map_err(|e| ApplicationError::Internal(format!("failed to spawn subagent: {e}")))?;
+    let _ = kernel
+        .agent_control()
+        .set_lifecycle(&handle.agent_id, AgentLifecycleStatus::Running)
+        .await;
 
-    // 合并 task + context
     let merged_task = match &request.context {
         Some(ctx) if !ctx.trim().is_empty() => {
             format!("{}\n\n{}", ctx.trim(), request.task)
@@ -66,9 +70,13 @@ pub async fn launch_subagent(
         _ => request.task,
     };
 
-    // 异步提交 prompt
     let mut accepted = session_runtime
-        .submit_prompt(&child_session.session_id, merged_task, runtime_config)
+        .submit_prompt_for_agent(
+            &child_session.session_id,
+            merged_task,
+            runtime_config,
+            subrun_event_context(&handle),
+        )
         .await
         .map_err(ApplicationError::from)?;
     metrics.record_child_spawned();
@@ -87,12 +95,27 @@ fn validate_subagent_request(request: &SubagentExecutionRequest) -> Result<(), A
             "field 'parentAgentId' must not be empty".to_string(),
         ));
     }
+    if request.working_dir.trim().is_empty() {
+        return Err(ApplicationError::InvalidArgument(
+            "field 'workingDir' must not be empty".to_string(),
+        ));
+    }
     if request.task.trim().is_empty() {
         return Err(ApplicationError::InvalidArgument(
             "field 'task' must not be empty".to_string(),
         ));
     }
     Ok(())
+}
+
+fn ensure_subagent_profile_mode(profile: &AgentProfile) -> Result<(), ApplicationError> {
+    if matches!(profile.mode, AgentMode::SubAgent | AgentMode::All) {
+        return Ok(());
+    }
+    Err(ApplicationError::InvalidArgument(format!(
+        "agent profile '{}' cannot be used as subagent",
+        profile.id
+    )))
 }
 
 #[cfg(test)]
@@ -119,6 +142,7 @@ mod tests {
             parent_session_id: "session-1".to_string(),
             parent_agent_id: "root-agent".to_string(),
             parent_turn_id: "turn-1".to_string(),
+            working_dir: "/tmp/project".to_string(),
             profile: test_profile(),
             task: "explore the code".to_string(),
             context: None,
@@ -153,6 +177,14 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_empty_working_dir() {
+        let mut req = valid_request();
+        req.working_dir.clear();
+        let err = validate_subagent_request(&req).unwrap_err();
+        assert!(err.to_string().contains("workingDir"));
+    }
+
+    #[test]
     fn validate_rejects_empty_task() {
         let mut req = valid_request();
         req.task = "   ".to_string();
@@ -165,9 +197,19 @@ mod tests {
 
     #[test]
     fn validate_does_not_check_profile_fields() {
-        // profile 存在性由业务逻辑在校验后判断，validate 只管必填字段
         let mut req = valid_request();
         req.profile.name = String::new();
         assert!(validate_subagent_request(&req).is_ok());
+    }
+
+    #[test]
+    fn ensure_subagent_profile_mode_rejects_primary_only_profile() {
+        let err = ensure_subagent_profile_mode(&AgentProfile {
+            mode: AgentMode::Primary,
+            ..test_profile()
+        })
+        .expect_err("primary-only profile should be rejected");
+
+        assert!(err.to_string().contains("subagent"));
     }
 }

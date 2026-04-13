@@ -138,6 +138,7 @@ impl ProfileResolutionService {
 
     /// 使全局缓存失效。
     pub fn invalidate_global(&self) {
+        self.cache.clear();
         let mut guard = self.global_cache.write().unwrap();
         *guard = None;
     }
@@ -159,7 +160,10 @@ fn working_dir_canonical(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use super::*;
 
@@ -200,6 +204,57 @@ mod tests {
         fn load_global(&self) -> Result<Vec<AgentProfile>, ApplicationError> {
             self.global_call_count.fetch_add(1, Ordering::SeqCst);
             Ok(self.profiles.clone())
+        }
+    }
+
+    struct MutableProfileProvider {
+        profiles: Mutex<Vec<AgentProfile>>,
+        load_call_count: AtomicUsize,
+        global_call_count: AtomicUsize,
+    }
+
+    impl MutableProfileProvider {
+        fn new(profiles: Vec<AgentProfile>) -> Self {
+            Self {
+                profiles: Mutex::new(profiles),
+                load_call_count: AtomicUsize::new(0),
+                global_call_count: AtomicUsize::new(0),
+            }
+        }
+
+        fn replace_profiles(&self, profiles: Vec<AgentProfile>) {
+            *self.profiles.lock().expect("profiles lock should work") = profiles;
+        }
+
+        fn load_count(&self) -> usize {
+            self.load_call_count.load(Ordering::SeqCst)
+        }
+
+        fn global_count(&self) -> usize {
+            self.global_call_count.load(Ordering::SeqCst)
+        }
+    }
+
+    impl ProfileProvider for MutableProfileProvider {
+        fn load_for_working_dir(
+            &self,
+            _working_dir: &Path,
+        ) -> Result<Vec<AgentProfile>, ApplicationError> {
+            self.load_call_count.fetch_add(1, Ordering::SeqCst);
+            Ok(self
+                .profiles
+                .lock()
+                .expect("profiles lock should work")
+                .clone())
+        }
+
+        fn load_global(&self) -> Result<Vec<AgentProfile>, ApplicationError> {
+            self.global_call_count.fetch_add(1, Ordering::SeqCst);
+            Ok(self
+                .profiles
+                .lock()
+                .expect("profiles lock should work")
+                .clone())
         }
     }
 
@@ -347,6 +402,49 @@ mod tests {
         assert!(
             matches!(err, ApplicationError::NotFound(ref msg) if msg.contains("nobody")),
             "should be NotFound: {err}"
+        );
+    }
+
+    #[test]
+    fn invalidate_global_also_clears_scoped_cache() {
+        let provider = Arc::new(MutableProfileProvider::new(vec![test_profile("explore")]));
+        let service = ProfileResolutionService::new(provider.clone());
+        let dir = std::env::current_dir().unwrap();
+
+        let _ = service.resolve(&dir).unwrap();
+        let _ = service.resolve_global().unwrap();
+        assert_eq!(provider.load_count(), 1);
+        assert_eq!(provider.global_count(), 1);
+
+        service.invalidate_global();
+        let _ = service.resolve(&dir).unwrap();
+        let _ = service.resolve_global().unwrap();
+        assert_eq!(provider.load_count(), 2, "全局失效也应清理 scoped cache");
+        assert_eq!(provider.global_count(), 2, "全局 cache 应重新加载");
+    }
+
+    #[test]
+    fn invalidate_reloads_future_requests_without_mutating_existing_snapshot() {
+        let provider = Arc::new(MutableProfileProvider::new(vec![test_profile("explore")]));
+        let service = ProfileResolutionService::new(provider.clone());
+        let dir = std::env::current_dir().unwrap();
+
+        let first = service.resolve(&dir).unwrap();
+        assert_eq!(first[0].description, "test explore");
+
+        provider.replace_profiles(vec![AgentProfile {
+            description: "updated explore".to_string(),
+            ..test_profile("explore")
+        }]);
+        service.invalidate(&dir);
+        let second = service.resolve(&dir).unwrap();
+
+        assert_eq!(first[0].description, "test explore");
+        assert_eq!(second[0].description, "updated explore");
+        assert_eq!(
+            provider.load_count(),
+            2,
+            "失效后后续请求必须重新读取 provider"
         );
     }
 }

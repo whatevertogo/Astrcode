@@ -95,21 +95,35 @@ impl AgentOrchestrationService {
                     )));
                 };
 
-                if let Err(error) = self
+                let accepted = match self
                     .session_runtime
-                    .submit_prompt(
+                    .submit_prompt_for_agent(
                         child_session_id,
                         resume_message,
                         self.default_runtime_config(),
+                        astrcode_core::AgentEventContext::from(&reused_handle),
                     )
                     .await
                 {
-                    self.restore_pending_inbox(&child.agent_id, pending).await;
-                    return Err(super::AgentOrchestrationError::Internal(format!(
-                        "agent '{}' resume submit failed: {error}",
-                        params.agent_id
-                    )));
-                }
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        self.restore_pending_inbox(&child.agent_id, pending).await;
+                        return Err(super::AgentOrchestrationError::Internal(format!(
+                            "agent '{}' resume submit failed: {error}",
+                            params.agent_id
+                        )));
+                    },
+                };
+                self.spawn_child_terminal_watcher(
+                    reused_handle.clone(),
+                    accepted.session_id.to_string(),
+                    accepted.turn_id.to_string(),
+                    ctx.session_id().to_string(),
+                    ctx.turn_id()
+                        .unwrap_or(&reused_handle.parent_turn_id)
+                        .to_string(),
+                    ctx.tool_call_id().map(ToString::to_string),
+                );
 
                 let child_ref = self.build_child_ref_from_handle(&reused_handle).await;
                 return Ok(CollaborationResult {

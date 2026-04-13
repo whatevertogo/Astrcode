@@ -16,7 +16,9 @@ use std::{
 };
 
 use astrcode_adapter_skills::{SkillSource, SkillSpec, collect_asset_files, is_valid_skill_name};
-use astrcode_core::{CapabilityInvoker, PluginRegistry, home::resolve_home_dir};
+#[cfg(test)]
+use astrcode_core::home::resolve_home_dir;
+use astrcode_core::{CapabilityInvoker, PluginRegistry};
 use astrcode_plugin::{PluginLoader, Supervisor, default_initialize_message, default_profiles};
 use astrcode_protocol::plugin::{PeerDescriptor, SkillDescriptor};
 use log::warn;
@@ -44,7 +46,16 @@ pub(crate) struct PluginBootstrapResult {
 /// 4. 更新 PluginRegistry 状态
 ///
 /// 容错：单个插件失败不影响其他插件，失败信息记录到 registry。
+#[cfg(test)]
 pub(crate) async fn bootstrap_plugins(search_paths: Vec<PathBuf>) -> PluginBootstrapResult {
+    let skill_root = resolve_default_plugin_skill_root();
+    bootstrap_plugins_with_skill_root(search_paths, skill_root).await
+}
+
+pub(crate) async fn bootstrap_plugins_with_skill_root(
+    search_paths: Vec<PathBuf>,
+    plugin_skill_root: PathBuf,
+) -> PluginBootstrapResult {
     let registry = Arc::new(PluginRegistry::default());
     let loader = PluginLoader {
         search_paths: search_paths.clone(),
@@ -99,8 +110,11 @@ pub(crate) async fn bootstrap_plugins(search_paths: Vec<PathBuf>) -> PluginBoots
                     .iter()
                     .map(|invoker| invoker.capability_spec())
                     .collect();
-                let (skills, warnings) =
-                    materialize_plugin_skills(&name, supervisor.declared_skills());
+                let (skills, warnings) = materialize_plugin_skills(
+                    plugin_skill_root.as_path(),
+                    &name,
+                    supervisor.declared_skills(),
+                );
 
                 log::info!(
                     "plugin '{name}' initialized with {} capabilities and {} skills",
@@ -135,6 +149,7 @@ pub(crate) async fn bootstrap_plugins(search_paths: Vec<PathBuf>) -> PluginBoots
 }
 
 fn materialize_plugin_skills(
+    plugin_skill_root: &Path,
     plugin_name: &str,
     skill_descriptors: Vec<SkillDescriptor>,
 ) -> (Vec<SkillSpec>, Vec<String>) {
@@ -151,7 +166,7 @@ fn materialize_plugin_skills(
         }
 
         let (skill_root, asset_files, materialize_warning) =
-            materialize_plugin_skill_assets(plugin_name, &descriptor);
+            materialize_plugin_skill_assets(plugin_skill_root, plugin_name, &descriptor);
         if let Some(warning) = materialize_warning {
             warnings.push(warning);
         }
@@ -172,35 +187,19 @@ fn materialize_plugin_skills(
 }
 
 fn materialize_plugin_skill_assets(
+    plugin_skill_root: &Path,
     plugin_name: &str,
     descriptor: &SkillDescriptor,
 ) -> (Option<String>, Vec<String>, Option<String>) {
-    let home_dir = match resolve_home_dir() {
-        Ok(home_dir) => home_dir,
-        Err(error) => {
-            return (
-                None,
-                Vec::new(),
-                Some(format!(
-                    "plugin '{}' skill '{}' could not resolve home directory: {}",
-                    plugin_name, descriptor.name, error
-                )),
-            );
-        },
-    };
-
-    materialize_plugin_skill_assets_under_root(&home_dir, plugin_name, descriptor)
+    materialize_plugin_skill_assets_under_root(plugin_skill_root, plugin_name, descriptor)
 }
 
 fn materialize_plugin_skill_assets_under_root(
-    home_dir: &Path,
+    plugin_skill_root: &Path,
     plugin_name: &str,
     descriptor: &SkillDescriptor,
 ) -> (Option<String>, Vec<String>, Option<String>) {
-    let skill_root = home_dir
-        .join(".astrcode")
-        .join("runtime")
-        .join("plugin-skills")
+    let skill_root = plugin_skill_root
         .join(sanitize_path_segment(plugin_name))
         .join(&descriptor.name);
 
@@ -292,6 +291,19 @@ fn materialize_plugin_skill_assets_under_root(
         collect_asset_files(&skill_root),
         None,
     )
+}
+
+#[cfg(test)]
+fn resolve_default_plugin_skill_root() -> PathBuf {
+    match resolve_home_dir() {
+        Ok(home_dir) => home_dir
+            .join(".astrcode")
+            .join("runtime")
+            .join("plugin-skills"),
+        Err(_) => PathBuf::from(".astrcode")
+            .join("runtime")
+            .join("plugin-skills"),
+    }
 }
 
 fn sanitize_path_segment(value: &str) -> String {
@@ -448,6 +460,11 @@ executable = "also-missing"
     #[test]
     fn plugin_declared_skills_materialize_into_skill_specs() {
         let temp_home = tempfile::tempdir().expect("temp home should be created");
+        let plugin_skill_root = temp_home
+            .path()
+            .join(".astrcode")
+            .join("runtime")
+            .join("plugin-skills");
         let descriptor = SkillDescriptor {
             name: "repo-search".to_string(),
             description: "Search the repo".to_string(),
@@ -461,11 +478,12 @@ executable = "also-missing"
             metadata: serde_json::Value::Null,
         };
         let (skill_root, asset_files, warning) = materialize_plugin_skill_assets_under_root(
-            temp_home.path(),
+            &plugin_skill_root,
             "demo-plugin",
             &descriptor,
         );
-        let (skills, warnings) = materialize_plugin_skills("demo-plugin", vec![descriptor]);
+        let (skills, warnings) =
+            materialize_plugin_skills(&plugin_skill_root, "demo-plugin", vec![descriptor]);
 
         assert!(warning.is_none(), "direct materialization should not warn");
         assert!(

@@ -10,5 +10,5 @@ mod subagent;
 
 pub use control::ExecutionControl;
 pub use profiles::{ProfileProvider, ProfileResolutionService};
-pub use root::execute_root_agent;
+pub use root::{RootExecutionRequest, execute_root_agent};
 pub use subagent::{SubagentExecutionRequest, launch_subagent};

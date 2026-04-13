@@ -18,6 +18,9 @@
     windows_subsystem = "windows"
 )]
 
+#[cfg(test)]
+#[path = "tests/agent_routes_tests.rs"]
+mod agent_routes_tests;
 #[path = "http/auth.rs"]
 mod auth;
 #[cfg(test)]
@@ -57,8 +60,8 @@ use tokio::io::AsyncReadExt;
 use crate::{
     auth::{AuthSessionManager, BootstrapAuth},
     bootstrap::{
-        attach_frontend_build, bootstrap_token_expires_at_ms, build_cors_layer, clear_run_info,
-        load_frontend_build, random_hex_token, write_run_info,
+        ServerRuntimeHandles, attach_frontend_build, bootstrap_token_expires_at_ms,
+        build_cors_layer, clear_run_info, load_frontend_build, random_hex_token, write_run_info,
     },
     routes::build_api_router,
 };
@@ -86,6 +89,8 @@ pub(crate) struct AppState {
     bootstrap_auth: BootstrapAuth,
     /// 前端构建产物（可选）
     frontend_build: Option<FrontendBuild>,
+    /// server 侧运行时资源守卫。
+    _runtime_handles: Arc<ServerRuntimeHandles>,
 }
 
 /// 前端构建产物。
@@ -231,6 +236,7 @@ async fn main() -> AnyhowResult<()> {
         auth_sessions: Arc::new(AuthSessionManager::default()),
         bootstrap_auth,
         frontend_build: frontend_build.clone(),
+        _runtime_handles: Arc::clone(&runtime.handles),
     };
     let shutdown_governance = Arc::clone(&state.governance);
     let shutdown_pid = std::process::id();

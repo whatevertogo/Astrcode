@@ -1,6 +1,8 @@
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
-use astrcode_core::{DeleteProjectResult, ExecutionAccepted, SessionMeta, config::Config};
+use astrcode_core::{
+    AgentProfile, DeleteProjectResult, ExecutionAccepted, SessionMeta, config::Config,
+};
 use astrcode_kernel::Kernel;
 use astrcode_session_runtime::SessionRuntime;
 use tokio::sync::broadcast;
@@ -127,7 +129,7 @@ pub use config::{
     resolve_tool_result_preview_limit,
 };
 pub use errors::ApplicationError;
-pub use execution::ExecutionControl;
+pub use execution::{ExecutionControl, ProfileResolutionService, RootExecutionRequest};
 pub use lifecycle::governance::{
     AppGovernance, ObservabilitySnapshotProvider, RuntimeGovernancePort, RuntimeGovernanceSnapshot,
     RuntimeReloader, SessionInfoProvider,
@@ -144,6 +146,7 @@ pub use watch::{WatchEvent, WatchPort, WatchService, WatchSource};
 pub struct App {
     kernel: Arc<Kernel>,
     session_runtime: Arc<SessionRuntime>,
+    profiles: Arc<ProfileResolutionService>,
     config_service: Arc<ConfigService>,
     composer_service: Arc<composer::ComposerService>,
     mcp_service: Arc<mcp::McpService>,
@@ -159,6 +162,7 @@ impl App {
     pub fn new(
         kernel: Arc<Kernel>,
         session_runtime: Arc<SessionRuntime>,
+        profiles: Arc<ProfileResolutionService>,
         config_service: Arc<ConfigService>,
         mcp_service: Arc<mcp::McpService>,
         agent_service: Arc<AgentOrchestrationService>,
@@ -166,6 +170,7 @@ impl App {
         Self {
             kernel,
             session_runtime,
+            profiles,
             config_service,
             composer_service: Arc::new(composer::ComposerService::new()),
             mcp_service,
@@ -183,6 +188,10 @@ impl App {
 
     pub fn config(&self) -> &Arc<ConfigService> {
         &self.config_service
+    }
+
+    pub fn profiles(&self) -> &Arc<ProfileResolutionService> {
+        &self.profiles
     }
 
     pub fn mcp(&self) -> &Arc<mcp::McpService> {
@@ -218,6 +227,32 @@ impl App {
             .create_session(working_dir)
             .await
             .map_err(ApplicationError::from)
+    }
+
+    pub async fn execute_root_agent(
+        &self,
+        request: RootExecutionRequest,
+    ) -> Result<ExecutionAccepted, ApplicationError> {
+        let runtime = self.config_service.get_config().await.runtime;
+        execution::execute_root_agent(
+            &self.kernel,
+            &self.session_runtime,
+            &self.profiles,
+            request,
+            runtime,
+        )
+        .await
+    }
+
+    pub fn list_global_agent_profiles(&self) -> Result<Vec<AgentProfile>, ApplicationError> {
+        Ok(self.profiles.resolve_global()?.as_ref().clone())
+    }
+
+    pub fn list_agent_profiles_for_working_dir(
+        &self,
+        working_dir: &Path,
+    ) -> Result<Vec<AgentProfile>, ApplicationError> {
+        Ok(self.profiles.resolve(working_dir)?.as_ref().clone())
     }
 
     pub async fn delete_session(&self, session_id: &str) -> Result<(), ApplicationError> {
@@ -412,6 +447,19 @@ impl App {
     ) -> Result<astrcode_kernel::CloseSubtreeResult, ApplicationError> {
         self.validate_non_empty("sessionId", session_id)?;
         self.validate_non_empty("agentId", agent_id)?;
+        let Some(handle) = self.kernel.get_agent_handle(agent_id).await else {
+            return Err(ApplicationError::NotFound(format!(
+                "agent '{}' not found",
+                agent_id
+            )));
+        };
+        if handle.session_id != session_id {
+            // 显式校验归属，避免仅凭 agent_id 跨 session 关闭不相关子树。
+            return Err(ApplicationError::NotFound(format!(
+                "agent '{}' not found in session '{}'",
+                agent_id, session_id
+            )));
+        }
         self.kernel
             .close_agent_subtree(agent_id)
             .await

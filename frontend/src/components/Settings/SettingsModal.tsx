@@ -6,6 +6,7 @@ import { cn } from '../../lib/utils';
 interface SettingsModalProps {
   onClose: () => void;
   getConfig: () => Promise<ConfigView>;
+  reloadConfig: () => Promise<void>;
   saveActiveSelection: (activeProfile: string, activeModel: string) => Promise<void>;
   testConnection: (profileName: string, model: string) => Promise<TestResult>;
   openConfigInEditor: (path?: string) => Promise<void>;
@@ -24,6 +25,7 @@ function pickNextModel(profile: ProfileView | undefined, currentModel: string): 
 export default function SettingsModal({
   onClose,
   getConfig,
+  reloadConfig,
   saveActiveSelection,
   testConnection,
   openConfigInEditor,
@@ -37,31 +39,33 @@ export default function SettingsModal({
   const [loading, setLoading] = useState(true);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  const loadConfig = React.useCallback(async () => {
+    setLoading(true);
+    setErrorMessage(null);
+    try {
+      const nextConfig = await getConfig();
+      setConfigView(nextConfig);
+      setSelectedProfile(nextConfig.activeProfile);
+      setSelectedModel(nextConfig.activeModel);
+      setWarning(nextConfig.warning);
+      setTestResult(null);
+    } catch (error) {
+      setErrorMessage(String(error));
+    } finally {
+      setLoading(false);
+    }
+  }, [getConfig]);
 
   useEffect(() => {
     let cancelled = false;
 
     const load = async () => {
-      setLoading(true);
-      setErrorMessage(null);
-      try {
-        const nextConfig = await getConfig();
-        if (cancelled) {
-          return;
-        }
-        setConfigView(nextConfig);
-        setSelectedProfile(nextConfig.activeProfile);
-        setSelectedModel(nextConfig.activeModel);
-        setWarning(nextConfig.warning);
-        setTestResult(null);
-      } catch (error) {
-        if (!cancelled) {
-          setErrorMessage(String(error));
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+      await loadConfig();
+      if (cancelled) {
+        return;
       }
     };
 
@@ -70,7 +74,7 @@ export default function SettingsModal({
     return () => {
       cancelled = true;
     };
-  }, [getConfig]);
+  }, [loadConfig]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -103,12 +107,14 @@ export default function SettingsModal({
     setSelectedModel(pickNextModel(profile, selectedModel));
     setTestResult(null);
     setErrorMessage(null);
+    setSuccessMessage(null);
   };
 
   const handleModelChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
     setSelectedModel(event.target.value);
     setTestResult(null);
     setErrorMessage(null);
+    setSuccessMessage(null);
   };
 
   const handleTestConnection = async () => {
@@ -117,6 +123,7 @@ export default function SettingsModal({
     }
     setTesting(true);
     setErrorMessage(null);
+    setSuccessMessage(null);
     setTestResult(null);
     try {
       const result = await testConnection(selectedProfile, selectedModel);
@@ -134,6 +141,7 @@ export default function SettingsModal({
     }
     setSaving(true);
     setErrorMessage(null);
+    setSuccessMessage(null);
     try {
       await saveActiveSelection(selectedProfile, selectedModel);
       setWarning(undefined);
@@ -148,10 +156,27 @@ export default function SettingsModal({
 
   const handleOpenConfig = async () => {
     setErrorMessage(null);
+    setSuccessMessage(null);
     try {
       await openConfigInEditor(configView?.configPath);
     } catch (error) {
       setErrorMessage(String(error));
+    }
+  };
+
+  const handleReload = async () => {
+    setReloading(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    setTestResult(null);
+    try {
+      await reloadConfig();
+      await loadConfig();
+      setSuccessMessage('已重新加载配置与能力面。');
+    } catch (error) {
+      setErrorMessage(String(error));
+    } finally {
+      setReloading(false);
     }
   };
 
@@ -201,6 +226,14 @@ export default function SettingsModal({
                 <div className="flex-1 min-w-0 py-[11px] px-3 rounded-xl border border-border bg-surface text-text-primary text-xs overflow-hidden text-ellipsis whitespace-nowrap">
                   {configView?.configPath ?? ''}
                 </div>
+                <button
+                  type="button"
+                  className={btnSecondary}
+                  onClick={() => void handleReload()}
+                  disabled={reloading || loading || saving || testing}
+                >
+                  {reloading ? '重载中...' : '重新加载'}
+                </button>
                 <button
                   type="button"
                   className={btnSecondary}
@@ -299,6 +332,11 @@ export default function SettingsModal({
               {errorMessage && (
                 <div className="flex items-center gap-2 text-xs text-danger leading-relaxed">
                   {errorMessage}
+                </div>
+              )}
+              {!errorMessage && successMessage && (
+                <div className="flex items-center gap-2 text-xs text-success leading-relaxed">
+                  {successMessage}
                 </div>
               )}
             </div>

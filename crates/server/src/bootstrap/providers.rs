@@ -5,10 +5,11 @@
 
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
 
+use astrcode_adapter_agents::AgentProfileLoader;
 use astrcode_adapter_llm::{
     ModelLimits as AdapterModelLimits, anthropic::AnthropicProvider, openai::OpenAiProvider,
 };
@@ -18,10 +19,11 @@ use astrcode_adapter_prompt::{
 };
 use astrcode_adapter_storage::config_store::FileConfigStore;
 use astrcode_application::{
-    ApplicationError, ConfigService,
+    ApplicationError, ConfigService, ProfileResolutionService,
     config::{
         api_key, resolve_anthropic_messages_api_url, resolve_openai_chat_completions_api_url,
     },
+    execution::ProfileProvider,
 };
 use astrcode_core::{
     AstrError, LlmProvider, ModelLimits, PromptProvider, ResourceProvider, Result,
@@ -44,17 +46,49 @@ pub(crate) fn build_resource_provider(
     Arc::new(McpResourceProvider::new(manager))
 }
 
-pub(crate) fn build_config_service() -> Result<Arc<ConfigService>> {
-    let config_store = FileConfigStore::default_path().map_err(|error| {
-        astrcode_core::AstrError::Internal(format!("failed to resolve config path: {error}"))
-    })?;
+pub(crate) fn build_config_service(config_path: PathBuf) -> Result<Arc<ConfigService>> {
+    let config_store = FileConfigStore::new(config_path);
     Ok(Arc::new(ConfigService::new(Arc::new(config_store))))
+}
+
+pub(crate) fn build_profile_resolution_service(
+    loader: AgentProfileLoader,
+) -> Result<Arc<ProfileResolutionService>> {
+    let provider: Arc<dyn ProfileProvider> = Arc::new(LoaderBackedProfileProvider { loader });
+    Ok(Arc::new(ProfileResolutionService::new(provider)))
 }
 
 struct ConfigBackedLlmProvider {
     config_service: Arc<ConfigService>,
     working_dir: PathBuf,
     providers: RwLock<HashMap<String, Arc<dyn LlmProvider>>>,
+}
+
+struct LoaderBackedProfileProvider {
+    loader: AgentProfileLoader,
+}
+
+impl ProfileProvider for LoaderBackedProfileProvider {
+    fn load_for_working_dir(
+        &self,
+        working_dir: &Path,
+    ) -> std::result::Result<Vec<astrcode_core::AgentProfile>, ApplicationError> {
+        let registry = self
+            .loader
+            .load_for_working_dir(Some(working_dir))
+            .map_err(|error| ApplicationError::Internal(error.to_string()))?;
+        Ok(registry.list().into_iter().cloned().collect())
+    }
+
+    fn load_global(
+        &self,
+    ) -> std::result::Result<Vec<astrcode_core::AgentProfile>, ApplicationError> {
+        let registry = self
+            .loader
+            .load()
+            .map_err(|error| ApplicationError::Internal(error.to_string()))?;
+        Ok(registry.list().into_iter().cloned().collect())
+    }
 }
 
 impl std::fmt::Debug for ConfigBackedLlmProvider {

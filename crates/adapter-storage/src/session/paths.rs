@@ -79,12 +79,38 @@ pub(crate) fn session_dir(session_id: &str, working_dir: &Path) -> Result<PathBu
     Ok(project_sessions_dir(working_dir)?.join(&session_id))
 }
 
+/// 从显式项目根目录计算会话目录路径。
+///
+/// server 测试通过显式 bootstrap sandbox 隔离存储根目录时，需要避免回落到
+/// 全局 `~/.astrcode/projects`，因此这里提供不依赖全局 home 的变体。
+pub(crate) fn session_dir_from_projects_root(
+    projects_root: &Path,
+    session_id: &str,
+    working_dir: &Path,
+) -> Result<PathBuf> {
+    let session_id = validated_session_id(session_id)?;
+    Ok(project_sessions_dir_from_root(projects_root, working_dir).join(&session_id))
+}
+
 /// 计算指定会话的 JSONL 文件完整路径。
 ///
 /// 路径格式：`<project_sessions_dir>/<session_id>/session-<session_id>.jsonl`
 pub(crate) fn session_path(session_id: &str, working_dir: &Path) -> Result<PathBuf> {
     let session_id = validated_session_id(session_id)?;
     Ok(session_dir(&session_id, working_dir)?.join(session_file_name(&session_id)))
+}
+
+/// 从显式项目根目录计算会话 JSONL 路径。
+pub(crate) fn session_path_from_projects_root(
+    projects_root: &Path,
+    session_id: &str,
+    working_dir: &Path,
+) -> Result<PathBuf> {
+    let session_id = validated_session_id(session_id)?;
+    Ok(
+        session_dir_from_projects_root(projects_root, &session_id, working_dir)?
+            .join(session_file_name(&session_id)),
+    )
 }
 
 /// 查找已存在的会话文件路径。
@@ -97,9 +123,18 @@ pub(crate) fn session_path(session_id: &str, working_dir: &Path) -> Result<PathB
 pub(crate) fn resolve_existing_session_path(session_id: &str) -> Result<PathBuf> {
     let session_id = validated_session_id(session_id)?;
     let projects_root = projects_root_dir()?;
+    resolve_existing_session_path_from_projects_root(&projects_root, &session_id)
+}
+
+/// 从显式项目根目录查找已存在的会话文件路径。
+pub(crate) fn resolve_existing_session_path_from_projects_root(
+    projects_root: &Path,
+    session_id: &str,
+) -> Result<PathBuf> {
+    let session_id = validated_session_id(session_id)?;
     let candidate_name = session_file_name(&session_id);
 
-    for sessions_dir in session_storage_dirs(&projects_root)? {
+    for sessions_dir in session_storage_dirs(projects_root)? {
         let candidate = sessions_dir.join(&session_id).join(&candidate_name);
         if candidate.exists() {
             return Ok(candidate);
@@ -131,6 +166,20 @@ pub(crate) fn resolve_existing_session_dir(session_id: &str) -> Result<PathBuf> 
     })
 }
 
+/// 从显式项目根目录查找已存在的会话目录。
+pub(crate) fn resolve_existing_session_dir_from_projects_root(
+    projects_root: &Path,
+    session_id: &str,
+) -> Result<PathBuf> {
+    let path = resolve_existing_session_path_from_projects_root(projects_root, session_id)?;
+    path.parent().map(Path::to_path_buf).ok_or_else(|| {
+        internal_io_error(format!(
+            "session file '{}' has no parent directory",
+            path.display()
+        ))
+    })
+}
+
 /// 获取会话文件锁的路径。
 ///
 /// 锁文件用于 `try_acquire_session_turn` 的独占文件锁，
@@ -139,12 +188,34 @@ pub(crate) fn session_turn_lock_path(session_id: &str) -> Result<PathBuf> {
     Ok(resolve_existing_session_dir(session_id)?.join("active-turn.lock"))
 }
 
+/// 从显式项目根目录获取会话文件锁路径。
+pub(crate) fn session_turn_lock_path_from_projects_root(
+    projects_root: &Path,
+    session_id: &str,
+) -> Result<PathBuf> {
+    Ok(
+        resolve_existing_session_dir_from_projects_root(projects_root, session_id)?
+            .join("active-turn.lock"),
+    )
+}
+
 /// 获取会话锁元数据文件的路径。
 ///
 /// 元数据文件包含当前锁持有者的 `turn_id`、`owner_pid`、`acquired_at`，
 /// 供竞争者读取以判断当前会话状态。
 pub(crate) fn session_turn_metadata_path(session_id: &str) -> Result<PathBuf> {
     Ok(resolve_existing_session_dir(session_id)?.join("active-turn.json"))
+}
+
+/// 从显式项目根目录获取会话锁元数据文件路径。
+pub(crate) fn session_turn_metadata_path_from_projects_root(
+    projects_root: &Path,
+    session_id: &str,
+) -> Result<PathBuf> {
+    Ok(
+        resolve_existing_session_dir_from_projects_root(projects_root, session_id)?
+            .join("active-turn.json"),
+    )
 }
 
 /// 枚举所有项目下的 sessions 目录。

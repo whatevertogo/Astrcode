@@ -94,6 +94,7 @@ export default function App() {
     deleteProject,
     listComposerOptions,
     getConfig,
+    reloadConfig,
     saveActiveSelection,
     setModel,
     getCurrentModel,
@@ -383,6 +384,7 @@ export default function App() {
         <SettingsModal
           onClose={() => setShowSettings(false)}
           getConfig={getConfig}
+          reloadConfig={reloadConfig}
           saveActiveSelection={saveActiveSelection}
           testConnection={testConnection}
           openConfigInEditor={openConfigInEditor}

@@ -64,6 +64,31 @@ impl SessionRuntime {
         }
     }
 
+    pub(crate) async fn try_resolve_submit_target_without_branch(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> astrcode_core::Result<Option<SubmitTarget>> {
+        self.ensure_session_exists(session_id).await?;
+
+        match self
+            .event_store
+            .try_acquire_turn(session_id, turn_id)
+            .await?
+        {
+            SessionTurnAcquireResult::Acquired(turn_lease) => {
+                let actor = self.ensure_loaded_session(session_id).await?;
+                Ok(Some(SubmitTarget {
+                    session_id: session_id.clone(),
+                    branched_from_session_id: None,
+                    actor,
+                    turn_lease,
+                }))
+            },
+            SessionTurnAcquireResult::Busy(_) => Ok(None),
+        }
+    }
+
     async fn branch_session_from_busy_turn(
         &self,
         source_session_id: &SessionId,

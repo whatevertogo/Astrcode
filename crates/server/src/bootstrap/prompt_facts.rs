@@ -23,9 +23,8 @@ pub(crate) fn build_prompt_facts_provider(
     config_service: Arc<ConfigService>,
     skill_catalog: Arc<SkillCatalog>,
     mcp_manager: Arc<McpConnectionManager>,
+    agent_loader: AgentProfileLoader,
 ) -> Result<Arc<dyn PromptFactsProvider>> {
-    let agent_loader = AgentProfileLoader::new()
-        .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))?;
     Ok(Arc::new(RuntimePromptFactsProvider {
         config_service,
         skill_catalog,

@@ -8,7 +8,7 @@ use astrcode_core::{
     MailboxDiscardedPayload, MailboxQueuedPayload, Result, SessionId, SubRunHandle, ToolContext,
 };
 
-use super::AgentOrchestrationService;
+use super::{AgentOrchestrationService, subrun_event_context};
 
 /// 将待处理的 inbox 信封与新的 send 输入拼接为 resume 消息。
 ///
@@ -116,21 +116,13 @@ impl AgentOrchestrationService {
             },
         };
 
-        let event_agent = AgentEventContext::sub_run(
-            child.agent_id.clone(),
-            child.parent_turn_id.clone(),
-            child.agent_profile.clone(),
-            child.sub_run_id.clone(),
-            child.parent_sub_run_id.clone(),
-            child.storage_mode,
-            child.child_session_id.clone(),
-        );
+        let event_agent = subrun_event_context(child);
         let mut translator = astrcode_core::EventTranslator::new(session_state.current_phase()?);
-        astrcode_session_runtime::append_mailbox_queued(
+        astrcode_session_runtime::append_mailbox_event(
             &session_state,
             ctx.turn_id().unwrap_or(&child.parent_turn_id),
             event_agent,
-            payload,
+            astrcode_session_runtime::MailboxEventAppend::Queued(payload),
             &mut translator,
         )
         .await
@@ -182,11 +174,11 @@ impl AgentOrchestrationService {
         // 为什么使用默认上下文：discard payload 已经自带 target_agent_id
         let event_agent = AgentEventContext::default();
         let mut translator = astrcode_core::EventTranslator::new(session_state.current_phase()?);
-        astrcode_session_runtime::append_mailbox_discarded(
+        astrcode_session_runtime::append_mailbox_event(
             &session_state,
             ctx.turn_id().unwrap_or(&handle.parent_turn_id),
             event_agent,
-            payload,
+            astrcode_session_runtime::MailboxEventAppend::Discarded(payload),
             &mut translator,
         )
         .await

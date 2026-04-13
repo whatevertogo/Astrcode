@@ -5,8 +5,19 @@
 import type { ConfigView } from '../../types';
 import { request, requestJson } from './client';
 
+export interface ConfigReloadResult {
+  reloadedAt: string;
+  config: ConfigView;
+}
+
 export async function getConfig(): Promise<ConfigView> {
   return requestJson<ConfigView>('/api/config');
+}
+
+export async function reloadConfig(): Promise<ConfigReloadResult> {
+  return requestJson<ConfigReloadResult>('/api/config/reload', {
+    method: 'POST',
+  });
 }
 
 export async function saveActiveSelection(

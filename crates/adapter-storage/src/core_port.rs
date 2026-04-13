@@ -3,6 +3,8 @@
 //! `core::ports::EventStore` 是 session-runtime 消费的简化端口接口，
 //! 本模块将其适配到 `FileSystemSessionRepository` 的完整文件系统实现上。
 
+use std::path::PathBuf;
+
 use astrcode_core::{
     DeleteProjectResult, Result, SessionId, SessionMeta, SessionTurnAcquireResult, StorageEvent,
     StoredEvent, ports::EventStore, store::SessionManager,
@@ -22,7 +24,17 @@ pub struct FsEventStore {
 impl FsEventStore {
     pub fn new() -> Self {
         Self {
-            repo: FileSystemSessionRepository,
+            repo: FileSystemSessionRepository::new(),
+        }
+    }
+
+    /// 使用显式项目根目录创建 event store。
+    ///
+    /// 这样 server 测试可以把整个 session 存储放进独立 sandbox，而不需要
+    /// 通过进程级 home 覆盖去影响所有并发测试。
+    pub fn new_with_projects_root(projects_root: PathBuf) -> Self {
+        Self {
+            repo: FileSystemSessionRepository::new_with_projects_root(projects_root),
         }
     }
 }

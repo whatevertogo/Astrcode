@@ -43,7 +43,10 @@ use chrono::Utc;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-use super::paths::{session_turn_lock_path, session_turn_metadata_path};
+use super::paths::{
+    session_turn_lock_path, session_turn_lock_path_from_projects_root, session_turn_metadata_path,
+    session_turn_metadata_path_from_projects_root,
+};
 use crate::{Result, io_error, parse_error};
 
 /// 活跃轮次锁的元数据载荷。
@@ -76,6 +79,24 @@ pub(super) fn try_acquire_session_turn(
 ) -> Result<SessionTurnAcquireResult> {
     let path = session_turn_lock_path(session_id)?;
     let metadata_path = session_turn_metadata_path(session_id)?;
+    try_acquire_session_turn_at_paths(path, metadata_path, turn_id)
+}
+
+pub(super) fn try_acquire_session_turn_in_projects_root(
+    projects_root: &Path,
+    session_id: &str,
+    turn_id: &str,
+) -> Result<SessionTurnAcquireResult> {
+    let path = session_turn_lock_path_from_projects_root(projects_root, session_id)?;
+    let metadata_path = session_turn_metadata_path_from_projects_root(projects_root, session_id)?;
+    try_acquire_session_turn_at_paths(path, metadata_path, turn_id)
+}
+
+fn try_acquire_session_turn_at_paths(
+    path: PathBuf,
+    metadata_path: PathBuf,
+    turn_id: &str,
+) -> Result<SessionTurnAcquireResult> {
     let file = OpenOptions::new()
         .create(true)
         .truncate(true)

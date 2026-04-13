@@ -33,9 +33,10 @@ pub use observe::{
 };
 pub use query::{SessionHistorySnapshot, SessionReplay, SessionViewSnapshot};
 pub use state::{
-    SessionSnapshot, SessionState, SessionStateEventSink, SessionTokenBudgetState, SessionWriter,
-    append_and_broadcast, append_and_broadcast_from_turn_callback, append_batch_acked,
-    append_batch_started, append_mailbox_discarded, append_mailbox_queued,
+    MailboxEventAppend, SessionSnapshot, SessionState, SessionStateEventSink,
+    SessionTokenBudgetState, SessionWriter, append_and_broadcast,
+    append_and_broadcast_from_turn_callback, append_batch_acked, append_batch_started,
+    append_mailbox_discarded, append_mailbox_event, append_mailbox_queued,
     complete_session_execution, display_name_from_working_dir, normalize_session_id,
     normalize_working_dir, prepare_session_execution, recent_turn_event_tail,
     should_record_compaction_tail_event,

@@ -27,6 +27,7 @@ mod plugins;
 mod prompt_facts;
 mod providers;
 pub(crate) mod runtime;
+mod watch;
 use std::path::{Path as FsPath, PathBuf};
 
 use anyhow::{Context, Result as AnyhowResult, anyhow};
@@ -40,7 +41,9 @@ use axum::{
     routing::get,
 };
 use rand::RngExt;
-pub(crate) use runtime::bootstrap_server_runtime;
+#[cfg(test)]
+pub(crate) use runtime::{ServerBootstrapOptions, bootstrap_server_runtime_with_options};
+pub(crate) use runtime::{ServerRuntimeHandles, bootstrap_server_runtime};
 use serde::Serialize;
 use tower::ServiceExt;
 use tower_http::{cors::CorsLayer, services::ServeDir};
@@ -51,12 +54,6 @@ use crate::{AUTH_HEADER_NAME, ApiError, AppState, FrontendBuild};
 ///
 /// 桌面端 sidecar 启动后 24 小时内有效，过期后需要重启 server 才能获取新 token。
 pub(crate) const BOOTSTRAP_TOKEN_TTL_HOURS: i64 = 24;
-
-/// 从 core crate 导入 home 目录环境变量名，供测试覆盖使用。
-///
-/// 仅在测试编译时可用，用于将 `dirs::home_dir()` 重定向到临时目录。
-#[cfg(test)]
-pub(crate) use astrcode_core::home::ASTRCODE_HOME_DIR_ENV as APP_HOME_OVERRIDE_ENV;
 
 /// 浏览器 bootstrap 桥接端点返回的载荷。
 ///
@@ -325,6 +322,19 @@ pub(crate) fn bootstrap_token_expires_at_ms(started_at: chrono::DateTime<chrono:
 /// 如果目录不存在会自动创建。写入失败会携带路径上下文信息。
 pub(crate) fn write_run_info(run_info: &LocalServerInfo) -> AnyhowResult<()> {
     let path = run_info_path()?;
+    write_run_info_at_path(&path, run_info)
+}
+
+#[cfg(test)]
+pub(crate) fn write_run_info_in_home(
+    home_dir: &FsPath,
+    run_info: &LocalServerInfo,
+) -> AnyhowResult<()> {
+    let path = run_info_path_in_home(home_dir);
+    write_run_info_at_path(&path, run_info)
+}
+
+fn write_run_info_at_path(path: &FsPath, run_info: &LocalServerInfo) -> AnyhowResult<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
             format!("failed to create run info directory '{}'", parent.display())
@@ -332,7 +342,7 @@ pub(crate) fn write_run_info(run_info: &LocalServerInfo) -> AnyhowResult<()> {
     }
 
     let json = serde_json::to_string_pretty(run_info).context("failed to serialize run info")?;
-    std::fs::write(&path, json)
+    std::fs::write(path, json)
         .with_context(|| format!("failed to write run info '{}'", path.display()))?;
     Ok(())
 }
@@ -344,11 +354,21 @@ pub(crate) fn write_run_info(run_info: &LocalServerInfo) -> AnyhowResult<()> {
 /// 文件不存在时静默返回 Ok，属于正常关闭流程。
 pub(crate) fn clear_run_info(expected_pid: u32) -> AnyhowResult<()> {
     let path = run_info_path()?;
+    clear_run_info_at_path(&path, expected_pid)
+}
+
+#[cfg(test)]
+pub(crate) fn clear_run_info_in_home(home_dir: &FsPath, expected_pid: u32) -> AnyhowResult<()> {
+    let path = run_info_path_in_home(home_dir);
+    clear_run_info_at_path(&path, expected_pid)
+}
+
+fn clear_run_info_at_path(path: &FsPath, expected_pid: u32) -> AnyhowResult<()> {
     if !path.is_file() {
         return Ok(());
     }
 
-    let raw = std::fs::read_to_string(&path)
+    let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read run info '{}'", path.display()))?;
     let run_info: LocalServerInfo = serde_json::from_str(&raw)
         .with_context(|| format!("failed to parse run info '{}'", path.display()))?;
@@ -356,39 +376,46 @@ pub(crate) fn clear_run_info(expected_pid: u32) -> AnyhowResult<()> {
         return Ok(());
     }
 
-    std::fs::remove_file(&path)
+    std::fs::remove_file(path)
         .with_context(|| format!("failed to remove run info '{}'", path.display()))?;
     Ok(())
 }
 
 fn run_info_path() -> AnyhowResult<PathBuf> {
-    Ok(astrcode_core::home::resolve_home_dir()
-        .map_err(|e| anyhow!("{e}"))?
-        .join(".astrcode")
-        .join("run.json"))
+    let home_dir = astrcode_core::home::resolve_home_dir().map_err(|e| anyhow!("{e}"))?;
+    Ok(run_info_path_in_home(home_dir.as_path()))
+}
+
+fn run_info_path_in_home(home_dir: &FsPath) -> PathBuf {
+    home_dir.join(".astrcode").join("run.json")
 }
 
 #[cfg(test)]
 mod tests {
     use astrcode_core::{LocalServerInfo, format_local_rfc3339};
 
-    use super::{bootstrap_token_expires_at_ms, clear_run_info, run_info_path, write_run_info};
-    use crate::test_support::ServerTestEnvGuard;
+    use super::{
+        bootstrap_token_expires_at_ms, clear_run_info_in_home, run_info_path_in_home,
+        write_run_info_in_home,
+    };
 
     #[test]
     fn write_run_info_persists_expiry_and_clear_run_info_removes_matching_pid() {
-        let _guard = ServerTestEnvGuard::new();
+        let temp_home = tempfile::tempdir().expect("temp home should be created");
         let expires_at_ms = bootstrap_token_expires_at_ms(chrono::Utc::now());
-        write_run_info(&LocalServerInfo {
-            port: 62000,
-            token: "bootstrap-token".to_string(),
-            pid: std::process::id(),
-            started_at: format_local_rfc3339(chrono::Utc::now()),
-            expires_at_ms,
-        })
+        write_run_info_in_home(
+            temp_home.path(),
+            &LocalServerInfo {
+                port: 62000,
+                token: "bootstrap-token".to_string(),
+                pid: std::process::id(),
+                started_at: format_local_rfc3339(chrono::Utc::now()),
+                expires_at_ms,
+            },
+        )
         .expect("run info should be written");
 
-        let path = run_info_path().expect("run info path should resolve");
+        let path = run_info_path_in_home(temp_home.path());
         let payload = std::fs::read_to_string(&path).expect("run info should be readable");
         let json: serde_json::Value =
             serde_json::from_str(&payload).expect("run info should be valid json");
@@ -407,7 +434,8 @@ mod tests {
             "run info should carry an expiry for the bootstrap token"
         );
 
-        clear_run_info(std::process::id()).expect("matching pid should clear run info");
+        clear_run_info_in_home(temp_home.path(), std::process::id())
+            .expect("matching pid should clear run info");
         assert!(
             !path.exists(),
             "graceful shutdown should remove the bootstrap token file for the active server pid"
@@ -416,8 +444,8 @@ mod tests {
 
     #[test]
     fn clear_run_info_keeps_files_for_other_server_pids() {
-        let _guard = ServerTestEnvGuard::new();
-        let path = run_info_path().expect("run info path should resolve");
+        let temp_home = tempfile::tempdir().expect("temp home should be created");
+        let path = run_info_path_in_home(temp_home.path());
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("run info parent should exist");
         }
@@ -434,7 +462,8 @@ mod tests {
         )
         .expect("run info fixture should be written");
 
-        clear_run_info(std::process::id()).expect("non-matching pid should be ignored");
+        clear_run_info_in_home(temp_home.path(), std::process::id())
+            .expect("non-matching pid should be ignored");
         assert!(
             path.exists(),
             "cleanup must not delete a newer server's run info"

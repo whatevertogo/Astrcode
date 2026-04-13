@@ -1,6 +1,6 @@
 import { run } from './hook-utils.mjs';
 
-// 阶段5升级：默认开启强阻断模式，避免越界依赖被静默忽略。
+// 默认开启强阻断模式，避免架构越界依赖被静默忽略。
 // 若需临时降级为警告模式，可传 --soft 参数。
 const SOFT_MODE = process.argv.includes('--soft');
 
@@ -44,78 +44,37 @@ function buildRules() {
   return [
     {
       id: 'R001',
-      description: 'protocol 必须保持纯 DTO，不得依赖 core/runtime 系列',
-      source: 'astrcode-protocol',
-      forbidden: [/^astrcode-core$/, /^astrcode-runtime(?:-.+)?$/],
+      description: 'core 是领域根，不得依赖任何其他工作区 crate',
+      source: 'astrcode-core',
+      allowedExact: new Set(),
     },
     {
       id: 'R002',
-      description: 'runtime-prompt 编译隔离：不得直接依赖其他 runtime-* crate',
-      source: 'astrcode-runtime-prompt',
-      forbidden: [/^astrcode-runtime(?:-.+)?$/],
-      allowForbiddenExact: new Set(['astrcode-runtime-prompt']),
+      description: 'protocol 必须保持纯 DTO，仅允许依赖 core',
+      source: 'astrcode-protocol',
+      allowedExact: new Set(['astrcode-core']),
     },
     {
       id: 'R003',
-      description: 'runtime-llm 编译隔离：不得直接依赖其他 runtime-* crate',
-      source: 'astrcode-runtime-llm',
-      forbidden: [/^astrcode-runtime(?:-.+)?$/],
-      allowForbiddenExact: new Set(['astrcode-runtime-llm']),
+      description: 'kernel 仅承载全局控制面，只允许依赖 core',
+      source: 'astrcode-kernel',
+      allowedExact: new Set(['astrcode-core']),
     },
     {
       id: 'R004',
-      description: 'runtime-config 编译隔离：不得直接依赖其他 runtime-* crate',
-      source: 'astrcode-runtime-config',
-      forbidden: [/^astrcode-runtime(?:-.+)?$/],
-      allowForbiddenExact: new Set(['astrcode-runtime-config']),
+      description: 'session-runtime 仅允许依赖 core 与 kernel',
+      source: 'astrcode-session-runtime',
+      allowedExact: new Set(['astrcode-core', 'astrcode-kernel']),
     },
-    // --- 阶段4结构性解耦新增规则 ---
     {
       id: 'R005',
-      description: 'runtime-execution 不得直接依赖 runtime-skill-loader',
-      source: 'astrcode-runtime-execution',
-      forbidden: [/^astrcode-runtime-skill-loader$/],
-    },
-    {
-      id: 'R006',
-      description: 'runtime-execution 不得直接依赖 runtime-agent-loop',
-      source: 'astrcode-runtime-execution',
-      forbidden: [/^astrcode-runtime-agent-loop$/],
-    },
-    {
-      id: 'R007',
-      description: 'runtime-execution 不得直接依赖 runtime-agent-tool',
-      source: 'astrcode-runtime-execution',
-      forbidden: [/^astrcode-runtime-agent-tool$/],
-    },
-    // --- runtime 系列其他编译隔离 ---
-    {
-      id: 'R008',
-      description: 'runtime-session 编译隔离：不得直接依赖其他 runtime-* crate（除 core/agent-control/agent-loop）',
-      source: 'astrcode-runtime-session',
-      forbidden: [/^astrcode-runtime(?:-.+)?$/],
-      allowForbiddenExact: new Set([
-        'astrcode-runtime-session',
-        'astrcode-runtime-agent-control',
-        'astrcode-runtime-agent-loop',
+      description: 'application 仅允许依赖 core、kernel、session-runtime',
+      source: 'astrcode-application',
+      allowedExact: new Set([
+        'astrcode-core',
+        'astrcode-kernel',
+        'astrcode-session-runtime',
       ]),
-    },
-    {
-      id: 'R009',
-      description: 'runtime-agent-control 编译隔离：不得直接依赖其他 runtime-* crate（除 core/config）',
-      source: 'astrcode-runtime-agent-control',
-      forbidden: [/^astrcode-runtime(?:-.+)?$/],
-      allowForbiddenExact: new Set([
-        'astrcode-runtime-agent-control',
-        'astrcode-runtime-config',
-      ]),
-    },
-    {
-      id: 'R010',
-      description: 'runtime-registry 编译隔离：不得直接依赖其他 runtime-* crate',
-      source: 'astrcode-runtime-registry',
-      forbidden: [/^astrcode-runtime(?:-.+)?$/],
-      allowForbiddenExact: new Set(['astrcode-runtime-registry']),
     },
   ];
 }
@@ -134,14 +93,6 @@ function checkRule(rule, edges, packageNames) {
     if (rule.allowedExact && !rule.allowedExact.has(dep)) {
       violations.push(dep);
       continue;
-    }
-
-    if (rule.forbidden) {
-      const blocked = rule.forbidden.some((pattern) => pattern.test(dep));
-      const allowedByException = rule.allowForbiddenExact?.has(dep) ?? false;
-      if (blocked && !allowedByException) {
-        violations.push(dep);
-      }
     }
   }
 

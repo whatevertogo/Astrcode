@@ -13,6 +13,12 @@ use crate::{
     state::{append_and_broadcast, complete_session_execution},
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubmitBusyPolicy {
+    BranchOnBusy,
+    RejectOnBusy,
+}
+
 impl SessionRuntime {
     pub async fn submit_prompt(
         &self,
@@ -20,6 +26,79 @@ impl SessionRuntime {
         text: String,
         runtime: RuntimeConfig,
     ) -> Result<ExecutionAccepted> {
+        self.submit_prompt_for_agent(session_id, text, runtime, AgentEventContext::default())
+            .await
+    }
+
+    pub async fn submit_prompt_for_agent(
+        &self,
+        session_id: &str,
+        text: String,
+        runtime: RuntimeConfig,
+        agent: AgentEventContext,
+    ) -> Result<ExecutionAccepted> {
+        self.submit_prompt_inner(
+            session_id,
+            None,
+            text,
+            runtime,
+            agent,
+            SubmitBusyPolicy::BranchOnBusy,
+        )
+        .await?
+        .ok_or_else(|| {
+            astrcode_core::AstrError::Validation(
+                "submit prompt unexpectedly rejected while branch-on-busy is enabled".to_string(),
+            )
+        })
+    }
+
+    pub async fn try_submit_prompt_for_agent(
+        &self,
+        session_id: &str,
+        text: String,
+        runtime: RuntimeConfig,
+        agent: AgentEventContext,
+    ) -> Result<Option<ExecutionAccepted>> {
+        self.submit_prompt_inner(
+            session_id,
+            None,
+            text,
+            runtime,
+            agent,
+            SubmitBusyPolicy::RejectOnBusy,
+        )
+        .await
+    }
+
+    pub async fn try_submit_prompt_for_agent_with_turn_id(
+        &self,
+        session_id: &str,
+        turn_id: TurnId,
+        text: String,
+        runtime: RuntimeConfig,
+        agent: AgentEventContext,
+    ) -> Result<Option<ExecutionAccepted>> {
+        self.submit_prompt_inner(
+            session_id,
+            Some(turn_id),
+            text,
+            runtime,
+            agent,
+            SubmitBusyPolicy::RejectOnBusy,
+        )
+        .await
+    }
+
+    async fn submit_prompt_inner(
+        &self,
+        session_id: &str,
+        turn_id: Option<TurnId>,
+        text: String,
+        runtime: RuntimeConfig,
+        agent: AgentEventContext,
+        busy_policy: SubmitBusyPolicy,
+    ) -> Result<Option<ExecutionAccepted>> {
         let text = text.trim().to_string();
         if text.is_empty() {
             return Err(astrcode_core::AstrError::Validation(
@@ -28,19 +107,33 @@ impl SessionRuntime {
         }
 
         let requested_session_id = SessionId::from(crate::state::normalize_session_id(session_id));
-        let turn_id = TurnId::from(format!("turn-{}", Utc::now().timestamp_millis()));
+        let turn_id = turn_id
+            .unwrap_or_else(|| TurnId::from(format!("turn-{}", Utc::now().timestamp_millis())));
         let cancel = CancelToken::new();
-        let submit_target = self
-            .resolve_submit_target(
-                &requested_session_id,
-                turn_id.as_str(),
-                runtime.max_concurrent_branch_depth,
-            )
-            .await?;
+        let submit_target = match busy_policy {
+            SubmitBusyPolicy::BranchOnBusy => Some(
+                self.resolve_submit_target(
+                    &requested_session_id,
+                    turn_id.as_str(),
+                    runtime.max_concurrent_branch_depth,
+                )
+                .await?,
+            ),
+            SubmitBusyPolicy::RejectOnBusy => {
+                self.try_resolve_submit_target_without_branch(
+                    &requested_session_id,
+                    turn_id.as_str(),
+                )
+                .await?
+            },
+        };
+        let Some(submit_target) = submit_target else {
+            return Ok(None);
+        };
 
         let user_message = StorageEvent {
             turn_id: Some(turn_id.to_string()),
-            agent: AgentEventContext::default(),
+            agent: agent.clone(),
             payload: StorageEventPayload::UserMessage {
                 content: text,
                 origin: UserMessageOrigin::User,
@@ -82,7 +175,7 @@ impl SessionRuntime {
                 messages,
                 runtime,
                 cancel: cancel.clone(),
-                agent: AgentEventContext::default(),
+                agent: agent.clone(),
                 prompt_facts_provider,
             };
 
@@ -138,7 +231,7 @@ impl SessionRuntime {
                     );
                     let failure = StorageEvent {
                         turn_id: Some(turn_id_for_task.to_string()),
-                        agent: AgentEventContext::default(),
+                        agent: agent.clone(),
                         payload: StorageEventPayload::Error {
                             message: error.to_string(),
                             timestamp: Some(Utc::now()),
@@ -226,11 +319,11 @@ impl SessionRuntime {
             }
         });
 
-        Ok(ExecutionAccepted {
+        Ok(Some(ExecutionAccepted {
             session_id: submit_target.session_id,
             turn_id,
             agent_id: None,
             branched_from_session_id: submit_target.branched_from_session_id,
-        })
+        }))
     }
 }

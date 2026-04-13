@@ -15,21 +15,28 @@
 mod mailbox;
 mod observe;
 mod routing;
+mod terminal;
+#[cfg(test)]
+mod test_support;
+mod turn_watch;
 mod wake;
 
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use astrcode_core::{
-    AgentLifecycleStatus, AgentMode, ArtifactRef, CloseAgentParams, CollaborationResult,
-    ObserveParams, Result, RuntimeMetricsRecorder, SendAgentParams, SpawnAgentParams,
-    SubRunHandoff, SubRunResult, ToolContext,
+    AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope, AgentTurnOutcome, ArtifactRef,
+    CloseAgentParams, CollaborationResult, ObserveParams, Result, RuntimeMetricsRecorder,
+    SendAgentParams, SpawnAgentParams, SubRunHandle, SubRunHandoff, SubRunResult, ToolContext,
 };
 use astrcode_kernel::Kernel;
 use astrcode_session_runtime::SessionRuntime;
 use async_trait::async_trait;
 use thiserror::Error;
 
-use crate::execution::{SubagentExecutionRequest, launch_subagent};
+use crate::{
+    execution::{ProfileResolutionService, SubagentExecutionRequest, launch_subagent},
+    lifecycle::TaskRegistry,
+};
 
 /// Agent 编排错误类型。
 #[derive(Debug, Error)]
@@ -45,6 +52,73 @@ pub enum AgentOrchestrationError {
 impl From<astrcode_core::AstrError> for AgentOrchestrationError {
     fn from(e: astrcode_core::AstrError) -> Self {
         AgentOrchestrationError::Internal(e.to_string())
+    }
+}
+
+pub(crate) fn root_execution_event_context(
+    agent_id: impl Into<String>,
+    profile_id: impl Into<String>,
+) -> AgentEventContext {
+    AgentEventContext::root_execution(agent_id, profile_id)
+}
+
+pub(crate) fn subrun_event_context(handle: &SubRunHandle) -> AgentEventContext {
+    AgentEventContext::from(handle)
+}
+
+pub(crate) fn subrun_event_context_for_parent_turn(
+    handle: &SubRunHandle,
+    parent_turn_id: &str,
+) -> AgentEventContext {
+    AgentEventContext::sub_run(
+        handle.agent_id.clone(),
+        parent_turn_id.to_string(),
+        handle.agent_profile.clone(),
+        handle.sub_run_id.clone(),
+        handle.parent_sub_run_id.clone(),
+        handle.storage_mode,
+        handle.child_session_id.clone(),
+    )
+}
+
+pub(crate) fn child_delivery_mailbox_envelope(
+    notification: &astrcode_core::ChildSessionNotification,
+    target_agent_id: String,
+) -> AgentMailboxEnvelope {
+    AgentMailboxEnvelope {
+        delivery_id: notification.notification_id.clone(),
+        from_agent_id: notification.child_ref.agent_id.clone(),
+        to_agent_id: target_agent_id,
+        message: terminal_notification_message(notification),
+        queued_at: chrono::Utc::now(),
+        sender_lifecycle_status: AgentLifecycleStatus::Idle,
+        sender_last_turn_outcome: terminal_notification_turn_outcome(notification),
+        sender_open_session_id: notification.child_ref.open_session_id.clone(),
+    }
+}
+
+pub(crate) fn terminal_notification_message(
+    notification: &astrcode_core::ChildSessionNotification,
+) -> String {
+    notification
+        .final_reply_excerpt
+        .as_deref()
+        .filter(|excerpt| !excerpt.trim().is_empty())
+        .unwrap_or(notification.summary.as_str())
+        .to_string()
+}
+
+pub(crate) fn terminal_notification_turn_outcome(
+    notification: &astrcode_core::ChildSessionNotification,
+) -> Option<AgentTurnOutcome> {
+    if !matches!(notification.status, AgentLifecycleStatus::Idle) {
+        return None;
+    }
+    match notification.kind {
+        astrcode_core::ChildSessionNotificationKind::Delivered => Some(AgentTurnOutcome::Completed),
+        astrcode_core::ChildSessionNotificationKind::Failed => Some(AgentTurnOutcome::Failed),
+        astrcode_core::ChildSessionNotificationKind::Closed => Some(AgentTurnOutcome::Cancelled),
+        _ => None,
     }
 }
 
@@ -66,6 +140,8 @@ fn map_orchestration_error(error: AgentOrchestrationError) -> astrcode_core::Ast
 pub struct AgentOrchestrationService {
     kernel: Arc<Kernel>,
     session_runtime: Arc<SessionRuntime>,
+    profiles: Arc<ProfileResolutionService>,
+    task_registry: Arc<TaskRegistry>,
     default_token_budget: Option<u64>,
     metrics: Arc<dyn RuntimeMetricsRecorder>,
 }
@@ -74,12 +150,16 @@ impl AgentOrchestrationService {
     pub fn new(
         kernel: Arc<Kernel>,
         session_runtime: Arc<SessionRuntime>,
+        profiles: Arc<ProfileResolutionService>,
+        task_registry: Arc<TaskRegistry>,
         default_token_budget: Option<u64>,
         metrics: Arc<dyn RuntimeMetricsRecorder>,
     ) -> Self {
         Self {
             kernel,
             session_runtime,
+            profiles,
+            task_registry,
             default_token_budget,
             metrics,
         }
@@ -91,6 +171,24 @@ impl AgentOrchestrationService {
             default_token_budget: self.default_token_budget,
             ..Default::default()
         }
+    }
+
+    fn resolve_subagent_profile(
+        &self,
+        working_dir: &Path,
+        profile_id: &str,
+    ) -> std::result::Result<astrcode_core::AgentProfile, AgentOrchestrationError> {
+        self.profiles
+            .find_profile(working_dir, profile_id)
+            .map_err(|error| match error {
+                crate::ApplicationError::NotFound(message) => {
+                    AgentOrchestrationError::NotFound(message)
+                },
+                crate::ApplicationError::InvalidArgument(message) => {
+                    AgentOrchestrationError::InvalidInput(message)
+                },
+                other => AgentOrchestrationError::Internal(other.to_string()),
+            })
     }
 }
 
@@ -106,23 +204,15 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
             .r#type
             .clone()
             .unwrap_or_else(|| "explore".to_string());
-
-        // 构造 AgentProfile
-        let profile = astrcode_core::AgentProfile {
-            id: profile_id.clone(),
-            name: profile_id.clone(),
-            description: params.description.clone(),
-            mode: AgentMode::SubAgent,
-            system_prompt: None,
-            allowed_tools: vec![],
-            disallowed_tools: vec![],
-            model_preference: None,
-        };
+        let profile = self
+            .resolve_subagent_profile(ctx.working_dir(), &profile_id)
+            .map_err(map_orchestration_error)?;
 
         let request = SubagentExecutionRequest {
             parent_session_id: parent_session_id.clone(),
             parent_agent_id,
             parent_turn_id,
+            working_dir: ctx.working_dir().display().to_string(),
             profile,
             task: params.prompt,
             context: params.context,
@@ -137,6 +227,20 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
         )
         .await
         .map_err(|e| astrcode_core::AstrError::Internal(e.to_string()))?;
+        if let (Some(child_agent_id), Some(parent_turn_id)) =
+            (accepted.agent_id.clone(), ctx.turn_id())
+        {
+            if let Some(child_handle) = self.kernel.get_agent_handle(&child_agent_id).await {
+                self.spawn_child_terminal_watcher(
+                    child_handle,
+                    accepted.session_id.to_string(),
+                    accepted.turn_id.to_string(),
+                    parent_session_id.clone(),
+                    parent_turn_id.to_string(),
+                    ctx.tool_call_id().map(ToString::to_string),
+                );
+            }
+        }
 
         Ok(SubRunResult {
             lifecycle: AgentLifecycleStatus::Running,
@@ -228,5 +332,66 @@ impl astrcode_core::CollaborationExecutor for AgentOrchestrationService {
         self.observe_child(params, ctx)
             .await
             .map_err(map_orchestration_error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use astrcode_core::{
+        AgentLifecycleStatus, ChildAgentRef, ChildSessionLineageKind, ChildSessionNotification,
+        ChildSessionNotificationKind,
+    };
+
+    use super::{
+        child_delivery_mailbox_envelope, root_execution_event_context,
+        terminal_notification_message, terminal_notification_turn_outcome,
+    };
+
+    #[test]
+    fn root_execution_event_context_uses_explicit_agent_id() {
+        let context = root_execution_event_context("root-agent", "planner");
+
+        assert_eq!(context.agent_id.as_deref(), Some("root-agent"));
+        assert_eq!(context.agent_profile.as_deref(), Some("planner"));
+        assert_eq!(
+            context.invocation_kind,
+            Some(astrcode_core::InvocationKind::RootExecution)
+        );
+    }
+
+    #[test]
+    fn child_delivery_mailbox_envelope_reuses_terminal_projection_fields() {
+        let notification = ChildSessionNotification {
+            notification_id: "delivery-1".to_string(),
+            child_ref: ChildAgentRef {
+                agent_id: "agent-child".to_string(),
+                session_id: "session-parent".to_string(),
+                sub_run_id: "subrun-child".to_string(),
+                parent_agent_id: Some("agent-parent".to_string()),
+                parent_sub_run_id: Some("subrun-parent".to_string()),
+                lineage_kind: ChildSessionLineageKind::Spawn,
+                status: AgentLifecycleStatus::Idle,
+                open_session_id: "session-child".to_string(),
+            },
+            kind: ChildSessionNotificationKind::Delivered,
+            summary: "summary".to_string(),
+            status: AgentLifecycleStatus::Idle,
+            source_tool_call_id: None,
+            final_reply_excerpt: Some("final reply".to_string()),
+        };
+
+        let envelope = child_delivery_mailbox_envelope(&notification, "agent-parent".to_string());
+
+        assert_eq!(terminal_notification_message(&notification), "final reply");
+        assert_eq!(
+            terminal_notification_turn_outcome(&notification),
+            Some(astrcode_core::AgentTurnOutcome::Completed)
+        );
+        assert_eq!(envelope.to_agent_id, "agent-parent");
+        assert_eq!(envelope.message, "final reply");
+        assert_eq!(
+            envelope.sender_last_turn_outcome,
+            Some(astrcode_core::AgentTurnOutcome::Completed)
+        );
     }
 }

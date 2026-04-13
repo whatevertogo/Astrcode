@@ -606,6 +606,51 @@ use astrcode_core::{
     MailboxQueuedPayload,
 };
 
+/// mailbox durable 事件追加命令。
+///
+/// 为什么放在 `session-runtime`：mailbox 事件最终都是单 session event log 的追加动作，
+/// 由真相层统一决定如何落成 `StorageEventPayload`，可以避免写侧在多处散落拼装。
+#[derive(Debug, Clone)]
+pub enum MailboxEventAppend {
+    Queued(MailboxQueuedPayload),
+    BatchStarted(MailboxBatchStartedPayload),
+    BatchAcked(MailboxBatchAckedPayload),
+    Discarded(MailboxDiscardedPayload),
+}
+
+impl MailboxEventAppend {
+    fn into_storage_payload(self) -> StorageEventPayload {
+        match self {
+            Self::Queued(payload) => StorageEventPayload::AgentMailboxQueued { payload },
+            Self::BatchStarted(payload) => {
+                StorageEventPayload::AgentMailboxBatchStarted { payload }
+            },
+            Self::BatchAcked(payload) => StorageEventPayload::AgentMailboxBatchAcked { payload },
+            Self::Discarded(payload) => StorageEventPayload::AgentMailboxDiscarded { payload },
+        }
+    }
+}
+
+/// 追加一条 mailbox durable 事件。
+pub async fn append_mailbox_event(
+    session: &SessionState,
+    turn_id: &str,
+    agent: astrcode_core::AgentEventContext,
+    event: MailboxEventAppend,
+    translator: &mut EventTranslator,
+) -> Result<StoredEvent> {
+    append_and_broadcast(
+        session,
+        &StorageEvent {
+            turn_id: Some(turn_id.to_string()),
+            agent,
+            payload: event.into_storage_payload(),
+        },
+        translator,
+    )
+    .await
+}
+
 /// 追加一条 `AgentMailboxQueued` 事件到 session event log。
 pub async fn append_mailbox_queued(
     session: &SessionState,
@@ -614,13 +659,11 @@ pub async fn append_mailbox_queued(
     payload: MailboxQueuedPayload,
     translator: &mut EventTranslator,
 ) -> Result<StoredEvent> {
-    append_and_broadcast(
+    append_mailbox_event(
         session,
-        &StorageEvent {
-            turn_id: Some(turn_id.to_string()),
-            agent,
-            payload: StorageEventPayload::AgentMailboxQueued { payload },
-        },
+        turn_id,
+        agent,
+        MailboxEventAppend::Queued(payload),
         translator,
     )
     .await
@@ -634,13 +677,11 @@ pub async fn append_batch_started(
     payload: MailboxBatchStartedPayload,
     translator: &mut EventTranslator,
 ) -> Result<StoredEvent> {
-    append_and_broadcast(
+    append_mailbox_event(
         session,
-        &StorageEvent {
-            turn_id: Some(turn_id.to_string()),
-            agent,
-            payload: StorageEventPayload::AgentMailboxBatchStarted { payload },
-        },
+        turn_id,
+        agent,
+        MailboxEventAppend::BatchStarted(payload),
         translator,
     )
     .await
@@ -654,13 +695,11 @@ pub async fn append_batch_acked(
     payload: MailboxBatchAckedPayload,
     translator: &mut EventTranslator,
 ) -> Result<StoredEvent> {
-    append_and_broadcast(
+    append_mailbox_event(
         session,
-        &StorageEvent {
-            turn_id: Some(turn_id.to_string()),
-            agent,
-            payload: StorageEventPayload::AgentMailboxBatchAcked { payload },
-        },
+        turn_id,
+        agent,
+        MailboxEventAppend::BatchAcked(payload),
         translator,
     )
     .await
@@ -674,13 +713,11 @@ pub async fn append_mailbox_discarded(
     payload: MailboxDiscardedPayload,
     translator: &mut EventTranslator,
 ) -> Result<StoredEvent> {
-    append_and_broadcast(
+    append_mailbox_event(
         session,
-        &StorageEvent {
-            turn_id: Some(turn_id.to_string()),
-            agent,
-            payload: StorageEventPayload::AgentMailboxDiscarded { payload },
-        },
+        turn_id,
+        agent,
+        MailboxEventAppend::Discarded(payload),
         translator,
     )
     .await
@@ -755,9 +792,9 @@ mod tests {
     use std::sync::Arc;
 
     use astrcode_core::{
-        AgentEventContext, AgentLifecycleStatus, AgentStateProjector, ChildAgentRef,
-        ChildSessionLineageKind, ChildSessionNotification, ChildSessionNotificationKind,
-        EventLogWriter, Phase, StoreResult, StoredEvent,
+        AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope, AgentStateProjector,
+        ChildAgentRef, ChildSessionLineageKind, ChildSessionNotification,
+        ChildSessionNotificationKind, EventLogWriter, Phase, StoreResult, StoredEvent,
     };
 
     use super::*;
@@ -1169,5 +1206,59 @@ mod tests {
         assert_eq!(tail.len(), 2);
         assert_eq!(tail[0].storage_seq, 1);
         assert_eq!(tail[1].storage_seq, 2);
+    }
+
+    #[test]
+    fn mailbox_event_append_maps_to_expected_storage_payload() {
+        let envelope = AgentMailboxEnvelope {
+            delivery_id: "delivery-1".to_string(),
+            from_agent_id: "agent-parent".to_string(),
+            to_agent_id: "agent-child".to_string(),
+            message: "hello".to_string(),
+            queued_at: chrono::Utc::now(),
+            sender_lifecycle_status: AgentLifecycleStatus::Idle,
+            sender_last_turn_outcome: None,
+            sender_open_session_id: "session-parent".to_string(),
+        };
+
+        assert!(matches!(
+            MailboxEventAppend::Queued(MailboxQueuedPayload {
+                envelope: envelope.clone(),
+            })
+            .into_storage_payload(),
+            StorageEventPayload::AgentMailboxQueued { payload }
+                if payload.envelope.delivery_id == "delivery-1"
+        ));
+        assert!(matches!(
+            MailboxEventAppend::BatchStarted(MailboxBatchStartedPayload {
+                target_agent_id: "agent-child".to_string(),
+                turn_id: "turn-1".to_string(),
+                batch_id: "batch-1".to_string(),
+                delivery_ids: vec!["delivery-1".to_string()],
+            })
+            .into_storage_payload(),
+            StorageEventPayload::AgentMailboxBatchStarted { payload }
+                if payload.batch_id == "batch-1"
+        ));
+        assert!(matches!(
+            MailboxEventAppend::BatchAcked(MailboxBatchAckedPayload {
+                target_agent_id: "agent-child".to_string(),
+                turn_id: "turn-1".to_string(),
+                batch_id: "batch-1".to_string(),
+                delivery_ids: vec!["delivery-1".to_string()],
+            })
+            .into_storage_payload(),
+            StorageEventPayload::AgentMailboxBatchAcked { payload }
+                if payload.delivery_ids == vec!["delivery-1".to_string()]
+        ));
+        assert!(matches!(
+            MailboxEventAppend::Discarded(MailboxDiscardedPayload {
+                target_agent_id: "agent-child".to_string(),
+                delivery_ids: vec!["delivery-1".to_string()],
+            })
+            .into_storage_payload(),
+            StorageEventPayload::AgentMailboxDiscarded { payload }
+                if payload.target_agent_id == "agent-child"
+        ));
     }
 }

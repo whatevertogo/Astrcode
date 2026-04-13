@@ -29,7 +29,7 @@ import {
   loadSessionView,
   submitPrompt,
 } from '../lib/api/sessions';
-import { getConfig, saveActiveSelection } from '../lib/api/config';
+import { getConfig, reloadConfig, saveActiveSelection } from '../lib/api/config';
 import { getCurrentModel, listAvailableModels, testConnection } from '../lib/api/models';
 import type {
   AgentEventPayload,
@@ -430,6 +430,10 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
     return getConfig();
   }, []);
 
+  const handleReloadConfig = useCallback(async (): Promise<void> => {
+    await reloadConfig();
+  }, []);
+
   const handleSaveActiveSelection = useCallback(
     async (activeProfile: string, activeModel: string): Promise<void> => {
       await saveActiveSelection(activeProfile, activeModel);
@@ -483,6 +487,7 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
     deleteProject: handleDeleteProject,
     listComposerOptions: handleListComposerOptions,
     getConfig: handleGetConfig,
+    reloadConfig: handleReloadConfig,
     saveActiveSelection: handleSaveActiveSelection,
     setModel,
     getCurrentModel: handleGetCurrentModel,

@@ -35,14 +35,23 @@ pub(crate) async fn list_agents(
     headers: HeaderMap,
 ) -> Result<Json<Vec<AgentProfileDto>>, ApiError> {
     require_auth(&state, &headers, None)?;
-    Ok(Json(vec![AgentProfileDto {
-        id: "root-agent".to_string(),
-        name: "Root Agent".to_string(),
-        description: "默认根执行代理".to_string(),
-        mode: "primary".to_string(),
-        allowed_tools: Vec::new(),
-        disallowed_tools: Vec::new(),
-    }]))
+    let profiles = state
+        .app
+        .list_global_agent_profiles()
+        .map_err(ApiError::from)?
+        .into_iter()
+        .map(|profile| {
+            crate::mapper::to_agent_profile_dto(crate::mapper::AgentProfileSummary {
+                id: profile.id,
+                name: profile.name,
+                description: profile.description,
+                mode: profile.mode,
+                allowed_tools: profile.allowed_tools,
+                disallowed_tools: profile.disallowed_tools,
+            })
+        })
+        .collect();
+    Ok(Json(profiles))
 }
 
 pub(crate) async fn execute_agent(
@@ -56,24 +65,18 @@ pub(crate) async fn execute_agent(
         .working_dir
         .map(PathBuf::from)
         .ok_or_else(|| ApiError::bad_request("workingDir is required".to_string()))?;
-    let session = state
-        .app
-        .create_session(working_dir.to_string_lossy().to_string())
-        .await
-        .map_err(ApiError::from)?;
-    let merged_task = match request.context {
-        Some(context) if !context.trim().is_empty() => {
-            format!("{}\n\n{}", context.trim(), request.task)
-        },
-        _ => request.task,
-    };
     let accepted = state
         .app
-        .submit_prompt_with_control(
-            &session.session_id,
-            merged_task,
-            to_execution_control(request.control.clone()),
-        )
+        .execute_root_agent(astrcode_application::RootExecutionRequest {
+            agent_id: agent_id.clone(),
+            working_dir: working_dir.to_string_lossy().to_string(),
+            task: request.task,
+            context: request.context,
+            control: to_execution_control(request.control),
+            context_overrides: crate::mapper::from_subagent_context_overrides_dto(
+                request.context_overrides,
+            ),
+        })
         .await
         .map_err(ApiError::from)?;
     Ok((
@@ -86,7 +89,7 @@ pub(crate) async fn execute_agent(
             ),
             session_id: Some(accepted.session_id.to_string()),
             turn_id: Some(accepted.turn_id.to_string()),
-            agent_id: Some(agent_id),
+            agent_id: accepted.agent_id.map(|value| value.to_string()),
         }),
     ))
 }
@@ -116,7 +119,16 @@ pub(crate) async fn get_subrun_status(
         .await
         .map_err(ApiError::from)?
     {
-        return Ok(Json(to_subrun_status_dto(view, session_id)));
+        if view.sub_run_id == sub_run_id {
+            return Ok(Json(to_subrun_status_dto(view, session_id)));
+        }
+        return Err(ApiError {
+            status: StatusCode::NOT_FOUND,
+            message: format!(
+                "subrun '{}' not found in session '{}'",
+                sub_run_id, session_id
+            ),
+        });
     }
 
     // 兜底：返回默认值（兼容无 agent 的 session）

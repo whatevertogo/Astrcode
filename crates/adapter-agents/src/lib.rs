@@ -110,12 +110,21 @@ impl AgentProfileLoader {
     /// - `~/.astrcode/agents`
     pub fn new() -> Result<Self, AstrError> {
         let home = astrcode_core::home::resolve_home_dir()?;
-        Ok(Self {
+        Ok(Self::new_with_home_dir(home))
+    }
+
+    /// 基于显式 home 目录创建 loader。
+    ///
+    /// server 测试和嵌入式组合根需要按调用方提供的隔离目录解析 agents，
+    /// 不能再偷偷依赖进程级 home 覆盖或全局环境变量。
+    pub fn new_with_home_dir(home_dir: impl AsRef<Path>) -> Self {
+        let home_dir = home_dir.as_ref();
+        Self {
             user_agent_dirs: vec![
-                home.join(".claude").join("agents"),
-                home.join(".astrcode").join("agents"),
+                home_dir.join(".claude").join("agents"),
+                home_dir.join(".astrcode").join("agents"),
             ],
-        })
+        }
     }
 
     /// 加载不绑定项目 scope 的 agents。

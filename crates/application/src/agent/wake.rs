@@ -1,25 +1,22 @@
 //! 父级 delivery 唤醒调度。
 //!
-//! 从旧 runtime/service/agent/wake.rs 迁入，去掉对 RuntimeService / lifecycle 的依赖，
-//! 改为通过 Kernel + SessionRuntime 完成所有操作。
-//!
-//! wake 是四工具模型的关键补充：当子 agent 完成后，系统需要自动
-//! 将子 agent 的执行结果投递到父 agent 的 inbox 并触发父级继续执行。
+//! wake 是跨会话协作编排，不属于 session-runtime 的单会话真相面。
+//! 这里负责把 child terminal delivery 追加到 durable mailbox、排入 kernel queue，
+//! 再通过“不分叉”的父级 wake turn 继续驱动父 agent。
+
+use std::collections::{HashMap, HashSet};
 
 use astrcode_core::{
-    AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope, AgentTurnOutcome,
-    MailboxQueuedPayload, SessionId,
+    AgentEventContext, MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxProjection,
+    MailboxQueuedPayload, SessionId, StorageEventPayload, TurnId,
 };
 
-use super::AgentOrchestrationService;
+use super::{
+    AgentOrchestrationError, AgentOrchestrationService, child_delivery_mailbox_envelope,
+    root_execution_event_context, subrun_event_context, terminal_notification_message,
+};
 
 impl AgentOrchestrationService {
-    /// 子 agent 完成时触发的父级唤醒入口。
-    ///
-    /// 流程：
-    /// 1. 向父 session 的 durable event log 追加 MailboxQueued 事件
-    /// 2. 向 kernel AgentControl 的 delivery queue 排入通知
-    /// 3. 尝试 checkout delivery batch 并启动父级 wake turn
     pub async fn reactivate_parent_agent_if_idle(
         &self,
         parent_session_id: &str,
@@ -29,11 +26,9 @@ impl AgentOrchestrationService {
         self.metrics.record_parent_reactivation_requested();
         let parent_session_id = astrcode_session_runtime::normalize_session_id(parent_session_id);
 
-        // 1. 加载父 session state 并追加 durable mailbox queue
-        let parent_session_id_for_state = parent_session_id.clone();
         let session_state = match self
             .session_runtime
-            .get_session_state(&SessionId::from(parent_session_id_for_state.clone()))
+            .get_session_state(&SessionId::from(parent_session_id.clone()))
             .await
         {
             Ok(state) => state,
@@ -61,10 +56,10 @@ impl AgentOrchestrationService {
                 notification.notification_id,
                 error
             );
+            self.metrics.record_parent_reactivation_failed();
             return;
         }
 
-        // 2. 向 kernel delivery queue 排入通知
         let queued = self
             .kernel
             .enqueue_child_delivery(
@@ -73,16 +68,17 @@ impl AgentOrchestrationService {
                 notification.clone(),
             )
             .await;
-        self.metrics.record_delivery_buffer_queued();
-        if !queued {
+        if queued {
+            self.metrics.record_delivery_buffer_queued();
+        } else {
             log::warn!(
-                "failed to enqueue parent delivery: parentSession='{}', deliveryId='{}'",
+                "parent delivery was not enqueued immediately; falling back to queue reconcile: \
+                 parentSession='{}', deliveryId='{}'",
                 parent_session_id,
                 notification.notification_id
             );
         }
 
-        // 3. 尝试启动父级 wake turn
         if let Err(error) = self
             .try_start_parent_delivery_turn(&parent_session_id)
             .await
@@ -97,148 +93,339 @@ impl AgentOrchestrationService {
                 error
             );
         }
-        self.metrics.record_parent_reactivation_succeeded();
     }
 
-    /// 尝试从 delivery queue 中 checkout 一批交付并启动父级 wake turn。
     pub async fn try_start_parent_delivery_turn(
         &self,
         parent_session_id: &str,
-    ) -> Result<bool, super::AgentOrchestrationError> {
+    ) -> Result<bool, AgentOrchestrationError> {
         let parent_session_id = astrcode_session_runtime::normalize_session_id(parent_session_id);
-
-        let delivery_batch = self
+        self.reconcile_parent_delivery_queue(&parent_session_id)
+            .await?;
+        let Some(delivery_batch) = self
             .kernel
             .checkout_parent_delivery_batch(&parent_session_id)
             .await
-            .ok_or_else(|| {
-                super::AgentOrchestrationError::Internal("no delivery batch available".to_string())
-            })?;
+        else {
+            return Ok(false);
+        };
         self.metrics.record_delivery_buffer_dequeued();
         self.metrics.record_delivery_buffer_wake_requested();
 
-        let batch_delivery_ids: Vec<String> = delivery_batch
+        let batch_delivery_ids = delivery_batch
             .iter()
-            .map(|d| d.delivery_id.clone())
-            .collect();
-
-        // 向父 session 提交 wake prompt
+            .map(|delivery| delivery.delivery_id.clone())
+            .collect::<Vec<_>>();
+        let target_agent_id = delivery_batch
+            .first()
+            .and_then(|delivery| delivery.notification.child_ref.parent_agent_id.clone())
+            .ok_or_else(|| {
+                AgentOrchestrationError::InvalidInput(
+                    "parent delivery batch missing target parent agent id".to_string(),
+                )
+            })?;
+        let wake_agent = self.resolve_wake_agent_context(&delivery_batch).await;
+        let wake_turn_id = TurnId::from(format!("turn-{}", chrono::Utc::now().timestamp_millis()));
         let wake_prompt = build_wake_prompt_from_deliveries(&delivery_batch);
-        let result = self
+        let accepted = match self
             .session_runtime
-            .submit_prompt(
+            .try_submit_prompt_for_agent_with_turn_id(
                 &parent_session_id,
+                wake_turn_id.clone(),
                 wake_prompt,
                 self.default_runtime_config(),
+                wake_agent.clone(),
             )
-            .await;
-
-        match result {
-            Ok(_) => {
-                // consume delivery batch
-                let consumed = self
-                    .kernel
-                    .consume_parent_delivery_batch(&parent_session_id, &batch_delivery_ids)
+            .await
+        {
+            Ok(Some(accepted)) => accepted,
+            Ok(None) => {
+                self.kernel
+                    .requeue_parent_delivery_batch(&parent_session_id, &batch_delivery_ids)
                     .await;
-                if !consumed {
-                    log::warn!(
-                        "parent wake turn succeeded but delivery batch consume failed: \
-                         parentSession='{}'",
-                        parent_session_id
-                    );
-                }
-                self.metrics.record_delivery_buffer_wake_succeeded();
-                Ok(true)
+                return Ok(false);
             },
             Err(error) => {
-                // requeue delivery batch 以便重试
                 self.kernel
                     .requeue_parent_delivery_batch(&parent_session_id, &batch_delivery_ids)
                     .await;
                 self.metrics.record_delivery_buffer_wake_failed();
-                log::warn!(
-                    "parent wake turn failed, requeued deliveries: parentSession='{}', error='{}'",
-                    parent_session_id,
-                    error
-                );
-                Err(super::AgentOrchestrationError::Internal(format!(
+                return Err(AgentOrchestrationError::Internal(format!(
                     "wake turn submit failed: {error}"
-                )))
+                )));
             },
+        };
+        if let Err(error) = self
+            .append_parent_delivery_batch_started(
+                &parent_session_id,
+                wake_turn_id.as_str(),
+                &target_agent_id,
+                &batch_delivery_ids,
+                &wake_agent,
+            )
+            .await
+        {
+            log::warn!(
+                "failed to persist parent mailbox batch start: parentSession='{}', turnId='{}', \
+                 error='{}'",
+                parent_session_id,
+                wake_turn_id,
+                error
+            );
         }
+
+        self.spawn_parent_wake_completion_watcher(
+            parent_session_id,
+            accepted.turn_id.to_string(),
+            batch_delivery_ids,
+            target_agent_id,
+        );
+        Ok(true)
     }
 
-    /// 向父 session 追加 durable MailboxQueued 事件。
+    fn spawn_parent_wake_completion_watcher(
+        &self,
+        parent_session_id: String,
+        turn_id: String,
+        batch_delivery_ids: Vec<String>,
+        target_agent_id: String,
+    ) {
+        let service = self.clone();
+        let handle = tokio::spawn(async move {
+            if let Err(error) = service
+                .finalize_parent_wake_turn(
+                    parent_session_id,
+                    turn_id,
+                    batch_delivery_ids,
+                    target_agent_id,
+                )
+                .await
+            {
+                log::warn!("failed to finalize parent wake turn: {error}");
+            }
+        });
+        // 为什么登记：这个 watcher 只服务父级 wake turn 的 ack/requeue 收口，
+        // 生命周期应与 turn 任务一起在 shutdown 时统一 abort。
+        self.task_registry.register_turn_task(handle);
+    }
+
+    async fn finalize_parent_wake_turn(
+        &self,
+        parent_session_id: String,
+        turn_id: String,
+        batch_delivery_ids: Vec<String>,
+        target_agent_id: String,
+    ) -> Result<(), AgentOrchestrationError> {
+        let terminal = self
+            .wait_for_turn_terminal_snapshot(&parent_session_id, &turn_id)
+            .await?;
+        let wake_succeeded =
+            matches!(terminal.phase, astrcode_core::Phase::Idle)
+                && terminal.events.iter().any(|stored| {
+                    matches!(stored.event.payload, StorageEventPayload::TurnDone { .. })
+                })
+                && !terminal.events.iter().any(|stored| {
+                    matches!(stored.event.payload, StorageEventPayload::Error { .. })
+                });
+
+        if wake_succeeded {
+            self.append_parent_delivery_batch_acked(
+                &parent_session_id,
+                &turn_id,
+                &target_agent_id,
+                &batch_delivery_ids,
+            )
+            .await?;
+            let consumed = self
+                .kernel
+                .consume_parent_delivery_batch(&parent_session_id, &batch_delivery_ids)
+                .await;
+            if consumed {
+                self.metrics.record_parent_reactivation_succeeded();
+                self.metrics.record_delivery_buffer_wake_succeeded();
+                let _ = self
+                    .try_start_parent_delivery_turn(&parent_session_id)
+                    .await?;
+                return Ok(());
+            }
+
+            log::warn!(
+                "parent wake turn succeeded but delivery batch consume failed: \
+                 parentSession='{}', turnId='{}'",
+                parent_session_id,
+                turn_id
+            );
+        }
+
+        self.kernel
+            .requeue_parent_delivery_batch(&parent_session_id, &batch_delivery_ids)
+            .await;
+        self.metrics.record_parent_reactivation_failed();
+        self.metrics.record_delivery_buffer_wake_failed();
+        Ok(())
+    }
+
     async fn append_parent_delivery_mailbox_queue(
         &self,
         parent_session_state: &astrcode_session_runtime::SessionState,
         parent_turn_id: &str,
         notification: &astrcode_core::ChildSessionNotification,
-    ) -> Result<(), super::AgentOrchestrationError> {
+    ) -> Result<(), AgentOrchestrationError> {
         let target_agent_id = notification
             .child_ref
             .parent_agent_id
             .clone()
             .ok_or_else(|| {
-                super::AgentOrchestrationError::InvalidInput(
+                AgentOrchestrationError::InvalidInput(
                     "child terminal delivery missing direct parent agent id".to_string(),
                 )
             })?;
 
-        let message = notification
-            .final_reply_excerpt
-            .as_deref()
-            .filter(|excerpt| !excerpt.trim().is_empty())
-            .unwrap_or(notification.summary.as_str())
-            .to_string();
-
-        let sender_last_turn_outcome = match notification.status {
-            AgentLifecycleStatus::Idle => match notification.kind {
-                astrcode_core::ChildSessionNotificationKind::Delivered => {
-                    Some(AgentTurnOutcome::Completed)
-                },
-                astrcode_core::ChildSessionNotificationKind::Failed => {
-                    Some(AgentTurnOutcome::Failed)
-                },
-                _ => None,
-            },
-            _ => None,
-        };
-
         let payload = MailboxQueuedPayload {
-            envelope: AgentMailboxEnvelope {
-                delivery_id: notification.notification_id.clone(),
-                from_agent_id: notification.child_ref.agent_id.clone(),
-                to_agent_id: target_agent_id,
-                message,
-                queued_at: chrono::Utc::now(),
-                sender_lifecycle_status: AgentLifecycleStatus::Idle,
-                sender_last_turn_outcome,
-                sender_open_session_id: notification.child_ref.open_session_id.clone(),
-            },
+            envelope: child_delivery_mailbox_envelope(notification, target_agent_id),
         };
 
         let mut translator =
             astrcode_core::EventTranslator::new(parent_session_state.current_phase()?);
-        astrcode_session_runtime::append_mailbox_queued(
+        astrcode_session_runtime::append_mailbox_event(
             parent_session_state,
             parent_turn_id,
             AgentEventContext::default(),
-            payload,
+            astrcode_session_runtime::MailboxEventAppend::Queued(payload),
             &mut translator,
         )
         .await
-        .map_err(|error| super::AgentOrchestrationError::Internal(error.to_string()))?;
-
+        .map_err(|error| AgentOrchestrationError::Internal(error.to_string()))?;
         Ok(())
+    }
+
+    async fn append_parent_delivery_batch_started(
+        &self,
+        parent_session_id: &str,
+        turn_id: &str,
+        target_agent_id: &str,
+        batch_delivery_ids: &[String],
+        event_agent: &AgentEventContext,
+    ) -> Result<(), AgentOrchestrationError> {
+        let session_state = self
+            .session_runtime
+            .get_session_state(&SessionId::from(parent_session_id.to_string()))
+            .await
+            .map_err(AgentOrchestrationError::from)?;
+        let payload = MailboxBatchStartedPayload {
+            target_agent_id: target_agent_id.to_string(),
+            turn_id: turn_id.to_string(),
+            batch_id: parent_wake_batch_id(turn_id),
+            delivery_ids: batch_delivery_ids.to_vec(),
+        };
+        let mut translator = astrcode_core::EventTranslator::new(session_state.current_phase()?);
+        astrcode_session_runtime::append_mailbox_event(
+            &session_state,
+            turn_id,
+            event_agent.clone(),
+            astrcode_session_runtime::MailboxEventAppend::BatchStarted(payload),
+            &mut translator,
+        )
+        .await
+        .map_err(|error| AgentOrchestrationError::Internal(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn append_parent_delivery_batch_acked(
+        &self,
+        parent_session_id: &str,
+        turn_id: &str,
+        target_agent_id: &str,
+        batch_delivery_ids: &[String],
+    ) -> Result<(), AgentOrchestrationError> {
+        let session_state = self
+            .session_runtime
+            .get_session_state(&SessionId::from(parent_session_id.to_string()))
+            .await
+            .map_err(AgentOrchestrationError::from)?;
+        let payload = MailboxBatchAckedPayload {
+            target_agent_id: target_agent_id.to_string(),
+            turn_id: turn_id.to_string(),
+            batch_id: parent_wake_batch_id(turn_id),
+            delivery_ids: batch_delivery_ids.to_vec(),
+        };
+        let mut translator = astrcode_core::EventTranslator::new(session_state.current_phase()?);
+        astrcode_session_runtime::append_mailbox_event(
+            &session_state,
+            turn_id,
+            AgentEventContext::default(),
+            astrcode_session_runtime::MailboxEventAppend::BatchAcked(payload),
+            &mut translator,
+        )
+        .await
+        .map_err(|error| AgentOrchestrationError::Internal(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn reconcile_parent_delivery_queue(
+        &self,
+        parent_session_id: &str,
+    ) -> Result<(), AgentOrchestrationError> {
+        let session_id = SessionId::from(parent_session_id.to_string());
+        let events = self
+            .session_runtime
+            .replay_stored_events(&session_id)
+            .await
+            .map_err(AgentOrchestrationError::from)?;
+        if events.is_empty() {
+            return Ok(());
+        }
+
+        let recoverable = recoverable_parent_deliveries(&events);
+        if recoverable.is_empty() {
+            return Ok(());
+        }
+
+        for pending in recoverable {
+            let _ = self
+                .kernel
+                .enqueue_child_delivery(
+                    pending.parent_session_id.clone(),
+                    pending.parent_turn_id.clone(),
+                    pending.notification,
+                )
+                .await;
+        }
+        Ok(())
+    }
+
+    async fn resolve_wake_agent_context(
+        &self,
+        deliveries: &[astrcode_kernel::PendingParentDelivery],
+    ) -> AgentEventContext {
+        let Some(target_agent_id) = deliveries
+            .first()
+            .and_then(|delivery| delivery.notification.child_ref.parent_agent_id.clone())
+        else {
+            return AgentEventContext::default();
+        };
+        let Some(parent_handle) = self.kernel.get_agent_handle(&target_agent_id).await else {
+            return AgentEventContext::default();
+        };
+        if parent_handle.depth == 0 {
+            root_execution_event_context(
+                parent_handle.agent_id.clone(),
+                parent_handle.agent_profile.clone(),
+            )
+        } else {
+            subrun_event_context(&parent_handle)
+        }
     }
 }
 
-/// 从 delivery 批次构造 wake prompt。
+fn parent_wake_batch_id(turn_id: &str) -> String {
+    format!("parent-wake-batch:{turn_id}")
+}
+
 fn build_wake_prompt_from_deliveries(
     deliveries: &[astrcode_kernel::PendingParentDelivery],
 ) -> String {
-    let parts: Vec<String> = deliveries
+    let parts = deliveries
         .iter()
         .map(|delivery| {
             format!(
@@ -247,22 +434,550 @@ fn build_wake_prompt_from_deliveries(
                  delivery_id 再次出现，不要把它当作新任务重复处理。",
                 delivery.delivery_id,
                 delivery.notification.child_ref.agent_id,
-                delivery.notification.summary,
+                terminal_notification_message(&delivery.notification),
             )
         })
-        .collect();
+        .collect::<Vec<_>>();
 
     if parts.len() == 1 {
-        parts.into_iter().next().unwrap_or_default()
-    } else {
-        format!(
-            "请按顺序处理以下子 Agent 交付结果：\n\n{}",
-            parts
-                .into_iter()
-                .enumerate()
-                .map(|(i, p)| format!("{}. {}", i + 1, p))
-                .collect::<Vec<_>>()
-                .join("\n\n")
+        return parts.into_iter().next().unwrap_or_default();
+    }
+
+    format!(
+        "请按顺序处理以下子 Agent 交付结果：\n\n{}",
+        parts
+            .into_iter()
+            .enumerate()
+            .map(|(index, part)| format!("{}. {}", index + 1, part))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    )
+}
+
+fn recoverable_parent_deliveries(
+    events: &[astrcode_core::StoredEvent],
+) -> Vec<astrcode_kernel::PendingParentDelivery> {
+    let projection_index = MailboxProjection::replay_index(events);
+    let mut recoverable_by_agent = HashMap::<String, HashSet<String>>::new();
+    for (agent_id, projection) in projection_index {
+        let active_ids = projection
+            .active_delivery_ids
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let recoverable = projection
+            .pending_delivery_ids
+            .into_iter()
+            .filter(|delivery_id| !active_ids.contains(delivery_id))
+            .collect::<HashSet<_>>();
+        if !recoverable.is_empty() {
+            recoverable_by_agent.insert(agent_id, recoverable);
+        }
+    }
+
+    let mut recovered = Vec::new();
+    let mut seen = HashSet::new();
+    for stored in events {
+        let StorageEventPayload::ChildSessionNotification { notification, .. } =
+            &stored.event.payload
+        else {
+            continue;
+        };
+        let Some(parent_agent_id) = notification.child_ref.parent_agent_id.as_ref() else {
+            continue;
+        };
+        let Some(recoverable_ids) = recoverable_by_agent.get(parent_agent_id) else {
+            continue;
+        };
+        if !recoverable_ids.contains(&notification.notification_id) {
+            continue;
+        }
+        if !seen.insert(notification.notification_id.clone()) {
+            continue;
+        }
+        let Some(parent_turn_id) = stored.event.turn_id().map(ToString::to_string) else {
+            continue;
+        };
+        recovered.push(astrcode_kernel::PendingParentDelivery {
+            delivery_id: notification.notification_id.clone(),
+            parent_session_id: notification.child_ref.session_id.clone(),
+            parent_turn_id,
+            notification: notification.clone(),
+        });
+    }
+    recovered
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use astrcode_core::{
+        AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope, CancelToken, ChildAgentRef,
+        ChildSessionLineageKind, ChildSessionNotification, ChildSessionNotificationKind,
+        EventStore, Phase, SessionId, StorageEvent, StoredEvent,
+    };
+    use astrcode_session_runtime::{
+        append_and_broadcast, complete_session_execution, prepare_session_execution,
+    };
+
+    use super::*;
+    use crate::{
+        agent::{
+            terminal_notification_turn_outcome,
+            test_support::{TestLlmBehavior, build_agent_test_harness},
+        },
+        lifecycle::governance::ObservabilitySnapshotProvider,
+    };
+
+    fn sample_notification(
+        parent_session_id: &str,
+        parent_agent_id: &str,
+        kind: ChildSessionNotificationKind,
+    ) -> ChildSessionNotification {
+        ChildSessionNotification {
+            notification_id: format!("delivery-{kind:?}").to_lowercase(),
+            child_ref: ChildAgentRef {
+                agent_id: "agent-child".to_string(),
+                session_id: parent_session_id.to_string(),
+                sub_run_id: "subrun-child".to_string(),
+                parent_agent_id: Some(parent_agent_id.to_string()),
+                parent_sub_run_id: Some("subrun-parent".to_string()),
+                lineage_kind: ChildSessionLineageKind::Spawn,
+                status: AgentLifecycleStatus::Idle,
+                open_session_id: "session-child".to_string(),
+            },
+            kind,
+            summary: "子 Agent 已完成".to_string(),
+            status: AgentLifecycleStatus::Idle,
+            source_tool_call_id: Some("tool-call-1".to_string()),
+            final_reply_excerpt: Some("最终回复摘录".to_string()),
+        }
+    }
+
+    fn child_notification_stored_event(
+        storage_seq: u64,
+        parent_turn_id: &str,
+        notification: ChildSessionNotification,
+    ) -> StoredEvent {
+        StoredEvent {
+            storage_seq,
+            event: StorageEvent {
+                turn_id: Some(parent_turn_id.to_string()),
+                agent: AgentEventContext::default(),
+                payload: StorageEventPayload::ChildSessionNotification {
+                    notification,
+                    timestamp: Some(chrono::Utc::now()),
+                },
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn busy_parent_requeues_delivery_until_explicit_retry() {
+        let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
+            content: "父级稍后继续处理。".to_string(),
+        })
+        .expect("test harness should build");
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let parent = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("parent session should be created");
+        let root = harness
+            .kernel
+            .agent_control()
+            .register_root_agent(
+                "root-agent".to_string(),
+                parent.session_id.clone(),
+                "root-profile".to_string(),
+            )
+            .await
+            .expect("root agent should register");
+        let parent_state = harness
+            .session_runtime
+            .get_session_state(&SessionId::from(parent.session_id.clone()))
+            .await
+            .expect("parent state should load");
+        let lease = match harness
+            .event_store
+            .try_acquire_turn(&SessionId::from(parent.session_id.clone()), "turn-busy")
+            .await
+            .expect("turn lease should acquire")
+        {
+            astrcode_core::SessionTurnAcquireResult::Acquired(lease) => lease,
+            astrcode_core::SessionTurnAcquireResult::Busy(_) => {
+                panic!("fresh parent session should not be busy")
+            },
+        };
+        prepare_session_execution(
+            parent_state.as_ref(),
+            &parent.session_id,
+            "turn-busy",
+            CancelToken::new(),
+            lease,
+            None,
         )
+        .expect("busy state should prepare");
+        *parent_state.phase.lock().expect("phase lock should work") = Phase::Thinking;
+
+        let notification = sample_notification(
+            &parent.session_id,
+            &root.agent_id,
+            ChildSessionNotificationKind::Delivered,
+        );
+        harness
+            .service
+            .reactivate_parent_agent_if_idle(&parent.session_id, "turn-parent", &notification)
+            .await;
+
+        assert_eq!(
+            harness
+                .kernel
+                .agent_control()
+                .pending_parent_delivery_count(&parent.session_id)
+                .await,
+            1,
+            "busy parent should keep delivery queued for retry"
+        );
+        assert_eq!(
+            harness.session_runtime.list_sessions().len(),
+            1,
+            "busy wake should not branch a new session"
+        );
+
+        complete_session_execution(parent_state.as_ref(), Phase::Idle);
+        let started = harness
+            .service
+            .try_start_parent_delivery_turn(&parent.session_id)
+            .await
+            .expect("retry should succeed");
+        assert!(started, "idle parent should start wake turn on retry");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if harness
+                .kernel
+                .agent_control()
+                .pending_parent_delivery_count(&parent.session_id)
+                .await
+                == 0
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "retried wake turn should consume queued delivery"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let metrics = harness.metrics.snapshot();
+        assert_eq!(
+            metrics.execution_diagnostics.parent_reactivation_requested,
+            1
+        );
+        assert_eq!(
+            metrics.execution_diagnostics.parent_reactivation_succeeded,
+            1
+        );
+        assert_eq!(
+            metrics.execution_diagnostics.delivery_buffer_wake_succeeded,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn wake_failure_requeues_delivery_batch() {
+        let harness = build_agent_test_harness(TestLlmBehavior::Fail {
+            message: "wake llm offline".to_string(),
+        })
+        .expect("test harness should build");
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let parent = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("parent session should be created");
+        let root = harness
+            .kernel
+            .agent_control()
+            .register_root_agent(
+                "root-agent".to_string(),
+                parent.session_id.clone(),
+                "root-profile".to_string(),
+            )
+            .await
+            .expect("root agent should register");
+        let notification = sample_notification(
+            &parent.session_id,
+            &root.agent_id,
+            ChildSessionNotificationKind::Failed,
+        );
+
+        harness
+            .service
+            .reactivate_parent_agent_if_idle(&parent.session_id, "turn-parent", &notification)
+            .await;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let metrics = harness.metrics.snapshot();
+            if harness
+                .kernel
+                .agent_control()
+                .pending_parent_delivery_count(&parent.session_id)
+                .await
+                == 1
+                && metrics.execution_diagnostics.parent_reactivation_failed == 1
+                && metrics.execution_diagnostics.delivery_buffer_wake_failed == 1
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "failed wake should requeue delivery"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let metrics = harness.metrics.snapshot();
+        assert_eq!(
+            metrics.execution_diagnostics.parent_reactivation_requested,
+            1
+        );
+        assert_eq!(metrics.execution_diagnostics.parent_reactivation_failed, 1);
+        assert_eq!(metrics.execution_diagnostics.delivery_buffer_wake_failed, 1);
+    }
+
+    #[tokio::test]
+    async fn try_start_parent_delivery_turn_recovers_durable_pending_delivery() {
+        let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
+            content: "父级已恢复 durable 交付。".to_string(),
+        })
+        .expect("test harness should build");
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let parent = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("parent session should be created");
+        let root = harness
+            .kernel
+            .agent_control()
+            .register_root_agent(
+                "root-agent".to_string(),
+                parent.session_id.clone(),
+                "root-profile".to_string(),
+            )
+            .await
+            .expect("root agent should register");
+        let notification = sample_notification(
+            &parent.session_id,
+            &root.agent_id,
+            ChildSessionNotificationKind::Delivered,
+        );
+        let parent_state = harness
+            .session_runtime
+            .get_session_state(&SessionId::from(parent.session_id.clone()))
+            .await
+            .expect("parent state should load");
+
+        harness
+            .service
+            .append_parent_delivery_mailbox_queue(
+                parent_state.as_ref(),
+                "turn-parent",
+                &notification,
+            )
+            .await
+            .expect("durable mailbox queue should append");
+        let mut translator = astrcode_core::EventTranslator::new(
+            parent_state.current_phase().expect("phase should load"),
+        );
+        append_and_broadcast(
+            parent_state.as_ref(),
+            &StorageEvent {
+                turn_id: Some("turn-parent".to_string()),
+                agent: AgentEventContext::default(),
+                payload: StorageEventPayload::ChildSessionNotification {
+                    notification: notification.clone(),
+                    timestamp: Some(chrono::Utc::now()),
+                },
+            },
+            &mut translator,
+        )
+        .await
+        .expect("child notification should persist");
+
+        let started = harness
+            .service
+            .try_start_parent_delivery_turn(&parent.session_id)
+            .await
+            .expect("wake should recover pending durable delivery");
+        assert!(started, "recovered durable delivery should start wake turn");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if harness
+                .kernel
+                .agent_control()
+                .pending_parent_delivery_count(&parent.session_id)
+                .await
+                == 0
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "recovered wake turn should eventually drain delivery queue"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let parent_events = harness
+            .session_runtime
+            .replay_stored_events(&SessionId::from(parent.session_id.clone()))
+            .await
+            .expect("parent events should replay");
+        assert!(parent_events.iter().any(|stored| matches!(
+            &stored.event.payload,
+            StorageEventPayload::AgentMailboxBatchStarted { payload }
+                if payload.target_agent_id == root.agent_id
+                    && payload.delivery_ids == vec![notification.notification_id.clone()]
+        )));
+        assert!(parent_events.iter().any(|stored| matches!(
+            &stored.event.payload,
+            StorageEventPayload::AgentMailboxBatchAcked { payload }
+                if payload.target_agent_id == root.agent_id
+                    && payload.delivery_ids == vec![notification.notification_id.clone()]
+        )));
+    }
+
+    #[test]
+    fn wake_prompt_prefers_final_excerpt_and_falls_back_to_summary() {
+        let delivered = sample_notification(
+            "session-parent",
+            "agent-parent",
+            ChildSessionNotificationKind::Delivered,
+        );
+        let summary_only = ChildSessionNotification {
+            final_reply_excerpt: None,
+            ..sample_notification(
+                "session-parent",
+                "agent-parent",
+                ChildSessionNotificationKind::Failed,
+            )
+        };
+
+        assert_eq!(terminal_notification_message(&delivered), "最终回复摘录");
+        assert_eq!(
+            terminal_notification_message(&summary_only),
+            "子 Agent 已完成"
+        );
+
+        let prompt = build_wake_prompt_from_deliveries(&[
+            astrcode_kernel::PendingParentDelivery {
+                delivery_id: "delivery-1".to_string(),
+                parent_session_id: "session-parent".to_string(),
+                parent_turn_id: "turn-parent".to_string(),
+                notification: delivered,
+            },
+            astrcode_kernel::PendingParentDelivery {
+                delivery_id: "delivery-2".to_string(),
+                parent_session_id: "session-parent".to_string(),
+                parent_turn_id: "turn-parent".to_string(),
+                notification: summary_only,
+            },
+        ]);
+        assert!(prompt.contains("message: 最终回复摘录"));
+        assert!(prompt.contains("message: 子 Agent 已完成"));
+    }
+
+    #[test]
+    fn recoverable_parent_deliveries_skips_active_batch_entries() {
+        let delivered = sample_notification(
+            "session-parent",
+            "agent-parent",
+            ChildSessionNotificationKind::Delivered,
+        );
+        let failed = ChildSessionNotification {
+            notification_id: "delivery-failed".to_string(),
+            ..sample_notification(
+                "session-parent",
+                "agent-parent",
+                ChildSessionNotificationKind::Failed,
+            )
+        };
+        let events = vec![
+            child_notification_stored_event(1, "turn-parent", delivered.clone()),
+            StoredEvent {
+                storage_seq: 2,
+                event: StorageEvent {
+                    turn_id: Some("turn-wake-1".to_string()),
+                    agent: AgentEventContext::default(),
+                    payload: StorageEventPayload::AgentMailboxQueued {
+                        payload: MailboxQueuedPayload {
+                            envelope: AgentMailboxEnvelope {
+                                delivery_id: delivered.notification_id.clone(),
+                                from_agent_id: delivered.child_ref.agent_id.clone(),
+                                to_agent_id: "agent-parent".to_string(),
+                                message: terminal_notification_message(&delivered),
+                                queued_at: chrono::Utc::now(),
+                                sender_lifecycle_status: AgentLifecycleStatus::Idle,
+                                sender_last_turn_outcome: terminal_notification_turn_outcome(
+                                    &delivered,
+                                ),
+                                sender_open_session_id: delivered.child_ref.open_session_id.clone(),
+                            },
+                        },
+                    },
+                },
+            },
+            StoredEvent {
+                storage_seq: 3,
+                event: StorageEvent {
+                    turn_id: Some("turn-wake-1".to_string()),
+                    agent: AgentEventContext::default(),
+                    payload: StorageEventPayload::AgentMailboxBatchStarted {
+                        payload: MailboxBatchStartedPayload {
+                            target_agent_id: "agent-parent".to_string(),
+                            turn_id: "turn-wake-1".to_string(),
+                            batch_id: parent_wake_batch_id("turn-wake-1"),
+                            delivery_ids: vec![delivered.notification_id.clone()],
+                        },
+                    },
+                },
+            },
+            child_notification_stored_event(4, "turn-parent", failed.clone()),
+            StoredEvent {
+                storage_seq: 5,
+                event: StorageEvent {
+                    turn_id: Some("turn-parent".to_string()),
+                    agent: AgentEventContext::default(),
+                    payload: StorageEventPayload::AgentMailboxQueued {
+                        payload: MailboxQueuedPayload {
+                            envelope: AgentMailboxEnvelope {
+                                delivery_id: failed.notification_id.clone(),
+                                from_agent_id: failed.child_ref.agent_id.clone(),
+                                to_agent_id: "agent-parent".to_string(),
+                                message: terminal_notification_message(&failed),
+                                queued_at: chrono::Utc::now(),
+                                sender_lifecycle_status: AgentLifecycleStatus::Idle,
+                                sender_last_turn_outcome: terminal_notification_turn_outcome(
+                                    &failed,
+                                ),
+                                sender_open_session_id: failed.child_ref.open_session_id.clone(),
+                            },
+                        },
+                    },
+                },
+            },
+        ];
+
+        let recovered = recoverable_parent_deliveries(&events);
+
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].delivery_id, failed.notification_id);
     }
 }

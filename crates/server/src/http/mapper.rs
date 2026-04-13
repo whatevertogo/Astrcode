@@ -35,25 +35,22 @@ use astrcode_core::{
 };
 use astrcode_protocol::http::{
     AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentLifecycleDto, AgentProfileDto,
-    AgentTurnOutcomeDto, ArtifactRefDto, ChildAgentRefDto, ChildSessionLineageKindDto,
-    ChildSessionNotificationKindDto, CompactTriggerDto, ComposerOptionDto, ComposerOptionKindDto,
-    ComposerOptionsResponseDto, ConfigView, CurrentModelInfoDto, ExecutionDiagnosticsDto,
-    ForkModeDto, InvocationKindDto, LineageSnapshotDto, MailboxBatchDto, MailboxDiscardedDto,
-    MailboxQueuedDto, ModelOptionDto, OperationMetricsDto, PROTOCOL_VERSION, PhaseDto,
-    PluginHealthDto, PluginRuntimeStateDto, ProfileView, ReplayMetricsDto,
-    ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto, RuntimeCapabilityDto,
-    RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto, SessionCatalogEventEnvelope,
-    SessionCatalogEventPayload, SessionListItem, SubRunExecutionMetricsDto, SubRunFailureCodeDto,
-    SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto, SubRunStatusDto,
-    SubRunStatusSourceDto, SubRunStorageModeDto, SubagentContextOverridesDto, ToolCallResultDto,
-    ToolDescriptorDto, ToolOutputStreamDto,
+    ArtifactRefDto, ChildAgentRefDto, ChildSessionLineageKindDto, ChildSessionNotificationKindDto,
+    CompactTriggerDto, ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto,
+    ConfigView, CurrentModelInfoDto, ExecutionDiagnosticsDto, ForkModeDto, InvocationKindDto,
+    MailboxBatchDto, MailboxDiscardedDto, MailboxQueuedDto, ModelOptionDto, OperationMetricsDto,
+    PROTOCOL_VERSION, PhaseDto, PluginHealthDto, PluginRuntimeStateDto, ProfileView,
+    ReplayMetricsDto, ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto,
+    RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto,
+    SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem,
+    SubRunExecutionMetricsDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
+    SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto, SubagentContextOverridesDto,
+    ToolCallResultDto, ToolOutputStreamDto,
 };
-use astrcode_session_runtime::{SubRunStatusSnapshot, SubRunStatusSource};
 use axum::{http::StatusCode, response::sse::Event};
 
 use crate::ApiError;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct AgentProfileSummary {
     pub id: String,
@@ -62,14 +59,6 @@ pub(crate) struct AgentProfileSummary {
     pub mode: astrcode_core::AgentMode,
     pub allowed_tools: Vec<String>,
     pub disallowed_tools: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ToolSummary {
-    pub name: String,
-    pub description: String,
-    pub profiles: Vec<String>,
-    pub streaming: bool,
 }
 
 /// 将会话元数据映射为列表项 DTO。
@@ -94,7 +83,6 @@ pub(crate) fn to_session_list_item(meta: SessionMeta) -> SessionListItem {
 ///
 /// 包含运行时名称、类型、已加载会话数、运行中的会话 ID、
 /// 插件搜索路径、运行时指标、能力描述和插件状态。
-#[allow(dead_code)]
 pub(crate) fn to_runtime_status_dto(snapshot: GovernanceSnapshot) -> RuntimeStatusDto {
     RuntimeStatusDto {
         runtime_name: snapshot.runtime_name,
@@ -120,7 +108,6 @@ pub(crate) fn to_runtime_status_dto(snapshot: GovernanceSnapshot) -> RuntimeStat
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn to_agent_profile_dto(profile: AgentProfileSummary) -> AgentProfileDto {
     AgentProfileDto {
         id: profile.id,
@@ -137,54 +124,6 @@ pub(crate) fn to_agent_profile_dto(profile: AgentProfileSummary) -> AgentProfile
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn to_tool_descriptor_dto(tool: ToolSummary) -> ToolDescriptorDto {
-    ToolDescriptorDto {
-        name: tool.name,
-        description: tool.description,
-        profiles: tool.profiles,
-        streaming: tool.streaming,
-    }
-}
-
-#[allow(dead_code)]
-pub(crate) fn to_subrun_status_dto(snapshot: SubRunStatusSnapshot) -> SubRunStatusDto {
-    let SubRunStatusSnapshot {
-        handle,
-        tool_call_id,
-        source,
-        result,
-        step_count,
-        estimated_tokens,
-    } = snapshot;
-    let source = match source {
-        SubRunStatusSource::Live => SubRunStatusSourceDto::Live,
-        SubRunStatusSource::Durable => SubRunStatusSourceDto::Durable,
-    };
-
-    SubRunStatusDto {
-        sub_run_id: handle.sub_run_id,
-        tool_call_id,
-        source,
-        agent_id: handle.agent_id,
-        agent_profile: handle.agent_profile,
-        session_id: handle.session_id,
-        child_session_id: handle.child_session_id,
-        depth: handle.depth,
-        parent_agent_id: handle.parent_agent_id,
-        parent_sub_run_id: handle.parent_sub_run_id,
-        storage_mode: to_subrun_storage_mode_dto(handle.storage_mode),
-        lifecycle: to_agent_lifecycle_dto(handle.lifecycle),
-        last_turn_outcome: handle.last_turn_outcome.map(to_agent_turn_outcome_dto),
-        result: result.map(to_subrun_result_dto),
-        step_count,
-        estimated_tokens,
-        resolved_overrides: None,
-        resolved_limits: None,
-    }
-}
-
-#[allow(dead_code)]
 pub(crate) fn from_subagent_context_overrides_dto(
     dto: Option<SubagentContextOverridesDto>,
 ) -> Option<SubagentContextOverrides> {
@@ -203,7 +142,6 @@ pub(crate) fn from_subagent_context_overrides_dto(
     })
 }
 
-#[allow(dead_code)]
 fn from_fork_mode_dto(dto: ForkModeDto) -> ForkMode {
     match dto {
         ForkModeDto::FullHistory => ForkMode::FullHistory,
@@ -362,7 +300,6 @@ fn to_artifact_ref_dto(artifact: ArtifactRef) -> ArtifactRefDto {
     }
 }
 
-#[allow(dead_code)]
 fn from_subrun_storage_mode_dto(mode: SubRunStorageModeDto) -> SubRunStorageMode {
     match mode {
         SubRunStorageModeDto::IndependentSession => SubRunStorageMode::IndependentSession,
@@ -425,16 +362,6 @@ fn to_agent_lifecycle_dto(status: astrcode_core::AgentLifecycleStatus) -> AgentL
     }
 }
 
-#[allow(dead_code)]
-fn to_agent_turn_outcome_dto(outcome: astrcode_core::AgentTurnOutcome) -> AgentTurnOutcomeDto {
-    match outcome {
-        astrcode_core::AgentTurnOutcome::Completed => AgentTurnOutcomeDto::Completed,
-        astrcode_core::AgentTurnOutcome::Failed => AgentTurnOutcomeDto::Failed,
-        astrcode_core::AgentTurnOutcome::Cancelled => AgentTurnOutcomeDto::Cancelled,
-        astrcode_core::AgentTurnOutcome::TokenExceeded => AgentTurnOutcomeDto::TokenExceeded,
-    }
-}
-
 fn to_child_lineage_kind_dto(
     kind: astrcode_core::ChildSessionLineageKind,
 ) -> ChildSessionLineageKindDto {
@@ -442,16 +369,6 @@ fn to_child_lineage_kind_dto(
         astrcode_core::ChildSessionLineageKind::Spawn => ChildSessionLineageKindDto::Spawn,
         astrcode_core::ChildSessionLineageKind::Fork => ChildSessionLineageKindDto::Fork,
         astrcode_core::ChildSessionLineageKind::Resume => ChildSessionLineageKindDto::Resume,
-    }
-}
-
-/// 谱系快照 DTO 映射。当前预留供 fork 场景使用。
-#[allow(dead_code)]
-fn to_lineage_snapshot_dto(snapshot: &astrcode_core::LineageSnapshot) -> LineageSnapshotDto {
-    LineageSnapshotDto {
-        source_agent_id: snapshot.source_agent_id.clone(),
-        source_session_id: snapshot.source_session_id.clone(),
-        source_sub_run_id: snapshot.source_sub_run_id.clone(),
     }
 }
 
@@ -551,7 +468,6 @@ fn to_resolved_limits_dto(limits: ResolvedExecutionLimitsSnapshot) -> ResolvedEx
 ///
 /// `kind` 字段通过 serde_json 序列化后取字符串表示，
 /// 反序列化失败时降级为 "unknown"，避免协议层崩溃。
-#[allow(dead_code)]
 fn to_runtime_capability_dto(spec: CapabilitySpec) -> RuntimeCapabilityDto {
     RuntimeCapabilityDto {
         name: spec.name.to_string(),
@@ -566,7 +482,6 @@ fn to_runtime_capability_dto(spec: CapabilitySpec) -> RuntimeCapabilityDto {
 ///
 /// 包含插件清单信息（名称、版本、描述）、运行时状态、健康度、
 /// 失败计数和最后检查时间，以及插件暴露的所有能力。
-#[allow(dead_code)]
 fn to_runtime_plugin_dto(entry: PluginEntry) -> RuntimePluginDto {
     RuntimePluginDto {
         name: entry.manifest.name,
@@ -599,7 +514,6 @@ fn to_runtime_plugin_dto(entry: PluginEntry) -> RuntimePluginDto {
 ///
 /// 包含三个维度的指标：会话重连（session_rehydrate）、
 /// SSE 追赶（sse_catch_up）、轮次执行（turn_execution）和子执行域观测（subrun_execution）。
-#[allow(dead_code)]
 fn to_runtime_metrics_dto(snapshot: RuntimeObservabilitySnapshot) -> RuntimeMetricsDto {
     RuntimeMetricsDto {
         session_rehydrate: to_operation_metrics_dto(snapshot.session_rehydrate),

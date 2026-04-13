@@ -18,18 +18,21 @@ use astrcode_session_runtime::SessionRuntime;
 use async_trait::async_trait;
 
 use super::{
-    capabilities::CapabilitySurfaceSync, mcp::load_declared_configs, plugins::bootstrap_plugins,
+    capabilities::CapabilitySurfaceSync, mcp::load_declared_configs,
+    plugins::bootstrap_plugins_with_skill_root,
 };
 
 pub(crate) struct GovernanceBuildInput {
     pub session_runtime: Arc<SessionRuntime>,
     pub config_service: Arc<ConfigService>,
     pub coordinator: Arc<RuntimeCoordinator>,
+    pub task_registry: Arc<TaskRegistry>,
     pub observability: Arc<RuntimeObservabilityCollector>,
     pub mcp_manager: Arc<McpConnectionManager>,
     pub capability_sync: CapabilitySurfaceSync,
     pub skill_catalog: Arc<SkillCatalog>,
     pub plugin_search_paths: Vec<PathBuf>,
+    pub plugin_skill_root: PathBuf,
     pub plugin_supervisors: Vec<Arc<Supervisor>>,
     pub working_dir: PathBuf,
 }
@@ -48,6 +51,7 @@ pub(crate) fn build_app_governance(input: GovernanceBuildInput) -> Arc<AppGovern
         capability_sync: input.capability_sync.clone(),
         skill_catalog: Arc::clone(&input.skill_catalog),
         plugin_search_paths: input.plugin_search_paths.clone(),
+        plugin_skill_root: input.plugin_skill_root.clone(),
         working_dir: input.working_dir.clone(),
     });
     let managed_components: Vec<Arc<dyn ManagedRuntimeComponent>> = input
@@ -64,7 +68,7 @@ pub(crate) fn build_app_governance(input: GovernanceBuildInput) -> Arc<AppGovern
     Arc::new(
         AppGovernance::new(
             runtime_port,
-            Arc::new(TaskRegistry::new()),
+            input.task_registry,
             input.observability,
             sessions,
         )
@@ -158,6 +162,7 @@ struct ServerRuntimeReloader {
     capability_sync: CapabilitySurfaceSync,
     skill_catalog: Arc<SkillCatalog>,
     plugin_search_paths: Vec<PathBuf>,
+    plugin_skill_root: PathBuf,
     working_dir: PathBuf,
 }
 
@@ -165,6 +170,7 @@ impl std::fmt::Debug for ServerRuntimeReloader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ServerRuntimeReloader")
             .field("plugin_search_paths", &self.plugin_search_paths)
+            .field("plugin_skill_root", &self.plugin_skill_root)
             .finish_non_exhaustive()
     }
 }
@@ -179,7 +185,11 @@ impl RuntimeReloader for ServerRuntimeReloader {
             self.config_service.reload_from_disk().await?;
             let mcp_configs =
                 load_declared_configs(&self.config_service, self.working_dir.as_path()).await?;
-            let plugin_bootstrap = bootstrap_plugins(self.plugin_search_paths.clone()).await;
+            let plugin_bootstrap = bootstrap_plugins_with_skill_root(
+                self.plugin_search_paths.clone(),
+                self.plugin_skill_root.clone(),
+            )
+            .await;
 
             let previous_base_skills = self.skill_catalog.base_skills();
             let mut next_base_skills = load_builtin_skills();

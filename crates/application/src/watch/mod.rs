@@ -18,10 +18,12 @@ use crate::ApplicationError;
 // ============================================================
 
 /// 变更事件的来源。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum WatchSource {
     /// 全局配置文件变更（`~/.astrcode/config.json`）。
     GlobalConfig,
+    /// 全局 agent 定义目录变更（`~/.claude/agents` / `~/.astrcode/agents`）。
+    GlobalAgentDefinitions,
     /// 项目级配置覆盖变更（`<project>/.astrcode/config.json`）。
     ProjectConfig { working_dir: String },
     /// Agent 定义文件变更（`<project>/.astrcode/agents/`）。
