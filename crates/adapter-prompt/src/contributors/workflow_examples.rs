@@ -15,40 +15,44 @@ use crate::{
 
 pub struct WorkflowExamplesContributor;
 
+const AGENT_COLLABORATION_TOOLS: &[&str] = &["spawn", "send", "observe", "close"];
+
 #[async_trait]
 impl PromptContributor for WorkflowExamplesContributor {
     fn contributor_id(&self) -> &'static str {
         "workflow-examples"
     }
 
-    async fn contribute(&self, _ctx: &PromptContext) -> PromptContribution {
-        PromptContribution {
-            blocks: vec![
-                BlockSpec::message_text(
-                    "few-shot-user",
-                    BlockKind::FewShotExamples,
-                    "Few Shot User",
-                    "Before changing code, inspect the relevant files and gather context first. \
-                     If you only know a filename pattern or glob, use `findFiles`. Use `grep` \
-                     only when you have both a content pattern and a search path.",
-                    RenderTarget::PrependUser,
-                )
-                .with_condition(BlockCondition::FirstStepOnly)
-                .with_priority(700),
-                BlockSpec::message_text(
-                    "few-shot-assistant",
-                    BlockKind::FewShotExamples,
-                    "Few Shot Assistant",
-                    "I will inspect the relevant files and gather context before making changes. \
-                     I will use `findFiles` to discover candidate paths, then use `grep` with \
-                     both `pattern` and `path` when I need content search inside those files or \
-                     directories.",
-                    RenderTarget::PrependAssistant,
-                )
-                .with_condition(BlockCondition::FirstStepOnly)
-                .depends_on("few-shot-user")
-                .with_priority(701),
-                // 子 Agent 协作决策指导
+    async fn contribute(&self, ctx: &PromptContext) -> PromptContribution {
+        let mut blocks = vec![
+            BlockSpec::message_text(
+                "few-shot-user",
+                BlockKind::FewShotExamples,
+                "Few Shot User",
+                "Before changing code, inspect the relevant files and gather context first. If \
+                 you only know a filename pattern or glob, use `findFiles`. Use `grep` only when \
+                 you have both a content pattern and a search path.",
+                RenderTarget::PrependUser,
+            )
+            .with_condition(BlockCondition::FirstStepOnly)
+            .with_priority(700),
+            BlockSpec::message_text(
+                "few-shot-assistant",
+                BlockKind::FewShotExamples,
+                "Few Shot Assistant",
+                "I will inspect the relevant files and gather context before making changes. I \
+                 will use `findFiles` to discover candidate paths, then use `grep` with both \
+                 `pattern` and `path` when I need content search inside those files or \
+                 directories.",
+                RenderTarget::PrependAssistant,
+            )
+            .with_condition(BlockCondition::FirstStepOnly)
+            .depends_on("few-shot-user")
+            .with_priority(701),
+        ];
+
+        if has_agent_collaboration_tools(ctx) {
+            blocks.push(
                 BlockSpec::system_text(
                     "child-collaboration-guidance",
                     BlockKind::CollaborationGuide,
@@ -73,10 +77,22 @@ impl PromptContributor for WorkflowExamplesContributor {
                      follow-up instruction or observe first.",
                 )
                 .with_priority(600),
-            ],
+            );
+        }
+
+        PromptContribution {
+            blocks,
             ..PromptContribution::default()
         }
     }
+}
+
+fn has_agent_collaboration_tools(ctx: &PromptContext) -> bool {
+    ctx.tool_names.iter().any(|tool_name| {
+        AGENT_COLLABORATION_TOOLS
+            .iter()
+            .any(|candidate| tool_name == candidate)
+    })
 }
 
 #[cfg(test)]
@@ -109,6 +125,49 @@ mod tests {
         let output = composer.build(&ctx).await.expect("build should succeed");
 
         assert_eq!(output.plan.prepend_messages.len(), 2);
+        assert!(
+            output
+                .plan
+                .system_blocks
+                .iter()
+                .all(|block| block.id != "child-collaboration-guidance")
+        );
+        match &output.plan.prepend_messages[0] {
+            LlmMessage::User { content, .. } => assert!(content.contains("findFiles")),
+            other => panic!("expected prepended user message, got {other:?}"),
+        }
+        match &output.plan.prepend_messages[1] {
+            LlmMessage::Assistant { content, .. } => assert!(content.contains("pattern")),
+            other => panic!("expected prepended assistant message, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn adds_collaboration_guidance_only_when_agent_tools_are_available() {
+        let _guard = TestEnvGuard::new();
+        let composer = PromptComposer::with_options(PromptComposerOptions {
+            validation_level: ValidationLevel::Strict,
+            ..PromptComposerOptions::default()
+        });
+
+        let ctx = PromptContext {
+            working_dir: "/workspace/demo".to_string(),
+            tool_names: vec![
+                "shell".to_string(),
+                "spawn".to_string(),
+                "observe".to_string(),
+            ],
+            capability_specs: Vec::new(),
+            prompt_declarations: Vec::new(),
+            agent_profiles: Vec::new(),
+            skills: Vec::new(),
+            step_index: 0,
+            turn_index: 0,
+            vars: Default::default(),
+        };
+
+        let output = composer.build(&ctx).await.expect("build should succeed");
+
         let collaboration_block = output
             .plan
             .system_blocks
@@ -131,13 +190,5 @@ mod tests {
                 .content
                 .contains("same `deliveryId` again")
         );
-        match &output.plan.prepend_messages[0] {
-            LlmMessage::User { content, .. } => assert!(content.contains("findFiles")),
-            other => panic!("expected prepended user message, got {other:?}"),
-        }
-        match &output.plan.prepend_messages[1] {
-            LlmMessage::Assistant { content, .. } => assert!(content.contains("pattern")),
-            other => panic!("expected prepended assistant message, got {other:?}"),
-        }
     }
 }
