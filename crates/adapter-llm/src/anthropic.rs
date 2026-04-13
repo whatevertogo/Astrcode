@@ -120,7 +120,8 @@ impl AnthropicProvider {
         system_prompt_blocks: &[SystemPromptBlock],
         stream: bool,
     ) -> AnthropicRequest {
-        let use_automatic_cache = is_official_anthropic_api_url(&self.messages_api_url);
+        let use_official_endpoint = is_official_anthropic_api_url(&self.messages_api_url);
+        let use_automatic_cache = use_official_endpoint;
         let mut remaining_cache_breakpoints = ANTHROPIC_CACHE_BREAKPOINT_LIMIT;
         let request_cache_control = if use_automatic_cache {
             remaining_cache_breakpoints = remaining_cache_breakpoints.saturating_sub(1);
@@ -129,7 +130,12 @@ impl AnthropicProvider {
             None
         };
 
-        let mut anthropic_messages = to_anthropic_messages(messages);
+        let mut anthropic_messages = to_anthropic_messages(
+            messages,
+            MessageBuildOptions {
+                include_reasoning_blocks: use_official_endpoint,
+            },
+        );
         let tools = if tools.is_empty() {
             None
         } else {
@@ -153,10 +159,16 @@ impl AnthropicProvider {
             system,
             tools,
             stream: stream.then_some(true),
-            thinking: thinking_config_for_model(
-                &self.model,
-                self.limits.max_output_tokens.min(u32::MAX as usize) as u32,
-            ),
+            // Why: 第三方 Anthropic 兼容网关常见只支持基础 messages 子集；
+            // 在非官方 endpoint 下关闭 `thinking` 字段，避免触发参数校验失败。
+            thinking: if use_official_endpoint {
+                thinking_config_for_model(
+                    &self.model,
+                    self.limits.max_output_tokens.min(u32::MAX as usize) as u32,
+                )
+            } else {
+                None
+            },
         }
     }
 
@@ -427,33 +439,59 @@ impl LlmProvider for AnthropicProvider {
 /// - User 消息 → 单个 `text` 内容块
 /// - Assistant 消息 → 可能包含 `thinking`、`text`、`tool_use` 多个块
 /// - Tool 消息 → 单个 `tool_result` 内容块
-fn to_anthropic_messages(messages: &[LlmMessage]) -> Vec<AnthropicMessage> {
-    messages
-        .iter()
-        .map(|message| match message {
-            LlmMessage::User { content, .. } => AnthropicMessage {
+#[derive(Clone, Copy)]
+struct MessageBuildOptions {
+    include_reasoning_blocks: bool,
+}
+
+fn to_anthropic_messages(
+    messages: &[LlmMessage],
+    options: MessageBuildOptions,
+) -> Vec<AnthropicMessage> {
+    let mut anthropic_messages = Vec::with_capacity(messages.len());
+    let mut pending_user_blocks = Vec::new();
+
+    let flush_pending_user_blocks =
+        |anthropic_messages: &mut Vec<AnthropicMessage>,
+         pending_user_blocks: &mut Vec<AnthropicContentBlock>| {
+            if pending_user_blocks.is_empty() {
+                return;
+            }
+
+            anthropic_messages.push(AnthropicMessage {
                 role: "user".to_string(),
-                content: vec![AnthropicContentBlock::Text {
+                content: std::mem::take(pending_user_blocks),
+            });
+        };
+
+    for message in messages {
+        match message {
+            LlmMessage::User { content, .. } => {
+                pending_user_blocks.push(AnthropicContentBlock::Text {
                     text: content.clone(),
                     cache_control: None,
-                }],
+                });
             },
             LlmMessage::Assistant {
                 content,
                 tool_calls,
                 reasoning,
             } => {
+                flush_pending_user_blocks(&mut anthropic_messages, &mut pending_user_blocks);
+
                 let mut blocks = Vec::new();
-                if let Some(reasoning) = reasoning {
-                    blocks.push(AnthropicContentBlock::Thinking {
-                        thinking: reasoning.content.clone(),
-                        signature: reasoning.signature.clone(),
-                        cache_control: None,
-                    });
+                if options.include_reasoning_blocks {
+                    if let Some(reasoning) = reasoning {
+                        blocks.push(AnthropicContentBlock::Thinking {
+                            thinking: reasoning.content.clone(),
+                            signature: reasoning.signature.clone(),
+                            cache_control: None,
+                        });
+                    }
                 }
-                // Anthropic API 要求：如果有 tool_use，必须至少有一个 text 块（即使为空）
-                // 否则会报错：insufficient tool messages following tool_calls message
-                if !content.is_empty() || !tool_calls.is_empty() {
+                // Anthropic assistant 消息可以直接包含 tool_use 块，不要求前置 text 块。
+                // 仅在确实有文本时写入 text 块，避免向兼容网关发送空 text 导致参数校验失败。
+                if !content.is_empty() {
                     blocks.push(AnthropicContentBlock::Text {
                         text: content.clone(),
                         cache_control: None,
@@ -469,25 +507,33 @@ fn to_anthropic_messages(messages: &[LlmMessage]) -> Vec<AnthropicMessage> {
                             cache_control: None,
                         }),
                 );
+                if blocks.is_empty() {
+                    blocks.push(AnthropicContentBlock::Text {
+                        text: String::new(),
+                        cache_control: None,
+                    });
+                }
 
-                AnthropicMessage {
+                anthropic_messages.push(AnthropicMessage {
                     role: "assistant".to_string(),
                     content: blocks,
-                }
+                });
             },
             LlmMessage::Tool {
                 tool_call_id,
                 content,
-            } => AnthropicMessage {
-                role: "user".to_string(),
-                content: vec![AnthropicContentBlock::ToolResult {
+            } => {
+                pending_user_blocks.push(AnthropicContentBlock::ToolResult {
                     tool_use_id: tool_call_id.clone(),
                     content: content.clone(),
                     cache_control: None,
-                }],
+                });
             },
-        })
-        .collect()
+        }
+    }
+
+    flush_pending_user_blocks(&mut anthropic_messages, &mut pending_user_blocks);
+    anthropic_messages
 }
 
 /// 在最近的消息内容块上启用显式 prompt caching。
@@ -822,14 +868,34 @@ fn extract_delta_block(payload: &Value) -> &Value {
 
 fn anthropic_stream_error(payload: &Value) -> AstrError {
     let error = payload.get("error").unwrap_or(payload);
-    let error_type = error
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown_error");
     let message = error
         .get("message")
+        .or_else(|| error.get("msg"))
+        .or_else(|| payload.get("message"))
         .and_then(Value::as_str)
         .unwrap_or("anthropic stream returned an error event");
+
+    let mut error_type = error
+        .get("type")
+        .or_else(|| error.get("code"))
+        .or_else(|| payload.get("error_type"))
+        .or_else(|| payload.get("code"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown_error");
+
+    // Why: 部分兼容网关不回传结构化 error.type，只给中文文案。
+    // 这类错误本质仍是请求参数错误，不应退化成 internal stream error。
+    let message_lower = message.to_lowercase();
+    if matches!(error_type, "unknown_error" | "error")
+        && (message_lower.contains("参数非法")
+            || message_lower.contains("invalid request")
+            || message_lower.contains("invalid parameter")
+            || message_lower.contains("invalid arguments")
+            || (message_lower.contains("messages") && message_lower.contains("illegal")))
+    {
+        error_type = "invalid_request_error";
+    }
+
     let detail = format!("{error_type}: {message}");
 
     match error_type {
@@ -840,7 +906,7 @@ fn anthropic_stream_error(payload: &Value) -> AstrError {
         "rate_limit_error" => classify_http_error(429, &detail).into(),
         "overloaded_error" => classify_http_error(529, &detail).into(),
         "api_error" => classify_http_error(500, &detail).into(),
-        _ => AstrError::LlmStreamError(detail),
+        _ => classify_http_error(400, &detail).into(),
     }
 }
 
@@ -1187,15 +1253,14 @@ impl AnthropicCacheControl {
 impl AnthropicContentBlock {
     /// 判断内容块是否适合显式 `cache_control`。
     ///
-    /// Anthropic 不允许在 thinking block 上直接设置缓存标记；空文本块也没有缓存价值。
+    /// 出于兼容网关的稳健性，显式缓存断点仅打在 text 块上；
+    /// thinking / tool_use / tool_result 不设置 cache_control，避免部分兼容实现的参数校验失败。
     fn can_use_explicit_cache_control(&self) -> bool {
         match self {
             AnthropicContentBlock::Text { text, .. } => cacheable_text(text),
             AnthropicContentBlock::Thinking { .. } => false,
-            AnthropicContentBlock::ToolUse { id, name, .. } => {
-                cacheable_text(id) || cacheable_text(name)
-            },
-            AnthropicContentBlock::ToolResult { content, .. } => cacheable_text(content),
+            AnthropicContentBlock::ToolUse { .. } => false,
+            AnthropicContentBlock::ToolResult { .. } => false,
         }
     }
 
@@ -1356,7 +1421,7 @@ mod tests {
     use crate::sink_collector;
 
     #[test]
-    fn to_anthropic_messages_includes_empty_text_block_when_tool_calls_present() {
+    fn to_anthropic_messages_does_not_inject_empty_text_block_for_tool_use() {
         let messages = vec![LlmMessage::Assistant {
             content: "".to_string(),
             tool_calls: vec![ToolCallRequest {
@@ -1367,29 +1432,120 @@ mod tests {
             reasoning: None,
         }];
 
-        let anthropic_messages = to_anthropic_messages(&messages);
+        let anthropic_messages = to_anthropic_messages(
+            &messages,
+            MessageBuildOptions {
+                include_reasoning_blocks: true,
+            },
+        );
         assert_eq!(anthropic_messages.len(), 1);
 
         let msg = &anthropic_messages[0];
         assert_eq!(msg.role, "assistant");
-        assert_eq!(msg.content.len(), 2); // text + tool_use
+        assert_eq!(msg.content.len(), 1);
 
-        // 验证第一个块是空文本块
         match &msg.content[0] {
-            AnthropicContentBlock::Text { text, .. } => {
-                assert_eq!(text, "");
-            },
-            _ => panic!("Expected Text block as first content block"),
-        }
-
-        // 验证第二个块是 tool_use
-        match &msg.content[1] {
             AnthropicContentBlock::ToolUse { id, name, .. } => {
                 assert_eq!(id, "call_123");
                 assert_eq!(name, "test_tool");
             },
-            _ => panic!("Expected ToolUse block as second content block"),
+            _ => panic!("Expected ToolUse block"),
         }
+    }
+
+    #[test]
+    fn to_anthropic_messages_groups_consecutive_tool_results_into_one_user_message() {
+        let messages = vec![
+            LlmMessage::Assistant {
+                content: String::new(),
+                tool_calls: vec![
+                    ToolCallRequest {
+                        id: "call_1".to_string(),
+                        name: "read_file".to_string(),
+                        args: json!({"path": "a.rs"}),
+                    },
+                    ToolCallRequest {
+                        id: "call_2".to_string(),
+                        name: "grep".to_string(),
+                        args: json!({"pattern": "spawn"}),
+                    },
+                ],
+                reasoning: None,
+            },
+            LlmMessage::Tool {
+                tool_call_id: "call_1".to_string(),
+                content: "file content".to_string(),
+            },
+            LlmMessage::Tool {
+                tool_call_id: "call_2".to_string(),
+                content: "grep result".to_string(),
+            },
+        ];
+
+        let anthropic_messages = to_anthropic_messages(
+            &messages,
+            MessageBuildOptions {
+                include_reasoning_blocks: true,
+            },
+        );
+
+        assert_eq!(anthropic_messages.len(), 2);
+        assert_eq!(anthropic_messages[0].role, "assistant");
+        assert_eq!(anthropic_messages[1].role, "user");
+        assert_eq!(anthropic_messages[1].content.len(), 2);
+        assert!(matches!(
+            &anthropic_messages[1].content[0],
+            AnthropicContentBlock::ToolResult { tool_use_id, content, .. }
+            if tool_use_id == "call_1" && content == "file content"
+        ));
+        assert!(matches!(
+            &anthropic_messages[1].content[1],
+            AnthropicContentBlock::ToolResult { tool_use_id, content, .. }
+            if tool_use_id == "call_2" && content == "grep result"
+        ));
+    }
+
+    #[test]
+    fn to_anthropic_messages_keeps_user_text_after_tool_results_in_same_message() {
+        let messages = vec![
+            LlmMessage::Assistant {
+                content: String::new(),
+                tool_calls: vec![ToolCallRequest {
+                    id: "call_1".to_string(),
+                    name: "read_file".to_string(),
+                    args: json!({"path": "a.rs"}),
+                }],
+                reasoning: None,
+            },
+            LlmMessage::Tool {
+                tool_call_id: "call_1".to_string(),
+                content: "file content".to_string(),
+            },
+            LlmMessage::User {
+                content: "请继续总结发现。".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ];
+
+        let anthropic_messages = to_anthropic_messages(
+            &messages,
+            MessageBuildOptions {
+                include_reasoning_blocks: true,
+            },
+        );
+
+        assert_eq!(anthropic_messages.len(), 2);
+        assert_eq!(anthropic_messages[1].role, "user");
+        assert_eq!(anthropic_messages[1].content.len(), 2);
+        assert!(matches!(
+            &anthropic_messages[1].content[0],
+            AnthropicContentBlock::ToolResult { tool_use_id, content, .. }
+            if tool_use_id == "call_1" && content == "file content"
+        ));
+        assert!(matches!(
+            &anthropic_messages[1].content[1],
+            AnthropicContentBlock::Text { text, .. } if text == "请继续总结发现。"
+        ));
     }
 
     #[test]
@@ -1546,6 +1702,38 @@ mod tests {
     }
 
     #[test]
+    fn streaming_sse_error_event_without_type_still_maps_to_request_error() {
+        let mut accumulator = LlmAccumulator::default();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = sink_collector(events);
+        let mut sse_buffer = String::new();
+        let mut stop_reason_out: Option<String> = None;
+        let mut usage_out = AnthropicUsage::default();
+
+        let error = consume_sse_text_chunk(
+            concat!(
+                "event: error\n",
+                "data: {\"type\":\"error\",\"error\":{\"message\":\"messages 参数非法\"}}\n\n"
+            ),
+            &mut sse_buffer,
+            &mut accumulator,
+            &sink,
+            &mut stop_reason_out,
+            &mut usage_out,
+        )
+        .expect_err("error event should terminate the stream with a structured error");
+
+        match error {
+            AstrError::LlmRequestFailed { status, body } => {
+                assert_eq!(status, 400);
+                assert!(body.contains("invalid_request_error"));
+                assert!(body.contains("messages 参数非法"));
+            },
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[test]
     fn build_request_serializes_system_and_thinking_when_applicable() {
         let provider = AnthropicProvider::new(
             "https://api.anthropic.com/v1/messages".to_string(),
@@ -1675,8 +1863,9 @@ mod tests {
         let body = serde_json::to_value(&request).expect("request should serialize");
 
         assert!(body.get("cache_control").is_none());
+        assert_eq!(body["messages"].as_array().map(Vec::len), Some(1));
         assert_eq!(
-            body["messages"][1]["content"][0]["cache_control"]["type"],
+            body["messages"][0]["content"][1]["cache_control"]["type"],
             json!("ephemeral")
         );
         assert!(
@@ -1686,7 +1875,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_message_caching_skips_thinking_blocks() {
+    fn custom_gateway_request_disables_extended_thinking_payloads() {
         let provider = AnthropicProvider::new(
             "https://gateway.example.com/anthropic/v1/messages".to_string(),
             "sk-ant-test".to_string(),
@@ -1713,12 +1902,9 @@ mod tests {
         );
         let body = serde_json::to_value(&request).expect("request should serialize");
 
-        assert_eq!(body["messages"][0]["content"][0]["type"], json!("thinking"));
-        assert!(
-            body["messages"][0]["content"][0]
-                .get("cache_control")
-                .is_none()
-        );
+        assert!(body.get("thinking").is_none());
+        assert_eq!(body["messages"][0]["content"][0]["type"], json!("text"));
+        assert_eq!(body["messages"][0]["content"][0]["text"], json!(""));
     }
 
     #[test]

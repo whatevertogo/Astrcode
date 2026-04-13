@@ -127,10 +127,74 @@ fn map_kernel_error(error: KernelError) -> AstrError {
                 || contains_ascii_case_insensitive(&message, "operation cancelled")
                 || contains_ascii_case_insensitive(&message, "cancelled")
             {
-                AstrError::LlmInterrupted
+                return AstrError::LlmInterrupted;
+            }
+
+            if let Some(raw) = message.strip_prefix("LLM request failed: ") {
+                if let Some((status_raw, body)) = raw.split_once(" - ") {
+                    if let Ok(status) = status_raw.trim().parse::<u16>() {
+                        return AstrError::LlmRequestFailed {
+                            status,
+                            body: body.to_string(),
+                        };
+                    }
+                }
+                return AstrError::LlmRequestFailed {
+                    status: 400,
+                    body: raw.to_string(),
+                };
+            }
+
+            if let Some(raw) = message.strip_prefix("LLM stream error: ") {
+                return AstrError::LlmStreamError(raw.to_string());
+            }
+
+            if let Some(raw) = message.strip_prefix("network error: ") {
+                return AstrError::Network(raw.to_string());
+            }
+
+            if let Some(raw) = message.strip_prefix("invalid api key for provider: ") {
+                return AstrError::InvalidApiKey(raw.to_string());
             } else {
-                AstrError::Internal(message)
+                return AstrError::Internal(message);
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use astrcode_core::AstrError;
+    use astrcode_kernel::KernelError;
+
+    use super::map_kernel_error;
+
+    #[test]
+    fn map_kernel_error_restores_llm_request_failed_variant() {
+        let mapped = map_kernel_error(KernelError::Invoke(
+            "LLM request failed: 400 - invalid_request_error: messages 参数非法".to_string(),
+        ));
+
+        match mapped {
+            AstrError::LlmRequestFailed { status, body } => {
+                assert_eq!(status, 400);
+                assert!(body.contains("messages 参数非法"));
+            },
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_kernel_error_restores_llm_stream_error_variant() {
+        let mapped = map_kernel_error(KernelError::Invoke(
+            "LLM stream error: invalid_request_error: messages 参数非法".to_string(),
+        ));
+
+        match mapped {
+            AstrError::LlmStreamError(message) => {
+                assert!(message.contains("messages 参数非法"));
+            },
+            other => panic!("unexpected error variant: {other:?}"),
+        }
     }
 }
