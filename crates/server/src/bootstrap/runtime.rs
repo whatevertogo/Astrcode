@@ -23,8 +23,9 @@ use astrcode_session_runtime::SessionRuntime;
 
 use super::{
     capabilities::{
-        CapabilitySurfaceSync, build_agent_invokers, build_builtin_capability_invokers,
-        build_server_capability_router, build_skill_catalog, sync_external_tool_search_index,
+        CapabilitySurfaceSync, build_agent_tool_invokers, build_core_tool_invokers,
+        build_server_capability_router, build_skill_catalog, build_stable_local_invokers,
+        sync_external_tool_search_index,
     },
     governance::{GovernanceBuildInput, build_app_governance},
     mcp::{bootstrap_mcp_manager, build_mcp_service, warmup_mcp_manager},
@@ -117,7 +118,9 @@ impl ServerBootstrapPaths {
 
 /// 构建服务器运行时组合根。
 ///
-/// 能力来源三路合并：builtin + MCP + plugin。
+/// 能力来源拆为两层：
+/// - 稳定本地能力：core builtin tools + agent tools
+/// - 动态外部能力：MCP + plugin
 pub async fn bootstrap_server_runtime() -> Result<ServerRuntime> {
     bootstrap_server_runtime_with_options(ServerBootstrapOptions::default()).await
 }
@@ -138,7 +141,7 @@ pub async fn bootstrap_server_runtime_with_options(
     let mcp_manager =
         bootstrap_mcp_manager(working_dir.as_path(), paths.mcp_approvals_path.clone()).await?;
 
-    // plugin + MCP 是外部事实源，需要先完成装配，随后再把它们注入
+    // plugin + MCP 是动态外部事实源，需要先完成装配，随后再把它们注入
     // tool_search / skill catalog，避免启动态与 reload 态出现两套事实。
     let tool_search_index = Arc::new(ToolSearchIndex::new());
     let PluginBootstrapResult {
@@ -154,20 +157,22 @@ pub async fn bootstrap_server_runtime_with_options(
     .await;
     let mcp_invokers = mcp_manager.current_surface().await.capability_invokers;
 
-    let mut external_invokers: Vec<Arc<dyn CapabilityInvoker>> = mcp_invokers.clone();
-    external_invokers.extend(plugin_invokers.clone());
-    sync_external_tool_search_index(&tool_search_index, &external_invokers);
+    let mut external_dynamic_invokers: Vec<Arc<dyn CapabilityInvoker>> = mcp_invokers.clone();
+    external_dynamic_invokers.extend(plugin_invokers.clone());
+    sync_external_tool_search_index(&tool_search_index, &external_dynamic_invokers);
 
-    // builtin 能力：工具发现索引 + skill 目录
+    // core builtin tools：工具定义本身是 builtin + stable；
+    // 其中 `Skill` 工具消费的 catalog 可以包含 builtin / mcp / plugin 三类 skill。
     let skill_catalog = build_skill_catalog(plugin_skills);
-    let builtin_invokers =
-        build_builtin_capability_invokers(Arc::clone(&tool_search_index), skill_catalog.clone())?;
+    let core_tool_invokers =
+        build_core_tool_invokers(Arc::clone(&tool_search_index), skill_catalog.clone())?;
 
-    // 三路合并：builtin + MCP + plugin
-    let mut all_invokers = builtin_invokers.clone();
-    all_invokers.extend(mcp_invokers);
-    all_invokers.extend(plugin_invokers.clone());
-    let capabilities = build_server_capability_router(all_invokers)?;
+    // 初始 router 先用“当前可立即装配的能力面”启动：
+    // core builtin tools + 当前 external 动态能力。
+    // agent tools 要等 agent_service 准备好后再并入稳定本地层。
+    let mut initial_router_invokers = core_tool_invokers.clone();
+    initial_router_invokers.extend(external_dynamic_invokers.clone());
+    let capabilities = build_server_capability_router(initial_router_invokers)?;
 
     let kernel = Arc::new(build_kernel(
         capabilities,
@@ -207,16 +212,17 @@ pub async fn bootstrap_server_runtime_with_options(
         observability.clone(),
     ));
 
-    // agent 四工具依赖 agent_service，必须在 kernel/session_runtime 之后单独注册
-    let agent_invokers = build_agent_invokers(agent_service.clone())?;
-    let mut stable_invokers = builtin_invokers.clone();
-    stable_invokers.extend(agent_invokers);
+    // agent 四工具依赖 agent_service，必须在 kernel/session_runtime 之后单独注册。
+    // 组装完成后，稳定本地层 = core builtin tools + agent tools。
+    let agent_tool_invokers = build_agent_tool_invokers(agent_service.clone())?;
+    let stable_local_invokers =
+        build_stable_local_invokers(core_tool_invokers, agent_tool_invokers);
     let capability_sync = CapabilitySurfaceSync::new(
         kernel.clone(),
-        stable_invokers,
+        stable_local_invokers,
         Arc::clone(&tool_search_index),
     );
-    capability_sync.apply_external_invokers(external_invokers.clone())?;
+    capability_sync.apply_external_invokers(external_dynamic_invokers.clone())?;
     let coordinator = Arc::new(RuntimeCoordinator::new(
         Arc::new(super::governance::AppRuntimeHandle),
         plugin_registry.clone(),

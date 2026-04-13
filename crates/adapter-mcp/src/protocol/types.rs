@@ -95,6 +95,7 @@ impl JsonRpcNotification {
 
 /// MCP 服务器声明的工具信息。
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct McpToolInfo {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -119,6 +120,7 @@ pub struct McpToolAnnotations {
 
 /// MCP 工具调用结果。
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct McpToolResult {
     pub content: Vec<McpContentBlock>,
     #[serde(default)]
@@ -132,13 +134,18 @@ pub enum McpContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "image")]
-    Image { data: String, mime_type: String },
+    Image {
+        data: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+    },
     #[serde(rename = "resource")]
     Resource { resource: McpResourceContent },
 }
 
 /// MCP 资源内容。
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct McpResourceContent {
     pub uri: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -190,6 +197,7 @@ pub struct McpPromptResult {
 
 /// MCP 服务器声明的资源信息。
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct McpResourceInfo {
     pub uri: String,
     pub name: String,
@@ -357,3 +365,55 @@ pub struct McpOAuthConfig {
 
 /// 额外 HTTP headers（用于认证）。
 pub type HttpHeaders = HashMap<String, String>;
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{McpResourceContent, McpToolInfo, McpToolResult};
+
+    #[test]
+    fn deserializes_tool_info_input_schema_from_camel_case_field() {
+        let tool: McpToolInfo = serde_json::from_value(json!({
+            "name": "web_search_prime",
+            "description": "Search web information",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "search_query": { "type": "string" }
+                },
+                "required": ["search_query"]
+            }
+        }))
+        .expect("tool info should deserialize");
+
+        assert_eq!(tool.name, "web_search_prime");
+        assert_eq!(
+            tool.input_schema.expect("input schema should exist")["required"],
+            json!(["search_query"])
+        );
+    }
+
+    #[test]
+    fn deserializes_tool_result_error_flag_from_camel_case_field() {
+        let result: McpToolResult = serde_json::from_value(json!({
+            "content": [],
+            "isError": true
+        }))
+        .expect("tool result should deserialize");
+
+        assert!(result.is_error);
+    }
+
+    #[test]
+    fn deserializes_resource_content_mime_type_from_camel_case_field() {
+        let resource: McpResourceContent = serde_json::from_value(json!({
+            "uri": "file:///tmp/demo.txt",
+            "mimeType": "text/plain",
+            "text": "hello"
+        }))
+        .expect("resource content should deserialize");
+
+        assert_eq!(resource.mime_type.as_deref(), Some("text/plain"));
+    }
+}

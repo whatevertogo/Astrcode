@@ -1,7 +1,11 @@
 //! # 能力装配
 //!
-//! 负责把内置工具适配为 `CapabilityRouter`，
-//! 并在外部 surface（如 MCP）变化时同步刷新 kernel 能力面。
+//! 本模块把 server 运行时的能力面拆成两层：
+//! - 稳定本地能力（stable local capabilities）：core builtin tools + agent tools
+//! - 动态外部能力（dynamic external capabilities）：MCP + plugin
+//!
+//! `CapabilitySurfaceSync` 负责在外部能力变化时重建整份 surface，
+//! 但始终保留稳定本地能力不被刷掉。
 
 use std::sync::Arc;
 
@@ -25,7 +29,12 @@ use astrcode_application::AgentOrchestrationService;
 use astrcode_core::{CapabilityInvoker, Result, Tool};
 use astrcode_kernel::{CapabilityRouter, Kernel, ToolCapabilityInvoker};
 
-pub(crate) fn build_builtin_capability_invokers(
+/// 构建稳定本地层中的 core builtin tool invokers。
+///
+/// 这里的“builtin”是能力来源语义，不等同于“所有稳定能力”。
+/// 例如 agent 四工具同样属于稳定本地能力，但不在本函数中构建，
+/// 因为它们依赖 `AgentOrchestrationService`，必须在更晚的组合根阶段装配。
+pub(crate) fn build_core_tool_invokers(
     tool_search_index: Arc<ToolSearchIndex>,
     skill_catalog: Arc<SkillCatalog>,
 ) -> Result<Vec<Arc<dyn CapabilityInvoker>>> {
@@ -91,7 +100,7 @@ pub(crate) fn build_server_capability_router(
 
 #[derive(Clone)]
 pub(crate) struct CapabilitySurfaceSync {
-    stable_invokers: Vec<Arc<dyn CapabilityInvoker>>,
+    stable_local_invokers: Vec<Arc<dyn CapabilityInvoker>>,
     router: CapabilityRouter,
     kernel: Arc<Kernel>,
     tool_search_index: Arc<ToolSearchIndex>,
@@ -100,27 +109,27 @@ pub(crate) struct CapabilitySurfaceSync {
 impl CapabilitySurfaceSync {
     pub(crate) fn new(
         kernel: Arc<Kernel>,
-        stable_invokers: Vec<Arc<dyn CapabilityInvoker>>,
+        stable_local_invokers: Vec<Arc<dyn CapabilityInvoker>>,
         tool_search_index: Arc<ToolSearchIndex>,
     ) -> Self {
         Self {
             router: kernel.gateway().capabilities().clone(),
             kernel,
-            stable_invokers,
+            stable_local_invokers,
             tool_search_index,
         }
     }
 
     /// 用 MCP + plugin 的外部调用器替换整份 surface。
     ///
-    /// 稳定内置调用器（builtin + agent）始终保留，MCP 和 plugin 由外部传入。
+    /// 稳定本地调用器（core builtin + agent）始终保留，MCP 和 plugin 由外部传入。
     /// 整份 surface 一次性替换，不做半刷新。
     /// 同时刷新 ToolSearchIndex 使其与 router 保持同步。
     pub(crate) fn apply_external_invokers(
         &self,
         external_invokers: Vec<Arc<dyn CapabilityInvoker>>,
     ) -> Result<()> {
-        let mut invokers = self.stable_invokers.clone();
+        let mut invokers = self.stable_local_invokers.clone();
         invokers.extend(external_invokers);
         self.router.replace_invokers(invokers.clone())?;
         self.kernel
@@ -128,7 +137,7 @@ impl CapabilitySurfaceSync {
             .replace_capabilities(&invokers, self.kernel.events());
         let external_specs = invokers
             .iter()
-            .skip(self.stable_invokers.len())
+            .skip(self.stable_local_invokers.len())
             .map(|invoker| invoker.capability_spec())
             .collect();
         self.tool_search_index.replace_from_specs(external_specs);
@@ -145,7 +154,7 @@ impl CapabilitySurfaceSync {
 /// 因为 agent_service 依赖 kernel 和 session_runtime，
 /// 而 kernel 的 capability surface 又需要包含 agent 工具，
 /// 所以 agent 工具的注册必须在 kernel + session_runtime 构建之后单独完成。
-pub(crate) fn build_agent_invokers(
+pub(crate) fn build_agent_tool_invokers(
     agent_service: Arc<AgentOrchestrationService>,
 ) -> Result<Vec<Arc<dyn CapabilityInvoker>>> {
     let tools: Vec<Arc<dyn Tool>> = vec![
@@ -166,6 +175,20 @@ pub(crate) fn build_agent_invokers(
         .collect())
 }
 
+/// 合并稳定本地能力层。
+///
+/// 为什么显式拆成 helper：
+/// - `core builtin` 和 `agent tools` 都属于“稳定本地能力”，只是装配时机不同
+/// - 组合根里直接 `extend` 很容易把“来源”和“生命周期”两个维度混在一起
+pub(crate) fn build_stable_local_invokers(
+    core_tool_invokers: Vec<Arc<dyn CapabilityInvoker>>,
+    agent_tool_invokers: Vec<Arc<dyn CapabilityInvoker>>,
+) -> Vec<Arc<dyn CapabilityInvoker>> {
+    let mut stable_local_invokers = core_tool_invokers;
+    stable_local_invokers.extend(agent_tool_invokers);
+    stable_local_invokers
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -180,7 +203,7 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::{Value, json};
 
-    use super::CapabilitySurfaceSync;
+    use super::{CapabilitySurfaceSync, build_stable_local_invokers};
     use crate::bootstrap::capabilities::sync_external_tool_search_index;
 
     #[derive(Debug)]
@@ -313,12 +336,12 @@ mod tests {
     #[test]
     fn apply_external_invokers_keeps_previous_surface_on_failure() {
         let builtin_invoker = invoker("read_file", &["source:builtin"]);
-        let builtin_invokers = vec![builtin_invoker];
-        let kernel = test_kernel(&builtin_invokers);
+        let core_tool_invokers = vec![builtin_invoker];
+        let kernel = test_kernel(&core_tool_invokers);
         let tool_search_index = Arc::new(ToolSearchIndex::new());
         let sync = CapabilitySurfaceSync::new(
             Arc::clone(&kernel),
-            builtin_invokers.clone(),
+            core_tool_invokers.clone(),
             Arc::clone(&tool_search_index),
         );
 
@@ -371,12 +394,13 @@ mod tests {
     fn apply_external_invokers_preserves_stable_internal_tools() {
         let builtin_invoker = invoker("read_file", &["source:builtin"]);
         let agent_invoker = invoker("spawn", &["builtin", "agent"]);
-        let stable_invokers = vec![builtin_invoker, agent_invoker];
-        let kernel = test_kernel(&stable_invokers);
+        let stable_local_invokers =
+            build_stable_local_invokers(vec![builtin_invoker], vec![agent_invoker]);
+        let kernel = test_kernel(&stable_local_invokers);
         let tool_search_index = Arc::new(ToolSearchIndex::new());
         let sync = CapabilitySurfaceSync::new(
             Arc::clone(&kernel),
-            stable_invokers,
+            stable_local_invokers,
             Arc::clone(&tool_search_index),
         );
 

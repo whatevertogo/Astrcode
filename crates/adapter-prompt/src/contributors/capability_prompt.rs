@@ -237,9 +237,13 @@ fn build_tool_search_workflow_block() -> BlockSpec {
         "tool-search-workflow",
         BlockKind::ToolGuide,
         "Example Workflow",
-        "1. Check whether builtin tools already solve the task.\n2. If not, use `tool_search` to \
-         discover relevant external MCP/plugin tools and inspect their schemas.\n3. Pick the \
-         matching concrete tool from the search results, such as `mcp__...`, and call it directly.",
+        "1. Check whether builtin tools already solve the task.\n2. If an external tool is needed \
+         or a visible `mcp__...` tool has unclear parameters, call `tool_search` first with part \
+         of the tool name or the task purpose, for example `{ \"query\": \"webReader\" }` or `{ \
+         \"query\": \"github repo structure\" }`.\n3. Read the returned `inputSchema` from \
+         `tool_search` before making the external tool call.\n4. Pick the matching concrete tool \
+         from the search results, such as `mcp__...`, and call it directly. Do not guess argument \
+         names when schema is available.",
     )
     .with_tag("source:capability")
     .with_category("capabilities")

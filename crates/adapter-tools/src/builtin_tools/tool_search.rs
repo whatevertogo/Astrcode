@@ -127,13 +127,22 @@ impl Tool for ToolSearchTool {
         ToolCapabilityMetadata::builtin()
             .side_effect(SideEffect::None)
             .concurrency_safe(true)
-            .prompt(ToolPromptMetadata::new(
-                "Search external MCP/plugin tools and return their full schema on demand.",
-                "Start with builtin tools. Use `tool_search` only when builtin tools are not \
-                 enough and the prompt only gives a rough external-tool summary. `tool_search` \
-                 returns candidate MCP/plugin tools plus schema, then call the matching concrete \
-                 tool such as `mcp__...`.",
-            ))
+            .prompt(
+                ToolPromptMetadata::new(
+                    "Search external MCP/plugin tools and return their full schema on demand.",
+                    "Start with builtin tools. If an external MCP/plugin tool is visible but its \
+                     parameters are unclear, call `tool_search` with part of the tool name or its \
+                     purpose instead of guessing argument names. `tool_search` returns candidate \
+                     tools plus `inputSchema`; read that schema first, then call the matching \
+                     concrete tool such as `mcp__...`.",
+                )
+                .example("Find schema by exact tool name: { \"query\": \"webReader\" }")
+                .example("Find schema by purpose: { \"query\": \"github repo structure\" }")
+                .example(
+                    "List available external tools when you are unsure which one to use: { \
+                     \"query\": \"\", \"limit\": 20 }",
+                ),
+            )
     }
 
     async fn execute(
