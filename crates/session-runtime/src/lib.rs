@@ -41,7 +41,9 @@ pub use state::{
     normalize_working_dir, prepare_session_execution, recent_turn_event_tail,
     should_record_compaction_tail_event,
 };
-pub use turn::{TurnOutcome, TurnRunRequest, TurnRunResult, run_turn};
+pub use turn::{
+    TurnFinishReason, TurnOutcome, TurnRunRequest, TurnRunResult, TurnSummary, run_turn,
+};
 
 const ROOT_AGENT_ID: &str = "root-agent";
 

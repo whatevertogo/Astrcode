@@ -3,7 +3,7 @@ schema: spec-driven # 默认 schema，推荐使用这个；也可以改成 minim
 context: |
   必要:
     - 用中文写所有文档
-    - PROJECT_ARCHITECTURE.md 是架构约定的主要文档，必须保持更新并作为所有设计决策的参考
+   
   技术栈:
     - 后端: Rust, Axum, SSE
     - 桌面端: Tauri
@@ -16,10 +16,7 @@ context: |
     - Server is the truth：服务端作为业务事实唯一来源
     - 前后端分离，前端仅消费 HTTP / SSE API，不承载核心业务逻辑
     - DTO / 协议层保持纯数据结构，不混入运行时业务逻辑
-    - runtime、storage、server、frontend 职责清晰分离，避免边界污染
-    - 优先保持 crate 职责单一、依赖方向稳定、模块语义明确
-    - 流式事件、一致的事件模型与持久化回放能力属于核心能力
-    - 能不用兼容层就不用兼容层，优先干净实现而不是历史包袱
+    - PROJECT_ARCHITECTURE.md 是架构约定的主要文档，必须保持更新并作为所有设计决策的参考，这很重要你必须要深度理解并遵守其中的约定
 
   项目原则:
     - 优先干净架构与长期可维护性，不为向后兼容牺牲设计质量

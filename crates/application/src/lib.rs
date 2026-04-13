@@ -14,7 +14,7 @@ pub mod observability;
 pub mod watch;
 
 pub use astrcode_session_runtime::{
-    SessionCatalogEvent, SessionHistorySnapshot, SessionReplay, SessionViewSnapshot,
+    SessionCatalogEvent, SessionHistorySnapshot, SessionReplay, SessionViewSnapshot, TurnSummary,
 };
 pub use composer::{ComposerOption, ComposerOptionKind, ComposerOptionsRequest};
 pub use config::{

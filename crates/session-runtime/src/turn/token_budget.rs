@@ -228,4 +228,47 @@ mod tests {
             TokenBudgetDecision::Continue
         );
     }
+
+    // ── auto-continue 场景测试 ──────────────────────────────
+
+    #[test]
+    fn continue_when_budget_plenty_and_delta_large() {
+        // 预算远未用完且最近输出量较大，应该继续
+        assert_eq!(
+            check_token_budget(500, 1_000, 1, 800, 500, 3),
+            TokenBudgetDecision::Continue
+        );
+    }
+
+    #[test]
+    fn stop_at_max_continuations() {
+        // 超过 90% 预算且达到最大续写次数，应停止
+        assert_eq!(
+            check_token_budget(950, 1_000, 3, 800, 500, 3),
+            TokenBudgetDecision::DiminishingReturns
+        );
+    }
+
+    #[test]
+    fn stop_on_diminishing_returns() {
+        // 超过 90% 预算但最近增量很小，收益递减
+        assert_eq!(
+            check_token_budget(920, 1_000, 1, 50, 500, 3),
+            TokenBudgetDecision::DiminishingReturns
+        );
+    }
+
+    #[test]
+    fn nudge_shows_percentage_and_usage() {
+        let nudge = build_auto_continue_nudge(500_000, 1_000_000);
+        assert!(nudge.contains("50%"));
+        assert!(nudge.contains("500000"));
+        assert!(nudge.contains("1000000"));
+    }
+
+    #[test]
+    fn nudge_handles_zero_budget_gracefully() {
+        let nudge = build_auto_continue_nudge(500, 0);
+        assert!(!nudge.is_empty());
+    }
 }

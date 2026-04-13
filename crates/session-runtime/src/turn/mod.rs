@@ -7,10 +7,12 @@ mod compaction_cycle;
 pub mod llm_cycle;
 mod runner;
 // pub mod subagent;
+pub mod summary;
 pub mod token_budget;
 pub mod tool_cycle;
 
 use astrcode_core::{SessionId, TurnId};
+pub use summary::{TurnFinishReason, TurnSummary};
 
 /// Turn 运行请求参数。
 #[derive(Debug, Clone, PartialEq, Eq)]

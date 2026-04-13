@@ -157,6 +157,38 @@ crates/
   - 业务审批规则
   - 全局治理策略
 
+`session-runtime` 的长期内部建模方向也应保持稳定：
+
+1. **优先 Event Log，再做投影**
+   - 长期目标是把 session 视为 append-only event log，而不是一组可变字段。
+   - `SessionState`、`history view`、`context window`、`branch snapshot` 都应是 log 的投影结果。
+   - 当前项目已经部分符合这个方向：`EventStore.append/replay`、`SessionState` 内部 projector、`history/replay` 查询都建立在事件回放之上。
+   - 但长期仍应继续收口：减少“字段即真相”的写法，让 `SessionLog -> Projection` 成为更显式的建模方式。
+
+2. **Turn 优先建模为状态机，而不是散落的过程分支**
+   - 合法状态转换应尽可能体现在类型或清晰枚举上，例如 pending / running / waiting_tool / completed / interrupted。
+   - 当前项目的 `run_turn` 已经把 LLM、tool、compaction 拆成 step loop，但 turn 本身仍更接近过程编排，而不是显式状态机。
+   - 长期方向不是把所有逻辑塞进一个巨大 enum，而是把“哪些转换合法”从运行时 if/guard 逐步提升为结构化状态转换。
+
+3. **Context Window 优先建模为 budget 分配问题**
+   - compaction、prune、file recovery、auto-continue 的共同问题不是“字符串怎么拼”，而是“预算如何分配”。
+   - 当前项目已经有 `TokenUsageTracker`、`PromptTokenSnapshot`、`ContextWindowSettings`，说明方向是对的。
+   - 长期应继续推进到更显式的 `ContextBudget + Strategy` 模型，使：
+     - request assembly 可独立测试
+     - compaction 策略可替换
+     - budget 决策与 prompt 拼装解耦
+
+4. **Mailbox / child delivery 优先使用类型化消息契约**
+   - child delivery、interrupt、observe、wake、close 这些能力，长期应尽量通过明确的消息类型表达，而不是靠共享可变状态和隐式约定拼接。
+   - 当前项目已经有 durable mailbox 事件和投影，但 `SessionActor` 还不是一个以 typed channel 驱动的真正 actor loop。
+   - 如果后续 child delivery / subrun 控制继续增长，typed mailbox 是优先级很高的收口方向。
+
+5. **Query 与 Command 逻辑继续分离**
+   - 写侧负责追加事件、推进 turn、驱动 mailbox。
+   - 读侧负责 history、snapshot、replay、context view 等投影查询。
+   - 当前项目已经开始分离：有 `query/` 模块，也有只读快照类型。
+   - 但 `SessionRuntime` 仍同时暴露较多 command/query 方法；长期可以继续向轻量 CQRS 靠拢，让只读查询尽量不被写侧执行路径阻塞。
+
 ### 4.6 `adapter-*`
 
 - `adapter-*` 只实现端口，不持有业务真相。
