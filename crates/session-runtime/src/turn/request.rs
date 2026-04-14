@@ -29,7 +29,7 @@ use crate::{
         },
     },
 };
-
+// TODO: 需要重构
 pub struct AssemblePromptRequest<'a> {
     pub gateway: &'a KernelGateway,
     pub prompt_facts_provider: &'a dyn PromptFactsProvider,
