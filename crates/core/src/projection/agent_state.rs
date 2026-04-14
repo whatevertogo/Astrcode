@@ -115,7 +115,12 @@ impl AgentStateProjector {
                 content, origin, ..
             } => {
                 self.flush_pending_assistant();
-                if !matches!(origin, UserMessageOrigin::ReactivationPrompt) {
+                if !matches!(
+                    origin,
+                    UserMessageOrigin::ReactivationPrompt
+                        | UserMessageOrigin::AutoContinueNudge
+                        | UserMessageOrigin::ContinuationPrompt
+                ) {
                     self.state.messages.push(LlmMessage::User {
                         content: content.clone(),
                         origin: *origin,
@@ -183,6 +188,21 @@ impl AgentStateProjector {
                     tool_call_id: tool_call_id.clone(),
                     content: result.model_content(),
                 });
+            },
+            StorageEventPayload::ToolResultReferenceApplied {
+                tool_call_id,
+                replacement,
+                ..
+            } => {
+                if let Some(LlmMessage::Tool { content, .. }) = self
+                    .state
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find(|message| matches!(message, LlmMessage::Tool { tool_call_id: current, .. } if current == tool_call_id))
+                {
+                    *content = replacement.clone();
+                }
             },
 
             StorageEventPayload::CompactApplied {
@@ -445,6 +465,24 @@ mod tests {
         )
     }
 
+    fn tool_result_reference_applied(
+        turn_id: Option<&str>,
+        agent: AgentEventContext,
+        tool_call_id: &str,
+        replacement: &str,
+    ) -> StorageEvent {
+        event(
+            turn_id,
+            agent,
+            StorageEventPayload::ToolResultReferenceApplied {
+                tool_call_id: tool_call_id.into(),
+                persisted_relative_path: "tool-results/sample.txt".to_string(),
+                replacement: replacement.to_string(),
+                original_bytes: 120,
+            },
+        )
+    }
+
     fn assistant_final(
         turn_id: Option<&str>,
         agent: AgentEventContext,
@@ -567,6 +605,28 @@ mod tests {
                 root_agent(),
                 "# Child Session Delivery",
                 UserMessageOrigin::ReactivationPrompt,
+            ),
+        ]);
+
+        assert!(state.messages.is_empty());
+        assert_eq!(state.phase, Phase::Idle);
+    }
+
+    #[test]
+    fn internal_continuation_prompts_do_not_pollute_projected_messages() {
+        let state = project(&[
+            session_start("s1", "/tmp"),
+            user_message(
+                Some("turn-internal"),
+                root_agent(),
+                "请继续。",
+                UserMessageOrigin::AutoContinueNudge,
+            ),
+            user_message(
+                Some("turn-internal"),
+                root_agent(),
+                "从上次截断处继续。",
+                UserMessageOrigin::ContinuationPrompt,
             ),
         ]);
 
@@ -806,6 +866,37 @@ mod tests {
         assert!(
             matches!(&state.messages[2], LlmMessage::Tool { tool_call_id, .. } if tool_call_id == "tc1")
         );
+    }
+
+    #[test]
+    fn tool_result_reference_applied_rewrites_projected_tool_content() {
+        let events = vec![
+            session_start("s1", "/tmp"),
+            user_message(None, root_agent(), "run tool", UserMessageOrigin::User),
+            tool_call(
+                None,
+                root_agent(),
+                "tc1",
+                "readFile",
+                json!({"path": "src/lib.rs"}),
+            ),
+            tool_result(None, root_agent(), "tc1", "readFile", "inline output", 2),
+            tool_result_reference_applied(
+                None,
+                root_agent(),
+                "tc1",
+                "<persisted-output>\nOutput too large (120 bytes). Full output saved to: \
+                 tool-results/sample.txt\n</persisted-output>",
+            ),
+            turn_done(None, root_agent(), "completed"),
+        ];
+
+        let state = project(&events);
+
+        assert!(matches!(
+            &state.messages[2],
+            LlmMessage::Tool { content, .. } if content.contains("tool-results/sample.txt")
+        ));
     }
 
     #[test]

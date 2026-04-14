@@ -33,6 +33,7 @@ pub const DEFAULT_LLM_MAX_RETRIES: u32 = 2;
 pub const DEFAULT_LLM_RETRY_BASE_DELAY_MS: u64 = 250;
 pub const DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS: u8 = 3;
 pub const DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS: u8 = 3;
+pub const DEFAULT_MAX_CONTINUATIONS: u8 = 3;
 pub const DEFAULT_SUMMARY_RESERVE_TOKENS: usize = 20_000;
 pub const DEFAULT_MAX_TRACKED_FILES: usize = 10;
 pub const DEFAULT_MAX_RECOVERED_FILES: usize = 5;
@@ -129,6 +130,8 @@ pub struct RuntimeConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_continuation_attempts: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_continuations: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub summary_reserve_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tracked_files: Option<usize>,
@@ -213,6 +216,7 @@ pub struct ResolvedRuntimeConfig {
     pub llm_retry_base_delay_ms: u64,
     pub max_reactive_compact_attempts: u8,
     pub max_output_continuation_attempts: u8,
+    pub max_continuations: u8,
     pub summary_reserve_tokens: usize,
     pub max_tracked_files: usize,
     pub max_recovered_files: usize,
@@ -274,6 +278,7 @@ impl Default for ResolvedRuntimeConfig {
             llm_retry_base_delay_ms: DEFAULT_LLM_RETRY_BASE_DELAY_MS,
             max_reactive_compact_attempts: DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS,
             max_output_continuation_attempts: DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS,
+            max_continuations: DEFAULT_MAX_CONTINUATIONS,
             summary_reserve_tokens: DEFAULT_SUMMARY_RESERVE_TOKENS,
             max_tracked_files: DEFAULT_MAX_TRACKED_FILES,
             max_recovered_files: DEFAULT_MAX_RECOVERED_FILES,
@@ -417,6 +422,7 @@ impl fmt::Debug for RuntimeConfig {
                 "max_output_continuation_attempts",
                 &self.max_output_continuation_attempts,
             )
+            .field("max_continuations", &self.max_continuations)
             .field("summary_reserve_tokens", &self.summary_reserve_tokens)
             .field("max_tracked_files", &self.max_tracked_files)
             .field("max_recovered_files", &self.max_recovered_files)
@@ -644,6 +650,10 @@ pub fn resolve_runtime_config(runtime: &RuntimeConfig) -> ResolvedRuntimeConfig 
         max_output_continuation_attempts: runtime
             .max_output_continuation_attempts
             .unwrap_or(defaults.max_output_continuation_attempts)
+            .max(1),
+        max_continuations: runtime
+            .max_continuations
+            .unwrap_or(defaults.max_continuations)
             .max(1),
         summary_reserve_tokens: runtime
             .summary_reserve_tokens

@@ -36,6 +36,7 @@ use step::{StepOutcome, run_single_step};
 
 use super::{
     TurnOutcome,
+    loop_control::{TurnLoopTransition, TurnStopCause},
     summary::{TurnCollaborationSummary, TurnFinishReason, TurnSummary},
 };
 use crate::{
@@ -44,6 +45,7 @@ use crate::{
         ContextWindowSettings, file_access::FileAccessTracker, micro_compact::MicroCompactState,
         token_usage::TokenUsageTracker,
     },
+    turn::tool_result_budget::ToolResultReplacementState,
 };
 
 /// 可清除的工具名称（这些工具的旧结果可以被 prune pass 替换为占位文本）。
@@ -114,7 +116,21 @@ struct TurnExecutionContext {
     micro_compact_state: MicroCompactState,
     file_access_tracker: FileAccessTracker,
     step_index: usize,
+    continuation_count: usize,
     reactive_compact_attempts: usize,
+    max_output_continuation_count: usize,
+    last_transition: Option<TurnLoopTransition>,
+    stop_cause: Option<TurnStopCause>,
+    tool_result_replacement_state: ToolResultReplacementState,
+    tool_result_replacement_count: usize,
+    tool_result_reapply_count: usize,
+    tool_result_bytes_saved: usize,
+    tool_result_over_budget_message_count: usize,
+    streaming_tool_launch_count: usize,
+    streaming_tool_match_count: usize,
+    streaming_tool_fallback_count: usize,
+    streaming_tool_discard_count: usize,
+    streaming_tool_overlap_ms: u64,
 }
 
 impl<'a> TurnExecutionResources<'a> {
@@ -171,29 +187,72 @@ impl TurnExecutionContext {
             total_cache_creation_tokens: 0,
             auto_compaction_count: 0,
             step_index: 0,
+            continuation_count: 0,
             reactive_compact_attempts: 0,
+            max_output_continuation_count: 0,
+            last_transition: None,
+            stop_cause: None,
+            tool_result_replacement_state: ToolResultReplacementState::seed(
+                resources.session_state,
+            )
+            .unwrap_or_default(),
+            tool_result_replacement_count: 0,
+            tool_result_reapply_count: 0,
+            tool_result_bytes_saved: 0,
+            tool_result_over_budget_message_count: 0,
+            streaming_tool_launch_count: 0,
+            streaming_tool_match_count: 0,
+            streaming_tool_fallback_count: 0,
+            streaming_tool_discard_count: 0,
+            streaming_tool_overlap_ms: 0,
+        }
+    }
+
+    fn record_transition(&mut self, transition: TurnLoopTransition) {
+        self.last_transition = Some(transition);
+        match transition {
+            TurnLoopTransition::BudgetAllowsContinuation
+            | TurnLoopTransition::OutputContinuationRequested => {
+                self.continuation_count = self.continuation_count.saturating_add(1);
+            },
+            TurnLoopTransition::ToolCycleCompleted
+            | TurnLoopTransition::ReactiveCompactRecovered => {},
         }
     }
 
     fn finish(
-        self,
+        mut self,
         resources: &TurnExecutionResources<'_>,
         outcome: TurnOutcome,
-        reason: TurnFinishReason,
+        stop_cause: TurnStopCause,
     ) -> TurnRunResult {
+        self.stop_cause = Some(stop_cause);
         TurnRunResult {
             outcome,
             messages: self.messages,
             events: self.events,
             summary: TurnSummary {
-                finish_reason: reason,
+                finish_reason: TurnFinishReason::from(stop_cause),
+                stop_cause,
+                last_transition: self.last_transition,
                 wall_duration: self.turn_started_at.elapsed(),
                 step_count: self.step_index + 1,
+                continuation_count: self.continuation_count,
                 total_tokens_used: self.token_tracker.budget_tokens(0) as u64,
                 cache_read_input_tokens: self.total_cache_read_tokens,
                 cache_creation_input_tokens: self.total_cache_creation_tokens,
                 auto_compaction_count: self.auto_compaction_count,
                 reactive_compact_count: self.reactive_compact_attempts,
+                max_output_continuation_count: self.max_output_continuation_count,
+                tool_result_replacement_count: self.tool_result_replacement_count,
+                tool_result_reapply_count: self.tool_result_reapply_count,
+                tool_result_bytes_saved: self.tool_result_bytes_saved as u64,
+                tool_result_over_budget_message_count: self.tool_result_over_budget_message_count,
+                streaming_tool_launch_count: self.streaming_tool_launch_count,
+                streaming_tool_match_count: self.streaming_tool_match_count,
+                streaming_tool_fallback_count: self.streaming_tool_fallback_count,
+                streaming_tool_discard_count: self.streaming_tool_discard_count,
+                streaming_tool_overlap_ms: self.streaming_tool_overlap_ms,
                 collaboration: turn_collaboration_summary(
                     resources.session_state,
                     resources.turn_id,
@@ -241,7 +300,7 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
             return Ok(execution.finish(
                 &resources,
                 TurnOutcome::Cancelled,
-                TurnFinishReason::Cancelled,
+                TurnStopCause::Cancelled,
             ));
         }
 
@@ -251,25 +310,19 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
                 TurnOutcome::Error {
                     message: format!("turn exceeded maximum steps ({})", resources.max_steps),
                 },
-                TurnFinishReason::StepLimitExceeded,
+                TurnStopCause::StepLimitExceeded,
             ));
         }
 
         match run_single_step(&mut execution, &resources).await? {
-            StepOutcome::Continue => {},
-            StepOutcome::Completed => {
-                return Ok(execution.finish(
-                    &resources,
-                    TurnOutcome::Completed,
-                    TurnFinishReason::NaturalEnd,
-                ));
+            StepOutcome::Continue(transition) => {
+                execution.record_transition(transition);
             },
-            StepOutcome::Cancelled => {
-                return Ok(execution.finish(
-                    &resources,
-                    TurnOutcome::Cancelled,
-                    TurnFinishReason::Cancelled,
-                ));
+            StepOutcome::Completed(stop_cause) => {
+                return Ok(execution.finish(&resources, TurnOutcome::Completed, stop_cause));
+            },
+            StepOutcome::Cancelled(stop_cause) => {
+                return Ok(execution.finish(&resources, TurnOutcome::Cancelled, stop_cause));
             },
         }
     }

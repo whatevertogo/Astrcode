@@ -420,10 +420,13 @@ mod tests {
     use super::*;
     use crate::{
         TurnCollaborationSummary, TurnFinishReason, TurnRunResult, TurnSummary,
-        turn::test_support::{
-            BranchingTestEventStore, NoopMetrics, append_root_turn_event_to_actor,
-            assert_contains_compact_summary, assert_contains_error_message,
-            root_compact_applied_event, test_actor, test_runtime,
+        turn::{
+            TurnLoopTransition, TurnStopCause,
+            test_support::{
+                BranchingTestEventStore, NoopMetrics, append_root_turn_event_to_actor,
+                assert_contains_compact_summary, assert_contains_error_message,
+                root_compact_applied_event, test_actor, test_runtime,
+            },
         },
     };
 
@@ -552,13 +555,26 @@ mod tests {
             events: Vec::new(),
             summary: TurnSummary {
                 finish_reason: TurnFinishReason::NaturalEnd,
+                stop_cause: TurnStopCause::Completed,
+                last_transition: Some(TurnLoopTransition::ToolCycleCompleted),
                 wall_duration: Duration::default(),
                 step_count: 1,
+                continuation_count: 0,
                 total_tokens_used: 0,
                 cache_read_input_tokens: 0,
                 cache_creation_input_tokens: 0,
                 auto_compaction_count: 0,
                 reactive_compact_count: 0,
+                max_output_continuation_count: 0,
+                tool_result_replacement_count: 0,
+                tool_result_reapply_count: 0,
+                tool_result_bytes_saved: 0,
+                tool_result_over_budget_message_count: 0,
+                streaming_tool_launch_count: 0,
+                streaming_tool_match_count: 0,
+                streaming_tool_fallback_count: 0,
+                streaming_tool_discard_count: 0,
+                streaming_tool_overlap_ms: 0,
                 collaboration: TurnCollaborationSummary::default(),
             },
         }

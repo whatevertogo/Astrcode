@@ -215,6 +215,26 @@ pub(crate) fn tool_result_event(
     }
 }
 
+pub(crate) fn tool_result_reference_applied_event(
+    turn_id: &str,
+    agent: &AgentEventContext,
+    tool_call_id: &str,
+    persisted_relative_path: &str,
+    replacement: &str,
+    original_bytes: u64,
+) -> StorageEvent {
+    StorageEvent {
+        turn_id: Some(turn_id.to_string()),
+        agent: agent.clone(),
+        payload: StorageEventPayload::ToolResultReferenceApplied {
+            tool_call_id: tool_call_id.to_string(),
+            persisted_relative_path: persisted_relative_path.to_string(),
+            replacement: replacement.to_string(),
+            original_bytes,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use astrcode_core::{

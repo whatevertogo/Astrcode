@@ -21,7 +21,13 @@ use crate::{
         micro_compact::MicroCompactState,
         token_usage::{TokenUsageTracker, build_prompt_snapshot, should_compact},
     },
-    turn::events::{CompactAppliedStats, compact_applied_event, prompt_metrics_event},
+    turn::{
+        events::{CompactAppliedStats, compact_applied_event, prompt_metrics_event},
+        tool_result_budget::{
+            ApplyToolResultBudgetRequest, ToolResultBudgetOutcome, ToolResultBudgetStats,
+            ToolResultReplacementState, apply_tool_result_budget,
+        },
+    },
 };
 
 pub struct AssemblePromptRequest<'a> {
@@ -40,6 +46,8 @@ pub struct AssemblePromptRequest<'a> {
     pub clearable_tools: &'a HashSet<String>,
     pub micro_compact_state: &'a mut MicroCompactState,
     pub file_access_tracker: &'a FileAccessTracker,
+    pub session_state: &'a crate::SessionState,
+    pub tool_result_replacement_state: &'a mut ToolResultReplacementState,
 }
 
 pub struct AssemblePromptResult {
@@ -47,6 +55,7 @@ pub struct AssemblePromptResult {
     pub messages: Vec<LlmMessage>,
     pub events: Vec<StorageEvent>,
     pub auto_compacted: bool,
+    pub tool_result_budget_stats: ToolResultBudgetStats,
 }
 
 /// Why: request assembly 要回答“最终如何形成一次 LLM 请求”，
@@ -58,8 +67,24 @@ pub async fn assemble_prompt_request(
     let mut events = Vec::new();
     let mut auto_compacted = false;
 
+    let ToolResultBudgetOutcome {
+        messages: budgeted_messages,
+        events: budget_events,
+        stats: tool_result_budget_stats,
+    } = apply_tool_result_budget(ApplyToolResultBudgetRequest {
+        messages: &request.messages,
+        session_id: request.session_id,
+        working_dir: request.working_dir,
+        session_state: request.session_state,
+        replacement_state: request.tool_result_replacement_state,
+        aggregate_budget_bytes: request.settings.aggregate_result_bytes_budget,
+        turn_id: request.turn_id,
+        agent: request.agent,
+    })?;
+    events.extend(budget_events);
+
     let micro_outcome = request.micro_compact_state.apply_if_idle(
-        &request.messages,
+        &budgeted_messages,
         request.clearable_tools,
         request.settings.micro_compact_config(),
         now,
@@ -178,6 +203,7 @@ pub async fn assemble_prompt_request(
         messages,
         events,
         auto_compacted,
+        tool_result_budget_stats,
     })
 }
 
@@ -296,7 +322,10 @@ mod tests {
     use super::*;
     use crate::{
         context_window::token_usage::TokenUsageTracker,
-        turn::test_support::{NoopPromptFactsProvider, test_gateway},
+        turn::{
+            test_support::{NoopPromptFactsProvider, test_gateway, test_session_state},
+            tool_result_budget::ToolResultReplacementState,
+        },
     };
 
     #[tokio::test]
@@ -304,6 +333,8 @@ mod tests {
         let gateway = test_gateway(64_000);
         let mut micro_state = crate::context_window::micro_compact::MicroCompactState::default();
         let tracker = crate::context_window::file_access::FileAccessTracker::new(4);
+        let session_state = test_session_state();
+        let mut replacement_state = ToolResultReplacementState::default();
         let settings = ContextWindowSettings::from(&ResolvedRuntimeConfig::default());
 
         let result = assemble_prompt_request(AssemblePromptRequest {
@@ -329,6 +360,8 @@ mod tests {
             clearable_tools: &std::collections::HashSet::new(),
             micro_compact_state: &mut micro_state,
             file_access_tracker: &tracker,
+            session_state: &session_state,
+            tool_result_replacement_state: &mut replacement_state,
         })
         .await
         .expect("assembly should succeed");

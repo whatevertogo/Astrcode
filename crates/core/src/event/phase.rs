@@ -28,6 +28,7 @@ pub fn target_phase(event: &StorageEvent) -> Phase {
         },
         StorageEventPayload::PromptMetrics { .. }
         | StorageEventPayload::CompactApplied { .. }
+        | StorageEventPayload::ToolResultReferenceApplied { .. }
         | StorageEventPayload::SubRunStarted { .. }
         | StorageEventPayload::SubRunFinished { .. }
         | StorageEventPayload::ChildSessionNotification { .. }
@@ -88,7 +89,10 @@ impl PhaseTracker {
         if matches!(
             &event.payload,
             StorageEventPayload::UserMessage {
-                origin: UserMessageOrigin::ReactivationPrompt | UserMessageOrigin::CompactSummary,
+                origin: UserMessageOrigin::AutoContinueNudge
+                    | UserMessageOrigin::ContinuationPrompt
+                    | UserMessageOrigin::ReactivationPrompt
+                    | UserMessageOrigin::CompactSummary,
                 ..
             }
         ) {
@@ -98,6 +102,7 @@ impl PhaseTracker {
             &event.payload,
             StorageEventPayload::PromptMetrics { .. }
                 | StorageEventPayload::CompactApplied { .. }
+                | StorageEventPayload::ToolResultReferenceApplied { .. }
                 | StorageEventPayload::SubRunStarted { .. }
                 | StorageEventPayload::SubRunFinished { .. }
                 | StorageEventPayload::ChildSessionNotification { .. }
@@ -199,6 +204,14 @@ mod tests {
             target_phase(&user_message(UserMessageOrigin::CompactSummary)),
             Phase::Idle
         );
+        assert_eq!(
+            target_phase(&user_message(UserMessageOrigin::AutoContinueNudge)),
+            Phase::Idle
+        );
+        assert_eq!(
+            target_phase(&user_message(UserMessageOrigin::ContinuationPrompt)),
+            Phase::Idle
+        );
     }
 
     #[test]
@@ -208,6 +221,25 @@ mod tests {
             tracker
                 .on_event(
                     &user_message(UserMessageOrigin::ReactivationPrompt),
+                    Some("turn-1".to_string()),
+                    AgentEventContext::default(),
+                )
+                .is_none()
+        );
+        assert_eq!(tracker.current(), Phase::Idle);
+        assert!(
+            tracker
+                .on_event(
+                    &user_message(UserMessageOrigin::AutoContinueNudge),
+                    Some("turn-1".to_string()),
+                    AgentEventContext::default(),
+                )
+                .is_none()
+        );
+        assert!(
+            tracker
+                .on_event(
+                    &user_message(UserMessageOrigin::ContinuationPrompt),
                     Some("turn-1".to_string()),
                     AgentEventContext::default(),
                 )

@@ -372,6 +372,7 @@ impl EventTranslator {
                     warn_missing_turn_id(stored.storage_seq, "toolCallResult");
                 }
             },
+            StorageEventPayload::ToolResultReferenceApplied { .. } => {},
             StorageEventPayload::TurnDone { .. } => {
                 if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::TurnDone {
@@ -520,26 +521,32 @@ mod tests {
 
     #[test]
     fn internal_user_origins_do_not_replay_as_user_visible_messages() {
-        let records = replay_records(
-            &[StoredEvent {
-                storage_seq: 3,
-                event: StorageEvent {
-                    turn_id: Some("turn-3".to_string()),
-                    agent: AgentEventContext::default(),
-                    payload: StorageEventPayload::UserMessage {
-                        content: format_compact_summary("summary"),
-                        origin: UserMessageOrigin::CompactSummary,
-                        timestamp: chrono::Utc::now(),
+        for origin in [
+            UserMessageOrigin::CompactSummary,
+            UserMessageOrigin::AutoContinueNudge,
+            UserMessageOrigin::ContinuationPrompt,
+        ] {
+            let records = replay_records(
+                &[StoredEvent {
+                    storage_seq: 3,
+                    event: StorageEvent {
+                        turn_id: Some("turn-3".to_string()),
+                        agent: AgentEventContext::default(),
+                        payload: StorageEventPayload::UserMessage {
+                            content: format_compact_summary("summary"),
+                            origin,
+                            timestamp: chrono::Utc::now(),
+                        },
                     },
-                },
-            }],
-            None,
-        );
+                }],
+                None,
+            );
 
-        assert!(
-            records.is_empty(),
-            "internal prompt-side context must not leak into replayed history or phase changes"
-        );
+            assert!(
+                records.is_empty(),
+                "internal prompt-side context must not leak into replayed history or phase changes"
+            );
+        }
     }
 
     #[test]

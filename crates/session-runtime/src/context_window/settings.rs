@@ -11,6 +11,7 @@ pub struct ContextWindowSettings {
     pub max_tracked_files: usize,
     pub max_recovered_files: usize,
     pub recovery_token_budget: usize,
+    pub aggregate_result_bytes_budget: usize,
     pub micro_compact_gap_threshold: Duration,
     pub micro_compact_keep_recent_results: usize,
 }
@@ -42,6 +43,7 @@ impl From<&ResolvedRuntimeConfig> for ContextWindowSettings {
             max_tracked_files: config.max_tracked_files,
             max_recovered_files: config.max_recovered_files.max(1),
             recovery_token_budget: config.recovery_token_budget.max(1),
+            aggregate_result_bytes_budget: config.aggregate_result_bytes_budget.max(1),
             micro_compact_gap_threshold: Duration::from_secs(
                 config.micro_compact_gap_threshold_secs.max(1),
             ),

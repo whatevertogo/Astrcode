@@ -150,6 +150,7 @@ mod tests {
             max_tracked_files: 8,
             max_recovered_files: 2,
             recovery_token_budget: 512,
+            aggregate_result_bytes_budget: 16_384,
             micro_compact_gap_threshold: Duration::from_secs(30),
             micro_compact_keep_recent_results: 2,
         }

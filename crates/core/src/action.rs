@@ -176,6 +176,10 @@ pub enum UserMessageOrigin {
     /// 用户直接输入
     #[default]
     User,
+    /// turn 内 budget 允许继续时注入的内部续写提示。
+    AutoContinueNudge,
+    /// assistant 输出被截断后，为同一 turn 续写而注入的内部提示。
+    ContinuationPrompt,
     /// 子会话交付后用于唤醒父会话继续决策的内部提示。
     ReactivationPrompt,
     /// 压缩摘要（上下文压缩后插入的摘要消息）

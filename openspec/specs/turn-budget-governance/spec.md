@@ -39,3 +39,45 @@
 - **WHEN** continuation 次数未达上限且 budget 允许继续
 - **THEN** turn 可以继续执行下一轮
 
+### Requirement: budget 决策 SHALL 产出稳定的 continuation 与 stop cause
+
+`session-runtime` 在 turn 内做 budget 决策时 MUST 产出稳定的 continuation cause 或 stop cause，而不是只返回一个无法解释的布尔结果。该原因 SHALL 能被 loop、测试和 observability 重用。
+
+#### Scenario: budget 允许继续时产生 continuation cause
+
+- **WHEN** 本轮 assistant 输出完成且 budget 决策允许继续
+- **THEN** 系统生成稳定的 continuation cause
+- **AND** 该 cause SHALL 被 turn loop 用于注入 continue nudge 并进入下一轮
+
+#### Scenario: budget 阻止继续时产生 stop cause
+
+- **WHEN** 本轮 assistant 输出完成且 budget 决策要求停止
+- **THEN** 系统生成稳定的 stop cause
+- **AND** turn loop SHALL 使用该原因结束当前 turn
+
+#### Scenario: hard limit 停止同样必须有原因
+
+- **WHEN** continuation 次数达到上限或等价硬限制
+- **THEN** 系统生成稳定的 stop cause
+- **AND** 该 stop cause SHALL 不依赖调用方额外推断
+
+### Requirement: 输出截断恢复 SHALL 受显式尝试上限约束
+
+`session-runtime` 对输出截断的 continuation 恢复 MUST 受显式上限约束，并使用正式配置控制，而不是无限继续或依赖调用方外部中断。
+
+#### Scenario: 配置上限允许继续恢复
+
+- **WHEN** 当前输出截断恢复次数低于 `max_output_continuation_attempts`
+- **THEN** 系统可以继续注入下一条 continuation prompt
+
+#### Scenario: 配置上限阻止继续恢复
+
+- **WHEN** 当前输出截断恢复次数达到 `max_output_continuation_attempts`
+- **THEN** 系统 SHALL 不再继续恢复
+- **AND** turn 结束时 SHALL 带有明确的 stop cause
+
+#### Scenario: 恢复次数与 budget 语义一致可观测
+
+- **WHEN** turn 期间发生一次或多次输出截断恢复
+- **THEN** 系统 SHALL 记录这些恢复次数
+- **AND** 该信息 SHALL 能被 turn 级预算与汇总逻辑读取

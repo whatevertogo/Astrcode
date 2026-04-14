@@ -5,9 +5,11 @@
 
 mod branch;
 mod compaction_cycle;
+mod continuation_cycle;
 mod events;
 mod interrupt;
 pub mod llm_cycle;
+mod loop_control;
 pub(crate) mod manual_compact;
 mod replay;
 mod request;
@@ -18,8 +20,10 @@ pub(crate) mod test_support;
 // pub mod subagent;
 pub mod summary;
 pub mod tool_cycle;
+mod tool_result_budget;
 
 use astrcode_core::{SessionId, TurnId};
+pub use loop_control::{TurnLoopTransition, TurnStopCause};
 pub use summary::{TurnCollaborationSummary, TurnFinishReason, TurnSummary};
 
 /// Turn 运行请求参数。

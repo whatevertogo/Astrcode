@@ -88,6 +88,7 @@ fn validate_runtime_params(runtime: &astrcode_core::RuntimeConfig) -> Result<()>
         runtime.compact_keep_recent_turns => "runtime.compactKeepRecentTurns",
         runtime.max_reactive_compact_attempts => "runtime.maxReactiveCompactAttempts",
         runtime.max_output_continuation_attempts => "runtime.maxOutputContinuationAttempts",
+        runtime.max_continuations => "runtime.maxContinuations",
     )?;
 
     validate_positive_fields!(

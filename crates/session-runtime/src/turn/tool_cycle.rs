@@ -16,11 +16,14 @@
 //! 所有工具调用通过 `KernelGateway` 进行，session-runtime 不直接持有 provider。
 //! 策略检查（policy/approval）由 kernel gateway 在 `invoke_tool` 内部处理。
 
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 use astrcode_core::{
     AgentEventContext, CancelToken, LlmMessage, Result, StorageEvent, ToolCallRequest, ToolContext,
-    ToolExecutionResult, ToolOutputDelta, tool_result_persist::resolve_inline_limit,
+    ToolEventSink, ToolExecutionResult, ToolOutputDelta, tool_result_persist::resolve_inline_limit,
 };
 use astrcode_kernel::KernelGateway;
 use futures_util::stream::{self, StreamExt};
@@ -50,6 +53,14 @@ pub struct ToolCycleResult {
     pub tool_messages: Vec<LlmMessage>,
     /// 原始调用和结果，供外部追踪（文件访问、微压缩等）。
     pub raw_results: Vec<(ToolCallRequest, ToolExecutionResult)>,
+    /// 仅在 buffered 模式下返回，由 step 在 assistant 定稿后统一刷入 durable 事件流。
+    pub events: Vec<StorageEvent>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolEventEmissionMode {
+    Immediate,
+    Buffered,
 }
 
 /// 工具执行周期的上下文参数，避免函数参数过多。
@@ -64,6 +75,7 @@ pub struct ToolCycleContext<'a> {
     pub events: &'a mut Vec<StorageEvent>,
     pub max_concurrency: usize,
     pub tool_result_inline_limit: usize,
+    pub event_emission_mode: ToolEventEmissionMode,
 }
 
 struct SingleToolInvocation<'a> {
@@ -76,6 +88,41 @@ struct SingleToolInvocation<'a> {
     agent: &'a AgentEventContext,
     cancel: &'a CancelToken,
     tool_result_inline_limit: usize,
+    event_emission_mode: ToolEventEmissionMode,
+}
+
+pub struct BufferedToolExecutionRequest {
+    pub gateway: KernelGateway,
+    pub session_state: Arc<SessionState>,
+    pub tool_call: ToolCallRequest,
+    pub session_id: String,
+    pub working_dir: String,
+    pub turn_id: String,
+    pub agent: AgentEventContext,
+    pub cancel: CancelToken,
+    pub tool_result_inline_limit: usize,
+}
+
+pub struct BufferedToolExecution {
+    pub tool_call: ToolCallRequest,
+    pub result: ToolExecutionResult,
+    pub events: Vec<StorageEvent>,
+    pub started_at: Instant,
+    pub finished_at: Instant,
+}
+
+struct BufferedToolEventSink {
+    events: Arc<Mutex<Vec<StorageEvent>>>,
+}
+
+impl ToolEventSink for BufferedToolEventSink {
+    fn emit(&self, event: StorageEvent) -> Result<()> {
+        self.events
+            .lock()
+            .expect("buffered tool event sink lock should work")
+            .push(event);
+        Ok(())
+    }
 }
 
 struct ToolOutputForwarder {
@@ -192,13 +239,19 @@ pub async fn execute_tool_calls(
             agent: ctx.agent,
             cancel: ctx.cancel,
             tool_result_inline_limit: ctx.tool_result_inline_limit,
+            event_emission_mode: ctx.event_emission_mode,
         })
         .await;
         collected_events.extend(local_events);
         raw_results.push((call, result));
     }
 
-    ctx.events.extend(collected_events);
+    let events = if matches!(ctx.event_emission_mode, ToolEventEmissionMode::Buffered) {
+        collected_events
+    } else {
+        ctx.events.extend(collected_events);
+        Vec::new()
+    };
 
     // 构建工具结果消息
     let tool_messages: Vec<LlmMessage> = raw_results
@@ -213,6 +266,7 @@ pub async fn execute_tool_calls(
         outcome: ToolCycleOutcome::Completed,
         tool_messages,
         raw_results,
+        events,
     })
 }
 
@@ -247,6 +301,7 @@ async fn execute_concurrent_safe(
                     agent: &agent,
                     cancel: &cancel,
                     tool_result_inline_limit,
+                    event_emission_mode: ctx.event_emission_mode,
                 })
                 .await;
                 (call, result, events)
@@ -257,6 +312,44 @@ async fn execute_concurrent_safe(
         .await;
 
     Ok(results)
+}
+
+pub async fn execute_buffered_tool_call(
+    request: BufferedToolExecutionRequest,
+) -> BufferedToolExecution {
+    let BufferedToolExecutionRequest {
+        gateway,
+        session_state,
+        tool_call,
+        session_id,
+        working_dir,
+        turn_id,
+        agent,
+        cancel,
+        tool_result_inline_limit,
+    } = request;
+    let started_at = Instant::now();
+    let (result, events) = invoke_single_tool(SingleToolInvocation {
+        gateway: &gateway,
+        session_state,
+        tool_call: &tool_call,
+        session_id: &session_id,
+        working_dir: &working_dir,
+        turn_id: &turn_id,
+        agent: &agent,
+        cancel: &cancel,
+        tool_result_inline_limit,
+        event_emission_mode: ToolEventEmissionMode::Buffered,
+    })
+    .await;
+    let finished_at = Instant::now();
+    BufferedToolExecution {
+        tool_call,
+        result,
+        events,
+        started_at,
+        finished_at,
+    }
 }
 
 /// 底层工具调用：通过 kernel gateway 执行，记录开始/结束事件。
@@ -276,19 +369,31 @@ async fn invoke_single_tool(
         agent,
         cancel,
         tool_result_inline_limit,
+        event_emission_mode,
     } = invocation;
-    let mut events = Vec::new();
+    let buffered_events = Arc::new(Mutex::new(Vec::new()));
+    let mut fallback_events = Vec::new();
     let start = Instant::now();
-    let event_sink = SessionStateEventSink::new(Arc::clone(&session_state))
-        .map(|sink| Arc::new(sink) as Arc<dyn astrcode_core::ToolEventSink>)
-        .ok();
+    let event_sink = match event_emission_mode {
+        ToolEventEmissionMode::Immediate => SessionStateEventSink::new(Arc::clone(&session_state))
+            .map(|sink| Arc::new(sink) as Arc<dyn ToolEventSink>)
+            .ok(),
+        ToolEventEmissionMode::Buffered => Some(Arc::new(BufferedToolEventSink {
+            events: Arc::clone(&buffered_events),
+        }) as Arc<dyn ToolEventSink>),
+    };
     let (tool_output_tx, tool_output_rx) = mpsc::unbounded_channel::<ToolOutputDelta>();
     let tool_output_forwarder =
         ToolOutputForwarder::spawn(Arc::clone(&session_state), turn_id, agent, tool_output_rx);
 
     // 发出 ToolCall 开始事件
     let tool_call_event = tool_call_event(turn_id, agent, tool_call);
-    emit_or_buffer_tool_event(&event_sink, &mut events, tool_call_event, "tool start");
+    emit_or_buffer_tool_event(
+        &event_sink,
+        &mut fallback_events,
+        tool_call_event,
+        "tool start",
+    );
 
     // 构建工具上下文
     let tool_ctx = ToolContext::new(
@@ -332,8 +437,18 @@ async fn invoke_single_tool(
             ..result.clone()
         },
     );
-    emit_or_buffer_tool_event(&event_sink, &mut events, tool_result_event, "tool result");
+    emit_or_buffer_tool_event(
+        &event_sink,
+        &mut fallback_events,
+        tool_result_event,
+        "tool result",
+    );
 
+    let mut events = buffered_events
+        .lock()
+        .expect("buffered tool events lock should work")
+        .clone();
+    events.extend(fallback_events);
     (result, events)
 }
 
@@ -374,6 +489,7 @@ fn interrupted_result() -> ToolCycleResult {
         outcome: ToolCycleOutcome::Interrupted,
         tool_messages: Vec::new(),
         raw_results: Vec::new(),
+        events: Vec::new(),
     }
 }
 
@@ -550,6 +666,7 @@ mod tests {
             agent: &agent,
             cancel: &cancel,
             tool_result_inline_limit: 32 * 1024,
+            event_emission_mode: ToolEventEmissionMode::Immediate,
         })
         .await;
 
@@ -588,6 +705,7 @@ mod tests {
             agent: &agent,
             cancel: &cancel,
             tool_result_inline_limit: 32 * 1024,
+            event_emission_mode: ToolEventEmissionMode::Immediate,
         })
         .await;
 
@@ -660,6 +778,90 @@ mod tests {
                     && delta == "live-stdout"
             ),
             "stdout delta should go through the live channel immediately"
+        );
+    }
+
+    #[tokio::test]
+    async fn invoke_single_tool_buffers_structured_events_when_requested() {
+        let kernel = test_kernel_with_tool(Arc::new(StreamingProbeTool), 8192);
+        let tool_call = ToolCallRequest {
+            id: "call-buffered".to_string(),
+            name: "streaming_probe".to_string(),
+            args: json!({}),
+        };
+        let agent = AgentEventContext::root_execution("root-agent:session-1", "default");
+        let session_state = test_session_state();
+        let mut live_receiver = session_state.subscribe_live();
+
+        let cancel = CancelToken::new();
+        let (result, buffered_events) = invoke_single_tool(SingleToolInvocation {
+            gateway: kernel.gateway(),
+            session_state: Arc::clone(&session_state),
+            tool_call: &tool_call,
+            session_id: "session-1",
+            working_dir: ".",
+            turn_id: "turn-buffered",
+            agent: &agent,
+            cancel: &cancel,
+            tool_result_inline_limit: 32 * 1024,
+            event_emission_mode: ToolEventEmissionMode::Buffered,
+        })
+        .await;
+
+        assert!(result.ok, "tool invocation should succeed: {result:?}");
+        assert!(
+            buffered_events.iter().any(|event| matches!(
+                &event.payload,
+                StorageEventPayload::ToolCall {
+                    tool_call_id,
+                    tool_name,
+                    ..
+                } if tool_call_id == "call-buffered" && tool_name == "streaming_probe"
+            )),
+            "buffered mode should keep tool start in local event buffer"
+        );
+        assert!(
+            buffered_events.iter().any(|event| matches!(
+                &event.payload,
+                StorageEventPayload::ToolCallDelta {
+                    tool_call_id,
+                    tool_name,
+                    delta,
+                    ..
+                } if tool_call_id == "call-buffered"
+                    && tool_name == "streaming_probe"
+                    && delta == "durable-delta"
+            )),
+            "buffered mode should preserve tool-emitted durable deltas"
+        );
+        assert!(
+            session_state
+                .snapshot_recent_stored_events()
+                .expect("snapshot recent stored events should work")
+                .is_empty(),
+            "buffered mode should not immediately append durable events"
+        );
+
+        let live_event = timeout(Duration::from_secs(1), live_receiver.recv())
+            .await
+            .expect("live receiver should get stdout delta in time")
+            .expect("live receiver should stay open");
+        assert!(
+            matches!(
+                live_event,
+                astrcode_core::AgentEvent::ToolCallDelta {
+                    turn_id,
+                    tool_call_id,
+                    tool_name,
+                    stream: ToolOutputStream::Stdout,
+                    delta,
+                    ..
+                } if turn_id == "turn-buffered"
+                    && tool_call_id == "call-buffered"
+                    && tool_name == "streaming_probe"
+                    && delta == "live-stdout"
+            ),
+            "buffered mode should keep live stdout forwarding"
         );
     }
 }

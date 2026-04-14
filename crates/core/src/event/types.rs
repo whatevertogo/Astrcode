@@ -133,6 +133,13 @@ pub enum StorageEventPayload {
         metadata: Option<Value>,
         duration_ms: u64,
     },
+    /// 将大型工具结果替换为 `<persisted-output>` 引用后的 durable 决策。
+    ToolResultReferenceApplied {
+        tool_call_id: String,
+        persisted_relative_path: String,
+        replacement: String,
+        original_bytes: u64,
+    },
     /// 上下文窗口指标快照（用于监控和压缩决策）。
     PromptMetrics {
         #[serde(flatten)]

@@ -21,6 +21,16 @@ use tokio::sync::mpsc;
 
 use crate::SessionState;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamedToolCallDelta {
+    pub index: usize,
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub arguments_delta: String,
+}
+
+pub type ToolCallDeltaSink = Arc<dyn Fn(StreamedToolCallDelta) + Send + Sync>;
+
 /// 调用 LLM 并收集流式 delta 为 StorageEvent。
 ///
 /// LLM 完成前推送的最后几个 delta 可能还在 channel 缓冲中，
@@ -32,6 +42,7 @@ pub async fn call_llm_streaming(
     agent: &AgentEventContext,
     session_state: &SessionState,
     cancel: &CancelToken,
+    tool_delta_sink: Option<ToolCallDeltaSink>,
 ) -> Result<astrcode_core::LlmOutput> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<LlmEvent>();
 
@@ -48,7 +59,7 @@ pub async fn call_llm_streaming(
             result = &mut generate_future => break result,
             maybe_event = event_rx.recv(), if event_rx_open => {
                 match maybe_event {
-                    Some(event) => emit_llm_delta_live(event, turn_id, agent, session_state),
+                    Some(event) => emit_llm_delta_live(event, turn_id, agent, session_state, tool_delta_sink.as_ref()),
                     None => event_rx_open = false,
                 }
             }
@@ -61,7 +72,13 @@ pub async fn call_llm_streaming(
 
     // 排空 channel 中残余事件：LLM 完成前推送的最后几个 delta
     while let Ok(event) = event_rx.try_recv() {
-        emit_llm_delta_live(event, turn_id, agent, session_state);
+        emit_llm_delta_live(
+            event,
+            turn_id,
+            agent,
+            session_state,
+            tool_delta_sink.as_ref(),
+        );
     }
 
     output.map_err(map_kernel_error)
@@ -85,6 +102,7 @@ fn emit_llm_delta_live(
     turn_id: &str,
     agent: &AgentEventContext,
     session_state: &SessionState,
+    tool_delta_sink: Option<&ToolCallDeltaSink>,
 ) {
     match event {
         LlmEvent::TextDelta(text) => {
@@ -101,8 +119,23 @@ fn emit_llm_delta_live(
                 delta: text,
             });
         },
-        // ThinkingSignature 是 Anthropic API 计费验证令牌，ToolCallDelta 由 provider 内部聚合。
-        LlmEvent::ThinkingSignature(_) | LlmEvent::ToolCallDelta { .. } => {},
+        LlmEvent::ToolCallDelta {
+            index,
+            id,
+            name,
+            arguments_delta,
+        } => {
+            if let Some(sink) = tool_delta_sink {
+                sink(StreamedToolCallDelta {
+                    index,
+                    id,
+                    name,
+                    arguments_delta,
+                });
+            }
+        },
+        // ThinkingSignature 是 Anthropic API 计费验证令牌，不需要对 live UI 或 runner 暴露。
+        LlmEvent::ThinkingSignature(_) => {},
     }
 }
 
@@ -164,10 +197,13 @@ fn map_kernel_error(error: KernelError) -> AstrError {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::AstrError;
+    use std::sync::{Arc, Mutex};
+
+    use astrcode_core::{AgentEventContext, AstrError};
     use astrcode_kernel::KernelError;
 
-    use super::map_kernel_error;
+    use super::{StreamedToolCallDelta, emit_llm_delta_live, map_kernel_error};
+    use crate::turn::test_support::test_session_state;
 
     #[test]
     fn map_kernel_error_restores_llm_request_failed_variant() {
@@ -196,5 +232,43 @@ mod tests {
             },
             other => panic!("unexpected error variant: {other:?}"),
         }
+    }
+
+    #[test]
+    fn emit_llm_delta_live_forwards_tool_call_delta_to_runner_sink() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let sink_received = Arc::clone(&received);
+        let sink: super::ToolCallDeltaSink = Arc::new(move |delta: StreamedToolCallDelta| {
+            sink_received
+                .lock()
+                .expect("tool delta sink lock should work")
+                .push(delta);
+        });
+
+        emit_llm_delta_live(
+            astrcode_core::LlmEvent::ToolCallDelta {
+                index: 0,
+                id: Some("call-1".to_string()),
+                name: Some("readFile".to_string()),
+                arguments_delta: r#"{"path":"README.md"}"#.to_string(),
+            },
+            "turn-1",
+            &AgentEventContext::default(),
+            &test_session_state(),
+            Some(&sink),
+        );
+
+        assert_eq!(
+            received
+                .lock()
+                .expect("tool delta sink lock should work")
+                .as_slice(),
+            &[StreamedToolCallDelta {
+                index: 0,
+                id: Some("call-1".to_string()),
+                name: Some("readFile".to_string()),
+                arguments_delta: r#"{"path":"README.md"}"#.to_string(),
+            }]
+        );
     }
 }

@@ -14,6 +14,8 @@ use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
 };
 
+use super::{TurnLoopTransition, TurnStopCause};
+
 /// Turn 完成原因。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnFinishReason {
@@ -25,6 +27,20 @@ pub enum TurnFinishReason {
     Error,
     /// 超过 step 上限
     StepLimitExceeded,
+}
+
+impl From<TurnStopCause> for TurnFinishReason {
+    fn from(value: TurnStopCause) -> Self {
+        match value {
+            TurnStopCause::Completed
+            | TurnStopCause::BudgetStoppedContinuation
+            | TurnStopCause::ContinuationLimitReached
+            | TurnStopCause::MaxOutputContinuationLimitReached => Self::NaturalEnd,
+            TurnStopCause::Cancelled => Self::Cancelled,
+            TurnStopCause::Error => Self::Error,
+            TurnStopCause::StepLimitExceeded => Self::StepLimitExceeded,
+        }
+    }
 }
 
 /// 单轮 turn 内的协作汇总。
@@ -91,10 +107,16 @@ impl TurnCollaborationSummary {
 pub struct TurnSummary {
     /// Turn 完成原因
     pub finish_reason: TurnFinishReason,
+    /// 更细粒度的停止原因，供 loop/诊断层使用。
+    pub stop_cause: TurnStopCause,
+    /// 最后一次进入下一轮的 transition。
+    pub last_transition: Option<TurnLoopTransition>,
     /// Turn 执行总耗时
     pub wall_duration: Duration,
     /// Turn 内 step 数量
     pub step_count: usize,
+    /// Turn 内 budget/恢复驱动的 continuation 次数
+    pub continuation_count: usize,
     /// Provider 报告的总 token 使用量（含 input + output）
     pub total_tokens_used: u64,
     /// Provider 报告的 cache read input tokens
@@ -105,6 +127,26 @@ pub struct TurnSummary {
     pub auto_compaction_count: usize,
     /// Turn 期间发生的 reactive compact 次数
     pub reactive_compact_count: usize,
+    /// Turn 期间发生的 max_tokens continuation 次数
+    pub max_output_continuation_count: usize,
+    /// aggregate tool-result budget 新增 replacement 的命中数
+    pub tool_result_replacement_count: usize,
+    /// 已有 replacement 被 durable 重放到当前 prompt 的次数
+    pub tool_result_reapply_count: usize,
+    /// aggregate replacement 节省的字节数
+    pub tool_result_bytes_saved: u64,
+    /// 进入 aggregate over-budget 处理的 tool-result message 数
+    pub tool_result_over_budget_message_count: usize,
+    /// 流式阶段提前启动的安全工具调用数
+    pub streaming_tool_launch_count: usize,
+    /// 最终与 assistant 定稿精确匹配并复用的提前执行数
+    pub streaming_tool_match_count: usize,
+    /// 因参数未闭合、身份未稳定或工具不安全而保守回退的次数
+    pub streaming_tool_fallback_count: usize,
+    /// 已启动但最终被 discard 的提前执行数
+    pub streaming_tool_discard_count: usize,
+    /// LLM streaming 与工具执行真实重叠的累计毫秒数
+    pub streaming_tool_overlap_ms: u64,
     /// Turn 内 agent-tool 协作汇总
     pub collaboration: TurnCollaborationSummary,
 }
