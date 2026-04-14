@@ -59,6 +59,27 @@ pub(super) struct StreamingToolAssembly {
     pub name: Option<String>,
     pub arguments: String,
     pub launched: bool,
+    json_tracker: StreamingJsonTracker,
+}
+
+#[cfg(test)]
+impl StreamingToolAssembly {
+    pub(super) fn for_test(
+        id: Option<String>,
+        name: Option<String>,
+        arguments: impl Into<String>,
+    ) -> Self {
+        let arguments = arguments.into();
+        let mut assembly = Self {
+            id,
+            name,
+            arguments,
+            launched: false,
+            json_tracker: StreamingJsonTracker::default(),
+        };
+        assembly.json_tracker.observe_chunk(&assembly.arguments);
+        assembly
+    }
 }
 
 struct StreamingToolCandidate {
@@ -71,6 +92,82 @@ struct StreamingToolAssembler {
     assemblies: BTreeMap<usize, StreamingToolAssembly>,
 }
 
+#[derive(Debug, Default)]
+struct StreamingJsonTracker {
+    started: bool,
+    in_string: bool,
+    escape: bool,
+    object_depth: usize,
+    complete: bool,
+    fallback_to_full_parse: bool,
+}
+
+impl StreamingJsonTracker {
+    fn observe_chunk(&mut self, chunk: &str) {
+        if self.fallback_to_full_parse {
+            return;
+        }
+
+        for ch in chunk.chars() {
+            if self.complete {
+                if !ch.is_whitespace() {
+                    self.complete = false;
+                    self.fallback_to_full_parse = true;
+                }
+                continue;
+            }
+
+            if self.in_string {
+                if self.escape {
+                    self.escape = false;
+                    continue;
+                }
+                match ch {
+                    '\\' => self.escape = true,
+                    '"' => self.in_string = false,
+                    _ => {},
+                }
+                continue;
+            }
+
+            if !self.started {
+                if ch.is_whitespace() {
+                    continue;
+                }
+                self.started = true;
+                if ch == '{' {
+                    self.object_depth = 1;
+                } else {
+                    self.fallback_to_full_parse = true;
+                }
+                continue;
+            }
+
+            match ch {
+                '"' => self.in_string = true,
+                '{' => {
+                    self.object_depth = self.object_depth.saturating_add(1);
+                },
+                '}' => {
+                    if self.object_depth == 0 {
+                        self.fallback_to_full_parse = true;
+                        return;
+                    }
+                    self.object_depth -= 1;
+                    if self.object_depth == 0 {
+                        self.complete = true;
+                    }
+                },
+                _ => {},
+            }
+        }
+    }
+
+    fn should_attempt_parse(&self) -> bool {
+        self.complete || self.fallback_to_full_parse
+    }
+}
+
 impl StreamingToolAssembler {
     fn observe_delta(&mut self, delta: StreamedToolCallDelta) -> Option<StreamingToolCandidate> {
         let assembly = self.assemblies.entry(delta.index).or_default();
@@ -81,6 +178,7 @@ impl StreamingToolAssembler {
             assembly.name = Some(name);
         }
         assembly.arguments.push_str(&delta.arguments_delta);
+        assembly.json_tracker.observe_chunk(&delta.arguments_delta);
 
         if assembly.launched {
             return None;
@@ -88,6 +186,9 @@ impl StreamingToolAssembler {
 
         let id = assembly.id.clone()?;
         let name = assembly.name.clone()?;
+        if !assembly.json_tracker.should_attempt_parse() {
+            return None;
+        }
         let Ok(args) = serde_json::from_str::<Value>(&assembly.arguments) else {
             return None;
         };

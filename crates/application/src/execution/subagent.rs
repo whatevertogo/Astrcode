@@ -10,10 +10,11 @@ use astrcode_core::{
     ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, RuntimeMetricsRecorder,
     SpawnCapabilityGrant, normalize_non_empty_unique_string_list,
 };
-use astrcode_kernel::{AgentControlError, Kernel};
-use astrcode_session_runtime::{AgentPromptSubmission, SessionRuntime};
+use astrcode_kernel::AgentControlError;
+use astrcode_session_runtime::AgentPromptSubmission;
 
 use crate::{
+    AgentKernelPort, AgentSessionPort,
     agent::{
         build_delegation_metadata, build_fresh_child_contract, persist_delegation_for_handle,
         persist_resolved_limits_for_handle, subrun_event_context,
@@ -46,8 +47,8 @@ pub struct SubagentExecutionRequest {
 /// 4. 在控制树中注册子 agent
 /// 5. 异步提交 prompt
 pub async fn launch_subagent(
-    kernel: &Arc<Kernel>,
-    session_runtime: &Arc<SessionRuntime>,
+    kernel: &dyn AgentKernelPort,
+    session_runtime: &dyn AgentSessionPort,
     request: SubagentExecutionRequest,
     runtime_config: ResolvedRuntimeConfig,
     metrics: &Arc<dyn RuntimeMetricsRecorder>,
@@ -78,7 +79,6 @@ pub async fn launch_subagent(
         .map_err(ApplicationError::from)?;
 
     let handle = kernel
-        .agent()
         .spawn_independent_child(
             &request.profile,
             request.parent_session_id.clone(),
@@ -89,7 +89,6 @@ pub async fn launch_subagent(
         .await
         .map_err(map_spawn_error)?;
     if kernel
-        .agent()
         .set_lifecycle(&handle.agent_id, AgentLifecycleStatus::Running)
         .await
         .is_none()
@@ -100,11 +99,10 @@ pub async fn launch_subagent(
             handle.agent_id
         )));
     }
-    let handle =
-        persist_resolved_limits_for_handle(kernel.as_ref(), handle, resolved_limits.clone())
-            .await
-            .map_err(ApplicationError::Internal)?;
-    let handle = persist_delegation_for_handle(kernel.as_ref(), handle, delegation)
+    let handle = persist_resolved_limits_for_handle(kernel, handle, resolved_limits.clone())
+        .await
+        .map_err(ApplicationError::Internal)?;
+    let handle = persist_delegation_for_handle(kernel, handle, delegation)
         .await
         .map_err(ApplicationError::Internal)?;
 

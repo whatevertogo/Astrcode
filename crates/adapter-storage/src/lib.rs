@@ -15,7 +15,7 @@
 //!
 //! - [`session::EventLog`] — JSONL 事件日志的创建、打开、追加与回放
 //! - [`session::EventLogIterator`] — 逐行流式读取会话事件
-//! - [`session::FileSystemSessionRepository`] — 实现 `SessionManager` trait 的门面，
+//! - [`session::FileSystemSessionRepository`] — 直接实现 `EventStore` 的文件系统后端，
 //!   组合事件日志、迭代器与文件锁，提供统一的会话管理接口
 //!
 //! ## 并发安全
@@ -33,6 +33,21 @@ use astrcode_core::store::{StoreError, StoreResult};
 
 /// 存储层内部使用的 Result 别名，统一错误类型为 [`StoreError`]。
 pub(crate) type Result<T> = StoreResult<T>;
+
+pub(crate) fn map_store_error(error: StoreError) -> astrcode_core::AstrError {
+    match error {
+        StoreError::SessionNotFound(session_id) => {
+            astrcode_core::AstrError::SessionNotFound(session_id)
+        },
+        StoreError::InvalidSessionId(session_id) => {
+            astrcode_core::AstrError::InvalidSessionId(session_id)
+        },
+        StoreError::Io { context, source } => astrcode_core::AstrError::Io { context, source },
+        StoreError::Parse { context, source } => {
+            astrcode_core::AstrError::Parse { context, source }
+        },
+    }
+}
 
 /// 构造 IO 错误，附带上下文说明。
 pub(crate) fn io_error(context: impl Into<String>, source: std::io::Error) -> StoreError {

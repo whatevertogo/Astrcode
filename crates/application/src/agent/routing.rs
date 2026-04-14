@@ -45,7 +45,7 @@ impl AgentOrchestrationService {
         ctx: &astrcode_core::ToolContext,
         collaboration: &super::ToolCollaborationContext,
     ) -> Result<SubRunHandle, super::AgentOrchestrationError> {
-        let child = match self.kernel.agent().get_handle(agent_id).await {
+        let child = match self.kernel.get_handle(agent_id).await {
             Some(child) => child,
             None => {
                 let error = super::AgentOrchestrationError::NotFound(format!(
@@ -122,7 +122,7 @@ impl AgentOrchestrationService {
             )
             .await?;
 
-        let lifecycle = self.kernel.agent().get_lifecycle(&params.agent_id).await;
+        let lifecycle = self.kernel.get_lifecycle(&params.agent_id).await;
         if matches!(lifecycle, Some(AgentLifecycleStatus::Terminated)) {
             let error = super::AgentOrchestrationError::InvalidInput(format!(
                 "agent '{}' has been terminated and cannot receive new messages",
@@ -171,11 +171,7 @@ impl AgentOrchestrationService {
             .await?;
 
         // 收集子树用于 durable discard
-        let subtree_handles = self
-            .kernel
-            .agent()
-            .collect_subtree_handles(&params.agent_id)
-            .await;
+        let subtree_handles = self.kernel.collect_subtree_handles(&params.agent_id).await;
         let mut discard_targets = Vec::with_capacity(subtree_handles.len() + 1);
         discard_targets.push(target.clone());
         discard_targets.extend(subtree_handles.iter().cloned());
@@ -186,7 +182,6 @@ impl AgentOrchestrationService {
         // 执行 terminate
         let cancelled = self
             .kernel
-            .agent()
             .terminate_subtree(&params.agent_id)
             .await
             .ok_or_else(|| {
@@ -262,12 +257,8 @@ impl AgentOrchestrationService {
         &self,
         mut child_ref: ChildAgentRef,
     ) -> ChildAgentRef {
-        let lifecycle = self.kernel.agent().get_lifecycle(&child_ref.agent_id).await;
-        let last_turn_outcome = self
-            .kernel
-            .agent()
-            .get_turn_outcome(&child_ref.agent_id)
-            .await;
+        let lifecycle = self.kernel.get_lifecycle(&child_ref.agent_id).await;
+        let last_turn_outcome = self.kernel.get_turn_outcome(&child_ref.agent_id).await;
         if let Some(lifecycle) = lifecycle {
             child_ref.status =
                 project_collaboration_lifecycle(lifecycle, last_turn_outcome, child_ref.status);
@@ -280,13 +271,7 @@ impl AgentOrchestrationService {
     /// 但如果 resume 本身失败，必须把信封放回去，避免消息丢失。
     async fn restore_pending_inbox(&self, agent_id: &str, pending: Vec<AgentInboxEnvelope>) {
         for envelope in pending {
-            if self
-                .kernel
-                .agent()
-                .deliver(agent_id, envelope)
-                .await
-                .is_none()
-            {
+            if self.kernel.deliver(agent_id, envelope).await.is_none() {
                 log::warn!(
                     "failed to restore drained inbox after resume error: agent='{}'",
                     agent_id
@@ -321,13 +306,12 @@ impl AgentOrchestrationService {
 
         let pending = self
             .kernel
-            .agent()
             .drain_inbox(&child.agent_id)
             .await
             .unwrap_or_default();
         let resume_message = compose_reusable_child_message(&pending, params);
 
-        let Some(reused_handle) = self.kernel.agent().resume(&params.agent_id).await else {
+        let Some(reused_handle) = self.kernel.resume(&params.agent_id).await else {
             self.restore_pending_inbox(&child.agent_id, pending).await;
             return Ok(None);
         };
@@ -356,7 +340,7 @@ impl AgentOrchestrationService {
         };
 
         let allowed_tools =
-            super::effective_tool_names_for_handle(&reused_handle, self.kernel.gateway());
+            super::effective_tool_names_for_handle(&reused_handle, &self.kernel.gateway());
         let scoped_router = match self
             .kernel
             .gateway()
@@ -485,7 +469,6 @@ impl AgentOrchestrationService {
             .await?;
 
         self.kernel
-            .agent()
             .deliver(&child.agent_id, envelope)
             .await
             .ok_or_else(|| {
@@ -595,7 +578,6 @@ impl AgentOrchestrationService {
             AgentLifecycleStatus::Running
         } else {
             self.kernel
-                .agent()
                 .get_lifecycle(&sender_agent_id)
                 .await
                 .unwrap_or(AgentLifecycleStatus::Running)
@@ -603,7 +585,7 @@ impl AgentOrchestrationService {
         let sender_last_turn_outcome = if sender_agent_id.is_empty() {
             None
         } else {
-            self.kernel.agent().get_turn_outcome(&sender_agent_id).await
+            self.kernel.get_turn_outcome(&sender_agent_id).await
         };
         let sender_open_session_id = ctx
             .agent_context()
@@ -714,7 +696,10 @@ mod tests {
     use tokio::time::sleep;
 
     use super::super::{root_execution_event_context, subrun_event_context};
-    use crate::agent::test_support::{TestLlmBehavior, build_agent_test_harness};
+    use crate::{
+        AgentKernelPort,
+        agent::test_support::{TestLlmBehavior, build_agent_test_harness},
+    };
 
     async fn spawn_direct_child(
         harness: &crate::agent::test_support::AgentTestHarness,
@@ -767,7 +752,6 @@ mod tests {
         for _ in 0..20 {
             if harness
                 .kernel
-                .agent()
                 .get_lifecycle(&child_agent_id)
                 .await
                 .is_some_and(|lifecycle| lifecycle == astrcode_core::AgentLifecycleStatus::Idle)

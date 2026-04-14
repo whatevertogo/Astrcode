@@ -107,11 +107,9 @@ impl AgentOrchestrationService {
         let result = build_child_subrun_result(&watch.child, &watch.parent_session_id, &outcome);
         let _ = self
             .kernel
-            // 为什么这里仍然直连 AgentControl：
-            // child turn terminal finalizer 需要推进内部生命周期状态机，
-            // `complete_turn` 会同时更新 live tree、并发槽位和最后一轮 outcome，
-            // 这是控制面内部收口，不适合挂到面向编排方的稳定 surface。
-            .agent_control()
+            // 为什么这里需要单独的完成态推进端口：
+            // child turn terminal finalizer 必须原子更新 live tree、并发槽位和最后一轮 outcome，
+            // 但 application 仍只依赖 trait 契约，不再直接持有 AgentControl concrete。
             .complete_turn(&watch.child.agent_id, outcome.outcome)
             .await;
         self.metrics.record_subrun_execution(

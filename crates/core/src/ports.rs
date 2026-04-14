@@ -101,17 +101,21 @@ pub type LlmEventSink = Arc<dyn Fn(LlmEvent) + Send + Sync>;
 #[derive(Debug, Clone)]
 pub struct LlmRequest {
     pub messages: Vec<LlmMessage>,
-    pub tools: Vec<ToolDefinition>,
+    pub tools: Arc<[ToolDefinition]>,
     pub cancel: CancelToken,
     pub system_prompt: Option<String>,
     pub system_prompt_blocks: Vec<SystemPromptBlock>,
 }
 
 impl LlmRequest {
-    pub fn new(messages: Vec<LlmMessage>, tools: Vec<ToolDefinition>, cancel: CancelToken) -> Self {
+    pub fn new(
+        messages: Vec<LlmMessage>,
+        tools: impl Into<Arc<[ToolDefinition]>>,
+        cancel: CancelToken,
+    ) -> Self {
         Self {
             messages,
-            tools,
+            tools: tools.into(),
             cancel,
             system_prompt: None,
             system_prompt_blocks: Vec::new(),

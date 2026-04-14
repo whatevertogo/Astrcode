@@ -26,6 +26,7 @@ use astrcode_core::{
     ToolEventSink, ToolExecutionResult, ToolOutputDelta, tool_result_persist::resolve_inline_limit,
 };
 use astrcode_kernel::KernelGateway;
+use async_trait::async_trait;
 use futures_util::stream::{self, StreamExt};
 use tokio::{
     sync::{mpsc, oneshot},
@@ -115,8 +116,9 @@ struct BufferedToolEventSink {
     events: Arc<Mutex<Vec<StorageEvent>>>,
 }
 
+#[async_trait]
 impl ToolEventSink for BufferedToolEventSink {
-    fn emit(&self, event: StorageEvent) -> Result<()> {
+    async fn emit(&self, event: StorageEvent) -> Result<()> {
         self.events
             .lock()
             .expect("buffered tool event sink lock should work")
@@ -393,7 +395,8 @@ async fn invoke_single_tool(
         &mut fallback_events,
         tool_call_event,
         "tool start",
-    );
+    )
+    .await;
 
     // 构建工具上下文
     let tool_ctx = ToolContext::new(
@@ -442,7 +445,8 @@ async fn invoke_single_tool(
         &mut fallback_events,
         tool_result_event,
         "tool result",
-    );
+    )
+    .await;
 
     let mut events = buffered_events
         .lock()
@@ -468,14 +472,14 @@ fn broadcast_tool_output_delta(
     });
 }
 
-fn emit_or_buffer_tool_event(
+async fn emit_or_buffer_tool_event(
     event_sink: &Option<Arc<dyn astrcode_core::ToolEventSink>>,
     events: &mut Vec<StorageEvent>,
     event: StorageEvent,
     label: &str,
 ) {
     if let Some(sink) = event_sink {
-        if let Err(error) = sink.emit(event.clone()) {
+        if let Err(error) = sink.emit(event.clone()).await {
             log::warn!("failed to emit {label} immediately, buffering fallback event: {error}");
             events.push(event);
         }
@@ -620,7 +624,8 @@ mod tests {
                 "streaming_probe".to_string(),
                 ToolOutputStream::Stdout,
                 "durable-delta".to_string(),
-            ))?;
+            ))
+            .await?;
             assert!(
                 ctx.emit_stdout(tool_call_id.clone(), "streaming_probe", "live-stdout"),
                 "streaming probe should be able to emit live stdout"

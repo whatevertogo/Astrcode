@@ -5,12 +5,11 @@
 
 use std::path::PathBuf;
 
-use astrcode_core::{
+use astrcode_application::{
     AgentEventContext, AgentLifecycleStatus, AgentTurnOutcome, InvocationKind,
     ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, StorageEventPayload,
-    StoredEvent, SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult,
+    StoredEvent, SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult, SubRunStatusView,
 };
-use astrcode_kernel::SubRunStatusView;
 use astrcode_protocol::http::{
     AgentExecuteRequestDto, AgentExecuteResponseDto, AgentLifecycleDto, AgentProfileDto,
     AgentTurnOutcomeDto, ArtifactRefDto, ExecutionControlDto, ResolvedExecutionLimitsDto,
@@ -468,8 +467,7 @@ fn to_subrun_failure_dto(failure: SubRunFailure) -> SubRunFailureDto {
     }
 }
 
-fn to_lifecycle_dto(status: astrcode_core::AgentLifecycleStatus) -> AgentLifecycleDto {
-    use astrcode_core::AgentLifecycleStatus;
+fn to_lifecycle_dto(status: AgentLifecycleStatus) -> AgentLifecycleDto {
     match status {
         AgentLifecycleStatus::Pending => AgentLifecycleDto::Pending,
         AgentLifecycleStatus::Running => AgentLifecycleDto::Running,
@@ -478,12 +476,12 @@ fn to_lifecycle_dto(status: astrcode_core::AgentLifecycleStatus) -> AgentLifecyc
     }
 }
 
-fn to_turn_outcome_dto(outcome: astrcode_core::AgentTurnOutcome) -> AgentTurnOutcomeDto {
+fn to_turn_outcome_dto(outcome: AgentTurnOutcome) -> AgentTurnOutcomeDto {
     match outcome {
-        astrcode_core::AgentTurnOutcome::Completed => AgentTurnOutcomeDto::Completed,
-        astrcode_core::AgentTurnOutcome::Cancelled => AgentTurnOutcomeDto::Cancelled,
-        astrcode_core::AgentTurnOutcome::TokenExceeded => AgentTurnOutcomeDto::TokenExceeded,
-        astrcode_core::AgentTurnOutcome::Failed => AgentTurnOutcomeDto::Failed,
+        AgentTurnOutcome::Completed => AgentTurnOutcomeDto::Completed,
+        AgentTurnOutcome::Cancelled => AgentTurnOutcomeDto::Cancelled,
+        AgentTurnOutcome::TokenExceeded => AgentTurnOutcomeDto::TokenExceeded,
+        AgentTurnOutcome::Failed => AgentTurnOutcomeDto::Failed,
     }
 }
 

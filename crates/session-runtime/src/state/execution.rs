@@ -1,9 +1,11 @@
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 
 use astrcode_core::{
     CancelToken, EventTranslator, Phase, Result, SessionTurnLease, StorageEvent, StoredEvent,
     ToolEventSink, support,
 };
+use async_trait::async_trait;
+use tokio::sync::Mutex;
 
 use super::SessionState;
 
@@ -19,35 +21,6 @@ pub async fn append_and_broadcast(
         let _ = session.broadcaster.send(record);
     }
     Ok(stored)
-}
-
-fn append_and_broadcast_blocking(
-    session: &SessionState,
-    event: &StorageEvent,
-    translator: &mut EventTranslator,
-) -> Result<StoredEvent> {
-    let stored = session.writer.append_blocking(event)?;
-    let records = session.translate_store_and_cache(&stored, translator)?;
-    for record in records {
-        let _ = session.broadcaster.send(record);
-    }
-    Ok(stored)
-}
-
-/// 从 turn callback 上下文（可能不在 tokio reactor 上）安全地 append 事件。
-pub fn append_and_broadcast_from_turn_callback(
-    session: &SessionState,
-    event: &StorageEvent,
-    translator: &mut EventTranslator,
-) -> Result<StoredEvent> {
-    match tokio::runtime::Handle::current().runtime_flavor() {
-        tokio::runtime::RuntimeFlavor::CurrentThread => {
-            append_and_broadcast_blocking(session, event, translator)
-        },
-        _ => tokio::task::block_in_place(|| {
-            append_and_broadcast_blocking(session, event, translator)
-        }),
-    }
 }
 
 /// 准备 session 进入执行状态。
@@ -84,7 +57,7 @@ pub fn complete_session_execution(session: &SessionState, phase: Phase) {
 
 pub struct SessionStateEventSink {
     session: Arc<SessionState>,
-    translator: StdMutex<EventTranslator>,
+    translator: Mutex<EventTranslator>,
 }
 
 impl SessionStateEventSink {
@@ -92,19 +65,17 @@ impl SessionStateEventSink {
         let phase = session.current_phase()?;
         Ok(Self {
             session,
-            translator: StdMutex::new(EventTranslator::new(phase)),
+            translator: Mutex::new(EventTranslator::new(phase)),
         })
     }
 }
 
+#[async_trait]
 impl ToolEventSink for SessionStateEventSink {
-    fn emit(&self, event: StorageEvent) -> astrcode_core::Result<()> {
-        let mut translator = self
-            .translator
-            .lock()
-            .expect("session translator lock should not be poisoned");
-        append_and_broadcast_from_turn_callback(&self.session, &event, &mut translator)
+    async fn emit(&self, event: StorageEvent) -> astrcode_core::Result<()> {
+        let mut translator = self.translator.lock().await;
+        append_and_broadcast(&self.session, &event, &mut translator)
+            .await
             .map(|_| ())
-            .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))
     }
 }

@@ -351,13 +351,15 @@ describe('app reducer user message sync', () => {
     const rootThreadItems =
       withSecondDelta.projects[0].sessions[0].subRunThreadTree.rootThreadItems;
     expect(rootThreadItems).toHaveLength(1);
-    expect(rootThreadItems[0]).toEqual({
-      kind: 'message',
-      message: expect.objectContaining({
-        kind: 'assistant',
-        turnId: 'turn-1',
-        text: 'hello world',
-      }),
+    const [firstItem] = rootThreadItems;
+    expect(firstItem.kind).toBe('message');
+    if (firstItem.kind !== 'message') {
+      throw new Error('expected root thread item to be a message');
+    }
+    expect(firstItem.message).toMatchObject({
+      kind: 'assistant',
+      turnId: 'turn-1',
+      text: 'hello world',
     });
   });
 });

@@ -26,9 +26,11 @@ use astrcode_application::{
     },
     execution::ProfileProvider,
 };
-use astrcode_core::{
-    AstrError, LlmProvider, ModelLimits, PromptProvider, ResolvedRuntimeConfig, ResourceProvider,
-    Result, resolve_runtime_config,
+
+use super::deps::core::{
+    AgentProfile, AstrError, LlmEventSink, LlmOutput, LlmProvider, LlmRequest, ModelConfig,
+    ModelLimits, PromptProvider, ResolvedRuntimeConfig, ResourceProvider, Result,
+    resolve_runtime_config,
 };
 
 pub(crate) fn build_llm_provider(
@@ -74,7 +76,7 @@ impl ProfileProvider for LoaderBackedProfileProvider {
     fn load_for_working_dir(
         &self,
         working_dir: &Path,
-    ) -> std::result::Result<Vec<astrcode_core::AgentProfile>, ApplicationError> {
+    ) -> std::result::Result<Vec<AgentProfile>, ApplicationError> {
         let registry = self
             .loader
             .load_for_working_dir(Some(working_dir))
@@ -82,9 +84,7 @@ impl ProfileProvider for LoaderBackedProfileProvider {
         Ok(registry.list().into_iter().cloned().collect())
     }
 
-    fn load_global(
-        &self,
-    ) -> std::result::Result<Vec<astrcode_core::AgentProfile>, ApplicationError> {
+    fn load_global(&self) -> std::result::Result<Vec<AgentProfile>, ApplicationError> {
         let registry = self
             .loader
             .load()
@@ -234,11 +234,7 @@ fn client_config_from_runtime(runtime: &ResolvedRuntimeConfig) -> LlmClientConfi
 
 #[async_trait::async_trait]
 impl LlmProvider for ConfigBackedLlmProvider {
-    async fn generate(
-        &self,
-        request: astrcode_core::LlmRequest,
-        sink: Option<astrcode_core::LlmEventSink>,
-    ) -> Result<astrcode_core::LlmOutput> {
+    async fn generate(&self, request: LlmRequest, sink: Option<LlmEventSink>) -> Result<LlmOutput> {
         let provider = self.resolve_runtime_provider()?;
         provider.generate(request, sink).await
     }
@@ -274,7 +270,7 @@ struct ResolvedLlmProviderSpec {
     client_config: LlmClientConfig,
 }
 
-fn resolve_model_limits(provider_kind: &str, model: &astrcode_core::ModelConfig) -> ModelLimits {
+fn resolve_model_limits(provider_kind: &str, model: &ModelConfig) -> ModelLimits {
     let default_context_window = match provider_kind {
         "anthropic" => 200_000,
         _ => 128_000,

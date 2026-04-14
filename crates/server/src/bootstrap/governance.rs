@@ -12,13 +12,16 @@ use astrcode_application::{
     RuntimeGovernanceSnapshot, RuntimeObservabilityCollector, RuntimeReloader, SessionInfoProvider,
     lifecycle::TaskRegistry,
 };
-use astrcode_core::{ManagedRuntimeComponent, RuntimeCoordinator, RuntimeHandle};
 use astrcode_plugin::Supervisor;
-use astrcode_session_runtime::SessionRuntime;
 use async_trait::async_trait;
 
 use super::{
-    capabilities::CapabilitySurfaceSync, mcp::load_declared_configs,
+    capabilities::CapabilitySurfaceSync,
+    deps::{
+        core::{AstrError, ManagedRuntimeComponent, RuntimeCoordinator, RuntimeHandle},
+        session_runtime::SessionRuntime,
+    },
+    mcp::load_declared_configs,
     plugins::bootstrap_plugins_with_skill_root,
 };
 
@@ -122,10 +125,7 @@ impl RuntimeHandle for AppRuntimeHandle {
         "application"
     }
 
-    async fn shutdown(
-        &self,
-        _timeout_secs: u64,
-    ) -> std::result::Result<(), astrcode_core::AstrError> {
+    async fn shutdown(&self, _timeout_secs: u64) -> std::result::Result<(), AstrError> {
         Ok(())
     }
 }
@@ -250,9 +250,8 @@ impl RuntimeReloader for ServerRuntimeReloader {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{CapabilityKind, PluginRegistry};
-
     use super::*;
+    use crate::bootstrap::deps::core::{CapabilityKind, CapabilitySpec, PluginRegistry};
 
     #[tokio::test]
     async fn governance_port_exposes_runtime_snapshot_and_shutdown() {
@@ -260,7 +259,7 @@ mod tests {
             Arc::new(AppRuntimeHandle),
             Arc::new(PluginRegistry::default()),
             vec![
-                astrcode_core::CapabilitySpec::builder("test_tool", CapabilityKind::Tool)
+                CapabilitySpec::builder("test_tool", CapabilityKind::Tool)
                     .description("test")
                     .schema(
                         serde_json::json!({"type":"object"}),

@@ -28,8 +28,8 @@ use cache::{RecentSessionEvents, RecentStoredEvents};
 use child_sessions::{child_node_from_stored_event, rebuild_child_nodes};
 pub use compaction::{recent_turn_event_tail, should_record_compaction_tail_event};
 pub use execution::{
-    SessionStateEventSink, append_and_broadcast, append_and_broadcast_from_turn_callback,
-    complete_session_execution, prepare_session_execution,
+    SessionStateEventSink, append_and_broadcast, complete_session_execution,
+    prepare_session_execution,
 };
 pub use mailbox::{
     MailboxEventAppend, append_batch_acked, append_batch_started, append_mailbox_discarded,

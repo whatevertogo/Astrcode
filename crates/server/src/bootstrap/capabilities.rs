@@ -26,8 +26,11 @@ use astrcode_adapter_tools::{
     },
 };
 use astrcode_application::AgentOrchestrationService;
-use astrcode_core::{CapabilityInvoker, Result, Tool};
-use astrcode_kernel::{CapabilityRouter, Kernel, ToolCapabilityInvoker};
+
+use super::deps::{
+    core::{CapabilityInvoker, Result, Tool},
+    kernel::{CapabilityRouter, Kernel, ToolCapabilityInvoker},
+};
 
 /// 构建稳定本地层中的 core builtin tool invokers。
 ///
@@ -144,7 +147,7 @@ impl CapabilitySurfaceSync {
         Ok(())
     }
 
-    pub(crate) fn current_capabilities(&self) -> Vec<astrcode_core::CapabilitySpec> {
+    pub(crate) fn current_capabilities(&self) -> Vec<super::deps::core::CapabilitySpec> {
         self.kernel.surface().snapshot().capability_specs
     }
 }
@@ -194,17 +197,23 @@ mod tests {
     use std::sync::Arc;
 
     use astrcode_adapter_tools::builtin_tools::tool_search::ToolSearchIndex;
-    use astrcode_core::{
-        CapabilityInvoker, CapabilityKind, LlmProvider, LlmRequest, ModelLimits, PromptBuildOutput,
-        PromptBuildRequest, PromptProvider, ResourceProvider, ResourceReadResult,
-        ResourceRequestContext, Result, Tool, ToolContext, ToolDefinition, ToolExecutionResult,
-    };
-    use astrcode_kernel::{Kernel, ToolCapabilityInvoker};
     use async_trait::async_trait;
     use serde_json::{Value, json};
 
     use super::{CapabilitySurfaceSync, build_stable_local_invokers};
-    use crate::bootstrap::capabilities::sync_external_tool_search_index;
+    use crate::bootstrap::{
+        capabilities::sync_external_tool_search_index,
+        deps::{
+            core::{
+                AstrError, CapabilityInvoker, CapabilityKind, CapabilitySpec,
+                CapabilitySpecBuildError, LlmEventSink, LlmOutput, LlmProvider, LlmRequest,
+                ModelLimits, PromptBuildOutput, PromptBuildRequest, PromptProvider,
+                ResourceProvider, ResourceReadResult, ResourceRequestContext, Result, Tool,
+                ToolContext, ToolDefinition, ToolExecutionResult,
+            },
+            kernel::{CapabilityRouter, Kernel, ToolCapabilityInvoker},
+        },
+    };
 
     #[derive(Debug)]
     struct StaticTool {
@@ -222,13 +231,8 @@ mod tests {
             }
         }
 
-        fn capability_spec(
-            &self,
-        ) -> std::result::Result<
-            astrcode_core::CapabilitySpec,
-            astrcode_core::CapabilitySpecBuildError,
-        > {
-            astrcode_core::CapabilitySpec::builder(self.name, CapabilityKind::Tool)
+        fn capability_spec(&self) -> std::result::Result<CapabilitySpec, CapabilitySpecBuildError> {
+            CapabilitySpec::builder(self.name, CapabilityKind::Tool)
                 .description(format!("tool {}", self.name))
                 .schema(json!({"type": "object"}), json!({"type": "string"}))
                 .tags(self.tags.iter().copied())
@@ -262,9 +266,9 @@ mod tests {
         async fn generate(
             &self,
             _request: LlmRequest,
-            _sink: Option<astrcode_core::LlmEventSink>,
-        ) -> Result<astrcode_core::LlmOutput> {
-            Err(astrcode_core::AstrError::Validation(
+            _sink: Option<LlmEventSink>,
+        ) -> Result<LlmOutput> {
+            Err(AstrError::Validation(
                 "noop llm provider should not execute in this test".to_string(),
             ))
         }
@@ -317,7 +321,7 @@ mod tests {
     }
 
     fn test_kernel(builtin_invokers: &[Arc<dyn CapabilityInvoker>]) -> Arc<Kernel> {
-        let mut builder = astrcode_kernel::CapabilityRouter::builder();
+        let mut builder = CapabilityRouter::builder();
         for invoker in builtin_invokers {
             builder = builder.register_invoker(Arc::clone(invoker));
         }

@@ -11,11 +11,10 @@ use astrcode_core::{
     AgentMode, ExecutionAccepted, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig,
     SubagentContextOverrides,
 };
-use astrcode_kernel::Kernel;
-use astrcode_session_runtime::SessionRuntime;
 
 use crate::{
-    agent::{persist_resolved_limits_for_handle, root_execution_event_context},
+    AppKernelPort, AppSessionPort,
+    agent::root_execution_event_context,
     errors::ApplicationError,
     execution::{
         ExecutionControl, ProfileResolutionService, ensure_profile_mode, merge_task_with_context,
@@ -42,8 +41,8 @@ pub struct RootExecutionRequest {
 /// 5. 合并 task + context
 /// 6. 异步提交 prompt
 pub async fn execute_root_agent(
-    kernel: &Arc<Kernel>,
-    session_runtime: &Arc<SessionRuntime>,
+    kernel: &dyn AppKernelPort,
+    session_runtime: &dyn AppSessionPort,
     profiles: &Arc<ProfileResolutionService>,
     request: RootExecutionRequest,
     mut runtime_config: ResolvedRuntimeConfig,
@@ -57,12 +56,11 @@ pub async fn execute_root_agent(
     let profile_id = profile.id.clone();
 
     let session = session_runtime
-        .create_session(&request.working_dir)
+        .create_session(request.working_dir.clone())
         .await
         .map_err(ApplicationError::from)?;
 
     let handle = kernel
-        .agent()
         .register_root_agent(
             request.agent_id.clone(),
             session.session_id.clone(),
@@ -70,16 +68,23 @@ pub async fn execute_root_agent(
         )
         .await
         .map_err(|e| ApplicationError::Internal(format!("failed to register root agent: {e}")))?;
-    let handle = persist_resolved_limits_for_handle(
-        kernel.as_ref(),
-        handle,
-        ResolvedExecutionLimitsSnapshot {
-            allowed_tools: kernel.gateway().capabilities().tool_names(),
-            max_steps: Some(runtime_config.max_steps as u32),
-        },
-    )
-    .await
-    .map_err(ApplicationError::Internal)?;
+    let resolved_limits = ResolvedExecutionLimitsSnapshot {
+        allowed_tools: kernel.gateway().capabilities().tool_names(),
+        max_steps: Some(runtime_config.max_steps as u32),
+    };
+    if kernel
+        .set_resolved_limits(&handle.agent_id, resolved_limits.clone())
+        .await
+        .is_none()
+    {
+        return Err(ApplicationError::Internal(format!(
+            "failed to persist resolved limits for root agent '{}' because the control handle \
+             disappeared before the limits snapshot was recorded",
+            handle.agent_id
+        )));
+    }
+    let mut handle = handle;
+    handle.resolved_limits = resolved_limits;
 
     let merged_task = merge_task_with_context(&request.task, request.context.as_deref());
 

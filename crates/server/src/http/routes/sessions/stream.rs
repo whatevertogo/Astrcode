@@ -1,7 +1,7 @@
 use std::{convert::Infallible, pin::Pin, time::Duration};
 
+use astrcode_application::SessionEventFilterSpec;
 use astrcode_protocol::http::PROTOCOL_VERSION;
-use astrcode_session_runtime::SessionEventFilterSpec;
 use async_stream::stream;
 use axum::{
     extract::{Path, Query, State},

@@ -1,3 +1,7 @@
+use astrcode_core::{
+    AgentEventContext, CancelToken, SpawnAgentParams, ToolContext,
+    agent::executor::SubAgentExecutor,
+};
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
@@ -8,6 +12,59 @@ use crate::{AUTH_HEADER_NAME, routes::build_api_router, test_support::test_state
 
 // Why: 这些契约测试是 API 接口稳定性的核心保障，
 // 防止 server 在重构后回退到隐式容错或启发式行为。
+
+async fn spawn_test_child_agent(
+    state: &crate::AppState,
+    session_id: &str,
+    working_dir: &std::path::Path,
+) -> String {
+    state
+        .app
+        .kernel()
+        .register_root_agent(
+            "root-agent".to_string(),
+            session_id.to_string(),
+            "root-profile".to_string(),
+        )
+        .await
+        .expect("root agent should be registered");
+
+    let ctx = ToolContext::new(
+        session_id.to_string().into(),
+        working_dir.to_path_buf(),
+        CancelToken::new(),
+    )
+    .with_turn_id("turn-parent")
+    .with_agent_context(AgentEventContext::root_execution(
+        "root-agent",
+        "root-profile",
+    ));
+
+    state
+        .app
+        .agent()
+        .launch(
+            SpawnAgentParams {
+                r#type: Some("explore".to_string()),
+                description: "explore agent".to_string(),
+                prompt: "请阅读代码".to_string(),
+                context: None,
+                capability_grant: None,
+            },
+            &ctx,
+        )
+        .await
+        .expect("agent should launch")
+        .handoff
+        .and_then(|handoff| {
+            handoff
+                .artifacts
+                .into_iter()
+                .find(|artifact| artifact.kind == "agent")
+                .map(|artifact| artifact.id)
+        })
+        .expect("spawned child should return agent artifact")
+}
 
 // ─── Prompt 提交契约 ──────────────────────────────────────
 
@@ -261,28 +318,7 @@ async fn close_agent_route_closes_target_agent_and_returns_closed_ids() {
         .await
         .expect("session should be created");
 
-    let profile = astrcode_core::AgentProfile {
-        id: "explore".to_string(),
-        name: "Explore".to_string(),
-        description: "explore agent".to_string(),
-        mode: astrcode_core::AgentMode::SubAgent,
-        system_prompt: None,
-        allowed_tools: Vec::new(),
-        disallowed_tools: Vec::new(),
-        model_preference: None,
-    };
-    let handle = state
-        .app
-        .kernel()
-        .agent_control()
-        .spawn(
-            &profile,
-            &created.session_id.to_string(),
-            "turn-parent".to_string(),
-            None,
-        )
-        .await
-        .expect("agent should spawn");
+    let child_agent_id = spawn_test_child_agent(&state, &created.session_id, temp_dir.path()).await;
 
     let app = build_api_router().with_state(state);
     let response = app
@@ -291,7 +327,7 @@ async fn close_agent_route_closes_target_agent_and_returns_closed_ids() {
                 .method("POST")
                 .uri(format!(
                     "/api/v1/sessions/{}/agents/{}/close",
-                    created.session_id, handle.agent_id
+                    created.session_id, child_agent_id
                 ))
                 .header(AUTH_HEADER_NAME, "browser-token")
                 .header("content-type", "application/json")
@@ -312,7 +348,7 @@ async fn close_agent_route_closes_target_agent_and_returns_closed_ids() {
     assert!(
         closed_ids
             .iter()
-            .any(|id| id.as_str() == Some(&handle.agent_id)),
+            .any(|id| id.as_str() == Some(child_agent_id.as_str())),
         "closed list should contain the target agent"
     );
 }
@@ -327,28 +363,7 @@ async fn close_agent_route_accepts_empty_json_body() {
         .await
         .expect("session should be created");
 
-    let profile = astrcode_core::AgentProfile {
-        id: "explore".to_string(),
-        name: "Explore".to_string(),
-        description: "explore agent".to_string(),
-        mode: astrcode_core::AgentMode::SubAgent,
-        system_prompt: None,
-        allowed_tools: Vec::new(),
-        disallowed_tools: Vec::new(),
-        model_preference: None,
-    };
-    let handle = state
-        .app
-        .kernel()
-        .agent_control()
-        .spawn(
-            &profile,
-            &created.session_id.to_string(),
-            "turn-parent".to_string(),
-            None,
-        )
-        .await
-        .expect("agent should spawn");
+    let child_agent_id = spawn_test_child_agent(&state, &created.session_id, temp_dir.path()).await;
 
     let app = build_api_router().with_state(state);
     let response = app
@@ -357,7 +372,7 @@ async fn close_agent_route_accepts_empty_json_body() {
                 .method("POST")
                 .uri(format!(
                     "/api/v1/sessions/{}/agents/{}/close",
-                    created.session_id, handle.agent_id
+                    created.session_id, child_agent_id
                 ))
                 .header(AUTH_HEADER_NAME, "browser-token")
                 .header("content-type", "application/json")

@@ -1,12 +1,11 @@
 use std::{path::Path, sync::Arc};
 
-use astrcode_core::{AgentProfile, ExecutionAccepted, config::Config};
-use astrcode_kernel::Kernel;
-use astrcode_session_runtime::SessionRuntime;
+use astrcode_core::AgentProfile;
 use tokio::sync::broadcast;
 
-mod app_agent;
-mod app_session;
+mod agent_use_cases;
+mod ports;
+mod session_use_cases;
 
 pub mod agent;
 pub mod composer;
@@ -19,9 +18,20 @@ pub mod observability;
 pub mod watch;
 
 pub use agent::AgentOrchestrationService;
+pub use astrcode_core::{
+    AgentEvent, AgentEventContext, AgentLifecycleStatus, AgentMode, AgentTurnOutcome, ArtifactRef,
+    AstrError, CapabilitySpec, ChildAgentRef, ChildSessionLineageKind,
+    ChildSessionNotificationKind, CompactTrigger, Config, ExecutionAccepted, ForkMode,
+    InvocationKind, InvocationMode, LocalServerInfo, Phase, PluginHealth, PluginState,
+    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SessionEventRecord,
+    SessionMeta, StorageEventPayload, StoredEvent, SubRunFailure, SubRunFailureCode, SubRunHandoff,
+    SubRunResult, SubRunStorageMode, SubagentContextOverrides, ToolOutputStream,
+    format_local_rfc3339, plugin::PluginEntry,
+};
+pub use astrcode_kernel::SubRunStatusView;
 pub use astrcode_session_runtime::{
-    SessionCatalogEvent, SessionHistorySnapshot, SessionReplay, SessionViewSnapshot,
-    TurnCollaborationSummary, TurnSummary,
+    SessionCatalogEvent, SessionEventFilterSpec, SessionHistorySnapshot, SessionReplay,
+    SessionViewSnapshot, SubRunEventScope, TurnCollaborationSummary, TurnSummary,
 };
 pub use composer::{ComposerOption, ComposerOptionKind, ComposerOptionsRequest};
 pub use config::{
@@ -109,12 +119,13 @@ pub use observability::{
     OperationMetricsSnapshot, ReloadResult, ReplayMetricsSnapshot, ReplayPath,
     RuntimeObservabilityCollector, RuntimeObservabilitySnapshot, SubRunExecutionMetricsSnapshot,
 };
+pub use ports::{AgentKernelPort, AgentSessionPort, AppKernelPort, AppSessionPort};
 pub use watch::{WatchEvent, WatchPort, WatchService, WatchSource};
 
 /// 唯一业务用例入口。
 pub struct App {
-    kernel: Arc<Kernel>,
-    session_runtime: Arc<SessionRuntime>,
+    kernel: Arc<dyn AppKernelPort>,
+    session_runtime: Arc<dyn AppSessionPort>,
     profiles: Arc<ProfileResolutionService>,
     config_service: Arc<ConfigService>,
     composer_service: Arc<composer::ComposerService>,
@@ -131,8 +142,8 @@ pub struct CompactSessionAccepted {
 
 impl App {
     pub fn new(
-        kernel: Arc<Kernel>,
-        session_runtime: Arc<SessionRuntime>,
+        kernel: Arc<dyn AppKernelPort>,
+        session_runtime: Arc<dyn AppSessionPort>,
         profiles: Arc<ProfileResolutionService>,
         config_service: Arc<ConfigService>,
         mcp_service: Arc<mcp::McpService>,
@@ -149,11 +160,11 @@ impl App {
         }
     }
 
-    pub fn kernel(&self) -> &Arc<Kernel> {
+    pub fn kernel(&self) -> &Arc<dyn AppKernelPort> {
         &self.kernel
     }
 
-    pub fn session_runtime(&self) -> &Arc<SessionRuntime> {
+    pub fn session_runtime(&self) -> &Arc<dyn AppSessionPort> {
         &self.session_runtime
     }
 
@@ -189,8 +200,8 @@ impl App {
             .config_service
             .load_resolved_runtime_config(Some(Path::new(&request.working_dir)))?;
         execution::execute_root_agent(
-            &self.kernel,
-            &self.session_runtime,
+            self.kernel.as_ref(),
+            self.session_runtime.as_ref(),
             &self.profiles,
             request,
             runtime,
@@ -214,7 +225,7 @@ impl App {
         request: ComposerOptionsRequest,
     ) -> Vec<ComposerOption> {
         let gateway = self.kernel.gateway();
-        self.composer_service.list_options(request, Some(gateway))
+        self.composer_service.list_options(request, Some(&gateway))
     }
 
     pub async fn get_config(&self) -> Config {

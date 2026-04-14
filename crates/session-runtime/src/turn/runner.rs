@@ -94,7 +94,7 @@ struct TurnExecutionResources<'a> {
     cancel: &'a CancelToken,
     agent: &'a AgentEventContext,
     prompt_declarations: &'a [PromptDeclaration],
-    tools: Vec<ToolDefinition>,
+    tools: Arc<[ToolDefinition]>,
     settings: ContextWindowSettings,
     clearable_tools: HashSet<String>,
     max_steps: usize,
@@ -157,7 +157,7 @@ impl<'a> TurnExecutionResources<'a> {
             cancel: request.cancel,
             agent: request.agent,
             prompt_declarations: request.prompt_declarations,
-            tools: gateway.capabilities().tool_definitions(),
+            tools: Arc::from(gateway.capabilities().tool_definitions()),
             settings,
             clearable_tools: CLEARABLE_TOOLS
                 .iter()

@@ -20,18 +20,18 @@
 //! - **SSE 工具**：事件 ID 解析/格式化（`{storage_seq}.{subindex}` 格式）
 
 use astrcode_application::{
-    AgentCollaborationScorecardSnapshot, ApplicationError, ComposerOption, ComposerOptionKind,
-    ExecutionDiagnosticsSnapshot, GovernanceSnapshot, OperationMetricsSnapshot,
-    ReplayMetricsSnapshot, RuntimeObservabilitySnapshot, SessionCatalogEvent,
-    SubRunExecutionMetricsSnapshot, is_env_var_name, list_model_options as resolve_model_options,
-    resolve_active_selection, resolve_current_model as resolve_runtime_current_model,
-};
-use astrcode_core::{
-    AgentEvent, AgentEventContext, ArtifactRef, CapabilitySpec, Config, ForkMode, InvocationMode,
-    Phase, PluginHealth, PluginState, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, SessionEventRecord, SessionMeta, SubRunFailure,
+    AgentCollaborationScorecardSnapshot, AgentEvent, AgentEventContext, AgentLifecycleStatus,
+    AgentMode, AgentTurnOutcome, ApplicationError, ArtifactRef, CapabilitySpec, ChildAgentRef,
+    ChildSessionLineageKind, ChildSessionNotificationKind, CompactTrigger, ComposerOption,
+    ComposerOptionKind, Config, ExecutionDiagnosticsSnapshot, ForkMode, GovernanceSnapshot,
+    InvocationKind, InvocationMode, OperationMetricsSnapshot, Phase, PluginEntry, PluginHealth,
+    PluginState, ReplayMetricsSnapshot, ResolvedExecutionLimitsSnapshot,
+    ResolvedSubagentContextOverrides, RuntimeObservabilitySnapshot, SessionCatalogEvent,
+    SessionEventRecord, SessionMeta, SubRunExecutionMetricsSnapshot, SubRunFailure,
     SubRunFailureCode, SubRunHandoff, SubRunResult, SubRunStorageMode, SubagentContextOverrides,
-    format_local_rfc3339, plugin::PluginEntry,
+    ToolOutputStream, format_local_rfc3339, is_env_var_name,
+    list_model_options as resolve_model_options, resolve_active_selection,
+    resolve_current_model as resolve_runtime_current_model,
 };
 #[cfg(feature = "debug-workbench")]
 use astrcode_debug_workbench::{
@@ -68,7 +68,7 @@ pub(crate) struct AgentProfileSummary {
     pub id: String,
     pub name: String,
     pub description: String,
-    pub mode: astrcode_core::AgentMode,
+    pub mode: AgentMode,
     pub allowed_tools: Vec<String>,
     pub disallowed_tools: Vec<String>,
 }
@@ -126,9 +126,9 @@ pub(crate) fn to_agent_profile_dto(profile: AgentProfileSummary) -> AgentProfile
         name: profile.name,
         description: profile.description,
         mode: match profile.mode {
-            astrcode_core::AgentMode::Primary => "primary".to_string(),
-            astrcode_core::AgentMode::SubAgent => "subAgent".to_string(),
-            astrcode_core::AgentMode::All => "all".to_string(),
+            AgentMode::Primary => "primary".to_string(),
+            AgentMode::SubAgent => "subAgent".to_string(),
+            AgentMode::All => "all".to_string(),
         },
         allowed_tools: profile.allowed_tools,
         disallowed_tools: profile.disallowed_tools,
@@ -271,17 +271,17 @@ pub(crate) fn to_phase_dto(phase: Phase) -> PhaseDto {
 /// 将工具输出流类型映射为 DTO。
 ///
 /// 用于 `ToolCallDelta` 事件，区分 stdout 和 stderr 输出流。
-fn to_tool_output_stream_dto(stream: astrcode_core::ToolOutputStream) -> ToolOutputStreamDto {
+fn to_tool_output_stream_dto(stream: ToolOutputStream) -> ToolOutputStreamDto {
     match stream {
-        astrcode_core::ToolOutputStream::Stdout => ToolOutputStreamDto::Stdout,
-        astrcode_core::ToolOutputStream::Stderr => ToolOutputStreamDto::Stderr,
+        ToolOutputStream::Stdout => ToolOutputStreamDto::Stdout,
+        ToolOutputStream::Stderr => ToolOutputStreamDto::Stderr,
     }
 }
 
-fn to_compact_trigger_dto(trigger: astrcode_core::CompactTrigger) -> CompactTriggerDto {
+fn to_compact_trigger_dto(trigger: CompactTrigger) -> CompactTriggerDto {
     match trigger {
-        astrcode_core::CompactTrigger::Auto => CompactTriggerDto::Auto,
-        astrcode_core::CompactTrigger::Manual => CompactTriggerDto::Manual,
+        CompactTrigger::Auto => CompactTriggerDto::Auto,
+        CompactTrigger::Manual => CompactTriggerDto::Manual,
     }
 }
 
@@ -293,8 +293,8 @@ fn to_agent_context_dto(agent: AgentEventContext) -> AgentContextDto {
         agent_profile: agent.agent_profile,
         sub_run_id: agent.sub_run_id,
         invocation_kind: agent.invocation_kind.map(|kind| match kind {
-            astrcode_core::InvocationKind::SubRun => InvocationKindDto::SubRun,
-            astrcode_core::InvocationKind::RootExecution => InvocationKindDto::RootExecution,
+            InvocationKind::SubRun => InvocationKindDto::SubRun,
+            InvocationKind::RootExecution => InvocationKindDto::RootExecution,
         }),
         storage_mode: agent.storage_mode.map(to_subrun_storage_mode_dto),
         child_session_id: agent.child_session_id,
@@ -329,16 +329,16 @@ fn to_subrun_storage_mode_dto(mode: SubRunStorageMode) -> SubRunStorageModeDto {
 /// 旧 `AgentStatus` 已拆分为 `AgentLifecycleStatus`（生命周期阶段）和
 /// `AgentTurnOutcome`（单轮结束原因），此函数将两者重新投影为前端兼容的 outcome 枚举。
 fn to_subrun_outcome_dto(
-    lifecycle: astrcode_core::AgentLifecycleStatus,
-    last_turn_outcome: Option<astrcode_core::AgentTurnOutcome>,
+    lifecycle: AgentLifecycleStatus,
+    last_turn_outcome: Option<AgentTurnOutcome>,
 ) -> SubRunOutcomeDto {
     match last_turn_outcome {
-        Some(astrcode_core::AgentTurnOutcome::Completed) => SubRunOutcomeDto::Completed,
-        Some(astrcode_core::AgentTurnOutcome::Failed) => SubRunOutcomeDto::Failed,
-        Some(astrcode_core::AgentTurnOutcome::Cancelled) => SubRunOutcomeDto::Aborted,
-        Some(astrcode_core::AgentTurnOutcome::TokenExceeded) => SubRunOutcomeDto::TokenExceeded,
+        Some(AgentTurnOutcome::Completed) => SubRunOutcomeDto::Completed,
+        Some(AgentTurnOutcome::Failed) => SubRunOutcomeDto::Failed,
+        Some(AgentTurnOutcome::Cancelled) => SubRunOutcomeDto::Aborted,
+        Some(AgentTurnOutcome::TokenExceeded) => SubRunOutcomeDto::TokenExceeded,
         None => match lifecycle {
-            astrcode_core::AgentLifecycleStatus::Terminated => SubRunOutcomeDto::Aborted,
+            AgentLifecycleStatus::Terminated => SubRunOutcomeDto::Aborted,
             _ => SubRunOutcomeDto::Running,
         },
     }
@@ -352,7 +352,7 @@ fn to_subrun_result_dto(result: SubRunResult) -> SubRunResultDto {
     }
 }
 
-fn to_child_agent_ref_dto(child_ref: astrcode_core::ChildAgentRef) -> ChildAgentRefDto {
+fn to_child_agent_ref_dto(child_ref: ChildAgentRef) -> ChildAgentRefDto {
     ChildAgentRefDto {
         agent_id: child_ref.agent_id,
         session_id: child_ref.session_id,
@@ -365,50 +365,36 @@ fn to_child_agent_ref_dto(child_ref: astrcode_core::ChildAgentRef) -> ChildAgent
     }
 }
 
-fn to_agent_lifecycle_dto(status: astrcode_core::AgentLifecycleStatus) -> AgentLifecycleDto {
+fn to_agent_lifecycle_dto(status: AgentLifecycleStatus) -> AgentLifecycleDto {
     match status {
-        astrcode_core::AgentLifecycleStatus::Pending => AgentLifecycleDto::Pending,
-        astrcode_core::AgentLifecycleStatus::Running => AgentLifecycleDto::Running,
-        astrcode_core::AgentLifecycleStatus::Idle => AgentLifecycleDto::Idle,
-        astrcode_core::AgentLifecycleStatus::Terminated => AgentLifecycleDto::Terminated,
+        AgentLifecycleStatus::Pending => AgentLifecycleDto::Pending,
+        AgentLifecycleStatus::Running => AgentLifecycleDto::Running,
+        AgentLifecycleStatus::Idle => AgentLifecycleDto::Idle,
+        AgentLifecycleStatus::Terminated => AgentLifecycleDto::Terminated,
     }
 }
 
-fn to_child_lineage_kind_dto(
-    kind: astrcode_core::ChildSessionLineageKind,
-) -> ChildSessionLineageKindDto {
+fn to_child_lineage_kind_dto(kind: ChildSessionLineageKind) -> ChildSessionLineageKindDto {
     match kind {
-        astrcode_core::ChildSessionLineageKind::Spawn => ChildSessionLineageKindDto::Spawn,
-        astrcode_core::ChildSessionLineageKind::Fork => ChildSessionLineageKindDto::Fork,
-        astrcode_core::ChildSessionLineageKind::Resume => ChildSessionLineageKindDto::Resume,
+        ChildSessionLineageKind::Spawn => ChildSessionLineageKindDto::Spawn,
+        ChildSessionLineageKind::Fork => ChildSessionLineageKindDto::Fork,
+        ChildSessionLineageKind::Resume => ChildSessionLineageKindDto::Resume,
     }
 }
 
 fn to_child_notification_kind_dto(
-    kind: astrcode_core::ChildSessionNotificationKind,
+    kind: ChildSessionNotificationKind,
 ) -> ChildSessionNotificationKindDto {
     match kind {
-        astrcode_core::ChildSessionNotificationKind::Started => {
-            ChildSessionNotificationKindDto::Started
-        },
-        astrcode_core::ChildSessionNotificationKind::ProgressSummary => {
+        ChildSessionNotificationKind::Started => ChildSessionNotificationKindDto::Started,
+        ChildSessionNotificationKind::ProgressSummary => {
             ChildSessionNotificationKindDto::ProgressSummary
         },
-        astrcode_core::ChildSessionNotificationKind::Delivered => {
-            ChildSessionNotificationKindDto::Delivered
-        },
-        astrcode_core::ChildSessionNotificationKind::Waiting => {
-            ChildSessionNotificationKindDto::Waiting
-        },
-        astrcode_core::ChildSessionNotificationKind::Resumed => {
-            ChildSessionNotificationKindDto::Resumed
-        },
-        astrcode_core::ChildSessionNotificationKind::Closed => {
-            ChildSessionNotificationKindDto::Closed
-        },
-        astrcode_core::ChildSessionNotificationKind::Failed => {
-            ChildSessionNotificationKindDto::Failed
-        },
+        ChildSessionNotificationKind::Delivered => ChildSessionNotificationKindDto::Delivered,
+        ChildSessionNotificationKind::Waiting => ChildSessionNotificationKindDto::Waiting,
+        ChildSessionNotificationKind::Resumed => ChildSessionNotificationKindDto::Resumed,
+        ChildSessionNotificationKind::Closed => ChildSessionNotificationKindDto::Closed,
+        ChildSessionNotificationKind::Failed => ChildSessionNotificationKindDto::Failed,
     }
 }
 
@@ -781,12 +767,12 @@ fn to_debug_agent_node_kind_dto(kind: DebugAgentNodeKind) -> DebugAgentNodeKindD
 }
 
 #[cfg(feature = "debug-workbench")]
-fn to_agent_turn_outcome_dto(outcome: astrcode_core::AgentTurnOutcome) -> AgentTurnOutcomeDto {
+fn to_agent_turn_outcome_dto(outcome: AgentTurnOutcome) -> AgentTurnOutcomeDto {
     match outcome {
-        astrcode_core::AgentTurnOutcome::Completed => AgentTurnOutcomeDto::Completed,
-        astrcode_core::AgentTurnOutcome::Failed => AgentTurnOutcomeDto::Failed,
-        astrcode_core::AgentTurnOutcome::Cancelled => AgentTurnOutcomeDto::Cancelled,
-        astrcode_core::AgentTurnOutcome::TokenExceeded => AgentTurnOutcomeDto::TokenExceeded,
+        AgentTurnOutcome::Completed => AgentTurnOutcomeDto::Completed,
+        AgentTurnOutcome::Failed => AgentTurnOutcomeDto::Failed,
+        AgentTurnOutcome::Cancelled => AgentTurnOutcomeDto::Cancelled,
+        AgentTurnOutcome::TokenExceeded => AgentTurnOutcomeDto::TokenExceeded,
     }
 }
 

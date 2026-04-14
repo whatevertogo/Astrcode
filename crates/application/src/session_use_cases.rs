@@ -1,3 +1,4 @@
+/// ! 这是 App 的用例实现，不是 ports
 use std::path::Path;
 
 use astrcode_core::{
@@ -220,7 +221,6 @@ impl App {
 
         if let Some(handle) = self
             .kernel
-            .agent()
             .find_root_handle_for_session(&normalized_session_id)
             .await
         {
@@ -232,7 +232,6 @@ impl App {
 
         let handle = self
             .kernel
-            .agent()
             .register_root_agent(
                 implicit_session_root_agent_id(&normalized_session_id),
                 normalized_session_id,

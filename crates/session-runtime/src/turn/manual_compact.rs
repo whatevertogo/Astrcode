@@ -213,6 +213,7 @@ mod tests {
             None,
             None,
         )
+        .await
         .expect("actor should build");
         let mut translator = EventTranslator::new(Phase::Idle);
 

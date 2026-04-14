@@ -268,7 +268,6 @@ async fn subagent_launch_uses_resolved_profile_and_inherits_parent_working_dir()
     state
         .app
         .kernel()
-        .agent_control()
         .register_root_agent(
             "root-agent".to_string(),
             parent.session_id.clone(),
@@ -375,7 +374,6 @@ async fn subagent_launch_rejects_missing_profile_without_creating_child_session(
     state
         .app
         .kernel()
-        .agent_control()
         .register_root_agent(
             "root-agent".to_string(),
             parent.session_id.clone(),
@@ -455,7 +453,6 @@ async fn get_subrun_status_falls_back_to_durable_snapshot_with_resolved_limits()
     initial_runtime
         .app
         .kernel()
-        .agent_control()
         .register_root_agent(
             "root-agent".to_string(),
             parent.session_id.clone(),
@@ -749,7 +746,6 @@ async fn get_subrun_status_rejects_mismatched_root_subrun_id() {
     state
         .app
         .kernel()
-        .agent_control()
         .register_root_agent(
             "root-agent".to_string(),
             session.session_id.clone(),
@@ -793,7 +789,6 @@ async fn close_agent_rejects_cross_session_requests() {
     state
         .app
         .kernel()
-        .agent_control()
         .register_root_agent(
             "root-agent".to_string(),
             owner_session.session_id.clone(),
@@ -820,13 +815,7 @@ async fn close_agent_rejects_cross_session_requests() {
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert!(
-        state
-            .app
-            .kernel()
-            .agent()
-            .get_handle("root-agent")
-            .await
-            .is_some(),
+        state.app.kernel().get_handle("root-agent").await.is_some(),
         "跨 session 请求不得关闭目标 agent"
     );
 }

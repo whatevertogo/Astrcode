@@ -53,8 +53,7 @@ mod test_support;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::{Result as AnyhowResult, anyhow};
-use astrcode_application::{App, AppGovernance, ApplicationError};
-use astrcode_core::{AstrError, LocalServerInfo, format_local_rfc3339};
+use astrcode_application::{App, AppGovernance, ApplicationError, AstrError};
 #[cfg(feature = "debug-workbench")]
 use astrcode_debug_workbench::DebugWorkbenchService;
 use axum::{
@@ -68,8 +67,8 @@ use tokio::io::AsyncReadExt;
 use crate::{
     auth::{AuthSessionManager, BootstrapAuth},
     bootstrap::{
-        ServerRuntimeHandles, attach_frontend_build, bootstrap_token_expires_at_ms,
-        build_cors_layer, clear_run_info, load_frontend_build, random_hex_token, write_run_info,
+        ServerRuntimeHandles, attach_frontend_build, build_cors_layer, clear_run_info,
+        prepare_server_launch,
     },
     routes::build_api_router,
 };
@@ -220,25 +219,7 @@ async fn main() -> AnyhowResult<()> {
         .local_addr()
         .map_err(|e| AstrError::io("failed to resolve server listener address", e))?;
     let started_at = chrono::Utc::now();
-    let token = random_hex_token();
-    let bootstrap_expires_at_ms = bootstrap_token_expires_at_ms(started_at);
-    let bootstrap_auth = BootstrapAuth::new(token.clone(), bootstrap_expires_at_ms);
-    let server_origin = format!("http://127.0.0.1:{}", address.port());
-    let frontend_build = load_frontend_build(&server_origin, bootstrap_auth.token())?;
-    let local_server_info = LocalServerInfo {
-        port: address.port(),
-        token: bootstrap_auth.token().to_string(),
-        pid: std::process::id(),
-        started_at: format_local_rfc3339(started_at),
-        expires_at_ms: bootstrap_auth.expires_at_ms(),
-    };
-    write_run_info(&local_server_info)?;
-    println!(
-        "{}",
-        local_server_info
-            .to_ready_line()
-            .map_err(|error| anyhow!("failed to encode sidecar ready payload: {error}"))?
-    );
+    let prepared_launch = prepare_server_launch(address.port(), started_at)?;
     log::info!(
         "Ready: http://localhost:{}/ (API routes live under /api)",
         address.port()
@@ -253,15 +234,15 @@ async fn main() -> AnyhowResult<()> {
             Arc::clone(&runtime.governance),
         )),
         auth_sessions: Arc::new(AuthSessionManager::default()),
-        bootstrap_auth,
-        frontend_build: frontend_build.clone(),
+        bootstrap_auth: prepared_launch.bootstrap_auth,
+        frontend_build: prepared_launch.frontend_build.clone(),
         _runtime_handles: Arc::clone(&runtime.handles),
     };
     let shutdown_governance = Arc::clone(&state.governance);
     let shutdown_pid = std::process::id();
 
     let app: Router<AppState> = build_api_router();
-    let app = attach_frontend_build(app, frontend_build);
+    let app = attach_frontend_build(app, prepared_launch.frontend_build);
     let app = app.with_state(state).layer(build_cors_layer());
 
     Ok(axum::serve(listener, app)

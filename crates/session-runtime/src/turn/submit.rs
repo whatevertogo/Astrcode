@@ -763,7 +763,7 @@ mod tests {
 
     #[tokio::test]
     async fn finalize_turn_execution_records_failure_event_and_interrupts_session() {
-        let actor = test_actor();
+        let actor = test_actor().await;
 
         finalize_turn_execution(
             finalize_context(Arc::clone(&actor)),
@@ -787,7 +787,7 @@ mod tests {
 
     #[tokio::test]
     async fn finalize_turn_execution_persists_deferred_manual_compact_after_success() {
-        let actor = test_actor();
+        let actor = test_actor().await;
         append_root_turn_event_to_actor(
             &actor,
             crate::turn::test_support::root_user_message_event("turn-1", "hello"),

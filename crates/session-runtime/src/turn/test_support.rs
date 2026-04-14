@@ -283,7 +283,7 @@ impl RuntimeMetricsRecorder for NoopMetrics {
     fn record_agent_collaboration_fact(&self, _fact: &AgentCollaborationFact) {}
 }
 
-pub(crate) fn test_actor() -> Arc<SessionActor> {
+pub(crate) async fn test_actor() -> Arc<SessionActor> {
     Arc::new(
         SessionActor::new_persistent(
             astrcode_core::SessionId::from("session-1".to_string()),
@@ -291,6 +291,7 @@ pub(crate) fn test_actor() -> Arc<SessionActor> {
             AgentId::from("root-agent".to_string()),
             Arc::new(StubEventStore::default()),
         )
+        .await
         .expect("test actor should initialize"),
     )
 }

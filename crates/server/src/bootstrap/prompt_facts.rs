@@ -12,12 +12,13 @@ use astrcode_adapter_agents::AgentProfileLoader;
 use astrcode_adapter_mcp::manager::McpConnectionManager;
 use astrcode_adapter_skills::SkillCatalog;
 use astrcode_application::{ConfigService, resolve_current_model};
-use astrcode_core::{
-    PromptAgentProfileSummary, PromptDeclaration, PromptDeclarationKind,
+use async_trait::async_trait;
+
+use super::deps::core::{
+    AstrError, PromptAgentProfileSummary, PromptDeclaration, PromptDeclarationKind,
     PromptDeclarationRenderTarget, PromptDeclarationSource, PromptFacts, PromptFactsProvider,
     PromptFactsRequest, PromptSkillSummary, Result, SystemPromptLayer, resolve_runtime_config,
 };
-use async_trait::async_trait;
 
 pub(crate) fn build_prompt_facts_provider(
     config_service: Arc<ConfigService>,
@@ -54,10 +55,10 @@ impl PromptFactsProvider for RuntimePromptFactsProvider {
         let config = self
             .config_service
             .load_overlayed_config(Some(working_dir.as_path()))
-            .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))?;
+            .map_err(|error| AstrError::Internal(error.to_string()))?;
         let runtime = resolve_runtime_config(&config.runtime);
         let selection = resolve_current_model(&config)
-            .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))?;
+            .map_err(|error| AstrError::Internal(error.to_string()))?;
         let skill_summaries = self
             .skill_catalog
             .resolve_for_working_dir(&working_dir.to_string_lossy())
@@ -70,7 +71,7 @@ impl PromptFactsProvider for RuntimePromptFactsProvider {
         let agent_profiles = self
             .agent_loader
             .load_for_working_dir(Some(working_dir.as_path()))
-            .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))?
+            .map_err(|error| AstrError::Internal(error.to_string()))?
             .list_subagent_profiles()
             .into_iter()
             .map(|profile| PromptAgentProfileSummary {
@@ -225,9 +226,9 @@ mod tests {
         PromptDeclaration as AdapterPromptDeclaration, PromptDeclarationKind,
         PromptDeclarationRenderTarget, PromptDeclarationSource, PromptLayer,
     };
-    use astrcode_core::PromptFactsRequest;
 
     use super::prompt_declaration_is_visible;
+    use crate::bootstrap::deps::core::PromptFactsRequest;
 
     fn declaration(capability_name: Option<&str>) -> AdapterPromptDeclaration {
         AdapterPromptDeclaration {

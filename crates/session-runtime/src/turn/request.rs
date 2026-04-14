@@ -4,7 +4,7 @@
 //! request construction. It composes prompt metadata, runs prune/micro-compact,
 //! emits metrics, and finally builds `LlmRequest`.
 
-use std::{collections::HashSet, path::Path, time::Instant};
+use std::{collections::HashSet, path::Path, sync::Arc, time::Instant};
 
 use astrcode_core::{
     AgentEventContext, CompactTrigger, LlmMessage, LlmRequest, PromptBuildOutput,
@@ -41,7 +41,7 @@ pub struct AssemblePromptRequest<'a> {
     pub agent: &'a AgentEventContext,
     pub step_index: usize,
     pub token_tracker: &'a TokenUsageTracker,
-    pub tools: Vec<astrcode_core::ToolDefinition>,
+    pub tools: Arc<[astrcode_core::ToolDefinition]>,
     pub settings: &'a ContextWindowSettings,
     pub clearable_tools: &'a HashSet<String>,
     pub micro_compact_state: &'a mut MicroCompactState,
@@ -391,7 +391,8 @@ mod tests {
                 name: "readFile".to_string(),
                 description: "read".to_string(),
                 parameters: json!({"type":"object"}),
-            }],
+            }]
+            .into(),
             settings: &settings,
             clearable_tools: &std::collections::HashSet::new(),
             micro_compact_state: &mut micro_state,

@@ -19,7 +19,9 @@ export async function getDebugRuntimeTimeline(): Promise<RuntimeDebugTimeline> {
 }
 
 export async function getDebugSessionTrace(sessionId: string): Promise<SessionDebugTrace> {
-  return requestJson<SessionDebugTrace>(`/api/debug/sessions/${encodeURIComponent(sessionId)}/trace`);
+  return requestJson<SessionDebugTrace>(
+    `/api/debug/sessions/${encodeURIComponent(sessionId)}/trace`
+  );
 }
 
 export async function getDebugSessionAgents(sessionId: string): Promise<SessionDebugAgents> {

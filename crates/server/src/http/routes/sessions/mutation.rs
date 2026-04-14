@@ -1,4 +1,4 @@
-use astrcode_core::ExecutionAccepted;
+use astrcode_application::ExecutionAccepted;
 use astrcode_protocol::http::{
     CompactSessionRequest, CompactSessionResponse, CreateSessionRequest, DeleteProjectResultDto,
     ExecutionControlDto, PromptAcceptedResponse, PromptRequest, SessionListItem,

@@ -19,8 +19,9 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::{
-    AgentOrchestrationService, ApplicationError, ConfigService, ProfileResolutionService,
-    RuntimeObservabilityCollector, execution::ProfileProvider, lifecycle::TaskRegistry,
+    AgentKernelPort, AgentOrchestrationService, AgentSessionPort, ApplicationError, ConfigService,
+    ProfileResolutionService, RuntimeObservabilityCollector, execution::ProfileProvider,
+    lifecycle::TaskRegistry,
 };
 
 pub(super) struct AgentTestHarness {
@@ -72,9 +73,11 @@ pub(super) fn build_agent_test_harness_with_agent_config(
         StaticProfileProvider::default(),
     )));
     let task_registry = Arc::new(TaskRegistry::new());
+    let kernel_port: Arc<dyn AgentKernelPort> = kernel.clone();
+    let session_port: Arc<dyn AgentSessionPort> = session_runtime.clone();
     let service = AgentOrchestrationService::new(
-        Arc::clone(&kernel),
-        Arc::clone(&session_runtime),
+        kernel_port,
+        session_port,
         config_service,
         profiles,
         task_registry,

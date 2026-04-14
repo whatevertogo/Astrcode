@@ -14,18 +14,21 @@ use astrcode_application::{
     AgentOrchestrationService, App, AppGovernance, RuntimeObservabilityCollector, WatchService,
     lifecycle::TaskRegistry,
 };
-use astrcode_core::{
-    CapabilityInvoker, Config, EventStore, LlmProvider, PromptProvider, ResolvedRuntimeConfig,
-    ResourceProvider, Result, RuntimeCoordinator, resolve_runtime_config,
-};
-use astrcode_kernel::{AgentControlLimits, CapabilityRouter, Kernel, KernelBuilder};
-use astrcode_session_runtime::SessionRuntime;
 
 use super::{
     capabilities::{
         CapabilitySurfaceSync, build_agent_tool_invokers, build_core_tool_invokers,
         build_server_capability_router, build_skill_catalog, build_stable_local_invokers,
         sync_external_tool_search_index,
+    },
+    deps::{
+        core::{
+            self, AstrError, CapabilityInvoker, Config, EventStore, LlmProvider, PromptProvider,
+            ResolvedRuntimeConfig, ResourceProvider, Result, RuntimeCoordinator,
+            resolve_runtime_config,
+        },
+        kernel::{AgentControlLimits, CapabilityRouter, Kernel, KernelBuilder},
+        session_runtime::SessionRuntime,
     },
     governance::{GovernanceBuildInput, build_app_governance},
     mcp::{bootstrap_mcp_manager, build_mcp_service, warmup_mcp_manager},
@@ -99,7 +102,7 @@ impl ServerBootstrapPaths {
     fn from_options(options: &ServerBootstrapOptions) -> Result<Self> {
         let home_dir = match &options.home_dir {
             Some(home_dir) => home_dir.clone(),
-            None => astrcode_core::home::resolve_home_dir()?,
+            None => core::home::resolve_home_dir()?,
         };
         let astrcode_dir = home_dir.join(".astrcode");
         Ok(Self {
@@ -132,13 +135,12 @@ pub async fn bootstrap_server_runtime_with_options(
     let config_service = build_config_service(paths.config_path.clone())?;
     let working_dir = match options.working_dir {
         Some(working_dir) => working_dir,
-        None => std::env::current_dir().map_err(|error| {
-            astrcode_core::AstrError::io("failed to resolve server working directory", error)
-        })?,
+        None => std::env::current_dir()
+            .map_err(|error| AstrError::io("failed to resolve server working directory", error))?,
     };
     let resolved_config = config_service
         .load_overlayed_config(Some(working_dir.as_path()))
-        .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))?;
+        .map_err(|error| AstrError::Internal(error.to_string()))?;
     let agent_loader =
         astrcode_adapter_agents::AgentProfileLoader::new_with_home_dir(paths.home_dir.as_path());
     let mcp_manager =
@@ -206,7 +208,7 @@ pub async fn bootstrap_server_runtime_with_options(
     let watch_service = match options.watch_service_override.clone() {
         Some(service) => service,
         None => build_watch_service(agent_loader)
-            .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))?,
+            .map_err(|error| AstrError::Internal(error.to_string()))?,
     };
     let agent_service = Arc::new(AgentOrchestrationService::new(
         kernel.clone(),
@@ -266,7 +268,7 @@ pub async fn bootstrap_server_runtime_with_options(
         Some(
             bootstrap_profile_watch_runtime(Arc::clone(&app), Arc::clone(&watch_service))
                 .await
-                .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))?,
+                .map_err(|error| AstrError::Internal(error.to_string()))?,
         )
     } else {
         None
@@ -303,7 +305,7 @@ fn resolve_plugin_search_paths(
         return paths;
     }
     let separators: &[char] = if cfg!(windows) { &[';'] } else { &[':'] };
-    match std::env::var(astrcode_core::env::ASTRCODE_PLUGIN_DIRS_ENV) {
+    match std::env::var(core::env::ASTRCODE_PLUGIN_DIRS_ENV) {
         Ok(value) if !value.trim().is_empty() => value
             .split(separators)
             .filter(|s| !s.trim().is_empty())
@@ -327,7 +329,7 @@ fn build_kernel(
         .with_resource_provider(resource_provider)
         .with_agent_limits(agent_limits)
         .build()
-        .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))
+        .map_err(|error| AstrError::Internal(error.to_string()))
 }
 
 fn resolve_agent_control_limits(config: &Config) -> AgentControlLimits {
@@ -349,9 +351,8 @@ fn resolve_agent_control_limits_from_runtime(
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{AgentConfig, Config, RuntimeConfig};
-
     use super::resolve_agent_control_limits;
+    use crate::bootstrap::deps::core::{AgentConfig, Config, RuntimeConfig, config};
 
     #[test]
     fn resolve_agent_control_limits_uses_runtime_agent_config() {
@@ -383,9 +384,6 @@ mod tests {
     fn resolve_agent_control_limits_uses_config_defaults() {
         let limits = resolve_agent_control_limits(&Config::default());
 
-        assert_eq!(
-            limits.max_depth,
-            astrcode_core::config::DEFAULT_MAX_SUBRUN_DEPTH
-        );
+        assert_eq!(limits.max_depth, config::DEFAULT_MAX_SUBRUN_DEPTH);
     }
 }

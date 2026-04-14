@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use astrcode_core::{LlmOutput, LlmRequest, Result, ToolCallRequest};
 use async_trait::async_trait;
@@ -50,7 +50,7 @@ impl StepDriver for RuntimeStepDriver {
         execution: &mut TurnExecutionContext,
         resources: &TurnExecutionResources<'_>,
     ) -> Result<AssemblePromptResult> {
-        let assembled = assemble_prompt_request(AssemblePromptRequest {
+        let mut assembled = assemble_prompt_request(AssemblePromptRequest {
             gateway: resources.gateway,
             prompt_facts_provider: resources.prompt_facts_provider,
             session_id: resources.session_id,
@@ -61,7 +61,7 @@ impl StepDriver for RuntimeStepDriver {
             agent: resources.agent,
             step_index: execution.step_index,
             token_tracker: &execution.token_tracker,
-            tools: resources.tools.clone(),
+            tools: Arc::clone(&resources.tools),
             settings: &resources.settings,
             clearable_tools: &resources.clearable_tools,
             micro_compact_state: &mut execution.micro_compact_state,
@@ -71,9 +71,9 @@ impl StepDriver for RuntimeStepDriver {
             prompt_declarations: resources.prompt_declarations,
         })
         .await?;
-        execution.messages = assembled.messages.clone();
+        execution.messages = std::mem::take(&mut assembled.messages);
         if assembled.auto_compacted {
-            execution.auto_compaction_count += 1;
+            execution.auto_compaction_count = execution.auto_compaction_count.saturating_add(1);
         }
         execution.tool_result_replacement_count = execution
             .tool_result_replacement_count

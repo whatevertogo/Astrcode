@@ -37,12 +37,11 @@ impl AgentOrchestrationService {
 
         let lifecycle_status = self
             .kernel
-            .agent()
             .get_lifecycle(&params.agent_id)
             .await
             .unwrap_or(AgentLifecycleStatus::Pending);
 
-        let last_turn_outcome = self.kernel.agent().get_turn_outcome(&params.agent_id).await;
+        let last_turn_outcome = self.kernel.get_turn_outcome(&params.agent_id).await;
 
         let open_session_id = child
             .child_session_id

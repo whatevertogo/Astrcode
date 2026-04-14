@@ -353,9 +353,7 @@ export default function App() {
                 handleDeleteSession(sessionId);
               }}
               onOpenSettings={() => setShowSettings(true)}
-              showDebugWorkbenchEntry={
-                debugWorkbenchEnabled && hostBridge.canOpenDebugWorkbench
-              }
+              showDebugWorkbenchEntry={debugWorkbenchEnabled && hostBridge.canOpenDebugWorkbench}
               onOpenDebugWorkbench={() => {
                 void hostBridge.openDebugWorkbench(activeSession?.id ?? null).catch((error) => {
                   const message = error instanceof Error ? error.message : String(error);

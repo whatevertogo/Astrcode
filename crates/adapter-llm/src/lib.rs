@@ -496,17 +496,21 @@ pub fn sink_collector(events: Arc<std::sync::Mutex<Vec<LlmEvent>>>) -> EventSink
 #[derive(Clone, Debug)]
 pub struct LlmRequest {
     pub messages: Vec<LlmMessage>,
-    pub tools: Vec<ToolDefinition>,
+    pub tools: Arc<[ToolDefinition]>,
     pub cancel: CancelToken,
     pub system_prompt: Option<String>,
     pub system_prompt_blocks: Vec<SystemPromptBlock>,
 }
 
 impl LlmRequest {
-    pub fn new(messages: Vec<LlmMessage>, tools: Vec<ToolDefinition>, cancel: CancelToken) -> Self {
+    pub fn new(
+        messages: Vec<LlmMessage>,
+        tools: impl Into<Arc<[ToolDefinition]>>,
+        cancel: CancelToken,
+    ) -> Self {
         Self {
             messages,
-            tools,
+            tools: tools.into(),
             cancel,
             system_prompt: None,
             system_prompt_blocks: Vec::new(),
@@ -521,7 +525,7 @@ impl LlmRequest {
     pub fn from_model_request(request: ModelRequest, cancel: CancelToken) -> Self {
         Self {
             messages: request.messages,
-            tools: request.tools,
+            tools: request.tools.into(),
             cancel,
             system_prompt: request.system_prompt,
             system_prompt_blocks: request.system_prompt_blocks,

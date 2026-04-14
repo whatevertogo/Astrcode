@@ -40,13 +40,14 @@ function browserBridge(): HostBridge {
         // 浏览器降级为静默失败；调用方仍会展示路径。
       }
     },
-    async openDebugWorkbench(sessionId?: string | null) {
+    openDebugWorkbench(sessionId?: string | null) {
       const url = new URL('/debug.html', window.location.origin);
       url.searchParams.set('debugWorkbench', '1');
       if (sessionId) {
         url.searchParams.set('sessionId', sessionId);
       }
       window.open(url.toString(), '_blank', 'noopener,noreferrer');
+      return Promise.resolve();
     },
   };
 }

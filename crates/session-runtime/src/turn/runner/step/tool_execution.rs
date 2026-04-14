@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::Path, time::Instant};
 
-use astrcode_core::{LlmMessage, LlmOutput, Result, StorageEvent, StorageEventPayload};
+use astrcode_core::{AstrError, LlmMessage, LlmOutput, Result, StorageEvent, StorageEventPayload};
 
 use super::{
     TurnExecutionContext, TurnExecutionResources,
@@ -27,39 +27,45 @@ pub(super) async fn finalize_and_execute_tool_calls(
     let finalized_streaming = streaming_planner
         .finalize(&output.tool_calls, llm_finished_at)
         .await;
-    apply_streaming_stats(execution, finalized_streaming.stats);
+    let StreamingToolFinalizeResult {
+        matched_results,
+        remaining_tool_calls,
+        stats,
+        used_streaming_path,
+    } = finalized_streaming;
+    apply_streaming_stats(execution, stats);
 
-    let event_emission_mode = if finalized_streaming.used_streaming_path {
+    let event_emission_mode = if used_streaming_path {
         ToolEventEmissionMode::Buffered
     } else {
         ToolEventEmissionMode::Immediate
     };
-    let mut executed_remaining = if finalized_streaming.remaining_tool_calls.is_empty() {
+    let mut executed_remaining = if remaining_tool_calls.is_empty() {
         empty_tool_cycle_result()
     } else {
         driver
             .execute_tool_cycle(
                 execution,
                 resources,
-                finalized_streaming.remaining_tool_calls.clone(),
+                remaining_tool_calls,
                 event_emission_mode,
             )
             .await?
     };
 
-    if matches!(event_emission_mode, ToolEventEmissionMode::Buffered) {
+    if event_emission_mode == ToolEventEmissionMode::Buffered {
         merge_buffered_and_remaining_tool_results(
             execution,
             output,
-            &finalized_streaming,
+            &matched_results,
             &mut executed_remaining,
-        );
+        )?;
     }
 
     track_tool_results(execution, resources.working_dir, &executed_remaining);
     execution
         .messages
-        .extend(executed_remaining.tool_messages.clone());
+        .extend(std::mem::take(&mut executed_remaining.tool_messages));
 
     if matches!(executed_remaining.outcome, ToolCycleOutcome::Interrupted) {
         return Ok(ToolExecutionDisposition::Interrupted);
@@ -98,9 +104,9 @@ fn empty_tool_cycle_result() -> ToolCycleResult {
 fn merge_buffered_and_remaining_tool_results(
     execution: &mut TurnExecutionContext,
     output: &LlmOutput,
-    finalized_streaming: &StreamingToolFinalizeResult,
+    matched_results: &HashMap<String, crate::turn::tool_cycle::BufferedToolExecution>,
     executed_remaining: &mut ToolCycleResult,
-) {
+) -> Result<()> {
     let mut combined_events = Vec::new();
     let mut remaining_results = executed_remaining
         .raw_results
@@ -112,9 +118,10 @@ fn merge_buffered_and_remaining_tool_results(
         group_events_by_tool_call_id(std::mem::take(&mut executed_remaining.events));
     let mut merged_raw_results = Vec::with_capacity(output.tool_calls.len());
     let mut merged_tool_messages = Vec::with_capacity(output.tool_calls.len());
+    let mut dropped_tool_call_ids = Vec::new();
 
     for call in &output.tool_calls {
-        if let Some(buffered) = finalized_streaming.matched_results.get(&call.id) {
+        if let Some(buffered) = matched_results.get(&call.id) {
             combined_events.extend(buffered.events.iter().cloned());
             merged_tool_messages.push(LlmMessage::Tool {
                 tool_call_id: buffered.result.tool_call_id.clone(),
@@ -132,7 +139,24 @@ fn merge_buffered_and_remaining_tool_results(
                 content: result.model_content(),
             });
             merged_raw_results.push((remaining_call, result));
+            continue;
         }
+
+        dropped_tool_call_ids.push(call.id.clone());
+    }
+
+    debug_assert_eq!(
+        merged_tool_messages.len(),
+        output.tool_calls.len(),
+        "merge dropped tool calls: expected {} results, got {}",
+        output.tool_calls.len(),
+        merged_tool_messages.len()
+    );
+    if !dropped_tool_call_ids.is_empty() {
+        return Err(AstrError::Internal(format!(
+            "buffered tool merge dropped results for tool calls: {}",
+            dropped_tool_call_ids.join(", ")
+        )));
     }
 
     for call_id in remaining_event_order {
@@ -144,6 +168,7 @@ fn merge_buffered_and_remaining_tool_results(
     execution.events.extend(combined_events);
     executed_remaining.tool_messages = merged_tool_messages;
     executed_remaining.raw_results = merged_raw_results;
+    Ok(())
 }
 
 fn group_events_by_tool_call_id(

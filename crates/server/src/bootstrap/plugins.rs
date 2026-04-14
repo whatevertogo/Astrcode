@@ -16,12 +16,13 @@ use std::{
 };
 
 use astrcode_adapter_skills::{SkillSource, SkillSpec, collect_asset_files, is_valid_skill_name};
-#[cfg(test)]
-use astrcode_core::home::resolve_home_dir;
-use astrcode_core::{CapabilityInvoker, PluginRegistry};
 use astrcode_plugin::{PluginLoader, Supervisor, default_initialize_message, default_profiles};
 use astrcode_protocol::plugin::{PeerDescriptor, SkillDescriptor};
 use log::warn;
+
+#[cfg(test)]
+use super::deps::core::home::resolve_home_dir;
+use super::deps::core::{CapabilityInvoker, PluginRegistry};
 
 /// 插件装配结果。
 pub(crate) struct PluginBootstrapResult {
@@ -345,10 +346,10 @@ fn write_asset_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::plugin::{PluginHealth, PluginState};
     use astrcode_protocol::plugin::{SkillAssetDescriptor, SkillDescriptor};
 
     use super::*;
+    use crate::bootstrap::deps::core::plugin::{PluginHealth, PluginState};
 
     #[tokio::test]
     async fn bootstrap_with_empty_paths_returns_empty() {

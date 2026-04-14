@@ -5,7 +5,7 @@
 //!
 //! `AgentOrchestrationService` 是本子域的唯一服务入口，实现
 //! `SubAgentExecutor` 和 `CollaborationExecutor` 两个 trait，
-//! 通过 `Kernel` + `SessionRuntime` 两个显式依赖完成所有操作。
+//! 通过 agent 子域专用的 kernel/session 端口完成所有操作。
 //!
 //! 架构约束：
 //! - 不持有 session shadow state
@@ -30,12 +30,11 @@ use astrcode_core::{
     Result, RuntimeMetricsRecorder, SendAgentParams, SpawnAgentParams, SubRunHandle, SubRunHandoff,
     SubRunResult, SystemPromptLayer, ToolContext,
 };
-use astrcode_kernel::Kernel;
-use astrcode_session_runtime::SessionRuntime;
 use async_trait::async_trait;
 use thiserror::Error;
 
 use crate::{
+    AgentKernelPort, AgentSessionPort,
     config::ConfigService,
     execution::{ProfileResolutionService, SubagentExecutionRequest, launch_subagent},
     lifecycle::TaskRegistry,
@@ -381,12 +380,11 @@ pub(crate) fn build_resumed_child_contract(
 }
 
 pub(crate) async fn persist_resolved_limits_for_handle(
-    kernel: &Kernel,
+    kernel: &dyn AgentKernelPort,
     handle: SubRunHandle,
     resolved_limits: ResolvedExecutionLimitsSnapshot,
 ) -> std::result::Result<SubRunHandle, String> {
     if kernel
-        .agent()
         .set_resolved_limits(&handle.agent_id, resolved_limits.clone())
         .await
         .is_none()
@@ -404,12 +402,11 @@ pub(crate) async fn persist_resolved_limits_for_handle(
 }
 
 pub(crate) async fn persist_delegation_for_handle(
-    kernel: &Kernel,
+    kernel: &dyn AgentKernelPort,
     handle: SubRunHandle,
     delegation: DelegationMetadata,
 ) -> std::result::Result<SubRunHandle, String> {
     if kernel
-        .agent()
         .set_delegation(&handle.agent_id, Some(delegation.clone()))
         .await
         .is_none()
@@ -427,7 +424,7 @@ pub(crate) async fn persist_delegation_for_handle(
 }
 
 async fn ensure_handle_has_resolved_limits(
-    kernel: &Kernel,
+    kernel: &dyn AgentKernelPort,
     gateway: &astrcode_kernel::KernelGateway,
     handle: SubRunHandle,
     max_steps: Option<u32>,
@@ -643,12 +640,12 @@ fn map_orchestration_error(error: AgentOrchestrationError) -> astrcode_core::Ast
 
 /// Agent 编排服务。
 ///
-/// 持有 `Kernel` + `SessionRuntime` 两个显式依赖，
+/// 持有 agent 子域专用的 kernel/session 端口，
 /// 不持有 session shadow state，不缓存 session 引用。
 #[derive(Clone)]
 pub struct AgentOrchestrationService {
-    kernel: Arc<Kernel>,
-    session_runtime: Arc<SessionRuntime>,
+    kernel: Arc<dyn AgentKernelPort>,
+    session_runtime: Arc<dyn AgentSessionPort>,
     config_service: Arc<ConfigService>,
     profiles: Arc<ProfileResolutionService>,
     task_registry: Arc<TaskRegistry>,
@@ -657,8 +654,8 @@ pub struct AgentOrchestrationService {
 
 impl AgentOrchestrationService {
     pub fn new(
-        kernel: Arc<Kernel>,
-        session_runtime: Arc<SessionRuntime>,
+        kernel: Arc<dyn AgentKernelPort>,
+        session_runtime: Arc<dyn AgentSessionPort>,
         config_service: Arc<ConfigService>,
         profiles: Arc<ProfileResolutionService>,
         task_registry: Arc<TaskRegistry>,
@@ -741,7 +738,6 @@ impl AgentOrchestrationService {
         // 否则是子运行（用 subrun_event_context 保持 child session 血缘）。
         let event_agent = if let Some(parent_agent_id) = fact.parent_agent_id.as_deref() {
             self.kernel
-                .agent()
                 .get_handle(parent_agent_id)
                 .await
                 .map(|handle| {
@@ -882,11 +878,11 @@ impl AgentOrchestrationService {
             .filter(|agent_id| !agent_id.trim().is_empty());
 
         if let Some(agent_id) = explicit_agent_id {
-            if let Some(handle) = self.kernel.agent().get_handle(&agent_id).await {
+            if let Some(handle) = self.kernel.get_handle(&agent_id).await {
                 if handle.depth == 0 && handle.resolved_limits.allowed_tools.is_empty() {
                     return ensure_handle_has_resolved_limits(
                         self.kernel.as_ref(),
-                        self.kernel.gateway(),
+                        &self.kernel.gateway(),
                         handle,
                         None,
                     )
@@ -909,7 +905,6 @@ impl AgentOrchestrationService {
                     .unwrap_or_else(|| IMPLICIT_ROOT_PROFILE_ID.to_string());
                 let handle = self
                     .kernel
-                    .agent()
                     .register_root_agent(agent_id, session_id, profile_id)
                     .await
                     .map_err(|error| {
@@ -919,7 +914,7 @@ impl AgentOrchestrationService {
                     })?;
                 return ensure_handle_has_resolved_limits(
                     self.kernel.as_ref(),
-                    self.kernel.gateway(),
+                    &self.kernel.gateway(),
                     handle,
                     None,
                 )
@@ -933,15 +928,10 @@ impl AgentOrchestrationService {
             )));
         }
 
-        if let Some(handle) = self
-            .kernel
-            .agent()
-            .find_root_handle_for_session(&session_id)
-            .await
-        {
+        if let Some(handle) = self.kernel.find_root_handle_for_session(&session_id).await {
             return ensure_handle_has_resolved_limits(
                 self.kernel.as_ref(),
-                self.kernel.gateway(),
+                &self.kernel.gateway(),
                 handle,
                 None,
             )
@@ -951,7 +941,6 @@ impl AgentOrchestrationService {
 
         let handle = self
             .kernel
-            .agent()
             .register_root_agent(
                 implicit_session_root_agent_id(&session_id),
                 session_id,
@@ -963,9 +952,14 @@ impl AgentOrchestrationService {
                     "failed to register implicit root agent for session parent context: {error}"
                 ))
             })?;
-        ensure_handle_has_resolved_limits(self.kernel.as_ref(), self.kernel.gateway(), handle, None)
-            .await
-            .map_err(AgentOrchestrationError::Internal)
+        ensure_handle_has_resolved_limits(
+            self.kernel.as_ref(),
+            &self.kernel.gateway(),
+            handle,
+            None,
+        )
+        .await
+        .map_err(AgentOrchestrationError::Internal)
     }
 
     async fn enforce_spawn_budget_for_turn(
@@ -976,7 +970,6 @@ impl AgentOrchestrationService {
     ) -> std::result::Result<(), AgentOrchestrationError> {
         let spawned_for_turn = self
             .kernel
-            .agent()
             .count_children_spawned_for_turn(parent_agent_id, parent_turn_id)
             .await;
 
@@ -1034,7 +1027,7 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
             context: params.context,
             parent_allowed_tools: effective_tool_names_for_handle(
                 &parent_handle,
-                self.kernel.gateway(),
+                &self.kernel.gateway(),
             ),
             capability_grant: params.capability_grant,
             source_tool_call_id: ctx.tool_call_id().map(ToString::to_string),
@@ -1053,8 +1046,8 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
         }
 
         let accepted = match launch_subagent(
-            &self.kernel,
-            &self.session_runtime,
+            self.kernel.as_ref(),
+            self.session_runtime.as_ref(),
             request,
             runtime_config.clone(),
             &self.metrics,
@@ -1076,7 +1069,7 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
         if let (Some(child_agent_id), Some(parent_turn_id)) =
             (accepted.agent_id.clone(), ctx.turn_id())
         {
-            if let Some(child_handle) = self.kernel.agent().get_handle(&child_agent_id).await {
+            if let Some(child_handle) = self.kernel.get_handle(&child_agent_id).await {
                 let fact = {
                     let mut fact = collaboration
                         .fact(
@@ -1218,23 +1211,10 @@ mod tests {
             .unwrap_or(source);
         let direct_agent_control_count = production_source.matches(".agent_control()").count();
 
-        if file == "terminal.rs" {
-            assert_eq!(
-                direct_agent_control_count, 1,
-                "terminal.rs should keep exactly one direct AgentControl access for complete_turn \
-                 lifecycle finalization"
-            );
-            assert!(
-                production_source.contains(".complete_turn("),
-                "terminal.rs direct AgentControl access must be reserved for complete_turn"
-            );
-            return;
-        }
-
         assert_eq!(
             direct_agent_control_count, 0,
-            "{file} production code should use kernel.agent() stable surface instead of direct \
-             AgentControl access"
+            "{file} production code should depend on the agent-domain port surface instead of \
+             direct AgentControl access"
         );
     }
 

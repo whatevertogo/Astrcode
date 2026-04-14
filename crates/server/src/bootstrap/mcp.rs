@@ -21,13 +21,16 @@ use astrcode_application::{
 };
 use async_trait::async_trait;
 
-use super::capabilities::CapabilitySurfaceSync;
+use super::{
+    capabilities::CapabilitySurfaceSync,
+    deps::core::{AstrError, CapabilityInvoker, Result as CoreResult},
+};
 
 /// 构建并初始化 MCP 连接管理器。
 pub(crate) async fn bootstrap_mcp_manager(
     working_dir: &Path,
     approvals_path: PathBuf,
-) -> astrcode_core::Result<Arc<McpConnectionManager>> {
+) -> CoreResult<Arc<McpConnectionManager>> {
     let approval_store = FileMcpSettingsStore::new(approvals_path);
     Ok(Arc::new(McpConnectionManager::new().with_approval(
         McpApprovalManager::new(Box::new(approval_store)),
@@ -45,7 +48,7 @@ pub(crate) async fn warmup_mcp_manager(
     config_service: Arc<ConfigService>,
     working_dir: PathBuf,
     capability_sync: CapabilitySurfaceSync,
-    plugin_invokers: Vec<Arc<dyn astrcode_core::CapabilityInvoker>>,
+    plugin_invokers: Vec<Arc<dyn CapabilityInvoker>>,
 ) {
     let configs = match load_declared_configs(&config_service, working_dir.as_path()).await {
         Ok(configs) => configs,
@@ -111,21 +114,27 @@ impl McpPort for ManagerMcpPort {
             .collect()
     }
 
-    async fn approve_server(&self, server_signature: &str) -> Result<(), ApplicationError> {
+    async fn approve_server(
+        &self,
+        server_signature: &str,
+    ) -> std::result::Result<(), ApplicationError> {
         self.manager
             .approve_server(server_signature)
             .map_err(core_error_to_app)?;
         self.reload_from_source().await
     }
 
-    async fn reject_server(&self, server_signature: &str) -> Result<(), ApplicationError> {
+    async fn reject_server(
+        &self,
+        server_signature: &str,
+    ) -> std::result::Result<(), ApplicationError> {
         self.manager
             .reject_server(server_signature)
             .map_err(core_error_to_app)?;
         self.reload_from_source().await
     }
 
-    async fn reconnect_server(&self, name: &str) -> Result<(), ApplicationError> {
+    async fn reconnect_server(&self, name: &str) -> std::result::Result<(), ApplicationError> {
         self.manager
             .reconnect_server(name)
             .await
@@ -133,14 +142,17 @@ impl McpPort for ManagerMcpPort {
         self.sync_capabilities().await
     }
 
-    async fn reset_project_choices(&self) -> Result<(), ApplicationError> {
+    async fn reset_project_choices(&self) -> std::result::Result<(), ApplicationError> {
         self.manager
             .reset_project_choices()
             .map_err(core_error_to_app)?;
         self.reload_from_source().await
     }
 
-    async fn upsert_server(&self, input: &RegisterMcpServerInput) -> Result<(), ApplicationError> {
+    async fn upsert_server(
+        &self,
+        input: &RegisterMcpServerInput,
+    ) -> std::result::Result<(), ApplicationError> {
         self.config_service
             .upsert_mcp_server(self.working_dir.as_path(), input)
             .await?;
@@ -151,7 +163,7 @@ impl McpPort for ManagerMcpPort {
         &self,
         scope: astrcode_application::McpConfigScope,
         name: &str,
-    ) -> Result<(), ApplicationError> {
+    ) -> std::result::Result<(), ApplicationError> {
         self.config_service
             .remove_mcp_server(self.working_dir.as_path(), scope, name)
             .await?;
@@ -163,7 +175,7 @@ impl McpPort for ManagerMcpPort {
         scope: astrcode_application::McpConfigScope,
         name: &str,
         enabled: bool,
-    ) -> Result<(), ApplicationError> {
+    ) -> std::result::Result<(), ApplicationError> {
         self.config_service
             .set_mcp_server_enabled(self.working_dir.as_path(), scope, name, enabled)
             .await?;
@@ -172,7 +184,7 @@ impl McpPort for ManagerMcpPort {
 }
 
 impl ManagerMcpPort {
-    async fn reload_from_source(&self) -> Result<(), ApplicationError> {
+    async fn reload_from_source(&self) -> std::result::Result<(), ApplicationError> {
         let configs =
             load_declared_configs(&self.config_service, self.working_dir.as_path()).await?;
         self.manager
@@ -182,7 +194,7 @@ impl ManagerMcpPort {
         self.sync_capabilities().await
     }
 
-    async fn sync_capabilities(&self) -> Result<(), ApplicationError> {
+    async fn sync_capabilities(&self) -> std::result::Result<(), ApplicationError> {
         let surface = self.manager.current_surface().await;
         self.capability_sync
             .apply_external_invokers(surface.capability_invokers)
@@ -207,14 +219,14 @@ fn snapshot_to_view(
     }
 }
 
-fn core_error_to_app(error: astrcode_core::AstrError) -> ApplicationError {
+fn core_error_to_app(error: AstrError) -> ApplicationError {
     ApplicationError::Internal(error.to_string())
 }
 
 pub(crate) async fn load_declared_configs(
     config_service: &Arc<ConfigService>,
     working_dir: &Path,
-) -> Result<Vec<McpServerConfig>, ApplicationError> {
+) -> std::result::Result<Vec<McpServerConfig>, ApplicationError> {
     let mut merged = HashMap::new();
     let working_dir_display = working_dir.display().to_string();
 
@@ -286,7 +298,7 @@ pub(crate) async fn load_declared_configs(
 fn merge_configs_or_warn(
     merged: &mut HashMap<String, McpServerConfig>,
     source_label: &str,
-    configs: Result<Vec<McpServerConfig>, ApplicationError>,
+    configs: std::result::Result<Vec<McpServerConfig>, ApplicationError>,
 ) {
     match configs {
         Ok(configs) => {
@@ -309,10 +321,10 @@ mod tests {
     use std::{collections::HashMap, fs};
 
     use astrcode_adapter_storage::config_store::FileConfigStore;
-    use astrcode_core::{Config, ConfigOverlay};
     use serde_json::json;
 
     use super::*;
+    use crate::bootstrap::deps::core::{Config, ConfigOverlay};
 
     #[tokio::test]
     async fn load_declared_configs_merges_config_and_sidecars_by_scope_precedence() {

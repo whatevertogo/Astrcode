@@ -76,8 +76,9 @@ impl ExecutionOwner {
 ///
 /// 子 Agent / 复合工具不能直接依赖 runtime 的会话写入实现，
 /// 因此这里通过一个最小抽象把事件重新交回当前 turn 的持久化/广播链路。
+#[async_trait]
 pub trait ToolEventSink: Send + Sync {
-    fn emit(&self, event: StorageEvent) -> Result<()>;
+    async fn emit(&self, event: StorageEvent) -> Result<()>;
 }
 
 /// Execution context provided to tools during invocation.

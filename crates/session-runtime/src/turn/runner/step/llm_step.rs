@@ -28,7 +28,8 @@ pub(super) async fn call_llm_for_step(
                 && execution.reactive_compact_attempts
                     < compaction_cycle::MAX_REACTIVE_COMPACT_ATTEMPTS
             {
-                execution.reactive_compact_attempts += 1;
+                execution.reactive_compact_attempts =
+                    execution.reactive_compact_attempts.saturating_add(1);
                 log::warn!(
                     "turn {} step {}: prompt too long, reactive compact ({}/{})",
                     resources.turn_id,

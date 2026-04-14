@@ -21,6 +21,7 @@
 //! 它保留的原因是浏览器开发模式仍需要一个稳定的本地文件来读取 bootstrap token。
 
 mod capabilities;
+mod deps;
 mod governance;
 mod mcp;
 mod plugins;
@@ -31,7 +32,6 @@ mod watch;
 use std::path::{Path as FsPath, PathBuf};
 
 use anyhow::{Context, Result as AnyhowResult, anyhow};
-use astrcode_core::LocalServerInfo;
 use axum::{
     Json, Router,
     body::Body,
@@ -48,7 +48,8 @@ use serde::Serialize;
 use tower::ServiceExt;
 use tower_http::{cors::CorsLayer, services::ServeDir};
 
-use crate::{AUTH_HEADER_NAME, ApiError, AppState, FrontendBuild};
+use self::deps::core::{LocalServerInfo, format_local_rfc3339};
+use crate::{AUTH_HEADER_NAME, ApiError, AppState, FrontendBuild, auth::BootstrapAuth};
 
 /// Bootstrap token 有效期（小时）。
 ///
@@ -63,6 +64,46 @@ pub(crate) struct BrowserBootstrapResponse {
     token: String,
     #[serde(rename = "serverOrigin")]
     server_origin: String,
+}
+
+pub(crate) struct PreparedServerLaunch {
+    pub bootstrap_auth: BootstrapAuth,
+    pub frontend_build: Option<FrontendBuild>,
+}
+
+/// 组装 server 启动期需要的 bootstrap 产物并写入 run info。
+///
+/// 为什么下沉到 bootstrap：
+/// 让 `main.rs` 只关心启动流程编排，不再直接拼装 `LocalServerInfo`
+/// 等底层细节，减少入口文件对基础设施细节的感知。
+pub(crate) fn prepare_server_launch(
+    port: u16,
+    started_at: chrono::DateTime<chrono::Utc>,
+) -> AnyhowResult<PreparedServerLaunch> {
+    let token = random_hex_token();
+    let bootstrap_expires_at_ms = bootstrap_token_expires_at_ms(started_at);
+    let bootstrap_auth = BootstrapAuth::new(token, bootstrap_expires_at_ms);
+    let server_origin = format!("http://127.0.0.1:{port}");
+    let frontend_build = load_frontend_build(&server_origin, bootstrap_auth.token())?;
+    let local_server_info = LocalServerInfo {
+        port,
+        token: bootstrap_auth.token().to_string(),
+        pid: std::process::id(),
+        started_at: format_local_rfc3339(started_at),
+        expires_at_ms: bootstrap_auth.expires_at_ms(),
+    };
+    write_run_info(&local_server_info)?;
+    println!(
+        "{}",
+        local_server_info
+            .to_ready_line()
+            .map_err(|error| anyhow!("failed to encode sidecar ready payload: {error}"))?
+    );
+
+    Ok(PreparedServerLaunch {
+        bootstrap_auth,
+        frontend_build,
+    })
 }
 
 async fn server_root() -> &'static str {
@@ -414,7 +455,7 @@ fn clear_run_info_at_path(path: &FsPath, expected_pid: u32) -> AnyhowResult<()> 
 }
 
 fn run_info_path() -> AnyhowResult<PathBuf> {
-    let home_dir = astrcode_core::home::resolve_home_dir().map_err(|e| anyhow!("{e}"))?;
+    let home_dir = deps::core::home::resolve_home_dir().map_err(|e| anyhow!("{e}"))?;
     Ok(run_info_path_in_home(home_dir.as_path()))
 }
 
@@ -424,11 +465,10 @@ fn run_info_path_in_home(home_dir: &FsPath) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{LocalServerInfo, format_local_rfc3339};
-
     use super::{
-        bootstrap_token_expires_at_ms, clear_run_info_in_home, run_info_path_in_home,
-        write_run_info_in_home,
+        bootstrap_token_expires_at_ms, clear_run_info_in_home,
+        deps::core::{LocalServerInfo, format_local_rfc3339},
+        run_info_path_in_home, write_run_info_in_home,
     };
 
     #[test]

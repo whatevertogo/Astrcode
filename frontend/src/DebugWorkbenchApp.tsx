@@ -106,25 +106,24 @@ function buildSessionTraceSignature(trace: SessionDebugTrace | null): string {
     trace.sessionId,
     trace.phase,
     trace.parentSessionId ?? '',
-    ...trace.items.map(
-      (item) =>
-        [
-          item.id,
-          item.storageSeq,
-          item.turnId ?? '',
-          item.recordedAt ?? '',
-          item.kind,
-          item.title,
-          item.summary,
-          item.agentId ?? '',
-          item.subRunId ?? '',
-          item.childAgentId ?? '',
-          item.deliveryId ?? '',
-          item.toolCallId ?? '',
-          item.toolName ?? '',
-          item.lifecycle ?? '',
-          item.lastTurnOutcome ?? '',
-        ].join('|')
+    ...trace.items.map((item) =>
+      [
+        item.id,
+        item.storageSeq,
+        item.turnId ?? '',
+        item.recordedAt ?? '',
+        item.kind,
+        item.title,
+        item.summary,
+        item.agentId ?? '',
+        item.subRunId ?? '',
+        item.childAgentId ?? '',
+        item.deliveryId ?? '',
+        item.toolCallId ?? '',
+        item.toolName ?? '',
+        item.lifecycle ?? '',
+        item.lastTurnOutcome ?? '',
+      ].join('|')
     ),
   ].join('\n');
 }
@@ -136,24 +135,23 @@ function buildSessionAgentsSignature(agents: SessionDebugAgents | null): string 
   return [
     agents.sessionId,
     agents.title,
-    ...agents.nodes.map(
-      (node) =>
-        [
-          node.nodeId,
-          node.kind,
-          node.title,
-          node.agentId,
-          node.sessionId,
-          node.childSessionId ?? '',
-          node.subRunId ?? '',
-          node.parentAgentId ?? '',
-          node.parentSessionId ?? '',
-          node.depth,
-          node.lifecycle,
-          node.lastTurnOutcome ?? '',
-          node.statusSource ?? '',
-          node.lineageKind ?? '',
-        ].join('|')
+    ...agents.nodes.map((node) =>
+      [
+        node.nodeId,
+        node.kind,
+        node.title,
+        node.agentId,
+        node.sessionId,
+        node.childSessionId ?? '',
+        node.subRunId ?? '',
+        node.parentAgentId ?? '',
+        node.parentSessionId ?? '',
+        node.depth,
+        node.lifecycle,
+        node.lastTurnOutcome ?? '',
+        node.statusSource ?? '',
+        node.lineageKind ?? '',
+      ].join('|')
     ),
   ].join('\n');
 }
@@ -444,8 +442,8 @@ export default function DebugWorkbenchApp() {
             </div>
             <h1 className="mt-1 text-2xl font-semibold text-text-primary">Debug Workbench</h1>
             <p className="mt-1 text-sm text-text-secondary">
-              独立调试窗口直接读取 `/api/debug/*`，用于观察 agent-tool 治理指标、会话 trace
-              和 agent tree。
+              独立调试窗口直接读取 `/api/debug/*`，用于观察 agent-tool 治理指标、会话 trace 和 agent
+              tree。
             </p>
           </div>
           <div className="rounded-2xl border border-border bg-surface-soft px-4 py-3 text-right text-xs text-text-secondary">

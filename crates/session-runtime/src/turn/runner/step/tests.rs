@@ -493,7 +493,6 @@ async fn run_single_step_reuses_streamed_safe_tool_execution_when_final_call_mat
         StepOutcome::Continue(TurnLoopTransition::ToolCycleCompleted)
     ));
     assert_eq!(execution.step_index, 1);
-    assert_eq!(execution.streaming_tool_launch_count, 1);
     assert_eq!(driver.tool_cycle_calls.load(Ordering::SeqCst), 0);
     assert_eq!(execution.streaming_tool_launch_count, 1);
     assert_eq!(execution.streaming_tool_match_count, 1);
@@ -1181,6 +1180,210 @@ async fn run_single_step_merges_buffered_events_and_results_in_final_tool_order(
     );
 }
 
+#[cfg(not(debug_assertions))]
+#[tokio::test]
+async fn run_single_step_returns_internal_error_when_buffered_merge_loses_tool_result() {
+    struct MissingResultDriver;
+
+    #[async_trait]
+    impl StepDriver for MissingResultDriver {
+        async fn assemble_prompt(
+            &self,
+            _execution: &mut TurnExecutionContext,
+            _resources: &TurnExecutionResources<'_>,
+        ) -> astrcode_core::Result<AssemblePromptResult> {
+            Ok(assembled_prompt(vec![user_message("find the answer")]))
+        }
+
+        async fn call_llm(
+            &self,
+            _resources: &TurnExecutionResources<'_>,
+            _llm_request: LlmRequest,
+            tool_delta_sink: Option<ToolCallDeltaSink>,
+        ) -> astrcode_core::Result<LlmOutput> {
+            if let Some(sink) = tool_delta_sink {
+                sink(StreamedToolCallDelta {
+                    index: 1,
+                    id: Some("call-stream-2".to_string()),
+                    name: Some("streaming_safe_probe".to_string()),
+                    arguments_delta: r#"{"path":"README.md"}"#.to_string(),
+                });
+            }
+            Ok(LlmOutput {
+                content: String::new(),
+                tool_calls: vec![
+                    ToolCallRequest {
+                        id: "call-remain-1".to_string(),
+                        name: "dummy_tool".to_string(),
+                        args: json!({"query": "alpha"}),
+                    },
+                    ToolCallRequest {
+                        id: "call-stream-2".to_string(),
+                        name: "streaming_safe_probe".to_string(),
+                        args: json!({"path": "README.md"}),
+                    },
+                ],
+                reasoning: None,
+                usage: None,
+                finish_reason: LlmFinishReason::ToolCalls,
+            })
+        }
+
+        async fn try_reactive_compact(
+            &self,
+            _execution: &TurnExecutionContext,
+            _resources: &TurnExecutionResources<'_>,
+        ) -> astrcode_core::Result<Option<compaction_cycle::RecoveryResult>> {
+            Ok(None)
+        }
+
+        async fn execute_tool_cycle(
+            &self,
+            _execution: &mut TurnExecutionContext,
+            _resources: &TurnExecutionResources<'_>,
+            _tool_calls: Vec<ToolCallRequest>,
+            _event_emission_mode: ToolEventEmissionMode,
+        ) -> astrcode_core::Result<ToolCycleResult> {
+            Ok(ToolCycleResult {
+                outcome: ToolCycleOutcome::Completed,
+                tool_messages: Vec::new(),
+                raw_results: Vec::new(),
+                events: Vec::new(),
+            })
+        }
+    }
+
+    let probe_calls = Arc::new(AtomicUsize::new(0));
+    let kernel = crate::turn::test_support::test_kernel_with_tool(
+        Arc::new(StreamingSafeProbeTool {
+            calls: Arc::clone(&probe_calls),
+        }),
+        8192,
+    );
+    let session_state = test_session_state();
+    let runtime = ResolvedRuntimeConfig::default();
+    let cancel = CancelToken::new();
+    let agent = AgentEventContext::default();
+    let prompt_facts_provider = NoopPromptFactsProvider;
+    let resources = test_resources(
+        kernel.gateway(),
+        &session_state,
+        &runtime,
+        &cancel,
+        &agent,
+        &prompt_facts_provider,
+    );
+    let mut execution =
+        TurnExecutionContext::new(&resources, vec![user_message("hello from user")], None);
+
+    let error = match run_single_step_with(&mut execution, &resources, &MissingResultDriver).await {
+        Ok(_) => panic!("missing remaining tool result should fail fast"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(error, AstrError::Internal(message) if message.contains("call-remain-1")));
+}
+
+#[cfg(debug_assertions)]
+#[tokio::test]
+#[should_panic(expected = "merge dropped tool calls")]
+async fn run_single_step_panics_when_buffered_merge_loses_tool_result_in_debug() {
+    struct MissingResultDriver;
+
+    #[async_trait]
+    impl StepDriver for MissingResultDriver {
+        async fn assemble_prompt(
+            &self,
+            _execution: &mut TurnExecutionContext,
+            _resources: &TurnExecutionResources<'_>,
+        ) -> astrcode_core::Result<AssemblePromptResult> {
+            Ok(assembled_prompt(vec![user_message("find the answer")]))
+        }
+
+        async fn call_llm(
+            &self,
+            _resources: &TurnExecutionResources<'_>,
+            _llm_request: LlmRequest,
+            tool_delta_sink: Option<ToolCallDeltaSink>,
+        ) -> astrcode_core::Result<LlmOutput> {
+            if let Some(sink) = tool_delta_sink {
+                sink(StreamedToolCallDelta {
+                    index: 1,
+                    id: Some("call-stream-2".to_string()),
+                    name: Some("streaming_safe_probe".to_string()),
+                    arguments_delta: r#"{"path":"README.md"}"#.to_string(),
+                });
+            }
+            Ok(LlmOutput {
+                content: String::new(),
+                tool_calls: vec![
+                    ToolCallRequest {
+                        id: "call-remain-1".to_string(),
+                        name: "dummy_tool".to_string(),
+                        args: json!({"query": "alpha"}),
+                    },
+                    ToolCallRequest {
+                        id: "call-stream-2".to_string(),
+                        name: "streaming_safe_probe".to_string(),
+                        args: json!({"path": "README.md"}),
+                    },
+                ],
+                reasoning: None,
+                usage: None,
+                finish_reason: LlmFinishReason::ToolCalls,
+            })
+        }
+
+        async fn try_reactive_compact(
+            &self,
+            _execution: &TurnExecutionContext,
+            _resources: &TurnExecutionResources<'_>,
+        ) -> astrcode_core::Result<Option<compaction_cycle::RecoveryResult>> {
+            Ok(None)
+        }
+
+        async fn execute_tool_cycle(
+            &self,
+            _execution: &mut TurnExecutionContext,
+            _resources: &TurnExecutionResources<'_>,
+            _tool_calls: Vec<ToolCallRequest>,
+            _event_emission_mode: ToolEventEmissionMode,
+        ) -> astrcode_core::Result<ToolCycleResult> {
+            Ok(ToolCycleResult {
+                outcome: ToolCycleOutcome::Completed,
+                tool_messages: Vec::new(),
+                raw_results: Vec::new(),
+                events: Vec::new(),
+            })
+        }
+    }
+
+    let probe_calls = Arc::new(AtomicUsize::new(0));
+    let kernel = crate::turn::test_support::test_kernel_with_tool(
+        Arc::new(StreamingSafeProbeTool {
+            calls: Arc::clone(&probe_calls),
+        }),
+        8192,
+    );
+    let session_state = test_session_state();
+    let runtime = ResolvedRuntimeConfig::default();
+    let cancel = CancelToken::new();
+    let agent = AgentEventContext::default();
+    let prompt_facts_provider = NoopPromptFactsProvider;
+    let resources = test_resources(
+        kernel.gateway(),
+        &session_state,
+        &runtime,
+        &cancel,
+        &agent,
+        &prompt_facts_provider,
+    );
+    let mut execution =
+        TurnExecutionContext::new(&resources, vec![user_message("hello from user")], None);
+
+    let _ = run_single_step_with(&mut execution, &resources, &MissingResultDriver).await;
+}
+
 #[test]
 fn fallback_reason_reports_identity_never_stabilized() {
     let kernel = crate::turn::test_support::test_kernel_with_tool(
@@ -1194,12 +1397,11 @@ fn fallback_reason_reports_identity_never_stabilized() {
         name: "streaming_safe_probe".to_string(),
         args: json!({"path": "README.md"}),
     };
-    let assembly = StreamingToolAssembly {
-        id: Some("other-call".to_string()),
-        name: Some("streaming_safe_probe".to_string()),
-        arguments: r#"{"path":"README.md"}"#.to_string(),
-        launched: false,
-    };
+    let assembly = StreamingToolAssembly::for_test(
+        Some("other-call".to_string()),
+        Some("streaming_safe_probe".to_string()),
+        r#"{"path":"README.md"}"#,
+    );
 
     assert_eq!(
         fallback_reason_for_final_call(Some(kernel.gateway()), Some(&assembly), &call),
@@ -1220,12 +1422,11 @@ fn fallback_reason_reports_unstable_json_payload() {
         name: "streaming_safe_probe".to_string(),
         args: json!({"path": "README.md"}),
     };
-    let assembly = StreamingToolAssembly {
-        id: Some("call-1".to_string()),
-        name: Some("streaming_safe_probe".to_string()),
-        arguments: r#"{"path":"README.md""#.to_string(),
-        launched: false,
-    };
+    let assembly = StreamingToolAssembly::for_test(
+        Some("call-1".to_string()),
+        Some("streaming_safe_probe".to_string()),
+        r#"{"path":"README.md""#,
+    );
 
     assert_eq!(
         fallback_reason_for_final_call(Some(kernel.gateway()), Some(&assembly), &call),
