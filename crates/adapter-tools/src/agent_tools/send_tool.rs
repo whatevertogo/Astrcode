@@ -33,15 +33,21 @@ impl SendAgentTool {
 ## Usage Guide
 
 1. **Specify agentId**: The target sub-agent's stable ID.
-2. **Write the message**: The content to send to the sub-agent.
-3. **Copy agentId exactly**: `agentId` must be copied byte-for-byte from a previous tool result's `Child agent reference` — never zero-pad, rewrite, or guess.
-4. **Optional context**: Supplementary context information.
+2. **Write the next concrete instruction**: Ask for a revision, the next task, or a decision-ready deliverable.
+3. **Copy agentId exactly**: `agentId` must be copied byte-for-byte from a previous tool result's `Child agent reference`.
+4. **Optional context**: Add only missing facts or constraints that materially change the task.
 
 ## When to Use
 
-- Append information or modified requirements to a running sub-agent
-- Request rework or additions after a sub-agent completes
-- Do NOT use to create a new agent (use `spawn`)"#
+- Continue an existing line of work with the same child
+- Request a revision after reading the child's last result
+- Hand off the next scoped task to an idle child
+
+## When NOT to Use
+
+- Creating a new child for the same responsibility
+- Checking status only; use `observe`
+- Broadcasting vague reminders like "keep going""#
             .to_string()
     }
 
@@ -88,19 +94,23 @@ impl Tool for SendAgentTool {
             .compact_clearable(false)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Send a follow-up message to an existing sub-agent.",
-                    "Use `send` to append requirements or rework requests to a running or completed \
-                     sub-agent. Target is specified by stable `agentId` from a previous \
-                     collaboration tool result's `Child agent reference` — reuse the exact value \
-                     byte-for-byte.",
+                    "Send the next concrete instruction to an existing sub-agent.",
+                    "Use `send` when the same child should continue with the next scoped step. \
+                     Write one clear instruction, revision request, or additional constraint. Use \
+                     the exact `agentId` returned earlier. Prefer `send` over spawning a new child \
+                     when the responsibility stays the same.",
                 )
                 .caveat(
                     "Only send to sub-agents you spawned yourself. Never rewrite `agent-1` as \
                      `agent-01`.",
                 )
                 .caveat(
-                    "Messages enter the sub-agent's mailbox and are processed in send order. After \
-                     `send`, use `observe` to check results — do not assume immediate processing.",
+                    "Do not use `send` for status checks. If you need to know whether the child is \
+                     still running, idle, or blocked, use `observe`.",
+                )
+                .caveat(
+                    "Messages enter the child's mailbox and are processed in order. Do not stack \
+                     many speculative sends; wait for a result or observe before changing course.",
                 )
                 .prompt_tag("collaboration"),
             )

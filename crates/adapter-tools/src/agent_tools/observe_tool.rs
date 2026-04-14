@@ -38,10 +38,9 @@ impl ObserveAgentTool {
 ## Usage Guide
 
 1. **Specify agentId**: The sub-agent ID to observe.
-2. **Copy agentId exactly**: `agentId` must be copied byte-for-byte from a previous tool result's `Child agent reference` — never zero-pad, rewrite, or guess.
-3. **Snapshot contents**: Returns a full state snapshot including `lifecycleStatus`, `lastTurnOutcome`, `activeTask`, `pendingTask`, `pendingMessageCount`, etc.
-4. **Decision basis**: Use the snapshot to decide whether to `send` a new task or `close` the agent.
-5. **Recommended practice**: Use a shell script to wait for a short interval before observing again, to avoid aggressive polling.
+2. **Copy agentId exactly**: `agentId` must be copied byte-for-byte from a previous tool result's `Child agent reference`.
+3. **Use it to decide an action**: `observe` should usually answer "send next", "wait", or "close".
+4. **Do not poll aggressively**: Observe when a decision depends on the state, not in a tight loop.
 
 ## Returned Fields
 
@@ -55,10 +54,15 @@ impl ObserveAgentTool {
 
 ## When to Use
 
-- Need to know the sub-agent's current state before deciding next steps
-- Check if a sub-agent has finished its last turn (lifecycleStatus = Idle)
-- See if a sub-agent has a backlog of unprocessed messages
-- Do NOT use on unrelated sub-agents"#
+- Need to know whether a child is still running, idle, or done
+- Need the latest outcome before deciding whether to `send` or `close`
+- Need to confirm whether the child has pending mailbox work
+
+## When NOT to Use
+
+- Repeated heartbeat polling with no decision attached
+- Reading output that you already received in a delivery
+- Observing unrelated agents"#
             .to_string()
     }
 
@@ -97,13 +101,11 @@ impl Tool for ObserveAgentTool {
             .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Observe sub-agent state.",
-                    "Use `observe` to get an enhanced state snapshot of a direct child agent. The \
-                     snapshot includes `lifecycleStatus`, `lastTurnOutcome`, `activeTask`, \
-                     `pendingTask`, `pendingMessageCount`, etc. to help decide the next action. \
-                     Only direct children spawned by you can be observed. The `agentId` must come \
-                     from a previous collaboration tool result's `Child agent reference` and be \
-                     reused byte-for-byte.",
+                    "Observe child state when you need to decide the next action.",
+                    "Use `observe` to answer a concrete question such as: Is this child still \
+                     running? Did it finish its last turn? Should I `send` another instruction or \
+                     `close` it? Observe only direct children you spawned, and reuse the exact \
+                     `agentId` returned earlier.",
                 )
                 .caveat(
                     "Only returns snapshots for direct child agents. Never rewrite `agent-1` as \
@@ -113,6 +115,10 @@ impl Tool for ObserveAgentTool {
                     "State transitions: Pending → Running → Idle (waiting for new tasks) or \
                      Terminated (closed). `observe` is a synchronous non-blocking query — call at \
                      intervals, do not poll aggressively.",
+                )
+                .caveat(
+                    "Prefer one well-timed observe over repeated checking. If a child just sent a \
+                     usable delivery, act on it instead of observing immediately again.",
                 )
                 .prompt_tag("collaboration"),
             )

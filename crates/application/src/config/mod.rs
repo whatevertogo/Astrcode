@@ -32,14 +32,14 @@ pub use astrcode_core::{
         DEFAULT_LLM_RETRY_BASE_DELAY_MS, DEFAULT_MAX_CONCURRENT_AGENTS,
         DEFAULT_MAX_CONCURRENT_BRANCH_DEPTH, DEFAULT_MAX_CONSECUTIVE_FAILURES,
         DEFAULT_MAX_GREP_LINES, DEFAULT_MAX_IMAGE_SIZE, DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS,
-        DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS, DEFAULT_MAX_RECOVERED_FILES, DEFAULT_MAX_STEPS,
-        DEFAULT_MAX_SUBRUN_DEPTH, DEFAULT_MAX_TOOL_CONCURRENCY, DEFAULT_MAX_TRACKED_FILES,
-        DEFAULT_PARENT_DELIVERY_CAPACITY, DEFAULT_RECOVERY_TOKEN_BUDGET,
-        DEFAULT_RECOVERY_TRUNCATE_BYTES, DEFAULT_SESSION_BROADCAST_CAPACITY,
-        DEFAULT_SESSION_RECENT_RECORD_LIMIT, DEFAULT_SUMMARY_RESERVE_TOKENS,
-        DEFAULT_TOOL_RESULT_INLINE_LIMIT, DEFAULT_TOOL_RESULT_MAX_BYTES,
-        DEFAULT_TOOL_RESULT_PREVIEW_LIMIT, ResolvedAgentConfig, ResolvedRuntimeConfig,
-        max_tool_concurrency, resolve_agent_config, resolve_runtime_config,
+        DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS, DEFAULT_MAX_RECOVERED_FILES,
+        DEFAULT_MAX_SPAWN_PER_TURN, DEFAULT_MAX_STEPS, DEFAULT_MAX_SUBRUN_DEPTH,
+        DEFAULT_MAX_TOOL_CONCURRENCY, DEFAULT_MAX_TRACKED_FILES, DEFAULT_PARENT_DELIVERY_CAPACITY,
+        DEFAULT_RECOVERY_TOKEN_BUDGET, DEFAULT_RECOVERY_TRUNCATE_BYTES,
+        DEFAULT_SESSION_BROADCAST_CAPACITY, DEFAULT_SESSION_RECENT_RECORD_LIMIT,
+        DEFAULT_SUMMARY_RESERVE_TOKENS, DEFAULT_TOOL_RESULT_INLINE_LIMIT,
+        DEFAULT_TOOL_RESULT_MAX_BYTES, DEFAULT_TOOL_RESULT_PREVIEW_LIMIT, ResolvedAgentConfig,
+        ResolvedRuntimeConfig, max_tool_concurrency, resolve_agent_config, resolve_runtime_config,
     },
     ports::{ConfigStore, McpConfigFileScope},
 };
@@ -287,6 +287,7 @@ mod tests {
 
         assert_eq!(runtime.max_steps, DEFAULT_MAX_STEPS);
         assert_eq!(runtime.agent.max_subrun_depth, DEFAULT_MAX_SUBRUN_DEPTH);
+        assert_eq!(runtime.agent.max_spawn_per_turn, DEFAULT_MAX_SPAWN_PER_TURN);
         assert_eq!(
             runtime.tool_result_inline_limit,
             DEFAULT_TOOL_RESULT_INLINE_LIMIT
@@ -302,6 +303,7 @@ mod tests {
             config.runtime.llm_read_timeout_secs = Some(120);
             config.runtime.agent = Some(astrcode_core::AgentConfig {
                 max_subrun_depth: Some(5),
+                max_spawn_per_turn: Some(2),
                 ..astrcode_core::AgentConfig::default()
             });
         }
@@ -314,5 +316,6 @@ mod tests {
         assert_eq!(runtime.max_steps, 12);
         assert_eq!(runtime.llm_read_timeout_secs, 120);
         assert_eq!(runtime.agent.max_subrun_depth, 5);
+        assert_eq!(runtime.agent.max_spawn_per_turn, 2);
     }
 }

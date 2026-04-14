@@ -33,26 +33,26 @@ impl SpawnAgentTool {
 ## Usage Guide
 
 1. **Choose the right profile**: Set `type` to the target profile identifier. Available profiles are listed in the current session's agent index.
-2. **Be specific in `prompt`**: Clearly state what to do, find, or analyze.
-3. **Add context if needed**: Use `context` for background information (e.g., "focus on security issues", "frontend directory only").
-4. **Async by default**: `spawn` launches a background sub-session; progress is streamed back via the session event channel.
-5. **Preserve the original agentId**: Copy the `agentId` from the tool result byte-for-byte into later `send` / `observe` / `close` calls — never zero-pad, rewrite, or guess.
-6. **Parallel execution**: Issue multiple `spawn` calls in the same turn to run tasks in parallel.
-7. **Chained execution**: Wait for each agent's work, read the `summary`, then pass it explicitly in the next step's `context`.
-8. **Depth is limited**: Nested child depth is configurable and defaults to 3. Reuse an existing child with `send` before creating a deeper descendant.
+2. **Be specific in `prompt`**: Give one concrete responsibility, deliverable, or review angle.
+3. **Add only useful context**: Use `context` for narrow constraints such as scope, quality bar, or files to focus on.
+4. **Background by default**: `spawn` starts a child and returns immediately.
+5. **Preserve the original agentId**: Copy the returned `agentId` exactly into later `send` / `observe` / `close` calls.
+6. **Start with one child**: Add more children only when work clearly splits into independent threads.
+7. **Reuse before respawn**: If a child is `Idle`, prefer `send` or `observe` over creating another child for the same responsibility.
+8. **Depth and fan-out are limited**: Reuse an existing child before creating a deeper or wider subtree.
 
 ## When to Use
 
 - Exploring a large codebase or finding specific code patterns
 - Creating detailed implementation plans
 - Multi-perspective code review
-- Targeted code modification tasks
+- Targeted code modification tasks with clear ownership boundaries
 
 ## When NOT to Use
 
 - Simple file reads or searches (use `readFile`, `grep` etc. directly)
 - Questions you already know the answer to
-- Simple operations that don't need an isolated context"#
+- Broad "explore everything" delegation without first defining a few concrete workstreams"#
             .to_string()
     }
 
@@ -97,9 +97,9 @@ impl Tool for SpawnAgentTool {
         ToolCapabilityMetadata::builtin()
             .tag("agent")
             .tag("subagent")
-            // spawn 统一为后台启动：工具本身只负责建链和返回句柄，
-            // 不会阻塞当前 agent 的 LLM 轮次，因此可以安全并发。
-            .concurrency_safe(true)
+            // spawn 会修改 agent 树与 child session 目录视图；
+            // 串行执行可以避免同轮 fan-out 检查发生竞态。
+            .concurrency_safe(false)
             // compact 模式下可以折叠 spawn 的 tool result，减少上下文占用
             .compact_clearable(true)
             .prompt(
@@ -107,17 +107,21 @@ impl Tool for SpawnAgentTool {
                     "Launch a sub-agent with an isolated context. Only use when parallel benefit, \
                      context isolation, or responsibility separation is clear.",
                     "Use `spawn` to delegate exploration, review, planning, or targeted modification \
-                     to a sub-agent. Prefer spawn when: the task would consume significant context, \
-                     benefits from parallel execution, or needs an independent responsibility \
-                     boundary. Do not delegate simple reads, one-off searches, or operations you \
-                     can complete immediately. After calling, remember the original `agentId` from \
-                     the tool result; all subsequent `send`, `observe`, `close` calls must reuse \
-                     it byte-for-byte. Nested spawn depth is configurable and defaults to 3; \
-                     prefer reusing an idle child with `send` before creating a deeper descendant.",
+                     to a sub-agent when there is clear isolation or parallel value. Start with one \
+                     child unless there are clearly separate workstreams. Give the child one narrow \
+                     responsibility, not a vague request to explore everything. Do not delegate \
+                     simple reads, one-off searches, or work you can finish immediately. After \
+                     calling, reuse the returned `agentId` exactly in later `send`, `observe`, and \
+                     `close` calls. Reuse an idle child before spawning another child for the same \
+                     thread of work.",
                 )
                 .caveat(
                     "If your next step depends on the result, doing it yourself is usually faster; \
                      only spawn when parallel or isolation value is clear.",
+                )
+                .caveat(
+                    "Do not fan out by default. A small number of well-scoped children is better \
+                     than spawning many vague explorers over the same repo surface.",
                 )
                 .caveat(
                     "`description` is for UI/log summary only — put real task requirements in \
@@ -125,12 +129,12 @@ impl Tool for SpawnAgentTool {
                      `explore`.",
                 )
                 .caveat(
-                    "If spawn fails because the depth limit is reached, do not keep retrying with \
-                     deeper nested agents. Reuse an existing child via `send`, or finish the work \
-                     in the current agent.",
+                    "If spawn fails because a depth or fan-out limit is reached, do not keep \
+                     retrying with more children. Reuse an existing child via `send`, or finish \
+                     the work in the current agent.",
                 )
                 .example(
-                    "Parallel exploration: { description: \"check cache layer\", prompt: \"review \
+                    "Focused delegation: { description: \"check cache layer\", prompt: \"review \
                      concurrency and invalidation risks in crates/runtime-cache\", type: \
                      \"reviewer\" }",
                 )

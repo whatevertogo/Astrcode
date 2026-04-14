@@ -359,6 +359,7 @@ mod tests {
             runtime: RuntimeConfig {
                 agent: Some(AgentConfig {
                     max_subrun_depth: Some(5),
+                    max_spawn_per_turn: Some(2),
                     max_concurrent: Some(4),
                     finalized_retain_limit: Some(123),
                     inbox_capacity: Some(456),

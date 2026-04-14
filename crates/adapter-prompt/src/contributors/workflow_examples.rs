@@ -86,6 +86,7 @@ impl PromptContributor for WorkflowExamplesContributor {
 
         if has_agent_collaboration_tools(ctx) {
             let max_depth = collaboration_depth_limit(ctx).unwrap_or(DEFAULT_MAX_SUBRUN_DEPTH);
+            let max_spawn_per_turn = collaboration_spawn_limit(ctx).unwrap_or(3);
             blocks.push(
                 BlockSpec::system_text(
                     "child-collaboration-guidance",
@@ -108,15 +109,27 @@ impl PromptContributor for WorkflowExamplesContributor {
                          existing child over creating a deeper descendant. If you hit the depth \
                          limit, do not retry with more nested spawn calls. Finish the remaining \
                          work in the current agent, or send the next instruction to an existing \
-                         child.\n\nIf the delivery fully satisfies the original request, call \
-                         `close(agentId)` to terminate the child subtree. If you need follow-up \
-                         work or revisions, call `send(agentId, message)` with the next concrete \
-                         instruction. Runtime mailbox delivery can be replayed after recovery. If \
-                         you see the same `deliveryId` again, treat it as the same delivery \
-                         rather than a new task.\n\nExample: if the tool result contains \
-                         `agentId: agent-7`, every later collaboration call must use exactly \
-                         `agent-7`. Default: close the child if the delivery satisfies the \
-                         request; otherwise send a precise follow-up instruction or observe first."
+                         child.\n\nChoose the next tool by intent, not habit:\n- Use `observe` \
+                         only when a real decision depends on current child state.\n- Use `send` \
+                         when the same child should continue with one concrete next step.\n- Use \
+                         `close` when the child is done or that branch is no longer useful.\nDo \
+                         not loop on `observe` with no decision attached. Do not stack many \
+                         speculative `send` calls. Do not spawn a new child when an existing idle \
+                         child already owns the responsibility.\n\nSpawn sparingly. Start with \
+                         one child unless there are clearly distinct, independent workstreams \
+                         that justify fan-out. The runtime caps new child creation per turn at \
+                         {max_spawn_per_turn}. Do not blanket-spawn agents just to explore a repo \
+                         broadly; first decide the concrete threads of work, then delegate only \
+                         the few that truly benefit from isolation or parallelism.\n\nIf the \
+                         delivery fully satisfies the original request, call `close(agentId)` to \
+                         terminate the child subtree. If you need follow-up work or revisions, \
+                         call `send(agentId, message)` with the next concrete instruction. \
+                         Runtime mailbox delivery can be replayed after recovery. If you see the \
+                         same `deliveryId` again, treat it as the same delivery rather than a new \
+                         task.\n\nExample: if the tool result contains `agentId: agent-7`, every \
+                         later collaboration call must use exactly `agent-7`. Default: close the \
+                         child if the delivery satisfies the request; otherwise send a precise \
+                         follow-up instruction or observe first."
                     ),
                 )
                 .with_priority(600),
@@ -145,6 +158,12 @@ fn should_add_tool_search_example(ctx: &PromptContext) -> bool {
 fn collaboration_depth_limit(ctx: &PromptContext) -> Option<usize> {
     ctx.vars
         .get("agent.max_subrun_depth")
+        .and_then(|value| value.parse::<usize>().ok())
+}
+
+fn collaboration_spawn_limit(ctx: &PromptContext) -> Option<usize> {
+    ctx.vars
+        .get("agent.max_spawn_per_turn")
         .and_then(|value| value.parse::<usize>().ok())
 }
 

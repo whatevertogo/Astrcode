@@ -44,7 +44,7 @@ pub async fn launch_subagent(
     ensure_subagent_profile_mode(&request.profile)?;
 
     let child_session = session_runtime
-        .create_session(&request.working_dir)
+        .create_child_session(&request.working_dir, &request.parent_session_id)
         .await
         .map_err(ApplicationError::from)?;
 

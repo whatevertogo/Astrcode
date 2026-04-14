@@ -7,6 +7,10 @@ import type { Message, Project, SessionMeta } from '../types';
 import { normalizeProjectIdentity } from '../lib/knownProjects';
 import { buildSubRunThreadTree, createEmptySubRunThreadTree } from '../lib/subRunView';
 
+interface GroupSessionsOptions {
+  includeSessionIds?: string[];
+}
+
 function toEpochMs(value: string): number {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : Date.now();
@@ -20,11 +24,17 @@ function getDirectoryName(path: string): string {
 
 export function groupSessionsByProject(
   sessionMetas: SessionMeta[],
-  knownWorkingDirs: string[] = []
+  knownWorkingDirs: string[] = [],
+  options: GroupSessionsOptions = {}
 ): Project[] {
+  const visibleSessionIds = new Set(options.includeSessionIds ?? []);
   const projectMap = new Map<string, { project: Project; maxUpdatedAt: number }>();
 
   for (const meta of sessionMetas) {
+    if (meta.parentSessionId && !visibleSessionIds.has(meta.sessionId)) {
+      continue;
+    }
+
     const projectId = normalizeProjectIdentity(meta.workingDir) || '__default_project__';
     const projectName = meta.displayName || getDirectoryName(meta.workingDir);
     const updatedAt = toEpochMs(meta.updatedAt);

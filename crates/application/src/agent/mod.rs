@@ -286,6 +286,35 @@ impl AgentOrchestrationService {
                 ))
             })
     }
+
+    async fn enforce_spawn_budget_for_turn(
+        &self,
+        parent_agent_id: &str,
+        parent_turn_id: &str,
+        max_spawn_per_turn: usize,
+    ) -> std::result::Result<(), AgentOrchestrationError> {
+        let spawned_for_turn = self
+            .kernel
+            .agent_control()
+            .list()
+            .await
+            .into_iter()
+            .filter(|handle| {
+                handle.parent_turn_id == parent_turn_id
+                    && handle.parent_agent_id.as_deref() == Some(parent_agent_id)
+            })
+            .count();
+
+        if spawned_for_turn >= max_spawn_per_turn {
+            return Err(AgentOrchestrationError::InvalidInput(format!(
+                "spawn budget exhausted for this turn ({spawned_for_turn}/{max_spawn_per_turn}); \
+                 reuse an existing child with send/observe/close, or continue the work in the \
+                 current agent"
+            )));
+        }
+
+        Ok(())
+    }
 }
 
 // ── 实现 SubAgentExecutor（供 spawn 工具使用）──────────────────────
@@ -320,6 +349,13 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
         let runtime_config = self
             .resolve_runtime_config_for_working_dir(ctx.working_dir())
             .map_err(map_orchestration_error)?;
+        self.enforce_spawn_budget_for_turn(
+            &parent_agent_id,
+            &request.parent_turn_id,
+            runtime_config.agent.max_spawn_per_turn,
+        )
+        .await
+        .map_err(map_orchestration_error)?;
 
         let accepted = launch_subagent(
             &self.kernel,
@@ -451,7 +487,9 @@ mod tests {
         root_execution_event_context, terminal_notification_message,
         terminal_notification_turn_outcome,
     };
-    use crate::agent::test_support::{TestLlmBehavior, build_agent_test_harness};
+    use crate::agent::test_support::{
+        TestLlmBehavior, build_agent_test_harness, build_agent_test_harness_with_agent_config,
+    };
 
     #[test]
     fn root_execution_event_context_uses_explicit_agent_id() {
@@ -632,6 +670,14 @@ mod tests {
             .replay_stored_events(&SessionId::from(child_session_id.clone()))
             .await
             .expect("child session events should replay");
+        let child_meta = harness
+            .session_runtime
+            .list_session_metas()
+            .await
+            .expect("child session metas should list")
+            .into_iter()
+            .find(|meta| meta.session_id == child_session_id)
+            .expect("child session meta should exist");
         let child_prompt = child_events
             .iter()
             .find(|stored| {
@@ -645,6 +691,83 @@ mod tests {
             child_prompt.event.agent.child_session_id.as_deref(),
             Some(child_session_id.as_str()),
             "child prompt event should be stamped with its independent child session id"
+        );
+        assert_eq!(
+            child_meta.parent_session_id.as_deref(),
+            Some(parent.session_id.as_str()),
+            "independent child session should carry its parent session lineage"
+        );
+    }
+
+    #[tokio::test]
+    async fn launch_rejects_spawns_that_exceed_per_turn_budget() {
+        let harness = build_agent_test_harness_with_agent_config(
+            TestLlmBehavior::Succeed {
+                content: "子代理已完成。".to_string(),
+            },
+            Some(astrcode_core::AgentConfig {
+                max_spawn_per_turn: Some(1),
+                ..astrcode_core::AgentConfig::default()
+            }),
+        )
+        .expect("test harness should build");
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let parent = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("parent session should be created");
+        harness
+            .kernel
+            .agent_control()
+            .register_root_agent(
+                "root-agent".to_string(),
+                parent.session_id.clone(),
+                "root-profile".to_string(),
+            )
+            .await
+            .expect("root agent should be registered");
+        let ctx = ToolContext::new(
+            parent.session_id.clone().into(),
+            project.path().to_path_buf(),
+            CancelToken::new(),
+        )
+        .with_turn_id("turn-1")
+        .with_agent_context(root_execution_event_context("root-agent", "root-profile"));
+
+        harness
+            .service
+            .launch(
+                SpawnAgentParams {
+                    r#type: Some("reviewer".to_string()),
+                    description: "第一次".to_string(),
+                    prompt: "请阅读代码".to_string(),
+                    context: None,
+                },
+                &ctx,
+            )
+            .await
+            .expect("first spawn should succeed");
+
+        let error = harness
+            .service
+            .launch(
+                SpawnAgentParams {
+                    r#type: Some("reviewer".to_string()),
+                    description: "第二次".to_string(),
+                    prompt: "请继续阅读代码".to_string(),
+                    context: None,
+                },
+                &ctx,
+            )
+            .await
+            .expect_err("second spawn should hit the per-turn budget");
+
+        assert!(
+            error
+                .to_string()
+                .contains("spawn budget exhausted for this turn"),
+            "unexpected error: {error}"
         );
     }
 }

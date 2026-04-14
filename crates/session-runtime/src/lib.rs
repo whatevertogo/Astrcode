@@ -167,6 +167,23 @@ impl SessionRuntime {
     }
 
     pub async fn create_session(&self, working_dir: impl Into<String>) -> Result<SessionMeta> {
+        self.create_session_with_parent(working_dir, None).await
+    }
+
+    pub async fn create_child_session(
+        &self,
+        working_dir: impl Into<String>,
+        parent_session_id: impl Into<String>,
+    ) -> Result<SessionMeta> {
+        self.create_session_with_parent(working_dir, Some(parent_session_id.into()))
+            .await
+    }
+
+    async fn create_session_with_parent(
+        &self,
+        working_dir: impl Into<String>,
+        parent_session_id: Option<String>,
+    ) -> Result<SessionMeta> {
         let working_dir = normalize_working_dir(PathBuf::from(working_dir.into()))?;
         let session_id_raw = generate_session_id();
         let session_id: SessionId = session_id_raw.clone().into();
@@ -179,12 +196,15 @@ impl SessionRuntime {
             .await?;
 
         let created_at = Utc::now();
+        let lineage_parent_session_id = parent_session_id.clone();
         let actor = Arc::new(
-            SessionActor::new_persistent(
+            SessionActor::new_persistent_with_lineage(
                 session_id.clone(),
                 working_dir.display().to_string(),
                 AgentId::from(ROOT_AGENT_ID.to_string()),
                 Arc::clone(&self.event_store),
+                lineage_parent_session_id,
+                None,
             )
             .map_err(|error| SessionRuntimeError::SessionInitializationFailed {
                 session_id: session_id.to_string(),
@@ -205,7 +225,7 @@ impl SessionRuntime {
             title: "New Session".to_string(),
             created_at,
             updated_at: created_at,
-            parent_session_id: None,
+            parent_session_id,
             parent_storage_seq: None,
             phase: Phase::Idle,
         };

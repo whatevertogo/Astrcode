@@ -126,6 +126,25 @@ impl SessionActor {
         root_agent_id: AgentId,
         event_store: Arc<dyn EventStore>,
     ) -> astrcode_core::Result<Self> {
+        Self::new_persistent_with_lineage(
+            session_id,
+            working_dir,
+            root_agent_id,
+            event_store,
+            None,
+            None,
+        )
+    }
+
+    /// 创建一个带 durable writer 的 actor，并写入 lineage 元数据。
+    pub fn new_persistent_with_lineage(
+        session_id: SessionId,
+        working_dir: impl Into<String>,
+        root_agent_id: AgentId,
+        event_store: Arc<dyn EventStore>,
+        parent_session_id: Option<String>,
+        parent_storage_seq: Option<u64>,
+    ) -> astrcode_core::Result<Self> {
         let working_dir = working_dir.into();
         let writer = Arc::new(SessionWriter::new(Box::new(EventStoreLogWriter::new(
             event_store,
@@ -139,8 +158,8 @@ impl SessionActor {
                 session_id: session_id.to_string(),
                 timestamp: chrono::Utc::now(),
                 working_dir: working_dir.clone(),
-                parent_session_id: None,
-                parent_storage_seq: None,
+                parent_session_id,
+                parent_storage_seq,
             },
         };
         let stored = writer.append_blocking(&session_start)?;

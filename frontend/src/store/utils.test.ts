@@ -32,4 +32,36 @@ describe('groupSessionsByProject', () => {
     expect(projects.map((project) => project.workingDir)).toEqual(['D:\\Alpha', 'D:\\Beta']);
     expect(projects.every((project) => project.sessions.length === 0)).toBe(true);
   });
+
+  it('hides child sessions from the default sidebar grouping', () => {
+    const projects = groupSessionsByProject([
+      buildMeta({ sessionId: 'session-parent' }),
+      buildMeta({
+        sessionId: 'session-child',
+        parentSessionId: 'session-parent',
+      }),
+    ]);
+
+    expect(projects).toHaveLength(1);
+    expect(projects[0]?.sessions.map((session) => session.id)).toEqual(['session-parent']);
+  });
+
+  it('includes an explicitly requested child session so direct navigation still works', () => {
+    const projects = groupSessionsByProject(
+      [
+        buildMeta({ sessionId: 'session-parent' }),
+        buildMeta({
+          sessionId: 'session-child',
+          parentSessionId: 'session-parent',
+        }),
+      ],
+      [],
+      { includeSessionIds: ['session-child'] }
+    );
+
+    expect(projects[0]?.sessions.map((session) => session.id)).toEqual([
+      'session-parent',
+      'session-child',
+    ]);
+  });
 });

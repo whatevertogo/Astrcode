@@ -119,8 +119,8 @@ fn tool_description_is_stable_and_excludes_dynamic_profile_listing() {
     assert!(!definition.description.contains("当前没有可用的子 Agent"));
     assert!(definition.description.contains("When to Use"));
     assert!(definition.description.contains("Be specific"));
-    assert!(definition.description.contains("Parallel execution"));
-    assert!(definition.description.contains("Chained execution"));
+    assert!(definition.description.contains("Start with one child"));
+    assert!(definition.description.contains("Reuse before respawn"));
 }
 
 #[test]
@@ -136,8 +136,42 @@ fn spawn_tool_exposes_prompt_metadata_for_tool_summary_indexing() {
         .expect("spawn should expose prompt metadata");
 
     assert!(prompt.summary.contains("isolated context"));
-    assert!(prompt.guide.contains("parallel"));
+    assert!(prompt.guide.contains("Start with one child"));
     assert!(prompt.guide.contains("`agentId`"));
+}
+
+#[test]
+fn send_observe_close_prompt_metadata_stays_action_oriented() {
+    let executor = Arc::new(RecordingCollabExecutor::new());
+
+    let send_prompt = SendAgentTool::new(executor.clone())
+        .capability_metadata()
+        .prompt
+        .expect("send should expose prompt metadata");
+    assert!(send_prompt.summary.contains("next concrete instruction"));
+    assert!(send_prompt.guide.contains("same child should continue"));
+
+    let observe_prompt = ObserveAgentTool::new(executor.clone())
+        .capability_metadata()
+        .prompt
+        .expect("observe should expose prompt metadata");
+    assert!(observe_prompt.summary.contains("decide the next action"));
+    assert!(
+        observe_prompt
+            .guide
+            .contains("Should I `send` another instruction")
+    );
+
+    let close_prompt = CloseAgentTool::new(executor)
+        .capability_metadata()
+        .prompt
+        .expect("close should expose prompt metadata");
+    assert!(
+        close_prompt
+            .summary
+            .contains("finished or no longer useful")
+    );
+    assert!(close_prompt.guide.contains("free capacity"));
 }
 
 #[tokio::test]

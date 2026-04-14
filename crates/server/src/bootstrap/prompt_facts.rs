@@ -99,6 +99,7 @@ impl PromptFactsProvider for RuntimePromptFactsProvider {
                 "activeProfile": config.active_profile,
                 "activeModel": config.active_model,
                 "agentMaxSubrunDepth": runtime.agent.max_subrun_depth,
+                "agentMaxSpawnPerTurn": runtime.agent.max_spawn_per_turn,
             }),
             skills: skill_summaries,
             agent_profiles,

@@ -137,6 +137,7 @@ fn validate_runtime_params(runtime: &astrcode_core::RuntimeConfig) -> Result<()>
 
     if let Some(agent) = runtime.agent.as_ref() {
         validate_positive_usize(agent.max_subrun_depth, "runtime.agent.maxSubrunDepth")?;
+        validate_positive_usize(agent.max_spawn_per_turn, "runtime.agent.maxSpawnPerTurn")?;
         validate_positive_usize(agent.max_concurrent, "runtime.agent.maxConcurrent")?;
         validate_positive_usize(
             agent.finalized_retain_limit,
@@ -357,6 +358,17 @@ mod tests {
         });
         let error = validate_config(&config).expect_err("maxSubrunDepth=0 should fail");
         assert!(error.to_string().contains("runtime.agent.maxSubrunDepth"));
+    }
+
+    #[test]
+    fn zero_agent_max_spawn_per_turn_fails() {
+        let mut config = Config::default();
+        config.runtime.agent = Some(astrcode_core::AgentConfig {
+            max_spawn_per_turn: Some(0),
+            ..astrcode_core::AgentConfig::default()
+        });
+        let error = validate_config(&config).expect_err("maxSpawnPerTurn=0 should fail");
+        assert!(error.to_string().contains("runtime.agent.maxSpawnPerTurn"));
     }
 
     #[test]

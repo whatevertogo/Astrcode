@@ -143,7 +143,6 @@ export function useSessionCoordinator({
       const previousSessionId = activeSessionIdRef.current;
       const sessionMetas = await listSessionsWithMeta();
       const knownWorkingDirs = ensureKnownProjects(sessionMetas.map((meta) => meta.workingDir));
-      const projects = groupSessionsByProject(sessionMetas, knownWorkingDirs);
       const availableSessionIds = sessionMetas.map((meta) => meta.sessionId);
       const preferredSessionId = options?.preferredSessionId;
       const matchedPreferredSessionId = findMatchingSessionId(
@@ -154,6 +153,12 @@ export function useSessionCoordinator({
         availableSessionIds,
         activeSessionIdRef.current
       );
+      const projects = groupSessionsByProject(sessionMetas, knownWorkingDirs, {
+        includeSessionIds: [
+          ...(matchedPreferredSessionId ? [matchedPreferredSessionId] : []),
+          ...(matchedActiveSessionId ? [matchedActiveSessionId] : []),
+        ],
+      });
       const nextSessionId =
         matchedPreferredSessionId ?? matchedActiveSessionId ?? projects[0]?.sessions[0]?.id ?? null;
       const nextActiveSubRunPath =

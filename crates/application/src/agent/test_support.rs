@@ -33,6 +33,13 @@ pub(super) struct AgentTestHarness {
 }
 
 pub(super) fn build_agent_test_harness(llm_behavior: TestLlmBehavior) -> Result<AgentTestHarness> {
+    build_agent_test_harness_with_agent_config(llm_behavior, None)
+}
+
+pub(super) fn build_agent_test_harness_with_agent_config(
+    llm_behavior: TestLlmBehavior,
+    agent_config: Option<astrcode_core::AgentConfig>,
+) -> Result<AgentTestHarness> {
     let guard = AgentTestEnvGuard::new();
     let kernel = Arc::new(
         Kernel::builder()
@@ -51,7 +58,16 @@ pub(super) fn build_agent_test_harness(llm_behavior: TestLlmBehavior) -> Result<
         event_store.clone(),
         metrics.clone(),
     ));
-    let config_service = Arc::new(ConfigService::new(Arc::new(TestConfigStore::default())));
+    let config_store = Arc::new(TestConfigStore::default());
+    if let Some(agent_config) = agent_config {
+        config_store
+            .config
+            .lock()
+            .expect("config mutex")
+            .runtime
+            .agent = Some(agent_config);
+    }
+    let config_service = Arc::new(ConfigService::new(config_store));
     let profiles = Arc::new(ProfileResolutionService::new(Arc::new(
         StaticProfileProvider::default(),
     )));
@@ -288,6 +304,7 @@ struct InMemorySession {
     working_dir: String,
     created_at: chrono::DateTime<Utc>,
     updated_at: chrono::DateTime<Utc>,
+    parent_session_id: Option<String>,
     events: Vec<StoredEvent>,
     active_turn: Option<ActiveTurnLeaseState>,
 }
@@ -333,6 +350,7 @@ impl EventStore for InMemoryEventStore {
                 working_dir: working_dir.display().to_string(),
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                parent_session_id: None,
                 events: Vec::new(),
                 active_turn: None,
             });
@@ -348,6 +366,12 @@ impl EventStore for InMemoryEventStore {
             storage_seq: session.events.len() as u64 + 1,
             event: event.clone(),
         };
+        if let astrcode_core::StorageEventPayload::SessionStart {
+            parent_session_id, ..
+        } = &event.payload
+        {
+            session.parent_session_id = parent_session_id.clone();
+        }
         session.updated_at = Utc::now();
         session.events.push(stored.clone());
         Ok(stored)
@@ -412,7 +436,7 @@ impl EventStore for InMemoryEventStore {
                 title: "New Session".to_string(),
                 created_at: session.created_at,
                 updated_at: session.updated_at,
-                parent_session_id: None,
+                parent_session_id: session.parent_session_id.clone(),
                 parent_storage_seq: None,
                 phase: if session.active_turn.is_some() {
                     Phase::Thinking

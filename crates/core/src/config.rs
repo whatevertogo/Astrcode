@@ -17,6 +17,8 @@ const ENV_REFERENCE_PREFIX: &str = "env:";
 
 /// 默认受控子会话最大深度。
 pub const DEFAULT_MAX_SUBRUN_DEPTH: usize = 2;
+/// 默认单轮最多新建的子代理数量。
+pub const DEFAULT_MAX_SPAWN_PER_TURN: usize = 3;
 
 /// 默认最大安全工具并发数。
 pub const DEFAULT_MAX_TOOL_CONCURRENCY: usize = 10;
@@ -171,6 +173,8 @@ pub struct AgentConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_subrun_depth: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_spawn_per_turn: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_concurrent: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finalized_retain_limit: Option<usize>,
@@ -184,6 +188,7 @@ pub struct AgentConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedAgentConfig {
     pub max_subrun_depth: usize,
+    pub max_spawn_per_turn: usize,
     pub max_concurrent: usize,
     pub finalized_retain_limit: usize,
     pub inbox_capacity: usize,
@@ -229,6 +234,7 @@ impl fmt::Debug for AgentConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AgentConfig")
             .field("max_subrun_depth", &self.max_subrun_depth)
+            .field("max_spawn_per_turn", &self.max_spawn_per_turn)
             .field("max_concurrent", &self.max_concurrent)
             .field("finalized_retain_limit", &self.finalized_retain_limit)
             .field("inbox_capacity", &self.inbox_capacity)
@@ -241,6 +247,7 @@ impl Default for ResolvedAgentConfig {
     fn default() -> Self {
         Self {
             max_subrun_depth: DEFAULT_MAX_SUBRUN_DEPTH,
+            max_spawn_per_turn: DEFAULT_MAX_SPAWN_PER_TURN,
             max_concurrent: DEFAULT_MAX_CONCURRENT_AGENTS,
             finalized_retain_limit: DEFAULT_FINALIZED_AGENT_RETAIN_LIMIT,
             inbox_capacity: DEFAULT_INBOX_CAPACITY,
@@ -563,6 +570,10 @@ pub fn resolve_agent_config(agent: Option<&AgentConfig>) -> ResolvedAgentConfig 
             .and_then(|value| value.max_subrun_depth)
             .unwrap_or(defaults.max_subrun_depth)
             .max(1),
+        max_spawn_per_turn: agent
+            .and_then(|value| value.max_spawn_per_turn)
+            .unwrap_or(defaults.max_spawn_per_turn)
+            .max(1),
         max_concurrent: agent
             .and_then(|value| value.max_concurrent)
             .unwrap_or(defaults.max_concurrent)
@@ -705,6 +716,10 @@ mod tests {
         assert_eq!(resolved.max_steps, DEFAULT_MAX_STEPS);
         assert_eq!(resolved.agent.max_subrun_depth, DEFAULT_MAX_SUBRUN_DEPTH);
         assert_eq!(
+            resolved.agent.max_spawn_per_turn,
+            DEFAULT_MAX_SPAWN_PER_TURN
+        );
+        assert_eq!(
             resolved.tool_result_inline_limit,
             DEFAULT_TOOL_RESULT_INLINE_LIMIT
         );
@@ -718,6 +733,7 @@ mod tests {
             llm_read_timeout_secs: Some(120),
             agent: Some(AgentConfig {
                 max_subrun_depth: Some(5),
+                max_spawn_per_turn: Some(2),
                 ..AgentConfig::default()
             }),
             ..RuntimeConfig::default()
@@ -727,5 +743,6 @@ mod tests {
         assert_eq!(resolved.max_steps, 12);
         assert_eq!(resolved.llm_read_timeout_secs, 120);
         assert_eq!(resolved.agent.max_subrun_depth, 5);
+        assert_eq!(resolved.agent.max_spawn_per_turn, 2);
     }
 }

@@ -32,14 +32,20 @@ impl CloseAgentTool {
 ## Usage Guide
 
 1. **Specify agentId**: The sub-agent ID to close.
-2. **Copy agentId exactly**: `agentId` must be copied byte-for-byte from a previous tool result's `Child agent reference` — never zero-pad, rewrite, or guess.
+2. **Copy agentId exactly**: `agentId` must be copied byte-for-byte from a previous tool result's `Child agent reference`.
 3. **Cascade close**: All descendants of the agent are closed together.
 
 ## When to Use
 
-- The sub-agent's task is no longer needed
-- Need to release resources for other agents
-- Proactive cleanup after collaboration is complete"#
+- The child has finished and you no longer need follow-up work
+- The child took a wrong direction and you want to stop that branch
+- You want to free capacity before spawning other children
+
+## When NOT to Use
+
+- You still expect more work from the same child; use `send`
+- You only want to inspect state; use `observe`
+- You are unsure whether the task is complete"#
             .to_string()
     }
 
@@ -76,10 +82,10 @@ impl Tool for CloseAgentTool {
             .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Close a sub-agent.",
-                    "Use `close` to shut down a sub-agent that is no longer needed, cascading to \
-                     its entire subtree. The `agentId` must come from a previous collaboration \
-                     tool result's `Child agent reference` and be reused byte-for-byte.",
+                    "Close a child branch that is finished or no longer useful.",
+                    "Use `close` when a child has completed its job, when you want to stop an \
+                     unneeded branch, or when you need to free capacity. Closing cascades through \
+                     the child's subtree. Reuse the exact `agentId` returned earlier.",
                 )
                 .caveat(
                     "Already-terminated sub-agents are handled idempotently. Never rewrite \
@@ -88,6 +94,10 @@ impl Tool for CloseAgentTool {
                 .caveat(
                     "Closing cascades to all descendant agents. After `close`, do not call `send` \
                      or `observe` on that agentId.",
+                )
+                .caveat(
+                    "When unsure whether the child is still needed, `observe` first. Use `close` \
+                     for cleanup, not as a status probe.",
                 )
                 .prompt_tag("collaboration"),
             )

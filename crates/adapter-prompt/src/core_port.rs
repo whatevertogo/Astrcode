@@ -207,6 +207,16 @@ fn build_prompt_vars(request: &PromptBuildRequest) -> std::collections::HashMap<
     {
         vars.insert("agent.max_subrun_depth".to_string(), max_depth.to_string());
     }
+    if let Some(max_spawn_per_turn) = request
+        .metadata
+        .get("agentMaxSpawnPerTurn")
+        .and_then(Value::as_u64)
+    {
+        vars.insert(
+            "agent.max_spawn_per_turn".to_string(),
+            max_spawn_per_turn.to_string(),
+        );
+    }
     vars
 }
 
@@ -258,6 +268,33 @@ mod tests {
         assert_eq!(
             vars.get("agent.max_subrun_depth").map(String::as_str),
             Some("3")
+        );
+    }
+
+    #[test]
+    fn build_prompt_vars_exposes_agent_max_spawn_per_turn() {
+        let request = PromptBuildRequest {
+            session_id: None,
+            turn_id: None,
+            working_dir: PathBuf::from("/workspace/demo"),
+            profile: "default".to_string(),
+            step_index: 0,
+            turn_index: 0,
+            profile_context: serde_json::Value::Null,
+            capabilities: Vec::new(),
+            skills: Vec::new(),
+            agent_profiles: Vec::new(),
+            prompt_declarations: Vec::new(),
+            metadata: serde_json::json!({
+                "agentMaxSpawnPerTurn": 2u64,
+            }),
+        };
+
+        let vars = build_prompt_vars(&request);
+
+        assert_eq!(
+            vars.get("agent.max_spawn_per_turn").map(String::as_str),
+            Some("2")
         );
     }
 }
