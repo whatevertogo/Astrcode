@@ -40,8 +40,8 @@ use serde_json::{Value, json};
 use tokio::select;
 
 use crate::{
-    EventSink, FinishReason, LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest,
-    LlmUsage, MAX_RETRIES, ModelLimits, Utf8StreamDecoder, build_http_client,
+    EventSink, FinishReason, LlmAccumulator, LlmClientConfig, LlmEvent, LlmOutput, LlmProvider,
+    LlmRequest, LlmUsage, ModelLimits, Utf8StreamDecoder, build_http_client,
     cache_tracker::CacheTracker, classify_http_error, emit_event, is_retryable_status,
     wait_retry_delay,
 };
@@ -121,6 +121,7 @@ fn summarize_request_for_diagnostics(request: &AnthropicRequest) -> Value {
 #[derive(Clone)]
 pub struct AnthropicProvider {
     client: reqwest::Client,
+    client_config: LlmClientConfig,
     messages_api_url: String,
     api_key: String,
     model: String,
@@ -140,6 +141,7 @@ impl fmt::Debug for AnthropicProvider {
             .field("api_key", &"<redacted>")
             .field("model", &self.model)
             .field("limits", &self.limits)
+            .field("client_config", &self.client_config)
             .field("cache_tracker", &"<internal>")
             .finish()
     }
@@ -156,9 +158,11 @@ impl AnthropicProvider {
         api_key: String,
         model: String,
         limits: ModelLimits,
+        client_config: LlmClientConfig,
     ) -> Result<Self> {
         Ok(Self {
-            client: build_http_client()?,
+            client: build_http_client(client_config)?,
+            client_config,
             messages_api_url,
             api_key,
             model,
@@ -259,7 +263,7 @@ impl AnthropicProvider {
             );
         }
 
-        for attempt in 0..=MAX_RETRIES {
+        for attempt in 0..=self.client_config.max_retries {
             let send_future = self
                 .client
                 .post(&self.messages_api_url)
@@ -303,8 +307,13 @@ impl AnthropicProvider {
                     }
 
                     let body = response.text().await.unwrap_or_default();
-                    if is_retryable_status(status) && attempt < MAX_RETRIES {
-                        wait_retry_delay(attempt, cancel.clone()).await?;
+                    if is_retryable_status(status) && attempt < self.client_config.max_retries {
+                        wait_retry_delay(
+                            attempt,
+                            cancel.clone(),
+                            self.client_config.retry_base_delay,
+                        )
+                        .await?;
                         continue;
                     }
 
@@ -325,8 +334,13 @@ impl AnthropicProvider {
                     return Err(classify_http_error(status.as_u16(), &body).into());
                 },
                 Err(error) => {
-                    if error.is_retryable() && attempt < MAX_RETRIES {
-                        wait_retry_delay(attempt, cancel.clone()).await?;
+                    if error.is_retryable() && attempt < self.client_config.max_retries {
+                        wait_retry_delay(
+                            attempt,
+                            cancel.clone(),
+                            self.client_config.retry_base_delay,
+                        )
+                        .await?;
                         continue;
                     }
                     return Err(error);
@@ -1841,6 +1855,7 @@ mod tests {
                 context_window: 200_000,
                 max_output_tokens: 8096,
             },
+            LlmClientConfig::default(),
         )
         .expect("provider should build");
         let request = provider.build_request(
@@ -1889,6 +1904,7 @@ mod tests {
                 context_window: 200_000,
                 max_output_tokens: 8096,
             },
+            LlmClientConfig::default(),
         )
         .expect("provider should build");
         let system_blocks = (0..5)
@@ -1940,6 +1956,7 @@ mod tests {
                 context_window: 200_000,
                 max_output_tokens: 8096,
             },
+            LlmClientConfig::default(),
         )
         .expect("provider should build");
         let request = provider.build_request(
@@ -1982,6 +1999,7 @@ mod tests {
                 context_window: 200_000,
                 max_output_tokens: 8096,
             },
+            LlmClientConfig::default(),
         )
         .expect("provider should build");
         let request = provider.build_request(
@@ -2015,6 +2033,7 @@ mod tests {
                 context_window: 200_000,
                 max_output_tokens: 8096,
             },
+            LlmClientConfig::default(),
         )
         .expect("provider should build");
 
@@ -2034,6 +2053,7 @@ mod tests {
                 context_window: 200_000,
                 max_output_tokens: 8096,
             },
+            LlmClientConfig::default(),
         )
         .expect("provider should build");
         let request = provider.build_request(
@@ -2070,6 +2090,7 @@ mod tests {
                 context_window: 200_000,
                 max_output_tokens: 8096,
             },
+            LlmClientConfig::default(),
         )
         .expect("provider should build");
         let request = provider.build_request(
@@ -2238,6 +2259,7 @@ mod tests {
                 context_window: 200_000,
                 max_output_tokens: 8096,
             },
+            LlmClientConfig::default(),
         )
         .expect("provider should build");
 

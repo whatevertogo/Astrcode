@@ -39,6 +39,7 @@ impl SpawnAgentTool {
 5. **Preserve the original agentId**: Copy the `agentId` from the tool result byte-for-byte into later `send` / `observe` / `close` calls — never zero-pad, rewrite, or guess.
 6. **Parallel execution**: Issue multiple `spawn` calls in the same turn to run tasks in parallel.
 7. **Chained execution**: Wait for each agent's work, read the `summary`, then pass it explicitly in the next step's `context`.
+8. **Depth is limited**: Nested child depth is configurable and defaults to 3. Reuse an existing child with `send` before creating a deeper descendant.
 
 ## When to Use
 
@@ -111,7 +112,8 @@ impl Tool for SpawnAgentTool {
                      boundary. Do not delegate simple reads, one-off searches, or operations you \
                      can complete immediately. After calling, remember the original `agentId` from \
                      the tool result; all subsequent `send`, `observe`, `close` calls must reuse \
-                     it byte-for-byte.",
+                     it byte-for-byte. Nested spawn depth is configurable and defaults to 3; \
+                     prefer reusing an idle child with `send` before creating a deeper descendant.",
                 )
                 .caveat(
                     "If your next step depends on the result, doing it yourself is usually faster; \
@@ -121,6 +123,11 @@ impl Tool for SpawnAgentTool {
                     "`description` is for UI/log summary only — put real task requirements in \
                      `prompt`. Choose the narrowest profile for `type`; omit it to use the default \
                      `explore`.",
+                )
+                .caveat(
+                    "If spawn fails because the depth limit is reached, do not keep retrying with \
+                     deeper nested agents. Reuse an existing child via `send`, or finish the work \
+                     in the current agent.",
                 )
                 .example(
                     "Parallel exploration: { description: \"check cache layer\", prompt: \"review \

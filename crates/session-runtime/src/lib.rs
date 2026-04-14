@@ -233,6 +233,13 @@ impl SessionRuntime {
         Ok(Arc::clone(actor.state()))
     }
 
+    /// 读取指定 session 的工作目录。
+    pub async fn get_session_working_dir(&self, session_id: &str) -> Result<String> {
+        let session_id = SessionId::from(normalize_session_id(session_id));
+        let actor = self.ensure_loaded_session(&session_id).await?;
+        Ok(actor.working_dir().to_string())
+    }
+
     /// 回放指定 session 的全部持久化事件。
     ///
     /// 用于 agent 编排层需要从 durable 事件中提取 mailbox 信封等场景。

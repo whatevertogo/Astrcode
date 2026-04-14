@@ -2,7 +2,7 @@
 
 ### Requirement: child turn terminal result MUST use a unified finalizer
 
-`application` SHALL 使用统一的 child turn terminal finalizer 收口 child turn 的 terminal 结果，而不是按 spawn、resume、wake 分散维护不同逻辑。
+`application` SHALL 使用统一的 child turn terminal finalizer 收口真正的 child work turn 的 terminal 结果，而不是按 spawn、resume 分散维护不同逻辑。
 
 #### Scenario: spawn child turn reaches terminal
 
@@ -16,11 +16,15 @@
 - **THEN** 系统 MUST 通过同一 finalizer 投影 terminal outcome
 - **AND** MUST 向直接父级写入 terminal delivery
 
+### Requirement: wake turn MUST NOT auto-manufacture a new upward terminal delivery
+
+parent-delivery wake turn 是消费 mailbox 的协调 turn，不属于新的 child work turn。
+
 #### Scenario: wake turn reaches terminal
 
 - **WHEN** child agent 因 parent-delivery wake 而开始新一轮 turn 并结束
-- **THEN** 系统 MUST 通过同一 finalizer 投影 terminal outcome
-- **AND** MUST 向直接父级写入 terminal delivery
+- **THEN** 系统 MUST 只完成当前 mailbox batch 的 `acked / consume / requeue`
+- **AND** MUST NOT 因为这个 wake turn 自动向更上一级写入新的 terminal delivery
 
 ### Requirement: terminal business failures MUST still be delivered upward
 

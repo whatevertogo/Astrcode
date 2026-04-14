@@ -117,7 +117,7 @@ pub struct AgentControlLimits {
 impl Default for AgentControlLimits {
     fn default() -> Self {
         Self {
-            max_depth: 6,
+            max_depth: 3,
             max_concurrent: 32,
             finalized_retain_limit: 256,
             inbox_capacity: 1024,

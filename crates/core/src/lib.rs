@@ -81,7 +81,8 @@ pub use compact_summary::{
 };
 pub use config::{
     ActiveSelection, AgentConfig, Config, ConfigOverlay, CurrentModelSelection, ModelConfig,
-    ModelOption, Profile, RuntimeConfig,
+    ModelOption, Profile, ResolvedAgentConfig, ResolvedRuntimeConfig, RuntimeConfig,
+    max_tool_concurrency, resolve_agent_config, resolve_runtime_config,
 };
 pub use error::{AstrError, Result, ResultExt};
 pub use event::{

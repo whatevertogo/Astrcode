@@ -10,9 +10,6 @@ use crate::{
     SessionRuntime, actor::SessionActor, catalog::SessionCatalogEvent, state::normalize_working_dir,
 };
 
-/// 并发分支深度不应无限增长，否则说明调用方在持续向忙会话并发写入。
-const DEFAULT_MAX_CONCURRENT_BRANCH_DEPTH: usize = 3;
-
 pub(crate) struct SubmitTarget {
     pub(crate) session_id: SessionId,
     pub(crate) branched_from_session_id: Option<String>,
@@ -25,16 +22,14 @@ impl SessionRuntime {
         &self,
         session_id: &SessionId,
         turn_id: &str,
-        max_branch_depth: Option<usize>,
+        max_branch_depth: usize,
     ) -> astrcode_core::Result<SubmitTarget> {
         self.ensure_session_exists(session_id).await?;
 
         let mut target_session_id = session_id.clone();
         let mut branched_from_session_id = None;
         let mut branch_depth = 0usize;
-        let max_branch_depth = max_branch_depth
-            .unwrap_or(DEFAULT_MAX_CONCURRENT_BRANCH_DEPTH)
-            .max(1);
+        let max_branch_depth = max_branch_depth.max(1);
 
         loop {
             match self

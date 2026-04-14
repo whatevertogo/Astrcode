@@ -53,7 +53,6 @@ pub use config::{
     DEFAULT_LLM_MAX_RETRIES,
     DEFAULT_LLM_READ_TIMEOUT_SECS,
     DEFAULT_LLM_RETRY_BASE_DELAY_MS,
-    DEFAULT_MAX_AGENT_DEPTH,
     DEFAULT_MAX_CONCURRENT_AGENTS,
     DEFAULT_MAX_CONCURRENT_BRANCH_DEPTH,
     DEFAULT_MAX_CONSECUTIVE_FAILURES,
@@ -62,6 +61,7 @@ pub use config::{
     DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS,
     DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS,
     DEFAULT_MAX_RECOVERED_FILES,
+    DEFAULT_MAX_STEPS,
     DEFAULT_MAX_SUBRUN_DEPTH,
     DEFAULT_MAX_TOOL_CONCURRENCY,
     DEFAULT_MAX_TRACKED_FILES,
@@ -84,48 +84,20 @@ pub use config::{
     PROVIDER_KIND_ANTHROPIC,
     PROVIDER_KIND_OPENAI,
     RUNTIME_ENV_VARS,
+    ResolvedAgentConfig,
+    ResolvedRuntimeConfig,
     TAURI_ENV_TARGET_TRIPLE_ENV,
     TestConnectionResult,
     is_env_var_name,
     list_model_options,
     max_tool_concurrency,
     resolve_active_selection,
-    resolve_agent_finalized_retain_limit,
-    resolve_agent_inbox_capacity,
-    resolve_agent_max_concurrent,
-    resolve_agent_max_subrun_depth,
-    resolve_agent_parent_delivery_capacity,
-    resolve_aggregate_result_bytes_budget,
+    resolve_agent_config,
     resolve_anthropic_messages_api_url,
     resolve_anthropic_models_api_url,
-    resolve_api_session_ttl_hours,
-    resolve_auto_compact_enabled,
-    resolve_compact_keep_recent_turns,
-    resolve_compact_threshold_percent,
     resolve_current_model,
-    resolve_llm_connect_timeout_secs,
-    resolve_llm_max_retries,
-    resolve_llm_read_timeout_secs,
-    resolve_max_concurrent_branch_depth,
-    resolve_max_consecutive_failures,
-    resolve_max_grep_lines,
-    resolve_max_image_size,
-    resolve_max_output_continuation_attempts,
-    resolve_max_reactive_compact_attempts,
-    resolve_max_recovered_files,
-    resolve_max_tool_concurrency,
-    resolve_max_tracked_files,
-    resolve_micro_compact_gap_threshold_secs,
-    resolve_micro_compact_keep_recent_results,
     resolve_openai_chat_completions_api_url,
-    resolve_recovery_token_budget,
-    resolve_recovery_truncate_bytes,
-    resolve_session_broadcast_capacity,
-    resolve_session_recent_record_limit,
-    resolve_summary_reserve_tokens,
-    resolve_tool_result_inline_limit,
-    resolve_tool_result_max_bytes,
-    resolve_tool_result_preview_limit,
+    resolve_runtime_config,
 };
 pub use errors::ApplicationError;
 pub use execution::{ExecutionControl, ProfileResolutionService, RootExecutionRequest};
@@ -232,7 +204,9 @@ impl App {
         &self,
         request: RootExecutionRequest,
     ) -> Result<ExecutionAccepted, ApplicationError> {
-        let runtime = self.config_service.get_config().await.runtime;
+        let runtime = self
+            .config_service
+            .load_resolved_runtime_config(Some(Path::new(&request.working_dir)))?;
         execution::execute_root_agent(
             &self.kernel,
             &self.session_runtime,
@@ -290,7 +264,13 @@ impl App {
         if let Some(control) = &control {
             control.validate()?;
         }
-        let mut runtime = self.config_service.get_config().await.runtime;
+        let working_dir = self
+            .session_runtime
+            .get_session_working_dir(session_id)
+            .await?;
+        let mut runtime = self
+            .config_service
+            .load_resolved_runtime_config(Some(Path::new(&working_dir)))?;
         if let Some(control) = control {
             if control.manual_compact.is_some() {
                 return Err(ApplicationError::InvalidArgument(
@@ -298,7 +278,7 @@ impl App {
                 ));
             }
             if let Some(max_steps) = control.max_steps {
-                runtime.max_steps = Some(max_steps as usize);
+                runtime.max_steps = max_steps as usize;
             }
         }
         let root_agent = self.ensure_session_root_agent_context(session_id).await?;

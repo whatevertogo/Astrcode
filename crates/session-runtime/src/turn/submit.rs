@@ -1,8 +1,9 @@
 use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, CancelToken, EventTranslator, ExecutionAccepted, Phase, Result, SessionId,
-    StorageEvent, StorageEventPayload, TurnId, UserMessageOrigin, config::RuntimeConfig,
+    AgentEventContext, CancelToken, EventTranslator, ExecutionAccepted, Phase,
+    ResolvedRuntimeConfig, Result, SessionId, StorageEvent, StorageEventPayload, TurnId,
+    UserMessageOrigin,
 };
 use chrono::Utc;
 
@@ -24,7 +25,7 @@ impl SessionRuntime {
         &self,
         session_id: &str,
         text: String,
-        runtime: RuntimeConfig,
+        runtime: ResolvedRuntimeConfig,
     ) -> Result<ExecutionAccepted> {
         self.submit_prompt_for_agent(session_id, text, runtime, AgentEventContext::default())
             .await
@@ -34,7 +35,7 @@ impl SessionRuntime {
         &self,
         session_id: &str,
         text: String,
-        runtime: RuntimeConfig,
+        runtime: ResolvedRuntimeConfig,
         agent: AgentEventContext,
     ) -> Result<ExecutionAccepted> {
         self.submit_prompt_inner(
@@ -57,7 +58,7 @@ impl SessionRuntime {
         &self,
         session_id: &str,
         text: String,
-        runtime: RuntimeConfig,
+        runtime: ResolvedRuntimeConfig,
         agent: AgentEventContext,
     ) -> Result<Option<ExecutionAccepted>> {
         self.submit_prompt_inner(
@@ -76,7 +77,7 @@ impl SessionRuntime {
         session_id: &str,
         turn_id: TurnId,
         text: String,
-        runtime: RuntimeConfig,
+        runtime: ResolvedRuntimeConfig,
         agent: AgentEventContext,
     ) -> Result<Option<ExecutionAccepted>> {
         self.submit_prompt_inner(
@@ -95,7 +96,7 @@ impl SessionRuntime {
         session_id: &str,
         turn_id: Option<TurnId>,
         text: String,
-        runtime: RuntimeConfig,
+        runtime: ResolvedRuntimeConfig,
         agent: AgentEventContext,
         busy_policy: SubmitBusyPolicy,
     ) -> Result<Option<ExecutionAccepted>> {

@@ -6,10 +6,10 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    AgentLifecycleStatus, AgentMode, AgentProfile, ExecutionAccepted, RuntimeMetricsRecorder,
-    SubRunStorageMode, config::RuntimeConfig,
+    AgentLifecycleStatus, AgentMode, AgentProfile, ExecutionAccepted, ResolvedRuntimeConfig,
+    RuntimeMetricsRecorder, SubRunStorageMode,
 };
-use astrcode_kernel::Kernel;
+use astrcode_kernel::{AgentControlError, Kernel};
 use astrcode_session_runtime::SessionRuntime;
 
 use crate::{agent::subrun_event_context, errors::ApplicationError};
@@ -37,7 +37,7 @@ pub async fn launch_subagent(
     kernel: &Arc<Kernel>,
     session_runtime: &Arc<SessionRuntime>,
     request: SubagentExecutionRequest,
-    runtime_config: RuntimeConfig,
+    runtime_config: ResolvedRuntimeConfig,
     metrics: &Arc<dyn RuntimeMetricsRecorder>,
 ) -> Result<ExecutionAccepted, ApplicationError> {
     validate_subagent_request(&request)?;
@@ -59,7 +59,7 @@ pub async fn launch_subagent(
             SubRunStorageMode::IndependentSession,
         )
         .await
-        .map_err(|e| ApplicationError::Internal(format!("failed to spawn subagent: {e}")))?;
+        .map_err(map_spawn_error)?;
     let _ = kernel
         .agent_control()
         .set_lifecycle(&handle.agent_id, AgentLifecycleStatus::Running)
@@ -118,6 +118,27 @@ fn ensure_subagent_profile_mode(profile: &AgentProfile) -> Result<(), Applicatio
         "agent profile '{}' cannot be used as subagent",
         profile.id
     )))
+}
+
+fn map_spawn_error(error: AgentControlError) -> ApplicationError {
+    match error {
+        AgentControlError::MaxDepthExceeded { current, max } => {
+            ApplicationError::InvalidArgument(format!(
+                "subagent depth limit reached at depth {current} (configured max: {max}); reuse \
+                 an existing child with send/observe/close, or finish the work in the current \
+                 agent"
+            ))
+        },
+        AgentControlError::MaxConcurrentExceeded { current, max } => {
+            ApplicationError::Conflict(format!(
+                "too many active agents ({current}/{max}); wait for an existing child to go idle \
+                 or close one before spawning more"
+            ))
+        },
+        AgentControlError::ParentAgentNotFound { agent_id } => {
+            ApplicationError::NotFound(format!("parent agent '{agent_id}' not found"))
+        },
+    }
 }
 
 #[cfg(test)]
@@ -213,5 +234,22 @@ mod tests {
         .expect_err("primary-only profile should be rejected");
 
         assert!(err.to_string().contains("subagent"));
+    }
+
+    #[test]
+    fn map_spawn_error_turns_depth_limit_into_actionable_invalid_argument() {
+        let err = map_spawn_error(AgentControlError::MaxDepthExceeded { current: 4, max: 3 });
+
+        assert!(matches!(err, ApplicationError::InvalidArgument(_)));
+        assert!(err.to_string().contains("configured max: 3"));
+        assert!(err.to_string().contains("send/observe/close"));
+    }
+
+    #[test]
+    fn map_spawn_error_turns_concurrency_limit_into_conflict() {
+        let err = map_spawn_error(AgentControlError::MaxConcurrentExceeded { current: 8, max: 4 });
+
+        assert!(matches!(err, ApplicationError::Conflict(_)));
+        assert!(err.to_string().contains("too many active agents"));
     }
 }

@@ -15,10 +15,10 @@ use astrcode_application::{
     lifecycle::TaskRegistry,
 };
 use astrcode_core::{
-    CapabilityInvoker, EventStore, LlmProvider, PromptProvider, ResourceProvider, Result,
-    RuntimeCoordinator,
+    CapabilityInvoker, Config, EventStore, LlmProvider, PromptProvider, ResolvedRuntimeConfig,
+    ResourceProvider, Result, RuntimeCoordinator, resolve_runtime_config,
 };
-use astrcode_kernel::{CapabilityRouter, Kernel, KernelBuilder};
+use astrcode_kernel::{AgentControlLimits, CapabilityRouter, Kernel, KernelBuilder};
 use astrcode_session_runtime::SessionRuntime;
 
 use super::{
@@ -136,6 +136,9 @@ pub async fn bootstrap_server_runtime_with_options(
             astrcode_core::AstrError::io("failed to resolve server working directory", error)
         })?,
     };
+    let resolved_config = config_service
+        .load_overlayed_config(Some(working_dir.as_path()))
+        .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))?;
     let agent_loader =
         astrcode_adapter_agents::AgentProfileLoader::new_with_home_dir(paths.home_dir.as_path());
     let mcp_manager =
@@ -179,6 +182,7 @@ pub async fn bootstrap_server_runtime_with_options(
         build_llm_provider(config_service.clone(), working_dir.clone()),
         build_prompt_provider(),
         build_resource_provider(mcp_manager.clone()),
+        resolve_agent_control_limits(&resolved_config),
     )?);
     let observability = Arc::new(RuntimeObservabilityCollector::new());
     let task_registry = Arc::new(TaskRegistry::new());
@@ -207,6 +211,7 @@ pub async fn bootstrap_server_runtime_with_options(
     let agent_service = Arc::new(AgentOrchestrationService::new(
         kernel.clone(),
         session_runtime.clone(),
+        config_service.clone(),
         profiles.clone(),
         task_registry.clone(),
         observability.clone(),
@@ -313,12 +318,73 @@ fn build_kernel(
     llm_provider: Arc<dyn LlmProvider>,
     prompt_provider: Arc<dyn PromptProvider>,
     resource_provider: Arc<dyn ResourceProvider>,
+    agent_limits: AgentControlLimits,
 ) -> Result<Kernel> {
     KernelBuilder::default()
         .with_capabilities(capabilities)
         .with_llm_provider(llm_provider)
         .with_prompt_provider(prompt_provider)
         .with_resource_provider(resource_provider)
+        .with_agent_limits(agent_limits)
         .build()
         .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))
+}
+
+fn resolve_agent_control_limits(config: &Config) -> AgentControlLimits {
+    let runtime = resolve_runtime_config(&config.runtime);
+    resolve_agent_control_limits_from_runtime(&runtime)
+}
+
+fn resolve_agent_control_limits_from_runtime(
+    runtime: &ResolvedRuntimeConfig,
+) -> AgentControlLimits {
+    AgentControlLimits {
+        max_depth: runtime.agent.max_subrun_depth,
+        max_concurrent: runtime.agent.max_concurrent,
+        finalized_retain_limit: runtime.agent.finalized_retain_limit,
+        inbox_capacity: runtime.agent.inbox_capacity,
+        parent_delivery_capacity: runtime.agent.parent_delivery_capacity,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use astrcode_core::{AgentConfig, Config, RuntimeConfig};
+
+    use super::resolve_agent_control_limits;
+
+    #[test]
+    fn resolve_agent_control_limits_uses_runtime_agent_config() {
+        let config = Config {
+            runtime: RuntimeConfig {
+                agent: Some(AgentConfig {
+                    max_subrun_depth: Some(5),
+                    max_concurrent: Some(4),
+                    finalized_retain_limit: Some(123),
+                    inbox_capacity: Some(456),
+                    parent_delivery_capacity: Some(789),
+                }),
+                ..RuntimeConfig::default()
+            },
+            ..Config::default()
+        };
+
+        let limits = resolve_agent_control_limits(&config);
+
+        assert_eq!(limits.max_depth, 5);
+        assert_eq!(limits.max_concurrent, 4);
+        assert_eq!(limits.finalized_retain_limit, 123);
+        assert_eq!(limits.inbox_capacity, 456);
+        assert_eq!(limits.parent_delivery_capacity, 789);
+    }
+
+    #[test]
+    fn resolve_agent_control_limits_uses_config_defaults() {
+        let limits = resolve_agent_control_limits(&Config::default());
+
+        assert_eq!(
+            limits.max_depth,
+            astrcode_core::config::DEFAULT_MAX_SUBRUN_DEPTH
+        );
+    }
 }

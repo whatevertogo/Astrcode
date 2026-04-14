@@ -28,7 +28,7 @@
 //! - 可重试状态码：408（超时）、429（限流）、5xx（服务器错误）
 //! - 传输层错误（DNS 解析失败、连接断开等）也会重试
 //! - 重试期间持续监听 [`CancelToken`]，取消请求会立即中断
-//! - 最大重试次数由 `MAX_RETRIES` 常量控制（默认 2 次）
+//! - 最大重试次数由运行时 `LlmClientConfig` 控制（默认 2 次）
 //!
 //! ## Prompt Caching
 //!
@@ -248,25 +248,37 @@ pub async fn cancelled(cancel: CancelToken) {
 // Shared constants & helpers used by all LLM providers
 // ---------------------------------------------------------------------------
 
-/// TCP 连接超时（10 秒）
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// LLM HTTP 客户端配置。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LlmClientConfig {
+    /// TCP 连接超时。
+    pub connect_timeout: Duration,
+    /// 读取超时。
+    pub read_timeout: Duration,
+    /// 最大自动重试次数（瞬态故障）。
+    pub max_retries: u32,
+    /// 首次重试延迟，后续重试指数退避。
+    pub retry_base_delay: Duration,
+}
 
-/// 读取超时（90 秒）- 足够慢的流式响应，但能检测卡死的连接
-const READ_TIMEOUT: Duration = Duration::from_secs(90);
-
-/// 最大自动重试次数（瞬态故障）
-const MAX_RETRIES: u32 = 2;
-
-/// 首次重试延迟（毫秒），后续重试指数退避
-const RETRY_BASE_DELAY_MS: u64 = 250;
+impl Default for LlmClientConfig {
+    fn default() -> Self {
+        Self {
+            connect_timeout: Duration::from_secs(10),
+            read_timeout: Duration::from_secs(90),
+            max_retries: 2,
+            retry_base_delay: Duration::from_millis(250),
+        }
+    }
+}
 
 /// 构建共享超时策略的 HTTP 客户端。
 ///
 /// 不在库层 panic，统一返回 `AstrError` 交由上层决定是降级、重试还是失败。
-pub fn build_http_client() -> Result<reqwest::Client> {
+pub fn build_http_client(config: LlmClientConfig) -> Result<reqwest::Client> {
     reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(READ_TIMEOUT)
+        .connect_timeout(config.connect_timeout)
+        .read_timeout(config.read_timeout)
         .build()
         .map_err(|error| AstrError::http("failed to build shared http client", error))
 }
@@ -286,8 +298,13 @@ pub fn is_retryable_status(status: reqwest::StatusCode) -> bool {
 }
 
 /// 等待指数退避延迟（或被取消）
-pub async fn wait_retry_delay(attempt: u32, cancel: CancelToken) -> Result<()> {
-    let delay_ms = RETRY_BASE_DELAY_MS.saturating_mul(1_u64 << attempt);
+pub async fn wait_retry_delay(
+    attempt: u32,
+    cancel: CancelToken,
+    retry_base_delay: Duration,
+) -> Result<()> {
+    let delay_ms = (retry_base_delay.as_millis().min(u64::MAX as u128) as u64)
+        .saturating_mul(1_u64 << attempt);
     select! {
         _ = cancelled(cancel) => Err(AstrError::LlmInterrupted),
         _ = sleep(Duration::from_millis(delay_ms)) => Ok(()),

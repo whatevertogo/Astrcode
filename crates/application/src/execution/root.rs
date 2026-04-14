@@ -8,8 +8,8 @@
 use std::{path::Path, sync::Arc};
 
 use astrcode_core::{
-    AgentMode, ExecutionAccepted, ResolvedSubagentContextOverrides, SubagentContextOverrides,
-    config::RuntimeConfig,
+    AgentMode, ExecutionAccepted, ResolvedRuntimeConfig, ResolvedSubagentContextOverrides,
+    SubagentContextOverrides,
 };
 use astrcode_kernel::Kernel;
 use astrcode_session_runtime::SessionRuntime;
@@ -44,7 +44,7 @@ pub async fn execute_root_agent(
     session_runtime: &Arc<SessionRuntime>,
     profiles: &Arc<ProfileResolutionService>,
     request: RootExecutionRequest,
-    mut runtime_config: RuntimeConfig,
+    mut runtime_config: ResolvedRuntimeConfig,
 ) -> Result<ExecutionAccepted, ApplicationError> {
     validate_root_request(&request)?;
     apply_execution_control(&mut runtime_config, request.control.as_ref());
@@ -146,12 +146,15 @@ fn ensure_root_profile_mode(profile: &astrcode_core::AgentProfile) -> Result<(),
     )))
 }
 
-fn apply_execution_control(runtime_config: &mut RuntimeConfig, control: Option<&ExecutionControl>) {
+fn apply_execution_control(
+    runtime_config: &mut ResolvedRuntimeConfig,
+    control: Option<&ExecutionControl>,
+) {
     let Some(control) = control else {
         return;
     };
     if let Some(max_steps) = control.max_steps {
-        runtime_config.max_steps = Some(max_steps as usize);
+        runtime_config.max_steps = max_steps as usize;
     }
 }
 
@@ -257,7 +260,7 @@ mod tests {
 
     #[test]
     fn apply_execution_control_overrides_runtime_config() {
-        let mut runtime = RuntimeConfig::default();
+        let mut runtime = ResolvedRuntimeConfig::default();
         apply_execution_control(
             &mut runtime,
             Some(&ExecutionControl {
@@ -266,7 +269,7 @@ mod tests {
             }),
         );
 
-        assert_eq!(runtime.max_steps, Some(5));
+        assert_eq!(runtime.max_steps, 5);
     }
 
     #[test]

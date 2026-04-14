@@ -15,7 +15,7 @@ use astrcode_application::{ConfigService, resolve_current_model};
 use astrcode_core::{
     PromptAgentProfileSummary, PromptDeclaration, PromptDeclarationKind,
     PromptDeclarationRenderTarget, PromptDeclarationSource, PromptFacts, PromptFactsProvider,
-    PromptFactsRequest, PromptSkillSummary, Result, SystemPromptLayer,
+    PromptFactsRequest, PromptSkillSummary, Result, SystemPromptLayer, resolve_runtime_config,
 };
 use async_trait::async_trait;
 
@@ -53,8 +53,9 @@ impl PromptFactsProvider for RuntimePromptFactsProvider {
         let working_dir = request.working_dir.clone();
         let config = self
             .config_service
-            .load_resolved_config(Some(working_dir.as_path()))
+            .load_overlayed_config(Some(working_dir.as_path()))
             .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))?;
+        let runtime = resolve_runtime_config(&config.runtime);
         let selection = resolve_current_model(&config)
             .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))?;
         let skill_summaries = self
@@ -97,6 +98,7 @@ impl PromptFactsProvider for RuntimePromptFactsProvider {
                 "configVersion": config.version,
                 "activeProfile": config.active_profile,
                 "activeModel": config.active_model,
+                "agentMaxSubrunDepth": runtime.agent.max_subrun_depth,
             }),
             skills: skill_summaries,
             agent_profiles,

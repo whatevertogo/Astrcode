@@ -5,11 +5,12 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentMode, AgentProfile, AstrError, DeleteProjectResult, EventStore, LlmFinishReason,
-    LlmOutput, LlmProvider, LlmRequest, ModelLimits, Phase, PromptBuildOutput, PromptBuildRequest,
-    PromptFacts, PromptFactsProvider, PromptProvider, ResourceProvider, ResourceReadResult,
-    ResourceRequestContext, Result, SessionId, SessionMeta, SessionTurnAcquireResult,
-    SessionTurnBusy, SessionTurnLease, StorageEvent, StoredEvent,
+    AgentMode, AgentProfile, AstrError, Config, ConfigOverlay, DeleteProjectResult, EventStore,
+    LlmFinishReason, LlmOutput, LlmProvider, LlmRequest, ModelLimits, Phase, PromptBuildOutput,
+    PromptBuildRequest, PromptFacts, PromptFactsProvider, PromptProvider, ResourceProvider,
+    ResourceReadResult, ResourceRequestContext, Result, SessionId, SessionMeta,
+    SessionTurnAcquireResult, SessionTurnBusy, SessionTurnLease, StorageEvent, StoredEvent,
+    ports::{ConfigStore, McpConfigFileScope},
 };
 use astrcode_kernel::{CapabilityRouter, Kernel};
 use astrcode_session_runtime::{SessionRuntime, display_name_from_working_dir};
@@ -18,7 +19,7 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::{
-    AgentOrchestrationService, ApplicationError, ProfileResolutionService,
+    AgentOrchestrationService, ApplicationError, ConfigService, ProfileResolutionService,
     RuntimeObservabilityCollector, execution::ProfileProvider, lifecycle::TaskRegistry,
 };
 
@@ -50,6 +51,7 @@ pub(super) fn build_agent_test_harness(llm_behavior: TestLlmBehavior) -> Result<
         event_store.clone(),
         metrics.clone(),
     ));
+    let config_service = Arc::new(ConfigService::new(Arc::new(TestConfigStore::default())));
     let profiles = Arc::new(ProfileResolutionService::new(Arc::new(
         StaticProfileProvider::default(),
     )));
@@ -57,6 +59,7 @@ pub(super) fn build_agent_test_harness(llm_behavior: TestLlmBehavior) -> Result<
     let service = AgentOrchestrationService::new(
         Arc::clone(&kernel),
         Arc::clone(&session_runtime),
+        config_service,
         profiles,
         task_registry,
         metrics.clone(),
@@ -88,6 +91,51 @@ pub(super) fn sample_profile(id: &str) -> AgentProfile {
 pub(super) struct AgentTestEnvGuard {
     _temp_home: tempfile::TempDir,
     previous_test_home: Option<std::ffi::OsString>,
+}
+
+#[derive(Default)]
+struct TestConfigStore {
+    config: Mutex<Config>,
+}
+
+impl ConfigStore for TestConfigStore {
+    fn load(&self) -> Result<Config> {
+        Ok(self.config.lock().expect("config mutex").clone())
+    }
+
+    fn save(&self, config: &Config) -> Result<()> {
+        *self.config.lock().expect("config mutex") = config.clone();
+        Ok(())
+    }
+
+    fn path(&self) -> std::path::PathBuf {
+        std::path::PathBuf::from("agent-test-config.json")
+    }
+
+    fn load_overlay(&self, _working_dir: &Path) -> Result<Option<ConfigOverlay>> {
+        Ok(None)
+    }
+
+    fn save_overlay(&self, _working_dir: &Path, _overlay: &ConfigOverlay) -> Result<()> {
+        Ok(())
+    }
+
+    fn load_mcp(
+        &self,
+        _scope: McpConfigFileScope,
+        _working_dir: Option<&Path>,
+    ) -> Result<Option<Value>> {
+        Ok(None)
+    }
+
+    fn save_mcp(
+        &self,
+        _scope: McpConfigFileScope,
+        _working_dir: Option<&Path>,
+        _mcp: Option<&Value>,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 impl AgentTestEnvGuard {

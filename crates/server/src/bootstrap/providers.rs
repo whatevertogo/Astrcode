@@ -11,7 +11,8 @@ use std::{
 
 use astrcode_adapter_agents::AgentProfileLoader;
 use astrcode_adapter_llm::{
-    ModelLimits as AdapterModelLimits, anthropic::AnthropicProvider, openai::OpenAiProvider,
+    LlmClientConfig, ModelLimits as AdapterModelLimits, anthropic::AnthropicProvider,
+    openai::OpenAiProvider,
 };
 use astrcode_adapter_mcp::{core_port::McpResourceProvider, manager::McpConnectionManager};
 use astrcode_adapter_prompt::{
@@ -26,7 +27,8 @@ use astrcode_application::{
     execution::ProfileProvider,
 };
 use astrcode_core::{
-    AstrError, LlmProvider, ModelLimits, PromptProvider, ResourceProvider, Result,
+    AstrError, LlmProvider, ModelLimits, PromptProvider, ResolvedRuntimeConfig, ResourceProvider,
+    Result, resolve_runtime_config,
 };
 
 pub(crate) fn build_llm_provider(
@@ -111,7 +113,7 @@ impl ConfigBackedLlmProvider {
     fn resolve_spec(&self) -> std::result::Result<ResolvedLlmProviderSpec, ApplicationError> {
         let config = self
             .config_service
-            .load_resolved_config(Some(self.working_dir.as_path()))?;
+            .load_overlayed_config(Some(self.working_dir.as_path()))?;
         let selection = astrcode_application::resolve_current_model(&config)?;
         let profile = config
             .profiles
@@ -136,6 +138,8 @@ impl ConfigBackedLlmProvider {
         let api_key = api_key::resolve_api_key(profile)
             .map_err(|error| ApplicationError::Internal(error.to_string()))?;
         let limits = resolve_model_limits(&profile.provider_kind, model);
+        let runtime = resolve_runtime_config(&config.runtime);
+        let client_config = client_config_from_runtime(&runtime);
         let endpoint = match profile.provider_kind.as_str() {
             "openai-compatible" => resolve_openai_chat_completions_api_url(&profile.base_url),
             "anthropic" => resolve_anthropic_messages_api_url(&profile.base_url),
@@ -149,14 +153,22 @@ impl ConfigBackedLlmProvider {
 
         Ok(ResolvedLlmProviderSpec {
             cache_key: format!(
-                "{}|{}|{}|{}",
-                profile.provider_kind, endpoint, profile.name, model.id
+                "{}|{}|{}|{}|{}|{}|{}|{}",
+                profile.provider_kind,
+                endpoint,
+                profile.name,
+                model.id,
+                client_config.connect_timeout.as_secs(),
+                client_config.read_timeout.as_secs(),
+                client_config.max_retries,
+                client_config.retry_base_delay.as_millis()
             ),
             provider_kind: profile.provider_kind.clone(),
             endpoint,
             api_key,
             model: model.id.clone(),
             limits,
+            client_config,
         })
     }
 
@@ -183,6 +195,7 @@ impl ConfigBackedLlmProvider {
                     context_window: spec.limits.context_window,
                     max_output_tokens: spec.limits.max_output_tokens,
                 },
+                spec.client_config,
             )?),
             "anthropic" => Arc::new(AnthropicProvider::new(
                 spec.endpoint.clone(),
@@ -192,6 +205,7 @@ impl ConfigBackedLlmProvider {
                     context_window: spec.limits.context_window,
                     max_output_tokens: spec.limits.max_output_tokens,
                 },
+                spec.client_config,
             )?),
             other => {
                 return Err(AstrError::Validation(format!(
@@ -206,6 +220,15 @@ impl ConfigBackedLlmProvider {
             .expect("llm provider cache write lock")
             .insert(spec.cache_key, provider.clone());
         Ok(provider)
+    }
+}
+
+fn client_config_from_runtime(runtime: &ResolvedRuntimeConfig) -> LlmClientConfig {
+    LlmClientConfig {
+        connect_timeout: std::time::Duration::from_secs(runtime.llm_connect_timeout_secs),
+        read_timeout: std::time::Duration::from_secs(runtime.llm_read_timeout_secs),
+        max_retries: runtime.llm_max_retries,
+        retry_base_delay: std::time::Duration::from_millis(runtime.llm_retry_base_delay_ms),
     }
 }
 
@@ -248,6 +271,7 @@ struct ResolvedLlmProviderSpec {
     api_key: String,
     model: String,
     limits: ModelLimits,
+    client_config: LlmClientConfig,
 }
 
 fn resolve_model_limits(provider_kind: &str, model: &astrcode_core::ModelConfig) -> ModelLimits {

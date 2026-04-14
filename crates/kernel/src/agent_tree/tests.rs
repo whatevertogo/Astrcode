@@ -7,7 +7,7 @@ use astrcode_core::{
 };
 
 // 直接内联默认值，避免 kernel 依赖 runtime-config
-const DEFAULT_MAX_AGENT_DEPTH: usize = 3;
+const DEFAULT_AGENT_TREE_DEPTH_LIMIT: usize = 3;
 const DEFAULT_MAX_CONCURRENT_AGENTS: usize = 8;
 
 use super::{AgentControl, AgentControlError, LiveSubRunControl, StaticAgentProfileSource};
@@ -315,8 +315,11 @@ async fn mark_failed_transitions_agent_to_final_failed_state() {
 
 #[tokio::test]
 async fn gc_prunes_old_finalized_leaf_agents_but_keeps_recent_and_live_nodes() {
-    let control =
-        AgentControl::with_limits(DEFAULT_MAX_AGENT_DEPTH, DEFAULT_MAX_CONCURRENT_AGENTS, 1);
+    let control = AgentControl::with_limits(
+        DEFAULT_AGENT_TREE_DEPTH_LIMIT,
+        DEFAULT_MAX_CONCURRENT_AGENTS,
+        1,
+    );
 
     let first = control
         .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)

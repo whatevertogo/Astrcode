@@ -25,8 +25,8 @@
 use std::{collections::HashSet, path::Path, sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, CancelToken, LlmMessage, PromptFactsProvider, Result, StorageEvent,
-    StorageEventPayload, config::RuntimeConfig,
+    AgentEventContext, CancelToken, LlmMessage, PromptFactsProvider, ResolvedRuntimeConfig, Result,
+    StorageEvent, StorageEventPayload,
 };
 use astrcode_kernel::Kernel;
 use chrono::Utc;
@@ -47,9 +47,6 @@ use crate::{
     turn::request::{AssemblePromptRequest, assemble_prompt_request},
 };
 
-/// 单个 Turn 的默认最大 step 数，防止无限循环。
-const DEFAULT_MAX_STEPS: usize = 50;
-
 /// 可清除的工具名称（这些工具的旧结果可以被 prune pass 替换为占位文本）。
 const CLEARABLE_TOOLS: &[&str] = &["readFile", "listDir", "grep", "findFiles"];
 
@@ -60,7 +57,7 @@ pub struct TurnRunRequest {
     pub turn_id: String,
     pub messages: Vec<LlmMessage>,
     pub session_state: Arc<SessionState>,
-    pub runtime: RuntimeConfig,
+    pub runtime: ResolvedRuntimeConfig,
     pub cancel: CancelToken,
     pub agent: AgentEventContext,
     pub prompt_facts_provider: Arc<dyn PromptFactsProvider>,
@@ -90,11 +87,7 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
     let mut total_cache_read_tokens: u64 = 0;
     let mut total_cache_creation_tokens: u64 = 0;
 
-    let max_steps = request
-        .runtime
-        .max_steps
-        .unwrap_or(DEFAULT_MAX_STEPS)
-        .max(1);
+    let max_steps = request.runtime.max_steps.max(1);
 
     let gateway = kernel.gateway();
 
@@ -314,7 +307,8 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
                 agent: &request.agent,
                 cancel: &request.cancel,
                 events: &mut events,
-                max_concurrency: request.runtime.max_tool_concurrency.unwrap_or(10),
+                max_concurrency: request.runtime.max_tool_concurrency,
+                tool_result_inline_limit: request.runtime.tool_result_inline_limit,
             },
             output.tool_calls,
         )

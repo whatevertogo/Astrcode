@@ -11,8 +11,7 @@ use astrcode_core::{
 
 use super::{
     AgentOrchestrationError, AgentOrchestrationService, child_delivery_mailbox_envelope,
-    root_execution_event_context, subrun_event_context, terminal::ChildTurnTerminalContext,
-    terminal_notification_message,
+    root_execution_event_context, subrun_event_context, terminal_notification_message,
 };
 
 impl AgentOrchestrationService {
@@ -114,7 +113,8 @@ impl AgentOrchestrationService {
                 &parent_session_id,
                 wake_turn_id.clone(),
                 wake_prompt,
-                self.default_runtime_config(),
+                self.resolve_runtime_config_for_session(&parent_session_id)
+                    .await?,
                 wake_agent.clone(),
             )
             .await
@@ -209,34 +209,10 @@ impl AgentOrchestrationService {
                 && !terminal.events.iter().any(|stored| {
                     matches!(stored.event.payload, StorageEventPayload::Error { .. })
                 });
-        let target_handle = self
-            .kernel
-            .get_agent_handle(&target_agent_id)
-            .await
-            .ok_or_else(|| {
-                AgentOrchestrationError::NotFound(format!(
-                    "target wake agent '{}' not found",
-                    target_agent_id
-                ))
-            })?;
-
-        if target_handle.parent_agent_id.is_some() {
-            self.finalize_child_turn_with_outcome(
-                ChildTurnTerminalContext::new(
-                    target_handle.clone(),
-                    parent_session_id.clone(),
-                    turn_id.clone(),
-                    // 显式使用 handle 上的 parent routing truth，禁止从 child_ref 反推。
-                    target_handle.session_id.clone(),
-                    target_handle.parent_turn_id.clone(),
-                    None,
-                ),
-                self.session_runtime
-                    .project_turn_outcome(&parent_session_id, &turn_id)
-                    .await?,
-            )
-            .await?;
-        }
+        // 为什么 wake turn 不再自动向更上一级制造 terminal delivery：
+        // Claude Code 的稳定点是“worker 每轮进入 idle，但 idle 通知只是状态转换，不代表
+        // 又生成了一项新的上游任务”。这里保持同样边界：wake 只负责消费当前 mailbox batch，
+        // 避免把协作协调 turn 误当成新的 child work turn，从而形成自激膨胀。
 
         if wake_succeeded {
             self.append_parent_delivery_batch_acked(
@@ -620,7 +596,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wake_turn_bubbles_terminal_delivery_to_direct_parent() {
+    async fn wake_turn_drains_delivery_without_bubbling_terminal_notification_upward() {
         let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
             content: "middle 已处理 leaf 交付。".to_string(),
         })
@@ -711,7 +687,7 @@ mod tests {
             }
             assert!(
                 Instant::now() < deadline,
-                "wake bubbling should eventually drain both middle and root delivery queues"
+                "wake turn should drain the middle delivery queue without inflating root queue"
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -722,15 +698,12 @@ mod tests {
             .await
             .expect("root events should replay");
         assert!(
-            root_events.iter().any(|stored| matches!(
+            !root_events.iter().any(|stored| matches!(
                 &stored.event.payload,
                 StorageEventPayload::ChildSessionNotification { notification, .. }
                     if notification.child_ref.agent_id == middle.agent_id
-                        && notification.kind == ChildSessionNotificationKind::Delivered
-                        && notification.final_reply_excerpt.as_deref()
-                            == Some("middle 已处理 leaf 交付。")
             )),
-            "middle wake turn should bubble a terminal delivery to root"
+            "wake turn is a coordination turn and must not auto-manufacture a new upward delivery"
         );
     }
 

@@ -57,26 +57,133 @@ pub fn validate_config(config: &Config) -> Result<()> {
 }
 
 fn validate_runtime_params(runtime: &astrcode_core::RuntimeConfig) -> Result<()> {
-    if matches!(runtime.max_tool_concurrency, Some(0)) {
-        return Err(AstrError::Validation(
-            "runtime.maxToolConcurrency must be greater than 0".to_string(),
-        ));
-    }
-    if matches!(runtime.tool_result_max_bytes, Some(0)) {
-        return Err(AstrError::Validation(
-            "runtime.toolResultMaxBytes must be greater than 0".to_string(),
-        ));
-    }
-    if matches!(runtime.compact_keep_recent_turns, Some(0)) {
-        return Err(AstrError::Validation(
-            "runtime.compactKeepRecentTurns must be greater than 0".to_string(),
-        ));
-    }
+    validate_positive_usize(runtime.max_tool_concurrency, "runtime.maxToolConcurrency")?;
+    validate_positive_usize(runtime.tool_result_max_bytes, "runtime.toolResultMaxBytes")?;
+    validate_positive_u8(
+        runtime.compact_keep_recent_turns,
+        "runtime.compactKeepRecentTurns",
+    )?;
     if let Some(percent) = runtime.compact_threshold_percent {
         if !(1..=100).contains(&percent) {
             return Err(AstrError::Validation(
                 "runtime.compactThresholdPercent must be between 1 and 100".to_string(),
             ));
+        }
+    }
+    validate_positive_usize(runtime.max_steps, "runtime.maxSteps")?;
+    validate_positive_u64(
+        runtime.llm_connect_timeout_secs,
+        "runtime.llmConnectTimeoutSecs",
+    )?;
+    validate_positive_u64(runtime.llm_read_timeout_secs, "runtime.llmReadTimeoutSecs")?;
+    validate_positive_u64(
+        runtime.llm_retry_base_delay_ms,
+        "runtime.llmRetryBaseDelayMs",
+    )?;
+    validate_positive_u8(
+        runtime.max_reactive_compact_attempts,
+        "runtime.maxReactiveCompactAttempts",
+    )?;
+    validate_positive_u8(
+        runtime.max_output_continuation_attempts,
+        "runtime.maxOutputContinuationAttempts",
+    )?;
+    validate_positive_usize(runtime.max_tracked_files, "runtime.maxTrackedFiles")?;
+    validate_positive_usize(runtime.max_recovered_files, "runtime.maxRecoveredFiles")?;
+    validate_positive_usize(runtime.recovery_token_budget, "runtime.recoveryTokenBudget")?;
+    validate_positive_usize(
+        runtime.tool_result_inline_limit,
+        "runtime.toolResultInlineLimit",
+    )?;
+    validate_positive_usize(
+        runtime.tool_result_preview_limit,
+        "runtime.toolResultPreviewLimit",
+    )?;
+    validate_positive_usize(runtime.max_image_size, "runtime.maxImageSize")?;
+    validate_positive_usize(runtime.max_grep_lines, "runtime.maxGrepLines")?;
+    validate_positive_usize(
+        runtime.session_broadcast_capacity,
+        "runtime.sessionBroadcastCapacity",
+    )?;
+    validate_positive_usize(
+        runtime.session_recent_record_limit,
+        "runtime.sessionRecentRecordLimit",
+    )?;
+    validate_positive_usize(
+        runtime.max_concurrent_branch_depth,
+        "runtime.maxConcurrentBranchDepth",
+    )?;
+    validate_positive_usize(
+        runtime.aggregate_result_bytes_budget,
+        "runtime.aggregateResultBytesBudget",
+    )?;
+    validate_positive_u64(
+        runtime.micro_compact_gap_threshold_secs,
+        "runtime.microCompactGapThresholdSecs",
+    )?;
+    validate_positive_usize(
+        runtime.micro_compact_keep_recent_results,
+        "runtime.microCompactKeepRecentResults",
+    )?;
+    validate_positive_i64(runtime.api_session_ttl_hours, "runtime.apiSessionTtlHours")?;
+    validate_positive_usize(
+        runtime.max_consecutive_failures,
+        "runtime.maxConsecutiveFailures",
+    )?;
+    validate_positive_usize(
+        runtime.recovery_truncate_bytes,
+        "runtime.recoveryTruncateBytes",
+    )?;
+
+    if let Some(agent) = runtime.agent.as_ref() {
+        validate_positive_usize(agent.max_subrun_depth, "runtime.agent.maxSubrunDepth")?;
+        validate_positive_usize(agent.max_concurrent, "runtime.agent.maxConcurrent")?;
+        validate_positive_usize(
+            agent.finalized_retain_limit,
+            "runtime.agent.finalizedRetainLimit",
+        )?;
+        validate_positive_usize(agent.inbox_capacity, "runtime.agent.inboxCapacity")?;
+        validate_positive_usize(
+            agent.parent_delivery_capacity,
+            "runtime.agent.parentDeliveryCapacity",
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_positive_usize(value: Option<usize>, field: &str) -> Result<()> {
+    if matches!(value, Some(0)) {
+        return Err(AstrError::Validation(format!(
+            "{field} must be greater than 0"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_positive_u64(value: Option<u64>, field: &str) -> Result<()> {
+    if matches!(value, Some(0)) {
+        return Err(AstrError::Validation(format!(
+            "{field} must be greater than 0"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_positive_u8(value: Option<u8>, field: &str) -> Result<()> {
+    if matches!(value, Some(0)) {
+        return Err(AstrError::Validation(format!(
+            "{field} must be greater than 0"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_positive_i64(value: Option<i64>, field: &str) -> Result<()> {
+    if let Some(value) = value {
+        if value <= 0 {
+            return Err(AstrError::Validation(format!(
+                "{field} must be greater than 0"
+            )));
         }
     }
     Ok(())
@@ -231,6 +338,25 @@ mod tests {
         let mut config = Config::default();
         config.runtime.compact_threshold_percent = Some(0);
         assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn zero_max_steps_fails() {
+        let mut config = Config::default();
+        config.runtime.max_steps = Some(0);
+        let error = validate_config(&config).expect_err("maxSteps=0 should fail");
+        assert!(error.to_string().contains("runtime.maxSteps"));
+    }
+
+    #[test]
+    fn zero_agent_max_subrun_depth_fails() {
+        let mut config = Config::default();
+        config.runtime.agent = Some(astrcode_core::AgentConfig {
+            max_subrun_depth: Some(0),
+            ..astrcode_core::AgentConfig::default()
+        });
+        let error = validate_config(&config).expect_err("maxSubrunDepth=0 should fail");
+        assert!(error.to_string().contains("runtime.agent.maxSubrunDepth"));
     }
 
     #[test]

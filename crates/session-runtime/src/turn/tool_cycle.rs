@@ -21,6 +21,7 @@ use std::{sync::Arc, time::Instant};
 use astrcode_core::{
     AgentEventContext, CancelToken, LlmMessage, Result, StorageEvent, StorageEventPayload,
     ToolCallRequest, ToolContext, ToolExecutionResult, ToolOutputDelta,
+    tool_result_persist::resolve_inline_limit,
 };
 use astrcode_kernel::KernelGateway;
 use futures_util::stream::{self, StreamExt};
@@ -60,6 +61,7 @@ pub struct ToolCycleContext<'a> {
     pub cancel: &'a CancelToken,
     pub events: &'a mut Vec<StorageEvent>,
     pub max_concurrency: usize,
+    pub tool_result_inline_limit: usize,
 }
 
 /// 执行一组工具调用，支持并发安全工具并行。
@@ -127,6 +129,7 @@ pub async fn execute_tool_calls(
             ctx.turn_id,
             ctx.agent,
             ctx.cancel,
+            ctx.tool_result_inline_limit,
         )
         .await;
         collected_events.extend(local_events);
@@ -168,6 +171,7 @@ async fn execute_concurrent_safe(
             let turn_id = ctx.turn_id.to_string();
             let agent = ctx.agent.clone();
             let cancel = ctx.cancel.clone();
+            let tool_result_inline_limit = ctx.tool_result_inline_limit;
             let session_state = Arc::clone(ctx.session_state);
 
             async move {
@@ -180,6 +184,7 @@ async fn execute_concurrent_safe(
                     &turn_id,
                     &agent,
                     &cancel,
+                    tool_result_inline_limit,
                 )
                 .await;
                 (call, result, events)
@@ -206,6 +211,7 @@ async fn invoke_single_tool(
     turn_id: &str,
     agent: &AgentEventContext,
     cancel: &CancelToken,
+    tool_result_inline_limit: usize,
 ) -> (ToolExecutionResult, Vec<StorageEvent>) {
     let mut events = Vec::new();
     let start = Instant::now();
@@ -276,6 +282,14 @@ async fn invoke_single_tool(
     .with_turn_id(turn_id.to_string())
     .with_tool_call_id(tool_call.id.clone())
     .with_agent_context(agent.clone())
+    .with_resolved_inline_limit(resolve_inline_limit(
+        &tool_call.name,
+        gateway
+            .capabilities()
+            .capability_spec(&tool_call.name)
+            .and_then(|spec| spec.max_result_inline_size),
+        tool_result_inline_limit,
+    ))
     .with_tool_output_sender(tool_output_tx.clone());
     let tool_ctx = if let Some(sink) = &event_sink {
         tool_ctx.with_event_sink(Arc::clone(sink))
@@ -608,6 +622,7 @@ mod tests {
             "turn-1",
             &agent,
             &CancelToken::new(),
+            32 * 1024,
         )
         .await;
 
@@ -644,6 +659,7 @@ mod tests {
             "turn-live",
             &agent,
             &CancelToken::new(),
+            32 * 1024,
         )
         .await;
 

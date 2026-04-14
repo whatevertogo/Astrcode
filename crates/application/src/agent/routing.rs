@@ -100,7 +100,8 @@ impl AgentOrchestrationService {
                     .submit_prompt_for_agent(
                         child_session_id,
                         resume_message,
-                        self.default_runtime_config(),
+                        self.resolve_runtime_config_for_session(child_session_id)
+                            .await?,
                         astrcode_core::AgentEventContext::from(&reused_handle),
                     )
                     .await

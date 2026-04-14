@@ -321,8 +321,8 @@ mod tests {
 
     use astrcode_core::{
         LlmProvider, LlmRequest, PromptBuildRequest, PromptFactsRequest, PromptProvider,
-        ResourceProvider, ResourceReadResult, ResourceRequestContext, ToolDefinition,
-        config::RuntimeConfig,
+        ResolvedRuntimeConfig, ResourceProvider, ResourceReadResult, ResourceRequestContext,
+        ToolDefinition,
     };
     use astrcode_kernel::CapabilityRouter;
     use serde_json::json;
@@ -407,7 +407,7 @@ mod tests {
         let gateway = test_gateway(64_000);
         let mut micro_state = crate::context_window::micro_compact::MicroCompactState::default();
         let tracker = crate::context_window::file_access::FileAccessTracker::new(4);
-        let settings = ContextWindowSettings::from(&RuntimeConfig::default());
+        let settings = ContextWindowSettings::from(&ResolvedRuntimeConfig::default());
 
         let result = assemble_prompt_request(AssemblePromptRequest {
             gateway: &gateway,

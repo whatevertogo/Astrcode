@@ -1,10 +1,13 @@
 ## 设计概览
 
-本次修复采用“每轮独立收口、直接父级逐级冒泡”的模型。
+本次修复采用“两类 turn 分治”的模型：
+
+- 真正的 child work turn：统一 terminal 收口，并向直接父级投递结果
+- parent-delivery wake turn：只负责消费当前 mailbox batch，不再自动制造新的上行 delivery
 
 ### 决策 1：child turn terminal finalizer 统一收口
 
-所有 child turn 在进入 terminal 状态后，都进入同一个 application 级 finalizer：
+所有真正的 child work turn 在进入 terminal 状态后，都进入同一个 application 级 finalizer：
 
 1. 等待 `session_id + turn_id` 的 terminal snapshot
 2. 投影 `AgentTurnOutcome / summary / final_reply_excerpt`
@@ -12,7 +15,7 @@
 4. 向父侧 session 追加 durable notification
 5. 触发直接父级 wake
 
-这样 spawn、resume、wake 不再各自维护一套终态逻辑。
+这样 spawn 与 idle-resume 不再各自维护一套终态逻辑。
 
 ### 决策 2：异常终态仍然向上级投递
 
@@ -37,22 +40,27 @@
 
 `ChildAgentRef` 继续承担 stable child reference / projection 角色，但不再承担 parent routing truth。
 
-### 决策 4：wake turn 在 batch 收口前先做上行 finalization
+### 决策 4：wake turn 保持为协调 turn，不自动向上冒泡
 
 对于由 delivery 触发的 wake turn：
 
 - 先等待当前 turn terminal
-- 如果当前执行者本身是 child agent，则先尝试对它的直接父级发布 terminal delivery
-- 上行 finalization 成功后，再执行当前 batch 的 `acked / consume`
-- 如果上行 finalization 失败，则当前 batch 保持可 requeue，避免“叶子结果被消费但更上级永远收不到”
+- 然后只执行当前 batch 的 `acked / consume / requeue`
+- 不把 wake turn 本身重新包装成新的 child terminal delivery
+
+这样做的原因是要对齐 Claude Code 那种“turn 结束进入 idle，但 idle 通知只是状态转换”的稳定边界：
+
+- wake turn 是协调 turn，不是新的 delegated child work
+- 如果把 wake turn 也自动继续向上包装，会把 mailbox 协调链误当成新任务链
+- 结果是越多层协作，越容易出现自激膨胀、重复唤醒和重复总结
 
 ### 决策 5：turn 完成不等待后代 settled
 
 “middle 的 turn 完成”只表示 `middle` 当前这一轮结束。
 
-如果 `middle` 在这一轮里又产生了新的 child work：
+如果 `middle` 在真正的 child work turn 里又产生了新的 child work：
 
-- `middle` 当前 turn 仍应立即向 `root` 汇报
+- `middle` 当前 child work turn 仍应立即向直接父级汇报
 - 新 child 的完成由后续独立 delivery/wake 周期继续回传
 
 不引入树级等待语义，避免生命周期耦合、循环等待和重复汇报。

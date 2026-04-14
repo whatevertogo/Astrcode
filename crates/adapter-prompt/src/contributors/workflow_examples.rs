@@ -6,6 +6,7 @@
 //! 同时提供子 Agent 协作决策指导：当父 Agent 收到子 Agent 交付结果后，
 //! 指导模型如何决定关闭或保留子 Agent。
 
+use astrcode_core::config::DEFAULT_MAX_SUBRUN_DEPTH;
 use async_trait::async_trait;
 
 use crate::{
@@ -84,29 +85,39 @@ impl PromptContributor for WorkflowExamplesContributor {
         }
 
         if has_agent_collaboration_tools(ctx) {
+            let max_depth = collaboration_depth_limit(ctx).unwrap_or(DEFAULT_MAX_SUBRUN_DEPTH);
             blocks.push(
                 BlockSpec::system_text(
                     "child-collaboration-guidance",
                     BlockKind::CollaborationGuide,
                     "Child Agent Collaboration Guide",
-                    "When you receive a delivery from a child agent, use the four-tool \
-                     collaboration model consistently. Treat the `agentId` returned by tool \
-                     results as an exact opaque identifier. Copy it byte-for-byte in later \
-                     `send`, `observe`, and `close` calls. Never renumber it, never zero-pad it, \
-                     and never invent `agent-01` when the tool result says `agent-1`.\n\nChild \
-                     agents are reusable. A child can finish one turn, return to `Idle`, and \
-                     later receive more work through `send(agentId, message)`. Do not assume a \
-                     completed turn means the child instance is gone.\n\nIf the delivery fully \
-                     satisfies the original request, call `close(agentId)` to terminate the child \
-                     subtree. If you need follow-up work or revisions, call `send(agentId, \
-                     message)` with the next concrete instruction. If you are unsure whether the \
-                     child is still running, idle, or already terminated, call `observe(agentId)` \
-                     before deciding. Runtime mailbox delivery can be replayed after recovery. If \
-                     you see the same `deliveryId` again, treat it as the same delivery rather \
-                     than a new task.\n\nExample: if the tool result contains `agentId: agent-7`, \
-                     every later collaboration call must use exactly `agent-7`. Default: close \
-                     the child if the delivery satisfies the request; otherwise send a precise \
-                     follow-up instruction or observe first.",
+                    format!(
+                        "When you receive a delivery from a child agent, use the four-tool \
+                         collaboration model consistently. Treat the `agentId` returned by tool \
+                         results as an exact opaque identifier. Copy it byte-for-byte in later \
+                         `send`, `observe`, and `close` calls. Never renumber it, never zero-pad \
+                         it, and never invent `agent-01` when the tool result says \
+                         `agent-1`.\n\nA child finishing one turn and returning to `Idle` is \
+                         normal. Do not treat `Idle` as an error, and do not immediately spawn a \
+                         replacement child just because one turn completed. Child agents are \
+                         reusable. Reuse an idle child with `send(agentId, message)` when the \
+                         responsibility stays the same. If you are unsure whether the child is \
+                         still running, idle, or already terminated, call `observe(agentId)` \
+                         before deciding.\n\nNested spawning is a scarce budget. The runtime \
+                         enforces a maximum child depth of {max_depth}. Prefer reusing an \
+                         existing child over creating a deeper descendant. If you hit the depth \
+                         limit, do not retry with more nested spawn calls. Finish the remaining \
+                         work in the current agent, or send the next instruction to an existing \
+                         child.\n\nIf the delivery fully satisfies the original request, call \
+                         `close(agentId)` to terminate the child subtree. If you need follow-up \
+                         work or revisions, call `send(agentId, message)` with the next concrete \
+                         instruction. Runtime mailbox delivery can be replayed after recovery. If \
+                         you see the same `deliveryId` again, treat it as the same delivery \
+                         rather than a new task.\n\nExample: if the tool result contains \
+                         `agentId: agent-7`, every later collaboration call must use exactly \
+                         `agent-7`. Default: close the child if the delivery satisfies the \
+                         request; otherwise send a precise follow-up instruction or observe first."
+                    ),
                 )
                 .with_priority(600),
             );
@@ -129,6 +140,12 @@ fn has_agent_collaboration_tools(ctx: &PromptContext) -> bool {
 
 fn should_add_tool_search_example(ctx: &PromptContext) -> bool {
     has_tool_search(ctx) && has_external_tools(ctx)
+}
+
+fn collaboration_depth_limit(ctx: &PromptContext) -> Option<usize> {
+    ctx.vars
+        .get("agent.max_subrun_depth")
+        .and_then(|value| value.parse::<usize>().ok())
 }
 
 fn has_tool_search(ctx: &PromptContext) -> bool {
@@ -286,6 +303,9 @@ mod tests {
                 .content
                 .contains("Copy it byte-for-byte")
         );
+        assert!(collaboration_block.content.contains(&format!(
+            "maximum child depth of {DEFAULT_MAX_SUBRUN_DEPTH}"
+        )));
         assert!(collaboration_block.content.contains("agent-01"));
         assert!(
             collaboration_block
@@ -296,6 +316,53 @@ mod tests {
             collaboration_block
                 .content
                 .contains("same `deliveryId` again")
+        );
+        assert!(
+            collaboration_block
+                .content
+                .contains("returning to `Idle` is normal")
+        );
+    }
+
+    #[tokio::test]
+    async fn collaboration_guidance_uses_configured_depth_limit() {
+        let _guard = TestEnvGuard::new();
+        let composer = PromptComposer::with_options(PromptComposerOptions {
+            validation_level: ValidationLevel::Strict,
+            ..PromptComposerOptions::default()
+        });
+
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("agent.max_subrun_depth".to_string(), "5".to_string());
+        let ctx = PromptContext {
+            working_dir: "/workspace/demo".to_string(),
+            tool_names: vec![
+                "spawn".to_string(),
+                "send".to_string(),
+                "observe".to_string(),
+                "close".to_string(),
+            ],
+            capability_specs: Vec::new(),
+            prompt_declarations: Vec::new(),
+            agent_profiles: Vec::new(),
+            skills: Vec::new(),
+            step_index: 0,
+            turn_index: 0,
+            vars,
+        };
+
+        let output = composer.build(&ctx).await.expect("build should succeed");
+
+        let collaboration_block = output
+            .plan
+            .system_blocks
+            .iter()
+            .find(|block| block.id == "child-collaboration-guidance")
+            .expect("collaboration guidance block should exist");
+        assert!(
+            collaboration_block
+                .content
+                .contains("maximum child depth of 5")
         );
     }
 }

@@ -33,6 +33,7 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 use crate::{
+    config::ConfigService,
     execution::{ProfileResolutionService, SubagentExecutionRequest, launch_subagent},
     lifecycle::TaskRegistry,
 };
@@ -151,6 +152,7 @@ fn map_orchestration_error(error: AgentOrchestrationError) -> astrcode_core::Ast
 pub struct AgentOrchestrationService {
     kernel: Arc<Kernel>,
     session_runtime: Arc<SessionRuntime>,
+    config_service: Arc<ConfigService>,
     profiles: Arc<ProfileResolutionService>,
     task_registry: Arc<TaskRegistry>,
     metrics: Arc<dyn RuntimeMetricsRecorder>,
@@ -160,6 +162,7 @@ impl AgentOrchestrationService {
     pub fn new(
         kernel: Arc<Kernel>,
         session_runtime: Arc<SessionRuntime>,
+        config_service: Arc<ConfigService>,
         profiles: Arc<ProfileResolutionService>,
         task_registry: Arc<TaskRegistry>,
         metrics: Arc<dyn RuntimeMetricsRecorder>,
@@ -167,15 +170,34 @@ impl AgentOrchestrationService {
         Self {
             kernel,
             session_runtime,
+            config_service,
             profiles,
             task_registry,
             metrics,
         }
     }
 
-    /// 返回默认 RuntimeConfig 用于 wake / resume 场景。
-    fn default_runtime_config(&self) -> astrcode_core::config::RuntimeConfig {
-        astrcode_core::config::RuntimeConfig::default()
+    /// 解析指定工作目录的有效 RuntimeConfig。
+    fn resolve_runtime_config_for_working_dir(
+        &self,
+        working_dir: &Path,
+    ) -> std::result::Result<astrcode_core::ResolvedRuntimeConfig, AgentOrchestrationError> {
+        self.config_service
+            .load_resolved_runtime_config(Some(working_dir))
+            .map_err(|error| AgentOrchestrationError::Internal(error.to_string()))
+    }
+
+    /// 解析指定 session 对应工作目录的有效 RuntimeConfig。
+    async fn resolve_runtime_config_for_session(
+        &self,
+        session_id: &str,
+    ) -> std::result::Result<astrcode_core::ResolvedRuntimeConfig, AgentOrchestrationError> {
+        let working_dir = self
+            .session_runtime
+            .get_session_working_dir(session_id)
+            .await
+            .map_err(AgentOrchestrationError::from)?;
+        self.resolve_runtime_config_for_working_dir(Path::new(&working_dir))
     }
 
     fn resolve_subagent_profile(
@@ -295,12 +317,15 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
             task: params.prompt,
             context: params.context,
         };
+        let runtime_config = self
+            .resolve_runtime_config_for_working_dir(ctx.working_dir())
+            .map_err(map_orchestration_error)?;
 
         let accepted = launch_subagent(
             &self.kernel,
             &self.session_runtime,
             request,
-            self.default_runtime_config(),
+            runtime_config,
             &self.metrics,
         )
         .await

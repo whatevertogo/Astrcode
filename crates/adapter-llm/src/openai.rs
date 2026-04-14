@@ -38,8 +38,8 @@ use serde_json::Value;
 use tokio::select;
 
 use crate::{
-    EventSink, FinishReason, LlmAccumulator, LlmEvent, LlmOutput, LlmProvider, LlmRequest,
-    LlmUsage, MAX_RETRIES, ModelLimits, Utf8StreamDecoder, build_http_client, emit_event,
+    EventSink, FinishReason, LlmAccumulator, LlmClientConfig, LlmEvent, LlmOutput, LlmProvider,
+    LlmRequest, LlmUsage, ModelLimits, Utf8StreamDecoder, build_http_client, emit_event,
     is_retryable_status, wait_retry_delay,
 };
 
@@ -50,6 +50,8 @@ use crate::{
 pub struct OpenAiProvider {
     /// 共享的 HTTP 客户端（含统一超时策略）
     client: reqwest::Client,
+    /// 当前 provider 使用的 HTTP / retry 配置。
+    client_config: LlmClientConfig,
     /// 已解析好的 Chat Completions endpoint。
     ///
     /// provider_factory 会先把用户配置标准化到最终请求地址，这里不再二次拼接，
@@ -73,6 +75,7 @@ impl fmt::Debug for OpenAiProvider {
             .field("api_key", &"<redacted>")
             .field("model", &self.model)
             .field("limits", &self.limits)
+            .field("client_config", &self.client_config)
             .finish()
     }
 }
@@ -84,9 +87,11 @@ impl OpenAiProvider {
         api_key: String,
         model: String,
         limits: ModelLimits,
+        client_config: LlmClientConfig,
     ) -> Result<Self> {
         Ok(Self {
-            client: build_http_client()?,
+            client: build_http_client(client_config)?,
+            client_config,
             chat_completions_api_url,
             api_key,
             model,
@@ -179,7 +184,7 @@ impl OpenAiProvider {
         req: &OpenAiChatRequest<'_>,
         cancel: CancelToken,
     ) -> Result<reqwest::Response> {
-        for attempt in 0..=MAX_RETRIES {
+        for attempt in 0..=self.client_config.max_retries {
             let send_future = self
                 .client
                 .post(&self.chat_completions_api_url)
@@ -203,8 +208,13 @@ impl OpenAiProvider {
                     }
 
                     let body = response.text().await.unwrap_or_default();
-                    if is_retryable_status(status) && attempt < MAX_RETRIES {
-                        wait_retry_delay(attempt, cancel.clone()).await?;
+                    if is_retryable_status(status) && attempt < self.client_config.max_retries {
+                        wait_retry_delay(
+                            attempt,
+                            cancel.clone(),
+                            self.client_config.retry_base_delay,
+                        )
+                        .await?;
                         continue;
                     }
 
@@ -214,8 +224,13 @@ impl OpenAiProvider {
                     });
                 },
                 Err(error) => {
-                    if error.is_retryable() && attempt < MAX_RETRIES {
-                        wait_retry_delay(attempt, cancel.clone()).await?;
+                    if error.is_retryable() && attempt < self.client_config.max_retries {
+                        wait_retry_delay(
+                            attempt,
+                            cancel.clone(),
+                            self.client_config.retry_base_delay,
+                        )
+                        .await?;
                         continue;
                     }
                     return Err(error);
@@ -1009,6 +1024,7 @@ mod tests {
                 context_window: 128_000,
                 max_output_tokens: 2048,
             },
+            LlmClientConfig::default(),
         )
         .expect("provider should build");
         let messages = [LlmMessage::User {
@@ -1036,6 +1052,7 @@ mod tests {
                 context_window: 128_000,
                 max_output_tokens: 2048,
             },
+            LlmClientConfig::default(),
         )
         .expect("provider should build");
         let messages = [LlmMessage::User {
@@ -1108,6 +1125,7 @@ mod tests {
                 context_window: 128_000,
                 max_output_tokens: 2048,
             },
+            LlmClientConfig::default(),
         )
         .expect("provider should build");
         let compatible = OpenAiProvider::new(
@@ -1118,6 +1136,7 @@ mod tests {
                 context_window: 128_000,
                 max_output_tokens: 2048,
             },
+            LlmClientConfig::default(),
         )
         .expect("provider should build");
 
@@ -1187,6 +1206,7 @@ mod tests {
                 context_window: 128_000,
                 max_output_tokens: 2048,
             },
+            LlmClientConfig::default(),
         )
         .expect("provider should build");
 
@@ -1262,6 +1282,7 @@ mod tests {
                 context_window: 128_000,
                 max_output_tokens: 2048,
             },
+            LlmClientConfig::default(),
         )
         .expect("provider should build");
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -1389,6 +1410,7 @@ mod tests {
                 context_window: 128_000,
                 max_output_tokens: 2048,
             },
+            LlmClientConfig::default(),
         )
         .expect("provider should build");
 
@@ -1405,6 +1427,7 @@ mod tests {
                 context_window: 128_000,
                 max_output_tokens: 2048,
             },
+            LlmClientConfig::default(),
         )
         .expect("provider should build");
 
