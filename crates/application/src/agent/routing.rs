@@ -10,7 +10,10 @@ use astrcode_core::{
     MailboxQueuedPayload, SendAgentParams, SubRunHandle,
 };
 
-use super::{AgentOrchestrationService, subrun_event_context};
+use super::{
+    AgentOrchestrationService, build_delegation_metadata, build_resumed_child_contract,
+    subrun_event_context,
+};
 
 impl AgentOrchestrationService {
     /// 验证调用者是否为目标子 agent 的直接父级。
@@ -221,6 +224,7 @@ impl AgentOrchestrationService {
             delivery_id: None,
             summary: Some(summary),
             observe_result: None,
+            delegation: None,
             cascade: Some(true),
             closed_root_agent_id: Some(cancelled.agent_id.clone()),
             failure: None,
@@ -374,6 +378,17 @@ impl AgentOrchestrationService {
             },
         };
 
+        let fallback_delegation = build_delegation_metadata(
+            "",
+            params.message.as_str(),
+            &reused_handle.resolved_limits,
+            false,
+        );
+        let resume_delegation = reused_handle
+            .delegation
+            .clone()
+            .unwrap_or(fallback_delegation);
+
         let accepted = match self
             .session_runtime
             .submit_prompt_for_agent_with_submission(
@@ -384,6 +399,11 @@ impl AgentOrchestrationService {
                 astrcode_session_runtime::AgentPromptSubmission {
                     agent: astrcode_core::AgentEventContext::from(&reused_handle),
                     capability_router: Some(scoped_router),
+                    prompt_declarations: vec![build_resumed_child_contract(
+                        &resume_delegation,
+                        params.message.as_str(),
+                        params.context.as_deref(),
+                    )],
                     resolved_limits: Some(reused_handle.resolved_limits.clone()),
                     source_tool_call_id: ctx.tool_call_id().map(ToString::to_string),
                 },
@@ -434,6 +454,7 @@ impl AgentOrchestrationService {
                 params.agent_id
             )),
             observe_result: None,
+            delegation: reused_handle.delegation.clone(),
             cascade: None,
             closed_root_agent_id: None,
             failure: None,
@@ -503,6 +524,7 @@ impl AgentOrchestrationService {
                 params.agent_id
             )),
             observe_result: None,
+            delegation: child.delegation.clone(),
             cascade: None,
             closed_root_agent_id: None,
             failure: None,
@@ -889,6 +911,14 @@ mod tests {
                 .summary
                 .as_deref()
                 .is_some_and(|summary| summary.contains("已恢复"))
+        );
+        assert_eq!(
+            result
+                .delegation
+                .as_ref()
+                .map(|metadata| metadata.responsibility_summary.as_str()),
+            Some("检查 crates"),
+            "resumed child should keep the original responsibility branch metadata"
         );
     }
 

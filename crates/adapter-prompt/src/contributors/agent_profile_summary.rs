@@ -22,7 +22,7 @@ impl PromptContributor for AgentProfileSummaryContributor {
     }
 
     fn cache_version(&self) -> u64 {
-        3
+        4
     }
 
     fn cache_fingerprint(&self, ctx: &PromptContext) -> String {
@@ -48,16 +48,16 @@ impl PromptContributor for AgentProfileSummaryContributor {
             "Use `spawn` only when a task benefits from a dedicated sub-agent with an isolated \
              task scope. Prefer doing the work locally when the task is tiny, the answer is \
              needed immediately for the next step, or no context isolation is \
-             needed.\n\nAvailable sub-agent profiles:\n",
+             needed.\n\nAvailable child behavior templates:\n",
         );
         for profile in profiles {
             append_profile_line(&mut content, &profile);
         }
         content.push_str(
-            "\nWhen choosing `type`, prefer the narrowest profile that matches the task. Omit \
-             `type` to use the default `explore` profile. Profile descriptions tell you the \
-             primary job, not the full delegation policy; use the `spawn` guide for the final \
-             spawn-vs-local decision.",
+            "\nChoose `type` by the kind of responsibility you want the child to own. Omit `type` \
+             to use the default `explore` template. These entries describe behavior and \
+             when-to-use scope only. They do not declare static tool ownership or launch-time \
+             capability limits.",
         );
 
         PromptContribution {
@@ -65,7 +65,7 @@ impl PromptContributor for AgentProfileSummaryContributor {
                 BlockSpec::system_text(
                     "agent-profile-summary",
                     BlockKind::ToolGuide,
-                    "SpawnAgent Profiles",
+                    "Child Behavior Templates",
                     content.trim_end().to_string(),
                 )
                 .with_category("agents")
@@ -146,7 +146,7 @@ mod tests {
         let BlockContent::Text(content) = &contribution.blocks[0].content else {
             panic!("agent profile summary should render as text");
         };
-        assert!(content.contains("Available sub-agent profiles"));
+        assert!(content.contains("Available child behavior templates"));
         assert!(content.contains("- reviewer: 多视角代码审查"));
     }
 
@@ -163,6 +163,34 @@ mod tests {
         assert!(!summary.contains("Examples"));
         assert!(summary.ends_with('…'));
         assert!(summary.chars().count() <= MAX_PROFILE_SUMMARY_CHARS + 1);
+    }
+
+    #[tokio::test]
+    async fn behavior_template_catalog_does_not_claim_capability_authority() {
+        let _guard = TestEnvGuard::new();
+        let contribution = AgentProfileSummaryContributor
+            .contribute(&PromptContext {
+                working_dir: "/workspace/demo".to_string(),
+                tool_names: vec!["spawn".to_string()],
+                capability_specs: Vec::new(),
+                prompt_declarations: Vec::new(),
+                agent_profiles: vec![PromptAgentProfileSummary::new(
+                    "explore",
+                    "适合先收集上下文、梳理代码路径，再把发现整理给父级。",
+                )],
+                skills: Vec::new(),
+                step_index: 0,
+                turn_index: 0,
+                vars: Default::default(),
+            })
+            .await;
+
+        let BlockContent::Text(content) = &contribution.blocks[0].content else {
+            panic!("agent profile summary should render as text");
+        };
+        assert!(content.contains("Available child behavior templates"));
+        assert!(content.contains("describe behavior and when-to-use scope only"));
+        assert!(content.contains("do not declare static tool ownership"));
     }
 
     #[tokio::test]

@@ -124,9 +124,8 @@ impl Tool for SpawnAgentTool {
                      than spawning many vague explorers over the same repo surface.",
                 )
                 .caveat(
-                    "`description` is for UI/log summary only — put real task requirements in \
-                     `prompt`. `type` selects a behavior template; `capabilityGrant` is the task \
-                     grant for narrowing tools. Omit `type` to use the default `explore`.",
+                    "`description` is for UI/log summary only. Put real task requirements in \
+                     `prompt`. `type` selects a behavior template, not a static tool bundle.",
                 )
                 .caveat(
                     "If spawn fails because a depth or fan-out limit is reached, do not keep \

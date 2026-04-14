@@ -27,7 +27,7 @@ mod step;
 use std::{collections::HashSet, path::Path, sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, CancelToken, LlmMessage, PromptFactsProvider,
+    AgentEventContext, CancelToken, LlmMessage, PromptDeclaration, PromptFactsProvider,
     ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, Result, StorageEvent,
     StorageEventPayload, ToolDefinition,
 };
@@ -67,6 +67,7 @@ pub struct TurnRunRequest {
     pub agent: AgentEventContext,
     pub prompt_facts_provider: Arc<dyn PromptFactsProvider>,
     pub capability_router: Option<CapabilityRouter>,
+    pub prompt_declarations: Vec<PromptDeclaration>,
     pub resolved_limits: Option<ResolvedExecutionLimitsSnapshot>,
     pub source_tool_call_id: Option<String>,
 }
@@ -92,6 +93,7 @@ struct TurnExecutionResources<'a> {
     runtime: &'a ResolvedRuntimeConfig,
     cancel: &'a CancelToken,
     agent: &'a AgentEventContext,
+    prompt_declarations: &'a [PromptDeclaration],
     tools: Vec<ToolDefinition>,
     settings: ContextWindowSettings,
     clearable_tools: HashSet<String>,
@@ -107,6 +109,7 @@ struct TurnExecutionRequestView<'a> {
     runtime: &'a ResolvedRuntimeConfig,
     cancel: &'a CancelToken,
     agent: &'a AgentEventContext,
+    prompt_declarations: &'a [PromptDeclaration],
 }
 
 struct TurnExecutionContext {
@@ -153,6 +156,7 @@ impl<'a> TurnExecutionResources<'a> {
             runtime: request.runtime,
             cancel: request.cancel,
             agent: request.agent,
+            prompt_declarations: request.prompt_declarations,
             tools: gateway.capabilities().tool_definitions(),
             settings,
             clearable_tools: CLEARABLE_TOOLS
@@ -283,6 +287,7 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
         agent,
         prompt_facts_provider,
         capability_router,
+        prompt_declarations,
         resolved_limits: _,
         source_tool_call_id: _,
     } = request;
@@ -298,6 +303,7 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
             runtime: &runtime,
             cancel: &cancel,
             agent: &agent,
+            prompt_declarations: &prompt_declarations,
         },
     );
     let mut execution = TurnExecutionContext::new(&resources, messages, last_assistant_at);

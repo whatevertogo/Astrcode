@@ -14,7 +14,10 @@ use astrcode_kernel::{AgentControlError, Kernel};
 use astrcode_session_runtime::{AgentPromptSubmission, SessionRuntime};
 
 use crate::{
-    agent::{persist_resolved_limits_for_handle, subrun_event_context},
+    agent::{
+        build_delegation_metadata, build_fresh_child_contract, persist_delegation_for_handle,
+        persist_resolved_limits_for_handle, subrun_event_context,
+    },
     errors::ApplicationError,
     execution::{ensure_profile_mode, merge_task_with_context},
 };
@@ -26,6 +29,7 @@ pub struct SubagentExecutionRequest {
     pub parent_turn_id: String,
     pub working_dir: String,
     pub profile: AgentProfile,
+    pub description: String,
     pub task: String,
     pub context: Option<String>,
     pub parent_allowed_tools: Vec<String>,
@@ -60,6 +64,13 @@ pub async fn launch_subagent(
         .subset_for_tools_checked(&resolved_limits.allowed_tools)
         .map_err(|error| ApplicationError::InvalidArgument(error.to_string()))?;
     let scoped_router = scoped_gateway.capabilities().clone();
+    let delegation = build_delegation_metadata(
+        request.description.as_str(),
+        request.task.as_str(),
+        &resolved_limits,
+        request.capability_grant.is_some(),
+    );
+    let contract = build_fresh_child_contract(&delegation);
 
     let child_session = session_runtime
         .create_child_session(&request.working_dir, &request.parent_session_id)
@@ -93,6 +104,9 @@ pub async fn launch_subagent(
         persist_resolved_limits_for_handle(kernel.as_ref(), handle, resolved_limits.clone())
             .await
             .map_err(ApplicationError::Internal)?;
+    let handle = persist_delegation_for_handle(kernel.as_ref(), handle, delegation)
+        .await
+        .map_err(ApplicationError::Internal)?;
 
     let merged_task = merge_task_with_context(&request.task, request.context.as_deref());
 
@@ -104,6 +118,7 @@ pub async fn launch_subagent(
             AgentPromptSubmission {
                 agent: subrun_event_context(&handle),
                 capability_router: Some(scoped_router),
+                prompt_declarations: vec![contract],
                 resolved_limits: Some(resolved_limits),
                 source_tool_call_id: request.source_tool_call_id,
             },
@@ -223,6 +238,7 @@ mod tests {
             parent_turn_id: "turn-1".to_string(),
             working_dir: "/tmp/project".to_string(),
             profile: test_profile(),
+            description: "探索代码".to_string(),
             task: "explore the code".to_string(),
             context: None,
             parent_allowed_tools: vec!["read_file".to_string(), "grep".to_string()],

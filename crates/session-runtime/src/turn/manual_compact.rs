@@ -16,7 +16,7 @@ use crate::{
     },
     turn::{
         events::{CompactAppliedStats, compact_applied_event},
-        request::build_prompt_output,
+        request::{PromptOutputRequest, build_prompt_output},
     },
 };
 
@@ -39,15 +39,16 @@ pub(crate) async fn build_manual_compact_events(
         settings.max_tracked_files,
         request.working_dir,
     );
-    let prompt_output = build_prompt_output(
-        request.gateway,
-        request.prompt_facts_provider,
-        request.session_id,
-        "manual-compact",
-        request.working_dir,
-        0,
-        &projected.messages,
-    )
+    let prompt_output = build_prompt_output(PromptOutputRequest {
+        gateway: request.gateway,
+        prompt_facts_provider: request.prompt_facts_provider,
+        session_id: request.session_id,
+        turn_id: "manual-compact",
+        working_dir: request.working_dir,
+        step_index: 0,
+        messages: &projected.messages,
+        submission_prompt_declarations: &[],
+    })
     .await?;
 
     let Some(compaction) = auto_compact(

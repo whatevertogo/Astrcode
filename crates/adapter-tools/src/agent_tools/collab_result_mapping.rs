@@ -11,7 +11,7 @@
 //! - `summary` → output（LLM 可见的文本摘要）
 //! - 整个 CollaborationResult 序列化为 metadata（供前端消费）
 
-use astrcode_core::{CollaborationResult, ToolExecutionResult};
+use astrcode_core::{CollaborationResult, DelegationMetadata, ToolExecutionResult};
 use serde_json::json;
 
 /// 协作工具的错误结果（参数校验失败等）。
@@ -45,7 +45,10 @@ pub(crate) fn map_collaboration_result(
     let error = result.failure.clone();
     let output = result.summary.clone().unwrap_or_default();
     let metadata = Some(match serde_json::to_value(&result) {
-        Ok(value) => value,
+        Ok(mut value) => {
+            inject_advisory_projection(&mut value, &result);
+            value
+        },
         Err(serialization_error) => json!({
             "schema": "collaborationResult",
             "accepted": result.accepted,
@@ -64,4 +67,55 @@ pub(crate) fn map_collaboration_result(
         duration_ms: 0,
         truncated: false,
     }
+}
+
+fn inject_advisory_projection(metadata: &mut serde_json::Value, result: &CollaborationResult) {
+    let Some(object) = metadata.as_object_mut() else {
+        return;
+    };
+    if let Some(advisory) = build_advisory_projection(result) {
+        object.insert("advisory".to_string(), advisory);
+    }
+}
+
+fn build_advisory_projection(result: &CollaborationResult) -> Option<serde_json::Value> {
+    let delegation = result.delegation.as_ref().or_else(|| {
+        result
+            .observe_result
+            .as_ref()
+            .and_then(|observe| observe.delegation.as_ref())
+    });
+    let next_step = result.observe_result.as_ref().map(|observe| {
+        json!({
+            "preferredAction": observe.recommended_next_action,
+            "reason": observe.recommended_reason,
+            "deliveryFreshness": observe.delivery_freshness,
+        })
+    });
+    let branch = delegation.map(branch_advisory);
+
+    if next_step.is_none() && branch.is_none() {
+        return None;
+    }
+
+    Some(json!({
+        "nextStep": next_step,
+        "branch": branch,
+    }))
+}
+
+fn branch_advisory(metadata: &DelegationMetadata) -> serde_json::Value {
+    json!({
+        "responsibilityBranch": metadata.responsibility_summary,
+        "reuseScopeSummary": metadata.reuse_scope_summary,
+        "restricted": metadata.restricted,
+        "capabilityLimitSummary": metadata.capability_limit_summary,
+        "sameResponsibilityAction": "send",
+        "differentResponsibilityAction": "close_or_respawn",
+        "broaderToolsAction": if metadata.restricted {
+            "respawn_or_handle_here"
+        } else {
+            "close_or_respawn"
+        },
+    })
 }

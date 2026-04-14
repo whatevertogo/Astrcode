@@ -1,6 +1,7 @@
 use astrcode_core::{
     AgentInboxEnvelope, AgentLifecycleStatus, AgentProfile, AgentTurnOutcome,
-    ChildSessionNotification, ResolvedExecutionLimitsSnapshot, SubRunHandle, SubRunStorageMode,
+    ChildSessionNotification, DelegationMetadata, ResolvedExecutionLimitsSnapshot, SubRunHandle,
+    SubRunStorageMode,
 };
 
 use crate::{
@@ -21,6 +22,7 @@ pub struct SubRunStatusView {
     pub lifecycle: AgentLifecycleStatus,
     pub last_turn_outcome: Option<AgentTurnOutcome>,
     pub resolved_limits: ResolvedExecutionLimitsSnapshot,
+    pub delegation: Option<DelegationMetadata>,
 }
 
 impl SubRunStatusView {
@@ -36,6 +38,7 @@ impl SubRunStatusView {
             lifecycle: handle.lifecycle,
             last_turn_outcome: handle.last_turn_outcome,
             resolved_limits: handle.resolved_limits.clone(),
+            delegation: handle.delegation.clone(),
         }
     }
 }
@@ -169,6 +172,17 @@ impl<'a> KernelAgentSurface<'a> {
         self.kernel
             .agent_control()
             .set_resolved_limits(sub_run_or_agent_id, resolved_limits)
+            .await
+    }
+
+    pub async fn set_delegation(
+        &self,
+        sub_run_or_agent_id: &str,
+        delegation: Option<DelegationMetadata>,
+    ) -> Option<()> {
+        self.kernel
+            .agent_control()
+            .set_delegation(sub_run_or_agent_id, delegation)
             .await
     }
 

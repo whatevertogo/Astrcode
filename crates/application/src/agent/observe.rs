@@ -71,6 +71,7 @@ impl AgentOrchestrationService {
             observe_snapshot.pending_message_count,
             observe_snapshot.active_task.as_deref(),
             observe_snapshot.pending_task.as_deref(),
+            child.delegation.as_ref(),
         );
         let delivery_freshness = delivery_freshness(
             lifecycle_status,
@@ -95,6 +96,7 @@ impl AgentOrchestrationService {
             pending_task: observe_snapshot.pending_task,
             recent_mailbox_messages: observe_snapshot.recent_mailbox_messages,
             last_output: observe_snapshot.last_output,
+            delegation: child.delegation.clone(),
             recommended_next_action,
             recommended_reason,
             delivery_freshness,
@@ -128,6 +130,7 @@ impl AgentOrchestrationService {
             delivery_id: None,
             summary: Some(format_observe_summary(&observe_result)),
             observe_result: Some(observe_result),
+            delegation: child.delegation.clone(),
             cascade: None,
             closed_root_agent_id: None,
             failure: None,
@@ -156,44 +159,88 @@ fn recommended_reason(
     pending_message_count: usize,
     active_task: Option<&str>,
     pending_task: Option<&str>,
+    delegation: Option<&astrcode_core::DelegationMetadata>,
 ) -> String {
+    let branch_summary = delegation
+        .map(|metadata| format!("责任分支：{}。", metadata.responsibility_summary))
+        .unwrap_or_default();
+    let restricted_summary = delegation
+        .and_then(|metadata| metadata.capability_limit_summary.as_ref())
+        .map(|summary| format!(" {}", summary))
+        .unwrap_or_default();
+
     match lifecycle_status {
         AgentLifecycleStatus::Pending | AgentLifecycleStatus::Running => {
             if let Some(task) = active_task {
-                format!("子 Agent 仍在处理当前任务：{task}")
+                format!("{branch_summary}子 Agent 仍在处理当前任务：{task}{restricted_summary}")
             } else if let Some(task) = pending_task {
-                format!("子 Agent 还有待消费的 mailbox 任务：{task}")
+                format!(
+                    "{branch_summary}子 Agent 还有待消费的 mailbox \
+                     任务：{task}{restricted_summary}"
+                )
             } else {
-                "子 Agent 仍在执行中，当前更适合继续等待。".to_string()
+                format!(
+                    "{branch_summary}子 Agent 仍在执行中，当前更适合继续等待。{restricted_summary}"
+                )
             }
         },
-        AgentLifecycleStatus::Terminated => "子 Agent 已终止，不能再接收 \
-                                             send；如需继续工作应改由当前 Agent 或新的分支处理。"
-            .to_string(),
+        AgentLifecycleStatus::Terminated => format!(
+            "{branch_summary}子 Agent 已终止，不能再接收 send；如需继续工作应改由当前 Agent \
+             或新的分支处理。{restricted_summary}"
+        ),
         AgentLifecycleStatus::Idle if active_task.is_some() || pending_task.is_some() => {
-            "子 Agent 当前空闲，但还有待处理任务痕迹，先等待当前 mailbox 周期稳定。".to_string()
+            format!(
+                "{branch_summary}子 Agent 当前空闲，但还有待处理任务痕迹，先等待当前 mailbox \
+                 周期稳定。{restricted_summary}"
+            )
         },
         AgentLifecycleStatus::Idle if pending_message_count > 0 => {
-            "子 Agent 已空闲，但 mailbox 里仍有待处理消息；先等待这些消息被消费。".to_string()
+            format!(
+                "{branch_summary}子 Agent 已空闲，但 mailbox \
+                 里仍有待处理消息；先等待这些消息被消费。{restricted_summary}"
+            )
         },
         AgentLifecycleStatus::Idle => match last_turn_outcome {
-            Some(astrcode_core::AgentTurnOutcome::Completed) => "子 Agent 已完成上一轮工作；\
-                                                                 如果责任边界不变可直接 send \
-                                                                 复用，否则 close 结束该分支。"
-                .to_string(),
-            Some(astrcode_core::AgentTurnOutcome::Failed) => {
-                "子 Agent 上一轮失败；若要继续同一责任可 send 明确返工要求，否则 close 止损。"
-                    .to_string()
-            },
-            Some(astrcode_core::AgentTurnOutcome::Cancelled) => {
-                "子 Agent 上一轮已取消；通常更适合 close，只有在确实要复用同一分支时才 send。"
-                    .to_string()
-            },
-            Some(astrcode_core::AgentTurnOutcome::TokenExceeded) => {
-                "子 Agent 上一轮受 token 限制中断；若继续复用，请先收窄任务范围后再 send。"
-                    .to_string()
-            },
-            None => "子 Agent 当前空闲，可根据责任是否继续存在来选择 send 或 close。".to_string(),
+            Some(astrcode_core::AgentTurnOutcome::Completed) => format!(
+                "{branch_summary}子 Agent 已完成上一轮工作；如果责任边界不变可直接 send \
+                 复用，否则 close 结束该分支。{}{}",
+                delegation
+                    .map(|metadata| metadata.reuse_scope_summary.as_str())
+                    .unwrap_or(""),
+                restricted_summary
+            ),
+            Some(astrcode_core::AgentTurnOutcome::Failed) => format!(
+                "{branch_summary}子 Agent 上一轮失败；若要继续同一责任可 send 明确返工要求，否则 \
+                 close 止损。{}{}",
+                delegation
+                    .map(|metadata| metadata.reuse_scope_summary.as_str())
+                    .unwrap_or(""),
+                restricted_summary
+            ),
+            Some(astrcode_core::AgentTurnOutcome::Cancelled) => format!(
+                "{branch_summary}子 Agent 上一轮已取消；通常更适合 \
+                 close，只有在确实要复用同一分支时才 send。{}{}",
+                delegation
+                    .map(|metadata| metadata.reuse_scope_summary.as_str())
+                    .unwrap_or(""),
+                restricted_summary
+            ),
+            Some(astrcode_core::AgentTurnOutcome::TokenExceeded) => format!(
+                "{branch_summary}子 Agent 上一轮受 token \
+                 限制中断；若继续复用，请先收窄任务范围后再 send。{}{}",
+                delegation
+                    .map(|metadata| metadata.reuse_scope_summary.as_str())
+                    .unwrap_or(""),
+                restricted_summary
+            ),
+            None => format!(
+                "{branch_summary}子 Agent 当前空闲，可根据责任是否继续存在来选择 send 或 \
+                 close。{}{}",
+                delegation
+                    .map(|metadata| metadata.reuse_scope_summary.as_str())
+                    .unwrap_or(""),
+                restricted_summary
+            ),
         },
     }
 }
@@ -216,10 +263,16 @@ fn delivery_freshness(
 }
 
 fn format_observe_summary(result: &ObserveAgentResult) -> String {
+    let branch_prefix = result
+        .delegation
+        .as_ref()
+        .map(|metadata| format!("责任分支：{}；", metadata.responsibility_summary))
+        .unwrap_or_default();
     let base = format!(
-        "子 Agent {} 当前为 {:?}；建议 {}：{}",
+        "子 Agent {} 当前为 {:?}；{}建议 {}：{}",
         result.agent_id,
         result.lifecycle_status,
+        branch_prefix,
         result.recommended_next_action,
         result.recommended_reason
     );
@@ -238,8 +291,8 @@ mod tests {
     use std::time::Duration;
 
     use astrcode_core::{
-        AgentCollaborationActionKind, AgentCollaborationOutcomeKind, CancelToken, ObserveParams,
-        SessionId, StorageEventPayload, ToolContext,
+        AgentCollaborationActionKind, AgentCollaborationOutcomeKind, CancelToken,
+        DelegationMetadata, ObserveParams, SessionId, StorageEventPayload, ToolContext,
         agent::executor::{CollaborationExecutor, SubAgentExecutor},
     };
     use tokio::time::sleep;
@@ -276,6 +329,7 @@ mod tests {
                 0,
                 Some("scan repo"),
                 None,
+                None,
             )
             .contains("scan repo")
         );
@@ -310,6 +364,7 @@ mod tests {
             pending_task: None,
             recent_mailbox_messages: vec!["最近一条消息".to_string()],
             last_output: Some("done".to_string()),
+            delegation: None,
             recommended_next_action: "send_or_close".to_string(),
             recommended_reason: "上一轮已完成".to_string(),
             delivery_freshness: "ready_for_follow_up".to_string(),
@@ -319,6 +374,32 @@ mod tests {
         assert!(summary.contains("建议 send_or_close"));
         assert!(summary.contains("agent-7"));
         assert!(summary.contains("最近 mailbox 摘要"));
+    }
+
+    #[test]
+    fn recommended_reason_keeps_restricted_branch_boundary_visible() {
+        let reason = recommended_reason(
+            astrcode_core::AgentLifecycleStatus::Idle,
+            Some(astrcode_core::AgentTurnOutcome::Completed),
+            0,
+            None,
+            None,
+            Some(&DelegationMetadata {
+                responsibility_summary: "只检查缓存层".to_string(),
+                reuse_scope_summary: "只有当下一步仍属于同一责任分支，\
+                                      且所需操作仍落在当前收缩后的 capability surface \
+                                      内时，才应继续复用这个 child。"
+                    .to_string(),
+                restricted: true,
+                capability_limit_summary: Some(
+                    "本分支当前只允许使用这些工具：readFile, grep。".to_string(),
+                ),
+            }),
+        );
+
+        assert!(reason.contains("只检查缓存层"));
+        assert!(reason.contains("当前收缩后的 capability surface"));
+        assert!(reason.contains("readFile, grep"));
     }
 
     #[tokio::test]

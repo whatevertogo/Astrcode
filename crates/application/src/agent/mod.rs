@@ -24,9 +24,11 @@ use std::{path::Path, sync::Arc};
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
     AgentCollaborationPolicyContext, AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope,
-    AgentTurnOutcome, ArtifactRef, CloseAgentParams, CollaborationResult, InvocationKind,
-    ObserveParams, ResolvedExecutionLimitsSnapshot, Result, RuntimeMetricsRecorder,
-    SendAgentParams, SpawnAgentParams, SubRunHandle, SubRunHandoff, SubRunResult, ToolContext,
+    AgentTurnOutcome, ArtifactRef, CloseAgentParams, CollaborationResult, DelegationMetadata,
+    InvocationKind, ObserveParams, PromptDeclaration, PromptDeclarationKind,
+    PromptDeclarationRenderTarget, PromptDeclarationSource, ResolvedExecutionLimitsSnapshot,
+    Result, RuntimeMetricsRecorder, SendAgentParams, SpawnAgentParams, SubRunHandle, SubRunHandoff,
+    SubRunResult, SystemPromptLayer, ToolContext,
 };
 use astrcode_kernel::Kernel;
 use astrcode_session_runtime::SessionRuntime;
@@ -249,6 +251,135 @@ fn effective_tool_names_for_handle(
     }
 }
 
+fn compact_delegation_summary(description: &str, prompt: &str) -> String {
+    let candidate = if !description.trim().is_empty() {
+        description.trim()
+    } else {
+        prompt.trim()
+    };
+    let normalized = candidate.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = normalized.chars();
+    let truncated = chars.by_ref().take(160).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
+}
+
+fn capability_limit_summary(allowed_tools: &[String]) -> Option<String> {
+    if allowed_tools.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "本分支当前只允许使用这些工具：{}。",
+        allowed_tools.join(", ")
+    ))
+}
+
+pub(crate) fn build_delegation_metadata(
+    description: &str,
+    prompt: &str,
+    resolved_limits: &ResolvedExecutionLimitsSnapshot,
+    restricted: bool,
+) -> DelegationMetadata {
+    let responsibility_summary = compact_delegation_summary(description, prompt);
+    let reuse_scope_summary = if restricted {
+        "只有当下一步仍属于同一责任分支，且所需操作仍落在当前收缩后的 capability surface \
+         内时，才应继续复用这个 child。"
+            .to_string()
+    } else {
+        "只有当下一步仍属于同一责任分支时，才应继续复用这个 child；若责任边界已经改变，应 close \
+         当前分支并重新选择更合适的执行主体。"
+            .to_string()
+    };
+
+    DelegationMetadata {
+        responsibility_summary,
+        reuse_scope_summary,
+        restricted,
+        capability_limit_summary: restricted
+            .then(|| capability_limit_summary(&resolved_limits.allowed_tools))
+            .flatten(),
+    }
+}
+
+pub(crate) fn build_fresh_child_contract(metadata: &DelegationMetadata) -> PromptDeclaration {
+    let mut content = format!(
+        "You are a delegated child responsible for one isolated branch.\n\nResponsibility \
+         branch:\n- {}\n\nFresh-child rule:\n- Treat this as a new responsibility branch with its \
+         own ownership boundary.\n- Do not expand into unrelated exploration or \
+         implementation.\n\nDelivery contract:\n- End the turn with a concise reusable summary \
+         for the parent.\n- State what you finished, the key findings, and any remaining \
+         follow-up.\n\nReuse boundary:\n- {}",
+        metadata.responsibility_summary, metadata.reuse_scope_summary
+    );
+    if let Some(limit_summary) = &metadata.capability_limit_summary {
+        content.push_str(&format!(
+            "\n\nCapability limit:\n- {limit_summary}\n- Do not take work that needs tools \
+             outside this surface."
+        ));
+    }
+
+    PromptDeclaration {
+        block_id: "child.execution.contract".to_string(),
+        title: "Child Execution Contract".to_string(),
+        content,
+        render_target: PromptDeclarationRenderTarget::System,
+        layer: SystemPromptLayer::Inherited,
+        kind: PromptDeclarationKind::ExtensionInstruction,
+        priority_hint: Some(585),
+        always_include: true,
+        source: PromptDeclarationSource::Builtin,
+        capability_name: None,
+        origin: Some("child-contract:fresh".to_string()),
+    }
+}
+
+pub(crate) fn build_resumed_child_contract(
+    metadata: &DelegationMetadata,
+    message: &str,
+    context: Option<&str>,
+) -> PromptDeclaration {
+    let mut content = format!(
+        "You are continuing an existing delegated child branch.\n\nResponsibility continuity:\n- \
+         Keep ownership of the same branch: {}\n\nResumed-child rule:\n- Prioritize the latest \
+         delta instruction from the parent.\n- Do not restate or reinterpret the whole original \
+         brief unless the new delta requires it.\n\nDelta instruction:\n- {}",
+        metadata.responsibility_summary,
+        message.trim()
+    );
+    if let Some(context) = context.filter(|value| !value.trim().is_empty()) {
+        content.push_str(&format!("\n- Supplementary context: {}", context.trim()));
+    }
+    content.push_str(&format!(
+        "\n\nDelivery contract:\n- Reply with the concrete progress on this delta, key findings, \
+         and remaining follow-up.\n\nReuse boundary:\n- {}",
+        metadata.reuse_scope_summary
+    ));
+    if let Some(limit_summary) = &metadata.capability_limit_summary {
+        content.push_str(&format!(
+            "\n\nCapability limit:\n- {limit_summary}\n- If the delta now needs broader tools, \
+             stop stretching this child and let the parent choose a different branch."
+        ));
+    }
+
+    PromptDeclaration {
+        block_id: "child.execution.contract".to_string(),
+        title: "Child Execution Contract".to_string(),
+        content,
+        render_target: PromptDeclarationRenderTarget::System,
+        layer: SystemPromptLayer::Inherited,
+        kind: PromptDeclarationKind::ExtensionInstruction,
+        priority_hint: Some(585),
+        always_include: true,
+        source: PromptDeclarationSource::Builtin,
+        capability_name: None,
+        origin: Some("child-contract:resumed".to_string()),
+    }
+}
+
 pub(crate) async fn persist_resolved_limits_for_handle(
     kernel: &Kernel,
     handle: SubRunHandle,
@@ -269,6 +400,29 @@ pub(crate) async fn persist_resolved_limits_for_handle(
 
     let mut handle = handle;
     handle.resolved_limits = resolved_limits;
+    Ok(handle)
+}
+
+pub(crate) async fn persist_delegation_for_handle(
+    kernel: &Kernel,
+    handle: SubRunHandle,
+    delegation: DelegationMetadata,
+) -> std::result::Result<SubRunHandle, String> {
+    if kernel
+        .agent()
+        .set_delegation(&handle.agent_id, Some(delegation.clone()))
+        .await
+        .is_none()
+    {
+        return Err(format!(
+            "failed to persist delegation metadata for agent '{}' because the control handle \
+             disappeared before the branch contract was recorded",
+            handle.agent_id
+        ));
+    }
+
+    let mut handle = handle;
+    handle.delegation = Some(delegation);
     Ok(handle)
 }
 
@@ -868,12 +1022,14 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
             },
         };
 
+        let spawn_description = params.description.clone();
         let request = SubagentExecutionRequest {
             parent_session_id: parent_session_id.clone(),
             parent_agent_id: parent_agent_id.clone(),
             parent_turn_id: parent_turn_id.clone(),
             working_dir: ctx.working_dir().display().to_string(),
             profile,
+            description: spawn_description.clone(),
             task: params.prompt,
             context: params.context,
             parent_allowed_tools: effective_tool_names_for_handle(
@@ -929,7 +1085,7 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
                         )
                         .child(&child_handle);
                     if let Some(summary) =
-                        Some(params.description.trim()).filter(|value| !value.is_empty())
+                        Some(spawn_description.trim()).filter(|value| !value.is_empty())
                     {
                         fact = fact.summary(summary.to_string());
                     }
@@ -1016,14 +1172,15 @@ mod tests {
     use astrcode_core::{
         AgentCollaborationActionKind, AgentCollaborationOutcomeKind, AgentLifecycleStatus,
         CancelToken, ChildAgentRef, ChildSessionLineageKind, ChildSessionNotification,
-        ChildSessionNotificationKind, SessionId, SpawnAgentParams, StorageEventPayload,
-        ToolContext, agent::executor::SubAgentExecutor,
+        ChildSessionNotificationKind, ResolvedExecutionLimitsSnapshot, SessionId, SpawnAgentParams,
+        StorageEventPayload, ToolContext, agent::executor::SubAgentExecutor,
     };
 
     use super::{
-        IMPLICIT_ROOT_PROFILE_ID, child_delivery_mailbox_envelope, implicit_session_root_agent_id,
-        root_execution_event_context, terminal_notification_message,
-        terminal_notification_turn_outcome,
+        IMPLICIT_ROOT_PROFILE_ID, build_delegation_metadata, build_fresh_child_contract,
+        build_resumed_child_contract, child_delivery_mailbox_envelope,
+        implicit_session_root_agent_id, root_execution_event_context,
+        terminal_notification_message, terminal_notification_turn_outcome,
     };
     use crate::agent::test_support::{
         TestLlmBehavior, build_agent_test_harness, build_agent_test_harness_with_agent_config,
@@ -1143,6 +1300,46 @@ mod tests {
             envelope.sender_last_turn_outcome,
             Some(astrcode_core::AgentTurnOutcome::Completed)
         );
+    }
+
+    #[test]
+    fn fresh_child_contract_exposes_responsibility_and_capability_limit() {
+        let metadata = build_delegation_metadata(
+            "审查缓存层",
+            "检查缓存一致性",
+            &ResolvedExecutionLimitsSnapshot {
+                allowed_tools: vec!["readFile".to_string(), "grep".to_string()],
+                max_steps: Some(8),
+            },
+            true,
+        );
+
+        let contract = build_fresh_child_contract(&metadata);
+
+        assert_eq!(contract.origin.as_deref(), Some("child-contract:fresh"));
+        assert!(contract.content.contains("审查缓存层"));
+        assert!(contract.content.contains("本分支当前只允许使用这些工具"));
+    }
+
+    #[test]
+    fn resumed_child_contract_keeps_branch_and_delta_instruction() {
+        let metadata = build_delegation_metadata(
+            "审查缓存层",
+            "检查缓存一致性",
+            &ResolvedExecutionLimitsSnapshot {
+                allowed_tools: vec!["readFile".to_string(), "grep".to_string()],
+                max_steps: Some(8),
+            },
+            false,
+        );
+
+        let contract =
+            build_resumed_child_contract(&metadata, "补充验证过期路径", Some("优先看失效逻辑"));
+
+        assert_eq!(contract.origin.as_deref(), Some("child-contract:resumed"));
+        assert!(contract.content.contains("审查缓存层"));
+        assert!(contract.content.contains("补充验证过期路径"));
+        assert!(contract.content.contains("优先看失效逻辑"));
     }
 
     #[tokio::test]
@@ -1273,6 +1470,21 @@ mod tests {
             child_handle.child_session_id.as_deref(),
             Some(child_session_id.as_str()),
             "independent child should carry its open child session id"
+        );
+        assert_eq!(
+            child_handle
+                .delegation
+                .as_ref()
+                .map(|metadata| metadata.responsibility_summary.as_str()),
+            Some("仓库审查"),
+            "fresh launch should persist the delegated responsibility branch"
+        );
+        assert!(
+            child_handle
+                .delegation
+                .as_ref()
+                .is_some_and(|metadata| !metadata.restricted),
+            "fresh launch without grant should not mark the branch as restricted"
         );
 
         let child_events = harness

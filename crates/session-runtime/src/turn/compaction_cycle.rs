@@ -25,7 +25,7 @@ use crate::{
     },
     turn::{
         events::{CompactAppliedStats, compact_applied_event},
-        request::build_prompt_output,
+        request::{PromptOutputRequest, build_prompt_output},
     },
 };
 
@@ -92,15 +92,16 @@ fn recovery_result_from_compaction(
 pub async fn try_reactive_compact(
     ctx: &ReactiveCompactContext<'_>,
 ) -> Result<Option<RecoveryResult>> {
-    let prompt_output = build_prompt_output(
-        ctx.gateway,
-        ctx.prompt_facts_provider,
-        ctx.session_id,
-        ctx.turn_id,
-        ctx.working_dir.as_ref(),
-        ctx.step_index,
-        ctx.messages,
-    )
+    let prompt_output = build_prompt_output(PromptOutputRequest {
+        gateway: ctx.gateway,
+        prompt_facts_provider: ctx.prompt_facts_provider,
+        session_id: ctx.session_id,
+        turn_id: ctx.turn_id,
+        working_dir: ctx.working_dir.as_ref(),
+        step_index: ctx.step_index,
+        messages: ctx.messages,
+        submission_prompt_declarations: &[],
+    })
     .await?;
 
     match auto_compact(

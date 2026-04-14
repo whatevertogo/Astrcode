@@ -10,7 +10,10 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::lifecycle::{AgentLifecycleStatus, AgentTurnOutcome};
+use super::{
+    DelegationMetadata,
+    lifecycle::{AgentLifecycleStatus, AgentTurnOutcome},
+};
 use crate::StoredEvent;
 
 /// 稳定消息投递标识。
@@ -359,6 +362,9 @@ pub struct ObserveAgentResult {
     pub recent_mailbox_messages: Vec<String>,
     /// 最近 assistant 输出摘要。
     pub last_output: Option<String>,
+    /// responsibility continuity / restricted-child 的轻量元数据。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation: Option<DelegationMetadata>,
     /// 面向下一步决策的建议动作。
     ///
     /// 这是 advisory projection，不是新的业务真相；

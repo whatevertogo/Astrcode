@@ -102,10 +102,8 @@ impl Tool for SendAgentTool {
                      many speculative sends; wait for a result or observe before changing course.",
                 )
                 .caveat(
-                    "A good `send` gives the child one concrete next step and enough direction to \
-                     report back cleanly. Ask for a concise completion summary, key findings, and \
-                     any remaining follow-up instead of forcing the parent to infer progress from \
-                     raw intermediate work.",
+                    "Keep the message delta-oriented. Do not restate the whole original brief \
+                     when the child already owns the responsibility.",
                 )
                 .prompt_tag("collaboration"),
             )

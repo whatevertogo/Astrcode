@@ -337,6 +337,23 @@ pub struct ResolvedExecutionLimitsSnapshot {
     pub max_steps: Option<u32>,
 }
 
+/// child delegation 的轻量元数据。
+///
+/// 这是 launch / resume / observe 共用的责任连续性投影，
+/// 用来描述“这个 child 负责哪条责任分支”以及“复用时要遵守什么边界”。
+/// 它不是新的 durable 真相，真正事实仍然来自 lifecycle / turn outcome /
+/// resolved capability surface。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegationMetadata {
+    pub responsibility_summary: String,
+    pub reuse_scope_summary: String,
+    #[serde(default)]
+    pub restricted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_limit_summary: Option<String>,
+}
+
 /// Agent 画像定义。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -412,6 +429,9 @@ pub struct SubRunHandle {
     /// 当前 agent 执行实例生效的 capability 限制快照。
     #[serde(default)]
     pub resolved_limits: ResolvedExecutionLimitsSnapshot,
+    /// 当前 child 责任分支与复用边界的轻量元数据。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation: Option<DelegationMetadata>,
 }
 
 /// 子会话 lineage 来源。
@@ -611,6 +631,9 @@ pub struct CollaborationResult {
     /// observe 的结构化结果。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observe_result: Option<mailbox::ObserveAgentResult>,
+    /// responsibility continuity / restricted-child 的轻量元数据。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation: Option<DelegationMetadata>,
     /// 是否级联关闭（仅 close 场景）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cascade: Option<bool>,

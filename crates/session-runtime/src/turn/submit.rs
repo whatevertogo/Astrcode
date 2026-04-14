@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, CancelToken, EventTranslator, ExecutionAccepted, Phase,
+    AgentEventContext, CancelToken, EventTranslator, ExecutionAccepted, Phase, PromptDeclaration,
     ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, ResolvedSubagentContextOverrides,
     Result, RuntimeMetricsRecorder, SessionId, StorageEvent, StorageEventPayload, TurnId,
     UserMessageOrigin,
@@ -35,6 +35,7 @@ struct TurnExecutionTask {
 pub struct AgentPromptSubmission {
     pub agent: AgentEventContext,
     pub capability_router: Option<CapabilityRouter>,
+    pub prompt_declarations: Vec<PromptDeclaration>,
     pub resolved_limits: Option<ResolvedExecutionLimitsSnapshot>,
     pub source_tool_call_id: Option<String>,
 }
@@ -394,6 +395,7 @@ impl SessionRuntime {
         let AgentPromptSubmission {
             agent,
             capability_router,
+            prompt_declarations,
             resolved_limits,
             source_tool_call_id,
         } = submission;
@@ -454,6 +456,7 @@ impl SessionRuntime {
                 agent: agent.clone(),
                 prompt_facts_provider: Arc::clone(&self.prompt_facts_provider),
                 capability_router,
+                prompt_declarations,
                 resolved_limits: resolved_limits.clone(),
                 source_tool_call_id: source_tool_call_id.clone(),
             },

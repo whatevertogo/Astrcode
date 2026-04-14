@@ -3,15 +3,15 @@ use std::sync::{Arc, Mutex};
 use astrcode_core::{
     AgentLifecycleStatus, AgentTurnOutcome, ArtifactRef, CancelToken, ChildAgentRef,
     ChildSessionLineageKind, CloseAgentParams, CollaborationResult, CollaborationResultKind,
-    ObserveParams, SendAgentParams, SpawnAgentParams, SpawnCapabilityGrant, SubRunFailure,
-    SubRunFailureCode, SubRunHandoff, SubRunResult, Tool, ToolContext,
+    DelegationMetadata, ObserveParams, SendAgentParams, SpawnAgentParams, SpawnCapabilityGrant,
+    SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult, Tool, ToolContext,
 };
 use async_trait::async_trait;
 use serde_json::json;
 
 use crate::agent_tools::{
     CloseAgentTool, CollaborationExecutor, ObserveAgentTool, SendAgentTool, SpawnAgentTool,
-    SubAgentExecutor,
+    SubAgentExecutor, collab_result_mapping::map_collaboration_result,
 };
 
 struct RecordingExecutor {
@@ -539,6 +539,24 @@ fn sample_child_ref() -> ChildAgentRef {
     }
 }
 
+fn sample_delegation(restricted: bool) -> DelegationMetadata {
+    DelegationMetadata {
+        responsibility_summary: "检查缓存层".to_string(),
+        reuse_scope_summary: if restricted {
+            "只有当下一步仍属于同一责任分支，且所需操作仍落在当前收缩后的 capability surface \
+             内时，才应继续复用这个 child。"
+                .to_string()
+        } else {
+            "只有当下一步仍属于同一责任分支时，才应继续复用这个 child；若责任边界已经改变，应 \
+             close 当前分支并重新选择更合适的执行主体。"
+                .to_string()
+        },
+        restricted,
+        capability_limit_summary: restricted
+            .then(|| "本分支当前只允许使用这些工具：readFile, grep。".to_string()),
+    }
+}
+
 #[async_trait]
 impl CollaborationExecutor for RecordingCollabExecutor {
     async fn send(
@@ -554,6 +572,7 @@ impl CollaborationExecutor for RecordingCollabExecutor {
             delivery_id: Some("delivery-1".to_string()),
             summary: Some("消息已发送".to_string()),
             observe_result: None,
+            delegation: Some(sample_delegation(false)),
             cascade: None,
             closed_root_agent_id: None,
             failure: None,
@@ -573,6 +592,7 @@ impl CollaborationExecutor for RecordingCollabExecutor {
             delivery_id: None,
             summary: Some("子 Agent 已关闭".to_string()),
             observe_result: None,
+            delegation: None,
             cascade: Some(true),
             closed_root_agent_id: Some("agent-42".to_string()),
             failure: None,
@@ -610,10 +630,12 @@ impl CollaborationExecutor for RecordingCollabExecutor {
                 pending_task: None,
                 recent_mailbox_messages: vec!["最近一条 mailbox 摘要".to_string()],
                 last_output: Some("done".to_string()),
+                delegation: Some(sample_delegation(false)),
                 recommended_next_action: "send_or_close".to_string(),
                 recommended_reason: "上一轮已完成。".to_string(),
                 delivery_freshness: "ready_for_follow_up".to_string(),
             }),
+            delegation: Some(sample_delegation(false)),
             cascade: None,
             closed_root_agent_id: None,
             failure: None,
@@ -771,6 +793,126 @@ async fn observe_agent_tool_parses_params_and_delegates_to_executor() {
     let calls = executor.observe_calls.lock().expect("lock");
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].agent_id, "agent-42");
+}
+
+#[test]
+fn collaboration_result_metadata_projects_idle_reuse_and_branch_mismatch_hints() {
+    let mapped = map_collaboration_result(
+        "call-observe-advisory".to_string(),
+        "observe",
+        CollaborationResult {
+            accepted: true,
+            kind: CollaborationResultKind::Observed,
+            agent_ref: Some(sample_child_ref()),
+            delivery_id: None,
+            summary: Some("子 Agent agent-42 当前为 Idle。".to_string()),
+            observe_result: Some(astrcode_core::ObserveAgentResult {
+                agent_id: "agent-42".to_string(),
+                sub_run_id: "subrun-42".to_string(),
+                session_id: "session-parent".to_string(),
+                open_session_id: "session-child-42".to_string(),
+                parent_agent_id: "agent-parent".to_string(),
+                lifecycle_status: AgentLifecycleStatus::Idle,
+                last_turn_outcome: Some(AgentTurnOutcome::Completed),
+                phase: "Idle".to_string(),
+                turn_count: 1,
+                pending_message_count: 0,
+                active_task: None,
+                pending_task: None,
+                recent_mailbox_messages: Vec::new(),
+                last_output: Some("done".to_string()),
+                delegation: Some(sample_delegation(false)),
+                recommended_next_action: "send_or_close".to_string(),
+                recommended_reason: "同一责任分支可继续 send。".to_string(),
+                delivery_freshness: "ready_for_follow_up".to_string(),
+            }),
+            delegation: Some(sample_delegation(false)),
+            cascade: None,
+            closed_root_agent_id: None,
+            failure: None,
+        },
+    );
+
+    assert_eq!(
+        mapped
+            .metadata
+            .as_ref()
+            .and_then(|value| value.get("advisory"))
+            .and_then(|value| value.get("branch"))
+            .and_then(|value| value.get("sameResponsibilityAction"))
+            .and_then(|value| value.as_str()),
+        Some("send")
+    );
+    assert_eq!(
+        mapped
+            .metadata
+            .as_ref()
+            .and_then(|value| value.get("advisory"))
+            .and_then(|value| value.get("branch"))
+            .and_then(|value| value.get("differentResponsibilityAction"))
+            .and_then(|value| value.as_str()),
+        Some("close_or_respawn")
+    );
+}
+
+#[test]
+fn collaboration_result_metadata_projects_restricted_child_broader_tool_hint() {
+    let mapped = map_collaboration_result(
+        "call-observe-restricted".to_string(),
+        "observe",
+        CollaborationResult {
+            accepted: true,
+            kind: CollaborationResultKind::Observed,
+            agent_ref: Some(sample_child_ref()),
+            delivery_id: None,
+            summary: Some("restricted child idle".to_string()),
+            observe_result: Some(astrcode_core::ObserveAgentResult {
+                agent_id: "agent-42".to_string(),
+                sub_run_id: "subrun-42".to_string(),
+                session_id: "session-parent".to_string(),
+                open_session_id: "session-child-42".to_string(),
+                parent_agent_id: "agent-parent".to_string(),
+                lifecycle_status: AgentLifecycleStatus::Idle,
+                last_turn_outcome: Some(AgentTurnOutcome::Completed),
+                phase: "Idle".to_string(),
+                turn_count: 1,
+                pending_message_count: 0,
+                active_task: None,
+                pending_task: None,
+                recent_mailbox_messages: Vec::new(),
+                last_output: Some("done".to_string()),
+                delegation: Some(sample_delegation(true)),
+                recommended_next_action: "send_or_close".to_string(),
+                recommended_reason: "同一责任分支且工具面匹配时可继续复用。".to_string(),
+                delivery_freshness: "ready_for_follow_up".to_string(),
+            }),
+            delegation: Some(sample_delegation(true)),
+            cascade: None,
+            closed_root_agent_id: None,
+            failure: None,
+        },
+    );
+
+    assert_eq!(
+        mapped
+            .metadata
+            .as_ref()
+            .and_then(|value| value.get("advisory"))
+            .and_then(|value| value.get("branch"))
+            .and_then(|value| value.get("broaderToolsAction"))
+            .and_then(|value| value.as_str()),
+        Some("respawn_or_handle_here")
+    );
+    assert_eq!(
+        mapped
+            .metadata
+            .as_ref()
+            .and_then(|value| value.get("advisory"))
+            .and_then(|value| value.get("branch"))
+            .and_then(|value| value.get("capabilityLimitSummary"))
+            .and_then(|value| value.as_str()),
+        Some("本分支当前只允许使用这些工具：readFile, grep。")
+    );
 }
 
 #[tokio::test]

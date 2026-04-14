@@ -726,6 +726,7 @@ impl StepDriver for RuntimeStepDriver {
             file_access_tracker: &execution.file_access_tracker,
             session_state: resources.session_state,
             tool_result_replacement_state: &mut execution.tool_result_replacement_state,
+            prompt_declarations: resources.prompt_declarations,
         })
         .await?;
         execution.messages = assembled.messages.clone();
@@ -977,6 +978,7 @@ mod tests {
                 runtime,
                 cancel,
                 agent,
+                prompt_declarations: &[],
             },
         )
     }

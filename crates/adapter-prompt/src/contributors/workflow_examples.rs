@@ -99,12 +99,23 @@ impl PromptContributor for WorkflowExamplesContributor {
                          when the tool result says `agent-1`.\n\nDefault protocol:\n1. `spawn` \
                          only for a new isolated responsibility with real parallel or \
                          context-isolation value.\n2. `send` when the same child should take one \
-                         concrete next step.\n3. `observe` only when the next decision depends on \
-                         current child state.\n4. `close` when the branch is done or no longer \
-                         useful.\n\n`Idle` is normal and reusable. Do not respawn just because a \
-                         child finished one turn. Reuse an idle child with `send(agentId, \
-                         message)` when the responsibility stays the same. If you are unsure \
-                         whether the child is still running, idle, or terminated, call \
+                         concrete next step on the same responsibility branch.\n3. `observe` only \
+                         when the next decision depends on current child state.\n4. `close` when \
+                         the branch is done or no longer useful.\n\nDelegation modes:\n- Fresh \
+                         child: use `spawn` for a new responsibility branch. Give the child a \
+                         full briefing: task scope, boundaries, expected deliverable, and any \
+                         important focus or exclusion. Do not treat a short nudge like 'take a \
+                         look' as a sufficient fresh-child brief.\n- Resumed child: use `send` \
+                         when the same child should continue the same responsibility branch. Send \
+                         one concrete delta instruction or clarification, not a full re-briefing \
+                         of the original task.\n- Restricted child: when you narrow a child with \
+                         `capabilityGrant`, assign only work that fits that reduced capability \
+                         surface. If the next step needs tools the restricted child does not \
+                         have, choose a different child or do the work locally instead of forcing \
+                         a mismatch.\n\n`Idle` is normal and reusable. Do not respawn just \
+                         because a child finished one turn. Reuse an idle child with \
+                         `send(agentId, message)` when the responsibility stays the same. If you \
+                         are unsure whether the child is still running, idle, or terminated, call \
                          `observe(agentId)` once and act on the result.\n\nSpawn sparingly. The \
                          runtime enforces a maximum child depth of {max_depth} and at most \
                          {max_spawn_per_turn} new children per turn. Start with one child unless \
@@ -321,6 +332,10 @@ mod tests {
             "maximum child depth of {DEFAULT_MAX_SUBRUN_DEPTH}"
         )));
         assert!(collaboration_block.content.contains("Default protocol:"));
+        assert!(collaboration_block.content.contains("Delegation modes:"));
+        assert!(collaboration_block.content.contains("Fresh child:"));
+        assert!(collaboration_block.content.contains("Resumed child:"));
+        assert!(collaboration_block.content.contains("Restricted child:"));
         assert!(
             collaboration_block
                 .content

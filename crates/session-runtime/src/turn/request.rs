@@ -8,8 +8,8 @@ use std::{collections::HashSet, path::Path, time::Instant};
 
 use astrcode_core::{
     AgentEventContext, CompactTrigger, LlmMessage, LlmRequest, PromptBuildOutput,
-    PromptBuildRequest, PromptFacts, PromptFactsProvider, PromptFactsRequest, Result, StorageEvent,
-    UserMessageOrigin,
+    PromptBuildRequest, PromptDeclaration, PromptFacts, PromptFactsProvider, PromptFactsRequest,
+    Result, StorageEvent, UserMessageOrigin,
 };
 use astrcode_kernel::KernelGateway;
 
@@ -48,6 +48,7 @@ pub struct AssemblePromptRequest<'a> {
     pub file_access_tracker: &'a FileAccessTracker,
     pub session_state: &'a crate::SessionState,
     pub tool_result_replacement_state: &'a mut ToolResultReplacementState,
+    pub prompt_declarations: &'a [PromptDeclaration],
 }
 
 pub struct AssemblePromptResult {
@@ -56,6 +57,17 @@ pub struct AssemblePromptResult {
     pub events: Vec<StorageEvent>,
     pub auto_compacted: bool,
     pub tool_result_budget_stats: ToolResultBudgetStats,
+}
+
+pub(crate) struct PromptOutputRequest<'a> {
+    pub gateway: &'a KernelGateway,
+    pub prompt_facts_provider: &'a dyn PromptFactsProvider,
+    pub session_id: &'a str,
+    pub turn_id: &'a str,
+    pub working_dir: &'a Path,
+    pub step_index: usize,
+    pub messages: &'a [LlmMessage],
+    pub submission_prompt_declarations: &'a [PromptDeclaration],
 }
 
 /// Why: request assembly 要回答“最终如何形成一次 LLM 请求”，
@@ -99,15 +111,16 @@ pub async fn assemble_prompt_request(
     );
     messages = prune_outcome.messages;
 
-    let mut prompt_output = build_prompt_output(
-        request.gateway,
-        request.prompt_facts_provider,
-        request.session_id,
-        request.turn_id,
-        request.working_dir,
-        request.step_index,
-        &messages,
-    )
+    let mut prompt_output = build_prompt_output(PromptOutputRequest {
+        gateway: request.gateway,
+        prompt_facts_provider: request.prompt_facts_provider,
+        session_id: request.session_id,
+        turn_id: request.turn_id,
+        working_dir: request.working_dir,
+        step_index: request.step_index,
+        messages: &messages,
+        submission_prompt_declarations: request.prompt_declarations,
+    })
     .await?;
     let mut snapshot = build_prompt_snapshot(
         request.token_tracker,
@@ -156,15 +169,16 @@ pub async fn assemble_prompt_request(
                     compaction.timestamp,
                 ));
 
-                prompt_output = build_prompt_output(
-                    request.gateway,
-                    request.prompt_facts_provider,
-                    request.session_id,
-                    request.turn_id,
-                    request.working_dir,
-                    request.step_index,
-                    &messages,
-                )
+                prompt_output = build_prompt_output(PromptOutputRequest {
+                    gateway: request.gateway,
+                    prompt_facts_provider: request.prompt_facts_provider,
+                    session_id: request.session_id,
+                    turn_id: request.turn_id,
+                    working_dir: request.working_dir,
+                    step_index: request.step_index,
+                    messages: &messages,
+                    submission_prompt_declarations: request.prompt_declarations,
+                })
                 .await?;
                 snapshot = build_prompt_snapshot(
                     request.token_tracker,
@@ -208,14 +222,18 @@ pub async fn assemble_prompt_request(
 }
 
 pub(crate) async fn build_prompt_output(
-    gateway: &KernelGateway,
-    prompt_facts_provider: &dyn PromptFactsProvider,
-    session_id: &str,
-    turn_id: &str,
-    working_dir: &Path,
-    step_index: usize,
-    messages: &[LlmMessage],
+    request: PromptOutputRequest<'_>,
 ) -> Result<PromptBuildOutput> {
+    let PromptOutputRequest {
+        gateway,
+        prompt_facts_provider,
+        session_id,
+        turn_id,
+        working_dir,
+        step_index,
+        messages,
+        submission_prompt_declarations,
+    } = request;
     let facts = prompt_facts_provider
         .resolve_prompt_facts(&PromptFactsRequest {
             session_id: Some(session_id.to_string().into()),
@@ -239,8 +257,9 @@ pub(crate) async fn build_prompt_output(
         metadata: _,
         skills,
         agent_profiles,
-        prompt_declarations,
+        mut prompt_declarations,
     } = facts;
+    prompt_declarations.extend_from_slice(submission_prompt_declarations);
     gateway
         .build_prompt(PromptBuildRequest {
             session_id: Some(session_id.to_string().into()),
@@ -322,7 +341,18 @@ pub(crate) fn count_user_turns(messages: &[LlmMessage]) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{ResolvedRuntimeConfig, StorageEventPayload, ToolDefinition};
+    use std::sync::{Arc, Mutex};
+
+    use astrcode_core::{
+        AstrError, LlmOutput, LlmProvider, LlmRequest, ModelLimits, PromptBuildOutput,
+        PromptBuildRequest, PromptDeclaration, PromptDeclarationKind,
+        PromptDeclarationRenderTarget, PromptDeclarationSource, PromptFacts, PromptFactsProvider,
+        PromptFactsRequest, PromptProvider, ResolvedRuntimeConfig, ResourceProvider,
+        ResourceReadResult, ResourceRequestContext, StorageEventPayload, SystemPromptLayer,
+        ToolDefinition,
+    };
+    use astrcode_kernel::{CapabilityRouter, KernelGateway};
+    use async_trait::async_trait;
     use serde_json::json;
 
     use super::*;
@@ -368,6 +398,7 @@ mod tests {
             file_access_tracker: &tracker,
             session_state: &session_state,
             tool_result_replacement_state: &mut replacement_state,
+            prompt_declarations: &[],
         })
         .await
         .expect("assembly should succeed");
@@ -378,5 +409,140 @@ mod tests {
             StorageEventPayload::PromptMetrics { .. }
         ));
         assert_eq!(result.llm_request.messages.len(), 1);
+    }
+
+    #[derive(Debug)]
+    struct RecordingPromptProvider {
+        captured: Arc<Mutex<Vec<PromptDeclaration>>>,
+    }
+
+    #[async_trait]
+    impl PromptProvider for RecordingPromptProvider {
+        async fn build_prompt(
+            &self,
+            request: PromptBuildRequest,
+        ) -> astrcode_core::Result<PromptBuildOutput> {
+            *self.captured.lock().expect("capture lock should work") =
+                request.prompt_declarations.clone();
+            Ok(PromptBuildOutput {
+                system_prompt: "recorded".to_string(),
+                system_prompt_blocks: Vec::new(),
+                metadata: serde_json::Value::Null,
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct RecordingPromptFactsProvider;
+
+    #[async_trait]
+    impl PromptFactsProvider for RecordingPromptFactsProvider {
+        async fn resolve_prompt_facts(
+            &self,
+            _request: &PromptFactsRequest,
+        ) -> astrcode_core::Result<PromptFacts> {
+            Ok(PromptFacts {
+                prompt_declarations: vec![PromptDeclaration {
+                    block_id: "facts.contract".to_string(),
+                    title: "Facts Contract".to_string(),
+                    content: "facts".to_string(),
+                    render_target: PromptDeclarationRenderTarget::System,
+                    layer: SystemPromptLayer::Inherited,
+                    kind: PromptDeclarationKind::ExtensionInstruction,
+                    priority_hint: None,
+                    always_include: true,
+                    source: PromptDeclarationSource::Builtin,
+                    capability_name: None,
+                    origin: Some("facts-origin".to_string()),
+                }],
+                ..PromptFacts::default()
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct LocalNoopLlmProvider;
+
+    #[async_trait]
+    impl LlmProvider for LocalNoopLlmProvider {
+        async fn generate(
+            &self,
+            _request: LlmRequest,
+            _sink: Option<astrcode_core::LlmEventSink>,
+        ) -> astrcode_core::Result<LlmOutput> {
+            Err(AstrError::Validation(
+                "request test noop llm provider should not execute".to_string(),
+            ))
+        }
+
+        fn model_limits(&self) -> ModelLimits {
+            ModelLimits {
+                context_window: 32_000,
+                max_output_tokens: 4096,
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct LocalNoopResourceProvider;
+
+    #[async_trait]
+    impl ResourceProvider for LocalNoopResourceProvider {
+        async fn read_resource(
+            &self,
+            uri: &str,
+            _context: &ResourceRequestContext,
+        ) -> astrcode_core::Result<ResourceReadResult> {
+            Ok(ResourceReadResult {
+                uri: uri.to_string(),
+                content: serde_json::Value::Null,
+                metadata: serde_json::Value::Null,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn build_prompt_output_merges_submission_prompt_declarations() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let gateway = KernelGateway::new(
+            CapabilityRouter::empty(),
+            Arc::new(LocalNoopLlmProvider),
+            Arc::new(RecordingPromptProvider {
+                captured: captured.clone(),
+            }),
+            Arc::new(LocalNoopResourceProvider),
+        );
+        let submission_declarations = vec![PromptDeclaration {
+            block_id: "child.execution.contract".to_string(),
+            title: "Child Execution Contract".to_string(),
+            content: "submission".to_string(),
+            render_target: PromptDeclarationRenderTarget::System,
+            layer: SystemPromptLayer::Inherited,
+            kind: PromptDeclarationKind::ExtensionInstruction,
+            priority_hint: None,
+            always_include: true,
+            source: PromptDeclarationSource::Builtin,
+            capability_name: None,
+            origin: Some("submission-origin".to_string()),
+        }];
+
+        let output = build_prompt_output(PromptOutputRequest {
+            gateway: &gateway,
+            prompt_facts_provider: &RecordingPromptFactsProvider,
+            session_id: "session-1",
+            turn_id: "turn-1",
+            working_dir: Path::new("."),
+            step_index: 0,
+            messages: &[],
+            submission_prompt_declarations: &submission_declarations,
+        })
+        .await
+        .expect("prompt output should build");
+
+        assert_eq!(output.system_prompt, "recorded");
+        let captured = captured.lock().expect("capture lock should work");
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0].origin.as_deref(), Some("facts-origin"));
+        assert_eq!(captured[1].origin.as_deref(), Some("submission-origin"));
     }
 }

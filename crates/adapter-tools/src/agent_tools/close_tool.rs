@@ -89,9 +89,8 @@ impl Tool for CloseAgentTool {
                      for cleanup, not as a status probe.",
                 )
                 .caveat(
-                    "After a child delivers a useful result, decide immediately: either `close` \
-                     the finished branch or `send` one concrete follow-up. Do not leave completed \
-                     children idle without an explicit decision.",
+                    "Use `close` to end a branch, not to restate delegation policy. After a child \
+                     delivers useful work, either close it or send one concrete follow-up.",
                 )
                 .prompt_tag("collaboration"),
             )

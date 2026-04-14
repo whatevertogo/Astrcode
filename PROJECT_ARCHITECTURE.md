@@ -2,8 +2,7 @@
 
 ## 1. 架构目标
 
-本仓库采用“无兼容层重建”策略。  
-重构的目标不是把旧 `runtime` 分拆成更多 crate，而是把系统收敛成一套**长期稳定、可读、可定位、可扩展**的边界：
+本仓库采用“无兼容层”策略。  
 
 - `application` 是唯一用例入口与治理入口。
 - `kernel` 是唯一全局控制面。
@@ -145,6 +144,13 @@ crates/
 - `spawn` 时的 task-scoped capability grant 只描述“这次任务申请的最小工具子集”。
 - child 的最终 capability surface 必须由父级当前可继承能力面、spawn grant、runtime availability 与既有 policy 护栏求交得到。
 - prompt 可见工具集合与 runtime 可执行工具集合必须读取同一份 filtered capability router，不能一边看 profile、一边看全局 registry。
+
+agent delegation experience 也遵循同样的分层边界：
+
+- 共享协作协议由 `adapter-prompt::contributors::workflow_examples` 承担，只负责四工具的通用决策规则与 fresh / resumed / restricted 三种 delegation mode。
+- 行为模板目录由 `adapter-prompt::contributors::agent_profile_summary` 承担，只回答“什么样的 child 适合做什么事”，不能伪装成 capability 授权目录。
+- child 专属 execution contract 只能通过 `PromptDeclaration` 注入，沿 child launch / resume 的 submission-time 链路进入 prompt，不能回退到工具 description 或 profile 文本拼装。
+- `observe` / collaboration result 中的 reuse / close / respawn 建议只能是 advisory projection；真正的事实源仍然是 lifecycle、turn outcome、mailbox 投影与 resolved capability surface。
 
 ### 4.5 `session-runtime`
 

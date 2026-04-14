@@ -303,6 +303,7 @@ impl AgentControl {
             lifecycle: AgentLifecycleStatus::Pending,
             last_turn_outcome: None,
             resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+            delegation: None,
         };
         let cancel = CancelToken::new();
         let (status_tx, _status_rx) = watch::channel(handle.lifecycle);
@@ -370,6 +371,7 @@ impl AgentControl {
             lifecycle: AgentLifecycleStatus::Running,
             last_turn_outcome: None,
             resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+            delegation: None,
         };
         let cancel = CancelToken::new();
         let (status_tx, _status_rx) = watch::channel(handle.lifecycle);
@@ -467,6 +469,19 @@ impl AgentControl {
         let key = resolve_entry_key(&state, id)?.to_string();
         let entry = state.entries.get_mut(&key)?;
         entry.handle.resolved_limits = resolved_limits;
+        Some(())
+    }
+
+    /// 更新 agent 当前执行实例的 delegation 元数据。
+    pub async fn set_delegation(
+        &self,
+        id: &str,
+        delegation: Option<astrcode_core::DelegationMetadata>,
+    ) -> Option<()> {
+        let mut state = self.state.write().await;
+        let key = resolve_entry_key(&state, id)?.to_string();
+        let entry = state.entries.get_mut(&key)?;
+        entry.handle.delegation = delegation;
         Some(())
     }
 
